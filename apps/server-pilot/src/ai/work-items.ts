@@ -1,4 +1,7 @@
 import { failedReadFingerprint } from './extraction/retry-binding.js';
+import { randomUUID } from 'node:crypto';
+import { MANUAL_CREATE_KEY, manualCreateMarker, manualCreatePayload } from './manual-create-source.js';
+import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import {
   and,
   asc,
@@ -17,7 +20,7 @@ import {
   type SQL,
 } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
-import { aiWorkflowRun, attachment, mailActionLabel, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
+import { aiWorkflowRun, attachment, mailActionLabel, mailboxAccess, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { sqlList } from '../db/schema/hitl.js';
 import { MESSAGE_ARRIVED_AT, MESSAGE_DELIVERED_AT, OUTLOOK_SYNCED } from './message-arrival-time.js';
 export { MESSAGE_ARRIVED_AT, MESSAGE_DELIVERED_AT, OUTLOOK_SYNCED } from './message-arrival-time.js';
@@ -55,7 +58,7 @@ import {
 import { aopQuoteChannelFromSender } from './aop-playbook.js';
 import { matchRoomType } from './room-types.js';
 import { normalizeEmailAddress, PUBLIC_MAIL_DOMAINS } from './never-spam.js';
-import { groundedSeparateAsk, isSelfSentPreStayInformationMail, preStaySourceText } from './existing-stay-information.js';
+import { groundedSeparateAsk, isSelfSentPreStayInformationMail, isSelfSentPreStaySubject, preStaySourceText } from './existing-stay-information.js';
 import { collectNeedsYouPages, type NeedsYouCursor } from './work-items-list-pages.js';
 import { maskCardNumbers } from './card-mask.js';
 import { isNoReplyAddress } from '../mail/conversation-signals.js';
@@ -964,7 +967,8 @@ export function storedAnalysis(
   };
 }
 
-export type StoredAnalysis = ReturnType<typeof storedAnalysis>['analysis'];
+export type StoredAnalysis = Omit<ReturnType<typeof storedAnalysis>['analysis'], 'source' | 'aiUnavailable'> &
+  { source: 'luna' | 'staff_manual'; aiUnavailable: boolean };
 
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
 
@@ -1023,6 +1027,7 @@ export function correctionsCarryTo(
  * never when her saved values would land on other stays or rows in the next read.
  */
 async function shouldRelink(db: WorkTx, fromId: string | null, nextId: string, state: WorkState): Promise<boolean> {
+  if (Object.hasOwn(state, MANUAL_CREATE_KEY)) return false;
   if (!fromId) return true;
   const reads = await db
     .select({ id: mailExtraction.id, createdAt: mailExtraction.createdAt, payload: mailExtraction.payload })
@@ -1173,6 +1178,12 @@ export async function ensureWorkItemForMessage(
   db: DB,
   input: { transportId: string; messageId: string },
 ): Promise<WorkItemRef | null> {
+  // A later model read must never transplant a staff-owned draft or its receipts to different stay IDs.
+  const existingItems = await db.select({ id: workItem.id, status: workItem.status, state: workItem.state,
+    extractionId: workItem.extractionId }).from(workItem).where(and(eq(workItem.transportId, input.transportId),
+      eq(workItem.sourceMessageId, input.messageId)));
+  const manual = existingItems.find((item) => Object.hasOwn(item.state, MANUAL_CREATE_KEY));
+  if (manual) return manual;
   const [msg] = await db
     .select({
       threadId: message.threadId,
@@ -1187,12 +1198,20 @@ export async function ensureWorkItemForMessage(
   if (!msg) return null;
   return db.transaction(async tx => {
     const transaction = tx as unknown as DB;
+    await lockCanonicalMailbox(transaction, input.transportId);
+    if (msg.threadId) await tx.select({ id: mailThread.id }).from(mailThread)
+      .where(and(eq(mailThread.id, msg.threadId), eq(mailThread.transportId, input.transportId)))
+      .limit(1).for('no key update');
     // A reread can relink or restore one item before refreshing the whole thread.
     // Take thread items in the same order as the refresh before touching any one,
     // including dismissed items that the reread may restore.
     await tx.select({ id: workItem.id }).from(workItem)
       .where(and(eq(workItem.transportId, input.transportId), eq(workItem.threadId, msg.threadId)))
       .orderBy(workItem.id).for('update');
+    const [staffDraft] = await tx.select({ id: workItem.id, status: workItem.status, state: workItem.state,
+      extractionId: workItem.extractionId }).from(workItem).where(and(eq(workItem.transportId, input.transportId),
+      eq(workItem.sourceMessageId, input.messageId), sql`${workItem.state} ? ${MANUAL_CREATE_KEY}`)).limit(1);
+    if (staffDraft) return staffDraft;
     const latest = await succeededRead(transaction, input.messageId);
     if (!latest || latest.kind === 'spam') return null;
     const item = await ensureWorkItem(transaction, {
@@ -1625,7 +1644,7 @@ export async function planThreadWork(
         source: { threadId: input.threadId, messageId: source.id, sourceHash: staffQuoteSourceHash(source) },
         state: item.state, files: voucherFiles, candidates: files }) : null;
     const pendingVoucher = files.some(file => !handled.has(file.key) && file.key !== confirmed);
-    const outstanding = currentKind && (pendingVoucher || hasOutstandingRequestHistory((runsBySource.get(source.id) ?? [])
+    const outstanding = Object.hasOwn(item.state, MANUAL_CREATE_KEY) || currentKind && (pendingVoucher || hasOutstandingRequestHistory((runsBySource.get(source.id) ?? [])
       .map(run => ({ id: run.id, result: run.metrics?.reservationistResult, source: run.metrics?.reservationistDraftSource })), requestStates.get(source.id)));
     const untouched = !outstanding && !item.touched && Object.keys(item.state ?? {}).length === 0;
     const humanWritten = item.origin !== 'system_notice';
@@ -1871,11 +1890,12 @@ export type FieldProvenance = Record<string, { source: FieldProvenanceSource; va
 
 export type StoredWork =
   | { status: 'none' }
-  | { status: 'failed'; reason: string; extractionId: string; extractorVersion: string; fingerprint: string; source: { threadId: string; messageId: string; sourceHash: string } }
+  | { status: 'failed'; reason: string; extractionId?: string; extractorVersion?: string; fingerprint?: string; source?: { threadId: string; messageId: string; sourceHash: string } }
   | {
       status: 'ready';
       /** The stored extraction kind, for the pane's shared reservation-staff vocabulary. */
       kind: string;
+      staffManual?: boolean;
       /** A self-sent pre-stay confirmation is information about an existing stay, not booking work. */
       existingStayInformation: boolean;
       separateAsk: string | null;
@@ -1953,6 +1973,52 @@ export async function messageFor(db: DB, input: { transportId: string; internetM
   return result && (!input.expectedMessageId || result.id === input.expectedMessageId) ? result : null;
 }
 
+/** Explicit staff choice, bound to the selected inbound email and its actual failed observation. */
+export async function startManualCreate(db: DB, input: {
+  transportId: string; actorId: string; internetMessageId: string; selection: PaneSourceSelection;
+  extractionId: string; fingerprint: string; source: DraftSource;
+}): Promise<{ status: 'started' | 'blocked' }> {
+  return db.transaction(async (tx) => {
+    const transaction = tx as unknown as DB;
+    await lockCanonicalMailbox(transaction, input.transportId);
+    const [thread] = await tx.select({ id: mailThread.id }).from(mailThread).where(and(
+      eq(mailThread.id, input.source.threadId), eq(mailThread.transportId, input.transportId),
+      eq(mailThread.historyOnly, false), isNull(mailThread.trashedAt), isNull(mailThread.spamAt))).limit(1).for('no key update');
+    if (!thread) return { status: 'blocked' as const };
+    const selected = await messageFor(transaction, { ...input, expectedMessageId: input.source.messageId });
+    if (!selected || selected.threadId !== thread.id || staffQuoteSourceHash(selected) !== input.source.sourceHash ||
+        isSelfSentPreStaySubject({ fromAddress: selected.fromAddress, mailboxAddress: selected.mailboxAddress, subject: selected.subject })) {
+      return { status: 'blocked' as const };
+    }
+    const [mail] = await tx.select().from(message).where(and(eq(message.id, selected.id), eq(message.transportId, input.transportId),
+      eq(message.threadId, thread.id), eq(message.direction, 'inbound'), eq(message.historyOnly, false))).limit(1).for('no key update');
+    if (!mail || mail.sourceProvenance?.attention != null || staffQuoteSourceHash(mail) !== input.source.sourceHash) {
+      return { status: 'blocked' as const };
+    }
+    const [access] = await tx.select({ id: mailboxAccess.id }).from(mailboxAccess).where(and(
+      eq(mailboxAccess.userId, input.actorId), eq(mailboxAccess.transportId, input.transportId))).limit(1).for('share');
+    const [read] = await tx.select().from(mailExtraction).where(and(eq(mailExtraction.id, input.extractionId),
+      eq(mailExtraction.messageId, mail.id))).limit(1).for('update');
+    if (!access || !read || read.status !== 'failed' || failedReadFingerprint(read) !== input.fingerprint) return { status: 'blocked' as const };
+    const [existing] = await tx.select({ id: workItem.id }).from(workItem).where(and(
+      eq(workItem.transportId, input.transportId), eq(workItem.sourceMessageId, mail.id))).limit(1);
+    const [success] = await tx.select({ id: mailExtraction.id }).from(mailExtraction).where(and(
+      eq(mailExtraction.messageId, mail.id), eq(mailExtraction.status, 'succeeded'))).limit(1);
+    if (existing || success) return { status: 'blocked' as const };
+    const marker = { version: 1 as const, extractionId: read.id, sourceHash: input.source.sourceHash,
+      messageId: mail.id, threadId: thread.id, actorId: input.actorId,
+      stayId: `s_m${randomUUID().replaceAll('-', '').slice(0, 24)}`,
+      rowId: `r_m${randomUUID().replaceAll('-', '').slice(0, 24)}` };
+    const [item] = await tx.insert(workItem).values({ transportId: input.transportId, threadId: thread.id,
+      sourceMessageId: mail.id, kind: 'booking', extractionId: read.id, state: { [MANUAL_CREATE_KEY]: marker } })
+      .onConflictDoNothing().returning({ id: workItem.id });
+    if (!item) return { status: 'blocked' as const };
+    await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'user', actorUserId: input.actorId,
+      type: 'note.staff', value: { action: 'manual_create_started', extractionId: read.id, sourceHash: input.source.sourceHash } });
+    return { status: 'started' as const };
+  });
+}
+
 type ReadyRead = NonNullable<Awaited<ReturnType<typeof succeededRead>>>;
 
 /** Old booking extractions never gain a work item or a separate-ask view. */
@@ -2024,6 +2090,7 @@ async function readyView(
   latest: ReadyRead,
   item: WorkItemSnapshot | null,
   transportId: string,
+  staffManual = false,
 ): Promise<StoredWork> {
   const messageId = msg.id;
   const read =
@@ -2068,7 +2135,7 @@ async function readyView(
       eq(mailActionLabel.source, 'owner'), eq(mailActionLabel.version, 'owner')))
     .orderBy(desc(mailActionLabel.updatedAt), desc(mailActionLabel.id)).limit(1);
   const effectiveDraft = !existingStayInformation && read.payload.stays.length > 0
-    ? projectEffectiveWork(draftSource, requestPayload(read.payload, state, read.kind), state, ownerLabel?.action, read.kind, read.attachments, read.payload.stays.length) : null;
+    ? projectEffectiveWork(draftSource, requestPayload(read.payload, state, read.kind), state, staffManual ? undefined : ownerLabel?.action, read.kind, read.attachments, read.payload.stays.length) : null;
   if (effectiveDraft && (read.kind === 'cancellation' || read.kind === 'amendment')) {
     const cancel = projectCancelRequests(draftSource, read.payload, state, ownerLabel?.action, read.kind);
     effectiveDraft.requests = effectiveDraft.requests.map((request) =>
@@ -2096,6 +2163,7 @@ async function readyView(
   return {
     status: 'ready',
     kind: existingStayInformation ? 'other' : read.kind,
+    ...(staffManual ? { staffManual: true } : {}),
     existingStayInformation,
     separateAsk,
     confirmationNumbers,
@@ -2110,6 +2178,7 @@ async function readyView(
     // As the live read does (quote-workflow route): a do-not-reply sender gets no reply controls.
     analysis: {
       ...stored.analysis,
+      ...(staffManual ? { source: 'staff_manual' as const, aiUnavailable: true } : {}),
       noReplySender: isNoReplyAddress(msg.fromAddress),
       hmsTodoCard: existingStayInformation
         ? null
@@ -2140,6 +2209,24 @@ async function readyView(
   };
 }
 
+/** A staff-owned draft remains on the exact failed read even if a later model read appears. */
+async function manualViewFor(db: DB, msg: NonNullable<Awaited<ReturnType<typeof messageFor>>>, transportId: string): Promise<StoredWork | null> {
+  const items = await db.select({ id: workItem.id, status: workItem.status, state: workItem.state,
+    extractionId: workItem.extractionId, revision: workItem.revision, revisionHead: workItem.revisionHead,
+    revisionSeq: workItem.revisionSeq, kind: workItem.kind, sourceMessageId: workItem.sourceMessageId,
+    threadId: workItem.threadId }).from(workItem).where(and(eq(workItem.transportId, transportId),
+      eq(workItem.sourceMessageId, msg.id), eq(workItem.kind, 'booking'))).limit(1);
+  const item = items[0];
+  if (!item || !Object.hasOwn(item.state, MANUAL_CREATE_KEY)) return null;
+  if (!manualCreateMarker(item.state) || !item.extractionId) return { status: 'failed', reason: 'This staff-entered booking changed. Reopen the email for review.' };
+  const [extraction] = await db.select().from(mailExtraction).where(eq(mailExtraction.id, item.extractionId)).limit(1);
+  const payload = extraction && manualCreatePayload({ item, extraction, source: msg });
+  if (!extraction || !payload) return { status: 'failed', reason: 'This staff-entered booking changed. Reopen the email for review.' };
+  const read: ReadyRead = { id: extraction.id, createdAt: extraction.createdAt, kind: 'booking', payload,
+    attachments: null, language: null, translation: null, classifier: null };
+  return readyView(db, msg, read, item, transportId, true);
+}
+
 /**
  * What the pane shows for one mail: the latest succeeded read with its work item, the latest failed read as a reason,
  * or nothing (the pane then reads the mail live). A read only: no model call, and no row is written. The inbound run
@@ -2151,6 +2238,8 @@ export async function storedWorkFor(
 ): Promise<StoredWork> {
   const msg = await messageFor(db, input);
   if (!msg) return { status: 'none' };
+  const manual = await manualViewFor(db, msg, input.transportId);
+  if (manual) return manual;
   const latest = await succeededRead(db, msg.id);
   if (!latest) return failureFor(db, msg);
   const existingStayInformation = isSelfSentPreStayInformationMail({
@@ -2195,6 +2284,8 @@ export async function openStoredWork(
 ): Promise<StoredWork> {
   const msg = await messageFor(db, input);
   if (!msg) return { status: 'none' };
+  const manual = await manualViewFor(db, msg, input.transportId);
+  if (manual) return manual;
   const latest = await succeededRead(db, msg.id);
   if (!latest) return failureFor(db, msg);
   if (
@@ -2287,27 +2378,32 @@ export async function recordFieldEvent(
     }
     const [read] = item.extractionId
       ? await tx
-          .select({ payload: mailExtraction.payload, version: mailExtraction.extractorVersion,
+          .select({ id: mailExtraction.id, payload: mailExtraction.payload, version: mailExtraction.extractorVersion,
             attachments: mailExtraction.attachments, messageId: mailExtraction.messageId,
             kind: mailExtraction.kind, status: mailExtraction.status })
           .from(mailExtraction)
           .where(eq(mailExtraction.id, item.extractionId))
           .limit(1)
       : [];
-    const payload = read?.payload as MailExtractionPayload | null | undefined;
-    if (request || input.source || input.expectedSeq !== undefined) {
-      if (!input.source || (request && input.expectedSeq === undefined) ||
+    let payload = read?.payload as MailExtractionPayload | null | undefined;
+    const isManual = Object.hasOwn(item.state, MANUAL_CREATE_KEY);
+    if (request || input.source || input.expectedSeq !== undefined || isManual) {
+      if (!input.source || ((request || isManual) && input.expectedSeq === undefined) ||
           input.source.threadId !== item.threadId || input.source.messageId !== item.sourceMessageId ||
-          !read || read.messageId !== item.sourceMessageId || read.kind !== item.kind || read.status !== 'succeeded') {
+          !read || read.messageId !== item.sourceMessageId) {
         return { status: 'stale_source' as const };
       }
       if (input.expectedSeq !== undefined && input.expectedSeq !== item.revisionSeq) return { status: 'stale_revision' as const };
-      const [mail] = await tx.select({ id: message.id, subject: message.subject, textBody: message.textBody,
+      const [mail] = await tx.select({ id: message.id, threadId: message.threadId, subject: message.subject, textBody: message.textBody,
         htmlBody: message.htmlBody, historyOnly: message.historyOnly, sourceProvenance: message.sourceProvenance }).from(message)
         .where(and(eq(message.id, input.source.messageId), eq(message.transportId, input.transportId),
           eq(message.threadId, input.source.threadId), eq(message.direction, 'inbound'))).limit(1);
       if (!mail || mail.historyOnly || mail.sourceProvenance?.attention != null ||
           staffQuoteSourceHash(mail) !== input.source.sourceHash) return { status: 'stale_source' as const };
+      if (isManual) {
+        payload = manualCreatePayload({ item, extraction: read, source: mail });
+        if (!payload) return { status: 'stale_source' as const };
+      } else if (read.kind !== item.kind || read.status !== 'succeeded') return { status: 'stale_source' as const };
     }
     let aiValue: unknown;
     if (request) {
@@ -2325,7 +2421,7 @@ export async function recordFieldEvent(
           eq(mailActionLabel.source, 'owner'), eq(mailActionLabel.version, 'owner')))
         .orderBy(desc(mailActionLabel.updatedAt), desc(mailActionLabel.id)).limit(1);
       if (!(MAIL_KINDS as readonly string[]).includes(item.kind)) return { status: 'invalid_path' as const };
-      const effective = effectiveActions(input.source, requestSource, item.state, owner?.action, item.kind as MailKind,
+      const effective = effectiveActions(input.source, requestSource, item.state, isManual ? undefined : owner?.action, item.kind as MailKind,
         read?.attachments as AttachmentRead[] | null ?? null, payload.stays.length).find((entry) => entry.requestId === request.requestId);
       if (input.type !== 'field.accept' && !requestFieldApplies(request, effective?.action ?? null)) {
         return { status: 'invalid_path' as const };
@@ -2377,6 +2473,8 @@ export async function recordFieldEvent(
     } else {
       aiValue = aiValueAt(payload, input.fieldPath);
     }
+    // The scaffold is a staff choice, not an extraction, including its booking action.
+    if (isManual) aiValue = null;
     const value = input.type === 'field.accept' ? aiValue : personValue;
     // state holds only a person's values. An accept clears the path, so the AI value shows as the extraction.
     const state = { ...item.state };
@@ -2398,7 +2496,7 @@ export async function recordFieldEvent(
       fieldPath: input.fieldPath,
       aiValue,
       value,
-      aiSource: read?.version ?? null,
+      aiSource: isManual ? null : read?.version ?? null,
       msSinceOpen: input.msSinceOpen ?? null,
       evidence: advanced.evidence,
     });

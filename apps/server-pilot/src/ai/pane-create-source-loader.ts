@@ -7,6 +7,7 @@ import { mailExtraction, workItem } from '../db/schema/work.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { canonicalJson } from './draft-approval.js';
 import type { CreateFenceTransaction } from './pane-create-dispatch-fence.js';
+import { MANUAL_CREATE_KEY, manualCreatePayload, manualCreateMarker } from './manual-create-source.js';
 
 const id = z.string().min(1).max(200).refine((value) => value === value.trim() && !/\p{Cc}/u.test(value));
 const cursorSchema = z.object({ extractionId: z.string().uuid(), revision: z.number().int().nonnegative().safe(),
@@ -18,6 +19,7 @@ export type LockedCreateSource = {
   snapshot: { source: typeof message.$inferSelect; extraction: typeof mailExtraction.$inferSelect };
   sourceDigest: string;
   item: typeof workItem.$inferSelect;
+  effectivePayload: Record<string, unknown> | null;
 };
 
 /**
@@ -27,7 +29,7 @@ export type LockedCreateSource = {
  * canonical mailbox, active thread, message, referenced extraction, then work item.
  */
 export async function lockCreateSource<T>(tx: CreateFenceTransaction, raw: z.input<typeof keySchema>,
-  continuation: (tx: CreateFenceTransaction, source: LockedCreateSource) => Promise<T>): Promise<T> {
+  continuation: (tx: CreateFenceTransaction, source: LockedCreateSource) => Promise<T>, allowManual = false): Promise<T> {
   const input = keySchema.parse(raw);
   await lockCanonicalMailbox(tx as unknown as DB, input.transportId);
   const [thread] = await tx.select({ id: mailThread.id, transportId: mailThread.transportId,
@@ -42,8 +44,8 @@ export async function lockCreateSource<T>(tx: CreateFenceTransaction, raw: z.inp
     throw new Error('create_source_stale');
   }
   const [extraction] = await tx.select().from(mailExtraction)
-    .where(and(eq(mailExtraction.id, input.cursor.extractionId), eq(mailExtraction.messageId, source.id),
-      eq(mailExtraction.status, 'succeeded'))).limit(1).for('no key update');
+    .where(and(eq(mailExtraction.id, input.cursor.extractionId), eq(mailExtraction.messageId, source.id)))
+    .limit(1).for('no key update');
   if (!extraction) throw new Error('create_source_stale');
   const [item] = await tx.select().from(workItem)
     .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
@@ -53,6 +55,11 @@ export async function lockCreateSource<T>(tx: CreateFenceTransaction, raw: z.inp
       item.revisionHead !== input.cursor.revisionHead || item.revisionSeq !== input.cursor.seq ||
       item.status === 'done' || item.status === 'dismissed') throw new Error('create_source_stale');
 
+  const manual = allowManual ? manualCreatePayload({ item, extraction, source }) : null;
+  if ((Object.hasOwn(item.state, MANUAL_CREATE_KEY) && !manual) ||
+      (extraction.status !== 'succeeded' && !manual)) throw new Error('create_source_stale');
+  const effectivePayload = manual ?? extraction.payload;
+
   const sourceDigest = createHash('sha256').update(canonicalJson({
     message: { id: source.id, transportId: source.transportId, threadId: source.threadId, direction: source.direction,
       historyOnly: source.historyOnly, fromAddress: source.fromAddress, ownerHeaderValue: source.ownerHeaderValue,
@@ -61,11 +68,22 @@ export async function lockCreateSource<T>(tx: CreateFenceTransaction, raw: z.inp
     extraction: { id: extraction.id, messageId: extraction.messageId, status: extraction.status,
       extractorVersion: extraction.extractorVersion, kind: extraction.kind, language: extraction.language,
       payload: extraction.payload, translation: extraction.translation, attachments: extraction.attachments },
+    ...(manual ? { staffManualCreate: manualCreateMarker(item.state) } : {}),
   })).digest('hex');
-  return continuation(tx, { snapshot: { source, extraction }, sourceDigest, item });
+  return continuation(tx, { snapshot: { source, extraction }, sourceDigest, item, effectivePayload });
 }
 
 export async function withLockedCreateSource<T>(db: DB, raw: z.input<typeof keySchema>,
   continuation: (tx: CreateFenceTransaction, source: LockedCreateSource) => Promise<T>): Promise<T> {
   return db.transaction((tx) => lockCreateSource(tx, raw, continuation), { isolationLevel: 'read committed' });
+}
+
+/** Only Create and its rate-selection route may use the staff-owned failed-read authority. */
+export async function lockCreateSourceForCreate<T>(tx: CreateFenceTransaction, raw: z.input<typeof keySchema>,
+  continuation: (tx: CreateFenceTransaction, source: LockedCreateSource) => Promise<T>): Promise<T> {
+  return lockCreateSource(tx, raw, continuation, true);
+}
+export async function withLockedCreateSourceForCreate<T>(db: DB, raw: z.input<typeof keySchema>,
+  continuation: (tx: CreateFenceTransaction, source: LockedCreateSource) => Promise<T>): Promise<T> {
+  return db.transaction((tx) => lockCreateSourceForCreate(tx, raw, continuation), { isolationLevel: 'read committed' });
 }

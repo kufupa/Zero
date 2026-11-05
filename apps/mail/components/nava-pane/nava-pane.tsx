@@ -907,7 +907,9 @@ export function NavaPane({
   };
   // Keep the lookup deadline separate from its payload: a late ready result changes the decision to stored, not to
   // another live read. With a treat-as or note, only Retry read (its count) re-runs the live analysis.
-  const storedGate = storedOverridden && !storedWork.retryInProgress &&
+  const storedGate = storedWork.pane.state === 'ready' && storedWork.pane.staffManual
+    ? `manual|${storedWork.key}|${storedWork.pane.workItemId}`
+    : storedOverridden && !storedWork.retryInProgress &&
     storedWork.pane.state !== 'loading' && storedWork.pane.state !== 'failed'
     ? `override|${storedWork.retryCount}`
     : `${storedWork.key}|timed-out:${storedWork.lookupTimedOut}`;
@@ -922,6 +924,9 @@ export function NavaPane({
     const selectionEpoch = binding.selectionEpoch;
     const decision = storedDecision(storedWork.pane, storedOverridden);
     if (decision.kind === 'ready') {
+      const manual = storedWork.pane.state === 'ready' && storedWork.pane.staffManual;
+      const chooseBooking = { type: 'treat_as', treatAs: 'create_booking' } as const;
+      if (manual && quoteSessionRef.current.treatAs !== 'create_booking') dispatchQuote(chooseBooking);
       const ready = {
         type: 'analysis_ready',
         analysis: analysisWithPaneEdits(
@@ -930,7 +935,8 @@ export function NavaPane({
           contactMessageKey,
         ),
       } as const;
-      const before = reduceQuoteSession(quoteSessionRef.current, { type: 'analysis_started' });
+      const current = manual ? reduceQuoteSession(quoteSessionRef.current, chooseBooking) : quoteSessionRef.current;
+      const before = reduceQuoteSession(current, { type: 'analysis_started' });
       dispatchQuote({ type: 'mailbox_status', status: 'ready' });
       dispatchQuote(ready);
       // What she typed into the blank stay while the stored read loaded is laid over its stays. Log it like any edit.
@@ -2355,7 +2361,7 @@ export function NavaPane({
               readAs={readAs}
               treatAs={quoteSession.treatAs}
               workState={workState}
-              goldLabel={goldLabelEnabled && activeEmail ? {
+              goldLabel={goldLabelEnabled && activeEmail && !(storedWork.pane.state === 'ready' && storedWork.pane.staffManual) ? {
                 messageKey: activeEmail.internetMessageId ?? activeEmail.entryId ?? 'selected',
                 messageId:
                   activeEmail.internetMessageId &&
@@ -2365,7 +2371,7 @@ export function NavaPane({
                 internetMessageId: activeEmail.internetMessageId ?? null,
                 initialAction: GOLD_ACTION_FOR_READ_AS[readAs],
               } : undefined}
-              onIntentChange={isNonActionableMessage ? undefined : (treatAs) => {
+              onIntentChange={isNonActionableMessage || (storedWork.pane.state === 'ready' && storedWork.pane.staffManual) ? undefined : (treatAs) => {
                 suppressAutoStaffQuoteForCurrentEmail();
                 if (contactMessageKey) rememberTreatAs(treatAsMailKey, treatAs);
                 dispatchQuote({ type: 'treat_as', treatAs });
@@ -2558,7 +2564,12 @@ export function NavaPane({
               </p>
             ) : null}
 
-            {activeEmail && !quoteSession.staffQuote && quoteOrBookingEmail ? (
+            {storedWork.pane.state === 'ready' && storedWork.pane.staffManual ? (
+              <p className="px-1 text-[13px] text-[#92400e]">
+                Nava could not read this email. Enter and check all booking details yourself. After reviewing all requests,
+                dismiss it from Needs you.
+              </p>
+            ) : activeEmail && !quoteSession.staffQuote && quoteOrBookingEmail ? (
               <p className="px-1 text-[13px] text-[#64748b]">
                 Nava filled these in from the email. Check them before getting rates.
               </p>
@@ -2598,6 +2609,8 @@ export function NavaPane({
               onPatchGroup={(groupId, patch) => editStayRows({ type: 'patch_group', groupId, patch })}
               // Shown only on a failed-read item, which stays listed after she starts typing in the form.
               onRetryRead={storedWork.retry}
+              onStartManualCreate={storedWork.pane.state === 'failed' && storedWork.pane.canStartManualCreate
+                ? storedWork.startManualCreate : undefined}
               onStayAction={(action) => {
                 if (action.type !== 'remove_stay') {
                   editStayRows(action);

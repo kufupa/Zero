@@ -68,7 +68,8 @@ import { hmsJobQueueEnabled, queueRateCandidatesHmsJob, readRateCandidatesHmsJob
 import type { HmsCloudRateLookup } from '../../ai/hms-cloud-saved-stay-find.js';
 import { paneStayHmsTargetForTransport } from '../../ai/pane-stay-spawn-env.js';
 import { loadPaneRateHistory } from '../../ai/pane-rate-recommendation.js';
-import { withLockedCreateSource } from '../../ai/pane-create-source-loader.js';
+import { withLockedCreateSourceForCreate as withLockedCreateSource } from '../../ai/pane-create-source-loader.js';
+import { MANUAL_CREATE_KEY, manualCreatePayload } from '../../ai/manual-create-source.js';
 import { assertNoCreateDispatchFence } from '../../ai/pane-create-dispatch-fence.js';
 import { advancePaneRevision } from '../../ai/work-item-revision.js';
 import { and, eq } from 'drizzle-orm';
@@ -216,12 +217,15 @@ async function selectedRateSource(db: DB, binding: z.infer<typeof rateBinding>, 
     .innerJoin(mailExtraction, and(eq(mailExtraction.id, workItem.extractionId), eq(mailExtraction.messageId, message.id)))
     .where(and(eq(workItem.id, binding.workItemId), eq(workItem.transportId, transportId),
       eq(message.id, binding.source.messageId), eq(mailThread.id, binding.source.threadId))).limit(1);
-  return selected && selected.mail.threadId === binding.source.threadId && selected.mail.direction === 'inbound' &&
+  if (!selected) return null;
+  const manual = manualCreatePayload({ item: selected.item, extraction: selected.extraction, source: selected.mail });
+  return selected.mail.threadId === binding.source.threadId && selected.mail.direction === 'inbound' &&
     !selected.mail.historyOnly && !selected.thread.historyOnly && selected.thread.trashedAt === null &&
-    selected.mail.sourceProvenance?.attention == null && selected.extraction.status === 'succeeded' &&
+    selected.mail.sourceProvenance?.attention == null &&
+    (Object.hasOwn(selected.item.state, MANUAL_CREATE_KEY) ? Boolean(manual) : selected.extraction.status === 'succeeded') &&
     !['done', 'dismissed'].includes(selected.item.status) && selected.item.revisionSeq === binding.expectedSeq &&
     (binding.expectedExtractionId === undefined || selected.extraction.id === binding.expectedExtractionId) &&
-    staffQuoteSourceHash(selected.mail) === binding.source.sourceHash ? selected : null;
+    staffQuoteSourceHash(selected.mail) === binding.source.sourceHash ? { ...selected, payload: manual ?? selected.extraction.payload } : null;
 }
 
 function storedRatePartyBinding(state: Record<string, unknown>, binding: z.infer<typeof rateBinding>, extractionId: string, actorId: string) {
@@ -280,7 +284,7 @@ export const quoteWorkflowRouter = router({
     const selected = await selectedRateSource(db, binding, ctx.activeTransportId);
     const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
     if (!selected || !target.ok || target.target.propertyCode !== 'HRCEN') return unavailable;
-    const parsed = mailExtractionPayloadSchema.safeParse(selected.extraction.payload);
+    const parsed = mailExtractionPayloadSchema.safeParse(selected.payload);
     if (!parsed.success || amendRequestId(binding.source, binding.request.stayId) !== binding.request.requestId ||
         binding.request.rowId === null || binding.request.roomIndex === null) return unavailable;
     const stay = formStays(parsed.data, selected.item.state).find((item) => item.id === binding.request.stayId);
@@ -338,7 +342,7 @@ export const quoteWorkflowRouter = router({
     if (!selected) return refuse('stale', 'SOURCE_OR_REVISION_CHANGED');
     const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
     if (!target.ok || target.target.propertyCode !== 'HRCEN') return refuse('blocked', 'PROPERTY_CONTEXT_UNSUPPORTED');
-    const parsed = mailExtractionPayloadSchema.safeParse(selected.extraction.payload);
+    const parsed = mailExtractionPayloadSchema.safeParse(selected.payload);
     if (!parsed.success || amendRequestId(binding.source, binding.request.stayId) !== binding.request.requestId) {
       return refuse('stale', 'REQUEST_IDENTITY_CHANGED');
     }
@@ -416,7 +420,7 @@ export const quoteWorkflowRouter = router({
     if (!selected) return refuse('stale', 'SOURCE_OR_REVISION_CHANGED', 'This request has changed. Refresh the email.');
     const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
     if (!target.ok || target.target.propertyCode !== 'HRCEN') return refuse('blocked', 'PROPERTY_CONTEXT_UNSUPPORTED', 'Rate lookup is not available for this hotel yet.');
-    const payload = mailExtractionPayloadSchema.safeParse(selected.extraction.payload);
+    const payload = mailExtractionPayloadSchema.safeParse(selected.payload);
     if (!payload.success || amendRequestId(binding.source, binding.request.stayId) !== requestId) {
       return refuse('stale', 'REQUEST_IDENTITY_CHANGED', 'This stay request has changed. Refresh the email.');
     }

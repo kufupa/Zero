@@ -37,12 +37,13 @@ export type StoredPane =
   | { state: 'loading' }
   | { state: 'retrying' }
   | { state: 'reading' }
-  | { state: 'failed'; reason: string }
+  | { state: 'failed'; reason: string; canStartManualCreate?: boolean }
   | {
       state: 'ready';
       analysis: QuoteAnalysis;
       /** The mail kind and current work-item state, shared with the pane's read-as and work-state banners. */
       kind: string;
+      staffManual?: boolean;
       existingStayInformation?: boolean;
       separateAsk?: string | null;
       confirmationNumbers?: string[];
@@ -73,6 +74,7 @@ export type StoredDecision =
 export function storedDecision(pane: StoredPane, overridden: boolean): StoredDecision {
   if (pane.state === 'retrying' || pane.state === 'loading') return { kind: 'wait' };
   if (pane.state === 'failed') return { kind: 'failed', reason: pane.reason };
+  if (pane.state === 'ready' && pane.staffManual) return { kind: 'ready', analysis: pane.analysis };
   if (overridden) return { kind: 'live' };
   if (pane.state === 'ready') return { kind: 'ready', analysis: pane.analysis };
   return { kind: 'live' };
@@ -424,10 +426,20 @@ export function useStoredWork(args: {
   const lookupKey = internetMessageId
     ? JSON.stringify([scope, internetMessageId, selection ?? null, args.selectionEpoch ?? null])
     : null;
+  // Unversioned edits already cached when this selection opened remain stale. Edits made while
+  // this selection waits for its failed read can be adopted only by its newly created empty draft.
+  const selectionCache = useRef<{ key: string; hadEdits: boolean } | null>(null);
+  const freshManualFormKey = useRef<string | null>(null);
+  if ((selectionCache.current?.key ?? null) !== lookupKey) {
+    selectionCache.current = lookupKey ? { key: lookupKey, hadEdits: Boolean(args.hasCachedEdits) } : null;
+    freshManualFormKey.current = null;
+  }
   const [lookup, setLookup] = useState<Lookup | null>(null);
   // Retry count is used by explicit live analysis overrides; failed stored reads use the durable queue.
   const [retries, setRetries] = useState<{ key: string | null; count: number }>({ key: null, count: 0 });
   const [retryingRead, setRetryingRead] = useState<{ key: string; runId: string | null; extractionId: string; transportId: string | null } | null>(null);
+  const [manualStarting, setManualStarting] = useState<string | null>(null);
+  const manualInFlight = useRef(false);
   const retryInFlight = useRef(false);
   const [retrySlow, setRetrySlow] = useState(false);
   const readyAt = useRef(0);
@@ -667,13 +679,14 @@ export function useStoredWork(args: {
   const retried = retries.key === lookupKey ? retries.count : 0;
   let pane: StoredPane;
   if (!internetMessageId || !canLookUp) pane = { state: 'reading' };
-  else if (retryingRead?.key === lookupKey) pane = { state: 'retrying' };
+  else if (retryingRead?.key === lookupKey || manualStarting === lookupKey) pane = { state: 'retrying' };
   else if (!currentLookup) pane = { state: 'loading' };
   else if (stored?.status === 'ready') {
     pane = {
       state: 'ready',
       analysis: quoteAnalysisWithSavedRates(stored),
       kind: stored.kind,
+      staffManual: stored.staffManual,
       existingStayInformation: stored.existingStayInformation === true,
       separateAsk: stored.separateAsk ?? null,
       confirmationNumbers: stored.confirmationNumbers ?? [],
@@ -688,7 +701,9 @@ export function useStoredWork(args: {
       amendDraft: amendSnapshotOf(stored),
     };
   } else if (stored?.status === 'failed') {
-    pane = { state: 'failed', reason: stored.reason };
+    pane = { state: 'failed', reason: stored.reason,
+      ...(selection && stored.extractionId && stored.fingerprint && stored.source &&
+        workItemsFromTrpc(trpc).startManualCreate ? { canStartManualCreate: true } : {}) };
   } else if (currentLookup.timedOut || stored) pane = { state: 'reading' };
   else pane = { state: 'loading' };
 
@@ -712,8 +727,11 @@ export function useStoredWork(args: {
   if (visibleDraft && readyTransportId && lookupKey) {
     const formKey = JSON.stringify([lookupKey, readyTransportId, visibleDraft.workItemId, visibleDraft.source]);
     if (formRevision.current?.key !== formKey) {
+      const adoptingNewManualDraft = freshManualFormKey.current === formKey && visibleDraft.revisionSeq === 0;
+      if (adoptingNewManualDraft) freshManualFormKey.current = null;
       formRevision.current = { key: formKey, workItemId: visibleDraft.workItemId, transportId: readyTransportId,
-        source: visibleDraft.source, seq: visibleDraft.revisionSeq, invalid: Boolean(args.hasCachedEdits) };
+        source: visibleDraft.source, seq: visibleDraft.revisionSeq,
+        invalid: Boolean(args.hasCachedEdits && !adoptingNewManualDraft) };
     }
     snapshotRevisions.current.set(visibleDraft, formRevision.current);
   } else formRevision.current = null;
@@ -776,7 +794,7 @@ export function useStoredWork(args: {
   }, [flushSnapshot, readyTransportId]);
 
   const retry = useCallback(() => {
-    if (!lookupKey || !internetMessageId || retryInFlight.current || retryingRead?.key === lookupKey) return;
+    if (!lookupKey || !internetMessageId || retryInFlight.current || manualInFlight.current || retryingRead?.key === lookupKey) return;
     if (stored?.status !== 'failed') {
       setRetries((prev) => ({ key: lookupKey, count: (prev.key === lookupKey ? prev.count : 0) + 1 }));
       return;
@@ -811,6 +829,44 @@ export function useStoredWork(args: {
         result: { ...stored, reason: 'Could not start the read. Try again.' } } : previous);
     }).finally(() => { retryInFlight.current = false; });
   }, [lookupKey, internetMessageId, selection, stored, currentLookup, retryingRead]);
+
+  const startManualCreate = useCallback(async () => {
+    if (!lookupKey || !internetMessageId || !selection || stored?.status !== 'failed' ||
+        !stored.extractionId || !stored.fingerprint || !stored.source || manualInFlight.current || retryInFlight.current ||
+        retryingRead?.key === lookupKey) return;
+    const route = workItemsFromTrpc(trpcRef.current).startManualCreate;
+    if (!route) return;
+    const keyNow = lookupKey, transportId = currentLookup?.transportId ?? null;
+    const pinned = inMailbox(transportId);
+    manualInFlight.current = true;
+    setManualStarting(keyNow);
+    try {
+      const input = { internetMessageId, selection, extractionId: stored.extractionId,
+        fingerprint: stored.fingerprint, source: stored.source };
+      const result = await (pinned ? route.mutate(input, pinned) : route.mutate(input));
+      if (lookupKeyRef.current !== keyNow) return;
+      if (result.status !== 'started') throw new Error('The email or read changed. Reopen it and try again.');
+      const routes = workItemsFromTrpc(trpcRef.current);
+      const fresh = await bindStoredWork({ query: routes.getByMessage, open: routes.open, internetMessageId, selection,
+        transportId, allowOpen: openMissingWorkItem, isStale: () => lookupKeyRef.current !== keyNow,
+        openTimeoutMs: STORED_LOOKUP_TIMEOUT_MS });
+      if (lookupKeyRef.current !== keyNow) return;
+      if (fresh.status !== 'ready' || !fresh.staffManual || !fresh.workItemId) throw new Error('Reopen the email to continue the booking.');
+      freshManualFormKey.current = transportId && fresh.source && fresh.revisionSeq === 0 &&
+        selectionCache.current?.key === keyNow && !selectionCache.current.hadEdits
+        ? JSON.stringify([keyNow, transportId, fresh.workItemId, fresh.source]) : null;
+      readyAt.current = Date.now();
+      setLookup({ key: keyNow, transportId, result: fresh, timedOut: false });
+    } catch (error) {
+      if (lookupKeyRef.current !== keyNow) return;
+      const reason = error instanceof Error ? error.message : 'Could not start the booking. Reopen the email and try again.';
+      setLookup((previous) => previous?.key === keyNow && previous.result?.status === 'failed'
+        ? { ...previous, result: { ...previous.result, reason } } : previous);
+    } finally {
+      manualInFlight.current = false;
+      setManualStarting((previous) => previous === keyNow ? null : previous);
+    }
+  }, [lookupKey, internetMessageId, selection, stored, currentLookup, retryingRead, openMissingWorkItem]);
 
   useEffect(() => {
     if (!retryingRead?.runId || retryingRead.key !== lookupKey || !internetMessageId || !selection) return;
@@ -1264,7 +1320,8 @@ export function useStoredWork(args: {
     /** How many times the person asked to read this mail again. A live read with a treat-as re-runs on it. */
     retryCount: retried,
     retry,
-    retryInProgress: retryingRead?.key === lookupKey,
+    retryInProgress: retryingRead?.key === lookupKey || manualStarting === lookupKey,
+    startManualCreate,
     retrySlow: retryingRead?.key === lookupKey && retrySlow,
     rebindAmendDraft,
     amendRebinding,

@@ -22,7 +22,8 @@ import { digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from './pan
 import { assertNoCreateDispatchFence, type CreateFenceTransaction } from './pane-create-dispatch-fence.js';
 import { activePaneCreateIdentity, currentPaneCreateDatesMatch, legacyPaneCreateRoomId, paneCreateIdentitySchema, paneCreateRoomAliases, paneCreateRoomId,
   type PaneCreateIdentity } from './pane-create-scope.js';
-import { lockCreateSource, withLockedCreateSource, type LockedCreateSource } from './pane-create-source-loader.js';
+import { lockCreateSourceForCreate as lockCreateSource, withLockedCreateSourceForCreate as withLockedCreateSource,
+  type LockedCreateSource } from './pane-create-source-loader.js';
 import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
 import { PANE_PREVIEW_TTL_MS, PANE_SAVE_UNCONFIRMED, paneStayCreateTarget, paneStayDigest, paneStayModeRefusal,
   paneStayCloudTargetLock, paneStaySaveLoaders, paneStaySaveMode, registerPaneRun, type PaneStay, type PaneStayResult } from './pane-stay-save.js';
@@ -167,7 +168,7 @@ async function checkSource(tx: CreateFenceTransaction, source: LockedCreateSourc
   await assertNoCreateDispatchFence(tx, { transportId: input.transportId, workItemId: input.workItemId });
   const actor = await lockCreateActorAccess(tx, { transportId: input.transportId, actorUserId: input.actorUserId, accessId });
   const mail = source.snapshot.source;
-  if (mail.historyOnly || staffQuoteSourceHash(mail) !== input.selection.source.sourceHash ||
+  if (mail.historyOnly || mail.sourceProvenance?.attention != null || staffQuoteSourceHash(mail) !== input.selection.source.sourceHash ||
       actor.mailboxAddress !== input.mailboxAddress) throw new Error('cloud_create_source_changed');
   const thread = await tx.select({ id: message.id, direction: message.direction, fromAddress: message.fromAddress,
     ownerHeaderValue: message.ownerHeaderValue, toAddresses: message.toAddresses, ccAddresses: message.ccAddresses })
@@ -177,7 +178,7 @@ async function checkSource(tx: CreateFenceTransaction, source: LockedCreateSourc
       thread.some((row) => (row.id === mail.id || row.direction === 'inbound') && isDaVinciMailboxOrigin(row))) {
     throw new Error('cloud_create_property_mismatch');
   }
-  const payload = source.snapshot.extraction.payload;
+  const payload = source.effectivePayload;
   if (!activePaneCreateIdentity(payload, source.item.state, input.selection.identity,
     { legacyKey: input.stayId === legacyPaneCreateRoomId(input.selection.identity) })) throw new Error('cloud_create_scope_changed');
   if (input.selection.expectedSeq !== undefined &&

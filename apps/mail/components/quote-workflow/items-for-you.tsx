@@ -9,6 +9,7 @@ export function ItemsForYou({
   onHandle,
   onUndo,
   onRetry,
+  onStartBooking,
 }: {
   openItems: QuoteReviewItem[];
   handledItems: QuoteReviewItem[];
@@ -18,6 +19,7 @@ export function ItemsForYou({
   onUndo?: (itemId: string) => void | Promise<void>;
   /** Runs the read again. Shown on an analysis failure only. */
   onRetry?: () => void;
+  onStartBooking?: () => void | Promise<void>;
 }) {
   const inFlight = useRef(new Set<string>());
   const [pendingItems, setPendingItems] = useState<Set<string>>(() => new Set());
@@ -82,6 +84,16 @@ export function ItemsForYou({
                 onClick={() => onRetry()}
               >
                 Retry read
+              </button>
+            ) : null}
+            {item.kind === 'analysis_failure' && onStartBooking ? (
+              <button
+                type="button"
+                className="h-7 rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
+                disabled={pendingItems.has(item.id)}
+                onClick={() => saveReviewItem(item.id, onStartBooking)}
+              >
+                Start booking manually
               </button>
             ) : null}
             {onEditReply && (item.kind === 'question' || item.kind === 'analysis_failure') ? (
