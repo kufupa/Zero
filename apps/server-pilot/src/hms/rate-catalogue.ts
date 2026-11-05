@@ -43,6 +43,9 @@ export const CENTURION_RATE_CATALOGUE = {
   BBP: { name: 'BBP', board: 'unknown' },
   BWKPB: { name: 'Weekend Promo Rate', board: 'unknown' },
   NGOVB: { name: 'NGOVB', board: 'unknown', government: true },
+  // Observed stay codes only; native lookup supplies meaning, board and eligibility.
+  NGOVDB: { name: 'NGOVDB', board: 'unknown' },
+  BOTAB: { name: 'BOTAB', board: 'unknown' },
 } as const satisfies Record<string, CenturionRatePlan>;
 
 export type CenturionRateCode = keyof typeof CENTURION_RATE_CATALOGUE;
