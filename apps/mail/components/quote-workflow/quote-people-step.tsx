@@ -3,12 +3,11 @@ import { Field, Section, SecondaryButton, StepState, paneFieldClass } from '@/co
 import { ContactBlock } from '@/components/nava-pane/blocks/contact-block';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
-import { recalledGuestName, rememberGuestName } from '@/lib/quote-workflow/guest-name-cache';
-import { paneEditKey } from '@/lib/quote-workflow/pane-edits';
+import { guestNameCacheKey, recalledGuestName, rememberGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type { QuoteSession, StaffQuoteHeader } from '@/lib/quote-workflow/types';
 import { sectionHasStaffEdit, type WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
-import { PartyPicker } from './party-picker';
+import { PartyPicker, type RatePartyEvidence } from './party-picker';
 
 const stayingGuestListeners = new Set<() => void>();
 
@@ -39,7 +38,6 @@ function inferredGuestName(session: QuoteSession, contact?: StoredContact | null
 
   if (uniqueGuestNames.length === 1) return uniqueGuestNames[0] ?? '';
   if (uniqueGuestNames.length > 1) return '';
-  if (session.analysis?.luna?.party?.kind === 'private') return contact?.name?.trim() ?? '';
   return '';
 }
 
@@ -47,7 +45,7 @@ export function guestEditorKeyFor(session: QuoteSession, fallback?: string | nul
   const guestMessageKey = session.binding?.internetMessageId?.trim() || session.binding?.entryId;
   return (
     (session.binding && guestMessageKey
-      ? paneEditKey(session.binding.transportId, guestMessageKey)
+      ? guestNameCacheKey(session.binding.transportId, session.binding)
       : null) ??
     fallback ??
     session.staffSource?.messageId ??
@@ -120,6 +118,7 @@ function StaffPartyFields({
   threadId,
   sourceMessageId,
   onPartyLookupPending,
+  onRatePartyChange,
 }: {
   header: StaffQuoteHeader;
   onPatch?: (header: Partial<StaffQuoteHeader>) => void;
@@ -135,6 +134,7 @@ function StaffPartyFields({
   sourceMessageId?: string | null;
   /** Tells the pane whether a field's automatic HMS search still decides its pick, so a rates run waits for it. */
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
+  onRatePartyChange?: (kind: 'company' | 'agency', evidence: RatePartyEvidence | null) => void;
 }) {
   const partyPicker = (kind: 'company' | 'agency') => {
     const label = kind === 'agency' ? 'Agency' : 'Company';
@@ -151,6 +151,7 @@ function StaffPartyFields({
             onChange={(event) => {
               const searched = event.target.value;
               onFieldEdit?.(kind);
+              onRatePartyChange?.(kind, null);
               onPatch?.({
                 ...(kind === 'company' ? { company: searched } : { agency: searched }),
                 ...pickClearedBy(kind, header, searched),
@@ -174,8 +175,9 @@ function StaffPartyFields({
         suggestions={partySuggestions}
         indexSearch={partyIndex}
         onLookupPending={(pending) => onPartyLookupPending?.(kind, pending)}
-        onPick={(party) => {
+        onPick={(party, evidence) => {
           onFieldEdit?.(kind);
+          onRatePartyChange?.(kind, evidence ?? null);
           return onPatch?.({
             parties:
               party.kind === 'company'
@@ -186,6 +188,7 @@ function StaffPartyFields({
         }}
         onClear={(cleared) => {
           onFieldEdit?.(cleared);
+          onRatePartyChange?.(cleared, null);
           return onPatch?.({
             parties:
               cleared === 'company'
@@ -195,6 +198,7 @@ function StaffPartyFields({
         }}
         onSearchName={(searched, searchKind) => {
           onFieldEdit?.(searchKind);
+          onRatePartyChange?.(searchKind, null);
           return onPatch?.({
             ...(searchKind === 'company' ? { company: searched } : { agency: searched }),
             ...pickClearedBy(searchKind, header, searched),
@@ -226,6 +230,7 @@ export function QuotePeopleStep({
   contactEditorKey,
   onContactEdit,
   onPartyLookupPending,
+  onRatePartyChange,
   scrollToStep,
   workItemPane = null,
 }: {
@@ -242,6 +247,7 @@ export function QuotePeopleStep({
   contactEditorKey?: string;
   onContactEdit?: (field: ContactField, value: string | null) => void;
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
+  onRatePartyChange?: (kind: 'company' | 'agency', evidence: RatePartyEvidence | null) => void;
   scrollToStep: (id: string) => void;
   workItemPane?: WorkItemPaneControls | null;
 }) {
@@ -266,7 +272,7 @@ export function QuotePeopleStep({
         />
       ) : null}
       <GuestNameField
-        key={`guest:${guestEditorKey}`}
+        key={`guest:${guestEditorKey}:${workItemPane?.historyEpoch ?? 0}`}
         session={session}
         contact={contact}
         guestEditorKey={guestEditorKey}
@@ -282,6 +288,7 @@ export function QuotePeopleStep({
         threadId={session.staffSource?.threadId ?? null}
         sourceMessageId={session.staffSource?.messageId ?? null}
         onPartyLookupPending={onPartyLookupPending}
+        onRatePartyChange={onRatePartyChange}
       />
       <SecondaryButton className="w-full" onClick={() => scrollToStep('quote-stay')}>
         Continue to Stay

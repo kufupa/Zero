@@ -232,7 +232,9 @@ export type AmendDraftRequest = WorkflowDraftRequest & {
 };
 export type AmendDraftSnapshot = {
   workItemId: string; source: AmendDraftSource; revisionSeq: number; requests: WorkflowDraftRequest[];
-  fieldMeta: Record<string, { origin: 'staff' | 'email' | 'missing' }>;
+  fieldMeta: Record<string, { origin: 'staff' | 'email' | 'missing'; attributedTo?: string | null;
+    evidence?: { messageId: string; excerpt: string; source?: { kind: 'message' | 'attachment_text' | 'attachment_vision';
+      id: string; page?: number; digest?: string; reviewRequired?: boolean } } | null }>;
 };
 
 /** Until requests can be selected in the pane, only a single pending Amend is unambiguous. */
@@ -271,7 +273,7 @@ export type StoredWork =
       workItemExtractionId?: string | null;
       revisionSeq?: number | null;
       workflowRequests?: WorkflowDraftRequest[];
-      draftFieldMeta?: Record<string, { origin: 'staff' | 'email' | 'missing' }>;
+      draftFieldMeta?: AmendDraftSnapshot['fieldMeta'];
       /** Group id to the stay and row it came from. A stay with dates and no rows has a null rowId. */
       refs: Record<string, { stayId: string; rowId: string | null }>;
       analysis: ReadyAnalyse;
@@ -290,7 +292,8 @@ export type RecordFieldEventInput = {
   fieldPath: string;
   /** `true` only on a `.removed` path: the person deleted that stay or row. */
   value?: string | number | number[] | boolean | null |
-    { confirmation: string; arrival: string } | { mode: 'self' | 'client' | 'custom'; address: string };
+    { confirmation: string; arrival: string } | { mode: 'self' | 'client' | 'custom'; address: string } |
+    { nativeId: string; firstName: string; lastName: string } | { nativeId: string; name: string; code?: string };
   source?: Omit<AmendDraftSource, 'extractionId'>;
   expectedSeq?: number;
   expectedExtractionId?: string;

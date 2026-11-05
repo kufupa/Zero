@@ -873,6 +873,12 @@ describe('NavaPane', () => {
       boards: [], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
     };
   };
+  const resolveCenturionProperty = () => {
+    bridgeMockState.quotePaneConfig = {
+      transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
+      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    };
+  };
 
   /** Radix menu ids change with prior mounts; snapshots keep a stable placeholder. */
   const stabilizePaneSnapshot = (root: HTMLElement) => {
@@ -1736,6 +1742,7 @@ describe('NavaPane', () => {
   });
 
   it('shows finished rates after an email switch without queueing another staff_quote', async () => {
+    resolveCenturionProperty();
     bridgeMockState.storedWork = {
       ...STORED_READY,
       analysis: {
@@ -2158,6 +2165,7 @@ describe('NavaPane', () => {
   });
 
   it('asks for an unquoted booking draft on open without waiting for staff-quote polling', async () => {
+    resolveCenturionProperty();
     let resolveJob!: (view: unknown) => void;
     bridgeMockState.storedWork = bookingStoredWork();
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
@@ -2683,6 +2691,7 @@ describe('NavaPane', () => {
   });
 
   it('reads back the first email’s fresh quote when returning from another email', async () => {
+    resolveCenturionProperty();
     sessionStorage.removeItem(`nava.staff-quote-auto-suppressed:${selectedMailKey('001', '<quote-request@example.invalid>')}`);
     sessionStorage.removeItem(`nava.staff-quote-auto-suppressed:${selectedMailKey('002', '<other-quote@example.invalid>')}`);
     bridgeMockState.storedWork = STORED_READY;
@@ -2888,6 +2897,7 @@ describe('NavaPane', () => {
   });
 
   it('keeps the rates progress line while an overlapping prior-quote read settles', async () => {
+    resolveCenturionProperty();
     const finishPriorReads: Array<(view: null) => void> = [];
     bridgeMockState.storedWork = {
       ...STORED_READY,
@@ -2963,6 +2973,7 @@ describe('NavaPane', () => {
   });
 
   it('suppresses auto-start after staff quote edits and uses the edited header, party, and rate plan for Get rates', async () => {
+    resolveCenturionProperty();
     const queueModeResolvers: Array<(enabled: boolean) => void> = [];
     sessionStorage.removeItem(`nava.staff-quote-auto-suppressed:${selectedMailKey('001', '<quote-request@example.invalid>')}`);
     bridgeMockState.storedWork = {
@@ -3224,7 +3235,7 @@ describe('NavaPane', () => {
     fireEvent.change(within(card).getByLabelText('Rate plan'), { target: { value: 'CORP' } });
     await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalledTimes(2), { timeout: 4000 });
     expect(bridgeMockState.recordEvent).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      fieldPath: 'stays[stay-1].totalAdults', value: 3, expectedSeq: 0,
+      fieldPath: 'stays[stay-1].totalAdults', value: 3, expectedSeq: 0, expectedExtractionId: 'ex-amendment',
       source: { threadId: 'thread-1', messageId: 'mail-1', sourceHash: 'ab'.repeat(32) },
     }));
     expect(bridgeMockState.recordEvent).toHaveBeenNthCalledWith(2, expect.objectContaining({
@@ -3241,7 +3252,7 @@ describe('NavaPane', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Check rates in HMS' }));
     await waitFor(() => expect(rates).toHaveBeenCalledWith(expect.objectContaining({ kind: 'start', binding: {
       workItemId: 'wi-amendment', source: { threadId: 'thread-1', messageId: 'mail-1', sourceHash: 'ab'.repeat(32) },
-      request: { requestId: 'b'.repeat(64), stayId: 'stay-1', rowId: null, roomIndex: null }, expectedSeq: 3,
+      request: { requestId: 'b'.repeat(64), stayId: 'stay-1', rowId: null, roomIndex: null }, expectedSeq: 3, expectedExtractionId: 'ex-amendment',
     } }), { context: { activeTransportId: 'transport-1' } }));
     expect((await screen.findByRole('list', { name: 'Rates from HMS' }, { timeout: 7000 })).textContent).toContain('ZAR 1250.00 estimated per night');
     expect(rates).toHaveBeenCalledWith(expect.objectContaining({ kind: 'read', jobId: 'rate-job' }),

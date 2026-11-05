@@ -17,14 +17,14 @@ export const DIRECT_BOOKING_DEFAULTS = {
 } as const;
 
 const roomSchema = z.object({
-  adults: z.number().int(),
-  childAges: z.array(z.number().int()),
+  adults: z.number().int().nullable(),
+  childAges: z.array(z.number().int()).nullable(),
   roomTypeText: z.string().nullable(),
   guestName: z.string().nullable(),
 });
 
 export const buildCreatePrefillInputSchema = z.object({
-  arrival: z.string(),
+  arrival: z.string().nullable(),
   departure: z.string().nullable(),
   nights: z.number().int().nullable(),
   rooms: z.array(roomSchema),
@@ -231,8 +231,8 @@ export async function buildCreatePrefill(
     const roomIndex = index + 1;
     const request: Record<string, unknown> = {
       ...shared,
-      adults: room.adults,
-      childAges: [...room.childAges],
+      ...(room.adults !== null ? { adults: room.adults } : {}),
+      ...(room.childAges !== null ? { childAges: [...room.childAges] } : {}),
     };
     const mapped = matchRoomType(room.roomTypeText ?? undefined, parsed.propertyCode).code;
     const roomType =

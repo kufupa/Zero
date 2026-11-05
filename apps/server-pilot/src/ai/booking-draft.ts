@@ -46,7 +46,7 @@ export function isUnquotedSingleStayNewBooking(analysis: {
   if (analysis.workflow !== 'create_booking') return false;
   if (analysis.flags?.some((flag) => flag === 'conference_or_group' || flag === 'rooms_only_group')) return false;
   const keys = new Set(
-    (analysis.groups ?? []).filter((g) => g.arrival?.trim()).map((g) => `${g.arrival}:${g.departure ?? ''}`),
+    (analysis.groups ?? []).map((g) => `${g.arrival ?? ''}:${g.departure ?? ''}`),
   );
   return keys.size === 1;
 }
@@ -61,11 +61,12 @@ export function bookingDraftFromPrefill(input: {
   missing: BookingDraftMissing[];
   schemaErrors: string[][];
   board?: QuotedBoard;
+  roomIdentity?: Array<{ groupId: string; roomIndex: number }>;
 }): BookingDraft {
   return {
     rooms: input.requests.map((request, index) => ({
-      groupId: `${typeof request.arrival === 'string' ? request.arrival : 'unknown'}:${typeof request.departure === 'string' ? request.departure : 'unknown'}`,
-      roomIndex: index + 1,
+      groupId: input.roomIdentity?.[index]?.groupId ?? `${typeof request.arrival === 'string' ? request.arrival : 'unknown'}:${typeof request.departure === 'string' ? request.departure : 'unknown'}`,
+      roomIndex: input.roomIdentity?.[index]?.roomIndex ?? index + 1,
       board: input.board ?? 'unknown',
       request,
       schemaErrors: (input.schemaErrors[index] ?? []).filter((error) => !/ratePlan/i.test(error)),

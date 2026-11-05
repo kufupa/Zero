@@ -191,6 +191,7 @@ export const prepareUnquotedBookingDraftInput = z.object({
   inputRevision: z.number().int().nonnegative(),
   analysis: lunaAnalysisSchema,
   rateCode: z.string().trim().regex(/^[A-Z0-9]{2,10}$/).optional(),
+  groupIds: z.array(z.string().min(1).max(100)).max(40).optional(),
 }).strict();
 
 export const listThreadQuoteRevisionsInput = z.object({ threadId: z.string().min(1) }).strict();
@@ -1084,24 +1085,21 @@ export const workstationRouter = router({
       if (!isUnquotedSingleStayNewBooking(input.analysis)) {
         return { status: 'unavailable' as const, reason: 'not_a_single_stay_new_booking' };
       }
-      const groups = input.analysis.groups.filter((g) => g.arrival?.trim());
+      const groups = input.analysis.groups;
       const group = groups[0];
-      if (
-        !group?.arrival ||
-        groups.length !== 1 ||
-        groups.some((r) => !Number.isInteger(r.rooms) || (r.rooms ?? 0) < 1 || !Number.isInteger(r.adultsPerRoom) || (r.adultsPerRoom ?? 0) < 1 || r.childAges === null)
-      ) {
-        return unavailable;
-      }
+      if (!group || (input.groupIds && input.groupIds.length !== groups.length) ||
+          groups.some((row) => row.rooms !== null && (!Number.isInteger(row.rooms) || row.rooms < 1 || row.rooms > 8)) ||
+          groups.reduce((sum, row) => sum + (row.rooms ?? 1), 0) > 8) return unavailable;
       const party = input.analysis.party;
       try {
         const propertyCode = hmsReadTargetForTransport(ctx.activeTransportId).propertyCode;
+        const roomRows = groups.flatMap((row, groupIndex) => Array.from({ length: row.rooms ?? 1 }, (_, i) => ({
+          adults: row.adultsPerRoom, childAges: row.childAges, roomTypeText: row.roomPreference ?? null,
+          guestName: row.guestNames[i] ?? null, groupId: input.groupIds?.[groupIndex], roomIndex: i + 1,
+        })));
         const prefill = await buildCreatePrefill({
-          arrival: group.arrival, departure: group.departure ?? null, nights: null,
-          rooms: groups.flatMap((row) => Array.from({ length: row.rooms ?? 0 }, (_, i) => ({
-            adults: row.adultsPerRoom ?? 0, childAges: [...row.childAges!],
-            roomTypeText: row.roomPreference ?? null, guestName: row.guestNames[i] ?? null,
-          }))),
+          arrival: group.arrival ?? null, departure: group.departure ?? null, nights: null,
+          rooms: roomRows.map(({ adults, childAges, roomTypeText, guestName }) => ({ adults, childAges, roomTypeText, guestName })),
           boardText: group.board ?? null, rateText: input.rateCode ?? null,
           agencyName: party.kind === 'agency' ? party.name : null,
           organizationName: party.kind === 'organization' || party.kind === 'government' ? party.name : null,
@@ -1115,6 +1113,7 @@ export const workstationRouter = router({
           draft: bookingDraftFromPrefill({
             requests: prefill.requests, missing: prefill.missing, schemaErrors: prefill.schemaErrors,
             board: prefillBoardFromLuna(group.board),
+            ...(input.groupIds ? { roomIdentity: roomRows.map((row) => ({ groupId: row.groupId!, roomIndex: row.roomIndex })) } : {}),
           }),
           options: createRequestFieldOptions(propertyCode),
           messageId: input.messageId, selectionEpoch: input.selectionEpoch, inputRevision: input.inputRevision,

@@ -67,6 +67,21 @@ export function activePaneCreateIdentity(payload: unknown, state: WorkState, ide
   return Number.isInteger(count) && (count as number) <= 999 && (count as number) >= identity.roomIndex;
 }
 
+/** A fresh cursor must not approve dates from a form that missed another staff edit. */
+export function currentPaneCreateDatesMatch(payload: unknown, state: WorkState, identity: PaneCreateIdentity,
+  stay: PaneStay): boolean {
+  const parsed = mailExtractionPayloadSchema.safeParse(payload);
+  if (!parsed.success) return false;
+  const matches = formStays(parsed.data, state).filter((item) => item.id === identity.stayId);
+  if (matches.length !== 1) return false;
+  const requested = matches[0]!.requested;
+  const field = (name: 'arrival' | 'departure') => {
+    const path = `stays[${identity.stayId}].requested.${name}`;
+    return Object.hasOwn(state, path) ? state[path] : requested[name];
+  };
+  return field('arrival') === stay.arrival && field('departure') === stay.departure;
+}
+
 /** Strictly project the linked extraction plus its persisted pane edits. Never guess missing occupancy. */
 export function reconcilePaneCreateScope(input: {
   payload: unknown; state: WorkState; identity: PaneCreateIdentity; party: PaneCreateParty; stay: PaneStay;

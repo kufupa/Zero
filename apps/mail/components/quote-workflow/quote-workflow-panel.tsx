@@ -61,6 +61,8 @@ import { QuoteBookingHost } from './quote-booking-host';
 import { ShuttleDraft } from './shuttle-draft';
 import { QuoteDocumentsStep, type CurrentQuoteAction } from './quote-documents-step';
 import { QuotePeopleStep } from './quote-people-step';
+import { ContextualRateCheck } from './contextual-rate-check';
+import type { RatePartyEvidence } from './party-picker';
 import { QuoteStayStep, StayAskChrome } from './quote-stay-step';
 import { useFailedHmsJobNoticeMessage } from './hms-job-notices';
 import { HmsQueueStatusLine } from './hms-queue-status';
@@ -552,6 +554,11 @@ export function QuoteWorkflowPanel({
   makeQuote?: boolean;
   workItemPane?: WorkItemPaneControls | null;
 }) {
+  const ratePartyKey = JSON.stringify([session.binding?.transportId, session.binding?.selectionEpoch, session.staffSource]);
+  const [rateParty, setRateParty] = useState<{ key: string; company: RatePartyEvidence | null; agency: RatePartyEvidence | null }>({
+    key: ratePartyKey, company: null, agency: null,
+  });
+  const rateEvidence = rateParty.key === ratePartyKey ? rateParty : { company: null, agency: null };
   const currentEmailKey = session.binding?.entryId
     ? JSON.stringify([session.binding.storeId, session.binding.folderEntryId, session.binding.entryId]) : null;
   const shuttleArrivalDate = session.groups.find((group) => group.arrivalDate)?.arrivalDate ?? null;
@@ -1132,6 +1139,10 @@ export function QuoteWorkflowPanel({
           contactEditorKey={contactEditorKey}
           onContactEdit={onContactEdit}
           onPartyLookupPending={onPartyLookupPending}
+          onRatePartyChange={(kind, evidence) => setRateParty((previous) => {
+            const current = previous.key === ratePartyKey ? previous : { key: ratePartyKey, company: null, agency: null };
+            return JSON.stringify(current[kind]) === JSON.stringify(evidence) ? current : { ...current, [kind]: evidence };
+          })}
           scrollToStep={scrollToStep}
           workItemPane={workItemPane}
         />
@@ -1166,6 +1177,9 @@ export function QuoteWorkflowPanel({
             ratePlan={ratePlan}
             onRatePlanChange={changeRatePlan}
           />
+          {paneConfig?.propertyCode === HRCEN_PROPERTY_CODE ? session.groups.map((group) => <ContextualRateCheck
+            key={group.id} group={group} session={session} pane={workItemPane} evidence={rateEvidence} plans={rateCatalogue ?? []}
+            onChoose={onPatchGroup ? (code) => onPatchGroup(group.id, { rateCode: code || undefined }) : undefined} />) : null}
           {showRates ? (
             <h4 className="text-[13px] font-semibold text-[#475569]">Search availability & room rates</h4>
           ) : null}
@@ -1432,17 +1446,34 @@ export function QuoteWorkflowPanel({
                               key={`${group.id}:${rateCode}`}
                               id={`rate-code-${group.id}`}
                               aria-label="Rate code"
+                              list={`rate-codes-${group.id}`}
                               className={paneFieldClass}
-                              maxLength={10}
+                              maxLength={80}
                               disabled={!onPatchGroup || loadingThisStay || pinRunningThisStay}
                               defaultValue={rateCode}
+                              placeholder="Search code or name"
+                              onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); } }}
                               onBlur={(event) => {
-                                const value = event.currentTarget.value.trim().toUpperCase();
+                                const input = event.currentTarget.value.trim();
+                                const names = ratePlans.filter((plan) => plan.name.toLocaleLowerCase() === input.toLocaleLowerCase());
+                                const codeMatch = ratePlans.find((plan) => plan.code.toUpperCase() === input.toUpperCase());
+                                const value = codeMatch?.code ?? (names.length === 1 ? names[0]!.code : input.toUpperCase());
+                                if ((!codeMatch && names.length > 1) ||
+                                    (paneConfig?.propertyCode === HRCEN_PROPERTY_CODE && value && !/^[A-Z0-9]{1,12}$/.test(value))) {
+                                  event.currentTarget.value = rateCode;
+                                  return;
+                                }
                                 event.currentTarget.value = value;
                                 if (value === rateCode.trim().toUpperCase()) return;
                                 onPatchGroup?.(group.id, { rateCode: value || undefined });
                               }}
                             />
+                            <datalist id={`rate-codes-${group.id}`}>
+                              {ratePlans.map((plan) => <option key={plan.code} value={plan.code} label={plan.name} />)}
+                            </datalist>
+                            <span className="text-[11px] font-normal text-[#64748b]">
+                              {ratePlans.find((plan) => plan.code === rateCode)?.name || 'HMS checks the rate when searched.'}
+                            </span>
                           </Field>
                           <StayRateGrid
                             groupId={group.id}
@@ -1642,6 +1673,9 @@ export function QuoteWorkflowPanel({
         savedStays={savedStays}
         screenshot={screenshot ?? paneSave?.screenshot}
         propertyCode={paneConfig?.propertyCode ?? null}
+        rateCatalogue={rateCatalogue}
+        workItemPane={workItemPane}
+        rateEvidence={rateEvidence}
       />
     </div>
   );

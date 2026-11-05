@@ -22,6 +22,7 @@ import { MESSAGE_ARRIVED_AT, MESSAGE_DELIVERED_AT, OUTLOOK_SYNCED } from './mess
 export { MESSAGE_ARRIVED_AT, MESSAGE_DELIVERED_AT, OUTLOOK_SYNCED } from './message-arrival-time.js';
 import {
   FOLLOW_UP_DRAFT_FIELD_PATH,
+  MAIL_KINDS,
   mailExtraction,
   TELEMETRY_EVENT_TYPES,
   workEvent,
@@ -71,10 +72,12 @@ import {
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import {
-  amendEmailValue, amendStayForRequest, parseAmendRequestField, projectAmendRequests,
-  validAmendRequestValue, type DraftSource,
+  amendEmailValue,
+  type AmendField, type DraftSource,
 } from './pane-amend-draft.js';
-import { parseCancelRequestField, projectCancelRequests, validCancelRequestValue } from './pane-cancel-draft.js';
+import { parseRequestField, requestFieldApplies, sourceRequests, validRequestValue } from './work-item-fields.js';
+import { effectiveActions, projectEffectiveWork, type EffectiveRequest } from './work-item-effective.js';
+import { projectCancelRequests } from './pane-cancel-draft.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
 import { assertCreateDispatchFenceOwner, assertNoCreateDispatchFence, CreateFenceError,
@@ -523,7 +526,7 @@ export function formStays(payload: MailExtractionPayload, state: WorkState): For
       stays.push(stay);
     }
     if (path.rowId !== null && !stay.rows.some((row) => row.id === path.rowId)) {
-      stay.rows.push({ id: path.rowId, roomType: null, rooms: null, adultsPerRoom: null, childAges: [], board: null });
+      stay.rows.push({ id: path.rowId, roomType: null, rooms: null, adultsPerRoom: null, childAges: null, board: null });
     }
     if (path.field === 'removed' && state[key] === true) removed.add(path.rowId ?? path.stayId);
   }
@@ -554,6 +557,24 @@ export function formStays(payload: MailExtractionPayload, state: WorkState): For
       : stay.totalChildren;
     return [{ ...stay, totalAdults, totalChildren, rows: projectedRows }];
   });
+}
+
+/** Include staff-added stays and rows in the source-bound draft without losing removed source identities. */
+export function requestPayload(payload: MailExtractionPayload, state: WorkState, kind: string): MailExtractionPayload {
+  const stays = payload.stays.map((stay) => ({ ...stay, rows: [...stay.rows] }));
+  const sourceAction = payload.stays.length === 1
+    ? payload.stays[0]?.action ?? payload.action ?? (kind === 'booking' ? 'new_booking' : kind === 'quote' ? 'quote_availability' : null)
+    : null;
+  for (const form of formStays(payload, state)) {
+    let stay = stays.find((candidate) => candidate.id === form.id);
+    if (!stay) {
+      if (sourceAction !== 'new_booking' && sourceAction !== 'quote_availability') continue;
+      stay = { ...form, hotel: null, booked: null, action: sourceAction };
+      stays.push(stay);
+    }
+    for (const row of form.rows) if (!stay.rows.some((candidate) => candidate.id === row.id)) stay.rows.push(row);
+  }
+  return { ...payload, stays };
 }
 
 const WORKFLOW_BY_KIND: Partial<Record<MailKind, LunaAnalysis['workflow']>> = {
@@ -977,7 +998,7 @@ export function correctionsCarryTo(
   if (before.stays === after.stays) return true;
   // Request ids incorporate the extraction stay id. Never carry a person's
   // request edits onto an independently re-extracted, different stay.
-  if (Object.keys(state).some((key) => parseAmendRequestField(key) || parseCancelRequestField(key)) &&
+  if (Object.keys(state).some((key) => parseRequestField(key)) &&
       (before.stays.length !== after.stays.length ||
         before.stays.some((stay) => !after.stays.some((next) => next.id === stay.id)))) return false;
   for (const key of Object.keys(state)) {
@@ -1872,9 +1893,9 @@ export type StoredWork =
       draftContractVersion?: 1;
       source?: DraftSource & { extractionId: string };
       draftStays?: FormStay[];
-      workflowRequests?: Array<ReturnType<typeof projectAmendRequests>['requests'][number] | ReturnType<typeof projectCancelRequests>['requests'][number]>;
-      draftFieldMeta?: ReturnType<typeof projectAmendRequests>['meta'];
-      unappliedEdits?: ReturnType<typeof projectAmendRequests>['unappliedEdits'];
+      workflowRequests?: EffectiveRequest[];
+      draftFieldMeta?: ReturnType<typeof projectEffectiveWork>['meta'];
+      unappliedEdits?: ReturnType<typeof projectEffectiveWork>['unappliedEdits'];
       /** The read's source language (ISO 639-1), or null when unclear. */
       language: string | null;
       translation: StoredTranslation;
@@ -2027,19 +2048,20 @@ async function readyView(
   const sourceText = synced
     ? currentSourceText(synced)
     : [msg.subject ?? '', msg.textBody ?? ''].join('\n');
-  const draftSource = { threadId: msg.threadId, messageId: msg.id, sourceHash: staffQuoteSourceHash(msg) };
-  const [ownerLabel] = read.kind === 'cancellation' || read.kind === 'amendment'
-    ? await db.select({ action: mailActionLabel.action }).from(mailActionLabel)
-      .where(and(eq(mailActionLabel.transportId, transportId), eq(mailActionLabel.messageId, msg.id),
-        eq(mailActionLabel.source, 'owner'), eq(mailActionLabel.version, 'owner')))
-      .orderBy(desc(mailActionLabel.updatedAt), desc(mailActionLabel.id)).limit(1) : [];
-  const amend = read.kind === 'amendment' && !existingStayInformation
-    ? projectAmendRequests(draftSource, read.payload, state) : null;
-  const cancel = (read.kind === 'cancellation' || read.kind === 'amendment') && !existingStayInformation
-    ? projectCancelRequests(draftSource, read.payload, state, ownerLabel?.action, read.kind) : null;
-  const amendDraft = amend || cancel ? { requests: [...(amend?.requests ?? []), ...(cancel?.requests ?? [])],
-    meta: { ...amend?.meta, ...cancel?.meta }, unappliedEdits: amend?.unappliedEdits ?? [] } : null;
-  const draftStays = amendDraft ? formStays(read.payload, state).map((stay) => {
+  const draftSource = { threadId: msg.threadId, messageId: msg.id, sourceHash: staffQuoteSourceHash(msg), extractionId: read.id };
+  const [ownerLabel] = await db.select({ action: mailActionLabel.action }).from(mailActionLabel)
+    .where(and(eq(mailActionLabel.transportId, transportId), eq(mailActionLabel.messageId, msg.id),
+      eq(mailActionLabel.source, 'owner'), eq(mailActionLabel.version, 'owner')))
+    .orderBy(desc(mailActionLabel.updatedAt), desc(mailActionLabel.id)).limit(1);
+  const effectiveDraft = !existingStayInformation && read.payload.stays.length > 0
+    ? projectEffectiveWork(draftSource, requestPayload(read.payload, state, read.kind), state, ownerLabel?.action, read.kind, read.attachments, read.payload.stays.length) : null;
+  if (effectiveDraft && (read.kind === 'cancellation' || read.kind === 'amendment')) {
+    const cancel = projectCancelRequests(draftSource, read.payload, state, ownerLabel?.action, read.kind);
+    effectiveDraft.requests = effectiveDraft.requests.map((request) =>
+      request.action === 'cancel' ? cancel.requests.find((item) => item.requestId === request.requestId) ?? request : request);
+    Object.assign(effectiveDraft.meta, cancel.meta);
+  }
+  const draftStays = effectiveDraft ? formStays(read.payload, state).map((stay) => {
     const value = <T>(path: string, fallback: T): T => Object.hasOwn(state, path) ? state[path] as T : fallback;
     return {
       ...stay,
@@ -2091,13 +2113,13 @@ async function readyView(
       transportId,
       workItemId: paneItem?.id ?? null,
     }),
-    ...(amendDraft ? {
+    ...(effectiveDraft ? {
       draftContractVersion: 1 as const,
       source: { ...draftSource, extractionId: read.id },
       draftStays,
-      workflowRequests: amendDraft.requests,
-      draftFieldMeta: amendDraft.meta,
-      unappliedEdits: amendDraft.unappliedEdits,
+      workflowRequests: effectiveDraft.requests,
+      draftFieldMeta: effectiveDraft.meta,
+      unappliedEdits: effectiveDraft.unappliedEdits,
     } : {}),
     language: read.language,
     translation: storedTranslation(read.translation),
@@ -2220,14 +2242,11 @@ export async function recordFieldEvent(
   },
 ): Promise<FieldEventResult> {
   const contact = contactFieldOf(input.fieldPath);
-  const amendRequest = parseAmendRequestField(input.fieldPath);
-  const cancelRequest = parseCancelRequestField(input.fieldPath);
-  const request = amendRequest ?? cancelRequest;
+  const request = parseRequestField(input.fieldPath);
   const path = contact || request ? null : parseFieldPath(input.fieldPath);
   if (!contact && !path && !request) return { status: 'invalid_path' };
   const personValue = input.value ?? null;
-  const fits = contact ? validContactValue(personValue) : cancelRequest && !amendRequest ? validCancelRequestValue(cancelRequest.field, personValue)
-    : amendRequest ? validAmendRequestValue(amendRequest.field, personValue)
+  const fits = contact ? validContactValue(personValue) : request ? validRequestValue(request.field, personValue)
     : path !== null && validFieldValue(path.field, personValue);
   if (request && ((input.type === 'field.accept' && input.value !== undefined) ||
       (input.type === 'field.edit' && input.value === undefined))) return { status: 'invalid_value' };
@@ -2254,47 +2273,92 @@ export async function recordFieldEvent(
     }
     const [read] = item.extractionId
       ? await tx
-          .select({ payload: mailExtraction.payload, version: mailExtraction.extractorVersion })
+          .select({ payload: mailExtraction.payload, version: mailExtraction.extractorVersion,
+            attachments: mailExtraction.attachments, messageId: mailExtraction.messageId,
+            kind: mailExtraction.kind, status: mailExtraction.status })
           .from(mailExtraction)
           .where(eq(mailExtraction.id, item.extractionId))
           .limit(1)
       : [];
     const payload = read?.payload as MailExtractionPayload | null | undefined;
     if (request || input.source || input.expectedSeq !== undefined) {
-      if (!input.source || input.expectedSeq === undefined || (request && item.kind !== 'amendment' && item.kind !== 'cancellation') ||
-          input.source.threadId !== item.threadId || input.source.messageId !== item.sourceMessageId) {
+      if (!input.source || (request && input.expectedSeq === undefined) ||
+          input.source.threadId !== item.threadId || input.source.messageId !== item.sourceMessageId ||
+          !read || read.messageId !== item.sourceMessageId || read.kind !== item.kind || read.status !== 'succeeded') {
         return { status: 'stale_source' as const };
       }
-      if (input.expectedSeq !== item.revisionSeq) return { status: 'stale_revision' as const };
+      if (input.expectedSeq !== undefined && input.expectedSeq !== item.revisionSeq) return { status: 'stale_revision' as const };
       const [mail] = await tx.select({ id: message.id, subject: message.subject, textBody: message.textBody,
-        htmlBody: message.htmlBody }).from(message)
-        .where(and(eq(message.id, input.source.messageId), eq(message.transportId, input.transportId))).limit(1);
-      if (!mail || staffQuoteSourceHash(mail) !== input.source.sourceHash) return { status: 'stale_source' as const };
+        htmlBody: message.htmlBody, historyOnly: message.historyOnly, sourceProvenance: message.sourceProvenance }).from(message)
+        .where(and(eq(message.id, input.source.messageId), eq(message.transportId, input.transportId),
+          eq(message.threadId, input.source.threadId), eq(message.direction, 'inbound'))).limit(1);
+      if (!mail || mail.historyOnly || mail.sourceProvenance?.attention != null ||
+          staffQuoteSourceHash(mail) !== input.source.sourceHash) return { status: 'stale_source' as const };
     }
     let aiValue: unknown;
     if (request) {
       // The common guard above guarantees the source is present here.
       if (!input.source) return { status: 'stale_source' as const };
       if (!payload) return { status: 'invalid_path' as const };
-      const [owner] = cancelRequest ? await tx.select({ action: mailActionLabel.action }).from(mailActionLabel)
+      const requestSource = requestPayload(payload, item.state, item.kind as MailKind);
+      const sourceRequest = sourceRequests(input.source, requestSource, read?.attachments as AttachmentRead[] | null ?? null)
+        .find((entry) => entry.requestId === request.requestId);
+      if (!sourceRequest) return { status: 'invalid_path' as const };
+      // Until all action-specific prepare/Go guards consume the effective action, do not persist a new action.
+      if (request.field === 'action' && input.type !== 'field.accept') return { status: 'invalid_value' as const };
+      const [owner] = await tx.select({ action: mailActionLabel.action }).from(mailActionLabel)
         .where(and(eq(mailActionLabel.transportId, input.transportId), eq(mailActionLabel.messageId, input.source.messageId),
           eq(mailActionLabel.source, 'owner'), eq(mailActionLabel.version, 'owner')))
-        .orderBy(desc(mailActionLabel.updatedAt), desc(mailActionLabel.id)).limit(1) : [];
-      const cancel = cancelRequest ? projectCancelRequests(input.source, payload, item.state, owner?.action,
-        item.kind as MailKind).requests.find((entry) => entry.requestId === cancelRequest.requestId) : undefined;
-      if (cancel && cancelRequest) {
-        if (!validCancelRequestValue(cancelRequest.field, personValue) && input.type !== 'field.accept') return { status: 'invalid_value' as const };
-        const original = projectCancelRequests(input.source, payload, {}, owner?.action, item.kind as MailKind)
-          .requests.find((entry) => entry.requestId === cancelRequest.requestId);
-        aiValue = cancelRequest.field === 'target' ? original?.fields.value.target ?? null
-          : cancelRequest.field === 'cancel.note' ? original?.fields.value.cancellationNote ?? null : null;
+        .orderBy(desc(mailActionLabel.updatedAt), desc(mailActionLabel.id)).limit(1);
+      if (!(MAIL_KINDS as readonly string[]).includes(item.kind)) return { status: 'invalid_path' as const };
+      const effective = effectiveActions(input.source, requestSource, item.state, owner?.action, item.kind as MailKind,
+        read?.attachments as AttachmentRead[] | null ?? null, payload.stays.length).find((entry) => entry.requestId === request.requestId);
+      if (input.type !== 'field.accept' && !requestFieldApplies(request, effective?.action ?? null)) {
+        return { status: 'invalid_path' as const };
+      }
+      const stay = sourceRequest.stay;
+      const liveStay = formStays(payload, item.state).find((entry) => entry.id === stay.id);
+      if (!liveStay) {
+        return { status: 'invalid_path' as const };
+      }
+      if (request.rowId !== null) {
+        const row = liveStay.rows.find((entry) => entry.id === request.rowId);
+        const countPath = `stays[${stay.id}].rows[${request.rowId}].count`;
+        const count = Object.hasOwn(item.state, countPath) ? item.state[countPath] : row?.rooms ?? null;
+        const ownRow = !row && liveStay.rows.length === 0 && request.rowId === `${stay.id}_row`;
+        // Room zero is an editable placeholder while the room count is unknown. Prepare still requires a real count.
+        const partialFirstRoom = effective?.action === 'new_booking' && request.roomIndex === 0 && count === null;
+        if ((!row && !ownRow) || (request.roomIndex !== null && !partialFirstRoom &&
+            (typeof count !== 'number' || !Number.isInteger(count) || request.roomIndex >= count))) {
+          return { status: 'invalid_path' as const };
+        }
+      }
+      if (effective?.action === 'cancel') {
+        if (item.kind !== 'cancellation' && item.kind !== 'amendment') return { status: 'invalid_path' as const };
+        const current = projectCancelRequests(input.source, payload, item.state, owner?.action, item.kind);
+        if (!current.requests.some((entry) => entry.requestId === request.requestId)) return { status: 'invalid_path' as const };
+        const original = projectCancelRequests(input.source, payload, {}, owner?.action, item.kind)
+          .requests.find((entry) => entry.requestId === request.requestId);
+        aiValue = request.field === 'action' ? stay.action ?? (payload.stays.length === 1 ? payload.action : null) ?? null :
+          request.field === 'target' ? original?.fields.value.target ?? null :
+          request.field === 'cancel.note' ? original?.fields.value.cancellationNote ?? null : null;
+      } else if (request.field === 'action') aiValue = stay.action ?? (payload.stays.length === 1 ? payload.action : null) ?? null;
+      else if (request.field === 'target') {
+        const confirmations = [...new Set((stay.guests ?? []).flatMap((guest) => guest.confirmationNumber ? [guest.confirmationNumber] : []))];
+        const confirmation = confirmations.length === 1 ? confirmations[0] :
+          confirmations.length === 0 && payload.stays.length === 1 && payload.confirmationNumbers.length === 1
+            ? payload.confirmationNumbers[0] : null;
+        aiValue = confirmation && stay.booked?.arrival ? { confirmation, arrival: stay.booked.arrival } : null;
       } else {
-        const stay = amendRequest ? amendStayForRequest(input.source, payload, amendRequest.requestId) : undefined;
-        if (!stay || !amendRequest || item.kind !== 'amendment') return { status: 'invalid_path' as const };
-        aiValue = amendRequest.field === 'target'
-          ? projectAmendRequests(input.source, payload, {}).requests.find((entry) => entry.requestId === amendRequest.requestId)
-            ?.fields.value.target ?? null
-          : amendEmailValue(stay, amendRequest.field);
+        const proposalKey: Record<string, keyof NonNullable<ExtractionStay['workflowProposal']>> = {
+          firstName: 'firstName', lastName: 'lastName', guestEmail: 'guestEmail', guestMobile: 'guestMobile',
+          bookerName: 'bookerName', bookerEmail: 'bookerEmail', ratePlan: 'ratePlan', sourceOfBusiness: 'sourceOfBusiness',
+          track: 'track', guaranteeType: 'guaranteeType', reservationNote: 'reservationNote',
+          'cms.send': 'cmsSend', 'cms.messageId': 'cmsMessageId', 'cms.recipient': 'cmsRecipient',
+        };
+        const proposal = stay.workflowProposal?.[proposalKey[request.field]!];
+        aiValue = proposal ? request.field === 'cms.recipient' ? { mode: 'custom', address: proposal.value } : proposal.value
+          : amendEmailValue(stay, request.field as AmendField);
       }
     } else {
       aiValue = aiValueAt(payload, input.fieldPath);
@@ -2670,15 +2734,21 @@ export type WorkItemSection = { type: 'contact' } | { type: 'stay'; stayId: stri
 export type ResetWorkSectionResult =
   | { status: 'not_found' }
   | { status: 'invalid_section' }
-  | { status: 'recorded'; reset: number };
+  | { status: 'invalid_cursor' }
+  | { status: 'stale' }
+  | { status: 'recorded'; reset: number; revision?: number; revisionHead?: number; seq?: number; extractionId?: string | null };
 
 /** Restores extraction-backed overrides in one contact or stay section and logs each cleared field atomically. */
 export async function resetWorkSection(
   db: DB,
-  input: { transportId: string; workItemId: string; userId: string; section: WorkItemSection },
+  input: { transportId: string; workItemId: string; userId: string; section: WorkItemSection;
+    expectedSeq?: number; expectedExtractionId?: string | null },
 ): Promise<ResetWorkSectionResult> {
   if (input.section.type === 'stay' && !STAY_ID_PATTERN.test(input.section.stayId)) {
     return { status: 'invalid_section' };
+  }
+  if ((input.expectedSeq === undefined) !== (input.expectedExtractionId === undefined)) {
+    return { status: 'invalid_cursor' };
   }
   return db.transaction(async (tx) => {
     const [item] = await tx
@@ -2694,12 +2764,19 @@ export async function resetWorkSection(
       .limit(1)
       .for('update');
     if (!item) return { status: 'not_found' as const };
+    if (input.expectedSeq !== undefined &&
+        (input.expectedSeq !== item.revisionSeq || input.expectedExtractionId !== item.extractionId)) {
+      return { status: 'stale' as const };
+    }
+    const recorded = (reset: number, revision = item.revision, revisionHead = item.revisionHead, seq = item.revisionSeq) =>
+      ({ status: 'recorded' as const, reset, ...(input.expectedSeq !== undefined
+        ? { revision, revisionHead, seq, extractionId: item.extractionId } : {}) });
 
     const paths = Object.keys(item.state).filter((fieldPath) => {
       if (input.section.type === 'contact') return contactFieldOf(fieldPath) !== null;
       return parseFieldPath(fieldPath)?.stayId === input.section.stayId;
     });
-    if (!paths.length) return { status: 'recorded' as const, reset: 0 };
+    if (!paths.length) return recorded(0);
 
     const [read] = item.extractionId
       ? await tx
@@ -2714,7 +2791,7 @@ export async function resetWorkSection(
         aiValue: aiValueAt(read?.payload as MailExtractionPayload | null | undefined, fieldPath),
       }))
       .filter((field) => field.aiValue !== null && field.aiValue !== undefined);
-    if (!resets.length) return { status: 'recorded' as const, reset: 0 };
+    if (!resets.length) return recorded(0);
 
     const state = { ...item.state };
     for (const { fieldPath } of resets) delete state[fieldPath];
@@ -2749,7 +2826,7 @@ export async function resetWorkSection(
         updatedAt: new Date(),
       })
       .where(eq(workItem.id, input.workItemId));
-    return { status: 'recorded' as const, reset: resets.length };
+    return recorded(resets.length, advanced.revision, advanced.revisionHead, item.revisionSeq + 1);
   });
 }
 

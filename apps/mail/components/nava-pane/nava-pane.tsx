@@ -45,6 +45,7 @@ import {
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
 import { forgetPaneEdits, overlayRememberedGroups, paneEditKey, recalledPaneEdits, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
+import { forgetGuestName, guestNameCacheKey, recalledGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import { sectionHasStaffEdit, storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
 import { useAmendWorkItem } from '@/lib/quote-workflow/use-amend-work-item';
 import { useRequestWorkItem } from '@/lib/quote-workflow/use-request-work-item';
@@ -244,6 +245,13 @@ function staffQuoteAttemptKey(transportId: string, messageId: string, sourceHash
   return JSON.stringify([transportId, messageId, sourceHash, stayKey]);
 }
 
+function quoteSourceIdentity(session: QuoteSession): string {
+  const binding = session.binding;
+  const source = session.staffSource;
+  return JSON.stringify([binding?.transportId, binding?.storeId, binding?.folderEntryId, binding?.entryId,
+    binding?.selectionEpoch, binding?.scopeEpoch, source?.threadId, source?.messageId, source?.sourceHash]);
+}
+
 function analysisWithPaneEdits(
   analysis: QuoteAnalysis,
   transportId: string,
@@ -315,6 +323,7 @@ export function NavaPane({
   const staffQuoteRunCount = useRef(0);
   const staffQuoteReadBackInFlight = useRef(false);
   const staffQuoteReadBackGeneration = useRef(0);
+  const staffQuoteStepGenerations = useRef(new Map<string, number>());
   const preparedTaskGeneration = useRef(0);
   const autoStartStaffQuoteStepRef = useRef<() => void>(() => undefined);
   const runQuoteStepRef = useRef<(stepId: string, autoStart?: boolean, readBack?: boolean) => void>(() => undefined);
@@ -667,6 +676,18 @@ export function NavaPane({
     quoteSession.treatAs,
     quoteSession.staffNote,
   );
+  const contactMessageKey = selectedIdentity ?? '';
+  const contactCorrectionKey = `${currentScope ?? ''}::${contactMessageKey}`;
+  const [contactCorrection, setContactCorrection] = useState<{
+    key: string; fields: Partial<Record<ContactField, string | null>>;
+  } | null>(null);
+  const pendingContactCorrections = useRef<{
+    key: string; fields: Partial<Record<ContactField, string | null>>;
+  } | null>(null);
+  const hasCachedEdits = Boolean(contactCorrection?.key === contactCorrectionKey && Object.keys(contactCorrection.fields).length) ||
+    Boolean(activeConnection?.id && selectedIdentity && recalledPaneEdits(paneEditKey(activeConnection.id, selectedIdentity))) ||
+    Boolean(activeConnection?.id && activeEmail?.entryId &&
+      recalledGuestName(guestNameCacheKey(activeConnection.id, activeEmail)) !== null);
   // The stored read for the selected mail. A ready or failed read stands in for the live read. A treat-as or a staff
   // note asks for a fresh read, so the stored read is not used then, and it does not re-trigger the effect below.
   const storedWork = useStoredWork({
@@ -676,14 +697,27 @@ export function NavaPane({
     selectionEpoch: contextRevision.current.selectionEpoch,
     openMissingWorkItem: !isNonActionableBySourceOrSubject,
     scope: currentScope,
+    hasCachedEdits,
+    onFullReload: () => {
+      if (activeConnection?.id && selectedIdentity) forgetPaneEdits(paneEditKey(activeConnection.id, selectedIdentity));
+      if (activeConnection?.id && activeEmail?.entryId) forgetGuestName(guestNameCacheKey(activeConnection.id, activeEmail));
+      requestWorkItem.discard();
+      amendWorkItem.discard();
+      setContactCorrection(null);
+      pendingContactCorrections.current = null;
+      const binding = quoteSessionRef.current.binding;
+      dispatchQuote({ type: 'reset' });
+      if (binding && isCurrentBinding(binding)) dispatchQuote({ type: 'selection', binding });
+    },
   });
   const amendWorkItem = useAmendWorkItem({ trpc: trpcClient,
     snapshot: storedWork.pane.state === 'ready' ? storedWork.pane.amendDraft ?? null : null,
     transportId: storedWork.transportId ?? activeConnection?.id ?? null,
-    reload: storedWork.reloadAmendDraft, onSave: storedWork.noteAmendSave });
+    reload: storedWork.reloadAmendDraft, canSaveSnapshot: storedWork.canSaveSnapshot, flushSnapshot: storedWork.flushSnapshot,
+    onSave: storedWork.noteAmendSave });
   const requestWorkItem = useRequestWorkItem({ trpc: trpcClient,
     snapshot: storedWork.pane.state === 'ready' ? storedWork.pane.amendDraft ?? null : null,
-    transportId: storedWork.transportId, flushSnapshot: storedWork.flushSnapshot,
+    transportId: storedWork.transportId, flushSnapshot: storedWork.flushSnapshot, canSaveSnapshot: storedWork.canSaveSnapshot,
     reload: storedWork.reloadAmendDraft, onSave: storedWork.noteAmendSave });
   const amendRefresh = useAmendExtractionRefresh({ trpc: trpcClient,
     snapshot: !amendSourceChanged && storedWork.pane.state === 'ready' && storedWork.pane.kind === 'amendment'
@@ -696,8 +730,6 @@ export function NavaPane({
     selfSentPreStayBySubject ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
   const isNonActionableMessage = isNonActionableMailSource || isExistingStayInformation;
-  const contactMessageKey = selectedIdentity ?? '';
-  const contactCorrectionKey = `${currentScope ?? ''}::${contactMessageKey}`;
   const contactEditorKey = `${contactCorrectionKey}|${
     storedWork.pane.state === 'ready'
       ? `ready:${storedWork.pane.workItemId ?? ''}${storedWork.historyEpoch ? `:h${storedWork.historyEpoch}` : ''}`
@@ -712,14 +744,6 @@ export function NavaPane({
         ? { ...senderFallback, company: null, endClient: null, phone: null }
         : null;
   const normalizedContact = sourceContact ? { ...sourceContact } : null;
-  const [contactCorrection, setContactCorrection] = useState<{
-    key: string;
-    fields: Partial<Record<ContactField, string | null>>;
-  } | null>(null);
-  const pendingContactCorrections = useRef<{
-    key: string;
-    fields: Partial<Record<ContactField, string | null>>;
-  } | null>(null);
   const contactFields = contactCorrection?.key === contactCorrectionKey ? contactCorrection.fields : null;
   const documentContact = contactFields
     ? {
@@ -737,17 +761,30 @@ export function NavaPane({
     if (transportId && contactMessageKey) forgetPaneEdits(paneEditKey(transportId, contactMessageKey));
   }, [storedWork.historyEpoch]);
   const workItemPane =
-    storedWork.pane.state === 'ready' && storedWork.pane.fieldProvenance && storedWork.pane.workItemId
+    storedWork.pane.state === 'ready' && storedWork.pane.workItemId
       ? {
-          fieldProvenance: storedWork.pane.fieldProvenance,
+          fieldProvenance: storedWork.pane.fieldProvenance ?? {},
           refs: storedWork.pane.refs ?? {},
-          onResetContact: storedWork.resetAvailable
+          ...(requestWorkItem.available ? { requestDraft: requestWorkItem } : {}),
+          ...(storedWork.pane.amendDraft && storedWork.transportId ? { rateDraft: {
+            snapshot: storedWork.pane.amendDraft,
+            trpc: trpcClient,
+            transportId: storedWork.transportId,
+            flush: storedWork.flushForBinding,
+            onSave: storedWork.noteAmendSave,
+          } } : {}),
+          onResetContact: storedWork.resetAvailable && !requestWorkItem.pending && !storedWork.saveFailed
             ? () => storedWork.resetSection({ type: 'contact' })
             : undefined,
-          onResetStay: storedWork.resetAvailable
+          onResetStay: storedWork.resetAvailable && !requestWorkItem.pending && !storedWork.saveFailed
             ? (stayId: string) => storedWork.resetSection({ type: 'stay', stayId })
             : undefined,
           resetPending: storedWork.historyPending || storedWork.historyNeedsReload,
+          historyBusy: storedWork.historyPending || storedWork.historyNeedsReload,
+          historyEpoch: storedWork.historyEpoch,
+          bindingCursor: storedWork.bindingCursor,
+          editGeneration: storedWork.editGeneration,
+          bindingPending: storedWork.saveFailed || amendWorkItem.pending || amendRefresh.pending,
         }
       : null;
   const recordContact = (field: ContactField, value: string | null) => {
@@ -1187,6 +1224,13 @@ export function NavaPane({
       return;
     }
     const generation = ++staffQuoteReadBackGeneration.current;
+    const sourceIdentity = quoteSourceIdentity(quoteSession);
+    const stepVersions = new Map(waiting.map((stayKey) => [stayKey,
+      staffQuoteStepGenerations.current.get(`${sourceIdentity}:${stayKey}`) ?? 0]));
+    const readBackCurrent = () => !cancelled && staffQuoteReadBackGeneration.current === generation &&
+      quoteSourceIdentity(quoteSessionRef.current) === sourceIdentity &&
+      [...stepVersions].every(([stayKey, version]) =>
+        (staffQuoteStepGenerations.current.get(`${sourceIdentity}:${stayKey}`) ?? 0) === version);
     staffQuoteReadBackInFlight.current = true;
     const staff = staffQuoteFromTrpc(trpcClient);
     const selectionEpoch = binding.selectionEpoch;
@@ -1211,11 +1255,12 @@ export function NavaPane({
         selectionEpoch,
         inputRevision,
         analysis: { ...luna, groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups) },
+        groupIds: quoteSession.groups.map((group) => group.id),
         ...(rateCode ? { rateCode } : {}),
       })
         .then((result) => {
           if (
-            cancelled ||
+            !readBackCurrent() ||
             result?.status !== 'ready' ||
             result.revisionRef !== UNQUOTED_BOOKING_REVISION_REF ||
             result.selectionEpoch !== selectionEpoch ||
@@ -1254,7 +1299,7 @@ export function NavaPane({
         ),
       );
       if (
-        cancelled ||
+        !readBackCurrent() ||
         !quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })
       ) return;
 
@@ -1285,7 +1330,7 @@ export function NavaPane({
           threadId: source.threadId,
         });
         for (const row of revisions) {
-          if (cancelled || unbound.size === 0) break;
+          if (!readBackCurrent() || unbound.size === 0) break;
           const candidate = await bindUsePriorQuoteForBooking({
             mutate: staff.workstation.usePriorQuoteForBooking?.mutate,
             source,
@@ -1300,7 +1345,7 @@ export function NavaPane({
               groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups),
             },
           });
-          if (cancelled) return;
+          if (!readBackCurrent()) return;
           if (candidate.status !== 'ok') {
             reasons.push(candidate.reason);
             if (candidate.reason === 'expired' && !expiredPrior) {
@@ -1317,12 +1362,12 @@ export function NavaPane({
         }
       }
       if (
-        cancelled ||
+        !readBackCurrent() ||
         !quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })
       ) return;
 
       for (const row of restored) {
-        if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
+        if (!readBackCurrent() || !quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
           toast.warning('Details changed while HMS was searching — search availability again.');
           return;
         }
@@ -1338,7 +1383,7 @@ export function NavaPane({
         });
         for (const item of row.result.extrasReviewItems) toast.warning(item);
         if (isBooking && luna) {
-          if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
+          if (!readBackCurrent() || !quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
             toast.warning('Details changed while HMS was searching — search availability again.');
             return;
           }
@@ -1359,7 +1404,7 @@ export function NavaPane({
               toast.warning(draftRemote.reason);
               return;
             }
-            if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
+            if (!readBackCurrent() || !quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
               toast.warning('Details changed while HMS was searching — search availability again.');
               return;
             }
@@ -1731,12 +1776,18 @@ export function NavaPane({
     const selectionEpoch = binding.selectionEpoch;
     const inputRevision = session.inputRevision;
     const stayRevision = session.stayRevision;
+    const sourceIdentity = quoteSourceIdentity(session);
+    const startedVersions = new Map(requestedQuoteKeys(session.groups).map((key) => [key,
+      staffQuoteStepGenerations.current.get(`${sourceIdentity}:${key}`) ?? 0]));
+    const sourceCurrent = () => quoteSourceIdentity(quoteSessionRef.current) === sourceIdentity &&
+      quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision });
     const staff = staffQuoteFromTrpc(trpcClient);
     void bindGetPriorStaffQuoteRequote({
       query: staff.workstation.getPriorStaffQuoteRequote?.query,
       threadId: source.threadId,
       row,
     }).then((loaded) => {
+      if (!sourceCurrent()) return;
       if (loaded.status !== 'ok') {
         toast.warning(loaded.reason);
         return;
@@ -1751,6 +1802,16 @@ export function NavaPane({
         toast.warning('The stays changed since this quote. Run the search for that stay again.');
         return;
       }
+      const keys = requestedQuoteKeys(groups);
+      if (keys.some((key) => (staffQuoteStepGenerations.current.get(`${sourceIdentity}:${key}`) ?? 0) !==
+          (startedVersions.get(key) ?? 0))) return;
+      const versions = new Map(keys.map((key) => {
+        const next = (staffQuoteStepGenerations.current.get(`${sourceIdentity}:${key}`) ?? 0) + 1;
+        staffQuoteStepGenerations.current.set(`${sourceIdentity}:${key}`, next);
+        return [key, next];
+      }));
+      const current = () => sourceCurrent() && [...versions].every(([key, version]) =>
+        staffQuoteStepGenerations.current.get(`${sourceIdentity}:${key}`) === version);
       // The prior quote loaded after the click, so a lookup may have started since. The run must not start under it.
       const lookupWaitNow = partyLookupWaitReason(quoteSessionRef.current);
       if (lookupWaitNow) {
@@ -1770,7 +1831,7 @@ export function NavaPane({
       });
       return trackStaffQuoteRun(run).then((remote) => {
         // The reducer drops this result when the selection, inputs or stay rows moved on while HMS searched. Say so.
-        if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
+        if (!current()) {
           toast.warning('Details changed while HMS was searching — search availability again.');
           return;
         }
@@ -1804,6 +1865,7 @@ export function NavaPane({
             groups: overlayLunaGroupsFromStaff(luna, session.groups),
           },
         }).then((draftRemote) => {
+          if (!current()) return;
           if (draftRemote.status !== 'ok') {
             toast.warning(draftRemote.reason);
             return;
@@ -1962,6 +2024,8 @@ export function NavaPane({
     };
     const staffQuoteStep = step;
     const staffQuoteSource = source;
+    const sourceIdentity = quoteSourceIdentity(quoteSession);
+    const stepGenerationKey = `${sourceIdentity}:${step.shareKey ?? step.id}`;
     const retry = () => {
       const lostRunId = pollLostRunId;
       const retryRun = lostRunId && originalStaffQuoteJob
@@ -1988,17 +2052,25 @@ export function NavaPane({
             propertyCode: activePaneConfig?.propertyCode,
             stayKey: step.shareKey,
           });
-      void runNoticed(retryRun).then(applyStaffQuoteResult);
+      runNoticed(retryRun);
     };
-    const runNoticed = (pendingRun: Promise<BoundExecuteStaffQuote | null>) =>
-      trackMainStaffQuoteRun(pendingRun, retry, noticeEmail).then((remote) => {
+    const runNoticed = (pendingRun: Promise<BoundExecuteStaffQuote | null>) => {
+      const generation = (staffQuoteStepGenerations.current.get(stepGenerationKey) ?? 0) + 1;
+      staffQuoteStepGenerations.current.set(stepGenerationKey, generation);
+      const current = () => staffQuoteStepGenerations.current.get(stepGenerationKey) === generation &&
+        quoteSourceIdentity(quoteSessionRef.current) === sourceIdentity &&
+        quoteStayRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision,
+          stepId: staffQuoteStep.id, stayKey: staffQuoteStep.shareKey ?? '', groups: stayGroups });
+      void trackMainStaffQuoteRun(pendingRun, retry, noticeEmail).then((remote) => {
+        if (!current()) return;
         pollLostRunId =
           remote?.status === 'unavailable' && remote.reason === STAFF_QUOTE_POLL_LOST_REASON
             ? lastStaffQuoteRunId
             : null;
-        return remote;
+        applyStaffQuoteResult(remote, current);
       });
-    function applyStaffQuoteResult(remote: BoundExecuteStaffQuote | null) {
+    };
+    function applyStaffQuoteResult(remote: BoundExecuteStaffQuote | null, current: () => boolean) {
       if (
         !quoteStayRunIsCurrent(quoteSessionRef.current, {
           selectionEpoch,
@@ -2062,6 +2134,7 @@ export function NavaPane({
           inputRevision,
           analysis: { ...luna, groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups) },
         }).then((draftRemote) => {
+          if (!current()) return;
           if (draftRemote.status !== 'ok') {
             toast.warning(draftRemote.reason);
             return;
@@ -2074,7 +2147,7 @@ export function NavaPane({
         });
       }
     }
-    void runNoticed(run).then(applyStaffQuoteResult);
+    runNoticed(run);
   };
   runQuoteStepRef.current = runQuoteStep;
 
@@ -2291,28 +2364,29 @@ export function NavaPane({
                 serverCursor={storedWork.historyCursor}
                 onUndo={storedWork.undo}
                 onRedo={storedWork.redo}
-                pending={storedWork.historyPending || storedWork.historyNeedsReload || amendWorkItem.pending || amendRefresh.pending || requestWorkItem.pending}
+                pending={storedWork.historyPending || storedWork.historyNeedsReload || storedWork.saveFailed || amendWorkItem.pending || amendRefresh.pending || requestWorkItem.pending}
               />
             ) : null}
-            {requestWorkItem.error ? <p role="status" className="px-1 text-[11px] text-amber-900">
-              {requestWorkItem.error}{' '}{requestWorkItem.retryable ? <button type="button" className="font-semibold underline"
-                onClick={requestWorkItem.retry}>Retry save</button> : null}
-            </p> : null}
             {storedWork.historyError ? (
               <p role="status" className="flex flex-wrap items-center gap-1 px-1 text-[11px] text-[#64748b]">
                 <span>{storedWork.historyError}</span>
                 {storedWork.historyNeedsReload ? (
                   <button
                     type="button"
-                    disabled={storedWork.historyPending}
-                    onClick={storedWork.reloadHistory}
+                    disabled={storedWork.historyPending || requestWorkItem.saving || amendWorkItem.saving || amendRefresh.pending}
+                    onClick={() => { requestWorkItem.discard(); amendWorkItem.discard(); storedWork.reloadHistory(); }}
                     className="rounded-[3px] text-[11px] font-semibold text-[#64748b] hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:text-[#94a3b8]"
                   >
-                    Reload
+                    {hasCachedEdits || storedWork.saveFailed || requestWorkItem.pending || amendWorkItem.pending
+                      ? 'Reload and discard unsaved changes' : 'Reload'}
                   </button>
                 ) : null}
               </p>
             ) : null}
+            {requestWorkItem.error ? <p role="status" className="px-1 text-[11px] text-amber-900">
+              {requestWorkItem.error}{' '}{requestWorkItem.retryable && !storedWork.historyNeedsReload ? <button type="button" className="font-semibold underline"
+                onClick={requestWorkItem.retry}>Retry save</button> : null}
+            </p> : null}
           </div>
         ) : null}
 
@@ -2465,7 +2539,7 @@ export function NavaPane({
             {storedWork.saveFailed ? (
               <p role="status" className="flex items-center gap-2 px-1 text-[11px] text-[#b45309]">
                 Couldn&apos;t save change.
-                <button type="button" className="font-semibold underline" onClick={storedWork.retrySave}>
+                <button type="button" disabled={storedWork.historyNeedsReload} className="font-semibold underline" onClick={storedWork.retrySave}>
                   Retry
                 </button>
               </p>
