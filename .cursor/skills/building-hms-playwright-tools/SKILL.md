@@ -36,7 +36,7 @@ Verify the property, reservation/record identity, selected row and native action
 
 Apply requested controls in the native order and let the PMS recalculate. After all dependent changes settle, compare every requested field with the final form, then return the full effective result for approval. A later recalculation can undo an earlier value. Preserve untouched edit fields unless the PMS explicitly changes a dependent value, which must be included in the preview.
 
-Immediately before dispatch, serialize writes to the actual reservation/record under trusted host ownership and obtain a fresh, complete relevant before-state. Compare it with the approved preparation and refuse a stale target or changed record. Re-stage/recalculate and compare the approved values again. An earlier preview is not the dispatch baseline. Reuse a host lock when the existing workflow requires it; do not add a mandatory lock, journal or logging framework without a demonstrated need. In-process serialization does not coordinate other processes or staff editing directly in the PMS.
+Immediately before dispatch, run writes to the same reservation/record one at a time and obtain a fresh, complete relevant before-state. Compare it with the approved preparation and refuse a stale target or changed record. Re-stage/recalculate and compare the approved values again. An earlier preview is not the dispatch baseline; serialization in one process does not coordinate other processes or staff editing directly in the PMS.
 
 Use only the native operation whose semantics have been established. Editing is not delete-and-recreate; removal is not quantity zero unless native behavior proves that is the intended action. Posted charges, cancellation penalties and bundle side effects require their own evidence, not a local accounting engine.
 
@@ -58,7 +58,7 @@ A timeout revokes pending authority but does not cancel a request already sent. 
 
 ## Verify persistence and attribute the attempt
 
-Record possible dispatch before consuming its response. Preserve the operation, phase, requested values, before-state, known ID, receipts and uncertainty even if response parsing fails. Where restart/replay safety requires durable claims or cross-process coordination, reuse the trusted host's existing mechanism rather than forcing that infrastructure into every tool. Changing an attempt ID must not bypass an unresolved logical intent.
+Record possible dispatch before consuming its response. Preserve the operation, phase, requested values, before-state, known ID, receipts and uncertainty even if response parsing fails. Reconcile an uncertain result before retrying; changing an attempt ID must not bypass an unresolved logical intent.
 
 Independently reopen the intended native record and compare all supported effective fields, including explicit blanks and flags. Capture identity from the response or a verified native grid; Submit may clear the form instead of retaining the saved ID.
 

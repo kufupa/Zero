@@ -8,10 +8,10 @@ These are historical observations from particular HMS surfaces and tool versions
 - Fields supplied earlier in a preparation could be changed by a later native recalculation. Checking the final complete requested values caught this; checking each field only immediately after filling it was insufficient.
 - Submit used an action in both the URL and body and reset its form. Guard target/action/business values rather than the whole request shape; obtain inserted identity from native evidence and read its details independently.
 - A grid store total was zero despite a saved row. Correlated native metadata and actual IDs established the useful completeness check. Other grids may need a footer or exact-ID lookup instead.
-- An approval-delayed preview could incorrectly credit another session's identical insert. Taking a fresh complete baseline inside the write lock fixed attribution; preview hashes alone do not prevent this.
+- An approval-delayed preview could incorrectly credit another session's identical insert. A fresh complete baseline immediately before the serialized write improved attribution; preview hashes alone do not prevent this, and direct HMS edits may still race.
 - An interrupted response still represented a possible native write. Recording the attempt before reading the body allowed a fresh reader to recover the uniquely new row without retrying.
 - Concurrent first calls could initialize separate page state; storing the shared initialization promise before awaiting prevented that race.
-- Slow dispatch callbacks could outlive the UI timeout and lock. Quarantine plus callback drain kept ownership until the late handler settled; native response bodies also needed their own deadlines.
+- Slow dispatch callbacks could outlive the UI timeout. Quarantine plus callback drain kept the page fenced until the late handler settled; native response bodies also needed their own deadlines.
 - The insert guard needed new-record identity checks so stale existing IDs could not turn an Add approval into an update. Update and removal need their own positively established native operations.
 - Sequential Dinner/Breakfast writes proved a batch can be composed, not made atomic. Keep partial receipts and reconcile before another write.
 
@@ -24,7 +24,7 @@ A fresh read of one saved, manually added HRCEN Non-Room Item found its code rea
 - Selected-row edits used native SAVE and removals DELETE, both in URL and body, with the existing sequence key and primary key. One owned future Proof Labtest edit preserved its native ID; removal produced complete independent absence. This proves manually added items on that surface, not posted-charge reversal or every bundle/activity action.
 - Re-clicking an already selected row emitted no fresh detail request. Clearing the grid selection alone did not reset the native form. Native Clear reloaded an empty form and allowed exact-row refresh without requiring insertion permission. Use a proved native refresh action when displayed selection and server form state differ.
 - Guest Stay rate readiness waited on `networkidle` despite a matched availability response. Native Ajax and mask readiness removed that timeout; later missing dated rates remained a distinct `needs_input` result. Wait for the business condition, and do not override missing price evidence to make a fixture succeed.
-- Saved row IDs distinguish duplicate catalogue items. A partial patch preserves omitted fields and exposes dependent recalculations; a prepared removal reads the row without clicking Delete. Sequential corrections need fresh row checks and partial receipts, without imposing a new journaling or locking framework.
+- Saved row IDs distinguish duplicate catalogue items. A partial patch preserves omitted fields and exposes dependent recalculations; a prepared removal reads the row without clicking Delete. Sequential corrections need fresh row checks and partial receipts.
 
 ## Surface-specific observations
 
