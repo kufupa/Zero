@@ -296,6 +296,7 @@ export type StoredWork =
       status: 'ready';
       /** The stored mail kind, used to keep the selected-email classification in the shared pane vocabulary. */
       kind: string;
+      staffManual?: boolean;
       existingStayInformation?: boolean;
       separateAsk?: string | null;
       confirmationNumbers?: string[];
@@ -364,6 +365,9 @@ type WorkItemsClient = {
     extractionId: string; extractorVersion: string; fingerprint: string;
     source: { threadId: string; messageId: string; sourceHash: string } },
     opts?: { context: Record<string, unknown> }) => Promise<{ status: 'blocked' } | { status: 'queued'; runId: string }> };
+  startManualCreate?: { mutate: (input: { internetMessageId: string; selection: MailSourceSelection;
+    extractionId: string; fingerprint: string; source: { threadId: string; messageId: string; sourceHash: string } },
+    opts?: { context: Record<string, unknown> }) => Promise<{ status: 'started' | 'blocked' }> };
   failedReadRetryStatus?: { query: (input: { internetMessageId: string; selection: MailSourceSelection;
     extractionId: string; runId: string }, opts?: { context: Record<string, unknown> }) =>
     Promise<{ status: 'reading' | 'finished' | 'blocked' }> };

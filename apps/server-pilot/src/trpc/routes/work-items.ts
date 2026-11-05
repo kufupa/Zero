@@ -18,6 +18,7 @@ import {
   resetWorkSection,
   storedTranslation,
   storedWorkFor,
+  startManualCreate,
   undoWorkItemRevision,
 } from '../../ai/work-items.js';
 import {
@@ -144,6 +145,10 @@ export const workItemsRouter = router({
     .mutation(({ input, ctx }) => retrySelectedFailedRead(getDb(), {
       ...input, transportId: ctx.activeTransportId, actorId: ctx.sessionUser.id,
     })),
+  startManualCreate: mailboxProcedure.input(z.object({ internetMessageId, selection: paneSourceSelectionSchema,
+    extractionId: z.string().uuid(), fingerprint: z.string().regex(/^[a-f0-9]{64}$/), source: voucherReviewSource }).strict())
+    .mutation(({ input, ctx }) => startManualCreate(getDb(), { ...input, transportId: ctx.activeTransportId,
+      actorId: ctx.sessionUser.id })),
   failedReadRetryStatus: mailboxProcedure.input(z.object({ internetMessageId, selection: paneSourceSelectionSchema,
     extractionId: z.string().uuid(), runId: z.string().uuid() }).strict())
     .query(({ input, ctx }) => failedReadRetryStatus(getDb(), { ...input, transportId: ctx.activeTransportId })),

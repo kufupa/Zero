@@ -45,6 +45,7 @@ export function WorkflowBadge({
   if (!current) return null;
 
   const label = NAVA_READ_AS_LABEL[current];
+  const manual = analysis?.source === 'staff_manual';
   // A paid claim relabels a quote or booking as payment; staff can still correct the workflow underneath.
   const paidWorkflow = current === 'payment' ? quoteOrBookingWorkflow(analysis, kind) : null;
   const changeable =
@@ -61,13 +62,13 @@ export function WorkflowBadge({
   return (
     <section
       role={goldLabel ? 'group' : 'status'}
-      aria-label={goldLabel ? 'Email action label controls' : `Nava reads this as: ${label}`}
+      aria-label={goldLabel ? 'Email action label controls' : `${manual ? 'Staff started' : 'Nava reads this as'}: ${label}`}
       className="flex shrink-0 flex-col gap-2 rounded-[4px] border border-[#bfdbfe] bg-[#eff6ff] px-3 py-2.5"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         {!goldLabel ? (
           <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[12.5px] text-[#1e293b]">
-            <span className="font-semibold">Nava reads this as:</span>
+            <span className="font-semibold">{manual ? 'Staff started:' : 'Nava reads this as:'}</span>
             <span
               data-read-as={current}
               title={SPECIAL_READ_HINT[current]}
@@ -77,7 +78,7 @@ export function WorkflowBadge({
             </span>
             {analysis?.aiUnavailable ? (
               <span className="rounded-full bg-white px-2 py-0.5 text-[10.5px] font-semibold text-[#64748b]">
-                Read without AI
+                {manual ? 'Staff entry' : 'Read without AI'}
               </span>
             ) : null}
           </div>

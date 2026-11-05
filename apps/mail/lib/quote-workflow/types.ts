@@ -267,7 +267,7 @@ export type QuoteAmendment = {
   requestedChange: string | null;
 };
 
-export type QuoteAnalysisSource = 'luna' | 'regex_fallback';
+export type QuoteAnalysisSource = 'luna' | 'regex_fallback' | 'staff_manual';
 
 export type QuoteWorkflowFallbackReason = 'timeout' | 'error' | 'disabled' | 'invalid_output';
 

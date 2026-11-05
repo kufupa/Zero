@@ -448,6 +448,7 @@ export function QuoteWorkflowPanel({
   onUndoReviewItem,
   onSetPreparedTaskHandled,
   onRetryRead,
+  onStartManualCreate,
   onViewSource,
   onEditReply,
   onPatchStaffHeader,
@@ -529,6 +530,7 @@ export function QuoteWorkflowPanel({
   onSetPreparedTaskHandled?: (task: ReservationistPreparedTask, handled: boolean) => Promise<void>;
   /** Runs the read again after an analysis failure. Absent when there is nothing to retry. */
   onRetryRead?: () => void;
+  onStartManualCreate?: () => void | Promise<void>;
   onViewSource?: (item: QuoteReviewItem) => void;
   onEditReply?: () => void;
   onPatchStaffHeader?: (header: Partial<StaffQuoteHeader>, options?: { staffEdit?: boolean }) => void;
@@ -1678,6 +1680,7 @@ export function QuoteWorkflowPanel({
             onHandle={onHandleReviewItem}
             onUndo={onUndoReviewItem}
             onRetry={onRetryRead}
+            onStartBooking={onStartManualCreate}
           />
         </>
       ) : null}
