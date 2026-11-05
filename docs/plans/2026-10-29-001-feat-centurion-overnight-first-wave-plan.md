@@ -8,6 +8,8 @@ product_contract_source: Centurion Wayfinder decisions 676, 677 and 678
 execution: code
 ---
 
+> **Legacy operational guidance:** The one-HRCEN-browser / property-wide lock restriction below was scoped to this older run and is not a standing rule for new Cloud tools. The owner reports same-login Cloud sessions can run concurrently. Existing product paths may still acquire advisory locks; this notice does not remove or bypass them. Check the current path and protect session and target isolation.
+
 # Centurion overnight first wave - Plan
 
 ## Goal Capsule

@@ -9,6 +9,8 @@ product_contract_source: ce-plan-bootstrap
 execution: code
 ---
 
+> **Historical run guidance:** Do not carry this plan's send-on or one-browser-per-hotel assumptions into new Cloud tooling. Current owner direction makes CMS inputs optional and permits isolated Cloud sessions in parallel; Nava never sends. Existing product locks may still be active. This notice does not remove or bypass them or authorize this old run.
+
 # Da Vinci Booking Proof - Plan
 
 ## Context

@@ -1,5 +1,7 @@
 # Handoff for a fresh session (2026-10-14, ~16:20Z)
 
+> **Historical snapshot (2026-10-14; routing superseded):** The `fable` → GPT-6.1 Sol assignment below is not current. As of 2026-11-03, the active gateway config maps Fable to GPT-6.1 Terra; GPT-6.1 Sol is not in its model list. See [the team handoff](HANDOFF-2026-10-14-team.md) and verify the active config before use.
+
 **You are the lead for Nava**, an AI reservationist for Centurion Hotel (Legacy Hotels, Infor HMS). It is **live with the client**: real staff, real guests. Never call it a demo.
 
 **Goal:** a complete product. Quote, new booking, amend and cancel each reach "one click, human approves", with the highest triage (classifier) coverage. Next client: Da Vinci.
