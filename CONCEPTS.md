@@ -84,24 +84,6 @@ Ops recovery that restores the live pilot Postgres instance from a **pre-wipe** 
 
 *Avoid: restoring from automated snapshots taken after the wipe clock — they capture empty/fixture state.*
 
-### Wipe-safe pilot verify
-
-How to prove seed / mailbox-access / switcher changes on the live EC2 pilot without pointing Vitest at pilot RDS: local unit/guard tests with `DATABASE_URL` unset; live proof via deploy + `CONFIRM_PILOT_SEED` seed (no password rotate unless required) + SQL or `connections.list` semantics. Distinct from intentional RDS gate scripts that set an explicit vitest opt-in.
-
-*Avoid: treating “EC2 vitest green” as the acceptance path for grant or switcher proof after the Jul 2026 wipe.*
-
-### Pilot RDS vitest refuse
-
-Fail-closed Vitest bootstrap that aborts when `DATABASE_URL` points at the live pilot Postgres host unless an explicit opt-in env is set. Catches suites that never use the transactional test-DB helper. Distinct from the intentional pilot wipe confirm gate (operator truncate scripts) and from disposable/local DB test runs. Necessary but not sufficient alone — opt-in shells and non-Vitest mutators can still wipe; see Pilot RDS PITR rename recovery.
-
-### VITEST_ALLOW_PILOT_RDS
-
-Escape-hatch env historically used by intentional RDS-backed deploy gate scripts when they source production env and run Vitest. After the dual-key mutation guard lands, hazard-context connects to pilot also require a second confirm (`CONFIRM_PILOT_MUTATE` or script-specific seed/wipe confirm as defined in the mutation-guard plan). Must not be set in casual overnight agent shells. Prefer DB-free gates that unset `DATABASE_URL` so neither key is needed.
-
-### Pilot DB hazard context
-
-Runtime signal that Vitest/`NODE_ENV=test`/explicit guard mode is active — under which opening a connection to the live pilot Postgres host is refused unless dual confirms are present. Distinct from production PM2 runtime, which must keep connecting to pilot without those confirms.
-
 ### Rocketseed banner server
 
 Hotel SMTP branding relay (`172.24.0.8` / `branding.legacyhotels.co.za`) that injects signature and top/footer banners before mail reaches Zimbra. **Mandatory sole real-mail SMTP hop** for Zero (`MAIL_TRANSPORT_MODE=real` connects only to `.8:587` STARTTLS, IP-trust, never AUTH); POP3 stays Zimbra `.10`. Banner selection remains **From/sender tenant provisioning**, not SMTP AUTH and not “did the message touch Rocketseed.” Traversal stamps (`X-ExSBR-Direction`, `X-BypassBranding`) appear on branded and unbranded copies alike. Fixture/wire do not use hotel SMTP.
@@ -200,30 +182,6 @@ Staff-facing close contract for reply compose: empty close is silent; dirty expl
 
 Git-bundle-over-S3 workflow (`sync-ec2-git-bundle.sh`) that updates EC2 code via in-place `git fetch` + `reset --hard` without destroying `node_modules`. Complements normal `git push` to remote.
 
-### Pre-real-ingest gate
-
-The security hardening wave (sanitize HTML, mailbox header trust, RDS TLS, signup guard, etc.) that must pass on EC2 before enabling real POP3/SMTP ingest.
-
-### Manual RDS migrate
-
-Explicit operator step to apply Drizzle SQL migrations against pilot RDS. Not part of `deploy-ec2.sh` so breaking schema changes do not run automatically on every deploy. Requires exporting production env (`set -a` before sourcing `.env.production`) so child migrate processes inherit `DATABASE_URL`.
-
-### Patch-fragment truncation
-
-Autonomous-agent editing failure where a plan snippet is written as the entire file, leaving only the new hunk and dropping the file's head and tail. Structural (missing imports/exports), distinct from CRLF mangling or a bad logic change. Recovery is revert-to-clean-HEAD, not hand-repair.
-
-### False green gate
-
-A verification gate (typecheck, test, or build) reported as passing in a hand-off summary but never executed against the actual working tree — the described fixes were never persisted or committed, so re-running the check on disk reveals the true failures. Distinct from Patch-fragment truncation, where edits are corrupted rather than absent; here the state simply never matched the claim. Detection and prevention is to re-run the exact gate on disk (ideally in CI) rather than trusting the reported status.
-
-### E2E session mint
-
-Autonomous Playwright gate step that logs in a pilot user non-interactively — POST `/api/auth/sign-in/email` with a password from Secrets Manager — then exports `PLAYWRIGHT_SESSION_TOKEN`/`PLAYWRIGHT_SESSION_DATA` (+ `PLAYWRIGHT_COOKIE_PREFIX`) so `auth.setup.ts` injects a real Better Auth session. Cookie domain/secure derive from `PLAYWRIGHT_BASE_URL`, not hardcoded `localhost`. For the real-mail U9 gate, browser form login is the proof path; mint remains assist-only and does not replace AE1.
-
-### U9 gate
-
-Ephemeral Playwright real-mail UI proof on EC2 (`playwright-real-mail-ui-gate.sh`) against the live SPA host and hotel mailbox. Covers browser login, compose self-loopback, Force Sync loopback, and reply loopback. Requires real transport, host-matched auth URL, and a zero undo window for deterministic flush — then product undo must be restored.
-
 ### Force Sync
 
 Operator-triggered one-shot ingest from the SPA debug menu: calls `forceSync` → `ingestOnce` under a mailbox lock and invalidates thread queries so new mail appears without a full page reload. Complements the default thread poll interval; does not replace always-on POP3 draining.
@@ -238,11 +196,7 @@ Display rule that rewrites a single **To** address as the friendly label **You**
 
 ### Undo send window
 
-Seconds outbound mail sits in the undo/schedule queue before SMTP flush (`UNDO_SEND_SECONDS`). Product UX uses a human-scale window; automated U9 sets the window to zero so compose/reply assertions are not racing the queue, then restores the product value after the gate.
-
-### AI gate
-
-EC2/RDS verification step for the AI mail pipeline: runs server-pilot AI contract tests against production Postgres plus spike eval and server build. Includes mocked `bedrock-adapter-contract.test.ts` (fake adapter — `NODE_ENV=test`). Live Bedrock Converse proof is the separate on-demand Bedrock live gate. Requires VITEST_ALLOW_PILOT_RDS when sourcing production env. Distinct from local vitest, which skips RDS-only cases when `DATABASE_URL` is unset and refuses the pilot host without the opt-in.
+Seconds outbound mail sits in the undo/schedule queue before SMTP flush (`UNDO_SEND_SECONDS`). Product UX uses a human-scale window; automated real-mail UI gates set the window to zero so compose/reply assertions are not racing the queue, then restores the product value after the gate.
 
 ### Always-on OpenVPN
 
@@ -264,27 +218,11 @@ Infor Guest Stay list/search system function used for exact reservation lookups 
 
 A fail-closed lookup key derived from authorized mail: either a confirmation number or an external reference, never a fuzzy guest-name search. Bound opaquely for `hms_find_reservation`; live DoD may walk several mail-derived exact candidates until one matches in HMS.
 
-### Live reservation shadow
-
-EC2 proof path that runs real Guest Stay search through the HMS worker and agent tool surface in shadow mode: queue/claim/audit digests only, no business persistence of live values, evidence, or drafts. Operator success is a fixed token chain ending in rollback.
-
 ### Live-negative verification gate
 
-Discipline that forbids accepting a live PMS/HMS read's zero/empty/not_found as business truth until six layers are independently proven: request chrome, response transport shape, parser (fail-closed on unknown), filter scope (no accidental wildcard), date/paging window, and a green **known-positive control** through the same code path. A negative is treated as *unproven*, not *false*, until the gate passes. Distinct from False green gate (which is about unpersisted verification claims on our own tree); this gate is about false negatives manufactured by stacked wrong assumptions against a live third-party surface. Sits over OSRESS and Exact reservation candidate reads and is the checkable form of the empirical build-debug loop.
+Discipline that forbids accepting a live PMS/HMS read's zero/empty/not_found as business truth until six layers are independently proven: request chrome, response transport shape, parser (fail-closed on unknown), filter scope (no accidental wildcard), date/paging window, and a green **known-positive control** through the same code path. A negative is treated as *unproven*, not *false*, until the gate passes. Distinct from unpersisted verification claims on our own tree; this gate is about false negatives manufactured by stacked wrong assumptions against a live third-party surface. Sits over OSRESS and Exact reservation candidate reads and is the checkable form of the empirical build-debug loop.
 
 *Avoid: reading fixture-green as live-green; concluding "PMS has no record" from a single candidate over a narrow window with no positive control.*
-
-### Packaging gate
-
-Proof that the live HMS runner authenticated, stayed `view_only`, produced digests/receipts, and captured a playable video. Necessary but not sufficient for tool promotion. Distinct from Payload gate.
-
-### Payload gate
-
-Proof that `result.v1.json` (or equivalent) satisfies the tool's field contract: required values present, allowed nulls explicit, forbidden sentinels rejected, and `claimKeys` honest relative to `unresolvedFields`. Requires a recorded live response fixture, not only synthetic happy-path GRID rows. Distinct from Packaging gate.
-
-### Tool promotion HITL
-
-Human batch review at a **wave boundary** after every tool in that wave has passed Packaging gate and Payload gate: watch the wave’s videos and check result payloads before the next wave may start. Inside a wave there is no human pause. Distinct from write-tool HITL proposal approve/execute.
 
 ### HOST_ROUTE
 
@@ -314,16 +252,6 @@ One Nginx site on the pilot that must always carry both the hotel Legacy plane (
 
 Public operator access to the pilot mail UI via `nava-admin.trynava.io`: TLS terminates at a dedicated ALB; the ALB forwards only that host to the instance private `:8443` target. Distinct from Canonical origin, which stays hotel-VPN-only and must not gain public ingress through this path.
 
-### Remote admin lifecycle state
-
-Fail-closed classification of ALB listener rules plus target health into a small set of safe shapes (`pre-registration`, `active`, `rollback`). Any mixed, broad, or non-healthy arrangement is `unknown` and must not be mutated by cutover scripts. After the host-forward rule is deleted, AWS often reports the target as unused rather than healthy — that is `unknown`, not `rollback`.
-
-*Avoid: treating `nava.legacy.local` as the live staff URL after the hotel-HTTPS cutover; that name is legacy overlap only.*
-
-### Closed deploy then open
-
-Cutover sequencing where the app and Nginx TLS site are deployed and proven on-box while UFW still denies hotel TCP 443, then exactly one `tun0` TCP/443 allow is added before launch-readiness must report READY. Initial rollback removes the tunnel allow first and restores the pinned pre-cutover runtime, leaving staff access closed.
-
 ## AI mail pipeline
 
 ### Luna
@@ -338,33 +266,9 @@ Durable queue row in `ai_workflow_run` representing one async AI job (triage, ca
 
 Terminal update invariant on AI workflow runs: `markAiRunSucceeded`, retry, and dead-letter helpers only mutate a row when `claimOwner` and `expectedStates` still match the worker that holds the claim. A stale or reclaimed worker's terminal write returns no row instead of overwriting a newer owner's result.
 
-### Shadow triage
-
-Classifier/eval path that records triage output and metrics without mutating mailbox category, spam, or urgent state until the spike gate enables durable writes.
-
-### Centurion triage retag
-
-Ops cutover that back-applies production triage classifications onto an approved Centurion thread cohort: quiesce workers, snapshot (RDS + app), bind twice-stable approvals under a fresh ledger key prefix, dry-run, apply, scoped drain, then audit-or-restore. Distinct from Shadow triage (no durable writes) and from ordinary inbound classify of new mail. A spent key prefix must not be reused; red audit restores pre-retag durable labels while code may stay on the new prompt version.
-
-The v6 cutover treats the manifest as a provenance chain (snapshot, source,
-canonical approval, rehearsal, and apply bindings), validates restore drift and
-mutation in one serialization boundary, and enqueues retag work without clearing
-prior state. Worker success performs the explicit full rewrite; retry/dead-letter
-rows may resume under the same key while succeeded runs remain terminal. The
-workflow navigation surface is enabled only after the complete eligible cohort
-has drained and audited.
-
-### Triage asOf
-
-The ISO instant folded into the triage input hash for a workflow run — the causal window of messages the classifier saw. Workers hash at run create time; finish time is bookkeeping only. Audits that recompute production `inputHash` must use the same instant or every target falsely mismatches.
-
 ### AI candidate draft
 
 `mail_draft` with `status='candidate'` and `origin='ai'`, plus immutable `mail_draft_revision(kind='ai_generated')`. Never sends mail autonomously.
-
-### HITL feedback label
-
-Async label set comparing the first `ai_generated` revision to the final `sent` revision (tone, factual, recipient, subject, missing_info, no_edit). Stored as eval metrics, not active memory.
 
 ### AI workflow runner
 
@@ -374,17 +278,9 @@ The `ai-worker` PM2 process that claims `ai_workflow_run` rows and executes Mast
 
 Abstraction boundary for LLM invocation in server-pilot (`ModelAdapter.invoke`). `FakeModelAdapter` returns deterministic JSON for tests and deploy gates; `BedrockModelAdapter` calls Bedrock Converse on `ai-worker`. Selection is env-driven via `createModelAdapter()` — mirrors the mail transport factory pattern (`NODE_ENV=test` always fake; `AI_ENABLED=true` in production uses Bedrock).
 
-### Bedrock live gate
-
-On-demand EC2 verification (`bedrock-live-gate.sh`) that runs one real Converse call via instance role credentials. Distinct from `ai-gate.sh`, which stays on the fake adapter for deterministic spike eval every deploy. Opt-in via `BEDROCK_LIVE_TEST=1`; proves IAM and cross-region Bedrock access without blocking daily deploys.
-
-### AI mail pipeline live gate
-
-Opt-in EC2 proof (`ai-mail-pipeline-live-gate.sh`) composing Mailpit ingest, `ai-worker` Bedrock triage, durable categories, candidate draft persistence, and Playwright browser proof. Requires `BEDROCK_PIPELINE_LIVE_TEST=1`. `AI_WRITE_GATE_ENABLED` and `AI_DRAFTS_ENABLED` default false in production; the live gate sets them explicitly for full proof.
-
 ### Spam placement (`spam_at`)
 
-Folder-first spam membership: a thread is in Spam when its spam timestamp is set and it is not trashed. Soft user labels named SPAM are not folder truth. Leaving spam (bin, archive, soft-delete, empty-spam) must clear the spam timestamp so list predicates never orphan the thread. Durable AI triage and Centurion triage retag audits treat approved `spam` the same way: expect the spam timestamp set, not an AI-managed category slug named spam.
+Folder-first spam membership: a thread is in Spam when its spam timestamp is set and it is not trashed. Soft user labels named SPAM are not folder truth. Leaving spam (bin, archive, soft-delete, empty-spam) must clear the spam timestamp so list predicates never orphan the thread. Durable AI triage and triage audits treat approved `spam` the same way: expect the spam timestamp set, not an AI-managed category slug named spam.
 
 *Avoid: keeping spam set while also trashing or archiving; dual state matches neither folder.*
 *Avoid: expecting a `spam` hotel-category join as durable spam proof — membership is the spam timestamp.*
@@ -486,10 +382,6 @@ Sidebar user-filing surface for custom folders built on mailLabel rows (slash na
 
 Exclusive user-label filing mutation: set the target user label on threads, archive them out of inbox, clear trash/spam placement, leave AI categoryIds untouched. Unfile is Move to Inbox (clear archive), which drops the thread from the folder list that filters archive+labelIds.
 
-### Labels demotion
-
-Historical sidebar posture that kept the Labels tree secondary to hotel Folders. Superseded for FO chrome: that tree is now titled My folders (still backed by labels). Hotel Folders must never re-use the My folders title.
-
 ### Honesty UI
 
 Pilot practice of removing or replacing dead/fake affordances (unavailable AI surfaces, demo-only chrome, stub dialogs) with a real staff workflow — or hiding them — rather than leaving an interaction that only announces the feature is off.
@@ -548,54 +440,6 @@ Sum of EPV on unanswered external-enquiry threads (at-risk pipeline). Distinct f
 
 Sum of EPV on responded actionable threads. Distinct from uEPV.
 
-## Reservationist research and evaluation
-
-### Corpus snapshot
-
-A private, dated export of source mail and supporting evidence used as a repeatable offline research baseline. Refreshing the baseline creates a new snapshot rather than silently replacing the prior one.
-
-### Answer key
-
-A reservation-level record of ground-truth facts established from authoritative HMS reads and used to score inferred or looked-up results.
-
-Missing company or agency labels in supporting mail or PDFs leave the answer unknown; they do not establish a negative party match.
-
-### Needs action
-
-A judgment that an inbound still requires reservationist work after considering thread context and prior resolution.
-
-### Primary action
-
-A label for the kind of reservationist work required by an actionable inbound, distinct from whether work is still due.
-
-## Agent workflow (Cursor skills)
-
-### Nava plan
-
-Canonical multi-step planning front door for Zero. Per the installed nava-plan skill, produces one final executable TDD plan and does not implement product code. Repo rule requires a Paired plan gate and `writing-plans` on the path to a final executable plan.
-
-### Nava run
-
-Canonical implementation front door for a final executable plan. Runs TDD/SDD with per-task review, final CE code review, and fresh verification. Per the installed nava-run skill, does not by itself authorize commits, pushes, PRs, or production mutations unless the user explicitly requested them.
-
-### Autonomous plan
-
-Mandate-stamping front door that embeds overnight autonomy into an existing implementation plan **in place**. Not a planner and not a substitute for Nava plan. Compatibility alias: overnight-autonomous-execution; Zero overlay: overnight-autonomous-zero.
-
-*Avoid: treating Autonomous plan as CE→review→writing-plans; creating a sibling “plan to modify the plan.”*
-
-### Continue autonomously
-
-Queued fail-safe that resumes stalled autonomous work after the agent paused, asked a routine question, or ended early. Inspect state first; auto-decide reversible choices; stop only on true blockers. Compatibility alias documented on the installed continue-autonomously skill: overnight-continue-working.
-
-### Paired plan gate
-
-Mandatory dual review on every implementation plan: `gstack-plan-eng-review` as the completeness floor and `ponytail-review` as the simplicity ceiling. Neither substitutes for the other. Persistent ponytail mode stays off unless explicitly invoked; ponytail-review remains the review-only half of this gate.
-
-### Pilot RDS test safety
-
-Hard override that forbids Vitest (and similar runners) against pilot/production Postgres, including under overnight autonomy and “make tests green” pressure. Prefer disposable non-production databases for DB-required tests; prove pilot with read-only SQL/API, health checks, or purpose-built non-test scripts. Related: Pilot RDS vitest refuse, VITEST_ALLOW_PILOT_RDS, Wipe-safe pilot verify.
-
 ## Outlook desktop taskpane domain
 
 ### Outlook Task Pane
@@ -622,8 +466,6 @@ The versioned JSON RPC message contract exchanged over `window.chrome.webview.po
 
 - **"read" / grey list styling** had been treated as “already replied” in shared Centurion triage — unread/grey is Ball-in-court auto-read; ever answered is hasReplied.
 - **"Rocketseed branding"** had been conflated with “mail traversed 172.24.0.8” — branding is From/sender tenant provisioning; traversal alone is insufficient.
-- **"autonomous-plan"** had been used as if it were the full planning pipeline — Autonomous plan only stamps a mandate; Nava plan owns CE→paired review→writing-plans.
-- **"ponytail"** had been conflated with ponytail-review — persistent ponytail mode is OFF by default; the Paired plan gate uses ponytail-review only.
 - **"Folders" on mailbox provider** used to mean the Labels tree; hotel AI categories now own the Folders section title — user filing chrome is **My folders**, never Folders.
 - **category color** can mean seed DB hex or Centurion pastel presentation — for managed slugs, presentation wins in UI chrome.
 - **"honesty"** had been used for both Honesty UI (hide fake chrome) and Compose-close honesty (draft leave dialog) — these are distinct.
@@ -631,24 +473,8 @@ The versioned JSON RPC message contract exchanged over `window.chrome.webview.po
 - **"never-spam"** names the auto-triage allowlist (not a ban on manual mark-spam or ingest block); the same hotel domain list also seeds Image trust defaults — spam auto-path and image-loading are still distinct product surfaces.
 - **"nava URL"** after the hotel-HTTPS cutover means the Canonical origin on hotel DNS/VPN — not `nava.legacy.local` (legacy CORS overlap only).
 - **"SynXis exclusion"** had been applied only at actionable-thread filter — within-thread Trigger inbound can still be a Channel-automated inbound unless selection hard-excludes it; thread filter alone does not protect uEPV.
-- **"Needs action" vs "Primary action"** are separate labels — whether work is still due versus what work to perform.
 - **"Channel-automated inbound" vs travel-agent mail** are separate source/work distinctions — known channel/system notices are source-routed no-work traffic; a travel-agent sender can still request reservation work.
-- **"proof green" / PROOF_EXIT=0** is Packaging gate only — Payload gate (field contract + live fixture) and Tool promotion HITL are separate; do not promote the next PMS tool on packaging alone.
 - **"Office.js Web Add-in"** had been assumed to work across all Outlook clients — modern Office.js web taskpanes strictly require an Exchange or Microsoft 365 mailbox and fail to load on POP3/IMAP accounts in Outlook 2016 desktop. VSTO COM Add-ins (.NET/C#) remain mandatory for non-Exchange local POP3 environments.
 - **"first inbound"** is not the same as Trigger inbound — received-day / early demand scripts used first inbound; unanswered EPV must not silently fall back to it when no guest/agent trigger exists.
 - **"override"** can mean the per-row price source (`override`, with a rate code, a rate and a required note) or `resolveApprovedOverride`, a whole-total adjustment packet that sets no line rate.
 - **"approval"** can mean the HMS write grant (`approval.granted`, with the 30-minute snapshot rule) or the draft-only approval in `draft-approval.ts`.
-
-## Pilot measurement
-
-### Coverage-qualified mail baseline
-
-Observed mailbox service over an explicit arrival window and observation cutoff, qualified by reconciled incoming/sent source coverage and timestamp provenance. Missing sent mail, unknown source intervals and off-email work are not evidence of staff inactivity or lost revenue. Distinct from a complete baseline of all hotel operations and from Nava treatment-effect measurement.
-
-### Private reply shadow
-
-Background reply prediction sealed with its available-at-the-time inputs and later compared with observed staff replies and supporting facts. It stores private evaluation artifacts without exposing a draft, changing mailbox/work state or sending mail. Distinct from legacy Live reservation shadow, whose contract intentionally retains counters rather than business evidence or draft bodies.
-
-### Embedded task measurement
-
-Optional timing and quality comparison during visits already occurring in the one-person pilot. Assistance offered, actual exposure and complete task effort are separate observations; partial or abandoned timing cannot become a time-saving claim. Distinct from always-on passive mail-service metrics and from a hotel-wide revenue experiment.
