@@ -426,6 +426,14 @@ export function useStoredWork(args: {
   const lookupKey = internetMessageId
     ? JSON.stringify([scope, internetMessageId, selection ?? null, args.selectionEpoch ?? null])
     : null;
+  // Unversioned edits already cached when this selection opened remain stale. Edits made while
+  // this selection waits for its failed read can be adopted only by its newly created empty draft.
+  const selectionCache = useRef<{ key: string; hadEdits: boolean } | null>(null);
+  const freshManualFormKey = useRef<string | null>(null);
+  if ((selectionCache.current?.key ?? null) !== lookupKey) {
+    selectionCache.current = lookupKey ? { key: lookupKey, hadEdits: Boolean(args.hasCachedEdits) } : null;
+    freshManualFormKey.current = null;
+  }
   const [lookup, setLookup] = useState<Lookup | null>(null);
   // Retry count is used by explicit live analysis overrides; failed stored reads use the durable queue.
   const [retries, setRetries] = useState<{ key: string | null; count: number }>({ key: null, count: 0 });
@@ -694,8 +702,8 @@ export function useStoredWork(args: {
     };
   } else if (stored?.status === 'failed') {
     pane = { state: 'failed', reason: stored.reason,
-      canStartManualCreate: Boolean(selection && stored.extractionId && stored.fingerprint && stored.source &&
-        workItemsFromTrpc(trpc).startManualCreate) };
+      ...(selection && stored.extractionId && stored.fingerprint && stored.source &&
+        workItemsFromTrpc(trpc).startManualCreate ? { canStartManualCreate: true } : {}) };
   } else if (currentLookup.timedOut || stored) pane = { state: 'reading' };
   else pane = { state: 'loading' };
 
@@ -719,8 +727,11 @@ export function useStoredWork(args: {
   if (visibleDraft && readyTransportId && lookupKey) {
     const formKey = JSON.stringify([lookupKey, readyTransportId, visibleDraft.workItemId, visibleDraft.source]);
     if (formRevision.current?.key !== formKey) {
+      const adoptingNewManualDraft = freshManualFormKey.current === formKey && visibleDraft.revisionSeq === 0;
+      if (adoptingNewManualDraft) freshManualFormKey.current = null;
       formRevision.current = { key: formKey, workItemId: visibleDraft.workItemId, transportId: readyTransportId,
-        source: visibleDraft.source, seq: visibleDraft.revisionSeq, invalid: Boolean(args.hasCachedEdits) };
+        source: visibleDraft.source, seq: visibleDraft.revisionSeq,
+        invalid: Boolean(args.hasCachedEdits && !adoptingNewManualDraft) };
     }
     snapshotRevisions.current.set(visibleDraft, formRevision.current);
   } else formRevision.current = null;
@@ -841,6 +852,9 @@ export function useStoredWork(args: {
         openTimeoutMs: STORED_LOOKUP_TIMEOUT_MS });
       if (lookupKeyRef.current !== keyNow) return;
       if (fresh.status !== 'ready' || !fresh.staffManual || !fresh.workItemId) throw new Error('Reopen the email to continue the booking.');
+      freshManualFormKey.current = transportId && fresh.source && fresh.revisionSeq === 0 &&
+        selectionCache.current?.key === keyNow && !selectionCache.current.hadEdits
+        ? JSON.stringify([keyNow, transportId, fresh.workItemId, fresh.source]) : null;
       readyAt.current = Date.now();
       setLookup({ key: keyNow, transportId, result: fresh, timedOut: false });
     } catch (error) {
