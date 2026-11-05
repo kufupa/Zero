@@ -17,6 +17,7 @@ import { READ_TOOL_IDS } from '../hms/read-tools.js';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { z } from 'zod';
+import { groundedSeparateAsk, isSelfSentPreStayInformationMail, preStaySourceText } from './existing-stay-information.js';
 
 export const TRIAGE_CATEGORIES = [...AI_PRIMARY_CATEGORY_SLUGS, 'spam'] as const;
 
@@ -268,6 +269,7 @@ export type TriageThreadSignals = ThreadSignals;
 export interface TriageRefineInput {
   from: string;
   body: string;
+  mailboxAddress?: string;
   subject?: string;
   asOf?: string;
   threadSignals?: ThreadSignals;
@@ -622,6 +624,13 @@ function isRoutineSystemMail(
     return false;
   }
 
+  const authoredBody = /<(?:html|body|div|p|br|table|blockquote)(?:\s|>|\/)/i.test(input.body)
+    ? preStaySourceText(null, input.body) : input.body;
+  const agentServiceRequest = [...authoredBody.matchAll(
+    /\b(?:please|kindly|(?:could|can|would)\s+you|(?:we|i)\s+(?:need|request|would\s+like|(?:are|am)\s+requesting)|request\s+for)\b[^.!?\n]{0,80}\b(?:refund|book|reserve|amend|change|cancel|send|issue|confirm|quote)\b|\b(?:refund|invoice|quotation|amendment)\s+(?:request|requested|required)\b/gi,
+  )].some((match) => groundedSeparateAsk(authoredBody, match[0]) === match[0]);
+  if (agentServiceRequest && /\b(?:tbo(?:\s+holidays)?|travelit)\b/i.test(haystack)) return false;
+
   const synxisOrChannelConfirm =
     /\b(?:synxis|channel(?:\s+manager)?)\b/i.test(haystack) &&
     /\b(?:confirm(?:ation|ed|s)?|cancel(?:lation|led|ed|s)?|modif(?:ication|ied)|daily\s+report|booking\s+update)\b/i.test(
@@ -646,7 +655,7 @@ function isRoutineSystemMail(
 
   const tboNotice =
     /\btbo(?:\s+holidays)?\b/i.test(haystack) &&
-    /\b(?:booking\s+confirmed|modification\s+alert)\b/i.test(haystack);
+    /\b(?:booking\s+(?:confirmed|cancelled|canceled)|modification\s+alert)\b/i.test(haystack);
 
   const webbedsNotice =
     /\bwebbeds\b/i.test(haystack) &&
@@ -670,16 +679,12 @@ function isRoutineSystemMail(
       fromDomain.endsWith('.booking.com') ||
       fromDomain === 'profitroom.com' ||
       fromDomain.endsWith('.profitroom.com') ||
-      fromDomain === 'tbo.com' ||
-      fromDomain.endsWith('.tbo.com') ||
       fromDomain === 'webbeds.com' ||
       fromDomain.endsWith('.webbeds.com') ||
       fromDomain === 'expediapartnercentral.com' ||
       fromDomain.endsWith('.expediapartnercentral.com') ||
       fromDomain === 'synxis.com' ||
       fromDomain.endsWith('.synxis.com') ||
-      fromDomain === 'travelit.co.za' ||
-      fromDomain.endsWith('.travelit.co.za') ||
       fromDomain === 'erevmax.co.uk' ||
       fromDomain.endsWith('.erevmax.co.uk')) &&
     /\b(?:reservation|booking|confirmation|cancellation|modification|confirmed|cancelled|daily\s+report|update\s+failure)\b/i.test(
@@ -954,8 +959,8 @@ function hasUrgentOtaGuestNeed(haystack: string): boolean {
 
 /** Detects automated Infor PMS pre-stay guest registration and arrival profile notifications. */
 function isPreStayNotification(input: TriageRefineInput): boolean {
-  const subject = (input.subject ?? '').trim();
-  return /^Pre Stay\s*:\s*Property\s+HRCEN\s+Confirmation\s+No/i.test(subject);
+  return isSelfSentPreStayInformationMail({ fromAddress: input.from,
+    mailboxAddress: input.mailboxAddress, subject: input.subject });
 }
 
 /** Detects internal staff night audit reports, discrepancy reports, duty manager handovers, F&B balances, printer scans, and server notices. */
