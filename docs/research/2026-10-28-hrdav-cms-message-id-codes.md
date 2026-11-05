@@ -1,3 +1,5 @@
+> **Superseded rule:** On 2026-11-01 the owner made the CMS send checkbox, message ID and email optional. Code `03` may be a changeable default. The nonblank rule below is historical, not current direction. Nava never sends.
+
 # HRDAV CMS Message Id options (udfchar09)
 
 Date: 2026-10-28 ~00:50Z. Read-only probe on Product EC2 (checkout `92be0e5d2`), HRDAV slot 127.0.0.1:19225, shared read lease + read-only request guard. Guest Stay → New Record → CMS Message Id lookup → read Ext store → Cancel. Nothing saved.

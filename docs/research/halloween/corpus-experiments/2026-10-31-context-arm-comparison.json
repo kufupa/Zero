@@ -1,0 +1,2000 @@
+{
+  "schema": "hms-context-arm-comparison-v1",
+  "method": {
+    "cases": 24,
+    "design": "Four separate reviewers: current, current+prior, current+prior+attachment text, repeated current.",
+    "prior_cases": 12,
+    "attachment_cases": 12,
+    "limitations": [
+      "Purposively selected historical examples, redacted and not representative.",
+      "Same-content controls have different packet arm labels and empty fields; current repeat sees the exact same packet.",
+      "Some current bodies already contain quoted history; attachment content is text-only, potentially partial, with no image bytes.",
+      "No independently verified gold: changes measure reviewer sensitivity, not correctness or causal lift.",
+      "Different reviewers and random model outputs contribute noise; zero or missing evidence does not prove absence."
+    ]
+  },
+  "primary_action_counts": {
+    "current": {
+      "unclear": 5,
+      "amend": 3,
+      "service": 4,
+      "cancel": 9,
+      "payment_or_billing": 1,
+      "none": 1,
+      "quote": 1
+    },
+    "prior": {
+      "unclear": 6,
+      "amend": 6,
+      "service": 3,
+      "cancel": 8,
+      "none": 1
+    },
+    "attachments": {
+      "unclear": 6,
+      "amend": 5,
+      "service": 3,
+      "cancel": 9,
+      "quote": 1
+    },
+    "current-repeat": {
+      "unclear": 4,
+      "amend": 7,
+      "service": 4,
+      "cancel": 8,
+      "none": 1
+    }
+  },
+  "comparisons": {
+    "current_vs_prior": {
+      "prior_present": {
+        "cases": 12,
+        "primary_action_changed": 3,
+        "any_action_set_changed": 3,
+        "known_field_set_changed": 8
+      },
+      "same_content_no_prior": {
+        "cases": 12,
+        "primary_action_changed": 1,
+        "any_action_set_changed": 2,
+        "known_field_set_changed": 8
+      }
+    },
+    "prior_vs_attachments": {
+      "attachment_present": {
+        "cases": 12,
+        "primary_action_changed": 2,
+        "any_action_set_changed": 3,
+        "known_field_set_changed": 8
+      },
+      "same_content_no_attachment": {
+        "cases": 12,
+        "primary_action_changed": 1,
+        "any_action_set_changed": 4,
+        "known_field_set_changed": 10
+      }
+    },
+    "current_vs_current_repeat": {
+      "cases": 24,
+      "primary_action_changed": 4,
+      "any_action_set_changed": 5,
+      "known_field_set_changed": 14
+    }
+  },
+  "cases": [
+    {
+      "case": "case_01",
+      "prior_present": true,
+      "attachment_text_present": true,
+      "labels": {
+        "current": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        },
+        "prior": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        },
+        "attachments": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [],
+          "missing_or_uncertain": [
+            "action",
+            "scope"
+          ],
+          "confidence": "low"
+        },
+        "current-repeat": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "dates",
+            "invoice_payment"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        }
+      }
+    },
+    {
+      "case": "case_02",
+      "prior_present": true,
+      "attachment_text_present": false,
+      "labels": {
+        "current": {
+          "action": "amend",
+          "secondary_actions": [
+            "payment_or_billing"
+          ],
+          "field_families": [
+            "dates",
+            "invoice_payment"
+          ],
+          "known_from_input": [
+            "dates",
+            "invoice_payment"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "invoice_payment",
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "prior": {
+          "action": "amend",
+          "secondary_actions": [
+            "payment_or_billing"
+          ],
+          "field_families": [
+            "dates",
+            "nights",
+            "invoice_payment"
+          ],
+          "known_from_input": [
+            "dates",
+            "nights",
+            "invoice_payment"
+          ],
+          "missing_or_uncertain": [
+            "identity",
+            "scope"
+          ],
+          "confidence": "medium"
+        },
+        "attachments": {
+          "action": "amend",
+          "secondary_actions": [
+            "payment_or_billing"
+          ],
+          "field_families": [
+            "dates",
+            "invoice_payment"
+          ],
+          "known_from_input": [
+            "dates",
+            "invoice_payment"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "invoice_payment"
+          ],
+          "confidence": "medium"
+        },
+        "current-repeat": {
+          "action": "amend",
+          "secondary_actions": [
+            "payment_or_billing"
+          ],
+          "field_families": [
+            "dates",
+            "invoice_payment"
+          ],
+          "known_from_input": [
+            "dates",
+            "invoice_payment"
+          ],
+          "missing_or_uncertain": [
+            "identity"
+          ],
+          "confidence": "medium"
+        }
+      }
+    },
+    {
+      "case": "case_03",
+      "prior_present": false,
+      "attachment_text_present": true,
+      "labels": {
+        "current": {
+          "action": "service",
+          "secondary_actions": [
+            "amend"
+          ],
+          "field_families": [
+            "dates",
+            "service"
+          ],
+          "known_from_input": [
+            "dates",
+            "service"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "prior": {
+          "action": "service",
+          "secondary_actions": [
+            "amend"
+          ],
+          "field_families": [
+            "dates",
+            "service"
+          ],
+          "known_from_input": [
+            "dates",
+            "service"
+          ],
+          "missing_or_uncertain": [
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "attachments": {
+          "action": "service",
+          "secondary_actions": [
+            "amend"
+          ],
+          "field_families": [
+            "dates",
+            "service"
+          ],
+          "known_from_input": [
+            "dates",
+            "service"
+          ],
+          "missing_or_uncertain": [
+            "dates"
+          ],
+          "confidence": "high"
+        },
+        "current-repeat": {
+          "action": "service",
+          "secondary_actions": [
+            "amend"
+          ],
+          "field_families": [
+            "dates",
+            "service"
+          ],
+          "known_from_input": [
+            "dates",
+            "service"
+          ],
+          "missing_or_uncertain": [
+            "identity"
+          ],
+          "confidence": "high"
+        }
+      }
+    },
+    {
+      "case": "case_04",
+      "prior_present": true,
+      "attachment_text_present": false,
+      "labels": {
+        "current": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        },
+        "prior": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        },
+        "attachments": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope"
+          ],
+          "confidence": "low"
+        },
+        "current-repeat": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "dates",
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        }
+      }
+    },
+    {
+      "case": "case_05",
+      "prior_present": false,
+      "attachment_text_present": false,
+      "labels": {
+        "current": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "other"
+          ],
+          "known_from_input": [
+            "dates",
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "prior": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates"
+          ],
+          "known_from_input": [
+            "dates"
+          ],
+          "missing_or_uncertain": [
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "attachments": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "cancel_policy"
+          ],
+          "known_from_input": [
+            "dates"
+          ],
+          "missing_or_uncertain": [
+            "cancel_policy",
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "current-repeat": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "guest"
+          ],
+          "known_from_input": [
+            "dates",
+            "guest"
+          ],
+          "missing_or_uncertain": [
+            "identity"
+          ],
+          "confidence": "high"
+        }
+      }
+    },
+    {
+      "case": "case_06",
+      "prior_present": true,
+      "attachment_text_present": true,
+      "labels": {
+        "current": {
+          "action": "payment_or_billing",
+          "secondary_actions": [
+            "amend"
+          ],
+          "field_families": [
+            "invoice_payment",
+            "other"
+          ],
+          "known_from_input": [
+            "invoice_payment",
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "invoice_payment",
+            "scope",
+            "identity"
+          ],
+          "confidence": "medium"
+        },
+        "prior": {
+          "action": "amend",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "medium"
+        },
+        "attachments": {
+          "action": "amend",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "scope"
+          ],
+          "confidence": "low"
+        },
+        "current-repeat": {
+          "action": "amend",
+          "secondary_actions": [
+            "payment_or_billing"
+          ],
+          "field_families": [
+            "invoice_payment",
+            "other"
+          ],
+          "known_from_input": [
+            "invoice_payment"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        }
+      }
+    },
+    {
+      "case": "case_07",
+      "prior_present": true,
+      "attachment_text_present": false,
+      "labels": {
+        "current": {
+          "action": "service",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "service"
+          ],
+          "known_from_input": [
+            "dates",
+            "service"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "identity"
+          ],
+          "confidence": "medium"
+        },
+        "prior": {
+          "action": "service",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "occupancy",
+            "service"
+          ],
+          "known_from_input": [
+            "dates",
+            "occupancy",
+            "service"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "medium"
+        },
+        "attachments": {
+          "action": "service",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "service"
+          ],
+          "known_from_input": [
+            "dates",
+            "service"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "service"
+          ],
+          "confidence": "medium"
+        },
+        "current-repeat": {
+          "action": "service",
+          "secondary_actions": [
+            "payment_or_billing"
+          ],
+          "field_families": [
+            "dates",
+            "service",
+            "invoice_payment"
+          ],
+          "known_from_input": [
+            "dates",
+            "service",
+            "invoice_payment"
+          ],
+          "missing_or_uncertain": [
+            "identity",
+            "scope"
+          ],
+          "confidence": "medium"
+        }
+      }
+    },
+    {
+      "case": "case_08",
+      "prior_present": false,
+      "attachment_text_present": true,
+      "labels": {
+        "current": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "other"
+          ],
+          "known_from_input": [
+            "dates",
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "prior": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "nights"
+          ],
+          "known_from_input": [
+            "dates",
+            "nights"
+          ],
+          "missing_or_uncertain": [
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "attachments": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "nights",
+            "room",
+            "cancel_policy"
+          ],
+          "known_from_input": [
+            "dates",
+            "nights",
+            "room",
+            "cancel_policy"
+          ],
+          "missing_or_uncertain": [],
+          "confidence": "high"
+        },
+        "current-repeat": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "guest"
+          ],
+          "known_from_input": [
+            "dates",
+            "guest"
+          ],
+          "missing_or_uncertain": [
+            "identity"
+          ],
+          "confidence": "high"
+        }
+      }
+    },
+    {
+      "case": "case_09",
+      "prior_present": true,
+      "attachment_text_present": false,
+      "labels": {
+        "current": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "room",
+            "other"
+          ],
+          "known_from_input": [
+            "room",
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "prior": {
+          "action": "amend",
+          "secondary_actions": [
+            "cancel"
+          ],
+          "field_families": [
+            "dates",
+            "room"
+          ],
+          "known_from_input": [
+            "dates",
+            "room"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "medium"
+        },
+        "attachments": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "nights",
+            "room"
+          ],
+          "known_from_input": [
+            "dates",
+            "nights",
+            "room"
+          ],
+          "missing_or_uncertain": [
+            "scope"
+          ],
+          "confidence": "medium"
+        },
+        "current-repeat": {
+          "action": "amend",
+          "secondary_actions": [
+            "cancel"
+          ],
+          "field_families": [
+            "dates",
+            "room"
+          ],
+          "known_from_input": [
+            "dates",
+            "room"
+          ],
+          "missing_or_uncertain": [
+            "identity",
+            "scope"
+          ],
+          "confidence": "medium"
+        }
+      }
+    },
+    {
+      "case": "case_10",
+      "prior_present": true,
+      "attachment_text_present": false,
+      "labels": {
+        "current": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "medium"
+        },
+        "prior": {
+          "action": "cancel",
+          "secondary_actions": [
+            "amend"
+          ],
+          "field_families": [
+            "dates",
+            "other"
+          ],
+          "known_from_input": [
+            "dates",
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        },
+        "attachments": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "room",
+            "party"
+          ],
+          "known_from_input": [
+            "room",
+            "party"
+          ],
+          "missing_or_uncertain": [
+            "scope"
+          ],
+          "confidence": "medium"
+        },
+        "current-repeat": {
+          "action": "cancel",
+          "secondary_actions": [
+            "amend"
+          ],
+          "field_families": [
+            "dates",
+            "other"
+          ],
+          "known_from_input": [
+            "dates"
+          ],
+          "missing_or_uncertain": [
+            "identity",
+            "scope"
+          ],
+          "confidence": "medium"
+        }
+      }
+    },
+    {
+      "case": "case_11",
+      "prior_present": false,
+      "attachment_text_present": true,
+      "labels": {
+        "current": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "other"
+          ],
+          "known_from_input": [
+            "dates",
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "prior": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "other"
+          ],
+          "known_from_input": [
+            "dates",
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "attachments": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "nights",
+            "room",
+            "cancel_policy"
+          ],
+          "known_from_input": [
+            "dates",
+            "nights",
+            "room",
+            "cancel_policy"
+          ],
+          "missing_or_uncertain": [],
+          "confidence": "high"
+        },
+        "current-repeat": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "other"
+          ],
+          "known_from_input": [
+            "dates",
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "identity"
+          ],
+          "confidence": "high"
+        }
+      }
+    },
+    {
+      "case": "case_12",
+      "prior_present": true,
+      "attachment_text_present": false,
+      "labels": {
+        "current": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "prior": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "other"
+          ],
+          "known_from_input": [
+            "dates",
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "attachments": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "room"
+          ],
+          "known_from_input": [
+            "dates",
+            "room"
+          ],
+          "missing_or_uncertain": [],
+          "confidence": "high"
+        },
+        "current-repeat": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "guest",
+            "room"
+          ],
+          "known_from_input": [
+            "dates",
+            "room"
+          ],
+          "missing_or_uncertain": [
+            "identity"
+          ],
+          "confidence": "high"
+        }
+      }
+    },
+    {
+      "case": "case_13",
+      "prior_present": true,
+      "attachment_text_present": true,
+      "labels": {
+        "current": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "guest"
+          ],
+          "known_from_input": [
+            "dates",
+            "guest"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "action",
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        },
+        "prior": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "guest",
+            "other"
+          ],
+          "known_from_input": [
+            "dates",
+            "guest",
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        },
+        "attachments": {
+          "action": "quote",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "room",
+            "guest",
+            "party",
+            "rate_board",
+            "service"
+          ],
+          "known_from_input": [
+            "dates",
+            "room",
+            "guest",
+            "party",
+            "rate_board",
+            "service"
+          ],
+          "missing_or_uncertain": [
+            "room"
+          ],
+          "confidence": "medium"
+        },
+        "current-repeat": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "service"
+          ],
+          "known_from_input": [
+            "dates",
+            "service"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        }
+      }
+    },
+    {
+      "case": "case_14",
+      "prior_present": true,
+      "attachment_text_present": true,
+      "labels": {
+        "current": {
+          "action": "none",
+          "secondary_actions": [],
+          "field_families": [],
+          "known_from_input": [],
+          "missing_or_uncertain": [],
+          "confidence": "low"
+        },
+        "prior": {
+          "action": "none",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "other"
+          ],
+          "known_from_input": [
+            "dates",
+            "other"
+          ],
+          "missing_or_uncertain": [],
+          "confidence": "medium"
+        },
+        "attachments": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [],
+          "missing_or_uncertain": [
+            "action"
+          ],
+          "confidence": "low"
+        },
+        "current-repeat": {
+          "action": "none",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "dates",
+            "other"
+          ],
+          "missing_or_uncertain": [],
+          "confidence": "low"
+        }
+      }
+    },
+    {
+      "case": "case_15",
+      "prior_present": false,
+      "attachment_text_present": false,
+      "labels": {
+        "current": {
+          "action": "cancel",
+          "secondary_actions": [
+            "payment_or_billing"
+          ],
+          "field_families": [
+            "dates",
+            "room",
+            "occupancy",
+            "invoice_payment",
+            "cancel_policy"
+          ],
+          "known_from_input": [
+            "dates",
+            "room",
+            "occupancy",
+            "invoice_payment",
+            "cancel_policy"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "room",
+            "occupancy",
+            "invoice_payment",
+            "cancel_policy",
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "prior": {
+          "action": "cancel",
+          "secondary_actions": [
+            "payment_or_billing"
+          ],
+          "field_families": [
+            "dates",
+            "nights",
+            "room",
+            "occupancy",
+            "invoice_payment",
+            "cancel_policy"
+          ],
+          "known_from_input": [
+            "dates",
+            "nights",
+            "room",
+            "occupancy",
+            "invoice_payment",
+            "cancel_policy"
+          ],
+          "missing_or_uncertain": [
+            "identity",
+            "invoice_payment",
+            "cancel_policy"
+          ],
+          "confidence": "high"
+        },
+        "attachments": {
+          "action": "cancel",
+          "secondary_actions": [
+            "payment_or_billing"
+          ],
+          "field_families": [
+            "dates",
+            "room",
+            "occupancy",
+            "party",
+            "invoice_payment",
+            "cancel_policy"
+          ],
+          "known_from_input": [
+            "dates",
+            "room",
+            "occupancy",
+            "party",
+            "invoice_payment"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "invoice_payment",
+            "cancel_policy"
+          ],
+          "confidence": "high"
+        },
+        "current-repeat": {
+          "action": "cancel",
+          "secondary_actions": [
+            "payment_or_billing"
+          ],
+          "field_families": [
+            "dates",
+            "room",
+            "occupancy",
+            "invoice_payment",
+            "cancel_policy"
+          ],
+          "known_from_input": [
+            "dates",
+            "room",
+            "occupancy",
+            "invoice_payment",
+            "cancel_policy"
+          ],
+          "missing_or_uncertain": [
+            "invoice_payment",
+            "cancel_policy",
+            "identity"
+          ],
+          "confidence": "high"
+        }
+      }
+    },
+    {
+      "case": "case_16",
+      "prior_present": false,
+      "attachment_text_present": true,
+      "labels": {
+        "current": {
+          "action": "amend",
+          "secondary_actions": [
+            "service"
+          ],
+          "field_families": [
+            "dates",
+            "room",
+            "occupancy",
+            "service"
+          ],
+          "known_from_input": [
+            "dates",
+            "room",
+            "occupancy",
+            "service"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "occupancy",
+            "identity"
+          ],
+          "confidence": "medium"
+        },
+        "prior": {
+          "action": "amend",
+          "secondary_actions": [
+            "service"
+          ],
+          "field_families": [
+            "dates",
+            "room",
+            "occupancy",
+            "service"
+          ],
+          "known_from_input": [
+            "dates",
+            "room",
+            "occupancy",
+            "service"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "medium"
+        },
+        "attachments": {
+          "action": "amend",
+          "secondary_actions": [
+            "service"
+          ],
+          "field_families": [
+            "room",
+            "occupancy",
+            "party",
+            "dates",
+            "service"
+          ],
+          "known_from_input": [
+            "room",
+            "occupancy",
+            "party",
+            "dates",
+            "service"
+          ],
+          "missing_or_uncertain": [
+            "room",
+            "occupancy",
+            "service"
+          ],
+          "confidence": "medium"
+        },
+        "current-repeat": {
+          "action": "amend",
+          "secondary_actions": [
+            "service"
+          ],
+          "field_families": [
+            "dates",
+            "room",
+            "occupancy",
+            "service"
+          ],
+          "known_from_input": [
+            "dates",
+            "room",
+            "occupancy",
+            "service"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "medium"
+        }
+      }
+    },
+    {
+      "case": "case_17",
+      "prior_present": false,
+      "attachment_text_present": true,
+      "labels": {
+        "current": {
+          "action": "amend",
+          "secondary_actions": [],
+          "field_families": [
+            "dates"
+          ],
+          "known_from_input": [
+            "dates"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "prior": {
+          "action": "amend",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "nights"
+          ],
+          "known_from_input": [
+            "dates",
+            "nights"
+          ],
+          "missing_or_uncertain": [
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "attachments": {
+          "action": "amend",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "nights"
+          ],
+          "known_from_input": [
+            "dates",
+            "nights"
+          ],
+          "missing_or_uncertain": [
+            "dates"
+          ],
+          "confidence": "high"
+        },
+        "current-repeat": {
+          "action": "amend",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "nights"
+          ],
+          "known_from_input": [
+            "dates",
+            "nights"
+          ],
+          "missing_or_uncertain": [
+            "identity"
+          ],
+          "confidence": "high"
+        }
+      }
+    },
+    {
+      "case": "case_18",
+      "prior_present": true,
+      "attachment_text_present": true,
+      "labels": {
+        "current": {
+          "action": "quote",
+          "secondary_actions": [
+            "amend"
+          ],
+          "field_families": [
+            "dates",
+            "room",
+            "rate_board"
+          ],
+          "known_from_input": [
+            "dates",
+            "room",
+            "rate_board"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "room",
+            "rate_board",
+            "identity"
+          ],
+          "confidence": "medium"
+        },
+        "prior": {
+          "action": "amend",
+          "secondary_actions": [
+            "quote"
+          ],
+          "field_families": [
+            "dates",
+            "room",
+            "rate_board"
+          ],
+          "known_from_input": [
+            "dates",
+            "room",
+            "rate_board"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "attachments": {
+          "action": "amend",
+          "secondary_actions": [
+            "quote"
+          ],
+          "field_families": [
+            "dates",
+            "room",
+            "rate_board"
+          ],
+          "known_from_input": [
+            "dates",
+            "room",
+            "rate_board"
+          ],
+          "missing_or_uncertain": [
+            "room",
+            "rate_board"
+          ],
+          "confidence": "medium"
+        },
+        "current-repeat": {
+          "action": "amend",
+          "secondary_actions": [
+            "quote"
+          ],
+          "field_families": [
+            "dates",
+            "room",
+            "rate_board"
+          ],
+          "known_from_input": [
+            "dates",
+            "room",
+            "rate_board"
+          ],
+          "missing_or_uncertain": [
+            "room",
+            "rate_board",
+            "scope",
+            "identity"
+          ],
+          "confidence": "medium"
+        }
+      }
+    },
+    {
+      "case": "case_19",
+      "prior_present": false,
+      "attachment_text_present": false,
+      "labels": {
+        "current": {
+          "action": "service",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "service"
+          ],
+          "known_from_input": [
+            "dates",
+            "service"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "service",
+            "identity"
+          ],
+          "confidence": "medium"
+        },
+        "prior": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "other"
+          ],
+          "known_from_input": [
+            "dates",
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        },
+        "attachments": {
+          "action": "unclear",
+          "secondary_actions": [
+            "create",
+            "quote"
+          ],
+          "field_families": [
+            "dates",
+            "nights",
+            "room",
+            "occupancy"
+          ],
+          "known_from_input": [
+            "dates",
+            "nights",
+            "room",
+            "occupancy"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope"
+          ],
+          "confidence": "low"
+        },
+        "current-repeat": {
+          "action": "service",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "service"
+          ],
+          "known_from_input": [
+            "dates",
+            "service"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "medium"
+        }
+      }
+    },
+    {
+      "case": "case_20",
+      "prior_present": false,
+      "attachment_text_present": false,
+      "labels": {
+        "current": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "prior": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "other"
+          ],
+          "known_from_input": [
+            "dates",
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "medium"
+        },
+        "attachments": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "medium"
+        },
+        "current-repeat": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "identity"
+          ],
+          "confidence": "medium"
+        }
+      }
+    },
+    {
+      "case": "case_21",
+      "prior_present": false,
+      "attachment_text_present": false,
+      "labels": {
+        "current": {
+          "action": "service",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "service"
+          ],
+          "known_from_input": [
+            "dates",
+            "service"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "service",
+            "identity"
+          ],
+          "confidence": "medium"
+        },
+        "prior": {
+          "action": "service",
+          "secondary_actions": [
+            "quote",
+            "payment_or_billing"
+          ],
+          "field_families": [
+            "dates",
+            "guest",
+            "occupancy",
+            "service",
+            "invoice_payment"
+          ],
+          "known_from_input": [
+            "dates",
+            "guest",
+            "occupancy",
+            "service",
+            "invoice_payment"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "attachments": {
+          "action": "service",
+          "secondary_actions": [
+            "amend",
+            "quote",
+            "payment_or_billing"
+          ],
+          "field_families": [
+            "dates",
+            "service",
+            "invoice_payment",
+            "rate_board"
+          ],
+          "known_from_input": [
+            "dates",
+            "service",
+            "invoice_payment",
+            "rate_board"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "service",
+            "invoice_payment"
+          ],
+          "confidence": "medium"
+        },
+        "current-repeat": {
+          "action": "service",
+          "secondary_actions": [
+            "payment_or_billing"
+          ],
+          "field_families": [
+            "dates",
+            "service",
+            "invoice_payment"
+          ],
+          "known_from_input": [
+            "dates",
+            "service",
+            "invoice_payment"
+          ],
+          "missing_or_uncertain": [
+            "identity",
+            "scope"
+          ],
+          "confidence": "high"
+        }
+      }
+    },
+    {
+      "case": "case_22",
+      "prior_present": false,
+      "attachment_text_present": true,
+      "labels": {
+        "current": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "prior": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "high"
+        },
+        "attachments": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "nights",
+            "room",
+            "service",
+            "cancel_policy"
+          ],
+          "known_from_input": [
+            "dates",
+            "nights",
+            "room",
+            "service",
+            "cancel_policy"
+          ],
+          "missing_or_uncertain": [
+            "cancel_policy"
+          ],
+          "confidence": "medium"
+        },
+        "current-repeat": {
+          "action": "cancel",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "identity"
+          ],
+          "confidence": "high"
+        }
+      }
+    },
+    {
+      "case": "case_23",
+      "prior_present": true,
+      "attachment_text_present": true,
+      "labels": {
+        "current": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "guest",
+            "other"
+          ],
+          "known_from_input": [
+            "dates",
+            "guest",
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "dates",
+            "action",
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        },
+        "prior": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "guest",
+            "other"
+          ],
+          "known_from_input": [
+            "dates",
+            "guest",
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        },
+        "attachments": {
+          "action": "unclear",
+          "secondary_actions": [
+            "cancel",
+            "amend"
+          ],
+          "field_families": [
+            "dates",
+            "room",
+            "party"
+          ],
+          "known_from_input": [
+            "dates",
+            "room",
+            "party"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope"
+          ],
+          "confidence": "low"
+        },
+        "current-repeat": {
+          "action": "amend",
+          "secondary_actions": [],
+          "field_families": [
+            "dates",
+            "other"
+          ],
+          "known_from_input": [
+            "dates"
+          ],
+          "missing_or_uncertain": [
+            "scope",
+            "identity"
+          ],
+          "confidence": "medium"
+        }
+      }
+    },
+    {
+      "case": "case_24",
+      "prior_present": false,
+      "attachment_text_present": false,
+      "labels": {
+        "current": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        },
+        "prior": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "cancel_policy",
+            "other"
+          ],
+          "known_from_input": [
+            "cancel_policy",
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        },
+        "attachments": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "other",
+            "cancel_policy"
+          ],
+          "known_from_input": [
+            "cancel_policy"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        },
+        "current-repeat": {
+          "action": "unclear",
+          "secondary_actions": [],
+          "field_families": [
+            "other"
+          ],
+          "known_from_input": [
+            "other"
+          ],
+          "missing_or_uncertain": [
+            "action",
+            "scope",
+            "identity"
+          ],
+          "confidence": "low"
+        }
+      }
+    }
+  ]
+}

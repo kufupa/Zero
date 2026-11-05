@@ -1,0 +1,212 @@
+{
+  "schema": "hms-staff-response-categorical-review-v1",
+  "method": {
+    "case_count": 15,
+    "selection": "Purposive sample of 15 from 38 same-thread candidate pairs found with change/cancel and staff-response cues.",
+    "review": "One reviewer labeled redacted target requests first, froze labels, then labeled authored-top staff responses.",
+    "limits": [
+      "Selection is not representative; classes overlap and do not estimate prevalence.",
+      "Masking and truncated request tails obscure details; later staff replies are not HMS or payment proof.",
+      "Directness is reviewer judgment, not a proven reply-to relationship; 10 links are ambiguous.",
+      "Acceptance or update is a text classification, not proof the requested action was fulfilled."
+    ]
+  },
+  "reply_class_counts": {
+    "acceptance_or_update": 8,
+    "cancellation_fee_or_policy": 1,
+    "clarification": 3,
+    "extra_charge_or_price": 7,
+    "not_decidable": 4,
+    "offered_alternative": 1,
+    "other_condition": 4,
+    "payment_condition": 3,
+    "specific_refusal_or_unavailability": 0
+  },
+  "relationship_counts": {
+    "direct": 5,
+    "ambiguous": 10
+  },
+  "cases": [
+    {
+      "case": "PB-A",
+      "request_label": "room_quote_and_transfer_request",
+      "reply_classes": [
+        "extra_charge_or_price",
+        "other_condition",
+        "acceptance_or_update"
+      ],
+      "scope": "room_quote_and_booking_confirmation_process",
+      "decision_specificity": "partial",
+      "relationship": "direct",
+      "confidence": "medium"
+    },
+    {
+      "case": "PB-B",
+      "request_label": "cancellation_fee_inquiry",
+      "reply_classes": [
+        "cancellation_fee_or_policy",
+        "extra_charge_or_price"
+      ],
+      "scope": "cancellation_charge",
+      "decision_specificity": "partial",
+      "relationship": "ambiguous",
+      "confidence": "medium"
+    },
+    {
+      "case": "PB-C",
+      "request_label": "room_availability_inquiry",
+      "reply_classes": [
+        "acceptance_or_update"
+      ],
+      "scope": "booking_status_and_payment_reference",
+      "decision_specificity": "partial",
+      "relationship": "direct",
+      "confidence": "medium"
+    },
+    {
+      "case": "PB-D",
+      "request_label": "reservation_change_request",
+      "reply_classes": [
+        "acceptance_or_update",
+        "extra_charge_or_price"
+      ],
+      "scope": "charge_status",
+      "decision_specificity": "partial",
+      "relationship": "ambiguous",
+      "confidence": "medium"
+    },
+    {
+      "case": "PB-E",
+      "request_label": "group_room_availability_inquiry_unclear",
+      "reply_classes": [
+        "offered_alternative",
+        "extra_charge_or_price"
+      ],
+      "scope": "room_rate_options",
+      "decision_specificity": "partial",
+      "relationship": "ambiguous",
+      "confidence": "low"
+    },
+    {
+      "case": "PB-F",
+      "request_label": "room_quote_and_booking_conditions_request",
+      "reply_classes": [
+        "acceptance_or_update",
+        "clarification"
+      ],
+      "scope": "availability_and_booking_choice",
+      "decision_specificity": "specific",
+      "relationship": "direct",
+      "confidence": "medium"
+    },
+    {
+      "case": "PB-G",
+      "request_label": "multi_room_quote_and_booking_conditions_request",
+      "reply_classes": [
+        "extra_charge_or_price",
+        "other_condition",
+        "acceptance_or_update"
+      ],
+      "scope": "group_quote_and_booking_confirmation_process",
+      "decision_specificity": "partial",
+      "relationship": "direct",
+      "confidence": "medium"
+    },
+    {
+      "case": "PB-H",
+      "request_label": "cancellation_fee_waiver_request",
+      "reply_classes": [
+        "clarification",
+        "not_decidable"
+      ],
+      "scope": "cancellation_waiver_decision",
+      "decision_specificity": "none",
+      "relationship": "ambiguous",
+      "confidence": "low"
+    },
+    {
+      "case": "PB-I",
+      "request_label": "reservation_modification_request",
+      "reply_classes": [
+        "payment_condition"
+      ],
+      "scope": "booking_payment_condition",
+      "decision_specificity": "partial",
+      "relationship": "ambiguous",
+      "confidence": "medium"
+    },
+    {
+      "case": "PB-J",
+      "request_label": "deposit_condition_update",
+      "reply_classes": [
+        "clarification",
+        "extra_charge_or_price",
+        "other_condition",
+        "not_decidable"
+      ],
+      "scope": "checkout_status_and_charge",
+      "decision_specificity": "unclear",
+      "relationship": "ambiguous",
+      "confidence": "low"
+    },
+    {
+      "case": "PB-K",
+      "request_label": "room_quote_and_policy_request",
+      "reply_classes": [
+        "acceptance_or_update",
+        "payment_condition"
+      ],
+      "scope": "booking_status_and_payment",
+      "decision_specificity": "partial",
+      "relationship": "ambiguous",
+      "confidence": "medium"
+    },
+    {
+      "case": "PB-L",
+      "request_label": "contact_routing_and_account_update",
+      "reply_classes": [
+        "not_decidable"
+      ],
+      "scope": "communication_receipt_or_routing",
+      "decision_specificity": "unclear",
+      "relationship": "ambiguous",
+      "confidence": "low"
+    },
+    {
+      "case": "PB-M",
+      "request_label": "reservation_request_with_arrival_details",
+      "reply_classes": [
+        "extra_charge_or_price",
+        "other_condition",
+        "acceptance_or_update"
+      ],
+      "scope": "room_quote_and_booking_confirmation_process",
+      "decision_specificity": "partial",
+      "relationship": "direct",
+      "confidence": "medium"
+    },
+    {
+      "case": "PB-N",
+      "request_label": "payment_timing_inquiry",
+      "reply_classes": [
+        "payment_condition"
+      ],
+      "scope": "payment_timing",
+      "decision_specificity": "partial",
+      "relationship": "ambiguous",
+      "confidence": "medium"
+    },
+    {
+      "case": "PB-O",
+      "request_label": "payment_link_request",
+      "reply_classes": [
+        "acceptance_or_update",
+        "not_decidable"
+      ],
+      "scope": "attachment_or_payment_link",
+      "decision_specificity": "unclear",
+      "relationship": "ambiguous",
+      "confidence": "low"
+    }
+  ]
+}
