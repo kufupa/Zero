@@ -103,17 +103,17 @@ vi.mock('../src/ai/pane-create-dispatch-fence.js', async (original) => ({
   assertNoCreateDispatchFence: async () => undefined,
 }));
 vi.mock('../src/ai/pane-create-source-loader.js', () => ({
-  withLockedCreateSource: async (_db: unknown, key: any, fn: any) => {
+  withLockedCreateSourceForCreate: async (_db: unknown, key: any, fn: any) => {
     if (!h.threadActive || key.messageId !== h.mail.id || key.threadId !== h.mail.threadId ||
-        JSON.stringify(key.cursor) !== JSON.stringify(h.cursor)) throw new Error('source changed');
-    return fn(h.tx, { sourceDigest: h.sourceDigest, item: { state: h.state }, snapshot: {
+        JSON.stringify(key.cursor) !== JSON.stringify(h.cursor)) throw new Error('create_source_stale');
+    return fn(h.tx, { sourceDigest: h.sourceDigest, item: { state: h.state }, effectivePayload: h.payload, snapshot: {
       source: h.mail, extraction: { payload: h.payload }, historicalCorrections: [],
     } });
   },
-  lockCreateSource: async (tx: unknown, key: any, fn: any) => {
+  lockCreateSourceForCreate: async (tx: unknown, key: any, fn: any) => {
     if (!h.threadActive || key.messageId !== h.mail.id || key.threadId !== h.mail.threadId ||
-        JSON.stringify(key.cursor) !== JSON.stringify(h.cursor)) throw new Error('source changed');
-    return fn(tx, { sourceDigest: h.sourceDigest, item: { state: h.state }, snapshot: {
+        JSON.stringify(key.cursor) !== JSON.stringify(h.cursor)) throw new Error('create_source_stale');
+    return fn(tx, { sourceDigest: h.sourceDigest, item: { state: h.state }, effectivePayload: h.payload, snapshot: {
       source: h.mail, extraction: { payload: h.payload }, historicalCorrections: [],
     } });
   },
