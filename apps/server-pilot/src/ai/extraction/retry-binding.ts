@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { paneSourceSelectionSchema, type PaneSourceSelection } from '../../mail/pane-source-selection.js';
 
 /** A failed observation changes after every actual retry; it cannot authorize a different observation. */
 export function failedReadFingerprint(row: {
@@ -17,11 +18,15 @@ export type FailedReadRetry = {
   selectionHash: string;
   attachmentHash: string;
   actorId: string;
+  internetMessageId: string;
+  selection: PaneSourceSelection;
 };
 
 export function failedReadRetryOf(metrics: unknown): FailedReadRetry | null {
   const value = (metrics as { failedReadRetry?: Partial<FailedReadRetry> } | null)?.failedReadRetry;
+  const selection = paneSourceSelectionSchema.safeParse(value?.selection);
   if (!value || typeof value.failedId !== 'string' || typeof value.actorId !== 'string' ||
+      typeof value.internetMessageId !== 'string' || !selection.success ||
       ![value.fingerprint, value.sourceHash, value.selectionHash, value.attachmentHash].every((s) => typeof s === 'string' && /^[a-f0-9]{64}$/.test(s))) return null;
-  return value as FailedReadRetry;
+  return { ...value, selection: selection.data } as FailedReadRetry;
 }

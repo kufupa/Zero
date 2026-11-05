@@ -288,7 +288,7 @@ export async function retrySelectedFailedRead(db: DB, input: {
     if (!mail || staffQuoteSourceHash(mail) !== input.source.sourceHash ||
         await retryAttachmentHash(tx as unknown as DB, mail.id) !== attachmentHash) return { status: 'blocked' as const };
     const [access] = await tx.select({ id: mailboxAccess.id }).from(mailboxAccess).where(and(
-      eq(mailboxAccess.userId, input.actorId), eq(mailboxAccess.transportId, input.transportId))).limit(1);
+      eq(mailboxAccess.userId, input.actorId), eq(mailboxAccess.transportId, input.transportId))).limit(1).for('share');
     if (!access) return { status: 'blocked' as const };
     const [read] = await tx.select().from(mailExtraction).where(and(eq(mailExtraction.id, input.extractionId),
       eq(mailExtraction.messageId, mail.id), eq(mailExtraction.extractorVersion, EXTRACTION_VERSION)))
@@ -310,7 +310,8 @@ export async function retrySelectedFailedRead(db: DB, input: {
       sql`${aiWorkflowRun.metrics}->'failedReadRetry'->>'fingerprint' = ${input.fingerprint}`)).limit(1);
     if (active) return { status: 'queued' as const, runId: active.id };
     const binding: FailedReadRetry = { failedId: read.id, fingerprint: input.fingerprint,
-      sourceHash: input.source.sourceHash, selectionHash, attachmentHash, actorId: input.actorId };
+      sourceHash: input.source.sourceHash, selectionHash, attachmentHash, actorId: input.actorId,
+      internetMessageId: input.internetMessageId, selection: input.selection };
     const run = await enqueueAiRun({ transportId: input.transportId, threadId: thread.id, triggerMessageId: mail.id,
       runKind: 'inbound_extraction', idempotencyKey: `inbound-extraction-retry:${read.id}:${randomUUID()}`,
       modelId: EXTRACTION_MODEL_ID, promptVersion: EXTRACTION_VERSION, metrics: { failedReadRetry: binding } }, tx as unknown as DB);
@@ -440,7 +441,9 @@ export async function runInboundExtraction(
   if (retry) {
     const [access] = await db.select({ id: mailboxAccess.id }).from(mailboxAccess).where(and(
       eq(mailboxAccess.userId, retry.actorId), eq(mailboxAccess.transportId, run.transportId))).limit(1);
-    if (!access || staffQuoteSourceHash(trigger) !== retry.sourceHash) return 'stale_source';
+    const selected = await messageFor(db, { transportId: run.transportId, internetMessageId: retry.internetMessageId,
+      selection: retry.selection, expectedMessageId: run.triggerMessageId });
+    if (!access || !selected || selected.threadId !== trigger.threadId || staffQuoteSourceHash(trigger) !== retry.sourceHash) return 'stale_source';
   }
   const [existing] = await db
     .select()
@@ -514,6 +517,9 @@ export async function runInboundExtraction(
         eq(mailThread.id, trigger.threadId), eq(mailThread.transportId, run.transportId), eq(mailThread.historyOnly, false),
         isNull(mailThread.trashedAt), isNull(mailThread.spamAt))).limit(1).for('no key update');
       if (!thread) return;
+      const selected = await messageFor(tx, { transportId: run.transportId, internetMessageId: retry.internetMessageId,
+        selection: retry.selection, expectedMessageId: run.triggerMessageId });
+      if (!selected || selected.threadId !== thread.id) return;
       // Canonical ingest holds the same mailbox lock. Reload the bounded source while it is held,
       // so attachment or thread changes cannot race the final comparison and update.
       const signal = deps.signal ? AbortSignal.any([deps.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000);
@@ -533,7 +539,7 @@ export async function runInboundExtraction(
         .limit(1).for('update');
       if (!read || read.status !== 'failed' || failedReadFingerprint(read) !== retry.fingerprint) return;
       const [access] = await tx.select({ id: mailboxAccess.id }).from(mailboxAccess).where(and(
-        eq(mailboxAccess.userId, retry.actorId), eq(mailboxAccess.transportId, run.transportId))).limit(1);
+        eq(mailboxAccess.userId, retry.actorId), eq(mailboxAccess.transportId, run.transportId))).limit(1).for('share');
       const [item] = await tx.select({ id: workItem.id }).from(workItem).where(and(
         eq(workItem.transportId, run.transportId), eq(workItem.sourceMessageId, mail.id))).limit(1);
       const [success] = await tx.select({ id: mailExtraction.id }).from(mailExtraction).where(and(
