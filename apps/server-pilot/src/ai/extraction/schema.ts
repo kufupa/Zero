@@ -201,7 +201,7 @@ const mailExtractionObjectSchema = z.object({
       field: z.string(),
       question: z.string(),
     }),
-  ),
+  ).nullish().transform((questions) => questions ?? []),
 });
 
 export const mailExtractionSchema = mailExtractionObjectSchema.superRefine((value, context) => {
