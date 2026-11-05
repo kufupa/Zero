@@ -10,8 +10,8 @@ All functions operate on the supplied logged-in Playwright `page`, bound to one 
 | --- | --- | --- | --- |
 | `readStay360AddOns` | `page`, `confirmation` | `{detailIds: string[]}` | `{outcome:"ok", confirmation, propertyCode, target, rows, columns, details, coverage, notes}` |
 | `listStay360AddOnItems` | `page`, `confirmation` | None | `{outcome:"ok", confirmation, propertyCode, candidates, columns, coverage}` |
-| `prepareStay360AddOns` | `page`, `confirmation`, `items: AddOnInput[]` | Optional fields inside each item | `{outcome:"prepared", preparedId, confirmation, propertyCode, items: AddOnPreview[], availabilityVerified:false, saved:false}` |
-| `saveStay360AddOns` | `page`, `confirmation`, `preparedId`, `{authorize}` | Trusted `beforeDispatch`, `afterDispatch` callbacks | `{outcome:"awaiting_readback", confirmation, preparedId, receipts, requestedCount, baseline}`; never reports saved on acknowledgement alone |
+| `prepareStay360AddOns` | `page`, `confirmation`, `items: AddOnInput[]` | Optional fields inside each item | `{outcome:"prepared", preparedId, confirmation, propertyCode, items: AddOnPreview[], baselineCoverage, availabilityVerified:false, saved:false}` |
+| `saveStay360AddOns` | `page`, `confirmation`, `preparedId`, `{authorize}` | Trusted `beforeDispatch`, `afterDispatch` callbacks | `{outcome:"awaiting_readback", confirmation, preparedId, receipts, attempts, requestedCount, baseline, baselineCoverage}`; never reports saved on acknowledgement alone |
 | `reconcileStay360AddOns` | Previous save result | `{withPage, target}` for an independent browser and lookup hints | `{outcome:"verified"\|"uncertain", confirmation, verified, mismatches, readback}` |
 | `withStay360AddOnSession` | Async callback receiving `{runTool}` | Trusted host callbacks and browser factory | Callback's return value; owns one page and serializes JSON tool calls |
 
@@ -34,7 +34,7 @@ All functions operate on the supplied logged-in Playwright `page`, bound to one 
 | `folio` | No | Native dropdown code; options include `GUEST`, `INCID`, `AR`, `FOLIO4`, `FOLIO5`, `FOLIO7` |
 | `comment` | No | Plain text; omitted uses native default |
 
-Native controls determine editability and options. The tool verifies every supplied field after interaction and returns the effective values for approval. `AddOnPreview` contains all nine input fields, plus `name`, `itemId`, `currency`, `averageDaily`, `totalCost`, `status`, and `controls`. Each control contains `{value, display, editable, required, options?}`; options contain `{code,name}`. Totals are HMS calculations; `VALID` is not proof of inventory availability.
+Native controls determine editability and options. The tool compares every supplied field with the finished form after all native recalculations and returns the effective values for approval. `AddOnPreview` contains all nine input fields, plus `name`, `itemId`, `currency`, `averageDaily`, `totalCost`, `status`, and `controls`. Each control contains `{value, display, editable, required, options?}`; options contain `{code,name}`. Totals are HMS calculations; `VALID` is not proof of inventory availability.
 
 ### Same-session JSON interface
 
@@ -53,9 +53,13 @@ Provide `arrivalDate` for future or historical stays outside the shared lookup's
 
 The session wrapper fresh-reads every possible dispatch. It reports `saved` only when all requested items have matching native row IDs and full field readback in a separate browser. `uncertain` requires reconciliation before any retry. Successful save seals the original page; start a fresh session for further operations.
 
+Each receipt/attempt contains `{index, item, itemId, nativeId:string|null}`. Attempts are retained at the possible-dispatch boundary, before reading the response. If an ID is lost, reconciliation selects a unique new row outside the complete baseline and then reads all its detailed fields. Ambiguous, missing or partially dispatched items remain uncertain. Native response metadata must prove the complete baseline before Save; capped/incomplete Add-On lists return `ADDONS_BASELINE_INCOMPLETE` rather than guessing.
+
 ## Write boundary
 
 The CLI's default authorization allows only a freshly verified Proof Labtest stay, arrival 2027 or later, Reserved status, matching native stay identity, and CMS Send off. Real guest saves require a trusted server host to supply `authorize(prepared)`, `beforeDispatch(dispatch)`, `afterDispatch(receipt)` and `withWriteLock(confirmation, callback)`. The host owns staff approval, a durable dispatch journal and cross-process reservation locking. `authorize` and `beforeDispatch` must return exactly `true`.
+
+Host callbacks must settle within the host's own deadlines. After an interrupted dispatch, the tool quarantines the page and drains running journal callbacks before returning from the locked operation. It deliberately retains the reservation lock while a host callback is still running. Native response headers and body reads each have a 25-second deadline. Concurrent first calls share one initialization and guard; the same-page busy fence rejects overlapping direct actions.
 
 Only the matched native Submit request gets a one-shot exception in the shared read guard. Property, stay/account IDs, item code/ID, action and approved business values must match. Full request field sets and counts are not pinned. Late unexpected requests are blocked; failed native steps quarantine the page.
 
@@ -76,3 +80,5 @@ A later two-item batch returned `saved` with automatic fresh-session reconciliat
 Existing lookup, booking-session and read-guard checks passed (11 tests); the five read-guard tests passed again after the native URL-action correction. No new tests were added. These are backend module/runner proofs in the isolated feature checkout, not a deployed production canary.
 
 Unsaved refusal/recovery checks also passed: an unknown item code returned `ADDONS_ITEM_NOT_LOADED`; missing native-zero pricing returned `ADDONS_PRICE_REQUIRED`; an explicit zero then prepared successfully on the same page with `saved:false`.
+
+After review fixes, concurrent first reads produced one successful read and one `ADDONS_ACTION_IN_PROGRESS` refusal. A 28-second dispatch callback retained the reservation lock through completion; fresh readback confirmed no new row. An owned Labtest Save with deliberately interrupted response reading retained its attempted values, recovered row `1742` from the complete preimage, and matched every field in a fresh browser without a retry. The existing 11 focused tests passed again after these changes.

@@ -22,28 +22,60 @@ async function authorizeLabtest(prepared, withPage) {
   }, { headless: true, blockServiceWorkers: true });
 }
 
-/** Fresh session readback; a response acknowledgement is never a saved result. */
+const nativeIdOf = row => String(row.enhexpsequencekey ?? '').trim();
+const canonicalDate = value => {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return value;
+  const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(value || '');
+  return match ? `${match[3]}-${match[1]}-${match[2]}` : null;
+};
+const canonicalNumber = value => {
+  const text = String(value ?? '').trim().replace(/,/g, '');
+  if (!/^\d+(?:\.\d+)?$/.test(text)) return null;
+  const [whole, fraction = ''] = text.split('.');
+  return `${whole.replace(/^0+(?=\d)/, '')}.${fraction.replace(/0+$/, '')}`;
+};
+const sameNumber = (left, right) => canonicalNumber(left) !== null && canonicalNumber(left) === canonicalNumber(right);
+
+/** Fresh session readback; recover possible dispatches even without a response ID. */
 export async function reconcileStay360AddOns(save, { withPage = withCenturionStay360Page, target } = {}) {
-  if (!save || !/^\d+-\d+$/.test(save.confirmation || '') || !Array.isArray(save.receipts)) {
+  if (!save || !/^\d+-\d+$/.test(save.confirmation || '') || !Array.isArray(save.receipts) ||
+      (save.attempts !== undefined && !Array.isArray(save.attempts))) {
     return { outcome: 'needs_input', issue: 'ADDONS_RECEIPTS_REQUIRED' };
   }
   try {
+    const expected = structuredClone(save.attempts ?? save.receipts);
+    const baselineIds = new Set((save.baseline || []).map(nativeIdOf).filter(Boolean));
     const readback = await withPage(async page => {
       await readConfirmationFromStay360(page, save.confirmation, { guestName: target?.guestName, arrivalDate: target?.arrival });
-      return readStay360AddOns(page, save.confirmation, { detailIds: save.receipts.map(receipt => receipt.nativeId).filter(Boolean) });
+      const listing = await readStay360AddOns(page, save.confirmation);
+      if (listing.outcome !== 'ok') return listing;
+      const acknowledgedIds = new Set(expected.map(attempt => attempt.nativeId).filter(Boolean));
+      for (const attempt of expected) {
+        if (attempt.nativeId) continue;
+        if (save.baselineCoverage?.complete !== true) continue;
+        const item = attempt.item;
+        const candidates = listing.rows.filter(row => nativeIdOf(row) && !baselineIds.has(nativeIdOf(row)) &&
+          !acknowledgedIds.has(nativeIdOf(row)) && String(row.itemid) === attempt.itemId &&
+          canonicalDate(row.startdate) === item.startDate && canonicalDate(row.enddate) === item.endDate &&
+          sameNumber(row.quantity, item.quantity) && sameNumber(row.totalcost, item.totalCost) &&
+          String(row.enxcurrency ?? '') === item.currency && String(row.comment ?? '') === item.comment);
+        if (candidates.length === 1) attempt.nativeId = nativeIdOf(candidates[0]);
+      }
+      const ids = [...new Set(expected.map(attempt => attempt.nativeId).filter(Boolean))];
+      return ids.length ? readStay360AddOns(page, save.confirmation, { detailIds: ids }) : listing;
     }, { headless: true, blockServiceWorkers: true });
     if (readback.outcome !== 'ok') return { outcome: 'uncertain', issue: 'ADDONS_FRESH_READ_FAILED', readback };
-    const verified = [], mismatches = [], receiptIds = save.receipts.map(receipt => receipt.nativeId);
-    for (const receipt of save.receipts) {
+    const verified = [], mismatches = [], receiptIds = expected.map(receipt => receipt.nativeId);
+    for (const receipt of expected) {
       const details = (readback.details || []).filter(item => item.nativeId === receipt.nativeId);
       const current = details.length === 1 ? details[0].fields : null;
       const keys = ['code', 'quantity', 'startDate', 'endDate', 'unitPrice', 'frequency', 'pricingControl', 'folio', 'comment', 'currency', 'totalCost'];
-      const changed = !current || receiptIds.filter(id => id === receipt.nativeId).length !== 1 ? ['nativeId'] :
+      const changed = !current || baselineIds.has(receipt.nativeId) || receiptIds.filter(id => id === receipt.nativeId).length !== 1 ? ['nativeId'] :
         keys.filter(key => current[key] !== receipt.item[key]);
       if (changed.length || current?.itemId !== receipt.itemId) mismatches.push({ index: receipt.index, fields: changed.length ? changed : ['itemId'] });
       else verified.push({ index: receipt.index, nativeId: receipt.nativeId, item: receipt.item });
     }
-    const complete = save.requestedCount === save.receipts.length && save.receipts.length > 0 && mismatches.length === 0;
+    const complete = save.requestedCount === expected.length && expected.length > 0 && mismatches.length === 0;
     return { outcome: complete ? 'verified' : 'uncertain', confirmation: save.confirmation, verified, mismatches, readback };
   } catch (error) { return { outcome: 'uncertain', issue: issue(error), confirmation: save.confirmation }; }
 }
@@ -92,7 +124,7 @@ export async function withStay360AddOnSession(operation, options = {}) {
           if (!['awaiting_readback', 'uncertain'].includes(lastSave.outcome) || !lastSave.receipts) return lastSave;
           closed = true;
           const reconciliation = await reconcileStay360AddOns(lastSave, { withPage, target: currentTarget });
-          return { ...lastSave, outcome: reconciliation.outcome === 'verified' && lastSave.outcome === 'awaiting_readback' ? 'saved' : 'uncertain',
+          return { ...lastSave, outcome: reconciliation.outcome === 'verified' ? 'saved' : 'uncertain',
             reconciliation, next: reconciliation.outcome === 'verified' ? 'fresh_session' : 'reconcile_before_retry' };
         };
         return options.withWriteLock ? await options.withWriteLock(confirmation, save) : await save();

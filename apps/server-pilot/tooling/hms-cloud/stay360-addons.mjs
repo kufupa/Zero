@@ -35,10 +35,28 @@ function day(value) {
 }
 const displayDate = iso => { const [year, month, date] = iso.split('-'); return `${date}-${MONTHS[Number(month) - 1]}-${year}`; };
 const wireDate = iso => { const [year, month, date] = iso.split('-'); return `${month}/${date}/${year}`; };
+const requestedValue = (key, value) => ['quantity', 'unitPrice'].includes(key) ? decimal(value) :
+  ['startDate', 'endDate'].includes(key) ? day(value) : String(value);
+async function withDeadline(task, milliseconds, issue) {
+  let timer;
+  try {
+    return await Promise.race([task, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(issue)), milliseconds);
+    })]);
+  } finally { clearTimeout(timer); }
+}
 const popup = page => page.locator('[data-testid="popup-OSENEX"]:visible');
 const picker = page => page.locator('[data-testid="popup-LOVPOP"]:visible');
 const scalar = value => value && typeof value === 'object' && value.dd ? value.selected : value;
 const nativeGrid = data => data?.grid?.GRIDRESULT?.GRID || data?.GRIDRESULT?.GRID || null;
+function coverage(state, rows) {
+  const grid = state.grid, metadata = grid?.METADATA;
+  const total = metadata && Number(metadata.RECORDS);
+  const ids = data => data.map(row => clean(row.enhexpsequencekey));
+  const correlated = Array.isArray(grid?.DATA) && JSON.stringify(ids(grid.DATA)) === JSON.stringify(ids(rows));
+  return { loaded: rows.length, reportedTotal: Number.isFinite(total) ? total : null,
+    complete: correlated && metadata.MORERECORDPRESENT === '-' && total === rows.length ? true : null };
+}
 function nativeResponse(text) {
   try { return parseSavedStayNativeResponse(text); } catch {
     // Full native popup descriptions use JavaScript string escapes as well as
@@ -143,15 +161,21 @@ function matches(request, state, pending) {
     exact(body, 'unitpricecurr', item.currency);
 }
 
-async function stateFor(page) {
-  let state = states.get(page);
-  if (state) return state;
+function stateFor(page) {
+  let initialization = states.get(page);
+  if (!initialization) {
+    initialization = initializeState(page);
+    states.set(page, initialization);
+  }
+  return initialization;
+}
+
+async function initializeState(page) {
   let approvals = contextApprovals.get(page.context());
   if (!approvals) { approvals = new WeakSet(); contextApprovals.set(page.context(), approvals); }
   await installReadOnlyGuard(page.context(), { approvedAddOnSaveRequests: approvals });
-  state = { busy: false, quarantined: false, pending: null, native: null, values: null,
-    target: null, prepared: new Map(), approvals, dispatched: false, nativeDialog: null };
-  states.set(page, state);
+  const state = { busy: false, quarantined: false, pending: null, native: null, values: null,
+    target: null, prepared: new Map(), approvals, dispatched: false, nativeDialog: null, callbacks: new Set(), attempts: [], grid: null };
   page.on('dialog', dialog => { state.nativeDialog = { type: dialog.type(), message: dialog.message() };
     state.quarantined = true; state.prepared.clear(); });
   await page.route('**/*', async route => {
@@ -170,11 +194,17 @@ async function stateFor(page) {
     if (pending.kind === 'open') state.native = { stayId: body.get('reservationstayid'), account: body.get('account') };
     if (pending.kind === 'save') {
       try {
-        if (pending.beforeDispatch && await pending.beforeDispatch(structuredClone(pending.dispatch)) !== true) {
-          pending.rejected = true; return route.abort();
+        if (pending.beforeDispatch) {
+          const callback = Promise.resolve().then(() => pending.beforeDispatch(structuredClone(pending.dispatch)));
+          state.callbacks.add(callback);
+          let approved;
+          try { approved = await callback; } finally { state.callbacks.delete(callback); }
+          if (approved !== true) { pending.rejected = true; return route.abort(); }
         }
         if (state.quarantined) return route.abort();
         state.dispatched = true;
+        state.attempts.push({ index: pending.dispatch.index, item: structuredClone(pending.dispatch.item),
+          itemId: pending.itemId, nativeId: null });
         state.approvals.add(request);
       } catch { pending.rejected = true; return route.abort(); }
     }
@@ -192,7 +222,9 @@ async function step(page, state, spec, action) {
     await action();
     const response = await received;
     if (!response || response.status() !== 200 || pending.rejected) fail(pending.rejected ? 'ADDONS_DISPATCH_REFUSED' : 'ADDONS_RESPONSE_UNVERIFIED');
-    const data = nativeResponse(await response.text());
+    const data = nativeResponse(await withDeadline(response.text(), 25000, 'ADDONS_RESPONSE_BODY_TIMEOUT'));
+    const grid = nativeGrid(data);
+    if (grid?.METADATA?.GRIDNAME === 'OSENEX') state.grid = structuredClone(grid);
     if (data.values) {
       const v = data.values;
       if (clean(v.propertycode) !== 'HRCEN' || clean(v.reservationstayid) !== state.native.stayId ||
@@ -264,7 +296,8 @@ async function catalogue(page, state) {
   const more = grid.MORERECORDS ?? grid.METADATA?.MORERECORDS;
   return { outcome: 'ok', propertyCode: 'HRCEN', candidates, columns: loaded.columns,
     coverage: { loaded: candidates.length, reportedTotal: Number.isFinite(total) ? total : loaded.reportedTotal,
-      complete: footer && Number(footer[1]) === candidates.length && total === candidates.length ? true :
+      complete: (grid.METADATA?.MORERECORDPRESENT === '-' && total === candidates.length) ||
+        (footer && Number(footer[1]) === candidates.length && total === candidates.length) ? true :
         (['false', false, '0', 0].includes(more) && total === candidates.length ? true : null) } };
 }
 
@@ -319,7 +352,7 @@ async function selectItem(page, state, code) {
 
 async function setField(page, state, item, key, requested) {
   let current = await form(page, state);
-  const expected = ['quantity', 'unitPrice'].includes(key) ? decimal(requested) : ['startDate', 'endDate'].includes(key) ? day(requested) : String(requested);
+  const expected = requestedValue(key, requested);
   if (current[key] === expected) return;
   if (!current.controls[key].editable) fail('ADDONS_FIELD_NOT_EDITABLE', 'unsupported', { field: key });
   const input = popup(page).locator(`[name="${FIELDS[key]}"]:visible`);
@@ -373,6 +406,8 @@ async function stageOne(page, state, requested) {
     if (Object.hasOwn(requested, key)) await setField(page, state, item, key, requested[key]);
   }
   const actual = await form(page, state);
+  const changed = Object.keys(requested).filter(key => actual[key] !== requestedValue(key, requested[key]));
+  if (changed.length) fail('ADDONS_REQUESTED_FIELDS_CHANGED', 'needs_input', { fields: changed, preview: actual });
   if (actual.code !== item.code || actual.itemId !== item.itemId || !actual.startDate || !actual.endDate || !actual.quantity ||
       !actual.unitPrice || !actual.totalCost || !actual.currency) fail('ADDONS_PREVIEW_UNVERIFIED');
   if (actual.status !== 'VALID') fail('ADDONS_NATIVE_VALIDATION_REQUIRED', 'needs_input', { nativeStatus: actual.status, preview: actual });
@@ -418,7 +453,7 @@ export async function readStay360AddOns(page, confirmation, { detailIds = [] } =
     }
     return { outcome: 'ok', confirmation, propertyCode: 'HRCEN', target: structuredClone(state.target),
       rows: loaded.rows, columns: loaded.columns, details,
-      coverage: { loaded: loaded.rows.length, reportedTotal: loaded.reportedTotal, complete: null },
+      coverage: coverage(state, loaded.rows),
       notes: await takeHandledNotes(page) };
   });
 }
@@ -442,10 +477,11 @@ export async function prepareStay360AddOns(page, confirmation, items) {
     const baseline = await loadedRows(page, 'listdetailgrid', popup(page)), previews = [];
     for (const requested of items) previews.push(await stageOne(page, state, requested));
     const preparedId = randomUUID(), prepared = { preparedId, confirmation, target: structuredClone(state.target),
-      native: structuredClone(state.native), items: structuredClone(previews), requestedItems: structuredClone(items), baseline: baseline.rows };
+      native: structuredClone(state.native), items: structuredClone(previews), requestedItems: structuredClone(items),
+      baseline: baseline.rows, baselineCoverage: coverage(state, baseline.rows) };
     state.prepared.set(preparedId, prepared);
     return { outcome: 'prepared', preparedId, confirmation, propertyCode: 'HRCEN', items: previews,
-      availabilityVerified: false, saved: false };
+      baselineCoverage: prepared.baselineCoverage, availabilityVerified: false, saved: false };
   });
 }
 
@@ -455,6 +491,7 @@ export async function saveStay360AddOns(page, confirmation, preparedId, options 
   return run(page, async state => {
     const prepared = state.prepared.get(preparedId);
     if (!prepared || prepared.confirmation !== confirmation) fail('ADDONS_PREPARED_ID_REQUIRED');
+    if (prepared.baselineCoverage.complete !== true) fail('ADDONS_BASELINE_INCOMPLETE', 'needs_input');
     if (typeof options.authorize !== 'function') fail('ADDONS_SAVE_AUTHORIZATION_REQUIRED');
     await ensureOpen(page, state, confirmation);
     if (JSON.stringify(state.target) !== JSON.stringify(prepared.target) || JSON.stringify(state.native) !== JSON.stringify(prepared.native)) fail('ADDONS_TARGET_CHANGED');
@@ -462,6 +499,7 @@ export async function saveStay360AddOns(page, confirmation, preparedId, options 
     if (JSON.stringify(await target(page, confirmation)) !== JSON.stringify(prepared.target)) fail('ADDONS_TARGET_CHANGED');
     state.prepared.delete(preparedId);
     const receipts = [];
+    state.attempts = [];
     try {
       for (let index = 0; index < prepared.items.length; index += 1) {
         const approved = prepared.items[index];
@@ -490,16 +528,22 @@ export async function saveStay360AddOns(page, confirmation, preparedId, options 
           nativeId: clean(data.values?.enhexpsequencekey) || clean(data.values?.recordid) ||
             (inserted.length === 1 ? clean(inserted[0].enhexpsequencekey) : null) };
         receipts.push(receipt);
+        state.attempts.find(attempt => attempt.index === index).nativeId = receipt.nativeId;
         if (options.afterDispatch) await options.afterDispatch(structuredClone(receipt));
       }
       state.quarantined = true;
       return { outcome: 'awaiting_readback', confirmation, preparedId, receipts,
-        requestedCount: prepared.items.length, baseline: prepared.baseline };
+        attempts: structuredClone(state.attempts), requestedCount: prepared.items.length, baseline: prepared.baseline,
+        baselineCoverage: prepared.baselineCoverage };
     } catch (error) {
       state.quarantined = true; state.prepared.clear();
-      return { ...problem(error), outcome: state.dispatched ? 'uncertain' : problem(error).outcome,
+      return { ...problem(error), outcome: state.dispatched || state.callbacks.size ? 'uncertain' : problem(error).outcome,
         confirmation, preparedId, receipts, requestedCount: prepared.items.length,
-        baseline: prepared.baseline, next: 'fresh_readback' };
+        attempts: structuredClone(state.attempts), baseline: prepared.baseline, baselineCoverage: prepared.baselineCoverage, next: 'fresh_readback' };
+    } finally {
+      // Quarantine prevents a late callback from sending its paused request.
+      // Keep the caller's reservation lock until its journal callback settles.
+      await Promise.allSettled([...state.callbacks]);
     }
   });
 }
