@@ -14,7 +14,8 @@ export function useRequestWorkItem(args: {
   flushSnapshot: (snapshot: AmendDraftSnapshot, transportId: string, visible?: boolean) => Promise<Cursor | null>;
   canSaveSnapshot?: (snapshot: AmendDraftSnapshot, transportId: string, seq: number) => boolean;
   reload: (snapshot: AmendDraftSnapshot, transportId: string) => Promise<AmendDraftSnapshot | null>;
-  onSave: (cursor: Cursor, previousSeq?: number, snapshot?: AmendDraftSnapshot) => void;
+  onSave: (cursor: Cursor, previousSeq?: number, snapshot?: AmendDraftSnapshot,
+    event?: { path: string; value: Value }) => void;
 }) {
   const refs = useRef(args);
   refs.current = args;
@@ -64,7 +65,7 @@ export function useRequestWorkItem(args: {
           cursor = { seq: result.seq, revision: result.revision!, revisionHead: result.revisionHead! };
           item.saved.set(path, entry.value);
           if (item.entries.get(path) === entry) item.entries.delete(path);
-          refs.current.onSave(cursor, previousSeq, item.snapshot);
+          refs.current.onSave(cursor, previousSeq, item.snapshot, { path, value: entry.value });
           changed(item);
         } catch {
           let fresh: AmendDraftSnapshot | null = null;

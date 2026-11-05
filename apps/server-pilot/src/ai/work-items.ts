@@ -75,9 +75,8 @@ import {
   amendEmailValue,
   type AmendField, type DraftSource,
 } from './pane-amend-draft.js';
-import { parseRequestField, requestFieldApplies, requestIdFor, sourceRequests, validRequestValue,
-  type RequestField } from './work-item-fields.js';
-import { effectiveActions, projectEffectiveWork, type EffectiveRequest } from './work-item-effective.js';
+import { parseRequestField, requestFieldApplies, requestIdFor, sourceRequests, validRequestValue } from './work-item-fields.js';
+import { createRequestSourceValue, effectiveActions, projectEffectiveWork, type EffectiveRequest } from './work-item-effective.js';
 import { projectCancelRequests } from './pane-cancel-draft.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
@@ -2739,25 +2738,6 @@ export type ResetWorkSectionResult =
   | { status: 'stale' }
   | { status: 'recorded'; reset: number; revision?: number; revisionHead?: number; seq?: number; extractionId?: string | null };
 
-/** Source values shown by the Create projection; native selections are never extraction values. */
-function createRequestAiValue(stay: ExtractionStay, field: RequestField): unknown {
-  if (field.roomIndex !== null) {
-    if (field.field === 'arrival' || field.field === 'departure') return stay.requested[field.field];
-    const row = stay.rows.find((candidate) => candidate.id === field.rowId);
-    if (field.field === 'adults') return row?.adultsPerRoom ?? null;
-    if (field.field === 'childAges') return row?.childAges ?? null;
-  }
-  const proposalKey: Partial<Record<string, keyof NonNullable<ExtractionStay['workflowProposal']>>> = {
-    firstName: 'firstName', lastName: 'lastName', guestEmail: 'guestEmail', guestMobile: 'guestMobile',
-    bookerName: 'bookerName', bookerEmail: 'bookerEmail', ratePlan: 'ratePlan', sourceOfBusiness: 'sourceOfBusiness',
-    track: 'track', guaranteeType: 'guaranteeType', reservationNote: 'reservationNote',
-    'cms.send': 'cmsSend', 'cms.messageId': 'cmsMessageId', 'cms.recipient': 'cmsRecipient',
-  };
-  const key = proposalKey[field.field];
-  const proposal = key ? stay.workflowProposal?.[key] : undefined;
-  return proposal ? field.field === 'cms.recipient' ? { mode: 'custom', address: proposal.value } : proposal.value : null;
-}
-
 /** Restores extraction-backed overrides in one contact or stay section and logs each cleared field atomically. */
 export async function resetWorkSection(
   db: DB,
@@ -2835,7 +2815,7 @@ export async function resetWorkSection(
           sourceHash: staffQuoteSourceHash(mail) }, stay.id, 'primary');
         for (const entry of requestPaths) {
           if (entry.field.requestId !== requestId) continue;
-          const aiValue = createRequestAiValue(stay, entry.field);
+          const aiValue = createRequestSourceValue(stay, entry.field);
           if (aiValue !== null && aiValue !== undefined) resets.push({ fieldPath: entry.fieldPath, aiValue });
         }
       }

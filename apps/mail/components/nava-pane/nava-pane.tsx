@@ -1865,7 +1865,13 @@ export function NavaPane({
             groups: overlayLunaGroupsFromStaff(luna, session.groups),
           },
         }).then((draftRemote) => {
-          if (!current()) return;
+          const accepted = quoteSessionRef.current;
+          // The quote result updates its own rows and revision. Its accepted revision remains
+          // present only while those inputs still describe this result.
+          if (!current() && !(quoteSourceIdentity(accepted) === sourceIdentity &&
+              quoteRunIsCurrent(accepted, { selectionEpoch, inputRevision }) &&
+              [...versions].every(([key, version]) => staffQuoteStepGenerations.current.get(`${sourceIdentity}:${key}`) === version) &&
+              accepted.staffQuotes[remote.offer.quoteRequestKey]?.revisionRef === remote.staffQuote.revisionRef)) return;
           if (draftRemote.status !== 'ok') {
             toast.warning(draftRemote.reason);
             return;
@@ -2067,10 +2073,10 @@ export function NavaPane({
           remote?.status === 'unavailable' && remote.reason === STAFF_QUOTE_POLL_LOST_REASON
             ? lastStaffQuoteRunId
             : null;
-        applyStaffQuoteResult(remote, current);
+        applyStaffQuoteResult(remote, current, generation);
       });
     };
-    function applyStaffQuoteResult(remote: BoundExecuteStaffQuote | null, current: () => boolean) {
+    function applyStaffQuoteResult(remote: BoundExecuteStaffQuote | null, current: () => boolean, generation: number) {
       if (
         !quoteStayRunIsCurrent(quoteSessionRef.current, {
           selectionEpoch,
@@ -2134,7 +2140,13 @@ export function NavaPane({
           inputRevision,
           analysis: { ...luna, groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups) },
         }).then((draftRemote) => {
-          if (!current()) return;
+          const accepted = quoteSessionRef.current;
+          // Applying the quote adds its prices to the groups, so the pre-search group
+          // comparison no longer matches. A later edit to this stay removes its quote.
+          if (!current() && !(staffQuoteStepGenerations.current.get(stepGenerationKey) === generation &&
+              quoteSourceIdentity(accepted) === sourceIdentity &&
+              quoteRunIsCurrent(accepted, { selectionEpoch, inputRevision }) &&
+              accepted.staffQuotes[remote.offer.quoteRequestKey]?.revisionRef === remote.staffQuote.revisionRef)) return;
           if (draftRemote.status !== 'ok') {
             toast.warning(draftRemote.reason);
             return;
