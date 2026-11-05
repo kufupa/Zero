@@ -16,7 +16,7 @@ import { projectFinanceDisplayPreflight } from './guest-stay-finance-preflight.m
 import { readStayAmendmentAvailability } from './guest-stay-amend-availability.mjs';
 import { readLabtestStayAmendmentAvailability } from './guest-stay-amend-date-room-rate.mjs';
 import { nativePriceDigest, readSavedStayNightlyRates } from './saved-stay-nightly-rates.mjs';
-import { listSavedStayRateOverrideReasons, prepareSavedStayRateOverride,
+import { listSavedStayRateOverrideReasons, prepareSavedStayRateOverride, readSavedStayRateReasons,
   restageSavedStayRateOverride } from './saved-stay-rate-override.mjs';
 import { withRateOverrideSavedStay, submitRateOverrideOnce,
   readBackSavedStayRateOverride } from './pane-rate-override-session.mjs';
@@ -166,12 +166,17 @@ export async function withSavedStayAgentSession(operation, { signal, readOnly = 
         }
         const sessionInput = { selected, target: RATE_TARGET, allowRealGuest: true, cloudTargetKey, signal };
         if (tool === 'readSavedStayRates' || tool === 'listRateOverrideReasons') {
+          if (tool === 'readSavedStayRates' && request.includeReasons !== undefined && typeof request.includeReasons !== 'boolean') {
+            return { outcome: 'input_gap', issue: 'RATE_REASONS_OPTION_INVALID' };
+          }
           try {
             return await withRateOverrideSavedStay(sessionInput, async session => {
               const target = rateTarget(session.selected);
               if (tool === 'readSavedStayRates') {
                 const rates = await readSavedStayNightlyRates(session.page, session.state, target);
-                return { outcome: 'ok', rates: publicRates(rates), observedAt: new Date().toISOString() };
+                const reasons = request.includeReasons ? await readSavedStayRateReasons(session.page, session.state, target) : null;
+                return { outcome: 'ok', rates: publicRates(rates), observedAt: new Date().toISOString(),
+                  ...(request.includeReasons && { reasons }) };
               }
               const reasons = await listSavedStayRateOverrideReasons(session.page, session.state, target);
               return { outcome: 'ok', ...reasons };
@@ -190,15 +195,17 @@ export async function withSavedStayAgentSession(operation, { signal, readOnly = 
           try {
             const prepared = await withRateOverrideSavedStay(sessionInput, async session => {
               const stage = await prepareSavedStayRateOverride(session.page, session.state, rateTarget(session.selected), change);
-              return { review: structuredClone(stage.review), selected: structuredClone(session.selected),
+              return { review: structuredClone(stage.review), reasonDescription: stage.reasonDescription,
+                selected: structuredClone(session.selected),
                 preserved: structuredClone(session.preserved), totalsSource: stage.nativePreview.totalsSource };
             });
             const preparedId = randomUUID();
-            const reviewDigest = nativePriceDigest({ review: prepared.review, preserved: prepared.preserved });
+            const reviewDigest = nativePriceDigest({ review: prepared.review, preserved: prepared.preserved,
+              reasonDescription: prepared.reasonDescription });
             pendingRate = { preparedId, reviewDigest, ...prepared };
             return { outcome: 'prepared', preparedId, reviewedBaseline: publicRates(prepared.review.savedRates),
               change: { date: request.date, amountCents: request.amountCents, currency: request.currency,
-                reasonCode: request.reasonCode }, reviewDigest,
+                reasonCode: request.reasonCode, reasonDescription: prepared.reasonDescription }, reviewDigest,
               proposedTotals: null, totalsSource: prepared.totalsSource };
           } catch (error) { return { outcome: 'refused', issue: safeIssue(error, 'RATE_PREPARATION_FAILED') }; }
         }
@@ -219,26 +226,30 @@ export async function withSavedStayAgentSession(operation, { signal, readOnly = 
                 throw new Error('RATE_OVERRIDE_BUSINESS_FIELDS_CHANGED');
               }
               const stage = await restageSavedStayRateOverride(session.page, session.state, prepared.review);
+              if (stage.reasonDescription !== prepared.reasonDescription) throw new Error('RATE_OVERRIDE_REASON_CHANGED');
               return submitRateOverrideOnce(session, stage, (nativeRequest, continueOnce) =>
                 dispatchRateOverride(nativeRequest, async () => { continued = true; return continueOnce(); },
                   structuredClone({ preparedId: prepared.preparedId, reviewDigest: prepared.reviewDigest,
-                    review: prepared.review, preserved: prepared.preserved })), { signal });
+                    review: prepared.review, preserved: prepared.preserved, reasonDescription: prepared.reasonDescription })), { signal });
             });
         } catch (error) { failure = safeIssue(error, 'RATE_COMMIT_FAILED'); }
         let readback = null, readbackIssue = null;
         try {
           readback = await readBackSavedStayRateOverride(prepared.review, { target: RATE_TARGET,
-            cloudTargetKey, signal, beforePreserved: prepared.preserved });
+            cloudTargetKey, signal, beforePreserved: prepared.preserved, expectedReasonDescription: prepared.reasonDescription });
         } catch (error) { readbackIssue = safeIssue(error, 'RATE_READBACK_FAILED'); }
         const verification = { nightly: 'UNKNOWN', reasonReadback: 'UNKNOWN', preservedFields: 'UNKNOWN', otherStayFields: 'UNKNOWN',
           ...readback?.comparison };
         return { outcome: failure ? (continued ? 'uncertain' : 'refused') :
           continued && dispatch?.dispatchCallbacksDrained && dispatch.httpStatus >= 200 && dispatch.httpStatus < 300 &&
-            verification.nightly === 'MATCHED' && verification.preservedFields !== 'CHANGED' ? 'partially_verified' : 'uncertain',
+            verification.nightly === 'MATCHED' && verification.preservedFields !== 'CHANGED' &&
+            readback?.reason?.descriptionStatus !== 'CHANGED' && readback?.reason?.codeStatus !== 'CHANGED'
+            ? 'partially_verified' : 'uncertain',
           ...(failure && { issue: failure }),
           dispatch: { continued, httpStatus: dispatch?.httpStatus ?? null,
             callbacksDrained: dispatch?.dispatchCallbacksDrained ?? false },
-          readback: readback ? { rates: publicRates(readback.rates), observedAt: readback.observedAt } : null,
+          readback: readback ? { rates: publicRates(readback.rates), reason: readback.reason,
+            observedAt: readback.observedAt } : null,
           verification, ...(readbackIssue && { readbackIssue }), next: 'fresh_session' };
       }
 

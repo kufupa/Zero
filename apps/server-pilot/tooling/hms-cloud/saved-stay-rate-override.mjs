@@ -2,7 +2,8 @@
 // its pre-Submit grid and totals still describe the saved stay, not the override.
 import { createHash } from 'node:crypto';
 import { cleanLabtestRecord, snapshotLabtestRecord } from './labtest-record.mjs';
-import { nativeMoneyCents, nativePriceDigest, readSavedStayNightlyRates } from './saved-stay-nightly-rates.mjs';
+import { nativeMoneyCents, nativeNightDates, nativePriceDigest, readSavedStayNightlyRates } from './saved-stay-nightly-rates.mjs';
+import { parseAssociationResponse } from './cancel-association-scope.mjs';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 
@@ -175,11 +176,13 @@ async function chooseWizardValue(frame, popup, name, value) {
   const labels = await choices.allTextContents(), matching = labels.map((text, index) => text.trim() === label.trim() ? index : -1).filter(index => index >= 0);
   if (matching.length !== 1) throw new Error(`RATE_OVERRIDE_OPTION_UNVERIFIED:${name}`);
   await choices.nth(matching[0]).click({timeout:5000});
+  return label;
 }
 
 // Both discovery and staging pass through the same request fence. Submit is
 // blocked throughout this helper, including while the dropdown is loading.
-async function withRateOverrideWizard(page, state, target, change, operation, expectedSnapshot = null) {
+async function withRateOverrideWizard(page, state, target, change, operation, expectedSnapshot = null,
+  { savedReadOnly = false } = {}) {
   const frame = state?.frame, context = page.context();
   const fence = await installPageRequestFence(page, [OPEN_PATH, INSTRUCTION_PATH, UPDATE_PATH]);
   await installReadOnlyGuard(context);
@@ -187,12 +190,21 @@ async function withRateOverrideWizard(page, state, target, change, operation, ex
   const before = await snapshotLabtestRecord(frame);
   if (!cleanLabtestRecord(before)) throw new Error('RATE_OVERRIDE_TARGET_UNVERIFIED:clean_record');
   if (expectedSnapshot && !same(before, expectedSnapshot)) throw new Error('RATE_OVERRIDE_TARGET_CHANGED');
-  const scope = fence.open(), candidates = new WeakSet();
-  let active = true, armed = null;
+  const scope = fence.open(), candidates = new WeakSet(), approved = new WeakSet();
+  let active = true, armed = null, guardViolation = false;
+  const observeRequest = request => {
+    const path = new URL(request.url()).pathname.toLowerCase();
+    if ([OPEN_PATH, INSTRUCTION_PATH, UPDATE_PATH].some(value => value.toLowerCase() === path) &&
+        !approved.has(request) && (!active || path !== armed?.toLowerCase())) {
+      guardViolation = true; fence.quarantine();
+    }
+  };
   const contextRoute = async route => {
     const request = route.request();
     if (!candidates.delete(request)) return route.fallback();
-    if (!active || fence.isQuarantined() || !requestFields(request, frame, new URL(request.url()).pathname)) return route.abort();
+    if (!active || fence.isQuarantined() || !requestFields(request, frame, new URL(request.url()).pathname)) {
+      guardViolation = true; fence.quarantine(); return route.abort();
+    }
     // Only the two matched read/stage requests may cross the strict saved-record read guard.
     return route.continue();
   };
@@ -207,15 +219,19 @@ async function withRateOverrideWizard(page, state, target, change, operation, ex
         rateamount:'',ratereason:'',userrateoverrideneeded:'',userrateoverridemsg:'',openfieldlevelsecauthpopup:'' } : {}) };
     if (!active || path === UPDATE_PATH || path !== armed || !field ||
         !Object.entries(expected).every(([key,value]) => field(key) === value)) {
-      fence.quarantine(); return route.abort();
+      guardViolation = true; fence.quarantine(); return route.abort();
     }
-    armed = null; candidates.add(request);
-    return scope.allow(request) ? route.fallback() : route.abort();
+    armed = null; candidates.add(request); approved.add(request);
+    if (!scope.allow(request)) { guardViolation = true; fence.quarantine(); return route.abort(); }
+    return route.fallback();
   };
   try {
+    if (savedReadOnly) page.on('request', observeRequest);
     await context.route('**/*', contextRoute); await page.route('**/*', pageRoute);
     const unchanged = async () => {
-      if (fence.isQuarantined() || !same(before, await snapshotLabtestRecord(frame))) throw new Error('RATE_OVERRIDE_TARGET_CHANGED');
+      if (guardViolation || fence.isQuarantined()) throw new Error('RATE_OVERRIDE_TARGET_CHANGED');
+      const after = await snapshotLabtestRecord(frame);
+      if (guardViolation || fence.isQuarantined() || !same(before, after)) throw new Error('RATE_OVERRIDE_TARGET_CHANGED');
     };
     await unchanged();
     const button = frame.locator('[data-qtip="Stay Wizard"]:visible');
@@ -223,11 +239,24 @@ async function withRateOverrideWizard(page, state, target, change, operation, ex
     const opened = page.waitForResponse(r => r.request().frame() === frame && new URL(r.url()).pathname === OPEN_PATH, {timeout:20000});
     void opened.catch(() => {}); armed = OPEN_PATH;
     await button.click({timeout:5000,noWaitAfter:true});
-    if ((await opened).status() !== 200) throw new Error('RATE_OVERRIDE_OPEN_FAILED');
+    const openResponse = await opened;
+    if (openResponse.status() !== 200) { await unchanged(); throw new Error('RATE_OVERRIDE_OPEN_FAILED'); }
     const popup = frame.locator('.x-window:visible:not(.x-menu)').filter({hasText:/Stay Wizard/});
-    await popup.waitFor({state:'visible',timeout:10000});
+    try { await popup.waitFor({state:'visible',timeout:10000}); }
+    catch (error) {
+      if (!savedReadOnly || error?.name !== 'TimeoutError') throw error;
+      await unchanged();
+      throw new Error('RATE_REASON_WIZARD_UNAVAILABLE');
+    }
     const initial = await readWizard(frame);
     if (!initial || initial.rateinstr !== 'REQUOT' || !unrequestedAuthorization(initial)) throw new Error('RATE_OVERRIDE_AUTHORIZATION_UNVERIFIED');
+    if (savedReadOnly) {
+      if (initial.propertycode !== target.propertyCode || String(initial.reservationstayid) !== target.nativeStayId ||
+          initial.pmsconfirmationnumber !== target.confirmation || String(initial.guestid) !== target.guestId) {
+        throw new Error('RATE_OVERRIDE_TARGET_UNVERIFIED:wizard');
+      }
+      return await operation({ frame, popup, unchanged, openResponse });
+    }
     const datesSet = await frame.evaluate(({startDate,endDate}) => {
       const windows = globalThis.Ext.ComponentQuery.query('window').filter(w => w.isVisible?.() && /Stay Wizard/i.test(String(w.title || '')));
       const form = windows.length === 1 ? windows[0].down('form') : null;
@@ -245,8 +274,27 @@ async function withRateOverrideWizard(page, state, target, change, operation, ex
   } catch (error) { fence.quarantine(); throw error; }
   finally {
     active = false; scope.close();
-    await page.unroute('**/*',pageRoute); await context.unroute('**/*',contextRoute);
+    try { await page.unroute('**/*',pageRoute); await context.unroute('**/*',contextRoute); }
+    finally { if (savedReadOnly) page.off('request', observeRequest); }
+    if (savedReadOnly && guardViolation) throw new Error('RATE_OVERRIDE_TARGET_CHANGED');
   }
+}
+
+async function readWizardReasonOptions(frame, popup) {
+  const input = await openWizardOptions(frame, popup, 'ratereason');
+  const options = await input.evaluate(el => {
+    const field = globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
+    const store = field?.getStore?.(), rows = store?.getRange?.();
+    if (!Array.isArray(rows) || !field?.valueField || !field?.displayField ||
+        store?.isLoading?.() === true || store?.loading === true) return null;
+    return rows.map(row => ({ code: String(row.get(field.valueField) ?? ''),
+      description: String(row.get(field.displayField) ?? '') }));
+  });
+  if (!options || options.some(option => !option.code || !option.description) ||
+      new Set(options.map(option => option.code)).size !== options.length) {
+    throw new Error('RATE_OVERRIDE_REASONS_UNVERIFIED');
+  }
+  return options;
 }
 
 /** Read current native reason codes without permitting a wizard Submit. */
@@ -254,23 +302,104 @@ export async function listSavedStayRateOverrideReasons(page, state, target) {
   const rates = await readSavedStayNightlyRates(page, state, target);
   const change = { startDate: target.arrival, endDate: target.arrival, currency: rates.currency };
   return withRateOverrideWizard(page, state, target, change, async ({ frame, popup, unchanged }) => {
-    const input = await openWizardOptions(frame, popup, 'ratereason');
-    const options = await input.evaluate(el => {
-      const field = globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
-      const store = field?.getStore?.(), rows = store?.getRange?.();
-      if (!Array.isArray(rows) || !field?.valueField || !field?.displayField ||
-          store?.isLoading?.() === true || store?.loading === true) return null;
-      return rows.map(row => ({ code: String(row.get(field.valueField) ?? ''),
-        description: String(row.get(field.displayField) ?? '') }));
-    });
-    if (!options || options.some(option => !option.code || !option.description) ||
-        new Set(options.map(option => option.code)).size !== options.length) {
-      throw new Error('RATE_OVERRIDE_REASONS_UNVERIFIED');
-    }
+    const options = await readWizardReasonOptions(frame, popup);
     await unchanged();
     return { options, coverage: { loaded: options.length, total: null, complete: null },
       observedAt: new Date().toISOString() };
   });
+}
+
+/** Read saved nightly descriptions before changing any wizard instructions. */
+export async function readSavedStayRateReasons(page, state, target) {
+  const dates = nativeNightDates(target?.arrival, target?.departure);
+  if (!dates) throw new Error('RATE_OVERRIDE_TARGET_UNVERIFIED:dates');
+  const change = { startDate: target.arrival, endDate: target.arrival, currency: '' };
+  const unknown = issue => ({ source: 'stay_wizard', observedAt: new Date().toISOString(), nights: [],
+    coverage: { loaded: null, total: dates.length, complete: null }, ...(issue && { issue }) });
+  try {
+    return await withRateOverrideWizard(page, state, target, change, async ({ frame, unchanged, openResponse }) => {
+      const verifyWizard = async () => {
+        await unchanged();
+        const fields = await readWizard(frame);
+        if (!fields || fields.rateinstr !== 'REQUOT' || !unrequestedAuthorization(fields) ||
+            fields.propertycode !== target.propertyCode || String(fields.reservationstayid) !== target.nativeStayId ||
+            fields.pmsconfirmationnumber !== target.confirmation || String(fields.guestid) !== target.guestId) {
+          throw new Error('RATE_OVERRIDE_TARGET_CHANGED');
+        }
+      };
+      await verifyWizard();
+      let timer, body;
+      try {
+        body = await Promise.race([openResponse.text(), new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('RATE_REASON_RESPONSE_TIMEOUT')), 10000);
+        })]);
+      } catch (error) {
+        if (error?.message !== 'RATE_REASON_RESPONSE_TIMEOUT') throw error;
+        await verifyWizard();
+        return unknown('RATE_REASON_RESPONSE_TIMEOUT');
+      } finally { clearTimeout(timer); }
+      const payload = /^application\/json(?:;|$)/i.test(openResponse.headers()['content-type'] || '')
+        ? parseAssociationResponse(body) : null;
+      const data = payload?.pageData, values = data?.values;
+      const hasContent = value => Array.isArray(value) ? value.length > 0 : value != null && value !== false && value !== '';
+      if (!data || payload.classPath !== 'osstwz_popups' || payload.pageName !== 'OSSTWZ' ||
+          [payload, data].some(part => (Object.hasOwn(part, 'success') && part.success !== true) ||
+            hasContent(part.error) || hasContent(part.errors)) || hasContent(data.messages)) {
+        await verifyWizard();
+        return unknown('RATE_REASON_RESPONSE_UNVERIFIED');
+      }
+      const numericId = value => (typeof value === 'string' && /^\d+$/.test(value)) ||
+        (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0);
+      if (!values || typeof values.propertycode !== 'string' || !/^[A-Z0-9]+$/.test(values.propertycode) ||
+          !numericId(values.reservationstayid) || typeof values.pmsconfirmationnumber !== 'string' ||
+          !/^\d+-\d+$/.test(values.pmsconfirmationnumber) || !numericId(values.guestid)) {
+        await verifyWizard();
+        return unknown('RATE_REASON_RESPONSE_UNVERIFIED');
+      }
+      if (values.propertycode !== target.propertyCode || String(values.reservationstayid) !== target.nativeStayId ||
+          values.pmsconfirmationnumber !== target.confirmation || String(values.guestid) !== target.guestId) {
+        throw new Error('RATE_OVERRIDE_TARGET_CHANGED');
+      }
+      const rows = values.egriddata;
+      const day = value => {
+        const match = typeof value === 'string' && /^(\d{2})\/(\d{2})\/(\d{4})(?:\s+\d{2}:\d{2}(?::\d{2})?)?$/.exec(value.trim());
+        return match ? `${match[3]}-${match[1]}-${match[2]}` : null;
+      };
+      const nights = Array.isArray(rows) && rows.length === dates.length && values.rateinstr?.selected === 'REQUOT'
+        ? rows.map(row => {
+          const date = day(row?.date);
+          return date && dates.includes(date) && day(row.startDate) === date && day(row.endDate) === date &&
+            row.isDateRange === false ? { date, description: typeof row.rateReason === 'string' ? row.rateReason : null, code: null } : null;
+        }) : null;
+      await verifyWizard();
+      if (!nights || nights.some(row => !row) || new Set(nights.map(row => row.date)).size !== dates.length) {
+        return unknown('RATE_REASON_GRID_UNVERIFIED');
+      }
+      nights.sort((a, b) => a.date.localeCompare(b.date));
+      return { source: 'stay_wizard', observedAt: new Date().toISOString(), nights,
+        coverage: { loaded: nights.length, total: dates.length, complete: true } };
+    }, null, { savedReadOnly: true });
+  } catch (error) {
+    // The exact read request reached HMS but was unavailable. Guard, identity,
+    // browser and cleanup failures must still escape the session.
+    if (['RATE_OVERRIDE_OPEN_FAILED', 'RATE_REASON_WIZARD_UNAVAILABLE'].includes(error?.message)) return unknown(error.message);
+    throw error;
+  }
+}
+
+/** A saved description can match without proving which native code was saved. */
+export function compareSavedStayRateOverrideReason(review, observation, expectedDescription = null) {
+  if (!validReview(review)) throw new Error('RATE_OVERRIDE_REVIEW_INVALID');
+  const matches = observation?.coverage?.complete === true && Array.isArray(observation.nights)
+    ? observation.nights.filter(row => row?.date === review.change.startDate) : [];
+  const description = matches.length === 1 && typeof matches[0].description === 'string' ? matches[0].description : null;
+  const expected = typeof expectedDescription === 'string' && expectedDescription.trim() ? expectedDescription : null;
+  return { date: review.change.startDate, expected: { code: review.change.reason, description: expected },
+    observed: { code: null, description },
+    descriptionStatus: description === null || expected === null ? 'UNKNOWN' :
+      description.trim() === expected.trim() ? 'MATCHED' : 'CHANGED',
+    codeStatus: 'UNKNOWN', source: 'stay_wizard', observedAt: observation?.observedAt ?? null,
+    ...(observation?.issue && { issue: observation.issue }) };
 }
 
 /** Stage only. Caller owns the browser, staff approval, native Submit and uncertain-write reconciliation. */
@@ -284,18 +413,18 @@ export async function prepareSavedStayRateOverride(page, state, target, change, 
     if (await amount.count() !== 1 || !await amount.isEditable()) throw new Error('RATE_OVERRIDE_AMOUNT_UNAVAILABLE');
     const cents = BigInt(change.amountCents);
     await amount.fill(`${cents/100n}.${String(cents%100n).padStart(2,'0')}`); await amount.press('Tab');
-    await chooseWizardValue(frame,popup,'ratereason',change.reason);
+    const reasonDescription = await chooseWizardValue(frame,popup,'ratereason',change.reason);
     const fields = await readWizard(frame);
     if (!matchesWizard(fields,review)) throw new Error('RATE_OVERRIDE_DRAFT_UNVERIFIED');
     await unchanged();
     const savedTotalsMatch = [['ratepkgcharges','subtotalCents'],['taxes','taxCents'],['fees','feeCents'],['total','totalCents']]
       .every(([field,total]) => nativeMoneyCents(fields[field]) === review.savedRates.totals[total]);
-    const stage = { status:'STAGED_UNSAVED', frame, review,
+    const stage = { status:'STAGED_UNSAVED', frame, review, reasonDescription,
       nativePreview:{fields,proposedTotals:null,totalsSource:savedTotalsMatch ? 'saved_stay' : 'unverified_pre_submit'},
       commitBoundary:{path:UPDATE_PATH,action:'Submit',writesSavedStay:true},
       pausedGate:createPausedRateOverrideGate({frame,review}),
       async revalidate() { await unchanged(); if (!matchesWizard(await readWizard(frame),review)) throw new Error('RATE_OVERRIDE_STAGE_CHANGED'); } };
-    preparedStages.set(stage, { frame, digest: nativePriceDigest(review), revalidate: stage.revalidate });
+    preparedStages.set(stage, { frame, digest: nativePriceDigest(review), reasonDescription, revalidate: stage.revalidate });
     return stage;
   }, before);
 }
@@ -304,7 +433,7 @@ export async function prepareSavedStayRateOverride(page, state, target, change, 
 export function isPreparedSavedStayRateOverride(stage, frame) {
   const proof = preparedStages.get(stage);
   return !!proof && stage.frame === frame && proof.frame === frame && stage.revalidate === proof.revalidate &&
-    validReview(stage.review) && nativePriceDigest(stage.review) === proof.digest;
+    stage.reasonDescription === proof.reasonDescription && validReview(stage.review) && nativePriceDigest(stage.review) === proof.digest;
 }
 
 /** A fresh browser/state is required; price or target drift rejects the reviewed override before staging. */

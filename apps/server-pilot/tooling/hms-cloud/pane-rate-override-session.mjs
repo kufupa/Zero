@@ -6,7 +6,8 @@ import { expectedLabtestAmendRecord } from './pane-amend-session.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { installLabtestSaveRouteChain } from './saved-stay-save-route-chain.mjs';
 import { compareSavedStayRateOverrideReadback, isPreparedSavedStayRateOverride, isSavedStayRateOverrideReview,
-  matchesSavedStayRateOverrideRequest } from './saved-stay-rate-override.mjs';
+  matchesSavedStayRateOverrideRequest, readSavedStayRateReasons,
+  compareSavedStayRateOverrideReason } from './saved-stay-rate-override.mjs';
 import { readSavedStayNightlyRates } from './saved-stay-nightly-rates.mjs';
 
 const UPDATE = '/web/base/OSSTWZ.UpdateStayWizard';
@@ -142,7 +143,8 @@ export async function submitRateOverrideOnce(session, stage, onPaused, { signal 
 }
 
 /** Reopen by the reviewed identity; do not require the old full preimage after a write. */
-export async function readBackSavedStayRateOverride(review, { target, cloudTargetKey, signal, beforePreserved } = {}) {
+export async function readBackSavedStayRateOverride(review, { target, cloudTargetKey, signal, beforePreserved,
+  expectedReasonDescription = null } = {}) {
   const bound = structuredClone(review), reviewed = bound?.target;
   if (!isSavedStayRateOverrideReview(bound) || reviewed.firstName !== 'Proof' || reviewed.lastName !== 'Labtest' ||
       reviewed.arrival < '2027-01-01' || target?.propertyCode !== 'HRCEN' || target.browserSlot !== 'centurion' ||
@@ -165,6 +167,9 @@ export async function readBackSavedStayRateOverride(review, { target, cloudTarge
     if (state.cmsSend !== false) throw new Error('RATE_OVERRIDE_CMS_MUST_BE_OFF');
     const rates = await readSavedStayNightlyRates(page, state, reviewed);
     const comparison = compareSavedStayRateOverrideReadback(bound, rates);
+    const reasons = await readSavedStayRateReasons(page, state, reviewed);
+    const reason = compareSavedStayRateOverrideReason(bound, reasons, expectedReasonDescription);
+    comparison.reasonReadback = reason.codeStatus;
     if (beforePreserved) {
       // HMS can change recordId when it saves a stay. Keep it in the pre-submit
       // drift check, but compare the stable stay identity and business fields
@@ -180,7 +185,7 @@ export async function readBackSavedStayRateOverride(review, { target, cloudTarge
       if (unknownChildAges) comparison.unknownPreservedFields = ['childAges'];
       comparison.otherStayFields = 'UNKNOWN';
     }
-    return { rates, comparison, observedAt: new Date().toISOString() };
+    return { rates, reason, comparison, observedAt: new Date().toISOString() };
   }, { headless: true, blockServiceWorkers: true, cloudTargetKey,
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(5 * 60_000)]) : AbortSignal.timeout(5 * 60_000),
     prepareContext: async context => {

@@ -13,7 +13,7 @@ following requests use the same `{ id, tool, ... }` envelope:
 
 | Tool | Required fields | Result |
 | --- | --- | --- |
-| `readSavedStayRates` | none | native nightly amounts, currency, totals and digest |
+| `readSavedStayRates` | none; optional `includeReasons: true` | native nightly amounts, currency, totals and digest; optionally saved reason descriptions |
 | `listRateOverrideReasons` | none | current native codes and descriptions; coverage may be unknown |
 | `prepareRateOverride` | `date`, `amountCents`, `currency`, `reasonCode` | one-use `preparedId`, reviewed baseline and staged change |
 | `commitRateOverride` | `preparedId` | dispatch evidence and independent readback |
@@ -28,6 +28,23 @@ The callback receives the paused native request, `continueOnce`, and the
 review binding; it must explicitly await `continueOnce` to dispatch. Neither a
 handle nor a digest grants authority. After an attempt the session requires a
 fresh read, and missing readback evidence is reported as unknown.
+
+With `includeReasons: true`, `readSavedStayRates` adds `reasons` with its
+`source`, `observedAt`, per-night `{ date, description, code }`, and date
+coverage. A missing native description is `null`. HMS currently exposes the
+saved description here, not its code, so `code` is `null`. The option does
+not change the nightly-rate digest. Without it, the existing result is unchanged.
+An unverified or unavailable native reason response adds an `issue` and unknown
+coverage; it does not erase an independently read nightly price. Identity,
+guard and browser cleanup failures remain read failures.
+
+Prepare returns `change.reasonCode` and the selected native
+`change.reasonDescription`; both are bound to the review. Commit reopens the
+stay and reports `readback.reason` with expected and observed code/description
+and separate `descriptionStatus` and `codeStatus`. A matching description does
+not prove the saved code: `verification.reasonReadback` remains `UNKNOWN`
+unless the code itself can be observed. A changed description makes the write
+`uncertain`; missing evidence remains `UNKNOWN` and requires reconciliation.
 HMS can change `recordId` on Save: readback reports it separately as
 `verification.nativeRecordId`, while the stable stay, guest and business fields
 are checked for preservation. The pre-submit drift check still includes it.
