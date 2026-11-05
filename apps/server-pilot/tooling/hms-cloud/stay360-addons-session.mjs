@@ -145,7 +145,8 @@ export async function withStay360AddOnSession(operation, options = {}) {
       if (!request || typeof request !== 'object' || Array.isArray(request)) return { outcome: 'needs_input', issue: 'ADDONS_REQUEST_INVALID' };
       if (closed && request.tool !== 'reconcile') return { outcome: 'refused', issue: 'ADDONS_FRESH_SESSION_REQUIRED' };
       if (!['read', 'list', 'prepare', 'save', 'prepareChanges', 'saveChanges', 'reconcile'].includes(request.tool)) return { outcome: 'needs_input', issue: 'ADDONS_TOOL_UNKNOWN' };
-      const unsupported = Object.keys(request).filter(key => !['tool', 'confirmation', 'guestName', 'arrivalDate', 'items', 'preparedId', 'detailIds', 'changes'].includes(key));
+      const unsupported = Object.keys(request).filter(key => !['tool', 'confirmation', 'guestName', 'arrivalDate', 'items', 'preparedId', 'detailIds', 'changes'].includes(key) ||
+        (key === 'changes' && request.tool !== 'prepareChanges') || (key === 'detailIds' && request.tool !== 'read'));
       if (unsupported.length) return { outcome: 'unsupported', issue: 'ADDONS_REQUEST_FIELDS_UNSUPPORTED', fields: unsupported };
       if (['prepareChanges', 'saveChanges'].includes(request.tool)) {
         const fields = Object.keys(request).filter(key => !['tool', 'confirmation', 'guestName', 'arrivalDate',
@@ -154,11 +155,14 @@ export async function withStay360AddOnSession(operation, options = {}) {
       }
       if (!/^\d+-\d+$/.test(request.confirmation || '')) return { outcome: 'needs_input', issue: 'INVALID_CONFIRMATION' };
       if (confirmation && request.confirmation !== confirmation) return { outcome: 'refused', issue: 'ADDONS_SESSION_TARGET_CHANGED' };
-      if (!confirmation) {
-        await readConfirmationFromStay360(page, request.confirmation, { guestName: request.guestName, arrivalDate: request.arrivalDate });
+      if (!confirmation || !currentTarget) {
+        if (!confirmation) await readConfirmationFromStay360(page, request.confirmation, { guestName: request.guestName, arrivalDate: request.arrivalDate });
         confirmation = request.confirmation;
         const read = await readStay360AddOns(page, confirmation, request.tool === 'read' ? { detailIds: request.detailIds } : {});
-        if (read.outcome !== 'ok') { closed = true; return read; }
+        if (read.outcome !== 'ok') {
+          closed = !['ADDONS_DETAIL_IDS_INVALID', 'ADDONS_DETAIL_NOT_LOADED'].includes(read.issue);
+          return read;
+        }
         currentTarget = read.target;
         if (request.tool === 'read') return read;
       }

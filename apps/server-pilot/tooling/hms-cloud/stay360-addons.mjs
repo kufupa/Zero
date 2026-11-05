@@ -228,12 +228,36 @@ async function initializeState(page) {
   return state;
 }
 
+async function assertNoUnexpectedWindows(page, state) {
+  if (!state.nativeDialog) {
+    const warning = await withDeadline(page.locator('.x-window:visible:not(.x-menu)').evaluateAll(windows => {
+      const shown = element => { const box = element.getBoundingClientRect(); return box.width > 0 && box.height > 0 && getComputedStyle(element).visibility !== 'hidden'; };
+      let recordFrames = 0;
+      for (const window of windows) {
+        if (window.matches('[data-testid="popup-OSENEX"],[data-testid="popup-LOVPOP"]') ||
+            window.querySelector('[data-testid="popup-OSENEX"],[data-testid="popup-LOVPOP"]')) continue;
+        const frames = [...window.querySelectorAll('iframe')].filter(shown);
+        if (frames.length === 1) {
+          const url = new URL(frames[0].src, location.href);
+          if (url.origin === location.origin && url.searchParams.get('initpath') === 'OSRESV' && ++recordFrames === 1) continue;
+        }
+        return { type: 'hms_window', title: window.querySelector('.x-window-header-text')?.innerText.trim() || '',
+          message: window.innerText.trim().slice(0, 4000) };
+      }
+      return null;
+    }), 10000, 'ADDONS_DIALOG_CHECK_TIMEOUT');
+    if (warning) state.nativeDialog = warning;
+  }
+  if (state.nativeDialog) fail('ADDONS_DIALOG_REQUIRES_REVIEW', 'uncertain', { nativeDialog: state.nativeDialog });
+}
+
 async function step(page, state, spec, action) {
   if (state.quarantined || state.pending) fail('ADDONS_FRESH_SESSION_REQUIRED');
   const pending = { ...spec, request: null };
   state.pending = pending;
   const received = page.waitForResponse(response => response.request() === pending.request, { timeout: 25000 }).catch(() => null);
   try {
+    await assertNoUnexpectedWindows(page, state);
     await action();
     const response = await received;
     if (!response || response.status() !== 200 || pending.rejected) fail(pending.rejected ? 'ADDONS_DISPATCH_REFUSED' : 'ADDONS_RESPONSE_UNVERIFIED');
@@ -249,7 +273,7 @@ async function step(page, state, spec, action) {
     }
     if (['reset', 'inspect', 'save', 'edit', 'remove'].includes(spec.kind)) state.rowDirty = false;
     await settled(page);
-    if (state.nativeDialog) fail('ADDONS_DIALOG_REQUIRES_REVIEW', 'uncertain', { nativeDialog: state.nativeDialog });
+    await assertNoUnexpectedWindows(page, state);
     return data;
   } catch (error) {
     state.quarantined = true; state.prepared.clear();
@@ -652,6 +676,7 @@ async function stageChange(page, state, change) {
     if (Object.hasOwn(change.patch, key)) await setField(page, state, identity, key, change.patch[key]);
   }
   const fields = await form(page, state);
+  await assertNoUnexpectedWindows(page, state);
   const mismatch = Object.keys(change.patch).filter(key => fields[key] !== requestedValue(key, change.patch[key]));
   if (mismatch.length) fail('ADDONS_REQUESTED_FIELDS_CHANGED', 'needs_input', { fields: mismatch, preview: fields });
   if (fields.itemId !== identity.itemId || fields.code !== identity.code || clean(state.values?.enhexpsequencekey) !== change.nativeId) {
