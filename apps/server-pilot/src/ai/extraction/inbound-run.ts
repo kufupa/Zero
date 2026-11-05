@@ -533,6 +533,7 @@ export async function runInboundExtraction(
         // Successful normal reads also move the thread and work items. Lock the thread before the
         // insert, as retries do, so a concurrent current-version insert cannot invert this order.
         if (row.status === 'succeeded') {
+          await lockCanonicalMailbox(tx, run.transportId);
           await tx.select({ id: mailThread.id }).from(mailThread).where(and(
             eq(mailThread.id, trigger.threadId), eq(mailThread.transportId, run.transportId)))
             .limit(1).for('no key update');
