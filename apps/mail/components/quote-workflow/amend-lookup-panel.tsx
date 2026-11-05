@@ -2094,7 +2094,8 @@ function CloudCancelSection({
         settledRun.current = state.runId;
         const result = { ...run, outcome: state.outcome, ...(state.outcome === 'cancelled' ? { statusAfter: 'Cancelled' } : {}) };
         const done = viewAfterCommit(result, run, confirmation);
-        if (done.kind === 'done') restored.current(done);
+        if (done.kind === 'done') restored.current(state.outcome === 'cancelled' && state.notice
+          ? { ...done, text: `${done.text}. HMS says: ${state.notice} No fee action was approved. Check HMS for any charge.` } : done);
       } catch {
         if (live) setReadState('failed');
       }

@@ -25,6 +25,7 @@ export type HmsWriteView = {
     state: string;
     failureClass: string | null;
     lastError: string | null;
+    cancelNotice?: string;
     evidence: HmsWriteEvidence[];
     reviewed: 'ok' | 'flag' | null;
   } | null;

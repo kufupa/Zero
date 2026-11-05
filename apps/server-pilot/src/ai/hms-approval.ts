@@ -1341,6 +1341,7 @@ async function latestWriteRun(db: DB, workItemId: string) {
       state: aiWorkflowRun.state,
       failureClass: aiWorkflowRun.failureClass,
       lastError: aiWorkflowRun.lastError,
+      metrics: aiWorkflowRun.metrics,
       idempotencyKey: aiWorkflowRun.idempotencyKey,
       promptVersion: aiWorkflowRun.promptVersion,
     })
@@ -1553,6 +1554,7 @@ export type HmsWriteStateView = {
     state: string;
     failureClass: string | null;
     lastError: string | null;
+    cancelNotice?: string;
     evidence: Array<{ eventId: string; name: string; expired: boolean }>;
     reviewed: 'ok' | 'flag' | null;
   } | null;
@@ -1753,6 +1755,9 @@ export async function hmsWriteStateOf(input: {
       state: run.state,
       failureClass: run.failureClass,
       lastError: run.lastError,
+      ...(run.state === 'succeeded' && run.metrics?.action === 'cancel' &&
+          run.metrics?.cancelNotice === 'Cancellation Penalty of 0.00 may be added to account.'
+        ? { cancelNotice: run.metrics.cancelNotice } : {}),
       evidence: evidence.map((row) => ({
         eventId: row.id,
         name: row.name,
