@@ -120,7 +120,8 @@ function matches(request, state, pending) {
   if (url.search) {
     // Native Submit carries SAVE in both the URL and the form. Check the
     // action and conflicting business values rather than pinning a URL shape.
-    if (pending.kind !== 'save' || !exact(url.searchParams, 'pageaction', 'SAVE') ||
+    if (!['save', 'edit', 'remove'].includes(pending.kind) ||
+        !exact(url.searchParams, 'pageaction', pending.kind === 'remove' ? 'DELETE' : 'SAVE') ||
         [...url.searchParams].some(([key, value]) => key.toLowerCase() === 'action' ||
           (key.toLowerCase() === 'pageaction' && key !== 'pageaction') ||
           (body.has(key) && !exact(body, key, value)))) return false;
@@ -154,16 +155,22 @@ function matches(request, state, pending) {
       exact(body, 'ONLY_DATA_REQUIRED', 'true') && !clean(body.get('enhexpsequencekey'));
   }
   if (!exact(body, 'itemtype', 'ITEM') || !exact(body, 'itemorbundlecode', pending.code) ||
-      !exact(body, 'itemid', pending.itemId) || ['recordid', 'enhexpsequencekey'].some(key =>
-        body.getAll(key).length > 1 || clean(body.get(key)))) return false;
+      !exact(body, 'itemid', pending.itemId)) return false;
+  if (pending.nativeId) {
+    if (!exact(body, 'enhexpsequencekey', pending.nativeId) ||
+        !exact(body, 'PKID', `${pending.nativeId}#HRCEN#ITEM`) ||
+        body.getAll('recordid').length > 1 || (body.has('recordid') && !exact(body, 'recordid', pending.recordId))) return false;
+  } else if (['recordid', 'enhexpsequencekey'].some(key => body.getAll(key).length > 1 || clean(body.get(key)))) return false;
   if (pending.kind === 'calculate') {
     return url.pathname === `${PATH}.getenhancedexperiencecalculations` && !body.has('pageaction') && !body.has('action');
   }
-  if (pending.kind !== 'save' || url.pathname !== PATH || !exact(body, 'pageaction', 'SAVE') || body.has('action')) return false;
+  if (!['save', 'edit', 'remove'].includes(pending.kind) || url.pathname !== PATH ||
+      !exact(body, 'pageaction', pending.kind === 'remove' ? 'DELETE' : 'SAVE') || body.has('action')) return false;
+  if (pending.kind !== 'save' && !pending.nativeId) return false;
   // A primary key for an existing item must never turn an approved insert into
   // an update, even if the visible fields still look like a new record.
-  if (body.getAll('PKID').length > 1 || (clean(body.get('PKID')) &&
-      !exact(body, 'PKID', '@[EMPTY]#HRCEN#ITEM'))) return false;
+  if (pending.kind === 'save' && (body.getAll('PKID').length > 1 || (clean(body.get('PKID')) &&
+      !exact(body, 'PKID', '@[EMPTY]#HRCEN#ITEM')))) return false;
   const item = pending.item;
   return ['quantity', 'unitprice', 'totalcost'].every((key, i) => body.getAll(key).length === 1 && decimal(body.get(key)) ===
     [item.quantity, item.unitPrice, item.totalCost][i]) &&
@@ -187,7 +194,7 @@ async function initializeState(page) {
   if (!approvals) { approvals = new WeakSet(); contextApprovals.set(page.context(), approvals); }
   await installReadOnlyGuard(page.context(), { approvedAddOnSaveRequests: approvals });
   const state = { busy: false, quarantined: false, pending: null, native: null, values: null,
-    target: null, prepared: new Map(), approvals, dispatched: false, nativeDialog: null, callbacks: new Set(), attempts: [], grid: null };
+    target: null, prepared: new Map(), approvals, dispatched: false, nativeDialog: null, callbacks: new Set(), attempts: [], grid: null, rowDirty: false };
   page.on('dialog', dialog => { state.nativeDialog = { type: dialog.type(), message: dialog.message() };
     state.quarantined = true; state.prepared.clear(); });
   await page.route('**/*', async route => {
@@ -204,7 +211,7 @@ async function initializeState(page) {
     }
     pending.request = request;
     if (pending.kind === 'open') state.native = { stayId: body.get('reservationstayid'), account: body.get('account') };
-    if (pending.kind === 'save') {
+    if (['save', 'edit', 'remove'].includes(pending.kind)) {
       try {
         if (pending.beforeDispatch) {
           const callback = Promise.resolve().then(() => pending.beforeDispatch(structuredClone(pending.dispatch)));
@@ -215,8 +222,9 @@ async function initializeState(page) {
         }
         if (state.quarantined) return route.abort();
         state.dispatched = true;
-        state.attempts.push({ index: pending.dispatch.index, item: structuredClone(pending.dispatch.item),
-          itemId: pending.itemId, nativeId: null });
+        state.attempts.push(pending.kind === 'save'
+          ? { index: pending.dispatch.index, item: structuredClone(pending.dispatch.item), itemId: pending.itemId, nativeId: null }
+          : { ...structuredClone(pending.dispatch), dispatched: true, nativeId: pending.nativeId });
         state.approvals.add(request);
       } catch { pending.rejected = true; return route.abort(); }
     }
@@ -225,16 +233,41 @@ async function initializeState(page) {
   return state;
 }
 
+async function assertNoUnexpectedWindows(page, state) {
+  if (!state.nativeDialog) {
+    const warning = await withDeadline(page.locator('.x-window:visible:not(.x-menu)').evaluateAll(windows => {
+      const shown = element => { const box = element.getBoundingClientRect(); return box.width > 0 && box.height > 0 && getComputedStyle(element).visibility !== 'hidden'; };
+      let recordFrames = 0;
+      for (const window of windows) {
+        if (window.matches('[data-testid="popup-OSENEX"],[data-testid="popup-LOVPOP"]') ||
+            window.querySelector('[data-testid="popup-OSENEX"],[data-testid="popup-LOVPOP"]')) continue;
+        const frames = [...window.querySelectorAll('iframe')].filter(shown);
+        if (frames.length === 1) {
+          const url = new URL(frames[0].src, location.href);
+          if (url.origin === location.origin && url.searchParams.get('initpath') === 'OSRESV' && ++recordFrames === 1) continue;
+        }
+        return { type: 'hms_window', title: window.querySelector('.x-window-header-text')?.innerText.trim() || '',
+          message: window.innerText.trim().slice(0, 4000) };
+      }
+      return null;
+    }), 10000, 'ADDONS_DIALOG_CHECK_TIMEOUT');
+    if (warning) state.nativeDialog = warning;
+  }
+  if (state.nativeDialog) fail('ADDONS_DIALOG_REQUIRES_REVIEW', 'uncertain', { nativeDialog: state.nativeDialog });
+}
+
 async function step(page, state, spec, action) {
   if (state.quarantined || state.pending) fail('ADDONS_FRESH_SESSION_REQUIRED');
   const pending = { ...spec, request: null };
   state.pending = pending;
   const received = page.waitForResponse(response => response.request() === pending.request, { timeout: 25000 }).catch(() => null);
   try {
+    await assertNoUnexpectedWindows(page, state);
     await action();
     const response = await received;
     if (!response || response.status() !== 200 || pending.rejected) fail(pending.rejected ? 'ADDONS_DISPATCH_REFUSED' : 'ADDONS_RESPONSE_UNVERIFIED');
     const data = nativeResponse(await withDeadline(response.text(), 25000, 'ADDONS_RESPONSE_BODY_TIMEOUT'));
+    if (['edit', 'remove'].includes(spec.kind) && !data.values) fail('ADDONS_RESPONSE_UNVERIFIED');
     const grid = nativeGrid(data);
     if (grid?.METADATA?.GRIDNAME === 'OSENEX') state.grid = structuredClone(grid);
     if (data.values) {
@@ -243,8 +276,9 @@ async function step(page, state, spec, action) {
           clean(v.account) !== state.native.account) fail('ADDONS_NATIVE_TARGET_MISMATCH');
       state.values = v;
     }
+    if (['reset', 'inspect', 'save', 'edit', 'remove'].includes(spec.kind)) state.rowDirty = false;
     await settled(page);
-    if (state.nativeDialog) fail('ADDONS_DIALOG_REQUIRES_REVIEW', 'uncertain', { nativeDialog: state.nativeDialog });
+    await assertNoUnexpectedWindows(page, state);
     return data;
   } catch (error) {
     state.quarantined = true; state.prepared.clear();
@@ -367,6 +401,7 @@ async function setField(page, state, item, key, requested) {
   const expected = requestedValue(key, requested);
   if (current[key] === expected) return;
   if (!current.controls[key].editable) fail('ADDONS_FIELD_NOT_EDITABLE', 'unsupported', { field: key });
+  state.rowDirty = true;
   const input = popup(page).locator(`[name="${FIELDS[key]}"]:visible`);
   const edit = async () => {
     if (COMBOS.has(key)) {
@@ -389,7 +424,8 @@ async function setField(page, state, item, key, requested) {
   if (key === 'comment' || key === 'folio') {
     // These controls do not change price in the observed native form.
     await edit(); await settled(page);
-  } else await step(page, state, { kind: 'calculate', code: item.code, itemId: item.itemId }, edit);
+  } else await step(page, state, { kind: 'calculate', code: item.code, itemId: item.itemId,
+    nativeId: item.nativeId, recordId: item.recordId }, edit);
   current = await form(page, state);
   if (current[key] !== expected) fail('ADDONS_FIELD_READBACK_MISMATCH', 'uncertain', { field: key });
 }
@@ -442,29 +478,45 @@ async function run(page, operation) {
   finally { if (acquired) state.busy = false; }
 }
 
+async function inspectRow(page, state, nativeId) {
+  // Native Clear reloads an empty form without requiring insertion permission.
+  // It discards staged values and permits the same saved row to load again.
+  if (state.rowDirty || clean(state.values?.enhexpsequencekey) === nativeId) {
+    await step(page, state, { kind: 'reset' }, () => button(page, 'clear'));
+  }
+  const recordId = await popup(page).evaluate((element, wanted) => {
+    const grid = Ext.ComponentQuery.query('grid').find(g => g.el?.dom && element.contains(g.el.dom) && g.el.dom.querySelector('[data-testid="listdetailgrid"]'));
+    const records = grid?.getStore().getRange().filter(record => String(record.data.enhexpsequencekey ?? record.data.recordid ?? record.data.id ?? '') === wanted);
+    return records?.length === 1 ? records[0].internalId : null;
+  }, nativeId);
+  if (!recordId) fail('ADDONS_DETAIL_NOT_LOADED', 'needs_input', { nativeId });
+  const row = popup(page).locator('.x-grid-row').filter({ has: page.locator(`[data-recordid="${recordId}"]`) });
+  const direct = popup(page).locator(`.x-grid-row[data-recordid="${recordId}"]`);
+  const selected = await direct.count() === 1 ? direct : row;
+  if (await selected.count() !== 1) fail('ADDONS_DETAIL_ROW_NOT_VISIBLE');
+  await step(page, state, { kind: 'inspect', nativeId }, () => selected.click());
+  if (clean(state.values?.enhexpsequencekey) !== nativeId) fail('ADDONS_DETAIL_ID_MISMATCH');
+  return { nativeId, fields: await form(page, state) };
+}
+
 export async function readStay360AddOns(page, confirmation, { detailIds = [] } = {}) {
   return run(page, async state => {
     if (!Array.isArray(detailIds) || detailIds.some(id => typeof id !== 'string' || !id || /[\p{Cc}]/u.test(id))) fail('ADDONS_DETAIL_IDS_INVALID', 'needs_input');
     await ensureOpen(page, state, confirmation);
     const loaded = await loadedRows(page, 'listdetailgrid', popup(page));
     const details = [];
-    for (const nativeId of detailIds) {
-      const recordId = await popup(page).evaluate((element, wanted) => {
-        const grid = Ext.ComponentQuery.query('grid').find(g => g.el?.dom && element.contains(g.el.dom) && g.el.dom.querySelector('[data-testid="listdetailgrid"]'));
-        const records = grid?.getStore().getRange().filter(record => String(record.data.enhexpsequencekey ?? record.data.recordid ?? record.data.id ?? '') === wanted);
-        return records?.length === 1 ? records[0].internalId : null;
-      }, nativeId);
-      if (!recordId) fail('ADDONS_DETAIL_NOT_LOADED', 'needs_input', { nativeId });
-      const row = popup(page).locator('.x-grid-row').filter({ has: page.locator(`[data-recordid="${recordId}"]`) });
-      const direct = popup(page).locator(`.x-grid-row[data-recordid="${recordId}"]`);
-      const selected = await direct.count() === 1 ? direct : row;
-      if (await selected.count() !== 1) fail('ADDONS_DETAIL_ROW_NOT_VISIBLE');
-      await step(page, state, { kind: 'inspect', nativeId }, () => selected.click());
-      if (clean(state.values?.enhexpsequencekey) !== nativeId) fail('ADDONS_DETAIL_ID_MISMATCH');
-      details.push({ nativeId, fields: await form(page, state) });
-    }
+    for (const nativeId of detailIds) details.push(await inspectRow(page, state, nativeId));
     return { outcome: 'ok', confirmation, propertyCode: 'HRCEN', target: structuredClone(state.target),
       rows: loaded.rows, columns: loaded.columns, details,
+      items: loaded.rows.map(row => ({ nativeId: clean(row.enhexpsequencekey), code: clean(row.itemorbundlecode) || null,
+        name: clean(row.itemdesc), itemId: clean(row.itemid), quantity: decimal(row.quantity),
+        startDate: day(row.startdate), endDate: day(row.enddate), totalCost: decimal(row.totalcost),
+        currency: clean(row.enxcurrency) || null, unitPrice: decimal(row.unitprice),
+        frequency: clean(row.frequency) || null, pricingControl: clean(row.pricingcontrol) || null,
+        folio: clean(row.folio) || null, comment: row.comment == null ? null : String(row.comment) })).map(item => {
+          const fields = details.find(detail => detail.nativeId === item.nativeId)?.fields;
+          return fields ? Object.fromEntries(Object.entries(item).map(([key, value]) => [key, fields[key] ?? value])) : item;
+        }),
       coverage: coverage(state, loaded.rows),
       notes: await takeHandledNotes(page) };
   });
@@ -527,7 +579,7 @@ export async function prepareStay360AddOns(page, confirmation, items) {
     state.prepared.clear();
     const baseline = await loadedRows(page, 'listdetailgrid', popup(page)), previews = [];
     for (const requested of items) previews.push(await stageOne(page, state, requested));
-    const preparedId = randomUUID(), prepared = { preparedId, confirmation, target: structuredClone(state.target),
+    const preparedId = randomUUID(), prepared = { kind: 'add', preparedId, confirmation, target: structuredClone(state.target),
       native: structuredClone(state.native), items: structuredClone(previews), requestedItems: structuredClone(items),
       baseline: baseline.rows, baselineCoverage: coverage(state, baseline.rows) };
     state.prepared.set(preparedId, prepared);
@@ -543,14 +595,18 @@ async function freshBaseline(prepared) {
     await readConfirmationFromStay360(page, prepared.confirmation, {
       guestName: prepared.target.guestName, arrivalDate: prepared.target.arrival,
     });
-    return readStay360AddOns(page, prepared.confirmation);
+    const listing = await readStay360AddOns(page, prepared.confirmation);
+    if (listing.outcome !== 'ok' || !prepared.changes) return listing;
+    const present = new Set(listing.rows.map(row => clean(row.enhexpsequencekey)));
+    const detailIds = prepared.changes.map(change => change.nativeId).filter(id => present.has(id));
+    return detailIds.length ? readStay360AddOns(page, prepared.confirmation, { detailIds }) : listing;
   }, { headless: true, blockServiceWorkers: true });
 }
 
 export async function saveStay360AddOns(page, confirmation, preparedId, options = {}) {
   return run(page, async state => {
     const prepared = state.prepared.get(preparedId);
-    if (!prepared || prepared.confirmation !== confirmation) fail('ADDONS_PREPARED_ID_REQUIRED');
+    if (!prepared || prepared.kind !== 'add' || prepared.confirmation !== confirmation) fail('ADDONS_PREPARED_ID_REQUIRED');
     if (typeof options.authorize !== 'function') fail('ADDONS_SAVE_AUTHORIZATION_REQUIRED');
     await ensureOpen(page, state, confirmation);
     if (JSON.stringify(state.target) !== JSON.stringify(prepared.target) || JSON.stringify(state.native) !== JSON.stringify(prepared.native)) fail('ADDONS_TARGET_CHANGED');
@@ -604,6 +660,159 @@ export async function saveStay360AddOns(page, confirmation, preparedId, options 
     } finally {
       // Quarantine prevents a late callback from sending its paused request.
       // Keep the caller's reservation lock until its journal callback settles.
+      await Promise.allSettled([...state.callbacks]);
+    }
+  });
+}
+
+const recordValues = fields => ({ ...approvedValues(fields), itemId: fields.itemId, name: fields.name, status: fields.status });
+const sameRecord = (left, right) => JSON.stringify(recordValues(left)) === JSON.stringify(recordValues(right));
+
+async function actionAvailable(page, name) {
+  return popup(page).evaluate((root, wanted) => {
+    const nodes = [...root.querySelectorAll(`[data-testid="${wanted}"]`)];
+    const anchor = nodes.length === 1 ? nodes[0].closest('a') : null;
+    return Boolean(anchor && !anchor.classList.contains('x-item-disabled') && !Ext.getCmp(anchor.id)?.disabled);
+  }, name);
+}
+
+function validateChanges(changes) {
+  if (!Array.isArray(changes) || !changes.length || changes.length > 100) fail('ADDONS_CHANGES_REQUIRED', 'needs_input');
+  const ids = new Set();
+  for (const change of changes) {
+    if (!change || typeof change !== 'object' || Array.isArray(change) ||
+        !['edit', 'remove'].includes(change.operation) || typeof change.nativeId !== 'string' || !/^\d+$/.test(change.nativeId)) {
+      fail('ADDONS_CHANGE_INVALID', 'needs_input');
+    }
+    if (ids.has(change.nativeId)) fail('ADDONS_DUPLICATE_ROW_CHANGE', 'needs_input');
+    ids.add(change.nativeId);
+    const keys = change.operation === 'edit' ? ['operation', 'nativeId', 'patch'] : ['operation', 'nativeId'];
+    const unsupported = Object.keys(change).filter(key => !keys.includes(key));
+    if (unsupported.length) fail('ADDONS_FIELDS_UNSUPPORTED', 'unsupported', { fields: unsupported });
+    if (change.operation === 'edit') {
+      const patch = change.patch;
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch) || !Object.keys(patch).length) fail('ADDONS_PATCH_REQUIRED', 'needs_input');
+      if (Object.hasOwn(patch, 'code')) fail('ADDONS_FIELD_NOT_EDITABLE', 'unsupported', { field: 'code' });
+      for (const key of ['frequency', 'pricingControl', 'folio', 'comment']) {
+        if (Object.hasOwn(patch, key) && typeof patch[key] !== 'string') fail('ADDONS_FIELD_INVALID', 'needs_input', { field: key });
+      }
+      // Reuse the business-field validator; the code is resolved from the saved row.
+      validateItems([{ ...patch, code: 'existing-row' }]);
+    }
+  }
+}
+
+async function stageChange(page, state, change) {
+  let before;
+  try { before = await inspectRow(page, state, change.nativeId); } catch (error) {
+    if (error.message === 'ADDONS_DETAIL_NOT_LOADED') fail('ADDONS_RECORD_NOT_FOUND', 'needs_input', { nativeId: change.nativeId });
+    throw error;
+  }
+  if (scalar(state.values?.itemtype) !== 'ITEM') fail('ADDONS_ITEM_TYPE_UNSUPPORTED', 'unsupported');
+  const identity = { code: before.fields.code, itemId: before.fields.itemId, nativeId: change.nativeId,
+    recordId: clean(state.values?.recordid) };
+  if (!identity.code || !identity.itemId) fail('ADDONS_ROW_IDENTITY_UNVERIFIED');
+  if (!await actionAvailable(page, change.operation === 'edit' ? 'submit' : 'removerecord')) {
+    fail('ADDONS_CONTROL_UNAVAILABLE', 'unsupported', { nativeId: change.nativeId, operation: change.operation });
+  }
+  if (change.operation === 'remove') return { before, after: null, identity };
+  for (const key of ['quantity', 'startDate', 'endDate', 'frequency', 'pricingControl', 'unitPrice', 'folio', 'comment']) {
+    if (Object.hasOwn(change.patch, key)) await setField(page, state, identity, key, change.patch[key]);
+  }
+  const fields = await form(page, state);
+  await assertNoUnexpectedWindows(page, state);
+  const mismatch = Object.keys(change.patch).filter(key => fields[key] !== requestedValue(key, change.patch[key]));
+  if (mismatch.length) fail('ADDONS_REQUESTED_FIELDS_CHANGED', 'needs_input', { fields: mismatch, preview: fields });
+  if (fields.itemId !== identity.itemId || fields.code !== identity.code || clean(state.values?.enhexpsequencekey) !== change.nativeId) {
+    fail('ADDONS_ROW_IDENTITY_UNVERIFIED');
+  }
+  if (fields.status !== 'VALID') fail('ADDONS_NATIVE_VALIDATION_REQUIRED', 'needs_input', { preview: fields });
+  return { before, after: { nativeId: change.nativeId, fields }, identity };
+}
+
+/** Prepare exact-row partial edits or removal, without dispatching Submit/Delete. */
+export async function prepareStay360AddOnChanges(page, confirmation, changes) {
+  try { changes = structuredClone(changes); } catch { return { outcome: 'needs_input', issue: 'ADDONS_CHANGE_INVALID' }; }
+  return run(page, async state => {
+    validateChanges(changes);
+    await ensureOpen(page, state, confirmation);
+    state.prepared.clear();
+    const preparedChanges = [];
+    for (const [index, requested] of changes.entries()) {
+      const staged = await stageChange(page, state, requested);
+      preparedChanges.push({ index, ...requested, ...staged });
+    }
+    const preparedId = randomUUID();
+    state.prepared.set(preparedId, { kind: 'changes', preparedId, confirmation, target: structuredClone(state.target),
+      native: structuredClone(state.native), changes: structuredClone(preparedChanges) });
+    return { outcome: 'prepared', preparedId, confirmation, propertyCode: 'HRCEN', saved: false,
+      changes: preparedChanges.map(({ index, operation, nativeId, before, after }) => ({ index, operation, nativeId, before, after,
+        changedFields: after ? Object.keys(recordValues(after.fields)).filter(key => recordValues(before.fields)[key] !== recordValues(after.fields)[key]) : [],
+        warnings: [], financialEffect: 'unknown' })) };
+  });
+}
+
+/** Sequential corrections; trusted authorization is required, journal/lock callbacks are optional. */
+export async function saveStay360AddOnChanges(page, confirmation, preparedId, options = {}) {
+  return run(page, async state => {
+    const prepared = state.prepared.get(preparedId);
+    if (!prepared || prepared.kind !== 'changes' || prepared.confirmation !== confirmation) fail('ADDONS_PREPARED_ID_REQUIRED');
+    if (typeof options.authorize !== 'function') fail('ADDONS_SAVE_AUTHORIZATION_REQUIRED');
+    await ensureOpen(page, state, confirmation);
+    if (JSON.stringify(state.target) !== JSON.stringify(prepared.target) || JSON.stringify(state.native) !== JSON.stringify(prepared.native)) fail('ADDONS_TARGET_CHANGED');
+    if (await options.authorize(structuredClone(prepared)) !== true) fail('ADDONS_SAVE_NOT_AUTHORIZED');
+    state.prepared.delete(preparedId);
+    const attempts = [], receipts = [];
+    state.attempts = attempts;
+    state.dispatched = false;
+    let baseline = null;
+    const result = outcome => ({ outcome, kind: 'changes', confirmation, preparedId, requestedCount: prepared.changes.length,
+      changes: prepared.changes.map(({ index, operation, nativeId, before, after }) => ({ index, operation, nativeId, before, after })),
+      attempts: structuredClone(attempts), receipts: structuredClone(receipts), baseline: baseline?.rows || [], baselineCoverage: baseline?.coverage,
+      target: prepared.target });
+    try {
+      for (const approved of prepared.changes) {
+        const fresh = await (options.readBaseline || freshBaseline)({ ...structuredClone(prepared), changes: [structuredClone(approved)] });
+        if (fresh?.outcome !== 'ok' || !Array.isArray(fresh.rows) ||
+            (approved.operation === 'remove' && fresh.coverage?.complete !== true)) fail('ADDONS_BASELINE_INCOMPLETE', 'needs_input');
+        if (JSON.stringify(fresh.target) !== JSON.stringify(prepared.target) ||
+            JSON.stringify(await target(page, confirmation)) !== JSON.stringify(prepared.target)) fail('ADDONS_TARGET_CHANGED');
+        baseline ||= fresh;
+        const records = fresh.details?.filter(detail => detail.nativeId === approved.nativeId) || [];
+        if (records.length !== 1 || !sameRecord(records[0].fields, approved.before.fields)) {
+          fail('ADDONS_RECORD_CHANGED', 'needs_input', { nativeId: approved.nativeId, current: records[0] || null });
+        }
+        const staged = await stageChange(page, state, approved);
+        if (!sameRecord(staged.before.fields, approved.before.fields)) fail('ADDONS_RECORD_CHANGED', 'needs_input', { current: staged.before });
+        if (approved.after && !sameRecord(staged.after.fields, approved.after.fields)) {
+          fail('ADDONS_PRICE_OR_FIELDS_CHANGED', 'needs_input', { preview: staged.after });
+        }
+        if (approved.after && sameRecord(approved.before.fields, approved.after.fields)) {
+          receipts.push({ index: approved.index, operation: approved.operation, nativeId: approved.nativeId,
+            status: 'unchanged', dispatched: false, before: approved.before, after: approved.after });
+          continue;
+        }
+        const dispatch = { index: approved.index, operation: approved.operation, nativeId: approved.nativeId, confirmation, preparedId, target: prepared.target,
+          before: approved.before, after: approved.after, baselineCoverage: fresh.coverage, baselineIds: fresh.rows.map(row => clean(row.enhexpsequencekey)).filter(Boolean) };
+        const item = approved.after?.fields || approved.before.fields;
+        await step(page, state, { kind: approved.operation, ...staged.identity, item, dispatch,
+          beforeDispatch: options.beforeDispatch }, () => button(page, approved.operation === 'edit' ? 'submit' : 'removerecord'));
+        const receipt = { ...dispatch, dispatched: true, status: 'awaiting_readback' };
+        receipts.push(receipt);
+        if (options.afterDispatch) await options.afterDispatch(structuredClone(receipt));
+      }
+      state.quarantined = true;
+      return result(attempts.length ? 'awaiting_readback' : 'unchanged');
+    } catch (error) {
+      state.quarantined = true;
+      const dispatched = attempts.length > 0 || state.callbacks.size > 0;
+      return { ...result(dispatched ? 'uncertain' : problem(error).outcome), ...problem(error),
+        outcome: dispatched ? 'uncertain' : problem(error).outcome,
+        needsNativeReview: ['ADDONS_DIALOG_REQUIRES_REVIEW', 'ADDONS_NATIVE_RESPONSE_INVALID'].includes(error.message),
+        next: dispatched ? 'reconcile_before_retry' : 'fresh_session' };
+    } finally {
+      state.quarantined = true;
+      state.prepared.clear();
       await Promise.allSettled([...state.callbacks]);
     }
   });

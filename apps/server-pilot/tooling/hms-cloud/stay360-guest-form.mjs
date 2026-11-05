@@ -96,6 +96,8 @@ export async function readGuestFormsFromStay360(page, confirmation) {
       return !nativeGuestId || formValue('guestid') === clean(nativeGuestId);
     }, { gridId: initial.id, rowIndex: row.index, firstName: row.firstName,
       lastName: row.lastName, nativeGuestId: row.nativeGuestId }, { timeout: 20_000 });
+    // Identity readiness does not prove ancillary field initialization ended.
+    // Keep this observation window until that native load is correlated.
     await page.waitForTimeout(300);
     notes.push(...await dismissNotesOrThrow(page, { allowRecordFrame: true }));
     notes.push(...await dismissNotesOrThrow(frame));

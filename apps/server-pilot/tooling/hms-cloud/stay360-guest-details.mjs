@@ -1,6 +1,7 @@
 // Read Guest Details from the already-open Guest Stay record, without editing it.
 import { dismissNotesOrThrow, takeHandledNotes } from './stay360-notes.mjs';
 import { openStay360RecordTab } from './stay360-record-tabs.mjs';
+import { expandStay360Panel } from './stay360-panel-expansion.mjs';
 
 export async function readGuestDetailsFromStay360(page, confirmation) {
   const { frame, notes } = await openStay360RecordTab(page, confirmation, 'Guest Details');
@@ -37,12 +38,12 @@ export async function readGuestDetailsFromStay360(page, confirmation) {
   const collapsed = frame.locator('.x-panel.x-panel-collapsed:visible');
   for (let count = 0; await collapsed.count(); count += 1) {
     if (count >= 20) throw new Error('GUEST_DETAILS_PANELS_NOT_EXPANDED');
-    const expand = collapsed.first().locator(':scope > .x-panel-header .x-tool').filter({
+    const panel = collapsed.first();
+    const expand = panel.locator(':scope > .x-panel-header .x-tool').filter({
       has: frame.locator('img[class*="x-tool-expand-"]'),
     });
     if (await expand.count() !== 1) throw new Error('GUEST_DETAILS_EXPAND_NOT_UNIQUE');
-    await expand.click();
-    await page.waitForTimeout(150);
+    await expandStay360Panel(frame, panel, expand);
     notes.push(...await dismissNotesOrThrow(page, { allowRecordFrame: true }));
     notes.push(...await dismissNotesOrThrow(frame));
   }

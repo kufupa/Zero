@@ -454,6 +454,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       return route.abort();
     };
     await page.route('**/*',guard);
+    let validation = [], change = [];
     if (!recheckExistingRate) {
       const input = page.locator('input[name="rateplan"]:visible');
       if (await input.count() !== 1 || !await input.isEditable()) throw new Error('RATE_FIELD_UNAVAILABLE');
@@ -461,8 +462,14 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       await input.fill(code,{timeout:5000});
       if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
       await input.press('Tab',{timeout:12000});
-      await page.waitForTimeout(1500);
+      // Observe both requests caused by this blur before taking the resulting draft.
+      const deadline = Date.now() + 10000;
+      while (responses.length < 2 && !nativeDialog && Date.now() < deadline) await page.waitForTimeout(100);
       if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+      validation = responses.filter(item => item.kind === 'validation');
+      change = responses.filter(item => item.kind === 'change');
+      if (validation.length !== 1 || change.length !== 1 || requests.size !== 2) throw new Error('HMS_RESPONSE_UNVERIFIED');
+      await bounded(validateResponses(validation[0].response,change[0].response,code,dates,sessionId,before),10000,'HMS_RESPONSE_TIMEOUT');
       const onlyAsset = blocked.every(item => item.method === 'GET' && item.originMatches && !item.query && item.path === ASSET);
       if (!onlyAsset) throw new Error('UNEXPECTED_REQUEST_BLOCKED');
       await page.waitForFunction(() => !Ext.Ajax.isLoading(),null,{timeout:10000});
@@ -480,15 +487,6 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     }
     if (after.rate !== code || after.rateValue !== code || after.rateSubmit !== code || after.rateErrors.length || after.rateInvalid === 'true') {
       throw new Error('RATE_READBACK_UNVERIFIED');
-    }
-    let validation = [], change = [];
-    if (!recheckExistingRate) {
-      const deadline = Date.now() + 10000;
-      while (responses.length < 2 && Date.now() < deadline) await page.waitForTimeout(100);
-      validation = responses.filter(item => item.kind === 'validation');
-      change = responses.filter(item => item.kind === 'change');
-      if (validation.length !== 1 || change.length !== 1 || requests.size !== 2) throw new Error('HMS_RESPONSE_UNVERIFIED');
-      await bounded(validateResponses(validation[0].response,change[0].response,code,dates,sessionId,before),10000,'HMS_RESPONSE_TIMEOUT');
     }
     if (!proofsCurrent(page,dates)) throw new Error('DRAFT_IDENTITY_CHANGED');
     let rateAvailability = null, priceUnconfirmed = false;
@@ -527,8 +525,11 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       if (!nativeAvailability) {
         throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
       }
-      await bounded(page.waitForLoadState('networkidle',{timeout:10000}),12000,'RATE_AVAILABILITY_READBACK_TIMEOUT');
-      await bounded(page.waitForFunction(() => !Ext.Ajax.isLoading(),null,{timeout:10000}),12000,'RATE_AVAILABILITY_READBACK_TIMEOUT');
+      await bounded(page.waitForFunction(() => {
+        const shown = el => { const box = el.getBoundingClientRect(); return box.width > 0 && box.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+        return typeof globalThis.Ext?.Ajax?.isLoading === 'function' && !Ext.Ajax.isLoading() &&
+          ![...document.querySelectorAll('.x-mask,.x-mask-msg,.x-loadmask')].some(shown);
+      },null,{timeout:10000}),12000,'RATE_AVAILABILITY_READBACK_TIMEOUT');
       if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
       const availabilityResponses = responses.filter(item => item.kind === 'availability');
       if (availabilityResponses.length !== 1 || availabilityResponses[0].response !== availabilityResponse ||

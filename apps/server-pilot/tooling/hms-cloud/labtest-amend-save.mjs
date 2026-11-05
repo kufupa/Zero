@@ -131,6 +131,7 @@ export function isRetainRatesSaveSuccess(body) {
 /** Verify the whole visible question before choosing the exact previously approved answer. */
 async function nativeRateQuestionButton(frame, choice, bounded, questionText) {
   const dialogs = frame.locator('.x-window:visible:not(.x-menu)');
+  await bounded(frame.getByText(questionText, { exact: true }).waitFor({ state: 'visible', timeout: 5_000 }));
   await bounded(dialogs.first().waitFor({ state: 'visible', timeout: 5_000 }));
   if (await bounded(dialogs.count()) !== 1) throw new Error('RETAIN_DIALOG_UNVERIFIED');
   const dialog = dialogs.first(), question = dialog.getByText(questionText, { exact: true });
@@ -507,6 +508,8 @@ export async function runLabtestAmendSave(page, {
       if (!withinDeadline()) throw new Error(stopReason || 'AMEND_TIMEOUT');
       if (!wrapperCompleted) throw new Error('SAVE_DISPATCH_UNCERTAIN');
     }
+    // Keep observing optional dialogs after wrapper completion; neither a 200
+    // nor a completed dispatch wrapper excludes later client-side prompts.
     await bounded(page.waitForTimeout(500));
     if (!withinDeadline()) throw new Error(stopReason || 'AMEND_TIMEOUT');
     if (retainRate) {
@@ -528,7 +531,7 @@ export async function runLabtestAmendSave(page, {
           !(await bounded(routeChain.waitForSecond())) || !withinDeadline()) throw new Error('RETAIN_SAVE_UNVERIFIED');
       const retainResponse = response.text ? parseNativePricingJson(await bounded(response.text())) : await bounded(response.json());
       if (extendRate && isExtendOverrideRatesQuestion(retainResponse)) {
-        await bounded(page.waitForTimeout(500));
+        await nativeRateQuestionButton(prepared.frame, 'yes', bounded, EXTEND_OVERRIDE_QUESTION);
         extendSnapshot = structuredClone(await bounded(extendRate.snapshot(bounded, prepared, staged, { fence, scope })));
         if (!withinDeadline() || blocked !== blockedAtDispatch || nativeDialog) throw new Error('EXTEND_OVERRIDE_QUESTION_UNVERIFIED');
         const pendingExtend = page.waitForResponse(item => item.request() === extendRequest, { timeout: timeoutMs }).catch(() => null);
@@ -540,6 +543,7 @@ export async function runLabtestAmendSave(page, {
             !(await bounded(routeChain.waitForThird())) || !withinDeadline() ||
             !isRetainRatesSaveSuccess(response.text ? parseNativePricingJson(await bounded(response.text())) : await bounded(response.json()))) throw new Error('EXTEND_OVERRIDE_SAVE_UNVERIFIED');
       } else if (!isRetainRatesSaveSuccess(retainResponse)) throw new Error('RETAIN_SAVE_UNVERIFIED');
+      // No further dialog is positively expected; keep the absence window.
       await bounded(page.waitForTimeout(500));
       if (!withinDeadline()) throw new Error(stopReason || 'AMEND_TIMEOUT');
       }
