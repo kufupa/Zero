@@ -277,6 +277,8 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     const policy = policyResponse?.status() === 200 ? await policyResponse.json().catch(() => null) : null;
     action.check();
     armed = false;
+    // A response can precede the reason/fee dialog. Retain the observation
+    // window until a terminal native handler state excludes a later dialog.
     await page.waitForTimeout(1_000);
     const windows = frame.locator('.x-window:visible:not(.x-menu)');
     let dialogs = await windows.evaluateAll((windows) =>
@@ -313,6 +315,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
               throw new Error('CANCEL_CHARGE_CHANGED');
             }
             await button.click({ timeout: timeoutMs, noWaitAfter: true });
+            // Fee acceptance has no established terminal dialog signal.
             await page.waitForTimeout(1_000);
             dialogs = await windows.evaluateAll((items) => items.map((item) => item.innerText.trim())).catch(() => []);
             fee = dialogs.some((value) => /penalt|fee|charge|deposit/i.test(value) && !/cancellation reason/i.test(value));
@@ -625,6 +628,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     response = await pending;
     action.check();
     armed = false;
+    // A Save response does not establish absence of a later penalty notice.
     await page.waitForTimeout(1_500);
     let dialogs = await windows.evaluateAll((items) => items.map((item) => item.innerText.trim())).catch(() => []);
     action.check();
@@ -660,6 +664,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
             chargeApproved = true;
             chargeArmed = true;
             await button.click({ timeout: timeoutMs, noWaitAfter: true });
+            // Dismissal/HTTP success does not prove a posted charge or no next dialog.
             await page.waitForTimeout(1_500);
             dialogs = await windows.evaluateAll((items) => items.map((item) => item.innerText.trim())).catch(() => []);
             fee = dialogs.some((value) => /penalt|fee|charge|deposit/i.test(value));

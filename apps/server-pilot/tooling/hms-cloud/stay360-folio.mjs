@@ -62,7 +62,9 @@ export async function readFolioFromStay360(page, confirmation, { timeoutMs = 100
     if (!store || typeof store.on !== 'function' || typeof store.un !== 'function' ||
         typeof store.isLoading !== 'function' || store.isLoading()) return false;
     if (!button || !grids[0].contains(button)) return false;
-    const state = { store, button, gridId: grids[0].id, clicked: false, clickedAt: null, beforeCount: 0, started: false, finished: false, success: null, changed: 0, refreshed: 0 };
+    const candidateView = globalThis.Ext?.getCmp?.(grids[0].id)?.getView?.();
+    const view = typeof candidateView?.on === 'function' && typeof candidateView?.un === 'function' ? candidateView : null;
+    const state = { store, view, button, gridId: grids[0].id, clicked: false, clickedAt: null, beforeCount: 0, started: false, finished: false, success: null, changed: 0, refreshed: 0, renderedChange: 0 };
     state.click = () => { state.clicked = true; state.clickedAt = Date.now(); };
     state.before = () => { if (state.clicked) { state.started = true; state.beforeCount += 1; } };
     state.load = (_store, _records, success) => {
@@ -70,11 +72,13 @@ export async function readFolioFromStay360(page, confirmation, { timeoutMs = 100
     };
     state.change = () => { if (state.clicked) state.changed += 1; };
     state.refresh = () => { if (state.clicked && state.changed) state.refreshed += 1; };
+    state.render = () => { if (state.clicked && state.changed) state.renderedChange = state.changed; };
     button.addEventListener('click', state.click, true);
     store.on('datachanged', state.change);
     store.on('refresh', state.refresh);
     store.on('beforeload', state.before);
     store.on('load', state.load);
+    view?.on('refresh', state.render);
     globalThis[key] = state;
     return true;
   }, { key, button });
@@ -135,8 +139,25 @@ export async function readFolioFromStay360(page, confirmation, { timeoutMs = 100
     } catch (error) {
       if (error?.name !== 'TimeoutError') throw error;
     }
-    // Let the rendered view catch up with the store's load event.
-    await page.waitForTimeout(1200);
+    // A store event can precede rendering. Observe this view's refresh for the
+    // current data generation; legacy/unobserved paths retain their window.
+    let viewReady = false;
+    const renderDeadline = Date.now() + 1200;
+    if (await frame.evaluate((key) => Boolean(globalThis[key]?.view), key)) {
+      try {
+        await frame.waitForFunction((key) => {
+          const state = globalThis[key], grid = document.getElementById(state?.gridId);
+          return state?.changed > 0 && state.renderedChange === state.changed &&
+            !state.store.isLoading() && grid && globalThis.Ext?.getCmp?.(grid.id)?.getStore?.() === state.store &&
+            globalThis.Ext?.getCmp?.(grid.id)?.getView?.() === state.view;
+        }, key, { timeout: Math.min(timeoutMs, Math.max(1, renderDeadline - Date.now())) });
+        viewReady = true;
+      } catch (error) {
+        if (error?.name !== 'TimeoutError') throw error;
+      }
+    }
+    const remainingRenderWindow = Math.max(0, renderDeadline - Date.now());
+    if (!viewReady && remainingRenderWindow) await page.waitForTimeout(remainingRenderWindow);
     notes.push(...await dismissNotesOrThrow(page, { allowRecordFrame: true }));
     notes.push(...await dismissNotesOrThrow(frame));
     const headers = page.locator('h1.recordcode:visible');
@@ -258,6 +279,7 @@ export async function readFolioFromStay360(page, confirmation, { timeoutMs = 100
       state.store.un('refresh', state.refresh);
       state.store.un('beforeload', state.before);
       state.store.un('load', state.load);
+      state.view?.un('refresh', state.render);
       delete globalThis[key];
     }, key).catch(() => {});
     if (!uncertain) await page.unroute('**/*', fence);

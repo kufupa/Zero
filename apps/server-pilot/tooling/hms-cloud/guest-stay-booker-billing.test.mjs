@@ -164,7 +164,8 @@ function nativeFormPage(options = {}) {
     arrivaldate: '01-JAN-2027', departuredate: '03-JAN-2027', caller: '', udfchar06: '', billingreference: '' };
   const elements = Object.entries(initial).map(([name, value]) => ({ id: `${name}-inputEl`, name, value,
     type: 'text', tagName: 'INPUT', offsetWidth: 1, offsetHeight: 1, maxLength: 50,
-    readOnly: false, disabled: false, closest: () => null, contains: () => false, getAttribute: () => null }));
+    readOnly: false, disabled: false, isConnected: true,
+    closest: () => null, contains: () => false, getAttribute: () => null, dispose: async () => {} }));
   const root = { contains: (element) => elements.includes(element), querySelectorAll: () => elements };
   for (const element of elements) element.parentElement = root;
   const form = { el: { dom: root }, getRecord: () => ({ data }) };
@@ -213,10 +214,14 @@ function nativeFormPage(options = {}) {
         }
       }
     },
+    async waitForFunction(fn, arg) {
+      if (!await page.evaluate(fn, arg)) throw new Error('SYNTHETIC_WAIT_UNSATISFIED');
+    },
     locator(selector) {
       const name = /\[name="([^"]+)"\]/.exec(selector)?.[1];
       const element = elements.find((item) => item.name === name);
-      return { async count() { return element ? 1 : 0; }, async isEditable() { return Boolean(element); },
+      return { async elementHandle() { return element; },
+        async count() { return element ? 1 : 0; }, async isEditable() { return Boolean(element); },
         async fill(value) {
           actions.push(['fill', name]);
           if (name === options.pauseFill) {

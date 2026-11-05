@@ -129,6 +129,7 @@ export async function amendLabtestNote(page, expected = {}, { timeoutMs = 20_000
     await bounded(save.click({ timeout: 5_000, noWaitAfter: true }));
     response = await bounded(pending);
     armed = false;
+    // Retain the optional-dialog observation; response arrival is not its absence.
     await bounded(page.waitForTimeout(500));
     const dialogs = await bounded(frame.locator('.x-window:visible:not(.x-menu)').allTextContents().catch(() => []));
     const blockedAfterDispatch = Math.max(0, blocked - blockedAtDispatch);

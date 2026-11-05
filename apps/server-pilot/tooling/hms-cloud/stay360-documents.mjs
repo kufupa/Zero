@@ -19,7 +19,9 @@ export async function readDocumentsFromStay360(page, confirmation) {
     }
   };
   await waitForLoadedTree();
-  // HMS can render the tab before its initial refresh begins.
+  // HMS can render the tab before its initial refresh begins. Retain this
+  // observation window until activation-to-tree population is correlated;
+  // an idle/loaded root alone still leaves refreshVerified false.
   await page.waitForTimeout(1200);
   notes.push(...await dismissNotesOrThrow(page, { allowRecordFrame: true }));
   notes.push(...await dismissNotesOrThrow(frame));
