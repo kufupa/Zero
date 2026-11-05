@@ -440,6 +440,23 @@ function sanitizeAmendProposal(
   return Object.keys(result).length ? result : undefined;
 }
 
+function explicitCmsLabel(text: string, send: boolean, expected?: string): string | undefined {
+  const pattern = send ? /\bcms\s+send\s*[:=]\s*(?:on|true|yes)\b/gi :
+    /\bcms\s+send\s*[:=]\s*(?:off|false|no)\b/gi;
+  for (const match of text.matchAll(pattern)) {
+    const start = match.index ?? 0;
+    const prefix = text.slice(Math.max(0, start - 80), start);
+    if (/\b(?:do not|don't|never|not)\s+(?:set|switch|turn|choose|select|use|mark)\s+(?:the\s+)?$/i.test(prefix)) continue;
+    if (!expected || match[0].toLowerCase() === expected.toLowerCase()) return match[0];
+  }
+  return undefined;
+}
+
+function negativeCmsExcerpt(text: string): string | undefined {
+  return text.match(/\b(?:do not|don't|never|not)\s+send\s+(?:the\s+)?confirmation\b/i)?.[0] ??
+    explicitCmsLabel(text, false);
+}
+
 function sanitizeWorkflowProposal(
   proposal: z.infer<typeof workflowProposalSchema> | undefined,
   currentMessageText: string,
@@ -492,15 +509,16 @@ function sanitizeWorkflowProposal(
     }
     const groundedItem = provenance ? { ...item, source: provenance } : item;
     if (typeof item.value === 'boolean') {
-      const negativePattern = /\b(?:do not|don't|never|not)\s+send\s+(?:the\s+)?confirmation\b|\bcms\s+send\s*[:=]\s*(?:off|false|no)\b/i;
-      const citedNegative = negativePattern.test(item.excerpt);
-      const sourceNegative = singleStay ? verifiedTexts.map((text) => text.match(negativePattern)?.[0])
+      const citedNegative = negativeCmsExcerpt(item.excerpt);
+      const sourceNegative = singleStay ? verifiedTexts.map(negativeCmsExcerpt)
         .find((excerpt) => excerpt && excerpt.length <= 200) : undefined;
-      const positive = /\bsend\s+(?:the\s+)?confirmation\b/i.test(item.excerpt) ||
-        /\bcms\s+send\s*[:=]\s*(?:on|true|yes)\b/i.test(item.excerpt);
+      const negative = verifiedTexts.length ? sourceNegative : citedNegative;
+      const citedLabel = explicitCmsLabel(item.excerpt, true);
+      const positive = /\bsend\s+(?:the\s+)?confirmation\b/i.test(item.excerpt) || Boolean(citedLabel &&
+        (!verifiedTexts.length || verifiedTexts.some((text) => explicitCmsLabel(text, true, citedLabel))));
       if (key === 'cmsSend') {
-        if (citedNegative || sourceNegative) result[key] = { ...groundedItem, value: false,
-          excerpt: citedNegative ? item.excerpt : sourceNegative };
+        if (negative) result[key] = { ...groundedItem, value: false,
+          excerpt: verifiedTexts.length ? negative : item.excerpt };
         else if (item.value && positive) result[key] = groundedItem;
       }
       continue;
