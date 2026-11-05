@@ -23,8 +23,10 @@ import {
   VOUCHER_COPY,
   voucherConflictLines,
   voucherFindClientFromTrpc,
+  voucherReviewClientFromTrpc,
   voucherGuestLine,
   type VoucherFindReply,
+  type VoucherReview,
 } from '@/lib/quote-workflow/voucher-find';
 import { fetchAttachmentBlob, triggerBlobDownload, type AttachmentAccessInput } from '@/lib/attachment-access';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
@@ -174,6 +176,7 @@ type VoucherFindCardProps = {
   /** Selection generation and current source keep every search and approval on this email revision. */
   selectionEpoch?: number | null;
   selectedSource?: SelectedSource | null;
+  reviewSource?: SelectedSource | null;
   selectionCurrent?: boolean;
   /** The stored approval no longer describes the search or selected target. */
   onTargetChanged?: () => void;
@@ -184,7 +187,8 @@ export function VoucherFindCard(props: VoucherFindCardProps) {
   // Reset pending replies and previews whenever the selected mail, mailbox or actor/session changes.
   return <VoucherFindCardBody key={JSON.stringify([props.mailboxScope, props.transportId, props.internetMessageId,
     props.lookupSelection, props.selectionEpoch, props.selectedSource?.threadId, props.selectedSource?.messageId,
-    props.selectedSource?.sourceHash, props.selectionCurrent])} {...props} />;
+    props.selectedSource?.sourceHash, props.reviewSource?.threadId, props.reviewSource?.messageId,
+    props.reviewSource?.sourceHash, props.selectionCurrent])} {...props} />;
 }
 
 function VoucherFindCardBody({
@@ -202,10 +206,12 @@ function VoucherFindCardBody({
   propertyCode = null,
   selectionEpoch = null,
   selectedSource,
+  reviewSource,
   selectionCurrent = true,
   onTargetChanged,
 }: VoucherFindCardProps) {
   const findClient = useMemo(() => voucherFindClientFromTrpc(trpc, transportId), [trpc, transportId]);
+  const reviewClient = useMemo(() => voucherReviewClientFromTrpc(trpc, transportId), [trpc, transportId]);
   const jobClient = useMemo(() => amendFindClientFromTrpc(trpc, transportId), [trpc, transportId]);
   const attachClient = useMemo(() => voucherAttachClientFromTrpc(trpc, transportId, internetMessageId, propertyCode, selectedSource),
     [trpc, transportId, internetMessageId, propertyCode, selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash]);
@@ -224,6 +230,15 @@ function VoucherFindCardBody({
     workItemId: string; view: VoucherAttachWriteView | null; valid: boolean;
   } | null>(null);
   const attachWrite = attachStatus?.workItemId === workItemId ? attachStatus.view : null;
+  const [voucherReview, setVoucherReview] = useState<VoucherReview | null>(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewError, setReviewError] = useState(false);
+  const reviewGeneration = useRef(0);
+  const reviewSelection = reviewSource ?? selectedSource;
+  const reviewScope = JSON.stringify([transportId, workItemId, reviewSelection?.threadId, reviewSelection?.messageId,
+    reviewSelection?.sourceHash, selectionCurrent]);
+  const reviewScopeRef = useRef(reviewScope);
+  reviewScopeRef.current = reviewScope;
   const attachStatusKnown = attachStatus?.workItemId === workItemId && attachStatus.valid && attachWrite !== null;
   const [preview, setPreview] = useState<{ key: string; status: 'loading' | 'ready' | 'refused';
     documentSource?: DocumentSource; revisionSeq?: number } | null>(null);
@@ -233,6 +248,21 @@ function VoucherFindCardBody({
   const [searchForm, setSearchForm] = useState<VoucherSearchForm>({ confirmation: '', lastName: '', arrival: '', departure: '' });
   const [submittedSearch, setSubmittedSearch] = useState<VoucherSearchRequest | null>(null);
   const [submittedDirect, setSubmittedDirect] = useState<VoucherFindRequest | null>(null);
+
+  useEffect(() => {
+    const generation = ++reviewGeneration.current;
+    if (!reviewClient || !workItemId || !reviewSelection || !selectionCurrent) {
+      setVoucherReview(null);
+      return;
+    }
+    let current = true;
+    reviewClient.read({ workItemId, source: reviewSelection }).then(
+      (result) => { if (current && reviewGeneration.current === generation) { setVoucherReview(result); setReviewError(false); } },
+      () => { if (current && reviewGeneration.current === generation) { setVoucherReview(null); setReviewError(true); } },
+    );
+    return () => { current = false; };
+  }, [reviewClient, workItemId, reviewSelection?.threadId, reviewSelection?.messageId, reviewSelection?.sourceHash,
+    selectionCurrent, attachWrite?.run?.state]);
   const [directPicked, setDirectPicked] = useState<{ key: string; row: GuestSearchRow } | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchRevision, setSearchRevision] = useState(0);
@@ -772,11 +802,37 @@ function VoucherFindCardBody({
     }
   };
 
+  const reviewFile = voucherReview?.files.find((entry) => entry.attachmentId === selectedFileId);
+  const pendingFiles = inventory?.files?.filter((file) => voucherReview?.files.some(
+    (entry) => entry.attachmentId === file.id && !entry.handled,
+  )) ?? [];
+  const otherPendingFiles = pendingFiles.filter((file) => file.id !== reviewFile?.attachmentId);
+  const acknowledgeFile = async () => {
+    if (!reviewClient || !workItemId || !reviewSelection || !reviewFile || reviewFile.handled || reviewBusy || !selectionCurrent) return;
+    const file = reviewFile;
+    const scope = reviewScope;
+    ++reviewGeneration.current;
+    setReviewBusy(true);
+    setReviewError(false);
+    try {
+      await reviewClient.acknowledge({ workItemId, source: reviewSelection, attachmentId: file.attachmentId, key: file.key });
+      if (mounted.current && reviewScopeRef.current === scope) {
+        ++reviewGeneration.current;
+        setVoucherReview((current) => current ? { ...current,
+          files: current.files.map((entry) => entry.key === file.key ? { ...entry, handled: true } : entry) } : null);
+      }
+    } catch { if (mounted.current && reviewScopeRef.current === scope) setReviewError(true); }
+    finally { if (mounted.current) setReviewBusy(false); }
+  };
+
   // The id is the preview gate's sign that a voucher-only pane has settled (VOUCHER_CARD_SELECTOR in nava-preview-run.ts).
   return (
     <Section title={VOUCHER_COPY.heading} id="quote-voucher-find">
       <p className={captionClass}>{propertyCode === 'HRCEN'
         ? 'Find the booking and review the document before upload.' : VOUCHER_COPY.caption}</p>
+      {otherPendingFiles.length > 0 ? <Notice tone="warn">
+        <p data-pii>Attached PDF needs review: {otherPendingFiles.map((file) => file.filename).join(', ')}. Select a file below.</p>
+      </Notice> : null}
       {inventory?.files && inventory.files.length > 0 ? (
         <label className="flex flex-col gap-1 text-[11px] font-semibold text-[#475569]">
           Document
@@ -791,6 +847,14 @@ function VoucherFindCardBody({
       {selectedFileId && !fileReady ? <Notice tone={fileError ? 'warn' : undefined} role="status">
         {fileError ? 'Could not read this document. Reopen the email and try again.' : 'Reading selected document…'}
       </Notice> : null}
+      {reviewFile && !reviewFile.handled ? <Notice tone="warn">
+        <p>Review this PDF and file it if needed.</p>
+        <SecondaryButton type="button" disabled={reviewBusy || !selectionCurrent} onClick={() => void acknowledgeFile()}>
+          {reviewBusy ? 'Saving…' : 'Mark review handled'}
+        </SecondaryButton>
+      </Notice> : null}
+      {reviewFile?.handled ? <p role="status" className={infoNoteClass}>Document review handled.</p> : null}
+      {reviewError ? <Notice tone="warn">Could not update the document review. Reopen this email and try again.</Notice> : null}
       {(!fileReady || !selectedMatch) && (unconfirmedAttach || listedWithHold) ? <Notice tone="warn" role="status">
         {listedWithHold ? VOUCHER_ATTACH_COPY.listedWithHold : VOUCHER_ATTACH_COPY.checkInInfor}
       </Notice> : null}

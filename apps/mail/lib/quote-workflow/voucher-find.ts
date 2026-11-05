@@ -43,9 +43,18 @@ export type VoucherFindClient = {
   check: (input: MailSourceInput & { attachmentId?: string }) => Promise<VoucherFindReply>;
 };
 
+export type VoucherReviewSource = { threadId: string; messageId: string; sourceHash: string };
+export type VoucherReview = { status: string; files: { attachmentId: string; key: string; handled: boolean }[] };
+type VoucherReviewInput = { workItemId: string; source: VoucherReviewSource };
+
 type TrpcVoucherRoutes = {
   quoteWorkflow?: {
     voucherFind?: { query: (input: MailSourceInput & { attachmentId?: string }, options: { context: { activeTransportId: string } }) => Promise<VoucherFindReply> };
+  };
+  workItems?: {
+    voucherReview?: { query: (input: VoucherReviewInput, options: { context: { activeTransportId: string } }) => Promise<VoucherReview> };
+    acknowledgeVoucher?: { mutate: (input: VoucherReviewInput & { attachmentId: string; key: string },
+      options: { context: { activeTransportId: string } }) => Promise<unknown> };
   };
 };
 
@@ -56,6 +65,18 @@ export function voucherFindClientFromTrpc(trpc: unknown, transportId: string | n
   const route = (trpc as TrpcVoucherRoutes).quoteWorkflow?.voucherFind;
   if (!route) return null;
   return { check: (input) => route.query(input, mailbox) };
+}
+
+export function voucherReviewClientFromTrpc(trpc: unknown, transportId: string | null) {
+  const mailbox = inMailbox(transportId);
+  if (!mailbox || !trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
+  const routes = (trpc as TrpcVoucherRoutes).workItems;
+  if (!routes?.voucherReview || !routes.acknowledgeVoucher) return null;
+  return {
+    read: (input: VoucherReviewInput) => routes.voucherReview!.query(input, mailbox),
+    acknowledge: (input: VoucherReviewInput & { attachmentId: string; key: string }) =>
+      routes.acknowledgeVoucher!.mutate(input, mailbox),
+  };
 }
 
 export const VOUCHER_COPY = {

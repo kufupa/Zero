@@ -71,6 +71,7 @@ import { projectCloudStayFind, readCloudStayForPane, runCloudStayFind } from './
 import { hmsDispatchTargetKey, type HmsDispatchTarget } from './hms-dispatch-target.js';
 import { centurionWriterCurrent } from '../../tooling/playwright-quote/centurion-stay360.mjs';
 import { recordNeverDispatchedAttach } from './pane-cloud-attach-recovery.js';
+import { recordConfirmedVoucherFile } from './voucher-pending.js';
 import { cancelBusinessPreimage, cloudCancelDispatchSchema, executeCloudCancel, readCloudCancelPreimage } from './pane-cloud-cancel.js';
 import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError, resolveHmsLabtestDispatch,
   resolveNeverDispatchedAttach, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
@@ -1581,6 +1582,14 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
         }).where(eq(aiWorkflowRun.id, fence.runId));
       });
     } catch { return endConfirmedWithHold(db, fence); }
+    // The native result is already durable. A review-marker failure must not turn
+    // a confirmed upload into an uncertain write or trigger another upload.
+    try {
+      await db.transaction((tx) => recordConfirmedVoucherFile(tx, { transportId: input.transportId, workItemId: input.workItemId,
+        source: { threadId: filing.sourceThreadId, messageId: filing.sourceMessageId, sourceHash: filing.sourceHash },
+        attachmentId: filing.attachmentId, pdfSha256: filing.pdfSha256,
+        snapshotDigest: filing.sourceSnapshotDigest, runId: fence.runId }));
+    } catch { console.warn('voucher_review_confirmation_not_recorded'); }
     return { status: 'succeeded', action: 'attach_document', outcome: 'confirmed', evidence };
   }
   const marked = await markAiRunSucceeded(
