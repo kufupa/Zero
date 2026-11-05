@@ -648,7 +648,7 @@ function isRoutineSystemMail(
 
   const tboNotice =
     /\btbo(?:\s+holidays)?\b/i.test(haystack) &&
-    /\b(?:booking\s+confirmed|modification\s+alert)\b/i.test(haystack);
+    /\b(?:booking\s+(?:confirmed|cancelled|canceled)|modification\s+alert)\b/i.test(haystack);
 
   const webbedsNotice =
     /\bwebbeds\b/i.test(haystack) &&
