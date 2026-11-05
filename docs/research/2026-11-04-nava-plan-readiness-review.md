@@ -59,7 +59,7 @@ No empirical end-to-end comparator for new rate recommendation, durable complete
 - OSSTWZ.UpdateStayWizard is a write despite ONLY_DATA_REQUIRED; generic save-path guard misses it. Explicit fence required.
 - Native No/Extend continuation keys in Nov3 controller differ from current matcher; early current-controller check, narrow correction if confirmed.
 - **U8:** one fresh fenced FSGSPF master read returned exact native ID/audit. Existing fake master mobile blank; current New marks mobile required. Server Save/duplicate behavior unproved.
-- [U7 evidence](/home/orca/orca/workspaces/zero/u7-native-nightly-20261104/RESEARCH.md) · [U8 evidence](/home/orca/orca/workspaces/zero/u8-native-profile-20261104/RESEARCH.md) · [UI evidence](/home/orca/orca/workspaces/zero/plan-ui-system-20261104/RESEARCH.md).
+- [U7 evidence](2026-11-04-u7-native-nightly-research.md) · [U8 evidence](2026-11-04-u8-native-guest-profile-research.md) · [UI evidence](2026-11-04-shared-pane-ui-research.md).
 
 ## Orca visibility
 
