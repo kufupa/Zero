@@ -53,7 +53,8 @@ async function reconcileChanges(save, { withPage, target }) {
     const attempts = save.attempts || [], receipts = save.receipts || [];
     const results = [], mismatches = [];
     const removed = new Set(attempts.filter(attempt => attempt.operation === 'remove' && attempt.dispatched).map(attempt => attempt.nativeId));
-    const missingUntargeted = (save.baseline || []).map(nativeIdOf).filter(id => id && !removed.has(id) && !rows.has(id));
+    const baselineIds = new Set([...(save.baseline || []).map(nativeIdOf), ...attempts.flatMap(attempt => attempt.baselineIds || [])]);
+    const missingUntargeted = [...baselineIds].filter(id => id && !removed.has(id) && !rows.has(id));
     for (const change of save.changes) {
       const attempt = attempts.find(item => item.index === change.index && item.nativeId === change.nativeId && item.operation === change.operation);
       const receipt = receipts.find(item => item.index === change.index && item.nativeId === change.nativeId && item.operation === change.operation);

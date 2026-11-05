@@ -144,7 +144,7 @@ Native edit uses `pageaction=SAVE`, removal uses `pageaction=DELETE`, in both UR
 
 The session adds `reconciliation.results` entries containing `{index, operation, nativeId, status, dispatched, attribution, before, expectedAfter, observedAfter}`. Status is `updated`, `removed`, `unchanged`, `uncertain` or `not_attempted`; attribution is `verified` or `unknown`.
 
-Edits require the same row ID and all supported final fields. Removals require absence in a complete independent Add-On read and preservation of untargeted baseline IDs. This does not establish financial reversal. A missing or already removed row before dispatch is not credited to this attempt.
+Edits require the same row ID and all supported final fields. Removals require absence in a complete independent Add-On read and preservation of untargeted IDs observed in the batch baseline and each attempt's fresh census. This does not establish financial reversal. A missing or already removed row before dispatch is not credited to this attempt.
 
 A matched native response plus successful independent readback can yield `saved`. A no-op edit yields `unchanged` with no dispatch. After a lost response, results can show that the desired state exists while attribution stays unknown and overall outcome stays `uncertain`. Return attempts and next action `reconcile_before_retry`; never blindly replay. Multiple corrections are sequential and may partially persist; unattempted operations stay explicit.
 
