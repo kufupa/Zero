@@ -59,13 +59,20 @@ async function readDraft(page) {
     const value = key => unique(key) ? String(data[key] ?? '').trim() : null;
     const exact = (key,expected) => unique(key) && value(key) === expected;
     const accountKeys = keys?.filter(key => key.toLowerCase() === 'araccountid') || [];
+    const partyIdKeys = ['taid1', 'companyid'];
+    const optionalValue = name => {
+      const matches = keys?.filter(key => key.toLowerCase() === name) || [];
+      return matches.length === 1 ? String(data[matches[0]] ?? '').trim() : null;
+    };
     const identity = data ? {
       valid:exact('propertycode','HRCEN') && exact('PKID','@[EMPTY]#@[EMPTY]#HRCEN#') && exact('status','New') &&
         exact('confirmationnumber','') && unique('guestid') && unique('arprofileid') && accountKeys.length <= 1 &&
+        partyIdKeys.every(name => keys.filter(key => key.toLowerCase() === name).length <= 1) &&
         unique('bookingsessionid') && Boolean(value('bookingsessionid')) &&
         blankIds.every(key => exact(key,'')),
-      session:value('bookingsessionid'),guestId:value('guestid'),arAccountId:value('araccountid') || '',
+      session:value('bookingsessionid'),guestId:value('guestid'),arAccountId:optionalValue('araccountid') || '',
       arProfileId:value('arprofileid'),arAccountName:value('araccountname'),
+      agencyId:optionalValue('taid1'),organizationId:optionalValue('companyid'),
     } : null;
     let submit = null;
     try { submit = cmp?.getSubmitData?.() || null; } catch { /* Fail the readback if unavailable. */ }
@@ -145,7 +152,8 @@ export async function checkedChargeRateEvidence(page, expected) {
       proof.roomType !== expected.roomType || proof.ratePlan !== expected.ratePlan ||
       proof.arrival !== expected.arrival || proof.departure !== expected.departure) return null;
   const draft = await readDraft(page);
-  if (draft?.identity?.valid !== true || JSON.stringify(chargePriceFields(draft)) !== JSON.stringify(proof.fields)) return null;
+  if (draft?.identity?.valid !== true || JSON.stringify(draft.identity) !== JSON.stringify(proof.identity) ||
+      JSON.stringify(chargePriceFields(draft)) !== JSON.stringify(proof.fields)) return null;
   return { averageRate: proof.fields.averagerate, totalRate: proof.fields.totalrate, currency: proof.currency };
 }
 export async function currentCheckedChargeRate(page, expected) {
@@ -519,7 +527,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     const fields = rateAvailability ? chargePriceFields(after) : null;
     const chargePrice = fields && chargeRoomRevision(page) === revision && fields.roomtypecharge &&
       fields.rateplan === code && fields.averagerate === rateAvailability.averageRate && fields.totalrate === rateAvailability.totalRate
-      ? { revision, fields, chargeRoom: fields.roomtypecharge, roomType: fields.roomtype, ratePlan: code,
+      ? { revision, fields, identity: after.identity, chargeRoom: fields.roomtypecharge, roomType: fields.roomtype, ratePlan: code,
         arrival: dates.arrival.iso, departure: dates.departure.iso, currency: rateAvailability.currency } : null;
     selectedOnPage.set(page,{code,fingerprint:draftFingerprint(after),chargePrice});
     return {outcome:'selected_unsaved',code,previousCode,previousRateEvidence,propertyCode:PROPERTY,arrivalDate:dates.arrival.iso,departureDate:dates.departure.iso,

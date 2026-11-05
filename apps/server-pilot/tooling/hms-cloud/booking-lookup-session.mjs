@@ -130,7 +130,8 @@ export function buildLabtestOrganizationReadbackTarget(saveResult, request, sele
 function sessionState(page) {
   let state = sessionEvidence.get(page);
   if (!state) {
-    state = { organizationSelection: null, savedOrganizationCreate: null, chargeRoom: null, chargeRateChecked: false };
+    state = { organizationSelection: null, savedOrganizationCreate: null, chargeRoom: null,
+      chargeRateChecked: false, chargeRateRecheckAllowed: false };
     sessionEvidence.set(page, state);
   }
   return state;
@@ -457,7 +458,11 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
     } : null;
     let result;
     const previousChargeRateChecked = tool === 'selectGuestStayRatePlan' && state.chargeRateChecked;
-    if (tool === 'selectGuestStayRatePlan') state.chargeRateChecked = false;
+    const previousChargeRecheckAllowed = tool === 'selectGuestStayRatePlan' && state.chargeRateRecheckAllowed;
+    if (tool === 'selectGuestStayRatePlan') {
+      state.chargeRateChecked = false;
+      state.chargeRateRecheckAllowed = false;
+    }
     if (['readGuestStay', 'closeGuestProfilePicker', 'cancelHotelAvailabilityParty', 'closeHotelAvailability',
       'closeRoomRatePicker', 'closeGuestStaySourceBusinessPicker'].includes(tool)) {
       result = await action(page);
@@ -511,7 +516,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
         const availability = createAuthority?.m1CreateRateAvailabilityOptions?.();
         if (availability) Object.assign(options, availability);
         else if (state.chargeRoom && request.createDraft && createAuthority?.withM1CreateRateAvailability) {
-          if (previousChargeRateChecked) createAuthority.invalidateM1CreateRateAvailability?.();
+          if (previousChargeRecheckAllowed) createAuthority.invalidateM1CreateRateAvailability?.();
           result = await createAuthority.withM1CreateRateAvailability(async () => {
             const recheck = createAuthority.m1CreateRateAvailabilityOptions();
             if (!recheck) return { outcome: 'refused', issue: 'CHARGE_ROOM_PRICE_RECHECK_UNAVAILABLE' };
@@ -528,10 +533,12 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       if (result?.outcome === 'selected_unsaved') {
         state.chargeRoom = result.code;
         state.chargeRateChecked = false;
+        state.chargeRateRecheckAllowed = true;
         createAuthority?.invalidateM1CreateRateAvailability?.();
       } else if (result?.outcome === 'selection_uncertain') {
         state.chargeRoom = null;
         state.chargeRateChecked = false;
+        state.chargeRateRecheckAllowed = false;
       }
     }
     if (tool === 'selectGuestStayRatePlan' && state.chargeRoom && result?.outcome === 'selected_unsaved' && result.rateAvailability) {
@@ -539,6 +546,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
         roomType: request.createDraft?.roomType, ratePlan: result.code,
         arrival: result.arrivalDate, departure: result.departureDate });
       state.chargeRateChecked = checked;
+      state.chargeRateRecheckAllowed = checked;
       result = checked ? { ...result, chargeRoomPricing: 'checked' } :
         { ...result, outcome: 'selection_uncertain', issue: 'CHARGE_ROOM_PRICE_CHECK_UNVERIFIED' };
     } else if (tool === 'selectGuestStayRatePlan' && state.chargeRoom && result?.outcome === 'selected_unsaved') {
@@ -548,6 +556,12 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       // No price check was attempted; a corrected call or a later edit can
       // still recheck a previously verified price.
       state.chargeRateChecked = previousChargeRateChecked;
+      state.chargeRateRecheckAllowed = previousChargeRecheckAllowed;
+    } else if (tool === 'selectGuestStayRatePlan' && state.chargeRoom &&
+        result?.outcome === 'criteria_unavailable' && result.issue === 'RATE_PRICE_UNCONFIRMED') {
+      // The native availability request completed and no price was proven.
+      // A later check is safe, but this result must not authorize a Save.
+      state.chargeRateRecheckAllowed = true;
     }
     if (tool === 'saveNewLabtestStay' && result?.outcome === 'saved_same_form') {
       state.savedOrganizationCreate = buildLabtestOrganizationReadbackTarget(

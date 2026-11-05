@@ -372,7 +372,10 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
       current = await readWindow(page, id);
       if (!only(controls('selfiltervaluectrl'), '') ||
           JSON.stringify(await formFields(page)) !== formState) throw new Error('ROOM_FILTER_RESET_UNVERIFIED');
-      nativeFilters = [];
+      // The reset request can contain other native filters. Preserve those
+      // observations instead of assuming clearing the text cleared them all.
+      nativeFilters = [...new URLSearchParams(reset.request().postData() || '')]
+        .filter(([name]) => /filter/i.test(name)).map(([name, value]) => ({ name, value }));
       nativeFilterReset = true;
       initialMetadata = metadata;
     }
