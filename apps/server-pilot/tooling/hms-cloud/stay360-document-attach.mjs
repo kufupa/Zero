@@ -287,7 +287,7 @@ function validFile(file) {
 
 /** Returns awaiting_readback, uncertain, or not_dispatched. A fresh session must reconcile every dispatch. */
 export async function attachLabtestDocument(page, expected, file, { evidenceRoot, expectedOrganization, expectedDocumentContext, timeoutMs = 30000,
-  beforeDispatch, finalAuthority, dispatchWithAuthority, continuationAllowed, onDispatched, strictNetwork = false } = {}) {
+  beforeDispatch, finalAuthority, dispatchWithAuthority, continuationAllowed, onDispatched, strictNetwork = false, prepareOnly = false } = {}) {
   if (!validFile(file) || typeof evidenceRoot !== 'string' || !isAbsolute(evidenceRoot) ||
       !Number.isFinite(timeoutMs) || timeoutMs <= 0 ||
       (beforeDispatch !== undefined && typeof beforeDispatch !== 'function') ||
@@ -295,7 +295,8 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
       (dispatchWithAuthority !== undefined && typeof dispatchWithAuthority !== 'function') ||
       (continuationAllowed !== undefined && typeof continuationAllowed !== 'function') ||
       (onDispatched !== undefined && typeof onDispatched !== 'function') ||
-      (expectedDocumentContext !== undefined && expectedOrganization !== undefined) || typeof strictNetwork !== 'boolean') {
+      (expectedDocumentContext !== undefined && expectedOrganization !== undefined) || typeof strictNetwork !== 'boolean' ||
+      typeof prepareOnly !== 'boolean') {
     return { outcome: 'input_gap', issue: 'DOCUMENT_INPUT_INVALID' };
   }
   if (!page || typeof page.context !== 'function' || usedPages.has(page)) return { outcome: 'refused', issue: 'DOCUMENT_PAGE_UNAVAILABLE' };
@@ -434,6 +435,10 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
         expectedFields.get('typecode') !== 'U' || expectedFields.get('uploadorcreatedoc') !== 'U' || stopped || blocked) {
       throw new Error('DOCUMENT_DRAFT_UNVERIFIED');
     }
+    // Prepare never arms either request or creates an upload gate. The page and
+    // context fences stay installed until the browser session has closed.
+    if (prepareOnly) return { outcome: 'prepared', documentCode: expectedFields.get('documentcode'),
+      documentName: file.name, description: expectedFields.get('description') };
     token = new URLSearchParams(`requestToken=${await bounded(frame.evaluate(() => EAM.AppData.generateRequestToken()))}`);
     if (token.getAll('requestToken').length !== 1 || token.getAll('browserTabID').length !== 1 ||
         !token.get('requestToken') || !token.get('browserTabID')) throw new Error('DOCUMENT_SESSION_TOKEN_UNVERIFIED');

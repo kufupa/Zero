@@ -1043,7 +1043,8 @@ describe('voucher find card: attach to HMS', () => {
     await waitFor(() => expect(bind).toHaveBeenCalledWith({ workItemId: WORK_ITEM, sourceMessageId: 'm1',
       attachmentId: 'att-1', confirmation: SMITH_ROW.confirmation, arrival: SMITH_ROW.arrival,
       lastName: SMITH_ROW.lastName, internetMessageId: 'abc@host', selectedSource: SELECTED_SOURCE,
-      documentSource: DOCUMENT_SOURCE, revisionSeq: 0 }, MAILBOX));
+      documentSource: DOCUMENT_SOURCE, revisionSeq: 0,
+      expectedStay: { firstName: SMITH_ROW.firstName, status: SMITH_ROW.status, departure: SMITH_ROW.departure } }, MAILBOX));
     expect(onPrepared).toHaveBeenCalledOnce();
   });
 

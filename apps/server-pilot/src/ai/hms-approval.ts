@@ -205,7 +205,9 @@ function isBoundLabtestAttachment(state: Record<string, unknown>, sourceMessageI
     typeof state.pdfSha256 === 'string' && /^[a-f0-9]{64}$/.test(state.pdfSha256) &&
     typeof state.sourceSnapshotDigest === 'string' && /^[a-f0-9]{64}$/.test(state.sourceSnapshotDigest) &&
     typeof state.sourceThreadId === 'string' && state.sourceThreadId.length > 0 &&
-    typeof state.sourceHash === 'string' && /^[a-f0-9]{64}$/.test(state.sourceHash);
+    typeof state.sourceHash === 'string' && /^[a-f0-9]{64}$/.test(state.sourceHash) &&
+    typeof state.documentCode === 'string' && /^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(state.documentCode) &&
+    typeof state.filingStateDigest === 'string' && /^[a-f0-9]{64}$/.test(state.filingStateDigest);
 }
 
 function boundFilingSelectionMatches(state: Record<string, unknown>, source: HmsSelectedSource | undefined): boolean {
@@ -628,6 +630,9 @@ export async function approveHmsWrite(input: {
       state = { ...state, [HMS_SNAPSHOT_KEY]: snapshot };
       await tx.update(workItem).set({ state, updatedAt: now }).where(eq(workItem.id, item.id));
     }
+    if (labtestAttach && snapshot.digest !== item.state.filingStateDigest) {
+      throw new HmsApprovalError('snapshot_stale');
+    }
 
     // Random grantId: approving unchanged state again yields a new event id, so a new hash and a new run.
     const grant: HmsWriteGrant = {
@@ -964,7 +969,8 @@ export async function authorizeConsumedLabtestAttach(tx: WorkTransaction, input:
   if (!item || item.id !== input.workItemId || item.transportId !== input.transportId ||
       !isBoundLabtestAttachment(item.state, item.sourceMessageId, input.env) || item.state.confirmation !== input.confirmation ||
       item.state.arrival !== input.arrival || item.state.sourceSnapshotDigest !== input.sourceDigest ||
-      item.state.documentName !== input.documentName || item.state.pdfSha256 !== input.pdfSha256) {
+      item.state.documentName !== input.documentName || item.state.pdfSha256 !== input.pdfSha256 ||
+      item.state.documentCode !== input.documentCode) {
     throw new HmsApprovalError('state_changed');
   }
   if (item.state.sourceThreadId !== item.threadId || typeof item.state.sourceHash !== 'string' ||
@@ -993,6 +999,7 @@ export async function authorizeConsumedLabtestAttach(tx: WorkTransaction, input:
   if (grant.workItemId !== item.id || grant.transportId !== input.transportId || grant.actorUserId !== input.actorUserId ||
       grant.sessionId !== input.sessionId || grant.sessionProfile !== input.sessionProfile ||
       formDigest(item.state) !== grant.formDigest || grant.formDigest !== input.approvedDigest ||
+      grant.hmsBeforeDigest !== item.state.filingStateDigest ||
       snapshotStale(grant.hmsReadAt, now) || !snapshot || snapshot.digest !== grant.hmsBeforeDigest ||
       snapshot.readAt !== grant.hmsReadAt) throw new HmsApprovalError('state_changed');
   const consumed = await tx.select({ id: workEvent.id }).from(workEvent).where(and(eq(workEvent.workItemId, item.id),

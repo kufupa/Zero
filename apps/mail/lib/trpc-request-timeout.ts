@@ -15,6 +15,8 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
       routes.includes('paneStayAmend.commitAmend')
     )
       return 21 * 60_000;
+    // Two five-minute stay reads, a six-minute native prepare, source reads and lock waits.
+    if (routes.includes('hmsApproval.bindAttach')) return 20 * 60_000;
     if (routes.includes('workstation.executeStaffQuote')) return 20 * 60_000;
     // Two 60 s source reads surround a five-minute HMS lookup and up to 20 s of lock wait.
     if (routes.includes('hmsApproval.previewAttach')) return 9 * 60_000;

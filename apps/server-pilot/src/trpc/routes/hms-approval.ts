@@ -53,7 +53,9 @@ const filingPreviewInput = z.object({ workItemId: uuid, sourceMessageId: z.strin
   arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), lastName: z.string().trim().min(1).max(200),
   selectedSource, documentSource: filingDocumentSource }).strict();
 const bindAttachInput = filingPreviewInput.extend({ internetMessageId: selectedEmail,
-  revisionSeq: z.number().int().nonnegative().safe() }).strict();
+  revisionSeq: z.number().int().nonnegative().safe(),
+  expectedStay: z.object({ firstName: z.string().trim().min(1).max(200), status: z.string().trim().min(1).max(200),
+    departure: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).strict() }).strict();
 // No HMS reader is wired here yet, so a resolve is staff saying they checked the booking in HMS, with a note.
 const resolveInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail,
   note: z.string().trim().min(3).max(500), selectedSource: selectedSource.optional() }).strict();
@@ -150,11 +152,14 @@ export const hmsApprovalRouter = router({
       const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
       if (!target.ok || target.target.propertyCode !== 'HRCEN') return { status: 'refused' as const, reason: 'filing_unavailable' };
       const bound = await bindAttachDocumentForm({ ...input, transportId: ctx.activeTransportId, actorUserId: ctx.sessionUser.id });
-      if (bound.status !== 'bound' || !bound.formDigest) return bound;
+      // A bind refusal happens before storing the form; a later snapshot refusal may not.
+      if (bound.status !== 'bound') return { ...bound, retryable: true as const };
+      if (!bound.formDigest) return bound;
       const snapshot = await prepareHmsWriteSnapshot({ transportId: ctx.activeTransportId, workItemId: input.workItemId,
         selectedInternetMessageId: input.internetMessageId, selectedSource: input.selectedSource, expectedFormDigest: bound.formDigest,
         confirmation: bound.form.confirmation, arrival: bound.form.arrival });
-      return snapshot.status === 'stored' ? bound : snapshot;
+      return snapshot.status === 'stored' ? bound : snapshot.reason === 'filing_target_changed'
+        ? { ...snapshot, retryable: true as const } : snapshot;
     } catch (err) { return refusal(err); }
   }),
   approve: mailboxProcedure.input(approveInput).mutation(async ({ input, ctx }) => {

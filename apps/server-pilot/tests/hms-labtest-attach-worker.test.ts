@@ -85,6 +85,7 @@ describe('opt-in Labtest attachment worker', () => {
         confirmation: '123-1', arrival: '2027-09-14', attachmentId: 'attachment', documentName: 'voucher.pdf',
         sourceInternetMessageId: selectedInternetMessageId, sourceThreadId: selectedSource.threadId,
         sourceHash: selectedSource.sourceHash, pdfSha256: 'a'.repeat(64), sourceSnapshotDigest: 'b'.repeat(64),
+        documentCode: `NAVA${'A'.repeat(26)}`, filingStateDigest: hmsStateDigest({ confirmation: '123-1' }),
         hmsSnapshot: { digest: hmsStateDigest({ confirmation: '123-1' }), readAt: now.toISOString() } } };
     const events: Array<Record<string, unknown>> = [];
     let queued: Record<string, unknown> | undefined;

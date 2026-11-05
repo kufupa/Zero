@@ -18,6 +18,7 @@ export type BoundFilingForm = {
   action: 'attach_document'; confirmation: string; arrival: string; lastName: string;
   sourceMessageId: string; sourceInternetMessageId: string; attachmentId: string; documentName: string;
   pdfSha256: string; sourceSnapshotDigest: string; sourceThreadId?: string; sourceHash?: string;
+  documentCode?: string; filingStateDigest?: string;
 };
 type Scope = { transportId: string; workItemId: string; form: BoundFilingForm };
 type WorkTransaction = Parameters<Parameters<DB['transaction']>[0]>[0];

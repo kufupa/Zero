@@ -64,6 +64,7 @@ describe('read-only filing preview', () => {
     for (const filename of ['Proof  Labtest.pdf', ' Proof Labtest.pdf', 'Proof\u00a0Labtest.pdf']) {
       stubs.read.mockResolvedValueOnce({ source: { ...source, filename }, bytes: Buffer.from('%PDF-'), locator: {} });
       await expect(bindAttachDocumentForm({ ...input, db, internetMessageId: 'selected@example.test',
+        expectedStay: { firstName: 'Proof', status: 'Reserved', departure: '2027-09-15' },
         documentSource: { sha256: source.sha256, snapshotDigest: source.snapshotDigest }, revisionSeq: 0,
         selectedSource: { threadId: 'thread-1', messageId: input.sourceMessageId, sourceHash: staffQuoteSourceHash(selectedMail) },
         env: { PANE_HMS_LAB_ATTACH_WORKER: 'on', PANE_WRITE_ATTACH: 'lab' } }))

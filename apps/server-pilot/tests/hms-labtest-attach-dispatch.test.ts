@@ -21,6 +21,7 @@ function fixture() {
     sourceMessageId: 'selected-message', sourceInternetMessageId: 'selected@example.test',
     sourceThreadId: 'thread', sourceHash: staffQuoteSourceHash(selected),
     sourceSnapshotDigest: sourceDigest, documentName: document.name, pdfSha256: document.sha256,
+    documentCode: document.code, filingStateDigest: before,
     hmsSnapshot: { digest: before, readAt } };
   const item = { id: workItemId, transportId, threadId: 'thread', sourceMessageId: 'selected-message',
     status: 'needs_you', state };
