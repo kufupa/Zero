@@ -103,13 +103,14 @@ session rejects that action; it never enables general booking writes. The proof
 is bound to its page and dates and can expire or be invalidated. Independently
 reopen and verify the confirmation, and reconcile any uncertain outcome before
 trying another write. After a successful organization-only create or a
-charge-room create without linked parties, call `readSavedLabtestRecord` with
+charge-room create, call `readSavedLabtestRecord` with
 that response's confirmation. It opens a fresh guarded session and checks the
 saved fields, including charge room and checked price when present. For an
 organization, it verifies the native ID/name against the same-session
 selection. An organization search or new guest profile selection invalidates
-that proof. This reader does not support agency-plus-organization creates or
-cross-session caller-supplied IDs.
+that proof. Charge-room creates with an agency or A/R return
+`partially_verified`: selected parties are checked, while other linked parties
+are unknown. Cross-session caller-supplied IDs are not supported.
 See [guest-stay-save.md](./guest-stay-save.md) for all
 guards and the limits of browser-side email observations.
 

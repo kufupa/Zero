@@ -404,7 +404,9 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
   if (current.footer && (current.footer.loaded !== rows.length ||
       (c.total != null && current.footer.total !== c.total))) throw new Error('PICKER_COVERAGE_MISMATCH');
   const filterValues = nativeFilters.filter(item => item.name.toLowerCase() === 'filtervalue');
-  const clearedTextFilter = filterValues.length === 1 && !clean(filterValues[0].value);
+  const filterOperators = nativeFilters.filter(item => item.name.toLowerCase() === 'filteroperator');
+  const clearedTextFilter = filterValues.length === 1 && !clean(filterValues[0].value) &&
+    filterOperators.length === 1 && /^contains$/i.test(clean(filterOperators[0].value));
   const textFilterNames = new Set(['filterfields', 'filteroperator', 'filtervalue']);
   nativeFilters = nativeFilters.filter(item => clean(item.value) &&
     !(clearedTextFilter && textFilterNames.has(item.name.toLowerCase())));
