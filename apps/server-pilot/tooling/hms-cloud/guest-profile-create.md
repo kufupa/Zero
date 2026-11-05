@@ -69,7 +69,8 @@ The runner writes private, synchronized attempt, phase and response records
 under `~/.nava-hms-runtime/guest-profile` by default. A configured `runtimeDir`
 must be an absolute, owner-controlled `0700` directory outside Git. Files are
 `0600`; filenames are opaque hashes. Records contain the approved guest data,
-so retain them as private operational data.
+so retain them as private operational data. Each record is capped at 4 MiB;
+oversized results are held without writing an unreadable record.
 
 A repeated completed attempt returns its recorded result. A claimed or
 uncertain attempt stays held after process restart. Equivalent normalized

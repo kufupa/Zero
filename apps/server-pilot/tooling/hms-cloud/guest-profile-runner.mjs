@@ -17,6 +17,7 @@ const cleanIntent = value => value.normalize('NFKC').trim().replace(/\s+/gu, ' '
 const intentKey = fields => hash(['HRCEN', ...['firstName', 'lastName', 'mobile', 'email'].map(key => cleanIntent(fields[key]))]);
 const own = (object, keys) => object && typeof object === 'object' && !Array.isArray(object) &&
   Object.keys(object).every(key => keys.includes(key));
+const MAX_JOURNAL_RECORD_BYTES = 4 * 1024 * 1024;
 
 async function privateDirectory(path) {
   if (typeof path !== 'string' || !path || !path.startsWith('/')) throw new Error('PROFILE_JOURNAL_PATH_INVALID');
@@ -42,8 +43,10 @@ async function syncDir(dir) {
 }
 
 async function writeOnce(dir, name, value) {
+  const data = JSON.stringify(value) + '\n';
+  if (Buffer.byteLength(data) > MAX_JOURNAL_RECORD_BYTES) throw new Error('PROFILE_JOURNAL_RECORD_TOO_LARGE');
   const handle = await open(join(dir, name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-  try { await handle.writeFile(JSON.stringify(value) + '\n'); await handle.sync(); }
+  try { await handle.writeFile(data); await handle.sync(); }
   finally { await handle.close(); }
   await syncDir(dir);
 }
@@ -53,7 +56,7 @@ async function readRecord(dir, name) {
   try {
     handle = await open(join(dir, name), constants.O_RDONLY | constants.O_NOFOLLOW);
     const stat = await handle.stat();
-    if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077) || stat.size > 65536) throw new Error('PROFILE_JOURNAL_CORRUPT');
+    if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077) || stat.size > MAX_JOURNAL_RECORD_BYTES) throw new Error('PROFILE_JOURNAL_CORRUPT');
     const data = await handle.readFile('utf8');
     if (!data.endsWith('\n')) throw new Error('PROFILE_JOURNAL_CORRUPT');
     const parsed = JSON.parse(data);

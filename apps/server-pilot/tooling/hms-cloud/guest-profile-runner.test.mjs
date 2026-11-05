@@ -49,6 +49,25 @@ test('concurrent and restarted calls cannot dispatch twice; completed result rep
   assert.equal((await pending).outcome, 'created');
   assert.equal((await f.runner().createGuestProfile(input)).outcome, 'created');
   assert.equal(f.saves(), 1);
+
+  const largeReadback = { ...readback, fields: [{ rawValue: 'x'.repeat(70_000) }] };
+  const large = await fixture(t, async ({ dispatch }) => {
+    await dispatch(success);
+    return { ...created, readback: largeReadback };
+  });
+  assert.equal((await large.runner().createGuestProfile(input)).outcome, 'created');
+  assert.deepEqual((await large.runner().createGuestProfile(input)).readback, largeReadback);
+  assert.equal(large.saves(), 1);
+
+  const oversized = await fixture(t, async ({ dispatch }) => {
+    await dispatch(success);
+    return { ...created, readback: { ...readback, fields: [{ rawValue: 'x'.repeat(5 * 1024 * 1024) }] } };
+  });
+  const held = await oversized.runner().createGuestProfile(input);
+  assert.equal(held.outcome, 'reconciliation_required');
+  assert.equal(held.nativeId, '123');
+  assert.equal((await oversized.runner().readGuestProfile({ nativeId: '123', attemptId: input.attemptId })).reconciliation.outcome, 'created');
+  assert.equal(oversized.saves(), 1);
 });
 
 test('known returned ID survives uncertainty and reconciles without another Save', async t => {
