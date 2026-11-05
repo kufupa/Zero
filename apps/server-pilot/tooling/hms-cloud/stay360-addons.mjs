@@ -564,4 +564,3 @@ export async function saveStay360AddOns(page, confirmation, preparedId, options 
     }
   });
 }
-
