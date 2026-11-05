@@ -1198,6 +1198,7 @@ export async function ensureWorkItemForMessage(
   if (!msg) return null;
   return db.transaction(async tx => {
     const transaction = tx as unknown as DB;
+    await lockCanonicalMailbox(transaction, input.transportId);
     if (msg.threadId) await tx.select({ id: mailThread.id }).from(mailThread)
       .where(and(eq(mailThread.id, msg.threadId), eq(mailThread.transportId, input.transportId)))
       .limit(1).for('no key update');
