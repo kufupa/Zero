@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
 import { readConfirmationFromStay360 } from './stay360-confirmation.mjs';
 import { readRecordViewFromStay360 } from './stay360-record-view.mjs';
-import { readStay360AddOns, listStay360AddOnItems, prepareStay360AddOns, saveStay360AddOns, prepareStay360AddOnChanges, saveStay360AddOnChanges } from './stay360-addons.mjs';
+import { readStay360AddOns, listStay360AddOnItems, listStay360AddOnCatalogue, prepareStay360AddOns, saveStay360AddOns, prepareStay360AddOnChanges, saveStay360AddOnChanges } from './stay360-addons.mjs';
 
 const activeWrites = new Set();
 const issue = error => /^[A-Z][A-Z0-9_]{2,100}$/.test(error.message || '') ? error.message : 'ADDONS_SESSION_FAILED';
@@ -145,8 +145,9 @@ export async function withStay360AddOnSession(operation, options = {}) {
       if (!request || typeof request !== 'object' || Array.isArray(request)) return { outcome: 'needs_input', issue: 'ADDONS_REQUEST_INVALID' };
       if (closed && request.tool !== 'reconcile') return { outcome: 'refused', issue: 'ADDONS_FRESH_SESSION_REQUIRED' };
       if (!['read', 'list', 'prepare', 'save', 'prepareChanges', 'saveChanges', 'reconcile'].includes(request.tool)) return { outcome: 'needs_input', issue: 'ADDONS_TOOL_UNKNOWN' };
-      const unsupported = Object.keys(request).filter(key => !['tool', 'confirmation', 'guestName', 'arrivalDate', 'items', 'preparedId', 'detailIds', 'changes'].includes(key) ||
-        (key === 'changes' && request.tool !== 'prepareChanges') || (key === 'detailIds' && request.tool !== 'read'));
+      const unsupported = Object.keys(request).filter(key => !['tool', 'confirmation', 'guestName', 'arrivalDate', 'items', 'preparedId', 'detailIds', 'changes', 'itemType'].includes(key) ||
+        (key === 'changes' && request.tool !== 'prepareChanges') || (key === 'detailIds' && request.tool !== 'read') ||
+        (key === 'itemType' && request.tool !== 'list'));
       if (unsupported.length) return { outcome: 'unsupported', issue: 'ADDONS_REQUEST_FIELDS_UNSUPPORTED', fields: unsupported };
       if (['prepareChanges', 'saveChanges'].includes(request.tool)) {
         const fields = Object.keys(request).filter(key => !['tool', 'confirmation', 'guestName', 'arrivalDate',
@@ -167,7 +168,8 @@ export async function withStay360AddOnSession(operation, options = {}) {
         if (request.tool === 'read') return read;
       }
       if (request.tool === 'read') return readStay360AddOns(page, confirmation, { detailIds: request.detailIds });
-      if (request.tool === 'list') return listStay360AddOnItems(page, confirmation);
+      if (request.tool === 'list') return request.itemType === undefined ? listStay360AddOnItems(page, confirmation) :
+        listStay360AddOnCatalogue(page, confirmation, { itemType: request.itemType });
       if (request.tool === 'prepare') return prepareStay360AddOns(page, confirmation, request.items);
       if (request.tool === 'prepareChanges') return prepareStay360AddOnChanges(page, confirmation, request.changes);
       if (request.tool === 'reconcile') {
