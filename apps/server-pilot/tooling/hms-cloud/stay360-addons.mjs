@@ -135,7 +135,7 @@ function matches(request, state, pending) {
   }
   if (pending.kind !== 'save' || url.pathname !== PATH || !exact(body, 'pageaction', 'SAVE') || body.has('action')) return false;
   const item = pending.item;
-  return ['quantity', 'unitprice', 'totalcost'].every((key, i) => decimal(body.get(key)) ===
+  return ['quantity', 'unitprice', 'totalcost'].every((key, i) => body.getAll(key).length === 1 && decimal(body.get(key)) ===
     [item.quantity, item.unitPrice, item.totalCost][i]) &&
     exact(body, 'startdate', wireDate(item.startDate)) && exact(body, 'enddate', wireDate(item.endDate)) &&
     exact(body, 'frequency', item.frequency) && exact(body, 'pricingcontrol', item.pricingControl) &&

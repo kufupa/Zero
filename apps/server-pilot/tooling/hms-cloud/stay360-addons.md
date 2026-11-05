@@ -41,13 +41,15 @@ Native controls determine editability and options. The tool verifies every suppl
 Run `node apps/server-pilot/tooling/hms-cloud/stay360-addons-session.mjs --jsonl` to keep one authenticated browser alive. Each input line emits one JSON result.
 
 ```json
-{"tool":"list","confirmation":"3640876178-1"}
+{"tool":"list","confirmation":"3640876178-1","guestName":"Proof Labtest","arrivalDate":"2027-11-09"}
 {"tool":"prepare","confirmation":"3640876178-1","items":[{"code":"ADDINA","quantity":"2","startDate":"2027-11-09","endDate":"2027-11-09","unitPrice":"123.45","frequency":"ONCE","pricingControl":"PERRM","folio":"INCID"}]}
 {"tool":"save","confirmation":"3640876178-1","preparedId":"<ID from prepared result>"}
 {"tool":"reconcile","confirmation":"3640876178-1"}
 ```
 
 Supported `tool` values: `read`, `list`, `prepare`, `save`, `reconcile`. Every request requires `confirmation`; optional initial lookup hints are `guestName` and `arrivalDate`. `prepare` additionally requires `items`; `save` requires the latest `preparedId`. `reconcile` uses retained receipts from this session. No authorization booleans or native item IDs can be supplied through JSON. A prepared ID works only on its originating page; a new prepare invalidates earlier IDs.
+
+Provide `arrivalDate` for future or historical stays outside the shared lookup's default date range. An unhinted lookup failure does not establish that the reservation is absent.
 
 The session wrapper fresh-reads every possible dispatch. It reports `saved` only when all requested items have matching native row IDs and full field readback in a separate browser. `uncertain` requires reconciliation before any retry. Successful save seals the original page; start a fresh session for further operations.
 
@@ -72,3 +74,5 @@ On the owned Proof Labtest confirmation `3640876178-1` (9–11 November 2027, CM
 A later two-item batch returned `saved` with automatic fresh-session reconciliation: Dinner row `1740` had quantity 2, unit price ZAR 123.45, one day, Once, Per Room, Guest Folio 2 and native total ZAR 246.90; Breakfast row `1741` had quantity 3, unit price ZAR 30.00, one day, Once, Per Room, Guest Folio 1 and native total ZAR 90.00. All requested fields, comments, item IDs and native row identities matched. The original Dinner remained present.
 
 Existing lookup, booking-session and read-guard checks passed (11 tests); the five read-guard tests passed again after the native URL-action correction. No new tests were added. These are backend module/runner proofs in the isolated feature checkout, not a deployed production canary.
+
+Unsaved refusal/recovery checks also passed: an unknown item code returned `ADDONS_ITEM_NOT_LOADED`; missing native-zero pricing returned `ADDONS_PRICE_REQUIRED`; an explicit zero then prepared successfully on the same page with `saved:false`.

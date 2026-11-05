@@ -21,7 +21,7 @@
 - [x] Replace the prototype with `stay360-addons.mjs`: `readStay360AddOns(page, confirmation)`, `listStay360AddOnItems(page, confirmation)`, `prepareStay360AddOns(page, confirmation, items)` and `saveStay360AddOns(page, confirmation, preparedId, options)`. Return structured outcomes and normalized business values alongside native controls and coverage. The throwaway selection helper is replaced by explicit generic prepare/save.
 - [x] Add a JSON/session runner in `stay360-addons-session.mjs` to compose lookup, catalogue, read, prepare and save on one owned page. Resolve item IDs internally from explicit codes. Default writes to verified Labtest; trusted host callbacks own real-guest approval and durable dispatch.
 - [x] Verify one owned Labtest Add-On save, then reopen in a fresh browser and compare native row identity, dates, quantity, price, frequency and pricing control. A two-item batch also passed automatic fresh readback. HMS requires a saved confirmation first; booking and Add-On results stay separate.
-- [ ] Run syntax and existing focused checks for changed helpers, inspect the final diff, and update the existing tool documentation with exact input/output schemas and verified limits.
+- [x] Run syntax and existing focused checks for changed helpers, inspect the final diff, and update the existing tool documentation with exact input/output schemas and verified limits.
 
 ## Public input contract
 
