@@ -193,13 +193,15 @@ function LiveWriteCard({
   // Cloud attachment availability comes from this mailbox's server-side flags, not the create-booking switch.
   const filingCurrent = view?.filingAvailable === undefined || (filingApprovalAllowed &&
     (filingApprovalDigest === undefined || (filingApprovalDigest !== null && filingApprovalDigest === view?.formDigest)));
+  const completedFilingReview = view?.form.action === 'attach_document' && view.run?.state === 'succeeded' &&
+    !view.needsCheck && view.grant?.fingerprintMatches === true;
   const effectiveWritesEnabled = (view?.cancelAvailable ?? view?.filingAvailable ?? writesEnabled) &&
     (view?.form.action !== 'attach_document' || filingCurrent);
-  const reviewWritesEnabled = (view?.cancelAvailable ?? view?.filingAvailable ?? writesEnabled) &&
+  const reviewWritesEnabled = ((view?.cancelAvailable ?? view?.filingAvailable ?? writesEnabled) || completedFilingReview) &&
     (view?.form.action !== 'attach_document' || filingReviewAllowed);
   return (
     <WriteFrame confirmation={confirmation ?? formConfirmation} guestSurname={guestSurname} arrival={arrival}>
-      {!effectiveWritesEnabled ? <p className={writeClasses.note}>
+      {!effectiveWritesEnabled && !(completedFilingReview && filingReviewAllowed) ? <p className={writeClasses.note}>
         {view?.form.action === 'attach_document' && !filingCurrent
           ? 'Select the current document and booking before approving.'
           : view?.cancelAvailable === false ? AMEND_CANCEL_COPY.switchedOff : PANE_SAVE_OFF_COPY}
@@ -217,6 +219,7 @@ function LiveWriteCard({
             manualResolve={manualResolve}
             allowApprove={allowApprove}
             reviewWritesEnabled={reviewWritesEnabled}
+            completedFilingReview={completedFilingReview}
           />
         </>
       ) : failed ? (
@@ -266,6 +269,7 @@ function WriteBody({
   manualResolve,
   allowApprove,
   reviewWritesEnabled,
+  completedFilingReview,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
@@ -275,6 +279,7 @@ function WriteBody({
   manualResolve: boolean;
   allowApprove: boolean;
   reviewWritesEnabled: boolean;
+  completedFilingReview: boolean;
 }) {
   const status = writeStatusOf(view);
   const rows = writeRowsOf(view);
@@ -284,7 +289,7 @@ function WriteBody({
   return (
     <>
       <div role="status" aria-live="polite" className="text-[12px] text-[#334155]">
-        {filingUnavailable && view.run?.lastError !== 'confirmed_hold_unsettled'
+        {filingUnavailable && !completedFilingReview && view.run?.lastError !== 'confirmed_hold_unsettled'
           ? 'Document upload is not available yet. Check HMS if an earlier upload is uncertain.' : status.message}
       </div>
       {!cloudCancel ? <WriteRows rows={rows} filing={view.form.action === 'attach_document'} /> : null}

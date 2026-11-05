@@ -155,12 +155,25 @@ describe('ApproveCard approval', () => {
   it('hides Go and note-based resolution for unavailable filing', async () => {
     const client = fakeClient(viewWith({ form: { action: 'attach_document', documentName: 'voucher.pdf' },
       filingAvailable: false, needsCheck: true, run: runWith('dead_letter', { failureClass: 'LEASE_LOST' }) }));
-    renderCard(client);
+    const card = renderCard(client);
     expect(await screen.findByText(/Document upload is not available yet/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Go' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'I checked in HMS' })).toBeNull();
     expect(client.approve).not.toHaveBeenCalled();
     expect(client.resolveNeedsCheck).not.toHaveBeenCalled();
+    card.unmount();
+    const previous = fakeClient(viewWith({ form: { action: 'attach_document', documentName: 'voucher.pdf' },
+      filingAvailable: false, grant: { grantId: 'grant-1', consumed: true, fingerprintMatches: true },
+      run: runWith('succeeded') }));
+    const completed = renderCard(previous, { filingApprovalAllowed: false, filingReviewAllowed: true });
+    expect(await screen.findByText(/Written in HMS/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Review OK' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Flag' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
+    completed.unmount();
+    renderCard(previous, { filingApprovalAllowed: false, filingReviewAllowed: false });
+    await screen.findByText(/Written in HMS/);
+    expect(screen.queryByRole('button', { name: 'Review OK' })).toBeNull();
   });
   it('lists each changed value as before to after, with one Approve button', async () => {
     renderCard(fakeClient(viewWith()));
