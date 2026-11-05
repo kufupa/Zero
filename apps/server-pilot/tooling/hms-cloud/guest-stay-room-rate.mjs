@@ -9,9 +9,14 @@ const UNAVAILABLE_MESSAGE = 'Selected criteria is not available for these dates.
 const ROOM_CHANGE_PATHS = ['/web/base/OSRESV.HDR.roomtypechange', '/web/base/OSRESV.HDR.attributerefresh'];
 const SPECS = {
   roomType: { title: 'Room Types', grid: 'LVROOMTYPE2', code: 'roomtypecode', id: 'roomtypeid', name: 'roomtypedesc' },
+  roomTypeForCharge: { title: 'Room Types', grid: 'LVROOMTYPE2', code: 'roomtypecode', id: 'roomtypeid', name: 'roomtypedesc' },
   ratePlan: { title: 'Rate Plans', grid: 'LVMULTIRATEPLANS3', code: 'rateplancode', name: 'rateplanname' },
 };
+const roomKind = (kind) => kind === 'roomType' || kind === 'roomTypeForCharge';
+const roomField = (kind) => kind === 'roomTypeForCharge' ? 'roomtypecharge' : 'roomtype';
 const searches = new WeakMap(), guards = new WeakMap();
+const chargeRevisions = new WeakMap();
+export const chargeRoomRevision = (page) => chargeRevisions.get(page) || 0;
 const busy = new WeakSet();
 const clean = (v) => String(v ?? '').trim();
 const validCode = (v) => /^[A-Z][A-Z0-9_]{2,100}$/.test(v);
@@ -168,8 +173,8 @@ function allowedSearch(request, kind, origin) {
   const body = new URLSearchParams(request.postData() || '');
   const spec = SPECS[kind];
   if (url.pathname === '/web/base/GETCACHE') return body.get('GRID_NAME') === spec.grid;
-  if (kind === 'roomType') return url.pathname === '/web/base/LOVPOP' &&
-    body.get('GRID_NAME') === spec.grid && body.get('LOV_TAGNAME') === 'roomtype' && propertyAlias(body);
+  if (roomKind(kind)) return url.pathname === '/web/base/LOVPOP' &&
+    body.get('GRID_NAME') === spec.grid && body.get('LOV_TAGNAME') === roomField(kind) && propertyAlias(body);
   if (url.pathname === '/web/base/BSMSLV') return body.get('GRID_NAME') === spec.grid && propertyAlias(body);
   if (url.pathname === '/web/base/OSRASD' || url.pathname === '/web/base/OSRASD.RatePlanChange') {
     return body.getAll('property').length === 1 && body.getAll('confirmationnumber').length === 1 &&
@@ -305,7 +310,7 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
       const req = response.request();
       return new URL(req.url()).pathname === '/web/base/LOVPOP' && allowedSearch(req, kind, new URL(page.url()).origin);
     }, { timeout: 20000 }).catch(() => null);
-    const room = page.locator('input[name="roomtype"]:visible').first();
+    const room = page.locator(`input[name="${roomField(kind)}"]:visible`).first();
     await room.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').click();
   }
   const win = picker(page, spec.title);
@@ -320,7 +325,7 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
   const response = await initial;
   if (kind === 'ratePlan' && await dismissUnavailable()) return { criteriaUnavailable: true };
   if (!response || response.status() !== 200) throw new Error('PICKER_REQUEST_UNVERIFIED');
-  let nativeFilters = kind === 'roomType'
+  let nativeFilters = roomKind(kind)
     ? [...new URLSearchParams(response.request().postData() || '')]
       .filter(([name]) => /filter/i.test(name)).map(([name, value]) => ({ name, value }))
     : [];
@@ -393,7 +398,7 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
   const c = coverage(metadata, rows.length);
   if (current.footer && (current.footer.loaded !== rows.length ||
       (c.total != null && current.footer.total !== c.total))) throw new Error('PICKER_COVERAGE_MISMATCH');
-  const catalogCoverage = kind !== 'roomType' ? c : nativeFilters.length
+  const catalogCoverage = !roomKind(kind) ? c : nativeFilters.length
     ? { ...c, total: null, complete: false, possiblyTruncated: true, nativeFiltered: true,
       filteredResultTotal: c.total, filteredResultComplete: c.complete }
     : { ...c, nativeFiltered: false };
@@ -446,6 +451,12 @@ async function search(page, kind, input = {}) {
     await guards.get(context);
     let state = searches.get(page);
     let effects = [];
+    if (state && !state.cleanupOnly && roomKind(state.kind) && roomKind(kind) && state.kind !== kind) {
+      const closed = await closeRoomRatePickerLocked(page);
+      if (closed.outcome !== 'closed_unsaved') return { ...closed, kind, forField: kind };
+      effects = closed.effects;
+      state = null;
+    }
     if (state?.cleanupOnly || (state && state.kind !== kind)) throw new Error('PICKER_CLOSE_REQUIRED');
     if (state?.kind === kind) {
       await assertCurrent(page, state, () => native);
@@ -460,7 +471,7 @@ async function search(page, kind, input = {}) {
         cleanupRequired: true, effects: capture.effects,
       };
       state = { kind, ...capture.result };
-      effects = capture.effects;
+      effects = [...effects, ...capture.effects];
     }
     const needle = filter.query.toLocaleLowerCase();
     const matches = state.candidates.filter((candidate) =>
@@ -468,10 +479,10 @@ async function search(page, kind, input = {}) {
     const searchId = randomUUID();
     searches.set(page, { ...state, searchId });
     const outcome = matches.length ? 'matches' : state.coverage.complete === true ? 'no_match' : 'incomplete';
-    return { outcome, kind, searchId, observedAt: state.observedAt,
+    return { outcome, kind, ...(roomKind(kind) ? { forField: kind } : {}), searchId, observedAt: state.observedAt,
       criteria: { propertyCode: PROPERTY, scope: kind === 'ratePlan' ? 'guest_stay_rate_shop_catalog' : 'guest_stay_room_catalog',
         query: filter.query, offset: filter.offset, limit: filter.limit,
-        ...(kind === 'roomType' ? { nativeFilters: state.nativeFilters.map((item) => ({ ...item })),
+        ...(roomKind(kind) ? { nativeFilters: state.nativeFilters.map((item) => ({ ...item })),
           ...(state.nativeFilterReset ? { nativeFilterReset: true,
             initialNativeFilters: state.initialNativeFilters.map((item) => ({ ...item })) } : {}) } : {}),
         ...(state.shopState ? { rateShopControls: JSON.parse(state.shopState) } : {}) },
@@ -485,7 +496,13 @@ async function search(page, kind, input = {}) {
     busy.delete(page);
   }
 }
-export const searchRoomTypes = (page, input) => search(page, 'roomType', input);
+export function searchRoomTypes(page, input = {}) {
+  const kind = input?.forField === undefined ? 'roomType' : input.forField;
+  if (!roomKind(kind)) return Promise.resolve({ outcome: 'input_gap', issue: 'INVALID_ROOM_FIELD' });
+  return search(page, kind, input);
+}
+// Compatibility for existing callers; new callers use searchRoomTypes({ forField }).
+export const searchRoomTypesForCharge = (page, input) => search(page, 'roomTypeForCharge', input);
 export const searchRatePlans = (page, input) => search(page, 'ratePlan', input);
 function matchingCandidates(state, input) {
   const nativeId = clean(input?.nativeId);
@@ -560,6 +577,7 @@ export async function selectRoomType(page, input = {}, { timeoutMs = 20000 } = {
         body.get('roomtype') === chosen.code && body.get('roomtypeid') === chosen.nativeId;
     }, async () => {
       attempted = true;
+      chargeRevisions.set(page, chargeRoomRevision(page) + 1);
       await rows.nth(indexes[0]).click({ timeout: timeoutMs });
       const selected = await page.evaluate((id) => Ext.getCmp(id)?.query('grid,readonlygrid')?.[0]
         ?.getSelectionModel?.()?.getSelection?.().map((row) => row.data) || [], state.windowId);
@@ -595,10 +613,90 @@ export async function selectRoomType(page, input = {}, { timeoutMs = 20000 } = {
   } finally { scope?.close(); page.off('response', onResponse); page.off('dialog', onDialog); busy.delete(page); }
 }
 
-/** Explicitly discard the open picker (and Rate Shop's pending selection). */
-export async function closeRoomRatePicker(page) {
+/** Select a charge room type on the current unsaved stay, independently of its room type. */
+export async function selectRoomTypeForCharge(page, input = {}, { timeoutMs = 20000 } = {}) {
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'PICKER_IN_PROGRESS' };
   busy.add(page);
+  let native = false, attempted = false, fence, scope;
+  const onDialog = () => { native = true; };
+  const path = '/web/base/OSRESV.HDR.attributerefresh', responses = [];
+  const onResponse = (response) => { if (new URL(response.url()).pathname === path) responses.push(response); };
+  page.on('dialog', onDialog);
+  try {
+    fence = await installPageRequestFence(page, [path]);
+    scope = fence.open();
+    const state = searches.get(page);
+    if (!state || state.kind !== 'roomTypeForCharge' || !input.searchId || input.searchId !== state.searchId) {
+      throw new Error('SEARCH_STALE');
+    }
+    await assertCurrent(page, state, () => native);
+    const candidates = matchingCandidates(state, input);
+    if (candidates.length !== 1 || !candidates[0].nativeId || !candidates[0].code) throw new Error('CANDIDATE_NOT_UNIQUE');
+    const chosen = candidates[0], win = picker(page, 'Room Types');
+    const rows = win.locator('.x-grid-view .x-grid-row,.x-grid-view .x-grid-data-row');
+    const indexes = await rows.evaluateAll((elements, id) => elements.flatMap((el, index) => {
+      const grid = (Ext.ComponentQuery.query('grid,readonlygrid') || []).find((g) => g.getEl?.()?.dom?.contains(el));
+      return String(grid?.getView?.()?.getRecord?.(el)?.data?.roomtypeid ?? '').trim() === id ? [index] : [];
+    }), chosen.nativeId);
+    if (indexes.length !== 1) throw new Error('CANDIDATE_NOT_UNIQUE');
+    const before = await formFields(page), room = before.filter((field) => field.name === 'roomtype');
+    if (room.length !== 1 || before.filter((field) => field.name === 'roomtypecharge').length !== 1) {
+      throw new Error('ROOM_CHARGE_FORM_UNVERIFIED');
+    }
+    page.on('response', onResponse);
+    const { result: after, effects } = await withFence(page, (request, origin) => {
+      const url = new URL(request.url()), body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
+      const expected = { propertycode: PROPERTY, confirmationnumber: '', PKID: `@[EMPTY]#@[EMPTY]#${PROPERTY}#`,
+        recordid: '', reservationid: '', status: 'New', ONLY_DATA_REQUIRED: 'true',
+        roomtype: clean(room[0].value), roomtypecharge: chosen.code };
+      const noProfileWrite = ['newprofileclick', 'linkprofileflag', 'createinactiveprofileflag',
+        'savecctoprofile', 'savesettlementcctoprofile'].every((key) => {
+        const values = [...body].filter(([name]) => name.toLowerCase() === key).map(([, value]) => value.toLowerCase());
+        return values.length <= 1 && values.every((value) => ['', '0', 'false'].includes(value));
+      });
+      return request.method() === 'POST' && url.origin === origin && url.pathname === path && !url.search && !url.hash &&
+        /^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '') && noProfileWrite &&
+        Object.entries(expected).every(([key, value]) => body.getAll(key).length === 1 && body.get(key) === value &&
+          keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1);
+    }, async () => {
+      attempted = true;
+      chargeRevisions.set(page, chargeRoomRevision(page) + 1);
+      await rows.nth(indexes[0]).click({ timeout: timeoutMs });
+      const selected = await page.evaluate((id) => Ext.getCmp(id)?.query('grid,readonlygrid')?.[0]
+        ?.getSelectionModel?.()?.getSelection?.().map((row) => row.data) || [], state.windowId);
+      if (selected.length !== 1 || clean(selected[0].roomtypeid) !== chosen.nativeId ||
+          JSON.stringify(await readWindow(page, state.windowId)) !== state.pickerState) throw new Error('PICKER_SELECTION_CHANGED');
+      await assertWindows(page, ['Room Types'], () => native);
+      await win.locator('a.x-btn:visible').filter({ hasText: /^\s*OK\s*$/ }).click({ timeout: timeoutMs });
+      await win.waitFor({ state: 'hidden', timeout: timeoutMs });
+      searches.delete(page);
+      await page.waitForFunction(() => !Ext.Ajax.isLoading(), null, { timeout: timeoutMs });
+      await assertWindows(page, [], () => native);
+      if (responses.length !== 1 || responses[0].status() !== 200) throw new Error('ROOM_CHARGE_CHANGE_UNVERIFIED');
+      const values = parseResponse(await responseText(responses[0])).values;
+      if (!values || !['propertycode', 'confirmationnumber', 'recordid', 'reservationid', 'roomtype', 'roomtypecharge']
+          .every((key) => Object.hasOwn(values, key)) || clean(values.propertycode) !== PROPERTY || clean(values.confirmationnumber) ||
+          clean(values.recordid) || clean(values.reservationid) || clean(values.roomtypecharge) !== chosen.code ||
+          clean(values.roomtype) !== clean(room[0].value)) throw new Error('ROOM_CHARGE_CHANGE_UNVERIFIED');
+      const fields = await formFields(page), charge = fields.filter((field) => field.name === 'roomtypecharge');
+      const currentRoom = fields.filter((field) => field.name === 'roomtype');
+      if (charge.length !== 1 || clean(charge[0].value) !== chosen.code || currentRoom.length !== 1 ||
+          clean(currentRoom[0].value) !== clean(room[0].value)) throw new Error('ROOM_CHARGE_READBACK_MISMATCH');
+      return fields;
+    }, scope, () => { if (attempted) fence.quarantine(); });
+    return { outcome: 'selected_unsaved', searchId: state.searchId, observedAt: state.observedAt,
+      nativeId: chosen.nativeId, code: chosen.code, selectedField: after.find((field) => field.name === 'roomtypecharge'),
+      pricing: { availability: 'requires_recheck' },
+      form: { fields: after, changedFields: changedFields(before, after) }, effects };
+  } catch (error) {
+    if (attempted) fence?.quarantine();
+    if (attempted && searches.has(page)) searches.set(page, { ...searches.get(page), searchId: null, cleanupOnly: true });
+    return { outcome: attempted ? 'selection_uncertain' : 'execution_failure', issue: issue(error, 'ROOM_CHARGE_SELECTION_FAILED') };
+  } finally { scope?.close(); page.off('response', onResponse); page.off('dialog', onDialog); busy.delete(page); }
+}
+
+/** Explicitly discard the open picker (and Rate Shop's pending selection). */
+async function closeRoomRatePickerLocked(page) {
   let native = false, cancelAttempted = false;
   const onDialog = () => { native = true; };
   page.on('dialog', onDialog);
@@ -640,5 +738,12 @@ export async function closeRoomRatePicker(page) {
     if (state && cancelAttempted && !native && !await picker(page, 'Rate Shop').isVisible().catch(() => true)) state.shopId = null;
     if (state) searches.set(page, { ...state, searchId: null, cleanupOnly: true, cancelUncertain: state.cancelUncertain || cancelAttempted });
     return { outcome: cancelAttempted || state?.cancelUncertain ? 'close_uncertain' : 'execution_failure', issue: issue(error, 'PICKER_CLOSE_FAILED') };
-  } finally { page.off('dialog', onDialog); busy.delete(page); }
+  } finally { page.off('dialog', onDialog); }
+}
+
+export async function closeRoomRatePicker(page) {
+  if (busy.has(page)) return { outcome: 'execution_failure', issue: 'PICKER_IN_PROGRESS' };
+  busy.add(page);
+  try { return await closeRoomRatePickerLocked(page); }
+  finally { busy.delete(page); }
 }

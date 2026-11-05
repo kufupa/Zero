@@ -22,6 +22,7 @@ function validExpected(stay, expected) {
     !(isLabtestGuest(guest) && expected.cmsSend === true) &&
     expected.arrival === stay.arrival && expected.departure === stay.departure && /^\d+$/.test(String(expected.guestId ?? '')) &&
     ['roomType', 'ratePlan', 'note', 'guarantee'].every((key) => typeof expected[key] === 'string' && expected[key].trim()) &&
+    (expected.roomTypeForCharge === undefined || /^[A-Z0-9]{1,12}$/.test(expected.roomTypeForCharge)) &&
     (expected.guaranteeCode === undefined || CREATE_GUARANTEES[expected.guaranteeCode] === expected.guarantee) &&
     Number.isInteger(expected.adults) && expected.adults > 0 && Number.isInteger(expected.children) && expected.children >= 0 &&
     bands && Object.keys(bands).length === names.length && names.every((name) => Number.isInteger(bands[name]) && bands[name] >= 0) &&
@@ -36,6 +37,7 @@ function compareRecord(fields, expected) {
     ['arrival', 'arrivaldate', displayDate(expected.arrival)], ['departure', 'departuredate', displayDate(expected.departure)],
     ['adults', 'adults', expected.adults], ['children', 'children', expected.children],
     ['roomType', 'roomtype', expected.roomType], ['ratePlan', 'rateplan', expected.ratePlan],
+    ['roomTypeForCharge', 'roomtypecharge', expected.roomTypeForCharge],
     ['note', 'reservationnote', expected.note], ['guestId', 'guestid', expected.guestId], ['status', 'status', 'Reserved'],
     ['firstName', 'firstname', expected.allowRealGuest ? expected.firstName : 'Proof'],
     ['lastName', 'lastname', expected.allowRealGuest ? expected.lastName : 'Labtest'],
@@ -49,7 +51,7 @@ function compareRecord(fields, expected) {
   ]) {
     if (wanted == null) continue;
     const actual = uniqueValue(fields, name);
-    if (actual == null || (['note', 'guestId', 'firstName', 'lastName', 'roomType', 'ratePlan', 'cmsMessageId', 'cmsRecipient', 'guestEmail', 'bookerName', 'bookerContact'].includes(field) ? String(actual) !== String(wanted) : !same(actual, wanted))) {
+    if (actual == null || (['note', 'guestId', 'firstName', 'lastName', 'roomType', 'roomTypeForCharge', 'ratePlan', 'cmsMessageId', 'cmsRecipient', 'guestEmail', 'bookerName', 'bookerContact'].includes(field) ? String(actual) !== String(wanted) : !same(actual, wanted))) {
       mismatches.push({ field, expected: wanted, actual, ...(actual == null ? { issue: 'not_visible_or_ambiguous' } : {}) });
     }
   }

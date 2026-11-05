@@ -29,9 +29,10 @@ import {
   searchHotelAvailabilityParty, selectHotelAvailabilityParty, cancelHotelAvailabilityParty,
 } from './hotel-availability.mjs';
 import {
-  searchRoomTypes, searchRatePlans, inspectRoomRateCandidate, selectRoomType, closeRoomRatePicker,
+  searchRoomTypes, searchRoomTypesForCharge, searchRatePlans, inspectRoomRateCandidate,
+  selectRoomType, selectRoomTypeForCharge, closeRoomRatePicker,
 } from './guest-stay-room-rate.mjs';
-import { selectGuestStayRatePlan } from './guest-stay-rate-plan.mjs';
+import { selectGuestStayRatePlan, currentCheckedChargeRate } from './guest-stay-rate-plan.mjs';
 import { searchLabtestPreimage } from './labtest-preimage.mjs';
 import { guaranteeDisplayForSave, normalizeOrganizationSelection, saveNewLabtestStay } from './guest-stay-save.mjs';
 import { createCloudTargetKey, validCreateGuest } from './cloud-create-policy.mjs';
@@ -124,7 +125,7 @@ export function buildLabtestOrganizationReadbackTarget(saveResult, request, sele
 function sessionState(page) {
   let state = sessionEvidence.get(page);
   if (!state) {
-    state = { organizationSelection: null, savedOrganizationCreate: null };
+    state = { organizationSelection: null, savedOrganizationCreate: null, chargeRoom: null };
     sessionEvidence.set(page, state);
   }
   return state;
@@ -407,7 +408,8 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       readGuestStayForm, setGuestStayText, setGuestStayDate, listGuestStayDropdown, selectGuestStayDropdown,
       setGuestStayChildAges, listCmsMessageIds, selectCmsMessageId, closeCmsMessageIdPicker, setCmsSendCheckbox,
       searchHotelAvailabilityParty, selectHotelAvailabilityParty, cancelHotelAvailabilityParty,
-      searchRoomTypes, searchRatePlans, inspectRoomRateCandidate, selectRoomType, closeRoomRatePicker, selectGuestStayRatePlan,
+      searchRoomTypes, searchRoomTypesForCharge, searchRatePlans, inspectRoomRateCandidate,
+      selectRoomType, selectRoomTypeForCharge, closeRoomRatePicker, selectGuestStayRatePlan,
       searchGuestStaySourceBusiness, inspectGuestStaySourceBusiness,
       selectGuestStaySourceBusiness, closeGuestStaySourceBusinessPicker,
       closeHotelAvailability, readQuote, viewQuoteSnapshot, saveNewLabtestStay,
@@ -477,7 +479,8 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       'selectGuestStayDropdown', 'setGuestStayChildAges', 'listCmsMessageIds', 'selectCmsMessageId',
       'closeGuestStayPartyPicker', 'closeCmsMessageIdPicker',
       'setCmsSendCheckbox', 'searchHotelAvailabilityParty', 'selectHotelAvailabilityParty',
-      'searchRoomTypes', 'searchRatePlans', 'inspectRoomRateCandidate', 'selectRoomType', 'selectGuestStayRatePlan',
+      'searchRoomTypes', 'searchRoomTypesForCharge', 'searchRatePlans', 'inspectRoomRateCandidate',
+      'selectRoomType', 'selectRoomTypeForCharge', 'selectGuestStayRatePlan',
       'inspectGuestStaySourceBusiness', 'selectGuestStaySourceBusiness',
     ].includes(tool)) {
       const options = ['selectGuestStayDropdown', 'selectGuestStayRatePlan'].includes(tool)
@@ -487,12 +490,32 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
         delete options?.authorizeM1CreateAvailabilityRequest;
         const availability = createAuthority?.m1CreateRateAvailabilityOptions?.();
         if (availability) Object.assign(options, availability);
+        else if (state.chargeRoom && request.createDraft && createAuthority?.withM1CreateRateAvailability) {
+          result = await createAuthority.withM1CreateRateAvailability(async () => {
+            const recheck = createAuthority.m1CreateRateAvailabilityOptions();
+            if (!recheck) return { outcome: 'refused', issue: 'CHARGE_ROOM_PRICE_RECHECK_UNAVAILABLE' };
+            return action(page, request, { ...options, ...recheck });
+          });
+        }
       }
-      result = await action(page, request, options);
+      if (!result) result = await action(page, request, options);
     } else {
       result = await action(page, request.query, request.options);
     }
     if (tool === 'selectOrganization') state.organizationSelection = organizationSelectionProof(result);
+    if (tool === 'selectRoomTypeForCharge') {
+      state.chargeRoom = result?.outcome === 'selected_unsaved' ? result.code : null;
+      if (state.chargeRoom) createAuthority?.invalidateM1CreateRateAvailability?.();
+    }
+    if (tool === 'selectGuestStayRatePlan' && state.chargeRoom && result?.outcome === 'selected_unsaved' && result.rateAvailability) {
+      const checked = await currentCheckedChargeRate(page, { roomTypeForCharge: state.chargeRoom,
+        roomType: request.createDraft?.roomType, ratePlan: result.code,
+        arrival: result.arrivalDate, departure: result.departureDate });
+      result = checked ? { ...result, chargeRoomPricing: 'checked' } :
+        { ...result, outcome: 'selection_uncertain', issue: 'CHARGE_ROOM_PRICE_CHECK_UNVERIFIED' };
+    } else if (tool === 'selectGuestStayRatePlan' && state.chargeRoom && result?.outcome === 'selected_unsaved') {
+      result = { ...result, chargeRoomPricing: 'requires_recheck' };
+    }
     if (tool === 'saveNewLabtestStay' && result?.outcome === 'saved_same_form') {
       state.savedOrganizationCreate = buildLabtestOrganizationReadbackTarget(
         result, saveRequest, state.organizationSelection, createAuthority);
@@ -557,6 +580,7 @@ export async function withBookingLookupSession(operation, { memory, memorySource
   const approvedCreateAvailabilityRequests = new WeakSet();
   const activeCreateRateAvailability = new WeakSet();
   const usedCreateRateAvailability = new WeakSet();
+  const currentCreateRateAvailability = new WeakSet();
   const createAuthority = { ...(allowRealGuest ? { allowRealGuest: true, expectedGuest: { ...expectedGuest } } : {}),
     ...(cloudTargetKey ? { cloudTargetKey } : {}) };
   Object.defineProperties(createAuthority, {
@@ -566,7 +590,7 @@ export async function withBookingLookupSession(operation, { memory, memorySource
           activeCreateRateAvailability.has(createAuthority)) throw new Error('CREATE_AVAILABILITY_AUTHORITY_INVALID');
       activeCreateRateAvailability.add(createAuthority);
       try { return await operation(); }
-      finally { activeCreateRateAvailability.delete(createAuthority); }
+      finally { activeCreateRateAvailability.delete(createAuthority); currentCreateRateAvailability.delete(createAuthority); }
     } },
     m1CreateRateAvailabilityOptions: { value: () => {
       if (createAuthority.__m1CreateFlowAuthority !== true || !activeCreateRateAvailability.has(createAuthority) ||
@@ -575,9 +599,13 @@ export async function withBookingLookupSession(operation, { memory, memorySource
         if (!activeCreateRateAvailability.has(createAuthority) || usedCreateRateAvailability.has(createAuthority) ||
             !request || typeof request !== 'object') return false;
         usedCreateRateAvailability.add(createAuthority);
+        currentCreateRateAvailability.add(createAuthority);
         approvedCreateAvailabilityRequests.add(request);
         return true;
       } };
+    } },
+    invalidateM1CreateRateAvailability: { value: () => {
+      if (!currentCreateRateAvailability.has(createAuthority)) usedCreateRateAvailability.delete(createAuthority);
     } },
   });
   const pageOptions = { ...bookingSessionPageOptions({ headless, blockServiceWorkers, cloudTargetKey }),

@@ -1,6 +1,6 @@
 // Select a current rate code on a verified new HRCEN Guest Stay.
 import { createHash } from 'node:crypto';
-import { searchRatePlans, closeRoomRatePicker } from './guest-stay-room-rate.mjs';
+import { searchRatePlans, closeRoomRatePicker, chargeRoomRevision } from './guest-stay-room-rate.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { isVerifiedLabtestProfileCurrent, verifiedLabtestProfileToken } from './guest-profile.mjs';
 import { isVerifiedArSelectionCurrent, verifiedArSelectionToken } from './lookup.mjs';
@@ -123,6 +123,30 @@ function proofsCurrent(page, proof) {
     (!proof.ar?.token || isVerifiedArSelectionCurrent(page,{session:proof.session,...proof.ar}));
 }
 const draftFingerprint = draft => fingerprint([draft.fields,draft.identity]);
+const PRICE_FIELDS = ['guestid', 'arrivaldate', 'departuredate', 'roomtype', 'roomtypecharge', 'rateplan',
+  'adults', 'children', 'child1', 'child2', 'child3', 'guaranteetype', 'ta1', 'company', 'araccountname',
+  'track', 'sourceofbusinessdesc', 'averagerate', 'totalrate', 'averageratecurr', 'totalratecurr'];
+const PRICE_REQUIRED = ['guestid', 'arrivaldate', 'departuredate', 'roomtype', 'roomtypecharge', 'rateplan', 'averagerate', 'totalrate'];
+function chargePriceFields(draft) {
+  if (!Array.isArray(draft?.fields)) return null;
+  const values = {};
+  for (const name of PRICE_FIELDS) {
+    const fields = draft.fields.filter(field => field.name === name);
+    if (fields.length > 1 || (!fields.length && PRICE_REQUIRED.includes(name))) return null;
+    if (fields.length) values[name] = fields[0].value;
+  }
+  return values;
+}
+
+/** A charged-room Save must use the same checked draft on this page. */
+export async function currentCheckedChargeRate(page, expected) {
+  const proof = selectedOnPage.get(page)?.chargePrice;
+  if (!proof || chargeRoomRevision(page) !== proof.revision || proof.chargeRoom !== expected?.roomTypeForCharge ||
+      proof.roomType !== expected.roomType || proof.ratePlan !== expected.ratePlan ||
+      proof.arrival !== expected.arrival || proof.departure !== expected.departure) return false;
+  const draft = await readDraft(page);
+  return draft?.identity?.valid === true && JSON.stringify(chargePriceFields(draft)) === JSON.stringify(proof.fields);
+}
 function changedFields(before, after) {
   const key = (field,index) => field.id || `${field.name || ''}:${index}`;
   const a = new Map(before.map((field,index) => [key(field,index),field]));
@@ -286,6 +310,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
   if (!page || typeof page.route !== 'function' || typeof page.evaluate !== 'function') return {outcome:'input_gap',issue:'PAGE_REQUIRED'};
   if (busy.has(page)) return {outcome:'execution_failure',issue:'RATE_SELECTION_IN_PROGRESS'};
   busy.add(page);
+  const revision = chargeRoomRevision(page);
   let nativeDialog = false, attempted = false, availabilityCheckArmed = false, unsupportedId = null,
     before = null, after = null, guard = null, fence = null, scope = null;
   const blocked = [], requests = new Map(), responses = [], sessions = [];
@@ -475,7 +500,12 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       selectedOnPage.delete(page);
       return {outcome:'criteria_unavailable',issue:'RATE_PRICE_UNCONFIRMED'};
     }
-    selectedOnPage.set(page,{code,fingerprint:draftFingerprint(after)});
+    const fields = rateAvailability ? chargePriceFields(after) : null;
+    const chargePrice = fields && chargeRoomRevision(page) === revision && fields.roomtypecharge &&
+      fields.rateplan === code && fields.averagerate === rateAvailability.averageRate && fields.totalrate === rateAvailability.totalRate
+      ? { revision, fields, chargeRoom: fields.roomtypecharge, roomType: fields.roomtype, ratePlan: code,
+        arrival: dates.arrival.iso, departure: dates.departure.iso } : null;
+    selectedOnPage.set(page,{code,fingerprint:draftFingerprint(after),chargePrice});
     return {outcome:'selected_unsaved',code,previousCode,previousRateEvidence,propertyCode:PROPERTY,arrivalDate:dates.arrival.iso,departureDate:dates.departure.iso,
       nativeCodeEvidence:'validated_row_and_draft_change_response',nativeRatePlanId:'unsupported',
       identityReadback:{guestProfileId:guestId || null,arAccount:dates.ar ? {accountId:dates.ar.accountId,
