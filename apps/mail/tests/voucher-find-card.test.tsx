@@ -959,6 +959,62 @@ describe('voucher find card: saving the file', () => {
     expect(queueSearchGuest).not.toHaveBeenCalled();
     expect(queueFind).not.toHaveBeenCalled();
   });
+
+  it.each(['verified PDF', 'ineligible file', 'failed PDF'] as const)(
+    'keeps payment-only lookup for a %s without enabling filing', async (scenario) => {
+      const file = scenario === 'ineligible file'
+        ? { id: 'image', filename: 'proof.jpg', mimeType: 'image/jpeg', sizeBytes: 100 } : PDF;
+      const voucher = { ...VOUCHER, file, files: scenario === 'ineligible file' ? [] : [PDF] };
+      const download = vi.fn(async () => {});
+      const preview = vi.fn();
+      const bind = vi.fn();
+      const { trpc, queueSearchGuest, queueFind } = fakeTrpc({ reply: voucher });
+      if (scenario === 'failed PDF') {
+        trpc.quoteWorkflow.voucherFind.query = vi.fn(async (input: { internetMessageId: string; attachmentId?: string }): Promise<VoucherFindReply> => {
+          if (input.attachmentId) throw new Error('unavailable');
+          return voucher;
+        });
+      }
+      (trpc as { hmsApproval?: unknown }).hmsApproval = {
+        writeState: { query: vi.fn(async () => ({ run: null, needsCheck: false, filingConfigured: true })) },
+        previewAttach: { mutate: preview }, bindAttach: { mutate: bind },
+      };
+      render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={download}
+        lookupSelection={{ kind: 'web', threadId: 'thread-1', messageId: 'm1' }}
+        workItemId="3f8a2c1e-9b7d-4e6f-8a1b-2c3d4e5f6a7b" propertyCode="HRCEN"
+        selectedSource={undefined} approvalAvailable />);
+      if (scenario === 'failed PDF') {
+        await screen.findByText('Could not read this document. Reopen the email and try again.');
+        fireEvent.change(screen.getByLabelText('Guest surname'), { target: { value: 'Smith' } });
+        fireEvent.change(screen.getByLabelText('Arrival'), { target: { value: '2026-11-12' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Search HMS' }));
+      }
+      fireEvent.click(await screen.findByRole('button', { name: 'Select booking' }));
+      await waitFor(() => expect(queueFind).toHaveBeenCalledWith(expect.objectContaining({
+        threadId: 'thread-1', messageId: 'm1', confirmation: SMITH_ROW.confirmation,
+      }), MAILBOX));
+      expect(queueSearchGuest).toHaveBeenCalledWith(expect.objectContaining({
+        threadId: 'thread-1', messageId: 'm1',
+      }), MAILBOX);
+      fireEvent.click(screen.getByRole('button', { name: VOUCHER_COPY.save }));
+      await waitFor(() => expect(download).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'm1', attachmentId: file.id })));
+      expect(screen.queryByRole('button', { name: VOUCHER_ATTACH_COPY.review })).toBeNull();
+      expect(screen.queryByRole('button', { name: VOUCHER_ATTACH_COPY.prepare })).toBeNull();
+      expect(preview).not.toHaveBeenCalled();
+      expect(bind).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { selectedSource: null, selectionCurrent: true },
+    { selectedSource: undefined, selectionCurrent: false },
+  ])('blocks lookup when the filing source is unavailable or selection is stale', async (scope) => {
+    const { trpc, queueSearchGuest } = fakeTrpc({ reply: VOUCHER });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} propertyCode="HRCEN" {...scope} />);
+    expect(await screen.findByText('Nava cannot verify this email and document. Reopen the email.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Search HMS' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(queueSearchGuest).not.toHaveBeenCalled();
+  });
 });
 
 describe('voucher find card: attach to HMS', () => {

@@ -269,7 +269,8 @@ function VoucherFindCardBody({
     selectedSource.threadId === replyThread && selectedSource.messageId === replyMessageId &&
     /^[a-f0-9]{64}$/.test(selectedSource.sourceHash)));
   const sourceMatches = fileReady && emailMatches && (propertyCode !== 'HRCEN' || validDocumentSource);
-  const lookupSourceMatches = sourceMatches || ((noEligiblePdf || Boolean(failedFile)) && emailMatches);
+  // Payment-only views have no filing source; their reads still use the exact checked message.
+  const lookupSourceMatches = lookupReady && (emailMatches || (selectedSource === undefined && selectionCurrent));
   const transport = useMemo(
     () => lookupSourceMatches ? hmsJobTransport(jobClient, replyThread, replyMessageId,
       { exactSource: true, ...(selectedSource?.sourceHash ? { sourceHash: selectedSource.sourceHash } : {}) }) : null,
