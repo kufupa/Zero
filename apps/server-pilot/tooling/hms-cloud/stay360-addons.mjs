@@ -129,7 +129,7 @@ function matches(request, state, pending) {
     if (!['/web/base/LOVPOP', '/web/base/GRIDDATA'].includes(url.pathname) ||
         body.get('GRID_NAME') !== 'LVENHANCEDEXPERIENCE' || body.get('LOV_TAGNAME') !== 'itemorbundlecode') return false;
     const a = aliases(body);
-    return a?.get('param.propertycode') === 'HRCEN' && a.get('param.itemtype') === 'ITEM' &&
+    return a?.get('param.propertycode') === 'HRCEN' && a.get('param.itemtype') === (pending.itemType || 'ITEM') &&
       a.get('param.reservationstayid') === state.native.stayId && a.get('param.account') === state.native.account &&
       !body.has('pageaction') && !body.has('action');
   }
@@ -140,6 +140,11 @@ function matches(request, state, pending) {
       /^\d+$/.test(body.get('reservationstayid') || '') && /^\d+$/.test(body.get('account') || '');
   }
   if (!exact(body, 'reservationstayid', state.native.stayId) || !exact(body, 'account', state.native.account)) return false;
+  if (pending.kind === 'type') {
+    return url.pathname === `${PATH}.itemtypechange` && !body.has('pageaction') && !body.has('action') &&
+      exact(body, 'ONLY_DATA_REQUIRED', 'true') && exact(body, 'itemtype', pending.itemType) && !clean(body.get('recordid')) &&
+      !clean(body.get('enhexpsequencekey')) && !clean(body.get('itemorbundlecode'));
+  }
   if (pending.kind === 'inspect') {
     return url.pathname === PATH && !body.has('pageaction') && !body.has('action') &&
       exact(body, 'ONLY_DATA_REQUIRED', 'true') && exact(body, 'enhexpsequencekey', pending.nativeId);
@@ -284,12 +289,12 @@ async function loadedRows(page, testId, locator) {
   }, testId);
 }
 
-async function catalogue(page, state) {
+async function catalogue(page, state, itemType = 'ITEM') {
   if (await picker(page).count()) fail('ADDONS_PICKER_ALREADY_OPEN');
   const input = popup(page).locator('input[name="itemorbundlecode"]:visible');
   const trigger = input.locator('xpath=ancestor::table[contains(@class,"x-form-trigger-wrap")][1]').locator('.x-form-lov-trigger:visible');
   if (await trigger.count() !== 1) fail('ADDONS_ITEM_LOOKUP_UNAVAILABLE');
-  const data = await step(page, state, { kind: 'lookup' }, () => trigger.click());
+  const data = await step(page, state, { kind: 'lookup', itemType }, () => trigger.click());
   await picker(page).waitFor({ state: 'visible', timeout: 20000 });
   const loaded = await loadedRows(page, 'lovgrid', picker(page)), grid = nativeGrid(data);
   if (!grid || !Array.isArray(grid.DATA)) fail('ADDONS_CATALOGUE_RESPONSE_UNVERIFIED');
@@ -471,6 +476,45 @@ export async function listStay360AddOnItems(page, confirmation) {
     const found = await catalogue(page, state);
     await closePicker(page);
     return { confirmation, ...found };
+  });
+}
+
+async function setCatalogueType(page, state, itemType) {
+  const options = state.values?.itemtype?.option || [];
+  const matching = options.filter(option => option.value === itemType);
+  if (matching.length !== 1) fail('ADDONS_TYPE_REQUIRED', 'needs_input', { options });
+  const input = popup(page).locator('input[name="itemtype"]:visible');
+  if (await input.count() !== 1) fail('ADDONS_TYPE_CONTROL_UNVERIFIED');
+  const current = await input.evaluate(element => {
+    const cmp = Ext.getCmp(element.id.replace(/-inputEl$/, ''));
+    return { value: cmp?.getValue?.(), editable: !element.disabled && !element.readOnly && !cmp?.readOnly && !cmp?.disabled };
+  });
+  if (current.value === itemType) return;
+  if (!current.editable) fail('ADDONS_FRESH_TYPE_FORM_REQUIRED', 'needs_input');
+  await input.locator('xpath=ancestor::table[contains(@class,"x-form-trigger-wrap")][1]')
+    .locator('.x-form-arrow-trigger:visible').click();
+  const candidates = await page.locator('.x-boundlist:visible .x-boundlist-item').all();
+  const chosen = [];
+  for (const option of candidates) if ((await option.innerText()).trim() === matching[0].display) chosen.push(option);
+  if (chosen.length !== 1) fail('ADDONS_TYPE_OPTION_AMBIGUOUS');
+  await step(page, state, { kind: 'type', itemType }, () => chosen[0].click());
+  if (await input.evaluate(element => Ext.getCmp(element.id.replace(/-inputEl$/, ''))?.getValue?.()) !== itemType) {
+    fail('ADDONS_TYPE_SELECTION_UNVERIFIED');
+  }
+}
+
+/** Read current Meal Plan, Non-Room Bundle or Non-Room Item definitions. */
+export async function listStay360AddOnCatalogue(page, confirmation, { itemType = 'ITEM' } = {}) {
+  return run(page, async state => {
+    if (!['MEAL', 'PACK', 'ITEM'].includes(itemType)) fail('ADDONS_TYPE_REQUIRED', 'needs_input');
+    await ensureOpen(page, state, confirmation);
+    // Changing the catalogue invalidates an earlier prepared form, never its authority.
+    state.prepared.clear();
+    await setCatalogueType(page, state, itemType);
+    const found = await catalogue(page, state, itemType);
+    await closePicker(page);
+    await setCatalogueType(page, state, 'ITEM');
+    return { confirmation, itemType, ...found };
   });
 }
 

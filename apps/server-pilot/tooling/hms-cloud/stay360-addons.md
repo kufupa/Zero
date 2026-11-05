@@ -10,6 +10,7 @@ All functions operate on the supplied logged-in Playwright `page`, bound to one 
 | --- | --- | --- | --- |
 | `readStay360AddOns` | `page`, `confirmation` | `{detailIds: string[]}` | `{outcome:"ok", confirmation, propertyCode, target, rows, columns, details, coverage, notes}` |
 | `listStay360AddOnItems` | `page`, `confirmation` | None | `{outcome:"ok", confirmation, propertyCode, candidates, columns, coverage}` |
+| `listStay360AddOnCatalogue` | `page`, `confirmation` | `{itemType:"ITEM"\|"PACK"\|"MEAL"}`; default ITEM | Same catalogue result, plus `itemType` |
 | `prepareStay360AddOns` | `page`, `confirmation`, `items: AddOnInput[]` | Optional fields inside each item | `{outcome:"prepared", preparedId, confirmation, propertyCode, items: AddOnPreview[], baselineCoverage, availabilityVerified:false, saved:false}` |
 | `saveStay360AddOns` | `page`, `confirmation`, `preparedId`, `{authorize}` | Trusted `beforeDispatch`, `afterDispatch`, `readBaseline` callbacks | `{outcome:"awaiting_readback", confirmation, preparedId, receipts, attempts, requestedCount, baseline, baselineCoverage}`; never reports saved on acknowledgement alone |
 | `reconcileStay360AddOns` | Previous save result | `{withPage, target}` for an independent browser and lookup hints | `{outcome:"verified"\|"uncertain", confirmation, verified, mismatches, readback}` |
@@ -18,6 +19,31 @@ All functions operate on the supplied logged-in Playwright `page`, bound to one 
 `target = {confirmation, propertyCode, guestName, arrival, departure, status}`. Dates are calendar strings `YYYY-MM-DD`; prices and quantities in previews and receipts are decimal strings, never floating-point calculations by this tool.
 
 `coverage = {loaded:number, reportedTotal:number|null, complete:boolean|null}`. Unknown completeness stays `null`. Raw rows and column field mappings are preserved. `candidates` contain `{code, name, itemId, native}`. A detail contains `{nativeId, fields:AddOnPreview}`. Native IDs are resolved from current catalogue selection, not accepted as arbitrary caller substitutions.
+
+The typed catalogue reader exposes current Non-Room Item (`ITEM`), Non-Room
+Bundle (`PACK`) and Meal Plan (`MEAL`) definitions. It invalidates earlier
+preparations, verifies the native type change, closes the lookup and restores
+the ITEM form before returning. It does not widen the insert tool to bundle or
+meal-plan writes. Current HRCEN catalogue reads verified 33 Items, two conference
+Bundles and 12 Meal Plans, each complete.
+
+`diagnostics/batch-read-addons.mjs INPUT.json PRIVATE_OUTPUT_DIR WORKERS` reads a
+confirmation cohort with one or two fresh guarded sessions. Inputs require
+`propertyCode:"HRCEN"`, `sourceSha256` and `candidates` with confirmation and
+arrivalDate; optional guestName refines an ambiguous exact-confirmation lookup.
+If the old PDF date conflicts with one exact native match in a complete search,
+the runner retries in a fresh session using that match's current arrival date.
+Optional `detailIds:string[]` per candidate reads those exact saved Add-On rows.
+Optional `--identity-source SOURCE.json` supplies the original historical HMS
+snapshot. Its bytes must match `sourceSha256`, and each historical confirmation
+must match the candidate's source index. When an ambiguous current search has
+one exact match to the verified historical HMS guest name, the runner retries
+with that name and the returned current date. The standard exact-match reader
+still verifies both hints; each attempt records its hint source. Existing
+permanent failures resume only when a supported hint refinement is available.
+The runner preserves individual attempt JSON, input hashes, cleanup attestation
+and resumable progress, then emits full `reads.json`. Failed/incomplete reads
+remain separate from complete empty grids. It uses no Save operation.
 
 ### Item input
 
@@ -47,7 +73,12 @@ Run `node apps/server-pilot/tooling/hms-cloud/stay360-addons-session.mjs --jsonl
 {"tool":"reconcile","confirmation":"3640876178-1"}
 ```
 
-Supported `tool` values: `read`, `list`, `prepare`, `save`, `reconcile`. Every request requires `confirmation`; optional initial lookup hints are `guestName` and `arrivalDate`. `prepare` additionally requires `items`; `save` requires the latest `preparedId`. `reconcile` uses retained receipts from this session. No authorization booleans or native item IDs can be supplied through JSON. A prepared ID works only on its originating page; a new prepare invalidates earlier IDs.
+Supported `tool` values: `read`, `list`, `prepare`, `save`, `reconcile`. Every request requires `confirmation`; optional initial lookup hints are `guestName` and `arrivalDate`. `prepare` additionally requires `items`; `save` requires the latest `preparedId`. `reconcile` uses retained receipts from this session. No authorization booleans or catalogue item IDs can be supplied through JSON. A prepared ID works only on its originating page; a new prepare invalidates earlier IDs.
+
+`read` additionally accepts optional `detailIds:string[]` for exact saved-row
+details. `list` additionally accepts optional `itemType:"ITEM"|"PACK"|"MEAL"`;
+omission retains the existing ITEM list behavior. These fields are accepted only
+on their corresponding read operations, and do not extend write support.
 
 Provide `arrivalDate` for future or historical stays outside the shared lookup's default date range. An unhinted lookup failure does not establish that the reservation is absent.
 

@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
 import { readConfirmationFromStay360 } from './stay360-confirmation.mjs';
 import { readRecordViewFromStay360 } from './stay360-record-view.mjs';
-import { readStay360AddOns, listStay360AddOnItems, prepareStay360AddOns, saveStay360AddOns } from './stay360-addons.mjs';
+import { readStay360AddOns, listStay360AddOnItems, listStay360AddOnCatalogue, prepareStay360AddOns, saveStay360AddOns } from './stay360-addons.mjs';
 
 const activeWrites = new Set();
 const issue = error => /^[A-Z][A-Z0-9_]{2,100}$/.test(error.message || '') ? error.message : 'ADDONS_SESSION_FAILED';
@@ -94,20 +94,24 @@ export async function withStay360AddOnSession(operation, options = {}) {
       if (!request || typeof request !== 'object' || Array.isArray(request)) return { outcome: 'needs_input', issue: 'ADDONS_REQUEST_INVALID' };
       if (closed && request.tool !== 'reconcile') return { outcome: 'refused', issue: 'ADDONS_FRESH_SESSION_REQUIRED' };
       if (!['read', 'list', 'prepare', 'save', 'reconcile'].includes(request.tool)) return { outcome: 'needs_input', issue: 'ADDONS_TOOL_UNKNOWN' };
-      const unsupported = Object.keys(request).filter(key => !['tool', 'confirmation', 'guestName', 'arrivalDate', 'items', 'preparedId'].includes(key));
+      const fields = ['tool', 'confirmation', 'guestName', 'arrivalDate', 'items', 'preparedId',
+        ...(request.tool === 'read' ? ['detailIds'] : []), ...(request.tool === 'list' ? ['itemType'] : [])];
+      const unsupported = Object.keys(request).filter(key => !fields.includes(key));
       if (unsupported.length) return { outcome: 'unsupported', issue: 'ADDONS_REQUEST_FIELDS_UNSUPPORTED', fields: unsupported };
       if (!/^\d+-\d+$/.test(request.confirmation || '')) return { outcome: 'needs_input', issue: 'INVALID_CONFIRMATION' };
       if (confirmation && request.confirmation !== confirmation) return { outcome: 'refused', issue: 'ADDONS_SESSION_TARGET_CHANGED' };
       if (!confirmation) {
         await readConfirmationFromStay360(page, request.confirmation, { guestName: request.guestName, arrivalDate: request.arrivalDate });
         confirmation = request.confirmation;
-        const read = await readStay360AddOns(page, confirmation);
+        const read = await readStay360AddOns(page, confirmation,
+          request.tool === 'read' ? { detailIds: request.detailIds ?? [] } : {});
         if (read.outcome !== 'ok') { closed = true; return read; }
         currentTarget = read.target;
         if (request.tool === 'read') return read;
       }
-      if (request.tool === 'read') return readStay360AddOns(page, confirmation);
-      if (request.tool === 'list') return listStay360AddOnItems(page, confirmation);
+      if (request.tool === 'read') return readStay360AddOns(page, confirmation, { detailIds: request.detailIds ?? [] });
+      if (request.tool === 'list') return request.itemType === undefined ? listStay360AddOnItems(page, confirmation) :
+        listStay360AddOnCatalogue(page, confirmation, { itemType: request.itemType });
       if (request.tool === 'prepare') return prepareStay360AddOns(page, confirmation, request.items);
       if (request.tool === 'reconcile') {
         if (!lastSave) return { outcome: 'needs_input', issue: 'ADDONS_SAVE_RECEIPTS_REQUIRED' };
