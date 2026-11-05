@@ -440,21 +440,34 @@ function sanitizeAmendProposal(
   return Object.keys(result).length ? result : undefined;
 }
 
-function explicitCmsLabel(text: string, send: boolean, expected?: string): string | undefined {
+function explicitCmsLabel(text: string, send: boolean, startAt = 0): string | undefined {
   const pattern = send ? /\bcms\s+send\s*[:=]\s*(?:on|true|yes)\b/gi :
     /\bcms\s+send\s*[:=]\s*(?:off|false|no)\b/gi;
   for (const match of text.matchAll(pattern)) {
     const start = match.index ?? 0;
+    if (start < startAt) continue;
     const prefix = text.slice(Math.max(0, start - 80), start);
     if (/\b(?:do not|don't|never|not)\s+(?:set|switch|turn|choose|select|use|mark)\s+(?:the\s+)?$/i.test(prefix)) continue;
-    if (!expected || match[0].toLowerCase() === expected.toLowerCase()) return match[0];
+    return match[0];
   }
   return undefined;
 }
 
-function negativeCmsExcerpt(text: string): string | undefined {
-  return text.match(/\b(?:do not|don't|never|not)\s+send\s+(?:the\s+)?confirmation\b/i)?.[0] ??
-    explicitCmsLabel(text, false);
+function negativeCmsExcerpt(text: string, startAt = 0): string | undefined {
+  for (const match of text.matchAll(/\b(?:do not|don't|never|not)\s+send\s+(?:the\s+)?confirmation\b/gi)) {
+    if ((match.index ?? 0) >= startAt) return match[0];
+  }
+  return explicitCmsLabel(text, false, startAt);
+}
+
+function positiveCmsExcerpt(text: string, startAt = 0): string | undefined {
+  for (const match of text.matchAll(/\bsend\s+(?:the\s+)?confirmation\b/gi)) {
+    const start = match.index ?? 0;
+    if (start < startAt) continue;
+    if (/\b(?:do not|don't|never|not)\s+$/i.test(text.slice(Math.max(0, start - 80), start))) continue;
+    return match[0];
+  }
+  return explicitCmsLabel(text, true, startAt);
 }
 
 function sanitizeWorkflowProposal(
@@ -463,7 +476,6 @@ function sanitizeWorkflowProposal(
   messageId: string,
   admittedSources: CurrentProposalSource[],
   currentMessageSubject: string,
-  singleStay: boolean,
 ): z.infer<typeof workflowProposalSchema> | undefined {
   if (!proposal) return undefined;
   const source = maskCardNumbers(currentMessageText);
@@ -482,7 +494,7 @@ function sanitizeWorkflowProposal(
     const attachmentExact = (text: string) => maskCardNumbers(text).includes(item.excerpt);
     let provenance: z.infer<typeof proposalSourceSchema> | undefined;
     let verifiedTexts: string[] = [];
-    const checkCmsSource = key === 'cmsSend' && typeof item.value === 'boolean' && singleStay;
+    const checkCmsSource = key === 'cmsSend' && typeof item.value === 'boolean';
     if (item.source?.kind === 'message') {
       if (item.source.id !== messageId || !exact(source)) continue;
       provenance = { kind: 'message', id: messageId,
@@ -509,16 +521,19 @@ function sanitizeWorkflowProposal(
     }
     const groundedItem = provenance ? { ...item, source: provenance } : item;
     if (typeof item.value === 'boolean') {
-      const citedNegative = negativeCmsExcerpt(item.excerpt);
-      const sourceNegative = singleStay ? verifiedTexts.map(negativeCmsExcerpt)
-        .find((excerpt) => excerpt && excerpt.length <= 200) : undefined;
-      const negative = verifiedTexts.length ? sourceNegative : citedNegative;
-      const citedLabel = explicitCmsLabel(item.excerpt, true);
-      const positive = /\bsend\s+(?:the\s+)?confirmation\b/i.test(item.excerpt) || Boolean(citedLabel &&
-        (!verifiedTexts.length || verifiedTexts.some((text) => explicitCmsLabel(text, true, citedLabel))));
+      const contexts = verifiedTexts.flatMap((text) => {
+        const matches: Array<{ text: string; start: number }> = [];
+        for (let at = text.indexOf(item.excerpt); at >= 0; at = text.indexOf(item.excerpt, at + 1)) {
+          const from = Math.max(0, at - 80);
+          matches.push({ text: text.slice(from, at) + item.excerpt, start: at - from });
+        }
+        return matches;
+      });
+      if (!contexts.length) contexts.push({ text: item.excerpt, start: 0 });
+      const negative = contexts.some(({ text, start }) => negativeCmsExcerpt(text, start));
+      const positive = contexts.some(({ text, start }) => positiveCmsExcerpt(text, start));
       if (key === 'cmsSend') {
-        if (negative) result[key] = { ...groundedItem, value: false,
-          excerpt: verifiedTexts.length ? negative : item.excerpt };
+        if (negative) result[key] = { ...groundedItem, value: false };
         else if (item.value && positive) result[key] = groundedItem;
       }
       continue;
@@ -603,7 +618,7 @@ export function sanitizeExtraction(
         : {}),
       ...(stay.workflowProposal
         ? { workflowProposal: sanitizeWorkflowProposal(stay.workflowProposal, input.currentMessageText ?? input.sourceText,
-            input.messageId, input.currentProposalSources ?? [], input.currentMessageSubject ?? '', output.stays.length === 1) }
+            input.messageId, input.currentProposalSources ?? [], input.currentMessageSubject ?? '') }
         : {}),
     };
   });
