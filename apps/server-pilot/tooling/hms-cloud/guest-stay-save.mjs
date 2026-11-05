@@ -7,6 +7,8 @@ import { verifiedArSelectionToken, isVerifiedArSelectionCurrent } from './lookup
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { installLabtestSaveRouteChain as installLabtestCreateSaveRouteChain } from './saved-stay-save-route-chain.mjs';
 import { validCreateNote } from './create-request-binding.mjs';
+import { checkedChargeRateEvidence } from './guest-stay-rate-plan.mjs';
+import { compareChargeRoomPricing } from './charge-room-pricing.mjs';
 import { CREATE_GUARANTEES, isLabtestGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
@@ -20,7 +22,7 @@ const draftChecks = new Set([
   'DRAFT_PROFILE_PRIVACY_FIELDS', 'DRAFT_FORM_MODEL_SHAPE', 'DRAFT_FORM_MODEL_KEYS',
   'DRAFT_ADULT_MODEL', 'DRAFT_CHILD_MODEL', 'DRAFT_CHILD_AGES_MODEL', 'DRAFT_CHILD_CATEGORY_MODEL',
   'DRAFT_SOURCE_BUSINESS_MODEL', 'DRAFT_ADULT_VISIBLE_VALUE', 'DRAFT_CHILD_VISIBLE_VALUE',
-  'DRAFT_NOTE_SUBMIT_VALUE', 'DRAFT_CMS_MESSAGE_VALUE', 'DRAFT_REASON_FOR_STAY_VALUE', 'DRAFT_REVENUE_ZERO_NATIVE_VALUE', 'DRAFT_LIFETIME_NIGHTS_NATIVE_VALUE',
+  'DRAFT_NOTE_SUBMIT_VALUE', 'DRAFT_CMS_MESSAGE_VALUE', 'DRAFT_REASON_FOR_STAY_VALUE', 'DRAFT_CHARGE_ROOM_VALUE', 'DRAFT_REVENUE_ZERO_NATIVE_VALUE', 'DRAFT_LIFETIME_NIGHTS_NATIVE_VALUE',
   'DRAFT_PARTY_MODEL', 'DRAFT_ORGANIZATION_MODEL', 'DRAFT_AGENCY_COMMISSION_VALUE', 'DRAFT_REQUIRED_FIELDS',
   'DRAFT_BILLING_REFERENCE_VALUE', 'DRAFT_OPEN_MODAL',
   'DRAFT_GUEST_OPT_IN', 'DRAFT_REVIEWED_CONTACT_FIELDS',
@@ -246,6 +248,7 @@ async function draft(page, expected) {
     const names = ['ta1', 'company', 'groupname', 'bacontract', 'confirmationnumber', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
       'roomtype', 'rateplan', 'track', 'guaranteetype', 'reservationnote',
       'udfchkbox04', 'udfchar13', 'emailaddress',
+      ...(expected.roomTypeForCharge !== undefined ? ['roomtypecharge'] : []),
       ...(expected.createFieldProof?.adults != null ? ['adults'] : []),
       ...(expected.createFieldProof?.childAges != null ? ['children', ...childBands] : []),
       ...(expected.createFieldProof?.sourceBusiness ? ['sourceofbusinessdesc'] : []),
@@ -262,6 +265,14 @@ async function draft(page, expected) {
     const form = cmp('guestid')?.up?.('form');
     const record = form?.getRecord?.(), data = record?.data, keys = data && Object.keys(data);
     if (!form?.el?.dom || !data || names.some((name) => !form.el.dom.contains(fields[name][0]))) return 'DRAFT_FORM_RECORD';
+    if (expected.roomTypeForCharge === undefined) {
+      const inputs = [...document.querySelectorAll('input,textarea,select')].filter(el =>
+        el.name?.toLowerCase() === 'roomtypecharge' && visible(el));
+      const modelKeys = keys.filter(key => key.toLowerCase() === 'roomtypecharge');
+      if (inputs.length > 1 || inputs.some(el => el.name !== 'roomtypecharge' ||
+          !form.el.dom.contains(el) || String(el.value ?? '').trim()) || modelKeys.length > 1 ||
+          modelKeys.some(key => String(data[key] ?? '').trim())) return 'DRAFT_CHARGE_ROOM_VALUE';
+    }
     const exact = (key, value) => Object.hasOwn(data, key) && keys.filter((k) => k.toLowerCase() === key.toLowerCase()).length === 1 &&
       String(data[key] ?? '').trim() === value;
     const value = (name) => ['reservationnote', 'billingreference'].includes(name) ? fields[name][0].value : fields[name][0].value.trim();
@@ -290,7 +301,9 @@ async function draft(page, expected) {
     if (value('confirmationnumber') || value('guestid') !== expected.guestId ||
         value('firstname') !== expected.firstName || value('lastname') !== expected.lastName) return 'DRAFT_VISIBLE_PROFILE_FIELDS';
     if (value('arrivaldate') !== expected.arrivalDisplay || value('departuredate') !== expected.departureDisplay ||
-        value('roomtype') !== expected.roomType || value('rateplan') !== expected.ratePlan || !value('track') ||
+        value('roomtype') !== expected.roomType ||
+        (expected.roomTypeForCharge !== undefined && value('roomtypecharge') !== expected.roomTypeForCharge) ||
+        value('rateplan') !== expected.ratePlan || !value('track') ||
         (expected.approvedTrack !== undefined && value('track') !== expected.approvedTrack) ||
         value('reservationnote') !== expected.note) return 'DRAFT_STAY_FIELDS';
     if (value('guaranteetype') !== expected.guaranteeDisplay ||
@@ -368,6 +381,10 @@ async function draft(page, expected) {
         }
       }
       const proof = expected.createFieldProof;
+      if (expected.roomTypeForCharge !== undefined &&
+          (!override('roomtypecharge', expected.roomTypeForCharge) || !nativeFormValue('roomtypecharge'))) {
+        return 'DRAFT_CHARGE_ROOM_VALUE';
+      }
       if (proof && proof.adults !== null && !override('adults', proof.adults)) return 'DRAFT_ADULT_MODEL';
       if (proof && proof.childAges !== null) {
         const childCount = String(proof.childAges.length);
@@ -520,7 +537,9 @@ function matchesSave(page, request, expected) {
       propertycode: 'HRCEN', PKID: '@[EMPTY]#@[EMPTY]#HRCEN#', status: 'New',
       firstname: expected.firstName, lastname: expected.lastName,
       guestid: expected.guestId, bookingsessionid: expected.session, arrivaldate: expected.arrivalWire,
-      departuredate: expected.departureWire, roomtype: expected.roomType, rateplan: expected.ratePlan, track: expected.track,
+      departuredate: expected.departureWire, roomtype: expected.roomType,
+      ...(expected.roomTypeForCharge !== undefined ? { roomtypecharge: expected.roomTypeForCharge } : {}),
+      rateplan: expected.ratePlan, track: expected.track,
       reservationnote: expected.note, confirmationnumber: '', reservationid: '', reservationstayid: '', recordid: '',
       udfchkbox04: expected.cmsSend ? '1' : '0', udfchar13: expected.cmsRecipient ?? '', emailaddress: expected.guestEmail,
       ...(expected.booker?.name !== undefined ? { caller: expected.booker.name } : {}),
@@ -549,6 +568,27 @@ function matchesSave(page, request, expected) {
       Object.entries(required).every(([key, value]) => body.getAll(key).length === 1 && body.get(key) === value &&
         keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1);
     if (!matchesRequest) return false;
+    const chargeKeys = keys.filter(name => name.toLowerCase() === 'roomtypecharge');
+    if (expected.roomTypeForCharge === undefined && (chargeKeys.length > 1 ||
+        chargeKeys.some(name => name !== 'roomtypecharge' || clean(body.get(name))))) return false;
+    if (expected.roomTypeForCharge !== undefined) {
+      const priceFields = ['averagerate', 'totalrate', 'averageratecurr', 'totalratecurr'];
+      const fields = keys.filter(name => priceFields.includes(name.toLowerCase()))
+        .map(name => ({ name: name.toLowerCase(), value: body.getAll(name).length === 1 ? body.get(name) : null }));
+      const pricing = compareChargeRoomPricing(fields, expected.checkedPricing);
+      if (Object.values(pricing).some(value => value !== 'MATCHED')) return false;
+      const occupancy = expected.checkedPricing?.occupancy;
+      if (!occupancy || occupancy.adults == null || occupancy.children == null) return false;
+      for (const [name, wanted] of Object.entries(occupancy)) {
+        const values = [...body].filter(([key]) => key.toLowerCase() === name).map(([, value]) => value);
+        if (wanted == null ? values.length > 1 || values.some(value => clean(value)) :
+          values.length !== 1 || values[0] !== String(wanted)) return false;
+      }
+      const sources = [...body].filter(([key]) => key.toLowerCase() === 'sourceofbus').map(([, value]) => value);
+      const sourceCode = expected.checkedPricing.sourceCode;
+      if (sourceCode == null || sourceCode === '' ? sources.length > 1 || sources.some(value => clean(value)) :
+        sources.length !== 1 || sources[0] !== String(sourceCode)) return false;
+    }
     return profileControls.every((key) => {
       const matches = keys.filter((name) => name.toLowerCase() === key);
       return !matches.length || (matches.length === 1 && matches[0] === key && ['', '0'].includes(body.get(key)));
@@ -578,7 +618,7 @@ export async function finishLabtestCreateFence(result, routeChain, fence) {
 
 /** The page is sealed after this action. Use a fresh guarded session for reconciliation. */
 export async function saveNewLabtestStay(page, {
-  preimageId, arrival, departure, guestId, roomType, ratePlan, guaranteeType, note, guaranteeSelection,
+  preimageId, arrival, departure, guestId, roomType, roomTypeForCharge, ratePlan, guaranteeType, note, guaranteeSelection,
   createFieldProof, agencySelection, organizationSelection, arSelection, billingReference, track, guestOptIn, booker, cmsRecipient, cmsSend = false,
 } = {}, { timeoutMs = 20_000, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate,
   allowRealGuest = false, expectedGuest } = {}) {
@@ -589,6 +629,7 @@ export async function saveNewLabtestStay(page, {
   }
   const formatted = dates(arrival, departure, allowRealGuest);
   if (!formatted || !/^\d+$/.test(clean(guestId)) || !/^[A-Z0-9]{1,12}$/.test(roomType || '') ||
+      (roomTypeForCharge !== undefined && (allowRealGuest || !/^[A-Z0-9]{1,12}$/.test(roomTypeForCharge))) ||
       !/^[A-Z0-9]{1,12}$/.test(ratePlan || '') || !isSupportedLabtestGuarantee(guaranteeType) || !validCreateNote(note) ||
       !preimageId || (track !== undefined && (typeof track !== 'string' || !track.trim() || track !== track.trim())) ||
       (guestOptIn !== undefined && guestOptIn !== false) || typeof cmsSend !== 'boolean' ||
@@ -629,7 +670,7 @@ export async function saveNewLabtestStay(page, {
       ((authorizeCandidate === undefined) !== (dispatchCandidate === undefined))) {
     return { outcome: 'input_gap', issue: 'SAVE_GUARD_CALLBACKS_INVALID' };
   }
-  const strictCreateProof = Boolean(createFields || agency || organization || ar || authorizeCandidate || requireGuaranteeSelection ||
+  const strictCreateProof = Boolean(createFields || agency || organization || ar || authorizeCandidate || requireGuaranteeSelection || roomTypeForCharge !== undefined ||
     track !== undefined || guestOptIn !== undefined || booker !== undefined || cmsRecipient !== undefined);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
   if (!safeCreateContext(page)) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
@@ -637,7 +678,7 @@ export async function saveNewLabtestStay(page, {
   let dispatched = false, possiblyDispatched = false, requestSeen = false, blocked = 0, blockedAtDispatch = 0;
   let sendRequests = 0, nativeDialog = null, response = null, armed = false, stopReason = null;
   let authorizedRequest, scope, fence, routeChain, signalStop, blockedRequest, finishedResult;
-  let billingAttempted = false, billingStaged = false;
+  let billingAttempted = false, billingStaged = false, checkedPricing = null;
   const observedBlocked = new WeakSet();
   const stopped = new Promise((resolve) => { signalStop = resolve; });
   const stop = (issue) => {
@@ -668,7 +709,7 @@ export async function saveNewLabtestStay(page, {
     if (ar) partyValues.araccountname = ar.name;
     else if (isLabtestGuest(guest)) partyValues.araccountname = '';
     const expected = { ...formatted, arrival, departure, allowRealGuest, ...guest, requireGuaranteeSelection,
-      guestId: clean(guestId), roomType, ratePlan, guaranteeType, guaranteeDisplay, note,
+      guestId: clean(guestId), roomType, roomTypeForCharge, ratePlan, guaranteeType, guaranteeDisplay, note,
       ...(track !== undefined ? { approvedTrack: track } : {}), ...(guestOptIn === false ? { guestOptIn: false } : {}),
       ...(booker !== undefined ? { booker } : {}), ...(cmsRecipient !== undefined ? { cmsRecipient } : {}), cmsSend,
       ...(createFields ? { createFieldProof: createFields } : {}),
@@ -681,6 +722,12 @@ export async function saveNewLabtestStay(page, {
     const profileToken = await bounded(verifiedLabtestProfileToken(page, { nativeId: expected.guestId, session: state.session }));
     if (!profileToken) throw new Error('LABTEST_PROFILE_PROOF_STALE');
     if (!createSelectionProofTokensMatch(createFields, agency, organization, profileToken)) throw new Error('CREATE_SELECTION_PROOF_STALE');
+    if (roomTypeForCharge !== undefined) {
+      checkedPricing = await bounded(checkedChargeRateEvidence(page,
+        { roomTypeForCharge, roomType, ratePlan, arrival, departure })).catch(() => null);
+      if (!checkedPricing) throw new Error('CHARGE_ROOM_PRICE_RECHECK_REQUIRED');
+      if (!/^[A-Z]{3}$/.test(checkedPricing.currency || '')) throw new Error('CHARGE_ROOM_CURRENCY_UNVERIFIED');
+    }
     const arToken = ar ? await bounded(verifiedArSelectionToken(page, { session: state.session, accountId: ar.nativeId,
       profileId: state.arProfileId })) : null;
     if (ar && !arToken) throw new Error('AR_SELECTION_PROOF_STALE');
@@ -787,6 +834,12 @@ export async function saveNewLabtestStay(page, {
     if (hasBillingReference && await bounded(page.locator('.x-window:visible:not(.x-menu)').count())) {
       throw new Error('UNEXPECTED_DIALOG');
     }
+    if (roomTypeForCharge !== undefined) {
+      checkedPricing = await bounded(checkedChargeRateEvidence(page, { roomTypeForCharge, roomType, ratePlan, arrival, departure }));
+      if (!checkedPricing) throw new Error('CHARGE_ROOM_PRICE_RECHECK_REQUIRED');
+      if (!/^[A-Z]{3}$/.test(checkedPricing.currency || '')) throw new Error('CHARGE_ROOM_CURRENCY_UNVERIFIED');
+      expected.checkedPricing = checkedPricing;
+    }
     armed = true;
     await bounded(save.click({ timeout: 5_000, noWaitAfter: true }));
     response = await bounded(pending);
@@ -814,6 +867,7 @@ export async function saveNewLabtestStay(page, {
       confirmation: snapshot.confirmation || null, status: snapshot.status || null, httpStatus: response?.status() || null,
       requestSeen, blockedRequests: blocked, blockedRequestsAfterDispatch: blockedAfterDispatch,
       browserSendRequests: sendRequests, nativeDialog, dialogs, ...(ar ? { arProfileId: state.arProfileId } : {}),
+      ...(checkedPricing ? { checkedPricing } : {}),
       ...(billingStaged ? { billingReferenceStaged: true } : {}),
       ...(blockedRequest ? { blockedRequest } : {}) };
   } catch (error) {
@@ -825,6 +879,7 @@ export async function saveNewLabtestStay(page, {
       ...(draftCheck ? { draftCheck } : {}),
       requestSeen, httpStatus: response?.status() || null, blockedRequests: blocked,
       blockedRequestsAfterDispatch: Math.max(0, blocked - blockedAtDispatch),
+      ...(checkedPricing ? { checkedPricing } : {}),
       browserSendRequests: sendRequests, nativeDialog, ...(blockedRequest ? { blockedRequest } : {}) };
   } finally {
     clearTimeout(timer);

@@ -465,7 +465,7 @@ function nativeCreateDraftPage() {
     'bookingagency2iatanumber', 'bookingagency3iatanumber'];
   const visible = { ta1: '', company: '', groupname: '', bacontract: '', confirmationnumber: '', guestid: '1234567',
     firstname: 'Proof', lastname: 'Labtest', arrivaldate: '29-DEC-2027', departuredate: '31-DEC-2027', roomtype: 'STQN',
-    rateplan: 'BAR', track: 'Best Available', guaranteetype: 'Non-Guaranteed Individual', reservationnote: saveInputs.note,
+    roomtypecharge: '', rateplan: 'BAR', track: 'Best Available', guaranteetype: 'Non-Guaranteed Individual', reservationnote: saveInputs.note,
     revenuevalue: '0', nightsvalue: '5', udfchkbox04: '', udfchar13: '', emailaddress: '', adults: '2',
     udfchar09: '03', reasonforstay: 'Business', araccountname: 'Test Account',
     bookingagencycommissionpricing: 'FLAT', bookingagencycommissiontype: 'PERCNT', billingreference: '' };

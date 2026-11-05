@@ -4,6 +4,7 @@ import { searchLabtestPreimage } from './labtest-preimage.mjs';
 import { withSavedStayAgentSession } from './saved-stay-agent-session.mjs';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
 import { CREATE_GUARANTEES, createCloudTargetKey, isLabtestGuest, validCreateGuest } from './cloud-create-policy.mjs';
+import { compareChargeRoomCriteria, compareChargeRoomPricing } from './charge-room-pricing.mjs';
 
 const same = (a, b) => String(a ?? '').trim().toLocaleLowerCase() === String(b ?? '').trim().toLocaleLowerCase();
 const uniqueValue = (fields, name) => {
@@ -22,6 +23,7 @@ function validExpected(stay, expected) {
     !(isLabtestGuest(guest) && expected.cmsSend === true) &&
     expected.arrival === stay.arrival && expected.departure === stay.departure && /^\d+$/.test(String(expected.guestId ?? '')) &&
     ['roomType', 'ratePlan', 'note', 'guarantee'].every((key) => typeof expected[key] === 'string' && expected[key].trim()) &&
+    (expected.roomTypeForCharge === undefined || /^[A-Z0-9]{1,12}$/.test(expected.roomTypeForCharge)) &&
     (expected.guaranteeCode === undefined || CREATE_GUARANTEES[expected.guaranteeCode] === expected.guarantee) &&
     Number.isInteger(expected.adults) && expected.adults > 0 && Number.isInteger(expected.children) && expected.children >= 0 &&
     bands && Object.keys(bands).length === names.length && names.every((name) => Number.isInteger(bands[name]) && bands[name] >= 0) &&
@@ -36,6 +38,7 @@ function compareRecord(fields, expected) {
     ['arrival', 'arrivaldate', displayDate(expected.arrival)], ['departure', 'departuredate', displayDate(expected.departure)],
     ['adults', 'adults', expected.adults], ['children', 'children', expected.children],
     ['roomType', 'roomtype', expected.roomType], ['ratePlan', 'rateplan', expected.ratePlan],
+    ['roomTypeForCharge', 'roomtypecharge', expected.roomTypeForCharge],
     ['note', 'reservationnote', expected.note], ['guestId', 'guestid', expected.guestId], ['status', 'status', 'Reserved'],
     ['firstName', 'firstname', expected.allowRealGuest ? expected.firstName : 'Proof'],
     ['lastName', 'lastname', expected.allowRealGuest ? expected.lastName : 'Labtest'],
@@ -49,7 +52,7 @@ function compareRecord(fields, expected) {
   ]) {
     if (wanted == null) continue;
     const actual = uniqueValue(fields, name);
-    if (actual == null || (['note', 'guestId', 'firstName', 'lastName', 'roomType', 'ratePlan', 'cmsMessageId', 'cmsRecipient', 'guestEmail', 'bookerName', 'bookerContact'].includes(field) ? String(actual) !== String(wanted) : !same(actual, wanted))) {
+    if (actual == null || (['note', 'guestId', 'firstName', 'lastName', 'roomType', 'roomTypeForCharge', 'ratePlan', 'cmsMessageId', 'cmsRecipient', 'guestEmail', 'bookerName', 'bookerContact'].includes(field) ? String(actual) !== String(wanted) : !same(actual, wanted))) {
       mismatches.push({ field, expected: wanted, actual, ...(actual == null ? { issue: 'not_visible_or_ambiguous' } : {}) });
     }
   }
@@ -63,11 +66,31 @@ export async function readLabtestCreate({ confirmation, stay, expected }, { with
   const lastName = expected.allowRealGuest ? expected.lastName : 'Labtest';
   const read = await withSavedSession(({ runTool }) => runTool({ tool: 'read', confirmation,
     guestName: `${firstName} ${lastName}`, arrivalDate: stay.arrival,
-    ...(expected.guaranteeCode ? { includeNativePreimage: true } : {}) }),
+    ...(expected.guaranteeCode || expected.roomTypeForCharge !== undefined ? { includeNativePreimage: true } : {}) }),
   { readOnly: true, readOnlyConfirmation: confirmation, ...(cloudTargetKey ? { cloudTargetKey } : {}) });
   const fields = read?.record?.details?.fields;
   if (read?.outcome !== 'ok' || !Array.isArray(fields)) return { issue: 'readback_unverified', detail: read };
   const mismatches = compareRecord(fields, expected);
+  const pricing = expected.roomTypeForCharge !== undefined ? compareChargeRoomPricing(fields, expected.checkedPricing) : null;
+  if (pricing && (pricing.averageRate !== 'MATCHED' || pricing.totalRate !== 'MATCHED' || pricing.currency !== 'MATCHED')) {
+    mismatches.push({ field: 'checkedPricing', issue: 'saved_price_unverified', pricing });
+  }
+  let criteria;
+  if (expected.roomTypeForCharge !== undefined) {
+    const native = read.record.nativePreimage;
+    const identityMatches = native?.source === 'record_view_ext_model' && native.propertyCode === 'HRCEN' &&
+      native.confirmation === confirmation && native.guestId === String(expected.guestId) && native.status === 'Reserved' &&
+      native.firstName === firstName && native.lastName === lastName && native.arrival === expected.arrival &&
+      native.departure === expected.departure && native.roomType === expected.roomType && native.ratePlan === expected.ratePlan;
+    const data = identityMatches ? { adults: native.adults, children: native.children,
+      childages: Array.isArray(native.childAges) ? native.childAges : native.childAgesWire ?? null,
+      sourceofbus: native.sourceBusinessCode,
+      ...Object.fromEntries(['child1', 'child2', 'child3'].map(name => [name, uniqueValue(fields, name)])) } : null;
+    criteria = compareChargeRoomCriteria(expected.checkedPricing, data);
+    if (Object.values(criteria).some(value => value !== 'MATCHED')) {
+      mismatches.push({ field: 'checkedPricingCriteria', issue: 'saved_criteria_unverified', criteria });
+    }
+  }
   if (expected.guaranteeCode) {
     const native = read.record.nativePreimage;
     const verified = native?.source === 'record_view_ext_model' && native.propertyCode === 'HRCEN' &&
@@ -77,7 +100,7 @@ export async function readLabtestCreate({ confirmation, stay, expected }, { with
       native.adults === expected.adults && native.children === expected.children && native.guaranteeCode === expected.guaranteeCode;
     if (!verified) mismatches.push({ field: 'guaranteeTypeCode', issue: 'native_code_unverified' });
   }
-  return { fields, captureScope: read.record.details.captureScope, mismatches };
+  return { fields, captureScope: read.record.details.captureScope, mismatches, ...(pricing ? { pricing, criteria } : {}) };
 }
 
 const readCensus = (stay, expected, cloudTargetKey) => withCenturionStay360Page((page) => searchLabtestPreimage(page, {
