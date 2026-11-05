@@ -467,6 +467,7 @@ export function PartyPicker({
   sourceMessageId,
   propertyCode,
   autoLookup = false,
+  requireExplicitPick = false,
   jobReadBackStatusOwner = true,
   onLookupPending,
 }: {
@@ -494,6 +495,8 @@ export function PartyPicker({
   propertyCode?: string | null;
   /** Search HMS by itself for this field's name and pick the best match. Needs a kind. Off, the field keeps Find in HMS. */
   autoLookup?: boolean;
+  /** A Create identity remains a suggestion until staff chooses it. */
+  requireExplicitPick?: boolean;
   /** Which adjacent field owns the shared read-back loading line. A standalone picker owns it by default. */
   jobReadBackStatusOwner?: boolean;
   /** Told whether this field's automatic search still has to decide its pick. The pane holds a rates run until it does. */
@@ -764,7 +767,7 @@ export function PartyPicker({
     : undefined;
 
   useEffect(() => {
-    if (pickedHere || v2BoundForField || !onSearchName || !topSuggestion) return;
+    if (requireExplicitPick || pickedHere || v2BoundForField || !onSearchName || !topSuggestion) return;
     const seedKey = `${topSuggestion.kind}:${topSuggestion.name}`;
     if (seededSuggestion.current === seedKey) return;
     if (query && searchKey(query) === searchKey(topSuggestion.name)) {
@@ -774,7 +777,7 @@ export function PartyPicker({
     if (query) return;
     seededSuggestion.current = seedKey;
     onSearchName(topSuggestion.name, topSuggestion.kind);
-  }, [onSearchName, pickedHere, query, topSuggestion, v2BoundForField]);
+  }, [onSearchName, pickedHere, query, topSuggestion, v2BoundForField, requireExplicitPick]);
 
   const picked: StaffQuoteParty[] = [];
   for (const party of [parties.company, parties.agency])
@@ -868,7 +871,7 @@ export function PartyPicker({
   }, [fieldPresetKey]);
 
   useEffect(() => {
-    if (pickedHere || !topSuggestion || !suggestionMayBind(topSuggestion)) return;
+    if (requireExplicitPick || pickedHere || !topSuggestion || !suggestionMayBind(topSuggestion)) return;
     const candidate = autoBest ?? prefetchedBest;
     if (
       !candidate ||
@@ -880,7 +883,7 @@ export function PartyPicker({
     if (appliedSuggestionPick.current.has(key)) return;
     appliedSuggestionPick.current.add(key);
     emitPick(candidate);
-  }, [autoBest, onPick, pickedHere, prefetchedBest, query, topSuggestion]);
+  }, [autoBest, onPick, pickedHere, prefetchedBest, query, topSuggestion, requireExplicitPick]);
   const jobFailureOutcome = jobReply?.outcome ?? 'execution_failure';
   const partySearchTimedOut = currentJobView?.failureClass === 'PARTY_SEARCH_TIMEOUT';
   const timeoutMessage = 'Party search timed out after four minutes. You can retry.';

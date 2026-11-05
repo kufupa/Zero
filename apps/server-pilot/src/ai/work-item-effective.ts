@@ -124,6 +124,7 @@ export function projectEffectiveWork(source: DraftSource, payload: MailExtractio
         lastName: value('lastName', 'lastName'), guestEmail: value('guestEmail', 'guestEmail'),
         guestMobile: value('guestMobile', 'guestMobile'), arrival: date('arrival'), departure: date('departure'),
         ratePlan: value('ratePlan', 'ratePlan'), bookingAgency: value('parties.agency'), organization: value('parties.organization'),
+        sourceAgencyName: value('sourceAgencyName', 'agencyName'), sourceOrganizationName: value('sourceOrganizationName', 'organizationName'),
         sourceOfBusiness: value('sourceOfBusiness', 'sourceOfBusiness'), track: value('track', 'track'),
         guaranteeType: value('guaranteeType', 'guaranteeType'), reservationNote: value('reservationNote', 'reservationNote'),
         bookerName: value('bookerName', 'bookerName'), bookerEmail: value('bookerEmail', 'bookerEmail'),

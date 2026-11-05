@@ -53,7 +53,7 @@ import {
   paneTextareaClass,
   StepState,
 } from '@/components/nava-pane/pane-ui';
-import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
+import { sourceCreatePartyNames, type ContactField, type StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayAvailabilityReader, PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { pdfBlockReason } from './document-review';
@@ -594,10 +594,23 @@ export function QuoteWorkflowPanel({
   };
   const contactAgency = contact?.company?.trim() ?? '';
   const contactCompany = contact?.endClient?.trim() ?? '';
+  const sourceParties = sourceCreatePartyNames(workItemPane?.requestDraft?.snapshot);
   const contactPrefillKey = contact
     ? JSON.stringify([selectionEpoch, session.binding?.entryId ?? '', contactAgency, contactCompany])
     : null;
   const appliedContactPrefill = useRef<string | null>(null);
+  useEffect(() => {
+    if (!onPatchStaffHeader) return;
+    const patch: Partial<StaffQuoteHeader> = {};
+    for (const kind of ['agency', 'company'] as const) {
+      if (editedPartyFields.current[kind] || session.staffHeader.parties?.[kind]) continue;
+      const pick = kind === 'agency' ? sourceParties.agencyPick : sourceParties.companyPick;
+      const label = pick?.name || sourceParties[kind];
+      if (pick) patch.parties = { ...(patch.parties ?? session.staffHeader.parties), [kind]: { ...pick, kind } };
+      if (label && session.staffHeader[kind] !== label) patch[kind] = label;
+    }
+    if (Object.keys(patch).length) onPatchStaffHeader(patch);
+  }, [sourceParties, onPatchStaffHeader, session.staffHeader]);
   useEffect(() => {
     if (!pinRun) return;
     if (session.runningStepId || hmsQueue?.pending) return;
@@ -659,7 +672,7 @@ export function QuoteWorkflowPanel({
       (party?.kind === 'organization' || party?.kind === 'government') && company === partyName;
     const patch: Partial<StaffQuoteHeader> = {};
     if (
-      contactAgency &&
+      contactAgency && !sourceParties.agency &&
       !editedPartyFields.current.agency &&
       !session.staffHeader.parties?.agency &&
       (!agency || usesLunaAgency)
@@ -667,7 +680,7 @@ export function QuoteWorkflowPanel({
       patch.agency = contactAgency;
     }
     if (
-      contactCompany &&
+      contactCompany && !sourceParties.company &&
       !editedPartyFields.current.company &&
       !session.staffHeader.parties?.company &&
       (!company || usesLunaCompany)
@@ -678,6 +691,8 @@ export function QuoteWorkflowPanel({
   }, [
     contactAgency,
     contactCompany,
+    sourceParties.agency,
+    sourceParties.company,
     contactPrefillKey,
     onPatchStaffHeader,
     session.analysis?.luna?.party,
@@ -1135,6 +1150,7 @@ export function QuoteWorkflowPanel({
           partySuggestions={partySuggestions}
           partyIndex={partyIndex}
           partyJobTransport={partyJobTransport}
+          propertyCode={paneConfig?.propertyCode}
           contact={contact}
           contactEditorKey={contactEditorKey}
           onContactEdit={onContactEdit}
@@ -1676,6 +1692,7 @@ export function QuoteWorkflowPanel({
         rateCatalogue={rateCatalogue}
         workItemPane={workItemPane}
         rateEvidence={rateEvidence}
+        partyFieldEdited={editedPartyFields.current}
       />
     </div>
   );

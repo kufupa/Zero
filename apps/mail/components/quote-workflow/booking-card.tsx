@@ -894,6 +894,7 @@ type CreateRoomProjection = {
   guestProfile: { nativeId: string; firstName: string; lastName: string } | null;
   adults: number | null; childAges: number[] | null; roomType: string | null; ratePlan: string | null;
   bookingAgency: { nativeId: string; name: string } | null; organization: { nativeId: string; name: string } | null;
+  sourceAgencyName?: string | null; sourceOrganizationName?: string | null;
   sourceOfBusiness: string | null; track: string | null; guaranteeType: string | null; reservationNote: string | null;
   bookerName: string | null; bookerEmail: string | null;
   cms: { send: boolean | null; messageId: string | null; recipient: { mode: 'self' | 'client' | 'custom'; address: string } | null };
@@ -1110,6 +1111,7 @@ export function BookingCards({
   rateCatalogue = [],
   workItemPane,
   rateEvidence,
+  partyFieldEdited,
   confirmation,
   onSaveDefault,
 }: {
@@ -1138,6 +1140,7 @@ export function BookingCards({
   rateCatalogue?: RatePlanCatalogueEntry[];
   workItemPane?: WorkItemPaneControls | null;
   rateEvidence?: PartyEvidence;
+  partyFieldEdited?: { agency: boolean; company: boolean };
   /**
    * Signed-in user and saved confirmation default. Without it, confirmation defaults to an
    * unresolved staff address until staff choose a recipient.
@@ -1166,6 +1169,7 @@ export function BookingCards({
   const previousSelectedGuestName = useRef(selectedGuestName);
   const guestNamesEdited = useRef<Record<string, boolean>>({});
   const reservationNoteDirty = useRef<Record<string, boolean>>({});
+  const organizationEdited = useRef<Record<string, boolean>>({});
   const [choices, setChoices] = useState<Record<string, RoomChoice>>(
     () =>
       Object.fromEntries(
@@ -1202,6 +1206,8 @@ export function BookingCards({
           const agency = savedField('parties.agency', projected?.bookingAgency, null);
           const agencyWasChosen = binding && (workItemPane?.fieldProvenance[`${namePath}.parties.agency`]?.source === 'staff' ||
             workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.parties.agency`));
+          if (binding && (workItemPane?.fieldProvenance[`${namePath}.parties.organization`]?.source === 'staff' ||
+            workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.parties.organization`))) organizationEdited.current[key] = true;
           const choice: RoomChoice = {
             track: textValue(savedField('track', projected?.track, room.request.track)),
             sourceOfBusiness: textValue(savedField('sourceOfBusiness', projected?.sourceOfBusiness, initialSourceOfBusiness(
@@ -1215,11 +1221,11 @@ export function BookingCards({
             firstName,
             lastName,
             bookingAgency: agency && typeof agency === 'object' && 'nativeId' in agency
-              ? agency.nativeId === parties?.agency?.nativeId ? '__bound__' : '__unresolved__'
+              ? !parties?.agency || agency.nativeId === parties.agency.nativeId ? '__bound__' : '__unresolved__'
               : agencyWasChosen ? '__none__' : '',
             organization: textValue((() => {
               const value = savedField('parties.organization', projected?.organization,
-                textValue(room.request.organization) || pickedName(parties?.company));
+                textValue(projected?.sourceOrganizationName) || textValue(room.request.organization) || pickedName(parties?.company));
               return value && typeof value === 'object' && 'name' in value ? value.name : value;
             })()),
             reservationNote: textValue(savedField('reservationNote', projected?.reservationNote, existingNote)),
@@ -1253,6 +1259,23 @@ export function BookingCards({
   const guestSearchGeneration = useRef<Record<string, number>>({});
   const guestSearchMounted = useRef(true);
   useEffect(() => { guestSearchMounted.current = true; return () => { guestSearchMounted.current = false; }; }, []);
+  useEffect(() => {
+    setChoices((current) => {
+      let next: typeof current | undefined;
+      for (const room of draft.draft.rooms) {
+        const key = `${room.groupId}:${room.roomIndex}`;
+        const existing = current[key];
+        if (organizationEdited.current[key] || !existing) continue;
+        const projected = createRoomBinding(room, groups, workItemPane, session)?.value;
+        const label = pickedName(parties?.company) || projected?.organization?.name || projected?.sourceOrganizationName;
+        if (label && existing.organization !== label) {
+          next ??= { ...current };
+          next[key] = { ...existing, organization: label };
+        }
+      }
+      return next ?? current;
+    });
+  }, [draft, groups, workItemPane, session, parties?.company]);
 
   const [localSaves, setSaves] = useState<Record<string, RoomSaveState>>(() =>
     savesFromSavedStays(draft, groups, savedStays),
@@ -1668,10 +1691,13 @@ export function BookingCards({
   ) {
     const group = roomGroupFor(room, groups);
     const choice = choices[roomKeyOf(room)] ?? NO_CHOICE;
-    const boundAgency = parties?.agency?.nativeId ? parties.agency : undefined;
-    const boundCompany = parties?.company?.nativeId ? parties.company : undefined;
-    const savedAgency = createRoomBinding(room, groups, workItemPane, session)?.value.bookingAgency?.name;
-    const unboundName = textValue(savedAgency).trim() || textValue(room.request.agency).trim();
+    const roomBinding = createRoomBinding(room, groups, workItemPane, session);
+    const boundAgency = parties?.agency?.nativeId ? parties.agency :
+      !partyFieldEdited?.agency ? roomBinding?.value.bookingAgency ?? undefined : undefined;
+    const boundCompany = parties?.company?.nativeId ? parties.company :
+      !partyFieldEdited?.company ? roomBinding?.value.organization ?? undefined : undefined;
+    const savedAgency = roomBinding?.value.bookingAgency?.name;
+    const unboundName = textValue(savedAgency).trim() || textValue(roomBinding?.value.sourceAgencyName).trim() || textValue(room.request.agency).trim();
     const agencyUnresolved = choice.bookingAgency !== '__none__' &&
       (!boundAgency || choice.bookingAgency === '__unresolved__') && Boolean(unboundName);
     const currentEmail = currentContact ? textValue(currentContact.email) :
@@ -2357,7 +2383,10 @@ export function BookingCards({
         const inheritedAges = inheritedChildAges(room, group);
         const ages = choice.childAges ?? (Array.isArray(inheritedAges) ? inheritedAges.map(String) : []);
         const agesKnown = choice.childAges !== undefined || Array.isArray(inheritedAges);
-        const boundAgency = parties?.agency?.nativeId ? parties.agency : undefined;
+        const boundAgency = parties?.agency?.nativeId ? parties.agency :
+          !partyFieldEdited?.agency ? binding?.value.bookingAgency ?? undefined : undefined;
+        const boundCompany = parties?.company?.nativeId ? parties.company :
+          !partyFieldEdited?.company ? binding?.value.organization ?? undefined : undefined;
         const matchingGuests = (guestCandidates[key] ?? []).filter((candidate) =>
           (!choice.firstName.trim() || candidate.firstName.trim().toLowerCase() === choice.firstName.trim().toLowerCase()) &&
           candidate.lastName.trim().toLowerCase() === choice.lastName.trim().toLowerCase());
@@ -2401,7 +2430,8 @@ export function BookingCards({
         const observedFields = binding ? Object.entries(workItemPane?.requestDraft?.snapshot?.fieldMeta ?? {})
           .filter(([path, meta]) => path.startsWith(`requests[${binding.requestId}].`) &&
             meta.origin === 'email' && meta.evidence?.source?.reviewRequired)
-          .map(([path, meta]) => ({ field: path.split('.').at(-1) ?? 'detail', role: meta.attributedTo,
+          .map(([path, meta]) => ({ field: path.endsWith('.sourceAgencyName') ? 'agency' :
+            path.endsWith('.sourceOrganizationName') ? 'company' : path.split('.').at(-1) ?? 'detail', role: meta.attributedTo,
             page: meta.evidence?.source?.page })) : [];
         const agencyValue = choice.bookingAgency === '__none__' ? '__none__'
           : choice.bookingAgency === '__unresolved__' ? '' : boundAgency ? '__bound__' : '';
@@ -2525,8 +2555,8 @@ export function BookingCards({
               <CopyButton label="Booking agency" roomLabel={roomLabel} value={agencyValue === '__bound__' ? boundAgency?.name ?? '' : ''} />
             </div>
             {(!boundAgency || choice.bookingAgency === '__unresolved__') &&
-              (textValue(request.agency).trim() || binding?.value.bookingAgency?.name) && agencyValue !== '__none__' ? (
-              <p className="text-[11px] text-[#64748b]">{binding?.value.bookingAgency?.name || textValue(request.agency).trim()}: select this agency in Agency &amp; company above, or choose No agency.</p>
+              (textValue(request.agency).trim() || binding?.value.bookingAgency?.name || binding?.value.sourceAgencyName) && agencyValue !== '__none__' ? (
+              <p className="text-[11px] text-[#64748b]">{binding?.value.bookingAgency?.name || binding?.value.sourceAgencyName || textValue(request.agency).trim()}: select this agency in Agency &amp; company above, or choose No agency.</p>
             ) : null}
         </>);
         const organizationField = (<>
@@ -2536,7 +2566,7 @@ export function BookingCards({
               value={choice.organization}
               disabled={locked}
               maxLength={PANE_PARTY_NAME_MAX}
-              onChange={(value) => setChoice({ organization: value })}
+              onChange={(value) => { organizationEdited.current[key] = true; setChoice({ organization: value }); }}
             />
         </>);
         const rateField = (<>
@@ -2600,11 +2630,11 @@ export function BookingCards({
               group={group} session={session} pane={workItemPane ?? null} evidence={rateEvidence} plans={rateCatalogue}
               onChoose={(ratePlan) => setChoice({ ratePlan })} create={{ roomIndex: binding.roomIndex, rateCode: selectedRate,
                 agency: agencyValue === '__none__' ? 'none' : agencyValue === '__bound__' ? 'selected' : 'unknown',
-                company: !choice.organization.trim() ? 'none' : parties?.company?.nativeId &&
-                  choice.organization.trim() === parties.company.name ? 'selected' : 'unknown',
+                company: !choice.organization.trim() ? 'none' : boundCompany?.nativeId &&
+                  choice.organization.trim() === boundCompany.name ? 'selected' : 'unknown',
                 contextKey: JSON.stringify([arrival, departure, selectedRoom, choice.adults ?? group.adults,
                   agesKnown ? ages : null, selectedRate, choice.bookingAgency, boundAgency?.nativeId ?? null,
-                  choice.organization, parties?.company?.nativeId ?? null,
+                  choice.organization, boundCompany?.nativeId ?? null,
                   choice.sourceOfBusiness, choice.track, choice.guaranteeType]), locked,
                 onContextChange: () => {
                   delete cloudFreshPreviews.current[key];

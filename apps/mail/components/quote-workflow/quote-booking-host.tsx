@@ -20,6 +20,7 @@ export function QuoteBookingHost({
   rateCatalogue,
   workItemPane,
   rateEvidence,
+  partyFieldEdited,
   onSaveDefault,
 }: {
   session: QuoteSession;
@@ -33,6 +34,7 @@ export function QuoteBookingHost({
   rateCatalogue?: RatePlanCatalogueEntry[];
   workItemPane?: WorkItemPaneControls | null;
   rateEvidence?: PartyEvidence;
+  partyFieldEdited?: { agency: boolean; company: boolean };
   onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
 }) {
   const confirmation = useConfirmationSources();
@@ -79,6 +81,7 @@ export function QuoteBookingHost({
               rateCatalogue={rateCatalogue}
               workItemPane={workItemPane}
               rateEvidence={rateEvidence}
+              partyFieldEdited={partyFieldEdited}
               confirmation={confirmation}
               onSaveDefault={onSaveDefault ?? saveConfirmationDefault}
             />

@@ -23,6 +23,8 @@ function notifyStayingGuestName(): void {
 }
 
 function inferredGuestName(session: QuoteSession, contact?: StoredContact | null): string {
+  // The contact is the booker and is not evidence of the staying guest.
+  void contact;
   const storedGuestNames = session.groups.flatMap((group) =>
     'guestNames' in group && Array.isArray(group.guestNames)
       ? group.guestNames.filter((name): name is string => typeof name === 'string')
@@ -119,6 +121,8 @@ function StaffPartyFields({
   sourceMessageId,
   onPartyLookupPending,
   onRatePartyChange,
+  requireExplicitPick,
+  propertyCode,
 }: {
   header: StaffQuoteHeader;
   onPatch?: (header: Partial<StaffQuoteHeader>) => void;
@@ -135,6 +139,8 @@ function StaffPartyFields({
   /** Tells the pane whether a field's automatic HMS search still decides its pick, so a rates run waits for it. */
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
   onRatePartyChange?: (kind: 'company' | 'agency', evidence: RatePartyEvidence | null) => void;
+  requireExplicitPick?: boolean;
+  propertyCode?: string | null;
 }) {
   const partyPicker = (kind: 'company' | 'agency') => {
     const label = kind === 'agency' ? 'Agency' : 'Company';
@@ -164,6 +170,8 @@ function StaffPartyFields({
     return (
       <PartyPicker
         autoLookup
+        requireExplicitPick={requireExplicitPick}
+        propertyCode={propertyCode}
         kind={kind}
         name={value}
         parties={header.parties ?? {}}
@@ -233,6 +241,7 @@ export function QuotePeopleStep({
   onRatePartyChange,
   scrollToStep,
   workItemPane = null,
+  propertyCode,
 }: {
   session: QuoteSession;
   partyState: 'Done' | 'Pending' | 'Optional' | 'Looking up';
@@ -250,6 +259,7 @@ export function QuotePeopleStep({
   onRatePartyChange?: (kind: 'company' | 'agency', evidence: RatePartyEvidence | null) => void;
   scrollToStep: (id: string) => void;
   workItemPane?: WorkItemPaneControls | null;
+  propertyCode?: string | null;
 }) {
   const guestEditorKey = guestEditorKeyFor(session, contactEditorKey);
 
@@ -289,6 +299,8 @@ export function QuotePeopleStep({
         sourceMessageId={session.staffSource?.messageId ?? null}
         onPartyLookupPending={onPartyLookupPending}
         onRatePartyChange={onRatePartyChange}
+        requireExplicitPick={session.analysis?.luna?.workflow === 'create_booking'}
+        propertyCode={propertyCode}
       />
       <SecondaryButton className="w-full" onClick={() => scrollToStep('quote-stay')}>
         Continue to Stay
