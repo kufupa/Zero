@@ -31,12 +31,30 @@ const dateRange = z.object({
 });
 const extractionOriginSchema = z.enum(['person', 'system_notice']);
 
+const proposalSourceSchema = z.object({
+  kind: z.enum(['message', 'attachment_text', 'attachment_vision']),
+  id: z.string().min(1).max(500),
+  page: z.number().int().min(1).max(3).optional(),
+  digest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  reviewRequired: z.boolean().optional(),
+}).strict();
+
+/** Only sources actually admitted to the current model call may ground a proposal. */
+export type CurrentProposalSource = {
+  kind: 'attachment_text' | 'attachment_vision';
+  id: string;
+  page?: number;
+  text?: string;
+  digest: string;
+};
+
 // Each proposal carries the source phrase that states the requested change. It is
 // kept separate from native IDs and from the sender/booker contact block.
 const amendProposalValue = <T extends z.ZodTypeAny, R extends z.ZodTypeAny>(value: T, attributedTo: R) => z.object({
   value,
   excerpt: z.string(),
   attributedTo,
+  source: proposalSourceSchema.optional(),
 }).strict();
 const amendTextProposal = (role: 'guest' | 'booker' | null) =>
   amendProposalValue(z.string(), role === null ? z.null() : z.literal(role));
@@ -53,9 +71,27 @@ const amendProposalSchema = z.object({
   cmsMessageId: amendTextProposal(null).optional(),
   cmsRecipient: amendProposalValue(z.string(), z.enum(['guest', 'booker'])).optional(),
 }).strict().describe('Only explicit current amendment requests for this stay, each with an exact source excerpt.');
-const cancelProposalSchema = z.object({ cancelNote: amendTextProposal(null).optional() }).strict()
-  .describe('An explicitly requested cancellation note with its exact source excerpt.');
 
+// Labels are source facts, never HMS profile/party IDs or an inferred selection.
+const workflowProposalSchema = z.object({
+  firstName: amendTextProposal('guest').optional(),
+  lastName: amendTextProposal('guest').optional(),
+  guestEmail: amendTextProposal('guest').optional(),
+  guestMobile: amendTextProposal('guest').optional(),
+  bookerName: amendTextProposal('booker').optional(),
+  bookerEmail: amendTextProposal('booker').optional(),
+  agencyName: amendProposalValue(z.string(), z.literal('agency')).optional(),
+  organizationName: amendProposalValue(z.string(), z.literal('organization')).optional(),
+  ratePlan: amendTextProposal(null).optional(),
+  sourceOfBusiness: amendTextProposal(null).optional(),
+  track: amendTextProposal(null).optional(),
+  guaranteeType: amendTextProposal(null).optional(),
+  reservationNote: amendTextProposal(null).optional(),
+  cmsSend: amendChoiceProposal(z.boolean()).optional(),
+  cmsMessageId: amendTextProposal(null).optional(),
+  cmsRecipient: amendProposalValue(z.string(), z.enum(['guest', 'booker'])).optional(),
+  cancelNote: amendTextProposal(null).optional(),
+}).strict().describe('Explicit current Create facts or cancellation note, each with an exact source excerpt and role.');
 const mailExtractionObjectSchema = z.object({
   separateAsk: z.string().max(200).nullable().optional().describe(
     'For self-sent pre-stay confirmation mail only, an exact excerpt of a separate current request in the target body; otherwise null.',
@@ -135,7 +171,7 @@ const mailExtractionObjectSchema = z.object({
         .optional()
         .describe('Action for this stay; same enum as top-level action. Top-level action remains a summary.'),
       amendProposal: amendProposalSchema.optional(),
-      workflowProposal: cancelProposalSchema.optional(),
+      workflowProposal: workflowProposalSchema.optional(),
       rows: z.array(
         z.object({
           roomType: nullableText.describe(
@@ -205,7 +241,7 @@ export type ExtractionStay = {
   guests?: ExtractionGuest[];
   action?: MailAction;
   amendProposal?: z.infer<typeof amendProposalSchema>;
-  workflowProposal?: z.infer<typeof cancelProposalSchema>;
+  workflowProposal?: z.infer<typeof workflowProposalSchema>;
 };
 
 const sourceStaySchema = mailExtractionObjectSchema.shape.stays.element;
@@ -404,14 +440,61 @@ function sanitizeAmendProposal(
   return Object.keys(result).length ? result : undefined;
 }
 
-function sanitizeCancelProposal(proposal: z.infer<typeof cancelProposalSchema> | undefined, currentMessageText: string) {
-  const note = proposal?.cancelNote;
-  if (!note || !note.excerpt || groundedSeparateAsk(maskCardNumbers(currentMessageText), note.excerpt) !== note.excerpt ||
-      maskCardNumbers(note.excerpt) !== note.excerpt || /[\p{Cc}]/u.test(note.value)) return undefined;
-  const value = note.value.trim();
-  if (!value || value.length > 200 || cleanText(value, 200) !== value ||
-      !note.excerpt.toLowerCase().includes(value.toLowerCase())) return undefined;
-  return { cancelNote: { ...note, value } };
+function sanitizeWorkflowProposal(
+  proposal: z.infer<typeof workflowProposalSchema> | undefined,
+  currentMessageText: string,
+  messageId: string,
+  admittedSources: CurrentProposalSource[],
+): z.infer<typeof workflowProposalSchema> | undefined {
+  if (!proposal) return undefined;
+  const source = maskCardNumbers(currentMessageText);
+  const limits: Record<keyof typeof proposal, number> = {
+    firstName: 1000, lastName: 1000, guestEmail: 1000, guestMobile: 1000,
+    bookerName: 50, bookerEmail: 80, agencyName: 200, organizationName: 200, ratePlan: 12,
+    sourceOfBusiness: 80, track: 80, guaranteeType: 80, reservationNote: 2000,
+    cmsSend: 0, cmsMessageId: 8, cmsRecipient: 255, cancelNote: 200,
+  };
+  const result: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(proposal)) {
+    if (!item || !item.excerpt || maskCardNumbers(item.excerpt) !== item.excerpt) continue;
+    const exact = (text: string) => groundedSeparateAsk(maskCardNumbers(text), item.excerpt) === item.excerpt;
+    let provenance: z.infer<typeof proposalSourceSchema> | undefined;
+    if (item.source?.kind === 'message') {
+      if (item.source.id !== messageId || !exact(source)) continue;
+      provenance = { kind: 'message', id: messageId,
+        digest: createHash('sha256').update(source).digest('hex') };
+    } else if (item.source) {
+      const matched = admittedSources.filter((candidate) => candidate.kind === item.source!.kind &&
+        candidate.id === item.source!.id && (candidate.kind !== 'attachment_vision' || candidate.page === item.source!.page));
+      if (matched.length !== 1) continue;
+      const candidate = matched[0]!;
+      if (candidate.kind === 'attachment_text' && !exact(candidate.text ?? '')) continue;
+      provenance = { kind: candidate.kind, id: candidate.id, digest: candidate.digest,
+        ...(candidate.page !== undefined ? { page: candidate.page } : {}),
+        ...(candidate.kind === 'attachment_vision' ? { reviewRequired: true } : {}) };
+    } else if (!exact(source)) {
+      // Older model outputs may omit a pointer. Only one exact current text source is unambiguous.
+      const matched = admittedSources.filter((candidate) => candidate.kind === 'attachment_text' && exact(candidate.text ?? ''));
+      if (matched.length !== 1) continue;
+      provenance = { kind: 'attachment_text', id: matched[0]!.id, digest: matched[0]!.digest };
+    }
+    const groundedItem = provenance ? { ...item, source: provenance } : item;
+    if (typeof item.value === 'boolean') {
+      const negative = /\b(?:do not|don't|never|not)\s+send\s+(?:the\s+)?confirmation\b/i.test(item.excerpt);
+      if (key === 'cmsSend' && (item.value ? /\bsend\s+(?:the\s+)?confirmation\b/i.test(item.excerpt) && !negative : negative)) {
+        result[key] = groundedItem;
+      }
+      continue;
+    }
+    if (/[\p{Cc}]/u.test(item.value)) continue;
+    const value = item.value.trim();
+    const limit = limits[key as keyof typeof limits];
+    if (!value || value.length > limit || cleanText(value, limit) !== value ||
+        !item.excerpt.toLowerCase().includes(value.toLowerCase())) continue;
+    if (key === 'ratePlan' && !/^[A-Z0-9]{1,12}$/.test(value)) continue;
+    result[key] = { ...groundedItem, value };
+  }
+  return Object.keys(result).length ? workflowProposalSchema.parse(result) : undefined;
 }
 
 /**
@@ -420,7 +503,8 @@ function sanitizeCancelProposal(proposal: z.infer<typeof cancelProposalSchema> |
  */
 export function sanitizeExtraction(
   output: MailExtractionOutput,
-  input: { messageId: string; sourceText: string; currentMessageText?: string; dateAnchor?: StayDateAnchorContext },
+  input: { messageId: string; sourceText: string; currentMessageText?: string;
+    currentProposalSources?: CurrentProposalSource[]; dateAnchor?: StayDateAnchorContext },
 ): SanitizedExtraction {
   const sourceLower = input.sourceText.toLowerCase();
   const email = cleanText(output.contact.email);
@@ -480,8 +564,10 @@ export function sanitizeExtraction(
       ...(output.kind === 'amendment' && (stay.action === undefined || stay.action === 'amend')
         ? { amendProposal: sanitizeAmendProposal(stay.amendProposal, input.currentMessageText ?? input.sourceText) }
         : {}),
-      ...(stay.workflowProposal ? { workflowProposal: sanitizeCancelProposal(stay.workflowProposal,
-        input.currentMessageText ?? input.sourceText) } : {}),
+      ...(stay.workflowProposal
+        ? { workflowProposal: sanitizeWorkflowProposal(stay.workflowProposal, input.currentMessageText ?? input.sourceText,
+            input.messageId, input.currentProposalSources ?? []) }
+        : {}),
     };
   });
   const identityStays = prepared.map((stay) => ({ requested: stay.requested, guests: stay.guests }));
