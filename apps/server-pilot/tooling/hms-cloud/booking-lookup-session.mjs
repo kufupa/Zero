@@ -12,7 +12,7 @@ import { installPageRequestFence } from './page-request-fence.mjs';
 import { takeHandledNotes } from '../playwright-quote/stay360-notes.mjs';
 import { readConfirmationFromStay360 } from './stay360-confirmation.mjs';
 import { readRecordViewFromStay360 } from './stay360-record-view.mjs';
-import { readCreatedLabtestRecord, snapshotLabtestRecord } from './labtest-record.mjs';
+import { cleanLabtestRecord, readCreatedLabtestRecord, snapshotLabtestRecord } from './labtest-record.mjs';
 import { blankSavedPartyFields } from './labtest-party-fields.mjs';
 import { loadHmsBookingMemory, queryHmsBookingMemory } from './hms-booking-memory.mjs';
 import {
@@ -190,7 +190,9 @@ export async function readSavedOrganizationCreate(state, request, { openSession 
         if (parties.outcome !== 'verified') throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
       }
       const snapshot = await snapshotLabtestRecord(record.frame), data = snapshot?.data;
-      if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('LABTEST_RECORD_UNVERIFIED');
+      if (!cleanLabtestRecord(snapshot) || !data || typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error('LABTEST_RECORD_UNVERIFIED');
+      }
       const exact = (name, wanted) => {
         const keys = Object.keys(data).filter(key => key.toLowerCase() === name);
         return keys.length === 1 && ['string', 'number'].includes(typeof data[keys[0]]) &&
