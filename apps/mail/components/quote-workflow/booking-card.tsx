@@ -2630,7 +2630,7 @@ export function BookingCards({
               This room is not linked to a saved booking request. Reload the email before editing.
             </p> : null}
             {observedFields.length ? <p role="status" className="text-[11px] text-amber-900">
-              Review attachment reading: {observedFields.map((item) => `${item.field}${item.role ? ` (${item.role})` : ''}${item.page != null ? `, page ${item.page}` : ''}`).join('; ')}.
+              Check all booking details against the attachment, including dates, room and guests. Review attachment reading: {observedFields.map((item) => `${item.field}${item.role ? ` (${item.role})` : ''}${item.page != null ? `, page ${item.page}` : ''}`).join('; ')}.
             </p> : null}
             {cloudCreate ? guestFields : agencyField}
             {!cloudCreate ? guaranteeField : null}

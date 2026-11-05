@@ -484,9 +484,13 @@ function sanitizeWorkflowProposal(
     }
     const groundedItem = provenance ? { ...item, source: provenance } : item;
     if (typeof item.value === 'boolean') {
-      const negative = /\b(?:do not|don't|never|not)\s+send\s+(?:the\s+)?confirmation\b/i.test(item.excerpt);
-      if (key === 'cmsSend' && (item.value ? /\bsend\s+(?:the\s+)?confirmation\b/i.test(item.excerpt) && !negative : negative)) {
-        result[key] = groundedItem;
+      const negative = /\b(?:do not|don't|never|not)\s+send\s+(?:the\s+)?confirmation\b/i.test(item.excerpt) ||
+        /\bcms\s+send\s*[:=]\s*(?:off|false|no)\b/i.test(item.excerpt);
+      const positive = /\bsend\s+(?:the\s+)?confirmation\b/i.test(item.excerpt) ||
+        /\bcms\s+send\s*[:=]\s*(?:on|true|yes)\b/i.test(item.excerpt);
+      if (key === 'cmsSend') {
+        if (negative) result[key] = { ...groundedItem, value: false };
+        else if (item.value && positive) result[key] = groundedItem;
       }
       continue;
     }
