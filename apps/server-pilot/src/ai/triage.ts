@@ -17,7 +17,7 @@ import { READ_TOOL_IDS } from '../hms/read-tools.js';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { z } from 'zod';
-import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
+import { groundedSeparateAsk, isSelfSentPreStayInformationMail } from './existing-stay-information.js';
 
 export const TRIAGE_CATEGORIES = [...AI_PRIMARY_CATEGORY_SLUGS, 'spam'] as const;
 
@@ -624,6 +624,11 @@ function isRoutineSystemMail(
     return false;
   }
 
+  const agentServiceRequest = [...input.body.matchAll(
+    /\b(?:please|kindly|(?:could|can|would)\s+you|(?:we|i)\s+(?:need|request))\b[^.!?\n]{0,80}\b(?:refund|book|reserve|amend|change|cancel|send|issue|confirm|quote)\b|\b(?:refund|invoice|quotation|amendment)\s+(?:request|requested|required)\b/gi,
+  )].some((match) => groundedSeparateAsk(input.body, match[0]) === match[0]);
+  if (agentServiceRequest && /\b(?:tbo(?:\s+holidays)?|travelit)\b/i.test(haystack)) return false;
+
   const synxisOrChannelConfirm =
     /\b(?:synxis|channel(?:\s+manager)?)\b/i.test(haystack) &&
     /\b(?:confirm(?:ation|ed|s)?|cancel(?:lation|led|ed|s)?|modif(?:ication|ied)|daily\s+report|booking\s+update)\b/i.test(
@@ -646,12 +651,8 @@ function isRoutineSystemMail(
     /\bprofitroom\b/i.test(haystack) &&
     /\b(?:reservation\s+confirmed|booking\s+update|default\s+contact\s+form)\b/i.test(haystack);
 
-  const agentServiceRequest =
-    /\b(?:please|kindly|(?:could|can|would)\s+you|(?:we|i)\s+(?:need|request))\b[^.!?\n]{0,80}\b(?:refund|book|reserve|amend|change|cancel|send|issue|confirm|quote)\b/i.test(input.body) ||
-    /\b(?:refund|invoice|quotation|amendment)\s+(?:request|requested|required)\b/i.test(input.body);
-
   const tboNotice =
-    !agentServiceRequest && /\btbo(?:\s+holidays)?\b/i.test(haystack) &&
+    /\btbo(?:\s+holidays)?\b/i.test(haystack) &&
     /\b(?:booking\s+(?:confirmed|cancelled|canceled)|modification\s+alert)\b/i.test(haystack);
 
   const webbedsNotice =
@@ -662,7 +663,7 @@ function isRoutineSystemMail(
     /\bexpedia\s+partner\s+central\b/i.test(haystack) && /\bnew\s+booking\b/i.test(haystack);
 
   const travelitNotice =
-    !agentServiceRequest && /\btravelit\b/i.test(haystack) &&
+    /\btravelit\b/i.test(haystack) &&
     /\b(?:booking\s+made\s+through\s+travelit|new\s+booking\s+\d+|booking\s+cancellation\s+notification)\b/i.test(
       haystack,
     );
