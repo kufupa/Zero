@@ -111,8 +111,15 @@ export async function submitRateOverrideOnce(session, stage, onPaused, { signal 
     const response = page.waitForResponse(res => res.request() === chain.candidate(), { timeout: 90_000 });
     void response.catch(() => {});
     await submit.click({ timeout: 90_000 });
-    const saved = await response;
-    const dispatched = await chain.waitForDispatch();
+    const dispatch = chain.waitForDispatch();
+    const saved = await Promise.race([
+      response,
+      dispatch.then(dispatched => {
+        if (!dispatched) throw new Error('RATE_OVERRIDE_DISPATCH_NOT_CONFIRMED');
+        return response;
+      }),
+    ]);
+    const dispatched = await dispatch;
     armed = false;
     const drained = await chain.drain();
     return { httpStatus: saved.status(), dispatchCallbacksDrained: dispatched === true && drained && calls === 1 && !blocked };

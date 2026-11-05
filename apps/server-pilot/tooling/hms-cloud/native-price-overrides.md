@@ -19,8 +19,9 @@ following requests use the same `{ id, tool, ... }` envelope:
 | `commitRateOverride` | `preparedId` | dispatch evidence and independent readback |
 
 `date` is one night in the selected stay; `amountCents` is a positive integer
-string. A new preparation replaces the prior handle; handles expire when the
-session closes. Prepare is unsaved and works for verified real guests. Commit
+string different from that night's saved amount. A new preparation replaces
+the prior handle; handles expire when the session closes. Prepare is unsaved
+and works for verified real guests. Commit
 requires a backend-supplied `dispatchRateOverride` callback and is restricted
 to verified Labtest stays. The JSONL CLI supplies no dispatch authority.
 The callback receives the paused native request, `continueOnce`, and the

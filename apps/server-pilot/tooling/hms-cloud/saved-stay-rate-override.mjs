@@ -50,6 +50,9 @@ export function reviewSavedStayRateOverride(target, change, rates) {
       typeof change.amountCents !== 'string' || !/^[1-9]\d{0,13}$/.test(change.amountCents) ||
       !/^[A-Z0-9]{1,20}$/.test(change.reason || '') || !checkedRates(rates, target) ||
       change.currency !== rates.currency) throw new Error('RATE_OVERRIDE_REVIEW_INVALID');
+  if (rates.nightly.find(row => row.date === change.startDate)?.chargeCents === change.amountCents) {
+    throw new Error('RATE_OVERRIDE_AMOUNT_UNCHANGED');
+  }
   const reviewed = {
     target: { propertyCode: 'HRCEN', confirmation: target.confirmation, guestId: target.guestId,
       nativeStayId: target.nativeStayId, firstName: target.firstName, lastName: target.lastName,
