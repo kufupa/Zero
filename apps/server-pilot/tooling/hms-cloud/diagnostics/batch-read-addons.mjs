@@ -115,6 +115,7 @@ const controller = new AbortController();
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => controller.abort());
 const browserHold = result => result.issue?.startsWith('HMS_BROWSER_HOLD');
 const transient = result => !browserHold(result) && (['TimeoutError', 'HMS_BROWSER_LAUNCH_FAILED', 'HMS_SESSION_UNAVAILABLE',
+  'CONFIRMATION_SEARCH_TIMEOUT', 'CONFIRMATION_DETAILS_NOT_LOADED',
   'PLAYWRIGHT_OPERATION_FAILED', 'ADDONS_RESPONSE_UNVERIFIED', 'ADDONS_RESPONSE_BODY_TIMEOUT',
   'ADDONS_ACTION_FAILED', 'HMS_OPERATION_ABORTED', 'HMS_BROWSER_CLOSE_UNCONFIRMED'].includes(result.issue) ||
   ['credentials', 'browser_launch', 'browser_context', 'login'].includes(result.phase));
