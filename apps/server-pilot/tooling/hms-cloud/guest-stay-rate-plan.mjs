@@ -525,8 +525,11 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       if (!nativeAvailability) {
         throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
       }
-      await bounded(page.waitForLoadState('networkidle',{timeout:10000}),12000,'RATE_AVAILABILITY_READBACK_TIMEOUT');
-      await bounded(page.waitForFunction(() => !Ext.Ajax.isLoading(),null,{timeout:10000}),12000,'RATE_AVAILABILITY_READBACK_TIMEOUT');
+      await bounded(page.waitForFunction(() => {
+        const shown = el => { const box = el.getBoundingClientRect(); return box.width > 0 && box.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+        return typeof globalThis.Ext?.Ajax?.isLoading === 'function' && !Ext.Ajax.isLoading() &&
+          ![...document.querySelectorAll('.x-mask,.x-mask-msg,.x-loadmask')].some(shown);
+      },null,{timeout:10000}),12000,'RATE_AVAILABILITY_READBACK_TIMEOUT');
       if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
       const availabilityResponses = responses.filter(item => item.kind === 'availability');
       if (availabilityResponses.length !== 1 || availabilityResponses[0].response !== availabilityResponse ||
