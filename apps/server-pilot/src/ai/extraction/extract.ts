@@ -697,7 +697,8 @@ export async function extractInboundMail(input: {
   const sanitized = sanitizeExtraction(parsed.data, {
     messageId: input.messageId,
     sourceText: prompt.user,
-    currentMessageText: input.selection.currentBodyText ?? input.selection.bodyText,
+    currentMessageText: (input.selection.currentBodyText ?? input.selection.bodyText).slice(0, EXTRACTION_TARGET_BODY_MAX_CHARS),
+    currentMessageSubject: maskCardNumbers(input.selection.subject).slice(0, 5_000),
     currentProposalSources: [...prompt.currentProposalSources, ...vision.currentProposalSources],
     dateAnchor: {
       receivedAt: input.selection.receivedAt,

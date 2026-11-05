@@ -445,9 +445,11 @@ function sanitizeWorkflowProposal(
   currentMessageText: string,
   messageId: string,
   admittedSources: CurrentProposalSource[],
+  currentMessageSubject: string,
 ): z.infer<typeof workflowProposalSchema> | undefined {
   if (!proposal) return undefined;
   const source = maskCardNumbers(currentMessageText);
+  const subject = maskCardNumbers(currentMessageSubject);
   const limits: Record<keyof typeof proposal, number> = {
     firstName: 1000, lastName: 1000, guestEmail: 1000, guestMobile: 1000,
     bookerName: 50, bookerEmail: 80, agencyName: 200, organizationName: 200, ratePlan: 12,
@@ -457,13 +459,14 @@ function sanitizeWorkflowProposal(
   const result: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(proposal)) {
     if (!item || !item.excerpt || item.excerpt.length > 200 || maskCardNumbers(item.excerpt) !== item.excerpt) continue;
-    const exact = (text: string) => groundedSeparateAsk(maskCardNumbers(text), item.excerpt) === item.excerpt;
+    const exact = (text: string) => groundedSeparateAsk(maskCardNumbers(text), item.excerpt) === item.excerpt ||
+      subject.includes(item.excerpt);
     const attachmentExact = (text: string) => maskCardNumbers(text).includes(item.excerpt);
     let provenance: z.infer<typeof proposalSourceSchema> | undefined;
     if (item.source?.kind === 'message') {
       if (item.source.id !== messageId || !exact(source)) continue;
       provenance = { kind: 'message', id: messageId,
-        digest: createHash('sha256').update(source).digest('hex') };
+        digest: createHash('sha256').update(source).update('\0').update(subject).digest('hex') };
     } else if (item.source) {
       const matched = admittedSources.filter((candidate) => candidate.kind === item.source!.kind &&
         candidate.id === item.source!.id && (candidate.kind !== 'attachment_vision' || candidate.page === item.source!.page));
@@ -505,7 +508,7 @@ function sanitizeWorkflowProposal(
 export function sanitizeExtraction(
   output: MailExtractionOutput,
   input: { messageId: string; sourceText: string; currentMessageText?: string;
-    currentProposalSources?: CurrentProposalSource[]; dateAnchor?: StayDateAnchorContext },
+    currentMessageSubject?: string; currentProposalSources?: CurrentProposalSource[]; dateAnchor?: StayDateAnchorContext },
 ): SanitizedExtraction {
   const sourceLower = input.sourceText.toLowerCase();
   const email = cleanText(output.contact.email);
@@ -567,7 +570,7 @@ export function sanitizeExtraction(
         : {}),
       ...(stay.workflowProposal
         ? { workflowProposal: sanitizeWorkflowProposal(stay.workflowProposal, input.currentMessageText ?? input.sourceText,
-            input.messageId, input.currentProposalSources ?? []) }
+            input.messageId, input.currentProposalSources ?? [], input.currentMessageSubject ?? '') }
         : {}),
     };
   });
