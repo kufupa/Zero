@@ -75,7 +75,8 @@ import {
   amendEmailValue,
   type AmendField, type DraftSource,
 } from './pane-amend-draft.js';
-import { parseRequestField, requestFieldApplies, sourceRequests, validRequestValue } from './work-item-fields.js';
+import { parseRequestField, requestFieldApplies, requestIdFor, sourceRequests, validRequestValue,
+  type RequestField } from './work-item-fields.js';
 import { effectiveActions, projectEffectiveWork, type EffectiveRequest } from './work-item-effective.js';
 import { projectCancelRequests } from './pane-cancel-draft.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
@@ -2738,6 +2739,25 @@ export type ResetWorkSectionResult =
   | { status: 'stale' }
   | { status: 'recorded'; reset: number; revision?: number; revisionHead?: number; seq?: number; extractionId?: string | null };
 
+/** Source values shown by the Create projection; native selections are never extraction values. */
+function createRequestAiValue(stay: ExtractionStay, field: RequestField): unknown {
+  if (field.roomIndex !== null) {
+    if (field.field === 'arrival' || field.field === 'departure') return stay.requested[field.field];
+    const row = stay.rows.find((candidate) => candidate.id === field.rowId);
+    if (field.field === 'adults') return row?.adultsPerRoom ?? null;
+    if (field.field === 'childAges') return row?.childAges ?? null;
+  }
+  const proposalKey: Partial<Record<string, keyof NonNullable<ExtractionStay['workflowProposal']>>> = {
+    firstName: 'firstName', lastName: 'lastName', guestEmail: 'guestEmail', guestMobile: 'guestMobile',
+    bookerName: 'bookerName', bookerEmail: 'bookerEmail', ratePlan: 'ratePlan', sourceOfBusiness: 'sourceOfBusiness',
+    track: 'track', guaranteeType: 'guaranteeType', reservationNote: 'reservationNote',
+    'cms.send': 'cmsSend', 'cms.messageId': 'cmsMessageId', 'cms.recipient': 'cmsRecipient',
+  };
+  const key = proposalKey[field.field];
+  const proposal = key ? stay.workflowProposal?.[key] : undefined;
+  return proposal ? field.field === 'cms.recipient' ? { mode: 'custom', address: proposal.value } : proposal.value : null;
+}
+
 /** Restores extraction-backed overrides in one contact or stay section and logs each cleared field atomically. */
 export async function resetWorkSection(
   db: DB,
@@ -2754,6 +2774,9 @@ export async function resetWorkSection(
     const [item] = await tx
       .select({
         extractionId: workItem.extractionId,
+        threadId: workItem.threadId,
+        sourceMessageId: workItem.sourceMessageId,
+        kind: workItem.kind,
         state: workItem.state,
         revision: workItem.revision,
         revisionHead: workItem.revisionHead,
@@ -2776,11 +2799,17 @@ export async function resetWorkSection(
       if (input.section.type === 'contact') return contactFieldOf(fieldPath) !== null;
       return parseFieldPath(fieldPath)?.stayId === input.section.stayId;
     });
-    if (!paths.length) return recorded(0);
+    const requestPaths = input.section.type === 'stay'
+      ? Object.keys(item.state).flatMap((fieldPath) => {
+        const field = parseRequestField(fieldPath);
+        return field && field.field !== 'action' ? [{ fieldPath, field }] : [];
+      }) : [];
+    if (!paths.length && !requestPaths.length) return recorded(0);
 
     const [read] = item.extractionId
       ? await tx
-          .select({ payload: mailExtraction.payload, version: mailExtraction.extractorVersion })
+          .select({ payload: mailExtraction.payload, version: mailExtraction.extractorVersion,
+            messageId: mailExtraction.messageId, kind: mailExtraction.kind, status: mailExtraction.status })
           .from(mailExtraction)
           .where(eq(mailExtraction.id, item.extractionId))
           .limit(1)
@@ -2791,6 +2820,26 @@ export async function resetWorkSection(
         aiValue: aiValueAt(read?.payload as MailExtractionPayload | null | undefined, fieldPath),
       }))
       .filter((field) => field.aiValue !== null && field.aiValue !== undefined);
+    if (input.section.type === 'stay' && requestPaths.length && read?.status === 'succeeded' &&
+        read.messageId === item.sourceMessageId && read.kind === item.kind && item.threadId && item.sourceMessageId) {
+      const payload = read.payload as MailExtractionPayload | null;
+      const stayId = input.section.stayId;
+      const stay = payload?.stays.find((candidate) => candidate.id === stayId);
+      const action = stay?.action ?? (payload?.stays.length === 1 ? payload.action : null) ??
+        (item.kind === 'booking' ? 'new_booking' : null);
+      const [mail] = await tx.select({ id: message.id, subject: message.subject, textBody: message.textBody, htmlBody: message.htmlBody })
+        .from(message).where(and(eq(message.id, item.sourceMessageId), eq(message.transportId, input.transportId),
+          eq(message.threadId, item.threadId), eq(message.direction, 'inbound'))).limit(1);
+      if (stay && action === 'new_booking' && mail && item.extractionId) {
+        const requestId = requestIdFor({ threadId: item.threadId, messageId: mail.id,
+          sourceHash: staffQuoteSourceHash(mail) }, stay.id, 'primary');
+        for (const entry of requestPaths) {
+          if (entry.field.requestId !== requestId) continue;
+          const aiValue = createRequestAiValue(stay, entry.field);
+          if (aiValue !== null && aiValue !== undefined) resets.push({ fieldPath: entry.fieldPath, aiValue });
+        }
+      }
+    }
     if (!resets.length) return recorded(0);
 
     const state = { ...item.state };
