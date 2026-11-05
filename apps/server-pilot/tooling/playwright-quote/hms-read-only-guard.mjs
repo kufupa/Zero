@@ -62,14 +62,17 @@ export function shouldAbortReadOnlyRequest({ method, url, postData }) {
     (typeof postData === 'string' && hasWriteAction(new URLSearchParams(postData)));
 }
 
-export async function installReadOnlyGuard(context, { approvedCreateAvailabilityRequests } = {}) {
+export async function installReadOnlyGuard(context, { approvedCreateAvailabilityRequests, approvedAddOnSaveRequests } = {}) {
   if (approvedCreateAvailabilityRequests !== undefined && !(approvedCreateAvailabilityRequests instanceof WeakSet)) {
     throw new Error('CREATE_AVAILABILITY_APPROVALS_INVALID');
+  }
+  if (approvedAddOnSaveRequests !== undefined && !(approvedAddOnSaveRequests instanceof WeakSet)) {
+    throw new Error('ADDON_SAVE_APPROVALS_INVALID');
   }
   let state = readOnlyGuardState.get(context);
   const firstGuard = !state;
   if (!state) {
-    state = { approvals: undefined };
+    state = { approvals: undefined, addOnApprovals: undefined };
     readOnlyGuardState.set(context, state);
   }
   if (approvedCreateAvailabilityRequests && state.approvals && approvedCreateAvailabilityRequests !== state.approvals) {
@@ -77,11 +80,25 @@ export async function installReadOnlyGuard(context, { approvedCreateAvailability
   }
   const addedApprovals = Boolean(approvedCreateAvailabilityRequests && !state.approvals);
   if (addedApprovals) state.approvals = approvedCreateAvailabilityRequests;
+  if (approvedAddOnSaveRequests && state.addOnApprovals && approvedAddOnSaveRequests !== state.addOnApprovals) {
+    throw new Error('ADDON_SAVE_APPROVALS_INVALID');
+  }
+  const addedAddOnApprovals = Boolean(approvedAddOnSaveRequests && !state.addOnApprovals);
+  if (addedAddOnApprovals) state.addOnApprovals = approvedAddOnSaveRequests;
   try { await context.route('**/*', async (route) => {
     const request = route.request();
     let target;
     try { target = new URL(request.url()); } catch { /* The default guard handles malformed targets. */ }
     const approvals = state.approvals;
+    const addOnBody = new URLSearchParams(request.postData?.() || '');
+    if (state.addOnApprovals && request.method() === 'POST' && target?.origin === HMS_WEB_ORIGIN &&
+        target.pathname === '/web/base/OSENEX' && !target.hash &&
+        (!target.search || (target.searchParams.getAll('pageaction').length === 1 && target.searchParams.get('pageaction') === 'SAVE')) &&
+        addOnBody.getAll('pageaction').length === 1 && addOnBody.get('pageaction') === 'SAVE' &&
+        (firstGuard ? state.addOnApprovals.delete(request) : state.addOnApprovals.has(request))) {
+      await route.fallback();
+      return;
+    }
     if (approvals && String(request.method()).toUpperCase() === 'POST' &&
         target?.origin === HMS_WEB_ORIGIN && target.pathname.toLowerCase() === GUEST_STAY_CHECK_AVAILABILITY_PATH &&
         !target.search && !target.hash && !hasAvailabilityWriteIntent(new URLSearchParams(request.postData?.() || '')) &&
@@ -98,6 +115,7 @@ export async function installReadOnlyGuard(context, { approvedCreateAvailability
     await route.fallback();
   }); } catch (error) {
     if (addedApprovals && state.approvals === approvedCreateAvailabilityRequests) state.approvals = undefined;
+    if (addedAddOnApprovals && state.addOnApprovals === approvedAddOnSaveRequests) state.addOnApprovals = undefined;
     if (firstGuard && readOnlyGuardState.get(context) === state) readOnlyGuardState.delete(context);
     throw error;
   }

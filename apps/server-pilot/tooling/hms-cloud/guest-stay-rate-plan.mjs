@@ -443,6 +443,11 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
         requests.set(request,kind);
         return route.fallback();
       }
+      const displayUrl = new URL(request.url());
+      if (['GET', 'HEAD'].includes(request.method()) && displayUrl.origin === ORIGIN &&
+          (displayUrl.pathname.startsWith('/web/resources/') || displayUrl.pathname === '/web/jsp/interfaceStatusAlert.jsp')) {
+        return route.fallback();
+      }
       unsupportedId = draftIdIssue(request,guestId,dates.ar) || unsupportedId;
       const url = new URL(request.url());
       blocked.push({method:request.method(),path:url.pathname,originMatches:url.origin === ORIGIN,query:Boolean(url.search)});
