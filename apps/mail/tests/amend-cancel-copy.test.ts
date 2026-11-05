@@ -35,12 +35,12 @@ function run(overrides: Partial<CancelRun> = {}): CancelRun {
 }
 
 describe('cancellation charge copy', () => {
-  it('names the HMS charge and says staff cancel it in HMS, with one full stop', () => {
+  it('shows the HMS warning and asks staff to check the booking and charge', () => {
     expect(cancellationChargeCopy(CHARGE)).toBe(
-      'HMS shows a cancellation charge: Cancellation Penalty of 2060.00 may be added to account. Cancel this one in HMS yourself.',
+      'HMS says: Cancellation Penalty of 2060.00 may be added to account. Check the booking status and charge in HMS before taking further action.',
     );
     expect(cancellationChargeCopy(null)).toBe(
-      'HMS shows a cancellation charge. Cancel this one in HMS yourself.',
+      'HMS showed a possible cancellation charge. Check the booking status and charge in HMS before taking further action.',
     );
   });
 
@@ -59,8 +59,8 @@ describe('cancellation charge copy', () => {
       run: refused,
     });
     expect(viewAfterCommit(refused, run(), CONFIRMATION)).toEqual({
-      kind: 'idle',
-      note: cancellationChargeCopy(CHARGE),
+      kind: 'done',
+      text: cancellationChargeCopy(CHARGE),
       run: refused,
     });
   });

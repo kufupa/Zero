@@ -69,10 +69,11 @@ function chargeText(penaltyText: string): string {
   return penaltyText.trim().replace(/[.!?]+$/, '');
 }
 
-/** Shown when HMS opens a cancellation charge before the cancel. The cancel did not run; staff cancel it in HMS. */
+/** A warning does not establish whether HMS already changed the booking. */
 export function cancellationChargeCopy(penaltyText: string | null): string {
-  if (!penaltyText) return 'HMS shows a cancellation charge. Cancel this one in HMS yourself.';
-  return `HMS shows a cancellation charge: ${chargeText(penaltyText)}. Cancel this one in HMS yourself.`;
+  const instruction = 'Check the booking status and charge in HMS before taking further action.';
+  if (!penaltyText) return `HMS showed a possible cancellation charge. ${instruction}`;
+  return `HMS says: ${chargeText(penaltyText)}. ${instruction}`;
 }
 
 /** The note for a cancel attempt that did not go through. Commit reason refusals are handled by viewAfterCommit. */
@@ -185,6 +186,8 @@ export function viewAfterCommit(
       return { kind: 'done', run, text: AMEND_CANCEL_COPY.alreadyCancelled };
     case 'cancel_penalty_pending':
       return { kind: 'done', run, text: cancelOutcomeNote(run.outcome, confirmation, run.penaltyText) };
+    case 'refused_penalty':
+      return { kind: 'done', run, text: cancellationChargeCopy(run.penaltyText) };
     case 'cancel_unconfirmed':
       return { kind: 'done', run, text: AMEND_CANCEL_COPY.unconfirmed };
     case 'cancel_queued':

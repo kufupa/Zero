@@ -520,7 +520,7 @@ export function AmendLookupPanel({
       const run = await cancelClient.commitCancel({ ...cancelInput, reason: ready.reason, previewDigest });
       const view = viewAfterCommit(run, ready.run, cancelInput.confirmation);
       setCancelViews((prev) => ({ ...prev, [scope]: view }));
-      if (view.kind === 'done') reportStayAction('cancel', cancelInput.confirmation);
+      if (view.kind === 'done' && ['cancelled', 'already_cancelled'].includes(run.outcome)) reportStayAction('cancel', cancelInput.confirmation);
     } catch {
       setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'idle', note: AMEND_CANCEL_COPY.failed } }));
     }
