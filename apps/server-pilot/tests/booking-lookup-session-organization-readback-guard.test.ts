@@ -37,13 +37,17 @@ vi.mock('../tooling/hms-cloud/stay360-confirmation.mjs', () => ({
 vi.mock('../tooling/hms-cloud/stay360-record-view.mjs', () => ({
   readRecordViewFromStay360: async () => { fixtures.events.push('record-view'); },
 }));
-vi.mock('../tooling/hms-cloud/labtest-record.mjs', () => ({
-  readCreatedLabtestRecord: async (_page: unknown, expected: unknown, options: unknown) => {
-    fixtures.events.push('labtest-record');
-    fixtures.recordCalls.push({ expected, options });
-    return { partyPreimage: { companyid: '90210', company: 'Synthetic Company' } };
-  },
-}));
+vi.mock('../tooling/hms-cloud/labtest-record.mjs', async () => {
+  const { blankSavedPartyFields } = await import('../tooling/hms-cloud/labtest-party-fields.mjs');
+  return {
+    readCreatedLabtestRecord: async (_page: unknown, expected: unknown, options: unknown) => {
+      fixtures.events.push('labtest-record');
+      fixtures.recordCalls.push({ expected, options });
+      return { partyPreimage: { companyid: '90210', company: 'Synthetic Company' } };
+    },
+    snapshotLabtestRecord: async () => ({ data: Object.fromEntries(blankSavedPartyFields.map((name: string) => [name, ''])) }),
+  };
+});
 vi.mock('../tooling/hms-cloud/guest-stay-save.mjs', async (importOriginal) => ({
   ...await importOriginal<typeof import('../tooling/hms-cloud/guest-stay-save.mjs')>(),
   saveNewLabtestStay: async () => { fixtures.saveCalls += 1; return fixtures.saved; },
