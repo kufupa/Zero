@@ -34,6 +34,14 @@ describe('saved stay amendment request', () => {
     expect(savedStayAmendProposal(two.confirmation!, two, draft).proposal?.changes)
       .toEqual({ children: 2, childAges: [8, 3] });
     expect(savedStayAmendProposal('87654321-1', two, draft).proposal).toBeNull();
+    const known = { ...two, childAges: [8, 3] };
+    const unchanged = initialSavedStayAmendDraft(known, {});
+    expect(unchanged.childAges).toBe('8, 3');
+    expect(savedStayAmendProposal(known.confirmation!, known, { ...unchanged, adults: '3' }).proposal?.changes)
+      .toEqual({ adults: 3 });
+    expect(savedStayAmendProposal(known.confirmation!, known, { ...unchanged, childAges: '8, 4' }).proposal?.changes)
+      .toEqual({ children: 2, childAges: [8, 4] });
+    expect(savedStayAmendProposal(known.confirmation!, known, { ...unchanged, childAges: '' }).proposal).toBeNull();
   });
   it('rejects invalid dates and blank counts', () => {
     const initial = initialSavedStayAmendDraft(stay, {});
