@@ -1,0 +1,42 @@
+# U8 guest-master research — 9d388ab ([research](/home/ubuntu/projects/zero/docs/research/2026-11-04-nava-pane-prefill-rates-research.md:197), [plan](/home/ubuntu/projects/zero/docs/plans/2026-11-04-002-feat-nava-pane-prefill-rate-parity-plan.md:322))
+
+> Historical research from 4 November 2026. Temporary evidence links may expire; check current main for current behavior.
+
+**Decision:** off first-release critical path. Profile Prepare → staff Go → fresh profile-ID readback → existing reservation Prepare → staff Go.
+
+## 1. Native evidence
+
+| Claim | Evidence / limit |
+|---|---|
+| New control | Blank Guest Stay `Guest Profile` → `FSGSPF`; clean form toolbar `newRec` opens [New](/var/tmp/zero-option-a-u5-profile-new2-djp3chjy/native-new.png). `LVGUESTS` picker had no New. New on a dirty form can invoke Save; refuse it. |
+| Required/default | New client marks `firstname`, `lastname`, `mobilenumber`, `profilestatuscode` required; status displays `Active` (native code unverified). Profile ID blank/read-only; `guestoptin1–4` unchecked. Server-required rules unproved. |
+| Other fields | Optional UI includes `phonenumber` (separate from mobile), `emailaddress`, title, address, nationality, DOB; `programname` displays read-only `Legacy Lifestyle`. Read-only `createdby`, `created`, `updatedby`, `updated`; full observed fields in [capture](/var/tmp/zero-option-a-u5-profile-new2-djp3chjy/probe-summary.json). |
+| Master provenance | One exact fake-profile read: `createdby=NAVAAI`, `created=10/08/2026 03:08`, `updatedby=NAVAAI`, `updated=11/02/2026 01:09` ([receipt](/tmp/u8-native-profile-20261104-771da6f1/result.json:57)). Raw HMS dates; format/timezone unverified. Account name does not identify human or process. |
+| Counterevidence | Same master has blank mobile despite current New requirement. This is one existing fake profile, not proof of historical or server validation. Picker returned 13/13 rows, including 11 identical fake names: name alone cannot select a person. |
+| Save/duplicate | `saveRec` exists; generic [client source](https://github.com/kufupa/Zero/blob/9d388ab75/docs/research/2026-11-03-option-a-deep-retro/worker-evidence.md#L1854) suggests `POST /web/base/FSGSPF.HDR?pageaction=SAVE`, not observed. `confirmnewguestprofile` handler can call Save; trigger/duplicate policy, server response and ID-return behavior unknown. Never auto-confirm. |
+| Read seam | One independent [write-fenced browser](/tmp/u8-native-profile-20261104-771da6f1/master-read.mjs): `LVGUESTS.guestid` → data-only `FSGSPF.HDR` read returned matching `pageData.values.profileid`, names and master audit; browser closed. No Save sent. This proves an existing-record read, not new-record persistence. |
+
+## 2. Minimal implementation contract — proposed, not built
+
+| Layer | Exact seam |
+|---|---|
+| Native | New `tooling/hms-cloud/guest-profile-create.mjs`: `prepareGuestProfile(input)` stages New; `commitGuestProfile(input,{previewDigest,dispatchCandidate})` restages/rechecks then gates Save; `readGuestProfile({propertyCode,nativeId})` uses a fresh session. Reuse [searchGuestProfiles/selectGuestProfile](https://github.com/kufupa/Zero/blob/9d388ab75/apps/server-pilot/tooling/hms-cloud/guest-profile.mjs#L301). |
+| Pane/API | Add `previewProfile`/`commitProfile` in [quote-workflow.ts](https://github.com/kufupa/Zero/blob/9d388ab75/apps/server-pilot/src/trpc/routes/quote-workflow.ts#L305), with `previewPaneProfile`/`commitPaneProfile` in new `src/ai/pane-profile-create.ts`; use [booking-card.tsx](https://github.com/kufupa/Zero/blob/9d388ab75/apps/mail/components/quote-workflow/booking-card.tsx#L2120) and existing WorkItem edits. Profile-write admission defaults off; reservation flag alone grants no profile authority. |
+| Dispatch | Extend [hms-dispatch-target.ts](https://github.com/kufupa/Zero/blob/9d388ab75/apps/server-pilot/src/ai/hms-dispatch-target.ts#L12) with `kind:'profile_create'` and [hms-labtest-dispatch.ts](https://github.com/kufupa/Zero/blob/9d388ab75/apps/server-pilot/src/ai/hms-labtest-dispatch.ts#L18) with profile intent/resolution/recovery: no guest ID before Save; resolution requires native profile ID, not stay confirmation. Existing create target requires arrival; existing claim requires ID and `nativeCreateSaveDigest` is `OSRESV`-specific. |
+| Reservation | On verified ID, populate `createSelection.nativeGuestId`; [mapPaneStayToCloudCreateInput](https://github.com/kufupa/Zero/blob/9d388ab75/apps/server-pilot/src/ai/pane-create-cloud-input.ts#L45) supplies `guest.profileId`; existing `previewPaneCloud`/`commitPaneCloud` independently search/select and require separate review/Go. Profile survives reservation failure. |
+
+Input: `{workItemId,source:{messageId,threadId,sourceHash},identity:{stayId,rowId,roomIndex},guest:{firstName,lastName,mobile,email?},draftRevision,createDistinctCandidateDigest?}`; server binds HRCEN, transport, actor, session and access. Prepare → `needs_input{missing}` / `candidates{matches,coverage,candidateDigest}` / `ready{businessFields,previewDigest}` / `unavailable`; server seals candidate preimage. Go → `verified{nativeGuestId,readback}` / `review_required` / `not_dispatched` / `unknown{holdId}`.
+State: `editing → candidates|ready → dispatching → verified|unknown`; grant digests profile fields and source, not whole stay. Identity/contact/source edits invalidate approval; date edits do not change profile lock. Rebuild HMS staging on Go; no browser handle survives Prepare.
+Duplicates: run correlated, complete current searches; one filter at a time invalidates previous `searchId`. `phonenumber` search is not proven to cover `mobilenumber`. Incomplete/truncated/error ≠ no match. Staff chooses existing ID or explicitly confirms distinct people; server binds that choice to its candidate digest. Changed candidates → renewed review. Prompt after possible dispatch stays UNKNOWN; never automatic second Save.
+Concurrency: lock normalized `(HRCEN,profile_name,first,last)` plus reliable normalized mobile alias when available, in sorted order; no arrival/work-item key. Shared phone serializes, never proves same person. Different spelling/phone representations can evade aliases; native recheck and staff review remain necessary.
+Go captures target epoch before duplicate recheck; at paused native request atomically recheck epoch, approved business fields, source/session/access, consume one-use Go and claim durable identity hold; continue once after commit. No network in DB transaction; no whole-body/key-count pinning.
+UNKNOWN: keep hold; a proven Save response identifying a new ID outside complete preimage plus fresh exact-ID read matching reviewed fields resolves. If ID lost, compare complete fresh candidates with preimage, but a new matching name/contact alone cannot prove this dispatch; staff reconcile. Retry only after positive never-dispatched proof and writer quiescence.
+
+## 3. Guest data and next checkpoint
+
+| Field | Permitted source |
+|---|---|
+| Name/status/audit | Guest-attributed email/attachment or staff edit for name; selected HMS ID must match. Verify native Active default; keep consent unchecked until supported and explicit. HMS supplies master ID/audit; Guest Details/Record View are stay views and PDFs lack master-audit proof. |
+| Mobile/email | Explicit guest-attributed email/attachment or staff edit; verified exact master supplies a staff-selected existing profile. Otherwise ask staff. Never infer guest mobile from booker/agency contact. Current [extraction schema](https://github.com/kufupa/Zero/blob/9d388ab75/apps/server-pilot/src/ai/extraction/schema.ts#L56) has top-level contact and guest names, no guest-specific mobile/email; extend attributed guest fields and existing stable WorkItem edits. |
+
+**Next checkpoint:** under a later scope permitting Save, use one owner-authorized distinguishable fake Labtest profile; capture guarded FSGSPF Save, prompts and server response, then fresh exact-ID readback if ID returned. A complete Save proves sufficiency, not which fields the server requires. No blind retry if uncertain. **95 threshold not met** for native creation; Save, duplicate and server-required semantics remain open. Local captures/source + one live read; no tests/build/deploy/DB mutation; model cost unavailable.
