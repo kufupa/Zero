@@ -2,7 +2,9 @@ import { Fragment } from 'react';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { isMultiStay, requestedQuoteKeys } from '@/lib/quote-workflow/session';
-import type { QuoteSession } from '@/lib/quote-workflow/types';
+import type { QuoteSession, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
+import type { WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
+import type { PartyEvidence } from './contextual-rate-check';
 import { appliedSavedStayIds, BookingCards, SavedStayReceipt, type SavedStayCommit } from './booking-card';
 import { saveConfirmationDefault, useConfirmationSources, type ConfirmationSetting } from './confirmation-recipient';
 import { guestEditorKeyFor, stayingGuestName } from './quote-people-step';
@@ -15,6 +17,9 @@ export function QuoteBookingHost({
   savedStays,
   screenshot,
   propertyCode,
+  rateCatalogue,
+  workItemPane,
+  rateEvidence,
   onSaveDefault,
 }: {
   session: QuoteSession;
@@ -25,6 +30,9 @@ export function QuoteBookingHost({
   /** Reads a stored screenshot when Book writes are off. */
   screenshot?: PaneStayClient['screenshot'] | null;
   propertyCode?: string | null;
+  rateCatalogue?: RatePlanCatalogueEntry[];
+  workItemPane?: WorkItemPaneControls | null;
+  rateEvidence?: PartyEvidence;
   onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
 }) {
   const confirmation = useConfirmationSources();
@@ -36,6 +44,8 @@ export function QuoteBookingHost({
     session.binding?.selectionEpoch,
     session.binding?.scopeEpoch,
     workItemId,
+    workItemPane?.requestDraft?.snapshot?.source.extractionId,
+    workItemPane?.historyEpoch,
   ]);
 
   const shownDrafts = requestedQuoteKeys(session.groups).filter((key) => session.bookingDrafts[key]);
@@ -66,6 +76,9 @@ export function QuoteBookingHost({
               guestEditorKey={guestEditorKeyFor(session)}
               session={session}
               propertyCode={propertyCode}
+              rateCatalogue={rateCatalogue}
+              workItemPane={workItemPane}
+              rateEvidence={rateEvidence}
               confirmation={confirmation}
               onSaveDefault={onSaveDefault ?? saveConfirmationDefault}
             />

@@ -3158,9 +3158,9 @@ describe('NavaPane', () => {
     const amendment = bridgeMockState.analysisOverride?.amendment as { requestedDeparture?: string } | undefined;
     bridgeMockState.storedWork = { ...STORED_AMENDMENT,
       analysis: { ...STORED_AMENDMENT.analysis, amendment },
-      draftContractVersion: 1, revisionSeq: 0,
+      draftContractVersion: 1, revisionSeq: 0, workItemExtractionId: 'ex-amendment',
       source: { threadId: 'thread-1', messageId: 'mail-1', sourceHash: 'ab'.repeat(32), extractionId: 'ex-amendment' },
-      draftFieldMeta: {}, workflowRequests: [{ requestId: 'b'.repeat(64), stayId: 'stay-1', fields: { kind: 'amend', value: {
+      draftFieldMeta: {}, workflowRequests: [{ requestId: 'b'.repeat(64), stayId: 'stay-1', action: 'amend', workflow: 'amend', status: 'pending', fields: { kind: 'amend', value: {
         target: { confirmation: '77945494-1', arrival: '2026-10-17' }, arrival: null,
         departure: amendment?.requestedDeparture ?? null, adults: null, children: null, childAges: null,
         roomType: null, ratePlan: null, retainRates: null, firstName: null, lastName: null, guestEmail: null,
@@ -3224,7 +3224,7 @@ describe('NavaPane', () => {
     fireEvent.change(within(card).getByLabelText('Rate plan'), { target: { value: 'CORP' } });
     await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalledTimes(2), { timeout: 4000 });
     expect(bridgeMockState.recordEvent).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      fieldPath: 'stays[stay-1].totalAdults', value: 3, expectedSeq: 0,
+      fieldPath: 'stays[stay-1].totalAdults', value: 3, expectedSeq: 0, expectedExtractionId: 'ex-amendment',
       source: { threadId: 'thread-1', messageId: 'mail-1', sourceHash: 'ab'.repeat(32) },
     }));
     expect(bridgeMockState.recordEvent).toHaveBeenNthCalledWith(2, expect.objectContaining({
@@ -3241,7 +3241,7 @@ describe('NavaPane', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Check rates in HMS' }));
     await waitFor(() => expect(rates).toHaveBeenCalledWith(expect.objectContaining({ kind: 'start', binding: {
       workItemId: 'wi-amendment', source: { threadId: 'thread-1', messageId: 'mail-1', sourceHash: 'ab'.repeat(32) },
-      request: { requestId: 'b'.repeat(64), stayId: 'stay-1', rowId: null, roomIndex: null }, expectedSeq: 3,
+      request: { requestId: 'b'.repeat(64), stayId: 'stay-1', rowId: null, roomIndex: null }, expectedSeq: 3, expectedExtractionId: 'ex-amendment',
     } }), { context: { activeTransportId: 'transport-1' } }));
     expect((await screen.findByRole('list', { name: 'Rates from HMS' }, { timeout: 7000 })).textContent).toContain('ZAR 1250.00 estimated per night');
     expect(rates).toHaveBeenCalledWith(expect.objectContaining({ kind: 'read', jobId: 'rate-job' }),

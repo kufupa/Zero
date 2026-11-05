@@ -6,6 +6,7 @@ import {
   quoteAnalysisOf,
   workItemsFromTrpc,
   type ContactField,
+  type AmendDraftSource,
   type AmendDraftSnapshot,
   type MailSourceSelection,
   type RecordFieldEventInput,
@@ -15,6 +16,7 @@ import {
   type StoredWork,
 } from './backend-bind';
 import type { QuoteAnalysis, QuoteBoard, StayGroupRequirement } from './types';
+import type { useRequestWorkItem } from './use-request-work-item';
 
 /**
  * The pane's stored read for the selected mail (U4). Ready shows the stored analysis with no model call. Reading is a
@@ -91,6 +93,7 @@ type FieldSend = {
   path: string;
   value: RecordFieldEventInput['value'];
   msSinceOpen: number;
+  source?: AmendDraftSource;
 };
 type PendingEvent = FieldSend & { timer: ReturnType<typeof setTimeout> };
 export type FieldEvent = { path: string; value: RecordFieldEventInput['value'] };
@@ -103,18 +106,31 @@ export type WorkItemHistoryCursor = { revision: number; revisionHead: number };
 export type WorkItemPaneControls = {
   fieldProvenance: WorkItemProvenanceMap;
   refs: Record<string, { stayId: string; rowId: string | null }>;
+  requestDraft?: ReturnType<typeof useRequestWorkItem>;
+  rateDraft?: {
+    snapshot: AmendDraftSnapshot;
+    trpc: unknown;
+    transportId: string;
+    flush: () => Promise<{ seq: number; revision: number; revisionHead: number } | null>;
+    onSave: (cursor: { seq: number; revision: number; revisionHead: number }) => void;
+  };
   onResetContact?: () => void;
   onResetStay?: (stayId: string) => void;
   resetPending?: boolean;
+  historyBusy?: boolean;
+  historyEpoch?: number;
+  bindingCursor?: { seq: number; extractionId: string } | null;
+  editGeneration?: number;
+  bindingPending?: boolean;
 };
 
-type HistorySeqCursor = WorkItemHistoryCursor & { seq: number };
+type HistorySeqCursor = WorkItemHistoryCursor & { seq: number; extractionId?: string | null };
 type HistoryMutate = (
-  input: { workItemId: string; expectedSeq: number },
+  input: { workItemId: string; expectedSeq: number; expectedExtractionId?: string },
   opts?: ReturnType<typeof inMailbox>,
 ) => Promise<unknown>;
 type ResetMutate = (
-  input: { workItemId: string; section: WorkItemSection },
+  input: { workItemId: string; section: WorkItemSection; expectedSeq?: number; expectedExtractionId?: string },
   opts?: ReturnType<typeof inMailbox>,
 ) => Promise<unknown>;
 type CursorQuery = (
@@ -405,6 +421,7 @@ export function useStoredWork(args: {
   // Every save slot she edited on this screen. A save still pending, failed or retrying has not reached the server yet,
   // so its field is never sent as an accept.
   const edited = useRef(new Set<string>());
+  const editGeneration = useRef(new Map<string, number>());
   const [saveFailed, setSaveFailed] = useState(false);
   // The work item whose translation is being asked for again, so "Translating…" shows for that mail only.
   const [translating, setTranslating] = useState<string | null>(null);
@@ -414,6 +431,7 @@ export function useStoredWork(args: {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyNeedsReload, setHistoryNeedsReload] = useState(false);
   const [cursorEpoch, setCursorEpoch] = useState(0);
+  const [structureEpoch, setStructureEpoch] = useState(0);
   const [amendRebinding, setAmendRebinding] = useState(false);
   const trpcRef = useRef(trpc);
   const lookupKeyRef = useRef(lookupKey);
@@ -438,6 +456,8 @@ export function useStoredWork(args: {
           fieldPath: entry.path,
           value: entry.value,
           msSinceOpen: entry.msSinceOpen,
+          ...(entry.source ? { source: { threadId: entry.source.threadId, messageId: entry.source.messageId,
+            sourceHash: entry.source.sourceHash }, expectedExtractionId: entry.source.extractionId } : {}),
         };
         const pinned = inMailbox(entry.transportId);
         await (pinned ? recordEvent.mutate(input, pinned) : recordEvent.mutate(input));
@@ -477,6 +497,7 @@ export function useStoredWork(args: {
           path: entry.path,
           value: entry.value,
           msSinceOpen: entry.msSinceOpen,
+          source: entry.source,
         },
         false,
       );
@@ -506,7 +527,8 @@ export function useStoredWork(args: {
   }, []);
 
   const schedule = useCallback(
-    (path: string, workItemId: string, transportId: string | null, value: RecordFieldEventInput['value']) => {
+    (path: string, workItemId: string, transportId: string | null, value: RecordFieldEventInput['value'], source?: AmendDraftSource) => {
+      editGeneration.current.set(workItemId, (editGeneration.current.get(workItemId) ?? 0) + 1);
       const key = saveKey(workItemId, path);
       edited.current.add(key);
       const existing = pending.current.get(key);
@@ -518,7 +540,7 @@ export function useStoredWork(args: {
       const elapsed = Math.round(Date.now() - readyAt.current);
       const msSinceOpen = existing?.msSinceOpen ?? Math.min(MAX_MS_SINCE_OPEN, Math.max(0, elapsed));
       const timer = setTimeout(() => send(key), WORK_EVENT_DEBOUNCE_MS);
-      pending.current.set(key, { workItemId, transportId, path, value, msSinceOpen, timer });
+      pending.current.set(key, { workItemId, transportId, path, value, msSinceOpen, source, timer });
     },
     [send],
   );
@@ -582,7 +604,7 @@ export function useStoredWork(args: {
   else if (stored?.status === 'ready') {
     pane = {
       state: 'ready',
-      analysis: quoteAnalysisOf(stored.analysis),
+      analysis: quoteAnalysisWithSavedRates(stored),
       kind: stored.kind,
       existingStayInformation: stored.existingStayInformation === true,
       separateAsk: stored.separateAsk ?? null,
@@ -616,6 +638,42 @@ export function useStoredWork(args: {
   const readyRefs = stored?.status === 'ready' ? stored.refs : null;
   const readyWorkItemId = stored?.status === 'ready' ? stored.workItemId : null;
   const readyTransportId = currentLookup?.transportId ?? null;
+  const draftRef = useRef<AmendDraftSnapshot | null>(null);
+  draftRef.current = pane.state === 'ready' ? pane.amendDraft ?? null : null;
+
+  /** Wait for the visible stay/contact edits and bind the next operation to their exact revision. */
+  const flushSnapshot = useCallback(async (draft: AmendDraftSnapshot, transportId: string, visible = false) => {
+    if (visible && (!readyWorkItemId || draft.workItemId !== readyWorkItemId || !lookupKey ||
+        readyTransportId !== transportId || historyPending || historyNeedsReload)) return null;
+    const keyNow = lookupKey;
+    const generation = editGeneration.current.get(draft.workItemId) ?? 0;
+    const active = () => {
+      const current = draftRef.current;
+      return (editGeneration.current.get(draft.workItemId) ?? 0) === generation && (!visible ||
+        (lookupKeyRef.current === keyNow && current?.workItemId === draft.workItemId &&
+        JSON.stringify(current.source) === JSON.stringify(draft.source)));
+    };
+    const hasUnsettled = () => [...pending.current.values(), ...latest.current.values(), ...failed.current.values()]
+      .some((entry) => entry.workItemId === draft.workItemId);
+    flushAll();
+    await Promise.allSettled([...inFlight.current.entries()]
+      .filter(([key]) => key.startsWith(`${draft.workItemId}\n`)).map(([, run]) => run));
+    if (!active() || hasUnsettled()) return null;
+    const query = historyRoutesFrom(trpcRef.current).revisionCursor?.query;
+    if (!query) return null;
+    try {
+      const pinned = inMailbox(transportId);
+      const cursor = await (pinned ? query({ workItemId: draft.workItemId }, pinned) : query({ workItemId: draft.workItemId }));
+      if (!active() || hasUnsettled() || cursor.extractionId !== draft.source.extractionId ||
+          !Number.isSafeInteger(cursor.seq) || cursor.seq < 0 ||
+          !Number.isSafeInteger(cursor.revision) || !Number.isSafeInteger(cursor.revisionHead)) return null;
+      return cursor;
+    } catch { return null; }
+  }, [flushAll, historyNeedsReload, historyPending, lookupKey, readyTransportId, readyWorkItemId]);
+  const flushForBinding = useCallback(() => {
+    const draft = draftRef.current;
+    return draft && readyTransportId ? flushSnapshot(draft, readyTransportId, true) : Promise.resolve(null);
+  }, [flushSnapshot, readyTransportId]);
 
   const retry = useCallback(() => {
     if (!lookupKey) return;
@@ -658,10 +716,11 @@ export function useStoredWork(args: {
         );
       }
       for (const event of events) {
-        schedule(event.path, readyWorkItemId, readyTransportId, event.value);
+        schedule(event.path, readyWorkItemId, readyTransportId, event.value, stored?.status === 'ready' ? stored.source : undefined);
       }
+      if (events.some((event) => /\.(removed|count)$/.test(event.path))) setStructureEpoch((n) => n + 1);
     },
-    [historyNeedsReload, historyPending, lookupKey, readyRefs, readyWorkItemId, readyTransportId, schedule],
+    [historyNeedsReload, historyPending, lookupKey, readyRefs, readyWorkItemId, readyTransportId, schedule, stored],
   );
 
   /** Logs one contact edit as a `contact.<field>` event. Nothing is logged until the mail has a stored read. */
@@ -681,9 +740,9 @@ export function useStoredWork(args: {
           : prev,
       );
       if (!readyWorkItemId) return;
-      schedule(`contact.${field}`, readyWorkItemId, readyTransportId, value);
+      schedule(`contact.${field}`, readyWorkItemId, readyTransportId, value, stored?.status === 'ready' ? stored.source : undefined);
     },
-    [historyNeedsReload, historyPending, lookupKey, readyWorkItemId, readyTransportId, schedule],
+    [historyNeedsReload, historyPending, lookupKey, readyWorkItemId, readyTransportId, schedule, stored],
   );
 
   /**
@@ -759,9 +818,13 @@ export function useStoredWork(args: {
   }, [internetMessageId, lookupKey, readyTransportId]);
 
   // A conflict reload updates the projection without remounting an editor containing unsent input.
-  const reloadAmendDraft = useCallback(async (expected: AmendDraftSnapshot, transportId: string): Promise<AmendDraftSnapshot | null> => {
+  const reloadAmendDraft = useCallback(async (expected: AmendDraftSnapshot, transportId: string,
+    allowRemoved = false): Promise<AmendDraftSnapshot | null> => {
     const getByMessage = workItemsFromTrpc(trpcRef.current).getByMessage;
     if (!getByMessage || !internetMessageId || !lookupKey) return null;
+    const visible = draftRef.current;
+    if (!visible || visible.workItemId !== expected.workItemId ||
+        JSON.stringify(visible.source) !== JSON.stringify(expected.source)) return null;
     const pinned = inMailbox(transportId);
     const input = { internetMessageId, ...(selection ? { selection } : {}) };
     const result = await (pinned ? getByMessage.query(input, pinned) : getByMessage.query(input));
@@ -769,11 +832,27 @@ export function useStoredWork(args: {
     const snapshot = amendSnapshotOf(result);
     if (!snapshot || snapshot.workItemId !== expected.workItemId ||
         JSON.stringify(snapshot.source) !== JSON.stringify(expected.source) ||
-        !snapshot.requests.some((request) => request.requestId === expected.requests[0]?.requestId)) return snapshot;
-    setLookup((previous) => previous?.key === lookupKey ? { ...previous, result } : previous);
+        (!allowRemoved && !snapshot.requests.some((request) => request.requestId === expected.requests[0]?.requestId))) return snapshot;
+    setLookup((previous) => previous?.key === lookupKey ? { ...previous, result: result.status === 'ready' &&
+      previous.result?.status === 'ready' ? { ...result, refs: { ...previous.result.refs, ...result.refs } } : result } : previous);
     setCursorEpoch((n) => n + 1);
     return snapshot;
   }, [internetMessageId, lookupKey, selection]);
+
+  // Re-project added rows and room counts once their structural edits are durable.
+  useEffect(() => {
+    if (!structureEpoch || !readyTransportId) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      const draft = draftRef.current;
+      if (!draft) return;
+      void flushSnapshot(draft, readyTransportId, true).then((cursor) => {
+        if (cursor && !cancelled) return reloadAmendDraft(draft, readyTransportId, true);
+        return null;
+      }).catch(() => undefined);
+    }, 850);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [structureEpoch, lookupKey, readyTransportId, flushSnapshot, reloadAmendDraft]);
 
   const reloadRefreshedAmend = useCallback(async (expected: AmendDraftSnapshot, transportId: string,
     extractionId: string, isCurrent: () => boolean): Promise<boolean> => {
@@ -792,7 +871,10 @@ export function useStoredWork(args: {
 
   const historyRoutes = historyRoutesFrom(trpc);
   const historyAvailable = Boolean(readyWorkItemId && historyRoutes.undoRevision && historyRoutes.redoRevision);
-  const resetAvailable = Boolean(readyWorkItemId && historyRoutes.resetSection);
+  const needsSourceGuard = stored?.status === 'ready' && stored.draftContractVersion === 1;
+  const historySourceMatches = !needsSourceGuard || Boolean(draftRef.current && historyCursor &&
+    historyCursor.extractionId === draftRef.current.source.extractionId);
+  const resetAvailable = Boolean(readyWorkItemId && historyRoutes.resetSection && historySourceMatches);
 
   useEffect(() => {
     setHistoryEpoch(0);
@@ -836,13 +918,20 @@ export function useStoredWork(args: {
     (mutate: HistoryMutate | undefined, message: string) => {
       const seq = historyCursor?.seq;
       if (!readyWorkItemId || !mutate || seq === undefined) return;
+      const expectedExtractionId = draftRef.current?.source.extractionId;
+      if (stored?.status === 'ready' && stored.draftContractVersion === 1 &&
+          (!expectedExtractionId || historyCursor?.extractionId !== expectedExtractionId)) {
+        setHistoryError(HISTORY_STALE_COPY);
+        return;
+      }
       const keyNow = lookupKey;
       setHistoryPending(true);
       setHistoryError(null);
       setHistoryNeedsReload(false);
       dropQueuedSaves();
       const pinned = inMailbox(readyTransportId);
-      const input = { workItemId: readyWorkItemId, expectedSeq: seq };
+      const input = { workItemId: readyWorkItemId, expectedSeq: seq,
+        ...(expectedExtractionId ? { expectedExtractionId } : {}) };
       void Promise.allSettled(inFlight.current.values())
         .then(() => {
           if (lookupKeyRef.current !== keyNow) return;
@@ -857,7 +946,9 @@ export function useStoredWork(args: {
           }
           if (result && typeof result === 'object' && 'seq' in result) {
             const next = result as HistorySeqCursor;
-            if (Number.isSafeInteger(next.revision) && Number.isSafeInteger(next.seq)) setHistoryCursor(next);
+            if (Number.isSafeInteger(next.revision) && Number.isSafeInteger(next.seq)) {
+              setHistoryCursor({ ...next, extractionId: next.extractionId ?? expectedExtractionId });
+            }
           }
           return refetchStored();
         })
@@ -868,7 +959,7 @@ export function useStoredWork(args: {
           setHistoryPending(false);
         });
     },
-    [dropQueuedSaves, historyCursor, lookupKey, readyWorkItemId, readyTransportId, refetchStored],
+    [dropQueuedSaves, historyCursor, lookupKey, readyWorkItemId, readyTransportId, refetchStored, stored],
   );
 
   const undo = useCallback(
@@ -889,13 +980,19 @@ export function useStoredWork(args: {
     (section: WorkItemSection) => {
       const mutate = historyRoutesFrom(trpcRef.current).resetSection?.mutate;
       if (!readyWorkItemId || !mutate) return;
+      const expectedExtractionId = draftRef.current?.source.extractionId;
+      if (needsSourceGuard && (!expectedExtractionId || !historyCursor || historyCursor.extractionId !== expectedExtractionId)) {
+        setHistoryError(HISTORY_STALE_COPY);
+        return;
+      }
       const keyNow = lookupKey;
       setHistoryPending(true);
       setHistoryError(null);
       setHistoryNeedsReload(false);
       dropQueuedSaves(section);
       const pinned = inMailbox(readyTransportId);
-      const input = { workItemId: readyWorkItemId, section };
+      const input = { workItemId: readyWorkItemId, section,
+        ...(expectedExtractionId && historyCursor ? { expectedSeq: historyCursor.seq, expectedExtractionId } : {}) };
       void Promise.allSettled(inFlight.current.values())
         .then(() => {
           if (lookupKeyRef.current !== keyNow) return;
@@ -917,7 +1014,7 @@ export function useStoredWork(args: {
           setHistoryPending(false);
         });
     },
-    [dropQueuedSaves, lookupKey, readyWorkItemId, readyTransportId, refetchStored],
+    [dropQueuedSaves, historyCursor, lookupKey, needsSourceGuard, readyWorkItemId, readyTransportId, refetchStored],
   );
 
   const reloadHistory = useCallback(() => {
@@ -941,19 +1038,25 @@ export function useStoredWork(args: {
     amendRebinding,
     recordGroups,
     recordContact,
+    flushForBinding,
+    flushSnapshot,
     reloadAmendDraft,
     reloadRefreshedAmend,
     noteAmendSave: (cursor: HistorySeqCursor) => setHistoryCursor((previous) =>
-      previous && previous.seq > cursor.seq ? previous : cursor),
+      previous && previous.seq > cursor.seq ? previous : { ...cursor,
+        extractionId: cursor.extractionId ?? draftRef.current?.source.extractionId }),
     acceptUnedited,
     retryTranslation,
     translationBusy: translating !== null && translating === readyWorkItemId,
     saveFailed,
     retrySave,
     historyEpoch,
-    historyCursor: historyCursor
+    historyCursor: historyCursor && historySourceMatches
       ? { revision: historyCursor.revision, revisionHead: historyCursor.revisionHead }
       : null,
+    bindingCursor: historyCursor && historySourceMatches && historyCursor.extractionId
+      ? { seq: historyCursor.seq, extractionId: historyCursor.extractionId } : null,
+    editGeneration: readyWorkItemId ? editGeneration.current.get(readyWorkItemId) ?? 0 : 0,
     historyPending,
     historyError,
     historyNeedsReload,
@@ -969,9 +1072,29 @@ export function useStoredWork(args: {
 function amendSnapshotOf(stored: StoredWork): AmendDraftSnapshot | null {
   if (stored.status !== 'ready' || stored.draftContractVersion !== 1 || !stored.workItemId ||
       !stored.source || !Array.isArray(stored.workflowRequests) || !Number.isSafeInteger(stored.revisionSeq) ||
+      stored.workItemExtractionId !== stored.source.extractionId ||
       (stored.revisionSeq ?? -1) < 0) return null;
   return { workItemId: stored.workItemId, source: stored.source, revisionSeq: stored.revisionSeq!,
     requests: stored.workflowRequests, fieldMeta: stored.draftFieldMeta ?? {} };
+}
+
+/** Restore an explicitly saved per-row quote rate after reopening or undo/redo. */
+function quoteAnalysisWithSavedRates(stored: Extract<StoredWork, { status: 'ready' }>): QuoteAnalysis {
+  const analysis = quoteAnalysisOf(stored.analysis);
+  const snapshot = amendSnapshotOf(stored);
+  if (!snapshot) return analysis;
+  return { ...analysis, groups: analysis.groups.map((group) => {
+    const ref = stored.refs[group.id];
+    if (!ref?.rowId) return group;
+    const requests = snapshot.requests.filter((request) => request.stayId === ref.stayId && request.action === 'quote_availability' &&
+      request.workflow === 'quote' && request.status === 'pending' && request.fields?.kind === 'quote');
+    if (requests.length !== 1) return group;
+    const value = requests[0]?.fields?.value as { rows?: unknown } | null;
+    if (!value || !Array.isArray(value.rows)) return group;
+    const rows = value.rows.filter((row): row is { rowId: string; ratePlan: string | null } => Boolean(row && typeof row === 'object' &&
+      row.rowId === ref.rowId && (typeof row.ratePlan === 'string' || row.ratePlan === null)));
+    return rows.length === 1 ? { ...group, rateCode: rows[0]!.ratePlan ?? undefined } : group;
+  }) };
 }
 
 function withStaffPaths(stored: StoredWork, events: FieldEvent[]): StoredWork {

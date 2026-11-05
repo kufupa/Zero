@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import type {
   BookingDraftReady,
   BookingRateCheck,
   QuoteSession,
+  RatePlanCatalogueEntry,
   StaffQuoteParties,
   StaffQuoteParty,
   StayGroupRequirement,
@@ -14,13 +15,16 @@ import { HmsLinkActions } from './hms-link-actions';
 import { HmsShotsViewer, visibleStayShots, type HmsShotRecord } from './hms-shots-viewer';
 import { CopyHmsNotesButton, hmsNotesBlock } from './rate-controls';
 import { rowRoomLabel } from '@/lib/quote-workflow/room-types';
-import type { StoredContact, StoredStayCommit } from '@/lib/quote-workflow/backend-bind';
+import type { RecordFieldEventInput, StoredContact, StoredStayCommit } from '@/lib/quote-workflow/backend-bind';
+import type { WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
+import { ContextualRateCheck, type PartyEvidence } from './contextual-rate-check';
 import { recalledGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import { subscribeStayingGuestName } from './quote-people-step';
 import { usePaneStayPreview } from './use-pane-stay-preview';
 import {
   commitOutcome,
+  PANE_BOOKER_EMAIL_MAX,
   PANE_BOOKER_NAME_MAX,
   PANE_CMS_MISMATCH_COPY,
   PANE_COMMIT_UNREACHABLE_COPY,
@@ -87,6 +91,45 @@ const RATE_CHECK_REASON_COPY: Record<string, string | undefined> = {
 
 function textValue(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+
+/** Search labels locally; only an explicit code selection becomes the booking rate. */
+function CloudRatePicker({ value, plans, disabled, onChange }: {
+  value: string; plans: { code: string; name: string }[]; disabled: boolean; onChange: (code: string) => void;
+}) {
+  const id = useId();
+  const [search, setSearch] = useState(value);
+  const [open, setOpen] = useState(false);
+  useEffect(() => { if (!open) setSearch(value); }, [value, open]);
+  const input = search.trim();
+  const code = input.toUpperCase();
+  const exact = plans.find((plan) => plan.code.toUpperCase() === code);
+  const matches = plans.filter((plan) => `${plan.code} ${plan.name}`.toLocaleLowerCase().includes(input.toLocaleLowerCase()));
+  const select = (selected: string) => { setSearch(selected); setOpen(false); onChange(selected); };
+  return <div className="flex flex-col gap-1" onBlur={(event) => {
+    if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+  }}>
+    <label htmlFor={id} className="text-xs font-semibold text-[#475569]">Rate plan</label>
+    <input id={id} aria-label="Rate plan" aria-expanded={open} aria-controls={`${id}-rates`}
+      className={paneFieldClass} disabled={disabled} value={search} placeholder="Search code or name"
+      onFocus={() => setOpen(true)} onChange={(event) => {
+        const next = event.target.value;
+        const found = plans.find((plan) => plan.code.toUpperCase() === next.trim().toUpperCase());
+        setSearch(next); setOpen(true); onChange(found?.code ?? '');
+      }} onKeyDown={(event) => {
+        if (event.key === 'Enter' && /^[A-Z0-9]{1,12}$/.test(code)) {
+          event.preventDefault(); select(exact?.code ?? code);
+        }
+      }} />
+    {open ? <ul id={`${id}-rates`} aria-label="Matching rate plans" className="max-h-36 overflow-y-auto rounded-sm border border-[#cbd5e1] bg-white">
+      {matches.map((plan) => <li key={plan.code}><button type="button" className="w-full px-2 py-1 text-left text-xs hover:bg-[#f1f5f9]"
+        onClick={() => select(plan.code)}>{plan.code}{plan.name && plan.name !== plan.code ? ` · ${plan.name}` : ''}</button></li>)}
+      {!exact && /^[A-Z0-9]{1,12}$/.test(code) ? <li><button type="button"
+        className="w-full px-2 py-1 text-left text-xs hover:bg-[#f1f5f9]" onClick={() => select(code)}>Use {code} as a code</button></li> : null}
+      {!matches.length && !/^[A-Z0-9]{1,12}$/.test(code) ? <li className="px-2 py-1 text-xs text-[#64748b]">No matching rate plans</li> : null}
+    </ul> : null}
+    <span className="text-[11px] text-[#64748b]">{!open && exact && exact.name !== exact.code ? `${exact.name} · ` : ''}HMS checks price and eligibility during review.</span>
+  </div>;
 }
 
 function initialSourceOfBusiness(requestSource: unknown, options: string[]): string {
@@ -255,9 +298,10 @@ const LAB_WRITE_NOTE = 'This write is test-only. Book a real guest in HMS.';
 const textareaClass =
   'outline-hidden w-full rounded-xs border border-[#cbd5e1] bg-white px-2 py-1 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
 
+type CreateGuard = { expectedSeq: number; expectedExtractionId: string };
 type PreviewView =
   | { status: 'running'; key: string; requestId: symbol }
-  | { status: 'ready'; key: string; digest: string; runId?: string; screenshots: string[]; hmsPrice?: PaneStayResult['hmsPrice'] }
+  | { status: 'ready'; key: string; digest: string; runId?: string; screenshots: string[]; hmsPrice?: PaneStayResult['hmsPrice']; createGuard?: CreateGuard; editGeneration?: number }
   | { status: 'view_only'; key: string; runId?: string; screenshots: string[]; hmsPrice?: PaneStayResult['hmsPrice'] }
   | { status: 'refused'; key: string; message: string }
   | { status: 'stale'; key: string };
@@ -840,7 +884,55 @@ type RoomChoice = {
   adults?: string;
   childAges?: string[];
   nativeGuestId?: string;
+  bookerName?: string;
+  bookerEmail?: string;
 };
+
+type CreateRoomProjection = {
+  rowId: string; roomIndex: number; firstName: string | null; lastName: string | null;
+  guestProfile: { nativeId: string; firstName: string; lastName: string } | null;
+  adults: number | null; childAges: number[] | null; roomType: string | null; ratePlan: string | null;
+  bookingAgency: { nativeId: string; name: string } | null; organization: { nativeId: string; name: string } | null;
+  sourceOfBusiness: string | null; track: string | null; guaranteeType: string | null; reservationNote: string | null;
+  bookerName: string | null; bookerEmail: string | null;
+  cms: { send: boolean | null; messageId: string | null; recipient: { mode: 'self' | 'client' | 'custom'; address: string } | null };
+};
+
+function createRoomBinding(room: BookingDraftReady['draft']['rooms'][number], groups: StayGroupRequirement[],
+  pane: WorkItemPaneControls | null | undefined, session: QuoteSession | undefined) {
+  const snapshot = pane?.requestDraft?.snapshot;
+  const source = snapshot?.source;
+  const group = roomGroupFor(room, groups);
+  const ref = pane?.refs[room.groupId] ?? (group?.stayId ? { stayId: group.stayId, rowId: group.id } : undefined);
+  const rowId = ref?.rowId ?? (ref?.stayId ? `${ref.stayId}_row` : null);
+  if (!snapshot || !source || !session?.staffSource || source.threadId !== session.staffSource.threadId ||
+      source.messageId !== session.staffSource.messageId || source.sourceHash !== session.staffSource.sourceHash ||
+      !ref || !rowId || (group?.stayId && group.stayId !== ref.stayId) || room.roomIndex < 1 || room.roomIndex > 8) return null;
+  const requests = snapshot.requests.filter((request) => request.stayId === ref.stayId && request.action === 'new_booking' &&
+    request.workflow === 'create' && request.status === 'pending' && request.fields?.kind === 'create');
+  const request = requests[0];
+  const rooms = request?.fields?.value;
+  const index = room.roomIndex - 1;
+  if (!requests.length) {
+    // Booking from an existing quote still uses the deterministic Create route and its source/revision guard.
+    const quotes = snapshot.requests.filter((item) => item.stayId === ref.stayId && item.action === 'quote_availability' &&
+      item.workflow === 'quote' && item.status === 'pending' && item.fields?.kind === 'quote');
+    const quote = quotes[0];
+    const quoteFields = quote?.fields?.value as { rows?: Array<{ rowId?: string }> } | undefined;
+    if (quotes.length !== 1 || !quote || !quoteFields?.rows?.some((row) => row.rowId === rowId)) return null;
+    const value: CreateRoomProjection = { rowId, roomIndex: index, firstName: null, lastName: null, guestProfile: null,
+      adults: null, childAges: null, roomType: null, ratePlan: null, bookingAgency: null, organization: null,
+      sourceOfBusiness: null, track: null, guaranteeType: null, reservationNote: null, bookerName: null,
+      bookerEmail: null, cms: { send: null, messageId: null, recipient: null } };
+    return { requestId: quote.requestId, rowId, roomIndex: index, prefix: `rows[${rowId}].rooms[${index}]`, value, writable: false };
+  }
+  if (requests.length !== 1 || !request || !Array.isArray(rooms)) return null;
+  const values = rooms.filter((value: unknown) => value && typeof value === 'object' &&
+    (value as { rowId?: unknown }).rowId === rowId && (value as { roomIndex?: unknown }).roomIndex === index);
+  if (values.length !== 1) return null;
+  return { requestId: request.requestId, rowId, roomIndex: index,
+    prefix: `rows[${rowId}].rooms[${index}]`, value: values[0] as CreateRoomProjection, writable: true };
+}
 
 const NO_CHOICE: RoomChoice = {
   track: '',
@@ -911,8 +1003,8 @@ function roomChoiceFor(
     ...choice,
     roomType: choice.roomType ?? roomTypeFor(room, group),
     ratePlan: choice.ratePlan ?? (textValue(group?.rateCode) || textValue(group?.quotedRateCode) || textValue(room.request.ratePlan)),
-    bookerName: contact ? textValue(contact.name) : textValue(room.request.bookerName),
-    bookerEmail: contact ? textValue(contact.email) : textValue(room.request.bookerEmail),
+    bookerName: choice.bookerName ?? (contact ? textValue(contact.name) : textValue(room.request.bookerName)),
+    bookerEmail: choice.bookerEmail ?? (contact ? textValue(contact.email) : textValue(room.request.bookerEmail)),
     ...(confirmationRecipient ? { confirmationRecipient } : {}),
   };
 }
@@ -1014,6 +1106,9 @@ export function BookingCards({
   guestEditorKey,
   session,
   propertyCode,
+  rateCatalogue = [],
+  workItemPane,
+  rateEvidence,
   confirmation,
   onSaveDefault,
 }: {
@@ -1039,6 +1134,9 @@ export function BookingCards({
   session?: QuoteSession;
   /** Active mailbox property. Unknown or missing codes fail closed (no generated note). */
   propertyCode?: string | null;
+  rateCatalogue?: RatePlanCatalogueEntry[];
+  workItemPane?: WorkItemPaneControls | null;
+  rateEvidence?: PartyEvidence;
   /**
    * Signed-in user and saved confirmation default. Without it, confirmation defaults to an
    * unresolved staff address until staff choose a recipient.
@@ -1055,6 +1153,8 @@ export function BookingCards({
   const mode: PaneSaveMode = client ? (client.mode?.() ?? 'lab') : 'off';
   const savesOn = mode !== 'off';
   const cloudPreview = Boolean(client?.canPreview?.() && propertyCode !== 'HRDAV');
+  const cloudCreate = cloudPreview || propertyCode === 'HRCEN';
+  const requireDurableCreate = cloudCreate && workItemPane !== undefined;
   const previewsOn = cloudPreview || savesOn;
   const selectedGuestName = useSyncExternalStore(
     subscribeStayingGuestName,
@@ -1070,6 +1170,16 @@ export function BookingCards({
       Object.fromEntries(
         draft.draft.rooms.map((room) => {
           const key = `${room.groupId}:${room.roomIndex}`;
+          const binding = createRoomBinding(room, groups, workItemPane, session);
+          const savedField = (field: string, projected: unknown, fallback: unknown) => {
+            if (!binding) return fallback;
+            const suffix = `${binding.prefix}.${field}`;
+            const held = workItemPane?.requestDraft?.held(binding.requestId, suffix);
+            if (held) return held.value;
+            const path = `requests[${binding.requestId}].${suffix}`;
+            return projected !== null && projected !== undefined || workItemPane?.fieldProvenance[path]?.source === 'staff'
+              ? projected : fallback;
+          };
           const names = namesFromSelectedGuest(
             readSelectedGuestName(guestEditorKey, guestName),
             room.request,
@@ -1078,25 +1188,60 @@ export function BookingCards({
           const saved = savedId ? savedStays?.[savedId] : undefined;
           const savedTarget = saved?.status === 'booked' ? saved.cloudCreateTarget : undefined;
           const existingNote = textValue(room.request.reservationNote);
+          const projected = binding?.value;
+          const firstName = textValue(savedField('firstName', projected?.firstName, savedTarget?.firstName ?? names.firstName));
+          const lastName = textValue(savedField('lastName', projected?.lastName, savedTarget?.lastName ?? names.lastName));
+          const namePath = binding ? `requests[${binding.requestId}].${binding.prefix}` : '';
+          if (binding && (workItemPane?.fieldProvenance[`${namePath}.firstName`]?.source === 'staff' ||
+            workItemPane?.fieldProvenance[`${namePath}.lastName`]?.source === 'staff' ||
+            workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.firstName`) ||
+            workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.lastName`))) guestNamesEdited.current[key] = true;
+          if (binding && (workItemPane?.fieldProvenance[`${namePath}.reservationNote`]?.source === 'staff' ||
+            workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.reservationNote`))) reservationNoteDirty.current[key] = true;
+          const agency = savedField('parties.agency', projected?.bookingAgency, null);
+          const agencyWasChosen = binding && (workItemPane?.fieldProvenance[`${namePath}.parties.agency`]?.source === 'staff' ||
+            workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.parties.agency`));
           const choice: RoomChoice = {
-            track: textValue(room.request.track),
-            sourceOfBusiness: initialSourceOfBusiness(
+            track: textValue(savedField('track', projected?.track, room.request.track)),
+            sourceOfBusiness: textValue(savedField('sourceOfBusiness', projected?.sourceOfBusiness, initialSourceOfBusiness(
               room.request.sourceOfBusiness,
               draft.options.sourceOfBusiness,
-            ),
+            ))),
             marketSegment: '',
             // Guest consent must come from an explicit staff action, never from mail or a hotel default.
             guestoptin4: false,
-            guaranteeType: textValue(room.request.guaranteeType),
-            firstName: savedTarget?.firstName ?? names.firstName,
-            lastName: savedTarget?.lastName ?? names.lastName,
-            bookingAgency: '',
-            organization: textValue(room.request.organization) || pickedName(parties?.company),
-            reservationNote: existingNote,
+            guaranteeType: textValue(savedField('guaranteeType', projected?.guaranteeType, room.request.guaranteeType)),
+            firstName,
+            lastName,
+            bookingAgency: agency && typeof agency === 'object' && 'nativeId' in agency
+              ? agency.nativeId === parties?.agency?.nativeId ? '__bound__' : '__unresolved__'
+              : agencyWasChosen ? '__none__' : '',
+            organization: textValue((() => {
+              const value = savedField('parties.organization', projected?.organization,
+                textValue(room.request.organization) || pickedName(parties?.company));
+              return value && typeof value === 'object' && 'name' in value ? value.name : value;
+            })()),
+            reservationNote: textValue(savedField('reservationNote', projected?.reservationNote, existingNote)),
           };
+          const roomType = savedField('roomTypeCode', projected?.roomType, undefined);
+          const ratePlan = savedField('ratePlan', projected?.ratePlan, undefined);
+          const adults = savedField('adults', projected?.adults, undefined);
+          const childAges = savedField('childAges', projected?.childAges, undefined);
+          if (typeof roomType === 'string' || roomType === null) choice.roomType = textValue(roomType);
+          if (typeof ratePlan === 'string' || ratePlan === null) choice.ratePlan = textValue(ratePlan);
+          if (typeof adults === 'number') choice.adults = String(adults);
+          if (typeof adults === 'string' || adults === null) choice.adults = textValue(adults);
+          if (Array.isArray(childAges)) choice.childAges = childAges.map(String);
+          if (typeof childAges === 'string') choice.childAges = childAges.split('|');
+          if (projected?.guestProfile?.nativeId) choice.nativeGuestId = projected.guestProfile.nativeId;
+          for (const field of ['bookerName', 'bookerEmail'] as const) {
+            const value = savedField(field, projected?.[field], undefined);
+            if (value !== undefined) choice[field] = textValue(value);
+          }
           const generated = generatedNoteForChoice(session, propertyCode, room, roomGroupFor(room, groups), choice);
-          choice.reservationNote = prefillReservationNote(existingNote, generated, false);
-          if (!existingNote.trim() && generated) choice.generatedReservationNote = generated;
+          const hadNote = Boolean(choice.reservationNote.trim());
+          choice.reservationNote = prefillReservationNote(choice.reservationNote, generated, reservationNoteDirty.current[key] === true);
+          if (!hadNote && generated && !reservationNoteDirty.current[key]) choice.generatedReservationNote = generated;
           return [key, choice];
         }),
       ),
@@ -1137,45 +1282,77 @@ export function BookingCards({
   const partialCloudRoomsRef = useRef(new Set<string>());
   const cloudApprovalEpoch = useRef<Record<string, number>>({});
   const cloudFreshPreviews = useRef<Record<string, { key: string; epoch: number }>>({});
+  const createRevision = { cursor: workItemPane?.bindingCursor ?? null, editGeneration: workItemPane?.editGeneration ?? 0,
+    pending: Boolean(workItemPane?.requestDraft?.pending || workItemPane?.bindingPending) };
+  const createRevisionRef = useRef(createRevision);
+  createRevisionRef.current = createRevision;
   const options = draft.options as BookingOptions;
   const cmsOptions = options.cmsMessageIds?.length ? options.cmsMessageIds : CMS_FALLBACK;
-  const [sendConfirmation, setSendConfirmation] = useState(true);
+  const cmsBindings = draft.draft.rooms.map((room) => createRoomBinding(room, groups, workItemPane, session));
+  const allCmsBound = cmsBindings.length > 0 && cmsBindings.every(Boolean);
+  const cmsValues = (field: 'send' | 'messageId' | 'recipient') => cmsBindings.map((binding) => {
+    if (!binding) return null;
+    const held = workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.cms.${field}`);
+    return held ? held.value : binding.value.cms?.[field] ?? null;
+  });
+  const initialCmsValues = { send: cmsValues('send'), messageId: cmsValues('messageId'), recipient: cmsValues('recipient') };
+  const commonCms = (values: unknown[]) => values.length && values.every((value) => JSON.stringify(value) === JSON.stringify(values[0]))
+    ? values[0] : null;
+  const mixedCms = (values: unknown[]) => allCmsBound && new Set(values.map((value) => JSON.stringify(value))).size > 1;
+  const savedCmsSend = commonCms(initialCmsValues.send);
+  const savedCmsMessage = commonCms(initialCmsValues.messageId);
+  const rawCmsRecipient = commonCms(initialCmsValues.recipient);
+  const savedCmsRecipient = rawCmsRecipient && typeof rawCmsRecipient === 'object' && 'mode' in rawCmsRecipient &&
+    (rawCmsRecipient.mode === 'self' || rawCmsRecipient.mode === 'client' || rawCmsRecipient.mode === 'custom') &&
+    'address' in rawCmsRecipient && typeof rawCmsRecipient.address === 'string'
+    ? rawCmsRecipient as { mode: ConfirmationMode; address: string } : null;
+  const [cmsMixed, setCmsMixed] = useState(() => ({ send: mixedCms(initialCmsValues.send),
+    messageId: mixedCms(initialCmsValues.messageId), recipient: mixedCms(initialCmsValues.recipient) }));
+  const [sendConfirmation, setSendConfirmation] = useState(typeof savedCmsSend === 'boolean' ? savedCmsSend : true);
   const labtestOnly = draft.draft.rooms.length > 0 && draft.draft.rooms.every((room) => {
     const choice = choices[`${room.groupId}:${room.roomIndex}`];
     return textValue(choice?.firstName).trim().toLowerCase() === 'proof' && textValue(choice?.lastName).trim().toLowerCase() === 'labtest';
   });
   const sendHmsConfirmation = labtestOnly ? false : sendConfirmation;
-  const [chosenCmsMessage, setChosenCmsMessage] = useState<string | null>(null);
+  const [chosenCmsMessage, setChosenCmsMessage] = useState<string | null>(typeof savedCmsMessage === 'string' ? savedCmsMessage : null);
   const hasBoundParty = Boolean(pickedName(parties?.agency) || pickedName(parties?.company));
   const defaultCmsMessage = hasBoundParty ? (options.cmsDefaults?.agency ?? '03') : (options.cmsDefaults?.guest ?? '01');
   const cmsMessage = chosenCmsMessage ?? defaultCmsMessage;
   const contextConfirmation = useConfirmationSources();
   const sources = confirmation === undefined ? contextConfirmation : confirmation;
-  const [recipientMode, setRecipientMode] = useState<ConfirmationMode>(sources?.setting?.mode ?? 'self');
+  const [recipientMode, setRecipientMode] = useState<ConfirmationMode>(savedCmsRecipient?.mode ?? sources?.setting?.mode ?? 'self');
   const [customAddress, setCustomAddress] = useState(
-    sources?.setting?.mode === 'custom' ? (sources.setting.address ?? '') : '',
+    savedCmsRecipient?.mode === 'custom' ? savedCmsRecipient.address :
+      sources?.setting?.mode === 'custom' ? (sources.setting.address ?? '') : '',
   );
-  const [staffChose, setStaffChose] = useState(false);
+  const [staffChose, setStaffChose] = useState(Boolean(savedCmsRecipient));
   const [defaultSaved, setDefaultSaved] = useState(false);
   const [defaultError, setDefaultError] = useState<string | null>(null);
   const [savingDefault, setSavingDefault] = useState(false);
   const saveGeneration = useRef(0);
-  const staffChoseRef = useRef(false);
+  const staffChoseRef = useRef(Boolean(savedCmsRecipient));
   const signedInUserId = sources?.userId ?? '';
   const signedInMailbox = sources?.mailbox ?? '';
   const scopeKey = confirmationScopeKey(signedInUserId, signedInMailbox);
   const scopeRef = useRef({ userId: signedInUserId, mailbox: signedInMailbox });
   scopeRef.current = { userId: signedInUserId, mailbox: signedInMailbox };
+  const lastConfirmationIdentity = useRef({ userId: signedInUserId, mailbox: signedInMailbox });
   const [seenScope, setSeenScope] = useState(`${scopeKey}\0${sources?.userEmail ?? ''}`);
   if (sources && seenScope !== `${scopeKey}\0${sources.userEmail}`) {
     setSeenScope(`${scopeKey}\0${sources.userEmail}`);
-    staffChoseRef.current = false;
-    setStaffChose(false);
+    const prior = lastConfirmationIdentity.current;
+    const sameIdentity = (!prior.userId || !signedInUserId || prior.userId === signedInUserId) &&
+      (!prior.mailbox || !signedInMailbox || prior.mailbox === signedInMailbox);
+    lastConfirmationIdentity.current = { userId: signedInUserId, mailbox: signedInMailbox };
     setDefaultSaved(false);
     setDefaultError(null);
     setSavingDefault(false);
-    setRecipientMode(sources.setting?.mode ?? 'self');
-    setCustomAddress(sources.setting?.mode === 'custom' ? (sources.setting.address ?? '') : '');
+    if (!sameIdentity || !staffChoseRef.current) {
+      staffChoseRef.current = false;
+      setStaffChose(false);
+      setRecipientMode(sources.setting?.mode ?? 'self');
+      setCustomAddress(sources.setting?.mode === 'custom' ? (sources.setting.address ?? '') : '');
+    }
   }
   useEffect(() => {
     if (staffChoseRef.current || !sources?.setting) return;
@@ -1204,6 +1381,31 @@ export function BookingCards({
         invalidSetting: sources?.invalidSetting,
         staffChose,
       });
+  const recordCms = (field: 'send' | 'messageId' | 'recipient', value: Parameters<NonNullable<WorkItemPaneControls['requestDraft']>['record']>[2], valid = true) => {
+    if (!requireDurableCreate || !workItemPane?.requestDraft) return;
+    for (const binding of cmsBindings) if (binding) {
+      const previous = binding.value.cms?.[field] ?? null;
+      if (!workItemPane.requestDraft.held(binding.requestId, `${binding.prefix}.cms.${field}`) &&
+          JSON.stringify(previous) === JSON.stringify(value) && valid) continue;
+      workItemPane.requestDraft.record(binding.requestId, `${binding.prefix}.cms.${field}`, value, valid);
+    }
+  };
+  const recordRecipient = (mode: ConfirmationMode, address: string) => {
+    const selectedClientEmail = contact ? textValue(contact.email) : textValue(draft.draft.rooms[0]?.request.bookerEmail);
+    const result = resolveConfirmationRecipient({ mode, customAddress: address, userEmail: sources?.userEmail ?? '',
+      clientEmail: selectedClientEmail, invalidSetting: sources?.invalidSetting, staffChose: true });
+    const pendingAddress = mode === 'custom' ? address : mode === 'self' ? sources?.userEmail ?? '' : selectedClientEmail;
+    recordCms('recipient', result.ok ? result.recipient : { mode, address: pendingAddress }, result.ok);
+  };
+  const recipientSync = useRef('');
+  useEffect(() => {
+    if (!requireDurableCreate || !staffChose || !allCmsBound) return;
+    const key = JSON.stringify([workItemId, session?.staffSource, effectiveRecipientMode, customAddress, clientEmail, sources?.userEmail]);
+    if (recipientSync.current === key) return;
+    recipientSync.current = key;
+    recordRecipient(effectiveRecipientMode, customAddress);
+  }, [requireDurableCreate, staffChose, allCmsBound, workItemId, session?.staffSource,
+    effectiveRecipientMode, customAddress, clientEmail, sources?.userEmail]);
   useEffect(() => () => {
     stayBookingRef.current = false;
   }, []);
@@ -1225,7 +1427,10 @@ export function BookingCards({
         }
         const commitStatus = saves[key]?.commit?.status;
         if (stayBooking || commitStatus === 'running' || commitStatus === 'booked') continue;
-        if (guestNamesEdited.current[key]) continue;
+        if (!selectedGuestChanged || guestNamesEdited.current[key] || !selectedGuestName.trim()) continue;
+        const projected = createRoomBinding(room, groups, workItemPane, session)?.value;
+        if ((!guestEditorKey || recalledGuestName(guestEditorKey) === null) &&
+            (projected?.firstName != null || projected?.lastName != null)) continue;
         const names = guestSplit.ambiguous
           ? {
               firstName: textValue(room.request.firstName),
@@ -1334,13 +1539,58 @@ export function BookingCards({
     const { stayId } = input;
     const key = input.key;
     const approvalEpoch = cloudApprovalEpoch.current[roomKey] ?? 0;
+    const editGeneration = createRevisionRef.current.editGeneration;
     delete cloudFreshPreviews.current[roomKey];
     const requestId = Symbol();
     const generation = previewReceipt.begin(workItemId, stayId, inputKey);
     patchSave(roomKey, { preview: { status: 'running', key, requestId }, commit: undefined });
+    let createGuard: CreateGuard | undefined;
+    if (requireDurableCreate) {
+      const room = draft.draft.rooms.find((item) => roomKeyOf(item) === roomKey);
+      const binding = room ? createRoomBinding(room, groups, workItemPane, session) : null;
+      const queue = workItemPane?.requestDraft;
+      const profile = stay.createSelection?.nativeGuestId ? { nativeId: stay.createSelection.nativeGuestId,
+        firstName: stay.firstName, lastName: stay.lastName } : null;
+      const party = (value: PaneStayInput['bookingAgency']) => value?.nativeId ? { nativeId: value.nativeId, name: value.name } : null;
+      const values: Array<[string, unknown, RecordFieldEventInput['value'], boolean?]> = binding ? [
+        ['firstName', binding.value.firstName, stay.firstName], ['lastName', binding.value.lastName, stay.lastName],
+        ['guest.profile', binding.value.guestProfile, profile], ['adults', binding.value.adults, stay.adults, stay.adults >= 1 && stay.adults <= 9],
+        ['childAges', binding.value.childAges, stay.childAges ?? [], (stay.childAges ?? []).length <= 9],
+        ['roomTypeCode', binding.value.roomType, stay.roomType, /^[A-Z0-9]{1,12}$/.test(stay.roomType)],
+        ['ratePlan', binding.value.ratePlan, stay.ratePlan, /^[A-Z0-9]{1,12}$/.test(stay.ratePlan)],
+        ['parties.agency', binding.value.bookingAgency, party(stay.bookingAgency)],
+        ['parties.organization', binding.value.organization, party(stay.organization)],
+        ['sourceOfBusiness', binding.value.sourceOfBusiness, stay.sourceOfBusiness || null],
+        ['track', binding.value.track, stay.track || null], ['guaranteeType', binding.value.guaranteeType, stay.guaranteeType || null],
+        ['reservationNote', binding.value.reservationNote, stay.reservationNote || null],
+        ['bookerName', binding.value.bookerName, stay.bookerName || null], ['bookerEmail', binding.value.bookerEmail, stay.bookerEmail || null],
+        ['cms.send', binding.value.cms?.send, Boolean(stay.confirmationSendMail)],
+        ...(stay.confirmationSendMail ? [
+          ['cms.messageId', binding.value.cms?.messageId, stay.cmsMessageId || null] as [string, unknown, RecordFieldEventInput['value']],
+          ['cms.recipient', binding.value.cms?.recipient, stay.confirmationRecipient ?? null] as [string, unknown, RecordFieldEventInput['value']],
+        ] : []),
+      ] : [];
+      let accepted = Boolean(binding && queue);
+      if (binding?.writable && queue) for (const [field, prior, value, valid = true] of values) {
+        const suffix = `${binding.prefix}.${field}`;
+        if (queue.held(binding.requestId, suffix) || JSON.stringify(prior ?? null) !== JSON.stringify(value ?? null)) {
+          accepted = queue.record(binding.requestId, suffix, value, valid) && accepted;
+        }
+      }
+      const cursor = accepted && queue ? await queue.flush().catch(() => null) : null;
+      if (!cursor || previewInputsRef.current[roomKey]?.key !== key || createRevisionRef.current.editGeneration !== editGeneration) {
+        previewReceipt.finish(workItemId, stayId, inputKey, generation);
+        finishPreviewIfRunning(roomKey, requestId, { status: 'refused', key,
+          message: 'Save the booking details and check the selected email before previewing.' });
+        return;
+      }
+      createGuard = { expectedSeq: cursor.seq, expectedExtractionId: queue!.snapshot!.source.extractionId };
+    }
     let preview: Exclude<PreviewView, { status: 'running' }>;
     try {
-      const previewInput = workItemId ? { ...stay, stayId, workItemId } : stay;
+      const selected = createGuard && stay.createSelection ? { ...stay,
+        createSelection: { ...stay.createSelection, ...createGuard } } : stay;
+      const previewInput = workItemId ? { ...selected, stayId, workItemId } : selected;
       const result = await pane.preview(previewInput);
       if ((result.reason === 'guest_choice_required' || result.reason === 'guest_not_found') &&
           Array.isArray(result.guestCandidates) &&
@@ -1355,7 +1605,8 @@ export function BookingCards({
       preview = outcome.ok
         ? 'previewOnly' in outcome
           ? { status: 'view_only', key, runId: outcome.runId, screenshots: outcome.screenshots, hmsPrice: outcome.hmsPrice }
-          : { status: 'ready', key, digest: outcome.digest, runId: outcome.runId, screenshots: outcome.screenshots, hmsPrice: outcome.hmsPrice }
+          : { status: 'ready', key, digest: outcome.digest, runId: outcome.runId, screenshots: outcome.screenshots,
+            hmsPrice: outcome.hmsPrice, createGuard, editGeneration }
         : {
             status: 'refused',
             key,
@@ -1413,8 +1664,10 @@ export function BookingCards({
     const choice = choices[roomKeyOf(room)] ?? NO_CHOICE;
     const boundAgency = parties?.agency?.nativeId ? parties.agency : undefined;
     const boundCompany = parties?.company?.nativeId ? parties.company : undefined;
-    const unboundName = textValue(room.request.agency).trim();
-    const agencyUnresolved = choice.bookingAgency !== '__none__' && !boundAgency && Boolean(unboundName);
+    const savedAgency = createRoomBinding(room, groups, workItemPane, session)?.value.bookingAgency?.name;
+    const unboundName = textValue(savedAgency).trim() || textValue(room.request.agency).trim();
+    const agencyUnresolved = choice.bookingAgency !== '__none__' &&
+      (!boundAgency || choice.bookingAgency === '__unresolved__') && Boolean(unboundName);
     const currentEmail = currentContact ? textValue(currentContact.email) :
       staffChose && effectiveRecipientMode === 'client' ? textValue(draft.draft.rooms[0]?.request.bookerEmail) : '';
     const recipient = holdMessage ? { ok: false as const, message: holdMessage } : resolveConfirmationRecipient({
@@ -1427,7 +1680,7 @@ export function BookingCards({
       choice.reservationNote === choice.generatedReservationNote) {
       roomChoice.reservationNote = generatedNoteForChoice(session, propertyCode, room, group, choice) ?? '';
     }
-    roomChoice.bookingAgency = choice.bookingAgency === '__none__' || !boundAgency
+    roomChoice.bookingAgency = choice.bookingAgency === '__none__' || choice.bookingAgency === '__unresolved__' || !boundAgency
       ? undefined : { name: boundAgency.name, nativeId: boundAgency.nativeId };
     if (cloudPreview && choice.organization.trim() && boundCompany && choice.organization.trim() === boundCompany.name) {
       roomChoice.organization = { name: boundCompany.name, nativeId: boundCompany.nativeId };
@@ -1439,6 +1692,12 @@ export function BookingCards({
     const request = roomRequestFor(room, group, choice);
     const built = paneStayInputForConfiguredRoom(request, roomChoice, requiredCreateFields);
     const missing = [...built.missing];
+    if (requireDurableCreate && !createRoomBinding(room, groups, workItemPane, session)) missing.push('saved booking request');
+    if (requireDurableCreate && ((!labtestOnly && cmsMixed.send) ||
+      (sendHmsConfirmation && (cmsMixed.messageId || cmsMixed.recipient)))) missing.push('confirmation choices');
+    if (requireDurableCreate && built.stay && (built.stay.adults < 1 || built.stay.adults > 9)) missing.push('1–9 adults');
+    if (requireDurableCreate && built.stay && (built.stay.childAges?.length ?? 0) > 9) missing.push('at most 9 children');
+    if (cloudCreate && !roomChoice.reservationNote?.trim()) missing.push('reservation note');
     if (agencyUnresolved) missing.push('booking agency');
     if (cloudPreview && choice.organization.trim() && (!boundCompany || choice.organization.trim() !== boundCompany.name)) missing.push('company selected from HMS');
     if (roomChoice.confirmationSendMail && !recipient.ok) missing.push('confirmation recipient');
@@ -1529,9 +1788,19 @@ export function BookingCards({
     if (!built.stay) return null;
     const preview = saves[roomKeyOf(room)]?.preview;
     const key = paneStayPreviewKey(workItemId, allocationIdForRoom(room), paneStayKey(built.stay));
-    return preview?.status === 'ready' && preview.key === key && cloudPreviewIsFresh(room, key)
+    return preview?.status === 'ready' && preview.key === key && cloudPreviewIsFresh(room, key) &&
+      durablePreviewCurrent(preview)
       ? { stay: built.stay, digest: preview.digest }
       : null;
+  }
+
+  function durablePreviewCurrent(preview: Extract<PreviewView, { status: 'ready' }>): boolean {
+    if (!requireDurableCreate) return true;
+    const revision = createRevisionRef.current;
+    return Boolean(preview.createGuard && revision.cursor && !revision.pending &&
+      preview.createGuard.expectedSeq === revision.cursor.seq &&
+      preview.createGuard.expectedExtractionId === revision.cursor.extractionId &&
+      preview.editGeneration === revision.editGeneration);
   }
 
   const storedCloudStops = cloudStopsFromSaved(savedStays);
@@ -1676,7 +1945,10 @@ export function BookingCards({
       for (const item of snapshot) {
         const room = draft.draft.rooms.find((candidate) => roomKeyOf(candidate) === item.roomKey);
         if (!room || !item.stay.createSelection?.nativeGuestId) return;
-        rooms.push({ ...item.stay, createSelection: item.stay.createSelection,
+        const preview = saves[item.roomKey]?.preview;
+        const createGuard = preview?.status === 'ready' ? preview.createGuard : undefined;
+        if (requireDurableCreate && !createGuard) return;
+        rooms.push({ ...item.stay, createSelection: { ...item.stay.createSelection, ...createGuard },
           stayId: allocationIdForRoom(room), workItemId, previewDigest: item.digest });
       }
       batchStart = { kind: 'start', id: crypto.randomUUID(), rooms };
@@ -1755,6 +2027,12 @@ export function BookingCards({
   async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string, batch?: PaneStayBatch) {
     if (savedOutcomeBlocksRoom(roomKey)) return null;
     const key = paneStayKey(stay);
+    const priorPreview = saves[roomKey]?.preview;
+    const createGuard = priorPreview?.status === 'ready' && priorPreview.digest === previewDigest ? priorPreview.createGuard : undefined;
+    if (requireDurableCreate && (!createGuard || !stay.createSelection ||
+        ((!batch || batch.kind === 'start') && (priorPreview?.status !== 'ready' || !durablePreviewCurrent(priorPreview))))) return null;
+    const selected = createGuard && stay.createSelection ? { ...stay,
+      createSelection: { ...stay.createSelection, ...createGuard } } : stay;
     const room = draft.draft.rooms.find((item) => `${item.groupId}:${item.roomIndex}` === roomKey);
     if (room) previewReceipt.clear(workItemId, allocationIdForRoom(room));
     patchSave(roomKey, { commit: { status: 'running', key } });
@@ -1766,8 +2044,8 @@ export function BookingCards({
           ? { stayId: allocationIdForRoom(room), workItemId, ...(parentStayId ? { parentStayId } : {}) }
           : {};
       const result = batch
-        ? await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest, batch)
-        : await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest);
+        ? await pane.commit({ ...selected, ...persist } as PaneStayInput, previewDigest, batch)
+        : await pane.commit({ ...selected, ...persist } as PaneStayInput, previewDigest);
       const outcome = commitOutcome(result, stay);
       commit = outcome.ok
         ? {
@@ -1836,14 +2114,27 @@ export function BookingCards({
       <div className="flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
         <label className="flex items-center gap-2 text-xs font-semibold text-[#475569]">
           <input type="checkbox" aria-label="Send confirmation from HMS" checked={sendHmsConfirmation}
-            disabled={stayBooking || labtestOnly} onChange={(event) => setSendConfirmation(event.target.checked)} />
+            disabled={stayBooking || labtestOnly || Boolean(requireDurableCreate && (!allCmsBound || workItemPane?.historyBusy))}
+            onChange={(event) => {
+              setSendConfirmation(event.target.checked);
+              setCmsMixed((current) => ({ ...current, send: false }));
+              recordCms('send', event.target.checked);
+            }} />
           Send confirmation from HMS
         </label>
+        {requireDurableCreate && ((!labtestOnly && cmsMixed.send) ||
+          (sendHmsConfirmation && (cmsMixed.messageId || cmsMixed.recipient))) ?
+          <p role="status" className="text-[11px] text-amber-900">These rooms have different saved confirmation choices. Choose a common option before previewing.</p> : null}
         {labtestOnly ? <p className="text-[11px] text-[#64748b]">Proof Labtest bookings do not send confirmations.</p> : null}
         <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
           Message Id
-          <select aria-label="Message Id" className={paneFieldClass} disabled={stayBooking}
-            value={cmsMessage} onChange={(event) => setChosenCmsMessage(event.target.value)}>
+          <select aria-label="Message Id" className={paneFieldClass}
+            disabled={stayBooking || Boolean(requireDurableCreate && (!allCmsBound || workItemPane?.historyBusy))}
+            value={cmsMixed.messageId ? '' : cmsMessage} onChange={(event) => {
+              setChosenCmsMessage(event.target.value);
+              setCmsMixed((current) => ({ ...current, messageId: false }));
+              recordCms('messageId', event.target.value || null);
+            }}>
             <option value="">Select confirmation type</option>
             {cmsOptions.map((option) => <option key={option.code} value={option.code}>{option.code} – {option.label}</option>)}
           </select>
@@ -1855,14 +2146,16 @@ export function BookingCards({
           customAddress={customAddress}
           userEmail={sources?.userEmail ?? ''}
           clientEmail={clientEmail}
-          disabled={stayBooking}
-          unconfirmed={Boolean(holdMessage) && sources?.load !== 'pending'}
+          disabled={stayBooking || Boolean(requireDurableCreate && (!allCmsBound || workItemPane?.historyBusy))}
+          unconfirmed={(Boolean(holdMessage) && sources?.load !== 'pending') || cmsMixed.recipient}
           error={resolvedRecipient && !resolvedRecipient.ok ? resolvedRecipient.message : null}
           onMode={(next) => {
             staffChoseRef.current = true;
             saveGeneration.current += 1;
             setStaffChose(true);
             setRecipientMode(next);
+            setCmsMixed((current) => ({ ...current, recipient: false }));
+            recordRecipient(next, customAddress);
             setDefaultSaved(false);
           }}
           onCustomAddress={(value) => {
@@ -1870,6 +2163,8 @@ export function BookingCards({
             saveGeneration.current += 1;
             setStaffChose(true);
             setCustomAddress(value);
+            setCmsMixed((current) => ({ ...current, recipient: false }));
+            recordRecipient(effectiveRecipientMode, value);
             setDefaultSaved(false);
           }}
           onMakeDefault={
@@ -1947,7 +2242,52 @@ export function BookingCards({
       {draft.draft.rooms.map((room) => {
         const key = roomKeyOf(room);
         const choice = choices[key] ?? NO_CHOICE;
-        const setChoice = (patch: Partial<RoomChoice>) =>
+        const binding = createRoomBinding(room, groups, workItemPane, session);
+        const queue = workItemPane?.requestDraft;
+        const recordPatch = (patch: Partial<RoomChoice>) => {
+          if (!binding?.writable || !queue || !cloudCreate) return;
+          const record = (field: string, value: Parameters<typeof queue.record>[2], valid = true) =>
+            queue.record(binding.requestId, `${binding.prefix}.${field}`, value, valid);
+          if (patch.firstName !== undefined) record('firstName', patch.firstName || null);
+          if (patch.lastName !== undefined) record('lastName', patch.lastName || null);
+          if (patch.nativeGuestId !== undefined) {
+            const candidate = (guestCandidates[key] ?? []).find((guest) => guest.nativeId === patch.nativeGuestId);
+            record('guest.profile', candidate ? { nativeId: candidate.nativeId, firstName: candidate.firstName, lastName: candidate.lastName } : null);
+          } else if ((patch.firstName !== undefined || patch.lastName !== undefined) && choice.nativeGuestId) record('guest.profile', null);
+          if (patch.roomType !== undefined) record('roomTypeCode', patch.roomType || null, !patch.roomType || /^[A-Z0-9]{1,12}$/.test(patch.roomType));
+          if (patch.ratePlan !== undefined) record('ratePlan', patch.ratePlan || null, !patch.ratePlan || /^[A-Z0-9]{1,12}$/.test(patch.ratePlan));
+          if (patch.adults !== undefined) {
+            const adults = patch.adults.trim() ? Number(patch.adults) : null;
+            record('adults', adults === null || Number.isInteger(adults) ? adults : patch.adults,
+              adults === null || (Number.isInteger(adults) && adults >= 1 && adults <= 9));
+          }
+          if (patch.childAges !== undefined) {
+            const ages = patch.childAges.map((age) => age.trim() ? Number(age) : Number.NaN);
+            const valid = ages.length <= 9 && ages.every((age) => Number.isInteger(age) && age >= 0 && age <= 17);
+            record('childAges', valid ? ages : patch.childAges.join('|'), valid);
+          }
+          if (patch.bookingAgency !== undefined) {
+            const agency = parties?.agency;
+            record('parties.agency', patch.bookingAgency === '__bound__' && agency?.nativeId
+              ? { nativeId: agency.nativeId, name: agency.name } : null,
+            patch.bookingAgency === '__none__' || Boolean(patch.bookingAgency === '__bound__' && agency?.nativeId));
+          }
+          if (patch.organization !== undefined) {
+            const company = parties?.company;
+            const name = patch.organization.trim();
+            record('parties.organization', name && company?.nativeId && name === company.name
+              ? { nativeId: company.nativeId, name: company.name } : name || null,
+            !name || Boolean(company?.nativeId && name === company.name));
+          }
+          if (patch.sourceOfBusiness !== undefined) record('sourceOfBusiness', patch.sourceOfBusiness || null);
+          if (patch.track !== undefined) record('track', patch.track || null);
+          if (patch.guaranteeType !== undefined) record('guaranteeType', patch.guaranteeType || null);
+          if (patch.reservationNote !== undefined) record('reservationNote', patch.reservationNote || null);
+          if (patch.bookerName !== undefined) record('bookerName', patch.bookerName || null);
+          if (patch.bookerEmail !== undefined) record('bookerEmail', patch.bookerEmail || null);
+        };
+        const setChoice = (patch: Partial<RoomChoice>) => {
+          recordPatch(patch);
           setChoices((current) => {
             const currentChoice = current[key] ?? NO_CHOICE;
             const guestChanged =
@@ -1969,13 +2309,15 @@ export function BookingCards({
             }
             return { ...current, [key]: nextChoice };
           });
+        };
         // Once create is running or saved, freeze its create-only fields until staff checks the result.
         const commitStatus = saves[key]?.commit?.status;
         const originalHeldRoom = cloudPreview && (partialCloudRoomsRef.current.has(key) ||
           hasBookedSibling(room) ||
           cloudStops.some((stop) => stop.members.some((member) => roomIds(room, groups).includes(member.stayId) &&
             member.targetKey === stop.targetKey)));
-        const locked = stayBooking || commitStatus === 'running' || savedOutcomeBlocksRoom(key) || originalHeldRoom;
+        const locked = stayBooking || commitStatus === 'running' || savedOutcomeBlocksRoom(key) || originalHeldRoom ||
+          Boolean(requireDurableCreate && (!binding || workItemPane?.historyBusy));
         const request = room.request;
         const group = roomGroupFor(room, groups);
         const generatedNote = generatedNoteForChoice(session, propertyCode, room, group, choice);
@@ -1983,11 +2325,16 @@ export function BookingCards({
         const price = group?.rowPrice;
         const override = price?.source === 'override' ? price : null;
         const commit = saves[key]?.commit;
+        const roomPreview = saves[key]?.preview;
         const bookedCommit = commit?.status === 'booked' ? commit : null;
         const roomCount = group?.quantity ?? Math.max(
           1,
           draft.draft.rooms.filter((candidate) => candidate.groupId === room.groupId).length,
         );
+        const arrival = group?.arrivalDate ?? textValue(request.arrival);
+        const departure = group?.departureDate ?? textValue(request.departure);
+        const nightsValue = (Date.parse(`${departure}T00:00:00Z`) - Date.parse(`${arrival}T00:00:00Z`)) / 86_400_000;
+        const nights = Number.isInteger(nightsValue) && nightsValue > 0 ? nightsValue : null;
         const selectedRoom = choice.roomType ?? roomTypeFor(room, group);
         const selectedRate = choice.ratePlan ?? (textValue(group?.rateCode) || textValue(group?.quotedRateCode) || textValue(request.ratePlan));
         const propertyRooms = [...draft.options.roomType];
@@ -1997,6 +2344,10 @@ export function BookingCards({
           ...(session?.rateOptions ?? []).filter((rate) => rate.groupId === room.groupId && rate.roomCode === selectedRoom).map((rate) => rate.rateCode),
           ...(choice.ratePlan === undefined && selectedRate ? [selectedRate] : []),
         ].filter(Boolean))];
+        const cloudRatePlans = [...new Map([
+          ...rateCodes.map((code) => [code, { code, name: (session?.rateOptions ?? []).find((rate) => rate.rateCode === code)?.rateLabel ?? '' }] as const),
+          ...rateCatalogue.map((plan) => [plan.code, { code: plan.code, name: plan.name }] as const),
+        ]).values()];
         const inheritedAges = inheritedChildAges(room, group);
         const ages = choice.childAges ?? (Array.isArray(inheritedAges) ? inheritedAges.map(String) : []);
         const agesKnown = choice.childAges !== undefined || Array.isArray(inheritedAges);
@@ -2004,94 +2355,13 @@ export function BookingCards({
         const matchingGuests = (guestCandidates[key] ?? []).filter((candidate) =>
           candidate.firstName.trim().toLowerCase() === choice.firstName.trim().toLowerCase() &&
           candidate.lastName.trim().toLowerCase() === choice.lastName.trim().toLowerCase());
-        const agencyValue = choice.bookingAgency === '__none__' ? '__none__' : boundAgency ? '__bound__' : '';
+        const agencyValue = choice.bookingAgency === '__none__' ? '__none__'
+          : choice.bookingAgency === '__unresolved__' ? '' : boundAgency ? '__bound__' : '';
         const roomLabel = rowRoomLabel({
           roomPreference: selectedRoom || textValue(request.roomType),
           quantity: roomCount,
         });
-        return (
-          <article
-            key={key}
-            className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3"
-          >
-            <div className="flex items-end gap-2">
-              <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
-                Booking agency
-                <select aria-label="Booking agency" className={paneFieldClass} disabled={locked} value={agencyValue}
-                  onChange={(event) => setChoice({ bookingAgency: event.target.value })}>
-                  <option value="">Select agency above</option>
-                  <option value="__none__">No agency</option>
-                  {boundAgency ? <option value="__bound__">{boundAgency.name}</option> : null}
-                </select>
-              </label>
-              <CopyButton label="Booking agency" roomLabel={roomLabel} value={agencyValue === '__bound__' ? boundAgency?.name ?? '' : ''} />
-            </div>
-            {!boundAgency && textValue(request.agency).trim() && agencyValue !== '__none__' ? (
-              <p className="text-[11px] text-[#64748b]">{textValue(request.agency)}: select this agency in Agency &amp; company above, or choose No agency.</p>
-            ) : null}
-            <div className="flex items-end gap-2">
-              <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
-                Guarantee
-                <select
-                  disabled={locked}
-                  aria-label="Guarantee"
-                  className={paneFieldClass}
-                  value={choice.guaranteeType}
-                  onChange={(event) => setChoice({ guaranteeType: event.target.value })}
-                >
-                  <option value="">Select guarantee</option>
-                  {draft.options.guaranteeType.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <CopyButton label="Guarantee" roomLabel={roomLabel} value={choice.guaranteeType} />
-            </div>
-            <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-              Room type
-              <select aria-label="Room type" className={paneFieldClass} disabled={locked}
-                value={propertyRooms.includes(selectedRoom) ? selectedRoom : ''}
-                onChange={(event) => setChoice({ roomType: event.target.value, ratePlan: '' })}>
-                <option value="">Select room type</option>
-                {propertyRooms.map((code) => <option key={code} value={code}>{code}</option>)}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-              Rate plan
-              <select aria-label="Rate plan" className={paneFieldClass} disabled={locked} value={selectedRate}
-                onChange={(event) => setChoice({ ratePlan: event.target.value })}>
-                <option value="">Select rate plan</option>
-                {rateCodes.map((code) => <option key={code} value={code}>{code}</option>)}
-              </select>
-            </label>
-            {!selectedRate ? <p className="text-[11px] text-[#64748b]">Rates loading. Select a rate when available.</p> : null}
-            <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-              Adults
-              <input type="number" min={1} max={16} step={1} aria-label="Adults" className={paneFieldClass} disabled={locked}
-                value={choice.adults ?? String(group?.adults ?? request.adults ?? '')}
-                onChange={(event) => setChoice({ adults: event.target.value })} />
-            </label>
-            <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-              Children
-              <input type="number" min={0} max={16} step={1} aria-label="Children" className={paneFieldClass} disabled={locked}
-                value={cloudPreview && !agesKnown ? '' : ages.length} onChange={(event) => {
-                  if (event.target.value.trim() === '') return;
-                  const count = Number(event.target.value);
-                  if (Number.isInteger(count) && count >= 0 && count <= 16) {
-                    setChoice({ childAges: Array.from({ length: count }, (_, index) => ages[index] ?? '') });
-                  }
-                }} />
-            </label>
-            {CHILD_AGE_FIELDS.slice(0, ages.length).map((field, index) => (
-              <label key={field} className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-                Child age {index + 1}
-                <input type="number" min={0} max={17} step={1} aria-label={`Child age ${index + 1}`}
-                  className={paneFieldClass} disabled={locked} value={ages[index] ?? ''}
-                  onChange={(event) => setChoice({ childAges: ages.map((item, i) => i === index ? event.target.value : item) })} />
-              </label>
-            ))}
+        const guestFields = (<>
             <RoomTextField
               roomLabel={roomLabel}
               label="First name"
@@ -2140,6 +2410,64 @@ export function BookingCards({
                 {AMBIGUOUS_GUEST_NAME_COPY}
               </p>
             ) : null}
+        </>);
+        const roomTypeField = (<>
+            <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+              Room type
+              <select aria-label="Room type" className={paneFieldClass} disabled={locked}
+                value={propertyRooms.includes(selectedRoom) ? selectedRoom : ''}
+                onChange={(event) => setChoice({ roomType: event.target.value, ratePlan: '' })}>
+                <option value="">Select room type</option>
+                {propertyRooms.map((code) => <option key={code} value={code}>{code}</option>)}
+              </select>
+            </label>
+        </>);
+        const occupancyFields = (<>
+            <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+              Adults
+              <input type="number" min={1} max={requireDurableCreate ? 9 : 16} step={1} aria-label="Adults" className={paneFieldClass} disabled={locked}
+                value={choice.adults ?? String(group?.adults ?? request.adults ?? '')}
+                onChange={(event) => setChoice({ adults: event.target.value })} />
+            </label>
+            <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+              Children
+              <input type="number" min={0} max={requireDurableCreate ? 9 : 16} step={1} aria-label="Children" className={paneFieldClass} disabled={locked}
+                value={cloudPreview && !agesKnown ? '' : ages.length} onChange={(event) => {
+                  if (event.target.value.trim() === '') return;
+                  const count = Number(event.target.value);
+                  if (Number.isInteger(count) && count >= 0 && count <= (requireDurableCreate ? 9 : 16)) {
+                    setChoice({ childAges: Array.from({ length: count }, (_, index) => ages[index] ?? '') });
+                  }
+                }} />
+            </label>
+            {CHILD_AGE_FIELDS.slice(0, ages.length).map((field, index) => (
+              <label key={field} className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+                Child age {index + 1}
+                <input type="number" min={0} max={17} step={1} aria-label={`Child age ${index + 1}`}
+                  className={paneFieldClass} disabled={locked} value={ages[index] ?? ''}
+                  onChange={(event) => setChoice({ childAges: ages.map((item, i) => i === index ? event.target.value : item) })} />
+              </label>
+            ))}
+        </>);
+        const agencyField = (<>
+            <div className="flex items-end gap-2">
+              <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
+                Booking agency
+                <select aria-label="Booking agency" className={paneFieldClass} disabled={locked} value={agencyValue}
+                  onChange={(event) => setChoice({ bookingAgency: event.target.value })}>
+                  <option value="">Select agency above</option>
+                  <option value="__none__">No agency</option>
+                  {boundAgency ? <option value="__bound__">{boundAgency.name}</option> : null}
+                </select>
+              </label>
+              <CopyButton label="Booking agency" roomLabel={roomLabel} value={agencyValue === '__bound__' ? boundAgency?.name ?? '' : ''} />
+            </div>
+            {(!boundAgency || choice.bookingAgency === '__unresolved__') &&
+              (textValue(request.agency).trim() || binding?.value.bookingAgency?.name) && agencyValue !== '__none__' ? (
+              <p className="text-[11px] text-[#64748b]">{binding?.value.bookingAgency?.name || textValue(request.agency).trim()}: select this agency in Agency &amp; company above, or choose No agency.</p>
+            ) : null}
+        </>);
+        const organizationField = (<>
             <RoomTextField
               roomLabel={roomLabel}
               label="Organization"
@@ -2148,6 +2476,93 @@ export function BookingCards({
               maxLength={PANE_PARTY_NAME_MAX}
               onChange={(value) => setChoice({ organization: value })}
             />
+        </>);
+        const rateField = (<>
+            {cloudCreate ? <CloudRatePicker value={selectedRate} plans={cloudRatePlans} disabled={locked}
+              onChange={(ratePlan) => setChoice({ ratePlan })} /> : <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+              Rate plan
+              <select aria-label="Rate plan" className={paneFieldClass} disabled={locked} value={selectedRate}
+                onChange={(event) => setChoice({ ratePlan: event.target.value })}>
+                <option value="">Select rate plan</option>
+                {rateCodes.map((code) => <option key={code} value={code}>{code}</option>)}
+              </select>
+            </label>}
+        </>);
+        const guaranteeField = (<>
+            <div className="flex items-end gap-2">
+              <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
+                Guarantee
+                <select
+                  disabled={locked}
+                  aria-label="Guarantee"
+                  className={paneFieldClass}
+                  value={choice.guaranteeType}
+                  onChange={(event) => setChoice({ guaranteeType: event.target.value })}
+                >
+                  <option value="">Select guarantee</option>
+                  {draft.options.guaranteeType.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <CopyButton label="Guarantee" roomLabel={roomLabel} value={choice.guaranteeType} />
+            </div>
+        </>);
+        return (
+          <article
+            key={key}
+            className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3"
+          >
+            {requireDurableCreate && !binding ? <p role="status" className="text-[11px] text-amber-900">
+              This room is not linked to a saved booking request. Reload the email before editing.
+            </p> : null}
+            {cloudCreate ? guestFields : agencyField}
+            {!cloudCreate ? guaranteeField : null}
+            {cloudCreate ? <div className="flex flex-wrap items-baseline justify-between gap-1 text-xs text-[#475569]">
+              <span data-pii><strong>Dates</strong> {arrival || 'Arrival needed'} → {departure || 'Departure needed'}
+                {nights ? ` · ${nights} ${nights === 1 ? 'night' : 'nights'}` : ''}</span>
+              {group && session ? <a href="#quote-stay" className="font-semibold text-[#0066cc] underline">Edit stay dates</a> : null}
+            </div> : null}
+            {roomTypeField}
+            {!cloudCreate ? rateField : null}
+            {occupancyFields}
+            {cloudCreate ? agencyField : guestFields}
+            {organizationField}
+            {cloudCreate ? rateField : null}
+            {requireDurableCreate && group && session && rateEvidence && binding && queue ? <ContextualRateCheck
+              group={group} session={session} pane={workItemPane ?? null} evidence={rateEvidence} plans={rateCatalogue}
+              onChoose={(ratePlan) => setChoice({ ratePlan })} create={{ roomIndex: binding.roomIndex, rateCode: selectedRate,
+                agency: agencyValue === '__none__' ? 'none' : agencyValue === '__bound__' ? 'selected' : 'unknown',
+                company: !choice.organization.trim() ? 'none' : parties?.company?.nativeId &&
+                  choice.organization.trim() === parties.company.name ? 'selected' : 'unknown',
+                contextKey: JSON.stringify([arrival, departure, selectedRoom, choice.adults ?? group.adults,
+                  ages, choice.sourceOfBusiness, choice.track, choice.guaranteeType]), locked,
+                onContextChange: () => {
+                  delete cloudFreshPreviews.current[key];
+                  previewReceipt.clear(workItemId, allocationIdForRoom(room));
+                  setSaves((current) => {
+                    const save = current[key];
+                    return save?.preview ? { ...current, [key]: { ...save, preview: { status: 'stale', key: save.preview.key } } } : current;
+                  });
+                },
+                prepare: () => {
+                  const adults = Number(choice.adults ?? group.adults ?? request.adults);
+                  const childAges = ages.map((age) => age.trim() ? Number(age) : Number.NaN);
+                  if (!/^[A-Z0-9]{1,12}$/.test(selectedRoom) || !Number.isInteger(adults) || adults < 1 || adults > 9 ||
+                      !agesKnown || childAges.length > 9 || childAges.some((age) => !Number.isInteger(age) || age < 0 || age > 17)) return false;
+                  const fields: Array<[string, unknown, RecordFieldEventInput['value']]> = [
+                    ['roomTypeCode', binding.value.roomType, selectedRoom], ['adults', binding.value.adults, adults],
+                    ['childAges', binding.value.childAges, childAges],
+                  ];
+                  return fields.every(([field, previous, value]) => {
+                    const suffix = `${binding.prefix}.${field}`;
+                    return !queue.held(binding.requestId, suffix) && JSON.stringify(previous) === JSON.stringify(value) ||
+                      queue.record(binding.requestId, suffix, value);
+                  });
+                } }} /> : null}
+            {!selectedRate && !cloudCreate ? <p className="text-[11px] text-[#64748b]">Rates loading. Select a rate when available.</p> : null}
             <div className="flex items-end gap-2">
               <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
                 Source of business
@@ -2188,26 +2603,28 @@ export function BookingCards({
               </label>
               <CopyButton label="Track" roomLabel={roomLabel} value={choice.track} />
             </div>
-            <RoomTextField
-              roomLabel={roomLabel}
-              label="Market Segment"
-              value={choice.marketSegment}
-              disabled={locked}
-              onChange={(value) => setChoice({ marketSegment: value })}
-            />
-            <div className="flex flex-col gap-1">
-              <label className="flex items-center gap-2 text-xs font-semibold text-[#475569]">
-                <input
-                  type="checkbox"
-                  aria-label="Guest opt-in"
-                  checked={choice.guestoptin4}
-                  disabled={locked}
-                  onChange={(event) => setChoice({ guestoptin4: event.target.checked })}
-                />
-                <span>Terms</span>
-              </label>
-              <p className="text-[11px] text-[#64748b]">Select only if the guest explicitly opted in.</p>
-            </div>
+            {cloudCreate ? guaranteeField : null}
+            {cloudCreate ? <p className="text-[11px] text-[#64748b]">HMS Create derives market segment from track and cannot set guest opt-in yet.</p> : null}
+              <RoomTextField
+                roomLabel={roomLabel}
+                label="Market Segment"
+                value={choice.marketSegment}
+                disabled={locked}
+                onChange={(value) => setChoice({ marketSegment: value })}
+              />
+              <div className="flex flex-col gap-1">
+                <label className="flex items-center gap-2 text-xs font-semibold text-[#475569]">
+                  <input
+                    type="checkbox"
+                    aria-label="Guest opt-in"
+                    checked={choice.guestoptin4}
+                    disabled={locked}
+                    onChange={(event) => setChoice({ guestoptin4: event.target.checked })}
+                  />
+                  <span>Terms</span>
+                </label>
+                <p className="text-[11px] text-[#64748b]">Select only if the guest explicitly opted in.</p>
+              </div>
             <RoomTextField
               multiline
               roomLabel={roomLabel}
@@ -2215,7 +2632,7 @@ export function BookingCards({
               value={choice.reservationNote}
               disabled={locked}
               maxLength={PANE_RESERVATION_NOTE_MAX}
-              required={requiredCreateFields.some(
+              required={cloudCreate || requiredCreateFields.some(
                 (field) => field.trim().toLowerCase().replace(/[^a-z0-9]/g, '') === 'reservationnote',
               )}
               onChange={(value) => {
@@ -2234,9 +2651,25 @@ export function BookingCards({
                 Regenerate reservation note
               </SecondaryButton>
             ) : null}
+            {cloudCreate ? <div data-pii className="text-xs text-[#475569]">
+              <strong>Booker</strong> {[choice.bookerName ?? (contact ? textValue(contact.name) : textValue(request.bookerName)),
+                choice.bookerEmail ?? (contact ? textValue(contact.email) : textValue(request.bookerEmail))].filter(Boolean).join(' · ') || 'Not provided'}
+              {session ? <> · <a href="#quote-contact" className="font-semibold text-[#0066cc] underline">Edit contact</a></> : null}
+            </div> : null}
+            {requireDurableCreate ? <details className="text-xs text-[#475569]">
+              <summary className="cursor-pointer font-semibold">More booking details</summary>
+              <div className="mt-2 flex flex-col gap-2">
+                <RoomTextField roomLabel={roomLabel} label="Booker name for this room" disabled={locked} pii
+                  maxLength={PANE_BOOKER_NAME_MAX} value={choice.bookerName ?? (contact ? textValue(contact.name) : textValue(request.bookerName))}
+                  onChange={(bookerName) => setChoice({ bookerName })} />
+                <RoomTextField roomLabel={roomLabel} label="Booker email for this room" disabled={locked} pii
+                  maxLength={PANE_BOOKER_EMAIL_MAX} value={choice.bookerEmail ?? (contact ? textValue(contact.email) : textValue(request.bookerEmail))}
+                  onChange={(bookerEmail) => setChoice({ bookerEmail })} />
+              </div>
+            </details> : null}
             <CopyHmsNotesButton
               block={hmsNotesBlock({
-                booker: contact ? textValue(contact.name) : textValue(request.bookerName),
+                booker: choice.bookerName ?? (contact ? textValue(contact.name) : textValue(request.bookerName)),
                 company: choice.organization || contact?.company,
                 confirmations: bookedCommit ? [bookedCommit.confirmationNumber] : [],
                 rooms: [
@@ -2265,11 +2698,12 @@ export function BookingCards({
                 missing={built.missing}
                 save={saves[key] ?? {}}
                 screenshot={client.screenshot}
-                bookLabel={CREATE_PROVISIONAL_LABEL}
+                bookLabel={cloudCreate ? 'Create booking' : CREATE_PROVISIONAL_LABEL}
                 previewOnly={cloudPreview && !savesOn}
                 batchOnly={cloudPreview && draft.draft.rooms.length > 1}
                 frozen={stayBooking || (cloudPreview && (!cloudRoomEligible(room) || unknownTargetMissing))}
-                approvalRequired={!cloudPreviewIsFresh(room, previewKeyForRoom(room, built.stay))}
+                approvalRequired={!cloudPreviewIsFresh(room, previewKeyForRoom(room, built.stay)) ||
+                  (roomPreview?.status === 'ready' && !durablePreviewCurrent(roomPreview))}
                 onPreview={(stay) => void previewRoom(key, client, stay)}
                 onBook={(stay, previewDigest) => void bookSingleRoom(key, client, stay, previewDigest)}
               />
@@ -2280,7 +2714,7 @@ export function BookingCards({
                 missing={built.missing}
                 save={saves[key] ?? {}}
                 screenshot={client?.screenshot ?? shotReader ?? (async () => null)}
-                bookLabel={CREATE_PROVISIONAL_LABEL}
+                bookLabel={cloudCreate ? 'Create booking' : CREATE_PROVISIONAL_LABEL}
                 frozen
                 onPreview={() => undefined}
                 onBook={() => undefined}

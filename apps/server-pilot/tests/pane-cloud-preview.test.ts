@@ -127,7 +127,16 @@ describe('mounted read-only Cloud preview', () => {
     const wrong = request(); wrong.createSelection.source.messageId = 'other-message';
     expect(await caller().quoteWorkflow.previewStay(wrong)).toMatchObject({ status: 'refused', reason: 'cloud_create_scope_changed' });
     expect(calls).toHaveLength(0);
-    const result = await caller().quoteWorkflow.previewStay(request());
+    h.row.item.state = { 'stays[s1].requested.arrival': '2027-03-02' };
+    const stale = request();
+    expect(await caller().quoteWorkflow.previewStay({ ...stale, createSelection: { ...stale.createSelection,
+      expectedSeq: h.row.item.revisionSeq, expectedExtractionId: h.row.extraction.id } }))
+      .toMatchObject({ status: 'refused', reason: 'cloud_create_scope_changed' });
+    expect(calls).toHaveLength(0);
+    h.row.item.state = {};
+    const current = request();
+    const result = await caller().quoteWorkflow.previewStay({ ...current, createSelection: { ...current.createSelection,
+      expectedSeq: h.row.item.revisionSeq, expectedExtractionId: h.row.extraction.id } });
     expect(result).toMatchObject({ status: 'refused', reason: 'guest_choice_required',
       guestCandidates: [{ nativeId: '123', city: 'Pretoria' }] });
     expect((result as { guestCandidates?: unknown[] }).guestCandidates?.[0]).not.toHaveProperty('email');

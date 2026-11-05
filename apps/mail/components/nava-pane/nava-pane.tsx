@@ -47,6 +47,7 @@ import {
 import { forgetPaneEdits, overlayRememberedGroups, paneEditKey, recalledPaneEdits, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
 import { sectionHasStaffEdit, storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
 import { useAmendWorkItem } from '@/lib/quote-workflow/use-amend-work-item';
+import { useRequestWorkItem } from '@/lib/quote-workflow/use-request-work-item';
 import { useAmendExtractionRefresh } from '@/lib/quote-workflow/use-amend-extraction-refresh';
 import { WorkItemHistoryControls } from './screens/work-item-history-controls';
 import { readTreatAs, rememberTreatAs } from '@/lib/quote-workflow/treat-as-cache';
@@ -680,6 +681,10 @@ export function NavaPane({
     snapshot: storedWork.pane.state === 'ready' ? storedWork.pane.amendDraft ?? null : null,
     transportId: storedWork.transportId ?? activeConnection?.id ?? null,
     reload: storedWork.reloadAmendDraft, onSave: storedWork.noteAmendSave });
+  const requestWorkItem = useRequestWorkItem({ trpc: trpcClient,
+    snapshot: storedWork.pane.state === 'ready' ? storedWork.pane.amendDraft ?? null : null,
+    transportId: storedWork.transportId, flushSnapshot: storedWork.flushSnapshot,
+    reload: storedWork.reloadAmendDraft, onSave: storedWork.noteAmendSave });
   const amendRefresh = useAmendExtractionRefresh({ trpc: trpcClient,
     snapshot: !amendSourceChanged && storedWork.pane.state === 'ready' && storedWork.pane.kind === 'amendment'
       ? storedWork.pane.amendDraft ?? null : null,
@@ -732,17 +737,30 @@ export function NavaPane({
     if (transportId && contactMessageKey) forgetPaneEdits(paneEditKey(transportId, contactMessageKey));
   }, [storedWork.historyEpoch]);
   const workItemPane =
-    storedWork.pane.state === 'ready' && storedWork.pane.fieldProvenance && storedWork.pane.workItemId
+    storedWork.pane.state === 'ready' && storedWork.pane.workItemId
       ? {
-          fieldProvenance: storedWork.pane.fieldProvenance,
+          fieldProvenance: storedWork.pane.fieldProvenance ?? {},
           refs: storedWork.pane.refs ?? {},
-          onResetContact: storedWork.resetAvailable
+          ...(requestWorkItem.available ? { requestDraft: requestWorkItem } : {}),
+          ...(storedWork.pane.amendDraft && storedWork.transportId ? { rateDraft: {
+            snapshot: storedWork.pane.amendDraft,
+            trpc: trpcClient,
+            transportId: storedWork.transportId,
+            flush: storedWork.flushForBinding,
+            onSave: storedWork.noteAmendSave,
+          } } : {}),
+          onResetContact: storedWork.resetAvailable && !requestWorkItem.pending
             ? () => storedWork.resetSection({ type: 'contact' })
             : undefined,
-          onResetStay: storedWork.resetAvailable
+          onResetStay: storedWork.resetAvailable && !requestWorkItem.pending
             ? (stayId: string) => storedWork.resetSection({ type: 'stay', stayId })
             : undefined,
           resetPending: storedWork.historyPending || storedWork.historyNeedsReload,
+          historyBusy: storedWork.historyPending || storedWork.historyNeedsReload,
+          historyEpoch: storedWork.historyEpoch,
+          bindingCursor: storedWork.bindingCursor,
+          editGeneration: storedWork.editGeneration,
+          bindingPending: storedWork.saveFailed || amendWorkItem.pending || amendRefresh.pending,
         }
       : null;
   const recordContact = (field: ContactField, value: string | null) => {
@@ -2286,7 +2304,7 @@ export function NavaPane({
                 serverCursor={storedWork.historyCursor}
                 onUndo={storedWork.undo}
                 onRedo={storedWork.redo}
-                pending={storedWork.historyPending || storedWork.historyNeedsReload || amendWorkItem.pending || amendRefresh.pending}
+                pending={storedWork.historyPending || storedWork.historyNeedsReload || amendWorkItem.pending || amendRefresh.pending || requestWorkItem.pending}
               />
             ) : null}
             {storedWork.historyError ? (
@@ -2304,6 +2322,10 @@ export function NavaPane({
                 ) : null}
               </p>
             ) : null}
+            {requestWorkItem.error ? <p role="status" className="px-1 text-[11px] text-amber-900">
+              {requestWorkItem.error}{' '}{requestWorkItem.retryable ? <button type="button" className="font-semibold underline"
+                onClick={requestWorkItem.retry}>Retry save</button> : null}
+            </p> : null}
           </div>
         ) : null}
 

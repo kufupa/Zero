@@ -200,13 +200,17 @@ describe('workflow folder mapping', () => {
     expect(mapWorkflowFolder({ action: 'future_action', kind: 'spam' })).toBe('other-to-do');
   });
 
-  it('builds SQL membership from the latest owner action before extraction action', () => {
+  it('builds SQL membership from source-bound staff, owner and per-stay actions', () => {
     const query = new PgDialect().sqlToQuery(workflowFolderMembershipSql(TRANSPORT));
 
     expect(query.sql).toContain('"mail_action_label"."source" = \'owner\'');
     expect(query.sql).toContain('"mail_action_label"."version" = \'owner\'');
     expect(query.sql).toContain('order by "mail_action_label"."updated_at" desc');
-    expect(query.sql).toMatch(/coalesce\([\s\S]*?nullif\(btrim\(\([\s\S]*?select "mail_action_label"\."action"/);
+    expect(query.sql).toContain("bound.state->>('requests['");
+    expect(query.sql).toMatch(/coalesce\([\s\S]*?bound\.state[\s\S]*?bound\.owner_action[\s\S]*?stay\.value->>'action'/);
+    expect(query.sql).toContain("count(distinct action) filter (where action <> 'no_action') > 1");
+    expect(query.sql).toContain('sha256(convert_to(');
+    expect(query.sql).toContain('wi.source_message_id = "message"."id"');
 
     const sqlWithBinds = query.sql.replace(/\$(\d+)/g, (_match, index: string) =>
       String(query.params[Number(index) - 1]),

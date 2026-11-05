@@ -1,9 +1,13 @@
-import { WebPanePanel } from '@/components/nava-pane/web-pane-panel';
+import { useWebPreview } from '@/lib/workstation/web-pane-bridge';
+import { workItemsFromTrpc, quoteAnalysisOf, type StoredWork } from '@/lib/quote-workflow/backend-bind';
+import { inMailbox } from '@/lib/mail/mail-cache-scope';
+import { WorkflowBadge } from '@/components/quote-workflow/workflow-badge';
 import type { ThreadListItem } from '@zero/server/driver/types';
-import { useTRPC } from '@/providers/query-provider';
+import { trpcClient, useTRPC } from '@/providers/query-provider';
 import { Link, useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { authProxy } from '@/lib/auth-proxy';
+import { useEffect, useState } from 'react';
 
 const LIST_LIMIT = 50;
 
@@ -33,9 +37,45 @@ function formatWhen(value: string | Date | null | undefined): string {
   );
 }
 
+/** Read the selected message and its existing classification without opening or changing a work item. */
+function PreviewMessage({ threadId, sourceMessageId }: { threadId: string; sourceMessageId: string | null }) {
+  const { selection } = useWebPreview({ threadId, ...(sourceMessageId ? { sourceMessageId } : {}), requireSelectedMessage: true });
+  const [stored, setStored] = useState<{ key: string; result: StoredWork } | null>(null);
+  const email = selection.status === 'ready' ? selection.email : null;
+  const sourceThread = selection.status === 'ready' ? selection.threadId ?? null : null;
+  const readKey = JSON.stringify([threadId, sourceThread, email?.entryId, email?.internetMessageId,
+    email?.storeId, email?.subject, email?.bodyText, email?.bodyHtml]);
+  useEffect(() => {
+    setStored(null);
+    const query = workItemsFromTrpc(trpcClient).getByMessage?.query;
+    const mailbox = inMailbox(email?.storeId ?? null);
+    if (!query || !mailbox || !sourceThread || !email?.entryId || !email.internetMessageId) return;
+    let live = true;
+    void query({ internetMessageId: email.internetMessageId,
+      selection: { kind: 'web', threadId: sourceThread, messageId: email.entryId } }, mailbox)
+      .then((result) => { if (live) setStored({ key: readKey, result }); }).catch(() => { if (live) setStored(null); });
+    return () => { live = false; };
+  }, [readKey]);
+  if (selection.status !== 'ready') {
+    const text = selection.status === 'loading' ? 'Loading thread…' : selection.status === 'error'
+      ? 'Could not load this thread.' : 'Select a guest email in webmail.';
+    return <div data-preview-status={selection.status} data-preview-thread={threadId}
+      data-preview-reason={selection.status === 'unsynced' ? selection.reason : undefined} className="p-4 text-sm text-slate-600" role="status">{text}</div>;
+  }
+  return <div data-preview-status="ready" data-preview-thread={threadId} className="nava-pane-scroll flex h-full flex-col gap-4 overflow-y-auto p-4">
+    {stored?.key === readKey && stored.result.status === 'ready'
+      ? <WorkflowBadge analysis={quoteAnalysisOf(stored.result.analysis)} kind={stored.result.kind} /> : null}
+    <div className="flex flex-col gap-1">
+      <h2 data-pii className="text-sm font-semibold text-slate-900">{selection.email.subject || '(no subject)'}</h2>
+      <p data-pii className="text-xs text-slate-500">{selection.email.senderName || selection.email.senderEmail}</p>
+    </div>
+    <p data-pii className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-700">{selection.email.bodyText}</p>
+  </div>;
+}
+
 export default function NavaPreviewPage() {
   const trpc = useTRPC();
-  const [params, setParams] = useSearchParams();
+  const [params] = useSearchParams();
   const deepLinked = params.get('thread');
   const recent = useQuery(
     trpc.mail.listThreads.queryOptions({ folder: 'inbox', limit: LIST_LIMIT }),
@@ -49,9 +89,6 @@ export default function NavaPreviewPage() {
       <aside className="flex min-w-0 flex-1 flex-col border-r border-[#e2e8f0] bg-white">
         <header className="border-b border-[#e2e8f0] px-4 py-3">
           <h1 className="text-sm font-semibold">Recent threads</h1>
-          <p className="text-[11px] text-slate-500">
-            Read-only preview. Nothing is written to Outlook or HMS.
-          </p>
           {selectedId ? (
             <Link className="text-xs text-blue-700 underline" to={`/mail/inbox?threadId=${encodeURIComponent(selectedId)}${selectedMessageId ? `&sourceMessageId=${encodeURIComponent(selectedMessageId)}` : ''}`}>
               Open in webmail
@@ -74,10 +111,10 @@ export default function NavaPreviewPage() {
                   aria-current={row.id === selectedId ? 'true' : undefined}
                   className="flex flex-col gap-0.5 px-4 py-2.5 hover:bg-slate-50 aria-[current=true]:bg-slate-100"
                 >
-                  <span className="truncate text-sm font-medium">
+                  <span data-pii className="truncate text-sm font-medium">
                     {row.subject || '(no subject)'}
                   </span>
-                  <span className="truncate text-xs text-slate-500">{row.snippet ?? ''}</span>
+                  <span data-pii className="truncate text-xs text-slate-500">{row.snippet ?? ''}</span>
                   <time
                     dateTime={parseWhen(row.latestMessageAt)?.toISOString()}
                     className="text-[11px] text-slate-500"
@@ -96,14 +133,10 @@ export default function NavaPreviewPage() {
         className="flex h-screen w-[420px] shrink-0 flex-col overflow-hidden border-l border-[#e2e8f0] bg-white"
       >
         {selectedId ? (
-          <WebPanePanel
+          <PreviewMessage
             key={selectedId}
             threadId={selectedId}
             sourceMessageId={selectedMessageId}
-            requireSelectedMessage
-            onOpenThread={(id, messageId) => setParams(messageId == null
-              ? { thread: id }
-              : { thread: id, sourceMessageId: messageId })}
           />
         ) : (
           <p className="p-4 text-sm text-slate-500">No thread selected.</p>

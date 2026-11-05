@@ -55,6 +55,9 @@ const MANUAL_LOOKUP_MIN_CHARS = 2;
 const CHIP_LIMIT = 5;
 const PARTY_RETRY_OPTIONS = { retry: true } as const;
 
+/** A native choice can be used for rate lookup only while its source-scoped HMS job remains fresh. */
+export type RatePartyEvidence = { nativeId: string; name: string; jobId: string; asOf: string };
+
 // Every state names the query it belongs to, so a result for one name never shows for another.
 type PickerState =
   | { status: 'idle' }
@@ -474,7 +477,7 @@ export function PartyPicker({
   /** What is picked so far: at most one company and one agency. */
   parties: StaffQuoteParties;
   find: PartyFinder;
-  onPick: (party: StaffQuoteParty) => void;
+  onPick: (party: StaffQuoteParty, evidence?: RatePartyEvidence) => void;
   onClear: (kind: StaffQuoteParty['kind']) => void;
   suggestions?: PartySuggestion[];
   /** Puts an unverified suggestion's name in the matching field, so staff can search it in HMS. */
@@ -802,6 +805,25 @@ export function PartyPicker({
       row.kind !== prefetchedBest.kind ||
       row.nativeId !== prefetchedBest.nativeId,
   );
+  const evidenceFor = (row: PartyCandidate): RatePartyEvidence | undefined => {
+    for (const view of [currentJobView, v2DisplayJobView]) {
+      if (!view || view.status !== 'done' || view.request?.kind !== 'party' ||
+          (view.request.partyKind && view.request.partyKind !== row.kind) || !view.asOf) continue;
+      const time = Date.parse(view.asOf);
+      const rows = partyCandidatesFrom(view.result?.results);
+      if (!Number.isFinite(time) || time > Date.now() || Date.now() - time >= 5 * 60_000 || !rows) continue;
+      const matches = rows.filter((candidate) => candidate.kind === row.kind && candidate.nativeId === row.nativeId &&
+        candidateNameKey(candidate.name) === candidateNameKey(row.name));
+      if (matches.length === 1) return { nativeId: row.nativeId, name: row.name, jobId: view.runId, asOf: view.asOf };
+    }
+    return undefined;
+  };
+  const emitPick = (row: PartyCandidate) => {
+    const party = { kind: row.kind, nativeId: row.nativeId, name: row.name };
+    const evidence = evidenceFor(row);
+    if (evidence) onPick(party, evidence);
+    else onPick(party);
+  };
   // A row staff pick, in this field's search, is theirs: the search does not pick over it.
   const pickRow = (row: PartyCandidate) => {
     if (
@@ -819,7 +841,7 @@ export function PartyPicker({
     }
     setManualSearchOpen(false);
     setConfirmed(false);
-    onPick({ kind: row.kind, nativeId: row.nativeId, name: row.name });
+    emitPick(row);
   };
 
   const fieldRows = kind
@@ -857,7 +879,7 @@ export function PartyPicker({
     const key = `${candidate.kind}:${candidate.nativeId}`;
     if (appliedSuggestionPick.current.has(key)) return;
     appliedSuggestionPick.current.add(key);
-    onPick({ kind: candidate.kind, nativeId: candidate.nativeId, name: candidate.name });
+    emitPick(candidate);
   }, [autoBest, onPick, pickedHere, prefetchedBest, query, topSuggestion]);
   const jobFailureOutcome = jobReply?.outcome ?? 'execution_failure';
   const partySearchTimedOut = currentJobView?.failureClass === 'PARTY_SEARCH_TIMEOUT';
@@ -1040,11 +1062,7 @@ export function PartyPicker({
                   className="rounded-[3px] p-1 text-[#166534] hover:bg-[#f0fdf4]"
                   onClick={() => {
                     if (v2PartyJob && !v2PropertyOk) return;
-                    onPick({
-                      kind: fieldPreset.kind,
-                      nativeId: fieldPreset.nativeId,
-                      name: fieldPreset.name,
-                    });
+                    emitPick(fieldPreset);
                     setConfirmed(true);
                   }}
                 >
@@ -1297,11 +1315,7 @@ export function PartyPicker({
                   title={candidate.nativeId}
                   className="text-left text-[12.5px] font-semibold text-[#0066cc] underline"
                   onClick={() => {
-                    onPick({
-                      kind: candidate.kind,
-                      nativeId: candidate.nativeId,
-                      name: candidate.name,
-                    });
+                    emitPick(candidate);
                     setIndex(IDLE_INDEX);
                   }}
                 >
@@ -1380,11 +1394,7 @@ export function PartyPicker({
                   title={candidate.nativeId}
                   className="text-left text-[11.5px] font-semibold text-[#0066cc] underline"
                   onClick={() => {
-                    onPick({
-                      kind: candidate.kind,
-                      nativeId: candidate.nativeId,
-                      name: candidate.name,
-                    });
+                    emitPick(candidate);
                     setState(IDLE);
                   }}
                 >
