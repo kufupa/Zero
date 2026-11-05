@@ -25,12 +25,12 @@ vi.mock('../src/ai/pane-create-dispatch-fence.js', async (original) => ({
   assertNoCreateDispatchFence: async () => undefined,
 }));
 vi.mock('../src/ai/pane-create-source-loader.js', () => ({
-  withLockedCreateSource: async (_db: unknown, key: any, fn: any) => {
+  withLockedCreateSourceForCreate: async (_db: unknown, key: any, fn: any) => {
     if (!h.row || key.messageId !== h.row.mail.id || key.threadId !== h.row.mail.threadId ||
         key.cursor.extractionId !== h.row.extraction.id || key.cursor.seq !== h.row.item.revisionSeq) {
       throw new Error('create_source_stale');
     }
-    return fn(h.tx, { sourceDigest: 'f'.repeat(64), item: h.row.item, snapshot: {
+    return fn(h.tx, { sourceDigest: 'f'.repeat(64), item: h.row.item, effectivePayload: h.row.extraction.payload, snapshot: {
       source: h.row.mail, extraction: h.row.extraction, historicalCorrections: [],
     } });
   },
