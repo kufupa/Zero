@@ -17,7 +17,7 @@ import { READ_TOOL_IDS } from '../hms/read-tools.js';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { z } from 'zod';
-import { groundedSeparateAsk, isSelfSentPreStayInformationMail } from './existing-stay-information.js';
+import { groundedSeparateAsk, isSelfSentPreStayInformationMail, preStaySourceText } from './existing-stay-information.js';
 
 export const TRIAGE_CATEGORIES = [...AI_PRIMARY_CATEGORY_SLUGS, 'spam'] as const;
 
@@ -624,9 +624,11 @@ function isRoutineSystemMail(
     return false;
   }
 
-  const agentServiceRequest = [...input.body.matchAll(
+  const authoredBody = /<(?:html|body|div|p|br|table|blockquote)(?:\s|>|\/)/i.test(input.body)
+    ? preStaySourceText(null, input.body) : input.body;
+  const agentServiceRequest = [...authoredBody.matchAll(
     /\b(?:please|kindly|(?:could|can|would)\s+you|(?:we|i)\s+(?:need|request))\b[^.!?\n]{0,80}\b(?:refund|book|reserve|amend|change|cancel|send|issue|confirm|quote)\b|\b(?:refund|invoice|quotation|amendment)\s+(?:request|requested|required)\b/gi,
-  )].some((match) => groundedSeparateAsk(input.body, match[0]) === match[0]);
+  )].some((match) => groundedSeparateAsk(authoredBody, match[0]) === match[0]);
   if (agentServiceRequest && /\b(?:tbo(?:\s+holidays)?|travelit)\b/i.test(haystack)) return false;
 
   const synxisOrChannelConfirm =
