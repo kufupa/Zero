@@ -1,0 +1,2569 @@
+{
+  "schema": "hms-prefix-screen-v1",
+  "method": "Targeted local rule screen of 32 formerly withheld bodies, not a model judgment or verified-truth evaluation. Only redacted text before the first sensitive marker was visible; remainder withheld. Target classifications frozen before context; sender, attachments and exact values unavailable. Not prevalence.",
+  "summary": {
+    "sample_n": 32,
+    "target_only_class_counts": {
+      "action_mentioned_but_instruction_unclear": 3,
+      "information_or_availability_request": 1,
+      "booking_or_transaction_notice_status_candidate": 27,
+      "unclassifiable_from_visible_prefix": 1
+    },
+    "prior": {
+      "cases_with_any_messages": 1,
+      "messages_total": 3,
+      "cases_with_same_timestamp_omission": 0,
+      "messages_with_body_tail_withheld": 3
+    },
+    "later": {
+      "cases_with_any_messages": 1,
+      "messages_total": 1,
+      "cases_with_outbound_messages": 0,
+      "seven_day_censored_cases": 6,
+      "messages_with_body_tail_withheld": 1
+    },
+    "later_outbound_cue_case_counts": {
+      "tail_withheld_messages": 1
+    },
+    "later_context_state": {
+      "cases_with_action_report_cue": 0,
+      "cases_with_condition_cue": 0,
+      "cases_with_refusal_or_constraint_cue": 0,
+      "cases_unknown_or_censored": 32
+    },
+    "target_class_by_later_action_report": {
+      "action_mentioned_but_instruction_unclear": {
+        "unknown_censored": 3
+      },
+      "booking_or_transaction_notice_status_candidate": {
+        "unknown_censored": 27
+      },
+      "information_or_availability_request": {
+        "unknown_censored": 1
+      },
+      "unclassifiable_from_visible_prefix": {
+        "unknown_censored": 1
+      }
+    },
+    "attachment_content_examined": false,
+    "source_map_examined": false,
+    "raw_text_persisted": false,
+    "identifiers_persisted": false,
+    "caveats": [
+      "target-only labels frozen before packet access and preserved unchanged",
+      "outbound cues are staff-like reports only; no independent HMS readback or payment verification",
+      "sender identity redacted; cannot establish guest/staff/system authorship beyond direction",
+      "earlier/later prefixes are also lossy and can omit conditions/refusals/outcomes",
+      "later packet is subject to seven-day censoring",
+      "sample selected by withheld-tail flag only; not population prevalence"
+    ]
+  },
+  "cases": [
+    {
+      "anonymous_ordinal": 1,
+      "target_only": {
+        "anonymous_ordinal": 1,
+        "target_packet_index": 1,
+        "target_only_label": "action_mentioned_but_instruction_unclear",
+        "confidence": "low",
+        "reason_code": "action_mention_without_explicit_request_syntax",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": false,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": false,
+          "amendment_mentioned": false,
+          "creation_mentioned": false,
+          "payment_mentioned": true
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": false,
+          "room_or_rate": false,
+          "party_or_guest": false,
+          "payment_or_money": true,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 1,
+        "target_only_label_frozen": "action_mentioned_but_instruction_unclear",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 2,
+      "target_only": {
+        "anonymous_ordinal": 2,
+        "target_packet_index": 1,
+        "target_only_label": "information_or_availability_request",
+        "confidence": "low",
+        "reason_code": "information_request_without_write_instruction",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": true,
+          "notice_or_status_cue": false,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": false,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": false,
+          "party_or_guest": false,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 2,
+        "target_only_label_frozen": "information_or_availability_request",
+        "context_delta": {
+          "earlier": {
+            "message_count": 3,
+            "direction_counts": {
+              "inbound": 3
+            },
+            "message_flags": {
+              "body_tail_withheld": 3,
+              "body_withheld": 0,
+              "body_truncated": 0,
+              "subject_tail_withheld": 0,
+              "subject_truncated": 0,
+              "text_visible": 3
+            },
+            "message_cue_counts": {
+              "cancel_reported": 0,
+              "amend_reported": 0,
+              "booking_reported": 3,
+              "payment_status": 0,
+              "payment_request": 0,
+              "condition_payment": 0,
+              "condition_availability": 0,
+              "condition_policy_fee": 0,
+              "condition_approval_details": 0,
+              "refusal_availability": 0,
+              "refusal_cannot": 0
+            },
+            "messages_with_visible_prefix": 3
+          },
+          "later": {
+            "message_count": 1,
+            "direction_counts": {
+              "inbound": 1
+            },
+            "message_flags": {
+              "body_tail_withheld": 1,
+              "body_withheld": 0,
+              "body_truncated": 0,
+              "subject_tail_withheld": 0,
+              "subject_truncated": 0,
+              "text_visible": 1
+            },
+            "message_cue_counts": {
+              "cancel_reported": 0,
+              "amend_reported": 0,
+              "booking_reported": 1,
+              "payment_status": 0,
+              "payment_request": 0,
+              "condition_payment": 0,
+              "condition_availability": 0,
+              "condition_policy_fee": 0,
+              "condition_approval_details": 0,
+              "refusal_availability": 0,
+              "refusal_cannot": 0
+            },
+            "messages_with_visible_prefix": 1
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 3,
+          "later_body_tail_withheld_count": 1,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 3,
+      "target_only": {
+        "anonymous_ordinal": 3,
+        "target_packet_index": 1,
+        "target_only_label": "action_mentioned_but_instruction_unclear",
+        "confidence": "low",
+        "reason_code": "action_mention_without_explicit_request_syntax",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": false,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": false,
+          "amendment_mentioned": false,
+          "creation_mentioned": false,
+          "payment_mentioned": true
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": false,
+          "room_or_rate": false,
+          "party_or_guest": false,
+          "payment_or_money": true,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 3,
+        "target_only_label_frozen": "action_mentioned_but_instruction_unclear",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 4,
+      "target_only": {
+        "anonymous_ordinal": 4,
+        "target_packet_index": 1,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 4,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 5,
+      "target_only": {
+        "anonymous_ordinal": 5,
+        "target_packet_index": 1,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 5,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 6,
+      "target_only": {
+        "anonymous_ordinal": 6,
+        "target_packet_index": 1,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 6,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 7,
+      "target_only": {
+        "anonymous_ordinal": 7,
+        "target_packet_index": 1,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 7,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 8,
+      "target_only": {
+        "anonymous_ordinal": 8,
+        "target_packet_index": 1,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 8,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 9,
+      "target_only": {
+        "anonymous_ordinal": 9,
+        "target_packet_index": 1,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 9,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 10,
+      "target_only": {
+        "anonymous_ordinal": 10,
+        "target_packet_index": 1,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 10,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 11,
+      "target_only": {
+        "anonymous_ordinal": 11,
+        "target_packet_index": 2,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 11,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 12,
+      "target_only": {
+        "anonymous_ordinal": 12,
+        "target_packet_index": 2,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 12,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": true,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": true
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 13,
+      "target_only": {
+        "anonymous_ordinal": 13,
+        "target_packet_index": 2,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 13,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 14,
+      "target_only": {
+        "anonymous_ordinal": 14,
+        "target_packet_index": 2,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 14,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 15,
+      "target_only": {
+        "anonymous_ordinal": 15,
+        "target_packet_index": 2,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 15,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": true,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": true
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 16,
+      "target_only": {
+        "anonymous_ordinal": 16,
+        "target_packet_index": 2,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 16,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 17,
+      "target_only": {
+        "anonymous_ordinal": 17,
+        "target_packet_index": 2,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 17,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": true,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": true
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 18,
+      "target_only": {
+        "anonymous_ordinal": 18,
+        "target_packet_index": 2,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 18,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 19,
+      "target_only": {
+        "anonymous_ordinal": 19,
+        "target_packet_index": 2,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 19,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 20,
+      "target_only": {
+        "anonymous_ordinal": 20,
+        "target_packet_index": 2,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 20,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 21,
+      "target_only": {
+        "anonymous_ordinal": 21,
+        "target_packet_index": 3,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 21,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 22,
+      "target_only": {
+        "anonymous_ordinal": 22,
+        "target_packet_index": 3,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 22,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": true,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": true
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 23,
+      "target_only": {
+        "anonymous_ordinal": 23,
+        "target_packet_index": 3,
+        "target_only_label": "action_mentioned_but_instruction_unclear",
+        "confidence": "low",
+        "reason_code": "action_mention_without_explicit_request_syntax",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": false,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": false,
+          "amendment_mentioned": false,
+          "creation_mentioned": false,
+          "payment_mentioned": true
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": false,
+          "room_or_rate": false,
+          "party_or_guest": false,
+          "payment_or_money": true,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 23,
+        "target_only_label_frozen": "action_mentioned_but_instruction_unclear",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 24,
+      "target_only": {
+        "anonymous_ordinal": 24,
+        "target_packet_index": 3,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 24,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": true,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": true
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 25,
+      "target_only": {
+        "anonymous_ordinal": 25,
+        "target_packet_index": 3,
+        "target_only_label": "unclassifiable_from_visible_prefix",
+        "confidence": "low",
+        "reason_code": "no_clear_action_cue_in_visible_prefix",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": false,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": false,
+          "amendment_mentioned": false,
+          "creation_mentioned": false,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": false,
+          "room_or_rate": false,
+          "party_or_guest": false,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": true
+      },
+      "context": {
+        "anonymous_ordinal": 25,
+        "target_only_label_frozen": "unclassifiable_from_visible_prefix",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": true,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 26,
+      "target_only": {
+        "anonymous_ordinal": 26,
+        "target_packet_index": 3,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 26,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 27,
+      "target_only": {
+        "anonymous_ordinal": 27,
+        "target_packet_index": 3,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 27,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 28,
+      "target_only": {
+        "anonymous_ordinal": 28,
+        "target_packet_index": 3,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 28,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 29,
+      "target_only": {
+        "anonymous_ordinal": 29,
+        "target_packet_index": 3,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 29,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 30,
+      "target_only": {
+        "anonymous_ordinal": 30,
+        "target_packet_index": 3,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 30,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": true,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": true
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 31,
+      "target_only": {
+        "anonymous_ordinal": 31,
+        "target_packet_index": 3,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 31,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    },
+    {
+      "anonymous_ordinal": 32,
+      "target_only": {
+        "anonymous_ordinal": 32,
+        "target_packet_index": 3,
+        "target_only_label": "booking_or_transaction_notice_status_candidate",
+        "confidence": "medium",
+        "reason_code": "notice_status_cue_without_explicit_action_request",
+        "cue_flags": {
+          "explicit_cancel_request": false,
+          "explicit_amend_request": false,
+          "explicit_create_request": false,
+          "explicit_payment_request": false,
+          "information_request": false,
+          "notice_or_status_cue": true,
+          "policy_or_terms_cue": false,
+          "cancel_mentioned": true,
+          "amendment_mentioned": false,
+          "creation_mentioned": true,
+          "payment_mentioned": false
+        },
+        "field_type_flags": {
+          "stay_date_or_timing": true,
+          "room_or_rate": true,
+          "party_or_guest": true,
+          "payment_or_money": false,
+          "cancellation_terms": false
+        },
+        "limits": [
+          "sensitive_tail_withheld",
+          "sender_identity_redacted",
+          "exact_values_not_retained",
+          "attachment_content_not_examined",
+          "prefix_may_omit_decisive_instruction_or_condition",
+          "synthetic_masking_tests_are_not_privacy_certification"
+        ],
+        "subject_tail_withheld": false
+      },
+      "context": {
+        "anonymous_ordinal": 32,
+        "target_only_label_frozen": "booking_or_transaction_notice_status_candidate",
+        "context_delta": {
+          "earlier": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "later": {
+            "message_count": 0,
+            "direction_counts": {},
+            "message_flags": {},
+            "message_cue_counts": {},
+            "messages_with_visible_prefix": 0
+          },
+          "earlier_outbound_staff_cue_counts": {},
+          "later_outbound_staff_cue_counts": {},
+          "later_staff_action_report_categories": [],
+          "later_conditions": [],
+          "later_refusal_or_constraint_cues": [],
+          "later_action_status": "unknown_or_no_clear_action_cue",
+          "seven_day_censored": false,
+          "same_timestamp_omitted": false,
+          "target_only_label_unchanged": true,
+          "interpretation_caveat": "later and earlier text may quote history; cue presence is not proof of a request, HMS write, payment, or guest identity"
+        },
+        "censoring": {
+          "target_body_tail_withheld": true,
+          "target_subject_tail_withheld": false,
+          "earlier_body_tail_withheld_count": 0,
+          "later_body_tail_withheld_count": 0,
+          "earlier_same_timestamp_omitted": false,
+          "outcome_seven_day_censored": false
+        }
+      }
+    }
+  ]
+}

@@ -63,8 +63,9 @@ persisted the value. Any blocked request after dispatch makes the result
 `uncertain`, even when the approved response is HTTP 200. Reopen the exact
 record in a fresh guarded session and independently verify the requested Booker
 fields and unchanged stay fields. Reconcile every `uncertain` result before
-another mutation; never retry blindly. No live persistence result is claimed
-until an owner-serialized write slot and that fresh readback are complete.
+another mutation; never retry blindly. No live persistence result is claimed until an authorized, isolated Labtest
+write and that fresh readback are complete. This does not impose a
+property-wide one-browser rule.
 
 The saved-stay agent session exposes this adapter as `amendContact`: preserve
 the legacy `field`/`value` inputs for one field, or pass `bookerName` and/or

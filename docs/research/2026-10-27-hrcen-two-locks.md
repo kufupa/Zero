@@ -1,3 +1,5 @@
+> **Legacy trial guidance:** This file records an older lock configuration and trial mitigation, not a blanket one-browser rule for new HMS Cloud work. The owner reports Cloud browsers can run concurrently. Some current product paths still acquire property advisory locks; this notice does not remove or bypass them. Verify current runtime behavior before changing those paths.
+
 # HRCEN advisory-lock split
 
 ## Finding

@@ -1,3 +1,5 @@
+> **Proof chronology:** This document records an earlier refused strict-create attempt. Later Labtest creates succeeded and were independently read back; their exact execution SHA was not recorded. See the [run evidence](../../../../docs/research/halloween/2026-10-31-hms-coverage-run.md#0922-utc-checkpoint--broad-create-proof). Those historical cases do not prove every current-head path.
+
 # Save a fake HRCEN Labtest stay
 
 The writer refuses to dispatch unless its browser context blocks service workers
@@ -125,7 +127,10 @@ values stay pinned to the model.
 One strict full-body Proof Labtest create dispatched successfully with an agency,
 organization, no A/R account, zero children and CMS message `03`; fresh saved
 record and party readback matched. This does not prove other combinations.
-Earlier, in a fresh 2027+ Proof Labtest draft, the intercepted 988-key POST matched the
+
+At the time of this earlier observation, the strict path had not yet been proven
+by a dispatched create request. In a fresh 2027+ Proof Labtest draft, the
+intercepted 988-key POST matched the
 selected two-night dates and every reported field check except the
 `revenuevalue` comparison; the route refused it before network dispatch. The
 diagnostic retained only a mismatch flag, not the request value, so it does

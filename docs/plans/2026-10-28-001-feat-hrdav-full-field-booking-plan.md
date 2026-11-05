@@ -8,6 +8,8 @@ execution: code
 property: HRDAV
 ---
 
+> **Historical CMS guidance:** The mandatory nonblank CMS message ID and automatic confirmation-sending direction below were superseded for current Nava tooling on 2026-11-01. CMS checkbox, message ID and recipient are optional; `03` may be a changeable default. Nava never sends. This old plan does not authorize current execution.
+
 # Da Vinci full-field provisional booking (one pass)
 
 ## Goal

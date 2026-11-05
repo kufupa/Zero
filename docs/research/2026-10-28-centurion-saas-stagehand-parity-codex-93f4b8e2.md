@@ -1,3 +1,5 @@
+> **Legacy operational guidance:** The one-HRCEN-browser / property-wide lock instructions in this 2026-10-28 trial are not a standing rule for new Cloud tooling. The owner reports same-login Cloud sessions can run concurrently. Existing product paths may still acquire advisory locks, and this notice does not remove or bypass them. Check the current execution path and protect session and target isolation.
+
 # Centurion SaaS and a Stagehand Labtest parity trial
 
 2026-10-28. Scope: evidence-backed recommendation and an execution-ready trial brief. Zero `origin/main` and the inspected Product EC2 checkout were `00d814ca3`. This assessment did not log in to HMS, run a live lookup, alter a hotel browser, change product code, or deploy. The owner supplied HMS credentials in chat; they are deliberately not recorded here.

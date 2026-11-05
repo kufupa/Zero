@@ -647,3 +647,11 @@ Rows 223–237 belong to the parallel or2 handoff (merged above). Reserve 238–
 | 398-claude-f777f33d-stagehand-eta-determinism | 2026-10-28: “progress n eta? anything deterministic? its been 15 mins so far so will it be better next time?” | Answered; autonomous trial continues | Report actual progress, conditional form checkpoint, absence of a defensible full ETA, deterministic accessibility aid and unproven HMS replay. Correct premature stop based on stale status. |
 
 | 399-claude-f777f33d-stagehand-progress-20min | 2026-10-28: “progress n eta? anything deterministic? its been 20 mins total now so far so will it be better next time? / progress over last 5 mins#” | Progress requested; autonomous read-only trial continues | Report recent milestones, concrete determinism limits and an honest ETA while continuing the authorized Labtest form and rate-grid task. |
+
+| 400-claude-d1a2e868-general-pilot | 2026-11-03: Owner asks for an evidence-backed Plan 001 retro and fast generic production Cloud pilot plan covering Create, Filing, Amend, Multi-room and parallel cancellation. Labtest is test input, not the product. Keep Apex per PR and prefer small PRs; remove hard size, mandatory success and empty-record merge gates. | Assessment, plan and isolated policy changes | [Plan](../plans/2026-11-03-002-feat-general-cloud-real-pilot-plan.md). No workflow launch, real-guest write, flag change or deploy inferred. |
+
+## Owner UI direction — 2026-11-04
+
+UI across Quote/Create/Amend/Cancel/Filing is a top priority. Full redesign is allowed; do not preserve existing layout as a constraint. Derive fields and order from actual deterministic Infor HMS tools and staff tasks, aim for Infor parity, prefill all supported known fields and keep human edits. Rates: type code or use dropdown; code left/meaning right, native current price/availability, frequency and attributed-party recommendation when available. Native nightly amount is separate from Quote override. Mastra is the agent framework; use plain “guest-profile creation” for the HMS record.
+
+For AI coding workflow research, owner prefers recent primary practitioner posts/accounts (Lauren Tan, Boris Cherny, Tibo), rather than studies. Use this as source preference for that topic; do not infer universal speed or optimal worker counts from anecdotes.

@@ -1,0 +1,5872 @@
+{
+  "schema": "hms-inbound-discovery-index-v2",
+  "sample": {
+    "case_count": 125,
+    "window": "2026-09-28 through 2026-10-29",
+    "design": "Stratified fixed-seed discovery sample; 125 separate threads, not representative prevalence.",
+    "stages": "Target review frozen first; earlier context and later same-thread observations separate.",
+    "limits": [
+      "Lossy privacy redaction; original selected requests may be misread or withheld.",
+      "No inbound attachment contents or independent current-HMS truth in this sample.",
+      "Later staff text can reflect another message; it is not proof of a saved HMS or money outcome.",
+      "Censored or absent replies do not establish that no response occurred.",
+      "These case notes are evidence for tool discovery, not production accuracy or policy.",
+      "Target projections provide a stable envelope but preserve different reviewer vocabularies; do not aggregate their codes as a shared ontology."
+    ],
+    "source_reviews": [
+      "2026-10-31-amend-lane1-review.json",
+      "2026-10-31-amend-lane2-review.json",
+      "2026-10-31-amend-context-pilot.json"
+    ],
+    "separate_experiments": [
+      "2026-10-31-attachment-context-pilot.json",
+      "2026-10-31-recovered-prefix-screen.json"
+    ]
+  },
+  "cases": [
+    {
+      "case": "A001",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "system_or_platform_stay_notice",
+        "amendment_label": "not_evidenced",
+        "subtype": [],
+        "unit": "stay link not established",
+        "verification": "heuristic_candidate",
+        "confidence": "medium",
+        "note": "Subject signals received stay; body empty; no current human change ask visible."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "additional_coordinator_review": {
+        "target": {
+          "kind": "unknown",
+          "fields": [],
+          "limits": [
+            "empty_body",
+            "subject_only"
+          ]
+        },
+        "prior_thread": {
+          "earlier_count": 0
+        },
+        "later_thread": {
+          "later_outbound_count": 0,
+          "outcome": "unknown"
+        }
+      },
+      "target_projection": {
+        "request_codes": [
+          "system_or_platform_stay_notice"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A002",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "question_or_action_request",
+          "task_kinds": [
+            "reschedule_amendment",
+            "payment_terms_question"
+          ],
+          "field_families": [
+            "stay_dates",
+            "existing_booking",
+            "payment_status"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "yes",
+          "task_kinds": [
+            "cancellation"
+          ],
+          "field_families": [
+            "existing_booking"
+          ]
+        },
+        "confidence": "medium",
+        "visibility": "redacted_partial",
+        "notes": [
+          "quoted_cancellation_is_not_current_intent"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": true,
+        "earlier_message_count": 2,
+        "interpretation_effect": "material",
+        "change_codes": [
+          "earlier_cancellation_request",
+          "staff_cancellation_completed",
+          "current_message_is_post_cancellation_rebooking_or_payment_question"
+        ],
+        "evidence_confidence": "high"
+      },
+      "later_thread": {
+        "later_message_count": 3,
+        "later_inbound_count": 2,
+        "later_outbound_count": 1,
+        "outbound_staff_message_observed": true,
+        "response_classes": [
+          "clarified"
+        ],
+        "response_linkage": "direct",
+        "assessment_code": "dates_requested; no staff completion observed",
+        "seven_day_window": "complete",
+        "ambiguity_codes": [
+          "follow_up_inbound_present_without_later_staff_resolution"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "reschedule_amendment",
+          "payment_terms_question"
+        ],
+        "field_or_context_codes": [
+          "stay_dates",
+          "existing_booking",
+          "payment_status"
+        ],
+        "reviewer_notes_or_limits": [
+          "quoted_cancellation_is_not_current_intent"
+        ],
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A003",
+      "review_lane": 3,
+      "target": {
+        "kind": "likely_promotional_notice",
+        "fields": [],
+        "limits": [
+          "heavily_redacted",
+          "identity_unknown"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "likely_promotional_notice"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "heavily_redacted",
+          "identity_unknown"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A004",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "no_show_or_booking_status",
+        "amendment_label": "not_evidenced",
+        "subtype": [
+          "status",
+          "possible_fee_or_deposit"
+        ],
+        "unit": "stay identity unclear",
+        "verification": "candidate_only",
+        "confidence": "low",
+        "note": "Forwarded/no-show context; may ask staff to note an event, not amend stay fields."
+      },
+      "prior_thread": {
+        "prior_signal": "no_show_notice",
+        "stay_link": "same_thread_only; exact booking state not established",
+        "prior_staff_decision": "none visible",
+        "context_effect": "does_not_support_amendment",
+        "confidence": "low"
+      },
+      "later_thread": null,
+      "additional_coordinator_review": {
+        "target": {
+          "kind": "existing_booking_issue",
+          "fields": [
+            "duplicate_booking",
+            "no_show"
+          ],
+          "limits": [
+            "requested_action_unclear",
+            "embedded_history"
+          ]
+        },
+        "prior_thread": {
+          "earlier_count": 1,
+          "prior_effect": "Earlier no-show context supports an existing-booking issue; requested action remains unknown."
+        },
+        "later_thread": {
+          "later_outbound_count": 0,
+          "outcome": "unknown",
+          "seven_day_censored": true
+        }
+      },
+      "target_projection": {
+        "request_codes": [
+          "no_show_or_booking_status"
+        ],
+        "field_or_context_codes": [
+          "status",
+          "possible_fee_or_deposit"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A005",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "multi_part_request",
+          "task_kinds": [
+            "group_booking_coordination",
+            "rooming_list_update",
+            "arrival_transfer",
+            "billing_invoice"
+          ],
+          "field_families": [
+            "multiple_stays_or_references",
+            "group_or_multiple_rooms",
+            "guest_name",
+            "room_assignment",
+            "arrival_transfer",
+            "invoice",
+            "billing_routing"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "yes",
+          "task_kinds": [
+            "booking_coordination"
+          ],
+          "field_families": [
+            "multiple_stays_or_references"
+          ]
+        },
+        "confidence": "medium_low",
+        "visibility": "redacted_partial",
+        "notes": [
+          "exact_reference_to_room_allocation_and_requested_action_partly_obscured"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "group_booking_coordination",
+          "rooming_list_update",
+          "arrival_transfer",
+          "billing_invoice"
+        ],
+        "field_or_context_codes": [
+          "multiple_stays_or_references",
+          "group_or_multiple_rooms",
+          "guest_name",
+          "room_assignment",
+          "arrival_transfer",
+          "invoice",
+          "billing_routing"
+        ],
+        "reviewer_notes_or_limits": [
+          "exact_reference_to_room_allocation_and_requested_action_partly_obscured"
+        ],
+        "confidence_as_recorded": "medium_low"
+      }
+    },
+    {
+      "case": "A006",
+      "review_lane": 3,
+      "target": {
+        "kind": "group_availability_request",
+        "fields": [
+          "multiple_date_blocks",
+          "room_quantities",
+          "single_rooms",
+          "dinner",
+          "breakfast"
+        ],
+        "limits": [
+          "availability_and_rate_unverified"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 2,
+        "outcome": "Staff sent a quotation and described a return-before-confirmation condition. Attachment contents and current HMS availability remain unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "group_availability_request"
+        ],
+        "field_or_context_codes": [
+          "multiple_date_blocks",
+          "room_quantities",
+          "single_rooms",
+          "dinner",
+          "breakfast"
+        ],
+        "reviewer_notes_or_limits": [
+          "availability_and_rate_unverified"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A007",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "automated_email_delivery_notice",
+        "amendment_label": "not_evidenced",
+        "subtype": [],
+        "unit": "not a stay action",
+        "verification": "observed_non_amend",
+        "confidence": "high",
+        "note": "Automated notice says email did not reach a guest; no reservation change ask."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "additional_coordinator_review": {
+        "target": {
+          "kind": "likely_automated_notice",
+          "fields": [
+            "email_delivery"
+          ],
+          "limits": [
+            "masked_identity"
+          ]
+        },
+        "prior_thread": {
+          "earlier_count": 0
+        },
+        "later_thread": {
+          "later_outbound_count": 0,
+          "outcome": "unknown"
+        }
+      },
+      "target_projection": {
+        "request_codes": [
+          "automated_email_delivery_notice"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A008",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "unreadable",
+          "task_kinds": [
+            "unknown"
+          ],
+          "field_families": [
+            "unknown"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "abstain",
+        "visibility": "redacted_garbled",
+        "notes": [
+          "subject_suggests_booking_but_body_does_not_support_task_label"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "unknown"
+        ],
+        "reviewer_notes_or_limits": [
+          "subject_suggests_booking_but_body_does_not_support_task_label"
+        ],
+        "confidence_as_recorded": "abstain"
+      }
+    },
+    {
+      "case": "A009",
+      "review_lane": 3,
+      "target": {
+        "kind": "booking_and_rate_question",
+        "fields": [
+          "dates",
+          "breakfast",
+          "rate"
+        ],
+        "limits": [
+          "party_and_room_allocation_unclear"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 4,
+        "prior_effect": "Prior messages include similar requests with different departure dates and staff booking statements. The masked data does not establish which guest or stay the selected message concerns; prevent duplicate creation."
+      },
+      "later_thread": {
+        "later_outbound_count": 1,
+        "outcome": "A later outbound provides a confirmation reference; no independent HMS state or relation to every earlier request is established."
+      },
+      "target_projection": {
+        "request_codes": [
+          "booking_and_rate_question"
+        ],
+        "field_or_context_codes": [
+          "dates",
+          "breakfast",
+          "rate"
+        ],
+        "reviewer_notes_or_limits": [
+          "party_and_room_allocation_unclear"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A010",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "cancellation_followup",
+        "amendment_label": "not_evidenced",
+        "subtype": [
+          "cancellation",
+          "fee_question",
+          "refund_question"
+        ],
+        "unit": "one referenced stay; exact link unknown",
+        "verification": "explicit_non_amend_request",
+        "confidence": "medium",
+        "note": "Asks about cancellation fee and refund; quoted history contains cancellation request."
+      },
+      "prior_thread": {
+        "prior_signal": "cancellation_and_fee_or_refund_discussion",
+        "stay_link": "same-thread reservation context",
+        "prior_staff_decision": "late-cancellation fee condition disclosed",
+        "context_effect": "policy_context_only; actual charge or PMS state not verified",
+        "confidence": "medium"
+      },
+      "later_thread": {
+        "later_rows": 2,
+        "later_days": [
+          0
+        ],
+        "censored": false,
+        "outcome": "staff states a full-rate cancellation charge; guest replies that full payment was already made",
+        "staff_decision": "fee_condition_stated; waiver_or_refund_not_resolved_in_capture",
+        "evidence": "explicit outbound email text plus guest follow-up",
+        "confidence": "medium",
+        "limit": "charge/refund and cancellation state not independently verified"
+      },
+      "additional_coordinator_review": {
+        "target": {
+          "kind": "fee_refund_question",
+          "fields": [
+            "cancellation",
+            "fee",
+            "refund"
+          ],
+          "limits": [
+            "earlier_staff_charge_statement_quoted",
+            "fee_amount_unknown",
+            "body_review_clipped"
+          ]
+        },
+        "prior_thread": {
+          "earlier_count": 4,
+          "prior_effect": "Earlier messages include a cancellation request and a staff statement that a late charge applies."
+        },
+        "later_thread": {
+          "later_outbound_count": 1,
+          "outcome": "Staff stated full rate; precise amount and actual charge/refund remain unverified."
+        }
+      },
+      "target_projection": {
+        "request_codes": [
+          "cancellation_followup"
+        ],
+        "field_or_context_codes": [
+          "cancellation",
+          "fee_question",
+          "refund_question"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A011",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "action_request",
+          "task_kinds": [
+            "group_quote_availability"
+          ],
+          "field_families": [
+            "group_or_multiple_rooms",
+            "room_count",
+            "room_type",
+            "occupancy",
+            "stay_dates",
+            "rate_quote"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "medium",
+        "visibility": "redacted_partial",
+        "notes": [
+          "multi_room_quote_request"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 1,
+        "later_inbound_count": 0,
+        "later_outbound_count": 1,
+        "outbound_staff_message_observed": true,
+        "response_classes": [
+          "unknown"
+        ],
+        "response_linkage": "ambiguous",
+        "assessment_code": "outbound_appears_to_be_quote_handoff_or_forward_not_a_clear_guest_answer",
+        "seven_day_window": "complete",
+        "ambiguity_codes": [
+          "customer_facing_linkage_not_established"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "group_quote_availability"
+        ],
+        "field_or_context_codes": [
+          "group_or_multiple_rooms",
+          "room_count",
+          "room_type",
+          "occupancy",
+          "stay_dates",
+          "rate_quote"
+        ],
+        "reviewer_notes_or_limits": [
+          "multi_room_quote_request"
+        ],
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A012",
+      "review_lane": 3,
+      "target": {
+        "kind": "likely_automated_reply",
+        "fields": [],
+        "limits": [
+          "identity_unknown",
+          "content_redacted"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 4
+      },
+      "later_thread": {
+        "later_outbound_count": 1,
+        "outcome": "Later outbound body withheld; outcome unknown."
+      },
+      "target_projection": {
+        "request_codes": [
+          "likely_automated_reply"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "identity_unknown",
+          "content_redacted"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A013",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "system_or_platform_stay_notice",
+        "amendment_label": "not_evidenced",
+        "subtype": [],
+        "unit": "stay link not established",
+        "verification": "heuristic_candidate",
+        "confidence": "medium",
+        "note": "Subject signals received stay; body empty; no current human change ask visible."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "additional_coordinator_review": {
+        "target": {
+          "kind": "unknown",
+          "fields": [],
+          "limits": [
+            "empty_body",
+            "subject_only"
+          ]
+        },
+        "prior_thread": {
+          "earlier_count": 0
+        },
+        "later_thread": {
+          "later_outbound_count": 0,
+          "outcome": "unknown"
+        }
+      },
+      "target_projection": {
+        "request_codes": [
+          "system_or_platform_stay_notice"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A014",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "ambiguous_no_clear_new_action",
+          "task_kinds": [
+            "unknown"
+          ],
+          "field_families": [
+            "booking_confirmation",
+            "invoice",
+            "payment_terms"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "low",
+        "visibility": "redacted_partial",
+        "notes": [
+          "transaction_context_visible_but_current_requested_action_not_clear"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": true,
+        "earlier_message_count": 3,
+        "interpretation_effect": "material",
+        "change_codes": [
+          "confirmation_and_invoice_previously_sent",
+          "reservation_payment_gated",
+          "current_action_remains_unclear"
+        ],
+        "evidence_confidence": "high"
+      },
+      "later_thread": {
+        "later_message_count": 2,
+        "later_inbound_count": 2,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": [
+          "later_inbound_without_outbound_staff_reply"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "booking_confirmation",
+          "invoice",
+          "payment_terms"
+        ],
+        "reviewer_notes_or_limits": [
+          "transaction_context_visible_but_current_requested_action_not_clear"
+        ],
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A015",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [],
+        "limits": [
+          "body_withheld",
+          "subject_mentions_modification"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "recovered_prefix_review": {
+        "interpretation": "Booking notice; subject mentions modification. Sender and any required action unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "body_withheld",
+          "subject_mentions_modification"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A016",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "booking_confirmation",
+        "amendment_label": "not_evidenced",
+        "subtype": [
+          "new_booking"
+        ],
+        "unit": "one stay",
+        "verification": "observed_non_amend",
+        "confidence": "high",
+        "note": "Confirmation and one-night stay details; no change request."
+      },
+      "prior_thread": {
+        "prior_signal": "party_size_room_configuration_meal_and_payment-proof discussion",
+        "stay_link": "prior accommodation context in same thread",
+        "prior_staff_decision": "payment proof acknowledged",
+        "context_effect": "supports existing-stay context but no change request",
+        "confidence": "medium"
+      },
+      "later_thread": {
+        "later_rows": 2,
+        "later_days": [
+          6
+        ],
+        "censored": false,
+        "outcome": "two guest-side follow-ups request/send amended booking paperwork so payment can proceed",
+        "staff_decision": "no outbound staff row captured",
+        "evidence": "inbound rows only",
+        "confidence": "medium",
+        "limit": "no proof the document was received or the booking/payment updated"
+      },
+      "additional_coordinator_review": {
+        "target": {
+          "kind": "possible_date_correction",
+          "fields": [
+            "dates",
+            "nights"
+          ],
+          "limits": [
+            "original_dates_not_established",
+            "embedded_confirmation"
+          ]
+        },
+        "prior_thread": {
+          "earlier_count": 3,
+          "prior_effect": "Earlier messages include a different-looking booking; same thread does not establish same stay. Do not import its rooming details."
+        },
+        "later_thread": {
+          "later_outbound_count": 0,
+          "outcome": "Later inbound messages mention an amended document, but no staff outcome or HMS change is established."
+        }
+      },
+      "target_projection": {
+        "request_codes": [
+          "booking_confirmation"
+        ],
+        "field_or_context_codes": [
+          "new_booking"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A017",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "withheld",
+          "task_kinds": [
+            "unknown"
+          ],
+          "field_families": [
+            "unknown"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "abstain",
+        "visibility": "withheld",
+        "notes": [
+          "subject_only_confirmation_cue_is_insufficient_to_infer_action"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "unknown"
+        ],
+        "reviewer_notes_or_limits": [
+          "subject_only_confirmation_cue_is_insufficient_to_infer_action"
+        ],
+        "confidence_as_recorded": "abstain"
+      }
+    },
+    {
+      "case": "A018",
+      "review_lane": 3,
+      "target": {
+        "kind": "likely_automated_channel_notice",
+        "fields": [
+          "existing_stay",
+          "checkin_request"
+        ],
+        "limits": [
+          "reported_automatic_reply_not_manual_staff_action",
+          "sender_identity_redacted"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "likely_automated_channel_notice"
+        ],
+        "field_or_context_codes": [
+          "existing_stay",
+          "checkin_request"
+        ],
+        "reviewer_notes_or_limits": [
+          "reported_automatic_reply_not_manual_staff_action",
+          "sender_identity_redacted"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A019",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "automated_order_or_payment_confirmation",
+        "amendment_label": "unknown",
+        "subtype": [],
+        "unit": "withheld",
+        "verification": "withheld",
+        "confidence": "low",
+        "note": "Sensitive body withheld; subject alone cannot establish an ask."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "additional_coordinator_review": {
+        "target": {
+          "kind": "unknown",
+          "fields": [],
+          "limits": [
+            "body_withheld",
+            "subject_only"
+          ]
+        },
+        "prior_thread": {
+          "earlier_count": 0
+        },
+        "later_thread": {
+          "later_outbound_count": 0,
+          "outcome": "unknown"
+        }
+      },
+      "recovered_prefix_review": {
+        "interpretation": "Payment/order confirmation notice; actual settlement unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "automated_order_or_payment_confirmation"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A020",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "non_reservation_contact",
+          "task_kinds": [
+            "vendor_or_sales_solicitation",
+            "meeting_request"
+          ],
+          "field_families": [
+            "property_or_facility_information"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "no",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "high",
+        "visibility": "redacted_partial",
+        "notes": [
+          "not_a_guest_booking_or_stay_change"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "right_censored",
+        "ambiguity_codes": [
+          "right_censored_no_conclusion_beyond_observed_interval"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "vendor_or_sales_solicitation",
+          "meeting_request"
+        ],
+        "field_or_context_codes": [
+          "property_or_facility_information"
+        ],
+        "reviewer_notes_or_limits": [
+          "not_a_guest_booking_or_stay_change"
+        ],
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A021",
+      "review_lane": 3,
+      "target": {
+        "kind": "payment_link_request",
+        "fields": [
+          "voucher_mention",
+          "amended_document_mention"
+        ],
+        "limits": [
+          "attachment_unavailable",
+          "amendment_action_unclear"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 1,
+        "outcome": "Staff states that a payment link was sent. Delivery and actual payment are unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "payment_link_request"
+        ],
+        "field_or_context_codes": [
+          "voucher_mention",
+          "amended_document_mention"
+        ],
+        "reviewer_notes_or_limits": [
+          "attachment_unavailable",
+          "amendment_action_unclear"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A022",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "unknown_automated_or_booking_message",
+        "amendment_label": "unknown",
+        "subtype": [],
+        "unit": "withheld",
+        "verification": "withheld",
+        "confidence": "low",
+        "note": "Body withheld; subject insufficient to distinguish request from notice."
+      },
+      "prior_thread": {
+        "prior_signal": "messages withheld or obscured",
+        "stay_link": "unknown",
+        "prior_staff_decision": "unknown",
+        "context_effect": "no usable prior context",
+        "confidence": "low"
+      },
+      "later_thread": {
+        "later_rows": 1,
+        "later_days": [
+          0
+        ],
+        "censored": false,
+        "outcome": "follow-up content withheld",
+        "staff_decision": "unknown; no outbound staff row captured",
+        "evidence": "withheld inbound row",
+        "confidence": "low",
+        "limit": "no usable decision evidence"
+      },
+      "additional_coordinator_review": {
+        "target": {
+          "kind": "unknown",
+          "fields": [],
+          "limits": [
+            "body_withheld",
+            "subject_masked"
+          ]
+        },
+        "prior_thread": {
+          "earlier_count": 3,
+          "prior_effect": "Target body withheld; prior messages do not establish its requested action."
+        },
+        "later_thread": {
+          "later_outbound_count": 0,
+          "outcome": "unknown"
+        }
+      },
+      "recovered_prefix_review": {
+        "interpretation": "Third-party booking confirmation request covering two rooms and a check-in-hours question; actual HMS status unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown_automated_or_booking_message"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A023",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "non_reservation_notice",
+          "task_kinds": [
+            "calendar_event_cancellation_notice"
+          ],
+          "field_families": []
+        },
+        "quoted_in_target": {
+          "present": "no",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "high",
+        "visibility": "redacted_partial",
+        "notes": [
+          "event_notice_not_hotel_reservation_cancellation"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "calendar_event_cancellation_notice"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "event_notice_not_hotel_reservation_cancellation"
+        ],
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A024",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [
+          "attachment_mention"
+        ],
+        "limits": [
+          "body_redacted",
+          "attachment_unavailable"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "attachment_mention"
+        ],
+        "reviewer_notes_or_limits": [
+          "body_redacted",
+          "attachment_unavailable"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A025",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "group_or_multi_stay_work",
+        "amendment_label": "candidate_not_verified",
+        "subtype": [
+          "rooming",
+          "occupancy",
+          "dinner",
+          "breakfast",
+          "transfer",
+          "invoice"
+        ],
+        "unit": "multiple stays/rooms; per-guest allocation unknown",
+        "verification": "candidate_only",
+        "confidence": "medium",
+        "note": "Rooming-list and several add-on/billing asks; existing-versus-new booking boundary unclear."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "additional_coordinator_review": {
+        "target": {
+          "kind": "group_multi_stay_request",
+          "fields": [
+            "room_count",
+            "multiple_stays",
+            "dinner",
+            "breakfast",
+            "guest_list"
+          ],
+          "limits": [
+            "attached_list_unavailable",
+            "action_unclear",
+            "body_review_clipped"
+          ]
+        },
+        "prior_thread": {
+          "earlier_count": 0
+        },
+        "later_thread": {
+          "later_outbound_count": 0,
+          "outcome": "unknown"
+        }
+      },
+      "target_projection": {
+        "request_codes": [
+          "group_or_multi_stay_work"
+        ],
+        "field_or_context_codes": [
+          "rooming",
+          "occupancy",
+          "dinner",
+          "breakfast",
+          "transfer",
+          "invoice"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A026",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "system_notice_with_embedded_request",
+          "task_kinds": [
+            "channel_booking_confirmation",
+            "arrival_special_request"
+          ],
+          "field_families": [
+            "channel_booking",
+            "arrival_time"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "medium",
+        "visibility": "redacted_partial",
+        "notes": [
+          "separate_system_confirmation_from_guest_check_in_time_cue"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "channel_booking_confirmation",
+          "arrival_special_request"
+        ],
+        "field_or_context_codes": [
+          "channel_booking",
+          "arrival_time"
+        ],
+        "reviewer_notes_or_limits": [
+          "separate_system_confirmation_from_guest_check_in_time_cue"
+        ],
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A027",
+      "review_lane": 3,
+      "target": {
+        "kind": "quote_and_booking_request",
+        "fields": [
+          "dates",
+          "room",
+          "breakfast",
+          "dinner",
+          "rate"
+        ],
+        "limits": [
+          "party_and_rate_redacted"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 1,
+        "outcome": "Staff sent a quotation and described a return-before-confirmation condition; attachment contents and actual booking are unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "quote_and_booking_request"
+        ],
+        "field_or_context_codes": [
+          "dates",
+          "room",
+          "breakfast",
+          "dinner",
+          "rate"
+        ],
+        "reviewer_notes_or_limits": [
+          "party_and_rate_redacted"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A028",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "existing_stay_document_followup",
+        "amendment_label": "not_evidenced",
+        "subtype": [
+          "confirmation_or_invoice_document"
+        ],
+        "unit": "one confirmation-like stay; link uncertain",
+        "verification": "candidate_only",
+        "confidence": "low",
+        "note": "Asks to use earlier-sent material; no explicit stay-field change visible."
+      },
+      "prior_thread": {
+        "prior_signal": "prior confirmation_and_invoice; follow-up asks for document version",
+        "stay_link": "same-thread confirmation context",
+        "prior_staff_decision": "confirmation/invoice sent",
+        "context_effect": "document-only follow-up; no stay-field change",
+        "confidence": "medium"
+      },
+      "later_thread": {
+        "later_rows": 1,
+        "later_days": [
+          0
+        ],
+        "censored": false,
+        "outcome": "staff says a revised invoice will be sent",
+        "staff_decision": "document_correction_promised",
+        "evidence": "explicit outbound email text",
+        "confidence": "medium",
+        "limit": "attached document/content and actual delivery not inspected; no stay-field change"
+      },
+      "additional_coordinator_review": {
+        "target": {
+          "kind": "unknown",
+          "fields": [
+            "prior_context"
+          ],
+          "limits": [
+            "requested_object_redacted",
+            "embedded_confirmation"
+          ]
+        },
+        "prior_thread": {
+          "earlier_count": 1,
+          "prior_effect": "Earlier confirmation does not identify the masked object in the current request."
+        },
+        "later_thread": {
+          "later_outbound_count": 1,
+          "outcome": "Staff mentions a revised invoice; redaction prevents determining whether the request was resolved."
+        }
+      },
+      "target_projection": {
+        "request_codes": [
+          "existing_stay_document_followup"
+        ],
+        "field_or_context_codes": [
+          "confirmation_or_invoice_document"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A029",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "choice_or_clarification_request",
+          "task_kinds": [
+            "credit_or_refund_choice",
+            "billing_question"
+          ],
+          "field_families": [
+            "credit_balance",
+            "refund",
+            "future_booking",
+            "payment"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "medium",
+        "visibility": "redacted_partial",
+        "notes": [
+          "choice_is_open_not_an_authorization_to_refund_or_apply_credit"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 2,
+        "later_inbound_count": 1,
+        "later_outbound_count": 1,
+        "outbound_staff_message_observed": true,
+        "response_classes": [
+          "alternative",
+          "conditional"
+        ],
+        "response_linkage": "direct",
+        "assessment_code": "credit_retention_or_future_use_option_offered_with_a_use_condition; choice_not_closed",
+        "seven_day_window": "complete",
+        "ambiguity_codes": [
+          "no_evidence_of_refund_or_credit_application_completed"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "credit_or_refund_choice",
+          "billing_question"
+        ],
+        "field_or_context_codes": [
+          "credit_balance",
+          "refund",
+          "future_booking",
+          "payment"
+        ],
+        "reviewer_notes_or_limits": [
+          "choice_is_open_not_an_authorization_to_refund_or_apply_credit"
+        ],
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A030",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [],
+        "limits": [
+          "body_withheld",
+          "subject_only"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown",
+        "seven_day_censored": true
+      },
+      "recovered_prefix_review": {
+        "interpretation": "Booking notice with cancellation-policy text; sender and any required action unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "body_withheld",
+          "subject_only"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A031",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "existing_stay_amendment",
+        "amendment_label": "direct_request_in_target",
+        "subtype": [
+          "arrival_or_departure_date",
+          "add_one_night"
+        ],
+        "unit": "one referenced stay",
+        "verification": "explicit_request",
+        "confidence": "medium",
+        "note": "Visible text asks to add one night and describes changed stay dates; exact dates redacted."
+      },
+      "prior_thread": {
+        "prior_signal": "prior confirmation_and_invoice, with provisional/payment condition",
+        "stay_link": "existing reservation indicated in same thread",
+        "prior_staff_decision": "booking confirmation/document sent; payment condition stated",
+        "context_effect": "supports direct arrival/departure-date change request; no save/readback evidence",
+        "confidence": "medium"
+      },
+      "later_thread": {
+        "later_rows": 2,
+        "later_days": [
+          0
+        ],
+        "censored": false,
+        "outcome": "staff acknowledges payment proof, says booking has been amended, and refers to retained credit; guest then asks for revised invoice/booking confirmation",
+        "staff_decision": "explicit_amendment_claim_after_payment",
+        "evidence": "explicit outbound email text; follow-up request is inbound",
+        "confidence": "high_for_email_claim",
+        "limit": "no PMS readback or attached booking record; direction/type of date change only as stated in target label"
+      },
+      "additional_coordinator_review": {
+        "target": {
+          "kind": "probable_date_correction",
+          "fields": [
+            "arrival",
+            "departure",
+            "extra_night"
+          ],
+          "limits": [
+            "requested_action_implicit",
+            "body_review_clipped"
+          ]
+        },
+        "prior_thread": {
+          "earlier_count": 2
+        },
+        "later_thread": {
+          "later_outbound_count": 1,
+          "outcome": "Staff says an amendment was made and a credit retained; exact changed fields, amount and HMS state are unverified. Quoted intervening correspondence complicates attribution."
+        }
+      },
+      "post_freeze_correction": {
+        "disagreement": "Frozen lane label calls this an added night. The coordinator's less-redacted target projection indicates the guest requested a later arrival than the described booked arrival and said an extra night was already added; this suggests removing that night. The independent reviewer rechecked its stricter projection and agreed the extension direction was unverified. HMS and the attachment are not verified; the original frozen label is preserved."
+      },
+      "target_projection": {
+        "request_codes": [
+          "existing_stay_amendment"
+        ],
+        "field_or_context_codes": [
+          "arrival_or_departure_date",
+          "add_one_night"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A032",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "subject_only_ambiguous",
+          "task_kinds": [
+            "unknown"
+          ],
+          "field_families": [
+            "unknown"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "abstain",
+        "visibility": "empty_body",
+        "notes": [
+          "subject_alone_says_stay_request_received_but_no_action_is_readable"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "right_censored",
+        "ambiguity_codes": [
+          "right_censored_no_conclusion_beyond_observed_interval"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "unknown"
+        ],
+        "reviewer_notes_or_limits": [
+          "subject_alone_says_stay_request_received_but_no_action_is_readable"
+        ],
+        "confidence_as_recorded": "abstain"
+      }
+    },
+    {
+      "case": "A033",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [],
+        "limits": [
+          "body_withheld",
+          "subject_only"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "recovered_prefix_review": {
+        "interpretation": "Payment/order confirmation notice; actual settlement unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "body_withheld",
+          "subject_only"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A034",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "automated_order_confirmation",
+        "amendment_label": "unknown",
+        "subtype": [],
+        "unit": "withheld",
+        "verification": "withheld",
+        "confidence": "low",
+        "note": "Sensitive body withheld; no visible current ask."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "additional_coordinator_review": {
+        "target": {
+          "kind": "unknown",
+          "fields": [],
+          "limits": [
+            "body_withheld",
+            "subject_only"
+          ]
+        },
+        "prior_thread": {
+          "earlier_count": 0
+        },
+        "later_thread": {
+          "later_outbound_count": 0,
+          "outcome": "unknown"
+        }
+      },
+      "recovered_prefix_review": {
+        "interpretation": "Payment/order confirmation notice; actual settlement unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "automated_order_confirmation"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A035",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "non_guest_inventory_request",
+          "task_kinds": [
+            "channel_or_vendor_availability_survey"
+          ],
+          "field_families": [
+            "room_inventory",
+            "current_availability"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "no",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "high",
+        "visibility": "redacted_partial",
+        "notes": [
+          "availability_is_property_inventory_reporting_not_a_guest_stay_request"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "channel_or_vendor_availability_survey"
+        ],
+        "field_or_context_codes": [
+          "room_inventory",
+          "current_availability"
+        ],
+        "reviewer_notes_or_limits": [
+          "availability_is_property_inventory_reporting_not_a_guest_stay_request"
+        ],
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A036",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [],
+        "limits": [
+          "body_withheld",
+          "subject_only"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown",
+        "seven_day_censored": true
+      },
+      "recovered_prefix_review": {
+        "interpretation": "Booking notice with cancellation-policy text; sender and any required action unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "body_withheld",
+          "subject_only"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A037",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "automated_booking_confirmation",
+        "amendment_label": "unknown",
+        "subtype": [],
+        "unit": "withheld",
+        "verification": "withheld",
+        "confidence": "low",
+        "note": "Sensitive body withheld; no visible current ask."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "automated_booking_confirmation"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A038",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "withheld",
+          "task_kinds": [
+            "booking_confirmation_notice",
+            "unknown"
+          ],
+          "field_families": [
+            "arrival_urgency"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "abstain",
+        "visibility": "withheld",
+        "notes": [
+          "arrival_window_in_subject_does_not_reveal_requested_action"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "right_censored",
+        "ambiguity_codes": [
+          "right_censored_no_conclusion_beyond_observed_interval"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "booking_confirmation_notice",
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "arrival_urgency"
+        ],
+        "reviewer_notes_or_limits": [
+          "arrival_window_in_subject_does_not_reveal_requested_action"
+        ],
+        "confidence_as_recorded": "abstain"
+      }
+    },
+    {
+      "case": "A039",
+      "review_lane": 3,
+      "target": {
+        "kind": "possible_payment_notice",
+        "fields": [
+          "payment"
+        ],
+        "limits": [
+          "heavily_redacted",
+          "requested_action_unclear",
+          "payment_not_verified"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "possible_payment_notice"
+        ],
+        "field_or_context_codes": [
+          "payment"
+        ],
+        "reviewer_notes_or_limits": [
+          "heavily_redacted",
+          "requested_action_unclear",
+          "payment_not_verified"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A040",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "quote_or_company_details_followup",
+        "amendment_label": "not_evidenced",
+        "subtype": [
+          "quote_or_party_details"
+        ],
+        "unit": "stay not linked",
+        "verification": "candidate_only",
+        "confidence": "low",
+        "note": "Question and company-detail context; no direct existing-stay field change visible."
+      },
+      "prior_thread": {
+        "prior_signal": "quote exchange with company-detail request and returned quote",
+        "stay_link": "no confirmed stay shown",
+        "prior_staff_decision": "quote sent; requested company details",
+        "context_effect": "quote follow-up, not stay amendment",
+        "confidence": "medium"
+      },
+      "later_thread": {
+        "later_rows": 2,
+        "later_days": [
+          0
+        ],
+        "censored": true,
+        "outcome": "two guest-side quote/party follow-ups; no substantive staff answer captured",
+        "staff_decision": "none_visible",
+        "evidence": "inbound rows only",
+        "confidence": "low",
+        "limit": "thread remains open/censored; booking or attendance status unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "quote_or_company_details_followup"
+        ],
+        "field_or_context_codes": [
+          "quote_or_party_details"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A041",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "action_request",
+          "task_kinds": [
+            "reservation_cancellation",
+            "channel_to_property_status_sync"
+          ],
+          "field_families": [
+            "booking_status",
+            "cancellation"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "no",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "high",
+        "visibility": "redacted_partial",
+        "notes": [
+          "notice_says_cancelled_and_explicitly_requests_system_update"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "reservation_cancellation",
+          "channel_to_property_status_sync"
+        ],
+        "field_or_context_codes": [
+          "booking_status",
+          "cancellation"
+        ],
+        "reviewer_notes_or_limits": [
+          "notice_says_cancelled_and_explicitly_requests_system_update"
+        ],
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A042",
+      "review_lane": 3,
+      "target": {
+        "kind": "group_update_and_request",
+        "fields": [
+          "updated_list",
+          "dinner",
+          "additional_service"
+        ],
+        "limits": [
+          "attachment_unavailable",
+          "additional_service_redacted",
+          "quoted_history"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 24,
+        "prior_effect": "Earlier thread includes an apparent booking statement; identity and current HMS state remain unverified."
+      },
+      "later_thread": {
+        "later_outbound_count": 1,
+        "outcome": "Staff says a list was updated; the separately requested service and PMS state remain unclear."
+      },
+      "target_projection": {
+        "request_codes": [
+          "group_update_and_request"
+        ],
+        "field_or_context_codes": [
+          "updated_list",
+          "dinner",
+          "additional_service"
+        ],
+        "reviewer_notes_or_limits": [
+          "attachment_unavailable",
+          "additional_service_redacted",
+          "quoted_history"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A043",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "system_or_platform_stay_notice",
+        "amendment_label": "not_evidenced",
+        "subtype": [],
+        "unit": "stay link not established",
+        "verification": "heuristic_candidate",
+        "confidence": "medium",
+        "note": "Subject signals a received stay; body empty."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "system_or_platform_stay_notice"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A044",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "non_reservation_marketing",
+          "task_kinds": [
+            "event_or_service_promotion"
+          ],
+          "field_families": []
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "high",
+        "visibility": "redacted_partial",
+        "notes": [
+          "promotional_content_not_a_guest_booking"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "event_or_service_promotion"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "promotional_content_not_a_guest_booking"
+        ],
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A045",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [],
+        "limits": [
+          "subject_withheld",
+          "body_withheld"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "recovered_prefix_review": {
+        "interpretation": "Sensitive message; retained prefix insufficient to classify."
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "subject_withheld",
+          "body_withheld"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A046",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "automated_payment_confirmation",
+        "amendment_label": "not_evidenced",
+        "subtype": [
+          "payment_status"
+        ],
+        "unit": "one referenced reservation; exact link withheld",
+        "verification": "observed_non_amend",
+        "confidence": "high",
+        "note": "Payment-status notice; no stay-change request."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "automated_payment_confirmation"
+        ],
+        "field_or_context_codes": [
+          "payment_status"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A047",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "ambiguous_follow_up",
+          "task_kinds": [
+            "meeting_or_follow_up_request",
+            "unknown"
+          ],
+          "field_families": []
+        },
+        "quoted_in_target": {
+          "present": "yes",
+          "task_kinds": [
+            "group_quote_availability"
+          ],
+          "field_families": [
+            "group_or_multiple_rooms",
+            "room_count",
+            "occupancy",
+            "room_type",
+            "stay_dates"
+          ]
+        },
+        "confidence": "low",
+        "visibility": "redacted_partial",
+        "notes": [
+          "current_follow_up_is_obscured;_do_not_promote_quoted_group_quote_to_current_ask"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": true,
+        "earlier_message_count": 10,
+        "interpretation_effect": "material",
+        "change_codes": [
+          "group_composition_and_room_preference",
+          "changed_stay_dates",
+          "room_fit_or_availability_constraint",
+          "quote_requires_return_before_confirmation",
+          "no_room_hold"
+        ],
+        "evidence_confidence": "medium"
+      },
+      "later_thread": {
+        "later_message_count": 9,
+        "later_inbound_count": 7,
+        "later_outbound_count": 2,
+        "outbound_staff_message_observed": true,
+        "response_classes": [
+          "conditional",
+          "unknown"
+        ],
+        "response_linkage": "ambiguous",
+        "assessment_code": "quotation_material_sent_but_current_meeting_or_follow_up_request_not_clearly_answered",
+        "seven_day_window": "complete",
+        "ambiguity_codes": [
+          "same_day_thread_and_quoted_history",
+          "quote_is_not_a_booking_confirmation"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "meeting_or_follow_up_request",
+          "unknown"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "current_follow_up_is_obscured;_do_not_promote_quoted_group_quote_to_current_ask"
+        ],
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A048",
+      "review_lane": 3,
+      "target": {
+        "kind": "likely_promotional_notice",
+        "fields": [],
+        "limits": [
+          "heavily_redacted"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "likely_promotional_notice"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "heavily_redacted"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A049",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "billing_document_correction",
+        "amendment_label": "not_stay_field_amendment",
+        "subtype": [
+          "invoice_addressee_or_company_name"
+        ],
+        "unit": "one likely stay; link only candidate",
+        "verification": "explicit_document_request",
+        "confidence": "medium",
+        "note": "Visible request to revise invoice addressee; quoted reply refers to an amended booking but does not prove a stay-field change."
+      },
+      "prior_thread": {
+        "prior_signal": "confirmation/invoice and guest payment-proof discussion",
+        "stay_link": "existing booking indicated in same thread",
+        "prior_staff_decision": "payment proof acknowledged",
+        "context_effect": "invoice addressee/company correction; not stay-field change",
+        "confidence": "medium"
+      },
+      "later_thread": {
+        "later_rows": 2,
+        "later_days": [
+          0,
+          2
+        ],
+        "censored": false,
+        "outcome": "guest requests invoice in company name; staff replies to see attachment",
+        "staff_decision": "document_response_sent_claimed",
+        "evidence": "explicit outbound email text",
+        "confidence": "medium",
+        "limit": "invoice contents not inspected; no stay-field change"
+      },
+      "target_projection": {
+        "request_codes": [
+          "billing_document_correction"
+        ],
+        "field_or_context_codes": [
+          "invoice_addressee_or_company_name"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A050",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "withheld",
+          "task_kinds": [
+            "booking_confirmation_notice",
+            "unknown"
+          ],
+          "field_families": [
+            "booking_confirmation"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "abstain",
+        "visibility": "withheld",
+        "notes": [
+          "confirmation_subject_only"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "booking_confirmation_notice",
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "booking_confirmation"
+        ],
+        "reviewer_notes_or_limits": [
+          "confirmation_subject_only"
+        ],
+        "confidence_as_recorded": "abstain"
+      }
+    },
+    {
+      "case": "A051",
+      "review_lane": 3,
+      "target": {
+        "kind": "accommodation_and_transfer_request",
+        "fields": [
+          "group",
+          "shuttle"
+        ],
+        "limits": [
+          "room_allocation_unknown",
+          "quoted_history"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 1,
+        "outcome": "Staff sent a quotation with a return-before-confirmation condition; the attachment and transfer fulfillment are unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "accommodation_and_transfer_request"
+        ],
+        "field_or_context_codes": [
+          "group",
+          "shuttle"
+        ],
+        "reviewer_notes_or_limits": [
+          "room_allocation_unknown",
+          "quoted_history"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A052",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "automated_new_booking_or_payment_notice",
+        "amendment_label": "not_evidenced",
+        "subtype": [
+          "new_booking",
+          "payment_status"
+        ],
+        "unit": "one stay",
+        "verification": "observed_non_amend",
+        "confidence": "high",
+        "note": "Channel-style paid/new-reservation notice; no human change ask."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "automated_new_booking_or_payment_notice"
+        ],
+        "field_or_context_codes": [
+          "new_booking",
+          "payment_status"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A053",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "acknowledgement_or_status",
+          "task_kinds": [
+            "rooming_list_status_update"
+          ],
+          "field_families": [
+            "group_or_multiple_rooms"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "yes",
+          "task_kinds": [
+            "rooming_list_amendment",
+            "guest_name_change"
+          ],
+          "field_families": [
+            "group_or_multiple_rooms",
+            "guest_name"
+          ]
+        },
+        "confidence": "medium_low",
+        "visibility": "redacted_partial",
+        "notes": [
+          "quoted_name_change_is_history;_current_text_reads_as_status_or_acknowledgement"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "rooming_list_status_update"
+        ],
+        "field_or_context_codes": [
+          "group_or_multiple_rooms"
+        ],
+        "reviewer_notes_or_limits": [
+          "quoted_name_change_is_history;_current_text_reads_as_status_or_acknowledgement"
+        ],
+        "confidence_as_recorded": "medium_low"
+      }
+    },
+    {
+      "case": "A054",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [
+          "revised_document_mention"
+        ],
+        "limits": [
+          "document_type_redacted",
+          "attachment_unavailable"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 37,
+        "prior_effect": "Earlier messages include similar revised-document notices; document type and current action remain unclear."
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "revised_document_mention"
+        ],
+        "reviewer_notes_or_limits": [
+          "document_type_redacted",
+          "attachment_unavailable"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A055",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "system_notice_or_document",
+        "amendment_label": "unknown",
+        "subtype": [],
+        "unit": "not established",
+        "verification": "candidate_only",
+        "confidence": "low",
+        "note": "Subject-only message; body empty."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "system_notice_or_document"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A056",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "acknowledgement_or_completion_notice",
+          "task_kinds": [
+            "amendment_confirmation",
+            "invoice_or_confirmation_update"
+          ],
+          "field_families": [
+            "stay_length",
+            "invoice",
+            "booking_confirmation"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "yes",
+          "task_kinds": [
+            "one_night_amendment_request"
+          ],
+          "field_families": [
+            "stay_length",
+            "invoice"
+          ]
+        },
+        "confidence": "high",
+        "visibility": "redacted_partial",
+        "notes": [
+          "current_text_reports_amendment_done;_quoted_request_is_not_a_new_request"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": true,
+        "earlier_message_count": 1,
+        "interpretation_effect": "corroborating_only",
+        "change_codes": [
+          "prior_one_night_change_request",
+          "updated_invoice_requested"
+        ],
+        "evidence_confidence": "high"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "amendment_confirmation",
+          "invoice_or_confirmation_update"
+        ],
+        "field_or_context_codes": [
+          "stay_length",
+          "invoice",
+          "booking_confirmation"
+        ],
+        "reviewer_notes_or_limits": [
+          "current_text_reports_amendment_done;_quoted_request_is_not_a_new_request"
+        ],
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A057",
+      "review_lane": 3,
+      "target": {
+        "kind": "likely_system_followup",
+        "fields": [],
+        "limits": [
+          "requested_action_unclear",
+          "sender_redacted"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 4,
+        "prior_effect": "Earlier messages contain a human discussion, so the target-only possible system-followup classification needs review; redaction prevents identifying the issue."
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "likely_system_followup"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "requested_action_unclear",
+          "sender_redacted"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A058",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "voucher_or_booking_document_notice",
+        "amendment_label": "not_evidenced",
+        "subtype": [
+          "voucher"
+        ],
+        "unit": "stay link not established",
+        "verification": "candidate_only",
+        "confidence": "low",
+        "note": "Voucher-style subject/body only; no current change ask visible."
+      },
+      "prior_thread": null,
+      "later_thread": {
+        "later_rows": 3,
+        "later_days": [
+          0
+        ],
+        "censored": true,
+        "outcome": "later inbound text discusses meal options/pricing; staff sends a brief acknowledgment",
+        "staff_decision": "acknowledgment_only",
+        "evidence": "outbound row is a short acknowledgment; inbound request/options content is partly obscured",
+        "confidence": "low",
+        "limit": "selection/meal change and any booking effect unresolved; thread censored"
+      },
+      "target_projection": {
+        "request_codes": [
+          "voucher_or_booking_document_notice"
+        ],
+        "field_or_context_codes": [
+          "voucher"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A059",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "withheld",
+          "task_kinds": [
+            "booking_confirmation_notice",
+            "unknown"
+          ],
+          "field_families": [
+            "booking_confirmation"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "abstain",
+        "visibility": "withheld",
+        "notes": [
+          "confirmation_subject_only"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "booking_confirmation_notice",
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "booking_confirmation"
+        ],
+        "reviewer_notes_or_limits": [
+          "confirmation_subject_only"
+        ],
+        "confidence_as_recorded": "abstain"
+      }
+    },
+    {
+      "case": "A060",
+      "review_lane": 3,
+      "target": {
+        "kind": "possible_business_inquiry",
+        "fields": [],
+        "limits": [
+          "heavily_redacted",
+          "requested_action_unclear"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "possible_business_inquiry"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "heavily_redacted",
+          "requested_action_unclear"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A061",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "document_or_booking_detail_request",
+        "amendment_label": "not_stay_field_amendment",
+        "subtype": [
+          "document",
+          "guest_or_stay_details"
+        ],
+        "unit": "possibly multiple named items; allocation unclear",
+        "verification": "explicit_request_candidate",
+        "confidence": "low",
+        "note": "Asks to send material for listed booking details; exact requested document and stay link are obscured."
+      },
+      "prior_thread": {
+        "prior_signal": "request for booking/voucher details",
+        "stay_link": "same-thread stay details referenced; exact PMS record unverified",
+        "prior_staff_decision": "no outcome in prior packet",
+        "context_effect": "document_or_booking_detail request; not a stay-field amendment",
+        "confidence": "medium"
+      },
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "document_or_booking_detail_request"
+        ],
+        "field_or_context_codes": [
+          "document",
+          "guest_or_stay_details"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A062",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "report_or_status_only",
+          "task_kinds": [
+            "reservation_inventory_report",
+            "rate_or_offer_report"
+          ],
+          "field_families": [
+            "reservation_count",
+            "room_nights",
+            "room_type",
+            "rate",
+            "payment_status",
+            "cancellation_status"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "no",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "medium",
+        "visibility": "redacted_partial",
+        "notes": [
+          "bulk_operational_report_not_a_single_guest_request"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "reservation_inventory_report",
+          "rate_or_offer_report"
+        ],
+        "field_or_context_codes": [
+          "reservation_count",
+          "room_nights",
+          "room_type",
+          "rate",
+          "payment_status",
+          "cancellation_status"
+        ],
+        "reviewer_notes_or_limits": [
+          "bulk_operational_report_not_a_single_guest_request"
+        ],
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A063",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [],
+        "limits": [
+          "body_withheld",
+          "subject_only"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "recovered_prefix_review": {
+        "interpretation": "Booking notice with cancellation-policy text; sender and any required action unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "body_withheld",
+          "subject_only"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A064",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "payment_status_and_contingency",
+        "amendment_label": "not_evidenced",
+        "subtype": [
+          "payment_status",
+          "possible_card_payment"
+        ],
+        "unit": "existing booking mentioned; two rooms in quoted history",
+        "verification": "explicit_question",
+        "confidence": "medium",
+        "note": "Asks if payment cleared and offers card fallback; not a stay-field change."
+      },
+      "prior_thread": null,
+      "later_thread": {
+        "later_rows": 7,
+        "later_days": [
+          2,
+          3,
+          4
+        ],
+        "censored": false,
+        "outcome": "repeated guest-side requests to confirm payment, with card-at-arrival described as a fallback",
+        "staff_decision": "no separate outbound staff row captured",
+        "evidence": "seven later inbound rows; payment-received language appears only inside quoted material",
+        "confidence": "medium_for_hidden_need_low_for_outcome",
+        "limit": "quoted history is not a current staff response; payment/booking state unresolved"
+      },
+      "target_projection": {
+        "request_codes": [
+          "payment_status_and_contingency"
+        ],
+        "field_or_context_codes": [
+          "payment_status",
+          "possible_card_payment"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A065",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "attachment_dependent_ambiguous",
+          "task_kinds": [
+            "attachment_submission_or_acknowledgement",
+            "unknown"
+          ],
+          "field_families": [
+            "attachment_content_unknown"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "abstain",
+        "visibility": "redacted_partial",
+        "notes": [
+          "body_references_attachment_but_attachment_inventory_is_unknown"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "right_censored",
+        "ambiguity_codes": [
+          "right_censored_no_conclusion_beyond_observed_interval"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "attachment_submission_or_acknowledgement",
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "attachment_content_unknown"
+        ],
+        "reviewer_notes_or_limits": [
+          "body_references_attachment_but_attachment_inventory_is_unknown"
+        ],
+        "confidence_as_recorded": "abstain"
+      }
+    },
+    {
+      "case": "A066",
+      "review_lane": 3,
+      "target": {
+        "kind": "possible_billing_issue",
+        "fields": [
+          "credit",
+          "rate"
+        ],
+        "limits": [
+          "requested_action_redacted"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown",
+        "seven_day_censored": true
+      },
+      "target_projection": {
+        "request_codes": [
+          "possible_billing_issue"
+        ],
+        "field_or_context_codes": [
+          "credit",
+          "rate"
+        ],
+        "reviewer_notes_or_limits": [
+          "requested_action_redacted"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A067",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "quote_with_transfer_need",
+        "amendment_label": "not_existing_stay_amendment",
+        "subtype": [
+          "quote",
+          "airport_transfer",
+          "flight_context"
+        ],
+        "unit": "one potential stay; confirmation not established",
+        "verification": "explicit_request",
+        "confidence": "high",
+        "note": "Asks for updated quotation including transfer; flight details are referenced but not available here."
+      },
+      "prior_thread": {
+        "prior_signal": "hotel confirmation followed by transfer-service inquiry",
+        "stay_link": "existing hotel booking indicated by prior confirmation",
+        "prior_staff_decision": "transfer cost quoted; flight details requested before booking",
+        "context_effect": "transport add-on need with an outstanding information dependency; no transfer booking/readback",
+        "confidence": "medium"
+      },
+      "later_thread": {
+        "later_rows": 1,
+        "later_days": [
+          0
+        ],
+        "censored": false,
+        "outcome": "staff says an obscured item was added and requests payment proof and guest contact details",
+        "staff_decision": "add_action_claim_with_payment_and_information_dependencies",
+        "evidence": "explicit outbound email text; link to transfer add-on is contextual inference from target/prior",
+        "confidence": "medium_for_requirements_low_for_exact_item",
+        "limit": "object masked; no proof payment/contact details supplied or PMS state verified"
+      },
+      "target_projection": {
+        "request_codes": [
+          "quote_with_transfer_need"
+        ],
+        "field_or_context_codes": [
+          "quote",
+          "airport_transfer",
+          "flight_context"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A068",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "ambiguous_system_change_notice",
+          "task_kinds": [
+            "room_type_upgrade_candidate",
+            "booking_change_notice"
+          ],
+          "field_families": [
+            "room_type",
+            "booking_change"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "low",
+        "visibility": "redacted_garbled",
+        "notes": [
+          "structured_notice_like_body;_no_clear_request_or_required_action"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "room_type_upgrade_candidate",
+          "booking_change_notice"
+        ],
+        "field_or_context_codes": [
+          "room_type",
+          "booking_change"
+        ],
+        "reviewer_notes_or_limits": [
+          "structured_notice_like_body;_no_clear_request_or_required_action"
+        ],
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A069",
+      "review_lane": 3,
+      "target": {
+        "kind": "likely_promotional_notice",
+        "fields": [],
+        "limits": [
+          "heavily_redacted"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "likely_promotional_notice"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "heavily_redacted"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A070",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "automated_confirmation",
+        "amendment_label": "unknown",
+        "subtype": [],
+        "unit": "withheld",
+        "verification": "withheld",
+        "confidence": "low",
+        "note": "Sensitive body withheld."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "automated_confirmation"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A071",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "action_request",
+          "task_kinds": [
+            "billing_dispute",
+            "charge_correction_or_review"
+          ],
+          "field_families": [
+            "invoice",
+            "meal_charge",
+            "guest_charge",
+            "payment_status"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "yes",
+          "task_kinds": [
+            "group_quote_availability",
+            "booking_confirmation",
+            "invoice_request"
+          ],
+          "field_families": [
+            "room_availability",
+            "meal_plan",
+            "invoice",
+            "payment_status"
+          ]
+        },
+        "confidence": "medium",
+        "visibility": "redacted_partial",
+        "notes": [
+          "current_issue_is_a_post_stay_charge_dispute_not_a_new_quote"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": true,
+        "earlier_message_count": 6,
+        "interpretation_effect": "material",
+        "change_codes": [
+          "meal_plan_in_original_request",
+          "requested_room_type_reported_unavailable",
+          "later_booking_and_payment_evidence",
+          "current_issue_is_post_stay_charge_dispute"
+        ],
+        "evidence_confidence": "high"
+      },
+      "later_thread": {
+        "later_message_count": 4,
+        "later_inbound_count": 4,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": [
+          "later_inbound_without_outbound_staff_reply"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "billing_dispute",
+          "charge_correction_or_review"
+        ],
+        "field_or_context_codes": [
+          "invoice",
+          "meal_charge",
+          "guest_charge",
+          "payment_status"
+        ],
+        "reviewer_notes_or_limits": [
+          "current_issue_is_a_post_stay_charge_dispute_not_a_new_quote"
+        ],
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A072",
+      "review_lane": 3,
+      "target": {
+        "kind": "acknowledgement",
+        "fields": [],
+        "limits": [
+          "quoted_history",
+          "earlier_action_unclear"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 2
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "acknowledgement"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "quoted_history",
+          "earlier_action_unclear"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A073",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "marketing_or_spam",
+        "amendment_label": "not_evidenced",
+        "subtype": [],
+        "unit": "not a hotel stay action",
+        "verification": "observed_non_amend",
+        "confidence": "high",
+        "note": "Promotional booking-service content; no guest-stay request."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "marketing_or_spam"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A074",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "system_booking_notice",
+          "task_kinds": [
+            "channel_new_booking_notification"
+          ],
+          "field_families": [
+            "channel_booking",
+            "booking_voucher",
+            "invoice_routing"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "no",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "high",
+        "visibility": "redacted_partial",
+        "notes": [
+          "automated_new_booking_message;_no_guest-authored_change_request"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "right_censored",
+        "ambiguity_codes": [
+          "right_censored_no_conclusion_beyond_observed_interval"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "channel_new_booking_notification"
+        ],
+        "field_or_context_codes": [
+          "channel_booking",
+          "booking_voucher",
+          "invoice_routing"
+        ],
+        "reviewer_notes_or_limits": [
+          "automated_new_booking_message;_no_guest-authored_change_request"
+        ],
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A075",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [
+          "attachment_mention"
+        ],
+        "limits": [
+          "document_type_redacted",
+          "attachment_unavailable"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 1
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "attachment_mention"
+        ],
+        "reviewer_notes_or_limits": [
+          "document_type_redacted",
+          "attachment_unavailable"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A076",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "payment_terms_question",
+        "amendment_label": "not_evidenced",
+        "subtype": [
+          "payment_at_checkin"
+        ],
+        "unit": "one potential stay; quote context only",
+        "verification": "explicit_question",
+        "confidence": "high",
+        "note": "Asks whether payment can occur at check-in; no stay-field change."
+      },
+      "prior_thread": {
+        "prior_signal": "rate inquiry followed by staff statement that booking was done and invoice would follow",
+        "stay_link": "booking context indicated in same thread",
+        "prior_staff_decision": "invoice/payment-proof condition stated",
+        "context_effect": "payment-at-arrival question is a payment-condition issue, not stay amendment; acceptance unresolved",
+        "confidence": "medium"
+      },
+      "later_thread": {
+        "later_rows": 3,
+        "later_days": [
+          0
+        ],
+        "censored": false,
+        "outcome": "staff says payment is required before arrival and says a revised document will follow",
+        "staff_decision": "check-in_payment_not_accepted; pre-arrival_payment_condition_stated",
+        "evidence": "two explicit outbound email rows",
+        "confidence": "medium",
+        "limit": "exact deadline/document details obscured; no payment readback"
+      },
+      "target_projection": {
+        "request_codes": [
+          "payment_terms_question"
+        ],
+        "field_or_context_codes": [
+          "payment_at_checkin"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A077",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "action_request_partial",
+          "task_kinds": [
+            "group_billing_correction",
+            "charge_allocation",
+            "invoice_follow_up"
+          ],
+          "field_families": [
+            "group_account",
+            "charge_routing",
+            "invoice",
+            "payment_status"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "yes",
+          "task_kinds": [
+            "group_booking_coordination",
+            "invoice_follow_up",
+            "account_setup"
+          ],
+          "field_families": [
+            "group_account",
+            "invoice",
+            "payment_status",
+            "charge_routing"
+          ]
+        },
+        "confidence": "medium",
+        "visibility": "truncated",
+        "notes": [
+          "current_request_concerns_final_bill;_long_history_contains_failed_group_account_and_payment_follow_up"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": true,
+        "earlier_message_count": 8,
+        "interpretation_effect": "material",
+        "change_codes": [
+          "payment_before_check_in_required",
+          "payment_link_and_invoice_workflow",
+          "purchase_order_or_account_routing",
+          "final_bill_follow_up"
+        ],
+        "evidence_confidence": "medium"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "group_billing_correction",
+          "charge_allocation",
+          "invoice_follow_up"
+        ],
+        "field_or_context_codes": [
+          "group_account",
+          "charge_routing",
+          "invoice",
+          "payment_status"
+        ],
+        "reviewer_notes_or_limits": [
+          "current_request_concerns_final_bill;_long_history_contains_failed_group_account_and_payment_follow_up"
+        ],
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A078",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [
+          "existing_stay",
+          "arrival_context"
+        ],
+        "limits": [
+          "target_action_redacted",
+          "quoted_staff_history"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 3,
+        "prior_effect": "Staff previously discussed a late arrival relative to the booked night; the selected message action remains redacted."
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown",
+        "seven_day_censored": true
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "existing_stay",
+          "arrival_context"
+        ],
+        "reviewer_notes_or_limits": [
+          "target_action_redacted",
+          "quoted_staff_history"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A079",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "multi_booking_cancellation_request",
+        "amendment_label": "not_amendment",
+        "subtype": [
+          "cancellation"
+        ],
+        "unit": "two bookings; per-stay details masked",
+        "verification": "explicit_request",
+        "confidence": "medium",
+        "note": "Asks to cancel two bookings; not an amendment."
+      },
+      "prior_thread": {
+        "prior_signal": "same-thread cancellation, reversal/rebooking exchange before another cancellation request",
+        "stay_link": "conflicting same-thread action history",
+        "prior_staff_decision": "staff said cancellation was done, then acknowledged a rebooking/reversal request",
+        "context_effect": "target is a renewed cancellation request; current booking state cannot be inferred from email history",
+        "confidence": "medium"
+      },
+      "later_thread": {
+        "later_rows": 1,
+        "later_days": [
+          0
+        ],
+        "censored": false,
+        "outcome": "staff says the bookings have been cancelled",
+        "staff_decision": "cancellation_claimed_complete",
+        "evidence": "explicit outbound email text",
+        "confidence": "high_for_email_claim_medium_for_current_state",
+        "limit": "same thread contains prior cancellation/reversal history; no PMS readback"
+      },
+      "target_projection": {
+        "request_codes": [
+          "multi_booking_cancellation_request"
+        ],
+        "field_or_context_codes": [
+          "cancellation"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A080",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "acknowledgement_or_payment_status",
+          "task_kinds": [
+            "account_payment_update",
+            "charge_allocation_status"
+          ],
+          "field_families": [
+            "account",
+            "payment_status",
+            "charge_routing"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "yes",
+          "task_kinds": [
+            "charge_explanation_request",
+            "account_setup",
+            "payment_link"
+          ],
+          "field_families": [
+            "account",
+            "invoice",
+            "payment_status",
+            "charge_routing"
+          ]
+        },
+        "confidence": "medium",
+        "visibility": "redacted_partial",
+        "notes": [
+          "current_text_reports_payment_and_future_allocation;_does_not_prove_accounting_posted"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": true,
+        "earlier_message_count": 3,
+        "interpretation_effect": "material",
+        "change_codes": [
+          "guest_charge_not_allowed",
+          "organizational_account_and_payment_link_required",
+          "charge_reason_requested",
+          "payment_posting_pending"
+        ],
+        "evidence_confidence": "high"
+      },
+      "later_thread": {
+        "later_message_count": 1,
+        "later_inbound_count": 1,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "right_censored",
+        "ambiguity_codes": [
+          "later_inbound_without_outbound_staff_reply",
+          "right_censored_no_conclusion_beyond_observed_interval"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "account_payment_update",
+          "charge_allocation_status"
+        ],
+        "field_or_context_codes": [
+          "account",
+          "payment_status",
+          "charge_routing"
+        ],
+        "reviewer_notes_or_limits": [
+          "current_text_reports_payment_and_future_allocation;_does_not_prove_accounting_posted"
+        ],
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A081",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [],
+        "limits": [
+          "body_withheld",
+          "subject_only"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "recovered_prefix_review": {
+        "interpretation": "Booking notice with cancellation-policy text; sender and any required action unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "body_withheld",
+          "subject_only"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A082",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "multi_room_quote_request",
+        "amendment_label": "not_existing_stay_amendment",
+        "subtype": [
+          "room_type",
+          "room_count",
+          "occupancy",
+          "staggered_dates",
+          "payment_timing"
+        ],
+        "unit": "multiple room/date units",
+        "verification": "explicit_request",
+        "confidence": "high",
+        "note": "Requests an updated quotation for several room/date combinations and asks to receive it before a stated time."
+      },
+      "prior_thread": {
+        "prior_signal": "multi-room group quote request and quote response with no rooms held",
+        "stay_link": "no confirmed stay shown",
+        "prior_staff_decision": "quote supplied; reservation required further acceptance/confirmation",
+        "context_effect": "quote/availability workflow, not existing-stay amendment",
+        "confidence": "high"
+      },
+      "later_thread": {
+        "later_rows": 8,
+        "later_days": [
+          0
+        ],
+        "censored": true,
+        "outcome": "group quote thread evolves through room configuration/guest-list and billing-company updates; one outbound row is only an acknowledgment, while confirmation language occurs inside quoted/inbound material",
+        "staff_decision": "no_verified_response_to_specific_room_or_billing_changes",
+        "evidence": "multiple inbound rows and one minimal outbound row; quoted material not attributed to staff",
+        "confidence": "medium_for_request_subtypes_low_for_resolution",
+        "limit": "several stay/action units may be conflated; thread censored; attachments not inspected"
+      },
+      "target_projection": {
+        "request_codes": [
+          "multi_room_quote_request"
+        ],
+        "field_or_context_codes": [
+          "room_type",
+          "room_count",
+          "occupancy",
+          "staggered_dates",
+          "payment_timing"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A083",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "withheld",
+          "task_kinds": [
+            "booking_confirmation_notice",
+            "unknown"
+          ],
+          "field_families": [
+            "arrival_urgency"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "abstain",
+        "visibility": "withheld",
+        "notes": [
+          "arrival_window_in_subject_does_not_reveal_requested_action"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "right_censored",
+        "ambiguity_codes": [
+          "right_censored_no_conclusion_beyond_observed_interval"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "booking_confirmation_notice",
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "arrival_urgency"
+        ],
+        "reviewer_notes_or_limits": [
+          "arrival_window_in_subject_does_not_reveal_requested_action"
+        ],
+        "confidence_as_recorded": "abstain"
+      }
+    },
+    {
+      "case": "A084",
+      "review_lane": 3,
+      "target": {
+        "kind": "existing_billing_thread",
+        "fields": [
+          "invoice",
+          "contact"
+        ],
+        "limits": [
+          "requested_action_redacted",
+          "attachment_unavailable"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 1,
+        "prior_effect": "Prior message concerns an invoice after checkout; the requested action and attachment contents remain unclear."
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "existing_billing_thread"
+        ],
+        "field_or_context_codes": [
+          "invoice",
+          "contact"
+        ],
+        "reviewer_notes_or_limits": [
+          "requested_action_redacted",
+          "attachment_unavailable"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A085",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "existing_stay_amendment",
+        "amendment_label": "direct_request_in_target",
+        "subtype": [
+          "departure_date",
+          "amended_document",
+          "payment_link"
+        ],
+        "unit": "one referenced stay",
+        "verification": "explicit_request",
+        "confidence": "high",
+        "note": "Directly asks to move checkout date and send amended material/payment link; quoted earlier date differs."
+      },
+      "prior_thread": {
+        "prior_signal": "booking marked done and payment link supplied",
+        "stay_link": "existing reservation indicated in same thread",
+        "prior_staff_decision": "booking/payment instructions sent",
+        "context_effect": "direct checkout-date change request; whether stay is shortened/extended is uncertain; no save/readback evidence",
+        "confidence": "medium"
+      },
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "existing_stay_amendment"
+        ],
+        "field_or_context_codes": [
+          "departure_date",
+          "amended_document",
+          "payment_link"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A086",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "withheld",
+          "task_kinds": [
+            "booking_confirmation_notice",
+            "unknown"
+          ],
+          "field_families": [
+            "booking_confirmation"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "abstain",
+        "visibility": "withheld",
+        "notes": [
+          "confirmation_subject_only"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "booking_confirmation_notice",
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "booking_confirmation"
+        ],
+        "reviewer_notes_or_limits": [
+          "confirmation_subject_only"
+        ],
+        "confidence_as_recorded": "abstain"
+      }
+    },
+    {
+      "case": "A087",
+      "review_lane": 3,
+      "target": {
+        "kind": "likely_acknowledgement",
+        "fields": [
+          "existing_booking_context"
+        ],
+        "limits": [
+          "quoted_history",
+          "current_issue_redacted"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 9,
+        "prior_effect": "Prior messages include staff discussion and a system acknowledgement; redaction leaves the issue unresolved."
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown",
+        "seven_day_censored": true
+      },
+      "target_projection": {
+        "request_codes": [
+          "likely_acknowledgement"
+        ],
+        "field_or_context_codes": [
+          "existing_booking_context"
+        ],
+        "reviewer_notes_or_limits": [
+          "quoted_history",
+          "current_issue_redacted"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A088",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "automated_confirmation",
+        "amendment_label": "unknown",
+        "subtype": [],
+        "unit": "withheld",
+        "verification": "withheld",
+        "confidence": "low",
+        "note": "Sensitive body withheld."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "automated_confirmation"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A089",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "question_or_action_request",
+          "task_kinds": [
+            "guest_count_amendment",
+            "extra_guest_price_question"
+          ],
+          "field_families": [
+            "guest_count",
+            "occupancy",
+            "one_night_scope",
+            "rate_or_supplement",
+            "payment"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "yes",
+          "task_kinds": [
+            "rate_quote_request",
+            "booking_confirmation"
+          ],
+          "field_families": [
+            "stay_dates",
+            "rate_or_supplement"
+          ]
+        },
+        "confidence": "high",
+        "visibility": "redacted_partial",
+        "notes": [
+          "current_ask_is_one_night_guest_addition_and_cost;_not_a_new_stay_quote"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": true,
+        "earlier_message_count": 3,
+        "interpretation_effect": "supporting_context",
+        "change_codes": [
+          "existing_special_rate_booking",
+          "payment_proof_workflow",
+          "additional_guest_price_not_answered_by_prior_context"
+        ],
+        "evidence_confidence": "high"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "guest_count_amendment",
+          "extra_guest_price_question"
+        ],
+        "field_or_context_codes": [
+          "guest_count",
+          "occupancy",
+          "one_night_scope",
+          "rate_or_supplement",
+          "payment"
+        ],
+        "reviewer_notes_or_limits": [
+          "current_ask_is_one_night_guest_addition_and_cost;_not_a_new_stay_quote"
+        ],
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A090",
+      "review_lane": 3,
+      "target": {
+        "kind": "possible_channel_confirmation_notice",
+        "fields": [
+          "room",
+          "occupancy",
+          "payment_claim"
+        ],
+        "limits": [
+          "sender_identity_redacted",
+          "payment_not_independently_verified"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "possible_channel_confirmation_notice"
+        ],
+        "field_or_context_codes": [
+          "room",
+          "occupancy",
+          "payment_claim"
+        ],
+        "reviewer_notes_or_limits": [
+          "sender_identity_redacted",
+          "payment_not_independently_verified"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A091",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "automated_cancellation_notification",
+        "amendment_label": "not_evidenced",
+        "subtype": [
+          "channel_cancellation_notice",
+          "no_penalty_instruction"
+        ],
+        "unit": "one referenced booking",
+        "verification": "system_notice_policy",
+        "confidence": "high",
+        "note": "Automated/channel cancellation notice uses imperative wording; product front-door rule treats this as no-action, not a human cancellation ask."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "automated_cancellation_notification"
+        ],
+        "field_or_context_codes": [
+          "channel_cancellation_notice",
+          "no_penalty_instruction"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A092",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "system_report_only",
+          "task_kinds": [
+            "channel_arrival_report"
+          ],
+          "field_families": [
+            "arrival_status",
+            "upcoming_reservations"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "no",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "high",
+        "visibility": "redacted_partial",
+        "notes": [
+          "automated_arrival_list_not_guest-authored_request"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "right_censored",
+        "ambiguity_codes": [
+          "right_censored_no_conclusion_beyond_observed_interval"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "channel_arrival_report"
+        ],
+        "field_or_context_codes": [
+          "arrival_status",
+          "upcoming_reservations"
+        ],
+        "reviewer_notes_or_limits": [
+          "automated_arrival_list_not_guest-authored_request"
+        ],
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A093",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [],
+        "limits": [
+          "body_withheld",
+          "subject_only"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "recovered_prefix_review": {
+        "interpretation": "Booking notice with cancellation-policy text; sender and any required action unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "body_withheld",
+          "subject_only"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A094",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "automated_booking_offer",
+        "amendment_label": "not_evidenced",
+        "subtype": [
+          "accept_decline_or_change_options"
+        ],
+        "unit": "one requested stay",
+        "verification": "system_notice_policy",
+        "confidence": "medium",
+        "note": "Platform notice offers accept/change/decline controls; not a staff counteroffer or human-authored amendment."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "automated_booking_offer"
+        ],
+        "field_or_context_codes": [
+          "accept_decline_or_change_options"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A095",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "non_reservation_marketing_or_admin_prompt",
+          "task_kinds": [
+            "channel_partner_newsletter",
+            "availability_update_prompt"
+          ],
+          "field_families": [
+            "availability",
+            "rate_or_listing_content"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "no",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "high",
+        "visibility": "redacted_partial",
+        "notes": [
+          "general_partner_prompt_not_a_specific_guest_reservation"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "channel_partner_newsletter",
+          "availability_update_prompt"
+        ],
+        "field_or_context_codes": [
+          "availability",
+          "rate_or_listing_content"
+        ],
+        "reviewer_notes_or_limits": [
+          "general_partner_prompt_not_a_specific_guest_reservation"
+        ],
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A096",
+      "review_lane": 3,
+      "target": {
+        "kind": "likely_promotional_notice",
+        "fields": [],
+        "limits": [
+          "heavily_redacted"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "likely_promotional_notice"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "heavily_redacted"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A097",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "channel_notice_with_embedded_guest_preference",
+        "amendment_label": "candidate_not_verified",
+        "subtype": [
+          "checkin_time"
+        ],
+        "unit": "one existing channel reservation",
+        "verification": "embedded_request_candidate",
+        "confidence": "low",
+        "note": "Automated notice carries a guest check-in-time request and says it is confirmed free; owner front-door policy may exclude the message."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "channel_notice_with_embedded_guest_preference"
+        ],
+        "field_or_context_codes": [
+          "checkin_time"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A098",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "action_request",
+          "task_kinds": [
+            "group_quote_availability"
+          ],
+          "field_families": [
+            "multiple_stay_windows",
+            "room_count_by_window",
+            "room_type",
+            "meal_plan",
+            "rate_quote"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "no",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "high",
+        "visibility": "redacted_partial",
+        "notes": [
+          "two_distinct_overlapping_date_cohorts_should_not_be_collapsed_into_one_stay"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 5,
+        "later_inbound_count": 3,
+        "later_outbound_count": 2,
+        "outbound_staff_message_observed": true,
+        "response_classes": [
+          "conditional"
+        ],
+        "response_linkage": "direct",
+        "assessment_code": "quotation_sent; rooms_not_held_until_acceptance",
+        "seven_day_window": "right_censored",
+        "ambiguity_codes": [
+          "right_censored_window",
+          "no_booking_confirmation_observed"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "group_quote_availability"
+        ],
+        "field_or_context_codes": [
+          "multiple_stay_windows",
+          "room_count_by_window",
+          "room_type",
+          "meal_plan",
+          "rate_quote"
+        ],
+        "reviewer_notes_or_limits": [
+          "two_distinct_overlapping_date_cohorts_should_not_be_collapsed_into_one_stay"
+        ],
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A099",
+      "review_lane": 3,
+      "target": {
+        "kind": "rate_adjustment_and_payment_link_request",
+        "fields": [
+          "rate",
+          "payment_link",
+          "multiple_stays"
+        ],
+        "limits": [
+          "rate_attachment_unavailable",
+          "stay_attribution_unclear"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 4,
+        "prior_effect": "Earlier messages concern company-rate negotiation; attaching the requested rate to a particular stay is unproven."
+      },
+      "later_thread": {
+        "later_outbound_count": 2,
+        "outcome": "After intervening inbound messages, staff asks for dates to make a booking and later says payment was sent; redaction leaves the object and settlement status unclear.",
+        "seven_day_censored": true
+      },
+      "target_projection": {
+        "request_codes": [
+          "rate_adjustment_and_payment_link_request"
+        ],
+        "field_or_context_codes": [
+          "rate",
+          "payment_link",
+          "multiple_stays"
+        ],
+        "reviewer_notes_or_limits": [
+          "rate_attachment_unavailable",
+          "stay_attribution_unclear"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A100",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "payment_hold_or_checkin_condition",
+        "amendment_label": "not_evidenced",
+        "subtype": [
+          "payment_unconfirmed",
+          "checkin_block"
+        ],
+        "unit": "one referenced booking; identity/time unclear",
+        "verification": "candidate_only",
+        "confidence": "low",
+        "note": "Text says check-in cannot proceed without payment; current author and whether this is new work are unclear."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "payment_hold_or_checkin_condition"
+        ],
+        "field_or_context_codes": [
+          "payment_unconfirmed",
+          "checkin_block"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A101",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "question_or_clarification_request",
+          "task_kinds": [
+            "quote_vs_booking_price_reconciliation",
+            "rate_question"
+          ],
+          "field_families": [
+            "rate_or_price",
+            "quotation",
+            "online_booking",
+            "availability_or_hold_status"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "yes",
+          "task_kinds": [
+            "group_quote_availability"
+          ],
+          "field_families": [
+            "group_or_multiple_rooms",
+            "room_count",
+            "stay_dates",
+            "rate_quote",
+            "booking_hold_or_confirmation"
+          ]
+        },
+        "confidence": "medium_high",
+        "visibility": "redacted_partial",
+        "notes": [
+          "quoted_quote_says_rooms_not_held;_current_message_asks_about_price_difference_not_confirmation"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": true,
+        "earlier_message_count": 2,
+        "interpretation_effect": "material",
+        "change_codes": [
+          "group_room_quote_and_meal_plan",
+          "quote_does_not_hold_rooms",
+          "booking_requires_accepted_quote",
+          "price_difference_remains_current_question"
+        ],
+        "evidence_confidence": "high"
+      },
+      "later_thread": {
+        "later_message_count": 6,
+        "later_inbound_count": 4,
+        "later_outbound_count": 2,
+        "outbound_staff_message_observed": true,
+        "response_classes": [
+          "clarified",
+          "alternative",
+          "conditional"
+        ],
+        "response_linkage": "direct",
+        "assessment_code": "price_difference_explained_and_alternative_offer_made; subsequent_quote_remained_payment_gated",
+        "seven_day_window": "right_censored",
+        "ambiguity_codes": [
+          "right_censored_window",
+          "payment_or_final_booking_not_observed"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "quote_vs_booking_price_reconciliation",
+          "rate_question"
+        ],
+        "field_or_context_codes": [
+          "rate_or_price",
+          "quotation",
+          "online_booking",
+          "availability_or_hold_status"
+        ],
+        "reviewer_notes_or_limits": [
+          "quoted_quote_says_rooms_not_held;_current_message_asks_about_price_difference_not_confirmation"
+        ],
+        "confidence_as_recorded": "medium_high"
+      }
+    },
+    {
+      "case": "A102",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [],
+        "limits": [
+          "body_withheld",
+          "subject_only"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "recovered_prefix_review": {
+        "interpretation": "Booking notice with cancellation-policy text; sender and any required action unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "body_withheld",
+          "subject_only"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A103",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "new_booking_or_voucher_request",
+        "amendment_label": "not_existing_stay_amendment",
+        "subtype": [
+          "new_booking",
+          "voucher"
+        ],
+        "unit": "one stay",
+        "verification": "explicit_new_booking_context",
+        "confidence": "medium",
+        "note": "New-booking thread asks for confirmation; quoted material reports the booking was made."
+      },
+      "prior_thread": {
+        "prior_signal": "two-room booking and subsequent voucher/document exchange",
+        "stay_link": "new booking context in same thread",
+        "prior_staff_decision": "staff said booking was made and invoice would follow",
+        "context_effect": "booking/voucher workflow, not an established stay-field amendment",
+        "confidence": "medium"
+      },
+      "later_thread": {
+        "later_rows": 3,
+        "later_days": [
+          0
+        ],
+        "censored": false,
+        "outcome": "staff acknowledges receipt of a voucher; later inbound text contains booking-form instructions whose source/status is unclear",
+        "staff_decision": "receipt_acknowledged_only",
+        "evidence": "explicit outbound acknowledgment plus ambiguous inbound/embedded text",
+        "confidence": "medium_for_acknowledgment_low_for_booking_status",
+        "limit": "no explicit confirmation that booking was created or amended"
+      },
+      "target_projection": {
+        "request_codes": [
+          "new_booking_or_voucher_request"
+        ],
+        "field_or_context_codes": [
+          "new_booking",
+          "voucher"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A104",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "billing_admin_instruction",
+          "task_kinds": [
+            "voucher_invoice_submission",
+            "payment_method_or_format_condition"
+          ],
+          "field_families": [
+            "voucher",
+            "invoice",
+            "payment_method",
+            "billing_routing",
+            "no_response_cancellation_condition"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "no",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "high",
+        "visibility": "redacted_partial",
+        "notes": [
+          "supplier_payment_workflow;_quote_or_invoice_format_is_not_a_guest_stay_request"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 1,
+        "later_inbound_count": 0,
+        "later_outbound_count": 1,
+        "outbound_staff_message_observed": true,
+        "response_classes": [
+          "unknown"
+        ],
+        "response_linkage": "ambiguous",
+        "assessment_code": "outbound_voucher_or_forward_content_does_not_show_a_clear_answer",
+        "seven_day_window": "right_censored",
+        "ambiguity_codes": [
+          "right_censored_window",
+          "outbound_may_duplicate_or_forward_request"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "voucher_invoice_submission",
+          "payment_method_or_format_condition"
+        ],
+        "field_or_context_codes": [
+          "voucher",
+          "invoice",
+          "payment_method",
+          "billing_routing",
+          "no_response_cancellation_condition"
+        ],
+        "reviewer_notes_or_limits": [
+          "supplier_payment_workflow;_quote_or_invoice_format_is_not_a_guest_stay_request"
+        ],
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A105",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [],
+        "limits": [
+          "body_withheld",
+          "subject_mentions_modification"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown",
+        "seven_day_censored": true
+      },
+      "recovered_prefix_review": {
+        "interpretation": "Booking notice; subject mentions modification. Sender and any required action unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "body_withheld",
+          "subject_mentions_modification"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A106",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "late_arrival_or_document_request",
+        "amendment_label": "unknown",
+        "subtype": [
+          "late_timing_or_document"
+        ],
+        "unit": "stay link unclear",
+        "verification": "candidate_only",
+        "confidence": "low",
+        "note": "Only a brief attached-item reference is visible; requested action/value cannot be recovered."
+      },
+      "prior_thread": {
+        "prior_signal": "two brief attachment-related timing/document requests; wording obscured",
+        "stay_link": "unclear",
+        "prior_staff_decision": "none visible",
+        "context_effect": "prior context does not resolve target's late-time/document ambiguity",
+        "confidence": "low"
+      },
+      "later_thread": {
+        "later_rows": 3,
+        "later_days": [
+          0,
+          1
+        ],
+        "censored": false,
+        "outcome": "three guest-side attachment messages repeat early/late timing requests for adjacent dates",
+        "staff_decision": "no outbound staff row captured",
+        "evidence": "inbound rows only",
+        "confidence": "medium_for_repeated_need_low_for_exact_action",
+        "limit": "exact timing field and linked stay obscured; no response captured"
+      },
+      "target_projection": {
+        "request_codes": [
+          "late_arrival_or_document_request"
+        ],
+        "field_or_context_codes": [
+          "late_timing_or_document"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A107",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "action_request",
+          "task_kinds": [
+            "invoice_request",
+            "payment_details_request"
+          ],
+          "field_families": [
+            "invoice",
+            "payment_method",
+            "proof_of_payment",
+            "existing_booking"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "yes",
+          "task_kinds": [
+            "group_quote_availability",
+            "booking_confirmation",
+            "invoice_follow_up"
+          ],
+          "field_families": [
+            "room_count",
+            "room_type",
+            "meal_plan",
+            "stay_dates",
+            "quotation",
+            "booking_hold_or_confirmation"
+          ]
+        },
+        "confidence": "high",
+        "visibility": "redacted_partial",
+        "notes": [
+          "current_request_is_payment_documents_for_existing_booking;_quoted_quote_and_booking_are_history"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": true,
+        "earlier_message_count": 6,
+        "interpretation_effect": "supporting_context",
+        "change_codes": [
+          "quotation_requires_return_before_confirmation",
+          "purchase_order_form_condition",
+          "booking_later_done",
+          "current_request_is_payment_documents",
+          "payment_not_observed"
+        ],
+        "evidence_confidence": "medium_high"
+      },
+      "later_thread": {
+        "later_message_count": 1,
+        "later_inbound_count": 0,
+        "later_outbound_count": 1,
+        "outbound_staff_message_observed": true,
+        "response_classes": [
+          "accepted"
+        ],
+        "response_linkage": "direct",
+        "assessment_code": "requested_invoice_or_payment_documents_sent; payment_completion_not_observed",
+        "seven_day_window": "complete",
+        "ambiguity_codes": [
+          "actual_payment_not_observed"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "invoice_request",
+          "payment_details_request"
+        ],
+        "field_or_context_codes": [
+          "invoice",
+          "payment_method",
+          "proof_of_payment",
+          "existing_booking"
+        ],
+        "reviewer_notes_or_limits": [
+          "current_request_is_payment_documents_for_existing_booking;_quoted_quote_and_booking_are_history"
+        ],
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A108",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [],
+        "limits": [
+          "heavily_redacted"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "heavily_redacted"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A109",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "automated_booking_extension_notice",
+        "amendment_label": "system_change_not_human_ask",
+        "subtype": [
+          "stay_extension"
+        ],
+        "unit": "one channel booking",
+        "verification": "observed_notice_candidate",
+        "confidence": "high",
+        "note": "System says voucher/booking was modified and extended; it does not establish a current staff task or HMS write."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "automated_booking_extension_notice"
+        ],
+        "field_or_context_codes": [
+          "stay_extension"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A110",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "withheld",
+          "task_kinds": [
+            "amendment_candidate",
+            "unknown"
+          ],
+          "field_families": [
+            "unknown"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "abstain",
+        "visibility": "withheld",
+        "notes": [
+          "modification_subject_only_does_not_reveal_changed_field"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "right_censored",
+        "ambiguity_codes": [
+          "right_censored_no_conclusion_beyond_observed_interval"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "amendment_candidate",
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "unknown"
+        ],
+        "reviewer_notes_or_limits": [
+          "modification_subject_only_does_not_reveal_changed_field"
+        ],
+        "confidence_as_recorded": "abstain"
+      }
+    },
+    {
+      "case": "A111",
+      "review_lane": 3,
+      "target": {
+        "kind": "flight_document_followup",
+        "fields": [
+          "attachment_mention"
+        ],
+        "limits": [
+          "attachment_unavailable",
+          "requested_action_unclear",
+          "quoted_history"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 9,
+        "prior_effect": "Earlier messages request upgrades for multiple rooms and a transfer, discuss prices, and say flight details are needed to book the transfer. The selected message supplies a flight-document reference; attachment contents, actual upgrade and transfer completion are unverified."
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown",
+        "seven_day_censored": true
+      },
+      "target_projection": {
+        "request_codes": [
+          "flight_document_followup"
+        ],
+        "field_or_context_codes": [
+          "attachment_mention"
+        ],
+        "reviewer_notes_or_limits": [
+          "attachment_unavailable",
+          "requested_action_unclear",
+          "quoted_history"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A112",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "automated_confirmation",
+        "amendment_label": "unknown",
+        "subtype": [],
+        "unit": "withheld",
+        "verification": "withheld",
+        "confidence": "low",
+        "note": "Sensitive body withheld."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "automated_confirmation"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A113",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "withheld",
+          "task_kinds": [
+            "booking_confirmation_notice",
+            "unknown"
+          ],
+          "field_families": [
+            "booking_confirmation"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "abstain",
+        "visibility": "withheld",
+        "notes": [
+          "confirmation_subject_only"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "booking_confirmation_notice",
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "booking_confirmation"
+        ],
+        "reviewer_notes_or_limits": [
+          "confirmation_subject_only"
+        ],
+        "confidence_as_recorded": "abstain"
+      }
+    },
+    {
+      "case": "A114",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [],
+        "limits": [
+          "body_withheld",
+          "subject_only"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "recovered_prefix_review": {
+        "interpretation": "Booking notice with cancellation-policy text; sender and any required action unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "body_withheld",
+          "subject_only"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A115",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "purchase_confirmation",
+        "amendment_label": "not_evidenced",
+        "subtype": [
+          "new_booking",
+          "payment",
+          "cancellation_terms"
+        ],
+        "unit": "one stay",
+        "verification": "observed_non_amend",
+        "confidence": "high",
+        "note": "Automated purchase/booking confirmation includes payment and cancellation-policy terms; no change request."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "purchase_confirmation"
+        ],
+        "field_or_context_codes": [
+          "new_booking",
+          "payment",
+          "cancellation_terms"
+        ],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "high"
+      }
+    },
+    {
+      "case": "A116",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "action_request_partial",
+          "task_kinds": [
+            "booking_modification"
+          ],
+          "field_families": [
+            "existing_booking",
+            "stay_dates",
+            "multiple_rooms",
+            "room_type",
+            "occupancy",
+            "payment_terms",
+            "cancellation_terms"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "no",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "medium",
+        "visibility": "redacted_partial",
+        "notes": [
+          "modification_is_explicit_but_requested_field_is_obscured;_booking_details_and_terms_are_context_not_the_change"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 3,
+        "later_inbound_count": 1,
+        "later_outbound_count": 2,
+        "outbound_staff_message_observed": true,
+        "response_classes": [
+          "accepted",
+          "conditional"
+        ],
+        "response_linkage": "direct",
+        "assessment_code": "staff_reported_a_booking_action; payment_was_still_required",
+        "seven_day_window": "complete",
+        "ambiguity_codes": [
+          "payment_completion_not_observed",
+          "exact_modification_field_not_recoverable"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "booking_modification"
+        ],
+        "field_or_context_codes": [
+          "existing_booking",
+          "stay_dates",
+          "multiple_rooms",
+          "room_type",
+          "occupancy",
+          "payment_terms",
+          "cancellation_terms"
+        ],
+        "reviewer_notes_or_limits": [
+          "modification_is_explicit_but_requested_field_is_obscured;_booking_details_and_terms_are_context_not_the_change"
+        ],
+        "confidence_as_recorded": "medium"
+      }
+    },
+    {
+      "case": "A117",
+      "review_lane": 3,
+      "target": {
+        "kind": "possible_channel_confirmation_with_guest_question",
+        "fields": [
+          "checkin",
+          "checkout",
+          "invoice_details"
+        ],
+        "limits": [
+          "sender_identity_redacted",
+          "actual_reservation_unverified"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown",
+        "seven_day_censored": true
+      },
+      "target_projection": {
+        "request_codes": [
+          "possible_channel_confirmation_with_guest_question"
+        ],
+        "field_or_context_codes": [
+          "checkin",
+          "checkout",
+          "invoice_details"
+        ],
+        "reviewer_notes_or_limits": [
+          "sender_identity_redacted",
+          "actual_reservation_unverified"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A118",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "automated_confirmation",
+        "amendment_label": "unknown",
+        "subtype": [],
+        "unit": "withheld",
+        "verification": "withheld",
+        "confidence": "low",
+        "note": "Sensitive body withheld."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "automated_confirmation"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A119",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "withheld",
+          "task_kinds": [
+            "booking_modification_confirmation_notice",
+            "unknown"
+          ],
+          "field_families": [
+            "booking_confirmation"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "abstain",
+        "visibility": "withheld",
+        "notes": [
+          "subject_suggests_modified_confirmation_but_body_is_withheld"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "booking_modification_confirmation_notice",
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "booking_confirmation"
+        ],
+        "reviewer_notes_or_limits": [
+          "subject_suggests_modified_confirmation_but_body_is_withheld"
+        ],
+        "confidence_as_recorded": "abstain"
+      }
+    },
+    {
+      "case": "A120",
+      "review_lane": 3,
+      "target": {
+        "kind": "unknown",
+        "fields": [],
+        "limits": [
+          "body_withheld",
+          "subject_only"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 0
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "recovered_prefix_review": {
+        "interpretation": "Booking notice with cancellation-policy text; sender and any required action unverified."
+      },
+      "target_projection": {
+        "request_codes": [
+          "unknown"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": [
+          "body_withheld",
+          "subject_only"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A121",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "automated_confirmation",
+        "amendment_label": "unknown",
+        "subtype": [],
+        "unit": "withheld",
+        "verification": "withheld",
+        "confidence": "low",
+        "note": "Sensitive body withheld."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "automated_confirmation"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A122",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "withheld",
+          "task_kinds": [
+            "channel_cancellation_notice",
+            "unknown"
+          ],
+          "field_families": [
+            "cancellation_status",
+            "arrival_urgency"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "unknown",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "abstain",
+        "visibility": "withheld",
+        "notes": [
+          "subject_indicates_cancellation_notice;_underlying_request_and_required_follow_up_unknown"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "complete",
+        "ambiguity_codes": []
+      },
+      "target_projection": {
+        "request_codes": [
+          "channel_cancellation_notice",
+          "unknown"
+        ],
+        "field_or_context_codes": [
+          "cancellation_status",
+          "arrival_urgency"
+        ],
+        "reviewer_notes_or_limits": [
+          "subject_indicates_cancellation_notice;_underlying_request_and_required_follow_up_unknown"
+        ],
+        "confidence_as_recorded": "abstain"
+      }
+    },
+    {
+      "case": "A123",
+      "review_lane": 3,
+      "target": {
+        "kind": "voucher_acknowledgement",
+        "fields": [
+          "voucher_mention"
+        ],
+        "limits": [
+          "payment_not_independently_verified",
+          "attachment_unavailable"
+        ]
+      },
+      "prior_thread": {
+        "earlier_count": 1,
+        "prior_effect": "Prior message refers to a voucher; its attachment contents are unavailable."
+      },
+      "later_thread": {
+        "later_outbound_count": 0,
+        "outcome": "unknown"
+      },
+      "target_projection": {
+        "request_codes": [
+          "voucher_acknowledgement"
+        ],
+        "field_or_context_codes": [
+          "voucher_mention"
+        ],
+        "reviewer_notes_or_limits": [
+          "payment_not_independently_verified",
+          "attachment_unavailable"
+        ],
+        "confidence_as_recorded": null
+      }
+    },
+    {
+      "case": "A124",
+      "review_lane": 1,
+      "target": {
+        "stage": "target_only_pre_prior",
+        "target_type": "automated_confirmation",
+        "amendment_label": "unknown",
+        "subtype": [],
+        "unit": "withheld",
+        "verification": "withheld",
+        "confidence": "low",
+        "note": "Sensitive body withheld."
+      },
+      "prior_thread": null,
+      "later_thread": null,
+      "target_projection": {
+        "request_codes": [
+          "automated_confirmation"
+        ],
+        "field_or_context_codes": [],
+        "reviewer_notes_or_limits": null,
+        "confidence_as_recorded": "low"
+      }
+    },
+    {
+      "case": "A125",
+      "review_lane": 2,
+      "target": {
+        "current": {
+          "status": "system_booking_confirmation",
+          "task_kinds": [
+            "channel_booking_confirmation"
+          ],
+          "field_families": [
+            "booking_confirmation",
+            "stay_dates",
+            "room_count",
+            "occupancy",
+            "invoice_details",
+            "payment_status",
+            "cancellation_terms"
+          ]
+        },
+        "quoted_in_target": {
+          "present": "no",
+          "task_kinds": [],
+          "field_families": []
+        },
+        "confidence": "high",
+        "visibility": "redacted_partial",
+        "notes": [
+          "purchase_confirmation_reports_paid_status;_no_separate_guest_request"
+        ]
+      },
+      "prior_thread": {
+        "earlier_messages_available": false,
+        "earlier_message_count": 0,
+        "interpretation_effect": "no_prior_messages_supplied",
+        "change_codes": [],
+        "evidence_confidence": "not_applicable"
+      },
+      "later_thread": {
+        "later_message_count": 0,
+        "later_inbound_count": 0,
+        "later_outbound_count": 0,
+        "outbound_staff_message_observed": false,
+        "response_classes": [
+          "no_outbound_observed"
+        ],
+        "response_linkage": "none",
+        "assessment_code": "no_outbound_staff_response_in_observed_records",
+        "seven_day_window": "right_censored",
+        "ambiguity_codes": [
+          "right_censored_no_conclusion_beyond_observed_interval"
+        ]
+      },
+      "target_projection": {
+        "request_codes": [
+          "channel_booking_confirmation"
+        ],
+        "field_or_context_codes": [
+          "booking_confirmation",
+          "stay_dates",
+          "room_count",
+          "occupancy",
+          "invoice_details",
+          "payment_status",
+          "cancellation_terms"
+        ],
+        "reviewer_notes_or_limits": [
+          "purchase_confirmation_reports_paid_status;_no_separate_guest_request"
+        ],
+        "confidence_as_recorded": "high"
+      }
+    }
+  ]
+}
