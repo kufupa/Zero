@@ -17,7 +17,7 @@ All functions operate on the supplied logged-in Playwright `page`, bound to one 
 
 `target = {confirmation, propertyCode, guestName, arrival, departure, status}`. Dates are calendar strings `YYYY-MM-DD`; prices and quantities in previews and receipts are decimal strings, never floating-point calculations by this tool.
 
-`coverage = {loaded:number, reportedTotal:number|null, complete:boolean|null}`. Unknown completeness stays `null`. Raw rows and column field mappings are preserved. `candidates` contain `{code, name, itemId, native}`. A detail contains `{nativeId, fields:AddOnPreview}`. Native IDs are resolved from current catalogue selection, not accepted as arbitrary caller substitutions.
+`coverage = {loaded:number, reportedTotal:number|null, complete:boolean|null}`. Unknown completeness stays `null`. Raw rows and column field mappings are preserved. `candidates` contain `{code, name, itemId, native}`. A detail contains `{nativeId, fields:AddOnPreview}`. Catalogue item IDs come from current native selection; saved row IDs come from the booking's read. Callers cannot substitute catalogue IDs.
 
 ### Item input
 
@@ -134,7 +134,7 @@ The read result now also includes `items`, normalized saved-row summaries alongs
 
 `prepareChanges` requires `changes`; `saveChanges` requires the originating `preparedId`. Both require `confirmation`, with optional initial name/date lookup hints. Unsupported wire fields are rejected. Tokens are bound to add or corrections preparation; the other Save operation cannot consume them.
 
-Corrections execute one by one in the existing session queue. They require no new journal or distributed-lock framework. Default CLI authorization remains fresh Proof Labtest verification, arrival 2027+, Reserved status and CMS off. Real-guest callers provide a trusted `authorizeChanges(prepared)` function returning exactly `true` on staff approval. Optional host hooks are `beforeChangeDispatch(dispatch)` and `afterChangeDispatch(receipt)`. The existing add-session `authorize` and callback requirements remain unchanged. JSON cannot provide authority or callbacks.
+Corrections execute one by one in the existing session queue. They require no new journal or distributed-lock framework. Default CLI authorization remains fresh Proof Labtest verification, arrival 2027+, Reserved status and CMS off. Real-guest callers provide a trusted `authorizeChanges(prepared)` function returning exactly `true` on staff approval. Optional host hooks are `beforeChangeDispatch(dispatch)` and `afterChangeDispatch(receipt)`. An optional existing `withWriteLock(confirmation, callback)` is honored for both Save paths; it is not required for corrections. The existing add-session `authorize` and callback requirements remain unchanged. JSON cannot provide authority or callbacks.
 
 Immediately before each correction, the tool reads the target in an independent session, compares its full supported fields with the prepared before-state, reloads/stages the owning form, and compares the approved result before dispatch. Changed records return `ADDONS_RECORD_CHANGED` without overwriting the concurrent change. Different processes and direct HMS operators must avoid concurrent writes to the same booking; this fresh check is not an atomic compare-and-set against a later external edit.
 

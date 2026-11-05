@@ -196,7 +196,7 @@ All local checks are existing focused tests only. Native refusal and recovery ca
 
 ### Execution design
 
-Corrections reuse the existing session with a separate trusted `authorizeChanges` callback and optional correction dispatch callbacks. They do not force the add-only journaling/lock callback contract on new callers. Existing add-session `authorize` behavior is preserved. The owning page queue executes one correction at a time; caller-managed separate processes must also serialize writes to the same booking. A fresh pre-dispatch row read detects stale preparation, but is not an atomic compare-and-set against direct HMS edits.
+Corrections reuse the existing session with a separate trusted `authorizeChanges` callback and optional correction dispatch callbacks. They do not force the add-only journaling/lock callback contract on new callers. Existing add-session `authorize` behavior is preserved. The owning page queue executes one correction at a time. Honor an existing `withWriteLock` when a host explicitly supplies it, without requiring one for corrections; caller-managed separate processes must also serialize writes to the same booking. A fresh pre-dispatch row read detects stale preparation, but is not an atomic compare-and-set against direct HMS edits.
 
 ### Sequence and estimate limits
 

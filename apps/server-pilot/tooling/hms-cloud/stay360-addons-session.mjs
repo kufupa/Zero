@@ -204,7 +204,7 @@ export async function withStay360AddOnSession(operation, options = {}) {
           return { ...lastSave, outcome: reconciliation.outcome === 'verified' ? (lastSave.outcome === 'unchanged' ? 'unchanged' : 'saved') : 'uncertain',
             reconciliation, next: reconciliation.outcome === 'verified' ? 'fresh_session' : 'reconcile_before_retry' };
         };
-        return request.tool !== 'saveChanges' && options.withWriteLock ? await options.withWriteLock(confirmation, save) : await save();
+        return options.withWriteLock ? await options.withWriteLock(confirmation, save) : await save();
       } catch (error) {
         if (lastSave?.receipts && ['awaiting_readback', 'uncertain'].includes(lastSave.outcome)) {
           closed = true;
