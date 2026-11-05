@@ -550,9 +550,14 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       result = checked ? { ...result, chargeRoomPricing: 'checked' } :
         { ...result, outcome: 'selection_uncertain', issue: 'CHARGE_ROOM_PRICE_CHECK_UNVERIFIED' };
     } else if (tool === 'selectGuestStayRatePlan' && state.chargeRoom && result?.outcome === 'selected_unsaved') {
+      // A verified rate edit invalidates the old price, but it does not make
+      // the next native availability check unsafe.
+      state.chargeRateRecheckAllowed = previousChargeRecheckAllowed;
       result = { ...result, chargeRoomPricing: 'requires_recheck' };
     } else if (tool === 'selectGuestStayRatePlan' && (result?.outcome === 'input_gap' ||
-        (result?.outcome === 'execution_failure' && result.issue === 'RATE_AVAILABILITY_CONTROL_UNAVAILABLE'))) {
+        (result?.outcome === 'criteria_unavailable' && result.issue !== 'RATE_PRICE_UNCONFIRMED') ||
+        (result?.outcome === 'execution_failure' &&
+          ['RATE_AVAILABILITY_CONTROL_UNAVAILABLE', 'CURRENT_RATE_CODE_UNVERIFIED'].includes(result.issue)))) {
       // No price check was attempted; a corrected call or a later edit can
       // still recheck a previously verified price.
       state.chargeRateChecked = previousChargeRateChecked;

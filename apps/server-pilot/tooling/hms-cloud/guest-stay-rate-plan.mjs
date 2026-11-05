@@ -59,7 +59,7 @@ async function readDraft(page) {
     const value = key => unique(key) ? String(data[key] ?? '').trim() : null;
     const exact = (key,expected) => unique(key) && value(key) === expected;
     const accountKeys = keys?.filter(key => key.toLowerCase() === 'araccountid') || [];
-    const partyIdKeys = ['taid1', 'companyid'];
+    const partyIdKeys = ['taid1', 'companyid', 'childages', 'sourceofbus'];
     const optionalValue = name => {
       const matches = keys?.filter(key => key.toLowerCase() === name) || [];
       return matches.length === 1 ? String(data[matches[0]] ?? '').trim() : null;
@@ -72,7 +72,8 @@ async function readDraft(page) {
         blankIds.every(key => exact(key,'')),
       session:value('bookingsessionid'),guestId:value('guestid'),arAccountId:optionalValue('araccountid') || '',
       arProfileId:value('arprofileid'),arAccountName:value('araccountname'),
-      agencyId:optionalValue('taid1'),organizationId:optionalValue('companyid'),
+      agencyId:optionalValue('taid1'),organizationId:optionalValue('companyid'),childAges:optionalValue('childages'),
+      sourceCode:optionalValue('sourceofbus'),
     } : null;
     let submit = null;
     try { submit = cmp?.getSubmitData?.() || null; } catch { /* Fail the readback if unavailable. */ }
@@ -153,6 +154,7 @@ export async function checkedChargeRateEvidence(page, expected) {
       proof.arrival !== expected.arrival || proof.departure !== expected.departure) return null;
   const draft = await readDraft(page);
   if (draft?.identity?.valid !== true || JSON.stringify(draft.identity) !== JSON.stringify(proof.identity) ||
+      clean(draft.guaranteeValue) !== proof.guarantee ||
       JSON.stringify(chargePriceFields(draft)) !== JSON.stringify(proof.fields)) return null;
   return { averageRate: proof.fields.averagerate, totalRate: proof.fields.totalrate, currency: proof.currency };
 }
@@ -220,12 +222,41 @@ function rateChangeRequest(page, request, code, dates, sessionId, draft) {
   return !draftIdIssue(request,clean(draft.guestId),dates.ar);
 }
 // Only the armed Check Availability click may pass this read-only action.
-function isCreateAvailabilityRequest(page, request) {
+function isCreateAvailabilityRequest(page, request, { draft, dates, code, sessionId, createDraft }) {
   try {
     const url = new URL(request.url());
-    return request.method() === 'POST' && url.origin === ORIGIN && url.pathname === CHECK_AVAILABILITY &&
+    if (!(request.method() === 'POST' && url.origin === ORIGIN && url.pathname === CHECK_AVAILABILITY &&
       !url.search && !url.hash && request.frame() === page.mainFrame() &&
-      request.frame().page() === page;
+      request.frame().page() === page &&
+      /^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || ''))) return false;
+    const body = new URLSearchParams(request.postData() || ''), fields = new Map();
+    for (const [key, value] of body) {
+      const name = key.toLowerCase();
+      if (!fields.has(name)) fields.set(name, []);
+      fields.get(name).push(value);
+    }
+    const exact = (name, expected) => fields.get(name)?.length === 1 && fields.get(name)[0] === String(expected ?? '');
+    const optional = (name, expected) => {
+      const values = fields.get(name) || [];
+      if (values.length > 1) return false;
+      if (expected == null || expected === '') return !values.length || values[0] === '';
+      return values.length === 1 && values[0] === String(expected);
+    };
+    const required = { propertycode: PROPERTY, bookingsessionid: sessionId, guestid: draft.identity?.guestId,
+      arrivaldate: dates.arrival.wire, departuredate: dates.departure.wire, roomtype: createDraft.roomType,
+      rateplan: code, adults: createDraft.adults, children: createDraft.childCount, guaranteetype: createDraft.guaranteeType };
+    if (!Object.entries(required).every(([name, value]) => value != null && exact(name, value))) return false;
+    const chargeRoom = fieldValue(draft.fields, 'roomtypecharge');
+    if (!optional('roomtypecharge', chargeRoom) || !optional('taid1', draft.identity?.agencyId) ||
+        !optional('companyid', draft.identity?.organizationId) || !optional('araccountid', draft.identity?.arAccountId) ||
+        !optional('arprofileid', draft.identity?.arProfileId) || !optional('sourceofbus', draft.identity?.sourceCode)) return false;
+    const childAges = draft.identity?.childAges;
+    if (createDraft.childCount > 0 ? !childAges || !exact('childages', childAges) : !optional('childages', childAges)) return false;
+    for (const name of ['child1', 'child2', 'child3']) {
+      const present = (draft.fields || []).filter(field => field.name === name);
+      if (present.length > 1 || (present.length === 1 && !exact(name, clean(present[0].value)))) return false;
+    }
+    return true;
   } catch { return false; }
 }
 function fieldValue(fields, name) {
@@ -389,7 +420,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       else if (Array.from(requests.values()).includes('validation') && !Array.from(requests.values()).includes('change') &&
           rateChangeRequest(page,request,code,dates,sessionId,before)) kind = 'change';
       else if (requireM1CreateAvailability && availabilityCheckArmed && !Array.from(requests.values()).includes('availability') &&
-          isCreateAvailabilityRequest(page,request)) kind = 'availability';
+          isCreateAvailabilityRequest(page,request,{ draft:after, dates, code, sessionId, createDraft })) kind = 'availability';
       if (kind) {
         if (kind === 'change' && !scope?.allow(request)) return route.abort();
         if (kind === 'availability') {
@@ -526,8 +557,10 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     }
     const fields = rateAvailability ? chargePriceFields(after) : null;
     const chargePrice = fields && chargeRoomRevision(page) === revision && fields.roomtypecharge &&
+      (!Number(fieldValue(after.fields,'children')) || Boolean(after.identity?.childAges)) &&
       fields.rateplan === code && fields.averagerate === rateAvailability.averageRate && fields.totalrate === rateAvailability.totalRate
-      ? { revision, fields, identity: after.identity, chargeRoom: fields.roomtypecharge, roomType: fields.roomtype, ratePlan: code,
+      ? { revision, fields, identity: after.identity, guarantee: clean(after.guaranteeValue),
+        chargeRoom: fields.roomtypecharge, roomType: fields.roomtype, ratePlan: code,
         arrival: dates.arrival.iso, departure: dates.departure.iso, currency: rateAvailability.currency } : null;
     selectedOnPage.set(page,{code,fingerprint:draftFingerprint(after),chargePrice});
     return {outcome:'selected_unsaved',code,previousCode,previousRateEvidence,propertyCode:PROPERTY,arrivalDate:dates.arrival.iso,departureDate:dates.departure.iso,
