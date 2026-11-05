@@ -34,6 +34,9 @@ With `includeReasons: true`, `readSavedStayRates` adds `reasons` with its
 coverage. A missing native description is `null`. HMS currently exposes the
 saved description here, not its code, so `code` is `null`. The option does
 not change the nightly-rate digest. Without it, the existing result is unchanged.
+An unverified or unavailable native reason response adds an `issue` and unknown
+coverage; it does not erase an independently read nightly price. Identity,
+guard and browser cleanup failures remain read failures.
 
 Prepare returns `change.reasonCode` and the selected native
 `change.reasonDescription`; both are bound to the review. Commit reopens the
