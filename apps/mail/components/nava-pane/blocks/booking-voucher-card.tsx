@@ -135,6 +135,7 @@ export function BookingVoucherCard({
           approvalAvailable={Boolean(filingSourceCurrent && approvalClient && workItemId && mailboxScope && transportId && internetMessageId)}
           selectionEpoch={session.binding?.selectionEpoch}
           selectedSource={propertyCode === 'HRCEN' ? (selectedSource ?? null) : undefined}
+          reviewSource={selectedSource}
           selectionCurrent={filingSourceCurrent}
           onTargetChanged={() => setPreparedFiling(null)}
           onPrepared={(digest) => { setPreparedFiling({ scope: filingScope, digest: digest ?? null }); setApprovalRevision((revision) => revision + 1); }}

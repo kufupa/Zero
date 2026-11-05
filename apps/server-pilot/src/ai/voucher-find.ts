@@ -19,16 +19,13 @@ import { readPanePop3Attachment } from '../mail/artifacts/pane-pop3-attachment.j
 import { getS3Storage } from '../storage/s3.js';
 import { readPaneFilingAttachment } from './pane-filing-source.js';
 import { paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
-import { isVoucherPdfFilename, isVoucherPdfMime } from './voucher-filing-file.js';
-import { MAX_VOUCHER_FILING_BYTES } from './voucher-filing-bytes.js';
+export { isVoucherMail, voucherFilingFiles } from './voucher-filing-file.js';
 
 // Voucher and proof-of-payment mail. Only the subject and the start of the body are read, so quoted history
 // further down cannot make an unrelated email look like a voucher.
-const VOUCHER_WORDS = /\bvouchers?\b|\bvch\b|\bremittance\b|proof of payment/i;
 // POP is read in capitals only, so "pop-up" and "POP3" do not match.
 const POP_CAPS = /\bPOP\b/;
 const VOUCHER_FILE = /_vch_|voucher/i;
-const BODY_CHECK_CHARS = 2000;
 const ATTACHMENT_TEXT_CHARS = 20_000;
 const LABEL_TAIL_CHARS = 60;
 
@@ -71,17 +68,6 @@ export type VoucherCandidate = {
   attachments: QuoteAttachmentRow[];
 };
 
-export function isVoucherMail(input: {
-  subject: string;
-  bodyText: string;
-  attachmentNames: string[];
-}): boolean {
-  const head = input.bodyText.slice(0, BODY_CHECK_CHARS);
-  if (VOUCHER_WORDS.test(input.subject) || VOUCHER_WORDS.test(head)) return true;
-  if (POP_CAPS.test(input.subject) || POP_CAPS.test(head)) return true;
-  return input.attachmentNames.some((name) => VOUCHER_FILE.test(name));
-}
-
 function isPdfRow(row: QuoteAttachmentRow): boolean {
   return row.mimeType === 'application/pdf' || /\.pdf$/i.test(row.filename);
 }
@@ -94,13 +80,6 @@ export function voucherReadFiles(files: QuoteAttachmentRow[]): QuoteAttachmentRo
   const pdfs = files.filter((file) => !file.isInline && isPdfRow(file));
   const named = pdfs.filter((file) => VOUCHER_FILE.test(file.filename));
   return named.length > 0 ? named : pdfs;
-}
-
-/** Only visible PDFs the existing filing adapter can accept; content is verified later. */
-export function voucherFilingFiles(files: QuoteAttachmentRow[]): QuoteAttachmentRow[] {
-  return files.filter((file) => !file.isInline && isVoucherPdfFilename(file.filename) &&
-    isVoucherPdfMime(file.mimeType) && Number.isSafeInteger(file.sizeBytes) &&
-    file.sizeBytes > 0 && file.sizeBytes <= MAX_VOUCHER_FILING_BYTES);
 }
 
 export function voucherFileMetadata(file: QuoteAttachmentRow): VoucherFile {

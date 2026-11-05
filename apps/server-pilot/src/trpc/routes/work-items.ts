@@ -39,9 +39,13 @@ import {
 } from '../../ai/quote-followup.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
+import { acknowledgeVoucherReview, selectedVoucherReview } from '../../ai/voucher-pending.js';
 
 const internetMessageId = z.string().min(1).max(998);
 const followUpDraftId = z.string().min(1).max(200);
+const voucherReviewSource = z.object({ threadId: z.string().min(1).max(200), messageId: z.string().min(1).max(200),
+  sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+const voucherReviewInput = z.object({ workItemId: z.string().uuid(), source: voucherReviewSource }).strict();
 const adminReviewInput = z
   .object({
     sourceMessageId: z.string().min(1).max(998),
@@ -114,6 +118,17 @@ const fieldEventInput = z
   .strict();
 
 export const workItemsRouter = router({
+  voucherReview: mailboxProcedure.input(voucherReviewInput).query(async ({ input, ctx }) => {
+    const result = await selectedVoucherReview(getDb(), { ...input, transportId: ctx.activeTransportId });
+    if (!result) throw new TRPCError({ code: 'CONFLICT', message: 'This email changed. Reopen it to review the document.' });
+    return result;
+  }),
+  acknowledgeVoucher: mailboxProcedure.input(voucherReviewInput.extend({ attachmentId: z.string().min(1).max(200),
+    key: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).mutation(async ({ input, ctx }) => {
+    const saved = await acknowledgeVoucherReview(getDb(), { ...input, transportId: ctx.activeTransportId, userId: ctx.sessionUser.id });
+    if (!saved) throw new TRPCError({ code: 'CONFLICT', message: 'This document changed. Reopen the email and try again.' });
+    return { status: 'recorded' as const };
+  }),
   getByMessage: mailboxProcedure
     .input(z.object({ internetMessageId, selection: paneSourceSelectionSchema.optional() }).strict())
     .query(({ input, ctx }) =>

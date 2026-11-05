@@ -16,7 +16,7 @@ import {
   type SQL,
 } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
-import { aiWorkflowRun, mailActionLabel, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
+import { aiWorkflowRun, attachment, mailActionLabel, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { sqlList } from '../db/schema/hitl.js';
 import { MESSAGE_ARRIVED_AT, MESSAGE_DELIVERED_AT, OUTLOOK_SYNCED } from './message-arrival-time.js';
 export { MESSAGE_ARRIVED_AT, MESSAGE_DELIVERED_AT, OUTLOOK_SYNCED } from './message-arrival-time.js';
@@ -83,7 +83,8 @@ import { advancePaneRevision } from './work-item-revision.js';
 import { assertCreateDispatchFenceOwner, assertNoCreateDispatchFence, CreateFenceError,
   type CreateFenceIdentity } from './pane-create-dispatch-fence.js';
 import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
-import { handledRequestStates, hasOutstandingRequestHistory } from './reservationist-task-completion.js';
+import { handledRequestKeys, handledRequestStates, hasOutstandingRequestHistory } from './reservationist-task-completion.js';
+import { confirmedVoucherKey, voucherReviewFiles } from './voucher-pending.js';
 import type { CloudCreateHoldProjection } from './pane-cloud-preview.js';
 
 /**
@@ -1581,6 +1582,10 @@ export async function planThreadWork(
     .where(and(eq(message.transportId, input.transportId), eq(message.threadId, input.threadId)));
 
   const byId = new Map(mail.map((m) => [m.id, m]));
+  const voucherFiles = sourceIds.length ? await db.select({ id: attachment.id, messageId: attachment.messageId,
+    filename: attachment.filename, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes,
+    isInline: attachment.isInline, sha256: attachment.sha256, s3Key: attachment.s3Key })
+    .from(attachment).where(inArray(attachment.messageId, sourceIds)) : [];
   // The hotel's own mail lands as inbound too (a sent-item copy or a CC), so it is the hotel's answer, not a guest's. But
   // a forged From on the hotel's domain is neither: only an exact address the transport has sent from counts as the hotel.
   const mailboxEmail = mailbox?.email ?? '';
@@ -1611,8 +1616,16 @@ export async function planThreadWork(
     const kind = item.kind as MailKind;
     const at = arrivedAt(source);
     const currentKind = !latestKindBySource.has(source.id) || latestKindBySource.get(source.id) === item.kind;
-    const outstanding = currentKind && hasOutstandingRequestHistory((runsBySource.get(source.id) ?? [])
-      .map(run => ({ id: run.id, result: run.metrics?.reservationistResult, source: run.metrics?.reservationistDraftSource })), requestStates.get(source.id));
+    const handled = handledRequestKeys(requestStates.get(source.id));
+    const files = source.direction === 'inbound' && !source.historyOnly
+      ? voucherReviewFiles(input.transportId, kind, item.extractionPayload as MailExtractionPayload | null, source, voucherFiles) : [];
+    const confirmed = currentKind && files.some(file => !handled.has(file.key))
+      ? await confirmedVoucherKey(db, { transportId: input.transportId, workItemId: item.id,
+        source: { threadId: input.threadId, messageId: source.id, sourceHash: staffQuoteSourceHash(source) },
+        state: item.state, files: voucherFiles, candidates: files }) : null;
+    const pendingVoucher = files.some(file => !handled.has(file.key) && file.key !== confirmed);
+    const outstanding = currentKind && (pendingVoucher || hasOutstandingRequestHistory((runsBySource.get(source.id) ?? [])
+      .map(run => ({ id: run.id, result: run.metrics?.reservationistResult, source: run.metrics?.reservationistDraftSource })), requestStates.get(source.id)));
     const untouched = !outstanding && !item.touched && Object.keys(item.state ?? {}).length === 0;
     const humanWritten = item.origin !== 'system_notice';
     const payload = item.extractionPayload as MailExtractionPayload | null;
