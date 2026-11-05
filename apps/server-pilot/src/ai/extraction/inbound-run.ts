@@ -245,9 +245,10 @@ export async function refreshSelectedAmendExtraction(
 
 const MAX_FAILED_READ_HISTORY = 10;
 
-function retrySelectionHash(selection: SyncedQuoteSelection): string {
+function retrySelectionHash(selection: SyncedQuoteSelection, mailboxAddress: string | null): string {
   return createHash('sha256').update(hashSyncedQuoteSelection(selection))
-    .update(JSON.stringify(selection.threadMessages ?? [])).digest('hex');
+    .update(JSON.stringify([selection.fromAddress ?? null, mailboxAddress, selection.threadReferenceAt ?? null,
+      selection.threadMessages ?? []])).digest('hex');
 }
 
 async function retryAttachmentHash(db: DB, messageId: string): Promise<string> {
@@ -271,7 +272,7 @@ export async function retrySelectedFailedRead(db: DB, input: {
   const source = await loadSyncedQuoteSelectionFromMailbox({ transportId: input.transportId, messageId: selected.id,
     includeThreadState: true, includeVisionImages: extractionVisionEnabled(), trackVisionImages: true });
   if (!source) return { status: 'blocked' as const };
-  const selectionHash = retrySelectionHash(source);
+  const selectionHash = retrySelectionHash(source, selected.mailboxAddress);
   const attachmentHash = await retryAttachmentHash(db, selected.id);
   return db.transaction(async (tx) => {
     await lockCanonicalMailbox(tx as unknown as DB, input.transportId);
@@ -280,7 +281,8 @@ export async function retrySelectedFailedRead(db: DB, input: {
       isNull(mailThread.trashedAt), isNull(mailThread.spamAt))).limit(1).for('no key update');
     if (!thread) return { status: 'blocked' as const };
     const selectedAgain = await messageFor(tx as unknown as DB, { ...input, expectedMessageId: selected.id });
-    if (!selectedAgain || selectedAgain.threadId !== thread.id) return { status: 'blocked' as const };
+    if (!selectedAgain || selectedAgain.threadId !== thread.id || selectedAgain.fromAddress !== selected.fromAddress ||
+        selectedAgain.mailboxAddress !== selected.mailboxAddress) return { status: 'blocked' as const };
     const [mail] = await tx.select({ id: message.id, subject: message.subject, textBody: message.textBody,
       htmlBody: message.htmlBody }).from(message).where(and(eq(message.id, selected.id),
       eq(message.threadId, thread.id), eq(message.transportId, input.transportId), eq(message.historyOnly, false), eq(message.direction, 'inbound')))
@@ -493,7 +495,7 @@ export async function runInboundExtraction(
     trackVisionImages: true,
     signal: deps.signal,
   });
-  if (retry && (!loadedSelection || retrySelectionHash(loadedSelection) !== retry.selectionHash ||
+  if (retry && (!loadedSelection || retrySelectionHash(loadedSelection, trigger.mailbox) !== retry.selectionHash ||
       await retryAttachmentHash(db, run.triggerMessageId) !== retry.attachmentHash)) return 'stale_source';
   if (!loadedSelection) {
     await commitRead(db, deps.claim, (tx) =>
@@ -537,6 +539,9 @@ export async function runInboundExtraction(
       const selected = await messageFor(tx, { transportId: run.transportId, internetMessageId: retry.internetMessageId,
         selection: retry.selection, expectedMessageId: run.triggerMessageId });
       if (!selected || selected.threadId !== thread.id) return;
+      const [mailbox] = await tx.select({ email: mailboxTransport.email }).from(mailboxTransport)
+        .where(eq(mailboxTransport.id, run.transportId)).limit(1).for('share');
+      if (!mailbox) return;
       // Canonical ingest holds the same mailbox lock. Reload the bounded source while it is held,
       // so attachment or thread changes cannot race the final comparison and update.
       const signal = deps.signal ? AbortSignal.any([deps.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000);
@@ -544,7 +549,7 @@ export async function runInboundExtraction(
         transportId: run.transportId, messageId: run.triggerMessageId, includeThreadState: true,
         includeVisionImages: extractionVisionEnabled(env), trackVisionImages: true, signal, db: tx,
       });
-      if (!currentSelection || retrySelectionHash(currentSelection) !== retry.selectionHash) return;
+      if (!currentSelection || retrySelectionHash(currentSelection, mailbox.email) !== retry.selectionHash) return;
       const [mail] = await tx.select({ id: message.id, subject: message.subject, textBody: message.textBody,
         htmlBody: message.htmlBody }).from(message).where(and(eq(message.id, run.triggerMessageId),
         eq(message.threadId, thread.id), eq(message.transportId, run.transportId), eq(message.historyOnly, false), eq(message.direction, 'inbound')))
