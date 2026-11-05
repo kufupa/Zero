@@ -822,6 +822,9 @@ export function useStoredWork(args: {
     allowRemoved = false): Promise<AmendDraftSnapshot | null> => {
     const getByMessage = workItemsFromTrpc(trpcRef.current).getByMessage;
     if (!getByMessage || !internetMessageId || !lookupKey) return null;
+    const visible = draftRef.current;
+    if (!visible || visible.workItemId !== expected.workItemId ||
+        JSON.stringify(visible.source) !== JSON.stringify(expected.source)) return null;
     const pinned = inMailbox(transportId);
     const input = { internetMessageId, ...(selection ? { selection } : {}) };
     const result = await (pinned ? getByMessage.query(input, pinned) : getByMessage.query(input));

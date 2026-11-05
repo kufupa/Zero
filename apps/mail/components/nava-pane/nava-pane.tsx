@@ -749,13 +749,13 @@ export function NavaPane({
             flush: storedWork.flushForBinding,
             onSave: storedWork.noteAmendSave,
           } } : {}),
-          onResetContact: storedWork.resetAvailable
+          onResetContact: storedWork.resetAvailable && !requestWorkItem.pending
             ? () => storedWork.resetSection({ type: 'contact' })
             : undefined,
-          onResetStay: storedWork.resetAvailable
+          onResetStay: storedWork.resetAvailable && !requestWorkItem.pending
             ? (stayId: string) => storedWork.resetSection({ type: 'stay', stayId })
             : undefined,
-          resetPending: storedWork.historyPending || storedWork.historyNeedsReload || requestWorkItem.pending,
+          resetPending: storedWork.historyPending || storedWork.historyNeedsReload,
           historyBusy: storedWork.historyPending || storedWork.historyNeedsReload,
           historyEpoch: storedWork.historyEpoch,
           bindingCursor: storedWork.bindingCursor,

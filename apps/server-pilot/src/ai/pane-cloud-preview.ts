@@ -20,7 +20,7 @@ import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDisp
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 import { digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from './pane-create-cloud-input.js';
 import { assertNoCreateDispatchFence, type CreateFenceTransaction } from './pane-create-dispatch-fence.js';
-import { activePaneCreateIdentity, legacyPaneCreateRoomId, paneCreateIdentitySchema, paneCreateRoomAliases, paneCreateRoomId,
+import { activePaneCreateIdentity, currentPaneCreateDatesMatch, legacyPaneCreateRoomId, paneCreateIdentitySchema, paneCreateRoomAliases, paneCreateRoomId,
   type PaneCreateIdentity } from './pane-create-scope.js';
 import { lockCreateSource, withLockedCreateSource, type LockedCreateSource } from './pane-create-source-loader.js';
 import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
@@ -180,6 +180,10 @@ async function checkSource(tx: CreateFenceTransaction, source: LockedCreateSourc
   const payload = source.snapshot.extraction.payload;
   if (!activePaneCreateIdentity(payload, source.item.state, input.selection.identity,
     { legacyKey: input.stayId === legacyPaneCreateRoomId(input.selection.identity) })) throw new Error('cloud_create_scope_changed');
+  if (input.selection.expectedSeq !== undefined &&
+      !currentPaneCreateDatesMatch(payload, source.item.state, input.selection.identity, input.stay)) {
+    throw new Error('cloud_create_scope_changed');
+  }
   const confirmations = payload && Array.isArray(payload.confirmationNumbers)
     ? payload.confirmationNumbers.filter((value): value is string => typeof value === 'string') : [];
   if (!actor.mailboxAddress || isSelfSentPreStayInformationMail({ fromAddress: mail.fromAddress, mailboxAddress: actor.mailboxAddress,

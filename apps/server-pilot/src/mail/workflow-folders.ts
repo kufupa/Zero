@@ -18,6 +18,7 @@ import {
 } from '../db/schema/work.js';
 import { mailExtractionPayloadSchema, type MailKind } from '../ai/extraction/schema.js';
 import { pendingEffectiveActions } from '../ai/work-item-effective.js';
+import { requestPayload } from '../ai/work-items.js';
 import { MAIL_ACTIONS, type MailAction } from './action-labels.js';
 
 /** Centurion gold HITL window for nava-admin Workflows. Johannesburg SAST (UTC+2). */
@@ -419,17 +420,36 @@ function requestActionSql(): SQL<string | null> {
   const action = sql`coalesce(${staff}, case when ${unique} then bound.owner_action end, stay.value->>'action',
     case when ${unique} then coalesce(${payload}->>'action', ${fallback}) end, 'other_actionable')`;
   const rows = jsonArray(sql`stay.value->'rows'`);
+  const inheritedAction = sql`case when ${unique} then coalesce(${stays}->0->>'action', ${payload}->>'action', ${fallback}) end`;
+  const pathPattern = String.raw`^stays\[([A-Za-z0-9_-]{1,40})\]\.(?:requested\.(?:arrival|departure)|totalAdults|totalChildren|removed|rows\[([A-Za-z0-9_-]{1,40})\]\.(?:count|adults|roomType|childAges|board|removed))$`;
+  const addedRows = sql`select 1 from structural_paths added
+    where added.stay_id = ${stayId} and added.row_id is not null`;
   const live = sql`${state}->>('stays[' || ${stayId} || '].removed') is distinct from 'true'
-    and (jsonb_array_length(${rows}) = 0 or exists (
+    and ((jsonb_array_length(${rows}) = 0 and (not exists (${addedRows}) or exists (
+      select 1 from jsonb_array_elements(${stays}) original(value) where original.value->>'id' = ${stayId}
+    ))) or exists (
       select 1 from jsonb_array_elements(${rows}) row_value
       where ${state}->>('stays[' || ${stayId} || '].rows[' || (row_value->>'id') || '].removed') is distinct from 'true'
-    ))`;
+    ) or exists (${addedRows}
+      and ${state}->>('stays[' || ${stayId} || '].rows[' || added.row_id || '].removed') is distinct from 'true'))`;
   return sql<string | null>`case when jsonb_array_length(${stays}) = 0 then coalesce(bound.owner_action, ${effectiveAction}) else (
+    with structural_paths as (
+      select distinct parts[1] as stay_id, parts[2] as row_id
+      from (select regexp_match(path, ${pathPattern}) as parts from jsonb_object_keys(${state}) as keys(path)) parsed
+      where parts is not null
+    ), all_stays as (
+      select value from jsonb_array_elements(${stays})
+      union all
+      select jsonb_build_object('id', added.stay_id, 'action', ${inheritedAction}, 'rows', '[]'::jsonb)
+      from (select distinct stay_id from structural_paths) added
+      where ${inheritedAction} in ('quote_availability', 'new_booking')
+        and not exists (select 1 from jsonb_array_elements(${stays}) original(value) where original.value->>'id' = added.stay_id)
+    )
     select case when count(distinct action) filter (where action <> 'no_action') > 1 then 'other_actionable'
       when count(distinct action) filter (where action <> 'no_action') = 1 then min(action) filter (where action <> 'no_action')
       else 'no_action' end
     from (
-      select pending.action from jsonb_array_elements(${stays}) stay(value)
+      select pending.action from all_stays stay(value)
       cross join lateral (select ${action} as action) choice
       cross join lateral unnest(array[choice.action]) pending(action)
       where ${live} and pending.action is not null
@@ -792,9 +812,11 @@ function toWorkflowFolderRow(
 ): WorkflowFolderRow {
   const parsed = mailExtractionPayloadSchema.safeParse(row.draftPayload);
   const kind = (MAIL_KINDS as readonly string[]).includes(row.kind ?? '') ? row.kind as MailKind : 'other';
+  const state = asRecord(row.draftState);
   const pendingActions = parsed.success && parsed.data.stays.length && row.draftSourceHash
     ? [...new Set(pendingEffectiveActions({ threadId: row.threadId, messageId: row.sourceMessageId,
-      sourceHash: row.draftSourceHash }, parsed.data, asRecord(row.draftState), row.ownerAction, kind, null)
+      sourceHash: row.draftSourceHash }, requestPayload(parsed.data, state, kind), state, row.ownerAction, kind, null,
+      parsed.data.stays.length)
       .map((request) => request.action ?? 'other_actionable' as MailAction))] : undefined;
   return {
     threadId: row.threadId,

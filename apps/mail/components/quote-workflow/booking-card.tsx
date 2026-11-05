@@ -1235,10 +1235,8 @@ export function BookingCards({
           if (typeof childAges === 'string') choice.childAges = childAges.split('|');
           if (projected?.guestProfile?.nativeId) choice.nativeGuestId = projected.guestProfile.nativeId;
           for (const field of ['bookerName', 'bookerEmail'] as const) {
-            const held = binding && workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.${field}`);
-            if (held || (binding && workItemPane?.fieldProvenance[`${namePath}.${field}`]?.source === 'staff')) {
-              choice[field] = textValue(held ? held.value : projected?.[field]);
-            }
+            const value = savedField(field, projected?.[field], undefined);
+            if (value !== undefined) choice[field] = textValue(value);
           }
           const generated = generatedNoteForChoice(session, propertyCode, room, roomGroupFor(room, groups), choice);
           const hadNote = Boolean(choice.reservationNote.trim());
@@ -1429,7 +1427,10 @@ export function BookingCards({
         }
         const commitStatus = saves[key]?.commit?.status;
         if (stayBooking || commitStatus === 'running' || commitStatus === 'booked') continue;
-        if (guestNamesEdited.current[key] || !selectedGuestName.trim()) continue;
+        if (!selectedGuestChanged || guestNamesEdited.current[key] || !selectedGuestName.trim()) continue;
+        const projected = createRoomBinding(room, groups, workItemPane, session)?.value;
+        if ((!guestEditorKey || recalledGuestName(guestEditorKey) === null) &&
+            (projected?.firstName != null || projected?.lastName != null)) continue;
         const names = guestSplit.ambiguous
           ? {
               firstName: textValue(room.request.firstName),

@@ -7,7 +7,7 @@ const STAY_COMMITS_KEY = 'stays';
 const SOURCE_TYPES = ['field.edit', 'field.reject', 'field.accept', 'field.reset'] as const;
 
 export type PaneState = Record<string, unknown>;
-export type PaneRevisionCursor = { revision: number; revisionHead: number; seq: number };
+export type PaneRevisionCursor = { revision: number; revisionHead: number; seq: number; extractionId: string | null };
 export type PaneRevisionResult =
   | { status: 'not_found' }
   | { status: 'stale'; revision: number; revisionHead: number; seq: number }
@@ -207,6 +207,7 @@ export async function loadPaneRevisionCursor(
       revision: workItem.revision,
       revisionHead: workItem.revisionHead,
       seq: workItem.revisionSeq,
+      extractionId: workItem.extractionId,
     })
     .from(workItem)
     .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))

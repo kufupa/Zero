@@ -185,6 +185,7 @@ export function ContextualRateCheck({ group, session, pane, evidence, plans, onC
       if (generation.current !== mine || currentKey.current !== startedKey) return;
       if (!saved) return setView({ key: startedKey, status: 'blocked', message: 'Could not save this rate. Check the draft and try again.' });
       onChoose(code);
+      setView(null);
     } catch { if (generation.current === mine && currentKey.current === startedKey)
       setView({ key: startedKey, status: 'blocked', message: 'Could not save this rate. Check the draft and try again.' }); }
   };

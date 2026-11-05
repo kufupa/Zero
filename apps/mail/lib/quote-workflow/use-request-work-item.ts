@@ -63,7 +63,10 @@ export function useRequestWorkItem(args: {
           changed(item);
         } catch {
           let fresh: AmendDraftSnapshot | null = null;
-          try { fresh = await refs.current.reload(item.snapshot, item.transportId); } catch { /* retain entries for retry */ }
+          try {
+            if (currentKey.current === item.key) fresh = await refs.current.reload(item.snapshot, item.transportId);
+          } catch { /* retain entries for retry */ }
+          if (currentKey.current !== item.key) fresh = null;
           const same = fresh && fresh.workItemId === item.snapshot.workItemId &&
             JSON.stringify(fresh.source) === JSON.stringify(item.snapshot.source) &&
             item.snapshot.requests.every((request) => fresh!.requests.some((nextRequest) => nextRequest.requestId === request.requestId));

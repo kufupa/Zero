@@ -108,7 +108,8 @@ export function validRequestValue(field: string, value: unknown): boolean {
     case 'sourceOfBusiness':
     case 'track':
     case 'guaranteeType': return text(value, 80);
-    case 'reservationNote': return text(value, 2000);
+    case 'reservationNote': return typeof value === 'string' && value.length <= 2000 &&
+      !/\p{Cc}/u.test(value.replace(/\n/g, ''));
     case 'firstName':
     case 'lastName':
     case 'guestEmail':
