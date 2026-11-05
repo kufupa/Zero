@@ -108,12 +108,14 @@ export function buildLabtestOrganizationReadbackTarget(saveResult, request, sele
       typeof request.arrival !== 'string' || typeof request.departure !== 'string' ||
       (cloudTargetKey !== undefined && cloudTargetKey !== createCloudTargetKey(guest, request.arrival)) ||
       !/^[A-Z0-9]{1,12}$/.test(request.roomType || '') || !/^[A-Z0-9]{1,12}$/.test(request.ratePlan || '') ||
+      (request.roomTypeForCharge !== undefined && !/^[A-Z0-9]{1,12}$/.test(request.roomTypeForCharge)) ||
       !validCreateNote(request.note)) return null;
   return {
     confirmation,
     expected: {
       confirmation, guestId: String(request.guestId).trim(), ...guest, arrival: request.arrival,
       departure: request.departure, roomType: request.roomType, ratePlan: request.ratePlan, note: request.note,
+      ...(request.roomTypeForCharge !== undefined ? { roomTypeForCharge: request.roomTypeForCharge } : {}),
     },
     expectedOrganization: recordOptions.expectedOrganization,
     expectedGuarantee: { code: request.guaranteeType, display: guaranteeDisplay },
@@ -125,7 +127,7 @@ export function buildLabtestOrganizationReadbackTarget(saveResult, request, sele
 function sessionState(page) {
   let state = sessionEvidence.get(page);
   if (!state) {
-    state = { organizationSelection: null, savedOrganizationCreate: null, chargeRoom: null };
+    state = { organizationSelection: null, savedOrganizationCreate: null, chargeRoom: null, chargeRateChecked: false };
     sessionEvidence.set(page, state);
   }
   return state;
@@ -144,7 +146,13 @@ export async function readSavedOrganizationCreate(state, request, { openSession 
         guestName: `${target.expected.firstName} ${target.expected.lastName}`, arrivalDate: target.expected.arrival,
       });
       if (stay.confirmation !== target.confirmation) throw new Error('CONFIRMATION_HEADER_MISMATCH');
-      await readRecordViewFromStay360(page, target.confirmation);
+      const view = await readRecordViewFromStay360(page, target.confirmation);
+      if (target.expected.roomTypeForCharge !== undefined) {
+        const fields = view?.details?.fields?.filter((field) => field.name === 'roomtypecharge') || [];
+        if (fields.length !== 1 || fields[0].value !== target.expected.roomTypeForCharge) {
+          throw new Error('LABTEST_CHARGE_ROOM_UNVERIFIED');
+        }
+      }
       const record = await readCreatedLabtestRecord(page, target.expected, {
         allowUnchangedBusinessParties: true, expectedOrganization: target.expectedOrganization,
         expectedGuarantee: target.expectedGuarantee, ...(target.allowRealGuest ? { allowRealGuest: true } : {}),
@@ -155,7 +163,8 @@ export async function readSavedOrganizationCreate(state, request, { openSession 
       return {
         outcome: 'read_back_verified', confirmation: target.confirmation, property: PROPERTY,
         stay: { arrival: target.expected.arrival, departure: target.expected.departure,
-          roomType: target.expected.roomType, ratePlan: target.expected.ratePlan },
+          roomType: target.expected.roomType, ratePlan: target.expected.ratePlan,
+          ...(target.expected.roomTypeForCharge !== undefined ? { roomTypeForCharge: target.expected.roomTypeForCharge } : {}) },
         organization: { nativeId: record.partyPreimage.companyid, name: organizationName },
         otherLinkedPartiesBlank: true,
       };
@@ -438,6 +447,8 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       guaranteeSelection: structuredClone(request.guaranteeSelection),
     } : null;
     let result;
+    const previousChargeRateChecked = tool === 'selectGuestStayRatePlan' && state.chargeRateChecked;
+    if (tool === 'selectGuestStayRatePlan') state.chargeRateChecked = false;
     if (['readGuestStay', 'closeGuestProfilePicker', 'cancelHotelAvailabilityParty', 'closeHotelAvailability',
       'closeRoomRatePicker', 'closeGuestStaySourceBusinessPicker'].includes(tool)) {
       result = await action(page);
@@ -491,6 +502,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
         const availability = createAuthority?.m1CreateRateAvailabilityOptions?.();
         if (availability) Object.assign(options, availability);
         else if (state.chargeRoom && request.createDraft && createAuthority?.withM1CreateRateAvailability) {
+          if (previousChargeRateChecked) createAuthority.invalidateM1CreateRateAvailability?.();
           result = await createAuthority.withM1CreateRateAvailability(async () => {
             const recheck = createAuthority.m1CreateRateAvailabilityOptions();
             if (!recheck) return { outcome: 'refused', issue: 'CHARGE_ROOM_PRICE_RECHECK_UNAVAILABLE' };
@@ -505,16 +517,22 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
     if (tool === 'selectOrganization') state.organizationSelection = organizationSelectionProof(result);
     if (tool === 'selectRoomTypeForCharge') {
       state.chargeRoom = result?.outcome === 'selected_unsaved' ? result.code : null;
+      state.chargeRateChecked = false;
       if (state.chargeRoom) createAuthority?.invalidateM1CreateRateAvailability?.();
     }
     if (tool === 'selectGuestStayRatePlan' && state.chargeRoom && result?.outcome === 'selected_unsaved' && result.rateAvailability) {
       const checked = await currentCheckedChargeRate(page, { roomTypeForCharge: state.chargeRoom,
         roomType: request.createDraft?.roomType, ratePlan: result.code,
         arrival: result.arrivalDate, departure: result.departureDate });
+      state.chargeRateChecked = checked;
       result = checked ? { ...result, chargeRoomPricing: 'checked' } :
         { ...result, outcome: 'selection_uncertain', issue: 'CHARGE_ROOM_PRICE_CHECK_UNVERIFIED' };
     } else if (tool === 'selectGuestStayRatePlan' && state.chargeRoom && result?.outcome === 'selected_unsaved') {
       result = { ...result, chargeRoomPricing: 'requires_recheck' };
+    } else if (tool === 'selectGuestStayRatePlan' && result?.outcome === 'input_gap') {
+      // Input validation happens before any native request; a corrected call
+      // can still recheck a previously verified price.
+      state.chargeRateChecked = previousChargeRateChecked;
     }
     if (tool === 'saveNewLabtestStay' && result?.outcome === 'saved_same_form') {
       state.savedOrganizationCreate = buildLabtestOrganizationReadbackTarget(

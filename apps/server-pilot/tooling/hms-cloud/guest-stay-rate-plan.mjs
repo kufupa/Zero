@@ -366,6 +366,10 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     if (search.outcome !== 'matches' || search.coverage?.complete !== true ||
         search.coverage.returned !== search.coverage.matchingLoaded ||
         search.candidates.filter(candidate => candidate.code === code).length !== 1) throw new Error('CURRENT_RATE_CODE_UNVERIFIED');
+    // A room or party change may clear pricing while leaving the same rate
+    // selected. HMS does not emit a rate-change response for that same value;
+    // verify the existing selection and run its native availability check.
+    const recheckExistingRate = requireM1CreateAvailability && previousCode === code;
     guard = async route => {
       const request = route.request();
       let kind = null;
@@ -389,19 +393,21 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       return route.abort();
     };
     await page.route('**/*',guard);
-    const input = page.locator('input[name="rateplan"]:visible');
-    if (await input.count() !== 1 || !await input.isEditable()) throw new Error('RATE_FIELD_UNAVAILABLE');
-    attempted = true;
-    await input.fill(code,{timeout:5000});
-    if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
-    await input.press('Tab',{timeout:12000});
-    await page.waitForTimeout(1500);
-    if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
-    const onlyAsset = blocked.every(item => item.method === 'GET' && item.originMatches && !item.query && item.path === ASSET);
-    if (!onlyAsset) throw new Error('UNEXPECTED_REQUEST_BLOCKED');
-    await page.waitForFunction(() => !Ext.Ajax.isLoading(),null,{timeout:10000});
-    if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
-    after = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
+    if (!recheckExistingRate) {
+      const input = page.locator('input[name="rateplan"]:visible');
+      if (await input.count() !== 1 || !await input.isEditable()) throw new Error('RATE_FIELD_UNAVAILABLE');
+      attempted = true;
+      await input.fill(code,{timeout:5000});
+      if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+      await input.press('Tab',{timeout:12000});
+      await page.waitForTimeout(1500);
+      if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+      const onlyAsset = blocked.every(item => item.method === 'GET' && item.originMatches && !item.query && item.path === ASSET);
+      if (!onlyAsset) throw new Error('UNEXPECTED_REQUEST_BLOCKED');
+      await page.waitForFunction(() => !Ext.Ajax.isLoading(),null,{timeout:10000});
+      if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+    }
+    after = recheckExistingRate ? ready : await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
     const afterArrival = dateParts(after.arrival), afterDeparture = dateParts(after.departure);
     if (!afterArrival || !afterDeparture || afterArrival.iso !== dates.arrival.iso || afterDeparture.iso !== dates.departure.iso) {
       throw new Error('DRAFT_DATES_CHANGED');
@@ -414,11 +420,15 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     if (after.rate !== code || after.rateValue !== code || after.rateSubmit !== code || after.rateErrors.length || after.rateInvalid === 'true') {
       throw new Error('RATE_READBACK_UNVERIFIED');
     }
-    const deadline = Date.now() + 10000;
-    while (responses.length < 2 && Date.now() < deadline) await page.waitForTimeout(100);
-    const validation = responses.filter(item => item.kind === 'validation'), change = responses.filter(item => item.kind === 'change');
-    if (validation.length !== 1 || change.length !== 1 || requests.size !== 2) throw new Error('HMS_RESPONSE_UNVERIFIED');
-    await bounded(validateResponses(validation[0].response,change[0].response,code,dates,sessionId,before),10000,'HMS_RESPONSE_TIMEOUT');
+    let validation = [], change = [];
+    if (!recheckExistingRate) {
+      const deadline = Date.now() + 10000;
+      while (responses.length < 2 && Date.now() < deadline) await page.waitForTimeout(100);
+      validation = responses.filter(item => item.kind === 'validation');
+      change = responses.filter(item => item.kind === 'change');
+      if (validation.length !== 1 || change.length !== 1 || requests.size !== 2) throw new Error('HMS_RESPONSE_UNVERIFIED');
+      await bounded(validateResponses(validation[0].response,change[0].response,code,dates,sessionId,before),10000,'HMS_RESPONSE_TIMEOUT');
+    }
     if (!proofsCurrent(page,dates)) throw new Error('DRAFT_IDENTITY_CHANGED');
     let rateAvailability = null, priceUnconfirmed = false;
     if (requireM1CreateAvailability) {
@@ -447,6 +457,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       const responsePromise = page.waitForResponse(response => requests.get(response.request()) === 'availability',
         { timeout: 15000 }).catch(() => null);
       availabilityCheckArmed = true;
+      attempted = true;
       try { await check.click({ timeout: 5000 }); }
       finally { await check.dispose(); }
       const availabilityResponse = await bounded(responsePromise,16000,'RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
@@ -458,7 +469,8 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       await bounded(page.waitForFunction(() => !Ext.Ajax.isLoading(),null,{timeout:10000}),12000,'RATE_AVAILABILITY_READBACK_TIMEOUT');
       if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
       const availabilityResponses = responses.filter(item => item.kind === 'availability');
-      if (availabilityResponses.length !== 1 || availabilityResponses[0].response !== availabilityResponse || requests.size !== 3) {
+      if (availabilityResponses.length !== 1 || availabilityResponses[0].response !== availabilityResponse ||
+          requests.size !== (recheckExistingRate ? 1 : 3)) {
         throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
       }
       const checked = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
@@ -507,12 +519,13 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
         arrival: dates.arrival.iso, departure: dates.departure.iso } : null;
     selectedOnPage.set(page,{code,fingerprint:draftFingerprint(after),chargePrice});
     return {outcome:'selected_unsaved',code,previousCode,previousRateEvidence,propertyCode:PROPERTY,arrivalDate:dates.arrival.iso,departureDate:dates.departure.iso,
-      nativeCodeEvidence:'validated_row_and_draft_change_response',nativeRatePlanId:'unsupported',
+      nativeCodeEvidence:recheckExistingRate ? 'validated_row_and_existing_draft' : 'validated_row_and_draft_change_response',
+      nativeRatePlanId:'unsupported',
       identityReadback:{guestProfileId:guestId || null,arAccount:dates.ar ? {accountId:dates.ar.accountId,
         profileId:dates.ar.profileId,displayName:after.arAccountName,nativeName:after.arAccountNativeName} : null},
       ...(rateAvailability ? {rateAvailability} : {}),
       changedFields:changedFields(before.fields,after.fields),
-      effects:{validationStatus:validation[0].response.status(),rateChangeStatus:change[0].response.status(),blockedRequests:blocked}};
+      effects:{validationStatus:validation[0]?.response.status() ?? null,rateChangeStatus:change[0]?.response.status() ?? null,blockedRequests:blocked}};
   } catch (error) {
     if (attempted) { selectedOnPage.delete(page); fence?.quarantine(); }
     const unsupported = unsupportedId || (['GUEST_PROFILE_ID_UNSUPPORTED','AR_SELECTION_UNVERIFIED'].includes(error?.message) ? error.message : null);
