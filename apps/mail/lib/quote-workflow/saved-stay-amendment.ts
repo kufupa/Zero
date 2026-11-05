@@ -47,6 +47,36 @@ export function savedStayAmendReviewBasis(stay: StayRecordWire,
   return JSON.stringify([extractionRevision, request, fields]);
 }
 
+/** Accept only an acknowledged local projection whose changed entries match the visible edits. */
+export function savedStayAmendOwnEcho(acceptedBasis: string, stay: StayRecordWire, request: SavedStayAmendRequest,
+  extractionRevision: string, draft: SavedStayAmendDraft, touched: Array<keyof SavedStayAmendDraft>): boolean {
+  try {
+    const [priorRevision, priorRequest, priorStay] = JSON.parse(acceptedBasis);
+    const [, , currentStay] = JSON.parse(savedStayAmendReviewBasis(stay, request, extractionRevision));
+    if (priorRevision !== extractionRevision || JSON.stringify(priorStay) !== JSON.stringify(currentStay) ||
+        !priorRequest || typeof priorRequest !== 'object' || Array.isArray(priorRequest)) return false;
+    const fields = ['arrival', 'departure', 'adults', 'children', 'childAges'] as const;
+    if (Object.keys(priorRequest).some((key) => key !== 'cleared' && !fields.some((field) => field === key))) return false;
+    for (const field of fields) {
+      const previous = priorRequest[field] ?? null;
+      const current = request[field] ?? null;
+      const wasCleared = field !== 'childAges' && Boolean(priorRequest.cleared?.[field]);
+      const isCleared = field !== 'childAges' && Boolean(request.cleared?.[field]);
+      if (JSON.stringify(previous) === JSON.stringify(current) && wasCleared === isCleared) continue;
+      if (!touched.includes(field) && !(field === 'departure' && touched.includes('nights'))) return false;
+      if (isCleared) { if (draft[field] !== '') return false; continue; }
+      if (field === 'childAges') {
+        const ages = draft.childAges.trim() ? draft.childAges.split(',').map((value) => value.trim()) : [];
+        if (ages.some((value) => !/^(0|[1-9]\d?)$/.test(value) || Number(value) > 17) ||
+            JSON.stringify(ages.map(Number)) !== JSON.stringify(current)) return false;
+      } else if (field === 'adults' || field === 'children') {
+        if (!/^(0|[1-9]\d*)$/.test(draft[field]) || Number(draft[field]) !== current) return false;
+      } else if (draft[field] !== current) return false;
+    }
+    return true;
+  } catch { return false; }
+}
+
 /** Candidate only: the server must resolve property/ownership, re-read the preimage and issue the grant. */
 export type SavedStayCloudWriteCandidate = {
   executor: 'cloud-write/v1';
@@ -104,7 +134,7 @@ export function initialSavedStayAmendDraft(stay: StayRecordWire, request: SavedS
     nights: Number.isInteger(nights) && nights > 0 ? String(nights) : '',
     adults: request.cleared?.adults ? '' : request.adults == null ? (stay.adults == null ? '' : String(stay.adults)) : String(request.adults),
     children: request.cleared?.children ? '' : request.children == null ? (stay.children == null ? '' : String(stay.children)) : String(request.children),
-    childAges: request.childAges?.join(', ') ?? '',
+    childAges: request.childAges?.join(', ') ?? stay.childAges?.join(', ') ?? '',
   };
 }
 
@@ -142,10 +172,13 @@ export function savedStayAmendProposal(confirmation: string, stay: StayRecordWir
     if (children === null || ages.some((age) => age === null) || ages.length !== children) {
       errors.push('Enter one age from 0–17 for each child.');
     } else {
-      changes.children = children;
-      changes.childAges = ages as number[];
+      if (changes.children !== undefined || !Array.isArray(stay.childAges) ||
+          JSON.stringify(ages) !== JSON.stringify(stay.childAges)) {
+        changes.children = children;
+        changes.childAges = ages as number[];
+      }
     }
-  } else if (changes.children !== undefined && children !== 0) {
+  } else if ((changes.children !== undefined && children !== 0) || (stay.childAges?.length ?? 0) > 0) {
     errors.push('Enter one age for each child.');
   }
 

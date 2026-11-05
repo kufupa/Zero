@@ -1440,11 +1440,15 @@ function LocalAmendReview({ identity, revision, confirmation, stay, contactObser
     draft.confirmation === confirmation &&
     (['propertyCode', 'threadId', 'messageId', 'mailboxEmail', 'sourceHash'] as const)
       .every((field) => draft.identity[field] === identity[field]) ? draft : null;
+  // Newer WorkItem hooks expose the saved projection cursor and this session's acknowledgements.
+  const projection = durableDraft as (typeof durableDraft & { revisionSeq?: number | null; acknowledgedSeqs?: number[] });
+  const acknowledgedProjection = projection?.revisionSeq != null &&
+    projection.acknowledgedSeqs?.includes(projection.revisionSeq) === true;
   return <>
     <SavedStayAmendEditor draftStore={draftStore} identity={identity} extractionRevision={revision}
       confirmation={confirmation} stay={stay} requestedArrival={requestedArrival}
       requestedDeparture={requestedDeparture} requestedAdults={requestedAdults} requestedChildren={requestedChildren}
-      requestedChildAges={requestedChildAges} cleared={cleared} onFieldEdit={(field, value, next) => {
+      requestedChildAges={requestedChildAges} cleared={cleared} acknowledgedProjection={acknowledgedProjection} onFieldEdit={(field, value, next) => {
         if (!durableDraft) return;
         if (field === 'arrival' || field === 'departure' || field === 'nights') {
           const dateField = field === 'nights' ? 'departure' : field;
@@ -1461,13 +1465,13 @@ function LocalAmendReview({ identity, revision, confirmation, stay, contactObser
       }} onDraftChange={setDraft} />
     <LocalAmendChoices stay={stay} ratePlans={ratePlans} draft={currentDraft}
       identity={identity} confirmation={confirmation} contactObservations={contactObservations}
-      defaultRecipient={defaultRecipient} writeContext={writeContext} durableDraft={durableDraft}
+      defaultRecipient={defaultRecipient} writeContext={writeContext} durableDraft={durableDraft} refreshPending={refreshPending}
       onApprovalVisibilityChange={onApprovalVisibilityChange} />
   </>;
 }
 
 function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, contactObservations, defaultRecipient, writeContext,
-  durableDraft, onApprovalVisibilityChange }: {
+  durableDraft, refreshPending, onApprovalVisibilityChange }: {
   stay: StayRecordWire;
   ratePlans: RatePlanCatalogueEntry[];
   draft: SavedStayAmendDraftUpdate | null;
@@ -1478,6 +1482,7 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
   onApprovalVisibilityChange: (visible: boolean) => void;
   writeContext: { trpc: unknown; transportId: string; workItemId: string } | null;
   durableDraft: NonNullable<AmendReadOnlyContext['draft']> | null;
+  refreshPending?: boolean;
 }) {
   const labtest = stay.firstName?.trim() === 'Proof' && stay.lastName?.trim() === 'Labtest';
   const saved = durableDraft?.request?.fields.value;
@@ -1517,10 +1522,6 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
   const [cmsEdited, setCmsEdited] = useState(false);
   const [boundKey, setBoundKey] = useState<string | null>(null);
   const [availableKey, setAvailableKey] = useState<string | null>(null);
-  const rates = useAmendRateCandidates({ trpc: writeContext?.trpc ?? null,
-    transportId: writeContext?.transportId ?? null, workItemId: writeContext?.workItemId ?? null,
-    source: { threadId: identity.threadId, messageId: identity.messageId, sourceHash: identity.sourceHash },
-    confirmation, draft: durableDraft });
   useEffect(() => {
     if (recipientTouched || !sources?.setting) return;
     setRecipientMode(sources.setting.mode);
@@ -1588,6 +1589,16 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
       cmsMessageId: cmsMessageId.trim(), cmsRecipient: cmsRecipient.trim() },
   } : null;
   const requestKey = request ? JSON.stringify([request, durableDraft?.editVersion ?? 0]) : null;
+  const rateLocked = Boolean(refreshPending || !draft || !choicesValid || durableDraft?.error || pendingRateMatch || retainedPriceChange ||
+    !/^[A-Z0-9]{1,12}$/.test(ratePlan) || !/^[A-Z0-9]{1,12}$/.test(roomType));
+  const rates = useAmendRateCandidates({ trpc: writeContext?.trpc ?? null,
+    transportId: writeContext?.transportId ?? null, workItemId: writeContext?.workItemId ?? null,
+    source: { threadId: identity.threadId, messageId: identity.messageId, sourceHash: identity.sourceHash },
+    confirmation, draft: durableDraft, selectedRatePlan: ratePlan,
+    contextKey: JSON.stringify([draft?.basis, draft?.proposal?.changes, roomType, retainRates]), locked: rateLocked });
+  const selectedNativeRate = rates.view?.status === 'ready'
+    ? rates.view.reply?.options.find((option) => option.rateCode === ratePlan) : undefined;
+  const catalogueLabel = ratePlans.find((plan) => plan.code === ratePlan)?.name;
   const markDetail = (name: string) => setEditedDetails((current) => current.includes(name) ? current : [...current, name]);
   const recordRecipient = (mode: ConfirmationMode, custom: string) => durableDraft?.record('cms.recipient', {
     mode, address: mode === 'self' ? sources?.userEmail ?? '' : mode === 'client' ? defaultRecipient : custom,
@@ -1624,7 +1635,7 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
           {rateMatches.map((plan) => <li key={plan.code}><button type="button" className="w-full px-2 py-1 text-left hover:bg-[#f1f5f9]"
             onClick={() => { setRatePlan(plan.code); setRateSearch(plan.code); setShowRateMatches(false); markDetail('ratePlan');
               durableDraft?.record('ratePlan', plan.code); }}>
-            {plan.code} · {plan.name}
+            {plan.code} · {plan.name} · catalogue label
           </button></li>)}
           {pendingRateMatch && /^[A-Z0-9]{1,12}$/.test(ratePlan) ? <li><button type="button"
             className="w-full px-2 py-1 text-left hover:bg-[#f1f5f9]" onClick={() => { setRateSearch(ratePlan); setShowRateMatches(false);
@@ -1633,7 +1644,9 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
           </button></li> : null}
         </ul> : null}
         <span className={captionClass}>{pendingRateMatch ? 'Choose a match or confirm the typed code.'
-          : ratePlans.find((plan) => plan.code === ratePlan)?.name ?? 'Availability checked by HMS when prepared'}</span>
+          : selectedNativeRate?.rateLabel ? `${selectedNativeRate.rateLabel} · HMS label`
+            : catalogueLabel && catalogueLabel !== ratePlan ? `${catalogueLabel} · catalogue label, meaning not verified in HMS`
+              : 'Meaning not yet read from HMS.'}</span>
       </div>
       <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
         <span className="font-semibold">Retain the current rate?</span>
@@ -1649,17 +1662,16 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
     {retainedPriceChange ? <p className={warnNoteClass}>The new total cannot be verified while retaining rates. Choose No to reprice, or make this change in HMS.</p> : null}
     {rates.available ? <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" className={buttonClass} disabled={rates.view?.status === 'checking'}
-          onClick={() => void rates.check()}>{rates.view?.status === 'checking' ? 'Checking rates…' : 'Check rates in HMS'}</button>
-        {/^[A-Z0-9]{1,12}$/.test(ratePlan) ? <button type="button" className={buttonClass}
-          disabled={rates.view?.status === 'checking' || pendingRateMatch}
-          onClick={() => void rates.check(ratePlan)}>Check {ratePlan}</button> : null}
+        <button type="button" className={buttonClass} disabled={rateLocked || rates.view?.status === 'checking'}
+          onClick={() => void rates.check(ratePlan)}>{rates.view?.status === 'checking' ? `Checking ${ratePlan}…` : `Recheck ${ratePlan || 'rate'} in HMS`}</button>
       </div>
+      {rates.view?.status === 'checking' ? <p role="status" className={captionClass}>
+        {rates.view.message ?? 'Reading the selected rate for this stay…'}</p> : null}
       {rates.view?.status === 'blocked' ? <p role="status" className={warnNoteClass}>{rates.view.message}</p> : null}
       {rates.view?.status === 'ready' && rates.view.reply ? <>
         <HmsAsOf asOf={rates.view.reply.observedAt} />
-        <p className={captionClass}>{rates.view.reply.coverage.candidateList === 'complete' ? 'Rate list complete.'
-          : rates.view.reply.coverage.candidateList === 'partial' ? 'Rate list is incomplete.' : 'Rate list coverage is unknown.'}
+        <p className={captionClass}>{rates.view.reply.coverage.candidateList === 'complete' ? 'Selected rate read complete.'
+          : rates.view.reply.coverage.candidateList === 'partial' ? 'Selected rate read is incomplete.' : 'Selected rate coverage is unknown.'}
           {rates.view.reply.coverage.reason ? ` ${rates.view.reply.coverage.reason}` : ''}</p>
         {rates.view.reply.recommendation ? <p className={captionClass}>
           {rates.view.reply.recommendation.rateCode ? `${rates.view.reply.recommendation.rateCode}: ` : ''}
@@ -1818,7 +1830,7 @@ function CloudAmendAction({ request, transportId, trpc, onAvailable, onBound, gu
         if (liveRef.current) { if (ok) { setBound(true); onBound(); } else setFailed(true); }
       })()
         .finally(() => { if (liveRef.current) setBusy(false); });
-    }}>{busy ? 'Checking the booking…' : 'Review change for approval'}</button> : null}
+    }}>{busy ? 'Preparing in HMS… this may take a few minutes.' : 'Prepare in HMS'}</button> : null}
     {failed ? <p role="alert" className={warnNoteClass}>Nava could not prepare this change. Check it in HMS.</p> : null}
     {bound ? <ApproveCard client={client.approval} workItemId={selected.workItemId} confirmation={selected.confirmation}
       arrival={selected.arrival} guestSurname={guestSurname} writesEnabled manualResolve={false} /> : null}

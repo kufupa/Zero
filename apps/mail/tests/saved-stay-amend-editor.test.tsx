@@ -34,6 +34,14 @@ describe('saved stay amendment request', () => {
     expect(savedStayAmendProposal(two.confirmation!, two, draft).proposal?.changes)
       .toEqual({ children: 2, childAges: [8, 3] });
     expect(savedStayAmendProposal('87654321-1', two, draft).proposal).toBeNull();
+    const known = { ...two, childAges: [8, 3] };
+    const unchanged = initialSavedStayAmendDraft(known, {});
+    expect(unchanged.childAges).toBe('8, 3');
+    expect(savedStayAmendProposal(known.confirmation!, known, { ...unchanged, adults: '3' }).proposal?.changes)
+      .toEqual({ adults: 3 });
+    expect(savedStayAmendProposal(known.confirmation!, known, { ...unchanged, childAges: '8, 4' }).proposal?.changes)
+      .toEqual({ children: 2, childAges: [8, 4] });
+    expect(savedStayAmendProposal(known.confirmation!, known, { ...unchanged, childAges: '' }).proposal).toBeNull();
   });
   it('rejects invalid dates and blank counts', () => {
     const initial = initialSavedStayAmendDraft(stay, {});
@@ -41,11 +49,21 @@ describe('saved stay amendment request', () => {
   });
   it('emits edits as an unsaved proposal and does not offer a Save button', async () => {
     const onDraftChange = vi.fn();
-    render(<SavedStayAmendEditor draftStore={draftStore} extractionRevision={revision} identity={identity} confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
+    const { rerender } = render(<SavedStayAmendEditor draftStore={draftStore} extractionRevision={revision} identity={identity} confirmation={stay.confirmation!} stay={stay} onDraftChange={onDraftChange} />);
     fireEvent.change(screen.getByLabelText('Requested adults'), { target: { value: '3' } });
     await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith(expect.objectContaining({ identity, confirmation: stay.confirmation, proposal: { confirmation: stay.confirmation, changes: { adults: 3 } }, errors: [] })));
     expect(screen.getByText(/not saved to HMS/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /save|approve|preview/i })).toBeNull();
+    rerender(<SavedStayAmendEditor draftStore={draftStore} extractionRevision={revision} identity={identity} confirmation={stay.confirmation!}
+      stay={stay} requestedAdults={3} acknowledgedProjection onDraftChange={onDraftChange} />);
+    expect(screen.queryByText(/Booking or email details changed/)).toBeNull();
+    await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith(expect.objectContaining({ proposal: { confirmation: stay.confirmation, changes: { adults: 3 } } })));
+    rerender(<SavedStayAmendEditor draftStore={draftStore} extractionRevision={revision} identity={identity} confirmation={stay.confirmation!}
+      stay={stay} requestedAdults={3} requestedChildren={1} acknowledgedProjection onDraftChange={onDraftChange} />);
+    expect(screen.getByText(/Booking or email details changed/)).toBeTruthy();
+    rerender(<SavedStayAmendEditor draftStore={draftStore} extractionRevision={revision} identity={identity} confirmation={stay.confirmation!}
+      stay={{ ...stay, children: 1 }} requestedAdults={3} acknowledgedProjection onDraftChange={onDraftChange} />);
+    expect(screen.getByText(/Booking or email details changed/)).toBeTruthy();
   });
   it('does not carry a draft onto a different confirmation', async () => {
     const onDraftChange = vi.fn();

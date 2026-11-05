@@ -17,6 +17,7 @@ import {
   amendFindClientFromTrpc,
   findRequestFor,
   findRunFromJob,
+  findRunFromReply,
   hmsJobTransport,
   hmsNumberFor,
   isSettled,
@@ -2189,6 +2190,12 @@ describe('amend find helpers', () => {
       message: AMEND_FIND_COPY.searchFailed,
     });
     expect(searchRunFromJob(null, true, refusal)).toEqual({ kind: 'error', message: refusal });
+    const reply = found({ children: 2 });
+    const native = { propertyCode: 'HRCEN', confirmation: CONFIRMATION, firstName: 'Thabo', lastName: 'Mokoena',
+      status: 'Reserved', arrival: '2026-10-12', departure: '2026-10-13', adults: 1, children: 2, childAges: [8, 3] };
+    expect(findRunFromReply({ ...reply, rateLookup: { native } })).toMatchObject({ kind: 'found', stay: { childAges: [8, 3] } });
+    expect(findRunFromReply({ ...reply, rateLookup: { native: { ...native, confirmation: '999999-1' } } }))
+      .not.toHaveProperty('stay.childAges');
   });
 
   it('binds no client when the paneStayLookup routes are missing', () => {
@@ -2414,13 +2421,13 @@ describe('AmendLookupPanel amend form', () => {
     fireEvent.change(within(form).getByLabelText('Requested children'), { target: { value: '1' } });
     fireEvent.change(within(form).getByLabelText('Requested child ages'), { target: { value: '6' } });
     fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'corpor' } });
-    fireEvent.click(screen.getByRole('button', { name: 'CORP · Corporate' }));
+    fireEvent.click(screen.getByRole('button', { name: 'CORP · Corporate · catalogue label' }));
     fireEvent.change(screen.getByLabelText('Retain the current rate?'), { target: { value: 'yes' } });
     expect((within(form).getByLabelText('Requested adults') as HTMLInputElement).value).toBe('3');
     expect((within(form).getByLabelText('Requested child ages') as HTMLInputElement).value).toBe('6');
     expect((screen.getByLabelText('Rate plan') as HTMLInputElement).value).toBe('CORP');
-    expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
-      { name: 'Yes', selected: true })).toBeTruthy();
+    await waitFor(() => expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
+      { name: 'Yes', selected: true })).toBeTruthy());
     expect(screen.getByText(/new total cannot be verified while retaining rates/i)).toBeTruthy();
     expect((screen.getByLabelText('Send HMS confirmation') as HTMLInputElement).checked).toBe(true);
     expect(screen.queryByRole('button', { name: /^(Preview|Approve)$/ })).toBeNull();
@@ -2437,8 +2444,8 @@ describe('AmendLookupPanel amend form', () => {
     await waitFor(() => expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('3'));
     expect((screen.getByLabelText('Requested child ages') as HTMLInputElement).value).toBe('6');
     expect((screen.getByLabelText('Rate plan') as HTMLInputElement).value).toBe('CORP');
-    expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
-      { name: 'Yes', selected: true })).toBeTruthy();
+    await waitFor(() => expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
+      { name: 'Yes', selected: true })).toBeTruthy());
     fireEvent.change(screen.getByLabelText('Retain the current rate?'), { target: { value: 'no' } });
     expect(preview).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
@@ -2484,7 +2491,7 @@ describe('AmendLookupPanel amend form', () => {
       }} />);
       await pressFind();
       fireEvent.change(await screen.findByLabelText('Confirmation recipient'), { target: { value: 'guest@example.test' } });
-      fireEvent.click(await screen.findByRole('button', { name: 'Review change for approval' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Prepare in HMS' }));
       fireEvent.click(await screen.findByRole('button', { name: 'Approve again' }));
       await waitFor(() => expect(pendingGo.finish).toBeDefined());
       const readsBeforeEdit = state.mock.calls.length;

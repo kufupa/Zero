@@ -158,6 +158,8 @@ export type StayRecordWire = {
   nights: number | null;
   adults: number | null;
   children: number | null;
+  /** Ages from an identity-matched HMS record; omitted when HMS could not verify them. */
+  childAges?: number[];
   roomType: string | null;
   ratePlan: string | null;
   mealPlan: string | null;
@@ -213,6 +215,8 @@ export type FindStayReply = {
   stay: StayRecordWire | null;
   commercial?: StayCommercialWire | null;
   reservationObservations?: StayContactObservations | null;
+  rateLookup?: { native?: { propertyCode: string; confirmation: string; firstName: string; lastName: string;
+    status: string; arrival: string; departure: string; adults: number; children: number; childAges: number[] | 'unknown' } } | null;
   /** PNG file names. record.png is the booking itself. */
   screenshots: string[];
   runId: string | null;
@@ -585,17 +589,25 @@ function failedCopy(failureClass: string | null, kind: HmsJobKind): string {
 /** The panel's find run for a stored find reply. */
 export function findRunFromReply(reply: FindStayReply): HmsFindRun {
   switch (reply.outcome) {
-    case 'found':
+    case 'found': {
       if (!reply.stay) return { kind: 'error', message: AMEND_FIND_COPY.readFailed };
+      const native = reply.rateLookup?.native;
+      const stay = reply.stay;
+      const ages = native && native.propertyCode === 'HRCEN' && native.confirmation === stay.confirmation &&
+        native.firstName === stay.firstName && native.lastName === stay.lastName && native.status === stay.status &&
+        native.arrival === stay.arrival && native.departure === stay.departure && native.adults === stay.adults &&
+        native.children === stay.children && Array.isArray(native.childAges) && native.childAges.length === native.children &&
+        native.childAges.every((age) => Number.isInteger(age) && age >= 0 && age <= 17) ? [...native.childAges] : undefined;
       return {
         kind: 'found',
-        stay: reply.stay,
+        stay: ages ? { ...stay, childAges: ages } : stay,
         ...(reply.commercial ? { commercial: reply.commercial } : {}),
         ...(reply.reservationObservations ? { reservationObservations: reply.reservationObservations } : {}),
         runId: reply.runId,
         screenshots: reply.screenshots,
         arrivalMismatch: arrivalMismatchFrom(reply),
       };
+    }
     case 'not_found':
       return { kind: 'not_found' };
     case 'ambiguous':

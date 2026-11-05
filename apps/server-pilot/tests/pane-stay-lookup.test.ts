@@ -242,6 +242,9 @@ describe('findStay', () => {
   });
 
   it('passes through only populated allowlisted commercial fields for a found stay', async () => {
+    const blank = { state: 'blank' as const, value: null };
+    const contacts = { guestEmail: { state: 'observed' as const, value: 'guest@example.test' },
+      bookerName: { state: 'observed' as const, value: 'Booker' }, bookerContact: blank };
     paneStayLookupLoaders.spawn = async () => lookupResult({
       commercial: {
         company: { name: 'Northstar Conference Group', nativeId: 'COMP-42' },
@@ -250,6 +253,7 @@ describe('findStay', () => {
         status: 'Reserved',
         unknownField: 'must be dropped',
       } as never,
+      reservationObservations: { ...contacts, groupName: blank, promotionCode: blank, arAccountName: blank },
     });
     const result = await findStay({ confirmation: '57291630-1' }, { lock: () => passingLock() });
     expect(result).toMatchObject({
@@ -267,6 +271,7 @@ describe('findStay', () => {
       ratePlan: 'Corporate Saver',
       status: 'Reserved',
     });
+    expect(result.reservationObservations).toEqual(contacts);
   });
 
   it('keeps a confirmed-blank depositReceived as empty string so unpaid classifies', async () => {
