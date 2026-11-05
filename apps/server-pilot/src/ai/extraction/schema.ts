@@ -456,8 +456,9 @@ function sanitizeWorkflowProposal(
   };
   const result: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(proposal)) {
-    if (!item || !item.excerpt || maskCardNumbers(item.excerpt) !== item.excerpt) continue;
+    if (!item || !item.excerpt || item.excerpt.length > 200 || maskCardNumbers(item.excerpt) !== item.excerpt) continue;
     const exact = (text: string) => groundedSeparateAsk(maskCardNumbers(text), item.excerpt) === item.excerpt;
+    const attachmentExact = (text: string) => maskCardNumbers(text).includes(item.excerpt);
     let provenance: z.infer<typeof proposalSourceSchema> | undefined;
     if (item.source?.kind === 'message') {
       if (item.source.id !== messageId || !exact(source)) continue;
@@ -468,13 +469,13 @@ function sanitizeWorkflowProposal(
         candidate.id === item.source!.id && (candidate.kind !== 'attachment_vision' || candidate.page === item.source!.page));
       if (matched.length !== 1) continue;
       const candidate = matched[0]!;
-      if (candidate.kind === 'attachment_text' && !exact(candidate.text ?? '')) continue;
+      if (candidate.kind === 'attachment_text' && !attachmentExact(candidate.text ?? '')) continue;
       provenance = { kind: candidate.kind, id: candidate.id, digest: candidate.digest,
         ...(candidate.page !== undefined ? { page: candidate.page } : {}),
         ...(candidate.kind === 'attachment_vision' ? { reviewRequired: true } : {}) };
     } else if (!exact(source)) {
       // Older model outputs may omit a pointer. Only one exact current text source is unambiguous.
-      const matched = admittedSources.filter((candidate) => candidate.kind === 'attachment_text' && exact(candidate.text ?? ''));
+      const matched = admittedSources.filter((candidate) => candidate.kind === 'attachment_text' && attachmentExact(candidate.text ?? ''));
       if (matched.length !== 1) continue;
       provenance = { kind: 'attachment_text', id: matched[0]!.id, digest: matched[0]!.digest };
     }
