@@ -3,6 +3,8 @@ import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mj
 import { parseSavedStayNativeResponse } from './saved-stay-native-response.mjs';
 import { parseAssociationResponse } from './cancel-association-scope.mjs';
 import { dismissNotesOrThrow, takeHandledNotes } from './stay360-notes.mjs';
+import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
+import { readConfirmationFromStay360 } from './stay360-confirmation.mjs';
 
 const TARGET = { propertyCode: 'HRCEN', origin: 'https://hmsweb.hms.eu1.inforcloudsuite.com' };
 const PATH = '/web/base/OSENEX';
@@ -492,15 +494,28 @@ export async function prepareStay360AddOns(page, confirmation, items) {
 
 const approvedValues = item => Object.fromEntries([...Object.keys(FIELDS), 'currency', 'totalCost'].map(key => [key, item[key]]));
 
+async function freshBaseline(prepared) {
+  return withCenturionStay360Page(async page => {
+    await readConfirmationFromStay360(page, prepared.confirmation, {
+      guestName: prepared.target.guestName, arrivalDate: prepared.target.arrival,
+    });
+    return readStay360AddOns(page, prepared.confirmation);
+  }, { headless: true, blockServiceWorkers: true });
+}
+
 export async function saveStay360AddOns(page, confirmation, preparedId, options = {}) {
   return run(page, async state => {
     const prepared = state.prepared.get(preparedId);
     if (!prepared || prepared.confirmation !== confirmation) fail('ADDONS_PREPARED_ID_REQUIRED');
-    if (prepared.baselineCoverage.complete !== true) fail('ADDONS_BASELINE_INCOMPLETE', 'needs_input');
     if (typeof options.authorize !== 'function') fail('ADDONS_SAVE_AUTHORIZATION_REQUIRED');
     await ensureOpen(page, state, confirmation);
     if (JSON.stringify(state.target) !== JSON.stringify(prepared.target) || JSON.stringify(state.native) !== JSON.stringify(prepared.native)) fail('ADDONS_TARGET_CHANGED');
     if (await options.authorize(structuredClone(prepared)) !== true) fail('ADDONS_SAVE_NOT_AUTHORIZED');
+    const baseline = await (options.readBaseline || freshBaseline)(structuredClone(prepared));
+    if (baseline?.outcome !== 'ok' || baseline.coverage?.complete !== true || !Array.isArray(baseline.rows)) {
+      fail('ADDONS_BASELINE_INCOMPLETE', 'needs_input');
+    }
+    if (JSON.stringify(baseline.target) !== JSON.stringify(prepared.target)) fail('ADDONS_TARGET_CHANGED');
     if (JSON.stringify(await target(page, confirmation)) !== JSON.stringify(prepared.target)) fail('ADDONS_TARGET_CHANGED');
     state.prepared.delete(preparedId);
     const receipts = [];
@@ -509,22 +524,19 @@ export async function saveStay360AddOns(page, confirmation, preparedId, options 
       for (let index = 0; index < prepared.items.length; index += 1) {
         const approved = prepared.items[index];
         const requested = prepared.requestedItems[index];
-        let current = await form(page, state);
-        if (clean(state.values?.enhexpsequencekey) || clean(state.values?.recordid) ||
-            current.itemId !== approved.itemId || JSON.stringify(approvedValues(current)) !== JSON.stringify(approvedValues(approved))) {
-          current = await stageOne(page, state, requested);
-        }
-        if (JSON.stringify(approvedValues(current)) !== JSON.stringify(approvedValues(approved))) {
+        const current = await stageOne(page, state, requested);
+        if (current.itemId !== approved.itemId || current.name !== approved.name ||
+            JSON.stringify(approvedValues(current)) !== JSON.stringify(approvedValues(approved))) {
           fail('ADDONS_PRICE_OR_FIELDS_CHANGED', 'needs_input', { preview: current });
         }
-        const dispatch = { operation: 'addOns', preparedId, confirmation, index, item: approvedValues(approved), target: prepared.target };
-        const before = await loadedRows(page, 'listdetailgrid', popup(page));
+        const dispatch = { operation: 'addOns', preparedId, confirmation, index, item: approvedValues(approved), target: prepared.target,
+          baselineIds: baseline.rows.map(row => clean(row.enhexpsequencekey)).filter(Boolean), baselineCoverage: baseline.coverage };
+        const previousIds = new Set([...dispatch.baselineIds, ...receipts.map(receipt => receipt.nativeId).filter(Boolean)]);
         const data = await step(page, state, { kind: 'save', code: approved.code, itemId: approved.itemId,
           item: approved, beforeDispatch: options.beforeDispatch, dispatch }, () => button(page, 'submit'));
         // Submit resets the form; its values need not retain the inserted ID.
         // Resolve the new native grid row, then require full fresh readback.
         const after = await loadedRows(page, 'listdetailgrid', popup(page));
-        const previousIds = new Set(before.rows.map(row => clean(row.enhexpsequencekey)).filter(Boolean));
         const inserted = after.rows.filter(row => clean(row.enhexpsequencekey) && !previousIds.has(clean(row.enhexpsequencekey)) &&
           clean(row.itemid) === approved.itemId && day(row.startdate) === approved.startDate && day(row.enddate) === approved.endDate &&
           decimal(row.quantity) === approved.quantity && decimal(row.totalcost) === approved.totalCost &&
@@ -538,13 +550,13 @@ export async function saveStay360AddOns(page, confirmation, preparedId, options 
       }
       state.quarantined = true;
       return { outcome: 'awaiting_readback', confirmation, preparedId, receipts,
-        attempts: structuredClone(state.attempts), requestedCount: prepared.items.length, baseline: prepared.baseline,
-        baselineCoverage: prepared.baselineCoverage };
+        attempts: structuredClone(state.attempts), requestedCount: prepared.items.length, baseline: baseline.rows,
+        baselineCoverage: baseline.coverage };
     } catch (error) {
       state.quarantined = true; state.prepared.clear();
       return { ...problem(error), outcome: state.dispatched || state.callbacks.size ? 'uncertain' : problem(error).outcome,
         confirmation, preparedId, receipts, requestedCount: prepared.items.length,
-        attempts: structuredClone(state.attempts), baseline: prepared.baseline, baselineCoverage: prepared.baselineCoverage, next: 'fresh_readback' };
+        attempts: structuredClone(state.attempts), baseline: baseline.rows, baselineCoverage: baseline.coverage, next: 'fresh_readback' };
     } finally {
       // Quarantine prevents a late callback from sending its paused request.
       // Keep the caller's reservation lock until its journal callback settles.

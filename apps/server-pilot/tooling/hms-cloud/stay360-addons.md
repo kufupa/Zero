@@ -11,7 +11,7 @@ All functions operate on the supplied logged-in Playwright `page`, bound to one 
 | `readStay360AddOns` | `page`, `confirmation` | `{detailIds: string[]}` | `{outcome:"ok", confirmation, propertyCode, target, rows, columns, details, coverage, notes}` |
 | `listStay360AddOnItems` | `page`, `confirmation` | None | `{outcome:"ok", confirmation, propertyCode, candidates, columns, coverage}` |
 | `prepareStay360AddOns` | `page`, `confirmation`, `items: AddOnInput[]` | Optional fields inside each item | `{outcome:"prepared", preparedId, confirmation, propertyCode, items: AddOnPreview[], baselineCoverage, availabilityVerified:false, saved:false}` |
-| `saveStay360AddOns` | `page`, `confirmation`, `preparedId`, `{authorize}` | Trusted `beforeDispatch`, `afterDispatch` callbacks | `{outcome:"awaiting_readback", confirmation, preparedId, receipts, attempts, requestedCount, baseline, baselineCoverage}`; never reports saved on acknowledgement alone |
+| `saveStay360AddOns` | `page`, `confirmation`, `preparedId`, `{authorize}` | Trusted `beforeDispatch`, `afterDispatch`, `readBaseline` callbacks | `{outcome:"awaiting_readback", confirmation, preparedId, receipts, attempts, requestedCount, baseline, baselineCoverage}`; never reports saved on acknowledgement alone |
 | `reconcileStay360AddOns` | Previous save result | `{withPage, target}` for an independent browser and lookup hints | `{outcome:"verified"\|"uncertain", confirmation, verified, mismatches, readback}` |
 | `withStay360AddOnSession` | Async callback receiving `{runTool}` | Trusted host callbacks and browser factory | Callback's return value; owns one page and serializes JSON tool calls |
 
@@ -55,6 +55,8 @@ The session wrapper fresh-reads every possible dispatch. It reports `saved` only
 
 Each receipt/attempt contains `{index, item, itemId, nativeId:string|null}`. Attempts are retained at the possible-dispatch boundary, before reading the response. If an ID is lost, reconciliation selects a unique new row outside the complete baseline and then reads all its detailed fields. Ambiguous, missing or partially dispatched items remain uncertain. Native response metadata must prove the complete baseline before Save; capped/incomplete Add-On lists return `ADDONS_BASELINE_INCOMPLETE` rather than guessing.
 
+Save reads that baseline in an independent session after acquiring the caller's write lock. It recalculates every item and compares identity, description and approved values before dispatch. Preview's earlier baseline is not used to credit a Save. Direct callers must hold the reservation lock around the low-level Save; the JSON session owns this wrapping. Optional `readBaseline(prepared)` overrides the fresh Centurion reader and must return a fresh `{outcome:"ok", target, rows, coverage}`. Dispatch journals receive `baselineIds` and `baselineCoverage` with the approved item.
+
 ## Write boundary
 
 The CLI's default authorization allows only a freshly verified Proof Labtest stay, arrival 2027 or later, Reserved status, matching native stay identity, and CMS Send off. Real guest saves require a trusted server host to supply `authorize(prepared)`, `beforeDispatch(dispatch)`, `afterDispatch(receipt)` and `withWriteLock(confirmation, callback)`. The host owns staff approval, a durable dispatch journal and cross-process reservation locking. `authorize` and `beforeDispatch` must return exactly `true`.
@@ -84,3 +86,5 @@ Existing lookup, booking-session and read-guard checks passed (11 tests); the fi
 Unsaved refusal/recovery checks also passed: an unknown item code returned `ADDONS_ITEM_NOT_LOADED`; missing native-zero pricing returned `ADDONS_PRICE_REQUIRED`; an explicit zero then prepared successfully on the same page with `saved:false`.
 
 After review fixes, concurrent first reads produced one successful read and one `ADDONS_ACTION_IN_PROGRESS` refusal. A 28-second dispatch callback retained the reservation lock through completion; fresh readback confirmed no new row. An owned Labtest Save with deliberately interrupted response reading retained its attempted values, recovered row `1742` from the complete preimage, and matched every field in a fresh browser without a retry. The existing 11 focused tests passed again after these changes.
+
+The approval-delay recovery check also passed: another session inserted identical row `1743` while the original held a preview. The original's blocked Submit used a fresh five-row baseline inside its lock, remained uncertain, and left the row count at five. It did not credit the other session's row as a successful Save.

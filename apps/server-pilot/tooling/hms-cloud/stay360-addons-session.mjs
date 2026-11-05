@@ -120,6 +120,12 @@ export async function withStay360AddOnSession(operation, options = {}) {
           lastSave = await saveStay360AddOns(page, confirmation, request.preparedId, {
             authorize: options.authorize || (prepared => authorizeLabtest(prepared, withPage)),
             beforeDispatch: options.beforeDispatch, afterDispatch: options.afterDispatch,
+            readBaseline: prepared => withPage(async freshPage => {
+              await readConfirmationFromStay360(freshPage, prepared.confirmation, {
+                guestName: prepared.target.guestName, arrivalDate: prepared.target.arrival,
+              });
+              return readStay360AddOns(freshPage, prepared.confirmation);
+            }, { headless: true, blockServiceWorkers: true }),
           });
           if (!['awaiting_readback', 'uncertain'].includes(lastSave.outcome) || !lastSave.receipts) return lastSave;
           closed = true;
