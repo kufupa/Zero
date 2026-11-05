@@ -135,14 +135,14 @@ const draftFingerprint = draft => fingerprint([draft.fields,draft.identity]);
 const PRICE_FIELDS = ['guestid', 'arrivaldate', 'departuredate', 'roomtype', 'roomtypecharge', 'rateplan',
   'adults', 'children', 'child1', 'child2', 'child3', 'guaranteetype', 'ta1', 'company', 'araccountname',
   'track', 'sourceofbusinessdesc', 'averagerate', 'totalrate', 'averageratecurr', 'totalratecurr'];
-const PRICE_REQUIRED = ['guestid', 'arrivaldate', 'departuredate', 'roomtype', 'roomtypecharge', 'rateplan', 'averagerate', 'totalrate'];
+const PRICE_REQUIRED = new Set(['guestid', 'arrivaldate', 'departuredate', 'roomtype', 'roomtypecharge', 'rateplan', 'averagerate', 'totalrate']);
 const PRICE_RESULT_FIELDS = new Set(['averagerate', 'totalrate', 'averageratecurr', 'totalratecurr']);
 function chargePriceFields(draft) {
   if (!Array.isArray(draft?.fields)) return null;
   const values = {};
   for (const name of PRICE_FIELDS) {
     const fields = draft.fields.filter(field => field.name === name);
-    if (fields.length > 1 || (!fields.length && PRICE_REQUIRED.includes(name))) return null;
+    if (fields.length > 1 || (!fields.length && PRICE_REQUIRED.has(name))) return null;
     if (fields.length) values[name] = fields[0].value;
   }
   return values;
