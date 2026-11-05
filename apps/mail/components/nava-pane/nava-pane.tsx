@@ -2566,7 +2566,8 @@ export function NavaPane({
 
             {storedWork.pane.state === 'ready' && storedWork.pane.staffManual ? (
               <p className="px-1 text-[13px] text-[#92400e]">
-                Nava could not read this email. Enter and check all booking details yourself.
+                Nava could not read this email. Enter and check all booking details yourself. After reviewing all requests,
+                dismiss it from Needs you.
               </p>
             ) : activeEmail && !quoteSession.staffQuote && quoteOrBookingEmail ? (
               <p className="px-1 text-[13px] text-[#64748b]">
