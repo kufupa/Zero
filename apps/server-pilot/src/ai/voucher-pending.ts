@@ -10,6 +10,7 @@ import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { isVoucherMail, isVoucherNamedFile, voucherFilingFiles } from './voucher-filing-file.js';
 import { HMS_LABTEST_ATTACH_PROMPT_VERSION } from './run-ledger.js';
 import { resolveOutlookVoucherSnapshot } from './voucher-filing-source.js';
+import { MANUAL_CREATE_KEY, manualCreatePayload } from './manual-create-source.js';
 
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
 type Source = { threadId: string; messageId: string; sourceHash: string };
@@ -87,9 +88,11 @@ export async function confirmedVoucherKey(db: WorkTx, input: { transportId: stri
 export async function selectedVoucherReview(db: WorkTx, input: { transportId: string; workItemId: string; source: Source },
   includeReceipt = true) {
   const [row] = await db.select({ id: workItem.id, kind: workItem.kind, status: workItem.status,
-    threadId: workItem.threadId, sourceMessageId: workItem.sourceMessageId, state: workItem.state, payload: mailExtraction.payload,
+    threadId: workItem.threadId, sourceMessageId: workItem.sourceMessageId, state: workItem.state,
+    extractionId: workItem.extractionId, payload: mailExtraction.payload,
+    extraction: { id: mailExtraction.id, messageId: mailExtraction.messageId, status: mailExtraction.status },
     message: { id: message.id, subject: message.subject, textBody: message.textBody, htmlBody: message.htmlBody,
-      direction: message.direction, historyOnly: message.historyOnly } })
+      threadId: message.threadId, direction: message.direction, historyOnly: message.historyOnly } })
     .from(workItem).innerJoin(message, eq(message.id, workItem.sourceMessageId))
     .leftJoin(mailExtraction, eq(mailExtraction.id, workItem.extractionId))
     .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId),
@@ -97,13 +100,15 @@ export async function selectedVoucherReview(db: WorkTx, input: { transportId: st
   if (!row || row.threadId !== input.source.threadId || row.sourceMessageId !== input.source.messageId ||
       row.message.direction !== 'inbound' || row.message.historyOnly ||
       staffQuoteSourceHash(row.message) !== input.source.sourceHash) return null;
+  const manual = row.extraction ? manualCreatePayload({ item: row, extraction: row.extraction, source: row.message }) : null;
+  if (Object.hasOwn(row.state, MANUAL_CREATE_KEY) && !manual) return null;
   const files = await db.select({ id: attachment.id, messageId: attachment.messageId, filename: attachment.filename,
     mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, isInline: attachment.isInline,
     sha256: attachment.sha256, s3Key: attachment.s3Key }).from(attachment).where(eq(attachment.messageId, row.message.id));
   const decisions = await handledRequestStates(db as DB, { transportId: input.transportId, threadId: input.source.threadId,
     sourceIds: [input.source.messageId] });
   const handled = handledRequestKeys(decisions.get(input.source.messageId));
-  const candidates = voucherReviewFiles(input.transportId, row.kind, row.payload, row.message, files);
+  const candidates = voucherReviewFiles(input.transportId, row.kind, manual ?? row.payload, row.message, files);
   const confirmed = includeReceipt ? await confirmedVoucherKey(db, { ...input, state: row.state, files, candidates }) : null;
   return { status: row.status, files: candidates.map((file) => ({ ...file,
     handled: handled.has(file.key) || file.key === confirmed })) };
