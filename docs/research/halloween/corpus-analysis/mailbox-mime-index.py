@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 import unicodedata
+import uuid
 import zlib
 from pathlib import Path
 from typing import Any
@@ -66,7 +67,7 @@ class SafeError(Exception):
 
 
 REMOTE_CODE = r'''
-import base64, email, html, json, logging, os, re, subprocess, sys, time, unicodedata, zlib
+import base64, email, hashlib, html, json, logging, os, re, subprocess, sys, time, unicodedata, zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email import policy
 from email.parser import BytesParser
@@ -646,9 +647,30 @@ try:
     answer = main()
 except Exception:
     answer = {"fatal": "remote_runtime_error"}
-sys.stdout.write(base64.b64encode(zlib.compress(
+payload = zlib.compress(
     json.dumps(answer, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), 9
-)).decode("ascii"))
+)
+transfer_path = Path("/tmp") / ("nava-mailbox-mime-index-" + CONFIG["transfer_token"] + ".payload")
+try:
+    fd = os.open(transfer_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as output:
+        output.write(payload)
+    uploaded = subprocess.run([
+        "aws", "s3api", "put-object", "--bucket", CONFIG["transfer_bucket"],
+        "--key", CONFIG["transfer_key"], "--body", str(transfer_path),
+        "--region", CONFIG["transfer_region"], "--expected-bucket-owner",
+        CONFIG["transfer_owner"], "--server-side-encryption", "AES256",
+        "--query", "ServerSideEncryption", "--output", "text",
+    ], capture_output=True, text=True, timeout=120)
+    if uploaded.returncode or uploaded.stdout.strip() != "AES256":
+        raise RuntimeError("private_transfer_upload_failed")
+finally:
+    transfer_path.unlink(missing_ok=True)
+print(json.dumps({
+    "key": CONFIG["transfer_key"], "bytes": len(payload),
+    "sha256": hashlib.sha256(payload).hexdigest(),
+    "server_side_encryption": "AES256",
+}))
 '''
 
 
@@ -827,6 +849,8 @@ def invoke_remote(
     remote_root: str, pm2_process: str, aws_region: str, max_object_bytes: int,
     workers: int, body_chars: int, body_recovery: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    transfer_token = uuid.uuid4().hex
+    expected_key = tail.transfer_key(transfer_token)
     targets = {
         row["case"]: {"row_ids": row["row_ids"]}
         for row in batch
@@ -846,6 +870,11 @@ def invoke_remote(
         "safe_name_words": sorted(SAFE_NAME_WORDS),
         "document_markers": sorted(DOCUMENT_NAME_MARKERS),
         "safe_extensions": sorted(SAFE_EXTENSIONS),
+        "transfer_token": transfer_token,
+        "transfer_key": expected_key,
+        "transfer_bucket": tail.TRANSFER_BUCKET,
+        "transfer_region": tail.TRANSFER_REGION,
+        "transfer_owner": tail.EXPECTED_BUCKET_OWNER,
     }
     source = build_remote_source(config)
     packed = base64.b64encode(zlib.compress(source.encode("utf-8"), 9)).decode("ascii")
@@ -853,11 +882,16 @@ def invoke_remote(
     command = "python3 -B -c " + shlex.quote(bootstrap)
     if len(command.encode("utf-8")) > 24_000:
         raise SafeError("ssm_payload_too_large_reduce_batch_cases")
+    tail.ensure_private_transfer_bucket()
     try:
         stdout = tail.ssm(command)
-        payload = json.loads(zlib.decompress(base64.b64decode(stdout.strip(), validate=True)))
+        metadata = json.loads(stdout)
+        compressed = tail.fetch_payload(metadata, expected_key)
+        payload = json.loads(zlib.decompress(compressed))
     except Exception as exc:
         raise SafeError("ssm_or_response_error") from exc
+    finally:
+        tail.delete_transfer(expected_key)
     if not isinstance(payload, dict):
         raise SafeError("invalid_remote_response")
     if payload.get("fatal"):

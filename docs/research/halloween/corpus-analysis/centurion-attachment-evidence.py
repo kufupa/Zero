@@ -15,7 +15,8 @@ use the same interface. The selected row IDs must occur in those snapshots.
 
 The output path must be new and under .private, in an owner-only directory; it
 is created mode 0600. Only bounded, redacted evidence and opaque metadata are
-returned, never raw MIME or attachment bytes. ``--purpose room`` (default)
+returned through a private one-day S3 transfer; SSM carries metadata only.
+Raw MIME and attachment bytes are never returned. ``--purpose room`` (default)
 extracts room / occupancy / quantity evidence; ``--purpose document`` extracts
 bounded text relevant to distinguishing vouchers, payment proofs, receipts,
 and invoices. Neither mode classifies the email or document.
@@ -34,8 +35,19 @@ import re
 import stat
 import sys
 import time
+import uuid
 import zlib
 from typing import Any
+
+from private_s3_transfer import (
+    BUCKET as TRANSFER_BUCKET,
+    EXPECTED_BUCKET_OWNER,
+    REGION as TRANSFER_REGION,
+    delete_transfer,
+    ensure_private_transfer_bucket,
+    fetch_payload,
+    transfer_key,
+)
 
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -47,7 +59,6 @@ MAX_INPUT_BYTES = 100_000_000
 MAX_INPUT_ROWS = 50_000
 MAX_CASES = 12
 MAX_SNAPSHOTS = 8
-MAX_TRANSFER_CHARS = 20_000
 MAX_DECOMPRESSED_BYTES = 2_000_000
 CASE_RE = re.compile(r"[A-Z][A-Z0-9_-]{0,127}")
 ROW_ID_RE = re.compile(r"[A-Fa-f0-9-]{36}")
@@ -87,7 +98,7 @@ MAX_EVIDENCE_LINES = 20
 MAX_EVIDENCE_ROWS = 12
 MAX_EVIDENCE_COLUMNS = 6
 MAX_EVIDENCE_CHARS_PER_ATTACHMENT = 4500
-MAX_REMOTE_RESULT_CHARS = 18000
+MAX_REMOTE_RESULT_BYTES = 2000000
 
 CASE_RE = re.compile(r"[A-Z][A-Z0-9_-]{0,127}")
 ROW_ID_RE = re.compile(r"[A-Fa-f0-9-]{36}")
@@ -568,14 +579,31 @@ if __name__ == "__main__":
         result = _run_remote()
     except Exception:
         result = {"status": "failed", "error_code": "remote_extract_failed"}
-    encoded = base64.b64encode(zlib.compress(
-        json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8"), 9,
-    )).decode("ascii")
-    if len(encoded) > MAX_REMOTE_RESULT_CHARS:
-        encoded = base64.b64encode(zlib.compress(
-            b'{"status":"failed","error_code":"transfer_too_large"}', 9,
-        )).decode("ascii")
-    print("B64:" + encoded)
+    raw_result = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(raw_result) > MAX_REMOTE_RESULT_BYTES:
+        raw_result = b'{"status":"failed","error_code":"transfer_too_large"}'
+    payload = zlib.compress(raw_result, 9)
+    transfer_path = Path("/tmp") / ("nava-attachment-evidence-" + TRANSFER_TOKEN + ".payload")
+    try:
+        fd = os.open(transfer_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as output:
+            output.write(payload)
+        uploaded = subprocess.run([
+            "aws", "s3api", "put-object", "--bucket", TRANSFER_BUCKET,
+            "--key", TRANSFER_KEY, "--body", str(transfer_path),
+            "--region", TRANSFER_REGION, "--expected-bucket-owner", TRANSFER_OWNER,
+            "--server-side-encryption", "AES256", "--query", "ServerSideEncryption",
+            "--output", "text",
+        ], capture_output=True, text=True, timeout=120)
+        if uploaded.returncode or uploaded.stdout.strip() != "AES256":
+            raise RuntimeError("private_transfer_upload_failed")
+    finally:
+        transfer_path.unlink(missing_ok=True)
+    print(json.dumps({
+        "key": TRANSFER_KEY, "bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "server_side_encryption": "AES256",
+    }, separators=(",", ":")))
 '''
 
 
@@ -672,14 +700,14 @@ def _target_rows(rows: list[dict[str, Any]], selected: list[str]) -> dict[str, l
     return target
 
 
-def _decode_remote(value: str, selected: list[str]) -> dict[str, Any]:
-    if not isinstance(value, str) or len(value) > MAX_TRANSFER_CHARS or not value.startswith("B64:"):
+def _decode_remote(value: bytes, selected: list[str]) -> dict[str, Any]:
+    if not isinstance(value, bytes) or not value:
         raise Failure("remote_result_invalid")
     try:
-        compressed = base64.b64decode(value[4:].strip(), validate=True)
         decoder = zlib.decompressobj()
-        raw = decoder.decompress(compressed, MAX_DECOMPRESSED_BYTES + 1)
-        if len(raw) > MAX_DECOMPRESSED_BYTES or decoder.unconsumed_tail:
+        raw = decoder.decompress(value, MAX_DECOMPRESSED_BYTES + 1)
+        if (len(raw) > MAX_DECOMPRESSED_BYTES or decoder.unconsumed_tail
+                or decoder.unused_data or not decoder.eof):
             raise Failure("remote_result_too_large")
         result = json.loads(raw.decode("utf-8"))
     except Failure:
@@ -835,19 +863,34 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise Failure("snapshot_selection_invalid")
     rows, raw = _read_jsonl(input_path)
     target = _target_rows(rows, args.case)
+    transfer_token = uuid.uuid4().hex
+    expected_key = transfer_key(transfer_token)
     request = {"target": target, "snapshots": snapshots, "purpose": args.purpose}
     request_b64 = base64.b64encode(
         json.dumps(request, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     ).decode("ascii")
-    remote = "REQUEST_B64 = " + repr(request_b64) + "\n" + REMOTE
+    remote = (
+        "REQUEST_B64 = " + repr(request_b64) + "\n"
+        + "TRANSFER_TOKEN = " + repr(transfer_token) + "\n"
+        + "TRANSFER_KEY = " + repr(expected_key) + "\n"
+        + "TRANSFER_BUCKET = " + repr(TRANSFER_BUCKET) + "\n"
+        + "TRANSFER_REGION = " + repr(TRANSFER_REGION) + "\n"
+        + "TRANSFER_OWNER = " + repr(EXPECTED_BUCKET_OWNER) + "\n"
+        + REMOTE
+    )
     command = "python3 - <<'PY'\n" + remote + "\nPY"
     helper = _module("centurion_attachment_tail", TAIL_PATH)
     started = time.perf_counter()
+    ensure_private_transfer_bucket()
     try:
         response = helper.ssm(command)
+        metadata = json.loads(response)
+        payload = fetch_payload(metadata, expected_key)
     except Exception:
         raise Failure("read_only_s3_fetch_failed") from None
-    result = _decode_remote(response, args.case)
+    finally:
+        delete_transfer(expected_key)
+    result = _decode_remote(payload, args.case)
     if result.get("purpose") != args.purpose:
         raise Failure("remote_purpose_mismatch")
     result.update({

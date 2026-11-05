@@ -3,14 +3,26 @@
 
 Reads exported message IDs and existing S3 objects; never writes to the mailbox.
 Private results contain cleaned text and attachment metadata, not attachment bytes.
+SSM carries transfer metadata only; private results use the expiring S3 path.
 """
 import argparse
 import base64
 import importlib.util
 import json
 import os
+import uuid
 import zlib
 from pathlib import Path
+
+from private_s3_transfer import (
+    BUCKET as TRANSFER_BUCKET,
+    EXPECTED_BUCKET_OWNER,
+    REGION as TRANSFER_REGION,
+    delete_transfer,
+    ensure_private_transfer_bucket,
+    fetch_payload,
+    transfer_key,
+)
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[3]
@@ -26,7 +38,7 @@ def module(name, path):
 
 
 REMOTE = r'''
-import base64,html,json,os,re,subprocess,unicodedata,zlib
+import base64,hashlib,html,json,os,re,subprocess,unicodedata,zlib
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from email import policy
@@ -98,7 +110,20 @@ def recover(item):
         return case,{'status':'read_error','body':'','attachments':[]}
 with ThreadPoolExecutor(max_workers=4) as pool:
     output=dict(pool.map(recover,[(case,locators.get(case)) for case in target]))
-print(base64.b64encode(zlib.compress(json.dumps(output,ensure_ascii=False).encode(),9)).decode())
+payload=zlib.compress(json.dumps(output,ensure_ascii=False).encode(),9)
+transfer_path=Path('/tmp')/('nava-empty-mime-recovery-'+TRANSFER_TOKEN+'.payload')
+try:
+    fd=os.open(transfer_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    with os.fdopen(fd,'wb') as out:out.write(payload)
+    uploaded=subprocess.run(['aws','s3api','put-object','--bucket',TRANSFER_BUCKET,
+        '--key',TRANSFER_KEY,'--body',str(transfer_path),'--region',TRANSFER_REGION,
+        '--expected-bucket-owner',TRANSFER_OWNER,'--server-side-encryption','AES256',
+        '--query','ServerSideEncryption','--output','text'],capture_output=True,text=True,timeout=120)
+    if uploaded.returncode or uploaded.stdout.strip()!='AES256':raise RuntimeError('private_transfer_upload_failed')
+finally:
+    transfer_path.unlink(missing_ok=True)
+print(json.dumps({'key':TRANSFER_KEY,'bytes':len(payload),'sha256':hashlib.sha256(payload).hexdigest(),
+    'server_side_encryption':'AES256'}))
 '''
 
 
@@ -125,10 +150,22 @@ def main():
     if not target or (args.case and set(target) != set(args.case)):
         raise SystemExit('selected cases missing or empty')
     tail = module('tail_recover', HERE / 'centurion-recent-tail.py')
+    token = uuid.uuid4().hex
+    expected_key = transfer_key(token)
     target_encoded = base64.b64encode(json.dumps(target).encode()).decode()
-    code = 'TARGET=' + repr(target_encoded) + '\n' + REMOTE
-    response = tail.ssm("python3 - <<'REMOTE'\n" + code + "\nREMOTE")
-    data = json.loads(zlib.decompress(base64.b64decode(response, validate=True)))
+    code = ('TARGET=' + repr(target_encoded) + '\n'
+            + 'TRANSFER_TOKEN=' + repr(token) + '\n'
+            + 'TRANSFER_KEY=' + repr(expected_key) + '\n'
+            + 'TRANSFER_BUCKET=' + repr(TRANSFER_BUCKET) + '\n'
+            + 'TRANSFER_REGION=' + repr(TRANSFER_REGION) + '\n'
+            + 'TRANSFER_OWNER=' + repr(EXPECTED_BUCKET_OWNER) + '\n' + REMOTE)
+    ensure_private_transfer_bucket()
+    try:
+        metadata = json.loads(tail.ssm("python3 - <<'REMOTE'\n" + code + "\nREMOTE"))
+        compressed = fetch_payload(metadata, expected_key)
+    finally:
+        delete_transfer(expected_key)
+    data = json.loads(zlib.decompress(compressed))
     if set(data) != set(target):
         raise SystemExit('recovery case mismatch')
     cleaner = module('range_recover', HERE / 'centurion-range-prepare.py')

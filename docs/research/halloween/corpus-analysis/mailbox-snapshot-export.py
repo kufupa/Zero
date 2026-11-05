@@ -1,34 +1,41 @@
 #!/usr/bin/env python3
 """Export cleaned normalized rows from named, read-only mailbox snapshots.
 
-Snapshots are on the configured EC2 host. Source rows remain there; this sends
-only bounded cleaned text and metadata to a new owner-private JSONL file. The
-snapshot must already identify the intended mailbox and scope.
+Snapshots are on the configured EC2 host. Source rows remain there; bounded,
+cleaned text moves through the private one-day S3 transfer path into a new
+owner-private JSONL file. SSM carries metadata only. The snapshot must already
+identify the intended mailbox and scope.
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
-import hashlib
 import json
 import os
 import re
 import subprocess
 import uuid
 import zlib
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+
+from private_s3_transfer import (
+    BUCKET as TRANSFER_BUCKET,
+    EXPECTED_BUCKET_OWNER,
+    REGION as TRANSFER_REGION,
+    delete_transfer,
+    ensure_private_transfer_bucket,
+    fetch_payload,
+    transfer_key,
+)
 
 
 ROOT = Path(__file__).resolve().parents[4]
 PRIVATE_ROOT = ROOT / '.private'
-CHUNK_SIZE = 18_000
-MAX_TRANSFER = 50_000_000
 
 REMOTE_EXPORT = r'''
-import base64,datetime,hashlib,html,json,os,re,unicodedata,zlib
+import base64,datetime,hashlib,html,json,os,re,subprocess,unicodedata,zlib
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -99,10 +106,19 @@ encoded=base64.b64encode(zlib.compress(json.dumps(payload,ensure_ascii=False,sep
 folder=Path('/home/ubuntu/repos/zero/.private/mailbox-research-transfer')
 folder.mkdir(mode=0o700,parents=True,exist_ok=True)
 target=folder/(TOKEN+'.b64')
-fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
-with os.fdopen(fd,'wb') as output: output.write(encoded)
-print(json.dumps({'file':str(target),'bytes':len(encoded),'sha256':hashlib.sha256(encoded).hexdigest(),
-                  'rows':len(rows),'skipped_invalid':skipped,'by_snapshot':by_snapshot}))
+try:
+    fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    with os.fdopen(fd,'wb') as output: output.write(encoded)
+    result=subprocess.run(['aws','s3api','put-object','--bucket',TRANSFER_BUCKET,
+        '--key',TRANSFER_KEY,'--body',str(target),'--region',TRANSFER_REGION,
+        '--expected-bucket-owner',TRANSFER_OWNER,'--server-side-encryption','AES256',
+        '--query','ServerSideEncryption','--output','text'],capture_output=True,text=True,timeout=120)
+    if result.returncode or result.stdout.strip()!='AES256': raise RuntimeError('private_transfer_upload_failed')
+finally:
+    target.unlink(missing_ok=True)
+print(json.dumps({'key':TRANSFER_KEY,'bytes':len(encoded),'sha256':hashlib.sha256(encoded).hexdigest(),
+                  'server_side_encryption':'AES256','rows':len(rows),
+                  'skipped_invalid':skipped,'by_snapshot':by_snapshot}))
 '''
 
 
@@ -143,22 +159,18 @@ def main() -> None:
         if not parent.is_relative_to(root) or output_path.exists() or output_path.is_symlink():
             raise ValueError('output_not_new_private_path')
         token = uuid.uuid4().hex
+        expected_key = transfer_key(token)
         prelude = (f'SNAPSHOTS={args.snapshot!r}\nSTART={args.start!r}\nEND={args.end!r}\n'
-                   f'LIMIT={args.sample_limit!r}\nTOKEN={token!r}\n')
-        metadata = json.loads(ssm("python3 - <<'PY'\n" + prelude + REMOTE_EXPORT + "\nPY"))
-        remote = f'/home/ubuntu/repos/zero/.private/mailbox-research-transfer/{token}.b64'
-        size = metadata.get('bytes')
-        if metadata.get('file') != remote or not isinstance(size, int) or not 0 < size < MAX_TRANSFER:
-            raise ValueError('invalid_transfer_metadata')
+                   f'LIMIT={args.sample_limit!r}\nTOKEN={token!r}\nTRANSFER_KEY={expected_key!r}\n'
+                   f'TRANSFER_BUCKET={TRANSFER_BUCKET!r}\nTRANSFER_REGION={TRANSFER_REGION!r}\n'
+                   f'TRANSFER_OWNER={EXPECTED_BUCKET_OWNER!r}\n')
+        ensure_private_transfer_bucket()
+        try:
+            metadata = json.loads(ssm("python3 - <<'PY'\n" + prelude + REMOTE_EXPORT + "\nPY"))
 
-        def fetch(offset: int) -> bytes:
-            code = f'from pathlib import Path\nf=Path({remote!r}).open("rb")\nf.seek({offset})\nprint(f.read({CHUNK_SIZE}).decode())'
-            return ssm("python3 - <<'PY'\n" + code + "\nPY").encode()
-
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            encoded = b''.join(pool.map(fetch, range(0, size, CHUNK_SIZE)))
-        if len(encoded) != size or hashlib.sha256(encoded).hexdigest() != metadata.get('sha256'):
-            raise ValueError('transfer_integrity_failed')
+            encoded = fetch_payload(metadata, expected_key)
+        finally:
+            delete_transfer(expected_key)
         payload = json.loads(zlib.decompress(base64.b64decode(encoded, validate=True)))
         rows = payload.get('rows')
         if not isinstance(rows, list) or len(rows) != metadata.get('rows'):
@@ -167,11 +179,10 @@ def main() -> None:
         with os.fdopen(fd, 'w') as output:
             for row in rows:
                 output.write(json.dumps(row, ensure_ascii=False, separators=(',', ':')) + '\n')
-        # Remove only this invocation's random-token transfer after integrity verification.
-        ssm("python3 - <<'PY'\nfrom pathlib import Path\nPath(" + repr(remote) + ").unlink(missing_ok=True)\nPY")
         print(json.dumps({'rows': len(rows), 'by_snapshot': metadata.get('by_snapshot'),
                           'skipped_invalid': metadata.get('skipped_invalid'),
-                          'compressed_transfer_bytes': size, 'sha256': metadata.get('sha256')}, sort_keys=True))
+                          'compressed_transfer_bytes': metadata.get('bytes'),
+                          'sha256': metadata.get('sha256')}, sort_keys=True))
     except (ValueError, OSError, RuntimeError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
         code = str(exc) if isinstance(exc, (ValueError, RuntimeError)) and re.fullmatch(r'[a-z_]+', str(exc)) else 'export_failed'
         raise SystemExit(code) from None

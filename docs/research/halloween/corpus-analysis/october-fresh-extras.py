@@ -1,16 +1,28 @@
 #!/usr/bin/env python3
 """Fetch the newly sampled cases from the fresh read-only EC2 snapshot.
 
-The SSM command emits only a compressed, cleaned sample, never the full corpus.
-The owner-only output may contain client email and stays under .private.
+SSM carries transfer metadata only. The cleaned sample moves through the
+private one-day S3 transfer path; the owner-only output may contain client
+email and stays under .private.
 """
 
 import base64
 import json
+import os
 import subprocess
 import uuid
 import zlib
 from pathlib import Path
+
+from private_s3_transfer import (
+    BUCKET as TRANSFER_BUCKET,
+    EXPECTED_BUCKET_OWNER,
+    REGION as TRANSFER_REGION,
+    delete_transfer,
+    ensure_private_transfer_bucket,
+    fetch_payload,
+    transfer_key,
+)
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -19,7 +31,7 @@ SNAPSHOT = 'centurion-nine-day-8774dd09-e874-46f8-bed7-a24e4c282711'
 OUTPUT = PRIVATE / 'fresh-extra-packets.json'
 
 REMOTE_CODE = r'''
-import base64, datetime, email.utils, html, json, re, unicodedata, zlib
+import base64, datetime, email.utils, hashlib, html, json, os, re, subprocess, unicodedata, zlib
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -94,9 +106,23 @@ for index, row_id in enumerate(requested,1):
     packets.append({"case":f"N{index:02d}","cohort":"random","source_row_id":row_id,
                     "inbound":{"date":when.isoformat(),"from":sorted(sender),"subject":clean(r.get("subject") or "")[:300],
                                "message":body,"quoted_context":quoted},"candidate_replies":replies})
-payload=base64.b64encode(zlib.compress(json.dumps({"sample":packets},ensure_ascii=False).encode(),9)).decode()
-assert len(payload)<20000
-print(payload)
+encoded=base64.b64encode(zlib.compress(json.dumps({"sample":packets},ensure_ascii=False).encode(),9))
+folder=Path("/home/ubuntu/repos/zero/.private/mailbox-research-transfer")
+folder.mkdir(mode=0o700,parents=True,exist_ok=True)
+target=folder/(TOKEN+".b64")
+try:
+    fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    with os.fdopen(fd,"wb") as out:out.write(encoded)
+    result=subprocess.run(["aws","s3api","put-object","--bucket",TRANSFER_BUCKET,
+        "--key",TRANSFER_KEY,"--body",str(target),"--region",TRANSFER_REGION,
+        "--expected-bucket-owner",TRANSFER_OWNER,"--server-side-encryption","AES256",
+        "--query","ServerSideEncryption","--output","text"],capture_output=True,text=True,timeout=120)
+    if result.returncode or result.stdout.strip()!="AES256": raise RuntimeError("private_transfer_upload_failed")
+finally:
+    target.unlink(missing_ok=True)
+print(json.dumps({"key":TRANSFER_KEY,"bytes":len(encoded),
+    "sha256":hashlib.sha256(encoded).hexdigest(),"server_side_encryption":"AES256",
+    "sample":len(packets)}))
 '''
 
 
@@ -111,20 +137,31 @@ def main():
     if OUTPUT.exists():
         raise SystemExit('output already exists')
     encoded_ids = base64.b64encode(json.dumps(missing).encode()).decode()
-    remote_code = 'SNAPSHOT = ' + repr(SNAPSHOT) + '\nIDS = ' + repr(encoded_ids) + '\n' + REMOTE_CODE
+    transfer_token = uuid.uuid4().hex
+    expected_key = transfer_key(transfer_token)
+    remote_code = (f'SNAPSHOT = {SNAPSHOT!r}\nIDS = {encoded_ids!r}\nTOKEN = {transfer_token!r}\n'
+                   f'TRANSFER_KEY = {expected_key!r}\nTRANSFER_BUCKET = {TRANSFER_BUCKET!r}\n'
+                   f'TRANSFER_REGION = {TRANSFER_REGION!r}\nTRANSFER_OWNER = {EXPECTED_BUCKET_OWNER!r}\n'
+                   + REMOTE_CODE)
     payload = "python3 - <<'PY'\n" + remote_code + "\nPY"
-    result = subprocess.run(['bash', str(ROOT / 'apps/server-pilot/deploy/ssm-run-command.sh'), payload],
-                            text=True, capture_output=True, timeout=100)
-    if result.returncode:
-        raise SystemExit('SSM sample fetch failed')
-    invocation = json.loads(result.stdout)
-    if invocation.get('Status') != 'Success':
-        raise SystemExit('SSM sample fetch did not succeed')
-    compressed = base64.b64decode(invocation['Stdout'].strip(), validate=True)
-    sample = json.loads(zlib.decompress(compressed))
+    ensure_private_transfer_bucket()
+    try:
+        result = subprocess.run(['bash', str(ROOT / 'apps/server-pilot/deploy/ssm-run-command.sh'), payload],
+                                text=True, capture_output=True, timeout=100)
+        if result.returncode:
+            raise SystemExit('SSM sample fetch failed')
+        invocation = json.loads(result.stdout)
+        if invocation.get('Status') != 'Success':
+            raise SystemExit('SSM sample fetch did not succeed')
+        metadata = json.loads(invocation['Stdout'].strip())
+        compressed = fetch_payload(metadata, expected_key)
+    finally:
+        delete_transfer(expected_key)
+    sample = json.loads(zlib.decompress(base64.b64decode(compressed, validate=True)))
     if len(sample['sample']) != len(missing):
         raise SystemExit('sample count mismatch')
-    with OUTPUT.open('x') as out:
+    fd = os.open(OUTPUT, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w') as out:
         json.dump({'snapshot': SNAPSHOT, 'frame_inbound': selection['frame'],
                    'sample': sample['sample']}, out, ensure_ascii=False, indent=2)
     print(json.dumps({'new_cases': len(missing),
