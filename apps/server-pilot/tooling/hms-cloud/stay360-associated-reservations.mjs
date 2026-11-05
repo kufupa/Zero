@@ -24,7 +24,9 @@ export async function readAssociatedReservationsFromStay360(page, confirmation) 
     }
   };
   await waitForLoadedGrid();
-  // HMS can begin the refresh after the grid first appears.
+  // HMS can begin the refresh after the grid first appears. Retain this
+  // observation window: idle store/visible rows do not attribute a refresh
+  // to this activation, and coverage remains unverified.
   await page.waitForTimeout(1200);
   notes.push(...await dismissNotesOrThrow(page, { allowRecordFrame: true }));
   notes.push(...await dismissNotesOrThrow(frame));

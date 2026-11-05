@@ -117,22 +117,28 @@ export async function openHotelAvailability(page) {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       if (await menuOpen()) return;
       await page.locator('a.app-menu-trigger:visible').click();
-      await page.waitForTimeout(1200);
+      const frontDesk = await node('Front Desk').elementHandle();
+      try {
+        await page.waitForFunction((element) => {
+          const box = element?.closest('.x-tree-view')?.getBoundingClientRect();
+          return Boolean(box && Math.min(innerWidth, box.right) - Math.max(0, box.left) >= box.width * 0.9);
+        }, frontDesk, { timeout: 10000 });
+      } finally { await frontDesk?.dispose(); }
     }
     if (!await menuOpen()) throw new Error('MENU_NOT_OPENED');
   };
-  const ensureExpanded = async (parent, child, delay) => {
+  const ensureExpanded = async (parent, child) => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       if (await node(child).isVisible()) return;
       await clickMenuNode(node(parent));
-      await page.waitForTimeout(delay);
+      await node(child).waitFor({ state: 'visible', timeout: 10000 });
     }
     if (!await node(child).isVisible()) throw new Error('MENU_NOT_EXPANDED');
   };
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await ensureMenuOpen();
-    await ensureExpanded('Front Desk', 'Availability', 900);
-    await ensureExpanded('Availability', 'Hotel Availability', 1200);
+    await ensureExpanded('Front Desk', 'Availability');
+    await ensureExpanded('Availability', 'Hotel Availability');
     await clickMenuNode(node('Hotel Availability'));
     const surface = await waitForAvailabilitySurface(page, 8000);
     if (surface) return surface;
@@ -186,8 +192,21 @@ async function chooseDate(page, iso) {
     }
     if (!calendars.length || calendars.some((calendar) => !calendar.month)) throw new Error('DATE_PICKER_UNAVAILABLE');
     const direction = iso.slice(0, 7) < calendars[0].month ? 'prev' : 'next';
+    const before = await picker.locator('.x-datepicker:visible').evaluateAll((elements) =>
+      elements.map((element) => [...element.querySelectorAll('td.x-datepicker-active[title]')]
+        .find((cell) => cell.title !== 'Today')?.title));
     await picker.locator(`.x-daterange-${direction}:visible`).click();
-    await page.waitForTimeout(100);
+    const element = await picker.elementHandle();
+    try {
+      await page.waitForFunction(({ element, before }) => {
+        const dates = [...element.querySelectorAll('.x-datepicker')].filter((calendar) =>
+          calendar.getBoundingClientRect().width > 0 && getComputedStyle(calendar).visibility !== 'hidden')
+          .map((calendar) => [...calendar.querySelectorAll('td.x-datepicker-active[title]')]
+            .find((cell) => cell.title !== 'Today')?.title);
+        return dates.length === before.length && dates.every(Boolean) &&
+          dates.every((date, index) => date !== before[index]);
+      }, { element, before }, { timeout: 5000 });
+    } finally { await element?.dispose(); }
   }
   throw new Error('DATE_OUTSIDE_PICKER_RANGE');
 }

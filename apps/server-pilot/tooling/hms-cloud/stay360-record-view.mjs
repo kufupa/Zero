@@ -2,6 +2,7 @@
 import { dismissNotesOrThrow, installStay360NotesHandler, takeHandledNotes } from './stay360-notes.mjs';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
 import { readNativeSavedStayPreimage } from './stay360-native-preimage.mjs';
+import { expandStay360Panel } from './stay360-panel-expansion.mjs';
 
 export async function readRecordViewFromStay360(page, confirmation, options = {}) {
   const wanted = typeof confirmation === 'string' ? confirmation.trim() : '';
@@ -66,8 +67,7 @@ export async function readRecordViewFromStay360(page, confirmation, options = {}
       has: frame.locator('img[class*="x-tool-expand-"]'),
     });
     if (await expand.count() !== 1) throw new Error('RECORD_EXPAND_NOT_UNIQUE');
-    await expand.click();
-    await page.waitForTimeout(150);
+    await expandStay360Panel(frame, panel, expand);
     notes.push(...await dismissNotesOrThrow(page, { allowRecordFrame: true }));
     notes.push(...await dismissNotesOrThrow(frame));
   }

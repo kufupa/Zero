@@ -186,7 +186,7 @@ export async function openNewGuestStay(page) {
       if (!await guestStay.isVisible().catch(() => false)) await clickTreeNode(nodes.filter({ hasText: /^Front Desk$/ }), () => nativeDialog);
       let opened = false;
       for (let attempt = 0; attempt < 3 && !opened; attempt += 1) {
-        await page.waitForTimeout(800);
+        await guestStay.waitFor({ state: 'visible', timeout: 10000 });
         if (!await guestStay.isVisible().catch(() => false)) await page.locator('a.app-menu-trigger:visible').click();
         await clickTreeNode(guestStay, () => nativeDialog);
         opened = await page.locator('input[name="ff_confirmationnumber"]:visible').first()
@@ -199,8 +199,20 @@ export async function openNewGuestStay(page) {
       await agency.waitFor({ timeout: 25000 });
     }
     try {
-      await page.waitForLoadState('networkidle', { timeout: 10000 });
-      await page.waitForFunction(() => typeof Ext?.Ajax?.isLoading === 'function' && !Ext.Ajax.isLoading(), null,
+      // Background resources need not become idle for the native New form to be ready.
+      await page.waitForFunction((property) => {
+        const visible = (element) => Boolean((element.offsetWidth || element.offsetHeight) &&
+          getComputedStyle(element).visibility !== 'hidden' && !element.closest('.x-window'));
+        const fields = (name) => [...document.querySelectorAll(`input[name="${name}"]`)].filter(visible);
+        const agency = fields('ta1'), confirmation = fields('confirmationnumber');
+        if (agency.length !== 1 || confirmation.length !== 1 || confirmation[0].value.trim()) return false;
+        const form = globalThis.Ext?.getCmp?.(agency[0].id.replace(/-inputEl$/, ''))?.up?.('form');
+        const data = form?.getRecord?.()?.data;
+        return data?.propertycode === property && data.status === 'New' &&
+          data.PKID === `@[EMPTY]#@[EMPTY]#${property}#` && !String(data.confirmationnumber ?? '').trim() &&
+          typeof Ext?.Ajax?.isLoading === 'function' && !Ext.Ajax.isLoading() &&
+          ![...document.querySelectorAll('.x-mask,.x-mask-msg,.x-loadmask')].some(visible);
+      }, PROPERTY,
         { timeout: 10000 });
     } catch {
       throw new Error('GUEST_STAY_STARTUP_UNSETTLED');
@@ -743,6 +755,7 @@ export async function closeGuestStayPartyPicker(page, { propertyCode } = {}) {
     await cancel.click({ timeout: 5000 });
     await page.waitForFunction((id) => !Ext.getCmp(id)?.isVisible(), windowId, { timeout: 10000 });
     await win.waitFor({ state: 'hidden', timeout: 10000 });
+    // Hidden alone does not establish that picker callbacks and late requests have drained.
     await page.waitForTimeout(500);
     await assertExpectedDialogs(page, nativeDialog);
     await checkDraft();

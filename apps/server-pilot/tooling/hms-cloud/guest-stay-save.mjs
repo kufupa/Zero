@@ -762,6 +762,8 @@ export async function saveNewLabtestStay(page, {
       requireCurrent();
       await bounded(control.press('Tab', { timeout: 5_000 }));
       requireCurrent();
+      // Retain the guarded blur observation before rechecking the billing-only
+      // draft and identity proofs; input equality alone is insufficient.
       await bounded(page.waitForTimeout(1000));
       requireCurrent();
       expected.billingPhase = 'after';
