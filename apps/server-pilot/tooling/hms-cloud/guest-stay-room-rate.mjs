@@ -371,11 +371,17 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
       await waitGrid(page, id, rows.length);
       current = await readWindow(page, id);
       if (!only(controls('selfiltervaluectrl'), '') ||
+          current.controls.filter(control => control.name?.startsWith('ff_')).some(control => clean(control.value)) ||
           JSON.stringify(await formFields(page)) !== formState) throw new Error('ROOM_FILTER_RESET_UNVERIFIED');
       // The reset request can contain other native filters. Preserve those
       // observations instead of assuming clearing the text cleared them all.
-      nativeFilters = [...new URLSearchParams(reset.request().postData() || '')]
+      const resetFilters = [...new URLSearchParams(reset.request().postData() || '')]
         .filter(([name]) => /filter/i.test(name)).map(([name, value]) => ({ name, value }));
+      const filterValues = resetFilters.filter(item => item.name.toLowerCase() === 'filtervalue');
+      const clearedTextFilter = filterValues.length === 1 && !clean(filterValues[0].value);
+      const textFilterNames = new Set(['filterfields', 'filteroperator', 'filtervalue']);
+      nativeFilters = resetFilters.filter(item => clean(item.value) &&
+        !(clearedTextFilter && textFilterNames.has(item.name.toLowerCase())));
       nativeFilterReset = true;
       initialMetadata = metadata;
     }

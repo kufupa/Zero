@@ -577,6 +577,13 @@ function matchesSave(page, request, expected) {
         .map(name => ({ name: name.toLowerCase(), value: body.getAll(name).length === 1 ? body.get(name) : null }));
       const pricing = compareChargeRoomPricing(fields, expected.checkedPricing);
       if (Object.values(pricing).some(value => value !== 'MATCHED')) return false;
+      const occupancy = expected.checkedPricing?.occupancy;
+      if (!occupancy || occupancy.adults == null || occupancy.children == null) return false;
+      for (const [name, wanted] of Object.entries(occupancy)) {
+        const values = [...body].filter(([key]) => key.toLowerCase() === name).map(([, value]) => value);
+        if (wanted == null ? values.length > 1 || values.some(value => clean(value)) :
+          values.length !== 1 || values[0] !== String(wanted)) return false;
+      }
     }
     return profileControls.every((key) => {
       const matches = keys.filter((name) => name.toLowerCase() === key);

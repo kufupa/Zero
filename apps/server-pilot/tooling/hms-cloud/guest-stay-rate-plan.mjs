@@ -5,6 +5,7 @@ import { installPageRequestFence } from './page-request-fence.mjs';
 import { isVerifiedLabtestProfileCurrent, verifiedLabtestProfileToken } from './guest-profile.mjs';
 import { isVerifiedArSelectionCurrent, verifiedArSelectionToken } from './lookup.mjs';
 import { validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
+import { compareChargeRoomPricing } from './charge-room-pricing.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
@@ -135,6 +136,7 @@ const PRICE_FIELDS = ['guestid', 'arrivaldate', 'departuredate', 'roomtype', 'ro
   'adults', 'children', 'child1', 'child2', 'child3', 'guaranteetype', 'ta1', 'company', 'araccountname',
   'track', 'sourceofbusinessdesc', 'averagerate', 'totalrate', 'averageratecurr', 'totalratecurr'];
 const PRICE_REQUIRED = ['guestid', 'arrivaldate', 'departuredate', 'roomtype', 'roomtypecharge', 'rateplan', 'averagerate', 'totalrate'];
+const PRICE_RESULT_FIELDS = new Set(['averagerate', 'totalrate', 'averageratecurr', 'totalratecurr']);
 function chargePriceFields(draft) {
   if (!Array.isArray(draft?.fields)) return null;
   const values = {};
@@ -156,7 +158,10 @@ export async function checkedChargeRateEvidence(page, expected) {
   if (draft?.identity?.valid !== true || JSON.stringify(draft.identity) !== JSON.stringify(proof.identity) ||
       clean(draft.guaranteeValue) !== proof.guarantee ||
       JSON.stringify(chargePriceFields(draft)) !== JSON.stringify(proof.fields)) return null;
-  return { averageRate: proof.fields.averagerate, totalRate: proof.fields.totalrate, currency: proof.currency };
+  return { averageRate: proof.fields.averagerate, totalRate: proof.fields.totalrate, currency: proof.currency,
+    occupancy: { adults: proof.fields.adults, children: proof.fields.children, childages: proof.identity.childAges,
+      ...Object.fromEntries(['child1', 'child2', 'child3'].filter(name => Object.hasOwn(proof.fields, name))
+        .map(name => [name, proof.fields[name]])) } };
 }
 export async function currentCheckedChargeRate(page, expected) {
   return Boolean(await checkedChargeRateEvidence(page, expected));
@@ -267,7 +272,7 @@ function validateAvailabilityResponse(response) {
   if (response.status() !== 200) throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
   return response.text().then(body => {
     const data = parseResponse(body);
-    return Boolean(data);
+    return data;
   });
 }
 function observedPrice(value) {
@@ -351,6 +356,13 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     return {outcome:'input_gap',issue:'CREATE_AVAILABILITY_INPUT_INCOMPLETE'};
   }
   if (!page || typeof page.route !== 'function' || typeof page.evaluate !== 'function') return {outcome:'input_gap',issue:'PAGE_REQUIRED'};
+  if (requireM1CreateAvailability) {
+    try {
+      const context = page.context();
+      if (context?._options?.serviceWorkers !== 'block' || typeof context.serviceWorkers !== 'function' ||
+          context.serviceWorkers().length !== 0) return {outcome:'refused',issue:'BROWSER_CONTEXT_UNSAFE'};
+    } catch { return {outcome:'refused',issue:'BROWSER_CONTEXT_UNSAFE'}; }
+  }
   if (busy.has(page)) return {outcome:'execution_failure',issue:'RATE_SELECTION_IN_PROGRESS'};
   busy.add(page);
   const revision = chargeRoomRevision(page);
@@ -505,7 +517,8 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       finally { await check.dispose(); }
       const availabilityResponse = await bounded(responsePromise,16000,'RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
       if (!availabilityResponse) throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
-      if (!await bounded(validateAvailabilityResponse(availabilityResponse),10000,'RATE_AVAILABILITY_RESPONSE_UNVERIFIED')) {
+      const nativeAvailability = await bounded(validateAvailabilityResponse(availabilityResponse),10000,'RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
+      if (!nativeAvailability) {
         throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
       }
       await bounded(page.waitForLoadState('networkidle',{timeout:10000}),12000,'RATE_AVAILABILITY_READBACK_TIMEOUT');
@@ -518,6 +531,9 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       }
       const checked = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
       const checkedProof = await bounded(checkedDraft(checked,guestId,page,createAuthority),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
+      const criteria = draft => ({ identity: draft.identity, guarantee: clean(draft.guaranteeValue),
+        fields: PRICE_FIELDS.filter(name => !PRICE_RESULT_FIELDS.has(name)).map(name =>
+          [name, (draft.fields || []).filter(field => field.name === name).map(field => field.value)]) });
       const businessFields = [
         ['adults', createDraft.adults], ['children', createDraft.childCount], ['roomtype', createDraft.roomType],
         ...(createDraft.track ? [['track', createDraft.track.display]] : []),
@@ -531,6 +547,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       if (businessFields.some(([name, value]) => fieldValue(checked.fields, name) !== clean(value)) ||
           clean(checked.guaranteeValue) !== clean(createDraft.guaranteeType) ||
           JSON.stringify(checkedProof) !== JSON.stringify(dates) ||
+          JSON.stringify(criteria(checked)) !== JSON.stringify(criteria(after)) ||
           checked.property !== PROPERTY || checked.confirmation || checked.windows || checked.rate !== code ||
           checked.rateValue !== code || checked.rateSubmit !== code || checked.rateErrors.length || checked.rateInvalid === 'true') {
         throw new Error('RATE_AVAILABILITY_UNVERIFIED');
@@ -545,6 +562,13 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
         currencyValues.push('ZAR');
       }
       const currency = currencyValues.length && currencyValues.every(value => value === currencyValues[0]) ? currencyValues[0] : null;
+      if (fieldValue(checked.fields, 'roomtypecharge')) {
+        const values = nativeAvailability.values;
+        const responseFields = values && typeof values === 'object' && !Array.isArray(values)
+          ? Object.entries(values).map(([name, value]) => ({ name: name.toLowerCase(), value })) : [];
+        const returnedPrice = compareChargeRoomPricing(responseFields, { averageRate, totalRate, currency });
+        if (Object.values(returnedPrice).some(value => value !== 'MATCHED')) priceUnconfirmed = true;
+      }
       rateAvailability = { responseStatus:availabilityResponse.status(), averageRate, totalRate, currency };
       after = checked;
     }
