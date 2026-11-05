@@ -39,7 +39,7 @@ import {
 } from '@/lib/quote-workflow/fixtures';
 import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
 import type { CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
-import type { QuoteAnalysis, QuotePaneConfig, QuoteSelectionBinding, QuoteSessionAction } from '@/lib/quote-workflow/types';
+import type { QuoteAnalysis, QuotePaneConfig, QuoteSelectionBinding, QuoteSession, QuoteSessionAction } from '@/lib/quote-workflow/types';
 import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,

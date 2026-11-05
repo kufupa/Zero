@@ -1821,7 +1821,8 @@ describe('AmendLookupPanel cancel from the pane', () => {
         paneStayCancel: { previewCancel: { mutate: nativePreview }, commitCancel: { mutate: nativeCommit }, paneStayScreenshot: { query: shot } } };
       const renderCloud = (draft = snapshot) => render(<AmendLookupPanel session={session} trpc={cloud} workItemId={RUN_ID} readOnlyAmend={{ propertyCode: 'HRCEN',
         selectionCurrent: true, requireDurableDraft: true, ratePlans: [], requestDraft: { available: true,
-          record, held: vi.fn(() => undefined), flush, retry: vi.fn(), pending: false, error: null, retryable: false,
+          record, held: vi.fn(() => undefined), flush, retry: vi.fn(), discard: vi.fn(), saving: false,
+          pending: false, error: null, retryable: false,
           snapshot: draft } }} />);
       renderCloud();
       await pressFind();
