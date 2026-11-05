@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // A guarded saved-stay page and an optional separate Hotel Availability page.
 import { createInterface } from 'node:readline';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
@@ -14,6 +15,11 @@ import { projectCancellationPreflight } from './guest-stay-cancel-preflight.mjs'
 import { projectFinanceDisplayPreflight } from './guest-stay-finance-preflight.mjs';
 import { readStayAmendmentAvailability } from './guest-stay-amend-availability.mjs';
 import { readLabtestStayAmendmentAvailability } from './guest-stay-amend-date-room-rate.mjs';
+import { nativePriceDigest, readSavedStayNightlyRates } from './saved-stay-nightly-rates.mjs';
+import { listSavedStayRateOverrideReasons, prepareSavedStayRateOverride,
+  restageSavedStayRateOverride } from './saved-stay-rate-override.mjs';
+import { withRateOverrideSavedStay, submitRateOverrideOnce,
+  readBackSavedStayRateOverride } from './pane-rate-override-session.mjs';
 import {
   searchHotelAvailabilityParty, selectHotelAvailabilityParty, cancelHotelAvailabilityParty,
 } from './hotel-availability.mjs';
@@ -23,6 +29,23 @@ const RETRYABLE_LOOKUPS = new Set([
   'CONFIRMATION_HINT_UNVERIFIED', 'SEARCH_RESULTS_CHANGED',
   'INVALID_CONFIRMATION', 'INVALID_GUEST_NAME', 'INVALID_ARRIVAL_DATE', 'INVALID_LOOKUP_OPTIONS',
 ]);
+const RATE_TOOLS = ['readSavedStayRates', 'listRateOverrideReasons', 'prepareRateOverride', 'commitRateOverride'];
+const RATE_TARGET = Object.freeze({ propertyCode: 'HRCEN', browserSlot: 'centurion',
+  origin: 'https://hmsweb.hms.eu1.inforcloudsuite.com' });
+const rateTarget = selected => ({ propertyCode: selected.propertyCode, confirmation: selected.confirmation,
+  guestId: selected.guestId, nativeStayId: selected.reservationStayId, firstName: selected.firstName,
+  lastName: selected.lastName, arrival: selected.arrival, departure: selected.departure });
+const publicRates = rates => ({ currency: rates.currency, nightly: rates.nightly,
+  totals: rates.totals, digest: rates.digest });
+const validNight = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+  Number.isFinite(Date.parse(`${value}T00:00:00Z`)) &&
+  new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+const labtest = selected => selected?.firstName === 'Proof' && selected?.lastName === 'Labtest' &&
+  selected.arrival >= '2027-01-01';
+const safeIssue = (error, fallback) => {
+  const message = String(error?.message || '').split('\n')[0];
+  return /^[A-Z][A-Z0-9_]{2,100}$/.test(message) ? message : fallback;
+};
 
 function readFailure(error, stage, shallow) {
   const failure = lookupFailure(error, Date.now());
@@ -40,16 +63,18 @@ function readFailure(error, stage, shallow) {
 }
 
 /** Own guarded pages; calls submitted through runTool execute in order. */
-export async function withSavedStayAgentSession(operation, { signal, readOnly = false, readOnlyConfirmation, cloudTargetKey } = {}) {
+export async function withSavedStayAgentSession(operation, { signal, readOnly = false, readOnlyConfirmation,
+  cloudTargetKey, dispatchRateOverride } = {}) {
   if (typeof operation !== 'function') throw new Error('SESSION_CALLBACK_REQUIRED');
   if (typeof readOnly !== 'boolean') throw new Error('READ_ONLY_OPTION_INVALID');
+  if (dispatchRateOverride !== undefined && typeof dispatchRateOverride !== 'function') throw new Error('RATE_DISPATCH_INVALID');
   if (readOnly && !/^\d+-\d+$/.test(readOnlyConfirmation || '')) throw new Error('READ_CONFIRMATION_REQUIRED');
   signal?.throwIfAborted();
   const installStrictGuard = readOnly ? (await import('./saved-stay-read-guard.mjs')).installSavedStayReadGuard : undefined;
   const prepareContext = installStrictGuard && ((context) => installStrictGuard(context, { confirmation: readOnlyConfirmation }));
   return withCenturionStay360Page(async (page) => {
     if (!readOnly) await installReadOnlyGuard(page.context());
-    let current = null, recordOpen = false, pendingCancel = null, sealed = false, nativeDialog = null;
+    let current = null, recordOpen = false, pendingCancel = null, pendingRate = null, sealed = false, nativeDialog = null;
     let accepting = true, tail = Promise.resolve();
     let interruptRead;
     const readInterrupted = new Promise((resolve) => { interruptRead = resolve; });
@@ -85,7 +110,7 @@ export async function withSavedStayAgentSession(operation, { signal, readOnly = 
       const { tool } = request;
       if (!['read', 'prepareCancellation', 'prepareFinance', 'amendNote', 'amendContact', 'openCancel', 'confirmCancel',
         'readAmendmentAvailability', 'searchHotelAvailabilityParty', 'selectHotelAvailabilityParty',
-        'cancelHotelAvailabilityParty'].includes(tool)) {
+        'cancelHotelAvailabilityParty', ...RATE_TOOLS].includes(tool)) {
         return { outcome: 'input_gap', issue: 'UNKNOWN_TOOL' };
       }
       if (readOnly && tool !== 'read') return { outcome: 'refused', issue: 'READ_ONLY_SESSION' };
@@ -115,18 +140,106 @@ export async function withSavedStayAgentSession(operation, { signal, readOnly = 
         }
         if (request.view === 'shallow') return { outcome: 'ok', shallow };
         try {
-          const record = await readRecord(page, shallow.confirmation,
-            request.includeNativePreimage === true ? { nativePropertyCode: 'HRCEN',
-              nativeIdentityOnly: readOnly && request.includeNativeIdentityOnly === true } : {});
+          const record = await readRecord(page, shallow.confirmation, { nativePropertyCode: 'HRCEN',
+            nativeIdentityOnly: readOnly && request.includeNativeIdentityOnly === true });
           recordOpen = true;
           const statuses = record.details.fields.filter((field) => field.name === 'status');
           current = { confirmation: shallow.confirmation, status: statuses.length === 1 ? statuses[0].value : null,
             shallow: structuredClone(shallow), record: structuredClone(record), observedAt: new Date().toISOString() };
-          return { outcome: 'ok', shallow, record };
+          const publicRecord = request.includeNativePreimage === true ? record :
+            Object.fromEntries(Object.entries(record).filter(([key]) => key !== 'nativePreimage'));
+          return { outcome: 'ok', shallow, record: publicRecord };
         } catch (error) {
           sealed = true;
           return { ...readFailure(error, 'record', shallow), next: 'fresh_session' };
         }
+      }
+
+      if (RATE_TOOLS.includes(tool)) {
+        if (!current) return { outcome: 'refused', issue: 'CURRENT_RECORD_REQUIRED' };
+        if (current.status !== 'Reserved') return { outcome: 'refused', issue: 'RECORD_NOT_RESERVED' };
+        const selected = current.record?.nativePreimage;
+        if (!selected) return { outcome: 'refused', issue: 'NATIVE_STAY_IDENTITY_UNAVAILABLE' };
+        if (['dispatchRateOverride', 'authorizeCandidate', 'dispatchCandidate'].some(key => Object.hasOwn(request, key) ||
+            (request.options && Object.hasOwn(request.options, key)))) {
+          return { outcome: 'input_gap', issue: 'SERVER_SAVE_GUARD_ONLY' };
+        }
+        const sessionInput = { selected, target: RATE_TARGET, allowRealGuest: true, cloudTargetKey, signal };
+        if (tool === 'readSavedStayRates' || tool === 'listRateOverrideReasons') {
+          try {
+            return await withRateOverrideSavedStay(sessionInput, async session => {
+              const target = rateTarget(session.selected);
+              if (tool === 'readSavedStayRates') {
+                const rates = await readSavedStayNightlyRates(session.page, session.state, target);
+                return { outcome: 'ok', rates: publicRates(rates), observedAt: new Date().toISOString() };
+              }
+              const reasons = await listSavedStayRateOverrideReasons(session.page, session.state, target);
+              return { outcome: 'ok', ...reasons };
+            });
+          } catch (error) { return { outcome: 'read_failed', issue: safeIssue(error, 'RATE_READ_FAILED') }; }
+        }
+        if (tool === 'prepareRateOverride') {
+          pendingRate = null;
+          if (!validNight(request.date) || request.date < selected.arrival || request.date >= selected.departure ||
+              typeof request.amountCents !== 'string' || !/^[1-9]\d{0,13}$/.test(request.amountCents) ||
+              !/^[A-Z]{3}$/.test(request.currency || '') || !/^[A-Z0-9]{1,20}$/.test(request.reasonCode || '')) {
+            return { outcome: 'input_gap', issue: 'RATE_OVERRIDE_INPUT_INVALID' };
+          }
+          const change = { startDate: request.date, endDate: request.date, amountCents: request.amountCents,
+            currency: request.currency, reason: request.reasonCode };
+          try {
+            const prepared = await withRateOverrideSavedStay(sessionInput, async session => {
+              const stage = await prepareSavedStayRateOverride(session.page, session.state, rateTarget(session.selected), change);
+              return { review: structuredClone(stage.review), selected: structuredClone(session.selected),
+                preserved: structuredClone(session.preserved), totalsSource: stage.nativePreview.totalsSource };
+            });
+            const preparedId = randomUUID();
+            const reviewDigest = nativePriceDigest({ review: prepared.review, preserved: prepared.preserved });
+            pendingRate = { preparedId, reviewDigest, ...prepared };
+            return { outcome: 'prepared', preparedId, reviewedBaseline: publicRates(prepared.review.savedRates),
+              change: { date: request.date, amountCents: request.amountCents, currency: request.currency,
+                reasonCode: request.reasonCode }, reviewDigest,
+              proposedTotals: null, totalsSource: prepared.totalsSource };
+          } catch (error) { return { outcome: 'refused', issue: safeIssue(error, 'RATE_PREPARATION_FAILED') }; }
+        }
+
+        if (!pendingRate || typeof request.preparedId !== 'string' || request.preparedId !== pendingRate.preparedId) {
+          return { outcome: 'refused', issue: 'RATE_PREPARATION_STALE' };
+        }
+        if (typeof dispatchRateOverride !== 'function') return { outcome: 'refused', issue: 'RATE_DISPATCH_AUTHORITY_REQUIRED' };
+        if (!labtest(pendingRate.selected)) return { outcome: 'refused', issue: 'RATE_LABTEST_WRITE_ONLY' };
+        const prepared = pendingRate;
+        pendingRate = null;
+        sealed = true;
+        let continued = false, dispatch = null, failure = null;
+        try {
+          dispatch = await withRateOverrideSavedStay({ ...sessionInput, selected: prepared.selected, allowRealGuest: false },
+            async session => {
+              if (JSON.stringify(session.preserved) !== JSON.stringify(prepared.preserved)) {
+                throw new Error('RATE_OVERRIDE_BUSINESS_FIELDS_CHANGED');
+              }
+              const stage = await restageSavedStayRateOverride(session.page, session.state, prepared.review);
+              return submitRateOverrideOnce(session, stage, (nativeRequest, continueOnce) =>
+                dispatchRateOverride(nativeRequest, async () => { continued = true; return continueOnce(); },
+                  structuredClone({ preparedId: prepared.preparedId, reviewDigest: prepared.reviewDigest,
+                    review: prepared.review, preserved: prepared.preserved })), { signal });
+            });
+        } catch (error) { failure = safeIssue(error, 'RATE_COMMIT_FAILED'); }
+        let readback = null, readbackIssue = null;
+        try {
+          readback = await readBackSavedStayRateOverride(prepared.review, { target: RATE_TARGET,
+            cloudTargetKey, signal, beforePreserved: prepared.preserved });
+        } catch (error) { readbackIssue = safeIssue(error, 'RATE_READBACK_FAILED'); }
+        const verification = { nightly: 'UNKNOWN', reasonReadback: 'UNKNOWN', preservedFields: 'UNKNOWN', otherStayFields: 'UNKNOWN',
+          ...readback?.comparison };
+        return { outcome: failure ? (continued ? 'uncertain' : 'refused') :
+          continued && dispatch?.dispatchCallbacksDrained && dispatch.httpStatus >= 200 && dispatch.httpStatus < 300 &&
+            verification.nightly === 'MATCHED' && verification.preservedFields !== 'CHANGED' ? 'partially_verified' : 'uncertain',
+          ...(failure && { issue: failure }),
+          dispatch: { continued, httpStatus: dispatch?.httpStatus ?? null,
+            callbacksDrained: dispatch?.dispatchCallbacksDrained ?? false },
+          readback: readback ? { rates: publicRates(readback.rates), observedAt: readback.observedAt } : null,
+          verification, ...(readbackIssue && { readbackIssue }), next: 'fresh_session' };
       }
 
       if (tool === 'prepareCancellation') {
@@ -263,6 +376,7 @@ export async function withSavedStayAgentSession(operation, { signal, readOnly = 
     finally {
       accepting = false;
       await tail;
+      pendingRate = null;
       releaseAvailability?.();
       await availabilityTask;
     }
@@ -277,7 +391,7 @@ const writeLine = (value) => new Promise((done, fail) => {
 export async function runSavedStayAgentSessionCli(args = process.argv.slice(2)) {
   if (args.length === 1 && args[0] === '--help') {
     process.stdout.write('Usage: node saved-stay-agent-session.mjs --jsonl\n' +
-      'Tools: read, prepareCancellation, prepareFinance, readAmendmentAvailability, searchHotelAvailabilityParty, selectHotelAvailabilityParty, cancelHotelAvailabilityParty, amendNote, amendContact, openCancel, confirmCancel, quit. Results contain private data.\n');
+      'Tools: read, readSavedStayRates, listRateOverrideReasons, prepareRateOverride, commitRateOverride, prepareCancellation, prepareFinance, readAmendmentAvailability, searchHotelAvailabilityParty, selectHotelAvailabilityParty, cancelHotelAvailabilityParty, amendNote, amendContact, openCancel, confirmCancel, quit. Results contain private data.\n');
     return;
   }
   if (args.length !== 1 || args[0] !== '--jsonl') throw new Error('EXPECTED_JSONL');

@@ -7,6 +7,8 @@ asks: 273, 274
 supersedes: 2026-10-26-006 (run sections); 006 stays as history
 ---
 
+> **Historical run guidance:** Its one-browser-per-hotel instruction and real-guest/send assumptions are not current authority for new Cloud tooling. The owner reports independent Cloud sessions can run concurrently, while existing product paths may still use locks. Do not remove or bypass runtime locks based on this notice. Follow current guest-write and no-send rules.
+
 # Run plan 007 — Da Vinci first, both hotels by design
 
 Owner asks: 273 + 274 (verbatim in [ask 274 file](../context/asks/2026-10-26-ask274-walkthrough-and-owner-voice.md)). Evidence: [DV readiness](../research/2026-10-26-dv-faith-readiness.md). Main at plan time: `d4b37acbc` (= prod).

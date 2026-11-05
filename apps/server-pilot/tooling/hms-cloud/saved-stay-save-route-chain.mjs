@@ -117,6 +117,7 @@ export function consumeNeverDispatchedCreateProof(proof, request) {
  */
 export async function installLabtestSaveRouteChain(page, {
   frame,
+  savePath = SAVE_PATH,
   fence,
   scope,
   isArmed,
@@ -135,7 +136,9 @@ export async function installLabtestSaveRouteChain(page, {
   onDispatch,
   onBlocked,
 } = {}) {
-  if (!page || typeof page.route !== 'function' || typeof page.context !== 'function' || !frame ||
+  if (![SAVE_PATH, '/web/base/OSSTWZ.UpdateStayWizard'].includes(savePath) ||
+      (savePath !== SAVE_PATH && (availability || secondSave || thirdSave || childStageGate || roomStageGate || rateStageGate)) ||
+      !page || typeof page.route !== 'function' || typeof page.context !== 'function' || !frame ||
       typeof fence?.isQuarantined !== 'function' || typeof scope?.allow !== 'function' ||
       typeof isArmed !== 'function' || typeof matches !== 'function' ||
       (authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
@@ -357,7 +360,7 @@ export async function installLabtestSaveRouteChain(page, {
       if (gate === roomStageGate) roomCandidates.add(request); else rateCandidates.add(request);
       return route.fallback();
     }
-    if (SAFE_READ_METHODS.has(method) && url.pathname.toLowerCase() === SAVE_PATH.toLowerCase()) {
+    if (SAFE_READ_METHODS.has(method) && url.pathname.toLowerCase() === savePath.toLowerCase()) {
       // The lifetime fence rejects every non-approved request to this path,
       // including GET/HEAD reads. Count before falling through so a blocked
       // record refresh after dispatch cannot look like a clean save response.
@@ -366,10 +369,10 @@ export async function installLabtestSaveRouteChain(page, {
     }
     const safeRead = SAFE_READ_METHODS.has(method) && url.pathname &&
       !DANGEROUS_PATH.test(url.pathname) &&
-      !(url.pathname === SAVE_PATH && /^(SAVE|DELETE)$/i.test(pageAction));
+      !(url.pathname === savePath && /^(SAVE|DELETE)$/i.test(pageAction));
     if (safeRead) return route.fallback();
 
-    if (url.pathname === SAVE_PATH) {
+    if (url.pathname === savePath) {
       if (active && thirdSave && secondarySucceeded && thirdRequest === null && thirdSave.isArmed() &&
           !fence.isQuarantined() && isSameFrame(request) && thirdSave.matches(request, frame)) {
         let allowed = false;
@@ -424,7 +427,7 @@ export async function installLabtestSaveRouteChain(page, {
     let path;
     try { path = new URL(route.request().url()).pathname.toLowerCase(); }
     catch { return handler(route); }
-    return path === SAVE_PATH.toLowerCase() || path === AVAILABILITY_PATH.toLowerCase() ||
+    return path === savePath.toLowerCase() || path === AVAILABILITY_PATH.toLowerCase() ||
       [...SAVED_CHILD_STAGE_PATHS, ...SAVED_ROOM_STAGE_PATHS, ...SAVED_RATE_STAGE_PATHS].some((item) => item.toLowerCase() === path)
       ? trackCallback(() => handler(route)) : handler(route);
   };

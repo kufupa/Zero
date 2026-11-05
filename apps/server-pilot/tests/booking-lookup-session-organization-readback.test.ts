@@ -40,11 +40,13 @@ describe('booking-session linked-organization readback binding', () => {
     expect(buildLabtestOrganizationReadbackTarget(saved, request, selection)).toEqual({
       confirmation: '1234567-1',
       expected: {
-        confirmation: '1234567-1', guestId: '45678', arrival: '2027-01-25', departure: '2027-01-27',
+        confirmation: '1234567-1', guestId: '45678', firstName: 'Proof', lastName: 'Labtest',
+        arrival: '2027-01-25', departure: '2027-01-27',
         roomType: 'DLXKNG', ratePlan: 'BAR', note: 'synthetic org create',
       },
       expectedOrganization: { nativeId: '90210', name: 'Synthetic Company' },
       expectedGuarantee: { code: 'NGI', display: 'Non-Guaranteed Individual' },
+      allowRealGuest: false,
     });
     expect(buildLabtestOrganizationReadbackTarget({ ...saved, outcome: 'uncertain' }, request, selection)).toBeNull();
     expect(buildLabtestOrganizationReadbackTarget(saved, { ...request, agencySelection: {} }, selection)).toBeNull();

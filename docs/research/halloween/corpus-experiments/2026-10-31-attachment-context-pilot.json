@@ -1,0 +1,1042 @@
+{
+  "schema": "hms-attachment-context-pilot-v1",
+  "title": "Non-identifying local context-ablation pilot",
+  "manifest": {
+    "seed": "context-ablation-2026-10-31-v1",
+    "prior_filter": "strict timestamp < target reference; exclude direct replies to target with local thread metadata; no timestamps included in model view",
+    "arms": [
+      "current subject/body",
+      "current + eligible prior subject/body",
+      "current + eligible prior + selected attachment extracted text"
+    ],
+    "redaction": "strict allowlist lexical projection; names, locations, addresses, emails, IDs, phone, URLs, secrets, exact dates and numeric values suppressed or typed-placeholdered; sender/mailbox, filenames, confirmations, sibling files and image bytes omitted"
+  },
+  "interpretation_method": {
+    "kind": "qualitative layered review of strictly allowlisted, PII-redacted text projections",
+    "label_blinding": "silver reference labels remained separate until per-case interpretation notes were saved",
+    "arm_isolation": false,
+    "arm_isolation_note": "Current, prior, and attachment fields were presented side-by-side and reviewed in one pass, not sent as independent model calls. The current-only notes therefore are not memory-isolated model outputs.",
+    "external_model_call": false,
+    "claim_limit": "15/15 class-family alignments on classifiable cases are descriptive agreement with weak silver references, not a model accuracy estimate or a verified truth result."
+  },
+  "summary": {
+    "sample_n": 24,
+    "sample_reference_mix": {
+      "amend": 12,
+      "cancel": 12
+    },
+    "availability_cells": {
+      "11": 6,
+      "10": 6,
+      "01": 6,
+      "00": 6
+    },
+    "blind_action_family": {
+      "amend": 6,
+      "cancel": 9,
+      "abstain": 9
+    },
+    "silver_reference_alignment_on_classified_cases": {
+      "classified": 15,
+      "aligned": 15,
+      "not_a_score": "silver references are weak, later-outcome-influenced, and not verified truth"
+    },
+    "abstentions_by_silver_reference": {
+      "cancel": 3,
+      "amend": 6
+    },
+    "context_shape": {
+      "cases_with_prior": 12,
+      "eligible_prior_messages": 27,
+      "prior_bodies_with_nonempty_allowlisted_text": 24,
+      "prior_bodies_empty_after_safe_projection": 3,
+      "cases_with_attachment_text": 12,
+      "attachment_text_blocks": 13,
+      "equal_or_later_messages_excluded": 66,
+      "direct_replies_excluded": 0
+    },
+    "privacy_projection_shape": {
+      "current_bodies_with_header_like_quoted_content": 15,
+      "current_bodies_truncated_by_safe_projection_cap": 7,
+      "attachment_blocks_truncated_by_safe_projection_cap": 8
+    },
+    "caveats": [
+      "descriptive qualitative ablation, not a production replay or pass",
+      "current-only arm retains quoted history already embedded in selected body; context arms overlap",
+      "sender/mailbox, filenames, exact values, and images omitted",
+      "selected corpus and balanced sample are not population-representative",
+      "safe arm fields were reviewed side-by-side, not in independent model calls; no controlled model score"
+    ]
+  },
+  "attachment_shape": {
+    "selection_rows_with_nonempty_text": 792,
+    "selection_denominator": 1694,
+    "attachment_objects": 2644,
+    "nonempty_extracted_text_blocks": 965,
+    "text_blocks_by_generic_type": {
+      "pdf": 920,
+      "docx": 45
+    },
+    "text_blocks_over_prompt_20k_char_cap": 9,
+    "read_failure_categories": {
+      "unsupported_type": 291,
+      "image_not_read": 1105,
+      "over_limit": 69,
+      "read_error_or_other": 98
+    }
+  },
+  "attachment_limits": [
+    "selection attachment list is loader-selected, not complete MIME inventory",
+    "text-only: no scanned-PDF pages or image bytes in pilot",
+    "per-file model prompt cap 20,000 chars; 9/965 historical text blocks exceed it",
+    "total file cap 3 files / 5 MB in source loader; global prompt character cap is environment-configured and historical effective value not established",
+    "attachment text can add field types/policies but cannot prove current HMS truth, penalty applicability, or authorization"
+  ],
+  "truth_and_bias": {
+    "reference": "silver action labels only; 53 amend and 12 cancel in joined historical selected corpus",
+    "verified_truth_available": false,
+    "sequential_review_risk": "silver generation can use later staff outbound evidence/model consensus; later messages were excluded from blind inputs but may influence reference labels",
+    "population_bias": "historical 1,694-selection export is deliberately oversampled; 24-case pilot selects all 12 silver cancel and 12 amendments balanced across context/attachment cells; no prevalence or production-accuracy inference"
+  },
+  "cases": [
+    {
+      "case_id": "case_01",
+      "current_only": {
+        "action": "ambiguous booking/confirmation correspondence",
+        "confidence": "low",
+        "knowable": [
+          "reservation/confirmation and invoice are referenced",
+          "payment state is mentioned"
+        ],
+        "missing": [
+          "whether request is amend, cancel, or information-only",
+          "which stay/document is target"
+        ]
+      },
+      "prior_delta": {
+        "adds": [
+          "one prior outbound header with empty body; no material context"
+        ],
+        "cautions": []
+      },
+      "attachment_delta": {
+        "adds": [
+          "two extracted documents expose stay-date, room/occupancy, rate/meal, total/deposit/payment, and child-policy field types"
+        ],
+        "limits": [
+          "exact values and identifiers suppressed",
+          "cannot prove which document matches requested operation or current HMS state"
+        ]
+      },
+      "blind_model_family": "abstain",
+      "silver_reference_non_gold": "cancel",
+      "reference_alignment": null,
+      "sample_availability": {
+        "prior_available": true,
+        "attachment_text_available": true
+      },
+      "sample_shape": {
+        "prior_message_count": 1,
+        "attachment_text_block_count": 2
+      }
+    },
+    {
+      "case_id": "case_02",
+      "current_only": {
+        "action": "amend checkout/departure date",
+        "confidence": "high",
+        "knowable": [
+          "existing booking",
+          "requested checkout-date change",
+          "invoice/payment follow-up is mentioned"
+        ],
+        "missing": [
+          "exact old/new dates and booking identifier",
+          "whether payment is complete"
+        ]
+      },
+      "prior_delta": {
+        "adds": [
+          "earlier booking request and hotel booking/invoice replies; reinforces this is an existing reservation"
+        ],
+        "cautions": [
+          "current body itself contains quoted history, so some context is duplicated",
+          "payment status remains unclear"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [],
+        "limits": [
+          "no extracted attachment text"
+        ]
+      },
+      "blind_model_family": "amend",
+      "silver_reference_non_gold": "amend",
+      "reference_alignment": true,
+      "sample_availability": {
+        "prior_available": true,
+        "attachment_text_available": false
+      },
+      "sample_shape": {
+        "prior_message_count": 4,
+        "attachment_text_block_count": 0
+      }
+    },
+    {
+      "case_id": "case_03",
+      "current_only": {
+        "action": "partial reservation change: cancel/remove lunch",
+        "confidence": "high",
+        "knowable": [
+          "meal/lunch field",
+          "a date is named",
+          "request is not clearly full-stay cancellation"
+        ],
+        "missing": [
+          "whether meal is refundable and whether change was accepted"
+        ]
+      },
+      "prior_delta": {
+        "adds": [],
+        "cautions": [
+          "no prior context"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [
+          "voucher text adds room/night/date, check-in/out, rate/meal, payment/agency, and cancellation/refund-policy field types"
+        ],
+        "limits": [
+          "exact policy thresholds and amounts suppressed",
+          "document text does not establish current booking state"
+        ]
+      },
+      "blind_model_family": "amend",
+      "silver_reference_non_gold": "amend",
+      "reference_alignment": true,
+      "sample_availability": {
+        "prior_available": false,
+        "attachment_text_available": true
+      },
+      "sample_shape": {
+        "prior_message_count": 0,
+        "attachment_text_block_count": 1
+      }
+    },
+    {
+      "case_id": "case_04",
+      "current_only": {
+        "action": "ambiguous confirmation/update request",
+        "confidence": "low",
+        "knowable": [
+          "confirmation is referenced"
+        ],
+        "missing": [
+          "requested operation and scope"
+        ]
+      },
+      "prior_delta": {
+        "adds": [
+          "earlier date request plus hotel message acknowledging a cancellation document and asking whether the stay would continue"
+        ],
+        "cautions": [
+          "status and intended next step remain unresolved"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [],
+        "limits": [
+          "no extracted attachment text"
+        ]
+      },
+      "blind_model_family": "abstain",
+      "silver_reference_non_gold": "amend",
+      "reference_alignment": null,
+      "sample_availability": {
+        "prior_available": true,
+        "attachment_text_available": false
+      },
+      "sample_shape": {
+        "prior_message_count": 2,
+        "attachment_text_block_count": 0
+      }
+    },
+    {
+      "case_id": "case_05",
+      "current_only": {
+        "action": "cancel reservation/stay",
+        "confidence": "high",
+        "knowable": [
+          "explicit cancellation request",
+          "family-related reason category",
+          "a stay date is referenced"
+        ],
+        "missing": [
+          "exact stay/booking identifier",
+          "refund/fee outcome"
+        ]
+      },
+      "prior_delta": {
+        "adds": [],
+        "cautions": [
+          "no prior context"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [],
+        "limits": [
+          "no extracted attachment text"
+        ]
+      },
+      "blind_model_family": "cancel",
+      "silver_reference_non_gold": "cancel",
+      "reference_alignment": true,
+      "sample_availability": {
+        "prior_available": false,
+        "attachment_text_available": false
+      },
+      "sample_shape": {
+        "prior_message_count": 0,
+        "attachment_text_block_count": 0
+      }
+    },
+    {
+      "case_id": "case_06",
+      "current_only": {
+        "action": "move/change existing booking date",
+        "confidence": "medium",
+        "knowable": [
+          "existing booking",
+          "request to move it",
+          "invoice/payment is relevant"
+        ],
+        "missing": [
+          "exact target date and whether change is approved"
+        ]
+      },
+      "prior_delta": {
+        "adds": [
+          "prior hotel invoice/payment instructions establish earlier booking/payment workflow"
+        ],
+        "cautions": [
+          "payment completion remains unclear"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [
+          "confirmation text adds stay-date, room/occupancy, rate/meal, total/deposit/payment, and child-policy field types"
+        ],
+        "limits": [
+          "exact values suppressed; no availability or approval proof"
+        ]
+      },
+      "blind_model_family": "amend",
+      "silver_reference_non_gold": "amend",
+      "reference_alignment": true,
+      "sample_availability": {
+        "prior_available": true,
+        "attachment_text_available": true
+      },
+      "sample_shape": {
+        "prior_message_count": 1,
+        "attachment_text_block_count": 1
+      }
+    },
+    {
+      "case_id": "case_07",
+      "current_only": {
+        "action": "service/availability inquiry: late checkout, transfer, breakfast",
+        "confidence": "medium",
+        "knowable": [
+          "requested service types",
+          "flight/timing context exists"
+        ],
+        "missing": [
+          "whether requested services are available or already booked"
+        ]
+      },
+      "prior_delta": {
+        "adds": [
+          "earlier request and hotel reply mention payment state and a transfer fee"
+        ],
+        "cautions": [
+          "prior answer does not establish late-checkout or breakfast availability; repeated quoted history reduces independent delta"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [],
+        "limits": [
+          "no extracted attachment text"
+        ]
+      },
+      "blind_model_family": "abstain",
+      "silver_reference_non_gold": "amend",
+      "reference_alignment": null,
+      "sample_availability": {
+        "prior_available": true,
+        "attachment_text_available": false
+      },
+      "sample_shape": {
+        "prior_message_count": 2,
+        "attachment_text_block_count": 0
+      }
+    },
+    {
+      "case_id": "case_08",
+      "current_only": {
+        "action": "cancel attached booking/voucher",
+        "confidence": "medium",
+        "knowable": [
+          "cancellation request",
+          "voucher/booking target",
+          "a stay date is referenced"
+        ],
+        "missing": [
+          "exact stay/booking identifier and current status"
+        ]
+      },
+      "prior_delta": {
+        "adds": [],
+        "cautions": [
+          "no prior context"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [
+          "voucher text adds date/room/night/rate/meal, payment/agency, cancellation-policy and refund-policy field types"
+        ],
+        "limits": [
+          "exact fee/threshold suppressed",
+          "text cannot prove cancellation completion"
+        ]
+      },
+      "blind_model_family": "cancel",
+      "silver_reference_non_gold": "cancel",
+      "reference_alignment": true,
+      "sample_availability": {
+        "prior_available": false,
+        "attachment_text_available": true
+      },
+      "sample_shape": {
+        "prior_message_count": 0,
+        "attachment_text_block_count": 1
+      }
+    },
+    {
+      "case_id": "case_09",
+      "current_only": {
+        "action": "cancel a room or booking; scope ambiguous",
+        "confidence": "medium",
+        "knowable": [
+          "cancellation language",
+          "room scope is referenced"
+        ],
+        "missing": [
+          "whether one room or full reservation is to be cancelled"
+        ]
+      },
+      "prior_delta": {
+        "adds": [
+          "earlier booking/stay details and correspondence add existing-reservation context, date/room/rate field types"
+        ],
+        "cautions": [
+          "prior thread does not resolve cancellation scope or completion"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [],
+        "limits": [
+          "no extracted attachment text"
+        ]
+      },
+      "blind_model_family": "cancel",
+      "silver_reference_non_gold": "cancel",
+      "reference_alignment": true,
+      "sample_availability": {
+        "prior_available": true,
+        "attachment_text_available": false
+      },
+      "sample_shape": {
+        "prior_message_count": 4,
+        "attachment_text_block_count": 0
+      }
+    },
+    {
+      "case_id": "case_10",
+      "current_only": {
+        "action": "cancel reservation",
+        "confidence": "medium",
+        "knowable": [
+          "cancellation request is present",
+          "booking is the target"
+        ],
+        "missing": [
+          "exact booking identity and whether this is a repeat request"
+        ]
+      },
+      "prior_delta": {
+        "adds": [
+          "earlier inbound cancellation request and outbound confirmation that booking had already been cancelled"
+        ],
+        "cautions": [
+          "material status conflict/duplicate risk; verify same stay and current state before any action"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [],
+        "limits": [
+          "no extracted attachment text"
+        ]
+      },
+      "blind_model_family": "cancel",
+      "silver_reference_non_gold": "cancel",
+      "reference_alignment": true,
+      "sample_availability": {
+        "prior_available": true,
+        "attachment_text_available": false
+      },
+      "sample_shape": {
+        "prior_message_count": 4,
+        "attachment_text_block_count": 0
+      }
+    },
+    {
+      "case_id": "case_11",
+      "current_only": {
+        "action": "cancel attached booking",
+        "confidence": "high",
+        "knowable": [
+          "explicit cancellation request",
+          "voucher/booking target"
+        ],
+        "missing": [
+          "exact stay and policy outcome"
+        ]
+      },
+      "prior_delta": {
+        "adds": [],
+        "cautions": [
+          "no prior context"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [
+          "voucher adds stay/date/room/night/rate plus cancellation/refund terms; text says voucher is not itself payment"
+        ],
+        "limits": [
+          "penalty amount and applicability are not knowable from redacted projection",
+          "no current HMS-state proof"
+        ]
+      },
+      "blind_model_family": "cancel",
+      "silver_reference_non_gold": "cancel",
+      "reference_alignment": true,
+      "sample_availability": {
+        "prior_available": false,
+        "attachment_text_available": true
+      },
+      "sample_shape": {
+        "prior_message_count": 0,
+        "attachment_text_block_count": 1
+      }
+    },
+    {
+      "case_id": "case_12",
+      "current_only": {
+        "action": "cancel reservation",
+        "confidence": "high",
+        "knowable": [
+          "explicit cancellation request",
+          "reservation target"
+        ],
+        "missing": [
+          "exact target and payment/fee status"
+        ]
+      },
+      "prior_delta": {
+        "adds": [
+          "earlier inbound booking details add room/date/rate/board field types"
+        ],
+        "cautions": [
+          "no prior staff completion/acceptance evidence"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [],
+        "limits": [
+          "no extracted attachment text"
+        ]
+      },
+      "blind_model_family": "cancel",
+      "silver_reference_non_gold": "cancel",
+      "reference_alignment": true,
+      "sample_availability": {
+        "prior_available": true,
+        "attachment_text_available": false
+      },
+      "sample_shape": {
+        "prior_message_count": 3,
+        "attachment_text_block_count": 0
+      }
+    },
+    {
+      "case_id": "case_13",
+      "current_only": {
+        "action": "ambiguous; possible balance/guest follow-up, operation not clear",
+        "confidence": "low",
+        "knowable": [
+          "guest/booking and balance are referenced",
+          "response/action status is unclear"
+        ],
+        "missing": [
+          "whether this is amend, cancel, payment, or information-only"
+        ]
+      },
+      "prior_delta": {
+        "adds": [
+          "earlier quote/meal request and availability/signature constraints"
+        ],
+        "cautions": [
+          "relationship between those messages and current request is uncertain"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [
+          "confirmation-like text adds stay/date/room/occupancy/rate/meal/total/deposit/child-policy field types"
+        ],
+        "limits": [
+          "cannot safely associate attachment facts to the current ask beyond same selected email; no HMS association"
+        ]
+      },
+      "blind_model_family": "abstain",
+      "silver_reference_non_gold": "amend",
+      "reference_alignment": null,
+      "sample_availability": {
+        "prior_available": true,
+        "attachment_text_available": true
+      },
+      "sample_shape": {
+        "prior_message_count": 2,
+        "attachment_text_block_count": 1
+      }
+    },
+    {
+      "case_id": "case_14",
+      "current_only": {
+        "action": "no clear actionable operation; voucher/terms correspondence",
+        "confidence": "low",
+        "knowable": [
+          "voucher and terms are referenced"
+        ],
+        "missing": [
+          "requested change/cancellation and target scope"
+        ]
+      },
+      "prior_delta": {
+        "adds": [
+          "prior voucher exchange and terms; mostly duplicates current correspondence"
+        ],
+        "cautions": [
+          "does not resolve an actionable ask"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [
+          "voucher text adds stay/date/room/night/rate/meal/payment/agency and cancellation/refund-policy field types"
+        ],
+        "limits": [
+          "document facts do not establish an action or live reservation state"
+        ]
+      },
+      "blind_model_family": "abstain",
+      "silver_reference_non_gold": "cancel",
+      "reference_alignment": null,
+      "sample_availability": {
+        "prior_available": true,
+        "attachment_text_available": true
+      },
+      "sample_shape": {
+        "prior_message_count": 2,
+        "attachment_text_block_count": 1
+      }
+    },
+    {
+      "case_id": "case_15",
+      "current_only": {
+        "action": "cancel reservation and ask about deposit/refund",
+        "confidence": "high",
+        "knowable": [
+          "explicit cancellation request",
+          "refund/deposit question",
+          "date/room/adult-count field types"
+        ],
+        "missing": [
+          "exact booking identity, dates, fee, and refund amount"
+        ]
+      },
+      "prior_delta": {
+        "adds": [],
+        "cautions": [
+          "no prior context"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [],
+        "limits": [
+          "no extracted attachment text"
+        ]
+      },
+      "blind_model_family": "cancel",
+      "silver_reference_non_gold": "cancel",
+      "reference_alignment": true,
+      "sample_availability": {
+        "prior_available": false,
+        "attachment_text_available": false
+      },
+      "sample_shape": {
+        "prior_message_count": 0,
+        "attachment_text_block_count": 0
+      }
+    },
+    {
+      "case_id": "case_16",
+      "current_only": {
+        "action": "amend occupancy/room or arrival timing",
+        "confidence": "medium",
+        "knowable": [
+          "existing reservation",
+          "children/room and late check timing are referenced"
+        ],
+        "missing": [
+          "exact requested final occupancy/room and whether late timing is check-in or checkout"
+        ]
+      },
+      "prior_delta": {
+        "adds": [],
+        "cautions": [
+          "no prior context"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [
+          "confirmation/policy text adds booked stay dates, adult/child/room, rate/total/payment, cancellation terms, and child-policy field types"
+        ],
+        "limits": [
+          "exact values suppressed; no availability/acceptance proof"
+        ]
+      },
+      "blind_model_family": "amend",
+      "silver_reference_non_gold": "amend",
+      "reference_alignment": true,
+      "sample_availability": {
+        "prior_available": false,
+        "attachment_text_available": true
+      },
+      "sample_shape": {
+        "prior_message_count": 0,
+        "attachment_text_block_count": 1
+      }
+    },
+    {
+      "case_id": "case_17",
+      "current_only": {
+        "action": "update booking stay dates",
+        "confidence": "high",
+        "knowable": [
+          "explicit update request",
+          "date range/stay and check-in/out timing are referenced"
+        ],
+        "missing": [
+          "exact old/new dates and whether inventory/rate permit change"
+        ]
+      },
+      "prior_delta": {
+        "adds": [],
+        "cautions": [
+          "no prior context"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [
+          "confirmation/policy text adds booked date, room/adult, total/payment, cancellation, and child-policy field types"
+        ],
+        "limits": [
+          "exact values suppressed; needs explicit old-vs-new diff and availability check"
+        ]
+      },
+      "blind_model_family": "amend",
+      "silver_reference_non_gold": "amend",
+      "reference_alignment": true,
+      "sample_availability": {
+        "prior_available": false,
+        "attachment_text_available": true
+      },
+      "sample_shape": {
+        "prior_message_count": 0,
+        "attachment_text_block_count": 1
+      }
+    },
+    {
+      "case_id": "case_18",
+      "current_only": {
+        "action": "availability/rate inquiry with possible room amendment",
+        "confidence": "medium",
+        "knowable": [
+          "rate and room availability question",
+          "conditional request to amend room"
+        ],
+        "missing": [
+          "which room/rate is available and requested final choice"
+        ]
+      },
+      "prior_delta": {
+        "adds": [
+          "one prior outbound header with empty body; no material context"
+        ],
+        "cautions": []
+      },
+      "attachment_delta": {
+        "adds": [
+          "confirmation adds existing stay dates, room/occupancy, rate/meal/total/deposit/payment field types"
+        ],
+        "limits": [
+          "does not establish current availability or an eligible alternative"
+        ]
+      },
+      "blind_model_family": "amend",
+      "silver_reference_non_gold": "amend",
+      "reference_alignment": true,
+      "sample_availability": {
+        "prior_available": true,
+        "attachment_text_available": true
+      },
+      "sample_shape": {
+        "prior_message_count": 1,
+        "attachment_text_block_count": 1
+      }
+    },
+    {
+      "case_id": "case_19",
+      "current_only": {
+        "action": "ambiguous room/date/time request; could be new or existing stay",
+        "confidence": "low",
+        "knowable": [
+          "date/time and room-related field types appear"
+        ],
+        "missing": [
+          "operation and existing-booking reference"
+        ]
+      },
+      "prior_delta": {
+        "adds": [],
+        "cautions": [
+          "no prior context"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [],
+        "limits": [
+          "no extracted attachment text"
+        ]
+      },
+      "blind_model_family": "abstain",
+      "silver_reference_non_gold": "amend",
+      "reference_alignment": null,
+      "sample_availability": {
+        "prior_available": false,
+        "attachment_text_available": false
+      },
+      "sample_shape": {
+        "prior_message_count": 0,
+        "attachment_text_block_count": 0
+      }
+    },
+    {
+      "case_id": "case_20",
+      "current_only": {
+        "action": "cancel reservation",
+        "confidence": "medium",
+        "knowable": [
+          "cancellation is requested for a booking",
+          "reason category is referenced"
+        ],
+        "missing": [
+          "exact booking/stay identity, fee, and completion status"
+        ]
+      },
+      "prior_delta": {
+        "adds": [],
+        "cautions": [
+          "no prior context"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [],
+        "limits": [
+          "no extracted attachment text"
+        ]
+      },
+      "blind_model_family": "cancel",
+      "silver_reference_non_gold": "cancel",
+      "reference_alignment": true,
+      "sample_availability": {
+        "prior_available": false,
+        "attachment_text_available": false
+      },
+      "sample_shape": {
+        "prior_message_count": 0,
+        "attachment_text_block_count": 0
+      }
+    },
+    {
+      "case_id": "case_21",
+      "current_only": {
+        "action": "existing-reservation inquiry/add-on request",
+        "confidence": "medium",
+        "knowable": [
+          "reservation confirmation, late checkout, airport transfer, and breakfast are asked about"
+        ],
+        "missing": [
+          "whether each service is available, included, or accepted"
+        ]
+      },
+      "prior_delta": {
+        "adds": [],
+        "cautions": [
+          "no prior context"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [],
+        "limits": [
+          "no extracted attachment text"
+        ]
+      },
+      "blind_model_family": "abstain",
+      "silver_reference_non_gold": "amend",
+      "reference_alignment": null,
+      "sample_availability": {
+        "prior_available": false,
+        "attachment_text_available": false
+      },
+      "sample_shape": {
+        "prior_message_count": 0,
+        "attachment_text_block_count": 0
+      }
+    },
+    {
+      "case_id": "case_22",
+      "current_only": {
+        "action": "cancel booking tied to attached voucher",
+        "confidence": "high",
+        "knowable": [
+          "explicit cancellation request",
+          "voucher target"
+        ],
+        "missing": [
+          "exact stay identity and cancellation status"
+        ]
+      },
+      "prior_delta": {
+        "adds": [],
+        "cautions": [
+          "no prior context"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [
+          "voucher adds date/room/night/rate/meal, agency payment responsibility, and terms field types"
+        ],
+        "limits": [
+          "fee/refund amount and applicability suppressed; no completion proof"
+        ]
+      },
+      "blind_model_family": "cancel",
+      "silver_reference_non_gold": "cancel",
+      "reference_alignment": true,
+      "sample_availability": {
+        "prior_available": false,
+        "attachment_text_available": true
+      },
+      "sample_shape": {
+        "prior_message_count": 0,
+        "attachment_text_block_count": 1
+      }
+    },
+    {
+      "case_id": "case_23",
+      "current_only": {
+        "action": "booking-change request; exact operation/field unclear",
+        "confidence": "low",
+        "knowable": [
+          "booking and a change are referenced",
+          "guest/no-show or availability concern may be present"
+        ],
+        "missing": [
+          "precise requested amendment and desired final values"
+        ]
+      },
+      "prior_delta": {
+        "adds": [
+          "one prior outbound header with empty body; no material context"
+        ],
+        "cautions": []
+      },
+      "attachment_delta": {
+        "adds": [
+          "confirmation adds stay date/room/occupancy/rate/meal/payment field types"
+        ],
+        "limits": [
+          "does not identify requested diff or prove current HMS state"
+        ]
+      },
+      "blind_model_family": "abstain",
+      "silver_reference_non_gold": "cancel",
+      "reference_alignment": null,
+      "sample_availability": {
+        "prior_available": true,
+        "attachment_text_available": true
+      },
+      "sample_shape": {
+        "prior_message_count": 1,
+        "attachment_text_block_count": 1
+      }
+    },
+    {
+      "case_id": "case_24",
+      "current_only": {
+        "action": "ambiguous request",
+        "confidence": "low",
+        "knowable": [
+          "policy/terms are referenced"
+        ],
+        "missing": [
+          "action, stay, and relevant fields"
+        ]
+      },
+      "prior_delta": {
+        "adds": [],
+        "cautions": [
+          "no prior context"
+        ]
+      },
+      "attachment_delta": {
+        "adds": [],
+        "limits": [
+          "no extracted attachment text"
+        ]
+      },
+      "blind_model_family": "abstain",
+      "silver_reference_non_gold": "amend",
+      "reference_alignment": null,
+      "sample_availability": {
+        "prior_available": false,
+        "attachment_text_available": false
+      },
+      "sample_shape": {
+        "prior_message_count": 0,
+        "attachment_text_block_count": 0
+      }
+    }
+  ]
+}

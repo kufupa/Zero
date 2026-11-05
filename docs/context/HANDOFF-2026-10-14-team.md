@@ -1,5 +1,7 @@
 # Handoff — move to an agent-team session (2026-10-14 ~14:00Z)
 
+> **Routing correction (2026-11-03):** This handoff records a 2026-10-14 snapshot, not current gateway state. Its §6 `fable` → GPT-6.1 Sol route was verified for that run only. The active `/home/orca/.local/share/nava-gateway/config.yaml` now maps `claude-fable-5-1` to GPT-6.1 Terra and has no GPT-6.1 Sol model entry; `/home/orca/.local/bin/claude-team` labels `fable` as GPT-6.1 Terra. Re-check those live files before relying on any model-routing note below.
+
 **Read in this order:** `docs/context/OWNER-ASKS.md` (every ask, by number) → this file → `PRODUCT.md` → `AGENTS.md` → `docs/plans/2026-10-14-002-one-click-case-card-plan.md` → memory index `/home/orca/.claude/projects/-home-ubuntu-projects-zero/memory/MEMORY.md`.
 
 **Goal now:** a complete product for Centurion (and next, Da Vinci): quote, new booking, amend, cancel each reach "one click, human approves", plus the highest possible triage coverage. HMS is back.

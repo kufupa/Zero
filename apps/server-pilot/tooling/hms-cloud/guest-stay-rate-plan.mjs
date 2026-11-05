@@ -1,10 +1,11 @@
 // Select a current rate code on a verified new HRCEN Guest Stay.
 import { createHash } from 'node:crypto';
-import { searchRatePlans, closeRoomRatePicker } from './guest-stay-room-rate.mjs';
+import { searchRatePlans, closeRoomRatePicker, chargeRoomRevision } from './guest-stay-room-rate.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { isVerifiedLabtestProfileCurrent, verifiedLabtestProfileToken } from './guest-profile.mjs';
 import { isVerifiedArSelectionCurrent, verifiedArSelectionToken } from './lookup.mjs';
 import { validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
+import { compareChargeRoomPricing } from './charge-room-pricing.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
@@ -59,13 +60,21 @@ async function readDraft(page) {
     const value = key => unique(key) ? String(data[key] ?? '').trim() : null;
     const exact = (key,expected) => unique(key) && value(key) === expected;
     const accountKeys = keys?.filter(key => key.toLowerCase() === 'araccountid') || [];
+    const partyIdKeys = ['taid1', 'companyid', 'childages', 'sourceofbus'];
+    const optionalValue = name => {
+      const matches = keys?.filter(key => key.toLowerCase() === name) || [];
+      return matches.length === 1 ? String(data[matches[0]] ?? '').trim() : null;
+    };
     const identity = data ? {
       valid:exact('propertycode','HRCEN') && exact('PKID','@[EMPTY]#@[EMPTY]#HRCEN#') && exact('status','New') &&
         exact('confirmationnumber','') && unique('guestid') && unique('arprofileid') && accountKeys.length <= 1 &&
+        partyIdKeys.every(name => keys.filter(key => key.toLowerCase() === name).length <= 1) &&
         unique('bookingsessionid') && Boolean(value('bookingsessionid')) &&
         blankIds.every(key => exact(key,'')),
-      session:value('bookingsessionid'),guestId:value('guestid'),arAccountId:value('araccountid') || '',
+      session:value('bookingsessionid'),guestId:value('guestid'),arAccountId:optionalValue('araccountid') || '',
       arProfileId:value('arprofileid'),arAccountName:value('araccountname'),
+      agencyId:optionalValue('taid1'),organizationId:optionalValue('companyid'),childAges:optionalValue('childages'),
+      sourceCode:optionalValue('sourceofbus'),
     } : null;
     let submit = null;
     try { submit = cmp?.getSubmitData?.() || null; } catch { /* Fail the readback if unavailable. */ }
@@ -123,6 +132,41 @@ function proofsCurrent(page, proof) {
     (!proof.ar?.token || isVerifiedArSelectionCurrent(page,{session:proof.session,...proof.ar}));
 }
 const draftFingerprint = draft => fingerprint([draft.fields,draft.identity]);
+const PRICE_FIELDS = ['guestid', 'arrivaldate', 'departuredate', 'roomtype', 'roomtypecharge', 'rateplan',
+  'adults', 'children', 'child1', 'child2', 'child3', 'guaranteetype', 'ta1', 'company', 'araccountname',
+  'track', 'sourceofbusinessdesc', 'averagerate', 'totalrate', 'averageratecurr', 'totalratecurr'];
+const PRICE_REQUIRED = ['guestid', 'arrivaldate', 'departuredate', 'roomtype', 'roomtypecharge', 'rateplan', 'averagerate', 'totalrate'];
+const PRICE_RESULT_FIELDS = new Set(['averagerate', 'totalrate', 'averageratecurr', 'totalratecurr']);
+function chargePriceFields(draft) {
+  if (!Array.isArray(draft?.fields)) return null;
+  const values = {};
+  for (const name of PRICE_FIELDS) {
+    const fields = draft.fields.filter(field => field.name === name);
+    if (fields.length > 1 || (!fields.length && PRICE_REQUIRED.includes(name))) return null;
+    if (fields.length) values[name] = fields[0].value;
+  }
+  return values;
+}
+
+/** A charged-room Save must use the same checked draft on this page. */
+export async function checkedChargeRateEvidence(page, expected) {
+  const proof = selectedOnPage.get(page)?.chargePrice;
+  if (!proof || chargeRoomRevision(page) !== proof.revision || proof.chargeRoom !== expected?.roomTypeForCharge ||
+      proof.roomType !== expected.roomType || proof.ratePlan !== expected.ratePlan ||
+      proof.arrival !== expected.arrival || proof.departure !== expected.departure) return null;
+  const draft = await readDraft(page);
+  if (draft?.identity?.valid !== true || JSON.stringify(draft.identity) !== JSON.stringify(proof.identity) ||
+      clean(draft.guaranteeValue) !== proof.guarantee ||
+      JSON.stringify(chargePriceFields(draft)) !== JSON.stringify(proof.fields)) return null;
+  return { averageRate: proof.fields.averagerate, totalRate: proof.fields.totalrate, currency: proof.currency,
+    sourceCode: proof.identity.sourceCode,
+    occupancy: { adults: proof.fields.adults, children: proof.fields.children, childages: proof.identity.childAges,
+      ...Object.fromEntries(['child1', 'child2', 'child3'].filter(name => Object.hasOwn(proof.fields, name))
+        .map(name => [name, proof.fields[name]])) } };
+}
+export async function currentCheckedChargeRate(page, expected) {
+  return Boolean(await checkedChargeRateEvidence(page, expected));
+}
 function changedFields(before, after) {
   const key = (field,index) => field.id || `${field.name || ''}:${index}`;
   const a = new Map(before.map((field,index) => [key(field,index),field]));
@@ -184,12 +228,41 @@ function rateChangeRequest(page, request, code, dates, sessionId, draft) {
   return !draftIdIssue(request,clean(draft.guestId),dates.ar);
 }
 // Only the armed Check Availability click may pass this read-only action.
-function isCreateAvailabilityRequest(page, request) {
+function isCreateAvailabilityRequest(page, request, { draft, dates, code, sessionId, createDraft }) {
   try {
     const url = new URL(request.url());
-    return request.method() === 'POST' && url.origin === ORIGIN && url.pathname === CHECK_AVAILABILITY &&
+    if (!(request.method() === 'POST' && url.origin === ORIGIN && url.pathname === CHECK_AVAILABILITY &&
       !url.search && !url.hash && request.frame() === page.mainFrame() &&
-      request.frame().page() === page;
+      request.frame().page() === page &&
+      /^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || ''))) return false;
+    const body = new URLSearchParams(request.postData() || ''), fields = new Map();
+    for (const [key, value] of body) {
+      const name = key.toLowerCase();
+      if (!fields.has(name)) fields.set(name, []);
+      fields.get(name).push(value);
+    }
+    const exact = (name, expected) => fields.get(name)?.length === 1 && fields.get(name)[0] === String(expected ?? '');
+    const optional = (name, expected) => {
+      const values = fields.get(name) || [];
+      if (values.length > 1) return false;
+      if (expected == null || expected === '') return !values.length || values[0] === '';
+      return values.length === 1 && values[0] === String(expected);
+    };
+    const required = { propertycode: PROPERTY, bookingsessionid: sessionId, guestid: draft.identity?.guestId,
+      arrivaldate: dates.arrival.wire, departuredate: dates.departure.wire, roomtype: createDraft.roomType,
+      rateplan: code, adults: createDraft.adults, children: createDraft.childCount, guaranteetype: createDraft.guaranteeType };
+    if (!Object.entries(required).every(([name, value]) => value != null && exact(name, value))) return false;
+    const chargeRoom = fieldValue(draft.fields, 'roomtypecharge');
+    if (!optional('roomtypecharge', chargeRoom) || !optional('taid1', draft.identity?.agencyId) ||
+        !optional('companyid', draft.identity?.organizationId) || !optional('araccountid', draft.identity?.arAccountId) ||
+        !optional('arprofileid', draft.identity?.arProfileId) || !optional('sourceofbus', draft.identity?.sourceCode)) return false;
+    const childAges = draft.identity?.childAges;
+    if (createDraft.childCount > 0 ? !childAges || !exact('childages', childAges) : !optional('childages', childAges)) return false;
+    for (const name of ['child1', 'child2', 'child3']) {
+      const present = (draft.fields || []).filter(field => field.name === name);
+      if (present.length > 1 || (present.length === 1 && !exact(name, clean(present[0].value)))) return false;
+    }
+    return true;
   } catch { return false; }
 }
 function fieldValue(fields, name) {
@@ -200,7 +273,7 @@ function validateAvailabilityResponse(response) {
   if (response.status() !== 200) throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
   return response.text().then(body => {
     const data = parseResponse(body);
-    return Boolean(data);
+    return data;
   });
 }
 function observedPrice(value) {
@@ -284,8 +357,16 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     return {outcome:'input_gap',issue:'CREATE_AVAILABILITY_INPUT_INCOMPLETE'};
   }
   if (!page || typeof page.route !== 'function' || typeof page.evaluate !== 'function') return {outcome:'input_gap',issue:'PAGE_REQUIRED'};
+  if (requireM1CreateAvailability) {
+    try {
+      const context = page.context();
+      if (context?._options?.serviceWorkers !== 'block' || typeof context.serviceWorkers !== 'function' ||
+          context.serviceWorkers().length !== 0) return {outcome:'refused',issue:'BROWSER_CONTEXT_UNSAFE'};
+    } catch { return {outcome:'refused',issue:'BROWSER_CONTEXT_UNSAFE'}; }
+  }
   if (busy.has(page)) return {outcome:'execution_failure',issue:'RATE_SELECTION_IN_PROGRESS'};
   busy.add(page);
+  const revision = chargeRoomRevision(page);
   let nativeDialog = false, attempted = false, availabilityCheckArmed = false, unsupportedId = null,
     before = null, after = null, guard = null, fence = null, scope = null;
   const blocked = [], requests = new Map(), responses = [], sessions = [];
@@ -341,6 +422,10 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     if (search.outcome !== 'matches' || search.coverage?.complete !== true ||
         search.coverage.returned !== search.coverage.matchingLoaded ||
         search.candidates.filter(candidate => candidate.code === code).length !== 1) throw new Error('CURRENT_RATE_CODE_UNVERIFIED');
+    // A room or party change may clear pricing while leaving the same rate
+    // selected. HMS does not emit a rate-change response for that same value;
+    // verify the existing selection and run its native availability check.
+    const recheckExistingRate = requireM1CreateAvailability && previousCode === code;
     guard = async route => {
       const request = route.request();
       let kind = null;
@@ -348,7 +433,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       else if (Array.from(requests.values()).includes('validation') && !Array.from(requests.values()).includes('change') &&
           rateChangeRequest(page,request,code,dates,sessionId,before)) kind = 'change';
       else if (requireM1CreateAvailability && availabilityCheckArmed && !Array.from(requests.values()).includes('availability') &&
-          isCreateAvailabilityRequest(page,request)) kind = 'availability';
+          isCreateAvailabilityRequest(page,request,{ draft:after, dates, code, sessionId, createDraft })) kind = 'availability';
       if (kind) {
         if (kind === 'change' && !scope?.allow(request)) return route.abort();
         if (kind === 'availability') {
@@ -358,30 +443,39 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
         requests.set(request,kind);
         return route.fallback();
       }
+      const displayUrl = new URL(request.url());
+      if (['GET', 'HEAD'].includes(request.method()) && displayUrl.origin === ORIGIN &&
+          (displayUrl.pathname.startsWith('/web/resources/') || displayUrl.pathname === '/web/jsp/interfaceStatusAlert.jsp')) {
+        return route.fallback();
+      }
       unsupportedId = draftIdIssue(request,guestId,dates.ar) || unsupportedId;
       const url = new URL(request.url());
       blocked.push({method:request.method(),path:url.pathname,originMatches:url.origin === ORIGIN,query:Boolean(url.search)});
       return route.abort();
     };
     await page.route('**/*',guard);
-    const input = page.locator('input[name="rateplan"]:visible');
-    if (await input.count() !== 1 || !await input.isEditable()) throw new Error('RATE_FIELD_UNAVAILABLE');
-    attempted = true;
-    await input.fill(code,{timeout:5000});
-    if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
-    await input.press('Tab',{timeout:12000});
-    // Observe both requests caused by this blur before taking the resulting draft.
-    const deadline = Date.now() + 10000;
-    while (responses.length < 2 && !nativeDialog && Date.now() < deadline) await page.waitForTimeout(100);
-    if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
-    const validation = responses.filter(item => item.kind === 'validation'), change = responses.filter(item => item.kind === 'change');
-    if (validation.length !== 1 || change.length !== 1 || requests.size !== 2) throw new Error('HMS_RESPONSE_UNVERIFIED');
-    await bounded(validateResponses(validation[0].response,change[0].response,code,dates,sessionId,before),10000,'HMS_RESPONSE_TIMEOUT');
-    const onlyAsset = blocked.every(item => item.method === 'GET' && item.originMatches && !item.query && item.path === ASSET);
-    if (!onlyAsset) throw new Error('UNEXPECTED_REQUEST_BLOCKED');
-    await page.waitForFunction(() => !Ext.Ajax.isLoading(),null,{timeout:10000});
-    if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
-    after = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
+    let validation = [], change = [];
+    if (!recheckExistingRate) {
+      const input = page.locator('input[name="rateplan"]:visible');
+      if (await input.count() !== 1 || !await input.isEditable()) throw new Error('RATE_FIELD_UNAVAILABLE');
+      attempted = true;
+      await input.fill(code,{timeout:5000});
+      if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+      await input.press('Tab',{timeout:12000});
+      // Observe both requests caused by this blur before taking the resulting draft.
+      const deadline = Date.now() + 10000;
+      while (responses.length < 2 && !nativeDialog && Date.now() < deadline) await page.waitForTimeout(100);
+      if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+      validation = responses.filter(item => item.kind === 'validation');
+      change = responses.filter(item => item.kind === 'change');
+      if (validation.length !== 1 || change.length !== 1 || requests.size !== 2) throw new Error('HMS_RESPONSE_UNVERIFIED');
+      await bounded(validateResponses(validation[0].response,change[0].response,code,dates,sessionId,before),10000,'HMS_RESPONSE_TIMEOUT');
+      const onlyAsset = blocked.every(item => item.method === 'GET' && item.originMatches && !item.query && item.path === ASSET);
+      if (!onlyAsset) throw new Error('UNEXPECTED_REQUEST_BLOCKED');
+      await page.waitForFunction(() => !Ext.Ajax.isLoading(),null,{timeout:10000});
+      if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+    }
+    after = recheckExistingRate ? ready : await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
     const afterArrival = dateParts(after.arrival), afterDeparture = dateParts(after.departure);
     if (!afterArrival || !afterDeparture || afterArrival.iso !== dates.arrival.iso || afterDeparture.iso !== dates.departure.iso) {
       throw new Error('DRAFT_DATES_CHANGED');
@@ -422,22 +516,28 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       const responsePromise = page.waitForResponse(response => requests.get(response.request()) === 'availability',
         { timeout: 15000 }).catch(() => null);
       availabilityCheckArmed = true;
+      attempted = true;
       try { await check.click({ timeout: 5000 }); }
       finally { await check.dispose(); }
       const availabilityResponse = await bounded(responsePromise,16000,'RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
       if (!availabilityResponse) throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
-      if (!await bounded(validateAvailabilityResponse(availabilityResponse),10000,'RATE_AVAILABILITY_RESPONSE_UNVERIFIED')) {
+      const nativeAvailability = await bounded(validateAvailabilityResponse(availabilityResponse),10000,'RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
+      if (!nativeAvailability) {
         throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
       }
       await bounded(page.waitForLoadState('networkidle',{timeout:10000}),12000,'RATE_AVAILABILITY_READBACK_TIMEOUT');
       await bounded(page.waitForFunction(() => !Ext.Ajax.isLoading(),null,{timeout:10000}),12000,'RATE_AVAILABILITY_READBACK_TIMEOUT');
       if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
       const availabilityResponses = responses.filter(item => item.kind === 'availability');
-      if (availabilityResponses.length !== 1 || availabilityResponses[0].response !== availabilityResponse || requests.size !== 3) {
+      if (availabilityResponses.length !== 1 || availabilityResponses[0].response !== availabilityResponse ||
+          requests.size !== (recheckExistingRate ? 1 : 3)) {
         throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
       }
       const checked = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
       const checkedProof = await bounded(checkedDraft(checked,guestId,page,createAuthority),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
+      const criteria = draft => ({ identity: draft.identity, guarantee: clean(draft.guaranteeValue),
+        fields: PRICE_FIELDS.filter(name => !PRICE_RESULT_FIELDS.has(name)).map(name =>
+          [name, (draft.fields || []).filter(field => field.name === name).map(field => field.value)]) });
       const businessFields = [
         ['adults', createDraft.adults], ['children', createDraft.childCount], ['roomtype', createDraft.roomType],
         ...(createDraft.track ? [['track', createDraft.track.display]] : []),
@@ -451,6 +551,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       if (businessFields.some(([name, value]) => fieldValue(checked.fields, name) !== clean(value)) ||
           clean(checked.guaranteeValue) !== clean(createDraft.guaranteeType) ||
           JSON.stringify(checkedProof) !== JSON.stringify(dates) ||
+          JSON.stringify(criteria(checked)) !== JSON.stringify(criteria(after)) ||
           checked.property !== PROPERTY || checked.confirmation || checked.windows || checked.rate !== code ||
           checked.rateValue !== code || checked.rateSubmit !== code || checked.rateErrors.length || checked.rateInvalid === 'true') {
         throw new Error('RATE_AVAILABILITY_UNVERIFIED');
@@ -465,6 +566,13 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
         currencyValues.push('ZAR');
       }
       const currency = currencyValues.length && currencyValues.every(value => value === currencyValues[0]) ? currencyValues[0] : null;
+      if (fieldValue(checked.fields, 'roomtypecharge')) {
+        const values = nativeAvailability.values;
+        const responseFields = values && typeof values === 'object' && !Array.isArray(values)
+          ? Object.entries(values).map(([name, value]) => ({ name: name.toLowerCase(), value })) : [];
+        const returnedPrice = compareChargeRoomPricing(responseFields, { averageRate, totalRate, currency });
+        if (Object.values(returnedPrice).some(value => value !== 'MATCHED')) priceUnconfirmed = true;
+      }
       rateAvailability = { responseStatus:availabilityResponse.status(), averageRate, totalRate, currency };
       after = checked;
     }
@@ -475,14 +583,22 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       selectedOnPage.delete(page);
       return {outcome:'criteria_unavailable',issue:'RATE_PRICE_UNCONFIRMED'};
     }
-    selectedOnPage.set(page,{code,fingerprint:draftFingerprint(after)});
+    const fields = rateAvailability ? chargePriceFields(after) : null;
+    const chargePrice = fields && chargeRoomRevision(page) === revision && fields.roomtypecharge &&
+      (!Number(fieldValue(after.fields,'children')) || Boolean(after.identity?.childAges)) &&
+      fields.rateplan === code && fields.averagerate === rateAvailability.averageRate && fields.totalrate === rateAvailability.totalRate
+      ? { revision, fields, identity: after.identity, guarantee: clean(after.guaranteeValue),
+        chargeRoom: fields.roomtypecharge, roomType: fields.roomtype, ratePlan: code,
+        arrival: dates.arrival.iso, departure: dates.departure.iso, currency: rateAvailability.currency } : null;
+    selectedOnPage.set(page,{code,fingerprint:draftFingerprint(after),chargePrice});
     return {outcome:'selected_unsaved',code,previousCode,previousRateEvidence,propertyCode:PROPERTY,arrivalDate:dates.arrival.iso,departureDate:dates.departure.iso,
-      nativeCodeEvidence:'validated_row_and_draft_change_response',nativeRatePlanId:'unsupported',
+      nativeCodeEvidence:recheckExistingRate ? 'validated_row_and_existing_draft' : 'validated_row_and_draft_change_response',
+      nativeRatePlanId:'unsupported',
       identityReadback:{guestProfileId:guestId || null,arAccount:dates.ar ? {accountId:dates.ar.accountId,
         profileId:dates.ar.profileId,displayName:after.arAccountName,nativeName:after.arAccountNativeName} : null},
       ...(rateAvailability ? {rateAvailability} : {}),
       changedFields:changedFields(before.fields,after.fields),
-      effects:{validationStatus:validation[0].response.status(),rateChangeStatus:change[0].response.status(),blockedRequests:blocked}};
+      effects:{validationStatus:validation[0]?.response.status() ?? null,rateChangeStatus:change[0]?.response.status() ?? null,blockedRequests:blocked}};
   } catch (error) {
     if (attempted) { selectedOnPage.delete(page); fence?.quarantine(); }
     const unsupported = unsupportedId || (['GUEST_PROFILE_ID_UNSUPPORTED','AR_SELECTION_UNVERIFIED'].includes(error?.message) ? error.message : null);

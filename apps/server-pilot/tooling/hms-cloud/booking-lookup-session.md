@@ -52,11 +52,12 @@ response keeps the underlying module's outcome and fields alongside `id` and
 | `searchHotelAvailabilityParty` | `propertyCode`, `kind`, `query`; optional lookup `options` |
 | `selectHotelAvailabilityParty` | `kind`, current `searchId`, explicit `nativeId` |
 | `cancelHotelAvailabilityParty` | Cancels the current availability party picker |
-| `searchRoomTypes`, `searchRatePlans` | Optional `query`, `offset`, `limit` |
+| `searchRoomTypes` | Optional `query`, `offset`, `limit`, `forField` (`roomType` or `roomTypeForCharge`) |
+| `searchRatePlans` | Optional `query`, `offset`, `limit` |
 | `inspectRoomRateCandidate` | Current `searchId` and `nativeId` and/or `code` |
-| `selectRoomType` | Current `searchId` and explicit `nativeId` and/or `code`; optional lookup `options` |
+| `selectRoomType`, `selectRoomTypeForCharge` | Current field-matched `searchId` and explicit `nativeId` and/or `code`; optional lookup `options` |
 | `closeRoomRatePicker` | Closes the current room or rate catalog picker |
-| `selectGuestStayRatePlan` | Explicit current rate `code`; optional verified Proof Labtest `guestProfileId` |
+| `selectGuestStayRatePlan` | Explicit current rate `code`; optional verified `guestProfileId`; charge-room rechecks also require `createDraft` below |
 | `searchGuestStaySourceBusiness` | Optional description `query`, `field: "description"` and lookup `options` |
 | `inspectGuestStaySourceBusiness` | Current `searchId`; optional `nativeCode`, `offset`, `limit` |
 | `selectGuestStaySourceBusiness` | Current `searchId` and explicit `nativeCode`; optional lookup `options` |
@@ -64,8 +65,8 @@ response keeps the underlying module's outcome and fields alongside `id` and
 | `readQuote` | `criteria`, optional positive integer `roomQuantity`, `view`, private `snapshotPath` |
 | `viewQuoteSnapshot` | Current `snapshotHandle` and bounded `view` filters |
 | `closeHotelAvailability` | Closes the availability iframe and verifies the blank-confirmation draft |
-| `saveNewLabtestStay` | Labtest-only: `preimageId`, `arrival`, `departure`, `guestId`, `roomType`, `ratePlan`, `guaranteeType`, `note`; optional `createFieldProof` and independent top-level `agencySelection`, `organizationSelection`, `arSelection` results |
-| `readSavedLabtestRecord` | `confirmation` returned by a successful organization-only create in this same session; opens a fresh guarded Record View |
+| `saveNewLabtestStay` | Labtest-only: `preimageId`, `arrival`, `departure`, `guestId`, `roomType`, `ratePlan`, `guaranteeType`, `note`; optional `roomTypeForCharge`, `createFieldProof` and independent top-level `agencySelection`, `organizationSelection`, `arSelection` results |
+| `readSavedLabtestRecord` | `confirmation` from a successful organization or charge-room create in this same session; opens a fresh guarded Record View |
 
 Guest searches invalidate earlier guest search IDs; inspection, selection and
 closing use the current picker. The availability party kinds are `organization`,
@@ -77,9 +78,22 @@ guest, party, dropdown value or CMS code. See [guest-profile.md](./guest-profile
 uncertain outcomes.
 
 Programmatic sessions can set `blockServiceWorkers: true` to have the
-Centurion browser block service workers before login. The default remains false.
-The guarded create wrapper opts in; callers of the low-level save must use a
-blocked context or the save is refused before dispatch.
+Centurion browser block service workers before login. The programmatic default remains false;
+the JSONL CLI always blocks them.
+The guarded create wrapper opts in; callers of the low-level save or charge-room
+price recheck must use a blocked context or the action is refused.
+
+For a charge-room recheck, select the booked room and charge room first, then
+call `selectGuestStayRatePlan` with the rate `code`, the selected guest's
+`guestProfileId`, and a `createDraft` describing the staged form:
+`{ propertyCode, guest: { nativeId, firstName, lastName }, adults, childCount,
+roomType, guaranteeType, note, cmsSend, track, source, parties }`. `roomType` is
+the booked room. `track`, when present, is `{ code, display }`; `source` is
+`{ nativeCode, description }`; `parties` contains any selected `agency` and
+`organization` as `{ nativeId, name }`. Include `cmsMessageId` and
+`cmsRecipient` when staged. Values must match the current draft. Check the
+result has `chargeRoomPricing: 'checked'`, then pass the chosen charge code as
+`roomTypeForCharge` to `saveNewLabtestStay` with its other required inputs.
 
 ### Opt-in Labtest save session
 
@@ -88,7 +102,7 @@ writes. This session does not authenticate staff approval.
 
 For a new fake HRCEN Proof Labtest stay in 2027 or later, start the session with
 `--jsonl --labtest-arrival YYYY-MM-DD --labtest-departure YYYY-MM-DD`. This
-opt-in CLI session blocks service workers. Before opening the blank form, it searches the same page for matching fake stays. The
+session searches the same page for matching fake stays before opening the blank form. The
 private `ready` event contains `labtestPreimage`, including the current
 single-use `preimageId`, expiry and candidate context. A non-clear search ends
 startup with its result in the private error output; no blank form is opened.
@@ -100,12 +114,17 @@ preimage ID and the matching explicit values to `saveNewLabtestStay`. The normal
 session rejects that action; it never enables general booking writes. The proof
 is bound to its page and dates and can expire or be invalidated. Independently
 reopen and verify the confirmation, and reconcile any uncertain outcome before
-trying another write. After a successful organization-only create, call
-`readSavedLabtestRecord` with that response's confirmation; it opens a fresh
-guarded session and verifies the saved native company ID/name against the
-same-session `selectOrganization` result. An organization search or new guest
-profile selection invalidates that selection proof. This reader does not
-support agency-plus-organization creates or cross-session caller-supplied IDs.
+trying another write. After a successful organization-only create or a
+charge-room create, call `readSavedLabtestRecord` with
+that response's confirmation. It opens a fresh guarded session and checks the
+saved fields, including charge room and checked price when present. For an
+organization, it verifies the native ID/name against the same-session
+selection. An organization search or new guest profile selection invalidates
+that proof. Charge-room creates with an agency or A/R return
+`partially_verified`: selected parties are checked, while other linked parties
+are unknown. The same outcome reports unknown saved pricing criteria or
+unverified inherited parties; individual criteria report `MATCHED`, `CHANGED`,
+or `UNKNOWN`. Cross-session caller-supplied IDs are not supported.
 See [guest-stay-save.md](./guest-stay-save.md) for all
 guards and the limits of browser-side email observations.
 

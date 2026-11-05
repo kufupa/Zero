@@ -199,21 +199,23 @@ export async function openNewGuestStay(page) {
       await agency.waitFor({ timeout: 25000 });
     }
     try {
-      // Background resources need not become idle for the native New form to be ready.
+      // HMS embeds external support frames. Their traffic is unrelated to the
+      // Guest Stay form; wait for the native blank form instead of browser idle.
       await page.waitForFunction((property) => {
-        const visible = (element) => Boolean((element.offsetWidth || element.offsetHeight) &&
-          getComputedStyle(element).visibility !== 'hidden' && !element.closest('.x-window'));
-        const fields = (name) => [...document.querySelectorAll(`input[name="${name}"]`)].filter(visible);
-        const agency = fields('ta1'), confirmation = fields('confirmationnumber');
-        if (agency.length !== 1 || confirmation.length !== 1 || confirmation[0].value.trim()) return false;
-        const form = globalThis.Ext?.getCmp?.(agency[0].id.replace(/-inputEl$/, ''))?.up?.('form');
+        const ext = globalThis.Ext;
+        if (typeof ext?.Ajax?.isLoading !== 'function' || ext.Ajax.isLoading()) return false;
+        const shown = el => Boolean(el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+        if ([...document.querySelectorAll('.x-mask,.x-mask-msg,.x-loadmask')].some(shown)) return false;
+        const named = name => [...document.querySelectorAll(`input[name="${name}"]`)]
+          .filter(el => shown(el) && !el.closest('.x-window'));
+        const confirmation = named('confirmationnumber'), agency = named('ta1');
+        if (confirmation.length !== 1 || agency.length !== 1 || confirmation[0].value.trim()) return false;
+        const form = ext.getCmp?.(agency[0].id.replace(/-inputEl$/, ''))?.up?.('form');
         const data = form?.getRecord?.()?.data;
-        return data?.propertycode === property && data.status === 'New' &&
-          data.PKID === `@[EMPTY]#@[EMPTY]#${property}#` && !String(data.confirmationnumber ?? '').trim() &&
-          typeof Ext?.Ajax?.isLoading === 'function' && !Ext.Ajax.isLoading() &&
-          ![...document.querySelectorAll('.x-mask,.x-mask-msg,.x-loadmask')].some(visible);
-      }, PROPERTY,
-        { timeout: 10000 });
+        return Boolean(form?.el?.dom?.contains(confirmation[0]) && data?.propertycode === property &&
+          data.status === 'New' && data.PKID === `@[EMPTY]#@[EMPTY]#${property}#` &&
+          !String(data.confirmationnumber ?? '').trim());
+      }, PROPERTY, { timeout: 20000 });
     } catch {
       throw new Error('GUEST_STAY_STARTUP_UNSETTLED');
     }
