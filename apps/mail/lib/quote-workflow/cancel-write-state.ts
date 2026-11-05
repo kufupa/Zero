@@ -14,7 +14,7 @@ export type CancelWriteSelection = z.infer<typeof cancelSelectionSchema>;
 export type CancelWriteState =
   | { kind: 'empty' }
   | { kind: 'running'; runId: string }
-  | { kind: 'done'; runId: string; outcome: 'cancelled' | 'cancel_unconfirmed' | 'cancel_penalty_pending' };
+  | { kind: 'done'; runId: string; outcome: 'cancelled' | 'cancel_unconfirmed' | 'cancel_penalty_pending'; notice?: string };
 
 /** Read the existing write state only while the selected email and mailbox remain current. */
 export function cancelWriteStateClientFromTrpc(trpc: unknown, input: CancelWriteSelection, scope: {
@@ -97,7 +97,8 @@ export function cancelWriteStateClientFromTrpc(trpc: unknown, input: CancelWrite
         return { kind: 'done', runId, outcome: run.lastError === 'cancel_penalty_pending'
           ? 'cancel_penalty_pending' : 'cancel_unconfirmed' };
       }
-      if (run.state === 'succeeded') return { kind: 'done', runId, outcome: 'cancelled' };
+      if (run.state === 'succeeded') return { kind: 'done', runId, outcome: 'cancelled',
+        ...(run.cancelNotice === 'Cancellation Penalty of 0.00 may be added to account.' ? { notice: run.cancelNotice } : {}) };
       if (['queued', 'claimed', 'running', 'retry_wait'].includes(run.state as string)) return { kind: 'running', runId };
       return { kind: 'done', runId, outcome: 'cancel_unconfirmed' };
     },

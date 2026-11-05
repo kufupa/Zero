@@ -71,7 +71,8 @@ async function cancellationReadback(page, input, { shallow, read }) {
   const observed = { confirmation: native.confirmation, nativeStayId: native.reservationStayId, nativeGuestId: native.guestId,
     status: native.status, reasonCode: null, cancellationNote: null };
   const send = record?.details?.fields?.filter((item) => item?.name === 'udfchkbox04');
-  if (!Array.isArray(send) || send.length !== 1 || send[0].value !== expected.cmsSend) return observed;
+  if (field(record, 'reservationnote') !== expected.note || !Array.isArray(send) ||
+      send.length !== 1 || send[0].value !== expected.cmsSend) return observed;
   try {
     const frames = page.locator('.x-window:visible:not(.x-menu) iframe:visible');
     if (await frames.count() !== 1) return observed;
@@ -144,7 +145,15 @@ export async function runCloudPaneCancel(input, { openSession = withCenturionSta
   const options = { headless: true, blockServiceWorkers: true, signal: AbortSignal.timeout(sessionBudget),
     ...(input.cloudTargetKey ? { cloudTargetKey: input.cloudTargetKey } : {}) };
   let writerSessionClosed = false, dispatched = false, confirmAttempted = false, result;
-  let chargeAuthorityAttempted = false, pendingChargeAuthority = 0;
+  let chargeAuthorityAttempted = false, chargeDecisionRequested = false, chargeDispatchAttempted = false, pendingChargeAuthority = 0;
+  const awaitCharge = typeof input.awaitChargeApproval === 'function' ? async (...args) => {
+    chargeDecisionRequested = true;
+    return input.awaitChargeApproval(...args);
+  } : undefined;
+  const dispatchCharge = typeof input.dispatchChargeWithAuthority === 'function' ? async (...args) => {
+    chargeDispatchAttempted = true;
+    return input.dispatchChargeWithAuthority(...args);
+  } : undefined;
   const prepareCharge = typeof input.prepareChargeWithAuthority === 'function' ? async () => {
     chargeAuthorityAttempted = true;
     pendingChargeAuthority++;
@@ -170,7 +179,7 @@ export async function runCloudPaneCancel(input, { openSession = withCenturionSta
         return { outcome: 'not_dispatched', requestDispatched: false, dispatchCallbacksDrained: true };
       }
       const opened = await open(page, expected, input.mode === 'commit' ? {
-        timeoutMs: remaining, continuationAllowed: input.continuationAllowed, awaitChargeApproval: input.awaitChargeApproval,
+        timeoutMs: remaining, continuationAllowed: input.continuationAllowed, awaitChargeApproval: awaitCharge,
         prepareChargeWithAuthority: prepareCharge,
       } : {});
       if (input.mode === 'preview' && opened.outcome === 'fee_dialog_pending' && opened.reasons?.length) {
@@ -194,9 +203,9 @@ export async function runCloudPaneCancel(input, { openSession = withCenturionSta
       confirmAttempted = true;
       const saved = await confirm(page, expected, { reasonCode: input.reasonCode, reasonLabel: input.reasonLabel,
         cancellationNote: input.cancellationNote, timeoutMs, beforeDispatch: input.beforeDispatch,
-        continuationAllowed: input.continuationAllowed, awaitChargeApproval: input.awaitChargeApproval,
+        continuationAllowed: input.continuationAllowed, awaitChargeApproval: awaitCharge,
         prepareChargeWithAuthority: prepareCharge,
-        dispatchChargeWithAuthority: input.dispatchChargeWithAuthority,
+        dispatchChargeWithAuthority: dispatchCharge,
         dispatchWithAuthority: (send, digest, request) => input.dispatchWithAuthority(send, digest, request, join(root, 'before.png')),
         onDispatched: () => { dispatched = true; } });
       return { ...saved, ...(opened.chargeApproved ? { outcome: 'fee_accepted_unconfirmed',
@@ -225,8 +234,15 @@ export async function runCloudPaneCancel(input, { openSession = withCenturionSta
     nativeReadback.nativeStayId === input.expected?.nativeStayId && nativeReadback.nativeGuestId === input.expected?.guestId &&
     /^cancel(?:l)?ed$/i.test(nativeReadback.status || '') && nativeReadback.reasonCode === input.reasonCode &&
     nativeReadback.cancellationNote === input.cancellationNote;
-  const outcome = chargeAuthorityAttempted || ['fee_dialog_pending', 'fee_accepted_unconfirmed'].includes(result.outcome)
-    ? 'cancel_penalty_pending' : result.outcome === 'awaiting_readback' && complete ? 'cancelled' : 'cancel_unconfirmed';
+  const zeroNotice = result.outcome === 'zero_notice_awaiting_readback' && writerSessionClosed &&
+    result.dispatchCallbacksDrained === true && !chargeAuthorityAttempted && !chargeDecisionRequested && !chargeDispatchAttempted &&
+    result.requestDispatched === true && result.httpStatus === 200 && result.chargeApproved === false &&
+    result.chargeDispatched === false && result.browserSendRequests === 0 && Array.isArray(result.blockedRequests) &&
+    result.blockedRequests.length === 0 &&
+    result.zeroPenaltyNotice === 'Cancellation Penalty of 0.00 may be added to account.';
+  const outcome = chargeAuthorityAttempted || ['fee_dialog_pending', 'fee_accepted_unconfirmed'].includes(result.outcome) ||
+    (result.outcome === 'zero_notice_awaiting_readback' && !(zeroNotice && complete))
+    ? 'cancel_penalty_pending' : (result.outcome === 'awaiting_readback' || zeroNotice) && complete ? 'cancelled' : 'cancel_unconfirmed';
   return { ...result, outcome, nativeReadback, runDir: root, screenshots, writerSessionClosed,
     dispatchCallbacksDrained: pendingChargeAuthority === 0 && (confirmAttempted ? result.dispatchCallbacksDrained === true : true) };
 }

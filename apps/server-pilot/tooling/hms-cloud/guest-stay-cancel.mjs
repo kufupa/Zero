@@ -21,6 +21,7 @@ const preservedFields = ['arrivaldate', 'departuredate', 'roomtype', 'rateplan',
   'udfchkbox04', 'udfchar09', 'udfchar13'];
 const usedPages = new WeakSet();
 const pendingPages = new WeakMap();
+const zeroPenaltyNotice = 'Cancellation Penalty of 0.00 may be added to account.';
 const issue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'CANCEL_UNVERIFIED';
 // These controls can request a separate profile write. An omitted control is not a write.
 const noProfileWrite = (body, keys) => ['savecctoprofile', 'savesettlementcctoprofile'].every((key) => {
@@ -328,6 +329,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
       !blocked.length && !fence.isQuarantined();
     if (reasonReady) pendingPages.set(page, { frame, expected: { ...expected }, native: { ...state.native }, track: state.track,
       blocked, baseline: afterOpen, fence, reasons, partyPreimage: state.partyPreimage,
+      noCancelPolicy: policy?.applyCancelPolicy === false && policy?.allowCancelPolicyOverride === false,
       chargeApproved: preChargeStarted, penaltyText: preChargeText, dialogSeen: () => nativeDialog });
     openedReady = reasonReady;
     return { outcome: preChargeStarted && !reasonReady ? 'fee_accepted_unconfirmed' : fee ? 'fee_dialog_pending' : reasonReady ? 'reason_ready' : policy && !policyReady ? 'policy_requires_review' :
@@ -629,7 +631,18 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     let fee = dialogs.some((text) => /penalt|fee|charge|deposit/i.test(text)) ||
       Boolean(nativeDialog && /penalt|fee|charge|deposit/i.test(nativeDialog.message));
     if (fee) chargeText = dialogs.find((text) => /penalt|fee|charge|deposit/i.test(text)) ?? nativeDialog?.message ?? null;
-    if (fee && dispatched && !nativeDialog && typeof awaitChargeApproval === 'function' &&
+    // This one native post-Save notice was observed without any policy or charge action.
+    // Do not click its button: the separate fresh readback still decides cancellation success.
+    let zeroNotice = false;
+    if (fee && opened.noCancelPolicy && !opened.chargeApproved && typeof dispatchWithAuthority === 'function' &&
+        dispatched && authorizedRequest && response?.status() === 200 && pendingDispatch === 0 &&
+        !chargeApproved && !chargeDispatched && !nativeDialog && !blocked.length && !opened.blocked.length &&
+        !sendRequests && dialogs.length === 1 &&
+        dialogs[0].replace(/\s+/g, ' ').trim() === `${zeroPenaltyNotice} OK` && await windows.count() === 1) {
+      const buttons = windows.locator('.x-btn:visible');
+      zeroNotice = await buttons.count() === 1 && (await buttons.innerText()).trim() === 'OK';
+    }
+    if (fee && !zeroNotice && dispatched && !nativeDialog && typeof awaitChargeApproval === 'function' &&
         typeof dispatchChargeWithAuthority === 'function') {
       const charge = windows.filter({ hasText: /penalt|fee|charge|deposit/i });
       if (await charge.count() === 1) {
@@ -661,12 +674,13 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     action.check();
     // A dismissed dialog or a 200 response does not prove that HMS posted the charge.
     const chargeUnconfirmed = chargeApproved;
-    return { outcome: chargeUnconfirmed ? 'fee_accepted_unconfirmed' : fee ? 'fee_dialog_pending' : dispatched && response?.status() === 200 &&
+    return { outcome: chargeUnconfirmed ? 'fee_accepted_unconfirmed' : zeroNotice ? 'zero_notice_awaiting_readback' : fee ? 'fee_dialog_pending' : dispatched && response?.status() === 200 &&
       !nativeDialog && !dialogs.length && !blocked.length && !sendRequests
       ? 'awaiting_readback' : dispatched ? 'uncertain' : 'not_dispatched',
     httpStatus: response?.status() || null, reason: reasonLabel, requestDispatched: dispatched,
     dispatchCallbacksDrained: pendingDispatch === 0, dialogs, nativeDialog, blockedRequests: blocked,
-    browserSendRequests: sendRequests, penaltyText: chargeText, chargeApproved, chargeDispatched };
+    browserSendRequests: sendRequests, penaltyText: chargeText, chargeApproved, chargeDispatched,
+    ...(zeroNotice ? { zeroPenaltyNotice } : {}) };
   } catch (error) {
     armed = false;
     return { outcome: chargeText ? chargeApproved ? 'fee_accepted_unconfirmed' : 'fee_dialog_pending'

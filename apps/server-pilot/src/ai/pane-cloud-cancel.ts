@@ -69,6 +69,7 @@ type CancelContext = CancelRequestBinding & { db?: DB; transportId: string; acto
   confirmation: string; arrival: string; target: HmsReadTarget; env?: NodeJS.Dict<string>;
   selectedInternetMessageId?: string; expectedFormDigest?: string };
 type NativeResult = { outcome: string; expected?: unknown; reasons?: unknown; policyFacts?: string[]; penaltyText?: string | null;
+  zeroPenaltyNotice?: string;
   runDir?: string; screenshots?: string[];
   requestDispatched?: boolean; nativeReadback?: unknown; dispatchCallbacksDrained?: boolean; writerSessionClosed?: boolean };
 type NativeRunner = (input: Record<string, unknown>) => Promise<NativeResult>;
@@ -731,7 +732,9 @@ export async function executeCloudCancel(input: {
       }
       const now = new Date();
       await tx.update(aiWorkflowRun).set({ state: 'succeeded', finishedAt: now, updatedAt: now, claimOwner: null,
-        claimToken: null, metrics: mergeTerminalRunMetrics(run.metrics, { action: 'cancel', outcome: 'cancelled' }) })
+        claimToken: null, metrics: mergeTerminalRunMetrics(run.metrics, { action: 'cancel', outcome: 'cancelled',
+          ...(saved.zeroPenaltyNotice === 'Cancellation Penalty of 0.00 may be added to account.'
+            ? { cancelNotice: saved.zeroPenaltyNotice } : {}) }) })
         .where(eq(aiWorkflowRun.id, fence.runId));
     });
   } catch { return end('UNKNOWN', 'cancel_unconfirmed'); }
