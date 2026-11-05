@@ -833,6 +833,7 @@ export async function classifyWorkflowMailTriage(
       from: triggerMessage.from,
       subject: triggerMessage.subject,
       body: triggerMessage.body,
+      mailboxAddress: input.mailboxAddress ?? undefined,
       asOf: causalInput.asOf,
       threadSignals,
       to: triggerMessage.to ?? input.to,

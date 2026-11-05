@@ -17,6 +17,7 @@ import { READ_TOOL_IDS } from '../hms/read-tools.js';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { z } from 'zod';
+import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
 
 export const TRIAGE_CATEGORIES = [...AI_PRIMARY_CATEGORY_SLUGS, 'spam'] as const;
 
@@ -268,6 +269,7 @@ export type TriageThreadSignals = ThreadSignals;
 export interface TriageRefineInput {
   from: string;
   body: string;
+  mailboxAddress?: string;
   subject?: string;
   asOf?: string;
   threadSignals?: ThreadSignals;
@@ -670,16 +672,12 @@ function isRoutineSystemMail(
       fromDomain.endsWith('.booking.com') ||
       fromDomain === 'profitroom.com' ||
       fromDomain.endsWith('.profitroom.com') ||
-      fromDomain === 'tbo.com' ||
-      fromDomain.endsWith('.tbo.com') ||
       fromDomain === 'webbeds.com' ||
       fromDomain.endsWith('.webbeds.com') ||
       fromDomain === 'expediapartnercentral.com' ||
       fromDomain.endsWith('.expediapartnercentral.com') ||
       fromDomain === 'synxis.com' ||
       fromDomain.endsWith('.synxis.com') ||
-      fromDomain === 'travelit.co.za' ||
-      fromDomain.endsWith('.travelit.co.za') ||
       fromDomain === 'erevmax.co.uk' ||
       fromDomain.endsWith('.erevmax.co.uk')) &&
     /\b(?:reservation|booking|confirmation|cancellation|modification|confirmed|cancelled|daily\s+report|update\s+failure)\b/i.test(
@@ -954,8 +952,8 @@ function hasUrgentOtaGuestNeed(haystack: string): boolean {
 
 /** Detects automated Infor PMS pre-stay guest registration and arrival profile notifications. */
 function isPreStayNotification(input: TriageRefineInput): boolean {
-  const subject = (input.subject ?? '').trim();
-  return /^Pre Stay\s*:\s*Property\s+HRCEN\s+Confirmation\s+No/i.test(subject);
+  return isSelfSentPreStayInformationMail({ fromAddress: input.from,
+    mailboxAddress: input.mailboxAddress, subject: input.subject });
 }
 
 /** Detects internal staff night audit reports, discrepancy reports, duty manager handovers, F&B balances, printer scans, and server notices. */

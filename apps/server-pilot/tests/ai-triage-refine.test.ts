@@ -1340,6 +1340,7 @@ describe('workflow source and automation refinement', () => {
         {
           from: 'centurion@legacyhotels.co.za',
           subject: 'Pre Stay : Property HRCEN Confirmation No 14168848-1 Ms Mandi Hattingh',
+          mailboxAddress: 'centurion@legacyhotels.co.za',
           body: 'Ms Mandi Hattingh Arrival : 02-09-2026 Departure : 04-09-2026 Room Type : DLXKNG Confirmation No : 14168848-1 Address --> 103 Mosselbank Street Mobile --> 0798805549 Arrival time --> 7:00 PM',
         },
         workflowOutput({
