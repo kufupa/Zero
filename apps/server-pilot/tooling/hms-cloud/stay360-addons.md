@@ -41,9 +41,12 @@ one exact match to the verified historical HMS guest name, the runner retries
 with that name and the returned current date. The standard exact-match reader
 still verifies both hints; each attempt records its hint source. Existing
 permanent failures resume only when a supported hint refinement is available.
-The runner preserves individual attempt JSON, input hashes, cleanup attestation
-and resumable progress, then emits full `reads.json`. Failed/incomplete reads
-remain separate from complete empty grids. It uses no Save operation.
+The runner publishes complete attempt JSON atomically without overwriting prior
+snapshots, retains learned lookup hints through transient failures, and stops
+on browser holds without exhausting remaining confirmations' attempts. It
+preserves input hashes, cleanup attestation and resumable progress, then emits
+full `reads.json`. Failed/incomplete reads remain separate from complete empty
+grids. It uses no Save operation.
 
 ### Item input
 

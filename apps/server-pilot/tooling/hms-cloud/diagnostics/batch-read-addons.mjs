@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Private, resumable census using the existing exact-confirmation/Add-On readers.
-import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname as parentOf, join, resolve } from 'node:path';
 import { withCenturionStay360Page } from '../../playwright-quote/centurion-stay360.mjs';
@@ -67,7 +67,7 @@ if (existsSync(lock)) {
   if (previous.host !== hostname() || running) throw new Error('SCAN_ALREADY_OWNED');
   renameSync(lock, lock + '.stale-' + Date.now());
 }
-writeFileSync(lock, JSON.stringify({ pid: process.pid, host: hostname(), startedAt: new Date().toISOString() }), { flag: 'wx', mode: 0o600 });
+publishSnapshot(lock, { pid: process.pid, host: hostname(), startedAt: new Date().toISOString() });
 const progressPath = join(output, 'progress.json');
 let report = existsSync(progressPath) ? JSON.parse(readFileSync(progressPath, 'utf8')) : {
   input, inputSha256, sourceSha256: data.sourceSha256, propertyCode: 'HRCEN',
@@ -77,6 +77,7 @@ if (report.inputSha256 !== inputSha256 || report.sourceSha256 !== data.sourceSha
   unlinkSync(lock); throw new Error('RESUME_INPUT_CHANGED');
 }
 report.workers = workers;
+report.blocked = null;
 // Recover a snapshot committed just before an interrupted progress checkpoint.
 for (const candidate of candidates) {
   const directory = join(output, 'records', candidate.confirmation);
@@ -99,10 +100,20 @@ for (const candidate of candidates) {
 }
 const controller = new AbortController();
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => controller.abort());
-const transient = result => ['TimeoutError', 'HMS_BROWSER_LAUNCH_FAILED', 'HMS_SESSION_UNAVAILABLE',
+const browserHold = result => result.issue?.startsWith('HMS_BROWSER_HOLD');
+const transient = result => !browserHold(result) && (['TimeoutError', 'HMS_BROWSER_LAUNCH_FAILED', 'HMS_SESSION_UNAVAILABLE',
   'PLAYWRIGHT_OPERATION_FAILED', 'ADDONS_RESPONSE_UNVERIFIED', 'ADDONS_RESPONSE_BODY_TIMEOUT',
   'ADDONS_ACTION_FAILED', 'HMS_OPERATION_ABORTED', 'HMS_BROWSER_CLOSE_UNCONFIRMED'].includes(result.issue) ||
-  ['credentials', 'browser_launch', 'browser_context', 'login'].includes(result.phase);
+  ['credentials', 'browser_launch', 'browser_context', 'login'].includes(result.phase));
+
+// A hard link publishes only complete bytes and refuses an existing final path.
+// Interrupted temporary files never match the recovery reader's attempt names.
+function publishSnapshot(path, value) {
+  const temporary = path + '.partial-' + randomUUID();
+  writeFileSync(temporary, JSON.stringify(value), { flag: 'wx', mode: 0o600 });
+  try { linkSync(temporary, path); }
+  finally { unlinkSync(temporary); }
+}
 
 function atomic(path, value) {
   const temporary = path + '.partial';
@@ -192,23 +203,37 @@ async function worker() {
       const previousRaw = attempts.length ? JSON.parse(readFileSync(join(output, attempts.at(-1).artifact), 'utf8')) : null;
       const observedArrival = nativeArrivalHint(previousRaw);
       const historicalHints = historicalRefinement(candidate, previousRaw);
-      const lookupHints = historicalHints || { arrivalDate: observedArrival || candidate.arrivalDate,
+      const lookupHints = historicalHints || { ...(previousRaw?.lookupHints || { arrivalDate: candidate.arrivalDate }),
+        ...(observedArrival ? { arrivalDate: observedArrival } : {}),
         ...(useNameHint ? { guestName: candidate.guestName } : {}) };
       const lookupHintSource = historicalHints ? 'verified_historical_hms_name_and_current_native_date' :
-        observedArrival ? 'current_native_date' : useNameHint ? 'input_name_and_date' : 'input_date';
+        observedArrival ? 'current_native_date' : useNameHint ? 'input_name_and_date' : previousRaw?.lookupHintSource || 'input_date';
       const result = await readOne(candidate, attempt, lookupHints, lookupHintSource);
+      if (browserHold(result)) {
+        // No browser could launch: retain the blocker without spending a read attempt.
+        const artifact = 'browser-block-' + randomUUID() + '.json';
+        publishSnapshot(join(output, artifact), { inputSha256, sourceSha256: data.sourceSha256, toolHashes, candidate, ...result });
+        report.blocked = { issue: result.issue, confirmation: candidate.confirmation, artifact };
+        controller.abort();
+        checkpoint();
+        break;
+      }
       const artifact = 'records/' + candidate.confirmation + '/attempt-' + attempt + '.json';
-      writeFileSync(join(output, artifact), JSON.stringify({ inputSha256, sourceSha256: data.sourceSha256,
-        toolHashes, candidate, ...result }), { flag: 'wx', mode: 0o600 });
+      publishSnapshot(join(output, artifact), { inputSha256, sourceSha256: data.sourceSha256,
+        toolHashes, candidate, ...result });
       attempts.push({ artifact, ok: result.ok, completeRead: result.completeRead, issue: result.issue,
         observedAt: result.observedAt, elapsedMs: result.elapsedMs, sessionVerified: result.sessionVerified });
       report.results[candidate.confirmation] = { confirmation: candidate.confirmation, attempts,
         ok: result.ok, completeRead: result.completeRead, rowCount: result.addOns?.rows?.length ?? null,
         issue: result.issue, selectedArtifact: artifact };
+      if (result.issue === 'HMS_BROWSER_CLOSE_UNCONFIRMED') {
+        report.blocked = { issue: result.issue, confirmation: candidate.confirmation, artifact };
+        controller.abort();
+      }
       checkpoint();
       console.log(JSON.stringify({ ...counts(), lastOutcome: result.ok ? 'read' : result.issue,
         lastElapsedMs: result.elapsedMs }));
-      const canRefineName = result.issue === 'AMBIGUOUS_CONFIRMATION' && !useNameHint && Boolean(candidate.guestName);
+      const canRefineName = result.issue === 'AMBIGUOUS_CONFIRMATION' && !lookupHints.guestName && Boolean(candidate.guestName);
       const canRefineArrival = nativeArrivalHint(result) && nativeArrivalHint(result) !== lookupHints.arrivalDate;
       if (result.ok || (!transient(result) && !canRefineName && !canRefineArrival && !historicalRefinement(candidate, result))) break;
     }
