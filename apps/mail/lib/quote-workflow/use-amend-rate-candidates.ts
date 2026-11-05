@@ -19,7 +19,7 @@ export type RateReply = {
 };
 type RateBinding = {
   workItemId: string; source: { threadId: string; messageId: string; sourceHash: string };
-  request: { requestId: string; stayId: string; rowId: null; roomIndex: null }; expectedSeq: number;
+  request: { requestId: string; stayId: string; rowId: null; roomIndex: null }; expectedSeq: number; expectedExtractionId: string;
 };
 type RateRoute = { mutate: (input: { kind: 'start'; binding: RateBinding; typedRatePlan?: string; forceRefresh?: boolean } |
   { kind: 'read'; binding: RateBinding; jobId: string }, options: { context: { activeTransportId: string } }) => Promise<RateReply> };
@@ -48,7 +48,7 @@ export function useAmendRateCandidates(args: {
     const current = latest.current;
     const mutate = (current.trpc as { quoteWorkflow?: { rateCandidates?: RateRoute } } | null)?.quoteWorkflow?.rateCandidates?.mutate;
     const mailbox = inMailbox(current.transportId);
-    if (!mutate || !mailbox || !current.draft || !current.workItemId || current.locked) return;
+    if (!mutate || !mailbox || !current.draft?.source || !current.workItemId || current.locked) return;
     const rateCode = (typedRatePlan ?? current.selectedRatePlan ?? '').trim().toUpperCase();
     if (!/^[A-Z0-9]{1,12}$/.test(rateCode)) {
       if (forceRefresh) setView({ key: currentKey.current, status: 'blocked', message: 'Choose or type a valid rate code first.' });
@@ -68,7 +68,8 @@ export function useAmendRateCandidates(args: {
         return;
       }
       const binding: RateBinding = { workItemId: current.workItemId, source: current.source,
-        request: { requestId: cursor.requestId, stayId: cursor.stayId, rowId: null, roomIndex: null }, expectedSeq: cursor.expectedSeq };
+        request: { requestId: cursor.requestId, stayId: cursor.stayId, rowId: null, roomIndex: null }, expectedSeq: cursor.expectedSeq,
+        expectedExtractionId: current.draft.source.extractionId };
       let expectedContext: string | null = null;
       let polls = 0;
       const accept = async (reply: RateReply): Promise<void> => {
@@ -102,10 +103,11 @@ export function useAmendRateCandidates(args: {
       if (active()) setView({ key: startedKey, status: 'blocked', message: 'Rates could not be checked. Try again.' });
     }
   }, []);
-  const available = Boolean(route && args.draft?.available && args.draft.request && args.workItemId && args.transportId);
+  const available = Boolean(route && args.draft?.source && args.draft?.available && args.draft.request && args.workItemId && args.transportId);
   useEffect(() => {
     if (!available || args.locked || !/^[A-Z0-9]{1,12}$/.test((args.selectedRatePlan ?? '').trim().toUpperCase())) return;
     const scheduled = setTimeout(() => void check(undefined, false), 500);
+    timer.current = scheduled;
     return () => clearTimeout(scheduled);
   }, [key, available, args.locked, args.selectedRatePlan, check]);
   return { available,
