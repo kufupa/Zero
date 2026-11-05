@@ -529,9 +529,10 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
         { ...result, outcome: 'selection_uncertain', issue: 'CHARGE_ROOM_PRICE_CHECK_UNVERIFIED' };
     } else if (tool === 'selectGuestStayRatePlan' && state.chargeRoom && result?.outcome === 'selected_unsaved') {
       result = { ...result, chargeRoomPricing: 'requires_recheck' };
-    } else if (tool === 'selectGuestStayRatePlan' && result?.outcome === 'input_gap') {
-      // Input validation happens before any native request; a corrected call
-      // can still recheck a previously verified price.
+    } else if (tool === 'selectGuestStayRatePlan' && (result?.outcome === 'input_gap' ||
+        (result?.outcome === 'execution_failure' && result.issue === 'RATE_AVAILABILITY_CONTROL_UNAVAILABLE'))) {
+      // No price check was attempted; a corrected call or a later edit can
+      // still recheck a previously verified price.
       state.chargeRateChecked = previousChargeRateChecked;
     }
     if (tool === 'saveNewLabtestStay' && result?.outcome === 'saved_same_form') {
