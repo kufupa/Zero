@@ -113,6 +113,8 @@ export type ModelUsage = {
   costUsd?: number;
   /** Durable audit bit: thread state clipped or omitted before the model call. */
   threadContextTruncated?: boolean;
+  /** Bounded schema failures only; never include model values or error messages. */
+  validationIssues?: Array<{ code: string; path: string }>;
 };
 
 export function isJunkVisionFilename(filename: string): boolean {
@@ -694,7 +696,13 @@ export async function extractInboundMail(input: {
     threadContextTruncated: prompt.threadContextTruncated,
   };
   const parsed = mailExtractionSchema.safeParse(called.result.output);
-  if (!parsed.success) return { ok: false, reason: 'invalid_output', usage, attachments: reads };
+  if (!parsed.success) return {
+    ok: false, reason: 'invalid_output', attachments: reads,
+    usage: { ...usage, validationIssues: parsed.error.issues.slice(0, 12).map((issue) => ({
+      code: issue.code,
+      path: issue.path.map((part) => typeof part === 'number' ? '[]' : part).join('.').slice(0, 160),
+    })) },
+  };
   const sanitized = sanitizeExtraction(parsed.data, {
     messageId: input.messageId,
     sourceText: prompt.user,
