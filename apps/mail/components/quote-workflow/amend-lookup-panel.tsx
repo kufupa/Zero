@@ -1440,11 +1440,15 @@ function LocalAmendReview({ identity, revision, confirmation, stay, contactObser
     draft.confirmation === confirmation &&
     (['propertyCode', 'threadId', 'messageId', 'mailboxEmail', 'sourceHash'] as const)
       .every((field) => draft.identity[field] === identity[field]) ? draft : null;
+  // Newer WorkItem hooks expose the saved projection cursor and this session's acknowledgements.
+  const projection = durableDraft as (typeof durableDraft & { revisionSeq?: number | null; acknowledgedSeqs?: number[] });
+  const acknowledgedProjection = projection?.revisionSeq != null &&
+    projection.acknowledgedSeqs?.includes(projection.revisionSeq) === true;
   return <>
     <SavedStayAmendEditor draftStore={draftStore} identity={identity} extractionRevision={revision}
       confirmation={confirmation} stay={stay} requestedArrival={requestedArrival}
       requestedDeparture={requestedDeparture} requestedAdults={requestedAdults} requestedChildren={requestedChildren}
-      requestedChildAges={requestedChildAges} cleared={cleared} onFieldEdit={(field, value, next) => {
+      requestedChildAges={requestedChildAges} cleared={cleared} acknowledgedProjection={acknowledgedProjection} onFieldEdit={(field, value, next) => {
         if (!durableDraft) return;
         if (field === 'arrival' || field === 'departure' || field === 'nights') {
           const dateField = field === 'nights' ? 'departure' : field;

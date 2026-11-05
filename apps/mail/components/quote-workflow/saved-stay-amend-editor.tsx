@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { sendableArrival, type StayRecordWire } from '@/lib/quote-workflow/amend-find';
 import {
-  amendmentReadbackDifferences, initialSavedStayAmendDraft, savedStayAmendProposal, savedStayAmendReviewBasis,
+  amendmentReadbackDifferences, initialSavedStayAmendDraft, savedStayAmendOwnEcho, savedStayAmendProposal, savedStayAmendReviewBasis,
   type SavedStayAmendDraft, type SavedStayAmendDraftUpdate, type SavedStayAmendEditorIdentity, type SavedStayAmendRequest,
   type SavedStayAmendProposal, type SavedStayAmendResult,
 } from '@/lib/quote-workflow/saved-stay-amendment';
@@ -24,6 +24,7 @@ type Props = {
   requestedChildren?: number | null;
   requestedChildAges?: number[] | null;
   cleared?: SavedStayAmendRequest['cleared'];
+  acknowledgedProjection?: boolean;
   onFieldEdit?: (field: keyof SavedStayAmendDraft, value: string, next: SavedStayAmendDraft) => void;
   result?: SavedStayAmendResult | null;
   /** The current source and the proposal actually submitted, not values copied from the result. */
@@ -89,7 +90,7 @@ export function SavedStayAmendEditor(props: Props) {
 }
 
 function SavedStayAmendEditorContent({ identity, extractionRevision, confirmation, stay, requestedArrival, requestedDeparture,
-  requestedAdults, requestedChildren, requestedChildAges, cleared, result, resultContext,
+  requestedAdults, requestedChildren, requestedChildAges, cleared, acknowledgedProjection, result, resultContext,
   screenshot, onDraftChange, onFieldEdit, storedDraft, storeDraft }: Props & {
     storedDraft?: StoredDraft; storeDraft: (draft: StoredDraft) => void;
   }) {
@@ -99,7 +100,9 @@ function SavedStayAmendEditorContent({ identity, extractionRevision, confirmatio
   const [draft, setDraft] = useState(() => storedDraft ? { ...storedDraft.draft } : initialSavedStayAmendDraft(stay, request));
   const [touched, setTouched] = useState<DraftField[]>(() => storedDraft?.touched ?? []);
   const [acceptedBasis, setAcceptedBasis] = useState(() => storedDraft?.acceptedBasis ?? basis);
-  const needsReview = basis !== acceptedBasis;
+  const ownEcho = basis !== acceptedBasis && acknowledgedProjection === true &&
+    savedStayAmendOwnEcho(acceptedBasis, stay, request, extractionRevision, draft, touched);
+  const needsReview = basis !== acceptedBasis && !ownEcho;
   const onDraftRef = useRef(onDraftChange);
   onDraftRef.current = onDraftChange;
   const currentBasis = useRef({ basis, extractionRevision });
@@ -108,8 +111,13 @@ function SavedStayAmendEditorContent({ identity, extractionRevision, confirmatio
   const validation = needsReview ? { proposal: null, errors: [changedDetails] } : savedStayAmendProposal(confirmation, stay, draft);
   useEffect(() => {
     onDraftRef.current?.({ identity: { ...binding.identity }, confirmation: binding.confirmation, extractionRevision, basis,
-      ...(basis !== acceptedBasis ? { proposal: null, errors: [changedDetails] } : savedStayAmendProposal(confirmation, stay, draft)) });
-  }, [binding, basis, acceptedBasis, draft]);
+      ...(needsReview ? { proposal: null, errors: [changedDetails] } : savedStayAmendProposal(confirmation, stay, draft)) });
+  }, [binding, basis, needsReview, draft]);
+  useEffect(() => {
+    if (!ownEcho) return;
+    setAcceptedBasis(basis);
+    storeDraft({ draft, touched, acceptedBasis: basis });
+  }, [ownEcho, basis, draft, touched, storeDraft]);
   useEffect(() => () => {
     onDraftRef.current?.({ identity: { ...binding.identity }, confirmation: binding.confirmation,
       ...currentBasis.current, proposal: null, errors: ['The booking selection changed.'] });

@@ -2416,8 +2416,8 @@ describe('AmendLookupPanel amend form', () => {
     expect((within(form).getByLabelText('Requested adults') as HTMLInputElement).value).toBe('3');
     expect((within(form).getByLabelText('Requested child ages') as HTMLInputElement).value).toBe('6');
     expect((screen.getByLabelText('Rate plan') as HTMLInputElement).value).toBe('CORP');
-    expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
-      { name: 'Yes', selected: true })).toBeTruthy();
+    await waitFor(() => expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
+      { name: 'Yes', selected: true })).toBeTruthy());
     expect(screen.getByText(/new total cannot be verified while retaining rates/i)).toBeTruthy();
     expect((screen.getByLabelText('Send HMS confirmation') as HTMLInputElement).checked).toBe(true);
     expect(screen.queryByRole('button', { name: /^(Preview|Approve)$/ })).toBeNull();
@@ -2434,8 +2434,8 @@ describe('AmendLookupPanel amend form', () => {
     await waitFor(() => expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('3'));
     expect((screen.getByLabelText('Requested child ages') as HTMLInputElement).value).toBe('6');
     expect((screen.getByLabelText('Rate plan') as HTMLInputElement).value).toBe('CORP');
-    expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
-      { name: 'Yes', selected: true })).toBeTruthy();
+    await waitFor(() => expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
+      { name: 'Yes', selected: true })).toBeTruthy());
     fireEvent.change(screen.getByLabelText('Retain the current rate?'), { target: { value: 'no' } });
     expect(preview).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
