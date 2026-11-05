@@ -63,14 +63,18 @@ export function useRequestWorkItem(args: {
           changed(item);
         } catch {
           let fresh: AmendDraftSnapshot | null = null;
-          try { fresh = await refs.current.reload(item.snapshot, item.transportId); } catch { /* retain entries for retry */ }
+          let reloadFailed = currentKey.current !== item.key;
+          if (!reloadFailed) {
+            try { fresh = await refs.current.reload(item.snapshot, item.transportId); } catch { reloadFailed = true; }
+          }
           const same = fresh && fresh.workItemId === item.snapshot.workItemId &&
             JSON.stringify(fresh.source) === JSON.stringify(item.snapshot.source) &&
             item.snapshot.requests.every((request) => fresh!.requests.some((nextRequest) => nextRequest.requestId === request.requestId));
           if (same && fresh) item.snapshot = fresh;
-          item.error = same ? 'Draft changed or could not save. Check your entries, then retry.'
-            : 'Email or draft changed. Your unsaved entries are held here.';
-          item.retryable = Boolean(same || !fresh);
+          item.error = reloadFailed ? 'Could not save or reload. Your entries are held here.'
+            : same ? 'Draft changed or could not save. Check your entries, then retry.'
+              : 'Email or draft changed. Your unsaved entries are held here.';
+          item.retryable = Boolean(same || reloadFailed || !fresh || currentKey.current !== item.key);
           changed(item);
           return false;
         }
@@ -120,10 +124,14 @@ export function useRequestWorkItem(args: {
     return currentKey.current === session.key ? cursor : null;
   }, [session, pump]);
   const retry = useCallback(() => {
-    if (!session?.retryable) return;
+    if (!session?.retryable || currentKey.current !== session.key) return;
     session.retryable = false;
     void refs.current.reload(session.snapshot, session.transportId).then((fresh) => {
-      if (!fresh || fresh.workItemId !== session.snapshot.workItemId || JSON.stringify(fresh.source) !== JSON.stringify(session.snapshot.source)) {
+      if (!fresh || currentKey.current !== session.key) {
+        session.error = 'Could not reload. Your entries are held here.'; session.retryable = true; changed(session); return;
+      }
+      if (fresh.workItemId !== session.snapshot.workItemId || JSON.stringify(fresh.source) !== JSON.stringify(session.snapshot.source) ||
+          !session.snapshot.requests.every((request) => fresh.requests.some((next) => next.requestId === request.requestId))) {
         session.error = 'Email or draft changed. Your unsaved entries are held here.'; changed(session); return;
       }
       session.snapshot = fresh; session.error = null; void pump(session);
