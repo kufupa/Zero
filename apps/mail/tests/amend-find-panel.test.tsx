@@ -2404,7 +2404,7 @@ describe('AmendLookupPanel amend form', () => {
     fireEvent.change(within(form).getByLabelText('Requested children'), { target: { value: '1' } });
     fireEvent.change(within(form).getByLabelText('Requested child ages'), { target: { value: '6' } });
     fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'corpor' } });
-    fireEvent.click(screen.getByRole('button', { name: 'CORP · Corporate' }));
+    fireEvent.click(screen.getByRole('button', { name: 'CORP · Corporate · catalogue label' }));
     fireEvent.change(screen.getByLabelText('Retain the current rate?'), { target: { value: 'yes' } });
     expect((within(form).getByLabelText('Requested adults') as HTMLInputElement).value).toBe('3');
     expect((within(form).getByLabelText('Requested child ages') as HTMLInputElement).value).toBe('6');
