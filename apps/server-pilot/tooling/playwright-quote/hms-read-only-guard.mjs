@@ -93,8 +93,9 @@ export async function installReadOnlyGuard(context, { approvedCreateAvailability
     const addOnBody = new URLSearchParams(request.postData?.() || '');
     if (state.addOnApprovals && request.method() === 'POST' && target?.origin === HMS_WEB_ORIGIN &&
         target.pathname === '/web/base/OSENEX' && !target.hash &&
-        (!target.search || (target.searchParams.getAll('pageaction').length === 1 && target.searchParams.get('pageaction') === 'SAVE')) &&
-        addOnBody.getAll('pageaction').length === 1 && addOnBody.get('pageaction') === 'SAVE' &&
+        (!target.search || (target.searchParams.getAll('pageaction').length === 1 &&
+          ['SAVE', 'DELETE'].includes(target.searchParams.get('pageaction')) && target.searchParams.get('pageaction') === addOnBody.get('pageaction'))) &&
+        addOnBody.getAll('pageaction').length === 1 && ['SAVE', 'DELETE'].includes(addOnBody.get('pageaction')) &&
         (firstGuard ? state.addOnApprovals.delete(request) : state.addOnApprovals.has(request))) {
       await route.fallback();
       return;

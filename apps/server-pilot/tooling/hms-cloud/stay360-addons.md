@@ -8,7 +8,7 @@ All functions operate on the supplied logged-in Playwright `page`, bound to one 
 
 | Export | Required inputs | Optional inputs | Success result |
 | --- | --- | --- | --- |
-| `readStay360AddOns` | `page`, `confirmation` | `{detailIds: string[]}` | `{outcome:"ok", confirmation, propertyCode, target, rows, columns, details, coverage, notes}` |
+| `readStay360AddOns` | `page`, `confirmation` | `{detailIds: string[]}` | `{outcome:"ok", confirmation, propertyCode, target, rows, columns, details, items, coverage, notes}` |
 | `listStay360AddOnItems` | `page`, `confirmation` | None | `{outcome:"ok", confirmation, propertyCode, candidates, columns, coverage}` |
 | `prepareStay360AddOns` | `page`, `confirmation`, `items: AddOnInput[]` | Optional fields inside each item | `{outcome:"prepared", preparedId, confirmation, propertyCode, items: AddOnPreview[], baselineCoverage, availabilityVerified:false, saved:false}` |
 | `saveStay360AddOns` | `page`, `confirmation`, `preparedId`, `{authorize}` | Trusted `beforeDispatch`, `afterDispatch`, `readBaseline` callbacks | `{outcome:"awaiting_readback", confirmation, preparedId, receipts, attempts, requestedCount, baseline, baselineCoverage}`; never reports saved on acknowledgement alone |
@@ -47,7 +47,7 @@ Run `node apps/server-pilot/tooling/hms-cloud/stay360-addons-session.mjs --jsonl
 {"tool":"reconcile","confirmation":"3640876178-1"}
 ```
 
-Supported `tool` values: `read`, `list`, `prepare`, `save`, `reconcile`. Every request requires `confirmation`; optional initial lookup hints are `guestName` and `arrivalDate`. `prepare` additionally requires `items`; `save` requires the latest `preparedId`. `reconcile` uses retained receipts from this session. No authorization booleans or native item IDs can be supplied through JSON. A prepared ID works only on its originating page; a new prepare invalidates earlier IDs.
+Existing tools are `read`, `list`, `prepare`, `save`, `reconcile`; corrections add `prepareChanges` and `saveChanges` below. Every request requires `confirmation`; optional initial lookup hints are `guestName` and `arrivalDate`. `prepare` additionally requires `items`; `save` requires the latest `preparedId`. `reconcile` uses retained receipts from this session. No authorization booleans or caller-selected catalogue IDs can be supplied through JSON. Corrections accept saved row IDs from the reader, as documented below. A prepared ID works only on its originating page; a new prepare invalidates earlier IDs.
 
 Provide `arrivalDate` for future or historical stays outside the shared lookup's default date range. An unhinted lookup failure does not establish that the reservation is absent.
 
@@ -67,7 +67,7 @@ Only the matched native Submit request gets a one-shot exception in the shared r
 
 Insert guards also require empty record identities and a new-record primary key when supplied, so an existing row cannot be updated under an Add approval.
 
-Multiple items use native Submit once per item. This is not an atomic batch: earlier items can persist if a later item fails. Receipts, requested count and independent readback expose partial completion; never replay the whole batch blindly. This tool adds items; edit/remove existing Add-Ons and activity/bundle workflows are outside this contract.
+Multiple items use native Submit once per item. This is not an atomic batch: earlier items can persist if a later item fails. Receipts, requested count and independent readback expose partial completion; never replay the whole batch blindly. The original preparation/Save pair adds items. Corrections use the separate pair below; activity/bundle workflows remain outside this contract.
 
 ## New reservations
 
@@ -88,3 +88,70 @@ Unsaved refusal/recovery checks also passed: an unknown item code returned `ADDO
 After review fixes, concurrent first reads produced one successful read and one `ADDONS_ACTION_IN_PROGRESS` refusal. A 28-second dispatch callback retained the reservation lock through completion; fresh readback confirmed no new row. An owned Labtest Save with deliberately interrupted response reading retained its attempted values, recovered row `1742` from the complete preimage, and matched every field in a fresh browser without a retry. The existing 11 focused tests passed again after these changes.
 
 The approval-delay recovery check also passed: another session inserted identical row `1743` while the original held a preview. The original's blocked Submit used a fresh five-row baseline inside its lock, remained uncertain, and left the row count at five. It did not credit the other session's row as a successful Save.
+
+## Exact-row edit and removal
+
+The add-only exports and wire `prepare`/`save` keep their existing meaning. Corrections use two additional exports and wire operations:
+
+| Export | Required inputs | Optional inputs | Result |
+| --- | --- | --- | --- |
+| `prepareStay360AddOnChanges` | `page`, `confirmation`, `changes` | Optional fields in an edit patch | `{outcome:"prepared", preparedId, confirmation, propertyCode, saved:false, changes}` |
+| `saveStay360AddOnChanges` | `page`, `confirmation`, originating `preparedId`, `{authorize}` | Trusted `readBaseline`, `beforeDispatch`, `afterDispatch` callbacks | `{outcome:"awaiting_readback"\|"unchanged"\|"uncertain", kind:"changes", changes, attempts, receipts, requestedCount, baseline, baselineCoverage, target}` or an input/refusal/failure envelope |
+
+`changes` contains 1–100 operations, each using a different saved native row ID:
+
+```ts
+type AddOnChange =
+  | { operation: "edit"; nativeId: string; patch: AddOnPatch }
+  | { operation: "remove"; nativeId: string };
+
+type AddOnPatch = {
+  quantity?: string | number;
+  startDate?: string;
+  endDate?: string;
+  unitPrice?: string | number;
+  frequency?: string;
+  pricingControl?: string;
+  folio?: string;
+  comment?: string;
+};
+```
+
+`operation` and numeric-string `nativeId` are required. Edits additionally require a nonempty `patch`; removals reject a patch. Patch fields use the same dates, decimal validation and native option codes as item preparation. Omitted fields retain the existing values; `comment:""` clears the comment and `unitPrice:"0"` explicitly requests zero. Preserving an existing zero does not require resupplying its price. Code/catalogue ID changes are unsupported: the selected native row's code is read-only in the inspected flow.
+
+A correction preview contains `{index, operation, nativeId, before, after, changedFields, warnings, financialEffect:"unknown"}`. `before` and an edit's `after` are `{nativeId, fields:AddOnPreview}`. For removal `after:null` means requested removal, not zero cost or a refund. Preparation does not click the native Remove action. `warnings` reports available native warnings; it does not promise no later prompt.
+
+The read result now also includes `items`, normalized saved-row summaries alongside the existing raw rows. Grid-unavailable values such as a blank catalogue code remain `null` until the requested detail is read; summaries then include those known fields. Full `details` also expose editable controls. Wire `read` accepts optional `detailIds`, allowing callers to prefetch exact row details. Names/codes can repeat; corrections always choose a saved `nativeId` from that booking's read.
+
+### Correction session calls
+
+```json
+{"tool":"read","confirmation":"<confirmation>","guestName":"Proof Labtest","arrivalDate":"2027-11-23"}
+{"tool":"read","confirmation":"<confirmation>","detailIds":["<saved row ID>"]}
+{"tool":"prepareChanges","confirmation":"<confirmation>","changes":[{"operation":"edit","nativeId":"<saved row ID>","patch":{"quantity":"2","comment":"Dinner for two"}}]}
+{"tool":"saveChanges","confirmation":"<confirmation>","preparedId":"<returned preparation ID>"}
+```
+
+`prepareChanges` requires `changes`; `saveChanges` requires the originating `preparedId`. Both require `confirmation`, with optional initial name/date lookup hints. Unsupported wire fields are rejected. Tokens are bound to add or corrections preparation; the other Save operation cannot consume them.
+
+Corrections execute one by one in the existing session queue. They require no new journal or distributed-lock framework. Default CLI authorization remains fresh Proof Labtest verification, arrival 2027+, Reserved status and CMS off. Real-guest callers provide a trusted `authorizeChanges(prepared)` function returning exactly `true` on staff approval. Optional host hooks are `beforeChangeDispatch(dispatch)` and `afterChangeDispatch(receipt)`. The existing add-session `authorize` and callback requirements remain unchanged. JSON cannot provide authority or callbacks.
+
+Immediately before each correction, the tool reads the target in an independent session, compares its full supported fields with the prepared before-state, reloads/stages the owning form, and compares the approved result before dispatch. Changed records return `ADDONS_RECORD_CHANGED` without overwriting the concurrent change. Different processes and direct HMS operators must avoid concurrent writes to the same booking; this fresh check is not an atomic compare-and-set against a later external edit.
+
+Native edit uses `pageaction=SAVE`, removal uses `pageaction=DELETE`, in both URL and body. The guard checks the exact saved row and native primary key, operation and approved fields; the existing insert guard still requires new-record identity. Automatic acceptance of financial/activity prompts is not supported. An unexpected prompt or native error after possible dispatch requires review and fresh readback.
+
+### Correction results and recovery
+
+The session adds `reconciliation.results` entries containing `{index, operation, nativeId, status, dispatched, attribution, before, expectedAfter, observedAfter}`. Status is `updated`, `removed`, `unchanged`, `uncertain` or `not_attempted`; attribution is `verified` or `unknown`.
+
+Edits require the same row ID and all supported final fields. Removals require absence in a complete independent Add-On read and preservation of untargeted baseline IDs. This does not establish financial reversal. A missing or already removed row before dispatch is not credited to this attempt.
+
+A matched native response plus successful independent readback can yield `saved`. A no-op edit yields `unchanged` with no dispatch. After a lost response, results can show that the desired state exists while attribution stays unknown and overall outcome stays `uncertain`. Return attempts and next action `reconcile_before_retry`; never blindly replay. Multiple corrections are sequential and may partially persist; unattempted operations stay explicit.
+
+A possible write seals the session; start a fresh session after verified completion. Preparation or Save refusal after a consumed correction token also requires a fresh session. A partial or lost response retains the original native IDs and before/expected-after fields for `reconcile`.
+
+### Correction verification
+
+On 2026-11-05, an exclusively owned Proof Labtest stay (2027-11-23 to 2027-11-25, CMS off) proved native edit and removal through the backend session. The edit changed all eight supported fields, including an explicit blank comment, kept the same row ID and read back ZAR 37.02. The duplicate Dinner row and Breakfast row retained their full values. Removal then yielded a complete independent two-row census without the removed ID.
+
+Invalid/duplicate IDs, unsupported code changes, malformed patches, wrong token kind and wire authorization were refused. A no-op returned `unchanged` with zero dispatches. An intervening sequential-session edit caused `ADDONS_RECORD_CHANGED` with zero dispatches. This is raw source-worktree proof; deployed-main canary and real-guest enablement remain separate.
