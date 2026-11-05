@@ -182,7 +182,9 @@ function SavedStayAmendEditorContent({ identity, extractionRevision, confirmatio
         <input className={inputClass} value={draft.childAges} onChange={(event) => field('childAges', event.target.value)}
           placeholder="Ages separated by commas" aria-describedby="amend-child-ages-hint" />
       </label>
-      <p id="amend-child-ages-hint" className={smallClass}>HMS child ages not shown. If changing children, enter one age per child.</p>
+      <p id="amend-child-ages-hint" className={smallClass}>{stay.childAges
+        ? `HMS child ages: ${stay.childAges.length ? stay.childAges.join(', ') : 'None'}.`
+        : 'HMS child ages not shown.'} If changing children, enter one age per child.</p>
       {!needsReview && validation.errors.some((error) => error !== 'Choose a change to the booking.') ? <ul aria-live="polite" className="text-[11.5px] text-amber-900">
         {validation.errors.filter((error) => error !== 'Choose a change to the booking.').map((error) => <li key={error}>{error}</li>)}
       </ul> : null}

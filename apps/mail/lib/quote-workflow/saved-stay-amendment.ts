@@ -104,7 +104,7 @@ export function initialSavedStayAmendDraft(stay: StayRecordWire, request: SavedS
     nights: Number.isInteger(nights) && nights > 0 ? String(nights) : '',
     adults: request.cleared?.adults ? '' : request.adults == null ? (stay.adults == null ? '' : String(stay.adults)) : String(request.adults),
     children: request.cleared?.children ? '' : request.children == null ? (stay.children == null ? '' : String(stay.children)) : String(request.children),
-    childAges: request.childAges?.join(', ') ?? '',
+    childAges: request.childAges?.join(', ') ?? stay.childAges?.join(', ') ?? '',
   };
 }
 
@@ -142,10 +142,13 @@ export function savedStayAmendProposal(confirmation: string, stay: StayRecordWir
     if (children === null || ages.some((age) => age === null) || ages.length !== children) {
       errors.push('Enter one age from 0–17 for each child.');
     } else {
-      changes.children = children;
-      changes.childAges = ages as number[];
+      if (changes.children !== undefined || !Array.isArray(stay.childAges) ||
+          JSON.stringify(ages) !== JSON.stringify(stay.childAges)) {
+        changes.children = children;
+        changes.childAges = ages as number[];
+      }
     }
-  } else if (changes.children !== undefined && children !== 0) {
+  } else if ((changes.children !== undefined && children !== 0) || (stay.childAges?.length ?? 0) > 0) {
     errors.push('Enter one age for each child.');
   }
 

@@ -17,6 +17,7 @@ import {
   amendFindClientFromTrpc,
   findRequestFor,
   findRunFromJob,
+  findRunFromReply,
   hmsJobTransport,
   hmsNumberFor,
   isSettled,
@@ -2178,6 +2179,12 @@ describe('amend find helpers', () => {
       message: AMEND_FIND_COPY.searchFailed,
     });
     expect(searchRunFromJob(null, true, refusal)).toEqual({ kind: 'error', message: refusal });
+    const reply = found({ children: 2 });
+    const native = { propertyCode: 'HRCEN', confirmation: CONFIRMATION, firstName: 'Thabo', lastName: 'Mokoena',
+      status: 'Reserved', arrival: '2026-10-12', departure: '2026-10-13', adults: 1, children: 2, childAges: [8, 3] };
+    expect(findRunFromReply({ ...reply, rateLookup: { native } })).toMatchObject({ kind: 'found', stay: { childAges: [8, 3] } });
+    expect(findRunFromReply({ ...reply, rateLookup: { native: { ...native, confirmation: '999999-1' } } }))
+      .not.toHaveProperty('stay.childAges');
   });
 
   it('binds no client when the paneStayLookup routes are missing', () => {
