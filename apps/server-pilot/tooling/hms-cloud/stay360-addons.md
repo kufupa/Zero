@@ -63,6 +63,8 @@ Host callbacks must settle within the host's own deadlines. After an interrupted
 
 Only the matched native Submit request gets a one-shot exception in the shared read guard. Property, stay/account IDs, item code/ID, action and approved business values must match. Full request field sets and counts are not pinned. Late unexpected requests are blocked; failed native steps quarantine the page.
 
+Insert guards also require empty record identities and a new-record primary key when supplied, so an existing row cannot be updated under an Add approval.
+
 Multiple items use native Submit once per item. This is not an atomic batch: earlier items can persist if a later item fails. Receipts, requested count and independent readback expose partial completion; never replay the whole batch blindly. This tool adds items; edit/remove existing Add-Ons and activity/bundle workflows are outside this contract.
 
 ## New reservations

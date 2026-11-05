@@ -147,11 +147,16 @@ function matches(request, state, pending) {
       exact(body, 'ONLY_DATA_REQUIRED', 'true') && !clean(body.get('enhexpsequencekey'));
   }
   if (!exact(body, 'itemtype', 'ITEM') || !exact(body, 'itemorbundlecode', pending.code) ||
-      !exact(body, 'itemid', pending.itemId) || clean(body.get('recordid')) || clean(body.get('enhexpsequencekey'))) return false;
+      !exact(body, 'itemid', pending.itemId) || ['recordid', 'enhexpsequencekey'].some(key =>
+        body.getAll(key).length > 1 || clean(body.get(key)))) return false;
   if (pending.kind === 'calculate') {
     return url.pathname === `${PATH}.getenhancedexperiencecalculations` && !body.has('pageaction') && !body.has('action');
   }
   if (pending.kind !== 'save' || url.pathname !== PATH || !exact(body, 'pageaction', 'SAVE') || body.has('action')) return false;
+  // A primary key for an existing item must never turn an approved insert into
+  // an update, even if the visible fields still look like a new record.
+  if (body.getAll('PKID').length > 1 || (clean(body.get('PKID')) &&
+      !exact(body, 'PKID', '@[EMPTY]#HRCEN#ITEM'))) return false;
   const item = pending.item;
   return ['quantity', 'unitprice', 'totalcost'].every((key, i) => body.getAll(key).length === 1 && decimal(body.get(key)) ===
     [item.quantity, item.unitPrice, item.totalCost][i]) &&
