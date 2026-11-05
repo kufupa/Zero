@@ -159,6 +159,7 @@ export async function checkedChargeRateEvidence(page, expected) {
       clean(draft.guaranteeValue) !== proof.guarantee ||
       JSON.stringify(chargePriceFields(draft)) !== JSON.stringify(proof.fields)) return null;
   return { averageRate: proof.fields.averagerate, totalRate: proof.fields.totalrate, currency: proof.currency,
+    sourceCode: proof.identity.sourceCode,
     occupancy: { adults: proof.fields.adults, children: proof.fields.children, childages: proof.identity.childAges,
       ...Object.fromEntries(['child1', 'child2', 'child3'].filter(name => Object.hasOwn(proof.fields, name))
         .map(name => [name, proof.fields[name]])) } };

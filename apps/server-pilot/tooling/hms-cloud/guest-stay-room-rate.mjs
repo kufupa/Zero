@@ -375,13 +375,8 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
           JSON.stringify(await formFields(page)) !== formState) throw new Error('ROOM_FILTER_RESET_UNVERIFIED');
       // The reset request can contain other native filters. Preserve those
       // observations instead of assuming clearing the text cleared them all.
-      const resetFilters = [...new URLSearchParams(reset.request().postData() || '')]
+      nativeFilters = [...new URLSearchParams(reset.request().postData() || '')]
         .filter(([name]) => /filter/i.test(name)).map(([name, value]) => ({ name, value }));
-      const filterValues = resetFilters.filter(item => item.name.toLowerCase() === 'filtervalue');
-      const clearedTextFilter = filterValues.length === 1 && !clean(filterValues[0].value);
-      const textFilterNames = new Set(['filterfields', 'filteroperator', 'filtervalue']);
-      nativeFilters = resetFilters.filter(item => clean(item.value) &&
-        !(clearedTextFilter && textFilterNames.has(item.name.toLowerCase())));
       nativeFilterReset = true;
       initialMetadata = metadata;
     }
@@ -408,6 +403,11 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
   const c = coverage(metadata, rows.length);
   if (current.footer && (current.footer.loaded !== rows.length ||
       (c.total != null && current.footer.total !== c.total))) throw new Error('PICKER_COVERAGE_MISMATCH');
+  const filterValues = nativeFilters.filter(item => item.name.toLowerCase() === 'filtervalue');
+  const clearedTextFilter = filterValues.length === 1 && !clean(filterValues[0].value);
+  const textFilterNames = new Set(['filterfields', 'filteroperator', 'filtervalue']);
+  nativeFilters = nativeFilters.filter(item => clean(item.value) &&
+    !(clearedTextFilter && textFilterNames.has(item.name.toLowerCase())));
   const catalogCoverage = !roomKind(kind) ? c : nativeFilters.length
     ? { ...c, total: null, complete: false, possiblyTruncated: true, nativeFiltered: true,
       filteredResultTotal: c.total, filteredResultComplete: c.complete }

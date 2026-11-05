@@ -99,12 +99,15 @@ export function labtestRecordOptionsForOrganizationSelection(selection) {
 export function buildLabtestOrganizationReadbackTarget(saveResult, request, selectedOrganization,
   { allowRealGuest = false, expectedGuest, cloudTargetKey } = {}) {
   const recordOptions = labtestRecordOptionsForOrganizationSelection(selectedOrganization);
+  const chargeWithoutParties = request?.roomTypeForCharge !== undefined &&
+    request?.organizationSelection == null && request?.agencySelection == null && request?.arSelection == null;
   const confirmation = saveResult?.confirmation;
   const guaranteeDisplay = guaranteeDisplayForSave(request?.guaranteeType, request?.guaranteeSelection);
   const guest = allowRealGuest ? expectedGuest : { firstName: 'Proof', lastName: 'Labtest' };
   if (!validCreateGuest(guest) || saveResult?.outcome !== 'saved_same_form' || !/^\d{6,}-\d+$/.test(confirmation || '') ||
-      !request || typeof request !== 'object' || !guaranteeDisplay || request.agencySelection != null || !recordOptions ||
-      !sameSessionOrganizationSelection(selectedOrganization, request.organizationSelection) ||
+      !request || typeof request !== 'object' || !guaranteeDisplay || request.agencySelection != null ||
+      (!chargeWithoutParties && (!recordOptions ||
+        !sameSessionOrganizationSelection(selectedOrganization, request.organizationSelection))) ||
       !/^\d+$/.test(String(request.guestId ?? '').trim()) ||
       typeof request.arrival !== 'string' || typeof request.departure !== 'string' ||
       (cloudTargetKey !== undefined && cloudTargetKey !== createCloudTargetKey(guest, request.arrival)) ||
@@ -120,7 +123,7 @@ export function buildLabtestOrganizationReadbackTarget(saveResult, request, sele
       ...(request.roomTypeForCharge !== undefined ? { roomTypeForCharge: request.roomTypeForCharge,
         checkedPricing: structuredClone(saveResult.checkedPricing) } : {}),
     },
-    expectedOrganization: recordOptions.expectedOrganization,
+    expectedOrganization: chargeWithoutParties ? null : recordOptions.expectedOrganization,
     expectedGuarantee: { code: request.guaranteeType, display: guaranteeDisplay },
     allowRealGuest: allowRealGuest || !['NGI', 'GTDAGT'].includes(request.guaranteeType),
     ...(cloudTargetKey ? { cloudTargetKey } : {}),
@@ -163,18 +166,19 @@ export async function readSavedOrganizationCreate(state, request, { openSession 
         }
       }
       const record = await readCreatedLabtestRecord(page, target.expected, {
-        allowUnchangedBusinessParties: true, expectedOrganization: target.expectedOrganization,
+        ...(target.expectedOrganization ? { allowUnchangedBusinessParties: true,
+          expectedOrganization: target.expectedOrganization } : {}),
         expectedGuarantee: target.expectedGuarantee, ...(target.allowRealGuest ? { allowRealGuest: true } : {}),
       });
-      const organizationName = record.partyPreimage.company || record.partyPreimage.companyname;
-      if (record.partyPreimage.companyid !== target.expectedOrganization.nativeId ||
-          organizationName !== target.expectedOrganization.name) throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
+      const organizationName = target.expectedOrganization ? record.partyPreimage.company || record.partyPreimage.companyname : null;
+      if (target.expectedOrganization && (record.partyPreimage.companyid !== target.expectedOrganization.nativeId ||
+          organizationName !== target.expectedOrganization.name)) throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
       return {
         outcome: 'read_back_verified', confirmation: target.confirmation, property: PROPERTY,
         stay: { arrival: target.expected.arrival, departure: target.expected.departure,
           roomType: target.expected.roomType, ratePlan: target.expected.ratePlan,
           ...(target.expected.roomTypeForCharge !== undefined ? { roomTypeForCharge: target.expected.roomTypeForCharge } : {}) },
-        organization: { nativeId: record.partyPreimage.companyid, name: organizationName },
+        ...(target.expectedOrganization ? { organization: { nativeId: record.partyPreimage.companyid, name: organizationName } } : {}),
         ...(pricing ? { pricing } : {}),
         otherLinkedPartiesBlank: true,
       };
@@ -746,7 +750,7 @@ export async function runBookingLookupSessionCli(args = process.argv.slice(2)) {
     } finally {
       lines.close();
     }
-  }, { labtestDates, blockServiceWorkers: labtestDates !== undefined });
+  }, { labtestDates, blockServiceWorkers: true });
 }
 
 export function main() {

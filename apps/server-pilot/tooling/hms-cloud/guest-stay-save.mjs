@@ -584,6 +584,10 @@ function matchesSave(page, request, expected) {
         if (wanted == null ? values.length > 1 || values.some(value => clean(value)) :
           values.length !== 1 || values[0] !== String(wanted)) return false;
       }
+      const sources = [...body].filter(([key]) => key.toLowerCase() === 'sourceofbus').map(([, value]) => value);
+      const sourceCode = expected.checkedPricing.sourceCode;
+      if (sourceCode == null || sourceCode === '' ? sources.length > 1 || sources.some(value => clean(value)) :
+        sources.length !== 1 || sources[0] !== String(sourceCode)) return false;
     }
     return profileControls.every((key) => {
       const matches = keys.filter((name) => name.toLowerCase() === key);

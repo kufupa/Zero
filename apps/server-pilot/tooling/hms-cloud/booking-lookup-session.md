@@ -52,9 +52,10 @@ response keeps the underlying module's outcome and fields alongside `id` and
 | `searchHotelAvailabilityParty` | `propertyCode`, `kind`, `query`; optional lookup `options` |
 | `selectHotelAvailabilityParty` | `kind`, current `searchId`, explicit `nativeId` |
 | `cancelHotelAvailabilityParty` | Cancels the current availability party picker |
-| `searchRoomTypes`, `searchRatePlans` | Optional `query`, `offset`, `limit` |
+| `searchRoomTypes` | Optional `query`, `offset`, `limit`, `forField` (`roomType` or `roomTypeForCharge`) |
+| `searchRatePlans` | Optional `query`, `offset`, `limit` |
 | `inspectRoomRateCandidate` | Current `searchId` and `nativeId` and/or `code` |
-| `selectRoomType` | Current `searchId` and explicit `nativeId` and/or `code`; optional lookup `options` |
+| `selectRoomType`, `selectRoomTypeForCharge` | Current field-matched `searchId` and explicit `nativeId` and/or `code`; optional lookup `options` |
 | `closeRoomRatePicker` | Closes the current room or rate catalog picker |
 | `selectGuestStayRatePlan` | Explicit current rate `code`; optional verified Proof Labtest `guestProfileId` |
 | `searchGuestStaySourceBusiness` | Optional description `query`, `field: "description"` and lookup `options` |
@@ -77,9 +78,10 @@ guest, party, dropdown value or CMS code. See [guest-profile.md](./guest-profile
 uncertain outcomes.
 
 Programmatic sessions can set `blockServiceWorkers: true` to have the
-Centurion browser block service workers before login. The default remains false.
-The guarded create wrapper opts in; callers of the low-level save must use a
-blocked context or the save is refused before dispatch.
+Centurion browser block service workers before login. The programmatic default remains false;
+the JSONL CLI always blocks them.
+The guarded create wrapper opts in; callers of the low-level save or charge-room
+price recheck must use a blocked context or the action is refused.
 
 ### Opt-in Labtest save session
 
@@ -88,7 +90,7 @@ writes. This session does not authenticate staff approval.
 
 For a new fake HRCEN Proof Labtest stay in 2027 or later, start the session with
 `--jsonl --labtest-arrival YYYY-MM-DD --labtest-departure YYYY-MM-DD`. This
-opt-in CLI session blocks service workers. Before opening the blank form, it searches the same page for matching fake stays. The
+session searches the same page for matching fake stays before opening the blank form. The
 private `ready` event contains `labtestPreimage`, including the current
 single-use `preimageId`, expiry and candidate context. A non-clear search ends
 startup with its result in the private error output; no blank form is opened.
@@ -100,12 +102,14 @@ preimage ID and the matching explicit values to `saveNewLabtestStay`. The normal
 session rejects that action; it never enables general booking writes. The proof
 is bound to its page and dates and can expire or be invalidated. Independently
 reopen and verify the confirmation, and reconcile any uncertain outcome before
-trying another write. After a successful organization-only create, call
-`readSavedLabtestRecord` with that response's confirmation; it opens a fresh
-guarded session and verifies the saved native company ID/name against the
-same-session `selectOrganization` result. An organization search or new guest
-profile selection invalidates that selection proof. This reader does not
-support agency-plus-organization creates or cross-session caller-supplied IDs.
+trying another write. After a successful organization-only create or a
+charge-room create without linked parties, call `readSavedLabtestRecord` with
+that response's confirmation. It opens a fresh guarded session and checks the
+saved fields, including charge room and checked price when present. For an
+organization, it verifies the native ID/name against the same-session
+selection. An organization search or new guest profile selection invalidates
+that proof. This reader does not support agency-plus-organization creates or
+cross-session caller-supplied IDs.
 See [guest-stay-save.md](./guest-stay-save.md) for all
 guards and the limits of browser-side email observations.
 
