@@ -24,11 +24,13 @@ export function compareChargeRoomPricing(fields, checked) {
     return before === null || after === null ? 'UNKNOWN' : before === after ? 'MATCHED' : 'CHANGED';
   };
   const wantedCurrency = currency(checked?.currency);
-  const actualCurrencies = ['averageratecurr', 'totalratecurr'].map(name => currency(unique(fields, name))).filter(Boolean);
+  const currencyFields = ['averageratecurr', 'totalratecurr'];
+  const ambiguousCurrency = currencyFields.some(name => fields.filter(field => field.name === name).length > 1);
+  const actualCurrencies = currencyFields.map(name => currency(unique(fields, name))).filter(Boolean);
   return {
     averageRate: compare('averagerate', checked?.averageRate),
     totalRate: compare('totalrate', checked?.totalRate),
-    currency: !wantedCurrency || !actualCurrencies.length ? 'UNKNOWN' :
+    currency: ambiguousCurrency || !wantedCurrency || !actualCurrencies.length ? 'UNKNOWN' :
       actualCurrencies.every(value => value === wantedCurrency) ? 'MATCHED' : 'CHANGED',
   };
 }
