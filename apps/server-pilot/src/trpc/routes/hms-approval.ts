@@ -45,10 +45,14 @@ const evidenceInput = z.object({ workItemId: uuid, internetMessageId: selectedEm
   selectedSource: selectedSource.optional() }).strict();
 const stateInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, selectedSource: selectedSource.optional(),
   cancelSource: cancelSelectionSchema.optional() }).strict();
+const filingDocumentSource = z.object({ sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  snapshotDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 const filingPreviewInput = z.object({ workItemId: uuid, sourceMessageId: z.string().min(1).max(512),
   attachmentId: z.string().min(1).max(200), confirmation: z.string().regex(/^\d+-\d+$/).max(100),
-  arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), lastName: z.string().trim().min(1).max(200), selectedSource }).strict();
-const bindAttachInput = filingPreviewInput.extend({ internetMessageId: selectedEmail }).strict();
+  arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), lastName: z.string().trim().min(1).max(200),
+  selectedSource, documentSource: filingDocumentSource }).strict();
+const bindAttachInput = filingPreviewInput.extend({ internetMessageId: selectedEmail,
+  revisionSeq: z.number().int().nonnegative().safe() }).strict();
 // No HMS reader is wired here yet, so a resolve is staff saying they checked the booking in HMS, with a note.
 const resolveInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail,
   note: z.string().trim().min(3).max(500), selectedSource: selectedSource.optional() }).strict();

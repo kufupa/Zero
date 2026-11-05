@@ -63,9 +63,10 @@ export function BookingVoucherCard({
   const [approvalRevision, setApprovalRevision] = useState(0);
   const [preparedFiling, setPreparedFiling] = useState<{ scope: string; digest: string | null } | null>(null);
   const filingScope = JSON.stringify([mailboxScope, transportId, internetMessageId, lookupSelection, workItemId,
-    session.binding?.selectionEpoch, selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash]);
+    session.binding?.selectionEpoch, selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash,
+    readOnlyAmend?.historyEpoch, readOnlyAmend?.historyBusy]);
   const filingSourceCurrent = propertyCode !== 'HRCEN' || Boolean(selectedSource && readOnlyAmend?.selectionCurrent !== false &&
-    !readOnlyAmend?.sourceContentChanged);
+    !readOnlyAmend?.sourceContentChanged && !readOnlyAmend?.historyBusy);
   const intent = session.treatAs ?? session.analysis?.luna?.workflow;
   const hasBookingWorkflow = intent === 'create_booking';
   const showVoucherFindCard = readAs === 'payment' || hasBookingWorkflow || amendment !== null;
@@ -120,7 +121,8 @@ export function BookingVoucherCard({
       {showVoucherFindCard ? (
         <VoucherFindCard
           key={JSON.stringify([mailboxScope, transportId, internetMessageId, lookupSelection, session.binding?.selectionEpoch,
-            selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash])}
+            selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash,
+            readOnlyAmend?.historyEpoch, readOnlyAmend?.historyBusy])}
           internetMessageId={internetMessageId}
           lookupSelection={lookupSelection}
           transportId={transportId}

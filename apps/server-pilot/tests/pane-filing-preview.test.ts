@@ -27,7 +27,7 @@ function fixture() {
   let rows = [{ itemThread: 'thread-1', messageThread: 'thread-1', itemMessage: input.sourceMessageId,
     messageId: input.sourceMessageId, transportId: input.transportId, actorUserId: input.actorUserId,
     active: true, status: 'needs_you', direction: 'inbound', messageHistoryOnly: false,
-    threadHistoryOnly: false, threadTrashedAt: null as Date | null }];
+    threadHistoryOnly: false, threadTrashedAt: null as Date | null, revisionSeq: 0 }];
   const db = { select: (fields: Record<string, unknown>) => {
     const query = { from: () => query, innerJoin: () => query, where: () => query,
       limit: async () => 'itemThread' in fields ? rows : [selectedMail] };
@@ -64,6 +64,7 @@ describe('read-only filing preview', () => {
     for (const filename of ['Proof  Labtest.pdf', ' Proof Labtest.pdf', 'Proof\u00a0Labtest.pdf']) {
       stubs.read.mockResolvedValueOnce({ source: { ...source, filename }, bytes: Buffer.from('%PDF-'), locator: {} });
       await expect(bindAttachDocumentForm({ ...input, db, internetMessageId: 'selected@example.test',
+        documentSource: { sha256: source.sha256, snapshotDigest: source.snapshotDigest }, revisionSeq: 0,
         selectedSource: { threadId: 'thread-1', messageId: input.sourceMessageId, sourceHash: staffQuoteSourceHash(selectedMail) },
         env: { PANE_HMS_LAB_ATTACH_WORKER: 'on', PANE_WRITE_ATTACH: 'lab' } }))
         .resolves.toEqual({ status: 'refused', reason: 'form_invalid' });
@@ -74,6 +75,7 @@ describe('read-only filing preview', () => {
     const f = fixture();
     await expect(previewFiling({ ...input, db: f.db, s3: f.s3 })).resolves.toEqual({
       status: 'ready', confirmation: input.confirmation, arrival: input.arrival, documentName: source.filename,
+      documentSource: { sha256: source.sha256, snapshotDigest: source.snapshotDigest }, revisionSeq: 0,
     });
     expect(stubs.read).toHaveBeenCalledTimes(2);
     expect(stubs.read.mock.calls[1]![0].expected).toEqual(source);
@@ -134,6 +136,17 @@ describe('read-only filing preview', () => {
     stubs.read.mockImplementationOnce(async () => ({ source, bytes: Buffer.from('%PDF-'), locator: {} }))
       .mockResolvedValueOnce(null);
     await expect(previewFiling({ ...input, db: second.db, s3: second.s3 })).resolves.toEqual({ status: 'refused', reason: 'source_changed' });
+    const third = fixture();
+    await expect(previewFiling({ ...input, db: third.db, s3: third.s3,
+      documentSource: { sha256: 'c'.repeat(64), snapshotDigest: source.snapshotDigest } }))
+      .resolves.toEqual({ status: 'refused', reason: 'source_changed' });
+    const fourth = fixture();
+    stubs.find.mockImplementationOnce(async () => {
+      fourth.setRows([{ ...fourth.getRows()[0]!, revisionSeq: 1 }]);
+      return { outcome: 'found', stay, arrivalMismatch: false };
+    });
+    await expect(previewFiling({ ...input, db: fourth.db, s3: fourth.s3 }))
+      .resolves.toEqual({ status: 'refused', reason: 'source_changed' });
   });
 
   it.each([

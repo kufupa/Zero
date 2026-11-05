@@ -16,6 +16,7 @@ export type VoucherConflicts = { lastNames: string[]; arrivals: string[] };
 export type VoucherGuest = {
   lastName: string | null;
   arrival: string | null;
+  confirmationNumber?: string | null;
   conflicts?: VoucherConflicts;
 };
 
@@ -31,17 +32,20 @@ export type VoucherFindReply =
       threadId?: string;
       guest: VoucherGuest;
       file: VoucherFile | null;
+      /** Eligible source PDFs; filing requires querying one selected id. */
+      files?: VoucherFile[];
+      documentSource?: { sha256: string; snapshotDigest: string };
       /** Voucher PDFs whose text was not read. Optional so older replies still type-check. The quote panel names each file. */
       unreadPdfs?: number;
     };
 
 export type VoucherFindClient = {
-  check: (input: MailSourceInput) => Promise<VoucherFindReply>;
+  check: (input: MailSourceInput & { attachmentId?: string }) => Promise<VoucherFindReply>;
 };
 
 type TrpcVoucherRoutes = {
   quoteWorkflow?: {
-    voucherFind?: { query: (input: MailSourceInput, options: { context: { activeTransportId: string } }) => Promise<VoucherFindReply> };
+    voucherFind?: { query: (input: MailSourceInput & { attachmentId?: string }, options: { context: { activeTransportId: string } }) => Promise<VoucherFindReply> };
   };
 };
 
@@ -59,9 +63,9 @@ export const VOUCHER_COPY = {
   caption:
     'Read from this voucher or proof of payment. Nava only searches HMS and saves the file. It books and changes nothing.',
   missingGuest:
-    'Nava could not read the guest surname from this email. Find the booking by name in HMS.',
+    'Nava could not read the guest surname. Enter it or use a confirmation number.',
   missingArrival:
-    'Nava could not read the arrival date from this email. Find the booking by name in HMS.',
+    'Nava could not read the arrival date. Enter it to find the booking.',
   conflictLastNames: 'More than one guest name is on this voucher. Nava did not pick one:',
   conflictArrivals: 'More than one arrival date is on this voucher. Nava did not pick one:',
   waitingForSync: 'Waiting for this email to sync. Nava checks it again when the sync lands.',

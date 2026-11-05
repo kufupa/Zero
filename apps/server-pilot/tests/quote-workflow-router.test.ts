@@ -1841,8 +1841,27 @@ describe('quoteWorkflow.voucherFind', () => {
         mimeType: 'application/pdf',
         sizeBytes: 100,
       },
+      files: [{ id: 'att-1', filename: 'Smith_VCH_1879000.pdf', mimeType: 'application/pdf', sizeBytes: 100 }],
       unreadPdfs: 0,
     });
+  });
+
+  it('binds a chosen PDF to the selected email and reads only that file for guest facts', async () => {
+    const readText = vi.fn(async (files: Array<{ id: string; filename: string; sizeBytes: number }>) =>
+      files.map((file) => ({ id: file.id, filename: file.filename, byteSize: file.sizeBytes, bytesPresent: true,
+        text: file.id === 'two' ? 'GUEST: Jones\nARRIVAL 2027-01-19' : 'GUEST: Smith\nARRIVAL 2027-01-18' })));
+    voucherLoaders.candidate = async () => ({ messageId: 'm1', threadId: 'thread-1', subject: 'Vouchers',
+      bodyText: 'Attached.', attachments: [attachmentRow('one', 'Smith_VCH.pdf'),
+        attachmentRow('two', 'Jones.pdf'), attachmentRow('inline', 'inline.pdf', { isInline: true })] });
+    voucherLoaders.readText = readText;
+    const reply = await mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: 'abc@host', attachmentId: 'two' });
+    expect(reply).toMatchObject({ status: 'voucher', file: { id: 'two' },
+      guest: { lastName: 'Jones', arrival: '2027-01-19' }, files: [{ id: 'one' }, { id: 'two' }] });
+    expect(readText.mock.calls[0]?.[0].map((file) => file.id)).toEqual(['two']);
+    await expect(mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: 'abc@host', attachmentId: 'inline' }))
+      .rejects.toThrow('selected PDF');
+    await expect(mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: 'abc@host', attachmentId: 'foreign' }))
+      .rejects.toThrow('selected PDF');
   });
 
   it('counts a voucher PDF the reader could not read, so the card can tell staff to check it', async () => {

@@ -4,7 +4,7 @@ import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { DB } from '../src/db/client.js';
 
-const mocks = vi.hoisted(() => ({ read: vi.fn(), candidate: vi.fn() }));
+const mocks = vi.hoisted(() => ({ read: vi.fn(), candidate: vi.fn(), sealed: vi.fn(), snapshot: vi.fn() }));
 vi.mock('../src/mail/artifacts/pane-pop3-attachment.js', async (original) => ({
   ...(await original<typeof import('../src/mail/artifacts/pane-pop3-attachment.js')>()),
   readPanePop3Attachment: mocks.read,
@@ -13,8 +13,13 @@ vi.mock('../src/mail/artifacts/pane-pop3-attachment.js', async (original) => ({
 vi.mock('../src/storage/s3.js', async (original) => ({
   ...(await original<typeof import('../src/storage/s3.js')>()), getS3Storage: () => ({ bucket: 'synthetic' }),
 }));
+vi.mock('../src/outlook-sync/storage.js', () => ({ OutlookSyncStorage: class { bucket = 'synthetic'; } }));
+vi.mock('../src/ai/voucher-filing-source.js', async (original) => ({
+  ...(await original<typeof import('../src/ai/voucher-filing-source.js')>()),
+  readVoucherDiscoverySource: mocks.sealed, resolveOutlookVoucherSnapshot: mocks.snapshot,
+}));
 
-import { lockBoundFilingSource, type BoundFilingForm } from '../src/ai/pane-filing-source.js';
+import { lockBoundFilingSource, readBoundFilingSource, type BoundFilingForm } from '../src/ai/pane-filing-source.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 
 const bytes = Buffer.from('%PDF-1.7 synthetic voucher');
@@ -44,7 +49,8 @@ function transaction(rows: unknown[][] = [[{ threadId: 'thread' }], [thread], [m
       const result = () => n === 3 && params.length === 4
         ? (rows[n] as Array<{ id: string; threadId: string }>).filter((row) => row.id === params[2] && row.threadId === params[3])
         : rows[n] ?? [];
-      const query = new Proxy({ from: () => query, where: (sql: SQL) => { params = dialect.sqlToQuery(sql).params; return query; },
+      const query = new Proxy({ from: () => query, innerJoin: () => query,
+        where: (sql: SQL) => { params = dialect.sqlToQuery(sql).params; return query; },
         limit: () => query, for: async (mode: string) => { calls.push(`row-${n}:${mode}`); return result(); } }, {
         get(target, property, receiver) {
           if (property === 'then') return (resolve: (value: unknown[]) => unknown, reject: (reason: unknown) => unknown) =>
@@ -61,6 +67,8 @@ function transaction(rows: unknown[][] = [[{ threadId: 'thread' }], [thread], [m
 beforeEach(() => {
   mocks.read.mockReset();
   mocks.candidate.mockReset().mockResolvedValue({ filename: form.documentName, sha256: pdfSha256, fingerprint });
+  mocks.sealed.mockReset();
+  mocks.snapshot.mockReset();
 });
 
 describe('filing dispatch source lock', () => {
@@ -75,6 +83,34 @@ describe('filing dispatch source lock', () => {
     expect(mocks.read).not.toHaveBeenCalled();
     expect(mocks.candidate).toHaveBeenCalledWith(expect.objectContaining({ db: tx, bucket: 'synthetic',
       messageId: 'message', attachmentId: 'attachment' }));
+
+    const sealedSource = { transportId: 'transport', messageId: 'message', attachmentId: 'attachment',
+      filename: form.documentName, mimeType: 'application/pdf', sha256: pdfSha256, snapshotDigest: 'c'.repeat(64) };
+    const sealedForm = { ...form, sourceSnapshotDigest: sealedSource.snapshotDigest };
+    const sealedItem = { ...item, state: sealedForm };
+    const sealedFile = { ...file, s3Key: 'outlook-sync-originals/v1/synthetic' };
+    const rows = [[{ threadId: 'thread' }], [thread], [mail], [{ id: 'message' }], [mail], [sealedFile], [sealedItem],
+      [{ id: 'sync-source' }], [{ id: 'sync-source' }]];
+    mocks.snapshot.mockResolvedValue({ source: sealedSource });
+    const locked = transaction(rows);
+    await expect(lockBoundFilingSource(locked.tx, { transportId: 'transport', workItemId: 'item', form: sealedForm }))
+      .resolves.toEqual(sealedItem);
+    expect(locked.calls.at(-1)).toBe('row-8:share');
+    expect(mocks.snapshot).toHaveBeenCalledWith(expect.objectContaining({ attachmentId: 'attachment' }),
+      expect.objectContaining({ db: locked.tx, storage: { bucket: 'synthetic' } }));
+    mocks.snapshot.mockResolvedValueOnce({ source: { ...sealedSource, snapshotDigest: 'd'.repeat(64) } });
+    await expect(lockBoundFilingSource(transaction(rows).tx, { transportId: 'transport', workItemId: 'item', form: sealedForm }))
+      .resolves.toBeNull();
+
+    const db = { select: () => ({ from: () => ({ where: () => ({ limit: async () => [sealedItem] }) }) }) } as unknown as DB;
+    mocks.read.mockResolvedValue(null);
+    mocks.sealed.mockImplementation(async (_identity, deps, expected) =>
+      await deps.checkAuthority() && expected?.snapshotDigest === sealedSource.snapshotDigest ? { source: sealedSource, bytes } : null);
+    await expect(readBoundFilingSource({ db, transportId: 'transport', workItemId: 'item', form: sealedForm })).resolves.toEqual(bytes);
+    expect(mocks.sealed).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'message', attachmentId: 'attachment' }),
+      expect.anything(), expect.objectContaining({ sha256: pdfSha256, snapshotDigest: sealedSource.snapshotDigest }));
+    await expect(readBoundFilingSource({ db, transportId: 'transport', workItemId: 'item',
+      form: { ...sealedForm, sourceSnapshotDigest: 'd'.repeat(64) } })).resolves.toBeNull();
   });
 
   it('refuses a missing file, changed thread, changed form or unreadable approved bytes', async () => {

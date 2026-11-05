@@ -6,8 +6,11 @@ const mocks = vi.hoisted(() => ({
   selected: 'message-1',
   existing: vi.fn(),
   readPop3: vi.fn(),
+  readSealed: vi.fn(),
   extract: vi.fn(),
   conditions: [] as unknown[],
+  attachmentConditions: [] as unknown[],
+  selectedAttachment: 'att-1',
 }));
 
 vi.mock('../src/ai/quote-workflow-synced-selection.js', async (original) => ({
@@ -24,10 +27,15 @@ vi.mock('../src/mail/artifacts/read-artifact.js', async (original) => ({
 }));
 vi.mock('../src/db/client.js', async (original) => ({
   ...await original<typeof import('../src/db/client.js')>(),
-  getDb: () => ({ select: () => ({ from: () => ({ where: (condition: unknown) => {
-    mocks.conditions.push(condition);
-    return { limit: async () => [{ id: mocks.selected }] };
+  getDb: () => ({ select: () => ({ from: (table: unknown) => ({ where: (condition: unknown) => {
+    const isAttachment = table === mailSchema.attachment;
+    (isAttachment ? mocks.attachmentConditions : mocks.conditions).push(condition);
+    return { limit: async () => [{ id: isAttachment ? mocks.selectedAttachment : mocks.selected }] };
   } }) }) }),
+}));
+vi.mock('../src/outlook-sync/storage.js', () => ({ OutlookSyncStorage: class { bucket = 'synthetic'; } }));
+vi.mock('../src/ai/voucher-filing-source.js', async (original) => ({
+  ...await original<typeof import('../src/ai/voucher-filing-source.js')>(), readVoucherDiscoverySource: mocks.readSealed,
 }));
 vi.mock('../src/storage/s3.js', async (original) => ({
   ...await original<typeof import('../src/storage/s3.js')>(), getS3Storage: () => ({}),
@@ -37,6 +45,7 @@ vi.mock('../src/env.js', async (original) => ({
 }));
 
 import { extractVoucherGuest, readVoucherAttachmentText } from '../src/ai/voucher-find.js';
+import * as mailSchema from '../src/db/schema/mail.js';
 import { voucherLoaders } from '../src/trpc/routes/quote-workflow.js';
 import { appRouter } from '../src/trpc/router.js';
 
@@ -53,10 +62,13 @@ const extracted = { data: { text: 'GUEST: Labtest, Proof\nARRIVAL 2027-09-14', r
 beforeEach(() => {
   mocks.selected = scope.messageId;
   mocks.conditions = [];
+  mocks.attachmentConditions = [];
+  mocks.selectedAttachment = file.id;
   mocks.existing.mockReset().mockResolvedValue({ text: null, reason: 'malformed' });
   mocks.extract.mockReset().mockResolvedValue(extracted);
   mocks.readPop3.mockReset().mockImplementation(async (input: { checkAuthority: () => Promise<boolean> }) =>
     await input.checkAuthority() ? stored : null);
+  mocks.readSealed.mockReset();
 });
 
 describe('voucher lookup with a reconciled POP3 object key', () => {
@@ -103,6 +115,11 @@ describe('voucher lookup with a reconciled POP3 object key', () => {
       expect(voucherLoaders.candidate).toHaveBeenCalledWith({
         transportId: scope.transportId, internetMessageId: scope.internetMessageId, selection,
       });
+      const selected = await caller.quoteWorkflow.voucherFind({ internetMessageId: scope.internetMessageId,
+        selection, attachmentId: file.id });
+      expect(selected).toMatchObject({ status: 'voucher', file: { id: file.id },
+        documentSource: { sha256: source.sha256, snapshotDigest: source.snapshotDigest },
+        guest: { lastName: 'Labtest', arrival: '2027-09-14' } });
       expect(mocks.conditions.length).toBeGreaterThanOrEqual(2);
       for (const condition of mocks.conditions) {
         expect(new PgDialect().sqlToQuery(condition as SQL).params).toEqual(expect.arrayContaining([
@@ -112,6 +129,30 @@ describe('voucher lookup with a reconciled POP3 object key', () => {
       expect(mocks.readPop3.mock.calls[0]?.[0]).toMatchObject({
         transportId: scope.transportId, messageId: scope.messageId, attachmentId: file.id,
       });
+
+      const sealedFile = { ...file, s3Key: 'outlook-sync-originals/v1/synthetic', sha256: source.sha256 };
+      const sealedSource = { ...source, mimeType: 'application/pdf' as const };
+      voucherLoaders.candidate = vi.fn(async () => ({ messageId: scope.messageId, threadId: 'thread-1',
+        subject: 'Voucher', bodyText: '', attachments: [sealedFile] }));
+      mocks.readPop3.mockResolvedValue(null);
+      mocks.readSealed.mockImplementation(async (_identity, deps, expected) =>
+        await deps.checkAuthority() && (!expected || expected.snapshotDigest === sealedSource.snapshotDigest)
+          ? { source: sealedSource, bytes: body } : null);
+      const outlook = await caller.quoteWorkflow.voucherFind({ internetMessageId: scope.internetMessageId,
+        selection, attachmentId: sealedFile.id });
+      expect(outlook).toMatchObject({ status: 'voucher', file: { id: sealedFile.id },
+        documentSource: { sha256: sealedSource.sha256, snapshotDigest: sealedSource.snapshotDigest },
+        guest: { lastName: 'Labtest', arrival: '2027-09-14' } });
+      expect(mocks.readSealed.mock.calls[1]?.[2]).toMatchObject(sealedSource);
+      expect(new PgDialect().sqlToQuery(mocks.attachmentConditions[0] as SQL).params).toEqual(expect.arrayContaining([
+        sealedFile.id, scope.messageId, sealedFile.s3Key, sealedFile.filename, sealedFile.mimeType,
+        sealedFile.sizeBytes, sealedFile.sha256,
+      ]));
+      mocks.extract.mockImplementationOnce(async () => { mocks.selectedAttachment = 'other'; return extracted; });
+      const changed = await caller.quoteWorkflow.voucherFind({ internetMessageId: scope.internetMessageId,
+        selection, attachmentId: sealedFile.id });
+      expect(changed).toMatchObject({ guest: { lastName: null, arrival: null }, unreadPdfs: 1 });
+      expect(changed).not.toHaveProperty('documentSource');
     } finally { voucherLoaders.candidate = null; }
   });
 });

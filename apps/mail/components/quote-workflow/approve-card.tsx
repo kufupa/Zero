@@ -292,9 +292,7 @@ function WriteBody({
       {cloudCancel ? status.approve && status.phase !== 'running' && allowApprove ? (
         <CancelSection key={view.formDigest} client={client} workItemId={workItemId} view={view}
           onChanged={onChanged} writesEnabled={writesEnabled} />
-      ) : null : filingUnavailable ? (
-        <PrimaryButton disabled disabledReason="Document upload is not available yet.">Go</PrimaryButton>
-      ) : status.approve && allowApprove && !Object.hasOwn(view.form, 'cloudCancel') ? (
+      ) : null : !filingUnavailable && status.approve && allowApprove && !Object.hasOwn(view.form, 'cloudCancel') ? (
         <ApproveSection
           client={client}
           workItemId={workItemId}
