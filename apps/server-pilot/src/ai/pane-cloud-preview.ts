@@ -44,7 +44,7 @@ export type PaneCloudBatch =
       stay: PaneStay; previewDigest: string }> }
   | { kind: 'continue'; id: string; index: number };
 type Native = { outcome?: unknown; issue?: unknown; guestCandidates?: unknown; applied?: { guaranteeType?: unknown };
-  ratePlanAvailability?: unknown;
+  ratePlanAvailability?: unknown; ratePlanIssue?: { issue?: unknown };
   requestBinding?: { request?: unknown; digest?: unknown }; screenshots?: Record<string, unknown>;
   writerSessionClosed?: unknown; save?: { dispatchCallbacksDrained?: unknown };
   confirmation?: unknown; readback?: { fields?: unknown; mismatches?: unknown } };
@@ -575,6 +575,10 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
       return { ...refused(native.issue === 'guest_not_found' ? 'guest_not_found' : 'guest_choice_required'), guestCandidates: candidates };
     }
     if (!input.selection.nativeGuestId) return refused('prepared_guest_identity_required');
+    if (native.ratePlanIssue?.issue === 'RATE_PRICE_UNCONFIRMED') {
+      if (!await sourceUnchanged()) return refused('cloud_create_scope_changed');
+      return refused('cloud_price_unavailable');
+    }
     if (native.outcome !== 'prepared' || !native.requestBinding) return refused('cloud_preview_unavailable');
     const price = hmsPriceSchema.safeParse(native.ratePlanAvailability);
     if (!price.success) return refused('cloud_price_unavailable');
@@ -773,7 +777,10 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
           }
         },
       });
-      if (!dispatch.handle) return noClaimResult();
+      if (!dispatch.handle) {
+        if (!claimAttempted && native.issue === 'RATE_PRICE_UNCONFIRMED') return refused('cloud_price_unavailable');
+        return noClaimResult();
+      }
       const shots = beforeSha256 ? await saveScreenshots(native, input, beforeSha256) : null;
       const savedShot = shots?.shots.find((shot) => shot.name === 'saved.png');
       if (native.outcome !== 'saved' || native.writerSessionClosed !== true || native.save?.dispatchCallbacksDrained !== true ||

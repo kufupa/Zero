@@ -205,7 +205,8 @@ function validateAvailabilityResponse(response) {
 }
 function observedPrice(value) {
   const normalized = clean(value).replace(/^\s*(?:ZAR|R)\s*/i,'').replace(/\s*(?:ZAR)\s*$/i,'').replace(/[ ,]/g,'');
-  return /^\d+(?:\.\d{1,4})?$/.test(normalized) && Number.isFinite(Number(normalized));
+  const amount = Number(normalized);
+  return /^\d+(?:\.\d{1,4})?$/.test(normalized) && Number.isFinite(amount) ? amount : null;
 }
 
 // Normalize the vendor's data-only object literal without executing it.
@@ -394,7 +395,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     if (validation.length !== 1 || change.length !== 1 || requests.size !== 2) throw new Error('HMS_RESPONSE_UNVERIFIED');
     await bounded(validateResponses(validation[0].response,change[0].response,code,dates,sessionId,before),10000,'HMS_RESPONSE_TIMEOUT');
     if (!proofsCurrent(page,dates)) throw new Error('DRAFT_IDENTITY_CHANGED');
-    let rateAvailability = null;
+    let rateAvailability = null, priceUnconfirmed = false;
     if (requireM1CreateAvailability) {
       const controls = page.locator('a.x-btn:visible').filter({ hasText: /^Check Availability$/ });
       const matches = [];
@@ -451,12 +452,13 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
           clean(checked.guaranteeValue) !== clean(createDraft.guaranteeType) ||
           JSON.stringify(checkedProof) !== JSON.stringify(dates) ||
           checked.property !== PROPERTY || checked.confirmation || checked.windows || checked.rate !== code ||
-          checked.rateValue !== code || checked.rateSubmit !== code || checked.rateErrors.length || checked.rateInvalid === 'true' ||
-          !observedPrice(fieldValue(checked.fields,'averagerate')) || !observedPrice(fieldValue(checked.fields,'totalrate'))) {
+          checked.rateValue !== code || checked.rateSubmit !== code || checked.rateErrors.length || checked.rateInvalid === 'true') {
         throw new Error('RATE_AVAILABILITY_UNVERIFIED');
       }
       if (!proofsCurrent(page,dates)) throw new Error('DRAFT_IDENTITY_CHANGED');
       const averageRate = fieldValue(checked.fields,'averagerate'), totalRate = fieldValue(checked.fields,'totalrate');
+      const averageAmount = observedPrice(averageRate), totalAmount = observedPrice(totalRate);
+      priceUnconfirmed = averageAmount === null || averageAmount <= 0 || totalAmount === null || totalAmount <= 0;
       const currencyValues = [fieldValue(checked.fields,'averageratecurr'), fieldValue(checked.fields,'totalratecurr'),
         ...checked.currencies.map(clean)].filter(Boolean).map(value => /^r$/i.test(value) ? 'ZAR' : value.toUpperCase());
       if (!currencyValues.length && [averageRate,totalRate].every(value => /^(?:R|ZAR)\s*\d/i.test(value) || /\bZAR$/i.test(value))) {
@@ -468,6 +470,10 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     }
     if (nativeDialog || blocked.some(item => item.method !== 'GET' || !item.originMatches || item.query || item.path !== ASSET)) {
       throw new Error(nativeDialog ? 'UNEXPECTED_DIALOG' : 'UNEXPECTED_REQUEST_BLOCKED');
+    }
+    if (priceUnconfirmed) {
+      selectedOnPage.delete(page);
+      return {outcome:'criteria_unavailable',issue:'RATE_PRICE_UNCONFIRMED'};
     }
     selectedOnPage.set(page,{code,fingerprint:draftFingerprint(after)});
     return {outcome:'selected_unsaved',code,previousCode,previousRateEvidence,propertyCode:PROPERTY,arrivalDate:dates.arrival.iso,departureDate:dates.departure.iso,

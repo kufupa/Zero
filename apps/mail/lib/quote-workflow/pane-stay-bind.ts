@@ -53,7 +53,7 @@ const REFUSAL_COPY: Record<string, string> = {
   pane_save_parent_unsupported: 'Nava cannot add a room to an existing booking from this card. Book it in HMS.',
   cloud_create_preview_only: 'Booking from Nava is not available yet. Nothing was saved.',
   cloud_create_scope_changed: 'This booking or selected email changed. Check its details and try the preview again.',
-  cloud_price_unavailable: 'HMS did not return a price. Check availability before booking.',
+  cloud_price_unavailable: 'HMS returned no confirmed price. Choose another native rate or complete the booking in HMS.',
   pane_save_flag_off: 'Saving in HMS is switched off for now. Copy each field into HMS by hand.',
   pane_save_labtest_required: PANE_SAVE_LAB_GUARD_COPY,
   pane_save_arrival_2027_required: PANE_SAVE_LAB_GUARD_COPY,
