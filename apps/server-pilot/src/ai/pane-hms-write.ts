@@ -34,6 +34,7 @@ import {
   consumeHmsWriteApproval,
   endHmsWriteRun,
   formDigest,
+  hmsStateDigest,
   HmsApprovalError,
   type HmsSelectedSource,
   type HmsPreSaveOutcome,
@@ -195,6 +196,7 @@ function isPdfDocumentName(name: string): boolean {
 }
 
 const PDF_SHA256 = /^[a-f0-9]{64}$/;
+const FILING_DOCUMENT_CODE = /^NAVA[A-Z2-7]{25}[AEIMQUY4]$/;
 
 const attachFormSchema = z.object({
   action: z.literal('attach_document'),
@@ -210,12 +212,15 @@ const attachFormSchema = z.object({
   sourceSnapshotDigest: z.string().regex(PDF_SHA256).optional(),
   sourceThreadId: z.string().min(1).max(512).optional(),
   sourceHash: z.string().regex(PDF_SHA256).optional(),
+  documentCode: z.string().regex(FILING_DOCUMENT_CODE).optional(),
+  filingStateDigest: z.string().regex(PDF_SHA256).optional(),
 });
 
 const boundFilingFormSchema = attachFormSchema.extend({
   pdfSha256: z.string().regex(PDF_SHA256), sourceMessageId: z.string().min(1).max(512),
   sourceInternetMessageId: z.string().min(1).max(998), sourceSnapshotDigest: z.string().regex(PDF_SHA256),
   sourceThreadId: z.string().min(1).max(512), sourceHash: z.string().regex(PDF_SHA256),
+  documentCode: z.string().regex(FILING_DOCUMENT_CODE), filingStateDigest: z.string().regex(PDF_SHA256),
 });
 
 const cancelFormSchema = z.object({
@@ -367,6 +372,7 @@ export async function bindAttachDocumentForm(input: {
   selectedSource?: HmsSelectedSource;
   documentSource?: { sha256: string; snapshotDigest: string };
   revisionSeq?: number;
+  expectedStay?: { firstName: string; status: string; departure: string };
   env?: NodeJS.Dict<string>;
 }): Promise<BindAttachDocumentResult> {
   const db = input.db ?? getDb();
@@ -383,6 +389,8 @@ export async function bindAttachDocumentForm(input: {
     'sourceSnapshotDigest',
     'sourceThreadId',
     'sourceHash',
+    'documentCode',
+    'filingStateDigest',
     'filingHistorySeq',
     'reason',
     'fields',
@@ -400,6 +408,9 @@ export async function bindAttachDocumentForm(input: {
       return { status: 'refused', reason: 'filing_unavailable' };
     }
     const selected = canonicalMessageId(input.internetMessageId.trim());
+    const expectedStay = z.object({ firstName: z.string().trim().min(1).max(200), status: z.string().trim().min(1).max(200),
+      departure: z.string().regex(ISO_DATE) }).strict().safeParse(input.expectedStay);
+    if (!expectedStay.success) return { status: 'refused', reason: 'filing_unavailable' };
     if (!selected) return { status: 'refused', reason: 'source_mail_changed' };
     const sourceInput = { ...input, sourceMessageId: input.sourceMessageId, actorUserId: input.actorUserId };
     const threadId = await currentFilingSourceThread(db, sourceInput);
@@ -437,8 +448,46 @@ export async function bindAttachDocumentForm(input: {
       lastName: squash(input.lastName), sourceMessageId: input.sourceMessageId, sourceInternetMessageId: selected,
       attachmentId: input.attachmentId, documentName: source.source.filename, pdfSha256: source.source.sha256,
       sourceSnapshotDigest: source.source.snapshotDigest, sourceThreadId: selectedSource.threadId, sourceHash: selectedSource.sourceHash };
-    const parsed = attachFormSchema.safeParse(form);
-    if (!parsed.success || formRefusal(form, { allowRealGuest: true })) return { status: 'refused', reason: 'form_invalid' };
+    if (!attachFormSchema.safeParse(form).success || formRefusal(form, { allowRealGuest: true }) || pdfRefusal(source.bytes)) {
+      return { status: 'refused', reason: 'form_invalid' };
+    }
+    const lock = paneHmsWriteLoaders.lock ?? paneStayPropertyLock(target.target);
+    if (!lock) return { status: 'refused', reason: 'refused_lock_unavailable' };
+    let prepared: { cloud: CloudFilingRecord; documentCode: string } | null;
+    try {
+      prepared = await lock.withLock(async () => {
+        const cloud = await (paneHmsWriteLoaders.readCloudFiling ?? readCloudFilingRecord)(
+          { confirmation: form.confirmation, arrival: form.arrival }, target.target, { allowRealGuest: true });
+        if (!cloud || stayRefusal(cloud.stay, form, { allowRealGuest: true }) ||
+            squash(cloud.stay.firstName ?? '').toLocaleLowerCase() !== squash(expectedStay.data.firstName).toLocaleLowerCase() ||
+            squash(cloud.stay.status ?? '').toLocaleLowerCase() !== squash(expectedStay.data.status).toLocaleLowerCase() ||
+            cloud.stay.departure !== expectedStay.data.departure) return null;
+        const result = await (paneHmsWriteLoaders.prepareCloudAttach ?? prepareCloudAttach)({
+          confirmation: form.confirmation, arrival: form.arrival, documentName: form.documentName,
+          bytes: source.bytes, pdfSha256: form.pdfSha256, target: target.target,
+          guestName: `${cloud.stay.firstName} ${cloud.stay.lastName}`,
+          approvedStay: { ...cloud.stay, nativeGuestId: cloud.nativeGuestId, nativeStayId: cloud.nativeStayId, allowRealGuest: true },
+          approvedSnapshot: cloud.filingSnapshot, allowRealGuest: true,
+          cloudTargetKey: hmsDispatchTargetKey({ propertyCode: 'HRCEN', kind: 'saved',
+            confirmation: form.confirmation, nativeStayId: cloud.nativeStayId }),
+        });
+        return result.outcome === 'prepared' && FILING_DOCUMENT_CODE.test(result.documentCode ?? '')
+          ? { cloud, documentCode: result.documentCode! } : null;
+      }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+    } catch (error) {
+      return { status: 'refused', reason: isPropertyReadLockDeadline(error) ? 'refused_lock_busy' : 'execution_failure' };
+    }
+    if (!prepared) return { status: 'refused', reason: 'filing_prepare_unavailable' };
+    const fresh = await readPaneFilingAttachment({ db, s3: getS3Storage(), transportId: input.transportId,
+      messageId: input.sourceMessageId, attachmentId: input.attachmentId, expected: source.source,
+      signal: AbortSignal.timeout(READ_ATTACHMENT_TIMEOUT_MS),
+      checkAuthority: async () => await currentFilingSourceThread(db, sourceInput) === threadId &&
+        await currentFilingSelection(db, input.transportId, selectedSource) });
+    if (!fresh) return { status: 'refused', reason: 'source_changed' };
+    form.documentCode = prepared.documentCode;
+    form.filingStateDigest = hmsStateDigest(filingState(prepared.cloud));
+    const parsed = boundFilingFormSchema.safeParse(form);
+    if (!parsed.success) return { status: 'refused', reason: 'form_invalid' };
     return db.transaction(async (tx) => {
       const item = await lockBoundFilingSource(tx, { transportId: input.transportId, workItemId: input.workItemId,
         form, allowUnbound: true });
@@ -594,6 +643,9 @@ export async function prepareHmsWriteSnapshot(input: {
       return { status: 'refused', reason: isPropertyReadLockDeadline(error) ? 'refused_lock_busy' : 'execution_failure' };
     }
     if (!cloud) return { status: 'refused', reason: 'execution_failure' };
+    if (hmsStateDigest(filingState(cloud)) !== form.filingStateDigest) {
+      return { status: 'refused', reason: 'filing_target_changed' };
+    }
     stay = cloud.stay;
     reviewed = filingState(cloud);
   } else {
@@ -679,6 +731,7 @@ export type PaneAttachSpawnInput = {
   allowRealGuest?: boolean;
   target?: HmsReadTarget;
   pdfSha256?: string;
+  documentCode?: string;
   guestName?: string;
   cloudTargetKey?: string;
   approvedStay?: PaneStayFields & { nativeGuestId: string; nativeStayId: string; allowRealGuest: boolean };
@@ -688,6 +741,12 @@ export type PaneAttachSpawnInput = {
   continuationAllowed?: () => boolean;
   dispatchWithAuthority?: (code: string, nativeGuestId: string, nativeStayId: string, requestDigest: string,
     dispatch: NativeAttachContinuation, writer: unknown, beforeShot: string, interceptedRequest: unknown) => Promise<unknown>;
+};
+
+type PaneAttachPrepareInput = Omit<PaneAttachSpawnInput, 'file' | 'pdfSha256' | 'target' | 'guestName' | 'approvedStay' | 'approvedSnapshot'> & {
+  bytes: Buffer; pdfSha256: string; target: HmsReadTarget; guestName: string;
+  approvedStay: PaneStayFields & { nativeGuestId: string; nativeStayId: string; allowRealGuest: boolean };
+  approvedSnapshot: FilingSnapshot;
 };
 
 type NativeAttachContinuation = (() => Promise<unknown>) & { proveNeverDispatched?: () => unknown };
@@ -740,13 +799,22 @@ export const paneHmsWriteLoaders: {
   readAttachment: ((input: AttachmentReadInput) => Promise<Buffer | string>) | null;
   readCloudFiling: ((input: { confirmation: string; arrival: string }, target: HmsReadTarget, options?: FilingReadOptions) =>
     Promise<CloudFilingRecord | null>) | null;
+  prepareCloudAttach: ((input: PaneAttachPrepareInput) => Promise<{ outcome: string; documentCode?: string }>) | null;
 } = {
   lock: null,
   spawnAttach: null,
   spawnAmend: null,
   readAttachment: null,
   readCloudFiling: null,
+  prepareCloudAttach: null,
 };
+
+async function prepareCloudAttach(input: PaneAttachPrepareInput): Promise<{ outcome: string; documentCode?: string }> {
+  const { prepareCloudPaneAttach } = await import('../../tooling/hms-cloud/pane-attach-session.mjs' as string) as {
+    prepareCloudPaneAttach: (args: PaneAttachPrepareInput) => Promise<{ outcome: string; documentCode?: string }>;
+  };
+  return prepareCloudPaneAttach(input);
+}
 
 async function removeDirs(dirs: string[]): Promise<void> {
   await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true }).catch(() => {})));
@@ -1095,6 +1163,7 @@ async function saveAttach(
     arrival: form.arrival,
     file,
     documentName: form.documentName,
+    ...(target.propertyCode === 'HRCEN' ? { documentCode: form.documentCode } : {}),
     allowRealGuest,
     target,
     ...(cloud ? { ...cloud, pdfSha256: form.pdfSha256 } : {}),
@@ -1232,6 +1301,9 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   const parsedFiling = isCloudAttach ? boundFilingFormSchema.safeParse(approved) : null;
   if (isCloudAttach && !parsedFiling?.success) return endRun(db, fence, 'POLICY_BLOCK', 'form_invalid');
   const filing = parsedFiling?.success ? parsedFiling.data : null;
+  if (filing && consumed.hmsBeforeDigest !== filing.filingStateDigest) {
+    return endRun(db, fence, 'NEEDS_CHECK', 'filing_target_changed');
+  }
   const request = { confirmation: approved.confirmation, arrival: approved.arrival };
   const readCloud = paneHmsWriteLoaders.readCloudFiling ?? readCloudFilingRecord;
   const dispatchTarget = input.dispatchTarget;

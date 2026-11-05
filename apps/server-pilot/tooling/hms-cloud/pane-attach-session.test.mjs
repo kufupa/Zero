@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { approvedDocumentDispatch, approvedLabtestRecord, documentCodeForUuid, filingSnapshot, hasUniqueDocumentListing,
-  provePositiveAttachRecovery, runCloudPaneAttach } from './pane-attach-session.mjs';
+  prepareCloudPaneAttach, provePositiveAttachRecovery, runCloudPaneAttach } from './pane-attach-session.mjs';
 
 const native = { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123456-1', guestId: '123', firstName: 'Proof',
   lastName: 'Labtest', status: 'Reserved', guaranteeCode: 'NGI', arrival: '2027-10-12', departure: '2027-10-13',
@@ -169,14 +169,58 @@ test('filing refuses names that the Documents reader would normalize before open
   }
 });
 
+test('prepare stages only the selected PDF and approved native stay without upload authority', async () => {
+  const bytes = Buffer.from('%PDF-synthetic');
+  const input = { target: { propertyCode: 'HRCEN' }, confirmation: native.confirmation, arrival: native.arrival,
+    guestName: 'Proof Labtest', documentName: 'voucher.pdf', bytes, approvedStay: stay, approvedSnapshot: snapshot,
+    pdfSha256: createHash('sha256').update(bytes).digest('hex'), cloudTargetKey: 'selected-stay' };
+  let opened = 0, staged = 0;
+  const deps = { openSession: async (fn, options) => {
+    opened++;
+    assert.equal(options.blockServiceWorkers, true);
+    assert.equal(options.cloudTargetKey, 'selected-stay');
+    assert.equal(typeof options.prepareContext, 'function');
+    return fn({});
+  }, shallow: async () => {}, read: async () => record,
+  attach: async (_page, expected, file, options) => {
+    staged++;
+    assert.equal(expected.guestId, native.guestId);
+    assert.equal(expected.nativeStayId, native.reservationStayId);
+    assert.deepEqual(file.bytes, bytes);
+    assert.equal(file.name, input.documentName);
+    assert.equal(options.prepareOnly, true);
+    assert.equal(options.strictNetwork, true);
+    assert.deepEqual(options.expectedDocumentContext, snapshot);
+    assert.equal(options.dispatchWithAuthority, undefined);
+    assert.equal(options.onDispatched, undefined);
+    return { outcome: 'prepared', documentCode: file.documentCode, documentName: file.name, description: file.description };
+  } };
+  const result = await prepareCloudPaneAttach(input, deps);
+  assert.equal(result.outcome, 'prepared');
+  assert.match(result.documentCode, /^NAVA[A-Z2-7]{25}[AEIMQUY4]$/);
+  assert.equal(opened, 1); assert.equal(staged, 1);
+  assert.equal((await prepareCloudPaneAttach({ ...input, pdfSha256: 'a'.repeat(64) }, deps)).outcome, 'refused_input');
+  assert.equal(opened, 1);
+  assert.equal((await prepareCloudPaneAttach(input, { ...deps, read: async () => ({ ...record,
+    nativePreimage: { ...native, reservationStayId: '43' } }) })).outcome, 'refused');
+  assert.equal(staged, 1);
+  assert.equal((await prepareCloudPaneAttach(input, { ...deps, attach: async () => ({ outcome: 'prepared',
+    documentCode: result.documentCode, documentName: 'different.pdf', description: input.documentName }) })).outcome, 'refused');
+  assert.equal((await prepareCloudPaneAttach(input, { ...deps, openSession: async (fn) => {
+    await fn({}); throw new Error('browser close unconfirmed');
+  } })).outcome, 'refused');
+});
+
 test('a clean upload plus a fresh matching listing confirms metadata; uncertainty stays unknown', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'pane-attach-test-'));
   try {
     const bytes = Buffer.from('%PDF-synthetic'), path = join(dir, 'source.pdf');
     await writeFile(path, bytes);
     let heldCode;
+    const documentCode = documentCodeForUuid(randomUUID());
     const input = { target: { propertyCode: 'HRCEN' }, confirmation: native.confirmation, arrival: native.arrival,
       guestName: 'Proof Labtest', documentName: 'voucher.pdf', file: path, approvedStay: stay, approvedSnapshot: snapshot, beforeDispatch: async () => true,
+      documentCode,
       continuationAllowed: () => true,
       finalAuthority: async (code) => { heldCode = code; return true; },
       dispatchWithAuthority: async (_code, guestId, nativeStayId, requestDigest, dispatch, writerIdentity) => {
@@ -190,6 +234,7 @@ test('a clean upload plus a fresh matching listing confirms metadata; uncertaint
         return fn({ session: sessions }); },
       shallow: async () => {}, read: async () => record,
       attach: async (_page, expected, file, options) => { assert.equal(expected.guestId, native.guestId);
+        assert.equal(file.documentCode, documentCode);
         assert.equal(options.strictNetwork, true);
         assert.deepEqual(options.expectedDocumentContext, { cmsSend: false });
         assert.equal(await options.beforeDispatch(), true); assert.equal(await options.finalAuthority(), true); options.onDispatched();
@@ -204,7 +249,7 @@ test('a clean upload plus a fresh matching listing confirms metadata; uncertaint
           documentName: 'voucher.pdf', uniqueFreshListing: true }, screenshot: png }; } };
     const success = await runCloudPaneAttach(input, deps);
     assert.equal(success.outcome, 'confirmed'); assert.equal(success.uploadSent, true);
-    assert.equal(success.listed, true); assert.match(heldCode, /^NAVA[A-Z2-7]{25}[AEIMQUY4]$/);
+    assert.equal(success.listed, true); assert.equal(heldCode, documentCode);
     assert.deepEqual(success.screenshots, [join(success.runDir, 'before.png'), join(success.runDir, 'after.png')]);
     assert.deepEqual(await readFile(join(success.runDir, 'before.png')), png);
     assert.deepEqual(await readFile(join(success.runDir, 'after.png')), png);

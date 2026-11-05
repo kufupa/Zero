@@ -74,6 +74,12 @@ describe('procedure-specific request deadlines', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/hmsApproval.previewAttach,quoteWorkflow.commitStay')).toBe(1_620_000);
     expect(trpcRequestTimeoutMs('/api/trpc/hmsApproval.previewAttachX')).toBe(5_000);
   });
+  it('lets filing prepare stage the native form and reread the source and stay', () => {
+    expect(trpcRequestTimeoutMs('/api/trpc/hmsApproval.bindAttach')).toBe(1_200_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/paneStayCancel.commitCancel,hmsApproval.bindAttach')).toBe(1_260_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/quoteWorkflow.commitStay,hmsApproval.bindAttach')).toBe(1_620_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/hmsApproval.bindAttachX')).toBe(5_000);
+  });
   it('gives the Find in HMS party search six minutes, and leaves its neighbours short', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/panePartyLookup.findParty?batch=1')).toBe(360_000);
     expect(trpcRequestTimeoutMs('/api/trpc/panePartyLookup.findPartyX')).toBe(5_000);

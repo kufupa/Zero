@@ -21,6 +21,7 @@ function fixture() {
     sourceMessageId: 'selected-message', sourceInternetMessageId: 'selected@example.test',
     sourceThreadId: 'thread', sourceHash: staffQuoteSourceHash(selected),
     sourceSnapshotDigest: sourceDigest, documentName: document.name, pdfSha256: document.sha256,
+    documentCode: document.code, filingStateDigest: before,
     hmsSnapshot: { digest: before, readAt } };
   const item = { id: workItemId, transportId, threadId: 'thread', sourceMessageId: 'selected-message',
     status: 'needs_you', state };
@@ -81,6 +82,8 @@ describe('final Labtest filing claim authorization', () => {
       .rejects.toThrow('state_changed');
     await expect(authorizeConsumedLabtestAttach(transaction([]).tx, { ...changed.input, arrival: '2027-09-15' }))
       .rejects.toThrow('state_changed');
+    await expect(authorizeConsumedLabtestAttach(transaction([]).tx, { ...changed.input,
+      documentCode: documentCodeForUuid(randomUUID()) })).rejects.toThrow('state_changed');
     const changedBody = fixture();
     changedBody.item.state.sourceHash = 'd'.repeat(64);
     await expect(authorizeConsumedLabtestAttach(transaction(changedBody.rows).tx, changedBody.input))

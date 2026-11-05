@@ -293,7 +293,7 @@ export async function commitCloudCancel(input: CancelContext & { reason: string;
       const state: Record<string, unknown> = { ...withoutPreview(source.item.state) };
       // A work item may previously have held a Filing or Amend form. Only the new Cancel form is approved.
       for (const key of ['action', 'confirmation', 'arrival', 'lastName', 'attachmentId', 'documentName', 'pdfSha256',
-        'sourceMessageId', 'sourceInternetMessageId', 'sourceSnapshotDigest', 'sourceThreadId', 'sourceHash',
+        'sourceMessageId', 'sourceInternetMessageId', 'sourceSnapshotDigest', 'sourceThreadId', 'sourceHash', 'documentCode', 'filingStateDigest',
         'reason', 'fields', 'previewDigest', 'cloudAmend', 'cloudCancel', 'hmsSnapshot']) delete state[key];
       Object.assign(state, { action: 'cancel', confirmation: grant.preimage.confirmation,
         arrival: grant.preimage.arrival, lastName: grant.preimage.lastName, reason: selected[0]!.display, cloudCancel,

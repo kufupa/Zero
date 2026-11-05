@@ -1020,6 +1020,23 @@ describe('voucher find card: saving the file', () => {
 describe('voucher find card: attach to HMS', () => {
   const WORK_ITEM = '3f8a2c1e-9b7d-4e6f-8a1b-2c3d4e5f6a7b';
 
+  it('lets staff retry when native preparation was refused before binding', async () => {
+    const preview = vi.fn(async () => ({ status: 'ready' as const, confirmation: SMITH_ROW.confirmation,
+      arrival: SMITH_ROW.arrival, documentName: PDF.filename, documentSource: DOCUMENT_SOURCE, revisionSeq: 0 }));
+    const bind = vi.fn(async () => ({ status: 'refused' as const, reason: 'filing_prepare_unavailable', retryable: true }));
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview }, bindAttach: { mutate: bind },
+      writeState: { query: vi.fn(async () => ({ run: null, needsCheck: false, filingConfigured: true })) } };
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" approvalAvailable />);
+    await chooseCloudBooking();
+    fireEvent.click(await screen.findByRole('button', { name: 'Check document and booking' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Prepare upload for approval' }));
+    expect(await screen.findByText(VOUCHER_ATTACH_COPY.refused)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare upload for approval' }));
+    await waitFor(() => expect(bind).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(/could not confirm preparation/)).toBeNull();
+  });
+
   it('uses the scoped filing flag to prepare a reviewed upload even when create is off', async () => {
     const preview = vi.fn(async () => ({ status: 'ready' as const, confirmation: SMITH_ROW.confirmation,
       arrival: SMITH_ROW.arrival, documentName: 'Smith_VCH_1879000.pdf', documentSource: DOCUMENT_SOURCE, revisionSeq: 0 }));
@@ -1043,7 +1060,8 @@ describe('voucher find card: attach to HMS', () => {
     await waitFor(() => expect(bind).toHaveBeenCalledWith({ workItemId: WORK_ITEM, sourceMessageId: 'm1',
       attachmentId: 'att-1', confirmation: SMITH_ROW.confirmation, arrival: SMITH_ROW.arrival,
       lastName: SMITH_ROW.lastName, internetMessageId: 'abc@host', selectedSource: SELECTED_SOURCE,
-      documentSource: DOCUMENT_SOURCE, revisionSeq: 0 }, MAILBOX));
+      documentSource: DOCUMENT_SOURCE, revisionSeq: 0,
+      expectedStay: { firstName: SMITH_ROW.firstName, status: SMITH_ROW.status, departure: SMITH_ROW.departure } }, MAILBOX));
     expect(onPrepared).toHaveBeenCalledOnce();
   });
 

@@ -13,7 +13,7 @@ vi.mock('../src/mail/artifacts/pane-pop3-attachment.js', async (original) => ({
 }));
 
 import { previewFiling } from '../src/ai/pane-filing-preview.js';
-import { bindAttachDocumentForm } from '../src/ai/pane-hms-write.js';
+import { bindAttachDocumentForm, paneHmsWriteLoaders } from '../src/ai/pane-hms-write.js';
 
 const input = { transportId: 'transport-centurion', actorUserId: 'user-1', workItemId: 'item-1',
   sourceMessageId: 'mail-1', attachmentId: 'attachment-1', confirmation: '123456-1',
@@ -21,6 +21,7 @@ const input = { transportId: 'transport-centurion', actorUserId: 'user-1', workI
 const source = { transportId: input.transportId, messageId: input.sourceMessageId,
   attachmentId: input.attachmentId, filename: 'voucher.pdf', sha256: 'a'.repeat(64), snapshotDigest: 'b'.repeat(64) };
 const stay = { confirmation: input.confirmation, arrival: input.arrival, lastName: input.lastName };
+const expectedStay = { firstName: 'Proof', status: 'Reserved', departure: '2027-09-15' };
 const selectedMail = { id: input.sourceMessageId, subject: 'Voucher', textBody: 'Please file this', htmlBody: '' };
 
 function fixture() {
@@ -51,11 +52,44 @@ beforeEach(() => {
 
 afterEach(() => {
   mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
+  paneHmsWriteLoaders.lock = null;
+  paneHmsWriteLoaders.readCloudFiling = null;
+  paneHmsWriteLoaders.prepareCloudAttach = null;
   resetS3Storage();
   vi.unstubAllEnvs();
 });
 
 describe('read-only filing preview', () => {
+  it('refuses to bind when the actor loses access during native preparation', async () => {
+    const f = fixture();
+    const transaction = vi.fn();
+    const db = { ...f.db, transaction } as unknown as DB;
+    setS3Storage(f.s3);
+    paneHmsWriteLoaders.lock = { withLock: async (fn) => fn() };
+    paneHmsWriteLoaders.readCloudFiling = async () => ({
+      stay: { ...stay, firstName: 'Proof', status: 'Reserved', departure: '2027-09-15',
+        nights: 1, adults: 1, children: 0, roomType: null, ratePlan: null, mealPlan: null,
+        averageRate: null, grandTotal: null, balance: null, sourceOfBusiness: null, guaranteeType: null,
+        bookingAgency: null, organization: null },
+      nativeGuestId: '123', nativeStayId: '42', filingSnapshot: { cmsSend: false },
+    });
+    paneHmsWriteLoaders.prepareCloudAttach = vi.fn(async (prepared) => {
+      expect(prepared.bytes).toEqual(Buffer.from('%PDF-'));
+      expect(prepared.documentName).toBe(source.filename);
+      expect(prepared.pdfSha256).toBe(source.sha256);
+      expect(prepared.approvedStay.nativeGuestId).toBe('123');
+      expect(prepared.approvedStay.nativeStayId).toBe('42');
+      f.setRows(f.getRows().map((row) => ({ ...row, active: false })));
+      return { outcome: 'prepared', documentCode: `NAVA${'A'.repeat(26)}` };
+    });
+    await expect(bindAttachDocumentForm({ ...input, db, expectedStay, internetMessageId: 'selected@example.test',
+      documentSource: { sha256: source.sha256, snapshotDigest: source.snapshotDigest }, revisionSeq: 0,
+      selectedSource: { threadId: 'thread-1', messageId: input.sourceMessageId, sourceHash: staffQuoteSourceHash(selectedMail) },
+      env: { PANE_HMS_LAB_ATTACH_WORKER: 'on', PANE_WRITE_ATTACH: 'lab' } }))
+      .resolves.toEqual({ status: 'refused', reason: 'source_changed' });
+    expect(paneHmsWriteLoaders.prepareCloudAttach).toHaveBeenCalledTimes(1);
+    expect(transaction).not.toHaveBeenCalled();
+  });
   it('refuses an unconfirmable filename before storing a form or creating approval', async () => {
     const f = fixture();
     const transaction = vi.fn();
@@ -63,13 +97,33 @@ describe('read-only filing preview', () => {
     setS3Storage(f.s3);
     for (const filename of ['Proof  Labtest.pdf', ' Proof Labtest.pdf', 'Proof\u00a0Labtest.pdf']) {
       stubs.read.mockResolvedValueOnce({ source: { ...source, filename }, bytes: Buffer.from('%PDF-'), locator: {} });
-      await expect(bindAttachDocumentForm({ ...input, db, internetMessageId: 'selected@example.test',
+      await expect(bindAttachDocumentForm({ ...input, db, expectedStay, internetMessageId: 'selected@example.test',
         documentSource: { sha256: source.sha256, snapshotDigest: source.snapshotDigest }, revisionSeq: 0,
         selectedSource: { threadId: 'thread-1', messageId: input.sourceMessageId, sourceHash: staffQuoteSourceHash(selectedMail) },
         env: { PANE_HMS_LAB_ATTACH_WORKER: 'on', PANE_WRITE_ATTACH: 'lab' } }))
         .resolves.toEqual({ status: 'refused', reason: 'form_invalid' });
     }
     expect(transaction).not.toHaveBeenCalled();
+  });
+  it('refuses a changed guest, departure or status before staging the native form', async () => {
+    const f = fixture();
+    setS3Storage(f.s3);
+    paneHmsWriteLoaders.lock = { withLock: async (fn) => fn() };
+    const prepare = vi.fn();
+    paneHmsWriteLoaders.prepareCloudAttach = prepare;
+    const cloudStay = { ...stay, ...expectedStay, nights: 1, adults: 1, children: 0, roomType: null, ratePlan: null,
+      mealPlan: null, averageRate: null, grandTotal: null, balance: null, sourceOfBusiness: null,
+      guaranteeType: null, bookingAgency: null, organization: null };
+    for (const change of [{ firstName: 'Other' }, { departure: '2027-09-16' }, { status: 'Cancelled' }]) {
+      paneHmsWriteLoaders.readCloudFiling = async () => ({ stay: { ...cloudStay, ...change },
+        nativeGuestId: '123', nativeStayId: '42', filingSnapshot: { cmsSend: false } });
+      await expect(bindAttachDocumentForm({ ...input, db: f.db, expectedStay, internetMessageId: 'selected@example.test',
+        documentSource: { sha256: source.sha256, snapshotDigest: source.snapshotDigest }, revisionSeq: 0,
+        selectedSource: { threadId: 'thread-1', messageId: input.sourceMessageId, sourceHash: staffQuoteSourceHash(selectedMail) },
+        env: { PANE_HMS_LAB_ATTACH_WORKER: 'on', PANE_WRITE_ATTACH: 'lab' } }))
+        .resolves.toEqual({ status: 'refused', reason: 'filing_prepare_unavailable' });
+    }
+    expect(prepare).not.toHaveBeenCalled();
   });
   it('rechecks the selected PDF and exact HMS booking without creating a grant or run', async () => {
     const f = fixture();

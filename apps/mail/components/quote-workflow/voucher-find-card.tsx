@@ -66,6 +66,7 @@ export type VoucherAttachBindInput = {
   selectedSource?: SelectedSource;
   documentSource?: DocumentSource;
   revisionSeq?: number;
+  expectedStay?: { firstName: string; status: string; departure: string };
 };
 
 type VoucherAttachBindReply =
@@ -73,7 +74,7 @@ type VoucherAttachBindReply =
       confirmation?: string; arrival?: string; lastName?: string; attachmentId?: string; documentName?: string;
       pdfSha256?: string; sourceSnapshotDigest?: string; sourceMessageId?: string; sourceThreadId?: string; sourceHash?: string;
     } }
-  | { status: 'refused'; reason: string };
+  | { status: 'refused'; reason: string; retryable?: boolean };
 
 type VoucherAttachWriteView = {
   form?: { action?: string };
@@ -123,7 +124,7 @@ function voucherAttachClientFromTrpc(trpc: unknown, transportId: string | null, 
   return {
     ...(bindCloud ? { bind: (input: VoucherAttachBindInput) => bindCloud({ ...input, internetMessageId }, mailbox) }
       : bindLegacy ? { bind: ({ sourceMessageId: _source, selectedSource: _selection,
-        documentSource: _document, revisionSeq: _revision, ...input }: VoucherAttachBindInput) => bindLegacy(input, mailbox) } : {}),
+        documentSource: _document, revisionSeq: _revision, expectedStay: _stay, ...input }: VoucherAttachBindInput) => bindLegacy(input, mailbox) } : {}),
     ...(preview ? { preview: (input: VoucherPreviewInput) => preview(input, mailbox) } : {}),
     ...(writeState ? { writeState: (input: { workItemId: string }) => writeState({ ...input, internetMessageId,
       ...(selectedSource ? { selectedSource } : {}) }, mailbox) } : {}),
@@ -364,7 +365,9 @@ function VoucherFindCardBody({
     detailsRun.stay.arrival === detailRequest.arrival && detailsRun.stay.lastName &&
     normalizedSurname(detailsRun.stay.lastName) === normalizedSurname(explicitPick.lastName) &&
     (!explicitPick.firstName || (detailsRun.stay.firstName &&
-      normalizedSurname(detailsRun.stay.firstName) === normalizedSurname(explicitPick.firstName))));
+      normalizedSurname(detailsRun.stay.firstName) === normalizedSurname(explicitPick.firstName))) &&
+    (propertyCode !== 'HRCEN' || ((!explicitPick.departure || detailsRun.stay.departure === explicitPick.departure) &&
+      (!explicitPick.status || normalizedSurname(detailsRun.stay.status ?? '') === normalizedSurname(explicitPick.status)))));
   const retryableDetails =
     detailsRequested && detailsJob.view?.status === 'done' && detailsRun !== null && detailsRun.kind !== 'found';
   const showReadDetails = selectedMatch !== null && (!detailsRequested || retryableDetails);
@@ -692,12 +695,14 @@ function VoucherFindCardBody({
     file !== null && (file.mimeType === 'application/pdf' || /\.pdf$/i.test(file.filename));
   const filingEnabled = propertyCode === 'HRCEN' ? approvalAvailable && attachWrite?.filingConfigured === true : writesEnabled;
   const arrivalForMatch = selectedMatch?.arrival ?? submittedSearch?.arrival ?? '';
+  const expectedStay = selectedMatch?.firstName.trim() && selectedMatch.status.trim() && selectedMatch.departure
+    ? { firstName: selectedMatch.firstName, status: selectedMatch.status, departure: selectedMatch.departure } : null;
   const targetVerified = Boolean(selectedMatch && detailRequest?.arrival &&
     (propertyCode === 'HRCEN' ? pickedVerified : !explicitPick || pickedVerified) &&
     sendableArrival(arrivalForMatch));
   const canAttach = Boolean(propertyCode && sourceMatches && targetVerified && attachPdf && workItemId && reply.messageId && attachClient?.bind &&
     filingEnabled && attachStatusKnown && !searchFrozen && attach !== 'bound' &&
-    (propertyCode !== 'HRCEN' || previewStatus === 'ready'));
+    (propertyCode !== 'HRCEN' || (previewStatus === 'ready' && expectedStay)));
   const canPreview = Boolean(propertyCode === 'HRCEN' && sourceMatches && targetVerified && attachPdf && workItemId && reply.messageId &&
     attachClient?.preview && !searchFrozen && attach !== 'bound');
   const reviewAttach = async () => {
@@ -738,7 +743,8 @@ function VoucherFindCardBody({
         lastName: selectedMatch.lastName,
         attachmentId: file.id,
         sourceMessageId: reply.messageId,
-        ...(propertyCode === 'HRCEN' ? { documentSource: preview!.documentSource, revisionSeq: preview!.revisionSeq } : {}),
+        ...(propertyCode === 'HRCEN' ? { documentSource: preview!.documentSource, revisionSeq: preview!.revisionSeq,
+          expectedStay: expectedStay! } : {}),
         ...(selectedSource ? { selectedSource } : {}),
       });
       if (!mounted.current) return;
@@ -753,7 +759,8 @@ function VoucherFindCardBody({
         form.sourceMessageId === reply.messageId && form.sourceThreadId === selectedSource.threadId &&
         form.sourceHash === selectedSource.sourceHash);
       // A refused snapshot may already have stored the form; do not pretend it was unbound.
-      setAttach({ key, workItemId: item, status: current && result.status === 'bound' && matchesSelection ? 'bound' : 'unknown' });
+      setAttach({ key, workItemId: item, status: current && result.status === 'bound' && matchesSelection ? 'bound'
+        : current && result.status === 'refused' && result.retryable ? 'refused' : 'unknown' });
       if (current && result.status === 'bound' && matchesSelection) onPrepared?.(result.formDigest);
     } catch {
       if (mounted.current) setAttach({ key, workItemId: item, status: 'unknown' });
@@ -1077,7 +1084,7 @@ function MatchedBooking({
           {VOUCHER_ATTACH_COPY.refused}
         </Notice>
       ) : null}
-      {prepared && !unconfirmedAttach ? <p role="status" className={infoNoteClass}>Upload prepared. Check the booking above to approve.</p> : null}
+      {prepared && !unconfirmedAttach ? <p role="status" className={infoNoteClass}>HMS document form prepared. Check the booking above to approve.</p> : null}
       {documentsSeen && !unconfirmedAttach ? (
         <p role="status" className={infoNoteClass}>
           {VOUCHER_ATTACH_COPY.documentsRow}

@@ -1,6 +1,6 @@
 // The pane's approved HRCEN upload. Each readback owns a new browser session.
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { centurionWriterIdentity, centurionWriterQuiesced, withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
@@ -172,6 +172,49 @@ export async function provePositiveAttachRecovery(intent, { openSession = withCe
   } catch { return { outcome: 'unconfirmed' }; }
 }
 
+/** Stage the same native Documents form without arming or submitting an upload. */
+export async function prepareCloudPaneAttach(input, { openSession = withCenturionStay360Page,
+  attach = attachLabtestDocument, shallow = readShallow, read = readRecord } = {}) {
+  if (input.target?.propertyCode !== 'HRCEN' || !input.approvedSnapshot ||
+      typeof input.guestName !== 'string' || input.guestName !== `${input.approvedStay?.firstName} ${input.approvedStay?.lastName}` ||
+      typeof input.documentName !== 'string' || input.documentName !== input.documentName.replace(/\s+/g, ' ').trim() ||
+      !Buffer.isBuffer(input.bytes) || !input.bytes.length || input.bytes.length > 10 * 1024 * 1024 ||
+      !input.bytes.subarray(0, 5).equals(Buffer.from('%PDF-')) ||
+      createHash('sha256').update(input.bytes).digest('hex') !== input.pdfSha256) {
+    return { outcome: 'refused_input' };
+  }
+  const code = documentCodeForUuid(randomUUID());
+  const root = await mkdtemp(join(tmpdir(), 'pane-cloud-attach-prepare-'));
+  const native = { current: null }, approvedNative = { current: null };
+  const allowRealGuest = input.allowRealGuest === true && input.approvedStay?.allowRealGuest === true;
+  try {
+    const result = await openSession(async (page) => {
+      await shallow(page, input.confirmation, lookupOptions(input.guestName, input.arrival));
+      const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN', nativeIdentityOnly: true });
+      const expected = approvedDocumentDispatch(record, input.approvedStay, input.approvedSnapshot);
+      if (!expected) return { outcome: 'refused', issue: 'APPROVED_STAY_MISMATCH' };
+      approvedNative.current = snapshotApprovedNativeIdentity(record.nativePreimage);
+      native.current = record.nativePreimage;
+      return attach(page, expected, { name: input.documentName, documentCode: code,
+        description: input.documentName, mimeType: 'application/pdf', bytes: input.bytes },
+      { evidenceRoot: root, expectedDocumentContext: input.approvedSnapshot,
+        strictNetwork: true, prepareOnly: true, timeoutMs: 5 * 60_000 });
+    }, { headless: true, blockServiceWorkers: true, signal: AbortSignal.timeout(6 * 60_000),
+      ...(input.cloudTargetKey ? { cloudTargetKey: input.cloudTargetKey } : {}),
+      prepareContext: (context) => installPaneAttachReadGuard(context, {
+        confirmation: input.confirmation, allowRealGuest,
+        getNative: () => native.current, getApprovedNativeIdentity: () => approvedNative.current,
+      }) });
+    return result?.outcome === 'prepared' && result.documentCode === code &&
+      result.documentName === input.documentName && result.description === input.documentName
+      ? { outcome: 'prepared', documentCode: code } : { outcome: 'refused', issue: result?.issue };
+  } catch {
+    return { outcome: 'refused', issue: 'DOCUMENT_PREPARE_UNAVAILABLE' };
+  } finally {
+    await rm(root, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /** Caller holds the property lock and supplies a live server-side dispatch check. */
 export async function runCloudPaneAttach(input, { openSession = withCenturionStay360Page,
   attach = attachLabtestDocument, freshRead = freshDocuments, shallow = readShallow, read = readRecord,
@@ -190,7 +233,11 @@ export async function runCloudPaneAttach(input, { openSession = withCenturionSta
     return { outcome: 'attachment_hash_changed', uploadSent: false, screenshots: [] };
   }
   const root = await mkdtemp(join(tmpdir(), 'pane-cloud-attach-'));
-  const code = documentCodeForUuid(randomUUID());
+  const code = input.documentCode ?? documentCodeForUuid(randomUUID());
+  if (!/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(code)) {
+    await rm(root, { recursive: true, force: true }).catch(() => {});
+    return { outcome: 'refused_input', uploadSent: false, screenshots: [] };
+  }
   const allowRealGuest = input.allowRealGuest === true && input.approvedStay?.allowRealGuest === true;
   const approvedNative = { current: null };
   const options = (ref, timeout) => ({ headless: true, blockServiceWorkers: true, signal: AbortSignal.timeout(timeout),
