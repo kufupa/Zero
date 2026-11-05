@@ -135,7 +135,7 @@ export type PaneStayGuestSearchResult = {
 /** What one stay-lookup.mjs run reports in its result.json. Screenshots are absolute paths. */
 export type PaneStayLookupSpawnResult = {
   rateLookup?: HmsCloudRateLookup;
-  reservationObservations?: HmsCloudReservationObservations;
+  reservationObservations?: Pick<HmsCloudReservationObservations, 'guestEmail' | 'bookerName' | 'bookerContact'>;
   outcome: string;
   reason: string | null;
   stay: PaneStayFields | null;
