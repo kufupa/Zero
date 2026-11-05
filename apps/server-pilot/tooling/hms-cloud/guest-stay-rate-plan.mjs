@@ -139,13 +139,17 @@ function chargePriceFields(draft) {
 }
 
 /** A charged-room Save must use the same checked draft on this page. */
-export async function currentCheckedChargeRate(page, expected) {
+export async function checkedChargeRateEvidence(page, expected) {
   const proof = selectedOnPage.get(page)?.chargePrice;
   if (!proof || chargeRoomRevision(page) !== proof.revision || proof.chargeRoom !== expected?.roomTypeForCharge ||
       proof.roomType !== expected.roomType || proof.ratePlan !== expected.ratePlan ||
-      proof.arrival !== expected.arrival || proof.departure !== expected.departure) return false;
+      proof.arrival !== expected.arrival || proof.departure !== expected.departure) return null;
   const draft = await readDraft(page);
-  return draft?.identity?.valid === true && JSON.stringify(chargePriceFields(draft)) === JSON.stringify(proof.fields);
+  if (draft?.identity?.valid !== true || JSON.stringify(chargePriceFields(draft)) !== JSON.stringify(proof.fields)) return null;
+  return { averageRate: proof.fields.averagerate, totalRate: proof.fields.totalrate, currency: proof.currency };
+}
+export async function currentCheckedChargeRate(page, expected) {
+  return Boolean(await checkedChargeRateEvidence(page, expected));
 }
 function changedFields(before, after) {
   const key = (field,index) => field.id || `${field.name || ''}:${index}`;
@@ -516,7 +520,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     const chargePrice = fields && chargeRoomRevision(page) === revision && fields.roomtypecharge &&
       fields.rateplan === code && fields.averagerate === rateAvailability.averageRate && fields.totalrate === rateAvailability.totalRate
       ? { revision, fields, chargeRoom: fields.roomtypecharge, roomType: fields.roomtype, ratePlan: code,
-        arrival: dates.arrival.iso, departure: dates.departure.iso } : null;
+        arrival: dates.arrival.iso, departure: dates.departure.iso, currency: rateAvailability.currency } : null;
     selectedOnPage.set(page,{code,fingerprint:draftFingerprint(after),chargePrice});
     return {outcome:'selected_unsaved',code,previousCode,previousRateEvidence,propertyCode:PROPERTY,arrivalDate:dates.arrival.iso,departureDate:dates.departure.iso,
       nativeCodeEvidence:recheckExistingRate ? 'validated_row_and_existing_draft' : 'validated_row_and_draft_change_response',

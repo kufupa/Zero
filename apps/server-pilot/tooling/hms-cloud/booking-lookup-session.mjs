@@ -43,6 +43,7 @@ import {
 import { readQuote } from './quote-read.mjs';
 import { getQuoteView } from './quote-view.mjs';
 import { validCreateNote } from './create-request-binding.mjs';
+import { compareChargeRoomPricing } from './charge-room-pricing.mjs';
 
 const PROPERTY = 'HRCEN';
 const GUEST_STAY_CHECK_AVAILABILITY_PATH = '/web/base/OSRESV.HDR.getcheckavailability';
@@ -108,14 +109,16 @@ export function buildLabtestOrganizationReadbackTarget(saveResult, request, sele
       typeof request.arrival !== 'string' || typeof request.departure !== 'string' ||
       (cloudTargetKey !== undefined && cloudTargetKey !== createCloudTargetKey(guest, request.arrival)) ||
       !/^[A-Z0-9]{1,12}$/.test(request.roomType || '') || !/^[A-Z0-9]{1,12}$/.test(request.ratePlan || '') ||
-      (request.roomTypeForCharge !== undefined && !/^[A-Z0-9]{1,12}$/.test(request.roomTypeForCharge)) ||
+      (request.roomTypeForCharge !== undefined && (!/^[A-Z0-9]{1,12}$/.test(request.roomTypeForCharge) ||
+        !saveResult.checkedPricing)) ||
       !validCreateNote(request.note)) return null;
   return {
     confirmation,
     expected: {
       confirmation, guestId: String(request.guestId).trim(), ...guest, arrival: request.arrival,
       departure: request.departure, roomType: request.roomType, ratePlan: request.ratePlan, note: request.note,
-      ...(request.roomTypeForCharge !== undefined ? { roomTypeForCharge: request.roomTypeForCharge } : {}),
+      ...(request.roomTypeForCharge !== undefined ? { roomTypeForCharge: request.roomTypeForCharge,
+        checkedPricing: structuredClone(saveResult.checkedPricing) } : {}),
     },
     expectedOrganization: recordOptions.expectedOrganization,
     expectedGuarantee: { code: request.guaranteeType, display: guaranteeDisplay },
@@ -147,10 +150,15 @@ export async function readSavedOrganizationCreate(state, request, { openSession 
       });
       if (stay.confirmation !== target.confirmation) throw new Error('CONFIRMATION_HEADER_MISMATCH');
       const view = await readRecordViewFromStay360(page, target.confirmation);
+      let pricing;
       if (target.expected.roomTypeForCharge !== undefined) {
         const fields = view?.details?.fields?.filter((field) => field.name === 'roomtypecharge') || [];
         if (fields.length !== 1 || fields[0].value !== target.expected.roomTypeForCharge) {
           throw new Error('LABTEST_CHARGE_ROOM_UNVERIFIED');
+        }
+        pricing = compareChargeRoomPricing(view?.details?.fields, target.expected.checkedPricing);
+        if (pricing.averageRate !== 'MATCHED' || pricing.totalRate !== 'MATCHED' || pricing.currency === 'CHANGED') {
+          throw new Error('LABTEST_CHARGE_PRICE_UNVERIFIED');
         }
       }
       const record = await readCreatedLabtestRecord(page, target.expected, {
@@ -166,6 +174,7 @@ export async function readSavedOrganizationCreate(state, request, { openSession 
           roomType: target.expected.roomType, ratePlan: target.expected.ratePlan,
           ...(target.expected.roomTypeForCharge !== undefined ? { roomTypeForCharge: target.expected.roomTypeForCharge } : {}) },
         organization: { nativeId: record.partyPreimage.companyid, name: organizationName },
+        ...(pricing ? { pricing } : {}),
         otherLinkedPartiesBlank: true,
       };
     }, { blockServiceWorkers: true, prepareContext: installReadOnlyGuard,

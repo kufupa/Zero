@@ -7,7 +7,7 @@ import { verifiedArSelectionToken, isVerifiedArSelectionCurrent } from './lookup
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { installLabtestSaveRouteChain as installLabtestCreateSaveRouteChain } from './saved-stay-save-route-chain.mjs';
 import { validCreateNote } from './create-request-binding.mjs';
-import { currentCheckedChargeRate } from './guest-stay-rate-plan.mjs';
+import { currentCheckedChargeRate, checkedChargeRateEvidence } from './guest-stay-rate-plan.mjs';
 import { CREATE_GUARANTEES, isLabtestGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
@@ -645,7 +645,7 @@ export async function saveNewLabtestStay(page, {
   let dispatched = false, possiblyDispatched = false, requestSeen = false, blocked = 0, blockedAtDispatch = 0;
   let sendRequests = 0, nativeDialog = null, response = null, armed = false, stopReason = null;
   let authorizedRequest, scope, fence, routeChain, signalStop, blockedRequest, finishedResult;
-  let billingAttempted = false, billingStaged = false;
+  let billingAttempted = false, billingStaged = false, checkedPricing = null;
   const observedBlocked = new WeakSet();
   const stopped = new Promise((resolve) => { signalStop = resolve; });
   const stop = (issue) => {
@@ -799,9 +799,9 @@ export async function saveNewLabtestStay(page, {
     if (hasBillingReference && await bounded(page.locator('.x-window:visible:not(.x-menu)').count())) {
       throw new Error('UNEXPECTED_DIALOG');
     }
-    if (roomTypeForCharge !== undefined && !await bounded(currentCheckedChargeRate(page,
-      { roomTypeForCharge, roomType, ratePlan, arrival, departure }))) {
-      throw new Error('CHARGE_ROOM_PRICE_RECHECK_REQUIRED');
+    if (roomTypeForCharge !== undefined) {
+      checkedPricing = await bounded(checkedChargeRateEvidence(page, { roomTypeForCharge, roomType, ratePlan, arrival, departure }));
+      if (!checkedPricing) throw new Error('CHARGE_ROOM_PRICE_RECHECK_REQUIRED');
     }
     armed = true;
     await bounded(save.click({ timeout: 5_000, noWaitAfter: true }));
@@ -830,6 +830,7 @@ export async function saveNewLabtestStay(page, {
       confirmation: snapshot.confirmation || null, status: snapshot.status || null, httpStatus: response?.status() || null,
       requestSeen, blockedRequests: blocked, blockedRequestsAfterDispatch: blockedAfterDispatch,
       browserSendRequests: sendRequests, nativeDialog, dialogs, ...(ar ? { arProfileId: state.arProfileId } : {}),
+      ...(checkedPricing ? { checkedPricing } : {}),
       ...(billingStaged ? { billingReferenceStaged: true } : {}),
       ...(blockedRequest ? { blockedRequest } : {}) };
   } catch (error) {
@@ -841,6 +842,7 @@ export async function saveNewLabtestStay(page, {
       ...(draftCheck ? { draftCheck } : {}),
       requestSeen, httpStatus: response?.status() || null, blockedRequests: blocked,
       blockedRequestsAfterDispatch: Math.max(0, blocked - blockedAtDispatch),
+      ...(checkedPricing ? { checkedPricing } : {}),
       browserSendRequests: sendRequests, nativeDialog, ...(blockedRequest ? { blockedRequest } : {}) };
   } finally {
     clearTimeout(timer);

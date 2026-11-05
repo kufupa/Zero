@@ -4,6 +4,7 @@ import { searchLabtestPreimage } from './labtest-preimage.mjs';
 import { withSavedStayAgentSession } from './saved-stay-agent-session.mjs';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
 import { CREATE_GUARANTEES, createCloudTargetKey, isLabtestGuest, validCreateGuest } from './cloud-create-policy.mjs';
+import { compareChargeRoomPricing } from './charge-room-pricing.mjs';
 
 const same = (a, b) => String(a ?? '').trim().toLocaleLowerCase() === String(b ?? '').trim().toLocaleLowerCase();
 const uniqueValue = (fields, name) => {
@@ -70,6 +71,10 @@ export async function readLabtestCreate({ confirmation, stay, expected }, { with
   const fields = read?.record?.details?.fields;
   if (read?.outcome !== 'ok' || !Array.isArray(fields)) return { issue: 'readback_unverified', detail: read };
   const mismatches = compareRecord(fields, expected);
+  const pricing = expected.roomTypeForCharge !== undefined ? compareChargeRoomPricing(fields, expected.checkedPricing) : null;
+  if (pricing && (pricing.averageRate !== 'MATCHED' || pricing.totalRate !== 'MATCHED' || pricing.currency === 'CHANGED')) {
+    mismatches.push({ field: 'checkedPricing', issue: 'saved_price_unverified', pricing });
+  }
   if (expected.guaranteeCode) {
     const native = read.record.nativePreimage;
     const verified = native?.source === 'record_view_ext_model' && native.propertyCode === 'HRCEN' &&
@@ -79,7 +84,7 @@ export async function readLabtestCreate({ confirmation, stay, expected }, { with
       native.adults === expected.adults && native.children === expected.children && native.guaranteeCode === expected.guaranteeCode;
     if (!verified) mismatches.push({ field: 'guaranteeTypeCode', issue: 'native_code_unverified' });
   }
-  return { fields, captureScope: read.record.details.captureScope, mismatches };
+  return { fields, captureScope: read.record.details.captureScope, mismatches, ...(pricing ? { pricing } : {}) };
 }
 
 const readCensus = (stay, expected, cloudTargetKey) => withCenturionStay360Page((page) => searchLabtestPreimage(page, {
