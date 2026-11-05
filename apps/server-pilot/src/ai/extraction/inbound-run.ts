@@ -1,10 +1,12 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getDb, type DB } from '../../db/client.js';
 import {
   aiWorkflowRun,
+  attachment,
   mailboxTransport,
+  mailboxAccess,
   mailCategory,
   mailThread,
   mailThreadCategory,
@@ -26,8 +28,9 @@ import {
   type MailBaselineExtractionRoute,
 } from '../mail-baseline-extraction.js';
 import { lunaCallBudget } from '../bedrock/luna.js';
-import { resolveAdapter } from '../quote-workflow-analyse-selection.js';
-import { loadSyncedQuoteSelectionFromMailbox } from '../quote-workflow-synced-selection.js';
+import { hashSyncedQuoteSelection, resolveAdapter } from '../quote-workflow-analyse-selection.js';
+import { loadSyncedQuoteSelectionFromMailbox, type SyncedQuoteSelection } from '../quote-workflow-synced-selection.js';
+import { lockCanonicalMailbox } from '../../mail/ingest/canonical-identity.js';
 import { hotelRulesForProperty } from '../reservationist-decision.js';
 import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
 import {
@@ -37,10 +40,13 @@ import {
 } from './config.js';
 import { resolveTriageEventClock } from '../triage-input.js';
 import { TRIAGE_REVIEWER_VERSION } from '../triage.js';
-import { ensureWorkItemForMessage, MESSAGE_ARRIVED_AT } from '../work-items.js';
+import { ensureWorkItemForMessage, messageFor, MESSAGE_ARRIVED_AT } from '../work-items.js';
+import type { PaneSourceSelection } from '../../mail/pane-source-selection.js';
+import { failedReadFingerprint, failedReadRetryOf, type FailedReadRetry } from './retry-binding.js';
 import { staffQuoteSourceHash } from '../staff-quote-workflow.js';
 import {
   enqueueAiRun,
+  NONTERMINAL_AI_RUN_STATES,
   markAiRunDeadLetter,
   markAiRunPolicyRefused,
   markAiRunRetry,
@@ -237,6 +243,108 @@ export async function refreshSelectedAmendExtraction(
   });
 }
 
+const MAX_FAILED_READ_HISTORY = 10;
+
+function retrySelectionHash(selection: SyncedQuoteSelection, mailboxAddress: string | null): string {
+  return createHash('sha256').update(hashSyncedQuoteSelection(selection))
+    .update(JSON.stringify([selection.fromAddress ?? null, mailboxAddress, selection.threadReferenceAt ?? null,
+      selection.threadMessages ?? []])).digest('hex');
+}
+
+async function retryAttachmentHash(db: DB, messageId: string): Promise<string> {
+  const files = await db.select({ id: attachment.id, filename: attachment.filename, mimeType: attachment.mimeType,
+    sizeBytes: attachment.sizeBytes, sha256: attachment.sha256, s3Key: attachment.s3Key, isInline: attachment.isInline })
+    .from(attachment).where(eq(attachment.messageId, messageId)).orderBy(attachment.id);
+  return createHash('sha256').update(JSON.stringify(files)).digest('hex');
+}
+
+/** Queue an explicit, source-bound retry. The selected mail and failed observation are rechecked under locks. */
+export async function retrySelectedFailedRead(db: DB, input: {
+  transportId: string; actorId: string; internetMessageId: string; selection: PaneSourceSelection;
+  extractionId: string; extractorVersion: string; fingerprint: string;
+  source: { threadId: string; messageId: string; sourceHash: string };
+}) {
+  if (!inboundExtractionEnabled()) return { status: 'blocked' as const };
+  const selected = await messageFor(db, { ...input, expectedMessageId: input.source.messageId });
+  if (!selected || selected.threadId !== input.source.threadId || staffQuoteSourceHash(selected) !== input.source.sourceHash) {
+    return { status: 'blocked' as const };
+  }
+  const source = await loadSyncedQuoteSelectionFromMailbox({ transportId: input.transportId, messageId: selected.id,
+    includeThreadState: true, includeVisionImages: extractionVisionEnabled(), trackVisionImages: true });
+  if (!source) return { status: 'blocked' as const };
+  const selectionHash = retrySelectionHash(source, selected.mailboxAddress);
+  const attachmentHash = await retryAttachmentHash(db, selected.id);
+  return db.transaction(async (tx) => {
+    await lockCanonicalMailbox(tx as unknown as DB, input.transportId);
+    const [thread] = await tx.select({ id: mailThread.id }).from(mailThread).where(and(
+      eq(mailThread.id, selected.threadId), eq(mailThread.transportId, input.transportId), eq(mailThread.historyOnly, false),
+      isNull(mailThread.trashedAt), isNull(mailThread.spamAt))).limit(1).for('no key update');
+    if (!thread) return { status: 'blocked' as const };
+    const selectedAgain = await messageFor(tx as unknown as DB, { ...input, expectedMessageId: selected.id });
+    if (!selectedAgain || selectedAgain.threadId !== thread.id || selectedAgain.fromAddress !== selected.fromAddress ||
+        selectedAgain.mailboxAddress !== selected.mailboxAddress) return { status: 'blocked' as const };
+    const [mail] = await tx.select({ id: message.id, subject: message.subject, textBody: message.textBody,
+      htmlBody: message.htmlBody }).from(message).where(and(eq(message.id, selected.id),
+      eq(message.threadId, thread.id), eq(message.transportId, input.transportId), eq(message.historyOnly, false), eq(message.direction, 'inbound')))
+      .limit(1).for('no key update');
+    if (!mail || staffQuoteSourceHash(mail) !== input.source.sourceHash ||
+        await retryAttachmentHash(tx as unknown as DB, mail.id) !== attachmentHash) return { status: 'blocked' as const };
+    const [access] = await tx.select({ id: mailboxAccess.id }).from(mailboxAccess).where(and(
+      eq(mailboxAccess.userId, input.actorId), eq(mailboxAccess.transportId, input.transportId))).limit(1).for('share');
+    if (!access) return { status: 'blocked' as const };
+    const [read] = await tx.select().from(mailExtraction).where(and(eq(mailExtraction.id, input.extractionId),
+      eq(mailExtraction.messageId, mail.id), eq(mailExtraction.extractorVersion, input.extractorVersion)))
+      .limit(1).for('update');
+    if (!read || read.status !== 'failed' || failedReadFingerprint(read) !== input.fingerprint) return { status: 'blocked' as const };
+    const history = read.usage?.retryHistory;
+    if (history !== undefined && !Array.isArray(history)) return { status: 'blocked' as const };
+    if (Array.isArray(history) && history.length >= MAX_FAILED_READ_HISTORY) return { status: 'blocked' as const };
+    // Existing drafts or another succeeded read require review; do not relink staff work to a new model result.
+    const [item] = await tx.select({ id: workItem.id }).from(workItem).where(and(
+      eq(workItem.transportId, input.transportId), eq(workItem.sourceMessageId, mail.id))).limit(1);
+    const [success] = await tx.select({ id: mailExtraction.id }).from(mailExtraction).where(and(
+      eq(mailExtraction.messageId, mail.id), eq(mailExtraction.status, 'succeeded'))).limit(1);
+    if (item || success) return { status: 'blocked' as const };
+    if (input.extractorVersion !== EXTRACTION_VERSION) {
+      const [current] = await tx.select({ id: mailExtraction.id }).from(mailExtraction).where(and(
+        eq(mailExtraction.messageId, mail.id), eq(mailExtraction.extractorVersion, EXTRACTION_VERSION))).limit(1);
+      if (current) return { status: 'blocked' as const };
+    }
+    const [active] = await tx.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(and(
+      eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.triggerMessageId, mail.id),
+      eq(aiWorkflowRun.runKind, 'inbound_extraction'), inArray(aiWorkflowRun.state, NONTERMINAL_AI_RUN_STATES),
+      sql`${aiWorkflowRun.metrics}->'failedReadRetry'->>'failedId' = ${read.id}`,
+      sql`${aiWorkflowRun.metrics}->'failedReadRetry'->>'fingerprint' = ${input.fingerprint}`)).limit(1);
+    if (active) return { status: 'queued' as const, runId: active.id };
+    const [otherActive] = await tx.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(and(
+      eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.triggerMessageId, mail.id),
+      eq(aiWorkflowRun.runKind, 'inbound_extraction'), eq(aiWorkflowRun.promptVersion, EXTRACTION_VERSION),
+      inArray(aiWorkflowRun.state, NONTERMINAL_AI_RUN_STATES))).limit(1);
+    if (otherActive) return { status: 'blocked' as const };
+    const binding: FailedReadRetry = { failedId: read.id, extractorVersion: read.extractorVersion, fingerprint: input.fingerprint,
+      sourceHash: input.source.sourceHash, selectionHash, attachmentHash, actorId: input.actorId,
+      internetMessageId: input.internetMessageId, selection: input.selection };
+    const run = await enqueueAiRun({ transportId: input.transportId, threadId: thread.id, triggerMessageId: mail.id,
+      runKind: 'inbound_extraction', idempotencyKey: `inbound-extraction-retry:${read.id}:${randomUUID()}`,
+      modelId: EXTRACTION_MODEL_ID, promptVersion: EXTRACTION_VERSION, metrics: { failedReadRetry: binding } }, tx as unknown as DB);
+    return { status: 'queued' as const, runId: run.id };
+  });
+}
+
+export async function failedReadRetryStatus(db: DB, input: {
+  transportId: string; internetMessageId: string; selection: PaneSourceSelection; runId: string; extractionId: string;
+}) {
+  const selected = await messageFor(db, input);
+  if (!selected) return { status: 'blocked' as const };
+  const [run] = await db.select({ state: aiWorkflowRun.state, metrics: aiWorkflowRun.metrics }).from(aiWorkflowRun)
+    .where(and(eq(aiWorkflowRun.id, input.runId), eq(aiWorkflowRun.transportId, input.transportId),
+      eq(aiWorkflowRun.triggerMessageId, selected.id), eq(aiWorkflowRun.runKind, 'inbound_extraction'))).limit(1);
+  const binding = failedReadRetryOf(run?.metrics);
+  if (!run || binding?.failedId !== input.extractionId) return { status: 'blocked' as const };
+  return { status: NONTERMINAL_AI_RUN_STATES.includes(run.state as typeof NONTERMINAL_AI_RUN_STATES[number])
+    ? 'reading' as const : 'finished' as const };
+}
+
 type ExtractionRowInput = Omit<typeof mailExtraction.$inferInsert, 'extractorVersion'>;
 
 /** Insert-once per (message, version). A second write for the same read is a no-op. */
@@ -295,7 +403,8 @@ export type InboundExtractionOutcome =
   | 'disabled'
   | 'unconfigured'
   | 'stale_version'
-  | 'capped';
+  | 'capped'
+  | 'stale_source';
 
 export type InboundExtractionDeps = {
   db?: DB;
@@ -316,7 +425,7 @@ export type InboundExtractionDeps = {
  * its lease or deadline throws instead, so the worker's failure path decides and nothing is stored for it.
  */
 export async function runInboundExtraction(
-  run: Pick<AiWorkflowRun, 'transportId' | 'triggerMessageId' | 'promptVersion'>,
+  run: Pick<AiWorkflowRun, 'transportId' | 'triggerMessageId' | 'promptVersion'> & Partial<Pick<AiWorkflowRun, 'metrics'>>,
   deps: InboundExtractionDeps = {},
 ): Promise<InboundExtractionOutcome> {
   const env = deps.env ?? process.env;
@@ -325,7 +434,9 @@ export async function runInboundExtraction(
   const db = deps.db ?? getDb();
   const [trigger] = await db
     .select({
+      id: message.id,
       threadId: message.threadId,
+      textBody: message.textBody,
       direction: message.direction,
       fromAddress: message.fromAddress,
       subject: message.subject,
@@ -337,8 +448,18 @@ export async function runInboundExtraction(
     .where(and(eq(message.id, run.triggerMessageId), eq(message.transportId, run.transportId)))
     .limit(1);
   if (!trigger || trigger.direction !== 'inbound') return 'skipped';
+  const retry = failedReadRetryOf(run.metrics);
+  const retryRequested = Boolean(run.metrics && Object.hasOwn(run.metrics, 'failedReadRetry'));
+  if ((retryRequested && !retry) || (retry && !deps.claim)) return 'stale_source';
+  if (retry) {
+    const [access] = await db.select({ id: mailboxAccess.id }).from(mailboxAccess).where(and(
+      eq(mailboxAccess.userId, retry.actorId), eq(mailboxAccess.transportId, run.transportId))).limit(1);
+    const selected = await messageFor(db, { transportId: run.transportId, internetMessageId: retry.internetMessageId,
+      selection: retry.selection, expectedMessageId: run.triggerMessageId });
+    if (!access || !selected || selected.threadId !== trigger.threadId || staffQuoteSourceHash(trigger) !== retry.sourceHash) return 'stale_source';
+  }
   const [existing] = await db
-    .select({ id: mailExtraction.id })
+    .select()
     .from(mailExtraction)
     .where(
       and(
@@ -347,7 +468,15 @@ export async function runInboundExtraction(
       ),
     )
     .limit(1);
-  if (existing) {
+  if (retry) {
+    const [failed] = retry.extractorVersion === EXTRACTION_VERSION ? [existing] : await db.select().from(mailExtraction)
+      .where(and(eq(mailExtraction.id, retry.failedId), eq(mailExtraction.messageId, run.triggerMessageId),
+        eq(mailExtraction.extractorVersion, retry.extractorVersion))).limit(1);
+    if (!failed || failed.id !== retry.failedId || failed.status !== 'failed' ||
+        failedReadFingerprint(failed) !== retry.fingerprint ||
+        (retry.extractorVersion !== EXTRACTION_VERSION && existing)) return 'stale_source';
+  }
+  if (existing && !retry) {
     await ensureWorkItemForMessage(db, { transportId: run.transportId, messageId: run.triggerMessageId });
     return 'exists';
   }
@@ -366,6 +495,8 @@ export async function runInboundExtraction(
     trackVisionImages: true,
     signal: deps.signal,
   });
+  if (retry && (!loadedSelection || retrySelectionHash(loadedSelection, trigger.mailbox) !== retry.selectionHash ||
+      await retryAttachmentHash(db, run.triggerMessageId) !== retry.attachmentHash)) return 'stale_source';
   if (!loadedSelection) {
     await commitRead(db, deps.claim, (tx) =>
       storeRead(tx, {
@@ -395,16 +526,71 @@ export async function runInboundExtraction(
     env,
   });
   const attachments = extraction.attachments ?? attachmentReads(selection.attachments);
+  // Retry results can only replace the exact failed observation while the source still matches.
+  const commit = async (row: ExtractionRowInput, after?: (tx: DB) => Promise<void>): Promise<boolean> => {
+    if (!retry) { await commitRead(db, deps.claim, async (tx) => { await storeRead(tx, row); await after?.(tx); }); return true; }
+    let written = false;
+    await commitRead(db, deps.claim, async (tx) => {
+      await lockCanonicalMailbox(tx, run.transportId);
+      const [thread] = await tx.select({ id: mailThread.id }).from(mailThread).where(and(
+        eq(mailThread.id, trigger.threadId), eq(mailThread.transportId, run.transportId), eq(mailThread.historyOnly, false),
+        isNull(mailThread.trashedAt), isNull(mailThread.spamAt))).limit(1).for('no key update');
+      if (!thread) return;
+      const selected = await messageFor(tx, { transportId: run.transportId, internetMessageId: retry.internetMessageId,
+        selection: retry.selection, expectedMessageId: run.triggerMessageId });
+      if (!selected || selected.threadId !== thread.id) return;
+      const [mailbox] = await tx.select({ email: mailboxTransport.email }).from(mailboxTransport)
+        .where(eq(mailboxTransport.id, run.transportId)).limit(1).for('share');
+      if (!mailbox) return;
+      // Canonical ingest holds the same mailbox lock. Reload the bounded source while it is held,
+      // so attachment or thread changes cannot race the final comparison and update.
+      const signal = deps.signal ? AbortSignal.any([deps.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000);
+      const currentSelection = await (deps.loadSelection ?? loadSyncedQuoteSelectionFromMailbox)({
+        transportId: run.transportId, messageId: run.triggerMessageId, includeThreadState: true,
+        includeVisionImages: extractionVisionEnabled(env), trackVisionImages: true, signal, db: tx,
+      });
+      if (!currentSelection || retrySelectionHash(currentSelection, mailbox.email) !== retry.selectionHash) return;
+      const [mail] = await tx.select({ id: message.id, subject: message.subject, textBody: message.textBody,
+        htmlBody: message.htmlBody }).from(message).where(and(eq(message.id, run.triggerMessageId),
+        eq(message.threadId, thread.id), eq(message.transportId, run.transportId), eq(message.historyOnly, false), eq(message.direction, 'inbound')))
+        .limit(1).for('no key update');
+      if (!mail || staffQuoteSourceHash(mail) !== retry.sourceHash ||
+          await retryAttachmentHash(tx, mail.id) !== retry.attachmentHash) return;
+      const [read] = await tx.select().from(mailExtraction).where(and(eq(mailExtraction.id, retry.failedId),
+        eq(mailExtraction.messageId, mail.id), eq(mailExtraction.extractorVersion, retry.extractorVersion)))
+        .limit(1).for('update');
+      if (!read || read.status !== 'failed' || failedReadFingerprint(read) !== retry.fingerprint) return;
+      const [access] = await tx.select({ id: mailboxAccess.id }).from(mailboxAccess).where(and(
+        eq(mailboxAccess.userId, retry.actorId), eq(mailboxAccess.transportId, run.transportId))).limit(1).for('share');
+      const [item] = await tx.select({ id: workItem.id }).from(workItem).where(and(
+        eq(workItem.transportId, run.transportId), eq(workItem.sourceMessageId, mail.id))).limit(1);
+      const [success] = await tx.select({ id: mailExtraction.id }).from(mailExtraction).where(and(
+        eq(mailExtraction.messageId, mail.id), eq(mailExtraction.status, 'succeeded'))).limit(1);
+      const rawHistory = read.usage?.retryHistory;
+      if (rawHistory !== undefined && !Array.isArray(rawHistory)) return;
+      const history = Array.isArray(rawHistory) ? rawHistory : [];
+      if (!access || item || success || history.length >= MAX_FAILED_READ_HISTORY) return;
+      const { retryHistory: _previous, ...priorUsage } = read.usage ?? {};
+      const prior = { extractionId: read.id, extractorVersion: read.extractorVersion, retryRunId: deps.claim!.runId,
+        actorId: retry.actorId, usage: priorUsage, attachments: read.attachments, observedAt: new Date().toISOString() };
+      const value = { ...row, usage: { ...row.usage, retryHistory: [...history, prior] } };
+      if (retry.extractorVersion === EXTRACTION_VERSION) {
+        await tx.update(mailExtraction).set(value).where(and(eq(mailExtraction.id, read.id), eq(mailExtraction.status, 'failed')));
+      } else {
+        // A different deployed extractor gets its own genuine result; the old failure stays intact.
+        const [inserted] = await tx.insert(mailExtraction).values({ ...value, extractorVersion: EXTRACTION_VERSION })
+          .onConflictDoNothing({ target: [mailExtraction.messageId, mailExtraction.extractorVersion] }).returning({ id: mailExtraction.id });
+        if (!inserted) return;
+      }
+      await after?.(tx);
+      written = true;
+    });
+    return written;
+  };
   if (!extraction.ok) {
-    await commitRead(db, deps.claim, (tx) =>
-      storeRead(tx, {
-        messageId: run.triggerMessageId,
-        status: 'failed',
-        attachments,
-        usage: { ...extraction.usage, failureReason: extraction.reason },
-      }),
-    );
-    return 'failed';
+    const saved = await commit({ messageId: run.triggerMessageId, status: 'failed', attachments,
+      usage: { ...extraction.usage, failureReason: extraction.reason } });
+    return saved ? 'failed' : 'stale_source';
   }
   let translation: InboundTranslation | null = null;
   let translationUsage: ModelUsage | undefined;
@@ -425,8 +611,7 @@ export async function runInboundExtraction(
     translationUsage = done?.usage;
   }
   const spamWrites = env.AI_WRITE_GATE_ENABLED === 'true' && !isInboundTriageClassifierEnabled(env);
-  await commitRead(db, deps.claim, async (tx) => {
-    await storeRead(tx, {
+  const saved = await commit({
       messageId: run.triggerMessageId,
       status: 'succeeded',
       kind: extraction.kind,
@@ -438,7 +623,7 @@ export async function runInboundExtraction(
         extraction: extraction.usage,
         ...(translationUsage ? { translation: translationUsage } : {}),
       },
-    });
+    }, async (tx) => {
     // Spam has one writer. While the classifier is on it owns spamAt and this read only records its kind, so the two
     // never race (the read could otherwise spam a thread before the classifier files it). Once it is retired, this
     // read writes spam with the classifier's guards.
@@ -446,7 +631,7 @@ export async function runInboundExtraction(
     // The work item points at this read. Its person-set values stay in its state (see work-items.ts).
     await ensureWorkItemForMessage(tx, { transportId: run.transportId, messageId: run.triggerMessageId });
   });
-  return 'stored';
+  return saved ? 'stored' : 'stale_source';
 }
 
 /**
@@ -604,7 +789,7 @@ export async function executeInboundExtractionRun(input: {
   // Once the classifier is retired, the inbound baseline is projected here instead of by its run. It reads the message
   // and the approved route, not the extraction model, so it runs for every outcome that is not deferred. With the
   // classifier on, its run still projects the baseline and this one stays out, so a message never gets two.
-  const mailBaseline = isInboundTriageClassifierEnabled(input.env ?? process.env)
+  const mailBaseline = failedReadRetryOf(run.metrics) || isInboundTriageClassifierEnabled(input.env ?? process.env)
     ? null
     : await projectInboundMailBaseline(
         db,
@@ -613,6 +798,10 @@ export async function executeInboundExtractionRun(input: {
         input.signal,
       );
   if (outcome === 'stale_version') {
+    if (run.metrics && Object.hasOwn(run.metrics, 'failedReadRetry')) {
+      await markAiRunPolicyRefused({ ...claim, lastError: 'Retry no longer matches the deployed extractor.' }, db);
+      return { runId: run.id, state: 'dead_letter' };
+    }
     // A deploy can leave admitted mail queued against the previous prompt.
     // Queue the current version before retiring that run, preserving its source snapshot.
     // The extraction idempotency key makes concurrent rollovers harmless.
@@ -648,6 +837,7 @@ export async function executeInboundExtractionRun(input: {
       ...claim,
       metrics: {
         inboundExtraction: { outcome },
+        ...(failedReadRetryOf(run.metrics) ? { failedReadRetry: failedReadRetryOf(run.metrics) } : {}),
         ...(mailBaseline ? { mailBaseline } : {}),
       },
     },

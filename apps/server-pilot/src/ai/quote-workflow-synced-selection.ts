@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray } from 'drizzle-orm';
-import { getDb } from '../db/client.js';
+import { getDb, type DB } from '../db/client.js';
 import { attachment, message } from '../db/schema/mail.js';
 import {
   readAuthorizedArtifact,
@@ -226,11 +226,11 @@ async function readerForRows(
   rows: QuoteAttachmentRow[],
   transportId: string,
   signal: AbortSignal,
-  options: { includeVisionImages?: boolean } = {},
+  options: { includeVisionImages?: boolean; db?: DB } = {},
 ): Promise<QuoteAttachmentReader> {
   try {
     return createArtifactReader(rows, signal, {
-      revalidateOffice: (officeRow) => revalidateOfficeAttachment(officeRow, transportId),
+      revalidateOffice: (officeRow) => revalidateOfficeAttachment(officeRow, transportId, options.db),
       includeVisionImages: options.includeVisionImages,
       transportId,
     });
@@ -437,7 +437,7 @@ export function createArtifactReader(
       };
       const revalidate = async () => {
         if (!options.transportId) return false;
-        return revalidateOfficeAttachment(row, options.transportId);
+        return options.revalidateOffice ? options.revalidateOffice(row) : revalidateOfficeAttachment(row, options.transportId);
       };
       const raw = await readAuthorizedArtifactBytes({
         ...common,
@@ -519,10 +519,10 @@ export function createArtifactReader(
   };
 }
 
-async function revalidateOfficeAttachment(row: QuoteAttachmentRow, transportId: string): Promise<boolean> {
+async function revalidateOfficeAttachment(row: QuoteAttachmentRow, transportId: string, suppliedDb?: DB): Promise<boolean> {
   let db;
   try {
-    db = getDb();
+    db = suppliedDb ?? getDb();
     const [currentAttachments, parentMessages] = await Promise.all([
       db
         .select({
@@ -704,12 +704,14 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
   /** Keep image metadata for an honest unread audit while the vision gate is off. */
   trackVisionImages?: boolean;
   signal?: AbortSignal;
+  /** A caller holding canonical source locks uses the same transaction for every source read. */
+  db?: DB;
 }): Promise<SyncedQuoteSelection | null> {
   const internetMessageId = input.internetMessageId?.trim();
   if ((!internetMessageId && !input.messageId) || (input.selection && !internetMessageId)) return null;
   let db;
   try {
-    db = getDb();
+    db = input.db ?? getDb();
   } catch {
     return null;
   }
@@ -781,6 +783,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
   const signal = input.signal ?? AbortSignal.timeout(15_000);
   const reader = await readerForRows(rows, input.transportId, signal, {
     includeVisionImages: input.includeVisionImages === true,
+    db,
   });
 
   return {

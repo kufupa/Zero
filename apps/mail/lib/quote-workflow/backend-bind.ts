@@ -290,7 +290,8 @@ export function selectedAmendRequest(snapshot: AmendDraftSnapshot | null): Amend
  */
 export type StoredWork =
   | { status: 'none' }
-  | { status: 'failed'; reason: string }
+  | { status: 'failed'; reason: string; extractionId?: string; extractorVersion?: string; fingerprint?: string;
+      source?: { threadId: string; messageId: string; sourceHash: string } }
   | {
       status: 'ready';
       /** The stored mail kind, used to keep the selected-email classification in the shared pane vocabulary. */
@@ -359,6 +360,13 @@ type WorkItemsClient = {
   open?: {
     mutate: (input: MailSourceInput, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
   };
+  retryFailedRead?: { mutate: (input: { internetMessageId: string; selection: MailSourceSelection;
+    extractionId: string; extractorVersion: string; fingerprint: string;
+    source: { threadId: string; messageId: string; sourceHash: string } },
+    opts?: { context: Record<string, unknown> }) => Promise<{ status: 'blocked' } | { status: 'queued'; runId: string }> };
+  failedReadRetryStatus?: { query: (input: { internetMessageId: string; selection: MailSourceSelection;
+    extractionId: string; runId: string }, opts?: { context: Record<string, unknown> }) =>
+    Promise<{ status: 'reading' | 'finished' | 'blocked' }> };
   refreshAmendExtraction?: {
     mutate: (input: { workItemId: string; source: Omit<AmendDraftSource, 'extractionId'> },
       opts?: { context: Record<string, unknown> }) => Promise<
