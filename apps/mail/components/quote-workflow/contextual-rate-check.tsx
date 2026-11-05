@@ -153,7 +153,10 @@ export function ContextualRateCheck({ group, session, pane, evidence, plans, onC
           !Number.isSafeInteger(selected.revision) || !Number.isSafeInteger(selected.revisionHead)) {
         return fail('The stay or company details changed. Check the draft and try again.');
       }
-      draft.onSave({ seq: selected.seq, revision: selected.revision!, revisionHead: selected.revisionHead! }, cursor.seq, draft.snapshot);
+      // An unchanged reply performed no write; it may arrive after another local save.
+      if (selected.seq === cursor.seq + 1) {
+        draft.onSave({ seq: selected.seq, revision: selected.revision!, revisionHead: selected.revisionHead! }, cursor.seq, draft.snapshot);
+      }
       if (!active()) return;
       const rateBinding = { ...binding, expectedSeq: selected.seq };
       let context: string | null = null, polls = 0;
