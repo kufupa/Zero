@@ -618,14 +618,22 @@ export function useStoredWork(args: {
   const readyRefs = stored?.status === 'ready' ? stored.refs : null;
   const readyWorkItemId = stored?.status === 'ready' ? stored.workItemId : null;
   const readyTransportId = currentLookup?.transportId ?? null;
+  const draftRef = useRef<AmendDraftSnapshot | null>(null);
+  draftRef.current = pane.state === 'ready' ? pane.amendDraft ?? null : null;
 
-  const flushSnapshot = useCallback(async (draft: AmendDraftSnapshot, transportId: string) => {
-    if (!readyWorkItemId || draft.workItemId !== readyWorkItemId || !lookupKey ||
-        readyTransportId !== transportId || historyPending || historyNeedsReload) return null;
+  // Background saves stay pinned to their own draft; write approval also requires the visible selection.
+  const flushSnapshot = useCallback(async (draft: AmendDraftSnapshot, transportId: string, visible = false) => {
+    const selected = draftRef.current?.workItemId === draft.workItemId && readyTransportId === transportId;
+    if ((visible && (!readyWorkItemId || draft.workItemId !== readyWorkItemId || !lookupKey ||
+        readyTransportId !== transportId)) || ((visible || selected) && (historyPending || historyNeedsReload))) return null;
     const keyNow = lookupKey;
     const generation = editGeneration.current.get(draft.workItemId) ?? 0;
-    const active = () => lookupKeyRef.current === keyNow &&
-      (editGeneration.current.get(draft.workItemId) ?? 0) === generation;
+    const active = () => {
+      const current = draftRef.current;
+      return (editGeneration.current.get(draft.workItemId) ?? 0) === generation && (!visible ||
+        (lookupKeyRef.current === keyNow && current?.workItemId === draft.workItemId &&
+          JSON.stringify(current.source) === JSON.stringify(draft.source)));
+    };
     const unsettled = () => [...pending.current.values(), ...latest.current.values(), ...failed.current.values()]
       .some((entry) => entry.workItemId === draft.workItemId);
     flushAll();
