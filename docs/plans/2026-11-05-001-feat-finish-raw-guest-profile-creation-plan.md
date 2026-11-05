@@ -19,7 +19,7 @@ execution: code
 
 Finish the existing HRCEN profile creation tool so a trusted caller can prepare, create and independently verify a new profile, with useful recovery after a failure.
 The owner selected separate lookup and creation, restricted this work to raw tools, and approved the preceding implementation outline.
-The current request authorizes planning; it does not start implementation, commit, merge, deploy or live writes.
+The original request authorized planning only; implementation and merge were authorized later.
 
 - Owner: implementing agent in this chat; no delegated agents.
 - Scope: guest profile creation, its exact-ID reader, a concrete Labtest caller adapter and focused verification.
@@ -180,7 +180,7 @@ unset DATABASE_URL VITEST_ALLOW_PILOT_RDS TEST_DATABASE_URL
 node --test apps/server-pilot/tooling/hms-cloud/guest-profile-create.test.mjs apps/server-pilot/tooling/hms-cloud/guest-profile-runner.test.mjs
 ```
 
-The runner and test paths above are planned files, not claims that those checks already exist or passed.
+The runner and test paths above were planned when this document was written; they landed in PR #1051.
 Run required final-head Greptile Apex review; use another available reviewer if it fails/stalls, without spawning agents unless separately authorized.
 No local TypeScript check applies to this `.mjs`-only scope; if valid implementation changes touch TypeScript, use the approved remote typecheck on a clean final head.
 No broad lint, repo-wide tests, PR, merge, deployment or pane flag changes are part of this plan.
