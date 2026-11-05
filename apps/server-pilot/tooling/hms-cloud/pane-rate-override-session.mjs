@@ -166,7 +166,13 @@ export async function readBackSavedStayRateOverride(review, { target, cloudTarge
     const rates = await readSavedStayNightlyRates(page, state, reviewed);
     const comparison = compareSavedStayRateOverrideReadback(bound, rates);
     if (beforePreserved) {
-      const same = JSON.stringify(beforePreserved) === JSON.stringify(preservedFields(native, expected, state));
+      // HMS can change recordId when it saves a stay. Keep it in the pre-submit
+      // drift check, but compare the stable stay identity and business fields
+      // separately when reading back the saved result.
+      const { recordId: beforeRecordId, ...beforeFields } = beforePreserved;
+      const { recordId: afterRecordId, ...afterFields } = preservedFields(native, expected, state);
+      const same = JSON.stringify(beforeFields) === JSON.stringify(afterFields);
+      comparison.nativeRecordId = beforeRecordId === afterRecordId ? 'MATCHED' : 'CHANGED';
       const unknownChildAges = beforePreserved.children > 0 && beforePreserved.childAges === 'unknown';
       comparison.preservedFields = same ? (unknownChildAges ? 'PARTIAL' : 'MATCHED') : 'CHANGED';
       comparison.preservedScope = ['identity', 'dates', 'room', 'ratePlan', 'occupancy', 'note',
