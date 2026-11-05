@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
@@ -59,6 +60,18 @@ test('known returned ID survives uncertainty and reconciles without another Save
   assert.equal(fresh.reconciliation.outcome, 'created');
   assert.equal((await f.runner().createGuestProfile(input)).outcome, 'created');
   assert.equal(f.saves(), 1);
+
+  const interrupted = await fixture(t, async ({ dispatch }) => {
+    await dispatch(success);
+    return { outcome: 'uncertain', issue: 'READ_FAILED', attemptId: input.attemptId };
+  });
+  await interrupted.runner().createGuestProfile(input);
+  const attemptKey = createHash('sha256').update(JSON.stringify(input.attemptId)).digest('hex');
+  await writeFile(join(interrupted.dir, `attempt-${attemptKey}-reconcile-claim.json`),
+    JSON.stringify({ version: 1, attemptKey }) + '\n', { flag: 'wx', mode: 0o600 });
+  const resumed = await interrupted.runner().readGuestProfile({ nativeId: '123', attemptId: input.attemptId });
+  assert.equal(resumed.reconciliation.outcome, 'created');
+  assert.equal(interrupted.saves(), 1);
 });
 
 test('a changed approval, real guest, or caller-provided authority cannot dispatch', async t => {

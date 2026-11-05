@@ -84,8 +84,9 @@ runner compares the fresh master read with the recorded approved fields and,
 only when a successful response with that same ID was durably recorded, stores
 and returns a `reconciliation` result. No recovery read sends Save. Without a
 recorded ID, use the separate lookup and manual evidence; matching names alone
-cannot establish which attempt created a profile. Incomplete or corrupt
-records remain held.
+cannot establish which attempt created a profile. A valid reconciliation claim
+left without a result can resume after another matching read. Other incomplete
+or corrupt records remain held.
 
 A later reviewed attempt can reuse the same intent only after a **trusted
 runtime** independently establishes that the earlier attempt did not create a

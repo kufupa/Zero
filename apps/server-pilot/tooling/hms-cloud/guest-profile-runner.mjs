@@ -110,6 +110,8 @@ async function readAttempt(dir, attemptKey) {
         !(record.nativeId === null || /^\d+$/.test(record.nativeId)))) throw new Error('PROFILE_JOURNAL_CORRUPT');
   }
   if (parts.confirm && (!claim.confirmDuplicateName || !parts['initial-response']?.question)) throw new Error('PROFILE_JOURNAL_CORRUPT');
+  if (parts['reconcile-claim'] && (parts['reconcile-claim'].version !== 1 ||
+      parts['reconcile-claim'].attemptKey !== attemptKey)) throw new Error('PROFILE_JOURNAL_CORRUPT');
   if (parts.reconcile && (!parts['reconcile-claim'] || parts.reconcile.outcome !== 'created')) throw new Error('PROFILE_JOURNAL_CORRUPT');
   const successful = parts['confirm-response']?.success ? parts['confirm-response'] : parts['initial-response']?.success ? parts['initial-response'] : null;
   for (const result of [parts.result, parts.reconcile]) {
@@ -302,7 +304,9 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
     const result = { outcome: 'created', attemptId, phase: parts.confirm ? 'confirm_distinct' : 'initial',
       dispatched: true, nativeId: parts.successful.nativeId, readback };
     try {
-      await writeOnce(dir, file(attemptKey, 'reconcile-claim'), { version: 1, attemptKey });
+      // A prior process may have stopped after its durable claim. A fresh,
+      // matching read can finish reconciliation without sending another Save.
+      if (!parts['reconcile-claim']) await writeOnce(dir, file(attemptKey, 'reconcile-claim'), { version: 1, attemptKey });
       await writeOnce(dir, file(attemptKey, 'reconcile'), result);
       return { ...readback, reconciliation: result };
     } catch { return { ...held(attemptId, parts, 'PROFILE_RECONCILIATION_JOURNAL_UNAVAILABLE'), readback }; }
