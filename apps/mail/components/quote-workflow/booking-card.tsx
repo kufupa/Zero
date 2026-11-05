@@ -1176,13 +1176,15 @@ export function BookingCards({
         draft.draft.rooms.map((room) => {
           const key = `${room.groupId}:${room.roomIndex}`;
           const binding = createRoomBinding(room, groups, workItemPane, session);
+          const fieldStaff = (field: string) => binding && (
+            workItemPane?.requestDraft?.snapshot?.fieldMeta[`requests[${binding.requestId}].${binding.prefix}.${field}`]?.origin === 'staff' ||
+            workItemPane?.requestDraft?.snapshot?.fieldMeta[`requests[${binding.requestId}].${field}`]?.origin === 'staff');
           const savedField = (field: string, projected: unknown, fallback: unknown) => {
             if (!binding) return fallback;
             const suffix = `${binding.prefix}.${field}`;
             const held = workItemPane?.requestDraft?.held(binding.requestId, suffix);
             if (held) return held.value;
-            const path = `requests[${binding.requestId}].${suffix}`;
-            return projected !== null && projected !== undefined || workItemPane?.fieldProvenance[path]?.source === 'staff'
+            return projected !== null && projected !== undefined || fieldStaff(field)
               ? projected : fallback;
           };
           const names = namesFromSelectedGuest(
@@ -1196,17 +1198,15 @@ export function BookingCards({
           const projected = binding?.value;
           const firstName = textValue(savedField('firstName', projected?.firstName, savedTarget?.firstName ?? names.firstName));
           const lastName = textValue(savedField('lastName', projected?.lastName, savedTarget?.lastName ?? names.lastName));
-          const namePath = binding ? `requests[${binding.requestId}].${binding.prefix}` : '';
-          if (binding && (workItemPane?.fieldProvenance[`${namePath}.firstName`]?.source === 'staff' ||
-            workItemPane?.fieldProvenance[`${namePath}.lastName`]?.source === 'staff' ||
+          if (binding && (fieldStaff('firstName') || fieldStaff('lastName') ||
             workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.firstName`) ||
             workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.lastName`))) guestNamesEdited.current[key] = true;
-          if (binding && (workItemPane?.fieldProvenance[`${namePath}.reservationNote`]?.source === 'staff' ||
+          if (binding && (fieldStaff('reservationNote') ||
             workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.reservationNote`))) reservationNoteDirty.current[key] = true;
           const agency = savedField('parties.agency', projected?.bookingAgency, null);
-          const agencyWasChosen = binding && (workItemPane?.fieldProvenance[`${namePath}.parties.agency`]?.source === 'staff' ||
+          const agencyWasChosen = binding && (fieldStaff('parties.agency') ||
             workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.parties.agency`));
-          if (binding && (workItemPane?.fieldProvenance[`${namePath}.parties.organization`]?.source === 'staff' ||
+          if (binding && (fieldStaff('parties.organization') ||
             workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.parties.organization`))) organizationEdited.current[key] = true;
           const choice: RoomChoice = {
             track: textValue(savedField('track', projected?.track, room.request.track)),
@@ -1575,42 +1575,61 @@ export function BookingCards({
     patchSave(roomKey, { preview: { status: 'running', key, requestId }, commit: undefined });
     let createGuard: CreateGuard | undefined;
     if (requireDurableCreate) {
-      const room = draft.draft.rooms.find((item) => roomKeyOf(item) === roomKey);
-      const binding = room ? createRoomBinding(room, groups, workItemPane, session) : null;
       const queue = workItemPane?.requestDraft;
-      const profile = stay.createSelection?.nativeGuestId ? { nativeId: stay.createSelection.nativeGuestId,
-        firstName: stay.firstName, lastName: stay.lastName } : null;
+      // Every room shares the WorkItem cursor. Save all of their defaults before
+      // issuing any preview, so preparing a later room does not invalidate an earlier grant.
+      const rooms = draft.draft.rooms.filter((room) => !savedOutcomeBlocksRoom(roomKeyOf(room)));
+      const inputs = rooms.map((room) => ({ room, stay: roomBuilt(room).stay,
+        binding: createRoomBinding(room, groups, workItemPane, session), input: previewInputsRef.current[roomKeyOf(room)] }));
+      // A profile choice also advances that shared cursor. Allow an unselected room
+      // to search through Preview, but do not grant another room until all are chosen.
+      if (stay.createSelection?.nativeGuestId && inputs.some((item) => item.binding?.writable &&
+          !item.stay?.createSelection?.nativeGuestId)) {
+        previewReceipt.finish(workItemId, stayId, inputKey, generation);
+        finishPreviewIfRunning(roomKey, requestId, { status: 'refused', key,
+          message: 'Choose an existing guest profile for every room before previewing.' });
+        return;
+      }
+      const currentInputs = inputs.every(({ room, input }) => input?.key &&
+        previewInputsRef.current[roomKeyOf(room)]?.key === input.key);
+      let accepted = Boolean(queue && currentInputs && inputs.length && inputs.every(({ stay, binding }) => stay && binding));
       const party = (value: PaneStayInput['bookingAgency']) => value?.nativeId ? { nativeId: value.nativeId, name: value.name } : null;
-      const values: Array<[string, unknown, RecordFieldEventInput['value'], boolean?]> = binding ? [
-        ['firstName', binding.value.firstName, stay.firstName], ['lastName', binding.value.lastName, stay.lastName],
-        ['guest.profile', binding.value.guestProfile, profile], ['adults', binding.value.adults, stay.adults, stay.adults >= 1 && stay.adults <= 9],
-        ['childAges', binding.value.childAges, stay.childAges ?? [], (stay.childAges ?? []).length <= 9],
-        ['roomTypeCode', binding.value.roomType, stay.roomType, /^[A-Z0-9]{1,12}$/.test(stay.roomType)],
-        ['ratePlan', binding.value.ratePlan, stay.ratePlan, /^[A-Z0-9]{1,12}$/.test(stay.ratePlan)],
-        ['parties.agency', binding.value.bookingAgency, party(stay.bookingAgency)],
-        ['parties.organization', binding.value.organization, party(stay.organization)],
-        ['sourceOfBusiness', binding.value.sourceOfBusiness, stay.sourceOfBusiness || null],
-        ['track', binding.value.track, stay.track || null], ['guaranteeType', binding.value.guaranteeType, stay.guaranteeType || null],
-        ['reservationNote', binding.value.reservationNote, stay.reservationNote || null],
-        ['bookerName', binding.value.bookerName, stay.bookerName || null], ['bookerEmail', binding.value.bookerEmail, stay.bookerEmail || null],
-        ['cms.send', binding.value.cms?.send, Boolean(stay.confirmationSendMail)],
-        ...(stay.confirmationSendMail ? [
-          ['cms.messageId', binding.value.cms?.messageId, stay.cmsMessageId || null] as [string, unknown, RecordFieldEventInput['value']],
-          ['cms.recipient', binding.value.cms?.recipient, stay.confirmationRecipient ?? null] as [string, unknown, RecordFieldEventInput['value']],
-        ] : []),
-      ] : [];
-      let accepted = Boolean(binding && queue);
-      if (binding?.writable && queue) for (const [field, prior, value, valid = true] of values) {
-        const suffix = `${binding.prefix}.${field}`;
-        if (queue.held(binding.requestId, suffix) || JSON.stringify(prior ?? null) !== JSON.stringify(value ?? null)) {
-          accepted = queue.record(binding.requestId, suffix, value, valid) && accepted;
+      if (accepted && queue) for (const item of inputs) {
+        const binding = item.binding!, roomStay = item.stay!;
+        if (!binding.writable) continue;
+        const profile = roomStay.createSelection?.nativeGuestId ? { nativeId: roomStay.createSelection.nativeGuestId,
+          firstName: roomStay.firstName, lastName: roomStay.lastName } : null;
+        const values: Array<[string, unknown, RecordFieldEventInput['value'], boolean?]> = [
+          ['firstName', binding.value.firstName, roomStay.firstName], ['lastName', binding.value.lastName, roomStay.lastName],
+          ['guest.profile', binding.value.guestProfile, profile], ['adults', binding.value.adults, roomStay.adults, roomStay.adults >= 1 && roomStay.adults <= 9],
+          ['childAges', binding.value.childAges, roomStay.childAges ?? [], (roomStay.childAges ?? []).length <= 9],
+          ['roomTypeCode', binding.value.roomType, roomStay.roomType, /^[A-Z0-9]{1,12}$/.test(roomStay.roomType)],
+          ['ratePlan', binding.value.ratePlan, roomStay.ratePlan, /^[A-Z0-9]{1,12}$/.test(roomStay.ratePlan)],
+          ['parties.agency', binding.value.bookingAgency, party(roomStay.bookingAgency)],
+          ['parties.organization', binding.value.organization, party(roomStay.organization)],
+          ['sourceOfBusiness', binding.value.sourceOfBusiness, roomStay.sourceOfBusiness || null],
+          ['track', binding.value.track, roomStay.track || null], ['guaranteeType', binding.value.guaranteeType, roomStay.guaranteeType || null],
+          ['reservationNote', binding.value.reservationNote, roomStay.reservationNote || null],
+          ['bookerName', binding.value.bookerName, roomStay.bookerName || null], ['bookerEmail', binding.value.bookerEmail, roomStay.bookerEmail || null],
+          ['cms.send', binding.value.cms?.send, Boolean(roomStay.confirmationSendMail)],
+          ...(roomStay.confirmationSendMail ? [
+            ['cms.messageId', binding.value.cms?.messageId, roomStay.cmsMessageId || null] as [string, unknown, RecordFieldEventInput['value']],
+            ['cms.recipient', binding.value.cms?.recipient, roomStay.confirmationRecipient ?? null] as [string, unknown, RecordFieldEventInput['value']],
+          ] : []),
+        ];
+        for (const [field, prior, value, valid = true] of values) {
+          const suffix = `${binding.prefix}.${field}`;
+          if (queue.held(binding.requestId, suffix) || JSON.stringify(prior ?? null) !== JSON.stringify(value ?? null)) {
+            accepted = queue.record(binding.requestId, suffix, value, valid) && accepted;
+          }
         }
       }
       const cursor = accepted && queue ? await queue.flush().catch(() => null) : null;
-      if (!cursor || previewInputsRef.current[roomKey]?.key !== key || createRevisionRef.current.editGeneration !== editGeneration) {
+      if (!cursor || inputs.some(({ room, input }) => previewInputsRef.current[roomKeyOf(room)]?.key !== input?.key) ||
+          previewInputsRef.current[roomKey]?.key !== key || createRevisionRef.current.editGeneration !== editGeneration) {
         previewReceipt.finish(workItemId, stayId, inputKey, generation);
         finishPreviewIfRunning(roomKey, requestId, { status: 'refused', key,
-          message: 'Save the booking details and check the selected email before previewing.' });
+          message: 'Complete and save the booking details for every room before previewing.' });
         return;
       }
       createGuard = { expectedSeq: cursor.seq, expectedExtractionId: queue!.snapshot!.source.extractionId };

@@ -359,28 +359,29 @@ export function QuoteStayStep({
   );
 }
 
-function extractionStayId(
+function extractionStayIds(
   rows: StayGroupRequirement[],
   refs: WorkItemPaneControls['refs'] | null | undefined,
-): string | null {
-  for (const row of rows) {
+): string[] {
+  return [...new Set(rows.flatMap((row) => {
     const stayId = refs?.[row.id]?.stayId ?? row.stayId;
-    if (stayId && !stayId.startsWith('d:')) return stayId;
-  }
-  return null;
+    return stayId && !stayId.startsWith('d:') ? [stayId] : [];
+  }))];
 }
 
 function stayResetControl(rows: StayGroupRequirement[], workItemPane: WorkItemPaneControls | null) {
-  const stayId = extractionStayId(rows, workItemPane?.refs);
-  if (!stayId || !workItemPane?.onResetStay) return null;
-  const requestIds = workItemPane.requestDraft?.snapshot?.requests
-    .filter((request) => request.stayId === stayId && request.action === 'new_booking')
-    .map((request) => request.requestId) ?? [];
-  if (!sectionHasStaffEdit(workItemPane.fieldProvenance, { type: 'stay', stayId }, requestIds)) return null;
-  return (
-    <WorkItemResetButton
-      onClick={() => workItemPane.onResetStay?.(stayId)}
-      pending={workItemPane.resetPending}
-    />
-  );
+  if (!workItemPane?.onResetStay) return null;
+  const stayIds = extractionStayIds(rows, workItemPane.refs);
+  const snapshot = workItemPane.requestDraft?.snapshot;
+  return stayIds.map((stayId) => {
+    const requestIds = snapshot?.requests.filter((request) => request.stayId === stayId && request.action === 'new_booking')
+      .map((request) => request.requestId) ?? [];
+    const hasRequestReset = Object.entries(snapshot?.fieldMeta ?? {}).some(([path, meta]) =>
+      meta.origin === 'staff' && meta.resettable === true && requestIds.some((id) => path.startsWith(`requests[${id}].`)));
+    if (!hasRequestReset && !sectionHasStaffEdit(workItemPane.fieldProvenance, { type: 'stay', stayId })) return null;
+    const roomNumbers = rows.flatMap((row, index) =>
+      (workItemPane.refs[row.id]?.stayId ?? row.stayId) === stayId ? [index + 1] : []);
+    return <WorkItemResetButton key={stayId} onClick={() => workItemPane.onResetStay?.(stayId)}
+      pending={workItemPane.resetPending} label={stayIds.length > 1 ? `Reset room ${roomNumbers.join(', ')} to AI` : undefined} />;
+  });
 }

@@ -232,7 +232,7 @@ export type AmendDraftRequest = WorkflowDraftRequest & {
 };
 export type AmendDraftSnapshot = {
   workItemId: string; source: AmendDraftSource; revisionSeq: number; requests: WorkflowDraftRequest[];
-  fieldMeta: Record<string, { origin: 'staff' | 'email' | 'missing'; attributedTo?: string | null;
+  fieldMeta: Record<string, { origin: 'staff' | 'email' | 'missing'; attributedTo?: string | null; resettable?: boolean;
     evidence?: { messageId: string; excerpt: string; source?: { kind: 'message' | 'attachment_text' | 'attachment_vision';
       id: string; page?: number; digest?: string; reviewRequired?: boolean } } | null }>;
 };

@@ -1198,7 +1198,7 @@ export function useStoredWork(args: {
     canSaveSnapshot,
     reloadAmendDraft,
     reloadRefreshedAmend,
-    noteAmendSave: (cursor: HistorySeqCursor, previousSeq?: number, snapshot?: AmendDraftSnapshot) => {
+    noteAmendSave: (cursor: HistorySeqCursor, previousSeq?: number, snapshot?: AmendDraftSnapshot, event?: FieldEvent) => {
       const known = snapshot && snapshotRevisions.current.get(snapshot);
       if (previousSeq !== undefined && known) {
         if (known.invalid || known.seq !== previousSeq || (cursor.seq !== previousSeq && cursor.seq !== previousSeq + 1)) {
@@ -1210,6 +1210,17 @@ export function useStoredWork(args: {
       if (!snapshot || known === formRevision.current) setHistoryCursor((previous) =>
         previous && previous.seq > cursor.seq ? previous : { ...cursor,
           extractionId: cursor.extractionId ?? draftRef.current?.source.extractionId });
+      if (event && snapshot && known && known === formRevision.current && !known.invalid) {
+        setLookup((previous) => {
+          if (!previous || previous.key !== lookupKey || previous.result?.status !== 'ready' ||
+              previous.result.workItemId !== snapshot.workItemId ||
+              JSON.stringify(previous.result.source) !== JSON.stringify(snapshot.source)) return previous;
+          const result = withStaffPaths(previous.result, [event]);
+          if (result.status !== 'ready') return previous;
+          return { ...previous, result: { ...result, draftFieldMeta: { ...result.draftFieldMeta,
+            [event.path]: { ...result.draftFieldMeta?.[event.path], origin: 'staff' } } } };
+        });
+      }
     },
     acceptUnedited,
     retryTranslation,

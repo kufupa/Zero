@@ -2,11 +2,11 @@ import { createHash } from 'node:crypto';
 import { MAIL_ACTIONS, type MailAction } from '../mail/action-labels.js';
 import { projectAmendRequests, type DraftSource } from './pane-amend-draft.js';
 import type { AttachmentRead } from './extraction/extract.js';
-import type { MailExtractionPayload, MailKind } from './extraction/schema.js';
-import { parseRequestField, requestFieldApplies, sourceRequests } from './work-item-fields.js';
+import type { ExtractionStay, MailExtractionPayload, MailKind } from './extraction/schema.js';
+import { parseRequestField, requestFieldApplies, sourceRequests, type RequestField } from './work-item-fields.js';
 
 type State = Record<string, unknown>;
-type FieldMeta = { origin: 'staff' | 'email' | 'missing'; attributedTo: string | null;
+type FieldMeta = { origin: 'staff' | 'email' | 'missing'; attributedTo: string | null; resettable?: boolean;
   evidence: { messageId: string; excerpt: string; source?: { kind: 'message' | 'attachment_text' | 'attachment_vision';
     id: string; page?: number; digest?: string; reviewRequired?: boolean } } | null };
 type Issue = { code: 'missing' | 'unsupported' | 'conflict'; fieldPath: string | null; message: string;
@@ -25,6 +25,31 @@ const LEGACY: Partial<Record<MailKind, MailAction>> = {
   quote: 'quote_availability', booking: 'new_booking', amendment: 'amend', cancellation: 'cancel', voucher_pop: 'payment_proof',
 };
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+const GUEST_FIELDS = new Set(['firstName', 'lastName', 'guestEmail', 'guestMobile']);
+function hasDistinctStayGuests(stay: ExtractionStay): boolean {
+  return new Set((stay.guests ?? []).map((guest) => guest.name.trim().toLocaleLowerCase()).filter(Boolean)).size > 1;
+}
+
+/** Email values the existing Reset operation can restore. Native selections have no email value. */
+export function createRequestSourceValue(stay: ExtractionStay, field: RequestField): unknown {
+  if (field.roomIndex !== null) {
+    if (field.field === 'arrival' || field.field === 'departure') return stay.requested[field.field];
+    const row = stay.rows.find((candidate) => candidate.id === field.rowId);
+    if (field.field === 'adults') return row?.adultsPerRoom ?? null;
+    if (field.field === 'childAges') return row?.childAges ?? null;
+  }
+  if (GUEST_FIELDS.has(field.field) && hasDistinctStayGuests(stay)) return null;
+  const proposalKey: Partial<Record<string, keyof NonNullable<ExtractionStay['workflowProposal']>>> = {
+    firstName: 'firstName', lastName: 'lastName', guestEmail: 'guestEmail', guestMobile: 'guestMobile',
+    bookerName: 'bookerName', bookerEmail: 'bookerEmail', ratePlan: 'ratePlan', sourceOfBusiness: 'sourceOfBusiness',
+    track: 'track', guaranteeType: 'guaranteeType', reservationNote: 'reservationNote',
+    'cms.send': 'cmsSend', 'cms.messageId': 'cmsMessageId', 'cms.recipient': 'cmsRecipient',
+  };
+  const key = proposalKey[field.field];
+  const proposal = key ? stay.workflowProposal?.[key] : undefined;
+  return proposal ? field.field === 'cms.recipient' ? { mode: 'custom', address: proposal.value } : proposal.value : null;
+}
 
 /** One action per stay; a source-level decision cannot be assigned across ambiguous stays. */
 export function effectiveActions(source: DraftSource, payload: MailExtractionPayload, state: State,
@@ -66,13 +91,16 @@ export function projectEffectiveWork(source: DraftSource, payload: MailExtractio
       message: 'This corrected action needs review before it can be prepared.', blocksPrepare: true, blocksGo: true });
     const value = (field: string, proposalKey?: keyof NonNullable<typeof stay.workflowProposal>) => {
       const path = `requests[${requestId}].${field}`;
-      const proposal = proposalKey ? stay.workflowProposal?.[proposalKey] : undefined;
+      const proposal = proposalKey && !(workflow === 'create' && GUEST_FIELDS.has(field) && hasDistinctStayGuests(stay))
+        ? stay.workflowProposal?.[proposalKey] : undefined;
       const proposalSource = (proposal as (typeof proposal & { source?: NonNullable<FieldMeta['evidence']>['source'] }))?.source;
       const edited = Object.hasOwn(state, path);
       meta[path] = { origin: edited ? 'staff' : proposal ? 'email' : 'missing',
         attributedTo: proposal?.attributedTo ?? null,
         evidence: proposal ? { messageId: source.messageId, excerpt: proposal.excerpt,
-          ...(proposalSource ? { source: proposalSource } : {}) } : null };
+          ...(proposalSource ? { source: proposalSource } : {}) } : null,
+        ...(workflow === 'create' ? { resettable: createRequestSourceValue(stay,
+          {requestId, field, rowId:null, roomIndex:null}) != null } : {}) };
       if (edited) return state[path];
       return proposal ? field === 'cms.recipient' ? { mode: 'custom', address: proposal.value } : proposal.value : null;
     };
@@ -151,7 +179,13 @@ export function projectEffectiveWork(source: DraftSource, payload: MailExtractio
         return Array.from({ length: count ?? 1 }, (_, roomIndex) => {
           const roomValue = (field: string, fallback: unknown) => {
             const path = `requests[${requestId}].rows[${row.id}].rooms[${roomIndex}].${field}`;
-            return Object.hasOwn(state, path) ? state[path] : fallback;
+            const edited = Object.hasOwn(state, path);
+            const sourceValue = createRequestSourceValue(stay, {requestId, field, rowId:row.id, roomIndex});
+            const sourceMeta = meta[`requests[${requestId}].${field}`];
+            meta[path] = { origin: edited ? 'staff' : sourceValue != null ? 'email' : 'missing',
+              attributedTo: sourceMeta?.attributedTo ?? null, evidence: sourceMeta?.evidence ?? null,
+              resettable: sourceValue != null };
+            return edited ? state[path] : fallback;
           };
           return { ...common, rowId: row.id, roomIndex,
             guestProfile: roomValue('guest.profile', common.guestProfile),
