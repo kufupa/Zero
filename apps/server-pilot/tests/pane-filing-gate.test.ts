@@ -99,7 +99,8 @@ describe('HRCEN filing hold', () => {
     vi.stubEnv('PANE_HMS_LAB_ATTACH_WORKER', 'on');
     vi.stubEnv('PANE_WRITE_ATTACH', 'lab');
     const ready = { ...bound, state: { ...bound.state, sourceInternetMessageId: 'voucher@example.test',
-      pdfSha256: 'a'.repeat(64), sourceSnapshotDigest: 'b'.repeat(64) } };
+      pdfSha256: 'a'.repeat(64), sourceSnapshotDigest: 'b'.repeat(64),
+      documentCode: `NAVA${'A'.repeat(26)}`, filingStateDigest: 'c'.repeat(64) } };
     const grantId = '11111111-1111-4111-8111-111111111111';
     const grant = { grantId, workItemId: item.id, transportId: request.transportId, actorUserId: 'user-1',
       formDigest: formDigest(ready.state), hmsBeforeDigest: 'before', hmsReadAt: new Date().toISOString() };
