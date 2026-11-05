@@ -72,7 +72,7 @@ export async function readLabtestCreate({ confirmation, stay, expected }, { with
   if (read?.outcome !== 'ok' || !Array.isArray(fields)) return { issue: 'readback_unverified', detail: read };
   const mismatches = compareRecord(fields, expected);
   const pricing = expected.roomTypeForCharge !== undefined ? compareChargeRoomPricing(fields, expected.checkedPricing) : null;
-  if (pricing && (pricing.averageRate !== 'MATCHED' || pricing.totalRate !== 'MATCHED' || pricing.currency === 'CHANGED')) {
+  if (pricing && (pricing.averageRate !== 'MATCHED' || pricing.totalRate !== 'MATCHED' || pricing.currency !== 'MATCHED')) {
     mismatches.push({ field: 'checkedPricing', issue: 'saved_price_unverified', pricing });
   }
   if (expected.guaranteeCode) {

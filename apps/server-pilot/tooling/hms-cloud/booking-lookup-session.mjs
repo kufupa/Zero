@@ -157,7 +157,7 @@ export async function readSavedOrganizationCreate(state, request, { openSession 
           throw new Error('LABTEST_CHARGE_ROOM_UNVERIFIED');
         }
         pricing = compareChargeRoomPricing(view?.details?.fields, target.expected.checkedPricing);
-        if (pricing.averageRate !== 'MATCHED' || pricing.totalRate !== 'MATCHED' || pricing.currency === 'CHANGED') {
+        if (pricing.averageRate !== 'MATCHED' || pricing.totalRate !== 'MATCHED' || pricing.currency !== 'MATCHED') {
           throw new Error('LABTEST_CHARGE_PRICE_UNVERIFIED');
         }
       }

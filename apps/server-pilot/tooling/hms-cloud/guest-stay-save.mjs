@@ -802,6 +802,7 @@ export async function saveNewLabtestStay(page, {
     if (roomTypeForCharge !== undefined) {
       checkedPricing = await bounded(checkedChargeRateEvidence(page, { roomTypeForCharge, roomType, ratePlan, arrival, departure }));
       if (!checkedPricing) throw new Error('CHARGE_ROOM_PRICE_RECHECK_REQUIRED');
+      if (!/^[A-Z]{3}$/.test(checkedPricing.currency || '')) throw new Error('CHARGE_ROOM_CURRENCY_UNVERIFIED');
     }
     armed = true;
     await bounded(save.click({ timeout: 5_000, noWaitAfter: true }));

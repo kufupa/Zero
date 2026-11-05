@@ -26,11 +26,11 @@ export function compareChargeRoomPricing(fields, checked) {
   const wantedCurrency = currency(checked?.currency);
   const currencyFields = ['averageratecurr', 'totalratecurr'];
   const ambiguousCurrency = currencyFields.some(name => fields.filter(field => field.name === name).length > 1);
-  const actualCurrencies = currencyFields.map(name => currency(unique(fields, name))).filter(Boolean);
+  const actualCurrencies = currencyFields.map(name => currency(unique(fields, name)));
   return {
     averageRate: compare('averagerate', checked?.averageRate),
     totalRate: compare('totalrate', checked?.totalRate),
-    currency: ambiguousCurrency || !wantedCurrency || !actualCurrencies.length ? 'UNKNOWN' :
-      actualCurrencies.every(value => value === wantedCurrency) ? 'MATCHED' : 'CHANGED',
+    currency: wantedCurrency && actualCurrencies.some(value => value && value !== wantedCurrency) ? 'CHANGED' :
+      ambiguousCurrency || !wantedCurrency || actualCurrencies.some(value => !value) ? 'UNKNOWN' : 'MATCHED',
   };
 }
