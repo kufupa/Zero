@@ -4,6 +4,8 @@ import { formStays, parseFieldPath, validFieldValue, type WorkState } from './wo
 import type { PaneStay } from './pane-stay-save.js';
 import { matchRoomType } from './room-types.js';
 import type { HistoricalOwnRow } from './pane-create-scope-origin.js';
+import { requestIdFor } from './work-item-fields.js';
+import type { DraftSource } from './pane-amend-draft.js';
 
 const stableId = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/);
 export const paneCreatePartySchema = z.discriminatedUnion('kind', [
@@ -69,13 +71,19 @@ export function activePaneCreateIdentity(payload: unknown, state: WorkState, ide
 
 /** A fresh cursor must not approve dates from a form that missed another staff edit. */
 export function currentPaneCreateDatesMatch(payload: unknown, state: WorkState, identity: PaneCreateIdentity,
-  stay: PaneStay): boolean {
+  stay: PaneStay, source: DraftSource): boolean {
   const parsed = mailExtractionPayloadSchema.safeParse(payload);
   if (!parsed.success) return false;
   const matches = formStays(parsed.data, state).filter((item) => item.id === identity.stayId);
   if (matches.length !== 1) return false;
   const requested = matches[0]!.requested;
+  const original = parsed.data.stays.find((item) => item.id === identity.stayId);
+  const rowId = original?.rows.length === 0 && identity.rowId === identity.stayId
+    ? `${identity.stayId}_row` : identity.rowId;
+  const requestId = requestIdFor(source, identity.stayId, 'primary');
   const field = (name: 'arrival' | 'departure') => {
+    const roomPath = `requests[${requestId}].rows[${rowId}].rooms[${identity.roomIndex - 1}].${name}`;
+    if (Object.hasOwn(state, roomPath)) return state[roomPath];
     const path = `stays[${identity.stayId}].requested.${name}`;
     return Object.hasOwn(state, path) ? state[path] : requested[name];
   };

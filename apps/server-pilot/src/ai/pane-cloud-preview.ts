@@ -182,7 +182,7 @@ async function checkSource(tx: CreateFenceTransaction, source: LockedCreateSourc
   if (!activePaneCreateIdentity(payload, source.item.state, input.selection.identity,
     { legacyKey: input.stayId === legacyPaneCreateRoomId(input.selection.identity) })) throw new Error('cloud_create_scope_changed');
   if (input.selection.expectedSeq !== undefined &&
-      !currentPaneCreateDatesMatch(payload, source.item.state, input.selection.identity, input.stay)) {
+      !currentPaneCreateDatesMatch(payload, source.item.state, input.selection.identity, input.stay, input.selection.source)) {
     throw new Error('cloud_create_scope_changed');
   }
   const confirmations = payload && Array.isArray(payload.confirmationNumbers)
