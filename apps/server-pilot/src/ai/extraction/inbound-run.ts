@@ -528,7 +528,20 @@ export async function runInboundExtraction(
   const attachments = extraction.attachments ?? attachmentReads(selection.attachments);
   // Retry results can only replace the exact failed observation while the source still matches.
   const commit = async (row: ExtractionRowInput, after?: (tx: DB) => Promise<void>): Promise<boolean> => {
-    if (!retry) { await commitRead(db, deps.claim, async (tx) => { await storeRead(tx, row); await after?.(tx); }); return true; }
+    if (!retry) {
+      await commitRead(db, deps.claim, async (tx) => {
+        // Successful normal reads also move the thread and work items. Lock the thread before the
+        // insert, as retries do, so a concurrent current-version insert cannot invert this order.
+        if (row.status === 'succeeded') {
+          await tx.select({ id: mailThread.id }).from(mailThread).where(and(
+            eq(mailThread.id, trigger.threadId), eq(mailThread.transportId, run.transportId)))
+            .limit(1).for('no key update');
+        }
+        await storeRead(tx, row);
+        await after?.(tx);
+      });
+      return true;
+    }
     let written = false;
     await commitRead(db, deps.claim, async (tx) => {
       await lockCanonicalMailbox(tx, run.transportId);
