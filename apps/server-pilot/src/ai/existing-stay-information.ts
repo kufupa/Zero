@@ -54,17 +54,22 @@ export function preStaySourceText(textBody: string | null | undefined, htmlBody:
   return htmlToPlainText(document.root().html() ?? '');
 }
 
-/** Accept only an excerpt of the current message, not a model summary or thread history. */
-export function groundedSeparateAsk(body: string | null | undefined, value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const excerpt = value.trim();
-  if (!excerpt || excerpt.length > 200) return null;
-  if (!body) return null;
+/** Text authored in this message, excluding quoted or forwarded history. */
+export function currentAuthoredMessageText(body: string | null | undefined): string {
+  if (!body) return '';
   // A source excerpt in a forwarded or quoted thread is not, by itself, a
   // current request. Keep it only when the selected message authored it.
   const source = /<(?:html|body|div|p|br|table|blockquote)(?:\s|>|\/)/i.test(body)
     ? preStaySourceText(null, body)
     : body;
   const history = source.search(/^[\t ]*(?:>|From:\s|Sent:\s|Subject:\s|On [^\r\n]{1,250}(?:\r?\n[^\r\n]{0,250}){0,2}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/imu);
-  return source.slice(0, history < 0 ? source.length : history).includes(excerpt) ? excerpt : null;
+  return source.slice(0, history < 0 ? source.length : history);
+}
+
+/** Accept only an excerpt of the current message, not a model summary or thread history. */
+export function groundedSeparateAsk(body: string | null | undefined, value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const excerpt = value.trim();
+  if (!excerpt || excerpt.length > 200) return null;
+  return currentAuthoredMessageText(body).includes(excerpt) ? excerpt : null;
 }
