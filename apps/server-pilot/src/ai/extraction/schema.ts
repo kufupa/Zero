@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { MAIL_KINDS } from '../../db/schema/work.js';
 import { MAIL_ACTIONS, type MailAction } from '../../mail/action-labels.js';
 import { maskCardNumbers } from '../card-mask.js';
-import { groundedSeparateAsk } from '../existing-stay-information.js';
+import { currentAuthoredMessageText, groundedSeparateAsk } from '../existing-stay-information.js';
 import { validIsoDate } from '../quote-workflow-llm.js';
 import { anchorStayDateRange, type StayDateAnchorContext } from '../stay-date-anchoring.js';
 
@@ -446,6 +446,7 @@ function sanitizeWorkflowProposal(
   messageId: string,
   admittedSources: CurrentProposalSource[],
   currentMessageSubject: string,
+  singleStay: boolean,
 ): z.infer<typeof workflowProposalSchema> | undefined {
   if (!proposal) return undefined;
   const source = maskCardNumbers(currentMessageText);
@@ -463,16 +464,20 @@ function sanitizeWorkflowProposal(
       subject.includes(item.excerpt);
     const attachmentExact = (text: string) => maskCardNumbers(text).includes(item.excerpt);
     let provenance: z.infer<typeof proposalSourceSchema> | undefined;
+    let verifiedTexts: string[] = [];
+    const checkCmsSource = key === 'cmsSend' && typeof item.value === 'boolean' && singleStay;
     if (item.source?.kind === 'message') {
       if (item.source.id !== messageId || !exact(source)) continue;
       provenance = { kind: 'message', id: messageId,
         digest: createHash('sha256').update(source).update('\0').update(subject).digest('hex') };
+      if (checkCmsSource) verifiedTexts = [currentAuthoredMessageText(source), subject];
     } else if (item.source) {
       const matched = admittedSources.filter((candidate) => candidate.kind === item.source!.kind &&
         candidate.id === item.source!.id && (candidate.kind !== 'attachment_vision' || candidate.page === item.source!.page));
       if (matched.length !== 1) continue;
       const candidate = matched[0]!;
       if (candidate.kind === 'attachment_text' && !attachmentExact(candidate.text ?? '')) continue;
+      if (checkCmsSource && candidate.kind === 'attachment_text') verifiedTexts = [maskCardNumbers(candidate.text ?? '')];
       provenance = { kind: candidate.kind, id: candidate.id, digest: candidate.digest,
         ...(candidate.page !== undefined ? { page: candidate.page } : {}),
         ...(candidate.kind === 'attachment_vision' ? { reviewRequired: true } : {}) };
@@ -480,16 +485,22 @@ function sanitizeWorkflowProposal(
       // Older model outputs may omit a pointer. Only one exact current text source is unambiguous.
       const matched = admittedSources.filter((candidate) => candidate.kind === 'attachment_text' && attachmentExact(candidate.text ?? ''));
       if (matched.length !== 1) continue;
+      if (checkCmsSource) verifiedTexts = [maskCardNumbers(matched[0]!.text ?? '')];
       provenance = { kind: 'attachment_text', id: matched[0]!.id, digest: matched[0]!.digest };
+    } else {
+      if (checkCmsSource) verifiedTexts = [currentAuthoredMessageText(source), subject];
     }
     const groundedItem = provenance ? { ...item, source: provenance } : item;
     if (typeof item.value === 'boolean') {
-      const negative = /\b(?:do not|don't|never|not)\s+send\s+(?:the\s+)?confirmation\b/i.test(item.excerpt) ||
-        /\bcms\s+send\s*[:=]\s*(?:off|false|no)\b/i.test(item.excerpt);
+      const negativePattern = /\b(?:do not|don't|never|not)\s+send\s+(?:the\s+)?confirmation\b|\bcms\s+send\s*[:=]\s*(?:off|false|no)\b/i;
+      const citedNegative = negativePattern.test(item.excerpt);
+      const sourceNegative = singleStay ? verifiedTexts.map((text) => text.match(negativePattern)?.[0])
+        .find((excerpt) => excerpt && excerpt.length <= 200) : undefined;
       const positive = /\bsend\s+(?:the\s+)?confirmation\b/i.test(item.excerpt) ||
         /\bcms\s+send\s*[:=]\s*(?:on|true|yes)\b/i.test(item.excerpt);
       if (key === 'cmsSend') {
-        if (negative) result[key] = { ...groundedItem, value: false };
+        if (citedNegative || sourceNegative) result[key] = { ...groundedItem, value: false,
+          excerpt: citedNegative ? item.excerpt : sourceNegative };
         else if (item.value && positive) result[key] = groundedItem;
       }
       continue;
@@ -574,7 +585,7 @@ export function sanitizeExtraction(
         : {}),
       ...(stay.workflowProposal
         ? { workflowProposal: sanitizeWorkflowProposal(stay.workflowProposal, input.currentMessageText ?? input.sourceText,
-            input.messageId, input.currentProposalSources ?? [], input.currentMessageSubject ?? '') }
+            input.messageId, input.currentProposalSources ?? [], input.currentMessageSubject ?? '', output.stays.length === 1) }
         : {}),
     };
   });
