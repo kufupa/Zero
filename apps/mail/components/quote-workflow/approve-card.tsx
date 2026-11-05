@@ -293,7 +293,7 @@ function WriteBody({
           ? 'Document upload is not available yet. Check HMS if an earlier upload is uncertain.' : status.message}
       </div>
       {cloudCancel && view.run?.state === 'succeeded' && view.run.cancelNotice
-        ? <p className={writeClasses.note}>HMS says: {view.run.cancelNotice} No fee action was approved. Check HMS for any charge.</p> : null}
+        ? <p className={writeClasses.note}>HMS says: {view.run.cancelNotice} No fee action was approved.</p> : null}
       {!cloudCancel ? <WriteRows rows={rows} filing={view.form.action === 'attach_document'} /> : null}
       {!pricesReady ? <p role="alert" className={writeClasses.note}>The current rate, total or booking details could not be verified. Check them in HMS.</p> : null}
       {cloudCancel ? status.approve && status.phase !== 'running' && allowApprove ? (
