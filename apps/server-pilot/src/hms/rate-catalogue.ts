@@ -114,7 +114,7 @@ export function quoteSalesStrategiesFromRegistry(
       seen.has(code as QuoteSalesStrategyCode) ||
       !label ||
       label.length > 80 ||
-      /[<>\u0000-\u001f\u007f]/.test(label)
+      /[<>\p{Cc}]/u.test(label)
     ) continue;
     const safeCode = code as QuoteSalesStrategyCode;
     seen.add(safeCode);

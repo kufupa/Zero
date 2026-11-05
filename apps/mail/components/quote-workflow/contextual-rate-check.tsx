@@ -68,6 +68,7 @@ export function ContextualRateCheck({ group, session, pane, evidence, plans, onC
   useEffect(() => {
     if (!usable) return;
     const scheduled = setTimeout(() => void latestCheck.current?.(false), 500);
+    timer.current = scheduled;
     return () => clearTimeout(scheduled);
   }, [key, usable]);
   useEffect(() => () => { generation.current += 1; if (timer.current) clearTimeout(timer.current); }, [key]);
