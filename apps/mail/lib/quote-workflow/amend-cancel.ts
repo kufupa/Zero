@@ -118,7 +118,8 @@ export function cancelledText(statusAfter: string | null, penaltyText: string | 
 }
 
 export type CancelInput = { confirmation: string; arrival: string; workItemId?: string;
-  source?: { threadId: string; messageId: string; sourceHash: string } };
+  source?: { threadId: string; messageId: string; sourceHash: string };
+  requestId?: string; expectedSeq?: number; expectedExtractionId?: string };
 /** The previewDigest of the preview that must come back with the commit. The server refuses without it. */
 export type CancelCommitInput = CancelInput & { reason: string; previewDigest: string; cancellationNote?: string };
 
@@ -153,6 +154,7 @@ export type CancelView =
   | { kind: 'idle'; note: string | null; run?: CancelRun }
   | { kind: 'previewing' }
   | { kind: 'ready'; run: CancelRun; reason: string; note: string | null }
+  | { kind: 'checking'; run: CancelRun; reason: string }
   | { kind: 'committing'; run: CancelRun; reason: string }
   | { kind: 'done'; run: CancelRun; text: string };
 

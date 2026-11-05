@@ -785,10 +785,15 @@ export async function goldRemainingInFolder(
   }
   if (unmarked.length === 0) return { goldWrote: 0 };
 
-  const inserted = await db
-    .insert(mailActionLabel)
-    .values(
-      unmarked.map((messageId) => ({
+  return db.transaction(async (tx) => {
+    // Match the dispatch source lock even when the owner label does not yet exist.
+    const sources = await tx.select({ id: message.id }).from(message)
+      .where(and(eq(message.transportId, input.transportId), inArray(message.id, unmarked)))
+      .orderBy(asc(message.id)).for('no key update');
+    if (!sources.length) return { goldWrote: 0 };
+    const inserted = await tx
+      .insert(mailActionLabel)
+      .values(sources.map(({ id: messageId }) => ({
         transportId: input.transportId,
         messageId,
         source: 'owner' as const,
@@ -796,11 +801,11 @@ export async function goldRemainingInFolder(
         action,
         needsAction: action !== 'no_action',
         labelledBy: input.labelledBy,
-      })),
-    )
-    .onConflictDoNothing()
-    .returning({ messageId: mailActionLabel.messageId });
-  return { goldWrote: inserted.length };
+      })))
+      .onConflictDoNothing()
+      .returning({ messageId: mailActionLabel.messageId });
+    return { goldWrote: inserted.length };
+  });
 }
 
 async function listReviewSetRows(

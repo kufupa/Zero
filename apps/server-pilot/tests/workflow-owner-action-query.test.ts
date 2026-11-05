@@ -97,3 +97,33 @@ describe('workflowFolders.getOwnerActionLabel', () => {
     expect(result).toBeNull();
   });
 });
+
+it('waits for the selected message lock before inserting an owner action', async () => {
+  let acquired!: () => void;
+  let unlock!: () => void;
+  const entered = new Promise<void>((resolve) => { acquired = resolve; });
+  const held = new Promise<void>((resolve) => { unlock = resolve; });
+  const insert = vi.fn(() => ({ values: () => ({ onConflictDoUpdate: () => ({
+    returning: async () => [{ action: 'cancel', markedAt: new Date('2026-01-01T00:00:00Z') }],
+  }) }) }));
+  const tx = {
+    select: () => {
+      const query = { from: () => query, where: () => query, limit: () => query,
+        for: async (mode: string) => {
+          expect(mode).toBe('no key update');
+          acquired();
+          await held;
+          return [{ id: MESSAGE_ID }];
+        } };
+      return query;
+    },
+    insert,
+  };
+  const db = { transaction: (fn: (value: typeof tx) => unknown) => fn(tx) };
+  const write = withFakeDb(db, () => caller().setActionLabel({ messageId: MESSAGE_ID, action: 'cancel' }));
+  await entered;
+  expect(insert).not.toHaveBeenCalled();
+  unlock();
+  await expect(write).resolves.toEqual({ action: 'cancel', markedAt: '2026-01-01T00:00:00.000Z' });
+  expect(insert).toHaveBeenCalledOnce();
+});

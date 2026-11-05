@@ -11,7 +11,8 @@ import {
 import { bindAttachDocumentForm, parseHmsWriteForm, prepareHmsWriteSnapshot } from '../../ai/pane-hms-write.js';
 import { previewFiling } from '../../ai/pane-filing-preview.js';
 import { isSelectedHmsInboundMessage } from '../../ai/hms-jobs.js';
-import { cancelSelectionSchema, commitCloudCancel, previewCloudCancel } from '../../ai/pane-cloud-cancel.js';
+import { cancelRequestBindingFields, cancelSelectionSchema, commitCloudCancel, completeCancelRequestBinding,
+  previewCloudCancel } from '../../ai/pane-cloud-cancel.js';
 import { bindCloudAmendForm, bindCloudAmendInput, cloudAmendSelectionSchema, cloudAmendWriteState } from '../../ai/pane-cloud-amend.js';
 import { labtestAmendWorkerEnabled } from '../../ai/pane-cloud-amend-readiness.js';
 import { CENTURION_HMS_READ_TARGET } from '../../hms/hms-read-target.js';
@@ -24,11 +25,11 @@ const selectedSource = z.object({ threadId: z.string().min(1).max(512), messageI
   sourceHash: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
 const formDigestInput = z.string().regex(/^[0-9a-f]{64}$/);
 const cancelTarget = z.object({ confirmation: z.string().regex(/^\d+-\d+$/).max(100),
-  arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), source: cancelSelectionSchema }).strict();
+  arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), source: cancelSelectionSchema, ...cancelRequestBindingFields }).strict();
 const cancelCommit = cancelTarget.extend({ reason: z.string().trim().min(1).max(120).refine((value) => !value.startsWith('-')),
-  previewDigest: formDigestInput, cancellationNote: z.string().max(200).optional() }).strict();
+  previewDigest: formDigestInput, cancellationNote: z.string().max(200).optional() }).strict().refine(completeCancelRequestBinding);
 const cancelPreviewInput = cancelTarget.extend({ workItemId: uuid, internetMessageId: selectedEmail,
-  formDigest: formDigestInput }).strict();
+  formDigest: formDigestInput }).strict().refine(completeCancelRequestBinding);
 const cloudStateInput = z.object({ workItemId: uuid, source: cloudAmendSelectionSchema }).strict();
 const cloudApproveInput = cloudStateInput.extend({ formDigest: formDigestInput }).strict();
 const cloudEvidenceInput = cloudStateInput.extend({ eventId: uuid }).strict();
@@ -92,7 +93,8 @@ export const hmsApprovalRouter = router({
       sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile,
       workItemId: input.workItemId, selectedInternetMessageId: input.internetMessageId,
       expectedFormDigest: input.formDigest, source: input.source, confirmation: input.confirmation,
-      arrival: input.arrival, target: target.target });
+      arrival: input.arrival, target: target.target, requestId: input.requestId,
+      expectedSeq: input.expectedSeq, expectedExtractionId: input.expectedExtractionId });
   }),
   cloudAmendReady: mailboxProcedure.query(({ ctx }) => {
     const target = paneStayHmsTargetForTransport(ctx.activeTransportId);

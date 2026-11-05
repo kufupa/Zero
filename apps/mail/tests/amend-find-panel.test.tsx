@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 import { AmendLookupPanel } from '../components/quote-workflow/amend-lookup-panel';
@@ -1793,7 +1793,182 @@ describe('AmendLookupPanel cancel from the pane', () => {
     expect(within(dialog).getByRole('img').getAttribute('src')).toBe(SHOT_PNG);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
     expect(screen.queryByRole('dialog')).toBeNull();
-  });
+    cleanup();
+    const previousScope = getMailCacheScope();
+    setMailCacheScope({ userId: 'user-1', activeTransportId: 't1' });
+    try {
+      const session = sessionWith(CANCEL);
+      session.binding = { ...session.binding!, internetMessageId: '<cancel@example.test>' };
+      const source = { threadId: THREAD, messageId: 'msg-1', sourceHash: 'a'.repeat(64), extractionId: RUN_ID };
+      const requestId = 'b'.repeat(64);
+      const snapshot = { workItemId: RUN_ID, source, revisionSeq: 10, fieldMeta: {}, requests: [{ requestId,
+        stayId: 'stay-1', action: 'cancel', workflow: 'cancel', status: 'pending', fields: { kind: 'cancel',
+          value: { target: { confirmation: CONFIRMATION, arrival: CANCEL_ARRIVAL }, reason: null as string | null, cancellationNote: 'Saved note' } } }] };
+      const record = vi.fn(() => true);
+      const cursor11 = { seq: 11, revision: 2, revisionHead: 2 };
+      const cursor12 = { seq: 12, revision: 3, revisionHead: 3 };
+      const flush = vi.fn().mockResolvedValueOnce(cursor11).mockResolvedValue(cursor12);
+      const original = { ...PREVIEW_OK, previewStay: { confirmation: CONFIRMATION,
+        firstName: 'Thabo', lastName: 'Mokoena', arrival: CANCEL_ARRIVAL,
+        departure: CANCEL.departure!, roomType: 'DLXKNG' } };
+      const freshDigest = 'c'.repeat(64);
+      let finishRefresh: (run: CancelRun) => void = () => {};
+      const nativePreview = vi.fn().mockResolvedValueOnce(original).mockImplementationOnce(() =>
+        new Promise<CancelRun>((resolve) => { finishRefresh = resolve; }));
+      const nativeCommit = vi.fn().mockResolvedValue(cancelRun({ outcome: 'cancelled', statusAfter: 'Cancelled', runId: RUN_ID }));
+      const findStay = vi.fn().mockResolvedValue(unpaidFound({ arrival: CANCEL_ARRIVAL, departure: CANCEL.departure ?? '' }, []));
+      const cloud = { ...lookupTrpc(findStay), hmsApproval: { writeState: { query: vi.fn().mockResolvedValue({ form: {}, run: null, needsCheck: false }) } },
+        paneStayCancel: { previewCancel: { mutate: nativePreview }, commitCancel: { mutate: nativeCommit }, paneStayScreenshot: { query: shot } } };
+      const renderCloud = (draft = snapshot) => render(<AmendLookupPanel session={session} trpc={cloud} workItemId={RUN_ID} readOnlyAmend={{ propertyCode: 'HRCEN',
+        selectionCurrent: true, requireDurableDraft: true, ratePlans: [], requestDraft: { available: true,
+          record, held: vi.fn(() => undefined), flush, retry: vi.fn(), pending: false, error: null, retryable: false,
+          snapshot: draft } }} />);
+      renderCloud();
+      await pressFind();
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+      expect((await screen.findByLabelText('Cancellation note (optional)') as HTMLInputElement).value).toBe('Saved note');
+      expect(nativePreview).toHaveBeenCalledWith(expect.objectContaining({ requestId, expectedSeq: 11,
+        expectedExtractionId: RUN_ID }), expect.anything());
+      fireEvent.change(screen.getByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+      fireEvent.change(screen.getByLabelText('Cancellation note (optional)'), { target: { value: 'Changed note' } });
+      expect(record).toHaveBeenCalledWith(requestId, 'cancel.reason', 'Duplicate Booking', true);
+      expect(record).toHaveBeenCalledWith(requestId, 'cancel.note', 'Changed note', true);
+      const go = screen.getByRole('button', { name: 'Cancel booking in HMS' }) as HTMLButtonElement;
+      expect(go.disabled).toBe(false);
+      fireEvent.click(go);
+      fireEvent.click(go);
+      await waitFor(() => expect(nativePreview).toHaveBeenCalledTimes(2));
+      expect(nativeCommit).not.toHaveBeenCalled();
+      await act(async () => finishRefresh({ ...original, previewDigest: freshDigest }));
+      await waitFor(() => expect(nativeCommit).toHaveBeenCalledWith(expect.objectContaining({ requestId, expectedSeq: 12,
+        expectedExtractionId: RUN_ID, reason: 'Duplicate Booking', cancellationNote: 'Changed note',
+        previewDigest: freshDigest }), expect.anything()));
+      expect(nativeCommit).toHaveBeenCalledTimes(1);
+
+      for (const changed of [
+        { statusBefore: 'Checked In' },
+        { previewStay: { ...original.previewStay, firstName: 'Changed' } },
+        { penaltyText: 'New fee' },
+        { policyFacts: ['New policy'] },
+        { reasons: ['Test Reservations'] },
+      ]) {
+        cleanup();
+        flush.mockReset().mockResolvedValueOnce(cursor11).mockResolvedValue(cursor12);
+        nativePreview.mockReset().mockResolvedValueOnce(original).mockResolvedValueOnce({ ...original, ...changed, previewDigest: freshDigest });
+        nativeCommit.mockClear();
+        renderCloud();
+        await pressFind();
+        fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+        fireEvent.change(await screen.findByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+        await screen.findByText(/Cancellation details changed\. Review them/);
+        expect(nativeCommit).not.toHaveBeenCalled();
+        if ('statusBefore' in changed) expect(screen.getByText('Status in HMS: Checked In')).toBeTruthy();
+        if ('previewStay' in changed) expect(screen.getByText('Guest: Changed Mokoena')).toBeTruthy();
+        if ('penaltyText' in changed) expect(screen.getByText('HMS says: New fee.')).toBeTruthy();
+        if ('policyFacts' in changed) expect(screen.getByText('New policy')).toBeTruthy();
+        const nextGo = screen.getByRole('button', { name: 'Cancel booking in HMS' }) as HTMLButtonElement;
+        if ('reasons' in changed) {
+          expect(nextGo.disabled).toBe(true);
+        } else {
+          expect(nextGo.disabled).toBe(false);
+          fireEvent.click(nextGo);
+          await waitFor(() => expect(nativeCommit).toHaveBeenCalledWith(expect.objectContaining({ expectedSeq: 12,
+            previewDigest: freshDigest }), expect.anything()));
+          expect(nativeCommit).toHaveBeenCalledTimes(1);
+        }
+      }
+
+      cleanup();
+      flush.mockReset().mockResolvedValueOnce(cursor11).mockResolvedValue(cursor12);
+      nativePreview.mockReset().mockResolvedValueOnce(original).mockResolvedValueOnce({ ...original, previewDigest: freshDigest });
+      nativeCommit.mockClear();
+      const saved = { ...snapshot, requests: snapshot.requests.map((request) => ({ ...request, fields: { ...request.fields,
+        value: { ...request.fields.value, reason: 'Duplicate Booking' } } })) };
+      renderCloud(saved);
+      await pressFind();
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+      await waitFor(() => expect((screen.getByRole('button', { name: 'Cancel booking in HMS' }) as HTMLButtonElement).disabled).toBe(false));
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+      await waitFor(() => expect(nativeCommit).toHaveBeenCalledWith(expect.objectContaining({ expectedSeq: 12,
+        previewDigest: freshDigest, reason: 'Duplicate Booking' }), expect.anything()));
+      expect(nativePreview).toHaveBeenCalledTimes(2);
+      expect(nativeCommit).toHaveBeenCalledTimes(1);
+
+      cleanup();
+      flush.mockReset().mockResolvedValueOnce(cursor11).mockResolvedValue(cursor12);
+      nativePreview.mockReset().mockResolvedValueOnce(original).mockResolvedValueOnce({ ...original,
+        previewStay: { ...original.previewStay, confirmation: '98765-1' }, previewDigest: freshDigest });
+      nativeCommit.mockClear();
+      renderCloud();
+      await pressFind();
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+      fireEvent.change(await screen.findByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+      await screen.findByText('Nava could not confirm the cancellation details. Check the booking in HMS.');
+      expect(nativeCommit).not.toHaveBeenCalled();
+
+      cleanup();
+      flush.mockReset().mockResolvedValueOnce(cursor11).mockResolvedValue(cursor12);
+      nativePreview.mockReset().mockResolvedValueOnce(original).mockRejectedValueOnce(new Error('preview failed'));
+      nativeCommit.mockClear();
+      renderCloud();
+      await pressFind();
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+      fireEvent.change(await screen.findByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+      await screen.findByText('Could not check the saved changes. Nothing was cancelled; try again.');
+      expect(nativeCommit).not.toHaveBeenCalled();
+
+      cleanup();
+      flush.mockReset().mockResolvedValueOnce(cursor11).mockResolvedValue(cursor12);
+      nativePreview.mockReset().mockResolvedValueOnce(original).mockResolvedValueOnce({ ...original, previewDigest: freshDigest });
+      nativeCommit.mockReset().mockRejectedValue(new Error('write outcome unknown'));
+      renderCloud();
+      await pressFind();
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+      fireEvent.change(await screen.findByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+      await screen.findByText('HMS may have cancelled this booking. Check HMS before trying again.');
+      expect(nativeCommit).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole('button', { name: 'Cancel booking in HMS' })).toBeNull();
+
+      cleanup();
+      flush.mockReset().mockResolvedValueOnce(cursor11).mockResolvedValue(cursor12);
+      nativePreview.mockReset().mockResolvedValueOnce(original).mockImplementationOnce(() =>
+        new Promise<CancelRun>((resolve) => { finishRefresh = resolve; }));
+      nativeCommit.mockReset();
+      findStay.mockReset().mockResolvedValueOnce(unpaidFound({ arrival: CANCEL_ARRIVAL, departure: CANCEL.departure ?? '' }, []))
+        .mockImplementationOnce(() => new Promise(() => {}));
+      renderCloud();
+      await pressFind();
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+      fireEvent.change(await screen.findByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+      await waitFor(() => expect(nativePreview).toHaveBeenCalledTimes(2));
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh HMS lookup' }));
+      await waitFor(() => expect(findStay).toHaveBeenCalledTimes(2));
+      await act(async () => finishRefresh({ ...original, previewDigest: freshDigest }));
+      expect(nativeCommit).not.toHaveBeenCalled();
+
+      cleanup();
+      flush.mockReset().mockResolvedValueOnce(cursor11).mockResolvedValue(cursor12);
+      nativePreview.mockReset().mockResolvedValueOnce(original).mockImplementationOnce(() =>
+        new Promise<CancelRun>((resolve) => { finishRefresh = resolve; }));
+      nativeCommit.mockReset();
+      findStay.mockReset().mockResolvedValue(unpaidFound({ arrival: CANCEL_ARRIVAL, departure: CANCEL.departure ?? '' }, []));
+      renderCloud();
+      await pressFind();
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+      fireEvent.change(await screen.findByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+      await waitFor(() => expect(nativePreview).toHaveBeenCalledTimes(2));
+      setMailCacheScope({ userId: 'another-user', activeTransportId: 't1' });
+      await act(async () => finishRefresh({ ...original, previewDigest: freshDigest }));
+      expect(nativeCommit).not.toHaveBeenCalled();
+      await screen.findByText('Nava could not check the previous cancellation. Check HMS before trying again.');
+    } finally { setMailCacheScope(previousScope); }
+  }, 30000);
 
   it('does not carry a preview over to another booking picked from the name search', async () => {
     capabilities.paneSave = true;
