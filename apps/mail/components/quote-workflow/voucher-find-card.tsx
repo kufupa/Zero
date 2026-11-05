@@ -255,7 +255,10 @@ function VoucherFindCardBody({
     reply?.status === 'voucher' && reply.file?.id === selectedFileId);
   const noEligiblePdf = inventory?.files?.length === 0 && reply?.status === 'voucher' &&
     inventory.messageId === reply.messageId && inventory.threadId === reply.threadId;
-  const lookupReady = fileReady || noEligiblePdf;
+  const failedFile = fileError && !fileReady && reply?.status === 'voucher' && inventory !== null &&
+    inventory.messageId === reply.messageId && inventory.threadId === reply.threadId
+    ? inventory.files?.find((file) => file.id === selectedFileId) ?? null : null;
+  const lookupReady = fileReady || noEligiblePdf || Boolean(failedFile);
   selectedFileRef.current = fileReady ? selectedFileId : noEligiblePdf && reply?.status === 'voucher'
     ? reply.file?.id ?? '' : selectedFileId;
   const documentSource = reply?.status === 'voucher' ? reply.documentSource : undefined;
@@ -266,7 +269,7 @@ function VoucherFindCardBody({
     selectedSource.threadId === replyThread && selectedSource.messageId === replyMessageId &&
     /^[a-f0-9]{64}$/.test(selectedSource.sourceHash)));
   const sourceMatches = fileReady && emailMatches && (propertyCode !== 'HRCEN' || validDocumentSource);
-  const lookupSourceMatches = sourceMatches || (noEligiblePdf && emailMatches);
+  const lookupSourceMatches = sourceMatches || ((noEligiblePdf || Boolean(failedFile)) && emailMatches);
   const transport = useMemo(
     () => lookupSourceMatches ? hmsJobTransport(jobClient, replyThread, replyMessageId,
       { exactSource: true, ...(selectedSource?.sourceHash ? { sourceHash: selectedSource.sourceHash } : {}) }) : null,
@@ -274,7 +277,7 @@ function VoucherFindCardBody({
   );
   // Read back only a search for this voucher's guest: one thread can carry vouchers for different guests.
   const voucherSearch =
-    lookupReady && reply?.status === 'voucher' && canSearchVoucher(reply.guest)
+    lookupReady && !failedFile && reply?.status === 'voucher' && canSearchVoucher(reply.guest)
       ? searchRequestFor({ lastName: reply.guest.lastName, arrival: reply.guest.arrival })
       : null;
   const resumeFor = voucherSearch && 'request' in voucherSearch ? voucherSearch.request : null;
@@ -365,13 +368,15 @@ function VoucherFindCardBody({
     detailsRequested && detailsJob.view?.status === 'done' && detailsRun !== null && detailsRun.kind !== 'found';
   const showReadDetails = selectedMatch !== null && (!detailsRequested || retryableDetails);
 
-  const replySeed = lookupReady && reply?.status === 'voucher' ? JSON.stringify([reply.messageId, reply.threadId, reply.guest, reply.file]) : null;
+  const replySeed = lookupReady && reply?.status === 'voucher'
+    ? JSON.stringify([reply.messageId, reply.threadId, failedFile ? null : reply.guest, failedFile ?? reply.file]) : null;
   useEffect(() => {
     if (!replySeed || reply?.status !== 'voucher' || seededReply.current === replySeed) return;
     seededReply.current = replySeed;
-    const form = { confirmation: reply.guest.confirmationNumber ?? '', lastName: reply.guest.lastName ?? '',
-      arrival: reply.guest.arrival ?? '', departure: '' };
-    const request = canSearchVoucher(reply.guest) ? searchRequestFor(form) : null;
+    const form = failedFile ? { confirmation: '', lastName: '', arrival: '', departure: '' }
+      : { confirmation: reply.guest.confirmationNumber ?? '', lastName: reply.guest.lastName ?? '',
+        arrival: reply.guest.arrival ?? '', departure: '' };
+    const request = !failedFile && canSearchVoucher(reply.guest) ? searchRequestFor(form) : null;
     setSearchForm(form);
     setSubmittedSearch(request && 'request' in request && request.request.kind === 'search_guest' ? request.request : null);
     setSearchError(null);
@@ -469,7 +474,9 @@ function VoucherFindCardBody({
       (next) => {
         if (!live) return;
         if (next.status !== 'voucher' || next.messageId !== inventory.messageId || next.threadId !== inventory.threadId ||
-            next.file?.id !== selectedFileId || !next.files?.some((file) => file.id === selectedFileId)) {
+            next.file?.id !== selectedFileId || !next.files?.some((file) => file.id === selectedFileId) ||
+            (propertyCode === 'HRCEN' && (!/^[a-f0-9]{64}$/.test(next.documentSource?.sha256 ?? '') ||
+              !/^[a-f0-9]{64}$/.test(next.documentSource?.snapshotDigest ?? '')))) {
           setFileError(true);
           return;
         }
@@ -479,7 +486,7 @@ function VoucherFindCardBody({
       () => { if (live) setFileError(true); },
     );
     return () => { live = false; };
-  }, [findClient, internetMessageId, lookupSelection, selectedFileId, inventory]);
+  }, [findClient, internetMessageId, lookupSelection, selectedFileId, inventory, propertyCode]);
 
   // A commit while an unsynced answer shows starts one more check. A commit during a running check is compared when
   // that check answers, so the running check is left alone.
@@ -524,8 +531,9 @@ function VoucherFindCardBody({
     );
   }
   if (reply.status !== 'voucher') return null;
-  const { guest } = reply;
-  const file = lookupReady ? reply.file : null;
+  const guest = failedFile ? { ...reply.guest, lastName: null, arrival: null, confirmationNumber: null, conflicts: undefined }
+    : reply.guest;
+  const file = failedFile ?? (lookupReady ? reply.file : null);
   const unreadPdfs = reply.unreadPdfs ?? 0;
   const line = voucherGuestLine(guest);
   const surnameConflict = (guest.conflicts?.lastNames.length ?? 0) > 1;
