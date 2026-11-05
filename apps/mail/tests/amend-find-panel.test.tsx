@@ -1574,6 +1574,7 @@ type CancelMocks = {
   preview?: ReturnType<typeof vi.fn>;
   commit?: ReturnType<typeof vi.fn>;
   shot?: ReturnType<typeof vi.fn>;
+  onStayActionResult?: ReturnType<typeof vi.fn>;
 };
 
 /** Renders a cancel email whose booking HMS finds, with the paneStayCancel routes mocked. */
@@ -1592,7 +1593,9 @@ async function renderCancel(mocks: CancelMocks) {
       paneStayScreenshot: { query: shot },
     },
   };
-  render(<AmendLookupPanel session={sessionWith(CANCEL)} trpc={trpc} />);
+  render(<AmendLookupPanel session={sessionWith(CANCEL)} trpc={trpc}
+    savedStays={mocks.onStayActionResult ? { 'stay-1': { confirmationNumber: CONFIRMATION, status: 'booked' } } : undefined}
+    onStayActionResult={mocks.onStayActionResult} />);
   await pressFind();
   return { preview, commit, shot, findStay };
 }
@@ -1762,7 +1765,8 @@ describe('AmendLookupPanel cancel from the pane', () => {
     const commit = vi.fn().mockResolvedValue(
       cancelRun({ outcome: 'cancelled', statusBefore: 'Reserved', statusAfter: 'Cancelled', screenshots: ['readback.png'], runId: RUN_ID }),
     );
-    await renderCancel({ preview, commit, shot });
+    const onStayActionResult = vi.fn();
+    await renderCancel({ preview, commit, shot, onStayActionResult });
 
     fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
     expect(await screen.findByText(`HMS says: ${PENALTY}`)).toBeTruthy();
@@ -1781,6 +1785,7 @@ describe('AmendLookupPanel cancel from the pane', () => {
 
     fireEvent.click(commitButton);
     expect(await screen.findByText('Cancelled in HMS – status now Cancelled')).toBeTruthy();
+    expect(onStayActionResult).toHaveBeenCalledWith({ stayId: 'stay-1', confirmationNumber: CONFIRMATION, kind: 'cancel' });
     expect(commit).toHaveBeenCalledWith({
       confirmation: CONFIRMATION,
       arrival: CANCEL_ARRIVAL,
@@ -2043,19 +2048,24 @@ describe('AmendLookupPanel cancel from the pane', () => {
     ).toBeTruthy();
   });
 
-  it('says HMS may have cancelled the booking when the commit comes back cancel_unconfirmed', async () => {
+  it('keeps uncertain cancellation results visible without reporting a successful cancellation', async () => {
     capabilities.paneSave = true;
-    const preview = vi.fn().mockResolvedValue(PREVIEW_OK);
-    const commit = vi.fn().mockResolvedValue(cancelRun({ outcome: 'cancel_unconfirmed' }));
-    await renderCancel({ preview, commit });
-    fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
-    fireEvent.change(await screen.findByLabelText('Cancellation reason'), {
-      target: { value: 'Duplicate Booking' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
-    expect(
-      await screen.findByText('HMS may have cancelled this booking. Check HMS before trying again.'),
-    ).toBeTruthy();
+    for (const [outcome, message] of [
+      ['cancel_unconfirmed', 'HMS may have cancelled this booking. Check HMS before trying again.'],
+      ['cancel_penalty_pending', 'A cancellation penalty is pending on this booking. Check HMS before anything else.'],
+      ['refused_penalty', 'HMS showed a possible cancellation charge. Check the booking status and charge in HMS before taking further action.'],
+    ] as const) {
+      const preview = vi.fn().mockResolvedValue(PREVIEW_OK);
+      const commit = vi.fn().mockResolvedValue(cancelRun({ outcome, penaltyText: null }));
+      const onStayActionResult = vi.fn();
+      await renderCancel({ preview, commit, onStayActionResult });
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+      fireEvent.change(await screen.findByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+      expect(await screen.findByText(message)).toBeTruthy();
+      expect(onStayActionResult).not.toHaveBeenCalled();
+      cleanup();
+    }
   });
 
   it('says the booking is already cancelled in HMS and offers no cancel', async () => {
