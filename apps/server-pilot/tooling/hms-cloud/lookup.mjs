@@ -1,5 +1,6 @@
 // Live lookups on an authenticated, unsaved Guest Stay. The caller owns the page.
 import { randomUUID } from 'node:crypto';
+import { ensureApplicationMenuOpen, ensureMenuChild } from './hms-menu-readiness.mjs';
 import { treeClickFallback } from '../playwright-quote/open-guest-stay.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { currentVerifiedLabtestProfileToken } from './guest-profile.mjs';
@@ -180,14 +181,13 @@ export async function openNewGuestStay(page) {
     await assertExpectedDialogs(page, nativeDialog);
     const agency = page.locator('input[name="ta1"]:visible').first();
     if (!await agency.isVisible().catch(() => false)) {
-      await page.locator('a.app-menu-trigger:visible').click();
       const nodes = page.locator('span.x-tree-node-text:visible');
       const guestStay = nodes.filter({ hasText: /^Guest Stay$/ });
-      if (!await guestStay.isVisible().catch(() => false)) await clickTreeNode(nodes.filter({ hasText: /^Front Desk$/ }), () => nativeDialog);
+      const frontDesk = nodes.filter({ hasText: /^Front Desk$/ });
       let opened = false;
       for (let attempt = 0; attempt < 3 && !opened; attempt += 1) {
-        await guestStay.waitFor({ state: 'visible', timeout: 10000 });
-        if (!await guestStay.isVisible().catch(() => false)) await page.locator('a.app-menu-trigger:visible').click();
+        await ensureApplicationMenuOpen(page, frontDesk);
+        await ensureMenuChild(frontDesk, guestStay, () => clickTreeNode(frontDesk, () => nativeDialog));
         await clickTreeNode(guestStay, () => nativeDialog);
         opened = await page.locator('input[name="ff_confirmationnumber"]:visible').first()
           .waitFor({ timeout: 8000 }).then(() => true, () => false);

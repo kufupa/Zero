@@ -399,8 +399,9 @@ async function waitForInputState(page, input, expected) {
     await page.waitForFunction(({ element, expected }) => {
       const component = globalThis.Ext?.getCmp?.(element?.id.replace(/-inputEl$/, ''));
       if (!element?.isConnected || !component) return false;
-      const same = (actual, value) => expected.trim
-        ? String(actual ?? '').trim() === String(value ?? '').trim() : actual === value;
+      const same = (actual, value) => expected.caseInsensitive
+        ? String(actual ?? '').toUpperCase() === String(value ?? '').toUpperCase() : expected.trim
+          ? String(actual ?? '').trim() === String(value ?? '').trim() : actual === value;
       return (!Object.hasOwn(expected, 'display') || same(element.value, expected.display)) &&
         (!Object.hasOwn(expected, 'value') || same(component.getValue?.(), expected.value)) &&
         (!expected.blurred || component.hasFocus !== true) &&
@@ -439,7 +440,7 @@ export async function setGuestStayDate(page, { propertyCode, field, date } = {})
     await check(); mark();
     await input.fill(display, { timeout: 5000 });
     await input.press('Tab', { timeout: 5000 });
-    await waitForInputState(page, input, { display, blurred: true }); await check();
+    await waitForInputState(page, input, { display, blurred: true, caseInsensitive: true }); await check();
     const actual = await input.inputValue();
     if (actual.toUpperCase() !== display) throw new Error('DATE_READBACK_MISMATCH');
     return { outcome: 'updated_unsaved', field, requested: date, actual: date, displayed: actual };

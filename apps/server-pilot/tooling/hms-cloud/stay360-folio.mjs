@@ -142,6 +142,7 @@ export async function readFolioFromStay360(page, confirmation, { timeoutMs = 100
     // A store event can precede rendering. Observe this view's refresh for the
     // current data generation; legacy/unobserved paths retain their window.
     let viewReady = false;
+    const renderDeadline = Date.now() + 1200;
     if (await frame.evaluate((key) => Boolean(globalThis[key]?.view), key)) {
       try {
         await frame.waitForFunction((key) => {
@@ -149,13 +150,14 @@ export async function readFolioFromStay360(page, confirmation, { timeoutMs = 100
           return state?.changed > 0 && state.renderedChange === state.changed &&
             !state.store.isLoading() && grid && globalThis.Ext?.getCmp?.(grid.id)?.getStore?.() === state.store &&
             globalThis.Ext?.getCmp?.(grid.id)?.getView?.() === state.view;
-        }, key, { timeout: timeoutMs });
+        }, key, { timeout: Math.min(timeoutMs, Math.max(1, renderDeadline - Date.now())) });
         viewReady = true;
       } catch (error) {
         if (error?.name !== 'TimeoutError') throw error;
       }
     }
-    if (!viewReady) await page.waitForTimeout(1200);
+    const remainingRenderWindow = Math.max(0, renderDeadline - Date.now());
+    if (!viewReady && remainingRenderWindow) await page.waitForTimeout(remainingRenderWindow);
     notes.push(...await dismissNotesOrThrow(page, { allowRecordFrame: true }));
     notes.push(...await dismissNotesOrThrow(frame));
     const headers = page.locator('h1.recordcode:visible');

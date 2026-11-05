@@ -3,20 +3,22 @@ import { randomUUID } from 'node:crypto';
 // Observe the clicked panel, not a locator that moves to the next collapsed one.
 export async function expandStay360Panel(frame, panel, expand) {
   const element = await panel.elementHandle();
+  let trigger;
   const key = `__navaExpand_${randomUUID().replaceAll('-', '')}`;
   try {
-    const installed = await frame.evaluate(({ element, key }) => {
+    trigger = await expand.elementHandle();
+    const installed = await frame.evaluate(({ element, trigger, key }) => {
       const component = globalThis.Ext?.getCmp?.(element?.id);
-      if (!component?.collapsed || typeof component.on !== 'function' ||
+      if (!trigger || !element?.contains(trigger) || !component?.collapsed || typeof component.on !== 'function' ||
           typeof component.un !== 'function') return false;
       const state = { component, element, expanded: false };
       state.onExpand = () => { state.expanded = true; };
       component.on('expand', state.onExpand);
       globalThis[key] = state;
       return true;
-    }, { element, key });
+    }, { element, trigger, key });
     if (!installed) throw new Error('RECORD_PANEL_UNAVAILABLE');
-    await expand.click();
+    await trigger.click();
     await frame.waitForFunction((key) => {
       const state = globalThis[key], component = state?.component;
       const body = component?.body?.dom;
@@ -34,5 +36,6 @@ export async function expandStay360Panel(frame, panel, expand) {
       delete globalThis[key];
     }, key).catch(() => {});
     await element?.dispose();
+    await trigger?.dispose();
   }
 }

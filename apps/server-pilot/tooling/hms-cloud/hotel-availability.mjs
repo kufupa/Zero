@@ -1,5 +1,6 @@
 // Read prices and inventory from cloud Hotel Availability on the caller's page.
 import { randomUUID } from 'node:crypto';
+import { ensureApplicationMenuOpen, ensureMenuChild } from './hms-menu-readiness.mjs';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
 import { captureAvailabilityDisplay } from './availability-display.mjs';
 
@@ -109,36 +110,12 @@ export async function openHotelAvailability(page) {
   await page.locator('input[name="search"]:visible').first().waitFor({ timeout: 25000 });
   const node = (name) => page.locator('span.x-tree-node-text:visible')
     .filter({ hasText: new RegExp(`^${name}$`) });
-  const menuOpen = () => node('Front Desk').evaluate((element) => {
-    const box = element.closest('.x-tree-view')?.getBoundingClientRect();
-    return Boolean(box && Math.min(innerWidth, box.right) - Math.max(0, box.left) >= box.width * 0.9);
-  }).catch(() => false);
-  const ensureMenuOpen = async () => {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (await menuOpen()) return;
-      await page.locator('a.app-menu-trigger:visible').click();
-      const frontDesk = await node('Front Desk').elementHandle();
-      try {
-        await page.waitForFunction((element) => {
-          const box = element?.closest('.x-tree-view')?.getBoundingClientRect();
-          return Boolean(box && Math.min(innerWidth, box.right) - Math.max(0, box.left) >= box.width * 0.9);
-        }, frontDesk, { timeout: 10000 });
-      } finally { await frontDesk?.dispose(); }
-    }
-    if (!await menuOpen()) throw new Error('MENU_NOT_OPENED');
-  };
-  const ensureExpanded = async (parent, child) => {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (await node(child).isVisible()) return;
-      await clickMenuNode(node(parent));
-      await node(child).waitFor({ state: 'visible', timeout: 10000 });
-    }
-    if (!await node(child).isVisible()) throw new Error('MENU_NOT_EXPANDED');
-  };
+  const ensureExpanded = (parent, child, timeoutMs) => ensureMenuChild(node(parent), node(child),
+    () => clickMenuNode(node(parent)), { timeoutMs });
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    await ensureMenuOpen();
-    await ensureExpanded('Front Desk', 'Availability');
-    await ensureExpanded('Availability', 'Hotel Availability');
+    await ensureApplicationMenuOpen(page, node('Front Desk'));
+    await ensureExpanded('Front Desk', 'Availability', 900);
+    await ensureExpanded('Availability', 'Hotel Availability', 1200);
     await clickMenuNode(node('Hotel Availability'));
     const surface = await waitForAvailabilitySurface(page, 8000);
     if (surface) return surface;
