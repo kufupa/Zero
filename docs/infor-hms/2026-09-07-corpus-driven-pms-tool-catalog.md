@@ -310,7 +310,7 @@ The [source inventory](../../.private/pms-tools-replan-2026-09-07/current-tool-i
 - Company billing, group counts and event reads have structural blockers. Narrow proved fields can help, but fixtures returning a blocker are not finished readers.
 - Existing finance partial results use zero placeholders guarded by draftReady:false. Rich consumers require per-field unknowns; do not weaken the legacy drafting gate. The current classifyDepositActivity helper also defaults unrecognized activities to paid; replace that fallback with explicit unknown/unmapped handling for rich finance, retain affected total incompleteness, and prove a closed source mapping before any paid claim.
 - Existing [mail artifact reading](../../apps/server-pilot/src/mail/artifacts/read-artifact.ts), bounded S3 reads and mailbox authorization provide the first document path. HMS metadata is non-retrievable until an inert byte route is proven.
-- [Tax Invoice role/menu absence](../solutions/integration-issues/hms-tax-invoice-role-menu-absent-2026-08-07.md) is an entitlement blocker, not permission to guess hidden function codes.
+- Tax Invoice role/menu absence (2026-08-07; note removed in the docs/solutions cleanup, see git history before `0b9ce9ec6`) is an entitlement blocker, not permission to guess hidden function codes.
 
 Each enabled branch requires exact scope/role/version, known-positive and legitimate negative/ambiguity controls, bounded completeness, parser/source agreement and a current release fingerprint. Capture private trace/video evidence through the actual audited service path, not only mock parsers. Hand off tested scenarios, failure/manual paths and expiry. The agent owns research/coding/testing/repair; the user is not the coder or browser operator.
 

@@ -139,5 +139,4 @@ Treat as new `PILOT_USERS` email + SM key. Old email drops from allowed list on 
 - Seed: `apps/server-pilot/src/db/seed.ts`
 - Prod runner: `apps/server-pilot/scripts/seed-prod.ts`
 - Secret merge helper: `apps/server-pilot/src/lib/pilot-secrets.ts`
-- Wipe-safe verify: `docs/solutions/workflow-issues/nava-mailbox-switcher-finish-wipe-safe-verify.md`
 - Pilot RDS safety: `.cursor/rules/pilot-rds-safety.mdc`

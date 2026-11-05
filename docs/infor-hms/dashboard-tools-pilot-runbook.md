@@ -66,7 +66,7 @@ Representative screenshots were inspected; full videos were not manually watched
   no remote repair, live activation, deployment, merge, push, or PR occurred.
 - See the [execution ledger](../superpowers/plans/handoff-reports/2026-09-07-centurion-dashboard-tools-execution.md)
   for accepted repairs, remaining qualification requirements, and evidence
-  boundaries. The [export correctness note](../solutions/logic-errors/dashboard-cached-export-after-failed-refetch.md)
+  boundaries. The export correctness note (`dashboard-cached-export-after-failed-refetch`, removed in the docs/solutions cleanup; see git history before `0b9ce9ec6`)
   and [dashboard vocabulary](../../CONCEPTS.md#executive-dashboard-reports)
   preserve the completed compounding work.
 
