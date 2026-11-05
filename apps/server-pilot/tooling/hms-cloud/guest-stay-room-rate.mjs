@@ -189,18 +189,19 @@ function allowedSearch(request, kind, origin) {
   }
   return false;
 }
-function roomFilterResetRequest(request, origin, metadata) {
+function roomFilterResetRequest(request, origin, metadata, kind) {
   if (!metadata) return false;
   const url = new URL(request.url());
   const body = new URLSearchParams(request.postData() || '');
   const gridId = clean(metadata.GRIDID), dataSpyId = clean(metadata.DATASPYID);
   const expected = { GRID_ID: gridId, GRID_NAME: SPECS.roomType.grid, DATASPY_ID: dataSpyId,
     USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR', GRID_TYPE: 'LOV', REQUEST_TYPE: 'LOV.DATA_ONLY.STORED',
-    LOV_TAGNAME: 'roomtype', LOV_ALIAS_NAME_1: 'param.propertycode', LOV_ALIAS_VALUE_1: PROPERTY, LOV_ALIAS_TYPE_1: 'text' };
+    LOV_TAGNAME: roomField(kind), LOV_ALIAS_NAME_1: 'param.propertycode', LOV_ALIAS_VALUE_1: PROPERTY, LOV_ALIAS_TYPE_1: 'text' };
   return request.method() === 'POST' && url.origin === origin && url.pathname === '/web/base/GRIDDATA' && !url.search && !url.hash &&
     /^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '') &&
-    /^\d+$/.test(gridId) && /^\d+$/.test(dataSpyId) && [...body.keys()].length === Object.keys(expected).length &&
-    Object.entries(expected).every(([key, value]) => body.getAll(key).length === 1 && body.get(key) === value);
+    /^\d+$/.test(gridId) && /^\d+$/.test(dataSpyId) &&
+    Object.entries(expected).every(([key, value]) => body.getAll(key).length === 1 && body.get(key) === value &&
+      [...body.keys()].filter(name => name.toLowerCase() === key.toLowerCase()).length === 1);
 }
 async function withFence(page, allowed, action, scope = null, quarantine = null) {
   const effects = [];
@@ -336,14 +337,14 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
   if (clean(metadata.GRIDNAME) !== spec.grid) throw new Error('PICKER_RESPONSE_INVALID');
   await waitGrid(page, id, rows.length);
   let current = await readWindow(page, id);
-  const roomFields = form.filter((field) => field.name === 'roomtype');
+  const roomFields = form.filter((field) => field.name === roomField(kind));
   const roomCode = roomFields.length === 1 ? clean(roomFields[0].value) : '';
   const filterValue = (name) => nativeFilters.filter((item) => item.name === name).map((item) => item.value);
   const controls = (name) => current.controls.filter((control) => control.name === name).map((control) => clean(control.value));
   const only = (values, value) => values.length === 1 && values[0] === value;
   const emptyGridFilters = ['ff_roomtypecode', 'ff_roomtypedesc', 'ff_unittypecode', 'ff_minadults', 'ff_maxadults',
     'ff_maxchildren', 'ff_bedtype'].every((name) => only(controls(name), ''));
-  const resetKnownFilter = kind === 'roomType' && roomCode && nativeFilters.length === 3 &&
+  const resetKnownFilter = roomKind(kind) && roomCode && nativeFilters.length === 3 &&
     only(filterValue('filterfields'), 'roomtypecode') && only(filterValue('filteroperator'), 'CONTAINS') &&
     only(filterValue('filtervalue'), roomCode) && only(controls('filterfields'), 'Room Type') &&
     only(controls('selfiltervaluectrl'), roomCode) && only(controls('dataspylist'), '(default)') &&
@@ -357,7 +358,7 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
       allowReset(metadata);
       await input.fill('');
       if (await input.inputValue() !== '') throw new Error('ROOM_FILTER_RESET_UNVERIFIED');
-      const pending = page.waitForResponse((res) => roomFilterResetRequest(res.request(), HMS_ORIGIN, initialMetadata),
+      const pending = page.waitForResponse((res) => roomFilterResetRequest(res.request(), HMS_ORIGIN, initialMetadata, kind),
         { timeout: 20000 }).catch(() => null);
       await assertWindows(page, [spec.title], nativeDialog);
       await run.click({ timeout: 10000 });
@@ -463,7 +464,7 @@ async function search(page, kind, input = {}) {
     } else {
       let resetMetadata = null;
       const capture = await withFence(page, (req, origin) => allowedSearch(req, kind, origin) ||
-        (kind === 'roomType' && roomFilterResetRequest(req, origin, resetMetadata)),
+        (roomKind(kind) && roomFilterResetRequest(req, origin, resetMetadata, kind)),
       () => collectCatalog(page, kind, () => native, (metadata) => { resetMetadata = metadata; }));
       if (capture.result?.criteriaUnavailable) return {
         outcome: 'criteria_unavailable', kind, issue: 'RATE_SHOP_CRITERIA_UNAVAILABLE',
