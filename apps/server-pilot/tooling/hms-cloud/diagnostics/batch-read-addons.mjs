@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Private, resumable census using the existing exact-confirmation/Add-On readers.
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname as parentOf, join, resolve } from 'node:path';
 import { withCenturionStay360Page } from '../../playwright-quote/centurion-stay360.mjs';
@@ -19,11 +20,12 @@ if (process.argv.length !== 5 && !(process.argv.length === 7 && process.argv[5] 
   throw new Error('EXPECTED_INPUT_OUTPUT_WORKERS');
 }
 process.umask(0o077);
-const input = resolve(process.argv[2]), output = resolve(process.argv[3]), workers = Number(process.argv[4]);
+const input = resolve(process.argv[2]), outputPath = resolve(process.argv[3]), workers = Number(process.argv[4]);
 if (![1, 2].includes(workers)) throw new Error('INVALID_WORKER_COUNT');
-if (!existsSync(output)) mkdirSync(output, { mode: 0o700 });
-const directory = lstatSync(output);
+if (!existsSync(outputPath)) mkdirSync(outputPath, { mode: 0o700 });
+const directory = lstatSync(outputPath);
 if (!directory.isDirectory() || directory.uid !== process.getuid() || directory.mode & 0o077) throw new Error('OUTPUT_DIRECTORY_NOT_PRIVATE');
+const output = realpathSync(outputPath);
 for (let current = output; ; current = parentOf(current)) {
   if (existsSync(join(current, '.git'))) throw new Error('OUTPUT_IN_GIT');
   if (parentOf(current) === current) break;
@@ -59,6 +61,17 @@ if (process.argv[6]) {
   }
 }
 
+// Keep this inode permanently: the kernel releases its lock when the process
+// exits. Stale PID-file recovery now runs under an exclusive OS lock.
+const guardFd = openSync(join(output, 'scan.flock'), constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
+const guardStat = fstatSync(guardFd);
+if (!guardStat.isFile() || guardStat.uid !== process.getuid() || guardStat.mode & 0o077 || guardStat.nlink !== 1) {
+  closeSync(guardFd); throw new Error('SCAN_LOCK_NOT_PRIVATE');
+}
+const guard = spawnSync('flock', ['--exclusive', '--nonblock', '3'], { stdio: ['ignore', 'ignore', 'ignore', guardFd] });
+if (guard.error || guard.status !== 0) {
+  closeSync(guardFd); throw new Error(guard.status === 1 ? 'SCAN_ALREADY_OWNED' : 'SCAN_LOCK_UNAVAILABLE');
+}
 const lock = join(output, 'scan.lock');
 if (existsSync(lock)) {
   const previous = JSON.parse(readFileSync(lock, 'utf8'));
@@ -259,5 +272,8 @@ try {
   console.log(JSON.stringify({ scanFinished: report.scanFinished, ...counts() }));
   if (!report.scanFinished) process.exitCode = 1;
 } finally {
-  unlinkSync(lock);
+  try {
+    const owner = JSON.parse(readFileSync(lock, 'utf8'));
+    if (owner.pid === process.pid && owner.host === hostname()) unlinkSync(lock);
+  } finally { closeSync(guardFd); }
 }

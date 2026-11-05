@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import uuid
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +17,7 @@ def now():
 
 
 def write_json(path, value):
-    temporary = path.with_suffix(path.suffix + ".partial")
+    temporary = path.with_name(path.name + ".partial-" + uuid.uuid4().hex)
     with temporary.open("x") as target:
         json.dump(value, target, ensure_ascii=False, indent=2)
         target.write("\n")
