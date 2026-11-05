@@ -42,9 +42,12 @@ import { shouldShowOpenThreadSkeleton } from '@/lib/mail/thread-open-stability';
 import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
 import { orderMessagesNewestFirst } from '@/lib/mail/thread-display-order';
 import {
+  beginMailSelectionIntent,
+  isCurrentMailSelectionIntent,
   shouldSuppressLatestAutoScroll,
   useExactSourceMessageSelection,
 } from '@/lib/mail/source-message-navigation';
+import { beginThreadMove, cancelThreadMove, isCurrentThreadMove } from '@/lib/mail/thread-move-intent';
 import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import { ThreadDraftCard } from '@/components/mail/thread-draft-card';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
@@ -60,6 +63,8 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { type ThreadDestination } from '@/lib/thread-actions';
 import { handleUnsubscribe } from '@/lib/email-utils.client';
 import { useThread, useThreads } from '@/hooks/use-threads';
+import { useActiveConnection } from '@/hooks/use-connections';
+import { isInboundMessage, singleInboundMessageId } from '@/lib/workstation/web-pane-bridge';
 import { EmptyStateIcon } from '../icons/empty-state-svg';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
@@ -209,6 +214,16 @@ export function ThreadDisplay() {
     latestDraft,
     aiDraftCandidates,
   } = useThread(id ?? null);
+  const { data: activeConnection } = useActiveConnection();
+  const soleInboundId = useMemo(() => {
+    if (sourceMessageId != null || !id || !activeConnection?.id || !emailData || isThreadDataMismatch)
+      return null;
+    const threadTransportId = (emailData as typeof emailData & { transportId?: string }).transportId;
+    if (!isFrontendOnlyDemo() && threadTransportId !== activeConnection.id) return null;
+    return singleInboundMessageId(emailData.messages, activeConnection.email ?? '', id);
+  }, [activeConnection?.email, activeConnection?.id, emailData, id, isThreadDataMismatch, sourceMessageId]);
+  // Keep the default out of the URL so it cannot overwrite pending navigation.
+  const displayedSourceMessageId = sourceMessageId ?? soleInboundId;
   const [, items] = useThreads();
   const [isStarred, setIsStarred] = useState(false);
   const [navaSidePanelOpen, setNavaSidePanelOpen] = useAtom(navaSidePanelAtom);
@@ -264,8 +279,17 @@ export function ThreadDisplay() {
     draftId: parseAsString,
   });
 
-  const clearComposeContext = useCallback(async () => {
+  // Same-thread selection keeps the composer mounted. Any later selection cancels
+  // navigation and composer clearing that was waiting for an earlier draft flush.
+  const selectionRevision = useRef(0);
+  const selectedMessage = useRef({ threadId: id, sourceMessageId });
+  if (selectedMessage.current.threadId !== id || selectedMessage.current.sourceMessageId !== sourceMessageId) {
+    selectedMessage.current = { threadId: id, sourceMessageId };
+    selectionRevision.current += 1;
+  }
+  const clearComposeContext = useCallback(async (revision: number, intent: number) => {
     await runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
+      if (selectionRevision.current !== revision || !isCurrentMailSelectionIntent(intent)) return;
       await clearReplyComposeContext({
         setMode,
         setActiveReplyId,
@@ -274,6 +298,30 @@ export function ThreadDisplay() {
       });
     });
   }, [setMode, setActiveReplyId, setDraftId, setComposeState]);
+
+  const selectSourceMessage = useCallback((message: ParsedMessage) => {
+    if (!id || !message.threadId || !message.id) return;
+    const revision = ++selectionRevision.current;
+    const intent = beginMailSelectionIntent();
+    const nextThreadId = message.threadId;
+    if (nextThreadId === id) {
+      void setThreadSelection({ threadId: id, sourceMessageId: message.id });
+      return;
+    }
+    void clearComposeContext(revision, intent).then(() => {
+      if (selectionRevision.current === revision && isCurrentMailSelectionIntent(intent))
+        void setThreadSelection({ threadId: nextThreadId, sourceMessageId: message.id });
+    });
+  }, [clearComposeContext, id, setThreadSelection]);
+
+  const openLinkedThread = useCallback((threadId: string) => {
+    const revision = ++selectionRevision.current;
+    const intent = beginMailSelectionIntent();
+    void clearComposeContext(revision, intent).then(() => {
+      if (selectionRevision.current === revision && isCurrentMailSelectionIntent(intent))
+        void setThreadSelection({ threadId, sourceMessageId: null });
+    });
+  }, [clearComposeContext, setThreadSelection]);
 
   const openComposeForLatestMessage = useCallback(
     (nextMode: ReplyComposeMode) => {
@@ -367,34 +415,6 @@ export function ThreadDisplay() {
     [optimisticState.optimisticImportant, emailData?.latest?.tags, emailData?.messages],
   );
 
-  const handleNext = useCallback(async () => {
-    if (!id || !items.length || focusedIndex === null) {
-      return setThreadSelection({ threadId: null, sourceMessageId: null });
-    }
-    if (focusedIndex < items.length - 1) {
-      const nextIndex = Math.max(1, focusedIndex + 1);
-      //   console.log('nextIndex', nextIndex);
-
-      const nextThread = items[nextIndex];
-      if (nextThread) {
-        await clearComposeContext();
-        setThreadSelection({ threadId: nextThread.id, sourceMessageId: null });
-        setFocusedIndex(focusedIndex + 1);
-        if (animationsEnabled) {
-          setNavigationDirection('next');
-        }
-      }
-    }
-  }, [
-    items,
-    id,
-    focusedIndex,
-    setThreadSelection,
-    setFocusedIndex,
-    clearComposeContext,
-    animationsEnabled,
-  ]);
-
   const handleUnsubscribeProcess = () => {
     if (!emailData?.latest) return;
     toast.promise(handleUnsubscribe({ emailData: emailData.latest }), {
@@ -408,7 +428,10 @@ export function ThreadDisplay() {
     folder === FOLDERS.SPAM || isReservedSpamScopedLabelId(folder, reservedSpamLabelIds);
   const isInBin = folder === FOLDERS.BIN;
   const handleClose = useCallback(async () => {
-    await clearComposeContext();
+    const revision = ++selectionRevision.current;
+    const intent = beginMailSelectionIntent();
+    await clearComposeContext(revision, intent);
+    if (selectionRevision.current !== revision || !isCurrentMailSelectionIntent(intent)) return;
     setThreadSelection({ threadId: null, sourceMessageId: null });
   }, [setThreadSelection, clearComposeContext]);
 
@@ -416,12 +439,42 @@ export function ThreadDisplay() {
     async (destination: ThreadDestination) => {
       if (!id) return;
 
-      await clearComposeContext();
+      const moveIntent = beginThreadMove(id);
+      const revision = ++selectionRevision.current;
+      const intent = beginMailSelectionIntent();
+      try {
+        await clearComposeContext(revision, intent);
+      } catch (error) {
+        cancelThreadMove(id, moveIntent);
+        throw error;
+      }
+      if (!isCurrentThreadMove(id, moveIntent)) {
+        // Spam dispatches immediately; a superseded draft-stage spam must not
+        // send before the later action. Other moves remain undoable in queue.
+        if (destination === 'spam') cancelThreadMove(id, moveIntent);
+        else optimisticMoveThreadsTo([id], folder, destination, { preserveSelection: true, moveIntent });
+        return;
+      }
+      if (selectionRevision.current !== revision || !isCurrentMailSelectionIntent(intent)) {
+        // The move belongs to the clicked thread even if staff navigated while
+        // the draft saved. Do not clear or replace their newer selection.
+        optimisticMoveThreadsTo([id], folder, destination, { preserveSelection: true, moveIntent });
+        return;
+      }
 
-      optimisticMoveThreadsTo([id], folder, destination);
-      await handleNext();
+      const nextThread = focusedIndex !== null && focusedIndex < items.length - 1
+        ? items[Math.max(1, focusedIndex + 1)] : undefined;
+      // The optimistic move clears the old thread. Select its successor in the
+      // same turn, after the one draft flush, so that clear cannot cancel it.
+      optimisticMoveThreadsTo([id], folder, destination, { moveIntent });
+      void setThreadSelection({ threadId: nextThread?.id ?? null, sourceMessageId: null });
+      if (nextThread && focusedIndex !== null) {
+        setFocusedIndex(focusedIndex + 1);
+        if (animationsEnabled) setNavigationDirection('next');
+      }
     },
-    [id, folder, optimisticMoveThreadsTo, handleNext, clearComposeContext],
+    [id, folder, optimisticMoveThreadsTo, clearComposeContext, focusedIndex, items,
+      setThreadSelection, setFocusedIndex, animationsEnabled],
   );
 
   const handleToggleStar = useCallback(async () => {
@@ -1079,6 +1132,7 @@ export function ThreadDisplay() {
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button
+                        aria-label={m['common.threadDisplay.archive']()}
                         onClick={() => moveThreadTo('archive')}
                         className="inline-flex h-7 w-7 cursor-pointer items-center justify-center gap-1 overflow-hidden rounded-lg bg-white transition-colors hover:bg-gray-100 dark:bg-[#313131] dark:hover:bg-[#404040]"
                       >
@@ -1205,7 +1259,10 @@ export function ThreadDisplay() {
                   >
                     <MessageList
                       messages={emailData?.messages ?? []}
-                      sourceMessageId={sourceMessageId}
+                      sourceMessageId={displayedSourceMessageId}
+                      focusSourceMessageId={sourceMessageId}
+                      currentThreadId={id}
+                      onSelectSourceMessage={navaSidePanelOpen ? selectSourceMessage : undefined}
                       isFullscreen={isFullscreen}
                       totalReplies={emailData?.totalReplies}
                       allThreadAttachments={allThreadAttachments}
@@ -1215,18 +1272,17 @@ export function ThreadDisplay() {
                       leading={threadDraftSection}
                       linkedThreadIds={emailData?.linkedThreadIds}
                       conversationMessageCount={emailData?.conversationMessageCount}
-                      onOpenLinkedThread={(threadId) => {
-                        void clearComposeContext().then(() =>
-                          setThreadSelection({ threadId, sourceMessageId: null }),
-                        );
-                      }}
+                      onOpenLinkedThread={openLinkedThread}
                     />
                   </motion.div>
                 </AnimatePresence>
               ) : (
                 <MessageList
                   messages={emailData?.messages ?? []}
-                  sourceMessageId={sourceMessageId}
+                  sourceMessageId={displayedSourceMessageId}
+                  focusSourceMessageId={sourceMessageId}
+                  currentThreadId={id}
+                  onSelectSourceMessage={navaSidePanelOpen ? selectSourceMessage : undefined}
                   isFullscreen={isFullscreen}
                   totalReplies={emailData?.totalReplies}
                   allThreadAttachments={allThreadAttachments}
@@ -1236,11 +1292,7 @@ export function ThreadDisplay() {
                   leading={threadDraftSection}
                   linkedThreadIds={emailData?.linkedThreadIds}
                   conversationMessageCount={emailData?.conversationMessageCount}
-                  onOpenLinkedThread={(threadId) => {
-                    void clearComposeContext().then(() =>
-                      setThreadSelection({ threadId, sourceMessageId: null }),
-                    );
-                  }}
+                  onOpenLinkedThread={openLinkedThread}
                 />
               )}
             </div>
@@ -1254,6 +1306,9 @@ export function ThreadDisplay() {
 interface MessageListProps {
   messages: ParsedMessage[];
   sourceMessageId?: string | null;
+  focusSourceMessageId?: string | null;
+  currentThreadId?: string | null;
+  onSelectSourceMessage?: (message: ParsedMessage) => void;
   isFullscreen: boolean;
   totalReplies?: number;
   allThreadAttachments?: Attachment[];
@@ -1266,9 +1321,12 @@ interface MessageListProps {
   onOpenLinkedThread?: (threadId: string) => void;
 }
 
-const MessageList = ({
+export const MessageList = ({
   messages,
   sourceMessageId,
+  focusSourceMessageId = sourceMessageId,
+  currentThreadId,
+  onSelectSourceMessage,
   isFullscreen,
   totalReplies,
   allThreadAttachments,
@@ -1281,8 +1339,9 @@ const MessageList = ({
   onOpenLinkedThread,
 }: MessageListProps) => {
   const timezone = useTimezone();
+  const { data: connection } = useActiveConnection();
   const displayMessages = orderMessagesNewestFirst(messages || []);
-  const sourceMessageRef = useExactSourceMessageSelection(sourceMessageId, messages);
+  const sourceMessageRef = useExactSourceMessageSelection(focusSourceMessageId, messages);
   const linkedThreadCount = (linkedThreadIds?.length ?? 0) + 1;
 
   return (
@@ -1336,7 +1395,15 @@ const MessageList = ({
         ) : null}
         {displayMessages.map((message, index) => {
           const isReplyingToThisMessage = Boolean(mode && activeReplyId === message.id);
-          const isSelectedSourceMessage = message.id === sourceMessageId;
+          const canSelectSourceMessage = Boolean(
+            onSelectSourceMessage && connection?.id && connection.email && message.id && message.threadId &&
+            !message.isDraft && isInboundMessage(message, connection.email),
+          );
+          const isSelectedSourceMessage = Boolean(
+            message.id === sourceMessageId &&
+            message.threadId === currentThreadId &&
+            messages.filter((candidate) => candidate.id === sourceMessageId).length === 1,
+          );
           const previousMessage = displayMessages[index - 1];
           const showThreadDivider =
             index > 0 &&
@@ -1346,6 +1413,7 @@ const MessageList = ({
           return (
             <div
               key={message.id}
+              data-message-id={message.id}
               ref={isSelectedSourceMessage ? sourceMessageRef : undefined}
               tabIndex={isSelectedSourceMessage ? -1 : undefined}
               aria-current={isSelectedSourceMessage || undefined}
@@ -1369,6 +1437,18 @@ const MessageList = ({
                   index > 0 && !showThreadDivider && 'border-border border-t',
                 )}
               >
+                {canSelectSourceMessage ? (
+                  <div className="hidden justify-end px-4 pt-2 lg:flex">
+                    <button
+                      type="button"
+                      aria-pressed={isSelectedSourceMessage}
+                      onClick={() => onSelectSourceMessage?.(message)}
+                      className="text-primary rounded px-2 py-1 text-xs hover:underline focus-visible:outline-2"
+                    >
+                      {isSelectedSourceMessage ? 'Selected for Nava' : 'Use this email in Nava'}
+                    </button>
+                  </div>
+                ) : null}
                 {isReplyingToThisMessage ? (
                   <div
                     className="border-border border-b px-4 py-3"

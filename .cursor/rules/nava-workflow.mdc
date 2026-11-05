@@ -1,16 +1,10 @@
 ---
-description: "Canonical Zero planning, execution, review, memory, and model routing"
+description: "Zero workflow: follow AGENTS.md and PRODUCT.md (pilot-now)"
 alwaysApply: true
 ---
 
 # Nava workflow
 
-- A parent-workspace `nava-workflow.mdc` may be older. Where its process or routing rules differ, use this worktree’s rules and `AGENTS.md`.
-- Choose planning and execution skills for the task, risk and owner direction. Honor explicitly requested skills.
-- For nontrivial work, inspect relevant code/config and consult documented solutions when useful.
-- Choose plan, design and DevEx reviews in proportion to scope and risk. Do not require multiple review rituals by default.
-- Use test-driven or subagent-driven development when appropriate or explicitly requested. Never discard existing code merely because tests came later. Preserve project-required same-head review and fresh verification.
-- `ponytail` persistent mode stays off unless explicitly invoked. `ponytail-review` remains review-only.
-- Document verified, reusable learnings when useful or requested; do not require a document for every task.
-- Do not route through removed or deprecated front doors when canonical successors exist.
-- Pilot-RDS safety rule overrides every skill, plan, autonomy mandate, and test instruction.
+- `AGENTS.md` and `PRODUCT.md` on current main are the only workflow rules. The owner's latest message wins.
+- Pilot-now: ship working workflows. No review rituals, mandatory docs or new tests beyond AGENTS.md.
+- Pilot-RDS safety rule still applies.

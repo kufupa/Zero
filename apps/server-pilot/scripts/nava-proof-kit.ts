@@ -18,7 +18,7 @@ import {
   waitFor,
   type Captured,
 } from './nava-ae4-override-proof';
-import { fitPaneToContent, MARK_PII_JS, outcomeOf, PII_SELECTOR, type RunConfig } from './nava-preview-run';
+import { fitPaneToContent, MARK_PII_JS, outcomeOf, PII_SELECTOR, previewThreadUrl, type RunConfig } from './nava-preview-run';
 
 export {
   allowEditsFrom,
@@ -139,9 +139,10 @@ export async function openProofPage(
 }
 
 /** Opens the thread in /nava-preview and waits until the pane has read it (the "Nava is reading" line is gone). */
-export async function openThread(page: Page, baseUrl: string, threadId: string, captured: Captured): Promise<void> {
+export async function openThread(page: Page, baseUrl: string, threadId: string, captured: Captured,
+  sourceMessageId?: string | null): Promise<void> {
   const outcomeStart = captured.outcomes.length;
-  await page.goto(`${baseUrl}/nava-preview?thread=${encodeURIComponent(threadId)}`, { waitUntil: 'domcontentloaded' });
+  await page.goto(previewThreadUrl(baseUrl, threadId, sourceMessageId), { waitUntil: 'domcontentloaded' });
   if (new URL(page.url()).pathname.startsWith('/login')) throw new Blocker('the storage state has no session');
   await waitFor('the pane to read the email', SETTLE_MS, async () => {
     const read = await readPane(page, threadId);

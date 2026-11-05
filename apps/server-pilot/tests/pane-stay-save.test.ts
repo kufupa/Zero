@@ -85,6 +85,20 @@ const labStay = {
   guaranteeType: 'Awaiting Voucher',
 };
 
+
+// The HRCEN legacy writer is held; retain its generic runner coverage on HRDAV.
+const legacyDavinciStay = {
+  ...labStay,
+  propertyCode: 'HRDAV' as const,
+  marketSegment: marketSegmentOptions(profileFor('HRDAV'))?.[0] ?? '',
+  guestoptin4: true,
+  reservationNote: 'Test billing instructions',
+};
+const legacyDavinciRealStay = {
+  ...legacyDavinciStay, firstName: 'Ann', lastName: 'Smith',
+  arrival: '2026-11-12', departure: '2026-11-14',
+};
+
 let ownerSeq = 0;
 // Each test gets its own owner, so grants from one test never satisfy another.
 function freshOwner(transportId = 'transport-centurion'): string {
@@ -137,6 +151,23 @@ afterEach(() => {
 });
 
 describe('pane stay save guards', () => {
+  it('holds legacy HRCEN commits before duplicate reads or native spawn', async () => {
+    enableSave();
+    const read = vi.fn(async () => 'clear' as const);
+    const spawn = vi.fn(cliSpawn);
+    paneStaySaveLoaders.osressGuestDatesSearch = read;
+    paneStaySaveLoaders.spawn = spawn;
+    for (const input of [
+      { owner: freshOwner('transport-centurion'), stay: labStay },
+      { owner: 'operator', stay: { ...labStay, propertyCode: 'HRCEN' } },
+    ]) {
+      await expect(runPaneStay({ ...input, mode: 'commit', previewDigest: paneStayDigest(input.stay) }))
+        .resolves.toEqual({ status: 'refused', reason: 'cloud_create_required' });
+    }
+    expect(read).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it('is off unless RESERVATIONIST_PANE_SAVE is exactly lab or on', () => {
     expect(paneStaySaveEnabled({})).toBe(false);
     expect(paneStaySaveEnabled({ RESERVATIONIST_PANE_SAVE: 'off' })).toBe(false);
@@ -188,13 +219,10 @@ describe('pane stay save guards', () => {
     );
   });
 
-  it('treats *_PAID=on as off and logs it', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(paneWriteMode('amend', 'paid', { PANE_WRITE_AMEND_PAID: 'on' })).toBe('off');
-    expect(paneWriteMode('cancel', 'paid', { PANE_WRITE_CANCEL_PAID: 'on' })).toBe('off');
+  it('accepts dedicated paid amend and cancel flags', () => {
+    expect(paneWriteMode('amend', 'paid', { PANE_WRITE_AMEND_PAID: 'on' })).toBe('on');
+    expect(paneWriteMode('cancel', 'paid', { PANE_WRITE_CANCEL_PAID: 'on' })).toBe('on');
     expect(paneWriteMode('amend', 'paid', { PANE_WRITE_AMEND_PAID: 'lab' })).toBe('lab');
-    expect(warn).toHaveBeenCalledWith('pane_write_paid_on_ignored', { env: 'PANE_WRITE_AMEND_PAID' });
-    expect(warn).toHaveBeenCalledWith('pane_write_paid_on_ignored', { env: 'PANE_WRITE_CANCEL_PAID' });
     expect(paneWriteModes({ PANE_WRITE_CREATE: 'on' })).toEqual({
       create: 'on',
       amendUnpaid: 'off',
@@ -254,10 +282,11 @@ describe('pane stay save guards', () => {
   });
 
   it('refuses refused_lock_busy in commit when the duplicate check cannot get the lock in time', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
     paneStaySaveLoaders.osressGuestDatesSearch = async () => 'busy';
     await expect(
-      runPaneStay({ mode: 'commit', stay: labStay, owner: freshOwner(), previewDigest: paneStayDigest(labStay) }),
+      runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner: freshOwner('transport-davinci'), previewDigest: paneStayDigest(legacyDavinciStay) }),
     ).resolves.toEqual({ status: 'refused', reason: 'refused_lock_busy' });
   });
 
@@ -401,29 +430,31 @@ describe('pane stay save guards', () => {
   });
 
   it('commit with a parent confirmation adds the room to that booking despite the same-guest duplicate', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.lock = passingLock();
     paneStaySaveLoaders.osressGuestDatesSearch = async () => 'duplicate';
-    const owner = freshOwner();
+    const owner = freshOwner('transport-davinci');
     paneStaySaveLoaders.spawn = async (input) => {
       if (input.paneCommit) expect(input.parentConfirmation).toBe('73165771-1');
       return input.paneCommit
         ? { outcome: 'committed', clickedSave: true, confirmationNumber: '39863956-1' }
         : { outcome: 'previewed', clickedSave: false, confirmationNumber: '' };
     };
-    await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner });
     await expect(
       runPaneStay({
         mode: 'commit',
-        stay: labStay,
+        stay: legacyDavinciStay,
         owner,
-        previewDigest: paneStayDigest(labStay),
+        previewDigest: paneStayDigest(legacyDavinciStay),
         parentConfirmation: '73165771-1',
       }),
     ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '39863956-1' });
   });
 
   it('commit refuses a parent that is not a confirmation number before any lock', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.lock = {
       withLock: async () => {
@@ -433,15 +464,16 @@ describe('pane stay save guards', () => {
     await expect(
       runPaneStay({
         mode: 'commit',
-        stay: labStay,
-        owner: freshOwner(),
-        previewDigest: paneStayDigest(labStay),
+        stay: legacyDavinciStay,
+        owner: freshOwner('transport-davinci'),
+        previewDigest: paneStayDigest(legacyDavinciStay),
         parentConfirmation: 'Labtest',
       }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_parent_invalid' });
   });
 
   it('commit refuses when OSRESS finds a duplicate stay', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.lock = passingLock();
     paneStaySaveLoaders.osressGuestDatesSearch = async () => 'duplicate';
@@ -449,18 +481,19 @@ describe('pane stay save guards', () => {
       throw new Error('must not spawn');
     };
     await expect(
-      runPaneStay({ mode: 'commit', stay: labStay, owner: freshOwner(), previewDigest: paneStayDigest(labStay) }),
+      runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner: freshOwner('transport-davinci'), previewDigest: paneStayDigest(legacyDavinciStay) }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'osress_duplicate' });
   });
 
   it('commit refuses when the OSRESS guest-date reader is parked', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.osressGuestDatesSearch = null;
     paneStaySaveLoaders.spawn = async () => {
       throw new Error('must not spawn');
     };
     await expect(
-      runPaneStay({ mode: 'commit', stay: labStay, owner: freshOwner() }),
+      runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner: freshOwner('transport-davinci') }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'osress_reader_parked' });
   });
 });
@@ -480,25 +513,27 @@ describe('pane stay preview digest and commit', () => {
   });
 
   it('a refused preview grants nothing, so its digest cannot commit', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
-    const owner = freshOwner();
+    const owner = freshOwner('transport-davinci');
     paneStaySaveLoaders.spawn = async () => ({
       outcome: 'refused_save_blank_required',
       clickedSave: false,
       confirmationNumber: '',
     });
-    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    const preview = await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner });
     expect(preview).toMatchObject({ status: 'refused', reason: 'refused_save_blank_required' });
     expect(preview.previewDigest).toBeUndefined();
     paneStaySaveLoaders.spawn = async () => {
       throw new Error('must not spawn');
     };
     await expect(
-      runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest: paneStayDigest(labStay) }),
+      runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner, previewDigest: paneStayDigest(legacyDavinciStay) }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
   });
 
   it('commit without a previewDigest is refused before the lock or any spawn', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
     const seen: string[] = [];
     paneStaySaveLoaders.lock = passingLock(seen);
@@ -506,32 +541,34 @@ describe('pane stay preview digest and commit', () => {
       throw new Error('must not spawn');
     };
     await expect(
-      runPaneStay({ mode: 'commit', stay: labStay, owner: freshOwner() }),
+      runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner: freshOwner('transport-davinci') }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
     expect(seen).toEqual([]);
   });
 
   it('a digest for a different stay is a mismatch and never spawns', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
-    const owner = freshOwner();
-    await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    const owner = freshOwner('transport-davinci');
+    await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner });
     paneStaySaveLoaders.spawn = async () => {
       throw new Error('must not spawn');
     };
     await expect(
       runPaneStay({
         mode: 'commit',
-        stay: { ...labStay, roomType: 'DBL' },
+        stay: { ...legacyDavinciStay, roomType: 'DBL' },
         owner,
-        previewDigest: paneStayDigest(labStay),
+        previewDigest: paneStayDigest(legacyDavinciStay),
       }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_digest_mismatch' });
   });
 
   it('runs the duplicate read under the same property lock as the save, taken once', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
-    const owner = freshOwner();
-    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    const owner = freshOwner('transport-davinci');
+    const preview = await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner });
     const previewDigest = preview.previewDigest as string;
     let held = false;
     let acquisitions = 0;
@@ -552,45 +589,48 @@ describe('pane stay preview digest and commit', () => {
       return 'clear';
     };
     await expect(
-      runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest }),
+      runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner, previewDigest }),
     ).resolves.toMatchObject({ status: 'ok', outcome: 'committed' });
     expect(heldDuringRead).toEqual([true]);
     expect(acquisitions).toBe(1);
   });
 
   it('a matching preview commits once; replaying the same grant is refused', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
-    const owner = freshOwner();
-    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    const owner = freshOwner('transport-davinci');
+    const preview = await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner });
     const previewDigest = preview.previewDigest as string;
     await expect(
-      runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest }),
+      runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner, previewDigest }),
     ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
     await expect(
-      runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest }),
+      runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner, previewDigest }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
   });
 
   it('a preview grant expires after 10 minutes and belongs to the previewing owner', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
-    const owner = freshOwner();
+    const owner = freshOwner('transport-davinci');
     let now = 1_000_000;
     paneStaySaveLoaders.now = () => now;
-    await runPaneStay({ mode: 'preview', stay: labStay, owner });
-    const previewDigest = paneStayDigest(labStay);
+    await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner });
+    const previewDigest = paneStayDigest(legacyDavinciStay);
     await expect(
-      runPaneStay({ mode: 'commit', stay: labStay, owner: freshOwner(), previewDigest }),
+      runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner: freshOwner('transport-davinci'), previewDigest }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
     now += PANE_PREVIEW_TTL_MS + 1;
     await expect(
-      runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest }),
+      runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner, previewDigest }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
   });
 
   it('never reports committed when the runner readback did not match', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
-    const owner = freshOwner();
-    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    const owner = freshOwner('transport-davinci');
+    const preview = await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner });
     paneStaySaveLoaders.spawn = async () => ({
       outcome: 'committed_unverified',
       clickedSave: true,
@@ -599,7 +639,7 @@ describe('pane stay preview digest and commit', () => {
     await expect(
       runPaneStay({
         mode: 'commit',
-        stay: labStay,
+        stay: legacyDavinciStay,
         owner,
         previewDigest: preview.previewDigest ?? undefined,
       }),
@@ -611,29 +651,31 @@ describe('pane stay preview digest and commit', () => {
   });
 
   it('commit spawns a fresh fill under lock after its preview and returns the confirmation', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
-    const owner = freshOwner();
-    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    const owner = freshOwner('transport-davinci');
+    const preview = await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner });
     paneStaySaveLoaders.spawn = async (input) => {
       expect(input.paneCommit).toBe(true);
       expect(input.stopBefore).toBeNull();
       return { outcome: 'committed', clickedSave: true, confirmationNumber: '46184891-1' };
     };
     await expect(
-      runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest: preview.previewDigest ?? undefined }),
+      runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner, previewDigest: preview.previewDigest ?? undefined }),
     ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
   });
 
   it('does not reuse a preview session for commit', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
     const sessions: string[] = [];
     paneStaySaveLoaders.spawn = async (input) => {
       sessions.push(input.paneCommit ? 'commit' : 'preview');
       return cliSpawn(input);
     };
-    const owner = freshOwner();
-    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
-    await runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest: preview.previewDigest ?? undefined });
+    const owner = freshOwner('transport-davinci');
+    const preview = await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner });
+    await runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner, previewDigest: preview.previewDigest ?? undefined });
     expect(sessions).toEqual(['preview', 'commit']);
   });
 });
@@ -768,8 +810,9 @@ describe('pane stay screenshots', () => {
 
 describe('pane stay unconfirmed saves', () => {
   it('a commit with no booking number is refused as pane_save_unconfirmed, keeps its run, and spends the grant', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
-    const owner = freshOwner();
+    const owner = freshOwner('transport-davinci');
     const runDir = await mkdtemp(join(tmpdir(), 'pane-stay-test-'));
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
     await writeFile(join(runDir, 'saved.png'), png);
@@ -786,10 +829,10 @@ describe('pane stay unconfirmed saves', () => {
           }
         : { outcome: 'previewed', clickedSave: false, confirmationNumber: '' };
     try {
-      const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+      const preview = await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner });
       const previewDigest = preview.previewDigest as string;
       await expect(
-        runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest }),
+        runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner, previewDigest }),
       ).resolves.toEqual({
         status: 'refused',
         reason: 'pane_save_unconfirmed',
@@ -801,7 +844,7 @@ describe('pane stay unconfirmed saves', () => {
         dataUrl: `data:image/png;base64,${png.toString('base64')}`,
       });
       await expect(
-        runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest }),
+        runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner, previewDigest }),
       ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
     } finally {
       await rm(runDir, { recursive: true, force: true });
@@ -809,15 +852,16 @@ describe('pane stay unconfirmed saves', () => {
   });
 
   it('a save_failed from the CLI gets the same rule: it is never a plain failure', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
-    const owner = freshOwner();
+    const owner = freshOwner('transport-davinci');
     paneStaySaveLoaders.spawn = async (input) =>
       input.paneCommit
         ? { outcome: 'save_failed', clickedSave: true, confirmationNumber: '' }
         : { outcome: 'previewed', clickedSave: false, confirmationNumber: '' };
-    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    const preview = await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner });
     await expect(
-      runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest: preview.previewDigest as string }),
+      runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner, previewDigest: preview.previewDigest as string }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_unconfirmed' });
   });
 });
@@ -858,17 +902,18 @@ describe('pane stay save modes', () => {
   });
 
   it('on allows a real-guest preview but refuses commit before lock or spawn', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
     paneStaySaveLoaders.mode = () => 'on';
-    const owner = freshOwner();
-    const preview = await runPaneStay({ mode: 'preview', stay: realStay, owner });
+    const owner = freshOwner('transport-davinci');
+    const preview = await runPaneStay({ mode: 'preview', stay: legacyDavinciRealStay, owner });
     expect(preview).toMatchObject({ status: 'ok', outcome: 'previewed' });
     const locked: string[] = [];
     paneStaySaveLoaders.lock = passingLock(locked);
     paneStaySaveLoaders.spawn = async () => { throw new Error('must not spawn'); };
-    for (const stay of [realStay, { ...labStay, firstName: 'Pat' },
-      { ...labStay, arrival: '2026-12-31' }, { ...labStay, arrival: 'zzzz' },
-      { ...labStay, arrival: '2027-02-30' }]) {
+    for (const stay of [legacyDavinciRealStay, { ...legacyDavinciStay, firstName: 'Pat' },
+      { ...legacyDavinciStay, arrival: '2026-12-31' }, { ...legacyDavinciStay, arrival: 'zzzz' },
+      { ...legacyDavinciStay, arrival: '2027-02-30' }]) {
       await expect(runPaneStay({ mode: 'commit', stay, owner, previewDigest: paneStayDigest(stay) }))
         .resolves.toMatchObject({ status: 'refused', reason: 'trusted_staff_create_authorization_unavailable' });
     }
@@ -876,16 +921,18 @@ describe('pane stay save modes', () => {
   });
 
   it('refuses a Labtest commit requesting an HMS confirmation email before lock', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
     const locked: string[] = [];
     paneStaySaveLoaders.lock = passingLock(locked);
-    const stay = { ...labStay, confirmationRecipient: { mode: 'self' as const, address: 'staff@example.invalid' } };
-    await expect(runPaneStay({ mode: 'commit', stay, owner: freshOwner(), previewDigest: paneStayDigest(stay) }))
+    const stay = { ...legacyDavinciStay, confirmationRecipient: { mode: 'self' as const, address: 'staff@example.invalid' } };
+    await expect(runPaneStay({ mode: 'commit', stay, owner: freshOwner('transport-davinci'), previewDigest: paneStayDigest(stay) }))
       .resolves.toMatchObject({ status: 'refused', reason: 'confirmation_email_writer_unavailable' });
     expect(locked).toEqual([]);
   });
 
   it('on still refuses a commit when the duplicate check finds the guest on those dates', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
     paneStaySaveLoaders.mode = () => 'on';
     paneStaySaveLoaders.osressGuestDatesSearch = async () => 'duplicate';
@@ -895,9 +942,9 @@ describe('pane stay save modes', () => {
     await expect(
       runPaneStay({
         mode: 'commit',
-        stay: labStay,
-        owner: freshOwner(),
-        previewDigest: paneStayDigest(labStay),
+        stay: legacyDavinciStay,
+        owner: freshOwner('transport-davinci'),
+        previewDigest: paneStayDigest(legacyDavinciStay),
       }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'osress_duplicate' });
   });
@@ -919,11 +966,12 @@ describe('pane stay save modes', () => {
   });
 
   it('refuses a commit whose agency, organization, note or booker differs from the previewed stay', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
     paneStaySaveLoaders.mode = () => 'on';
-    const owner = freshOwner();
+    const owner = freshOwner('transport-davinci');
     const previewed = {
-      ...labStay,
+      ...legacyDavinciStay,
       bookingAgency: { name: 'XYZ TRAVEL' },
       reservationNote: 'Late arrival',
     };
@@ -959,6 +1007,7 @@ describe('pane stay save modes', () => {
 
   it('rejects out-of-range child ages at the pane boundary', () => {
     expect(paneStayInput.safeParse({ ...realStay, childAges: [0, 17] }).success).toBe(true);
+    expect(paneStayInput.safeParse({ ...realStay, stayId: `room_${'a'.repeat(36)}_1` }).success).toBe(true);
     expect(paneStayInput.safeParse({ ...realStay, childAges: [18] }).success).toBe(false);
     expect(paneStayInput.safeParse({ ...realStay, childAges: [-1] }).success).toBe(false);
     expect(paneStayInput.safeParse({ ...realStay, childAges: [1.5] }).success).toBe(false);
@@ -967,16 +1016,17 @@ describe('pane stay save modes', () => {
   });
 
   it('returns a saved CMS mismatch without turning the booking into a refusal', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
     paneStaySaveLoaders.mode = () => 'on';
     paneStaySaveLoaders.spawn = async () => ({ outcome: 'committed_unverified', clickedSave: true,
       confirmationNumber: '12345-1', cmsReason: 'saved_cms_mismatch',
       cmsMismatches: [{ field: 'udfchar09', expected: '03', actual: '' }] });
-    const owner = freshOwner();
-    const previewDigest = paneStayDigest(labStay);
+    const owner = freshOwner('transport-davinci');
+    const previewDigest = paneStayDigest(legacyDavinciStay);
     const { recordPanePreview } = await import('../src/ai/pane-stay-save.js');
     recordPanePreview(owner, previewDigest, Date.now());
-    await expect(runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest }))
+    await expect(runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner, previewDigest }))
       .resolves.toMatchObject({ status: 'ok', outcome: 'committed_unverified',
         confirmationNumber: '12345-1', cmsReason: 'saved_cms_mismatch',
         cmsMismatches: [{ field: 'udfchar09', expected: '03', actual: '' }] });
@@ -1230,24 +1280,16 @@ describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
     expect(seen).toEqual([DAVINCI_HMS_READ_TARGET]);
   });
 
-  it('Centurion commit dup-check stays on HRCEN', async () => {
+  it('Centurion legacy commit is held before the duplicate read', async () => {
     enableSave();
-    const seen: unknown[] = [];
-    paneStaySaveLoaders.osressGuestDatesSearch = async (input) => {
-      seen.push(input.target);
-      return 'clear';
-    };
+    const read = vi.fn(async () => 'clear' as const);
+    paneStaySaveLoaders.osressGuestDatesSearch = read;
     const owner = freshOwner();
     const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
-    await expect(
-      runPaneStay({
-        mode: 'commit',
-        stay: labStay,
-        owner,
-        previewDigest: preview.previewDigest ?? paneStayDigest(labStay),
-      }),
-    ).resolves.toMatchObject({ status: 'ok' });
-    expect(seen).toEqual([CENTURION_HMS_READ_TARGET]);
+    await expect(runPaneStay({ mode: 'commit', stay: labStay, owner,
+      previewDigest: preview.previewDigest ?? paneStayDigest(labStay) }))
+      .resolves.toMatchObject({ status: 'refused', reason: 'cloud_create_required' });
+    expect(read).not.toHaveBeenCalled();
   });
 
   it('PANE_WRITE_CREATE off still refuses Da Vinci create when the DV gate is lab', async () => {
@@ -1406,6 +1448,8 @@ describe('stay commit persist/reload', () => {
   it('reload reads the confirmation saved on the stay', () => {
     const state = withStayCommit({}, 's_1', booked);
     expect(stayCommitOf(state, 's_1')).toEqual(booked);
+    const longId = `room_${'a'.repeat(36)}_1`;
+    expect(stayCommitOf(JSON.parse(JSON.stringify(withStayCommit(state, longId, booked))), longId)).toEqual(booked);
   });
 
   it('persists a saved CMS mismatch across JSON reload without permitting another booking', () => {
@@ -1483,9 +1527,10 @@ describe('pane stay preview persist', () => {
   });
 
   it('refuses a failed bound preview and discards any earlier memory grant', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
-    const owner = freshOwner();
-    await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    const owner = freshOwner('transport-davinci');
+    await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner });
     paneStaySaveLoaders.previewPersist = {
       record: () => { throw new Error('database_unavailable'); },
       take: () => false,
@@ -1493,10 +1538,10 @@ describe('pane stay preview persist', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await expect(runPaneStay({
-        mode: 'preview', stay: labStay, owner, workItemId: randomUUID(), stayId: 's_1',
+        mode: 'preview', stay: legacyDavinciStay, owner, workItemId: randomUUID(), stayId: 's_1',
       })).resolves.toEqual({ status: 'refused', reason: 'pane_preview_persist_failed' });
       await expect(runPaneStay({
-        mode: 'commit', stay: labStay, owner, previewDigest: paneStayDigest(labStay),
+        mode: 'commit', stay: legacyDavinciStay, owner, previewDigest: paneStayDigest(legacyDavinciStay),
       })).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
     } finally {
       warn.mockRestore();
@@ -1530,9 +1575,10 @@ describe('pane stay preview persist', () => {
   });
 
   it('refuses a bound commit on an active create fence even with an in-memory grant', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
-    const owner = freshOwner();
-    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    const owner = freshOwner('transport-davinci');
+    const preview = await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner });
     paneStaySaveLoaders.previewPersist = {
       record: () => undefined,
       take: () => { throw new CreateFenceError('active'); },
@@ -1540,31 +1586,33 @@ describe('pane stay preview persist', () => {
     const spawn = vi.fn(cliSpawn);
     paneStaySaveLoaders.spawn = spawn;
     await expect(runPaneStay({
-      mode: 'commit', stay: labStay, owner, workItemId: randomUUID(), stayId: 's_1',
+      mode: 'commit', stay: legacyDavinciStay, owner, workItemId: randomUUID(), stayId: 's_1',
       previewDigest: preview.previewDigest as string,
     })).resolves.toMatchObject({ status: 'refused', reason: 'write_in_flight' });
     expect(spawn).not.toHaveBeenCalled();
     await expect(runPaneStay({
-      mode: 'commit', stay: labStay, owner, previewDigest: preview.previewDigest as string,
+      mode: 'commit', stay: legacyDavinciStay, owner, previewDigest: preview.previewDigest as string,
     })).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
   });
 
   it('does not leave an in-memory grant when bound preview persistence meets an active fence', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
-    const owner = freshOwner();
+    const owner = freshOwner('transport-davinci');
     paneStaySaveLoaders.previewPersist = {
       record: () => { throw new CreateFenceError('active'); },
       take: () => false,
     };
     await expect(runPaneStay({
-      mode: 'preview', stay: labStay, owner, workItemId: randomUUID(), stayId: 's_1',
+      mode: 'preview', stay: legacyDavinciStay, owner, workItemId: randomUUID(), stayId: 's_1',
     })).resolves.toMatchObject({ status: 'refused', reason: 'write_in_flight' });
     await expect(runPaneStay({
-      mode: 'commit', stay: labStay, owner, previewDigest: paneStayDigest(labStay),
+      mode: 'commit', stay: legacyDavinciStay, owner, previewDigest: paneStayDigest(legacyDavinciStay),
     })).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
   });
 
   it('preview survives service restart and digest change invalidates it', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
     let state: Record<string, unknown> = {};
     paneStaySaveLoaders.previewPersist = {
@@ -1591,23 +1639,23 @@ describe('pane stay preview persist', () => {
       return cliSpawn(input);
     };
     const workItemId = randomUUID();
-    const stayId = 's_1';
-    const owner = freshOwner();
-    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner, workItemId, stayId });
+    const stayId = `room_${'a'.repeat(36)}_1`;
+    const owner = freshOwner('transport-davinci');
+    const preview = await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner, workItemId, stayId });
     expect(preview).toMatchObject({
       status: 'ok',
       outcome: 'previewed',
       clickedSave: false,
-      previewDigest: paneStayDigest(labStay),
+      previewDigest: paneStayDigest(legacyDavinciStay),
     });
     expect(spawned).toEqual(['preview']);
-    expect(stayPreviewOf(state, stayId)?.digest).toBe(paneStayDigest(labStay));
+    expect(stayPreviewOf(state, stayId)?.digest).toBe(paneStayDigest(legacyDavinciStay));
 
     clearPanePreviewMemory();
     await expect(
       runPaneStay({
         mode: 'commit',
-        stay: labStay,
+        stay: legacyDavinciStay,
         owner,
         workItemId,
         stayId,
@@ -1616,9 +1664,9 @@ describe('pane stay preview persist', () => {
     ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
     expect(stayPreviewOf(state, stayId)).toBeUndefined();
 
-    const second = await runPaneStay({ mode: 'preview', stay: labStay, owner, workItemId, stayId });
+    const second = await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner, workItemId, stayId });
     clearPanePreviewMemory();
-    const changed = { ...labStay, roomType: 'DBL' };
+    const changed = { ...legacyDavinciStay, roomType: 'DBL' };
     await expect(
       runPaneStay({
         mode: 'commit',
@@ -1635,23 +1683,24 @@ describe('pane stay preview persist', () => {
   });
 
   it('does not let a memory-only preview authorize a bound commit', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
     paneStaySaveLoaders.previewPersist = {
       record: () => undefined,
       take: () => false,
     };
-    const owner = freshOwner();
-    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    const owner = freshOwner('transport-davinci');
+    const preview = await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner });
     expect(preview).toMatchObject({
       status: 'ok',
       outcome: 'previewed',
       clickedSave: false,
-      previewDigest: paneStayDigest(labStay),
+      previewDigest: paneStayDigest(legacyDavinciStay),
     });
     await expect(
       runPaneStay({
         mode: 'commit',
-        stay: labStay,
+        stay: legacyDavinciStay,
         owner,
         workItemId: randomUUID(),
         stayId: 's_1',
@@ -1661,22 +1710,23 @@ describe('pane stay preview persist', () => {
   });
 
   it('refuses a stale local grant after another process consumed the durable grant', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
     enableSave();
-    const owner = freshOwner();
+    const owner = freshOwner('transport-davinci');
     const workItemId = randomUUID(), stayId = 's_1';
     let durableAvailable = false;
     paneStaySaveLoaders.previewPersist = {
       record: () => { durableAvailable = true; },
       take: () => { const taken = durableAvailable; durableAvailable = false; return taken; },
     };
-    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner, workItemId, stayId });
+    const preview = await runPaneStay({ mode: 'preview', stay: legacyDavinciStay, owner, workItemId, stayId });
     expect(preview).toMatchObject({ status: 'ok', outcome: 'previewed' });
     // Simulate stale process A memory while process B consumed the durable record.
     recordPanePreview(owner, preview.previewDigest as string, paneStayClock());
     durableAvailable = false;
     const spawn = vi.fn(cliSpawn);
     paneStaySaveLoaders.spawn = spawn;
-    await expect(runPaneStay({ mode: 'commit', stay: labStay, owner, workItemId, stayId,
+    await expect(runPaneStay({ mode: 'commit', stay: legacyDavinciStay, owner, workItemId, stayId,
       previewDigest: preview.previewDigest as string })).resolves.toMatchObject({
         status: 'refused', reason: 'pane_save_preview_required',
       });

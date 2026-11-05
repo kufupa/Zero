@@ -1,6 +1,7 @@
 import {
   createArtifactReader,
   readQuoteAttachments,
+  type QuoteAttachmentReader,
   type QuoteAttachmentRow,
   type SyncedQuoteAttachment,
 } from './quote-workflow-synced-selection.js';
@@ -13,7 +14,13 @@ import { isScannedPdfVisionEnabled } from '../env.js';
 import { maskCardNumbers } from './card-mask.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { createAzureLunaModel, LunaModelAdapter } from './bedrock/luna.js';
-import { renderPdfPagesForVision, type SandboxRunner } from '../mail/artifacts/read-artifact.js';
+import { extractEmbeddedPdfText, renderPdfPagesForVision, type SandboxRunner } from '../mail/artifacts/read-artifact.js';
+import { readPanePop3Attachment } from '../mail/artifacts/pane-pop3-attachment.js';
+import { getS3Storage } from '../storage/s3.js';
+import { readPaneFilingAttachment } from './pane-filing-source.js';
+import { paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
+import { isVoucherPdfFilename, isVoucherPdfMime } from './voucher-filing-file.js';
+import { MAX_VOUCHER_FILING_BYTES } from './voucher-filing-bytes.js';
 
 // Voucher and proof-of-payment mail. Only the subject and the start of the body are read, so quoted history
 // further down cannot make an unrelated email look like a voucher.
@@ -35,6 +42,7 @@ export type VoucherConflicts = { lastNames: string[]; arrivals: string[] };
 export type VoucherGuest = {
   lastName: string | null;
   arrival: string | null;
+  confirmationNumber?: string | null;
   conflicts?: VoucherConflicts;
 };
 export type VoucherFindReply =
@@ -47,6 +55,9 @@ export type VoucherFindReply =
       threadId: string;
       guest: VoucherGuest;
       file: VoucherFile | null;
+      /** Metadata candidates only; the filing path still verifies the selected bytes and source. */
+      files: VoucherFile[];
+      documentSource?: { sha256: string; snapshotDigest: string };
       /** Voucher PDFs with no text: over the reader's cap, scanned, or unreadable. Staff check these by hand. */
       unreadPdfs: number;
     };
@@ -85,6 +96,17 @@ export function voucherReadFiles(files: QuoteAttachmentRow[]): QuoteAttachmentRo
   return named.length > 0 ? named : pdfs;
 }
 
+/** Only visible PDFs the existing filing adapter can accept; content is verified later. */
+export function voucherFilingFiles(files: QuoteAttachmentRow[]): QuoteAttachmentRow[] {
+  return files.filter((file) => !file.isInline && isVoucherPdfFilename(file.filename) &&
+    isVoucherPdfMime(file.mimeType) && Number.isSafeInteger(file.sizeBytes) &&
+    file.sizeBytes > 0 && file.sizeBytes <= MAX_VOUCHER_FILING_BYTES);
+}
+
+export function voucherFileMetadata(file: QuoteAttachmentRow): VoucherFile {
+  return { id: file.id, filename: file.filename, mimeType: file.mimeType, sizeBytes: file.sizeBytes };
+}
+
 /** The file staff upload to HMS Documents: a voucher-named file, else the first PDF, else the first file. */
 export function pickVoucherFile(files: QuoteAttachmentRow[]): VoucherFile | null {
   const visible = files.filter((file) => !file.isInline);
@@ -93,12 +115,7 @@ export function pickVoucherFile(files: QuoteAttachmentRow[]): VoucherFile | null
     visible.find(isPdfRow) ??
     visible[0];
   if (!chosen) return null;
-  return {
-    id: chosen.id,
-    filename: chosen.filename,
-    mimeType: chosen.mimeType,
-    sizeBytes: chosen.sizeBytes,
-  };
+  return voucherFileMetadata(chosen);
 }
 
 const MONTH_NAMES = [
@@ -301,6 +318,7 @@ export function extractVoucherGuest(input: {
 export async function loadVoucherCandidate(input: {
   transportId: string;
   internetMessageId: string;
+  selection?: PaneSourceSelection;
 }): Promise<VoucherCandidate | null> {
   let db;
   try {
@@ -320,6 +338,7 @@ export async function loadVoucherCandidate(input: {
       and(
         eq(message.transportId, input.transportId),
         eq(message.messageIdHeader, input.internetMessageId),
+        paneSourceSelectionCondition(input.selection),
       ),
     )
     .limit(2);
@@ -348,14 +367,53 @@ export async function loadVoucherCandidate(input: {
   };
 }
 
+/** Preserve the selected-mail boundary when a POP3 object's key still names its original ingest row. */
+async function readReconciledPop3Pdf(
+  row: QuoteAttachmentRow,
+  signal: AbortSignal,
+  scope: { transportId: string; messageId: string; internetMessageId: string; selection?: PaneSourceSelection },
+): ReturnType<QuoteAttachmentReader> {
+  if (row.messageId !== scope.messageId) return { text: null, reason: 'source changed' };
+  try {
+    const db = getDb();
+    const checkAuthority = async () => {
+      const rows = await db.select({ id: message.id }).from(message).where(and(
+        eq(message.transportId, scope.transportId), eq(message.messageIdHeader, scope.internetMessageId),
+        paneSourceSelectionCondition(scope.selection),
+      )).limit(2);
+      return rows.length === 1 && rows[0]?.id === scope.messageId;
+    };
+    const input = { transportId: scope.transportId, messageId: scope.messageId,
+      attachmentId: row.id, db, s3: getS3Storage(), signal, checkAuthority };
+    const original = await readPanePop3Attachment(input);
+    if (!original || original.source.filename !== row.filename || original.locator.s3Key !== row.s3Key ||
+        original.locator.mimeType !== row.mimeType || original.locator.sizeBytes !== row.sizeBytes ||
+        (row.sha256 && row.sha256 !== original.source.sha256)) return { text: null, reason: 'source changed' };
+    const parsed = await extractEmbeddedPdfText({ body: original.bytes, declaredSize: original.bytes.length,
+      declaredMime: 'application/pdf', objectMime: 'application/pdf' }, { signal, attachmentId: row.id });
+    // Extraction may take time. Do not return text or bytes if the selected mail or PDF moved meanwhile.
+    if (!(await readPanePop3Attachment({ ...input, expected: original.source }))) {
+      return { text: null, reason: 'source changed' };
+    }
+    if (parsed.data.text?.trim()) return { text: parsed.data.text };
+    if (parsed.data.reason === 'no_embedded_text') return { text: null, pdf: new Uint8Array(original.bytes) };
+    return { text: null, reason: parsed.data.reason.replaceAll('_', ' ') };
+  } catch { return { text: null, reason: 'source unavailable' }; }
+}
+
 /** PDF text for the voucher's own files only. Same reader and caps as the analyse loader. */
 export async function readVoucherAttachmentText(
   files: QuoteAttachmentRow[],
   signal: AbortSignal,
+  scope?: { transportId: string; messageId: string; internetMessageId: string; selection?: PaneSourceSelection },
 ): Promise<SyncedQuoteAttachment[]> {
-  let reader;
+  let reader: QuoteAttachmentReader;
   try {
-    reader = createArtifactReader(files, signal);
+    const existing = createArtifactReader(files, signal);
+    reader = async (row) => {
+      const result = await existing(row);
+      return result.text || result.pdf || !scope || signal.aborted ? result : readReconciledPop3Pdf(row, signal, scope);
+    };
   } catch {
     reader = async () => ({ text: null, reason: 'storage unavailable' });
   }
@@ -366,6 +424,59 @@ export async function readVoucherAttachmentText(
     adapter: enabled ? azureVisionAdapter() : null,
     signal: AbortSignal.timeout(VISION_DEADLINE_MS),
   });
+}
+
+/** Extract from the same authorized bytes whose identity the filing review will check. */
+export async function readSelectedVoucherAttachment(
+  file: QuoteAttachmentRow,
+  signal: AbortSignal,
+  scope: { transportId: string; messageId: string; internetMessageId: string; selection?: PaneSourceSelection },
+): Promise<{ texts: SyncedQuoteAttachment[]; source: { sha256: string; snapshotDigest: string } } | null> {
+  if (file.messageId !== scope.messageId) return null;
+  try {
+    const db = getDb();
+    const checkAuthority = async () => {
+      const rows = await db.select({ id: message.id }).from(message).where(and(
+        eq(message.transportId, scope.transportId), eq(message.messageIdHeader, scope.internetMessageId),
+        paneSourceSelectionCondition(scope.selection),
+      )).limit(2);
+      return rows.length === 1 && rows[0]?.id === scope.messageId;
+    };
+    const input = { transportId: scope.transportId, messageId: scope.messageId,
+      attachmentId: file.id, db, s3: getS3Storage(), signal, checkAuthority };
+    const sealed = file.s3Key.startsWith('outlook-sync-originals/');
+    const checkSelected = async () => {
+      const expectedSha = file.sha256;
+      if (!expectedSha || !(await checkAuthority())) return false;
+      const rows = await db.select({ id: attachment.id }).from(attachment).where(and(
+        eq(attachment.id, file.id), eq(attachment.messageId, scope.messageId), eq(attachment.s3Key, file.s3Key),
+        eq(attachment.filename, file.filename), eq(attachment.mimeType, file.mimeType),
+        eq(attachment.sizeBytes, file.sizeBytes), eq(attachment.sha256, expectedSha),
+      )).limit(2);
+      return rows.length === 1 && rows[0]?.id === file.id;
+    };
+    const pop3 = sealed ? null : await readPanePop3Attachment(input);
+    const original = sealed ? await readPaneFilingAttachment({ ...input, checkAuthority: checkSelected }) : pop3;
+    if (!original || original.source.filename !== file.filename || original.bytes.length !== file.sizeBytes ||
+        (file.sha256 && file.sha256 !== original.source.sha256) ||
+        (!sealed && (!pop3 || pop3.locator.s3Key !== file.s3Key || pop3.locator.mimeType !== file.mimeType ||
+          pop3.locator.sizeBytes !== file.sizeBytes))) return null;
+    const texts = await readQuoteAttachments([file], async () => {
+      const parsed = await extractEmbeddedPdfText({ body: original.bytes, declaredSize: original.bytes.length,
+        declaredMime: 'application/pdf', objectMime: 'application/pdf' }, { signal, attachmentId: file.id });
+      if (parsed.data.text?.trim()) return { text: parsed.data.text };
+      if (parsed.data.reason === 'no_embedded_text') return { text: null, pdf: new Uint8Array(original.bytes) };
+      return { text: null, reason: parsed.data.reason.replaceAll('_', ' ') };
+    });
+    const enabled = isScannedPdfVisionEnabled(process.env);
+    const result = await readScannedVoucherPages(texts, {
+      enabled, adapter: enabled ? azureVisionAdapter() : null, signal: AbortSignal.timeout(VISION_DEADLINE_MS),
+    });
+    const fresh = { ...input, signal: AbortSignal.timeout(15_000), expected: original.source };
+    if (!(sealed ? await readPaneFilingAttachment({ ...fresh, checkAuthority: checkSelected })
+      : await readPanePop3Attachment(fresh))) return null;
+    return { texts: result, source: { sha256: original.source.sha256, snapshotDigest: original.source.snapshotDigest } };
+  } catch { return null; }
 }
 
 // Vision fallback for scanned voucher PDFs (SCANNED_PDF_VISION=on). Same Azure Luna route as the quote analyse.

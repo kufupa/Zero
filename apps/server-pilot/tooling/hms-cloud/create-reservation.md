@@ -35,8 +35,16 @@ from stdin and returns one JSON object. Programmatic callers can import
 Codes are examples, not defaults, quotes or availability claims. Provide
 `guest.profileId` or `guest.search` with `lastName` and optional `firstName`
 and `email`. The current picker must verify an explicit profile ID; ambiguous
-or incomplete name searches return candidates and coverage. `stay.childCount`,
-when supplied, must agree with `childAges`. Absent or null ages mean unknown,
+or incomplete name searches return candidates and coverage. After a verified
+empty name search and successful picker close, prepare may stage explicit first
+and last name text only if the visible guest ID and both editable name fields
+are uniquely present and blank. It rechecks those fields after each edit and
+again on the final draft. A missing or hidden guest ID is not a verified blank.
+`guestNameDraft` records text staging only: the guest remains unresolved,
+`approvalReady` remains false, and the wrapper does not create or select a
+profile. Profile persistence remains unverified. This path has only synthetic
+wrapper coverage and requires live proof before native claims.
+`stay.childCount`, when supplied, must agree with `childAges`. Absent or null ages mean unknown,
 not zero; `[]` means known zero. Missing prepare inputs do not prevent other
 supported fields from being staged.
 
@@ -97,10 +105,11 @@ A fully staged unsaved draft returns `prepared` with `approvalReady: false`.
 When eligible, `requestBinding` contains a versioned canonical request and digest.
 The digest helper accepts either its raw input or returned canonical request; it
 is not authorization and does not prove equality to the native save body.
-This does not claim approval, a save, or persistence. NGI is staged only when
-an eligible verified Proof Labtest profile and valid 2027+ dates are present.
-Other drafts retain their staged fields but report `guaranteeType.staging` as
-missing. Non-NGI guarantees remain unsupported. Exact child ages are checked
+This does not claim approval, a save, or persistence. NGI and Guaranteed By
+Agent (`GTDAGT`) are staged only with an eligible verified Proof Labtest profile
+and valid 2027+ dates. Other drafts retain their staged fields but report
+`guaranteeType.staging` as missing. Other guarantees remain unsupported; an
+agent-guarantee save has not yet been proved in HMS. Exact child ages are checked
 at selection, but fresh saved-record readback exposes age bands rather than
 exact ages. Party IDs are checked at selection only on the unsaved draft. Selected party IDs require separate saved verification. Neither a
 visible label nor a selection proves persistence.
@@ -136,6 +145,5 @@ A/R account, and CMS message `03`. The CMS send box was unchecked, and no
 browser send requests were observed; this does not establish server-side email
 queue behavior. Saved A/R, billing reference, reason for stay, and other combinations remain
 unverified. The new billing path has not been proven with a live save. See [guest-stay-save.md](./guest-stay-save.md) for the existing
-fake-only request, preimage, no-send and proof limitations.
-No part of this interface enables real-guest writes or replaces a future
-authenticated staff approval boundary.
+request, preimage and readback contract. Real-guest writes happen only through
+the pane's staff Go (PRODUCT.md).

@@ -176,10 +176,12 @@ describe('HOLD file stops ops-deploy.sh before SSM', () => {
 
 describe('write-ec2-remote-env.sh canary SHA', () => {
   function runWriter(opts: {
+    attachWorkerOn?: boolean;
     liveSha: string;
     canaryLine: string | null;
     quoteOn: boolean;
     existingOn?: boolean;
+    createDispatch?: string;
   }): SpawnSyncReturns<string> {
     const root = scratch('u12-canary-');
     const repoRoot = join(root, 'repo');
@@ -191,11 +193,13 @@ describe('write-ec2-remote-env.sh canary SHA', () => {
     writeFileSync(
       join(serverPilot, '.env.production'),
       [
+        ...(opts.attachWorkerOn ? ["PANE_HMS_LAB_ATTACH_WORKER='on'", "PANE_WRITE_ATTACH='lab'"] : []),
         "NODE_ENV='production'",
         "DATABASE_URL='postgres://example.invalid/zero'",
         "AWS_REGION='af-south-1'",
         "S3_BUCKET='nava-test-bucket'",
         ...(opts.quoteOn ? ["HMS_DAVINCI_MAKE_QUOTE='on'"] : []),
+        ...(opts.createDispatch ? [`PANE_CLOUD_CREATE_DISPATCH='${opts.createDispatch}'`] : []),
         '',
       ].join('\n'),
     );
@@ -260,6 +264,17 @@ printf '%s' '{"BETTER_AUTH_SECRET":"remote-signing-secret"}'
     expect(result.stderr).toMatch(/HMS_DAVINCI_MAKE_QUOTE|quote/);
   });
 
+  it('allows Labtest attach-worker bootstrap without a live canary in lab mode', () => {
+    const sha = 'abcdef1234567890abcdef1234567890abcdef12';
+    for (const canaryLine of [null, `CANARY PASS attach HRDAV ${sha}`, 'CANARY PASS attach HRCEN deadbeef']) {
+      const result = runWriter({ liveSha: sha, canaryLine, quoteOn: false, attachWorkerOn: true });
+      expect(result.status, result.stderr).toBe(0);
+    }
+    const passed = runWriter({ liveSha: sha, canaryLine: `CANARY PASS attach HRCEN ${sha}`,
+      quoteOn: false, attachWorkerOn: true });
+    expect(passed.status, passed.stderr).toBe(0);
+  });
+
   it('does not treat an already-on flag as a flip', () => {
     const result = runWriter({
       liveSha: 'abcdef1234567890abcdef1234567890abcdef12',
@@ -269,5 +284,19 @@ printf '%s' '{"BETTER_AUTH_SECRET":"remote-signing-secret"}'
     });
     expect(result.stderr).not.toMatch(/CANARY PASS|stale/i);
     expect(result.status, result.stderr).toBe(0);
+  });
+
+  it('allows Cloud Create cutover only with an HRCEN canary on the live SHA', () => {
+    const sha = 'abcdef1234567890abcdef1234567890abcdef12';
+    for (const canaryLine of [null, `CANARY PASS create HRDAV ${sha}`, 'CANARY PASS create HRCEN deadbeef']) {
+      const refused = runWriter({ liveSha: sha, canaryLine, quoteOn: false, createDispatch: 'on' });
+      expect(refused.status).toBe(2);
+      expect(refused.stderr).toMatch(/PANE_CLOUD_CREATE_DISPATCH/);
+    }
+    const passed = runWriter({ liveSha: sha, canaryLine: `CANARY PASS create HRCEN ${sha}`,
+      quoteOn: false, createDispatch: 'on' });
+    expect(passed.status, passed.stderr).toBe(0);
+    const off = runWriter({ liveSha: sha, canaryLine: null, quoteOn: false, createDispatch: 'off' });
+    expect(off.status, off.stderr).toBe(0);
   });
 });

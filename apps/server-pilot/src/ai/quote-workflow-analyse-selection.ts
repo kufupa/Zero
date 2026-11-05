@@ -75,6 +75,10 @@ export function hashSyncedQuoteSelection(
   hash.update(selection.subject);
   hash.update('\0');
   hash.update(selection.bodyText);
+  if (selection.currentBodyText !== undefined) {
+    hash.update('\0currentBodyText\n');
+    hash.update(selection.currentBodyText);
+  }
   hash.update('\0');
   hash.update(selection.receivedAt ?? '');
   for (const message of selection.preceding) {

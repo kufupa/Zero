@@ -30,8 +30,9 @@ controls must also be blank. Linked, missing or ambiguous fields return
 `LABTEST_LINKED_PARTY_UNVERIFIED` in the identity or clean baseline checks;
 later changes also block the cancellation save.
 
-Never accept a fee or penalty dialog. `fee_dialog_pending` can occur after the
-cancellation save: reopen the confirmation in a fresh guarded session and
+On HRCEN the stay can already read Cancelled when a penalty dialog appears.
+Show the charge to staff; staff decide with a second Go (PRODUCT.md).
+`fee_dialog_pending` can occur after the cancellation save: reopen the confirmation in a fresh guarded session and
 verify its status and cancellation details. `awaiting_readback` also requires
 independent verification; reconcile uncertain outcomes before any further
 mutation, and never blindly retry. Browser send observations do not prove what

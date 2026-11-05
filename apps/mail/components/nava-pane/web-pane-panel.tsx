@@ -11,8 +11,12 @@ function statusCopy(selection: PreviewSelection): string {
   if (selection.status === 'loading') return 'Loading thread…';
   if (selection.status === 'error') return 'Could not load this thread.';
   if (selection.status === 'unsynced' && selection.reason === 'no_message_id') {
-    return 'Not analysable: the latest guest email has no Message-ID, so Nava cannot bind it.';
+    return 'Not analysable: this guest email has no Message-ID, so Nava cannot bind it.';
   }
+  if (selection.status === 'unsynced' && selection.reason === 'select_message')
+    return 'Select a guest email in this thread to use with Nava.';
+  if (selection.status === 'unsynced' && selection.reason === 'source_message_unavailable')
+    return 'This email is unavailable. Select a guest email in this thread to use with Nava.';
   if (selection.status === 'unsynced') return 'No guest email in this thread to analyse.';
   return '';
 }
@@ -21,23 +25,31 @@ function statusCopy(selection: PreviewSelection): string {
 export function WebPanePanel({
   threadId,
   sourceThreadId,
+  sourceMessageId,
+  requireSelectedMessage = false,
   onOpenThread,
   goldLabelEnabled = false,
   hmsNoticesManagedByParent = false,
 }: {
   threadId: string;
   sourceThreadId?: string;
-  onOpenThread?: (threadId: string) => void;
+  sourceMessageId?: string | null;
+  requireSelectedMessage?: boolean;
+  onOpenThread?: (threadId: string, sourceMessageId?: string) => void;
   goldLabelEnabled?: boolean;
   hmsNoticesManagedByParent?: boolean;
 }) {
   const { selection, bridge } = useWebPreview({
     threadId,
     ...(sourceThreadId ? { sourceThreadId } : {}),
+    ...(sourceMessageId != null ? { sourceMessageId } : {}),
+    ...(requireSelectedMessage ? { requireSelectedMessage } : {}),
   });
   const reporter = useHmsJobNoticeReporter();
   const activeEmail = selection.status === 'ready' ? selection.email : null;
-  const emailKey = activeEmail?.internetMessageId?.trim() || activeEmail?.entryId || threadId;
+  const emailKey = activeEmail?.entryId
+    ? JSON.stringify([activeEmail.storeId ?? '', activeEmail.folderEntryId ?? '', activeEmail.entryId])
+    : threadId;
   const emailSubject = activeEmail?.subject?.trim() || null;
 
   useLayoutEffect(() => {
@@ -72,6 +84,8 @@ export function WebPanePanel({
       <NavaPane
         bridge={bridge}
         preview
+        webSelectedMessageId={requireSelectedMessage ? activeEmail?.entryId ?? null : null}
+        webSelectedThreadId={selection.threadId}
         onOpenThread={onOpenThread}
         goldLabelEnabled={goldLabelEnabled}
         hmsNoticesManagedByParent={hmsNoticesManagedByParent}

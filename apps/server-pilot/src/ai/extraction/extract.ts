@@ -3,7 +3,7 @@ import type { ModelAdapter, ModelInvokeInput, ModelInvokeResult } from '../bedro
 import { createAzureLunaModel, lunaCallBudget, LunaModelAdapter } from '../bedrock/luna.js';
 import { maskCardNumbers } from '../card-mask.js';
 import { hotelRulesForProperty } from '../reservationist-decision.js';
-import { isSelfSentPreStayInformationMail } from '../existing-stay-information.js';
+import { groundedSeparateAsk, isSelfSentPreStayInformationMail } from '../existing-stay-information.js';
 import { renderPdfPagesForVision, type VisionPage } from '../../mail/artifacts/read-artifact.js';
 import type {
   QuoteAttachmentReviewReason,
@@ -64,6 +64,8 @@ export const EXTRACTION_RULES = `Mail extraction. Return only the JSON object de
 - confirmationNumbers are existing booking or confirmation numbers exactly as written. Never invent or reformat one.
 - For each stay, guests is optional: that stay's named guests, each with name as written and confirmationNumber exactly as written for that guest, or null. Never invent or reformat a confirmation number.
 - For each stay, action is optional and uses the same enum as top-level action. Top-level kind and action remain a summary of the mail.
+- For cancellation, workflowProposal.cancelNote is optional and contains only a note explicitly requested for that stay in the current message, with the exact excerpt and null attribution. Never infer a note.
+- For an amendment stay, amendProposal contains only changes explicitly requested NOW in the target message, never a current booking fact, historical quote, inferred identity or native ID. For each field give the value, an exact target-message excerpt of at most 200 characters proving that field and attributedTo: guest for firstName, lastName and guestEmail; booker for bookerName and bookerContact; guest or booker for an explicitly identified cmsRecipient; null for ratePlan, retainRates, cmsSend and cmsMessageId. Never assign the sender or booker's details to the guest. Use a ratePlan or CMS message ID only when its exact code is requested. retainRates is yes only for an explicit request to keep the current rate, no only for an explicit reprice request. cmsSend is true or false only for an explicit request to send or not send the confirmation. Omit every unstated or ambiguous field.
 - contact is the sender or booker's name, email and phone, as written.
 - sourceLanguage is the ISO 639-1 code of the main body text, lower case.
 - missing lists facts needed to quote or book that the mail does not state: dates, rooms, adults, child ages when needed for occupancy, guest names. Never ask for rates, room type or board.
@@ -82,7 +84,7 @@ export const ACTION_CLASSIFICATION_RULES = `Action classification is independent
 - group_event: conference and function requests, venue or boardroom hire, meals or packages for an event, rooming lists, tour groups, any accommodation request for more than 12 guests, and a shuttle for a group. Changes to an existing group booking (releasing rooms, rooming-list updates, removing a group dinner) stay group_event. Forwarding to a group colleague is not group_event by itself.
 - other_actionable: other concrete hotel work: an individual shuttle not tied to a booking, booking verification letters, rate-loading or close-out instructions, lost property, special requests needing staff action.
 - Internal mail between hotel or hotel-group staff is classed by the outside request it passes on (a forward or a note asking colleagues to quote, book or manage it). Internal mail with no outside request is no_action: shift handovers, operational reviews, IT/system notices, status updates, FYIs and approvals between colleagues. A staff mail that asks colleagues to quote, book, amend or cancel a specific guest stay is that action even when no outside request is passed on.
-- Pre-stay mail from the hotel's own mailbox about an existing booking stays no_action even when the guest's reply in it states a room preference or arrival detail.
+- Pre-stay mail from the hotel's own mailbox about an existing booking stays no_action even when the guest's reply in it states a room preference or arrival detail. A genuinely separate current request must be retained, including a request for another booking: classify it for manual review as billing, group_event or other_actionable and copy its exact target-body wording into separateAsk (maximum 200 characters). Use null for pure information, already-handled or quoted historical requests, and all other messages. Do not treat the existing confirmation as a new booking.
 - Never output card digits or security codes in actionEvidence or any other field.
 
 Synthetic examples:
@@ -676,6 +678,7 @@ export async function extractInboundMail(input: {
   const sanitized = sanitizeExtraction(parsed.data, {
     messageId: input.messageId,
     sourceText: prompt.user,
+    currentMessageText: input.selection.currentBodyText ?? input.selection.bodyText,
     dateAnchor: {
       receivedAt: input.selection.receivedAt,
       sourceText: stayDateSourceText(input.selection),
@@ -683,13 +686,38 @@ export async function extractInboundMail(input: {
       yearEvidenceText: stayDateYearEvidenceText(input.selection),
     },
   });
-  const kind = isSelfSentPreStayInformationMail({
+  const existingStayInformation = isSelfSentPreStayInformationMail({
     fromAddress: input.from,
     mailboxAddress: input.mailbox,
     subject: input.selection.subject,
     confirmationNumbers: sanitized.payload.confirmationNumbers,
-  })
-    ? 'other'
-    : sanitized.kind;
-  return { ok: true, ...sanitized, kind, usage, attachments: reads };
+  });
+  const separateAsk = existingStayInformation
+    ? groundedSeparateAsk(maskCardNumbers(input.selection.currentBodyText ?? input.selection.bodyText), parsed.data.separateAsk)
+    : null;
+  if (existingStayInformation) {
+    // A model's booking or quote action can never turn the confirmation into new-stay work.
+    sanitized.payload.stays = sanitized.payload.stays.map((stay) => ({ ...stay, action: 'no_action' as const }));
+    if (separateAsk) {
+      sanitized.payload.separateAsk = separateAsk;
+      sanitized.needsAction = true;
+      sanitized.payload.needsAction = true;
+      sanitized.actionEvidence = separateAsk;
+      sanitized.payload.actionEvidence = separateAsk;
+      // Even if the separate ask concerns a booking, this pre-stay mail is never
+      // authority to offer create or a write. Surface it as staff review instead.
+      if (!['billing', 'group_event', 'other_actionable'].includes(sanitized.action)) {
+        sanitized.action = 'other_actionable';
+        sanitized.payload.action = 'other_actionable';
+      }
+    } else {
+      sanitized.needsAction = false;
+      sanitized.action = 'no_action';
+      sanitized.actionEvidence = '';
+      sanitized.payload.needsAction = false;
+      sanitized.payload.action = 'no_action';
+      sanitized.payload.actionEvidence = '';
+    }
+  }
+  return { ok: true, ...sanitized, kind: existingStayInformation ? 'other' : sanitized.kind, usage, attachments: reads };
 }

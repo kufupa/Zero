@@ -10,6 +10,8 @@ export type CloudStayRunInput = {
   request: PaneStayFindInput;
   target: HmsReadTarget;
   signal?: AbortSignal;
+  /** Filing only: observe the exact target identity without requiring rate or occupancy fields. */
+  nativeIdentityOnly?: boolean;
 };
 
 export type HmsCloudFieldObservation = { state: 'observed' | 'blank' | 'unknown'; value: string | null };
@@ -29,6 +31,7 @@ export type HmsCloudReservationObservations = {
   groupName: HmsCloudFieldObservation;
   promotionCode: HmsCloudFieldObservation;
   arAccountName: HmsCloudFieldObservation;
+  guestEmail: HmsCloudFieldObservation;
   bookerName: HmsCloudFieldObservation;
   bookerContact: HmsCloudFieldObservation;
 };
@@ -39,6 +42,22 @@ export type HmsCloudNativePreimage = {
   reservationStayId: string; reservationId: string; recordId: string; guestId: string;
   status: string; firstName: string; lastName: string; arrival: string; departure: string;
   roomType: string; ratePlan: string; adults: number; children: number; childAges: number[] | 'unknown';
+  guaranteeCode?: string;
+};
+
+/** Same-record observations for a contextual rate read; never a write grant. */
+export type HmsCloudRateLookup = {
+  native: HmsCloudNativePreimage;
+  observedAt: string | null;
+  currency: string | null;
+  parties: Record<'organization' | 'agency', {
+    state: 'selected' | 'blank' | 'unknown'; nativeId: string | null; name: string | null;
+  }>;
+  group: HmsCloudFieldObservation;
+  promotion: HmsCloudFieldObservation;
+  arAccount: HmsCloudFieldObservation;
+  sourceOfBusiness: HmsCloudFieldObservation;
+  track: HmsCloudFieldObservation;
 };
 
 export type HmsCloudFindResult = PaneStayFindResult & {
@@ -47,7 +66,7 @@ export type HmsCloudFindResult = PaneStayFindResult & {
   nativePreimage?: HmsCloudNativePreimage | null;
   /** Full name is kept intact; no heuristic split into first/last name. */
   guestName: string | null;
-  /** Record View exposes party display names here, but does not expose native party IDs. */
+  /** Party IDs are included only when native and visible observations agree. */
   commercial?: PaneStayCommercial;
   /** Known stay-level amounts and their displayed currencies; blank differs from unread. */
   financialObservations?: HmsCloudFinancialObservations;
@@ -107,6 +126,13 @@ function parseCount(value: unknown): number | null {
     return Number.isSafeInteger(parsed) ? parsed : null;
   }
   return null;
+}
+
+// Record View's adult combo can render its count as "1 Adult" or "2 Adults".
+// Do not parse other free text or reuse this for child/night fields.
+function parseAdultCount(value: unknown): number | null {
+  const label = typeof value === 'string' ? /^(\d+)\s+adults?$/i.exec(value.trim()) : null;
+  return parseCount(label ? label[1] : value);
 }
 
 function recordFields(raw: unknown): Array<RecordValue> {
@@ -199,6 +225,7 @@ function reservationObservations(fields: Array<RecordValue>): HmsCloudReservatio
     groupName: fieldObservation(fields, ['groupname']),
     promotionCode: fieldObservation(fields, ['promotioncode']),
     arAccountName: fieldObservation(fields, ['araccountname']),
+    guestEmail: fieldObservation(fields, ['emailaddress']),
     bookerName: fieldObservation(fields, ['caller']),
     bookerContact: fieldObservation(fields, ['udfchar06']),
   };
@@ -213,7 +240,7 @@ function paneStayFields(confirmation: string, fields: Array<RecordValue>): PaneS
     arrival: parseDate(fieldText(fields, ['arrivaldate'], ['arrival date'])),
     departure: parseDate(fieldText(fields, ['departuredate'], ['departure date'])),
     nights: parseCount(fieldText(fields, ['nights'], ['nights'])),
-    adults: parseCount(fieldText(fields, ['adults'], ['adults'])),
+    adults: parseAdultCount(fieldText(fields, ['adults'], ['adults'])),
     children: parseCount(fieldText(fields, ['children', 'childcount'], ['children'])),
     roomType: fieldText(fields, ['roomtype', 'roomtypecode'], ['room type']),
     ratePlan: fieldText(fields, ['rateplan', 'rateplancode'], ['rate plan']),
@@ -248,15 +275,25 @@ function nativePreimage(raw: unknown, stay: PaneStayFields, fields: Array<Record
     recordId: native.recordId as string, guestId: native.guestId as string, status: native.status as string,
     firstName: native.firstName as string, lastName: native.lastName as string, arrival: native.arrival as string,
     departure: native.departure as string, roomType: native.roomType as string, ratePlan: native.ratePlan as string,
-    adults: native.adults as number, children: native.children as number, childAges: ages === 'unknown' ? 'unknown' : [...ages] };
+    adults: native.adults as number, children: native.children as number, childAges: ages === 'unknown' ? 'unknown' : [...ages],
+    ...(typeof native.guaranteeCode === 'string' && /^[A-Z0-9]{1,40}$/.test(native.guaranteeCode)
+      ? { guaranteeCode: native.guaranteeCode } : {}) };
 }
 
-function paneStayCommercial(stay: PaneStayFields): PaneStayCommercial | undefined {
+function paneStayCommercial(stay: PaneStayFields, rawNative: unknown, verifiedNative: HmsCloudNativePreimage | null): PaneStayCommercial | undefined {
   const company = stay.organization?.trim();
   const agency = stay.bookingAgency?.trim();
+  const observed = record(record(rawNative)?.commercial);
+  const party = (name: string, value: unknown) => {
+    const candidate = record(value);
+    const nativeId = candidate?.nativeId;
+    return verifiedNative && name.length <= 200 && !/\p{Cc}/u.test(name) && candidate?.name === name &&
+      typeof nativeId === 'string' && /^\d{1,100}$/.test(nativeId) && !/^0+$/.test(nativeId)
+      ? { name, nativeId } : { name };
+  };
   const commercial: PaneStayCommercial = {};
-  if (company) commercial.company = { name: company };
-  if (agency) commercial.agency = { name: agency };
+  if (company) commercial.company = party(company, observed?.company);
+  if (agency) commercial.agency = party(agency, observed?.agency);
   return Object.keys(commercial).length ? commercial : undefined;
 }
 
@@ -280,10 +317,29 @@ export function projectCloudStayFind(request: PaneStayFindInput, raw: unknown): 
     const stay = paneStayFields(confirmation, fields);
     const guestName = [stay.firstName, stay.lastName].filter((part): part is string => Boolean(part?.trim())).join(' ') ||
       fieldText(fields, ['guestfullname', 'guestname'], ['guest name', 'name']);
-    const commercial = paneStayCommercial(stay);
+    const verifiedNative = nativePreimage(details?.nativePreimage, stay, fields);
+    const commercial = paneStayCommercial(stay, details?.nativePreimage, verifiedNative);
+    const partyObservation = (names: string[], selected: PaneStayCommercial['company']) => {
+      const visible = fieldObservation(fields, names);
+      if (visible.state === 'blank') return { state: 'blank' as const, nativeId: null, name: null };
+      if (visible.state === 'observed' && selected?.nativeId && selected.name === visible.value) {
+        return { state: 'selected' as const, nativeId: selected.nativeId, name: selected.name };
+      }
+      return { state: 'unknown' as const, nativeId: null, name: visible.value };
+    };
     return {
-      outcome: 'found', reason: null, stay, nativePreimage: nativePreimage(details?.nativePreimage, stay, fields),
+      outcome: 'found', reason: null, stay, nativePreimage: verifiedNative,
       ...(commercial ? { commercial } : {}),
+      ...(verifiedNative ? { rateLookup: {
+        native: verifiedNative, observedAt: observationTimestamp(root.observedAt),
+        currency: financialObservations(fields).averageRate.currency.value,
+        parties: { organization: partyObservation(['company', 'organization'], commercial?.company),
+          agency: partyObservation(['ta1', 'bookingagency'], commercial?.agency) },
+        group: fieldObservation(fields, ['groupname']), promotion: fieldObservation(fields, ['promotioncode']),
+        arAccount: fieldObservation(fields, ['araccountname']),
+        sourceOfBusiness: fieldObservation(fields, ['sourceofbusinessdesc']),
+        track: fieldObservation(fields, ['track']),
+      } } : {}),
       financialObservations: financialObservations(fields),
       reservationObservations: reservationObservations(fields),
       arrivalMismatch: Boolean(request.arrival && stay.arrival && request.arrival !== stay.arrival),
@@ -343,30 +399,32 @@ export async function runCloudStayFind(input: CloudStayRunInput): Promise<unknow
   }
   const sessionUrl = new URL('../../tooling/hms-cloud/saved-stay-agent-session.mjs', import.meta.url);
   const module = await import(sessionUrl.href) as {
-    withSavedStayAgentSession: <T>(operation: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<T>, options?: { signal?: AbortSignal }) => Promise<T>;
+    withSavedStayAgentSession: <T>(operation: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<T>, options?: { signal?: AbortSignal; readOnly?: boolean; readOnlyConfirmation?: string }) => Promise<T>;
   };
   return module.withSavedStayAgentSession(async (session) => {
     // A fallback timestamp bounds both attempts from before the first read begins.
     const readStartedAt = new Date().toISOString();
-    const result = await readCloudStayForPane(session, input.request);
+    const result = await readCloudStayForPane(session, input.request, input.nativeIdentityOnly === true);
     return stampCloudStayReadResult(result, readStartedAt);
-  }, { signal: input.signal });
+  }, { signal: input.signal, readOnly: true, readOnlyConfirmation: input.request.confirmation });
 }
 
 /** A read-only retry relaxes only the arrival hint, never the shared native matching guard. */
 export async function readCloudStayForPane(
   session: { runTool: (request: Record<string, unknown>) => Promise<unknown> },
   request: PaneStayFindInput,
+  nativeIdentityOnly = false,
 ): Promise<unknown> {
+  const identity = nativeIdentityOnly ? { includeNativeIdentityOnly: true } : {};
   const first = await session.runTool({
     tool: 'read', confirmation: request.confirmation,
-    ...(request.arrival ? { arrivalDate: request.arrival } : {}), view: 'record', includeNativePreimage: true,
+    ...(request.arrival ? { arrivalDate: request.arrival } : {}), view: 'record', includeNativePreimage: true, ...identity,
   });
   const failure = record(first);
   if (!request.arrival || failure?.outcome !== 'read_failed' || failure.issue !== 'CONFIRMATION_HINT_MISMATCH') {
     return first;
   }
-  const second = await session.runTool({ tool: 'read', confirmation: request.confirmation, view: 'record', includeNativePreimage: true });
+  const second = await session.runTool({ tool: 'read', confirmation: request.confirmation, view: 'record', includeNativePreimage: true, ...identity });
   if (record(second)?.outcome !== 'ok') return second;
   const checked = projectCloudStayFind(request, second);
   if (checked.outcome !== 'found' || !checked.arrivalMismatch) {

@@ -39,6 +39,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getDb, type DB } from '../db/client.js';
 import { parseEnv } from '../env.js';
 import { PROPERTY_REGISTRY } from '../../tooling/playwright-quote/property-registry.mjs';
+import { HMS_LABTEST_AMEND_PROMPT_VERSION, HMS_LABTEST_AMEND_RUN_DEADLINE_MS } from './pane-cloud-amend-readiness.js';
 
 export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
 export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v6';
@@ -47,6 +48,13 @@ export const NOT_APPLICABLE_MODEL_ID = 'not_applicable';
 export const READ_TOOL_PROMPT_VERSION = 'hms-read/1';
 /** Pane HMS lookups queued as read_tool runs on the hms lane (CLI-backed; no read-service admission). */
 export const HMS_JOB_PROMPT_VERSION = 'hms-job/1';
+/** Only fully bound Labtest attachments can be claimed by the opt-in filing worker. */
+export const HMS_LABTEST_ATTACH_PROMPT_VERSION = 'hms-write/lab-attach/1';
+export const HMS_CLOUD_CANCEL_PROMPT_VERSION = 'hms-write/cloud-cancel/1';
+export function labtestAttachEnabled(env: NodeJS.Dict<string> = process.env): boolean {
+  return env.PANE_HMS_LAB_ATTACH_WORKER === 'on' && ['lab', 'on'].includes(env.PANE_WRITE_ATTACH ?? '');
+}
+const HMS_LABTEST_ATTACH_RUN_DEADLINE_MS = 25 * 60_000;
 // Keep aligned with HMS_JOB_PRIORITY_PREFETCH in hms-jobs.ts without creating a module cycle.
 const HMS_DEV_GATE_PREFETCH_PRIORITY = 0;
 // Several active transports may share one serialized browser slot; take groups from the registry.
@@ -787,7 +795,13 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
 
       // Prepared quotes get the staff budget too: the read takes minutes, and they already yield to staff work.
       const requestDeadlineMs =
-        candidate.runKind === 'read_tool' &&
+        candidate.runKind === HMS_WRITE_RUN_KIND && candidate.executorLane === 'hms' &&
+        candidate.promptVersion === HMS_LABTEST_AMEND_PROMPT_VERSION
+          ? Math.max(runDeadlineMs, HMS_LABTEST_AMEND_RUN_DEADLINE_MS)
+          : candidate.runKind === HMS_WRITE_RUN_KIND &&
+        (candidate.promptVersion === HMS_LABTEST_ATTACH_PROMPT_VERSION || candidate.promptVersion === HMS_CLOUD_CANCEL_PROMPT_VERSION)
+          ? Math.max(runDeadlineMs, HMS_LABTEST_ATTACH_RUN_DEADLINE_MS)
+          : candidate.runKind === 'read_tool' &&
         candidate.executorLane === 'hms' &&
         candidate.promptVersion === HMS_JOB_PROMPT_VERSION &&
         request?.kind === 'staff_quote'

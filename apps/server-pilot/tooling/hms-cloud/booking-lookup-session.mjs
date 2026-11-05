@@ -12,7 +12,7 @@ import { installPageRequestFence } from './page-request-fence.mjs';
 import { takeHandledNotes } from '../playwright-quote/stay360-notes.mjs';
 import { readConfirmationFromStay360 } from './stay360-confirmation.mjs';
 import { readRecordViewFromStay360 } from './stay360-record-view.mjs';
-import { currentLabtestRecord } from './labtest-record.mjs';
+import { readCreatedLabtestRecord } from './labtest-record.mjs';
 import { loadHmsBookingMemory, queryHmsBookingMemory } from './hms-booking-memory.mjs';
 import {
   openNewGuestStay, searchPrimaryBookingAgency, searchOrganization, searchArAccount,
@@ -33,15 +33,18 @@ import {
 } from './guest-stay-room-rate.mjs';
 import { selectGuestStayRatePlan } from './guest-stay-rate-plan.mjs';
 import { searchLabtestPreimage } from './labtest-preimage.mjs';
-import { normalizeOrganizationSelection, saveNewLabtestStay } from './guest-stay-save.mjs';
+import { guaranteeDisplayForSave, normalizeOrganizationSelection, saveNewLabtestStay } from './guest-stay-save.mjs';
+import { createCloudTargetKey, validCreateGuest } from './cloud-create-policy.mjs';
 import {
   searchGuestStaySourceBusiness, inspectGuestStaySourceBusiness,
   selectGuestStaySourceBusiness, closeGuestStaySourceBusinessPicker,
 } from './guest-stay-source-business.mjs';
 import { readQuote } from './quote-read.mjs';
 import { getQuoteView } from './quote-view.mjs';
+import { validCreateNote } from './create-request-binding.mjs';
 
 const PROPERTY = 'HRCEN';
+const GUEST_STAY_CHECK_AVAILABILITY_PATH = '/web/base/OSRESV.HDR.getcheckavailability';
 const DEFAULT_DATA_DIR = '/home/orca/.local/share/zero/research/halloween/raw-data';
 const quoteSnapshots = new WeakMap();
 const unexpectedNativeDialogs = new WeakSet();
@@ -91,23 +94,30 @@ export function labtestRecordOptionsForOrganizationSelection(selection) {
     expectedOrganization: { nativeId: proof.nativeId, name: proof.displayedOrganization } } : null;
 }
 
-export function buildLabtestOrganizationReadbackTarget(saveResult, request, selectedOrganization) {
+export function buildLabtestOrganizationReadbackTarget(saveResult, request, selectedOrganization,
+  { allowRealGuest = false, expectedGuest, cloudTargetKey } = {}) {
   const recordOptions = labtestRecordOptionsForOrganizationSelection(selectedOrganization);
   const confirmation = saveResult?.confirmation;
-  if (saveResult?.outcome !== 'saved_same_form' || !/^\d{6,}-\d+$/.test(confirmation || '') ||
-      !request || typeof request !== 'object' || request.agencySelection != null || !recordOptions ||
+  const guaranteeDisplay = guaranteeDisplayForSave(request?.guaranteeType, request?.guaranteeSelection);
+  const guest = allowRealGuest ? expectedGuest : { firstName: 'Proof', lastName: 'Labtest' };
+  if (!validCreateGuest(guest) || saveResult?.outcome !== 'saved_same_form' || !/^\d{6,}-\d+$/.test(confirmation || '') ||
+      !request || typeof request !== 'object' || !guaranteeDisplay || request.agencySelection != null || !recordOptions ||
       !sameSessionOrganizationSelection(selectedOrganization, request.organizationSelection) ||
       !/^\d+$/.test(String(request.guestId ?? '').trim()) ||
       typeof request.arrival !== 'string' || typeof request.departure !== 'string' ||
+      (cloudTargetKey !== undefined && cloudTargetKey !== createCloudTargetKey(guest, request.arrival)) ||
       !/^[A-Z0-9]{1,12}$/.test(request.roomType || '') || !/^[A-Z0-9]{1,12}$/.test(request.ratePlan || '') ||
-      typeof request.note !== 'string' || !request.note.trim() || request.note.length > 200) return null;
+      !validCreateNote(request.note)) return null;
   return {
     confirmation,
     expected: {
-      confirmation, guestId: String(request.guestId).trim(), arrival: request.arrival,
+      confirmation, guestId: String(request.guestId).trim(), ...guest, arrival: request.arrival,
       departure: request.departure, roomType: request.roomType, ratePlan: request.ratePlan, note: request.note,
     },
     expectedOrganization: recordOptions.expectedOrganization,
+    expectedGuarantee: { code: request.guaranteeType, display: guaranteeDisplay },
+    allowRealGuest: allowRealGuest || !['NGI', 'GTDAGT'].includes(request.guaranteeType),
+    ...(cloudTargetKey ? { cloudTargetKey } : {}),
   };
 }
 
@@ -120,7 +130,7 @@ function sessionState(page) {
   return state;
 }
 
-async function readSavedOrganizationCreate(state, request) {
+export async function readSavedOrganizationCreate(state, request, { openSession = withCenturionStay360Page } = {}) {
   const target = state?.savedOrganizationCreate;
   if (!target) return { outcome: 'input_gap', issue: 'SAVED_ORG_LABTEST_CREATE_REQUIRED' };
   if (Object.keys(request || {}).some((key) => !['id', 'tool', 'confirmation'].includes(key)) ||
@@ -128,15 +138,15 @@ async function readSavedOrganizationCreate(state, request) {
     return { outcome: 'input_gap', issue: 'CURRENT_CREATE_CONFIRMATION_REQUIRED' };
   }
   try {
-    return await withCenturionStay360Page(async (page) => {
-      await installReadOnlyGuard(page.context());
+    return await openSession(async (page) => {
       const stay = await readConfirmationFromStay360(page, target.confirmation, {
-        guestName: 'Proof Labtest', arrivalDate: target.expected.arrival,
+        guestName: `${target.expected.firstName} ${target.expected.lastName}`, arrivalDate: target.expected.arrival,
       });
       if (stay.confirmation !== target.confirmation) throw new Error('CONFIRMATION_HEADER_MISMATCH');
       await readRecordViewFromStay360(page, target.confirmation);
-      const record = await currentLabtestRecord(page, target.expected, {
+      const record = await readCreatedLabtestRecord(page, target.expected, {
         allowUnchangedBusinessParties: true, expectedOrganization: target.expectedOrganization,
+        expectedGuarantee: target.expectedGuarantee, ...(target.allowRealGuest ? { allowRealGuest: true } : {}),
       });
       const organizationName = record.partyPreimage.company || record.partyPreimage.companyname;
       if (record.partyPreimage.companyid !== target.expectedOrganization.nativeId ||
@@ -148,7 +158,8 @@ async function readSavedOrganizationCreate(state, request) {
         organization: { nativeId: record.partyPreimage.companyid, name: organizationName },
         otherLinkedPartiesBlank: true,
       };
-    });
+    }, { blockServiceWorkers: true, prepareContext: installReadOnlyGuard,
+      ...(target.cloudTargetKey ? { cloudTargetKey: target.cloudTargetKey } : {}) });
   } catch {
     return { outcome: 'execution_failure', issue: 'LABTEST_READBACK_UNVERIFIED' };
   }
@@ -353,12 +364,16 @@ async function viewQuoteSnapshot(page, request) {
 }
 
 /** Execute one call; the caller retains the page and memory between calls. */
-export async function runBookingLookupTool({ page, memory, memoryIssue, labtestPreimage, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate } = {}, request = {}) {
+export async function runBookingLookupTool({ page, memory, memoryIssue, labtestPreimage, beforeSaveScreenshot,
+  authorizeCandidate, dispatchCandidate, createAuthority } = {}, request = {}) {
   const id = request?.id ?? null;
   const tool = request?.tool ?? null;
   try {
     if (request?.options !== undefined && (!request.options || typeof request.options !== 'object' || Array.isArray(request.options))) {
       return { id, tool, outcome: 'input_gap', issue: 'invalid_options' };
+    }
+    if (request.options && ['allowRealGuest', 'expectedGuest', 'cloudTargetKey'].some((key) => Object.hasOwn(request.options, key))) {
+      return { id, tool, outcome: 'input_gap', issue: 'SERVER_SAVE_GUARD_ONLY' };
     }
     if (tool === 'saveNewLabtestStay' && request.options &&
         (Object.hasOwn(request.options, 'authorizeCandidate') || Object.hasOwn(request.options, 'dispatchCandidate'))) {
@@ -415,6 +430,11 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
         !sameSessionOrganizationSelection(state.organizationSelection, request.organizationSelection)) {
       return { id, tool, outcome: 'input_gap', issue: 'ORGANIZATION_SELECTION_NOT_CURRENT' };
     }
+    // Keep the request used for both save and reconciliation stable across awaited work.
+    const saveRequest = tool === 'saveNewLabtestStay' ? { ...request,
+      organizationSelection: structuredClone(request.organizationSelection),
+      guaranteeSelection: structuredClone(request.guaranteeSelection),
+    } : null;
     let result;
     if (['readGuestStay', 'closeGuestProfilePicker', 'cancelHotelAvailabilityParty', 'closeHotelAvailability',
       'closeRoomRatePicker', 'closeGuestStaySourceBusinessPicker'].includes(tool)) {
@@ -448,7 +468,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       const selection = request.selection ?? { nativeId: request.nativeId, searchId: request.searchId };
       result = await action(page, selection, request.options);
     } else if (tool === 'saveNewLabtestStay') {
-      result = await action(page, request, { ...request.options,
+      result = await action(page, saveRequest, { ...request.options, ...createAuthority,
         ...(beforeSaveScreenshot ? { beforeSaveScreenshot } : {}),
         ...(authorizeCandidate ? { authorizeCandidate, dispatchCandidate } : {}) });
     } else if ([
@@ -460,14 +480,22 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       'searchRoomTypes', 'searchRatePlans', 'inspectRoomRateCandidate', 'selectRoomType', 'selectGuestStayRatePlan',
       'inspectGuestStaySourceBusiness', 'selectGuestStaySourceBusiness',
     ].includes(tool)) {
-      result = await action(page, request, request.options);
+      const options = ['selectGuestStayDropdown', 'selectGuestStayRatePlan'].includes(tool)
+        ? { ...request.options, ...createAuthority } : request.options;
+      if (tool === 'selectGuestStayRatePlan') {
+        delete options?.requireM1CreateAvailability;
+        delete options?.authorizeM1CreateAvailabilityRequest;
+        const availability = createAuthority?.m1CreateRateAvailabilityOptions?.();
+        if (availability) Object.assign(options, availability);
+      }
+      result = await action(page, request, options);
     } else {
       result = await action(page, request.query, request.options);
     }
     if (tool === 'selectOrganization') state.organizationSelection = organizationSelectionProof(result);
     if (tool === 'saveNewLabtestStay' && result?.outcome === 'saved_same_form') {
       state.savedOrganizationCreate = buildLabtestOrganizationReadbackTarget(
-        result, request, state.organizationSelection);
+        result, saveRequest, state.organizationSelection, createAuthority);
     }
     return { id, tool, ...result };
   } catch (error) {
@@ -509,18 +537,51 @@ export function createBookingToolQueue(context) {
 }
 
 /** Own one guarded page for the callback; the page is closed when it returns. */
-export function bookingSessionPageOptions({ headless = true, blockServiceWorkers = false } = {}) {
+export function bookingSessionPageOptions({ headless = true, blockServiceWorkers = false, cloudTargetKey } = {}) {
   if (typeof blockServiceWorkers !== 'boolean') throw new Error('SERVICE_WORKER_OPTION_INVALID');
-  return { headless, blockServiceWorkers };
+  return { headless, blockServiceWorkers, prepareContext: installReadOnlyGuard, ...(cloudTargetKey ? { cloudTargetKey } : {}) };
 }
 
 export async function withBookingLookupSession(operation, { memory, memorySources, headless = true, labtestDates,
-  blockServiceWorkers = false, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate } = {}) {
+  blockServiceWorkers = false, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate, verifyLabtestMatches,
+  allowRealGuest = false, expectedGuest, cloudTargetKey } = {}) {
   if (beforeSaveScreenshot !== undefined && typeof beforeSaveScreenshot !== 'function') throw new Error('SCREENSHOT_CALLBACK_INVALID');
   if ((authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
       (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
-      ((authorizeCandidate === undefined) !== (dispatchCandidate === undefined))) throw new Error('SAVE_GUARD_CALLBACKS_INVALID');
-  const pageOptions = bookingSessionPageOptions({ headless, blockServiceWorkers });
+      ((authorizeCandidate === undefined) !== (dispatchCandidate === undefined)) ||
+      (verifyLabtestMatches !== undefined && (typeof verifyLabtestMatches !== 'function' || !authorizeCandidate)) ||
+      typeof allowRealGuest !== 'boolean' || (allowRealGuest && !validCreateGuest(expectedGuest)) ||
+      (cloudTargetKey !== undefined && typeof cloudTargetKey !== 'string')) {
+    throw new Error('SAVE_GUARD_CALLBACKS_INVALID');
+  }
+  const approvedCreateAvailabilityRequests = new WeakSet();
+  const activeCreateRateAvailability = new WeakSet();
+  const usedCreateRateAvailability = new WeakSet();
+  const createAuthority = { ...(allowRealGuest ? { allowRealGuest: true, expectedGuest: { ...expectedGuest } } : {}),
+    ...(cloudTargetKey ? { cloudTargetKey } : {}) };
+  Object.defineProperties(createAuthority, {
+    __m1CreateFlowAuthority: { value: true },
+    withM1CreateRateAvailability: { value: async (operation) => {
+      if (createAuthority.__m1CreateFlowAuthority !== true || typeof operation !== 'function' ||
+          activeCreateRateAvailability.has(createAuthority)) throw new Error('CREATE_AVAILABILITY_AUTHORITY_INVALID');
+      activeCreateRateAvailability.add(createAuthority);
+      try { return await operation(); }
+      finally { activeCreateRateAvailability.delete(createAuthority); }
+    } },
+    m1CreateRateAvailabilityOptions: { value: () => {
+      if (createAuthority.__m1CreateFlowAuthority !== true || !activeCreateRateAvailability.has(createAuthority) ||
+          usedCreateRateAvailability.has(createAuthority)) return null;
+      return { requireM1CreateAvailability: true, authorizeM1CreateAvailabilityRequest: (request) => {
+        if (!activeCreateRateAvailability.has(createAuthority) || usedCreateRateAvailability.has(createAuthority) ||
+            !request || typeof request !== 'object') return false;
+        usedCreateRateAvailability.add(createAuthority);
+        approvedCreateAvailabilityRequests.add(request);
+        return true;
+      } };
+    } },
+  });
+  const pageOptions = { ...bookingSessionPageOptions({ headless, blockServiceWorkers, cloudTargetKey }),
+    prepareContext: (context) => installReadOnlyGuard(context, { approvedCreateAvailabilityRequests }) };
   const loaded = memory === undefined
     ? await loadOptionalBookingMemory(memorySources)
     : { memory, status: memory ? 'available' : 'unavailable', issue: memory ? undefined : 'memory_unavailable' };
@@ -528,10 +589,10 @@ export async function withBookingLookupSession(operation, { memory, memorySource
     Object.assign(loaded, { memory: null, status: 'unavailable', issue: 'memory_property_mismatch' });
   }
   return withCenturionStay360Page(async (page) => {
-    await installReadOnlyGuard(page.context());
     let labtestPreimage;
     if (labtestDates !== undefined) {
-      labtestPreimage = await searchLabtestPreimage(page, labtestDates ?? {});
+      labtestPreimage = await searchLabtestPreimage(page, labtestDates ?? {},
+        { verifyExisting: verifyLabtestMatches, allowRealGuest });
       if (labtestPreimage.outcome !== 'clear') {
         const error = new Error('LABTEST_PREIMAGE_NOT_CLEAR');
         error.phase = 'labtest_preimage';
@@ -545,8 +606,9 @@ export async function withBookingLookupSession(operation, { memory, memorySource
       throw error;
     }
     // Keep a page interceptor installed when a form action removes its temporary route.
-    await installPageRequestFence(page, ['/web/base/OSRESV.HDR']);
-    const context = { page, memory: loaded.memory, memoryIssue: loaded.issue, labtestPreimage, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate };
+    await installPageRequestFence(page, ['/web/base/OSRESV.HDR', GUEST_STAY_CHECK_AVAILABILITY_PATH]);
+    const context = { page, memory: loaded.memory, memoryIssue: loaded.issue, labtestPreimage, beforeSaveScreenshot,
+      authorizeCandidate, dispatchCandidate, createAuthority };
     const onDialog = () => { unexpectedNativeDialogs.add(page); };
     page.on('dialog', onDialog);
     const queue = createBookingToolQueue(context);

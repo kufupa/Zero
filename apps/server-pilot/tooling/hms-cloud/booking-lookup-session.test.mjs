@@ -17,10 +17,23 @@ test('session and legacy alias require the current clear Labtest preimage', asyn
 });
 
 
-test('booking session forwards explicit service-worker blocking without changing defaults', () => {
-  assert.deepEqual(bookingSessionPageOptions(), { headless: true, blockServiceWorkers: false });
-  assert.deepEqual(bookingSessionPageOptions({ headless: false, blockServiceWorkers: true }),
-    { headless: false, blockServiceWorkers: true });
+test('booking session installs its read guard before the first page and preserves service-worker choice', async () => {
+  const defaultOptions = bookingSessionPageOptions();
+  const guardedOptions = bookingSessionPageOptions({ headless: false, blockServiceWorkers: true });
+  assert.equal(defaultOptions.headless, true);
+  assert.equal(defaultOptions.blockServiceWorkers, false);
+  assert.equal(guardedOptions.headless, false);
+  assert.equal(guardedOptions.blockServiceWorkers, true);
+  assert.equal(typeof guardedOptions.prepareContext, 'function');
+  assert.equal(guardedOptions.prepareContext, defaultOptions.prepareContext);
+  assert.equal(bookingSessionPageOptions({ cloudTargetKey: 'target' }).cloudTargetKey, 'target');
+  let handler;
+  await guardedOptions.prepareContext({ route: async (_pattern, installed) => { handler = installed; } });
+  let aborted = false;
+  await handler({ request: () => ({ method: () => 'POST',
+    url: () => 'https://example.test/web/base/OSRESV.HDR?pageaction=SAVE', postData: () => '' }),
+  abort: async () => { aborted = true; }, fallback: async () => {} });
+  assert.equal(aborted, true);
   for (const invalid of [null, 'block', 1]) assert.throws(
     () => bookingSessionPageOptions({ blockServiceWorkers: invalid }), /SERVICE_WORKER_OPTION_INVALID/);
 });
@@ -53,6 +66,7 @@ test('save guard authority stays in session context and wire options cannot supp
   const queue = createBookingToolQueue(context);
   assert.equal((await queue.runTool(request)).issue, 'BROWSER_CONTEXT_UNSAFE');
   for (const options of [{ authorizeCandidate: 'spoofed' }, { dispatchCandidate: 'spoofed' },
+    { allowRealGuest: true }, { expectedGuest: { firstName: 'Ada', lastName: 'Moyo' } }, { cloudTargetKey: 'spoofed' },
     { authorizeCandidate: 'spoofed', dispatchCandidate: 'spoofed' }]) {
     assert.equal((await queue.runTool({ ...request, options })).issue, 'SERVER_SAVE_GUARD_ONLY');
   }

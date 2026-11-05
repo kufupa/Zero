@@ -15,8 +15,10 @@ const fixtures = vi.hoisted(() => ({
 }));
 
 vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', () => ({
-  withCenturionStay360Page: async (operation: (page: unknown) => Promise<unknown>) => {
+  withCenturionStay360Page: async (operation: (page: unknown) => Promise<unknown>,
+    options?: { prepareContext?: (context: unknown) => Promise<void> }) => {
     fixtures.events.push('context-open');
+    await options?.prepareContext?.(fixtures.context);
     return operation({ context: () => fixtures.context });
   },
 }));
@@ -36,7 +38,7 @@ vi.mock('../tooling/hms-cloud/stay360-record-view.mjs', () => ({
   readRecordViewFromStay360: async () => { fixtures.events.push('record-view'); },
 }));
 vi.mock('../tooling/hms-cloud/labtest-record.mjs', () => ({
-  currentLabtestRecord: async (_page: unknown, expected: unknown, options: unknown) => {
+  readCreatedLabtestRecord: async (_page: unknown, expected: unknown, options: unknown) => {
     fixtures.events.push('labtest-record');
     fixtures.recordCalls.push({ expected, options });
     return { partyPreimage: { companyid: '90210', company: 'Synthetic Company' } };
@@ -79,6 +81,29 @@ describe('organization readback fresh-context guard', () => {
     expect(fixtures.saveCalls).toBe(0);
   });
 
+  it('binds agent-guarantee readback to the saved native selection', async () => {
+    const page = {};
+    const session = { page, labtestPreimage: { outcome: 'clear', preimageId: 'preimage-1' } };
+    await runBookingLookupTool(session, { tool: 'selectOrganization', nativeId: '90210', searchId: 'org-search-1' });
+    await runBookingLookupTool(session, {
+      tool: 'saveNewLabtestStay', preimageId: 'preimage-1', guestId: '45678',
+      arrival: '2027-01-25', departure: '2027-01-27', roomType: 'DLXKNG', ratePlan: 'BAR',
+      guaranteeType: 'GTDAGT', note: 'synthetic org create', organizationSelection: fixtures.selection,
+      guaranteeSelection: { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDAGT',
+        actual: { value: 'GTDAGT', submitted: 'GTDAGT', display: 'Guaranteed By Agent' } },
+    });
+    fixtures.events.length = 0;
+    const read = await runBookingLookupTool({ page }, {
+      tool: 'readSavedLabtestRecord', confirmation: fixtures.saved.confirmation,
+    });
+    expect(read).toMatchObject({ outcome: 'read_back_verified' });
+    expect(fixtures.events).toEqual(['context-open', 'guard', 'confirmation', 'record-view', 'labtest-record']);
+    expect(fixtures.recordCalls).toEqual([expect.objectContaining({ options: {
+      allowUnchangedBusinessParties: true, expectedOrganization: { nativeId: '90210', name: 'Synthetic Company' },
+      expectedGuarantee: { code: 'GTDAGT', display: 'Guaranteed By Agent' },
+    } })]);
+  });
+
   it('installs the read-only fence before searching the saved confirmation', async () => {
     const page = {};
     const session = { page, labtestPreimage: { outcome: 'clear', preimageId: 'preimage-1' } };
@@ -101,11 +126,13 @@ describe('organization readback fresh-context guard', () => {
     expect(fixtures.events).toEqual(['context-open', 'guard', 'confirmation', 'record-view', 'labtest-record']);
     expect(fixtures.recordCalls).toEqual([{
       expected: {
-        confirmation: '1234567-1', guestId: '45678', arrival: '2027-01-25', departure: '2027-01-27',
+        confirmation: '1234567-1', guestId: '45678', firstName: 'Proof', lastName: 'Labtest',
+        arrival: '2027-01-25', departure: '2027-01-27',
         roomType: 'DLXKNG', ratePlan: 'BAR', note: 'synthetic org create',
       },
       options: { allowUnchangedBusinessParties: true,
-        expectedOrganization: { nativeId: '90210', name: 'Synthetic Company' } },
+        expectedOrganization: { nativeId: '90210', name: 'Synthetic Company' },
+        expectedGuarantee: { code: 'NGI', display: 'Non-Guaranteed Individual' } },
     }]);
   });
 });

@@ -18,11 +18,13 @@ export function createSavedChildStageRequestGate({ frame, stayId, adults, priorA
   const prior = planSavedChildOccupancy({ childCount: Array.isArray(priorAges) ? priorAges.length : null, childAges: priorAges });
   const next = planSavedChildOccupancy({ childCount: Array.isArray(nextAges) ? nextAges.length : null, childAges: nextAges });
   if (!frame || typeof stayId !== 'string' || !/^\d+$/.test(stayId) || !Number.isInteger(adults) || adults < 1 || adults > 16 ||
-      prior.outcome !== 'planned' || prior.childAges === null || next.outcome !== 'planned' || next.childAges === null ||
-      !isDeepStrictEqual(prior.derivedBands, priorBands) || !Number.isFinite(deadlineAt) || deadlineAt <= performance.now()) {
+      prior.outcome !== 'planned' || next.outcome !== 'planned' || next.childAges === null ||
+      !priorBands || ['child1', 'child2', 'child3'].some((name) => !Number.isInteger(priorBands[name]) || priorBands[name] < 0 || priorBands[name] > 9) ||
+      priorBands.child1 + priorBands.child2 + priorBands.child3 > 9 ||
+      (prior.childAges !== null && !isDeepStrictEqual(prior.derivedBands, priorBands)) || !Number.isFinite(deadlineAt) || deadlineAt <= performance.now()) {
     throw new Error('CHILD_STAGE_GATE_INPUT_INVALID');
   }
-  const oldAges = [...prior.childAges], ages = [...next.childAges], bands = { ...prior.derivedBands };
+  const oldAges = prior.childAges === null ? null : [...prior.childAges], ages = [...next.childAges], bands = { ...priorBands };
   let state = 'ready', readRequest = null, validationRequest = null;
   const active = () => {
     if (performance.now() >= deadlineAt) state = 'closed';

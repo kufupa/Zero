@@ -10,6 +10,7 @@ import {
   type SandboxRunner,
 } from '../mail/artifacts/read-artifact.js';
 import { getS3Storage } from '../storage/s3.js';
+import { paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
 import { confirmationBase } from '../hms/confirmation-match.js';
 import { AMBIGUOUS_NUMBER_GROUPS, maskCardNumbers } from './card-mask.js';
 import { convertDocxWithGotenberg } from '../quote-proposal/gotenberg.js';
@@ -25,6 +26,8 @@ import {
 import { attachmentMattersForReview, isGenericAttachment, isPdfAttachment } from './quote-attachment-review.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { QUOTE_ATTACHMENT_TEXT_MAX_CHARS } from './quote-workflow-limits.js';
+import { htmlToPlainText } from '../mail/inbound-reaction-parser.js';
+import { preStaySourceText } from './existing-stay-information.js';
 
 export type SyncedQuoteAttachment = {
   id: string;
@@ -57,6 +60,8 @@ export type SyncedThreadMessage = {
 export type SyncedQuoteSelection = {
   subject: string;
   bodyText: string;
+  /** HTML-only source with quoted history removed for grounding current requests. */
+  currentBodyText?: string;
   /** Selected message receipt time; anchors year inference. */
   receivedAt?: string;
   /** Selected message's best stored time for finding its closest thread neighbours when receivedAt is missing. */
@@ -689,6 +694,7 @@ export function orderThreadContext(
 export async function loadSyncedQuoteSelectionFromMailbox(input: {
   transportId: string;
   internetMessageId?: string;
+  selection?: PaneSourceSelection;
   /** The stored row's id. When set it is used instead of the header, which can be missing or shared by two rows. */
   messageId?: string;
   /** Include all prior thread messages for action classification, instead of only causal preceding text. */
@@ -700,7 +706,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
   signal?: AbortSignal;
 }): Promise<SyncedQuoteSelection | null> {
   const internetMessageId = input.internetMessageId?.trim();
-  if (!internetMessageId && !input.messageId) return null;
+  if ((!internetMessageId && !input.messageId) || (input.selection && !internetMessageId)) return null;
   let db;
   try {
     db = getDb();
@@ -713,6 +719,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
       threadId: message.threadId,
       subject: message.subject,
       textBody: message.textBody,
+      htmlBody: message.htmlBody,
       receivedAt: message.receivedAt,
       sentAt: message.sentAt,
       createdAt: message.createdAt,
@@ -727,6 +734,8 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
         input.messageId
           ? eq(message.id, input.messageId)
           : eq(message.messageIdHeader, internetMessageId ?? ''),
+        input.selection ? eq(message.messageIdHeader, internetMessageId ?? '') : undefined,
+        paneSourceSelectionCondition(input.selection),
       ),
     )
     .limit(2);
@@ -776,7 +785,8 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
 
   return {
     subject: row.subject ?? '',
-    bodyText: row.textBody ?? '',
+    bodyText: row.textBody?.trim() ? row.textBody : htmlToPlainText(row.htmlBody ?? ''),
+    ...(!row.textBody?.trim() && row.htmlBody ? { currentBodyText: preStaySourceText(null, row.htmlBody) } : {}),
     receivedAt: row.receivedAt?.toISOString(),
     threadReferenceAt: (
       row.direction === 'outbound'

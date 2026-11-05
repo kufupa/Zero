@@ -3,6 +3,7 @@ import { sendableArrival, type StayRecordWire } from './amend-find';
 export type SavedStayAmendDraft = {
   arrival: string;
   departure: string;
+  nights: string;
   adults: string;
   children: string;
   childAges: string;
@@ -35,11 +36,15 @@ export type SavedStayAmendDraftUpdate = {
 };
 
 /** Compare the full displayed stay and extracted dates. This string contains stay data, not a security hash. */
+export type SavedStayAmendRequest = { arrival?: string | null; departure?: string | null;
+  adults?: number | null; children?: number | null; childAges?: number[] | null;
+  cleared?: Partial<Record<'arrival' | 'departure' | 'adults' | 'children', boolean>> };
+
 export function savedStayAmendReviewBasis(stay: StayRecordWire,
-  request: { arrival?: string | null; departure?: string | null }, extractionRevision: string): string {
+  request: SavedStayAmendRequest, extractionRevision: string): string {
   const fields = Object.entries(stay).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
     .map(([key, value]) => [key, typeof value, value]);
-  return JSON.stringify([extractionRevision, request.arrival ?? null, request.departure ?? null, fields]);
+  return JSON.stringify([extractionRevision, request, fields]);
 }
 
 /** Candidate only: the server must resolve property/ownership, re-read the preimage and issue the grant. */
@@ -90,11 +95,16 @@ export function amendmentReadbackDifferences(result: SavedStayAmendResult): stri
   return differences;
 }
 
-export function initialSavedStayAmendDraft(stay: StayRecordWire, request: { arrival?: string | null; departure?: string | null }): SavedStayAmendDraft {
+export function initialSavedStayAmendDraft(stay: StayRecordWire, request: SavedStayAmendRequest): SavedStayAmendDraft {
+  const arrival = request.cleared?.arrival ? '' : request.arrival ?? stay.arrival ?? '';
+  const departure = request.cleared?.departure ? '' : request.departure ?? stay.departure ?? '';
+  const nights = (Date.parse(`${departure}T00:00:00Z`) - Date.parse(`${arrival}T00:00:00Z`)) / 86400000;
   return {
-    arrival: request.arrival ?? stay.arrival ?? '', departure: request.departure ?? stay.departure ?? '',
-    adults: stay.adults == null ? '' : String(stay.adults), children: stay.children == null ? '' : String(stay.children),
-    childAges: '',
+    arrival, departure,
+    nights: Number.isInteger(nights) && nights > 0 ? String(nights) : '',
+    adults: request.cleared?.adults ? '' : request.adults == null ? (stay.adults == null ? '' : String(stay.adults)) : String(request.adults),
+    children: request.cleared?.children ? '' : request.children == null ? (stay.children == null ? '' : String(stay.children)) : String(request.children),
+    childAges: request.childAges?.join(', ') ?? '',
   };
 }
 

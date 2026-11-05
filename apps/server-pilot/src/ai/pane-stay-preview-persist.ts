@@ -3,7 +3,7 @@ import type { DB } from '../db/client.js';
 import { workItem } from '../db/schema/work.js';
 import { assertNoCreateDispatchFence } from './pane-create-dispatch-fence.js';
 
-const STAY_ID = /^[A-Za-z0-9_-]{1,40}$/;
+const STAY_ID = /^[A-Za-z0-9_-]{1,120}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
 export const STAY_PREVIEWS_KEY = 'stayPreviews';
 

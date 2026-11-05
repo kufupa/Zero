@@ -1,5 +1,7 @@
 import { createReservationistBusinessServices } from '../src/ai/reservationist-business-services.js';
 import { aiDraftGeneration, aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
+import { outlookDevice } from '../src/db/schema/outlook-device.js';
+import { outlookSyncObservation, outlookSyncSource } from '../src/db/schema/outlook-sync.js';
 import { occupiedDates, type QuoteSourceRecord } from '../src/quote-proposal/quote-revision.js';
 import { staffQuoteSourceHash, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { enqueueHmsJob, HMS_JOB_PRIORITY_PREFETCH } from '../src/ai/hms-jobs.js';
@@ -398,14 +400,59 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       await withSeededTestDb(async (db) => {
         installFixture(db);
         const request = await seedRequest(db), api = caller();
+        const duplicateId = randomUUID();
         await db.insert(message).values({
-          ...request.mail, id: randomUUID(), textBody: 'Different request with a repeated Message-ID',
+          ...request.mail, id: duplicateId, textBody: 'Different request with a repeated Message-ID',
         });
         await expect(api.workstation.staffQuoteSource({ internetMessageId: request.internetMessageId }))
           .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'Selected message identity is ambiguous' });
         await expect(api.workstation.qualifiedProposalChoices({ internetMessageId: request.internetMessageId }))
           .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'Selected message identity is ambiguous' });
         expect(await loadSyncedQuoteSelectionFromMailbox({ transportId: request.mail.transportId, internetMessageId: request.storedMessageId })).toBeNull();
+        const webSelection = { kind: 'web' as const, messageId: request.mail.id, threadId: request.mail.threadId };
+        await expect(api.workstation.staffQuoteSource({ internetMessageId: request.internetMessageId, selection: webSelection }))
+          .resolves.toMatchObject({ status: 'ready', messageId: request.mail.id, threadId: request.mail.threadId });
+        await expect(api.workstation.staffQuoteSource({ internetMessageId: request.internetMessageId,
+          selection: { ...webSelection, threadId: randomUUID() } })).resolves.toEqual({ status: 'message_not_synced' });
+        expect(await loadSyncedQuoteSelectionFromMailbox({ transportId: request.mail.transportId,
+          internetMessageId: request.storedMessageId, selection: webSelection })).toMatchObject({ messageId: request.mail.id });
+        expect(await loadSyncedQuoteSelectionFromMailbox({ transportId: request.mail.transportId,
+          internetMessageId: 'wrong@example.invalid', selection: webSelection })).toBeNull();
+
+        // A committed Outlook observation can refer to a POP3-first canonical row without changing message provenance.
+        const deviceId = randomUUID(), sourceId = randomUUID(), observationId = randomUUID();
+        const locator = { storeId: 'native-store', entryId: 'native-entry', folderEntryId: 'native-folder' };
+        await db.insert(outlookDevice).values({ deviceId, version: '4', storeId: locator.storeId,
+          secretCiphertext: 'synthetic' });
+        await db.insert(outlookSyncSource).values({ id: sourceId, deviceId, transportId: request.mail.transportId,
+          userId: 'user-ropperman', storeId: locator.storeId, rootEntryId: 'root', sessionId: 'session',
+          policyGeneration: 1, authorityExpiresAt: new Date(Date.now() + 60_000), activationKey: randomUUID(),
+          activationTicketHash: 'hash', activationTicketCiphertext: 'cipher', activationExpiresAt: new Date(Date.now() + 60_000) });
+        await db.insert(outlookSyncObservation).values({ id: observationId, sourceId, sourceObservationId: randomUUID(),
+          semanticVersion: 1, evidence: { locator }, availability: 'available', direction: 'inbound',
+          canonicalMessageId: request.mail.id, requiredArtifactRoles: [], ingestionState: 'committed' });
+        const outlookSelection = { kind: 'outlook' as const, ...locator };
+        await expect(api.workstation.staffQuoteSource({ internetMessageId: request.internetMessageId, selection: outlookSelection }))
+          .resolves.toMatchObject({ status: 'ready', messageId: request.mail.id });
+        await expect(api.workstation.staffQuoteSource({ internetMessageId: request.internetMessageId,
+          selection: { kind: 'outlook', storeId: locator.storeId, entryId: locator.entryId } }))
+          .resolves.toMatchObject({ status: 'ready', messageId: request.mail.id });
+        for (const selection of [{ ...outlookSelection, storeId: 'wrong' }, { ...outlookSelection, entryId: 'wrong' },
+          { ...outlookSelection, folderEntryId: 'wrong' }]) {
+          await expect(api.workstation.staffQuoteSource({ internetMessageId: request.internetMessageId, selection }))
+            .resolves.toEqual({ status: 'message_not_synced' });
+        }
+        expect(await loadSyncedQuoteSelectionFromMailbox({ transportId: request.mail.transportId,
+          internetMessageId: request.storedMessageId, selection: outlookSelection })).toMatchObject({ messageId: request.mail.id });
+        await db.update(outlookSyncObservation).set({ ingestionState: 'pending' }).where(eq(outlookSyncObservation.id, observationId));
+        await expect(api.workstation.staffQuoteSource({ internetMessageId: request.internetMessageId, selection: outlookSelection }))
+          .resolves.toEqual({ status: 'message_not_synced' });
+        await db.update(outlookSyncObservation).set({ ingestionState: 'committed' }).where(eq(outlookSyncObservation.id, observationId));
+        await db.insert(outlookSyncObservation).values({ id: randomUUID(), sourceId, sourceObservationId: randomUUID(),
+          semanticVersion: 1, evidence: { locator }, availability: 'available', direction: 'inbound',
+          canonicalMessageId: duplicateId, requiredArtifactRoles: [], ingestionState: 'committed' });
+        await expect(api.workstation.staffQuoteSource({ internetMessageId: request.internetMessageId, selection: outlookSelection }))
+          .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'Selected message identity is ambiguous' });
         expect(nativeRead).not.toHaveBeenCalled();
       });
     });

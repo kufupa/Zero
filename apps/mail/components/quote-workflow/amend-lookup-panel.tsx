@@ -1,10 +1,11 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   AMEND_CANCEL_COPY,
   AMEND_FIELD_LABEL,
   AMEND_FORM_FIELDS,
   AMEND_SAVE_COPY,
   amendCancelClientFromTrpc,
+  cancelChargeClientFromTrpc,
   amendCapabilitiesFromTrpc,
   amendStayClientFromTrpc,
   canPreviewAmendFromCapabilities,
@@ -46,6 +47,7 @@ import {
   prefetchedNotFoundConfirmationCopy,
   searchRequestFor,
   searchRunFromJob,
+  sendableArrival,
   stayGuest,
   stayPickCaption,
   stayText,
@@ -56,15 +58,45 @@ import {
   type HmsSearchRun,
   type ScreenshotInput,
   type ScreenshotReply,
+  type StayContactObservations,
   type StayPick,
   type StayRecordWire,
 } from '@/lib/quote-workflow/amend-find';
 import { amendmentOf } from '@/lib/quote-workflow/session';
+import { cancelWriteStateClientFromTrpc, type CancelWriteSelection } from '@/lib/quote-workflow/cancel-write-state';
+import { getMailCacheScope, subscribeMailCacheScope } from '@/lib/mail/mail-cache-scope';
+import { cloudAmendClientFromTrpc, type CloudAmendClient, type CloudAmendRequest, type CloudAmendSelection } from '@/lib/quote-workflow/cloud-amend-client';
+import { HMS_WRITE_IDLE_POLL_MS, HMS_WRITE_POLL_MS } from '@/lib/quote-workflow/hms-write';
 import { knownRoomCode, ROOM_TYPE_NAMES } from '@/lib/quote-workflow/room-types';
-import type { QuoteAmendment, QuoteSession } from '@/lib/quote-workflow/types';
+import { savedStayAmendReviewBasis, type SavedStayAmendDraftUpdate, type SavedStayAmendEditorIdentity } from '@/lib/quote-workflow/saved-stay-amendment';
+import type { QuoteAmendment, QuoteSession, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
+import type { useAmendWorkItem } from '@/lib/quote-workflow/use-amend-work-item';
+import type { useRequestWorkItem } from '@/lib/quote-workflow/use-request-work-item';
+import { rateMoney, rateReason, useAmendRateCandidates } from '@/lib/quote-workflow/use-amend-rate-candidates';
 import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
 import { HmsLinkActions } from './hms-link-actions';
 import { HmsAsOf, HmsJobStatusLine } from './hms-queue-status';
+import { createSavedStayAmendDraftStore, SavedStayAmendEditor } from './saved-stay-amend-editor';
+import { ApproveCard, CancelChargePrompt } from './approve-card';
+import { resolveConfirmationRecipient, useConfirmationSources, type ConfirmationMode } from './confirmation-recipient';
+
+export type AmendReadOnlyContext = {
+  propertyCode: 'HRCEN';
+  ratePlans: RatePlanCatalogueEntry[];
+  selectionCurrent: boolean;
+  sourceContentChanged?: boolean;
+  sourceSelectionUnavailable?: boolean;
+  draft?: ReturnType<typeof useAmendWorkItem>;
+  requestDraft?: ReturnType<typeof useRequestWorkItem>;
+  historyEpoch?: number;
+  historyBusy?: boolean;
+  refreshPending?: boolean;
+  refreshMessage?: string | null;
+  retryRefresh?: () => void;
+  requireDurableDraft?: boolean;
+  retryDraft?: () => void;
+  draftLoading?: boolean;
+};
 
 type SearchForm = { lastName: string; arrival: string; departure: string };
 
@@ -81,7 +113,7 @@ const warnNoteClass = 'rounded-xs border border-amber-300 bg-amber-50 px-2.5 py-
 const penaltyClass =
   'rounded-xs border border-amber-400 bg-amber-50 px-2.5 py-2 text-[12.5px] font-semibold text-amber-900';
 const selectClass =
-  'h-8 rounded-sm border border-[#cbd5e1] bg-white px-2 py-1.5 text-[12px] text-[#1e293b] disabled:text-[#94a3b8]';
+  'h-8 min-w-0 w-full rounded-sm border border-[#cbd5e1] bg-white px-2 py-1.5 text-[12px] text-[#1e293b] disabled:text-[#94a3b8]';
 
 export type AmendSavedStay = {
   confirmationNumber: string | null;
@@ -92,6 +124,35 @@ export type AmendSavedStay = {
 const SAVED_STAY_COPY = {
   heading: 'Bookings on this request',
 };
+
+const CANCEL_PREVIEW_MISMATCH = 'Nava could not confirm the cancellation details. Check the booking in HMS.';
+
+function nativeCancelPreview(run: CancelRun, target: { confirmation: string; arrival: string }): NonNullable<CancelRun['previewStay']> | null {
+  const stay = run.previewStay;
+  const text = (value: unknown, max: number) => typeof value === 'string' && value.trim().length > 0 &&
+    value.length <= max && !/[\p{Cc}]/u.test(value);
+  const day = (value: unknown) => {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const parsed = Date.parse(`${value}T00:00:00Z`);
+    return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === value;
+  };
+  if (!stay || typeof stay !== 'object' || Array.isArray(stay) || stay.confirmation !== target.confirmation ||
+      stay.arrival !== target.arrival || !day(stay.arrival) || !day(stay.departure) ||
+      !text(stay.firstName, 200) || !text(stay.lastName, 200) || !text(stay.roomType, 12)) return null;
+  return stay;
+}
+
+function sameCancelReview(before: CancelRun, after: CancelRun, target: { confirmation: string; arrival: string }, reason: string): boolean {
+  const prior = nativeCancelPreview(before, target);
+  const next = nativeCancelPreview(after, target);
+  if (!prior || !next || !before.reasons.includes(reason) || !after.reasons.includes(reason)) return false;
+  const facts = (run: CancelRun, stay: NonNullable<CancelRun['previewStay']>) => [
+    stay.confirmation, stay.firstName, stay.lastName, stay.arrival, stay.departure, stay.roomType,
+    stay.guarantee ?? null, stay.depositReceived ?? null, run.statusBefore, cancelFeeSentence(run.penaltyText),
+    run.policyFacts ?? [], run.message ?? null,
+  ];
+  return JSON.stringify(facts(before, prior)) === JSON.stringify(facts(after, next));
+}
 
 function savedStayPicksFrom(
   savedStays: Record<string, AmendSavedStay> | undefined,
@@ -129,10 +190,14 @@ export function AmendLookupPanel({
   trpc,
   savedStays,
   onStayActionResult,
+  readOnlyAmend,
+  workItemId = null,
 }: {
   session: QuoteSession;
   trpc: unknown;
   savedStays?: Record<string, AmendSavedStay>;
+  readOnlyAmend?: AmendReadOnlyContext | null;
+  workItemId?: string | null;
   onStayActionResult?: (input: {
     stayId: string;
     confirmationNumber: string;
@@ -140,12 +205,18 @@ export function AmendLookupPanel({
   }) => void;
 }) {
   const amendment = amendmentOf(session);
-  const client = useMemo(() => amendFindClientFromTrpc(trpc), [trpc]);
-  const cancelClient = useMemo(() => amendCancelClientFromTrpc(trpc), [trpc]);
+  const exactSource = Boolean(readOnlyAmend);
+  const selectedTransportId = exactSource && readOnlyAmend?.selectionCurrent
+    ? session.binding?.transportId?.trim() || null : null;
+  const client = useMemo(() => amendFindClientFromTrpc(trpc, selectedTransportId), [trpc, selectedTransportId]);
+  const cancelTransportId = selectedTransportId ?? session.binding?.transportId?.trim() ?? null;
+  const cancelClient = useMemo(() => amendCancelClientFromTrpc(trpc,
+    readOnlyAmend?.propertyCode === 'HRCEN' ? cancelTransportId : undefined), [trpc, cancelTransportId, readOnlyAmend?.propertyCode]);
   const amendClient = useMemo(() => amendStayClientFromTrpc(trpc), [trpc]);
   const loadCapabilities = useMemo(() => amendCapabilitiesFromTrpc(trpc), [trpc]);
   const [canPreviewCancel, setCanPreviewCancel] = useState(false);
   const [canPreviewAmend, setCanPreviewAmend] = useState(false);
+  const [activeAmendApproval, setActiveAmendApproval] = useState(false);
   useEffect(() => {
     if (!loadCapabilities) {
       setCanPreviewCancel(false);
@@ -170,25 +241,47 @@ export function AmendLookupPanel({
   }, [loadCapabilities]);
   const threadId = session.staffSource?.threadId.trim() || null;
   const messageId = session.staffSource?.messageId.trim() || null;
+  const sourceHash = session.staffSource?.sourceHash.trim() || null;
   const transport = useMemo(
-    () => hmsJobTransport(client, threadId, messageId),
-    [client, threadId, messageId],
+    () => exactSource && (!selectedTransportId || !sourceHash) ? null
+      : hmsJobTransport(client, threadId, messageId, exactSource ? { exactSource: true, sourceHash: sourceHash! } : undefined),
+    [client, threadId, messageId, sourceHash, exactSource, selectedTransportId],
   );
   const epoch = session.binding?.selectionEpoch ?? null;
   const key = threadId && epoch !== null ? `${threadId}:${epoch}` : null;
   const savedPicks = useMemo(() => savedStayPicksFrom(savedStays), [savedStays]);
   const [pickedStayId, setPickedStayId] = useState<string | null>(null);
-  const emailConfirmation = amendment?.confirmationNumber?.trim() || null;
+  const draftSource = readOnlyAmend?.draft?.source;
+  const sourceDraftMatches = Boolean(readOnlyAmend?.selectionCurrent && draftSource && session.staffSource &&
+    draftSource.threadId === session.staffSource.threadId && draftSource.messageId === session.staffSource.messageId &&
+    draftSource.sourceHash === session.staffSource.sourceHash);
+  const durableDraft = sourceDraftMatches && readOnlyAmend?.draft?.available ? readOnlyAmend.draft : null;
+  const projected = durableDraft?.request?.fields.value;
+  const cancelQueue = readOnlyAmend?.requestDraft;
+  const cancelSnapshot = cancelQueue?.snapshot;
+  const cancelRequests = cancelSnapshot?.requests.filter((request) => request.action === 'cancel' && request.workflow === 'cancel' &&
+    request.status === 'pending' && request.fields?.kind === 'cancel') ?? [];
+  const cancelRequest = cancelRequests.length === 1 && cancelSnapshot?.source.threadId === threadId &&
+    cancelSnapshot.source.messageId === messageId && cancelSnapshot.source.sourceHash === sourceHash &&
+    cancelSnapshot.workItemId === workItemId && readOnlyAmend?.selectionCurrent ? cancelRequests[0] : null;
+  const cancelFields = cancelRequest?.fields?.value as { target?: { confirmation: string; arrival: string } | null;
+    reason?: string | null; cancellationNote?: string | null } | null;
+  const selectedTarget = amendment?.kind === 'cancel' ? cancelFields?.target : projected?.target;
+  const targetMeta = amendment?.kind === 'cancel' && cancelRequest
+    ? cancelSnapshot?.fieldMeta[`requests[${cancelRequest.requestId}].target`]
+    : durableDraft?.fieldMeta[`requests[${durableDraft?.request?.requestId}].target`];
+  const targetCleared = selectedTarget === null && targetMeta?.origin === 'staff';
+  const emailConfirmation = targetCleared ? null : selectedTarget?.confirmation ?? (amendment?.confirmationNumber?.trim() || null);
   const resolvedStayId = resolvedSavedStayId(savedPicks, pickedStayId, emailConfirmation);
   const pickedConfirmation =
     savedPicks.find((pick) => pick.stayId === resolvedStayId)?.confirmationNumber ?? null;
-  const confirmationNumber = pickedConfirmation ?? (savedPicks.length > 0 ? null : emailConfirmation);
+  const confirmationNumber = targetCleared ? null : pickedConfirmation ?? (savedPicks.length > 0 ? null : emailConfirmation);
   // Only a dash confirmation (57291630-1) is an HMS number. A bare number may be a billing or voucher reference, so it is not one.
   const hmsNumber = hmsNumberFor(confirmationNumber);
   const lookupable = hmsNumber !== null;
   // The booked arrival rides with the find so HMS quick search covers that day. Without booked dates in the mail the
   // find goes by confirmation number alone: the requested arrival never stands in (AE2). findRequestFor drops a non-date.
-  const findArrival = amendment?.arrival ?? null;
+  const findArrival = targetCleared ? null : selectedTarget?.arrival ?? amendment?.arrival ?? null;
   const bookedMissing = !findArrival;
   const searchIdentity =
     amendment?.guestLastName?.trim() && amendment.arrival
@@ -207,7 +300,8 @@ export function AmendLookupPanel({
   // The find reads back the email's own number after a remount. A booking picked from a search is queued in this session.
   const find = useHmsJob({
     transport,
-    resume: hmsNumber ? { kind: 'find', confirmation: hmsNumber } : null,
+    resume: hmsNumber ? { kind: 'find', confirmation: hmsNumber,
+      ...(exactSource ? { arrival: sendableArrival(findArrival) } : {}) } : null,
     scope: key,
     autoStartIfMissing: Boolean(key && transport && hmsNumber),
     targetId: 'quote-booking',
@@ -217,12 +311,44 @@ export function AmendLookupPanel({
   const [refusedSearch, setRefusedSearch] = useState<{ scope: string; message: string } | null>(null);
   // Cancel views are kept per booking on an email (see cancelScope), so a reply for one booking never shows on another.
   const [cancelViews, setCancelViews] = useState<Record<string, CancelView>>({});
+  const [cancelNotes, setCancelNotes] = useState<Record<string, string>>({});
+  const [cancelDirty, setCancelDirty] = useState<Record<string, boolean>>({});
+  const [cancelGuards, setCancelGuards] = useState<Record<string, { requestId: string; expectedSeq: number; expectedExtractionId: string }>>({});
+  const cancelOperations = useRef(new Set<string>());
+  const cancelConsumed = useRef(new Map<string, { runs: CancelRun[]; editGeneration: number }>());
+  const cancelEditGeneration = useRef(0);
+  const cancelActionRef = useRef<string | null>(null);
+  const cancelSelection = JSON.stringify([workItemId, threadId, messageId, sourceHash, cancelTransportId,
+    session.binding?.internetMessageId, epoch, readOnlyAmend?.selectionCurrent,
+    readOnlyAmend?.sourceContentChanged, readOnlyAmend?.sourceSelectionUnavailable,
+    cancelSnapshot?.source.extractionId, cancelRequest?.requestId, readOnlyAmend?.historyEpoch]);
+  const cancelSelectionRef = useRef(cancelSelection);
+  cancelSelectionRef.current = cancelSelection;
+  const cancelScopeRef = useRef<string | null>(null);
+  const cancelScopeGeneration = useRef(0);
+  const cancelMountedRef = useRef(true);
+  const cancelMailboxGeneration = useRef(0);
+  useEffect(() => {
+    cancelMountedRef.current = true;
+    const unsubscribe = subscribeMailCacheScope(() => { cancelMailboxGeneration.current += 1; });
+    return () => { cancelMountedRef.current = false; unsubscribe(); };
+  }, []);
   const [amendViews, setAmendViews] = useState<Record<string, AmendView>>({});
   const [requestedByScope, setRequestedByScope] = useState<Record<string, AmendFormValues>>({});
+  const [selectedAfterClear, setSelectedAfterClear] = useState<{ scope: string; confirmation: string; arrival: string | null } | null>(null);
+  // Keep the mounted editor during a refresh, but never allow its stale booking to prepare a write.
+  const refreshingAmend = useRef<{ scope: string; confirmation: string; stay: StayRecordWire;
+    contactObservations?: StayContactObservations } | null>(null);
 
-  if (!amendment) return null;
+  if (!amendment) {
+    cancelActionRef.current = null;
+    if (cancelScopeRef.current !== null) cancelScopeGeneration.current += 1;
+    cancelScopeRef.current = null;
+    return null;
+  }
 
   const findView: HmsJobView | null = find.view;
+  const shownFindRequest = findView?.request?.kind === 'find' ? findView.request : null;
   const findRun = findRunFromJob(findView, find.queueFailed, find.queueFailureMessage);
   const running = find.queuing || (findView !== null && !isSettled(findView));
   const found = findRun?.kind === 'found' ? findRun : null;
@@ -265,7 +391,9 @@ export function AmendLookupPanel({
   const suspectLink = Boolean(stay && suspectStayLink(amendment, stay, Boolean(found?.arrivalMismatch)));
   const waitingForSavedPick = savedPicks.length > 0 && !lookupable;
   // CHECK: missing / not found / ambiguous / suspect, or staff already has a candidate list to reopen.
-  const checkReason = waitingForSavedPick
+  const awaitingClearedTarget = Boolean(targetCleared && (!key || selectedAfterClear?.scope !== key ||
+    selectedAfterClear.confirmation !== foundNumber || (selectedAfterClear.arrival && selectedAfterClear.arrival !== stay?.arrival)));
+  const checkReason = awaitingClearedTarget ? 'missing' : waitingForSavedPick
     ? null
     : !stay
       ? !lookupable
@@ -300,12 +428,36 @@ export function AmendLookupPanel({
 
   const searchHint = !client ? AMEND_FIND_COPY.unavailable : !key ? AMEND_FIND_COPY.waitingThread : null;
 
-  // The cancel view belongs to the booking it was started for: one email can show several bookings in turn.
-  const cancelScope = key && foundNumber ? `${key}|${foundNumber}` : null;
+  const selectedBookingMatches = !pickedConfirmation || foundNumber === pickedConfirmation;
+  const cancelTarget = selectedBookingMatches && foundNumber ? foundNumber : hmsNumber;
+  const cancelStay = stay && selectedBookingMatches && foundNumber === cancelTarget ? stay : null;
+  // Use the booked email target to restore history while Find is still running.
+  const cancelArrival = isoDayOf(stayText(cancelStay?.arrival)) ?? isoDayOf(amendment.arrival);
+  const requireNativeCancelPreview = readOnlyAmend?.propertyCode === 'HRCEN';
+  // Cloud views bind the source and target; legacy cancellation keeps its existing scope.
+  const cancelScope = requireNativeCancelPreview
+    ? key && cancelTarget ? JSON.stringify([key, cancelTarget, cancelArrival, resolvedStayId, confirmationNumber, cancelSelection]) : null
+    : key && foundNumber ? `${key}|${foundNumber}` : null;
+  if (cancelScopeRef.current !== cancelScope) {
+    cancelScopeGeneration.current += 1;
+    cancelScopeRef.current = cancelScope;
+  }
   const cancelView = cancelScope ? (cancelViews[cancelScope] ?? null) : null;
-  // The HMS arrival is the stay the cancel must match; the email's date is only a fallback.
-  const cancelArrival = isoDayOf(stayText(stay?.arrival)) ?? isoDayOf(amendment.arrival);
-  const cancelInput = foundNumber && cancelArrival ? { confirmation: foundNumber, arrival: cancelArrival } : null;
+  const cancelNeedsReview = Boolean(cancelScope && cancelDirty[cancelScope]);
+  const cancelDurableRequired = requireNativeCancelPreview && readOnlyAmend?.requireDurableDraft === true;
+  const cancelDraftAvailable = !cancelDurableRequired || Boolean(cancelQueue?.available && cancelRequest && !readOnlyAmend?.historyBusy);
+  const heldCancelNote = cancelRequest && cancelQueue?.held(cancelRequest.requestId, 'cancel.note');
+  const savedCancelNote = heldCancelNote ? heldCancelNote.value : cancelFields?.cancellationNote;
+  const cancelNote = cancelScope && Object.hasOwn(cancelNotes, cancelScope) ? cancelNotes[cancelScope]!
+    : typeof savedCancelNote === 'string' ? savedCancelNote : '';
+  const cancelRestoreInput = cancelTarget && cancelArrival && workItemId && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(workItemId) &&
+    threadId && messageId && /^[a-f0-9]{64}$/.test(sourceHash ?? '') &&
+    (!readOnlyAmend || (readOnlyAmend.selectionCurrent && !readOnlyAmend.sourceContentChanged && !readOnlyAmend.sourceSelectionUnavailable))
+    ? { confirmation: cancelTarget, arrival: cancelArrival, workItemId,
+        source: { threadId, messageId, sourceHash: sourceHash! } } : null;
+  const legacyCancelInput = foundNumber && cancelArrival ? { confirmation: foundNumber, arrival: cancelArrival } : null;
+  const cancelInput = requireNativeCancelPreview ? (cancelStay && !checkReason ? cancelRestoreInput : null) : legacyCancelInput;
+  cancelActionRef.current = canPreviewCancel && cancelDraftAvailable && cancelInput && !checkReason ? JSON.stringify(cancelInput) : null;
   const amendScope = cancelScope;
   const amendView = amendScope ? (amendViews[amendScope] ?? null) : null;
   const requested = (amendScope && requestedByScope[amendScope]) || {};
@@ -323,7 +475,8 @@ export function AmendLookupPanel({
   const amendRows = stay && amendment.kind === 'amend' ? changedAmendRows(stayCurrent, requestedValues) : [];
   const amendFields = Object.fromEntries(amendRows.map((row) => [row.field, requestedValues[row.field]])) as AmendFormValues;
   const amendLastName = stayText(stay?.lastName) ?? amendment.guestLastName ?? '';
-  const unpaidStay = classifyAmendPayment(paymentStayFromRecord(stay)) === 'unpaid';
+  const unpaidStay = amendment.kind === 'cancel' && requireNativeCancelPreview
+    ? null : classifyAmendPayment(paymentStayFromRecord(stay)) === 'unpaid';
   const canAmendWrite = Boolean(canPreviewAmend && unpaidStay && !checkReason && foundNumber);
   const amendInput =
     foundNumber && cancelArrival && amendLastName && Object.keys(amendFields).length
@@ -334,7 +487,10 @@ export function AmendLookupPanel({
     setPickedStayId(stayId);
     if (!key) return;
     const next = findRequestFor(confirmation, findArrival);
-    if ('request' in next) find.start(next.request);
+    if ('request' in next && next.request.kind === 'find') {
+      setSelectedAfterClear({ scope: key, confirmation, arrival: next.request.arrival ?? null });
+      find.start(next.request);
+    }
   };
 
   const reportStayAction = (kind: 'amend' | 'cancel', confirmation: string) => {
@@ -342,7 +498,7 @@ export function AmendLookupPanel({
     onStayActionResult?.({ stayId: resolvedStayId, confirmationNumber: confirmation, kind });
   };
 
-  const previewCancel = async () => {
+  const legacyPreviewCancel = async () => {
     if (checkReason || !canPreviewCancel || !cancelScope || !cancelClient || !cancelInput) return;
     const scope = cancelScope;
     setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'previewing' } }));
@@ -355,7 +511,7 @@ export function AmendLookupPanel({
   };
 
   // The commit must carry the digest of the preview it follows. Without one there is nothing to commit.
-  const commitCancel = async (ready: Extract<CancelView, { kind: 'ready' }>) => {
+  const legacyCommitCancel = async (ready: Extract<CancelView, { kind: 'ready' }>) => {
     const previewDigest = ready.run.previewDigest;
     if (checkReason || !canPreviewCancel || !cancelScope || !cancelClient || !cancelInput || !ready.reason || !previewDigest) return;
     const scope = cancelScope;
@@ -367,6 +523,135 @@ export function AmendLookupPanel({
       if (view.kind === 'done') reportStayAction('cancel', cancelInput.confirmation);
     } catch {
       setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'idle', note: AMEND_CANCEL_COPY.failed } }));
+    }
+  };
+
+  const cancelResponseCurrent = (scope: string, selection: string, generation: number, scopeGeneration: number, userId: string) => {
+    const active = getMailCacheScope();
+    return cancelMountedRef.current && cancelScopeRef.current === scope && cancelSelectionRef.current === selection &&
+      cancelMailboxGeneration.current === generation && cancelScopeGeneration.current === scopeGeneration &&
+      active.userId === userId && active.activeTransportId === cancelTransportId;
+  };
+
+  const previewCancel = async () => {
+    if (!requireNativeCancelPreview) return legacyPreviewCancel();
+    if (checkReason || !canPreviewCancel || !cancelScope || !cancelClient || !cancelInput || !cancelDraftAvailable) return;
+    const mailbox = getMailCacheScope();
+    const userId = mailbox.userId;
+    if (!userId || mailbox.activeTransportId !== cancelTransportId) return;
+    const scope = cancelScope;
+    const selection = cancelSelection;
+    const generation = cancelMailboxGeneration.current;
+    const scopeGeneration = cancelScopeGeneration.current;
+    const heldReason = cancelRequest && cancelQueue?.held(cancelRequest.requestId, 'cancel.reason');
+    const savedReason = heldReason ? heldReason.value : cancelFields?.reason;
+    const selectedReason = cancelView?.kind === 'ready' ? cancelView.reason : typeof savedReason === 'string' ? savedReason : '';
+    setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'previewing' } }));
+    try {
+      let guard: { requestId: string; expectedSeq: number; expectedExtractionId: string } | undefined;
+      if (cancelDurableRequired && cancelRequest && cancelQueue) {
+        const target = { confirmation: cancelInput.confirmation, arrival: cancelInput.arrival };
+        if ((cancelQueue.held(cancelRequest.requestId, 'target') || JSON.stringify(cancelFields?.target ?? null) !== JSON.stringify(target)) &&
+            !cancelQueue.record(cancelRequest.requestId, 'target', target)) throw new Error('Draft unavailable');
+        const cursor = await cancelQueue.flush();
+        if (!cursor || !cancelResponseCurrent(scope, selection, generation, scopeGeneration, userId)) throw new Error('Draft not saved');
+        guard = { requestId: cancelRequest.requestId, expectedSeq: cursor.seq, expectedExtractionId: cancelSnapshot!.source.extractionId };
+      }
+      const run = await cancelClient.previewCancel({ ...cancelInput, ...guard });
+      if (!cancelResponseCurrent(scope, selection, generation, scopeGeneration, userId)) return;
+      const preview = viewAfterPreview(run, cancelInput.confirmation);
+      if (guard) setCancelGuards((prev) => ({ ...prev, [scope]: guard! }));
+      setCancelViews((prev) => ({ ...prev, [scope]: preview.kind === 'ready' && requireNativeCancelPreview &&
+        !nativeCancelPreview(run, cancelInput) ? { kind: 'idle', note: CANCEL_PREVIEW_MISMATCH }
+          : preview.kind === 'ready' && selectedReason && run.reasons.includes(selectedReason)
+            ? { ...preview, reason: selectedReason } : preview }));
+      setCancelDirty((prev) => ({ ...prev, [scope]: false }));
+    } catch {
+      if (!cancelResponseCurrent(scope, selection, generation, scopeGeneration, userId)) return;
+      setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'idle', note: AMEND_CANCEL_COPY.failed } }));
+    }
+  };
+
+  // The commit must carry the digest of the preview it follows. Without one there is nothing to commit.
+  const commitCancel = async (ready: Extract<CancelView, { kind: 'ready' }>) => {
+    if (!requireNativeCancelPreview) return legacyCommitCancel(ready);
+    if (checkReason || !canPreviewCancel || !cancelScope || !cancelClient || !cancelInput || !ready.reason || !ready.run.previewDigest ||
+        !cancelDraftAvailable || !ready.run.reasons.includes(ready.reason) || /[\p{Cc}]/u.test(cancelNote) ||
+        (cancelDurableRequired && (!cancelGuards[cancelScope] || !cancelQueue || !cancelRequest)) ||
+        !nativeCancelPreview(ready.run, cancelInput) || cancelOperations.current.has(cancelScope)) return;
+    const mailbox = getMailCacheScope();
+    const userId = mailbox.userId;
+    if (!userId || mailbox.activeTransportId !== cancelTransportId) return;
+    const scope = cancelScope;
+    const consumed = cancelConsumed.current.get(scope);
+    if (consumed?.editGeneration === cancelEditGeneration.current && consumed.runs.includes(ready.run)) return;
+    const selection = cancelSelection;
+    const generation = cancelMailboxGeneration.current;
+    const scopeGeneration = cancelScopeGeneration.current;
+    const editGeneration = cancelEditGeneration.current;
+    const inputKey = JSON.stringify(cancelInput);
+    const actionCurrent = () => cancelResponseCurrent(scope, selection, generation, scopeGeneration, userId) &&
+      cancelActionRef.current === inputKey;
+    cancelOperations.current.add(scope);
+    let writing = false;
+    let reviewed = ready.run;
+    let guard = cancelDurableRequired ? cancelGuards[scope] : undefined;
+    setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'checking', run: ready.run, reason: ready.reason } }));
+    try {
+      if (cancelDurableRequired && cancelQueue && cancelRequest && cancelSnapshot) {
+        const cursor = await cancelQueue.flush();
+        if (!actionCurrent()) return;
+        if (!cursor) throw new Error('Draft not saved');
+        const nextGuard = { requestId: cancelRequest.requestId, expectedSeq: cursor.seq,
+          expectedExtractionId: cancelSnapshot.source.extractionId };
+        if (cancelEditGeneration.current !== editGeneration) {
+          setCancelViews((prev) => ({ ...prev, [scope]: { ...ready, reason: '', note: 'Details changed while checking. Choose a reason and try again.' } }));
+          return;
+        }
+        if (cancelNeedsReview || JSON.stringify(guard) !== JSON.stringify(nextGuard)) {
+          const fresh = await cancelClient.previewCancel({ ...cancelInput, ...nextGuard });
+          if (!actionCurrent()) return;
+          if (cancelEditGeneration.current !== editGeneration) {
+            setCancelViews((prev) => ({ ...prev, [scope]: { ...ready, reason: '', note: 'Details changed while checking. Choose a reason and try again.' } }));
+            return;
+          }
+          const next = viewAfterPreview(fresh, cancelInput.confirmation);
+          if (next.kind !== 'ready' || !nativeCancelPreview(fresh, cancelInput)) {
+            setCancelViews((prev) => ({ ...prev, [scope]: next.kind === 'ready'
+              ? { kind: 'idle', note: CANCEL_PREVIEW_MISMATCH } : next }));
+            return;
+          }
+          guard = nextGuard;
+          setCancelGuards((prev) => ({ ...prev, [scope]: nextGuard }));
+          setCancelDirty((prev) => ({ ...prev, [scope]: false }));
+          if (!sameCancelReview(ready.run, fresh, cancelInput, ready.reason)) {
+            setCancelViews((prev) => ({ ...prev, [scope]: { ...next,
+              reason: fresh.reasons.includes(ready.reason) ? ready.reason : '',
+              note: ['Cancellation details changed. Review them, then press Cancel booking in HMS again.', next.note].filter(Boolean).join(' ') } }));
+            return;
+          }
+          reviewed = fresh;
+        } else guard = nextGuard;
+      }
+      if (!actionCurrent() || cancelEditGeneration.current !== editGeneration) return;
+      setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'committing', run: reviewed, reason: ready.reason } }));
+      cancelConsumed.current.set(scope, { runs: [ready.run, reviewed], editGeneration });
+      writing = true;
+      const run = await cancelClient.commitCancel({ ...cancelInput, ...guard, reason: ready.reason, previewDigest: reviewed.previewDigest!,
+        cancellationNote: cancelNote.slice(0, 200) });
+      if (!cancelResponseCurrent(scope, selection, generation, scopeGeneration, userId)) return;
+      const view = viewAfterCommit(run, reviewed, cancelInput.confirmation);
+      setCancelViews((prev) => ({ ...prev, [scope]: view }));
+      if (view.kind === 'done' && ['cancelled', 'already_cancelled'].includes(run.outcome)) reportStayAction('cancel', cancelInput.confirmation);
+    } catch {
+      if (writing ? !cancelResponseCurrent(scope, selection, generation, scopeGeneration, userId) : !actionCurrent()) return;
+      setCancelViews((prev) => ({ ...prev, [scope]: writing
+        ? { kind: 'done', run: reviewed, text: AMEND_CANCEL_COPY.unconfirmed }
+        : { ...ready, note: 'Could not check the saved changes. Nothing was cancelled; try again.' } }));
+    } finally {
+      cancelOperations.current.delete(scope);
+      if (cancelMountedRef.current) setCancelViews((prev) => prev[scope]?.kind === 'checking'
+        ? { ...prev, [scope]: { kind: 'idle', note: 'Selection changed. Preview the cancellation again.' } } : prev);
     }
   };
 
@@ -399,13 +684,19 @@ export function AmendLookupPanel({
 
   // Cancel mail the pane can preview says so; otherwise the look-up footer stays.
   const footer =
-    amendment.kind === 'cancel' && stay && foundNumber && canPreviewCancel && !checkReason
+    amendment.kind === 'cancel' && stay && foundNumber && canPreviewCancel && cancelInput && !checkReason
       ? AMEND_CANCEL_COPY.footerPreview
       : AMEND_FIND_COPY.footer;
 
   const chooseReason = (reason: string) => {
-    if (!cancelScope) return;
+    if (!cancelScope || cancelOperations.current.has(cancelScope)) return;
     const scope = cancelScope;
+    cancelEditGeneration.current += 1;
+    if (cancelDurableRequired && cancelRequest && cancelQueue) {
+      cancelQueue.record(cancelRequest.requestId, 'cancel.reason', reason || null,
+        !reason || (reason.length <= 120 && !reason.startsWith('-') && !/[\p{Cc}]/u.test(reason)));
+      setCancelDirty((prev) => ({ ...prev, [scope]: true }));
+    }
     setCancelViews((prev) => {
       const view = prev[scope];
       if (!view || view.kind !== 'ready') return prev;
@@ -416,6 +707,24 @@ export function AmendLookupPanel({
   const requestedRows = stay && amendment.kind === 'amend' ? requestedChangeRows(amendment, stay, diff) : [];
   const requestLine = requestSummary(amendment, requestedRows.length === 0);
   const ratePlan = stayText(stay?.ratePlan);
+  const source = session.staffSource;
+  const binding = session.binding;
+  const readOnlyIdentity: SavedStayAmendEditorIdentity | null =
+    readOnlyAmend?.selectionCurrent && source?.threadId.trim() && source.messageId.trim() &&
+    /^[a-f0-9]{64}$/.test(source.sourceHash) && binding?.mailboxEmail.trim() &&
+    binding.internetMessageId?.trim()
+      ? { propertyCode: readOnlyAmend.propertyCode, threadId: source.threadId, messageId: source.messageId,
+          mailboxEmail: binding.mailboxEmail, sourceHash: source.sourceHash }
+      : null;
+  const reviewScope = readOnlyIdentity ? JSON.stringify([readOnlyIdentity, binding?.transportId, binding?.selectionEpoch]) : null;
+  const currentAmendReview = amendment.kind === 'amend' && stay && foundNumber && !checkReason && readOnlyIdentity &&
+    stayText(stay.confirmation) === foundNumber && findView?.request?.kind === 'find' &&
+    findView.request.confirmation === foundNumber
+      ? { confirmation: foundNumber, stay, contactObservations: found?.reservationObservations } : null;
+  const heldAmendReview = reviewScope && refreshingAmend.current?.scope === reviewScope ? refreshingAmend.current : null;
+  const amendReview = currentAmendReview ?? heldAmendReview;
+  // This is a local display revision, not an extraction id or authority to write.
+  const localReadRevision = JSON.stringify([session.inputRevision, amendment]);
   const matchWarningParts =
     stay && amendment.kind === 'amend'
       ? [
@@ -436,9 +745,24 @@ export function AmendLookupPanel({
       <h3 id="amend-lookup-title" className="text-[13px] font-semibold text-[#1e293b]">
         {amendment.kind === 'cancel' ? 'Cancellation request' : 'Change to an existing booking'}
       </h3>
+      {amendment.kind === 'amend' && readOnlyAmend?.refreshPending ? <p role="status" className={infoNoteClass}>
+        Checking this email for the latest request…
+      </p> : null}
+      {amendment.kind === 'amend' && readOnlyAmend?.refreshMessage ? <p role="status" className={warnNoteClass}>
+        {readOnlyAmend.refreshMessage}{' '}
+        {readOnlyAmend.retryRefresh ? <button type="button" className="font-semibold underline" onClick={readOnlyAmend.retryRefresh}>Try again</button> : null}
+      </p> : null}
+      {amendment.kind === 'amend' && (readOnlyAmend?.draft?.requestCount ?? 0) > 1 ?
+        <p role="status" className={warnNoteClass}>This email has multiple changes. Open each booking in HMS.</p> : null}
       <p data-testid="amend-request-summary" data-pii title="Request from this email" className={valueClass}>
         {requestLine}
       </p>
+      {amendment.kind === 'amend' && readOnlyIdentity && selectedTransportId && workItemId ? (
+        <CloudAmendHistory key={JSON.stringify([readOnlyIdentity, selectedTransportId, binding?.selectionEpoch, workItemId])}
+          trpc={trpc} transportId={selectedTransportId} suspended={activeAmendApproval} selection={{ workItemId, source: {
+            threadId: readOnlyIdentity.threadId, messageId: readOnlyIdentity.messageId, sourceHash: readOnlyIdentity.sourceHash,
+          } }} />
+      ) : null}
       {savedPicks.length ? (
         <div data-testid="amend-saved-stays" className="flex flex-col gap-2">
           <p className={headingClass}>{SAVED_STAY_COPY.heading}</p>
@@ -466,7 +790,8 @@ export function AmendLookupPanel({
           <p>{AMEND_FIND_COPY.checkHint}</p>
         </div>
       ) : null}
-      {stay && !unpaidStay && (amendment.kind === 'amend' || amendment.kind === 'cancel') ? (
+      {stay && unpaidStay === false && (!readOnlyAmend || amendment.kind === 'cancel') &&
+        (amendment.kind === 'amend' || amendment.kind === 'cancel') ? (
         <div
           data-testid={amendment.kind === 'cancel' ? 'cancel-payment-banner' : 'amend-payment-banner'}
           className={warnNoteClass}
@@ -474,12 +799,12 @@ export function AmendLookupPanel({
           {AMEND_SAVE_COPY.handleInHms}
         </div>
       ) : null}
-      <div className={`grid ${requestedRows.length ? 'grid-cols-2' : 'grid-cols-1'} gap-3`}>
+      <div className="grid grid-cols-1 gap-3">
         <div
           data-testid={stay ? 'amend-hms-result-card' : undefined}
           className="flex min-w-0 flex-col gap-2"
         >
-          <p className={headingClass}>Booking in HMS now</p>
+          <p className={headingClass}>{readOnlyAmend ? 'Booking at last HMS lookup' : 'Booking in HMS now'}</p>
           {stay ? (
             <>
               <dl data-testid="amend-hms-facts" className="grid grid-cols-2 gap-x-2.5 gap-y-1.5">
@@ -513,6 +838,17 @@ export function AmendLookupPanel({
                 />
               ) : null}
               {findView?.status === 'done' ? <HmsAsOf asOf={findView.asOf} /> : null}
+              {readOnlyAmend && shownFindRequest && shownFindRequest.confirmation === foundNumber ? (
+                <button type="button" className={buttonClass} disabled={!key || !transport || busy}
+                  onClick={() => {
+                    if (reviewScope && foundNumber && stay && amendment.kind === 'amend')
+                      refreshingAmend.current = { scope: reviewScope, confirmation: foundNumber, stay,
+                        contactObservations: found?.reservationObservations };
+                    find.start(shownFindRequest);
+                  }}>
+                  Refresh HMS lookup
+                </button>
+              ) : null}
             </>
           ) : (
             <>
@@ -623,10 +959,66 @@ export function AmendLookupPanel({
           onPick={(row) => {
             if (!key) return;
             const next = findRequestFor(row.confirmation, row.arrival);
-            if ('request' in next) find.start(next.request);
+            if ('request' in next) {
+              setSelectedAfterClear({ scope: key, confirmation: row.confirmation, arrival: row.arrival });
+              find.start(next.request);
+            }
           }}
         />
       ) : null}
+      {requireNativeCancelPreview ? (
+        <>
+      {amendment.kind === 'cancel' && cancelTarget && cancelScope &&
+        (cancelRestoreInput || (cancelStay && !checkReason)) ? (
+        <CloudCancelSection
+          key={cancelScope}
+          view={cancelView}
+          canPreview={canPreviewCancel && Boolean(cancelInput) && cancelDraftAvailable}
+          chargeEnabled={canPreviewCancel && Boolean(cancelRestoreInput)}
+          offNote={!cancelDraftAvailable ? 'The saved cancellation request is unavailable. Reload the email before continuing.'
+            : checkReason ? 'Check the booking in HMS before previewing cancellation.'
+            : canPreviewCancel && !cancelInput ? 'Select the current email before previewing cancellation.' : cancelSwitchedOffNote(cancelTarget)}
+          confirmation={cancelTarget}
+          arrival={cancelArrival}
+          requireNativePreview={requireNativeCancelPreview}
+          guestName={(cancelStay ? stayGuest(cancelStay) : null) ?? amendment.guestLastName ?? 'this guest'}
+          client={cancelClient}
+          trpc={trpc}
+          transportId={cancelTransportId}
+          selection={cancelRestoreInput && session.binding?.internetMessageId?.trim()
+            ? { ...cancelRestoreInput, internetMessageId: session.binding.internetMessageId.trim() } : null}
+          waitingForFind={!cancelStay || Boolean(checkReason)}
+          isCurrent={() => cancelMountedRef.current && cancelScopeRef.current === cancelScope}
+          onRestored={(view) => {
+            if (!cancelMountedRef.current || !cancelScope || cancelScopeRef.current !== cancelScope) return;
+            setCancelViews((prev) => {
+              if (view) return { ...prev, [cancelScope]: view };
+              if (!(cancelScope in prev)) return prev;
+              const next = { ...prev }; delete next[cancelScope]; return next;
+            });
+            if (view?.kind === 'done' && view.run.outcome === 'cancelled') reportStayAction('cancel', cancelTarget);
+          }}
+          onPreview={() => void previewCancel()}
+          onReason={chooseReason}
+          cancellationNote={cancelNote}
+          onNote={(note) => {
+            if (!cancelScope || cancelOperations.current.has(cancelScope)) return;
+            cancelEditGeneration.current += 1;
+            const value = note.slice(0, 200);
+            setCancelNotes((prev) => ({ ...prev, [cancelScope]: value }));
+            if (cancelDurableRequired && cancelRequest && cancelQueue) {
+              cancelQueue.record(cancelRequest.requestId, 'cancel.note', value || null, !/[\p{Cc}]/u.test(value));
+              setCancelDirty((prev) => ({ ...prev, [cancelScope]: true }));
+            }
+          }}
+          onCommit={() => {
+            if (cancelView?.kind === 'ready') void commitCancel(cancelView);
+          }}
+        />
+      ) : null}
+        </>
+      ) : (
+        <>
       {amendment.kind === 'cancel' && stay && foundNumber && !checkReason ? (
         <CancelSection
           view={cancelView}
@@ -642,7 +1034,40 @@ export function AmendLookupPanel({
           }}
         />
       ) : null}
-      {amendment.kind === 'amend' && stay && foundNumber && !checkReason ? (
+        </>
+      )}
+      {amendment.kind === 'amend' && readOnlyAmend && amendReview && readOnlyIdentity &&
+          (!readOnlyAmend.requireDurableDraft || durableDraft) ? (
+          <fieldset className="min-w-0" hidden={!currentAmendReview} disabled={readOnlyAmend.historyBusy}>
+          <LocalAmendReview
+            key={JSON.stringify([readOnlyIdentity, binding?.transportId, binding?.selectionEpoch, amendReview.confirmation,
+              readOnlyAmend.historyEpoch])}
+            identity={readOnlyIdentity}
+            revision={localReadRevision}
+            confirmation={amendReview.confirmation}
+            stay={amendReview.stay}
+            contactObservations={amendReview.contactObservations}
+            requestedArrival={projected ? projected.arrival : amendment.requestedArrival}
+            requestedDeparture={projected ? projected.departure : amendment.requestedDeparture}
+            requestedAdults={projected?.adults}
+            requestedChildren={projected?.children}
+            requestedChildAges={projected?.childAges}
+            durableDraft={durableDraft}
+            refreshPending={readOnlyAmend.refreshPending}
+            ratePlans={readOnlyAmend.ratePlans}
+            defaultRecipient={session.staffHeader.clientEmail}
+            onApprovalVisibilityChange={setActiveAmendApproval}
+            writeContext={currentAmendReview && selectedTransportId && workItemId ? { trpc, transportId: selectedTransportId, workItemId } : null}
+          />
+          </fieldset>
+      ) : amendment.kind === 'amend' && stay && foundNumber && !checkReason && readOnlyAmend &&
+          (readOnlyAmend.draft?.requestCount ?? 0) <= 1 ? (
+        <p className={infoNoteClass}>{readOnlyAmend.requireDurableDraft && !durableDraft
+          ? <>{readOnlyAmend.draftLoading ? 'Loading the saved request…' : 'The saved request is not ready.'}{' '}
+            {!readOnlyAmend.draftLoading && readOnlyAmend.retryDraft ? <button type="button" className="font-semibold underline"
+              onClick={readOnlyAmend.retryDraft}>Try again</button> : null}</>
+          : 'Select the email and confirm the booking before reviewing this change.'}</p>
+      ) : amendment.kind === 'amend' && stay && foundNumber && !checkReason && !readOnlyAmend ? (
         <AmendSection
           view={amendView}
           canPreview={canAmendWrite}
@@ -669,6 +1094,8 @@ export function AmendLookupPanel({
             if (amendView?.kind === 'ready') void commitAmendStay(amendView);
           }}
         />
+      ) : amendment.kind === 'amend' && !(stay && foundNumber) && readOnlyAmend ? (
+        <p className={captionClass}>Find the booking to review the requested changes.</p>
       ) : amendment.kind === 'amend' && !(stay && foundNumber) ? (
         <div data-testid="amend-run-placeholder" className="flex justify-end border-t border-[#e2e8f0] pt-2">
           <button type="button" className={buttonClass} disabled title="Find the booking first">
@@ -966,6 +1393,473 @@ function RequestedChangeRow({ label, from, to }: { label: string; from: string; 
   );
 }
 
+/** Bind the editable request to the current selected email and booking. */
+function LocalAmendReview({ identity, revision, confirmation, stay, contactObservations, requestedArrival, requestedDeparture,
+  requestedAdults, requestedChildren, requestedChildAges, durableDraft, refreshPending, ratePlans, defaultRecipient, writeContext, onApprovalVisibilityChange }: {
+  identity: SavedStayAmendEditorIdentity;
+  revision: string;
+  confirmation: string;
+  stay: StayRecordWire;
+  contactObservations?: StayContactObservations;
+  requestedArrival?: string | null;
+  requestedDeparture?: string | null;
+  requestedAdults?: number | null;
+  requestedChildren?: number | null;
+  requestedChildAges?: number[] | null;
+  durableDraft: NonNullable<AmendReadOnlyContext['draft']> | null;
+  refreshPending?: boolean;
+  ratePlans: RatePlanCatalogueEntry[];
+  defaultRecipient: string;
+  onApprovalVisibilityChange: (visible: boolean) => void;
+  writeContext: { trpc: unknown; transportId: string; workItemId: string } | null;
+}) {
+  const [draftStore] = useState(createSavedStayAmendDraftStore);
+  const [draft, setDraft] = useState<SavedStayAmendDraftUpdate | null>(null);
+  const lastTarget = useRef('');
+  useEffect(() => {
+    const arrival = sendableArrival(stay.arrival ?? '');
+    if (refreshPending || !durableDraft || !arrival) return;
+    const target = { confirmation, arrival };
+    const key = JSON.stringify(target);
+    if (key !== lastTarget.current && JSON.stringify(durableDraft.request?.fields.value.target) !== key) {
+      lastTarget.current = key;
+      durableDraft.record('target', target);
+    }
+  }, [refreshPending, durableDraft?.record, durableDraft?.request?.fields.value.target, confirmation, stay.arrival]);
+  const stayId = durableDraft?.request?.stayId;
+  const cleared = stayId ? {
+    arrival: requestedArrival == null && durableDraft?.fieldMeta[`stays[${stayId}].requested.arrival`]?.origin === 'staff',
+    departure: requestedDeparture == null && durableDraft?.fieldMeta[`stays[${stayId}].requested.departure`]?.origin === 'staff',
+    adults: requestedAdults == null && durableDraft?.fieldMeta[`stays[${stayId}].totalAdults`]?.origin === 'staff',
+    children: requestedChildren == null && durableDraft?.fieldMeta[`stays[${stayId}].totalChildren`]?.origin === 'staff',
+  } : undefined;
+  const requested = { arrival: requestedArrival, departure: requestedDeparture, adults: requestedAdults,
+    children: requestedChildren, childAges: requestedChildAges, cleared };
+  const basis = savedStayAmendReviewBasis(stay, requested, revision);
+  const currentDraft = draft?.basis === basis && draft.extractionRevision === revision &&
+    draft.confirmation === confirmation &&
+    (['propertyCode', 'threadId', 'messageId', 'mailboxEmail', 'sourceHash'] as const)
+      .every((field) => draft.identity[field] === identity[field]) ? draft : null;
+  return <>
+    <SavedStayAmendEditor draftStore={draftStore} identity={identity} extractionRevision={revision}
+      confirmation={confirmation} stay={stay} requestedArrival={requestedArrival}
+      requestedDeparture={requestedDeparture} requestedAdults={requestedAdults} requestedChildren={requestedChildren}
+      requestedChildAges={requestedChildAges} cleared={cleared} onFieldEdit={(field, value, next) => {
+        if (!durableDraft) return;
+        if (field === 'arrival' || field === 'departure' || field === 'nights') {
+          const dateField = field === 'nights' ? 'departure' : field;
+          const date = next[dateField];
+          durableDraft.record(dateField, date || null, !date || Boolean(sendableArrival(date)));
+        } else if (field === 'adults' || field === 'children') {
+          const valid = !value || /^(0|[1-9]\d{0,2})$/.test(value);
+          durableDraft.record(field, value && valid ? Number(value) : null, valid);
+        } else if (field === 'childAges') {
+          const parts = value.trim() ? value.split(',').map((age) => age.trim()) : [];
+          const valid = parts.every((age) => /^(0|[1-9]\d?)$/.test(age) && Number(age) <= 17) && parts.length <= 9;
+          durableDraft.record('childAges', value.trim() && valid ? parts.map(Number) : value.trim() ? null : [], valid);
+        }
+      }} onDraftChange={setDraft} />
+    <LocalAmendChoices stay={stay} ratePlans={ratePlans} draft={currentDraft}
+      identity={identity} confirmation={confirmation} contactObservations={contactObservations}
+      defaultRecipient={defaultRecipient} writeContext={writeContext} durableDraft={durableDraft}
+      onApprovalVisibilityChange={onApprovalVisibilityChange} />
+  </>;
+}
+
+function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, contactObservations, defaultRecipient, writeContext,
+  durableDraft, onApprovalVisibilityChange }: {
+  stay: StayRecordWire;
+  ratePlans: RatePlanCatalogueEntry[];
+  draft: SavedStayAmendDraftUpdate | null;
+  identity: SavedStayAmendEditorIdentity;
+  confirmation: string;
+  contactObservations?: StayContactObservations;
+  defaultRecipient: string;
+  onApprovalVisibilityChange: (visible: boolean) => void;
+  writeContext: { trpc: unknown; transportId: string; workItemId: string } | null;
+  durableDraft: NonNullable<AmendReadOnlyContext['draft']> | null;
+}) {
+  const labtest = stay.firstName?.trim() === 'Proof' && stay.lastName?.trim() === 'Labtest';
+  const saved = durableDraft?.request?.fields.value;
+  const staffCleared = (field: string) => durableDraft?.fieldMeta[`requests[${durableDraft?.request?.requestId}].${field}`]?.origin === 'staff';
+  const savedText = (field: string, value: string | null | undefined, fallback: string) =>
+    value ?? (staffCleared(field) ? '' : fallback);
+  const initialRoom = saved?.roomType ?? (staffCleared('roomType') ? '' : knownRoomCode(stay.roomType ?? '') ?? stay.roomType ?? '');
+  const initialRate = saved?.ratePlan ?? (staffCleared('ratePlan') ? '' : stay.ratePlan ?? '');
+  const initialFirstName = savedText('firstName', saved?.firstName, stay.firstName ?? '');
+  const initialLastName = savedText('lastName', saved?.lastName, stay.lastName ?? '');
+  const initialGuestEmail = savedText('guestEmail', saved?.guestEmail, contactObservations?.guestEmail?.value ?? '');
+  const initialBookerName = savedText('bookerName', saved?.bookerName, contactObservations?.bookerName?.value ?? '');
+  const initialBookerContact = savedText('bookerContact', saved?.bookerContact, contactObservations?.bookerContact?.value ?? '');
+  const initialCmsMessageId = savedText('cms.messageId', saved?.cms.messageId,
+    labtest ? '' : stay.bookingAgency || stay.organization ? '03' : '01');
+  const recipientCleared = saved?.cms.recipient === null && staffCleared('cms.recipient');
+  const sendCleared = saved?.cms.send === null && staffCleared('cms.send');
+  const [roomType, setRoomType] = useState(initialRoom);
+  const [ratePlan, setRatePlan] = useState(initialRate);
+  const [rateSearch, setRateSearch] = useState(initialRate);
+  const [showRateMatches, setShowRateMatches] = useState(false);
+  const [retainRates, setRetainRates] = useState<'yes' | 'no'>(saved?.retainRates ?? 'no');
+  const [firstName, setFirstName] = useState(initialFirstName);
+  const [lastName, setLastName] = useState(initialLastName);
+  const [guestEmail, setGuestEmail] = useState(initialGuestEmail);
+  const [bookerName, setBookerName] = useState(initialBookerName);
+  const [bookerContact, setBookerContact] = useState(initialBookerContact);
+  const [editedDetails, setEditedDetails] = useState<string[]>([]);
+  const sources = useConfirmationSources();
+  const [recipientMode, setRecipientMode] = useState<ConfirmationMode>(recipientCleared ? 'custom' : saved?.cms.recipient?.mode ?? sources?.setting?.mode ?? 'self');
+  const [customRecipient, setCustomRecipient] = useState(recipientCleared ? '' : saved?.cms.recipient?.address ?? sources?.setting?.address ?? '');
+  const [recipientTouched, setRecipientTouched] = useState(Boolean(saved?.cms.recipient || recipientCleared));
+  const [cmsSend, setCmsSend] = useState(labtest ? false : saved?.cms.send ?? true);
+  const [cmsNeedsChoice, setCmsNeedsChoice] = useState(Boolean(!labtest && sendCleared));
+  const [cmsMessageId, setCmsMessageId] = useState(initialCmsMessageId);
+  const [cmsTouched, setCmsTouched] = useState(Boolean(saved && (saved.cms.send !== null || saved.cms.messageId !== null || saved.cms.recipient)));
+  const [cmsEdited, setCmsEdited] = useState(false);
+  const [boundKey, setBoundKey] = useState<string | null>(null);
+  const [availableKey, setAvailableKey] = useState<string | null>(null);
+  const rates = useAmendRateCandidates({ trpc: writeContext?.trpc ?? null,
+    transportId: writeContext?.transportId ?? null, workItemId: writeContext?.workItemId ?? null,
+    source: { threadId: identity.threadId, messageId: identity.messageId, sourceHash: identity.sourceHash },
+    confirmation, draft: durableDraft });
+  useEffect(() => {
+    if (recipientTouched || !sources?.setting) return;
+    setRecipientMode(sources.setting.mode);
+    setCustomRecipient(sources.setting.address ?? '');
+  }, [recipientTouched, sources?.setting]);
+  useEffect(() => {
+    if (!editedDetails.includes('roomType')) setRoomType(initialRoom);
+    if (!editedDetails.includes('ratePlan')) {
+      setRatePlan(initialRate);
+      setRateSearch(initialRate);
+    }
+    if (!editedDetails.includes('firstName')) setFirstName(initialFirstName);
+    if (!editedDetails.includes('lastName')) setLastName(initialLastName);
+    if (!editedDetails.includes('guestEmail')) setGuestEmail(initialGuestEmail);
+    if (!editedDetails.includes('bookerName')) setBookerName(initialBookerName);
+    if (!editedDetails.includes('bookerContact')) setBookerContact(initialBookerContact);
+    if (!editedDetails.includes('retainRates')) setRetainRates(saved?.retainRates ?? 'no');
+    if (!cmsEdited && saved) {
+      setCmsSend(labtest ? false : saved.cms.send ?? true);
+      setCmsNeedsChoice(Boolean(!labtest && sendCleared));
+      setCmsMessageId(initialCmsMessageId);
+      setCmsTouched(Boolean(saved.cms.send !== null || saved.cms.messageId !== null || saved.cms.recipient));
+      if (saved.cms.recipient) {
+        setRecipientMode(saved.cms.recipient.mode);
+        setCustomRecipient(saved.cms.recipient.address);
+        setRecipientTouched(true);
+      } else if (recipientCleared) {
+        setRecipientMode('custom'); setCustomRecipient(''); setRecipientTouched(true);
+      }
+    }
+  }, [stay, contactObservations, saved, editedDetails, cmsEdited, labtest, initialRoom, initialRate, initialFirstName,
+    initialLastName, initialGuestEmail, initialBookerName, initialBookerContact, initialCmsMessageId, recipientCleared, sendCleared]);
+  const recipient = resolveConfirmationRecipient({
+    mode: recipientMode, customAddress: customRecipient, userEmail: sources?.userEmail ?? '', clientEmail: defaultRecipient,
+    invalidSetting: sources?.invalidSetting || sources?.load === 'failed', staffChose: recipientTouched,
+  });
+  const recipientLoading = sources?.load === 'pending' && !recipientTouched;
+  const cmsRecipient = recipient.ok ? recipient.recipient.address : '';
+  const choicesValid = Boolean(draft && draft.errors.every((error) => error === 'Choose a change to the booking.'));
+  const rateMatches = ratePlans.filter((plan) =>
+    `${plan.code} ${plan.name}`.toLocaleLowerCase().includes(rateSearch.trim().toLocaleLowerCase())).slice(0, 8);
+  const pendingRateMatch = showRateMatches && rateMatches.length > 0 &&
+    !ratePlans.some((plan) => plan.code.toUpperCase() === ratePlan);
+  const changes = { ...draft?.proposal?.changes,
+    ...(roomType && roomType !== (knownRoomCode(stay.roomType ?? '') ?? stay.roomType) ? { roomType } : {}),
+    ...(ratePlan && ratePlan !== stay.ratePlan ? { ratePlan } : {}),
+    ...(firstName.trim() !== (stay.firstName ?? '') ? { firstName: firstName.trim() } : {}),
+    ...(lastName.trim() !== (stay.lastName ?? '') ? { lastName: lastName.trim() } : {}),
+    ...(guestEmail.trim() !== (contactObservations?.guestEmail?.value ?? '') ? { guestEmail: guestEmail.trim() } : {}),
+    ...(bookerName.trim() !== (contactObservations?.bookerName?.value ?? '') ? { bookerName: bookerName.trim() } : {}),
+    ...(bookerContact.trim() !== (contactObservations?.bookerContact?.value ?? '') ? { bookerContact: bookerContact.trim() } : {}),
+  };
+  const retainedPriceChange = retainRates === 'yes' &&
+    ['arrival', 'departure', 'adults', 'children', 'childAges', 'roomType', 'ratePlan'].some((key) => Object.hasOwn(changes, key));
+  const validRecipient = !cmsNeedsChoice && (!cmsSend || (!recipientLoading && recipient.ok && Boolean(cmsMessageId.trim())));
+  const validChanges = Boolean(writeContext && choicesValid && stay.arrival && stay.departure &&
+    firstName.trim() && lastName.trim() && /^[A-Z0-9]{1,12}$/.test(ratePlan) && !pendingRateMatch &&
+    /^[A-Z0-9]{1,12}$/.test(roomType) && validRecipient && !retainedPriceChange &&
+    (Object.keys(changes).length > 0 || cmsTouched));
+  const request: CloudAmendRequest | null = validChanges && writeContext && stay.arrival ? {
+    workItemId: writeContext.workItemId,
+    source: { threadId: identity.threadId, messageId: identity.messageId, sourceHash: identity.sourceHash },
+    confirmation, arrival: stay.arrival,
+    changes: { ...changes, ratePlan, retainRates, cmsSend: labtest ? false : cmsSend,
+      cmsMessageId: cmsMessageId.trim(), cmsRecipient: cmsRecipient.trim() },
+  } : null;
+  const requestKey = request ? JSON.stringify([request, durableDraft?.editVersion ?? 0]) : null;
+  const markDetail = (name: string) => setEditedDetails((current) => current.includes(name) ? current : [...current, name]);
+  const recordRecipient = (mode: ConfirmationMode, custom: string) => durableDraft?.record('cms.recipient', {
+    mode, address: mode === 'self' ? sources?.userEmail ?? '' : mode === 'client' ? defaultRecipient : custom,
+  });
+  return <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
+    <div className="grid grid-cols-2 gap-2">
+      <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+        <span className="font-semibold">Room type</span>
+        <span className={captionClass}>HMS: {stay.roomType || 'Not shown'}</span>
+        <select className={selectClass} value={roomType} onChange={(event) => {
+          setRoomType(event.target.value); markDetail('roomType'); durableDraft?.record('roomType', event.target.value || null);
+        }}>
+          {!roomType ? <option value="">Choose room type</option> : null}
+          {roomType && !Object.hasOwn(ROOM_TYPE_NAMES, roomType) ? <option value={roomType}>{roomType}</option> : null}
+          {Object.entries(ROOM_TYPE_NAMES).map(([code, name]) => <option key={code} value={code}>{name} ({code})</option>)}
+        </select>
+      </label>
+      <div className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+        <span className="font-semibold">Rate plan</span>
+        <span className={captionClass}>HMS: {stay.ratePlan || 'Not shown'}</span>
+        <input aria-label="Rate plan" className={selectClass} value={rateSearch} placeholder="Search code or name"
+          onFocus={() => setShowRateMatches(true)} onChange={(event) => {
+            const input = event.target.value;
+            const code = input.trim().toUpperCase();
+            const matches = ratePlans.some((plan) => `${plan.code} ${plan.name}`.toLocaleLowerCase().includes(input.trim().toLocaleLowerCase()));
+            const exact = ratePlans.some((plan) => plan.code.toUpperCase() === code);
+            setRateSearch(input);
+            setRatePlan(code);
+            setShowRateMatches(true);
+            markDetail('ratePlan');
+            durableDraft?.record('ratePlan', code || null, !code || (/^[A-Z0-9]{1,12}$/.test(code) && (!matches || exact)));
+          }} />
+        {showRateMatches && rateMatches.length ? <ul aria-label="Matching rates" className="max-h-32 overflow-y-auto rounded-sm border border-[#cbd5e1] bg-white">
+          {rateMatches.map((plan) => <li key={plan.code}><button type="button" className="w-full px-2 py-1 text-left hover:bg-[#f1f5f9]"
+            onClick={() => { setRatePlan(plan.code); setRateSearch(plan.code); setShowRateMatches(false); markDetail('ratePlan');
+              durableDraft?.record('ratePlan', plan.code); }}>
+            {plan.code} · {plan.name}
+          </button></li>)}
+          {pendingRateMatch && /^[A-Z0-9]{1,12}$/.test(ratePlan) ? <li><button type="button"
+            className="w-full px-2 py-1 text-left hover:bg-[#f1f5f9]" onClick={() => { setRateSearch(ratePlan); setShowRateMatches(false);
+              durableDraft?.record('ratePlan', ratePlan); }}>
+            Use {ratePlan} as a code
+          </button></li> : null}
+        </ul> : null}
+        <span className={captionClass}>{pendingRateMatch ? 'Choose a match or confirm the typed code.'
+          : ratePlans.find((plan) => plan.code === ratePlan)?.name ?? 'Availability checked by HMS when prepared'}</span>
+      </div>
+      <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+        <span className="font-semibold">Retain the current rate?</span>
+        <select aria-label="Retain the current rate?" className={selectClass} value={retainRates} onChange={(event) => {
+          const value = event.target.value as 'yes' | 'no'; setRetainRates(value); markDetail('retainRates'); durableDraft?.record('retainRates', value);
+        }}>
+          <option value="no">No</option>
+          <option value="yes">Yes</option>
+        </select>
+        <span className={captionClass}>No: HMS reprices the stay.</span>
+      </label>
+    </div>
+    {retainedPriceChange ? <p className={warnNoteClass}>The new total cannot be verified while retaining rates. Choose No to reprice, or make this change in HMS.</p> : null}
+    {rates.available ? <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" className={buttonClass} disabled={rates.view?.status === 'checking'}
+          onClick={() => void rates.check()}>{rates.view?.status === 'checking' ? 'Checking rates…' : 'Check rates in HMS'}</button>
+        {/^[A-Z0-9]{1,12}$/.test(ratePlan) ? <button type="button" className={buttonClass}
+          disabled={rates.view?.status === 'checking' || pendingRateMatch}
+          onClick={() => void rates.check(ratePlan)}>Check {ratePlan}</button> : null}
+      </div>
+      {rates.view?.status === 'blocked' ? <p role="status" className={warnNoteClass}>{rates.view.message}</p> : null}
+      {rates.view?.status === 'ready' && rates.view.reply ? <>
+        <HmsAsOf asOf={rates.view.reply.observedAt} />
+        <p className={captionClass}>{rates.view.reply.coverage.candidateList === 'complete' ? 'Rate list complete.'
+          : rates.view.reply.coverage.candidateList === 'partial' ? 'Rate list is incomplete.' : 'Rate list coverage is unknown.'}
+          {rates.view.reply.coverage.reason ? ` ${rates.view.reply.coverage.reason}` : ''}</p>
+        {rates.view.reply.recommendation ? <p className={captionClass}>
+          {rates.view.reply.recommendation.rateCode ? `${rates.view.reply.recommendation.rateCode}: ` : ''}
+          {rates.view.reply.recommendation.explanation}
+          {rates.view.reply.recommendation.validation === 'needs_native_check' ? ' HMS check required.' : ''}
+        </p> : null}
+        {rates.view.reply.options.length ? <ul aria-label="Rates from HMS" className="max-h-48 overflow-y-auto rounded-sm border border-[#cbd5e1] bg-white">
+          {rates.view.reply.options.map((option) => {
+            const nightly = option.price ? rateMoney(option.price.currency, option.price.averagePerNightMinor) : null;
+            const total = option.price?.totalBasis === 'native' ? rateMoney(option.price.currency, option.price.totalMinor) : null;
+            return <li key={option.id} className="border-b border-[#e2e8f0] last:border-0">
+              <button type="button" className="w-full px-2 py-1.5 text-left disabled:text-[#94a3b8]"
+                disabled={['unavailable', 'restricted', 'failed'].includes(option.state)} onClick={() => {
+                  setRatePlan(option.rateCode); setRateSearch(option.rateCode); setShowRateMatches(false); markDetail('ratePlan');
+                  durableDraft?.record('ratePlan', option.rateCode);
+                }}>
+                <span className="block text-[12px] font-semibold">{option.rateCode}{option.rateLabel ? ` · ${option.rateLabel}` : ''}</span>
+                <span className={captionClass}>{[option.roomLabel ?? option.roomCode, option.boardLabel,
+                  option.state === 'unchecked' ? 'Not fully checked' : option.state,
+                  nightly ? `${nightly} estimated per night` : null, total ? `${total} total` : null,
+                  option.minRoomsAvailable !== null ? `${option.minRoomsAvailable} rooms listed` : null].filter(Boolean).join(' · ')}</span>
+                <span className={`block ${captionClass}`}>{option.coverage.nightsObserved}/{option.coverage.nightsExpected} nights checked
+                  {!option.coverage.eligibilityVerified ? ' · eligibility not verified' : ''}
+                  {!option.coverage.nativePartyIdsMatched ? ' · company/agency not verified' : ''}
+                  {option.reasons.length ? ` · ${option.reasons.map(rateReason).join('; ')}` : ''}</span>
+              </button>
+            </li>;
+          })}
+        </ul> : <p className={captionClass}>HMS returned no rate options for this check.</p>}
+        {rates.view.reply.issues.map((issue, index) => <p key={`${issue.message}:${index}`} className={captionClass}>{issue.message}</p>)}
+      </> : null}
+    </div> : null}
+    {stay.averageRate || stay.grandTotal ? <p className={captionClass}>HMS at lookup: {stay.averageRate ? `Average ${stay.averageRate}` : ''}{stay.averageRate && stay.grandTotal ? ' · ' : ''}{stay.grandTotal ? `Total ${stay.grandTotal}` : ''}</p> : null}
+    <details className="rounded-sm border border-[#e2e8f0] p-2">
+      <summary className="cursor-pointer text-[12px] font-semibold text-[#334155]">More · guest and booker</summary>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+      {([['Guest first name', firstName, setFirstName, stay.firstName], ['Guest surname', lastName, setLastName, stay.lastName],
+        ['Guest email', guestEmail, setGuestEmail, contactObservations?.guestEmail?.value],
+        ['Booker name', bookerName, setBookerName, contactObservations?.bookerName?.value],
+        ['Booker contact', bookerContact, setBookerContact, contactObservations?.bookerContact?.value]] as const).map(([label, value, update, current]) =>
+        <label key={label} className="flex min-w-0 flex-col gap-1 text-[11.5px] text-[#334155]">
+          <span className="font-semibold">{label}</span>
+          <span data-pii className={captionClass}>HMS: {current || 'Not shown'}</span>
+          <input data-pii className={selectClass} value={value} onChange={(event) => {
+            update(event.target.value);
+            const detailNames: Record<string, string> = { 'Guest first name': 'firstName', 'Guest surname': 'lastName', 'Guest email': 'guestEmail', 'Booker name': 'bookerName', 'Booker contact': 'bookerContact' };
+            const name = detailNames[label];
+            if (name) {
+              markDetail(name);
+              durableDraft?.record(name as 'firstName' | 'lastName' | 'guestEmail' | 'bookerName' | 'bookerContact', event.target.value,
+                event.target.value.length <= 1000 && !/[\p{Cc}]/u.test(event.target.value));
+            }
+          }} />
+        </label>)}
+      </div>
+    </details>
+    {!firstName.trim() || !lastName.trim() ? <p className={warnNoteClass}>Enter guest first name and surname under More.</p> : null}
+    {!/^[A-Z0-9]{1,12}$/.test(ratePlan) || !/^[A-Z0-9]{1,12}$/.test(roomType) ? <p className={warnNoteClass}>Choose a room type and enter a rate code (letters and numbers).</p> : null}
+    {cmsNeedsChoice ? <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+      <span>Send HMS confirmation?</span>
+      <select className={selectClass} value="" onChange={(event) => {
+        if (!event.target.value) return;
+        const send = event.target.value === 'yes'; setCmsSend(send); setCmsNeedsChoice(false);
+        setCmsTouched(true); setCmsEdited(true); durableDraft?.record('cms.send', send);
+      }}><option value="">Choose</option><option value="yes">Yes</option><option value="no">No</option></select>
+    </label> : <label className="flex items-center gap-2 text-[11.5px] text-[#334155]">
+      <input type="checkbox" checked={cmsSend} disabled={labtest} onChange={(event) => {
+        setCmsSend(event.target.checked); setCmsTouched(true); setCmsEdited(true); durableDraft?.record('cms.send', event.target.checked);
+      }} />
+      Send HMS confirmation
+    </label>}
+    {cmsSend && !cmsNeedsChoice ? <div className="flex flex-col gap-2">
+      <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+        <span className="font-semibold">CMS message ID</span>
+        <input className={selectClass} maxLength={8} value={cmsMessageId} disabled={labtest} onChange={(event) => {
+          setCmsMessageId(event.target.value); setCmsTouched(true); setCmsEdited(true); durableDraft?.record('cms.messageId', event.target.value);
+        }} />
+      </label>
+      <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+        <span className="font-semibold">Send confirmation to</span>
+        <select className={selectClass} value={(sources?.invalidSetting || sources?.load === 'failed') && !recipientTouched ? '' : recipientMode}
+          onChange={(event) => { const mode = event.target.value as ConfirmationMode;
+            setRecipientMode(mode); setRecipientTouched(true); setCmsTouched(true); setCmsEdited(true); recordRecipient(mode, customRecipient); }}>
+          {(sources?.invalidSetting || sources?.load === 'failed') && !recipientTouched ? <option value="">Choose recipient</option> : null}
+          <option value="self">Me</option><option value="client">Client</option><option value="custom">Other</option>
+        </select>
+      </label>
+      <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+        <span className="font-semibold">Confirmation recipient</span>
+        <input data-pii type="email" maxLength={255} className={selectClass} value={recipientMode === 'custom' ? customRecipient : cmsRecipient}
+          onChange={(event) => { setRecipientMode('custom'); setCustomRecipient(event.target.value); setRecipientTouched(true);
+            setCmsTouched(true); setCmsEdited(true); recordRecipient('custom', event.target.value); }} />
+      </label>
+      <p className={captionClass}>HMS sends this confirmation.</p>
+    </div> : null}
+    {!validRecipient ? <p className={warnNoteClass}>{cmsNeedsChoice ? 'Choose whether to send an HMS confirmation.'
+      : recipientLoading ? 'Loading confirmation preference…' : !recipient.ok ? recipient.message : 'Enter a confirmation message ID.'}</p> : null}
+    {labtest ? <p className={infoNoteClass}>HMS confirmation is off for Labtest.</p> : null}
+    {durableDraft?.error ? <p role="status" className={warnNoteClass}>{durableDraft.error}{' '}
+      {durableDraft.retryable ? <button type="button" className="font-semibold underline" onClick={durableDraft.retry}>Retry save</button> : null}
+    </p> : null}
+    <p className={infoNoteClass}>{requestKey && boundKey === requestKey
+      ? 'Review the HMS price and change below before Go.'
+      : requestKey && availableKey === requestKey
+        ? 'Prepare the change to see the HMS price.'
+        : 'Enter the requested change and confirmation details.'}</p>
+    {request && requestKey && writeContext ? <CloudAmendAction key={requestKey} request={request}
+      guestSurname={stay.lastName || ''} transportId={writeContext.transportId} trpc={writeContext.trpc}
+      flushDraft={durableDraft?.flush} draftBinding={durableDraft?.binding}
+      onApprovalVisibilityChange={onApprovalVisibilityChange}
+      onAvailable={() => setAvailableKey(requestKey)} onBound={() => setBoundKey(requestKey)} /> : null}
+  </div>;
+}
+
+/** Hidden unless the server advertises the complete, explicitly enabled writer. */
+function CloudAmendAction({ request, transportId, trpc, onAvailable, onBound, guestSurname, flushDraft, draftBinding, onApprovalVisibilityChange }: {
+  request: CloudAmendRequest; transportId: string; trpc: unknown; onAvailable: () => void; onBound: () => void; guestSurname: string;
+  flushDraft?: () => Promise<boolean>;
+  draftBinding?: () => CloudAmendRequest['draft'] | null;
+  onApprovalVisibilityChange: (visible: boolean) => void;
+}) {
+  const [client, setClient] = useState<CloudAmendClient | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [bound, setBound] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const liveRef = useRef(false);
+  useEffect(() => {
+    onApprovalVisibilityChange(bound && client !== null);
+    return () => onApprovalVisibilityChange(false);
+  }, [bound, client, onApprovalVisibilityChange]);
+  // The component is keyed by the exact source, booking and choices.
+  const [selected] = useState(request);
+  useEffect(() => {
+    const controller = new AbortController();
+    liveRef.current = true;
+    let live = true, owned: CloudAmendClient | null = null;
+    void cloudAmendClientFromTrpc(trpc, selected, { transportId, signal: controller.signal, isCurrent: () => live })
+      .then((result) => {
+        if (!live) { result?.dispose(); return; }
+        owned = result;
+        setClient(result);
+        if (result) onAvailable();
+      });
+    return () => { live = false; liveRef.current = false; controller.abort(); owned?.dispose(); };
+  }, [trpc, selected, transportId]);
+  if (!client) return null;
+  return <>
+    {!bound ? <button type="button" className={buttonClass} disabled={busy} onClick={() => {
+      setBusy(true); setFailed(false);
+      void (async () => {
+        if (flushDraft && !(await flushDraft())) return;
+        if (!liveRef.current) return;
+        const draft = draftBinding?.();
+        if (draftBinding && !draft) return;
+        const ok = await client.prepare(draft ?? undefined);
+        if (liveRef.current) { if (ok) { setBound(true); onBound(); } else setFailed(true); }
+      })()
+        .finally(() => { if (liveRef.current) setBusy(false); });
+    }}>{busy ? 'Checking the booking…' : 'Review change for approval'}</button> : null}
+    {failed ? <p role="alert" className={warnNoteClass}>Nava could not prepare this change. Check it in HMS.</p> : null}
+    {bound ? <ApproveCard client={client.approval} workItemId={selected.workItemId} confirmation={selected.confirmation}
+      arrival={selected.arrival} guestSurname={guestSurname} writesEnabled manualResolve={false} /> : null}
+  </>;
+}
+
+/** Restore a previous run without creating another HMS preview or approval. */
+function CloudAmendHistory({ trpc, transportId, selection, suspended }: {
+  trpc: unknown; transportId: string; selection: CloudAmendSelection; suspended: boolean;
+}) {
+  const [client, setClient] = useState<CloudAmendClient | null>(null);
+  const [selected] = useState(selection);
+  useEffect(() => {
+    const controller = new AbortController();
+    let live = true, owned: CloudAmendClient | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined, attempts = 0;
+    setClient(null);
+    const poll = async () => {
+      const result = await cloudAmendClientFromTrpc(trpc, selected, {
+        transportId, signal: controller.signal, isCurrent: () => live, resume: true,
+      });
+      if (!live) { result?.dispose(); return; }
+      if (result) {
+        if (!owned || owned.resumeKey !== result.resumeKey) {
+          owned?.dispose();
+          owned = result;
+          setClient(result);
+        } else result.dispose();
+      }
+      attempts += 1;
+      // A delayed retry may replace an older stopped run after the draft changes.
+      timer = setTimeout(poll, attempts <= 3 ? HMS_WRITE_POLL_MS : HMS_WRITE_IDLE_POLL_MS);
+    };
+    if (!suspended) void poll();
+    return () => { live = false; clearTimeout(timer); controller.abort(); owned?.dispose(); };
+  }, [trpc, selected, transportId, suspended]);
+  return !suspended && client ? <ApproveCard key={client.resumeKey} client={client.approval} workItemId={selected.workItemId} confirmation={null}
+    writesEnabled manualResolve={false} allowApprove={false} /> : null;
+}
+
+
 function AmendSection({
   view,
   canPreview,
@@ -1069,6 +1963,274 @@ function AmendSection({
       {currentView.kind === 'previewing' ? <p className={infoNoteClass}>{AMEND_SAVE_COPY.previewing}</p> : null}
       {currentView.kind === 'committing' ? <p className={infoNoteClass}>{AMEND_SAVE_COPY.committing}</p> : null}
       {currentView.kind === 'idle' && currentView.note ? <p className={warnNoteClass}>{currentView.note}</p> : null}
+    </div>
+  );
+}
+
+function CloudCancelSection({
+  view,
+  canPreview,
+  chargeEnabled,
+  offNote,
+  confirmation,
+  arrival,
+  requireNativePreview,
+  guestName,
+  client,
+  trpc,
+  transportId,
+  selection,
+  waitingForFind,
+  isCurrent,
+  onRestored,
+  onPreview,
+  onReason,
+  cancellationNote,
+  onNote,
+  onCommit,
+}: {
+  view: CancelView | null;
+  canPreview: boolean;
+  chargeEnabled: boolean;
+  offNote: string;
+  confirmation: string;
+  arrival: string | null;
+  requireNativePreview: boolean;
+  guestName: string;
+  client: AmendCancelClient | null;
+  trpc: unknown;
+  transportId: string | null;
+  selection: CancelWriteSelection | null;
+  waitingForFind: boolean;
+  isCurrent: () => boolean;
+  onRestored: (view: CancelView | null) => void;
+  onPreview: () => void;
+  onReason: (reason: string) => void;
+  cancellationNote: string;
+  onNote: (note: string) => void;
+  onCommit: () => void;
+}) {
+  const reasonId = useId();
+  const noteId = useId();
+  const selected = useRef(selection).current;
+  const chargeClient = useMemo(() => cancelChargeClientFromTrpc(trpc, transportId, selected?.source,
+    selected?.internetMessageId), [trpc, transportId, selected]);
+  const currentSelection = useRef(isCurrent);
+  const restored = useRef(onRestored);
+  const currentView = useRef(view);
+  const carriedView = useRef(view);
+  const settledRun = useRef<string | null>(null);
+  const revoked = useRef(false);
+  currentSelection.current = isCurrent;
+  restored.current = onRestored;
+  currentView.current = view;
+  const [readState, setReadState] = useState<'checking' | 'ready' | 'failed'>('checking');
+  const queuedRunId = view?.kind === 'committing' && view.run.outcome === 'cancel_queued' ? view.run.runId : null;
+
+  useEffect(() => {
+    let live = true, timer: ReturnType<typeof setTimeout> | undefined;
+    setReadState('checking');
+    if (!selected || !transportId || revoked.current) {
+      setReadState('failed');
+      return;
+    }
+    const controller = new AbortController();
+    const stateClient = cancelWriteStateClientFromTrpc(trpc, selected, {
+      transportId, signal: controller.signal, isCurrent: () => live && currentSelection.current(),
+      onInvalidated: () => {
+        if (live) { revoked.current = true; setReadState('failed'); }
+      },
+    });
+    if (!stateClient) {
+      setReadState('failed');
+      return () => { live = false; controller.abort(); };
+    }
+    let expectedRunId = queuedRunId ?? undefined;
+    const poll = async () => {
+      try {
+        const state = await stateClient.read(expectedRunId);
+        if (!live || !currentSelection.current()) return;
+        if (state.kind === 'empty') {
+          const current = currentView.current;
+          if (carriedView.current?.kind === 'committing' && current?.kind === 'committing') {
+            const unknown = { ...current.run, outcome: 'cancel_unconfirmed' as const };
+            restored.current(viewAfterCommit(unknown, current.run, confirmation));
+          } else if ((carriedView.current?.kind === 'ready' || carriedView.current?.kind === 'previewing' || carriedView.current?.kind === 'checking') &&
+              (current?.kind === 'ready' || current?.kind === 'previewing' || current?.kind === 'checking')) {
+            restored.current(null);
+          }
+          carriedView.current = null;
+          setReadState('ready');
+          return;
+        }
+        carriedView.current = null;
+        expectedRunId = state.runId;
+        const current = currentView.current;
+        const run: CancelRun = current?.kind === 'committing' && current.run.runId === state.runId
+          ? current.run : { outcome: 'cancel_queued', statusBefore: null, statusAfter: null, reasons: [],
+              penaltyText: null, screenshots: [], runId: state.runId, previewDigest: null };
+        if (state.kind === 'running') {
+          if (current?.kind !== 'committing' || current.run.outcome !== 'cancel_queued' || current.run.runId !== state.runId) {
+            restored.current({ kind: 'committing', run, reason: '' });
+          }
+          setReadState('ready');
+          timer = setTimeout(() => void poll(), 2_000);
+          return;
+        }
+        setReadState('ready');
+        if (settledRun.current === state.runId) return;
+        settledRun.current = state.runId;
+        const result = { ...run, outcome: state.outcome, ...(state.outcome === 'cancelled' ? { statusAfter: 'Cancelled' } : {}) };
+        const done = viewAfterCommit(result, run, confirmation);
+        if (done.kind === 'done') restored.current(done);
+      } catch {
+        if (live) setReadState('failed');
+      }
+    };
+    void poll();
+    return () => { live = false; if (timer) clearTimeout(timer); stateClient.dispose(); controller.abort(); };
+  }, [trpc, transportId, selected, queuedRunId, confirmation, waitingForFind]);
+
+  const current: CancelView = view ?? { kind: 'idle', note: null };
+  const noteValid = !/[\p{Cc}]/u.test(cancellationNote);
+  const runId = 'run' in current ? current.run?.runId : null;
+  const chargePrompt = selected && chargeClient && runId ? <CancelChargePrompt client={chargeClient}
+    target={{ workItemId: selected.workItemId, runId, confirmation: selected.confirmation, arrival: selected.arrival }}
+    writesEnabled={chargeEnabled} /> : null;
+
+  if (readState !== 'ready') {
+    const note = readState === 'checking' ? 'Nava is checking the previous cancellation…'
+      : !selection && canPreview ? 'Select the current email before previewing cancellation.'
+        : !selection ? offNote : 'Nava could not check the previous cancellation. Check HMS before trying again.';
+    return <div aria-live="polite" className="flex flex-col gap-2">
+      <p className={headingClass}>Cancel in HMS</p>
+      <p data-pii className={readState === 'failed' ? warnNoteClass : infoNoteClass}>{note}</p>
+      {chargePrompt}
+    </div>;
+  }
+
+  if (current.kind === 'done') {
+    return (
+      <div aria-live="polite" className="flex flex-col gap-2">
+        <p className={headingClass}>Cancel in HMS</p>
+        <p data-pii className={infoNoteClass}>{current.text}</p>
+        <CancelScreenshot client={client} run={current.run} />
+        {chargePrompt}
+      </div>
+    );
+  }
+
+  if (current.kind === 'committing' && current.run.outcome === 'cancel_queued') {
+    return <div aria-live="polite" className="flex flex-col gap-2">
+      <p className={headingClass}>Cancel in HMS</p>
+      <p className={infoNoteClass}>{AMEND_CANCEL_COPY.committing}</p>
+      {chargePrompt}
+    </div>;
+  }
+
+  if (waitingForFind) return chargePrompt;
+
+  if (current.kind === 'ready' || current.kind === 'checking' || current.kind === 'committing') {
+    const { run, reason } = current;
+    const committing = current.kind === 'committing';
+    const busy = committing || current.kind === 'checking';
+    const native = arrival ? nativeCancelPreview(run, { confirmation, arrival }) : null;
+    if (requireNativePreview && !native) return <div aria-live="polite" className="flex flex-col gap-2">
+      <p className={headingClass}>Cancel in HMS</p>
+      <p className={warnNoteClass}>{CANCEL_PREVIEW_MISMATCH}</p>
+    </div>;
+    const reviewedGuest = native ? `${native.firstName} ${native.lastName}` : guestName;
+    return (
+      <div aria-live="polite" className="flex flex-col gap-2">
+        <p className={headingClass}>Cancel in HMS</p>
+        <p className={valueClass}>{`Status in HMS: ${run.statusBefore ?? 'not shown'}`}</p>
+        {native ? <div data-testid="cancel-native-preview" data-pii className={valueClass}>
+          <p>{`Confirmation: ${native.confirmation}`}</p>
+          <p>{`Guest: ${native.firstName} ${native.lastName}`}</p>
+          <p>{`Arrival: ${native.arrival}`}</p>
+          <p>{`Departure: ${native.departure}`}</p>
+          <p>{`Room: ${native.roomType}`}</p>
+        </div> : null}
+        {native?.guarantee ? <p className={valueClass}>Guarantee: {native.guarantee}</p> : null}
+        {native?.depositReceived ? <p className={valueClass}>Deposit received: {native.depositReceived}</p> : null}
+        {(run.policyFacts ?? []).map((fact) => <p key={fact} className={valueClass}>{fact}</p>)}
+        <p className={run.penaltyText ? penaltyClass : captionClass}>{cancelFeeSentence(run.penaltyText)}</p>
+        <CancelScreenshot client={client} run={run} />
+        {chargePrompt}
+        <div className="flex flex-col gap-1">
+          <label htmlFor={reasonId} className={headingClass}>
+            {AMEND_CANCEL_COPY.reasonLabel}
+          </label>
+          <select
+            id={reasonId}
+            className={selectClass}
+            value={reason}
+            disabled={busy}
+            onChange={(event) => onReason(event.target.value)}
+          >
+            <option value="">{AMEND_CANCEL_COPY.reasonPlaceholder}</option>
+            {run.reasons.map((text) => (
+              <option key={text} value={text}>
+                {text}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label htmlFor={noteId} className={headingClass}>Cancellation note (optional)</label>
+          <input id={noteId} data-pii className={selectClass} value={cancellationNote} maxLength={200}
+            disabled={busy} onChange={(event) => onNote(event.target.value)} />
+          {!noteValid ? <p className={warnNoteClass}>Use one line for the cancellation note.</p> : null}
+        </div>
+        <p data-pii className={warnNoteClass}>
+          {cancelConfirmLine({ confirmation, guest: reviewedGuest, penaltyText: run.penaltyText })}
+        </p>
+        {canPreview ? (
+          <button
+            type="button"
+            className={buttonClass}
+            disabled={!reason || busy || !noteValid}
+            onClick={onCommit}
+          >
+            {AMEND_CANCEL_COPY.commit}
+          </button>
+        ) : (
+          <p className={infoNoteClass}>{offNote}</p>
+        )}
+        {current.kind === 'checking' ? <p className={infoNoteClass}>Checking the saved cancellation details in HMS…</p> : null}
+        {committing ? <p className={infoNoteClass}>{AMEND_CANCEL_COPY.committing}</p> : null}
+        {current.kind === 'ready' && current.note ? <p className={warnNoteClass}>{current.note}</p> : null}
+      </div>
+    );
+  }
+
+  const previewing = current.kind === 'previewing';
+  return (
+    <div aria-live="polite" className="flex flex-col gap-2">
+      <p className={headingClass}>Cancel in HMS</p>
+      {canPreview ? (
+        <button
+          type="button"
+          className={buttonClass}
+          disabled={previewing}
+          onClick={onPreview}
+        >
+          {AMEND_CANCEL_COPY.preview}
+        </button>
+      ) : null}
+      {canPreview ? (
+        <>
+          <p className={captionClass}>{AMEND_CANCEL_COPY.previewHint}</p>
+        </>
+      ) : (
+        <p data-pii className={infoNoteClass}>
+          {offNote}
+        </p>
+      )}
+      {previewing ? <p className={infoNoteClass}>{AMEND_CANCEL_COPY.previewing}</p> : null}
+      {current.kind === 'idle' && current.note ? <p data-pii className={warnNoteClass}>{current.note}</p> : null}
+      {current.kind === 'idle' && current.run ? <CancelScreenshot client={client} run={current.run} /> : null}
+      {chargePrompt}
     </div>
   );
 }

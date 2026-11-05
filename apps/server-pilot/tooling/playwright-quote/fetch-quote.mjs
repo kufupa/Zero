@@ -11,6 +11,7 @@ import { createAudit } from './audit.mjs';
 import { getHmsPropertyRegistration, installRegisteredAvailabilityReadOnlyGuard, resolveSecretSource, validateHmsPropertySecret } from './property-registry.mjs';
 import { isAvailabilityReadRequest } from './hms-read-only-guard.mjs';
 import { attachGuardedQuoteSession, prepareQuoteRequestPolicy } from './quote-request-guard.mjs';
+import { createQuoteBrowserConnector } from './quote-browser-fallback.mjs';
 import { normalizeQuoteRequest, assessConstraints, sumDisplayedRates, orderOptions, aggregateOutcome, composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 import { attachBorrowedSession, authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath } from './session-reuse.mjs';
 import { lookupActiveProperty, withReadCliPage } from './read-cli-lease.mjs';
@@ -52,7 +53,25 @@ export async function openHotelAvailability(page) {
     await node('Availability').click();
     await node('Hotel Availability').waitFor({ timeout: 3000 }).catch(() => {});
   }
-  await node('Hotel Availability').click();
+  const hotel = node('Hotel Availability');
+  // ExtJS can reveal this row before the expanding tree finishes moving it.
+  // Wait for a settled position before the real pointer click; the native
+  // tree does not handle a synthetic click event.
+  await hotel.evaluate((element) => new Promise((resolve, reject) => {
+    const started = performance.now();
+    let last = '', stableSince = started;
+    const sample = (now) => {
+      if (!element.isConnected) return reject(new Error('availability menu detached'));
+      const box = element.getBoundingClientRect();
+      const current = [box.x, box.y, box.width, box.height].map((value) => Math.round(value * 10)).join(':');
+      if (current !== last) { last = current; stableSince = now; }
+      if (now - stableSince >= 400) return resolve();
+      if (now - started >= 5000) return reject(new Error('availability menu did not settle'));
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  }));
+  await hotel.click();
   // On-prem HMS has a startdate field; the Infor cloud build (HRCEN, 2026-10-27) has one `dates` range picker.
   await page.locator('input[name="startdate"]:visible, input[name="dates"]:visible').first().waitFor();
   await page.getByRole('heading',{name:'Hotel Availability',exact:true}).waitFor();
@@ -771,6 +790,18 @@ export function detailReadOrder(options,detailsMap,stayDates) {
   return options.filter(o=>!complete(o.id));
 }
 
+/** The Cloud details panel identifies the selected day in its active date tab. */
+export async function selectedDetailDate(panel,date,timeout=20000) {
+  const [year,month,day]=date.split('-');
+  const weekday=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(`${date}T00:00:00Z`).getUTCDay()];
+  const legacy=panel.getByText(new RegExp(`Selected Date : .*${day}-${month}-${year}`));
+  const cloud=panel.locator('a.x-tab.x-tab-active').filter({hasText:new RegExp(`^${weekday}\\s+${displayDate(date)}$`)});
+  const selected=legacy.or(cloud).filter({visible:true});
+  await selected.first().waitFor({timeout});
+  if(await selected.count()!==1)throw new Error('AMBIGUOUS_SELECTED_DETAIL_DATE');
+  return selected.innerText();
+}
+
 export async function readDetails(page, chosen, prefix, checkpoint=async()=>{}, cachedRoom) {
   const row=rateRow(page,chosen.nativeRoom.code,chosen.rate.code);
   const rowInformation=await row.locator('td').first().evaluate(e=>({
@@ -778,16 +809,14 @@ export async function readDetails(page, chosen, prefix, checkpoint=async()=>{}, 
     labels:[...e.querySelectorAll('[data-qtip]')].map(n=>({kind:n.className,text:n.getAttribute('data-qtip')})),
   }));
   const details=[];
+  const panel=page.getByText('Availability Details',{exact:true}).locator('xpath=ancestor::div[contains(concat(" ",normalize-space(@class)," ")," x-panel ")][1]');
   for (const [n,index] of chosen.indexes.entries()) {
     await row.locator('td').nth(index+1).click();
-    const [year,month,day]=chosen.nightly[n].date.split('-');
-    const selected=page.getByText(new RegExp(`Selected Date : .*${day}-${month}-${year}`));
-    await selected.waitFor({timeout:20000});
+    const selected=await selectedDetailDate(panel,chosen.nightly[n].date);
     const roomLabel=`Room Type : ${chosen.nativeRoom.code} - ${chosen.nativeRoom.desc}`;
     const rateLabel=`Rate Plan : ${chosen.rate.code} - ${chosen.rate.desc}`;
-    await page.getByText(roomLabel,{exact:true}).waitFor();
-    await page.getByText(rateLabel,{exact:true}).waitFor();
-    const panel=page.getByText('Availability Details',{exact:true}).locator('xpath=ancestor::div[contains(concat(" ",normalize-space(@class)," ")," x-panel ")][1]');
+    await panel.getByText(roomLabel,{exact:true}).waitFor();
+    await panel.getByText(rateLabel,{exact:true}).waitFor();
     let sourceText=await panel.innerText();
     const roomHeader=panel.locator('.x-panel-header').filter({hasText:/^Room Type$/});
     if(await roomHeader.count()) {
@@ -795,7 +824,7 @@ export async function readDetails(page, chosen, prefix, checkpoint=async()=>{}, 
       if(collapsed)await roomHeader.click();
       const expanded=await panel.innerText();if(expanded!==sourceText)sourceText+='\n'+expanded;
     }
-    details.push({date:chosen.nightly[n].date,selectedDate:await selected.innerText(),room:roomLabel,rate:rateLabel,sourceText});
+    details.push({date:chosen.nightly[n].date,selectedDate:selected,room:roomLabel,rate:rateLabel,sourceText});
     await checkpoint(`${prefix}-night-${n+1}-details`);
   }
   if(cachedRoom)return {details,roomInformation:cachedRoom,rowInformation};
@@ -964,11 +993,11 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
 
 // The cloud policy is property-specific. Preserve the established HRDAV reader
 // until it has its own reviewed policy; never fall back if the HRCEN guard fails.
-export async function attachQuoteSession({href,env,property,secret,connectOverCDP,
+export async function attachQuoteSession({href,env,property,secret,quoteRequest,connectOverCDP,
   buildPolicy=prepareQuoteRequestPolicy,guardedAttach=attachGuardedQuoteSession,
   legacyAttach=attachBorrowedSession,legacyContext=newBorrowedContext}) {
   if(property.propertyCode==='HRCEN') {
-    const policy=await buildPolicy({secret,property});
+    const policy=await buildPolicy({secret,property,quoteRequest});
     const attached=await guardedAttach({href,env,policy,connectOverCDP});
     if(!attached?.guard) {
       let cleanupFailed=false;
@@ -992,7 +1021,7 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
   if (outputRoot!==root && !outputRoot.startsWith(root+'/')) throw new Error('OUTPUT_MUST_BE_PRIVATE_PLAYWRIGHT_QUOTE_DIRECTORY');
   const directory=join(outputRoot,new Date().toISOString().replace(/[:.]/g,'-')+'-'+randomUUID().slice(0,8));
   await mkdir(directory,{recursive:true,mode:0o700});
-  let browser,context,page,secret,propertyRegistration,quoteGuard,phase='input',result,auditReport;
+  let browser,context,page,secret,propertyRegistration,quoteGuard,browserConnector,phase='input',result,auditReport;
   const audit=await createAudit(directory,{video});
   const started=Date.now();
   const clock=createPhaseClock();
@@ -1021,12 +1050,14 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
       if(secret.expectedPropertyCode!==request.propertyCode) throw new Error('ACCOUNT_PROPERTY_MISMATCH');
       event('attach');
       await clock.time('cdp',async()=>{
+        browserConnector=createQuoteBrowserConnector({propertyCode:property.propertyCode,chromium:playwright().chromium,env});
         const attached=await attachQuoteSession({
           href:url.href,
           env,
           property,
           secret,
-          connectOverCDP:(href,opts)=>playwright().chromium.connectOverCDP(href,opts),
+          quoteRequest:request,
+          connectOverCDP:(href,opts)=>browserConnector.connect(href,opts),
         });
         browser=attached.browser;
         context=attached.context;
@@ -1062,12 +1093,16 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
     // cannot prevent closing our context or detaching CDP.
     try {auditReport=await clock.time('traceFinish',()=>audit.finish());}
     catch {auditReport={status:'incomplete',errors:['AUDIT_FINALIZATION_FAILED']};}
-    try { if(context) await context.close(); }
-    catch { result={...result,outcome:'execution_failure',cleanupError:'OWNED_CONTEXT_CLOSE_FAILED'}; }
-    // Pinned Playwright connectOverCDP closes its transport, not remote Chromium.
-    // Verified in coreBundle _connectOverCDPImpl and against the retained live tab.
-    try { if(browser) await browser.close(); }
-    catch { result={...result,outcome:'execution_failure',cleanupError:'CDP_DETACH_FAILED'}; }
+    let ownedClosed=false;
+    try { ownedClosed=await browserConnector?.close(context) ?? false; }
+    catch { ownedClosed=true; result={...result,outcome:'execution_failure',cleanupError:'OWNED_BROWSER_CLOSE_FAILED'}; }
+    if (!ownedClosed) {
+      try { if(context) await context.close(); }
+      catch { result={...result,outcome:'execution_failure',cleanupError:'OWNED_CONTEXT_CLOSE_FAILED'}; }
+      // Pinned Playwright connectOverCDP closes its transport, not remote Chromium.
+      try { if(browser) await browser.close(); }
+      catch { result={...result,outcome:'execution_failure',cleanupError:'CDP_DETACH_FAILED'}; }
+    }
     const policyError=quoteGuard?.failureError();
     if(policyError) result={...executionFailure(policyError,phase,secret),
       ...(result?.cleanupError?{cleanupError:result.cleanupError}:{})};

@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { createAudit } from './audit.mjs';
 import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import { lookupActiveProperty, withReadCliPage } from './read-cli-lease.mjs';
+import { createQuoteBrowserConnector } from './quote-browser-fallback.mjs';
+import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 
 export { withReadCliPage as withLeasedReadPage };
 
@@ -193,6 +195,19 @@ export function partyLookupPropertyCode(request) {
 export function assertPartyLookupAccount(secret, propertyCode) {
   if (!secret || secret.expectedPropertyCode !== propertyCode) {
     throw new Error('ACCOUNT_PROPERTY_MISMATCH');
+  }
+  if (propertyCode === 'HRCEN') {
+    try {
+      const property = lookupActiveProperty(propertyCode);
+      if (!property || secret.username !== property.username || secret.expectedTenant !== property.expectedTenant ||
+          secret.expectedPropertyName !== property.expectedPropertyName ||
+          (secret.mailboxTransportId !== undefined && secret.mailboxTransportId !== property.mailboxTransportId) ||
+          (secret.credentialMode !== undefined && secret.credentialMode !== property.credentialMode)) throw new Error('unexpected account');
+      const url = new URL(secret.loginUrl);
+      if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' ||
+          url.pathname !== '/web/base/logindisp' || url.searchParams.get('tenant') !== property.expectedTenant ||
+          url.username || url.password) throw new Error('unexpected origin');
+    } catch { throw new Error('ACCOUNT_PROPERTY_MISMATCH'); }
   }
 }
 
@@ -1080,6 +1095,50 @@ function overallSearchOutcome(searches) {
   return live[0]?.outcome || 'no_match';
 }
 
+async function contextBeforeDeadline(create, timeoutMs) {
+  let expired = false, timer;
+  const pending = Promise.resolve().then(create);
+  // A delayed context belongs to this invocation even after its deadline.
+  void pending.then(async value => {
+    if (expired) try { await value?.close(); } catch { /* best effort after timeout */ }
+  }, () => {});
+  try {
+    return await Promise.race([pending, new Promise((_, reject) => {
+      timer = setTimeout(() => { expired = true; reject(new Error('CONTEXT_TIMEOUT')); }, timeoutMs);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+/** Open the staff lookup in an isolated context; never close a borrowed browser. */
+export async function openPartyLookupBrowser({ href, env, propertyCode, chromium = playwright().chromium,
+  createContext = newBorrowedContext, makeConnector = createQuoteBrowserConnector,
+  installGuard = installReadOnlyGuard, contextTimeoutMs = CONNECT_MS }) {
+  const connector = makeConnector({ propertyCode, chromium, env });
+  let browser, context, closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    if (await connector.close(context)) return;
+    await context?.close();
+    // Older borrowed-CDP callers use disconnect and leave the owner running.
+    if (browser) try { browser.disconnect(); } catch { /* owner stays */ }
+  };
+  try {
+    browser = await connector.connect(href, { timeout: CONNECT_MS });
+    context = await contextBeforeDeadline(() => createContext(browser, {
+      ignoreHTTPSErrors: true, acceptDownloads: false, serviceWorkers: 'block',
+      viewport: { width: 1280, height: 720 },
+    }, env), contextTimeoutMs);
+    // Install before the leased page or login is created.
+    if (propertyCode === 'HRCEN') await installGuard(context);
+    return { browser, context, close };
+  } catch (error) {
+    try { await close(); }
+    catch { throw new Error('PARTY_LOOKUP_CLEANUP_UNCONFIRMED', { cause: error }); }
+    throw error;
+  }
+}
+
 export async function lookupParty({ requestPath, outputDir, env = process.env } = {}) {
   process.umask(0o077);
   const request = JSON.parse(await readFile(requestPath, 'utf8'));
@@ -1120,25 +1179,15 @@ export async function lookupParty({ requestPath, outputDir, env = process.env } 
   }
   let browser;
   let context;
+  let browserSession;
   let page;
   let audit;
   let result;
   const timed = { connect: 0, login: 0, navigate: 0 };
   try {
     const connectStarted = Date.now();
-    browser = await Promise.race([
-      playwright().chromium.connectOverCDP(url.href, { timeout: CONNECT_MS }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('CDP_CONNECT_TIMEOUT')), CONNECT_MS + 2000)),
-    ]);
-    context = await Promise.race([
-      newBorrowedContext(browser, {
-        ignoreHTTPSErrors: true,
-        acceptDownloads: false,
-        serviceWorkers: 'block',
-        viewport: { width: 1280, height: 720 },
-      }, env),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('CONTEXT_TIMEOUT')), CONNECT_MS)),
-    ]);
+    browserSession = await openPartyLookupBrowser({ href: url.href, env, propertyCode });
+    ({ browser, context } = browserSession);
     timed.connect = Date.now() - connectStarted;
     audit = await createAudit(directory, { trace: false });
     const loginStarted = Date.now();
@@ -1193,11 +1242,11 @@ export async function lookupParty({ requestPath, outputDir, env = process.env } 
     if (page) await dismissUnsaved(page).catch(() => {});
   } finally {
     try { await Promise.race([audit?.finish?.() ?? Promise.resolve(), new Promise((r) => setTimeout(r, 8000))]); } catch { /* keep result */ }
-    try { await context?.close(); } catch { /* detach anyway */ }
-    if (BORROWED_CLOSE_OWNER) {
-      try { await browser.close(); } catch { /* owner stays */ }
-    } else if (browser) {
-      try { browser.disconnect(); } catch { /* owner stays */ }
+    try { await browserSession?.close(); }
+    catch {
+      result = resultEnvelope({ outcome: 'execution_failure',
+        issues: [{ code: 'EXECUTION_FAILURE', path: 'cleanup', reason: 'browser_cleanup_unconfirmed' }],
+        evidenceDirectory: directory, phaseMs: partyLookupJobPhaseMs(timed) });
     }
   }
   await writeFile(join(directory, 'result.json'), JSON.stringify(result, null, 2), { mode: 0o600 });
@@ -1217,9 +1266,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     } else {
       lookupParty({ requestPath, outputDir }).then((result) => {
         console.log(JSON.stringify(result));
-        const ok = ['resolved', 'ambiguous', 'no_match', 'input_gap', 'external_system_unavailable'];
+        const ok = new Set(['resolved', 'ambiguous', 'no_match', 'input_gap', 'external_system_unavailable']);
         const searches = Array.isArray(result.searches) ? result.searches : [result];
-        process.exit(searches.every((item) => item.skipped || ok.includes(item.outcome)) ? 0 : 2);
+        process.exit(searches.every((item) => item.skipped || ok.has(item.outcome)) ? 0 : 2);
       }).catch((error) => {
         console.error(error.message);
         process.exit(2);

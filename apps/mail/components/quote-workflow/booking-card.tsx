@@ -14,7 +14,7 @@ import { HmsLinkActions } from './hms-link-actions';
 import { HmsShotsViewer, visibleStayShots, type HmsShotRecord } from './hms-shots-viewer';
 import { CopyHmsNotesButton, hmsNotesBlock } from './rate-controls';
 import { rowRoomLabel } from '@/lib/quote-workflow/room-types';
-import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
+import type { StoredContact, StoredStayCommit } from '@/lib/quote-workflow/backend-bind';
 import { recalledGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import { subscribeStayingGuestName } from './quote-people-step';
@@ -34,9 +34,12 @@ import {
   paneUnconfirmedMessage,
   previewOutcome,
   type PaneSaveMode,
+  type PaneGuestCandidate,
   type PaneStayChoice,
   type PaneStayClient,
+  type PaneStayBatch,
   type PaneStayInput,
+  type PaneStayResult,
 } from '@/lib/quote-workflow/pane-stay-bind';
 import { Notice, paneFieldClass, PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
 import {
@@ -254,7 +257,8 @@ const textareaClass =
 
 type PreviewView =
   | { status: 'running'; key: string; requestId: symbol }
-  | { status: 'ready'; key: string; digest: string; runId?: string; screenshots: string[] }
+  | { status: 'ready'; key: string; digest: string; runId?: string; screenshots: string[]; hmsPrice?: PaneStayResult['hmsPrice'] }
+  | { status: 'view_only'; key: string; runId?: string; screenshots: string[]; hmsPrice?: PaneStayResult['hmsPrice'] }
   | { status: 'refused'; key: string; message: string }
   | { status: 'stale'; key: string };
 
@@ -271,6 +275,7 @@ type CommitView =
       shots?: HmsShotRecord[];
       unverified?: boolean;
       cmsMismatch?: boolean;
+      hmsPrice?: PaneStayResult['hmsPrice'];
     }
   | {
       status: 'refused';
@@ -280,9 +285,60 @@ type CommitView =
       screenshots?: string[];
       shots?: HmsShotRecord[];
       statusChip?: 'check';
+      ambiguousStored?: boolean;
     };
 
 type RoomSaveState = { preview?: PreviewView; commit?: CommitView };
+
+type CloudCreateStop = {
+  unknownStayId: string;
+  targetKey: string;
+  batchId?: string;
+  members: Array<{ stayId: string; targetKey: string }>;
+};
+type RoomSnapshot = { roomKey: string; stayId: string; stay: PaneStayInput; digest: string; targetKey: string | null };
+
+function uncertainCommit(commit: CommitView | undefined): boolean {
+  return (commit?.status === 'refused' && commit.statusChip === 'check') ||
+    (commit?.status === 'booked' && Boolean(commit.unverified));
+}
+
+// Match the server's Create target identity. This only controls the card; the server rechecks authority.
+function cloudCreateTargetKey(stay: { firstName?: unknown; lastName?: unknown; arrival?: unknown }): string | null {
+  if (typeof stay.firstName !== 'string' || typeof stay.lastName !== 'string' || typeof stay.arrival !== 'string') return null;
+  const name = (value: string) => value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
+  const first = name(stay.firstName), last = name(stay.lastName), arrival = stay.arrival;
+  if (!first || !last || first.length > 256 || last.length > 256 || /[\p{Cc}]/u.test(first + last) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(arrival)) return null;
+  const date = new Date(`${arrival}T00:00:00Z`);
+  if (Number.isNaN(date.valueOf()) || date.toISOString().slice(0, 10) !== arrival) return null;
+  return JSON.stringify(['HRCEN', 'create', first, last, arrival]);
+}
+
+function cloudStopsFromSaved(savedStays: Record<string, SavedStayCommit> | undefined): CloudCreateStop[] {
+  return Object.entries(savedStays ?? {}).flatMap(([stayId, saved]) => {
+    const hold = saved.status === 'unknown' || (saved.status === 'booked' && saved.confirmationNumber)
+      ? saved.cloudCreateHold : undefined;
+    if (!hold || hold.target?.propertyCode !== 'HRCEN' || hold.target.kind !== 'create') return [];
+    const targetKey = cloudCreateTargetKey(hold.target);
+    if (!targetKey) return [];
+    if (!hold.batch) return [{ unknownStayId: stayId, targetKey, members: [{ stayId, targetKey }] }];
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(hold.batch.id) ||
+        !Array.isArray(hold.batch.rooms) || hold.batch.rooms.length < 2 || hold.batch.rooms.length > 8) return [];
+    const members: CloudCreateStop['members'] = [];
+    for (const room of hold.batch.rooms) {
+      if (!room || !/^[A-Za-z0-9_-]{1,120}$/.test(room.stayId) ||
+          room.target?.propertyCode !== 'HRCEN' || room.target.kind !== 'create') return [];
+      const memberTarget = cloudCreateTargetKey(room.target);
+      if (!memberTarget || members.some((member) => member.stayId === room.stayId)) return [];
+      members.push({ stayId: room.stayId, targetKey: memberTarget });
+    }
+    if (!members.some((member) => member.stayId === stayId && member.targetKey === targetKey)) return [];
+    return [{ unknownStayId: stayId, targetKey, batchId: hold.batch.id, members }];
+  });
+}
+
+const cloudStopIdentity = (stop: CloudCreateStop) => JSON.stringify([stop.unknownStayId, stop.batchId ?? null]);
 
 export type SavedStayCommit = {
   confirmationNumber: string | null;
@@ -292,6 +348,8 @@ export type SavedStayCommit = {
   runId?: string;
   shots?: HmsShotRecord[];
   cmsReason?: string;
+  cloudCreateHold?: StoredStayCommit['cloudCreateHold'];
+  cloudCreateTarget?: StoredStayCommit['cloudCreateTarget'];
 };
 
 function stayIdForRoom(
@@ -301,8 +359,57 @@ function stayIdForRoom(
   const group =
     groups.find((item) => item.id === room.groupId) ??
     groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
+  return `room_${group?.id ?? room.groupId}_${room.roomIndex}`;
+}
+
+function legacyStayIdForRoom(room: { groupId: string; roomIndex: number }, groups: StayGroupRequirement[]): string {
+  const group =
+    groups.find((item) => item.id === room.groupId) ??
+    groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
   const stay = group?.stayId ?? room.groupId;
   return `${stay}_${room.roomIndex}`;
+}
+
+function roomIds(room: { groupId: string; roomIndex: number }, groups: StayGroupRequirement[]): string[] {
+  const group = groups.find((item) => item.id === room.groupId) ??
+    groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
+  const row = group?.id ?? room.groupId, stay = group?.stayId ?? room.groupId;
+  const ids = [stayIdForRoom(room, groups), legacyStayIdForRoom(room, groups)];
+  if (row === stay || row === `${stay}_row`) ids.push(`room_${stay}_${room.roomIndex}`, `room_${stay}_row_${room.roomIndex}`);
+  return [...new Set(ids)];
+}
+
+function savedRoomMatch(
+  room: BookingDraftReady['draft']['rooms'][number], draft: BookingDraftReady,
+  groups: StayGroupRequirement[], savedStays: Record<string, SavedStayCommit> | undefined,
+): { id: string | null; ambiguous: boolean } {
+  const matches = roomIds(room, groups).filter((id) => savedStays && Object.hasOwn(savedStays, id));
+  if (!matches.length) return { id: null, ambiguous: false };
+  const ambiguous = matches.length !== 1 || matches.some((id) => {
+    const claimants = new Set<string>();
+    let duplicate = false;
+    for (const candidate of draft.draft.rooms) {
+      if (roomIds(candidate, groups).includes(id)) {
+        const key = JSON.stringify([roomGroupFor(candidate, groups)?.id ?? candidate.groupId, candidate.roomIndex]);
+        if (claimants.has(key)) duplicate = true;
+        claimants.add(key);
+      }
+    }
+    // Include other visible groups too, even if their draft belongs to another date card.
+    const groupClaims = new Set<string>();
+    for (const group of groups) {
+      if (Number.isInteger(group.quantity) && (group.quantity as number) < room.roomIndex) continue;
+      const candidate = { groupId: group.id, roomIndex: room.roomIndex };
+      if (roomIds(candidate, groups).includes(id)) {
+        const key = JSON.stringify([group.id, room.roomIndex]);
+        if (groupClaims.has(key)) duplicate = true;
+        groupClaims.add(key);
+        claimants.add(key);
+      }
+    }
+    return duplicate || claimants.size !== 1;
+  });
+  return { id: ambiguous ? null : matches[0]!, ambiguous };
 }
 
 /** Only apply a stored save when exactly one visible room claims its id. */
@@ -312,12 +419,10 @@ export function appliedSavedStayIds(
   savedStays: Record<string, SavedStayCommit> | undefined,
 ): string[] {
   if (!savedStays) return [];
-  const claims = new Map<string, number>();
-  for (const room of draft.draft.rooms) {
-    const id = stayIdForRoom(room, groups);
-    claims.set(id, (claims.get(id) ?? 0) + 1);
-  }
-  return [...claims.entries()].filter(([id, count]) => count === 1 && savedStays[id]).map(([id]) => id);
+  return draft.draft.rooms.flatMap((room) => {
+    const { id } = savedRoomMatch(room, draft, groups, savedStays);
+    return id ? [id] : [];
+  });
 }
 
 function paneStayPreviewKey(workItemId: string | undefined, stayId: string, inputKey: string): string {
@@ -366,14 +471,15 @@ function savesFromSavedStays(
   savedStays: Record<string, SavedStayCommit> | undefined,
 ): Record<string, RoomSaveState> {
   if (!savedStays) return {};
-  const shown = new Set(appliedSavedStayIds(draft, groups, savedStays));
   const saves: Record<string, RoomSaveState> = {};
   for (const room of draft.draft.rooms) {
-    const id = stayIdForRoom(room, groups);
-    if (!shown.has(id)) continue;
-    const saved = savedStays[id];
-    if (!saved) continue;
-    saves[`${room.groupId}:${room.roomIndex}`] = { commit: commitViewFromSaved(saved, room.request) };
+    const { id, ambiguous } = savedRoomMatch(room, draft, groups, savedStays);
+    const saved = id ? savedStays[id] : undefined;
+    if (saved) saves[`${room.groupId}:${room.roomIndex}`] = { commit: commitViewFromSaved(saved, room.request) };
+    else if (ambiguous) saves[`${room.groupId}:${room.roomIndex}`] = { commit: {
+      status: 'refused', key: '', statusChip: 'check', ambiguousStored: true,
+      message: 'A previous booking could match this room. Check HMS before booking.',
+    } };
   }
   return saves;
 }
@@ -471,7 +577,10 @@ function RoomSave({
   save,
   screenshot,
   bookLabel,
+  previewOnly = false,
+  batchOnly = false,
   frozen = false,
+  approvalRequired = false,
   onPreview,
   onBook,
 }: {
@@ -481,17 +590,21 @@ function RoomSave({
   save: RoomSaveState;
   screenshot: PaneStayClient['screenshot'];
   bookLabel: string;
+  previewOnly?: boolean;
+  batchOnly?: boolean;
   frozen?: boolean;
+  approvalRequired?: boolean;
   onPreview: (stay: PaneStayInput) => void;
   onBook: (stay: PaneStayInput, previewDigest: string) => void;
 }) {
   const { preview, commit } = save;
   const noRetry = commit?.status === 'refused' && commit.statusChip === 'check';
   const busy = frozen || preview?.status === 'running' || commit?.status === 'running';
-  const fresh = stay && preview?.status === 'ready' && preview.key === previewKey ? preview : null;
+  const fresh = stay && preview?.status === 'ready' && preview.key === previewKey && !approvalRequired ? preview : null;
+  const viewOnly = stay && preview?.status === 'view_only' && preview.key === previewKey ? preview : null;
   const changed =
-    preview?.status === 'stale' ||
-    ((preview?.status === 'running' || preview?.status === 'ready') && preview.key !== previewKey);
+    preview?.status === 'stale' || (approvalRequired && preview?.status === 'ready') ||
+    ((preview?.status === 'running' || preview?.status === 'ready' || preview?.status === 'view_only') && preview.key !== previewKey);
 
   if (commit?.status === 'booked') {
     const savedShot = commit.screenshots.includes(SAVED_SHOT) ? SAVED_SHOT : null;
@@ -514,6 +627,11 @@ function RoomSave({
             ? PANE_SAVE_UNVERIFIED_COPY
             : `Booked in HMS – confirmation ${commit.confirmationNumber}`}
         </p>
+        {commit.hmsPrice ? (
+          <p className="text-[12px] font-semibold text-[#1e293b]">
+            Saved HMS average: {commit.hmsPrice.averageRate} · total: {commit.hmsPrice.totalRate} · {commit.hmsPrice.currency ?? 'Currency unavailable'}
+          </p>
+        ) : stay?.createSelection ? <p className="text-[11px] text-[#64748b]">Saved price unavailable. Check HMS.</p> : null}
         {commit.confirmationNumber ? (
           <HmsLinkActions
             confirmation={commit.confirmationNumber}
@@ -535,7 +653,8 @@ function RoomSave({
     );
   }
 
-  const previewShot = fresh?.runId ? pickScreenshot(fresh.screenshots, PREVIEW_SHOT) : null;
+  const displayed = viewOnly ?? fresh;
+  const previewShot = displayed?.runId ? pickScreenshot(displayed.screenshots, PREVIEW_SHOT) : null;
   const refusedShot = commit?.status === 'refused' ? pickScreenshot(commit.screenshots ?? [], SAVED_SHOT) : null;
   return (
     <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
@@ -554,18 +673,40 @@ function RoomSave({
           You changed the booking – preview again.
         </p>
       ) : null}
-      {fresh && stay && fresh.runId && previewShot ? (
+      {displayed && stay && displayed.runId && previewShot ? (
         <PaneScreenshot
           caption="See what Nava filled in HMS"
-          runId={fresh.runId}
+          runId={displayed.runId}
           name={previewShot}
           screenshot={screenshot}
         />
       ) : null}
-      {fresh && stay ? (
+      {displayed && stay ? (
         <p data-pii className="text-[12px] text-[#1e293b]">
-          {`Nava will book ${stay.firstName} ${stay.lastName} for ${stay.arrival} – ${stay.departure}, 1 room, rate ${stay.ratePlan}. Nothing is saved until you press ${bookLabel}.`}
+          {viewOnly
+            ? `Preview only: ${stay.firstName} ${stay.lastName}, ${stay.arrival} – ${stay.departure}, 1 room, rate ${stay.ratePlan}. Nothing was saved. Booking from Nava is not available yet.`
+            : `Nava will book ${stay.firstName} ${stay.lastName} for ${stay.arrival} – ${stay.departure}, 1 room, rate ${stay.ratePlan}. Nothing is saved until you press ${bookLabel}.`}
         </p>
+      ) : null}
+      {displayed?.hmsPrice ? (
+        <p className="text-[12px] font-semibold text-[#1e293b]">
+          HMS average: {displayed.hmsPrice.averageRate} · total: {displayed.hmsPrice.totalRate} · {displayed.hmsPrice.currency ?? 'Currency unavailable'}
+        </p>
+      ) : null}
+      {displayed && stay?.createSelection?.nativeGuestId ? (
+        <dl aria-label="Reviewed booking details" data-pii className="grid grid-cols-2 gap-x-3 text-[11px] text-[#475569]">
+          {[
+            ['Guest profile', `${stay.firstName} ${stay.lastName} · #${stay.createSelection.nativeGuestId}`],
+            ['Guests', `${stay.adults} adult(s); child ages: ${stay.childAges?.join(', ') || 'none'}`],
+            ['Room and rate', `${stay.roomType} · ${stay.ratePlan} · ${stay.track}`],
+            ['Source and guarantee', `${stay.sourceOfBusiness} · ${stay.guaranteeType}`],
+            ['Agency', stay.bookingAgency ? `${stay.bookingAgency.name} · #${stay.bookingAgency.nativeId}` : 'None'],
+            ['Company', stay.organization ? `${stay.organization.name} · #${stay.organization.nativeId}` : 'None'],
+            ['Booker', [stay.bookerName, stay.bookerEmail].filter(Boolean).join(' · ') || 'None'],
+            ['Confirmation', `${stay.cmsMessageId ?? 'None'} · ${stay.confirmationRecipient?.address ?? 'No recipient'} · Send ${stay.confirmationSendMail ? 'on' : 'off'}`],
+            ['Reservation note', stay.reservationNote ?? 'None'],
+          ].map(([label, value]) => <div key={label}><dt className="font-semibold">{label}</dt><dd>{value}</dd></div>)}
+        </dl>
       ) : null}
       {commit?.status === 'running' ? (
         <p role="status" className="text-[11.5px] text-[#334155]">
@@ -605,8 +746,8 @@ function RoomSave({
           Preview in HMS
         </SecondaryButton>
         <PrimaryButton
-          disabled={!fresh || busy}
-          disabledReason={!stay || busy ? null : 'Preview in HMS first'}
+          disabled={previewOnly || batchOnly || !fresh || busy}
+          disabledReason={previewOnly || viewOnly ? 'Booking from Nava is not available yet' : batchOnly ? 'Use Book this stay below' : !stay || busy ? null : 'Preview in HMS first'}
           onClick={() => {
             if (stay && fresh) onBook(stay, fresh.digest);
           }}
@@ -698,6 +839,7 @@ type RoomChoice = {
   ratePlan?: string;
   adults?: string;
   childAges?: string[];
+  nativeGuestId?: string;
 };
 
 const NO_CHOICE: RoomChoice = {
@@ -736,6 +878,12 @@ function roomTypeFor(room: BookingDraftReady['draft']['rooms'][number], group?: 
     textValue(group?.roomPreference);
 }
 
+function inheritedChildAges(room: BookingDraftReady['draft']['rooms'][number], group?: StayGroupRequirement): unknown {
+  const ages = group?.childrenAges ?? room.request.childAges;
+  if (group?.fields.childAges === 'missing') return null;
+  return ages;
+}
+
 function roomRequestFor(
   room: BookingDraftReady['draft']['rooms'][number],
   group?: StayGroupRequirement,
@@ -748,7 +896,7 @@ function roomRequestFor(
     adults: choice?.adults ?? group?.adults ?? room.request.adults,
     childAges: choice?.childAges
       ? choice.childAges.map((age) => age.trim() === '' ? Number.NaN : Number(age))
-      : group?.childrenAges ?? room.request.childAges,
+      : inheritedChildAges(room, group),
   };
 }
 
@@ -906,6 +1054,8 @@ export function BookingCards({
   // off keeps the card copy-only. A client whose mode is not read yet is labelled as lab, the narrower mode.
   const mode: PaneSaveMode = client ? (client.mode?.() ?? 'lab') : 'off';
   const savesOn = mode !== 'off';
+  const cloudPreview = Boolean(client?.canPreview?.() && propertyCode !== 'HRDAV');
+  const previewsOn = cloudPreview || savesOn;
   const selectedGuestName = useSyncExternalStore(
     subscribeStayingGuestName,
     () => readSelectedGuestName(guestEditorKey, guestName),
@@ -924,6 +1074,9 @@ export function BookingCards({
             readSelectedGuestName(guestEditorKey, guestName),
             room.request,
           );
+          const savedId = savedRoomMatch(room, draft, groups, savedStays).id;
+          const saved = savedId ? savedStays?.[savedId] : undefined;
+          const savedTarget = saved?.status === 'booked' ? saved.cloudCreateTarget : undefined;
           const existingNote = textValue(room.request.reservationNote);
           const choice: RoomChoice = {
             track: textValue(room.request.track),
@@ -935,8 +1088,8 @@ export function BookingCards({
             // Guest consent must come from an explicit staff action, never from mail or a hotel default.
             guestoptin4: false,
             guaranteeType: textValue(room.request.guaranteeType),
-            firstName: names.firstName,
-            lastName: names.lastName,
+            firstName: savedTarget?.firstName ?? names.firstName,
+            lastName: savedTarget?.lastName ?? names.lastName,
             bookingAgency: '',
             organization: textValue(room.request.organization) || pickedName(parties?.company),
             reservationNote: existingNote,
@@ -948,6 +1101,7 @@ export function BookingCards({
         }),
       ),
   );
+  const [guestCandidates, setGuestCandidates] = useState<Record<string, PaneGuestCandidate[]>>({});
 
   const [localSaves, setSaves] = useState<Record<string, RoomSaveState>>(() =>
     savesFromSavedStays(draft, groups, savedStays),
@@ -977,9 +1131,20 @@ export function BookingCards({
   const previewInputsRef = useRef<Record<string, PreviewInput>>({});
   const [stayBooking, setStayBooking] = useState(false);
   const stayBookingRef = useRef(false);
+  // These snapshots belong to the original Go, not to the editable room form.
+  const [localCloudStops, setCloudStops] = useState<CloudCreateStop[]>([]);
+  const seenCloudStops = useRef(new Set<string>());
+  const partialCloudRoomsRef = useRef(new Set<string>());
+  const cloudApprovalEpoch = useRef<Record<string, number>>({});
+  const cloudFreshPreviews = useRef<Record<string, { key: string; epoch: number }>>({});
   const options = draft.options as BookingOptions;
   const cmsOptions = options.cmsMessageIds?.length ? options.cmsMessageIds : CMS_FALLBACK;
   const [sendConfirmation, setSendConfirmation] = useState(true);
+  const labtestOnly = draft.draft.rooms.length > 0 && draft.draft.rooms.every((room) => {
+    const choice = choices[`${room.groupId}:${room.roomIndex}`];
+    return textValue(choice?.firstName).trim().toLowerCase() === 'proof' && textValue(choice?.lastName).trim().toLowerCase() === 'labtest';
+  });
+  const sendHmsConfirmation = labtestOnly ? false : sendConfirmation;
   const [chosenCmsMessage, setChosenCmsMessage] = useState<string | null>(null);
   const hasBoundParty = Boolean(pickedName(parties?.agency) || pickedName(parties?.company));
   const defaultCmsMessage = hasBoundParty ? (options.cmsDefaults?.agency ?? '03') : (options.cmsDefaults?.guest ?? '01');
@@ -1076,6 +1241,7 @@ export function BookingCards({
           ...nextChoice,
           firstName: names.firstName,
           lastName: names.lastName,
+          nativeGuestId: undefined,
           // Consent is guest-specific; a People change needs a fresh explicit opt-in.
           guestoptin4: false,
         };
@@ -1167,16 +1333,36 @@ export function BookingCards({
     if (!input?.key || input.inputKey !== inputKey) return;
     const { stayId } = input;
     const key = input.key;
+    const approvalEpoch = cloudApprovalEpoch.current[roomKey] ?? 0;
+    delete cloudFreshPreviews.current[roomKey];
     const requestId = Symbol();
     const generation = previewReceipt.begin(workItemId, stayId, inputKey);
     patchSave(roomKey, { preview: { status: 'running', key, requestId }, commit: undefined });
     let preview: Exclude<PreviewView, { status: 'running' }>;
     try {
       const previewInput = workItemId ? { ...stay, stayId, workItemId } : stay;
-      const outcome = previewOutcome(await pane.preview(previewInput));
+      const result = await pane.preview(previewInput);
+      if ((result.reason === 'guest_choice_required' || result.reason === 'guest_not_found') &&
+          Array.isArray(result.guestCandidates) &&
+          previewInputsRef.current[roomKey]?.key === key) {
+        setGuestCandidates((current) => ({ ...current, [roomKey]: result.guestCandidates! }));
+      }
+      const outcome = previewOutcome(result);
+      const noMatchingGuestProfile =
+        result.reason === 'guest_not_found' &&
+        Array.isArray(result.guestCandidates) &&
+        result.guestCandidates.length === 0;
       preview = outcome.ok
-        ? { status: 'ready', key, digest: outcome.digest, runId: outcome.runId, screenshots: outcome.screenshots }
-        : { status: 'refused', key, message: outcome.message };
+        ? 'previewOnly' in outcome
+          ? { status: 'view_only', key, runId: outcome.runId, screenshots: outcome.screenshots, hmsPrice: outcome.hmsPrice }
+          : { status: 'ready', key, digest: outcome.digest, runId: outcome.runId, screenshots: outcome.screenshots, hmsPrice: outcome.hmsPrice }
+        : {
+            status: 'refused',
+            key,
+            message: noMatchingGuestProfile
+              ? 'HMS found no matching existing guest profile. Create the profile by hand in HMS, then preview again to choose it.'
+              : outcome.message,
+          };
     } catch {
       preview = { status: 'refused', key, message: PANE_PREVIEW_FAILED_COPY };
     }
@@ -1189,6 +1375,7 @@ export function BookingCards({
             digest: preview.digest,
             runId: preview.runId,
             screenshots: preview.screenshots,
+            hmsPrice: preview.hmsPrice,
           }
         : undefined;
     const accepted = previewReceipt.finish(workItemId, stayId, inputKey, generation, receipt);
@@ -1200,11 +1387,18 @@ export function BookingCards({
       finishPreviewIfRunning(roomKey, requestId, { status: 'stale', key });
       return;
     }
+    if (cloudPreview && preview.status === 'ready' && approvalEpoch === (cloudApprovalEpoch.current[roomKey] ?? 0)) {
+      cloudFreshPreviews.current[roomKey] = { key, epoch: approvalEpoch };
+    }
     finishPreviewIfRunning(roomKey, requestId, preview);
   }
 
   function roomKeyOf(room: BookingDraftReady['draft']['rooms'][number]): string {
     return `${room.groupId}:${room.roomIndex}`;
+  }
+
+  function allocationIdForRoom(room: BookingDraftReady['draft']['rooms'][number]): string {
+    return cloudPreview ? stayIdForRoom(room, groups) : legacyStayIdForRoom(room, groups);
   }
 
   function bookableRooms() {
@@ -1218,6 +1412,7 @@ export function BookingCards({
     const group = roomGroupFor(room, groups);
     const choice = choices[roomKeyOf(room)] ?? NO_CHOICE;
     const boundAgency = parties?.agency?.nativeId ? parties.agency : undefined;
+    const boundCompany = parties?.company?.nativeId ? parties.company : undefined;
     const unboundName = textValue(room.request.agency).trim();
     const agencyUnresolved = choice.bookingAgency !== '__none__' && !boundAgency && Boolean(unboundName);
     const currentEmail = currentContact ? textValue(currentContact.email) :
@@ -1226,23 +1421,48 @@ export function BookingCards({
       mode: effectiveRecipientMode, customAddress, userEmail: sources?.userEmail ?? '', clientEmail: currentEmail,
       invalidSetting: sources?.invalidSetting, staffChose,
     });
-    const roomChoice = roomChoiceFor(room, group, choice, currentContact, sendConfirmation && recipient.ok ? recipient.recipient : null);
+    const roomChoice = roomChoiceFor(room, group, choice, currentContact,
+      (sendHmsConfirmation || cloudPreview) && recipient.ok ? recipient.recipient : null);
     if (!reservationNoteDirty.current[roomKeyOf(room)] && choice.generatedReservationNote !== undefined &&
       choice.reservationNote === choice.generatedReservationNote) {
       roomChoice.reservationNote = generatedNoteForChoice(session, propertyCode, room, group, choice) ?? '';
     }
     roomChoice.bookingAgency = choice.bookingAgency === '__none__' || !boundAgency
       ? undefined : { name: boundAgency.name, nativeId: boundAgency.nativeId };
-    roomChoice.confirmationSendMail = sendConfirmation;
+    if (cloudPreview && choice.organization.trim() && boundCompany && choice.organization.trim() === boundCompany.name) {
+      roomChoice.organization = { name: boundCompany.name, nativeId: boundCompany.nativeId };
+    }
+    const labtestRoom = textValue(roomChoice.firstName).trim().toLowerCase() === 'proof' &&
+      textValue(roomChoice.lastName).trim().toLowerCase() === 'labtest';
+    roomChoice.confirmationSendMail = labtestRoom ? false : sendHmsConfirmation;
     roomChoice.cmsMessageId = cmsMessage;
-    const built = paneStayInputForConfiguredRoom(roomRequestFor(room, group, choice), roomChoice, requiredCreateFields);
+    const request = roomRequestFor(room, group, choice);
+    const built = paneStayInputForConfiguredRoom(request, roomChoice, requiredCreateFields);
     const missing = [...built.missing];
     if (agencyUnresolved) missing.push('booking agency');
-    if (sendConfirmation && !recipient.ok) missing.push('confirmation recipient');
+    if (cloudPreview && choice.organization.trim() && (!boundCompany || choice.organization.trim() !== boundCompany.name)) missing.push('company selected from HMS');
+    if (roomChoice.confirmationSendMail && !recipient.ok) missing.push('confirmation recipient');
     if (!cmsOptions.some((option) => option.code === cmsMessage)) missing.push('Confirmation type');
     const selectedRoom = roomChoice.roomType ?? '';
     if (propertyCode && propertyCode !== 'HRCEN' && !draft.options.roomType.includes(selectedRoom)) missing.push('room type');
-    return { stay: missing.length ? null : built.stay, missing: [...new Set(missing)] };
+    if (!cloudPreview) {
+      const legacy = built.stay && client?.canPreview?.() && propertyCode === 'HRDAV'
+        ? { ...built.stay, propertyCode } : built.stay;
+      return { stay: missing.length ? null : legacy, missing: [...new Set(missing)] };
+    }
+    const source = session?.staffSource;
+    const stableId = /^[A-Za-z0-9_-]{1,40}$/;
+    const selectedId = group?.stayId;
+    if (!workItemId || !source || !/^[a-f0-9]{64}$/.test(source.sourceHash) || !source.messageId.trim() ||
+        !source.threadId.trim() || !selectedId || !stableId.test(selectedId) || !stableId.test(group?.id ?? '') ||
+        !/^[A-Za-z0-9_-]{1,120}$/.test(stayIdForRoom(room, groups))) missing.push('selected email and saved booking request');
+    const stay = !missing.length && built.stay && source && selectedId && group
+      ? { ...built.stay, childAges: built.stay.childAges ?? [], ...(propertyCode ? { propertyCode } : {}), createSelection: {
+          source, identity: { stayId: selectedId, rowId: group.id, roomIndex: room.roomIndex },
+          ...(choice.nativeGuestId ? { nativeGuestId: choice.nativeGuestId } : {}),
+        } }
+      : null;
+    return { stay, missing: [...new Set(missing)] };
   }
 
   function previewKeyForRoom(
@@ -1250,13 +1470,13 @@ export function BookingCards({
     stay: PaneStayInput | null,
   ): string | null {
     return stay
-      ? paneStayPreviewKey(workItemId, stayIdForRoom(room, groups), paneStayKey(stay))
+      ? paneStayPreviewKey(workItemId, allocationIdForRoom(room), paneStayKey(stay))
       : null;
   }
 
   const previewInputs = Object.fromEntries(
     draft.draft.rooms.map((room) => {
-      const stayId = stayIdForRoom(room, groups);
+      const stayId = allocationIdForRoom(room);
       const built = roomBuilt(room);
       const inputKey = built.stay ? paneStayKey(built.stay) : null;
       return [
@@ -1308,35 +1528,182 @@ export function BookingCards({
     const built = roomBuilt(room);
     if (!built.stay) return null;
     const preview = saves[roomKeyOf(room)]?.preview;
-    const key = paneStayPreviewKey(workItemId, stayIdForRoom(room, groups), paneStayKey(built.stay));
-    return preview?.status === 'ready' && preview.key === key
+    const key = paneStayPreviewKey(workItemId, allocationIdForRoom(room), paneStayKey(built.stay));
+    return preview?.status === 'ready' && preview.key === key && cloudPreviewIsFresh(room, key)
       ? { stay: built.stay, digest: preview.digest }
       : null;
   }
 
+  const storedCloudStops = cloudStopsFromSaved(savedStays);
+  const cloudStops = [...localCloudStops, ...storedCloudStops];
+  const unprocessedStoredStop = storedCloudStops.some((stop) => !seenCloudStops.current.has(cloudStopIdentity(stop)));
+  const cloudUnknownStays = new Set([
+    ...Object.entries(savedStays ?? {}).filter(([, save]) => save.status === 'unknown').map(([id]) => id),
+    ...draft.draft.rooms.filter((room) => {
+      const commit = saves[roomKeyOf(room)]?.commit;
+      return uncertainCommit(commit) && !(commit?.status === 'refused' && commit.ambiguousStored) &&
+        !roomIds(room, groups).some((id) => savedStays?.[id]?.status === 'unknown');
+    })
+      .map((room) => allocationIdForRoom(room)),
+  ]);
+  const hasCloudStop = cloudStops.length > 0 || cloudUnknownStays.size > 0;
+  // A stored UNKNOWN without a captured target remains a global stop until HMS is checked.
+  const unknownTargetMissing = [...cloudUnknownStays].some((id) => !cloudStops.some((stop) => stop.unknownStayId === id));
+
+  useEffect(() => {
+    const unseen = cloudStopsFromSaved(savedStays).filter((stop) => !seenCloudStops.current.has(cloudStopIdentity(stop)));
+    if (!unseen.length) return;
+    for (const stop of unseen) seenCloudStops.current.add(cloudStopIdentity(stop));
+    setCloudStops((current) => [...current, ...unseen]);
+    const members = new Set(unseen.flatMap((stop) => stop.members.map((member) => member.stayId)));
+    for (const id of members) previewReceipt.clear(workItemId, id);
+    for (const room of draft.draft.rooms) {
+      if (!roomIds(room, groups).some((id) => members.has(id))) continue;
+      previewReceipt.clear(workItemId, allocationIdForRoom(room));
+      const key = roomKeyOf(room);
+      cloudApprovalEpoch.current[key] = (cloudApprovalEpoch.current[key] ?? 0) + 1;
+      delete cloudFreshPreviews.current[key];
+    }
+    setSaves((current) => {
+      const next = { ...current };
+      for (const room of draft.draft.rooms) {
+        if (!roomIds(room, groups).some((id) => members.has(id))) continue;
+        const key = roomKeyOf(room), save = current[key], preview = save?.preview;
+        if (save && preview) next[key] = { ...save, preview: { status: 'stale', key: preview.key } };
+      }
+      return next;
+    });
+  }, [savedStays, draft, groups, previewReceipt, workItemId]);
+
+  function cloudPreviewIsFresh(room: BookingDraftReady['draft']['rooms'][number], key: string | null): boolean {
+    if (!cloudPreview || !hasCloudStop) return true;
+    const roomKey = roomKeyOf(room), epoch = cloudApprovalEpoch.current[roomKey] ?? 0;
+    if (epoch === 0) return true;
+    const fresh = cloudFreshPreviews.current[roomKey];
+    return Boolean(key && fresh?.key === key && fresh?.epoch === epoch);
+  }
+
+  function cloudRoomTarget(room: BookingDraftReady['draft']['rooms'][number]): string | null {
+    const choice = choices[roomKeyOf(room)] ?? NO_CHOICE;
+    const request = roomRequestFor(room, roomGroupFor(room, groups), choice);
+    return cloudCreateTargetKey({ firstName: choice.firstName, lastName: choice.lastName, arrival: textValue(request.arrival) });
+  }
+
+  function confirmedStay(stayId: string, expectedTarget: string): boolean {
+    const stored = savedStays?.[stayId];
+    if (stored?.status === 'booked' && Boolean(stored.confirmationNumber)) {
+      // Legacy positive rows lack target provenance: retain the conservative
+      // sibling stop. New Cloud rows compare their actual authorized target.
+      return !stored.cloudCreateTarget || cloudCreateTargetKey(stored.cloudCreateTarget) === expectedTarget;
+    }
+    return draft.draft.rooms.some((room) => {
+      if (!roomIds(room, groups).includes(stayId)) return false;
+      const commit = saves[roomKeyOf(room)]?.commit;
+      return commit?.status === 'booked' && !commit.unverified && Boolean(commit.confirmationNumber) &&
+        cloudRoomTarget(room) === expectedTarget;
+    });
+  }
+
+  function hasBookedSibling(room: BookingDraftReady['draft']['rooms'][number]): boolean {
+    const ids = roomIds(room, groups);
+    return cloudStops.some((stop) => stop.members.some((member) => ids.includes(member.stayId) &&
+      stop.members.some((other) => other.stayId !== member.stayId && other.targetKey === member.targetKey &&
+        confirmedStay(other.stayId, member.targetKey))));
+  }
+
+  function cloudRoomHeld(room: BookingDraftReady['draft']['rooms'][number]): boolean {
+    const key = roomKeyOf(room);
+    const ids = roomIds(room, groups);
+    const target = cloudRoomTarget(room);
+    return partialCloudRoomsRef.current.has(key) || hasBookedSibling(room) || cloudStops.some((stop) =>
+      stop.members.some((member) => ids.includes(member.stayId) && member.targetKey === stop.targetKey) ||
+      (target !== null && (stop.targetKey === target ||
+        stop.members.some((member) => member.targetKey === target && confirmedStay(member.stayId, member.targetKey)))));
+  }
+
+  function cloudRoomEligible(room: BookingDraftReady['draft']['rooms'][number]): boolean {
+    return !cloudPreview || (!unknownTargetMissing && !unprocessedStoredStop && !cloudRoomHeld(room));
+  }
+
+  function stopCloudBatch(snapshot: RoomSnapshot[], uncertainIndex: number, batchId?: string) {
+    const uncertain = snapshot[uncertainIndex];
+    if (!uncertain?.targetKey) return;
+    const stop: CloudCreateStop = { unknownStayId: uncertain.stayId, targetKey: uncertain.targetKey,
+      ...(batchId ? { batchId } : {}), members: snapshot.flatMap((item) =>
+        item.targetKey ? [{ stayId: item.stayId, targetKey: item.targetKey }] : []) };
+    seenCloudStops.current.add(cloudStopIdentity(stop));
+    for (const member of snapshot) {
+      cloudApprovalEpoch.current[member.roomKey] = (cloudApprovalEpoch.current[member.roomKey] ?? 0) + 1;
+      delete cloudFreshPreviews.current[member.roomKey];
+    }
+    setCloudStops((current) => [...current, stop]);
+    // A later Go needs newly issued previews, rather than the approvals in the stopped batch.
+    const remaining = snapshot.slice(uncertainIndex + 1);
+    for (const item of remaining) previewReceipt.clear(workItemId, item.stayId);
+    setSaves((current) => {
+      const next = { ...current };
+      for (const item of remaining) {
+        const save = current[item.roomKey], preview = save?.preview;
+        if (save && preview) next[item.roomKey] = { ...save, preview: { status: 'stale', key: preview.key } };
+      }
+      return next;
+    });
+  }
+
   async function bookThisStay(pane: PaneStayClient) {
-    const snapshot = bookableRooms()
-      .filter((room) => {
-        const commit = saves[roomKeyOf(room)]?.commit;
-        return commit?.status !== 'booked' && !(commit?.status === 'refused' && commit.statusChip === 'check');
-      })
-      .map((room) => {
-        const ready = roomPreviewReady(room);
-        return ready ? { roomKey: roomKeyOf(room), stay: ready.stay, digest: ready.digest } : null;
-      });
-    if (snapshot.some((item) => item == null)) return;
+    if (stayBookingRef.current || (cloudPreview && unknownTargetMissing)) return;
+    // A prior run's batch ID is not yet resumable after a partial completion.
+    // Do not offer a new Go that would lose the verified sibling evidence.
+    if (cloudPreview && !hasCloudStop && bookableRooms().length > 1 &&
+        bookableRooms().some((room) => savesRef.current[roomKeyOf(room)]?.commit?.status === 'booked') &&
+        bookableRooms().some((room) => savesRef.current[roomKeyOf(room)]?.commit?.status !== 'booked')) return;
+    const snapshot: RoomSnapshot[] = [];
+    for (const room of bookableRooms()) {
+      const commit = saves[roomKeyOf(room)]?.commit;
+      if (commit?.status === 'booked' || uncertainCommit(commit) || !cloudRoomEligible(room)) continue;
+      const ready = roomPreviewReady(room);
+      if (!ready) return;
+      const targetKey = cloudPreview ? cloudCreateTargetKey(ready.stay) : null;
+      if (cloudPreview && !targetKey) return;
+      snapshot.push({ roomKey: roomKeyOf(room), stayId: allocationIdForRoom(room),
+        stay: ready.stay, digest: ready.digest, targetKey });
+    }
+    if (!snapshot.length) return;
+    let batchStart: Extract<PaneStayBatch, { kind: 'start' }> | undefined;
+    if (cloudPreview && snapshot.length > 1) {
+      if (!workItemId || snapshot.length > 8) return;
+      const rooms: Extract<PaneStayBatch, { kind: 'start' }>['rooms'] = [];
+      for (const item of snapshot) {
+        const room = draft.draft.rooms.find((candidate) => roomKeyOf(candidate) === item.roomKey);
+        if (!room || !item.stay.createSelection?.nativeGuestId) return;
+        rooms.push({ ...item.stay, createSelection: item.stay.createSelection,
+          stayId: allocationIdForRoom(room), workItemId, previewDigest: item.digest });
+      }
+      batchStart = { kind: 'start', id: crypto.randomUUID(), rooms };
+    }
     stayBookingRef.current = true;
     bookedInRunRef.current = {};
     setStayBooking(true);
+    const existingUnknown = new Set(Object.entries(savesRef.current)
+      .filter(([, save]) => uncertainCommit(save.commit)).map(([key]) => key));
     try {
-      for (const item of snapshot) {
-        if (!item || !stayBookingRef.current || savedOutcomeBlocksRoom(item.roomKey)) return;
+      for (const [index, item] of snapshot.entries()) {
+        if (cloudPreview && Object.entries(savesRef.current).some(([key, save]) =>
+          uncertainCommit(save.commit) && !existingUnknown.has(key))) return;
+        if (!stayBookingRef.current || savedOutcomeBlocksRoom(item.roomKey)) return;
         const room = draft.draft.rooms.find((candidate) => roomKeyOf(candidate) === item.roomKey);
         if (!room) return;
         const currentStay = roomBuilt(room, contactRef.current).stay;
         if (!currentStay || paneStayKey(currentStay) !== paneStayKey(item.stay) ||
             previewInputsRef.current[item.roomKey]?.inputKey !== paneStayKey(item.stay)) return;
-        if (!(await bookRoom(item.roomKey, pane, item.stay, item.digest))) return;
+        const batch = batchStart ? (index === 0 ? batchStart : { kind: 'continue' as const, id: batchStart.id, index }) : undefined;
+        const commit = await bookRoom(item.roomKey, pane, item.stay, item.digest, batch);
+        if (commit?.status === 'booked' && !commit.unverified) continue;
+        if (cloudPreview && uncertainCommit(commit ?? undefined)) stopCloudBatch(snapshot, index, batchStart?.id);
+        else if (cloudPreview && index > 0) {
+          for (const remaining of snapshot.slice(index)) partialCloudRoomsRef.current.add(remaining.roomKey);
+        }
+        return;
       }
     } finally {
       stayBookingRef.current = false;
@@ -1356,7 +1723,9 @@ export function BookingCards({
       // Add Record keeps room 1's guest profile, so only a room for the same guest joins it.
       if (otherStay && otherStay.lastName === stay.lastName && otherStay.firstName === stay.firstName &&
         otherStay.arrival === stay.arrival && otherStay.departure === stay.departure &&
-        inheritedFieldsMatch(other, otherStay, room, stay)) return stayIdForRoom(other, groups);
+        inheritedFieldsMatch(other, otherStay, room, stay)) {
+        return savedRoomMatch(other, draft, groups, savedStays).id ?? allocationIdForRoom(other);
+      }
     }
     return null;
   }
@@ -1383,20 +1752,22 @@ export function BookingCards({
     return (parent.reservationNote ?? '') === (stay.reservationNote ?? '') || (generated(parentRoom) && generated(room));
   }
 
-  async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string) {
-    if (savedOutcomeBlocksRoom(roomKey)) return false;
+  async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string, batch?: PaneStayBatch) {
+    if (savedOutcomeBlocksRoom(roomKey)) return null;
     const key = paneStayKey(stay);
     const room = draft.draft.rooms.find((item) => `${item.groupId}:${item.roomIndex}` === roomKey);
-    if (room) previewReceipt.clear(workItemId, stayIdForRoom(room, groups));
+    if (room) previewReceipt.clear(workItemId, allocationIdForRoom(room));
     patchSave(roomKey, { commit: { status: 'running', key } });
     let commit: CommitView;
     try {
-      const parentStayId = room && workItemId ? bookedParentStayId(room, stay) : null;
+      const parentStayId = !cloudPreview && room && workItemId ? bookedParentStayId(room, stay) : null;
       const persist =
         workItemId && room
-          ? { stayId: stayIdForRoom(room, groups), workItemId, ...(parentStayId ? { parentStayId } : {}) }
+          ? { stayId: allocationIdForRoom(room), workItemId, ...(parentStayId ? { parentStayId } : {}) }
           : {};
-      const result = await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest);
+      const result = batch
+        ? await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest, batch)
+        : await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest);
       const outcome = commitOutcome(result, stay);
       commit = outcome.ok
         ? {
@@ -1405,6 +1776,7 @@ export function BookingCards({
             confirmationNumber: outcome.confirmationNumber,
             runId: outcome.runId,
             screenshots: outcome.screenshots,
+            hmsPrice: outcome.hmsPrice,
             ...(outcome.unverified ? { unverified: true } : {}),
             ...(outcome.cmsMismatch ? { cmsMismatch: true } : {}),
           }
@@ -1414,7 +1786,9 @@ export function BookingCards({
             message: outcome.message,
             runId: outcome.runId,
             screenshots: outcome.screenshots,
-            ...(result.status === 'ok' || result.reason === PANE_SAVE_UNCONFIRMED_REASON
+            ...(result.status === 'ok' || result.reason === PANE_SAVE_UNCONFIRMED_REASON ||
+              (cloudPreview && typeof result.reason === 'string' &&
+                ['cloud_create_recovery_required', 'write_in_flight'].includes(result.reason))
               ? { statusChip: 'check' as const } : {}),
           };
     } catch {
@@ -1424,22 +1798,48 @@ export function BookingCards({
     if (commit.status === 'booked' && stayBookingRef.current) bookedInRunRef.current[roomKey] = commit;
     // Definite refusals can be previewed again; uncertain saves stay locked for an HMS check.
     patchSave(roomKey, commit.status === 'booked' ? { commit } : { commit, preview: undefined });
-    return commit.status === 'booked' && !commit.unverified;
+    return commit;
+  }
+
+  async function bookSingleRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, digest: string) {
+    if (!cloudPreview) {
+      await bookRoom(roomKey, pane, stay, digest);
+      return;
+    }
+    const room = draft.draft.rooms.find((item) => roomKeyOf(item) === roomKey);
+    const targetKey = cloudCreateTargetKey(stay);
+    if (!room || !targetKey || stayBookingRef.current || !cloudRoomEligible(room)) return;
+    stayBookingRef.current = true;
+    setStayBooking(true);
+    try {
+      const commit = await bookRoom(roomKey, pane, stay, digest);
+      if (uncertainCommit(commit ?? undefined)) {
+        stopCloudBatch([{ roomKey, stayId: allocationIdForRoom(room), stay, digest, targetKey }], 0);
+      }
+    } finally {
+      stayBookingRef.current = false;
+      bookedInRunRef.current = {};
+      setStayBooking(false);
+    }
   }
 
   return (
     <section aria-label="Booking details" className="flex flex-col gap-2">
       <p className="text-[11px] text-[#64748b]">
-        {savesOn
-          ? 'Preview each room using the Stay details above, then create it in HMS.'
+        {cloudPreview
+          ? mode === 'on' ? 'Preview each room in HMS, then book when the preview is ready.'
+            : mode === 'lab' ? 'Preview any stay. Booking is currently limited to Proof Labtest stays in 2027 or later.'
+              : 'Booking from this pane is off.'
+          : savesOn ? 'Preview each room using the Stay details above, then create it in HMS.'
           : 'Saving to HMS from this pane is off for now. Stay details are above; enter the booking-only fields in HMS Guest Stay.'}
       </p>
       <div className="flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
         <label className="flex items-center gap-2 text-xs font-semibold text-[#475569]">
-          <input type="checkbox" aria-label="Send confirmation from HMS" checked={sendConfirmation}
-            disabled={stayBooking} onChange={(event) => setSendConfirmation(event.target.checked)} />
+          <input type="checkbox" aria-label="Send confirmation from HMS" checked={sendHmsConfirmation}
+            disabled={stayBooking || labtestOnly} onChange={(event) => setSendConfirmation(event.target.checked)} />
           Send confirmation from HMS
         </label>
+        {labtestOnly ? <p className="text-[11px] text-[#64748b]">Proof Labtest bookings do not send confirmations.</p> : null}
         <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
           Message Id
           <select aria-label="Message Id" className={paneFieldClass} disabled={stayBooking}
@@ -1448,7 +1848,7 @@ export function BookingCards({
             {cmsOptions.map((option) => <option key={option.code} value={option.code}>{option.code} – {option.label}</option>)}
           </select>
         </label>
-      {sendConfirmation ? (
+      {sendConfirmation || cloudPreview ? (
         <div data-pii>
         <ConfirmationRecipient
           mode={effectiveRecipientMode}
@@ -1556,7 +1956,7 @@ export function BookingCards({
             const nextChoice: RoomChoice = {
               ...currentChoice,
               ...patch,
-              ...(guestChanged ? { guestoptin4: false } : {}),
+              ...(guestChanged ? { guestoptin4: false, nativeGuestId: patch.nativeGuestId } : {}),
             };
             if (!reservationNoteDirty.current[key]) {
               const wasGenerated = currentChoice.generatedReservationNote !== undefined &&
@@ -1571,7 +1971,11 @@ export function BookingCards({
           });
         // Once create is running or saved, freeze its create-only fields until staff checks the result.
         const commitStatus = saves[key]?.commit?.status;
-        const locked = stayBooking || commitStatus === 'running' || savedOutcomeBlocksRoom(key);
+        const originalHeldRoom = cloudPreview && (partialCloudRoomsRef.current.has(key) ||
+          hasBookedSibling(room) ||
+          cloudStops.some((stop) => stop.members.some((member) => roomIds(room, groups).includes(member.stayId) &&
+            member.targetKey === stop.targetKey)));
+        const locked = stayBooking || commitStatus === 'running' || savedOutcomeBlocksRoom(key) || originalHeldRoom;
         const request = room.request;
         const group = roomGroupFor(room, groups);
         const generatedNote = generatedNoteForChoice(session, propertyCode, room, group, choice);
@@ -1593,9 +1997,13 @@ export function BookingCards({
           ...(session?.rateOptions ?? []).filter((rate) => rate.groupId === room.groupId && rate.roomCode === selectedRoom).map((rate) => rate.rateCode),
           ...(choice.ratePlan === undefined && selectedRate ? [selectedRate] : []),
         ].filter(Boolean))];
-        const ages = choice.childAges ?? (Array.isArray(group?.childrenAges ?? request.childAges)
-          ? (group?.childrenAges ?? request.childAges as number[]).map(String) : []);
+        const inheritedAges = inheritedChildAges(room, group);
+        const ages = choice.childAges ?? (Array.isArray(inheritedAges) ? inheritedAges.map(String) : []);
+        const agesKnown = choice.childAges !== undefined || Array.isArray(inheritedAges);
         const boundAgency = parties?.agency?.nativeId ? parties.agency : undefined;
+        const matchingGuests = (guestCandidates[key] ?? []).filter((candidate) =>
+          candidate.firstName.trim().toLowerCase() === choice.firstName.trim().toLowerCase() &&
+          candidate.lastName.trim().toLowerCase() === choice.lastName.trim().toLowerCase());
         const agencyValue = choice.bookingAgency === '__none__' ? '__none__' : boundAgency ? '__bound__' : '';
         const roomLabel = rowRoomLabel({
           roomPreference: selectedRoom || textValue(request.roomType),
@@ -1668,7 +2076,7 @@ export function BookingCards({
             <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
               Children
               <input type="number" min={0} max={16} step={1} aria-label="Children" className={paneFieldClass} disabled={locked}
-                value={ages.length} onChange={(event) => {
+                value={cloudPreview && !agesKnown ? '' : ages.length} onChange={(event) => {
                   if (event.target.value.trim() === '') return;
                   const count = Number(event.target.value);
                   if (Number.isInteger(count) && count >= 0 && count <= 16) {
@@ -1708,6 +2116,25 @@ export function BookingCards({
                 setChoice({ lastName: value });
               }}
             />
+            {matchingGuests.length ? (
+              <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+                Guest profile
+                <select aria-label="Guest profile" className={paneFieldClass} disabled={locked}
+                  value={choice.nativeGuestId ?? ''} onChange={(event) => {
+                    const candidate = matchingGuests.find((guest) => guest.nativeId === event.target.value);
+                    if (candidate) guestNamesEdited.current[key] = true;
+                    setChoice({ nativeGuestId: event.target.value,
+                      ...(candidate ? { firstName: candidate.firstName, lastName: candidate.lastName } : {}) });
+                  }}>
+                  <option value="">Select the matching guest</option>
+                  {matchingGuests.map((candidate) => (
+                    <option key={candidate.nativeId} value={candidate.nativeId}>
+                      {[candidate.firstName, candidate.lastName, candidate.city, candidate.country, `#${candidate.nativeId}`].filter(Boolean).join(' · ')}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
             {selectedGuestName.trim() && guestSplit.ambiguous ? (
               <p role="status" className="text-[11px] text-[#64748b]">
                 {AMBIGUOUS_GUEST_NAME_COPY}
@@ -1831,7 +2258,7 @@ export function BookingCards({
                 ],
               })}
             />
-            {client && savesOn ? (
+            {client && previewsOn ? (
               <RoomSave
                 stay={built.stay}
                 previewKey={previewKeyForRoom(room, built.stay)}
@@ -1839,9 +2266,12 @@ export function BookingCards({
                 save={saves[key] ?? {}}
                 screenshot={client.screenshot}
                 bookLabel={CREATE_PROVISIONAL_LABEL}
-                frozen={stayBooking}
+                previewOnly={cloudPreview && !savesOn}
+                batchOnly={cloudPreview && draft.draft.rooms.length > 1}
+                frozen={stayBooking || (cloudPreview && (!cloudRoomEligible(room) || unknownTargetMissing))}
+                approvalRequired={!cloudPreviewIsFresh(room, previewKeyForRoom(room, built.stay))}
                 onPreview={(stay) => void previewRoom(key, client, stay)}
-                onBook={(stay, previewDigest) => void bookRoom(key, client, stay, previewDigest)}
+                onBook={(stay, previewDigest) => void bookSingleRoom(key, client, stay, previewDigest)}
               />
             ) : saves[key]?.commit ? (
               <RoomSave
@@ -1863,13 +2293,17 @@ export function BookingCards({
           </article>
         );
       })}
-      {client && savesOn ? (
+      {client && savesOn && (!cloudPreview || draft.draft.rooms.length > 1) ? (
         <StayBookBar
           rooms={draft.draft.rooms}
           saves={saves}
           isPreviewReady={(room) => roomPreviewReady(room) !== null}
+          isEligible={cloudRoomEligible}
           pane={client}
           stayBooking={stayBooking}
+          blockWhenUncertain={cloudPreview}
+          hasStop={cloudPreview && hasCloudStop}
+          hasUncertain={cloudPreview && cloudUnknownStays.size > 0}
           onBookStay={bookThisStay}
         />
       ) : null}
@@ -1881,27 +2315,36 @@ function StayBookBar({
   rooms,
   saves,
   isPreviewReady,
+  isEligible,
   pane,
   stayBooking,
+  blockWhenUncertain,
+  hasStop,
+  hasUncertain,
   onBookStay,
 }: {
   rooms: BookingDraftReady['draft']['rooms'];
   saves: Record<string, RoomSaveState>;
   isPreviewReady: (room: BookingDraftReady['draft']['rooms'][number]) => boolean;
+  isEligible: (room: BookingDraftReady['draft']['rooms'][number]) => boolean;
   pane: PaneStayClient;
   stayBooking: boolean;
+  blockWhenUncertain: boolean;
+  hasStop: boolean;
+  hasUncertain: boolean;
   onBookStay: (pane: PaneStayClient) => Promise<void>;
 }) {
   const bookable = rooms;
   if (!bookable.length) return null;
   const numbers = bookable.flatMap((room) => {
     const commit = saves[`${room.groupId}:${room.roomIndex}`]?.commit;
-    return commit?.status === 'booked' && commit.confirmationNumber ? [commit.confirmationNumber] : [];
+    return commit?.status === 'booked' && !commit.unverified && commit.confirmationNumber ? [commit.confirmationNumber] : [];
   });
-  const pending = bookable.filter((room) => {
+  const allPending = bookable.filter((room) => {
     const commit = saves[`${room.groupId}:${room.roomIndex}`]?.commit;
     return commit?.status !== 'booked' && !(commit?.status === 'refused' && commit.statusChip === 'check');
   });
+  const pending = allPending.filter(isEligible);
   const busy =
     stayBooking ||
     bookable.some((room) => {
@@ -1909,6 +2352,8 @@ function StayBookBar({
       return save?.preview?.status === 'running' || save?.commit?.status === 'running';
     });
   const allPreviewed = pending.every(isPreviewReady);
+  const needsCheck = blockWhenUncertain && hasStop && pending.length === 0;
+  const partialBatch = blockWhenUncertain && !hasStop && !stayBooking && numbers.length > 0 && allPending.length > 0;
   return (
     <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
       {numbers.length > 0 ? (
@@ -1916,10 +2361,18 @@ function StayBookBar({
           {`Booked ${numbers.length} of ${bookable.length} – ${numbers.join(', ')}`}
         </p>
       ) : null}
-      {pending.length > 0 ? (
+      {hasStop && pending.length > 0 ? (
+        <p className="text-[11.5px] text-amber-900">
+          {`After previewing, this will book only ${pending.length} other ${pending.length === 1 ? 'room' : 'rooms'}.${hasUncertain ? ' Check the uncertain booking in HMS.' : ''}`}
+        </p>
+      ) : null}
+      {allPending.length > 0 ? (
         <PrimaryButton
-          disabled={!allPreviewed || busy}
-          disabledReason={!allPreviewed && !busy ? 'Preview in HMS first' : null}
+          disabled={pending.length === 0 || !allPreviewed || busy || needsCheck || partialBatch}
+          disabledReason={needsCheck ? hasUncertain ? 'Check the uncertain booking in HMS first'
+            : 'Earlier rooms remain blocked; check them in HMS first.' : partialBatch
+            ? 'Some rooms were booked. Check HMS before handling the remaining rooms.'
+            : !allPreviewed && !busy ? 'Preview in HMS first' : null}
           onClick={() => void onBookStay(pane)}
         >
           {BOOK_THIS_STAY_LABEL}

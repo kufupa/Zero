@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   guestStaySaveOutcome,
   matchesFullCreateBody,
   createSelectionProofTokensMatch,
   validCreateBillingReference, billingOnlyDraftChange,
-  saveNewLabtestStay,
+  finishLabtestCreateFence, saveNewLabtestStay,
 } from './guest-stay-save.mjs';
 
 const controls = {
@@ -23,6 +24,26 @@ const saveInputs = {
   guaranteeType: 'NGI',
   note: 'synthetic offline proof',
 };
+
+test('Create cannot report success or no dispatch when route callback drain is unconfirmed', async () => {
+  for (const outcome of ['saved_same_form', 'not_dispatched']) {
+    for (const drain of [async () => false, async () => { throw new Error('drain failed'); }]) {
+      let quarantined = false;
+      const result = await finishLabtestCreateFence({ outcome, confirmation: 'synthetic' }, { drain },
+        { quarantine: () => { quarantined = true; } });
+      assert.equal(result.outcome, 'uncertain');
+      assert.equal(result.issue, 'SAVE_CALLBACK_DRAIN_UNCONFIRMED');
+      assert.equal(result.dispatchCallbacksDrained, false);
+      assert.equal(quarantined, true);
+    }
+  }
+});
+
+test('Create records callback drain separately from its original save outcome', async () => {
+  const result = await finishLabtestCreateFence({ outcome: 'saved_same_form' }, { drain: async () => true }, {});
+  assert.deepEqual(result, { outcome: 'saved_same_form', dispatchCallbacksDrained: true });
+  assert.deepEqual(await finishLabtestCreateFence({ outcome: 'not_dispatched' }, null, {}), { outcome: 'not_dispatched' });
+});
 
 function createModelData() {
   return {
@@ -233,6 +254,56 @@ test('preserves padded synthetic reservation notes exactly', () => {
   assert.equal(matchesFullCreateBody(body, formData), false);
 });
 
+test('native request fence preserves multiline note bytes exactly', () => {
+  const note = JSON.parse(readFileSync(new URL('./fixtures/generated-reservation-note.json', import.meta.url), 'utf8')).note;
+  const formData = { ...createModelData(), reservationnote: note };
+  const body = createSaveBody(formData);
+  assert.equal(matchesFullCreateBody(body, formData), true);
+  body.set('reservationnote', note.replace('\n', ' '));
+  assert.equal(matchesFullCreateBody(body, formData), false);
+});
+
+test('agent guarantee requires matching selector evidence and a current strict draft', async () => {
+  const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDAGT',
+    actual: { value: 'GTDAGT', submitted: 'GTDAGT', display: 'Guaranteed By Agent' } };
+  for (const invalid of [undefined, { ...selection, requested: 'NGI' },
+    { ...selection, actual: { ...selection.actual, submitted: 'NGI' } },
+    { ...selection, actual: { ...selection.actual, display: '' } }]) {
+    const result = await saveNewLabtestStay(pageStub(), { ...saveInputs, guaranteeType: 'GTDAGT', guaranteeSelection: invalid });
+    assert.equal(result.outcome, 'input_gap');
+    assert.equal(result.issue, 'GUARANTEE_SELECTION_UNVERIFIED');
+  }
+  let expected;
+  const page = pageStub();
+  page.evaluate = async (_fn, args) => { expected = args.expected; return 'DRAFT_GUARANTEE'; };
+  const result = await saveNewLabtestStay(page, { ...saveInputs, guaranteeType: 'GTDAGT', guaranteeSelection: selection });
+  assert.equal(result.outcome, 'not_dispatched');
+  assert.equal(result.issue, 'LABTEST_DRAFT_UNVERIFIED');
+  assert.equal(expected.guaranteeType, 'GTDAGT');
+  assert.equal(expected.guaranteeDisplay, 'Guaranteed By Agent');
+  assert.equal(expected.strictCreateProof, true);
+  const unsupported = await saveNewLabtestStay(pageStub(), { ...saveInputs, guaranteeType: 'CC' });
+  assert.equal(unsupported.issue, 'INVALID_LABTEST_SAVE_INPUT');
+});
+
+test('reviewed contact values are required by the strict Labtest draft and reject consent to send', async () => {
+  let expected;
+  const page = pageStub();
+  page.evaluate = async (_fn, args) => { expected = args.expected; return 'DRAFT_REVIEWED_CONTACT_FIELDS'; };
+  const request = { ...saveInputs, track: 'Best Available', guestOptIn: false,
+    booker: { name: 'Booker', contact: 'booker@example.test' }, cmsRecipient: 'client@example.test' };
+  const result = await saveNewLabtestStay(page, request);
+  assert.equal(result.outcome, 'not_dispatched');
+  assert.equal(result.draftCheck, 'DRAFT_REVIEWED_CONTACT_FIELDS');
+  assert.equal(expected.strictCreateProof, true);
+  assert.equal(expected.approvedTrack, request.track);
+  assert.equal(expected.guestOptIn, false);
+  assert.deepEqual(expected.booker, request.booker);
+  assert.equal(expected.cmsRecipient, request.cmsRecipient);
+  const invalid = await saveNewLabtestStay(pageStub(), { ...request, guestOptIn: true });
+  assert.equal(invalid.issue, 'INVALID_LABTEST_SAVE_INPUT');
+});
+
 test('preserves the legacy childless core-only input path', async () => {
   const result = await saveNewLabtestStay(pageStub(), saveInputs);
   assert.equal(result.outcome, 'not_dispatched');
@@ -437,6 +508,57 @@ function nativeCreateDraftPage() {
   return page;
 }
 
+test('native create draft tolerates unrelated HMS field drift but checks guest and room', async () => {
+  const makePage = () => {
+    const page = nativeCreateDraftPage();
+    page.data.araccountid = ''; page.data.arprofileid = ''; page.data.araccountname = '';
+    page.values.araccountid = ''; page.values.arprofileid = ''; page.values.araccountname = '';
+    page.elements.find((element) => element.name === 'araccountname').value = '';
+    return page;
+  };
+  const run = (page) => saveNewLabtestStay(page, saveInputs, {
+    authorizeCandidate: async () => false,
+    dispatchCandidate: async () => { throw new Error('unexpected dispatch'); },
+  });
+  for (const page of [makePage(), makePage()]) {
+    page.data.newNativeField = 'HMS default';
+    delete page.data.nightsvalue;
+    assert.equal((await run(page)).issue, 'LABTEST_PROFILE_PROOF_STALE');
+  }
+  const wrongGuest = makePage(); wrongGuest.data.guestid = '7654321';
+  assert.equal((await run(wrongGuest)).draftCheck, 'DRAFT_RESERVATION_MODEL');
+  const wrongRoom = makePage(); wrongRoom.elements.find((field) => field.name === 'roomtype').value = 'OTHER';
+  assert.equal((await run(wrongRoom)).draftCheck, 'DRAFT_STAY_FIELDS');
+});
+
+test('native draft checks agent guarantee display, native value and submitted value', async () => {
+  const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDAGT',
+    actual: { value: 'GTDAGT', submitted: 'GTDAGT', display: 'Guaranteed By Agent' } };
+  const makePage = () => {
+    const page = nativeCreateDraftPage();
+    page.data.araccountid = ''; page.data.arprofileid = ''; page.data.araccountname = '';
+    page.values.araccountid = ''; page.values.arprofileid = ''; page.values.araccountname = '';
+    page.elements.find((element) => element.name === 'araccountname').value = '';
+    page.data.guaranteetype = 'GTDAGT'; page.values.guaranteetype = 'GTDAGT';
+    page.elements.find((element) => element.name === 'guaranteetype').value = 'Guaranteed By Agent';
+    return page;
+  };
+  const run = (page) => saveNewLabtestStay(page, { ...saveInputs, guaranteeType: 'GTDAGT', guaranteeSelection: selection });
+  // The fixture has no verified profile token; no Save may dispatch.
+  const valid = await run(makePage());
+  assert.equal(valid.outcome, 'not_dispatched');
+  assert.equal(valid.issue, 'LABTEST_PROFILE_PROOF_STALE');
+  const wrongDisplay = makePage();
+  wrongDisplay.elements.find((element) => element.name === 'guaranteetype').value = 'Non-Guaranteed Individual';
+  const wrongValue = makePage(); wrongValue.components.guaranteetype.getValue = () => 'NGI';
+  const wrongSubmit = makePage(); wrongSubmit.components.guaranteetype.getSubmitData = () => ({ guaranteetype: 'NGI' });
+  for (const page of [wrongDisplay, wrongValue, wrongSubmit]) {
+    const result = await run(page);
+    assert.equal(result.outcome, 'not_dispatched');
+    assert.equal(result.draftCheck, 'DRAFT_GUARANTEE');
+  }
+});
+
 test('native draft binds A/R, CMS and reason controls before any save route', async () => {
   const arSelection = { outcome: 'selected_unsaved', searchId: 'ar-search', nativeId: '75', displayedArAccount: 'Test Account',
     nativeIdEvidence: 'form_change_response', selectedField: { name: 'araccountname', value: 'Test Account' },
@@ -445,8 +567,8 @@ test('native draft binds A/R, CMS and reason controls before any save route', as
     cmsMessageSelection: { outcome: 'updated_unsaved', field: 'cmsMessageId', requested: '03', actual: '03' },
     reasonSelection: { outcome: 'updated_unsaved', field: 'reasonForStay', requested: 'BUS', actual: { value: 'BUS', display: 'Business' } } };
   const run = (page) => saveNewLabtestStay(page, { ...saveInputs, arSelection, createFieldProof });
-  // Fixture is deliberately not a full 985-field HMS model. A valid native draft reaches the schema guard.
-  assert.equal((await run(nativeCreateDraftPage())).issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
+  // A valid draft reaches the independent profile proof guard.
+  assert.equal((await run(nativeCreateDraftPage())).issue, 'LABTEST_PROFILE_PROOF_STALE');
   const wrongAccount = nativeCreateDraftPage(); wrongAccount.data.araccountid = '76';
   assert.equal((await run(wrongAccount)).draftCheck, 'DRAFT_RESERVATION_MODEL');
   const wrongProfile = nativeCreateDraftPage(); wrongProfile.data.arprofileid = '';
@@ -484,7 +606,7 @@ test('agency commission defaults are bound from unique native submit controls', 
   const run = (page) => saveNewLabtestStay(page, { ...saveInputs, agencySelection: agencySelection(), arSelection,
     createFieldProof: { adultSelection: adultSelection(2) } });
   const valid = makePage();
-  assert.equal((await run(valid)).issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
+  assert.equal((await run(valid)).issue, 'LABTEST_PROFILE_PROOF_STALE');
   assert.equal(valid.lastDraft.formData.bookingagencycommissionpricing, 'FLAT');
   assert.equal(valid.lastDraft.formData.bookingagencycommissiontype, 'PERCNT');
   const body = createSaveBody(valid.lastDraft.formData);
@@ -522,7 +644,7 @@ test('billing draft exempts only its own blank required control and verifies nat
     createFieldProof: { adultSelection: adultSelection(2) } });
   const page = nativeCreateDraftPage();
   page.components.billingreference.allowBlank = false;
-  assert.equal((await run(page)).issue, 'CREATE_FORM_FIELD_SCHEMA_CHANGED');
+  assert.equal((await run(page)).issue, 'LABTEST_PROFILE_PROOF_STALE');
   const before = page.lastDraft, fn = page.lastDraftFunction, args = page.lastDraftArguments;
   page.values.billingreference = ' PO 123 ';
   page.elements.find((field) => field.name === 'billingreference').value = ' PO 123 ';
@@ -552,7 +674,7 @@ test('billing draft exempts only its own blank required control and verifies nat
   assert.equal((await run(invalid)).draftCheck, 'DRAFT_BILLING_REFERENCE_VALUE');
 });
 
-test('billing snapshot rejects unrelated form, model, identity and visible control drift', () => {
+test('billing snapshot preserves reviewed values while tolerating unrelated HMS field drift', () => {
   const before = { session: 's', arProfileId: 'p', track: 'x', partyValues: { araccountname: 'A' },
     modelData: { billingreference: '', roomtype: 'A', nested: { value: 1 } },
     formData: { billingreference: '', roomtype: 'A' },
@@ -560,10 +682,12 @@ test('billing snapshot rejects unrelated form, model, identity and visible contr
   const after = structuredClone(before); after.formData.billingreference = ' ref '; after.visibleFields[0].value = ' ref ';
   assert.equal(billingOnlyDraftChange(before, after, ' ref '), true);
   for (const mutate of [
-    (s) => { s.formData.roomtype = 'B'; }, (s) => { s.modelData.nested.value = 2; },
+    (s) => { s.formData.roomtype = 'B'; },
     (s) => { s.visibleFields[1].value = 'B'; }, (s) => { s.arProfileId = 'other'; },
     (s) => { s.modelData.billingreference = 'different'; }, (s) => { s.formData.billingreference = 'ref'; },
   ]) { const changed = structuredClone(after); mutate(changed); assert.equal(billingOnlyDraftChange(before, changed, ' ref '), false); }
+  const nativeDrift = structuredClone(after); nativeDrift.modelData.nested.value = 2;
+  assert.equal(billingOnlyDraftChange(before, nativeDrift, ' ref '), true);
   const body = createSaveBody({ billingreference: ' ref ', roomtype: 'A' });
   assert.equal(matchesFullCreateBody(body, { billingreference: ' ref ', roomtype: 'A' }), true);
   body.set('billingreference', 'ref');

@@ -17,6 +17,32 @@ const same = (a, b) => isDeepStrictEqual(a, b);
 const unknowns = () => ({ pricing: 'unknown', tax: 'unknown', inventory: 'unknown', saveEligible: false });
 const issue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'CHILD_STAGE_UNVERIFIED';
 
+// Reject ambiguous duplicate JSON keys without fixing the native field set.
+function parseUniqueJson(raw) {
+  const value = JSON.parse(raw), stack = [];
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i], top = stack.at(-1);
+    if (ch === '"') {
+      let end = i + 1, escaped = false;
+      for (; end < raw.length; end++) {
+        if (escaped) { escaped = false; continue; }
+        if (raw[end] === '\\') { escaped = true; continue; }
+        if (raw[end] === '"') break;
+      }
+      if (top?.kind === 'object' && top.key) {
+        const key = JSON.parse(raw.slice(i, end + 1)).toLowerCase();
+        if (top.keys.has(key)) throw new Error('DUPLICATE_FIELD');
+        top.keys.add(key); top.key = false;
+      }
+      i = end;
+    } else if (ch === '{') stack.push({ kind: 'object', key: true, keys: new Set() });
+    else if (ch === '[') stack.push({ kind: 'array' });
+    else if (ch === '}' || ch === ']') stack.pop();
+    else if (ch === ',' && top?.kind === 'object') top.key = true;
+  }
+  return value;
+}
+
 /** Explicit null is unknown; [] is an explicitly supplied no-children age list. */
 export function planSavedChildOccupancy(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { outcome: 'input_gap', issue: 'CHILD_OCCUPANCY_REQUIRED_OR_INVALID', ...unknowns() };
@@ -74,43 +100,35 @@ export function savedChildOccupancy(snapshot) {
     ages, ageState: ages === null ? 'unknown' : 'native_model' };
 }
 
-/** Exact saved-stay age read shape observed on one guarded HRCEN record. */
+/** Match the selected stay and child values, allowing HMS to add unrelated fields. */
 export function matchesSavedChildAgeRead(request, frame, stayId, ages) {
   try {
     const url = new URL(request.url()), body = new URLSearchParams(request.postData() || '');
     if (request.method() !== 'POST' || request.frame() !== frame || url.origin !== ORIGIN || url.pathname !== READ ||
         url.search || url.hash || !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '') ||
-        [...body.keys()].length !== 2 || body.getAll('params').length !== 1 ||
-        body.getAll('ONLY_DATA_REQUIRED').length !== 1 || body.get('ONLY_DATA_REQUIRED') !== 'true' ||
-        typeof stayId !== 'string' || !stayId || !agesValid(ages)) return false;
-    const raw = body.get('params'), params = JSON.parse(raw);
-    const keys = ['propertyCode', 'reservationStayId', 'childAges'];
-    if (!params || Array.isArray(params) || typeof params !== 'object' || Object.keys(params).length !== keys.length ||
-        keys.some((key) => !Object.hasOwn(params, key) || (raw.match(new RegExp('"' + key + '"\\s*:', 'g')) || []).length !== 1)) return false;
-    return params.propertyCode === 'HRCEN' && params.reservationStayId === stayId && same(params.childAges, ages);
+        body.getAll('params').length !== 1 || typeof stayId !== 'string' || !stayId) return false;
+    const params = parseUniqueJson(body.get('params'));
+    return params?.propertyCode === 'HRCEN' && params.reservationStayId === stayId && agesValid(params.childAges) &&
+      (ages === null || sameChildAgeMultiset(params.childAges, ages));
   } catch { return false; }
 }
 
-/** Match the observed saved-stay validation without authorizing Save. */
+/** Check native validation against the selected stay and the requested ages. */
 export function matchesSavedChildAgeValidation(request, frame, { stayId, adults, priorBands, ages } = {}) {
   try {
     const url = new URL(request.url()), body = new URLSearchParams(request.postData() || '');
     if (request.method() !== 'POST' || request.frame() !== frame || url.origin !== ORIGIN || url.pathname !== VALIDATE ||
         url.search || url.hash || !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '') ||
-        [...body.keys()].length !== 2 || body.getAll('params').length !== 1 ||
-        body.getAll('ONLY_DATA_REQUIRED').length !== 1 || body.get('ONLY_DATA_REQUIRED') !== 'true' ||
-        typeof stayId !== 'string' || !stayId || !Number.isInteger(adults) || adults < 1 || adults > 16 || !agesValid(ages) ||
-        !priorBands || Object.keys(priorBands).length !== 3 ||
-        NAMES.slice(1).some((name) => !Object.hasOwn(priorBands, name) || !countValid(priorBands[name]))) return false;
-    const raw = body.get('params'), params = JSON.parse(raw);
-    const keys = ['propertyCode', 'reservationStayId', 'childAges', 'adultCount', 'childCount', 'updateChildCategories',
-      'activeChildCategories', 'confirmChildCategory', 'childCategoryCounts'];
-    if (!params || typeof params !== 'object' || Array.isArray(params) || Object.keys(params).length !== keys.length ||
-        keys.some((key) => !Object.hasOwn(params, key) || (raw.match(new RegExp('"' + key + '"\\s*:', 'g')) || []).length !== 1) ||
-        NAMES.slice(1).some((key) => (raw.match(new RegExp('"' + key + '"\\s*:', 'g')) || []).length !== 1)) return false;
-    return params.propertyCode === 'HRCEN' && params.reservationStayId === stayId && params.adultCount === String(adults) &&
-      params.childCount === String(ages.length) && same(params.childAges, ages) && params.updateChildCategories === true &&
-      params.activeChildCategories === 3 && params.confirmChildCategory === false && same(params.childCategoryCounts, priorBands);
+        body.getAll('params').length !== 1 || typeof stayId !== 'string' || !stayId || !Number.isInteger(adults) ||
+        adults < 1 || adults > 16 || !agesValid(ages) || !priorBands ||
+        NAMES.slice(1).some((name) => !countValid(priorBands[name]))) return false;
+    const params = parseUniqueJson(body.get('params'));
+    return params?.propertyCode === 'HRCEN' && params.reservationStayId === stayId &&
+      Number(params.adultCount) === adults && Number(params.childCount) === ages.length &&
+      sameChildAgeMultiset(params.childAges, ages) && params.updateChildCategories === true &&
+      params.activeChildCategories === 3 && params.confirmChildCategory === false &&
+      NAMES.slice(1).every((name) => Object.hasOwn(params.childCategoryCounts ?? {}, name) &&
+        Number(params.childCategoryCounts[name]) === priorBands[name]);
   } catch { return false; }
 }
 
@@ -497,4 +515,106 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
     fence?.quarantine();
     // Leave deny routes and dialog listener installed for the page lifetime.
   }
+}
+
+/** Apply child ages to the already guarded, unsaved saved-stay draft. */
+export async function stageSavedChildrenForComposition(context, expected, childAges) {
+  const { page, frame, childStageGate: gate } = context ?? {};
+  const requested = planSavedChildOccupancy({ childCount: childAges?.length, childAges });
+  const active = () => {
+    if (!page || !frame || !gate || !context.isActive() || context.remainingMs() <= 0) throw new Error('CHILD_STAGE_GUARD_STOPPED');
+  };
+  active();
+  if (requested.outcome !== 'planned' || requested.childAges === null) throw new Error('CHILD_AGES_INVALID');
+  const before = await snapshotLabtestRecord(frame), occupancy = savedChildOccupancy(before);
+  if (!occupancy.valid || occupancy.count !== expected.childCount ||
+      String(before.data.reservationstayid ?? '') !== expected.reservationStayId ||
+      String(before.data.confirmationnumber ?? '') !== expected.confirmation) throw new Error('CHILD_PREIMAGE_UNVERIFIED');
+  const trigger = frame.locator('[data-qtip="Enter Child Ages"]:visible');
+  if (await trigger.count() !== 1 || !gate.armRead()) throw new Error('AGE_EDITOR_UNAVAILABLE');
+  const read = page.waitForResponse((response) => gate.isReadRequest(response.request()), { timeout: Math.min(context.remainingMs(), 20000) });
+  await trigger.click({ timeout: 5000, noWaitAfter: true });
+  const readResponse = await read, native = await readResponse.json();
+  active();
+  if (!readResponse.ok() || native?.propertyCode !== 'HRCEN' || native?.reservationStayId !== expected.reservationStayId ||
+      !agesValid(native.childAges) || native.childAges.length !== occupancy.count ||
+      (occupancy.ages !== null && !sameChildAgeMultiset(native.childAges, occupancy.ages)) || !gate.markReadVerified()) {
+    throw new Error('SAVED_AGE_READBACK_UNVERIFIED');
+  }
+  const popup = frame.locator('.x-window[id^="childagespopup"]:visible');
+  await popup.waitFor({ timeout: Math.min(context.remainingMs(), 20000) });
+  if (await popup.count() !== 1) throw new Error('AGE_EDITOR_NOT_UNIQUE');
+  const count = popup.locator('input[name="children"]');
+  if (await count.count() !== 1) throw new Error('CHILD_COUNT_UNAVAILABLE');
+  const valueOf = (input) => input.evaluate((el) => ({ visible: el.value,
+    native: globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''))?.getValue?.() }));
+  const exact = async (input, value, { initialEmpty = false } = {}) => {
+    const observed = await valueOf(input);
+    // HMS shows a blank spinner for the verified empty age list when the editor opens.
+    const blankZero = initialEmpty && value === 0 && observed.visible === '' &&
+      (observed.native === '' || observed.native == null);
+    if (!blankZero && (numeric(observed.visible) !== value || numeric(observed.native) !== value)) {
+      throw new Error('AGE_EDITOR_READBACK_MISMATCH');
+    }
+  };
+  await exact(count, occupancy.count, { initialEmpty: native.childAges.length === 0 });
+  const toggle = popup.locator('input[name="updatechildcategories"]');
+  if (await toggle.count() !== 1) throw new Error('AGE_EDITOR_UNAVAILABLE');
+  const checked = await toggle.evaluate((el) => globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''))?.getValue?.());
+  if (checked === false) await toggle.click({ timeout: 5000, noWaitAfter: true });
+  else if (checked !== true) throw new Error('AGE_EDITOR_TOGGLE_UNVERIFIED');
+  let countNow = occupancy.count;
+  while (countNow !== requested.childCount) {
+    active();
+    const direction = countNow < requested.childCount ? 1 : -1;
+    const spinner = count.locator('xpath=ancestor::tr[1]').locator(`.x-spinbox-control.${direction > 0 ? 'up' : 'down'}`);
+    if (await spinner.count() !== 1) throw new Error('CHILD_COUNT_UNAVAILABLE');
+    await spinner.click({ timeout: 5000, noWaitAfter: true });
+    countNow += direction;
+    await exact(count, countNow);
+  }
+  for (let index = 0; index < requested.childAges.length; index++) {
+    active();
+    const label = popup.getByText(`Age of Child ${index + 1}`, { exact: true });
+    await label.waitFor({ timeout: Math.min(context.remainingMs(), 20000) });
+    const row = label.locator('xpath=ancestor::table[contains(@class,"x-form-item")][1]');
+    const input = row.locator('input:visible');
+    if (await input.count() !== 1) throw new Error('AGE_EDITOR_UNAVAILABLE');
+    await row.locator('.x-form-arrow-trigger:visible').click({ timeout: 5000, noWaitAfter: true });
+    const items = frame.locator('.x-boundlist:visible').last().locator('.x-boundlist-item:visible');
+    await items.first().waitFor({ timeout: Math.min(context.remainingMs(), 20000) });
+    const matches = await items.evaluateAll((nodes, age) => nodes.flatMap((node, i) =>
+      node.textContent.trim() === String(age) ? [i] : []), requested.childAges[index]);
+    if (matches.length !== 1) throw new Error('AGE_OPTION_NOT_UNIQUE');
+    await items.nth(matches[0]).click({ timeout: 5000, noWaitAfter: true });
+    await exact(input, requested.childAges[index]);
+  }
+  const apply = popup.locator('a.x-btn:visible').filter({ hasText: /^\s*Apply\s*$/ });
+  if (await apply.count() !== 1 || !gate.armValidation()) throw new Error('AGE_APPLY_UNVERIFIED');
+  const validated = page.waitForResponse((response) => gate.isValidationRequest(response.request()),
+    { timeout: Math.min(context.remainingMs(), 20000) });
+  await apply.click({ timeout: 5000, noWaitAfter: true });
+  const response = await validated, result = await response.json();
+  active();
+  if (!response.ok() || result?.propertyCode !== 'HRCEN' || result?.reservationStayId !== expected.reservationStayId ||
+      Number(result.adultCount) !== expected.adults || Number(result.childCount) !== requested.childCount ||
+      !sameChildAgeMultiset(result.childAges, requested.childAges)) throw new Error('AGE_VALIDATION_RESPONSE_UNVERIFIED');
+  await popup.waitFor({ state: 'hidden', timeout: Math.min(context.remainingMs(), 20000) });
+  const synced = await frame.evaluate(() => {
+    const nodes = [...document.querySelectorAll('input[name="guestid"]')].filter((el) =>
+      (el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+    const panel = nodes.length === 1 ? globalThis.Ext?.getCmp?.(nodes[0].id.replace(/-inputEl$/, ''))?.up?.('form') : null;
+    const record = panel?.getRecord?.();
+    if (!record || typeof panel.updateRecord !== 'function') return false;
+    panel.updateRecord(record);
+    return true;
+  });
+  active();
+  if (!synced) throw new Error('CHILD_DRAFT_UNVERIFIED');
+  const after = await snapshotLabtestRecord(frame), observed = savedChildOccupancy(after);
+  if (!observed.valid || observed.count !== requested.childCount ||
+      !sameChildAgeMultiset(observed.ages ?? (observed.count === 0 ? [] : null), requested.childAges)) {
+    throw new Error('CHILD_DRAFT_UNVERIFIED');
+  }
+  return after;
 }

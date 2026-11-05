@@ -121,36 +121,38 @@ export const workflowFoldersRouter = router({
       if (ctx.accessRole === 'member') {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Owner access required' });
       }
-      const db = getDb();
-      const [source] = await db
-        .select({ id: message.id })
-        .from(message)
-        .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
-        .limit(1);
-      if (!source) throw new TRPCError({ code: 'NOT_FOUND', message: 'Workflow email not found.' });
+      return getDb().transaction(async (tx) => {
+        // Serialize first inserts as well as updates with source-bound dispatch.
+        const [source] = await tx
+          .select({ id: message.id })
+          .from(message)
+          .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
+          .limit(1).for('no key update');
+        if (!source) throw new TRPCError({ code: 'NOT_FOUND', message: 'Workflow email not found.' });
 
-      const [label] = await db
-        .insert(mailActionLabel)
-        .values({
-          transportId: ctx.activeTransportId,
-          messageId: input.messageId,
-          source: 'owner',
-          version: 'owner',
-          action: input.action,
-          needsAction: input.action !== 'no_action',
-          labelledBy: ctx.sessionUser.id,
-        })
-        .onConflictDoUpdate({
-          target: [mailActionLabel.messageId, mailActionLabel.source, mailActionLabel.version],
-          set: {
+        const [label] = await tx
+          .insert(mailActionLabel)
+          .values({
+            transportId: ctx.activeTransportId,
+            messageId: input.messageId,
+            source: 'owner',
+            version: 'owner',
             action: input.action,
             needsAction: input.action !== 'no_action',
             labelledBy: ctx.sessionUser.id,
-            updatedAt: new Date(),
-          },
-        })
-        .returning({ action: mailActionLabel.action, markedAt: mailActionLabel.updatedAt });
-      return { action: label!.action, markedAt: label!.markedAt.toISOString() };
+          })
+          .onConflictDoUpdate({
+            target: [mailActionLabel.messageId, mailActionLabel.source, mailActionLabel.version],
+            set: {
+              action: input.action,
+              needsAction: input.action !== 'no_action',
+              labelledBy: ctx.sessionUser.id,
+              updatedAt: new Date(),
+            },
+          })
+          .returning({ action: mailActionLabel.action, markedAt: mailActionLabel.updatedAt });
+        return { action: label!.action, markedAt: label!.markedAt.toISOString() };
+      });
     }),
   goldRemainingInFolder: mailboxProcedure
     .input(z.object({ folder: folderId }).strict())

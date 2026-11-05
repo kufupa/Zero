@@ -5,9 +5,10 @@ import {
   snapshotLabtestRecord,
   unchangedLabtestBusinessParties,
 } from './labtest-record.mjs';
-import { runLabtestAmendSave } from './labtest-amend-save.mjs';
+import { isLabtestAmendStageContext, runLabtestAmendSave } from './labtest-amend-save.mjs';
 import { savedChildOccupancy } from './guest-stay-amend-children.mjs';
 import { prepareStayAmendmentAvailability, readStayAmendmentAvailability } from './guest-stay-amend-availability.mjs';
+import { parseSavedStayNativeResponse } from './saved-stay-native-response.mjs';
 
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const SPECS = Object.freeze({
@@ -27,6 +28,50 @@ const IDENTITY_FIELDS = ['propertycode', 'confirmationnumber', 'guestid', 'statu
   'udfchkbox04', 'udfchar13', 'emailaddress', 'reservationnote'];
 const ownObject = (value) => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+/** Check the selected stay and requested business fields after local edits. */
+export function matchesComposedDateAdultDraft(before, after, expected, changes, { synced = true, previous = null, allowRealGuest = false } = {}) {
+  if (!cleanLabtestRecord(before) || !ownObject(after?.data) || !ownObject(after?.values) ||
+      !ownObject(expected) || !ownObject(changes) ||
+      Object.keys(changes).some((key) => !['arrival', 'departure', 'adults'].includes(key))) return false;
+  const arrival = changes.arrival ?? expected.arrival, departure = changes.departure ?? expected.departure;
+  const adults = changes.adults ?? expected.adults;
+  if (!dateParts(expected.arrival) || !dateParts(expected.departure) || !dateParts(arrival) || !dateParts(departure) ||
+      expected.arrival >= expected.departure || arrival >= departure ||
+      (!allowRealGuest && (expected.arrival < '2027-01-01' || arrival < '2027-01-01')) ||
+      !Number.isInteger(adults) || adults < 1 || adults > 16) return false;
+
+  // Identity and unedited stay fields must remain attached to the same record.
+  // HMS may refresh taxes, rates, and other native fields while dates change.
+  const identity = { propertycode: 'HRCEN', confirmationnumber: expected.confirmation,
+    guestid: expected.guestId, status: 'Reserved', roomtype: expected.roomType, rateplan: expected.ratePlan };
+  for (const [name, value] of Object.entries(identity)) {
+    if (value == null || String(before.data?.[name] ?? '') !== String(value) ||
+        String(after.data[name] ?? '') !== String(value)) return false;
+  }
+  for (const name of ['reservationid', 'reservationstayid', 'recordid', 'firstname', 'lastname']) {
+    if (Object.hasOwn(before.data, name) && String(after.data[name] ?? '') !== String(before.data[name] ?? '')) return false;
+  }
+  const initial = { arrivaldate: dateParts(expected.arrival), departuredate: dateParts(expected.departure),
+    adults: String(expected.adults) };
+  const target = { arrivaldate: dateParts(arrival), departuredate: dateParts(departure), adults: String(adults) };
+  for (const name of Object.keys(initial)) for (const part of ['data', 'values']) {
+    const old = typeof initial[name] === 'object' ? initial[name][part === 'data' ? 'wire' : 'display'] : initial[name];
+    const wanted = typeof target[name] === 'object' ? target[name][part === 'data' ? 'wire' : 'display'] : target[name];
+    const source = before[part], next = after[part];
+    const prior = part === 'data' && previous?.data && Object.hasOwn(previous.data, name) ? String(previous.data[name]) : null;
+    if (!Object.hasOwn(source, name) || !Object.hasOwn(next, name) || String(source[name]) !== old ||
+        (String(next[name]) !== wanted && (synced || part !== 'data' ||
+          (String(next[name]) !== old && String(next[name]) !== prior)))) return false;
+  }
+  const nights = String((Date.parse(`${departure}T00:00:00Z`) - Date.parse(`${arrival}T00:00:00Z`)) / 86400000);
+  for (const part of ['data', 'values']) {
+    if (Object.hasOwn(after[part], 'nights') && String(after[part].nights) !== nights && (synced || part !== 'data')) return false;
+  }
+  const previousChildren = savedChildOccupancy(before), currentChildren = savedChildOccupancy(after);
+  return previousChildren.valid && currentChildren.valid && previousChildren.count === currentChildren.count &&
+    equal(previousChildren.ages, currentChildren.ages);
+}
 
 function dateParts(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
@@ -166,9 +211,87 @@ async function nativeDateObservation(input, name) {
     const day = (date) => date instanceof Date && !Number.isNaN(date.getTime())
       ? `${String(date.getFullYear()).padStart(4, '0')}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` : null;
     const modelData = component.getModelData();
-    if (!modelData || Object.keys(modelData).length !== 1 || !Object.hasOwn(modelData, fieldName)) return null;
+    if (!modelData || !Object.hasOwn(modelData, fieldName)) return null;
     return { componentDate: day(component.getValue()), formModelDate: day(modelData[fieldName]) };
   }, name);
+}
+
+/** Compose date edits only while the shared request fence is active. */
+export async function stageSavedDatesForComposition(context, expected, changes, precedingSnapshot = null) {
+  const active = () => {
+    if (!isLabtestAmendStageContext(context) || !context.isActive() || context.remainingMs() <= 0) {
+      throw new Error('AMEND_STAGE_NOT_ACTIVE');
+    }
+  };
+  active();
+  if (!context.baseline || !context.frame || !context.page || !ownObject(changes) ||
+      Object.keys(changes).some((key) => !['arrival', 'departure', 'adults'].includes(key))) {
+    throw new Error('AMEND_INPUT_INVALID');
+  }
+  const arrival = changes.arrival ?? expected.arrival, departure = changes.departure ?? expected.departure;
+  const draftOptions = { allowRealGuest: context.allowRealGuest === true };
+  const minimum = expected.firstName === 'Proof' && expected.lastName === 'Labtest' ? '2027-01-01' : '0000-01-01';
+  if (!dateParts(arrival) || !dateParts(departure) || arrival < minimum || arrival >= departure) {
+    throw new Error('DATE_CHANGE_INVALID');
+  }
+  let snapshot = await snapshotLabtestRecord(context.frame);
+  active();
+  const applied = Object.hasOwn(changes, 'adults') ? { adults: changes.adults } : {};
+  if (precedingSnapshot ? !matchesComposedDateAdultDraft(context.baseline, snapshot, expected, applied, draftOptions) :
+      !cleanLabtestRecord(snapshot) || Object.keys(applied).length > 0) {
+    throw new Error('AMEND_PREIMAGE_CHANGED');
+  }
+  const order = arrival >= expected.departure ? ['departure', 'arrival'] : ['arrival', 'departure'];
+  for (const name of order) {
+    const value = name === 'arrival' ? arrival : departure;
+    if (value === expected[name]) continue;
+    active();
+    const input = await checkedControl(context.frame, snapshot, SPECS[name], dateParts(expected[name]).display);
+    active();
+    await input.fill(dateParts(value).display);
+    await input.press('Tab');
+    await context.page.waitForTimeout(1500);
+    active();
+    const nativeDate = await nativeDateObservation(input, SPECS[name].name);
+    if (nativeDate?.componentDate !== value || nativeDate?.formModelDate !== value ||
+        await context.frame.locator('.x-window:visible:not(.x-menu)').count() !== 0 ||
+        await context.page.locator('.x-window:visible:not(.x-menu)').count() !== 1) {
+      throw new Error('AMEND_NATIVE_DATE_UNVERIFIED');
+    }
+    applied[name] = value;
+    const draft = await snapshotLabtestRecord(context.frame);
+    active();
+    if (!matchesComposedDateAdultDraft(context.baseline, draft, expected, applied, { ...draftOptions, synced: false, previous: snapshot })) {
+      throw new Error('AMEND_DRAFT_CHANGED');
+    }
+    const browserNow = await context.frame.evaluate(() => performance.now());
+    active();
+    if (!Number.isFinite(browserNow)) throw new Error('BROWSER_CLOCK_UNAVAILABLE');
+    const synchronized = await input.evaluate((element, { before, deadline }) => {
+      const guestInputs = [...document.querySelectorAll('input[name="guestid"]')].filter((item) =>
+        (item.offsetWidth || item.offsetHeight) && getComputedStyle(item).visibility !== 'hidden' && !item.closest('.x-window'));
+      const panel = guestInputs.length === 1 && guestInputs[0].id
+        ? globalThis.Ext?.getCmp?.(guestInputs[0].id.replace(/-inputEl$/, ''))?.up?.('form') : null;
+      const form = panel?.getForm?.(), record = panel?.getRecord?.();
+      const cmp = globalThis.Ext?.getCmp?.(element.id?.replace(/-inputEl$/, ''));
+      if (!panel?.el?.dom?.contains(element) || cmp?.up?.('form') !== panel || !record?.data ||
+          typeof panel.updateRecord !== 'function' || !form?.getValues || performance.now() >= deadline ||
+          ['propertycode', 'confirmationnumber', 'guestid', 'reservationstayid', 'reservationid'].some((name) =>
+            String(record.data[name] ?? '') !== String(before.data[name] ?? '')) ||
+          ['arrivaldate', 'departuredate', 'adults'].some((name) =>
+            String(form.getValues()[name] ?? '') !== String(before.values[name] ?? ''))) return false;
+      panel.updateRecord(record);
+      return true;
+    }, { before: draft, deadline: browserNow + context.remainingMs() });
+    active();
+    if (!synchronized) throw new Error('AMEND_PREIMAGE_CHANGED');
+    snapshot = await snapshotLabtestRecord(context.frame);
+    active();
+    if (!matchesComposedDateAdultDraft(context.baseline, snapshot, expected, applied, draftOptions)) {
+      throw new Error('AMEND_DRAFT_CHANGED');
+    }
+  }
+  return snapshot;
 }
 
 // A saved-form combo is usable only if its own loaded records contain a unique exact ID/code.
@@ -204,6 +327,154 @@ async function selectSavedOption(input, spec, current, target, nativeId, commit)
     return true;
   }, { spec, current, target, nativeId, commit });
   if (result !== true) throw new Error(result);
+}
+
+async function stageSavedRoomPicker(context, current, target) {
+  const { page, frame, roomStageGate: gate } = context;
+  const before = await snapshotLabtestRecord(frame);
+  if (!gate?.arm(before, current, target) || !context.isActive()) throw new Error('ROOM_STAGE_GATE_INVALID');
+  const responseFor = (kind) => page.waitForResponse((response) => gate.isRequest(kind, response.request()),
+    { timeout: Math.max(1, Math.min(30_000, context.remainingMs())) }).catch(() => null);
+  const gridOf = async (response) => {
+    if (!response || response.status() !== 200) throw new Error('ROOM_PICKER_RESPONSE_INVALID');
+    const grid = parseSavedStayNativeResponse(await response.text())?.grid?.GRIDRESULT?.GRID;
+    if (!Array.isArray(grid?.DATA) || !grid.METADATA) throw new Error('ROOM_PICKER_RESPONSE_INVALID');
+    return { rows: grid.DATA, metadata: grid.METADATA };
+  };
+  const trigger = frame.locator('input[name="roomtype"]:visible').locator('xpath=ancestor::table[1]')
+    .locator('.x-form-lov-trigger:visible');
+  if (await trigger.count() !== 1) throw new Error('PICKER_TRIGGER_NOT_UNIQUE');
+  let pending = responseFor('initial');
+  await trigger.click({ timeout: 5_000, noWaitAfter: true });
+  const initial = await gridOf(await pending), metadata = initial.metadata;
+  if (metadata.GRIDNAME !== 'LVROOMTYPE2' || initial.rows.filter((row) => row.roomtypecode === current).length !== 1 ||
+      !gate.armReset(metadata) || !context.isActive()) throw new Error('PICKER_PREIMAGE_UNVERIFIED');
+  const win = frame.locator('.x-window:visible:not(.x-menu)').filter({
+    has: frame.locator('.x-window-header-text').filter({ hasText: /^Room Types$/ }),
+  });
+  const filter = win.locator('input[name="selfiltervaluectrl"]:visible');
+  const run = win.locator('a.x-btn:visible').filter({ hasText: /^\s*Run\s*$/ });
+  if (await win.count() !== 1 || await filter.count() !== 1 || await run.count() !== 1 ||
+      await filter.inputValue() !== current) throw new Error('PICKER_UNAVAILABLE');
+  await filter.fill(''); pending = responseFor('reset');
+  await run.click({ timeout: 5_000, noWaitAfter: true });
+  const catalog = await gridOf(await pending);
+  if (['GRIDID', 'GRIDNAME', 'DATASPYID'].some((key) => String(catalog.metadata[key]) !== String(metadata[key])) ||
+      catalog.metadata.MORERECORDPRESENT !== '-' || Number(catalog.metadata.RECORDS) !== catalog.rows.length) {
+    throw new Error('ROOM_CATALOG_INCOMPLETE');
+  }
+  const matches = catalog.rows.filter((row) => row.roomtypecode === target && /^\d+$/.test(String(row.roomtypeid ?? '')));
+  if (matches.length !== 1 || catalog.rows.filter((row) => String(row.roomtypeid) === String(matches[0].roomtypeid)).length !== 1) {
+    throw new Error('ROOM_OPTION_UNAVAILABLE');
+  }
+  const chosen = { code: target, nativeId: String(matches[0].roomtypeid) }, windowId = await win.getAttribute('id');
+  await frame.waitForFunction(({ id, code }) => {
+    const grids = globalThis.Ext?.getCmp?.(id)?.query?.('grid,readonlygrid') || [];
+    const store = grids.length === 1 ? grids[0].getStore() : null;
+    return Boolean(store && !store.isLoading() && store.getRange().some((record) => record.data?.roomtypecode === code));
+  }, { id: windowId, code: target }, { timeout: Math.max(1, Math.min(10_000, context.remainingMs())) });
+  const loaded = await frame.evaluate((id) => {
+    const grids = globalThis.Ext?.getCmp?.(id)?.query?.('grid,readonlygrid') || [];
+    if (grids.length !== 1 || grids[0].getStore().isLoading()) return null;
+    return grids[0].getStore().getRange().map((record) => record.data);
+  }, windowId);
+  const signature = (rows) => JSON.stringify(rows.map((row) => [String(row.roomtypeid), String(row.roomtypecode)]).sort());
+  if (!loaded || signature(loaded) !== signature(catalog.rows)) throw new Error('ROOM_GRID_MISMATCH');
+  const rows = win.locator('.x-grid-view .x-grid-row,.x-grid-view .x-grid-data-row');
+  const indexes = await rows.evaluateAll((elements, id) => elements.flatMap((element, index) => {
+    const grid = (globalThis.Ext?.ComponentQuery?.query?.('grid,readonlygrid') || [])
+      .find((candidate) => candidate.getEl?.()?.dom?.contains(element));
+    return String(grid?.getView?.()?.getRecord?.(element)?.data?.roomtypeid ?? '') === id ? [index] : [];
+  }), chosen.nativeId);
+  if (indexes.length !== 1) throw new Error('ROOM_OPTION_UNAVAILABLE');
+  await rows.nth(indexes[0]).click({ timeout: 5_000 });
+  const selected = await frame.evaluate((id) => globalThis.Ext?.getCmp?.(id)?.query?.('grid,readonlygrid')?.[0]
+    ?.getSelectionModel?.()?.getSelection?.().map((record) => record.data) || [], windowId);
+  if (selected.length !== 1 || selected[0].roomtypecode !== target || String(selected[0].roomtypeid) !== chosen.nativeId ||
+      !gate.armSelection(chosen) || !context.isActive()) throw new Error('PICKER_SELECTION_CHANGED');
+  const ok = win.locator('a.x-btn:visible').filter({ hasText: /^\s*OK\s*$/ });
+  if (await ok.count() !== 1) throw new Error('PICKER_OK_UNAVAILABLE');
+  const changed = responseFor('change'), refreshed = responseFor('refresh');
+  await ok.click({ timeout: 5_000, noWaitAfter: true });
+  const responses = await Promise.all([changed, refreshed]);
+  for (const response of responses) {
+    if (!response || response.status() !== 200) throw new Error('ROOM_CHANGE_UNVERIFIED');
+    parseSavedStayNativeResponse(await response.text());
+  }
+  const after = await snapshotLabtestRecord(frame);
+  if (!context.isActive() || await frame.locator('.x-window:visible:not(.x-menu)').count() !== 0 ||
+      String(after?.data?.roomtype ?? '') !== target || String(after?.data?.roomtypeid ?? '') !== chosen.nativeId ||
+      String(after?.values?.roomtype ?? '') !== target) throw new Error('ROOM_CHANGE_UNVERIFIED');
+  gate.close();
+  return after;
+}
+
+async function stageSavedRatePicker(context, current, target) {
+  const { page, frame, rateStageGate: gate } = context;
+  const before = await snapshotLabtestRecord(frame);
+  if (!gate?.arm(before, current, target) || !context.isActive()) throw new Error('RATE_STAGE_GATE_INVALID');
+  const input = frame.locator('input[name="rateplan"]:visible');
+  if (await input.count() !== 1 || !(await input.isEditable())) throw new Error('RATE_FIELD_UNAVAILABLE');
+  const responseFor = (kind) => page.waitForResponse((response) => gate.isRequest(kind, response.request()),
+    { timeout: Math.max(1, Math.min(30_000, context.remainingMs())) }).catch(() => null);
+  const validation = responseFor('validation'), change = responseFor('change');
+  await input.fill(target, { timeout: 5_000 });
+  await input.press('Tab', { timeout: Math.max(1, Math.min(12_000, context.remainingMs())) });
+  const responses = await Promise.all([validation, change]);
+  for (const response of responses) {
+    if (!response || response.status() !== 200) throw new Error('RATE_CHANGE_UNVERIFIED');
+    parseSavedStayNativeResponse(await response.text());
+  }
+  await frame.waitForFunction(() => !globalThis.Ext?.Ajax?.isLoading?.(), null,
+    { timeout: Math.max(1, Math.min(10_000, context.remainingMs())) });
+  const control = await input.evaluate((element) => {
+    const component = globalThis.Ext?.getCmp?.(element.id?.replace(/-inputEl$/, ''));
+    return { value: String(component?.getValue?.() ?? ''), input: element.value,
+      invalid: element.getAttribute('aria-invalid') === 'true', errors: component?.getActiveErrors?.() || [] };
+  });
+  const after = await snapshotLabtestRecord(frame);
+  if (!context.isActive() || await frame.locator('.x-window:visible:not(.x-menu)').count() !== 0 ||
+      control.value !== target || control.input !== target || control.invalid || control.errors.length ||
+      String(after?.data?.rateplan ?? '') !== target || String(after?.values?.rateplan ?? '') !== target) {
+    throw new Error('RATE_CHANGE_UNVERIFIED');
+  }
+  gate.close();
+  return after;
+}
+
+/** Select a loaded native option only while the saved-stay request fence is active. */
+export async function stageSavedRoomRateForComposition(context, fieldName, current, target) {
+  const spec = SPECS[fieldName];
+  if (!isLabtestAmendStageContext(context) || !context.isActive() || !spec || spec.type !== 'option' ||
+      typeof current !== 'string' || typeof target !== 'string' || !target) throw new Error('AMEND_INPUT_INVALID');
+  if (current === target) return snapshotLabtestRecord(context.frame);
+  if (fieldName === 'roomType' && context.roomStageGate) return stageSavedRoomPicker(context, current, target);
+  if (fieldName === 'ratePlan' && context.rateStageGate) return stageSavedRatePicker(context, current, target);
+  const input = context.frame.locator(`input[name="${spec.name}"]:visible`);
+  if (await input.count() !== 1) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
+  const nativeId = await input.evaluate((element, { spec, target }) => {
+    const cmp = globalThis.Ext?.getCmp?.(element.id?.replace(/-inputEl$/, ''));
+    const store = cmp?.store;
+    if (!store?.getCount || !store?.getAt || store.isLoading?.() !== false) return null;
+    const read = (record, key) => typeof record?.get === 'function' ? record.get(key) : record?.data?.[key];
+    const matches = Array.from({ length: store.getCount() }, (_, index) => store.getAt(index))
+      .filter((record) => String(read(record, spec.code) ?? '') === target);
+    return matches.length === 1 ? String(read(matches[0], spec.id) ?? '') : null;
+  }, { spec, target });
+  if (!nativeId) throw new Error('SAVED_NATIVE_PICKER_UNVERIFIED');
+  await selectSavedOption(input, spec, current, target, nativeId, true);
+  if (!context.isActive()) throw new Error('AMEND_DRAFT_CHANGED');
+  const synced = await input.evaluate((element) => {
+    const cmp = globalThis.Ext?.getCmp?.(element.id?.replace(/-inputEl$/, ''));
+    const panel = cmp?.up?.('form'), record = panel?.getRecord?.();
+    if (!panel?.el?.dom?.contains(element) || !record || typeof panel.updateRecord !== 'function') return false;
+    panel.updateRecord(record);
+    return true;
+  });
+  const after = await snapshotLabtestRecord(context.frame);
+  if (!synced || !context.isActive() || String(after.data?.[spec.name] ?? '') !== target ||
+      String(after.data?.[spec.id] ?? '') !== nativeId) throw new Error('SAVED_OPTION_UNVERIFIED');
+  return after;
 }
 
 /** Read only the currently loaded options of this saved form's own component. */

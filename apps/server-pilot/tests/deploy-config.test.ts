@@ -2516,6 +2516,7 @@ describe('deploy config', () => {
     const script = readFileSync(join(here, '..', 'deploy', 'write-ec2-env.sh'), 'utf8');
     for (const name of [
       'PANE_WRITE_CREATE',
+      'PANE_CLOUD_CREATE_DISPATCH',
       'PANE_WRITE_AMEND_UNPAID',
       'PANE_WRITE_AMEND_PAID',
       'PANE_WRITE_CANCEL_UNPAID',
@@ -3003,17 +3004,18 @@ if (!realMailGate) {
       'printf -v Q_BUNDLE_REF \'%q\' "refs/remotes/bundle/${GIT_BRANCH}"',
     );
     expect(sync).toContain(
-      'printf -v Q_BUNDLE_REFSPEC \'%q\' "+refs/heads/${GIT_BRANCH}:refs/remotes/bundle/${GIT_BRANCH}"',
+      'printf -v Q_BUNDLE_REFSPEC \'%q\' "+${BUNDLE_SOURCE_REF}:refs/remotes/bundle/${GIT_BRANCH}"',
     );
+    expect(sync).toContain('BUNDLE_SOURCE_REF="refs/heads/$GIT_BRANCH"');
     expect(sync).toContain(
       'git rev-parse --verify --quiet "$BUNDLE_COMMIT^{commit}"',
     );
     expect(sync).toContain(
-      'git bundle create "$BUNDLE_FILE" "refs/heads/$GIT_BRANCH"',
+      'git bundle create "$BUNDLE_FILE" "$BUNDLE_SOURCE_REF"',
     );
     expect(sync).toContain('git bundle list-heads "$BUNDLE_FILE"');
     expect(
-      sync.indexOf('git bundle create "$BUNDLE_FILE" "refs/heads/$GIT_BRANCH"'),
+      sync.indexOf('git bundle create "$BUNDLE_FILE" "$BUNDLE_SOURCE_REF"'),
     ).toBeLessThan(sync.indexOf('git bundle list-heads "$BUNDLE_FILE"'));
     expect(sync).not.toContain(
       'BUNDLE_COMMIT="$(git rev-parse --verify --quiet "refs/heads/$GIT_BRANCH^{commit}")"',
@@ -3023,14 +3025,14 @@ if (!realMailGate) {
     );
     expect(
       sync.match(/git fetch \$\{Q_REMOTE_BUNDLE\} \$\{Q_BUNDLE_REFSPEC\}/g),
-    ).toHaveLength(2);
-    expect(sync.match(/bundle commit mismatch/g)).toHaveLength(2);
+    ).toHaveLength(1);
+    expect(sync.match(/bundle commit mismatch/g)).toHaveLength(1);
     expect(
       sync.match(
-        /git checkout -f -B \$\{Q_GIT_BRANCH\} \$\{Q_BUNDLE_COMMIT\}; git reset --hard \$\{Q_BUNDLE_COMMIT\}/g,
+        /git checkout --no-overwrite-ignore -B \$\{Q_GIT_BRANCH\} \$\{Q_BUNDLE_COMMIT\}/g,
       ),
-    ).toHaveLength(2);
-    expect(sync).toContain('else git init ${Q_REPO_PATH}; cd ${Q_REPO_PATH};');
+    ).toHaveLength(1);
+    expect(sync).toContain('git init ${Q_REPO_PATH}; cd ${Q_REPO_PATH};');
     expect(sync).not.toContain('git clone ${Q_REMOTE_BUNDLE}');
     expect(sync).not.toContain(
       'git checkout ${Q_GIT_BRANCH}; git reset --hard ${Q_BUNDLE_REF}',
@@ -5151,7 +5153,7 @@ if (!realMailGate) {
         /\{\{resolve:secretsmanager:nava-zero\/server-pilot\/hms-evidence-hmac\}\}/,
       );
       expect(pm2).toMatch(/\/usr\/bin\/env HMS_EVIDENCE_HMAC_KEY=/);
-      expect(pm2).toMatch(/\/usr\/bin\/node dist\/ai\/worker\.js/);
+      expect(pm2).toMatch(/\/bin\/bash deploy\/start-guarded-server\.sh ai-worker/);
       expect(pm2).toMatch(/HMS_EVIDENCE_HMAC_SECRET_ARN/);
       expect(pm2).toMatch(/HMS_EVIDENCE_HMAC_KEY_VERSION/);
       expect(pm2).not.toMatch(/HMS_EVIDENCE_HMAC_KEY:\s/);
@@ -5225,7 +5227,7 @@ if (!realMailGate) {
       const pm2 = readFileSync(join(here, '..', 'deploy', 'pm2.config.cjs'), 'utf8');
 
       expect(pm2).toMatch(
-        /name:\s*['"]http['"][\s\S]*?script:\s*['"]dist\/main\.js['"][\s\S]*?PORT:\s*['"]8788['"][\s\S]*?NAVA_AUTH_SESSION_PROFILE:\s*['"]legacy['"]/,
+        /name:\s*['"]http['"][\s\S]*?script:\s*['"]deploy\/start-guarded-server\.sh['"][\s\S]*?args:\s*['"]http['"][\s\S]*?PORT:\s*['"]8788['"][\s\S]*?NAVA_AUTH_SESSION_PROFILE:\s*['"]legacy['"]/,
       );
       expect(pm2).toMatch(
         /name:\s*['"]remote-http['"][\s\S]*?script:\s*['"]deploy\/start-remote-http\.sh['"][\s\S]*?PORT:\s*['"]8789['"][\s\S]*?NAVA_AUTH_SESSION_PROFILE:\s*['"]remote['"]/,
@@ -5340,6 +5342,8 @@ if (!realMailGate) {
             "DATABASE_URL='postgres://example.invalid/zero'",
             "AWS_REGION='af-south-1'",
             "S3_BUCKET='nava-test-bucket'",
+            "HMS_CHROMIUM_EXECUTABLE_PATH='/opt/nava/chromium/chrome'",
+            "PLAYWRIGHT_BROWSERS_PATH='/opt/nava/ms-playwright'",
             '',
           ].join('\n'),
           'utf8',
@@ -5419,6 +5423,12 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
           expect(valid.status, valid.stderr).toBe(0);
           expect(readFileSync(join(serverPilot, '.env.remote-common'), 'utf8')).toContain(
             "DATABASE_URL='postgres://example.invalid/zero'",
+          );
+          expect(readFileSync(join(serverPilot, '.env.remote-common'), 'utf8')).toContain(
+            "HMS_CHROMIUM_EXECUTABLE_PATH='/opt/nava/chromium/chrome'",
+          );
+          expect(readFileSync(join(serverPilot, '.env.remote-common'), 'utf8')).toContain(
+            "PLAYWRIGHT_BROWSERS_PATH='/opt/nava/ms-playwright'",
           );
         }
 
@@ -5724,6 +5734,117 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       }
     });
 
+    it('rejects malformed release controls before the durable writer fetches secrets', async () => {
+      if (process.platform === 'win32') return;
+      const { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join, delimiter } = await import('node:path');
+      const writer = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy', 'write-ec2-env.sh');
+      const temp = mkdtempSync(join(tmpdir(), 'nava-durable-release-'));
+      const marker = join(temp, 'aws-called');
+      try {
+        const aws = join(temp, 'aws');
+        writeFileSync(aws, '#!/usr/bin/env bash\nprintf called >"$FAKE_AWS_MARKER"\nexit 7\n');
+        chmodSync(aws, 0o755);
+        for (const [key, value] of Object.entries({ PANE_WRITE_AMEND: 'always', PANE_HMS_LAB_CREATE_WORKER: 'lab',
+          PARTY_MATCH_V2: 'on', HMS_GUEST_PREFETCH_PER_HOUR: '-1', HMS_AVAILABILITY_PREFETCH: 'true' })) {
+          const result = spawnSync('bash', [writer], { encoding: 'utf8', env: {
+            PATH: `${temp}${delimiter}${process.env.PATH ?? ''}`, S3_BUCKET: 'fixture', BETTER_AUTH_SECRET: 'fixture',
+            FAKE_AWS_MARKER: marker, [key]: value,
+          } });
+          expect(result.status, key).toBe(2);
+          expect(existsSync(marker), key).toBe(false);
+        }
+      } finally { rmSync(temp, { recursive: true, force: true }); }
+    });
+
+    it('round-trips HRCEN release controls and rejects malformed values before replacing the remote env', async () => {
+      const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const parser = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy', 'parse-ec2-legacy-env.mjs');
+      const temp = mkdtempSync(join(tmpdir(), 'nava-release-controls-'));
+      const source = join(temp, 'source');
+      const result = join(temp, 'remote');
+      const controls: Record<string, string> = {
+        HMS_EXPECTED_TENANT: 'THECENTURION_PRD', HMS_EXPECTED_PROPERTY_CODE: 'HRCEN',
+        HMS_EXPECTED_TRANSPORT_ID: 'transport-centurion', HMS_LANE_PAUSED: '0',
+        HMS_PREFETCH_ENABLED: '1', HMS_JOB_QUEUE: 'on', HMS_AVAILABILITY_PREFETCH: 'on',
+        HMS_QUOTE_PREPARE: 'true', PARTY_MATCH_V2: 'true', HMS_PREFETCH_PER_HOUR: '60',
+        HMS_GUEST_PREFETCH_PER_HOUR: '60', HMS_AVAILABILITY_PER_HOUR: '60', HMS_QUOTE_PREPARE_PER_HOUR: '60',
+        PANE_WRITE_CREATE: 'on', PANE_HMS_LAB_CREATE_WORKER: 'on', PANE_CLOUD_CREATE_DISPATCH: 'on',
+        PANE_WRITE_ATTACH: 'on', PANE_HMS_LAB_ATTACH_WORKER: 'on', PANE_WRITE_AMEND: 'on',
+        PANE_HMS_LAB_AMEND_WORKER: 'on', PANE_WRITE_AMEND_UNPAID: 'on', PANE_WRITE_CANCEL_UNPAID: 'on',
+      };
+      const base = ["NODE_ENV='production'", "DATABASE_URL='fake-db'", "AWS_REGION='af-south-1'", "S3_BUCKET='fake-bucket'"];
+      const run = (values: Record<string, string>) => {
+        writeFileSync(source, [...base, ...Object.entries(values).map(([key, value]) => `${key}='${value}'`), ''].join('\n'));
+        return spawnSync(process.execPath, [parser, source, result, 'DATABASE_URL', 'AWS_REGION', 'S3_BUCKET', ...Object.keys(controls)], { encoding: 'utf8' });
+      };
+      try {
+        expect(run(controls).status).toBe(0);
+        const rendered = readFileSync(result, 'utf8');
+        for (const [key, value] of Object.entries(controls)) expect(rendered).toContain(`${key}='${value}'`);
+        for (const [key, value] of Object.entries({
+          HMS_PREFETCH_ENABLED: 'on', HMS_AVAILABILITY_PREFETCH: 'true', PARTY_MATCH_V2: 'on',
+          HMS_GUEST_PREFETCH_PER_HOUR: '-1', HMS_QUOTE_PREPARE_PER_HOUR: '60.5',
+          PANE_WRITE_AMEND: 'always', PANE_HMS_LAB_AMEND_WORKER: 'lab',
+          PANE_CLOUD_CREATE_DISPATCH: 'enabled', HMS_EXPECTED_TRANSPORT_ID: 'other',
+        })) {
+          writeFileSync(result, 'unchanged\n');
+          expect(run({ ...controls, [key]: value }).status, key).toBe(2);
+          expect(readFileSync(result, 'utf8')).toBe('unchanged\n');
+        }
+      } finally { rmSync(temp, { recursive: true, force: true }); }
+    });
+
+    it('requires exact HRCEN final-SHA workflow canaries for release flag flips and amend widening', async () => {
+      const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const writer = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy', 'write-ec2-remote-env.sh'), 'utf8');
+      const start = writer.indexOf('const fs = require("fs");', writer.indexOf('# Flip to `on`'));
+      const end = writer.indexOf('\nNODE\n', start);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const guard = writer.slice(start, end);
+      const temp = mkdtempSync(join(tmpdir(), 'nava-release-canary-'));
+      const next = join(temp, 'next');
+      const prev = join(temp, 'prev');
+      const canary = join(temp, 'canary');
+      const sha = 'a'.repeat(40);
+      const run = (key: string, value: string, proof: string, previous = 'off') => {
+        writeFileSync(next, `HMS_EXPECTED_PROPERTY_CODE='HRCEN'\n${key}='${value}'\n`);
+        writeFileSync(prev, `${key}='${previous}'\n`);
+        writeFileSync(canary, proof);
+        return spawnSync(process.execPath, ['-e', guard, '-', next, prev, canary, sha], { encoding: 'utf8' });
+      };
+      const flags = [
+        ['HMS_PREFETCH_ENABLED', '1', 'prefetch'], ['HMS_JOB_QUEUE', 'on', 'queue'],
+        ['HMS_AVAILABILITY_PREFETCH', 'on', 'availability'], ['HMS_QUOTE_PREPARE', 'true', 'quote'],
+        ['PARTY_MATCH_V2', 'true', 'party'], ['PANE_WRITE_CREATE', 'on', 'create'],
+        ['PANE_HMS_LAB_CREATE_WORKER', 'on', 'create'], ['PANE_CLOUD_CREATE_DISPATCH', 'on', 'create'],
+        ['PANE_WRITE_ATTACH', 'on', 'attach'], ['PANE_HMS_LAB_ATTACH_WORKER', 'on', 'attach'],
+        ['PANE_WRITE_AMEND', 'lab', 'amend'], ['PANE_HMS_LAB_AMEND_WORKER', 'on', 'amend'],
+        ['PANE_WRITE_AMEND_UNPAID', 'on', 'amend'], ['PANE_WRITE_CANCEL_UNPAID', 'on', 'cancel'],
+      ] as const;
+      try {
+        for (const [key, value, workflow] of flags) {
+          expect(run(key, value, '').status, key).toBe(2);
+          expect(run(key, value, `CANARY PASS ${workflow} HRCEN ${sha}\n`).status, key).toBe(0);
+        }
+        for (const proof of [`CANARY PASS amend HRDAV ${sha}\n`, `CANARY PASS create HRCEN ${sha}\n`,
+          `CANARY PASS amend HRCEN ${'b'.repeat(40)}\n`, `CANARY PASS amend HRCEN ${sha.slice(0, 7)}\n`]) {
+          expect(run('PANE_WRITE_AMEND', 'on', proof, 'lab').status).toBe(2);
+        }
+        expect(run('PANE_WRITE_AMEND', 'on', `CANARY PASS amend HRCEN ${sha}\n`, 'lab').status).toBe(0);
+        expect(run('PANE_WRITE_AMEND', 'on', '', 'on').status).toBe(0);
+      } finally { rmSync(temp, { recursive: true, force: true }); }
+    });
+
     it('writes only explicitly allowlisted remote HTTP environment files', async () => {
       const { existsSync, readFileSync } = await import('node:fs');
       const { fileURLToPath } = await import('node:url');
@@ -5749,24 +5870,48 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       const keys = allowlist!.trim().split(/\s+/);
       expect(new Set(keys).size).toBe(keys.length);
       expect(keys).toContain('GOTENBERG_URL');
+      expect(keys).toContain('PANE_HMS_LAB_ATTACH_WORKER');
       expect(keys).toContain('PANE_BRAIN');
       expect(keys).toContain('QUOTE_WORKFLOW_LLM');
       expect(keys).toContain('INBOUND_EXTRACTION');
       expect(keys).toContain('INBOUND_TRIAGE_CLASSIFIER');
+      expect(keys).toContain('PANE_CLOUD_CREATE_DISPATCH');
+      expect(keys).toContain('PLAYWRIGHT_BROWSERS_PATH');
+      const durable = readFileSync(join(here, '..', 'deploy', 'write-ec2-env.sh'), 'utf8');
+      for (const key of ['HMS_PREFETCH_ENABLED', 'HMS_JOB_QUEUE', 'HMS_AVAILABILITY_PREFETCH',
+        'HMS_QUOTE_PREPARE', 'PARTY_MATCH_V2', 'HMS_PREFETCH_PER_HOUR', 'HMS_GUEST_PREFETCH_PER_HOUR',
+        'HMS_AVAILABILITY_PER_HOUR', 'HMS_QUOTE_PREPARE_PER_HOUR', 'PANE_WRITE_CREATE',
+        'PANE_HMS_LAB_CREATE_WORKER', 'PANE_CLOUD_CREATE_DISPATCH', 'PANE_WRITE_ATTACH',
+        'PANE_HMS_LAB_ATTACH_WORKER', 'PANE_WRITE_AMEND', 'PANE_HMS_LAB_AMEND_WORKER',
+        'PANE_WRITE_AMEND_UNPAID', 'PANE_WRITE_CANCEL_UNPAID']) {
+        expect(keys).toContain(key);
+        expect(durable).toContain(`append_env ${key} "\${${key}:-}"`);
+      }
       expect(allowlist).not.toContain('PANE_PRECLASSIFY');
       expect(allowlist).not.toContain('BETTER_AUTH_');
       expect(allowlist).not.toContain('POP3_');
       expect(keys.filter((key) => key.startsWith('HMS_'))).toEqual([
+        'HMS_CHROMIUM_EXECUTABLE_PATH',
         'HMS_DAVINCI_CREATE',
         'HMS_DAVINCI_MAKE_QUOTE',
         'HMS_DAVINCI_READS',
+        'HMS_EXPECTED_TENANT',
+        'HMS_EXPECTED_PROPERTY_CODE',
+        'HMS_EXPECTED_TRANSPORT_ID',
         'HMS_JOB_QUEUE',
+        'HMS_LANE_PAUSED',
+        'HMS_PREFETCH_ENABLED',
+        'HMS_PREFETCH_PER_HOUR',
+        'HMS_GUEST_PREFETCH_PER_HOUR',
+        'HMS_AVAILABILITY_PREFETCH',
+        'HMS_AVAILABILITY_PER_HOUR',
         'HMS_QUOTE_PREPARE',
         'HMS_QUOTE_PREPARE_PER_HOUR',
         'HMS_STAGEHAND_CDP_URL_DAVINCI',
       ]);
       expect(keys.filter((key) => key.startsWith('PANE_WRITE_'))).toEqual([
         'PANE_WRITE_CREATE',
+        'PANE_WRITE_AMEND',
         'PANE_WRITE_AMEND_UNPAID',
         'PANE_WRITE_AMEND_PAID',
         'PANE_WRITE_CANCEL_UNPAID',
@@ -5934,6 +6079,23 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
           validate(commonEnv).status,
           '--validate rejected remote quote-preparation flags',
         ).toBe(0);
+
+        const releaseValues = ["HMS_EXPECTED_TENANT='THECENTURION_PRD'", "HMS_EXPECTED_PROPERTY_CODE='HRCEN'",
+          "HMS_EXPECTED_TRANSPORT_ID='transport-centurion'", "HMS_LANE_PAUSED='0'", "HMS_PREFETCH_ENABLED='1'",
+          "HMS_PREFETCH_PER_HOUR='60'", "HMS_GUEST_PREFETCH_PER_HOUR='60'", "HMS_AVAILABILITY_PREFETCH='on'",
+          "HMS_AVAILABILITY_PER_HOUR='60'", "PARTY_MATCH_V2='true'", "PANE_WRITE_CREATE='on'",
+          "PANE_HMS_LAB_CREATE_WORKER='on'", "PANE_CLOUD_CREATE_DISPATCH='on'", "PANE_WRITE_ATTACH='on'",
+          "PANE_HMS_LAB_ATTACH_WORKER='on'", "PANE_WRITE_AMEND='on'", "PANE_HMS_LAB_AMEND_WORKER='on'",
+          "PANE_WRITE_AMEND_UNPAID='on'", "PANE_WRITE_CANCEL_UNPAID='on'"];
+        writeFileSync(commonEnv, `${valid}${releaseValues.join('\n')}\n`, 'utf8');
+        expect(validate(commonEnv).status).toBe(0);
+        for (const [good, bad] of [["HMS_PREFETCH_ENABLED='1'", "HMS_PREFETCH_ENABLED='on'"],
+          ["HMS_GUEST_PREFETCH_PER_HOUR='60'", "HMS_GUEST_PREFETCH_PER_HOUR='-1'"],
+          ["PANE_WRITE_AMEND='on'", "PANE_WRITE_AMEND='always'"],
+          ["PANE_HMS_LAB_CREATE_WORKER='on'", "PANE_HMS_LAB_CREATE_WORKER='lab'"]]) {
+          writeFileSync(commonEnv, `${valid}${releaseValues.map((line) => line === good ? bad : line).join('\n')}\n`, 'utf8');
+          expect(validate(commonEnv).status, bad).toBe(2);
+        }
 
         for (const url of ['http://127.0.0.1:3000', 'https://converter.example']) {
           writeFileSync(commonEnv, `${valid}GOTENBERG_URL='${url}'\n`, 'utf8');
@@ -6258,7 +6420,8 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         mkdirSync(copiedDeploy, { recursive: true });
         mkdirSync(join(server, 'dist'));
         mkdirSync(bin);
-        for (const file of ['start-remote-http.sh', 'write-ec2-remote-env.sh', 'parse-ec2-legacy-env.mjs']) copyFileSync(join(deploy, file), join(copiedDeploy, file));
+        for (const file of ['start-remote-http.sh', 'build-identity.sh', 'write-ec2-remote-env.sh', 'parse-ec2-legacy-env.mjs']) copyFileSync(join(deploy, file), join(copiedDeploy, file));
+        writeFileSync(join(server, 'dist', '.nava-build-commit'), `${'a'.repeat(40)}\n`);
         writeFileSync(join(bin, 'id'), '#!/usr/bin/env bash\nprintf "%s\\n" ubuntu\n', { mode: 0o755 });
         writeFileSync(join(bin, 'stat'), '#!/usr/bin/env bash\nif [ -d "$3" ]; then echo 700:ubuntu:ubuntu; else echo 600:ubuntu:ubuntu; fi\n', { mode: 0o755 });
         writeFileSync(join(bin, 'pm2'), '#!/usr/bin/env bash\nif [ "$1" = start ] && [[ " $* " = *" --only remote-http "* ]]; then exec /bin/bash "$SERVER_PILOT/deploy/start-remote-http.sh"; fi\n', { mode: 0o755 });
@@ -6301,6 +6464,19 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         expect((await run()).status).toBe(0);
         expect(inspect()).toMatchObject({ HOME: toBashPath(temp), PATH: env.PATH, NODE_ENV: 'production', PORT: '8789', NAVA_AUTH_SESSION_PROFILE: 'remote', NAVA_BUILD_COMMIT: 'a'.repeat(40), PANE_BRAIN: 'classifier', QUOTE_WORKFLOW_LLM: 'on', PANE_WRITE_CREATE: 'lab', AZURE_FOUNDRY_API_KEY: 'fake-key-b', BETTER_AUTH_SECRET: 'remote-fake', UNRELATED_SECRET: null, GOOGLE_CLIENT_SECRET: null, REPO_ROOT: null, ENV_FILE: null });
         rmSync(marker);
+        env.NAVA_BUILD_COMMIT = 'unknown';
+        expect((await run()).status).toBe(0);
+        expect(inspect().NAVA_BUILD_COMMIT).toBe('a'.repeat(40));
+        rmSync(marker);
+        rmSync(join(server, 'dist', '.nava-build-commit'));
+        expect((await run()).status).toBe(0);
+        expect(inspect().NAVA_BUILD_COMMIT).toBe('unknown');
+        rmSync(marker);
+        writeFileSync(join(server, 'dist', '.nava-build-commit'), 'invalid\n');
+        expect((await run()).status).not.toBe(0);
+        expect(existsSync(marker)).toBe(false);
+        writeFileSync(join(server, 'dist', '.nava-build-commit'), `${'a'.repeat(40)}\n`);
+        env.NAVA_BUILD_COMMIT = 'a'.repeat(40);
         writeFileSync(common, [...commonBase, "PANE_BRAIN='classifier'", "QUOTE_WORKFLOW_LLM='on'", ''].join('\n'));
         expect((await run()).status).toBe(0);
         expect(inspect()).toMatchObject({ PANE_BRAIN: 'classifier', QUOTE_WORKFLOW_LLM: 'on' });
@@ -6463,9 +6639,12 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       expect(retry).toContain('assert_http_loopback_only && return 0');
       expect(retry).toMatch(/\bsleep\s+1\b/);
       expect(retry).toContain('return 1');
-      expect(boot).toMatch(
-        /start_legacy_processes\s*\nstart_remote_http\s*\nassert_http_loopback_with_retry\s+\|\|/,
-      );
+      const legacyStart = boot.lastIndexOf('\nstart_legacy_processes\n');
+      const remoteStart = boot.indexOf('start_remote_http', legacyStart);
+      const check = boot.indexOf('assert_http_loopback_with_retry ||', remoteStart);
+      expect(legacyStart).toBeGreaterThan(0);
+      expect(remoteStart).toBeGreaterThan(legacyStart);
+      expect(check).toBeGreaterThan(remoteStart);
     });
   });
 });

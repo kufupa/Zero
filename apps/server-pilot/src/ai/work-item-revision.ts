@@ -7,7 +7,7 @@ const STAY_COMMITS_KEY = 'stays';
 const SOURCE_TYPES = ['field.edit', 'field.reject', 'field.accept', 'field.reset'] as const;
 
 export type PaneState = Record<string, unknown>;
-export type PaneRevisionCursor = { revision: number; revisionHead: number; seq: number };
+export type PaneRevisionCursor = { revision: number; revisionHead: number; seq: number; extractionId: string | null };
 export type PaneRevisionResult =
   | { status: 'not_found' }
   | { status: 'stale'; revision: number; revisionHead: number; seq: number }
@@ -26,7 +26,7 @@ export type PaneRevisionEvidence = {
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
 
 function isPaneFieldKey(key: string): boolean {
-  return key.startsWith('stays[') || key.startsWith('contact.') || key === 'followUp.draft';
+  return key.startsWith('stays[') || key.startsWith('requests[') || key.startsWith('contact.') || key === 'followUp.draft';
 }
 
 export function paneStateOf(state: PaneState): PaneState {
@@ -168,6 +168,11 @@ async function applyHistoryMove(
     const nextRevision = undo ? revision - 1 : revision + 1;
     const nextSeq = seq + 1;
     const state = withPaneState(item.state, restored);
+    // Undo/redo invalidates an earlier filing review, even when pane fields return to their old values.
+    if (state.action === 'attach_document') {
+      state.filingHistorySeq = nextSeq;
+      delete state.hmsSnapshot;
+    }
     await tx.insert(workEvent).values({
       workItemId: input.workItemId,
       actorKind: 'user',
@@ -207,6 +212,7 @@ export async function loadPaneRevisionCursor(
       revision: workItem.revision,
       revisionHead: workItem.revisionHead,
       seq: workItem.revisionSeq,
+      extractionId: workItem.extractionId,
     })
     .from(workItem)
     .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))

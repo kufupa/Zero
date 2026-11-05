@@ -17,15 +17,17 @@ const opsDeployScript = readFileSync(
   'utf8',
 );
 const verdict = script.slice(script.indexOf('# BEGIN_READINESS_REPORT_BUILDER'));
-// Source-derived pieces: the dead-letter window SQL (with $1 bound to the marker), the marker validator, and the
-// marker read block from ops-deploy.sh. Each is run for real below, not string-matched.
-const deadLetterWindowSql = script
-  .slice(
-    script.indexOf('const [workflow] = await sql`') + 'const [workflow] = await sql`'.length,
-    script.indexOf('`;\n  const [outbound]'),
-  )
-  .split('${lastGoodDeployAt}')
-  .join('$1');
+// Run the shipped transaction and SQL against a controlled adapter or disposable DB.
+const workflowQuerySource = script.slice(
+  script.indexOf("const [workflow] = await sql.begin('read only', async (tx) => {"),
+  script.indexOf('  const [outbound]'),
+);
+const workflowSql = new Function(
+  'sql', 'deadLetterWindowAt', 'deployStartedAt',
+  `return (async () => { ${workflowQuerySource}\nreturn workflow; })();`,
+) as (sql: any, boundary: string | null, deployStartedAt: string | null) => Promise<any>;
+const runWorkflowSql = (sql: any, boundary: string | null, deployStartedAt: string | null = null) =>
+  workflowSql(sql, boundary, deployStartedAt);
 const markerValidatorSource = script.slice(
   script.indexOf('const rawLastGoodDeployAt ='),
   script.indexOf('const empty = {'),
@@ -68,6 +70,7 @@ function baselineRemote() {
       centurionActiveCategoryCount: 12,
       workflowCategoryMissingCount: 0,
       workflowNonterminalCount: 0,
+      workflowPostRestartNonterminalCount: 0 as number | null,
       workflowDeadLetterCount: 0,
       workflowDeadLetterRecentCount: 0,
       workflowDeadLetterWindowStart: null,
@@ -81,7 +84,7 @@ function baselineRemote() {
 
 type Remote = ReturnType<typeof baselineRemote>;
 
-function runVerdict(patch: (remote: Remote) => void = () => {}) {
+function runVerdict(patch: (remote: Remote) => void = () => {}, allowBacklog = '') {
   const remote = baselineRemote();
   patch(remote);
   const env = {
@@ -133,6 +136,7 @@ function runVerdict(patch: (remote: Remote) => void = () => {}) {
     REMOTE_TARGET_HEALTH_REQUIRED: '0',
     REMOTE_ADMIN_LIFECYCLE_MODE: '',
     REMOTE_ADMIN_FACTS: '{}',
+    NAVA_ALLOW_PREEXISTING_NONTERMINAL_BACKLOG: allowBacklog,
   };
   const result = spawnSync('bash', ['-c', `set -euo pipefail\n${verdict}`], {
     env,
@@ -146,6 +150,56 @@ function runVerdict(patch: (remote: Remote) => void = () => {}) {
     report: stdout ? (JSON.parse(stdout) as Record<string, any>) : null,
   };
 }
+
+describe('owner waiver for the existing workflow backlog', () => {
+  it('leaves the measured backlog visible as a warning', () => {
+    const run = runVerdict((remote) => { remote.db.workflowNonterminalCount = 54; }, '1');
+    expect(run.status).toBe(0);
+    expect(run.report).toMatchObject({
+      status: 'READY',
+      checks: { workflowNonterminalBacklogEmpty: false },
+      failures: [],
+      warnings: ['workflowNonterminalBacklogEmpty'],
+      observations: { workflowNonterminalCount: 54, workflowNonterminalBacklogWaived: true },
+    });
+    expect(run.stderr).toContain('owner waived workflowNonterminalBacklogEmpty');
+  });
+
+  it('still blocks nonterminal work created after this restart', () => {
+    const run = runVerdict((remote) => {
+      remote.db.workflowNonterminalCount = 55;
+      remote.db.workflowPostRestartNonterminalCount = 1;
+    }, '1');
+    expect(run.status).toBe(1);
+    expect(run.report?.failures).toEqual(['workflowPostRestartBacklogEmpty']);
+    expect(run.report?.warnings).toEqual(['workflowNonterminalBacklogEmpty']);
+  });
+
+  it('fails closed if the current restart boundary could not be measured', () => {
+    const run = runVerdict((remote) => {
+      remote.db.workflowNonterminalCount = 54;
+      remote.db.workflowPostRestartNonterminalCount = null;
+    }, '1');
+    expect(run.status).toBe(1);
+    expect(run.report?.failures).toEqual(['workflowPostRestartBacklogEmpty']);
+  });
+
+  it('keeps all other failures blocking when the backlog is waived', () => {
+    const run = runVerdict((remote) => {
+      remote.db.workflowNonterminalCount = 54;
+      remote.db.workflowDeadLetterRecentCount = 1;
+    }, '1');
+    expect(run.status).toBe(1);
+    expect(run.report?.failures).toEqual(['workflowDeadLetterBacklogEmpty']);
+    expect(run.report?.warnings).toEqual(['workflowNonterminalBacklogEmpty']);
+  });
+
+  it.each(['', '0', 'true'])('requires an explicit 1 for the waiver (%s)', (value) => {
+    const run = runVerdict((remote) => { remote.db.workflowNonterminalCount = 54; }, value);
+    expect(run.status).toBe(1);
+    expect(run.report?.failures).toEqual(['workflowNonterminalBacklogEmpty']);
+  });
+});
 
 describe('last-good deploy marker validation in launch-readiness', () => {
   it.each([
@@ -168,6 +222,51 @@ describe('last-good deploy marker validation in launch-readiness', () => {
   });
 });
 
+describe('deploy restart dead-letter boundary', () => {
+  it('runs the workflow query in a UTC read-only transaction', async () => {
+    const calls: string[] = [];
+    const boundValues: unknown[][] = [];
+    const transaction = async (parts: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = parts.join('?').replace(/\s+/g, ' ').trim();
+      calls.push(statement);
+      boundValues.push(values);
+      return statement.startsWith('SELECT') ? [{ dead_letter_recent: 1 }] : [];
+    };
+    const sql = {
+      begin: async (mode: string, callback: (tx: typeof transaction) => Promise<unknown>) => {
+        expect(mode).toBe('read only');
+        return callback(transaction);
+      },
+    };
+    const boundary = '2026-11-03T10:00:00.500Z';
+    const row = await runWorkflowSql(sql, boundary, boundary);
+    expect(row.dead_letter_recent).toBe(1);
+    expect(calls[0]).toBe("SET LOCAL TIME ZONE 'UTC'");
+    expect(calls[1]).toContain('FROM ai_workflow_run');
+    expect(calls[1]).toContain('created_at >= ?::timestamptz');
+    expect(boundValues[1]).toContain(boundary);
+  });
+
+  it('uses the current restart before the last-good marker', () => {
+    const result = spawnSync(process.execPath, ['--input-type=module'], {
+      input: `${markerValidatorSource}\nprocess.stdout.write(String(deadLetterWindowAt));\n`,
+      encoding: 'utf8',
+      env: { LAST_GOOD_DEPLOY_AT: '2026-11-02T10:00:00Z', DEPLOY_STARTED_AT: '2026-11-03T10:00:00Z' },
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('2026-11-03T10:00:00.000Z');
+  });
+
+  it('refuses an invalid explicit restart boundary', () => {
+    const result = spawnSync(process.execPath, ['--input-type=module'], {
+      input: `${markerValidatorSource}\nprocess.stdout.write(String(deadLetterWindowAt));\n`,
+      encoding: 'utf8',
+      env: { LAST_GOOD_DEPLOY_AT: '2026-11-02T10:00:00Z', DEPLOY_STARTED_AT: 'invalid' },
+    });
+    expect(result.status).not.toBe(0);
+  });
+});
+
 describe('last-good deploy marker read in ops-deploy', () => {
   function markerInvocation(marker: unknown) {
     const encoded = Buffer.from(JSON.stringify(marker)).toString('base64');
@@ -186,7 +285,7 @@ describe('last-good deploy marker read in ops-deploy', () => {
         'bash',
         [
           '-c',
-          `set -euo pipefail\nSCRIPT_DIR='${dir}'\n${markerReadBlock}\nprintf 'AT=%s\\n' "\${LAST_GOOD_DEPLOY_AT:-}"`,
+          `set -euo pipefail\nSCRIPT_DIR='${dir}'\nstep_mark() { :; }\n${markerReadBlock}\nprintf 'AT=%s\\n' "\${LAST_GOOD_DEPLOY_AT:-}"`,
         ],
         { encoding: 'utf8', env: { PATH: process.env.PATH ?? '/usr/bin:/bin' }, timeout: 60_000 },
       );
@@ -216,6 +315,32 @@ describe('last-good deploy marker read in ops-deploy', () => {
   });
 });
 
+describe('capture-deploy-ec2', () => {
+  it.each([0, 17])('places the restart boundary before long output and preserves exit %s', (status) => {
+    const root = mkdtempSync(join(tmpdir(), 'nava-capture-deploy-'));
+    try {
+      const deployDir = join(root, 'apps', 'server-pilot', 'deploy');
+      mkdirSync(deployDir, { recursive: true });
+      writeFileSync(join(deployDir, 'deploy-ec2.sh'), [
+        '#!/usr/bin/env bash',
+        'if [ "${2:-}" = --help ]; then exit 0; fi',
+        'printf "%040000d\\n" 0',
+        'printf "NAVA_PM2_RESTART_STARTED_AT=2026-11-03T10:00:00.500Z\\n"',
+        'printf "distinctive late failure\\n" >&2',
+        `exit ${status}`,
+      ].join('\n'));
+      const capture = fileURLToPath(new URL('../deploy/capture-deploy-ec2.sh', import.meta.url));
+      const result = spawnSync('bash', [capture], { cwd: root, encoding: 'utf8', timeout: 10_000 });
+      expect(result.status).toBe(status);
+      expect(result.stdout.startsWith('NAVA_PM2_RESTART_STARTED_AT=2026-11-03T10:00:00.500Z\n')).toBe(true);
+      expect(result.stdout.length).toBeGreaterThan(40_000);
+      expect(result.stderr.slice(0, 8_000)).toContain('distinctive late failure');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 // Runs the shipped ops-deploy.sh from a scratch directory with stub helpers, so the marker read and write run for real.
 // The SSM stub executes only the marker payloads (with /home/ubuntu rewritten into the scratch tree) and logs every
 // other payload by kind. Readiness, VPN and CAS failures are switched on with FAIL_* variables.
@@ -226,6 +351,7 @@ payload="$1"
 case "$payload" in
   *'base64 -w0'*) kind=marker-read ;;
   *'mv -f "$tmp" "$marker_path"'*) kind=marker-write ;;
+  *capture-deploy-ec2.sh*) kind=deploy ;;
   *vpn-health-assert*) kind=vpn ;;
   *source-registry-cas.sh*) kind=cas ;;
   *NAVA_HOST_CLOCK_UTC*) kind=host-clock ;;
@@ -243,6 +369,9 @@ case "$kind" in
     if [ "$FAIL_HOST_CLOCK" = 1 ]; then exit 70; fi
     "$NODE_BIN" -e 'process.stdout.write(JSON.stringify({ Stdout: process.argv[1] }))' "$HOST_CLOCK_STDOUT"
     ;;
+  deploy)
+    "$NODE_BIN" -e 'process.stdout.write(JSON.stringify({ Stdout: process.argv[1] }))' "$RESTART_STDOUT"
+    ;;
   vpn) sleep "$VPN_DELAY"; exit "$FAIL_VPN" ;;
   cas) exit "$FAIL_CAS" ;;
 esac
@@ -250,6 +379,7 @@ esac
   const readinessStub = String.raw`#!/usr/bin/env bash
 set -euo pipefail
 date -u +%Y-%m-%dT%H:%M:%SZ >"$SCRATCH/readiness-started-at"
+printf '%s\n' "$DEPLOY_STARTED_AT" >"$SCRATCH/deploy-started-at"
 printf '%s\n' readiness >>"$SCRATCH/calls.log"
 exit "$FAIL_READINESS"
 `;
@@ -273,6 +403,17 @@ exit "$FAIL_READINESS"
         '-C', repo, '-c', 'user.name=test', '-c', 'user.email=test@example.test',
         'commit', '-q', '--allow-empty', '-m', 'test',
       ]);
+      // The deploy script itself runs from a separate real clean fixture tree.
+      writeFileSync(join(scratch, '.gitignore'), '*\n!.gitignore\n');
+      execFileSync('git', ['init', '-q', '-b', 'main', scratch]);
+      execFileSync('git', ['-C', scratch, 'add', '.gitignore']);
+      execFileSync('git', [
+        '-C', scratch, '-c', 'user.name=test', '-c', 'user.email=test@example.test',
+        'commit', '-qm', 'deploy fixture',
+      ]);
+      execFileSync('git', ['-C', scratch, 'update-ref', 'refs/remotes/origin/main', 'HEAD']);
+      execFileSync('git', ['-C', repo, 'fetch', '-q', scratch, 'HEAD']);
+      execFileSync('git', ['-C', repo, 'reset', '-q', '--hard', 'FETCH_HEAD']);
       const head = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
       const run = spawnSync('bash', [join(deployDir, 'ops-deploy.sh'), ...(options.args ?? [])], {
         cwd: deployDir,
@@ -281,6 +422,7 @@ exit "$FAIL_READINESS"
         env: {
           PATH: process.env.PATH ?? '/usr/bin:/bin',
           SCRATCH: scratch,
+          REMOTE_TEST_REPO: scratch,
           NODE_BIN: process.execPath,
           FAIL_READINESS: '0',
           FAIL_VPN: '0',
@@ -288,12 +430,14 @@ exit "$FAIL_READINESS"
           VPN_DELAY: '0',
           FAIL_HOST_CLOCK: '0',
           HOST_CLOCK_STDOUT: `NAVA_HOST_CLOCK_UTC=${new Date().toISOString().slice(0, 19)}Z`,
+          RESTART_STDOUT: `NAVA_PM2_RESTART_STARTED_AT=${new Date().toISOString()}`,
           ...options.env,
         },
       });
       const callsPath = join(scratch, 'calls.log');
       const markerPath = join(scratch, 'home', '.nava-deploy', 'last-good.json');
       const readinessPath = join(scratch, 'readiness-started-at');
+      const deployStartedPath = join(scratch, 'deploy-started-at');
       return {
         status: run.status,
         stdout: run.stdout,
@@ -304,6 +448,7 @@ exit "$FAIL_READINESS"
           ? (JSON.parse(readFileSync(markerPath, 'utf8')) as { commit: string; at: string })
           : null,
         readinessStartedAt: existsSync(readinessPath) ? readFileSync(readinessPath, 'utf8').trim() : null,
+        deployStartedAt: existsSync(deployStartedPath) ? readFileSync(deployStartedPath, 'utf8').trim() : null,
       };
     } finally {
       rmSync(scratch, { recursive: true, force: true });
@@ -320,6 +465,23 @@ exit "$FAIL_READINESS"
     expect(run.marker!.at <= run.readinessStartedAt!).toBe(true);
     expect(run.calls.at(-1)).toBe('marker-write');
   });
+
+  it('passes the actual restart boundary into readiness', () => {
+    const run = runOpsDeploy({ env: { RESTART_STDOUT: 'NAVA_PM2_RESTART_STARTED_AT=2026-11-03T10:00:00.500Z' } });
+    expect(run.status).toBe(0);
+    expect(run.deployStartedAt).toBe('2026-11-03T10:00:00.500Z');
+  });
+
+  it.each(['', 'NAVA_PM2_RESTART_STARTED_AT=yesterday', 'NAVA_PM2_RESTART_STARTED_AT=2026-11-03T10:00:00Z'])(
+    'fails closed before readiness when the restart boundary is unavailable or invalid',
+    (RESTART_STDOUT) => {
+      const run = runOpsDeploy({ env: { RESTART_STDOUT } });
+      expect(run.status).toBe(20);
+      expect(run.stderr).toContain('deploy may have occurred, readiness not verified');
+      expect(run.calls).not.toContain('readiness');
+      expect(run.marker).toBeNull();
+    },
+  );
 
   it('takes the readiness boundary from the EC2 host clock minus a 5-minute margin, right before readiness', () => {
     const run = runOpsDeploy({ env: { HOST_CLOCK_STDOUT: 'NAVA_HOST_CLOCK_UTC=2026-10-12T10:00:00Z' } });
@@ -400,19 +562,25 @@ describe.skipIf(!dbConfigured)('dead-letter window SQL (disposable DB)', () => {
   function expectWindowAt24Hours(start: Date) {
     expect(Math.abs(start.getTime() - hoursAgo(24).getTime())).toBeLessThan(60_000);
   }
-  async function runWindow(markerAt: string | null, deadLetterAt: Date) {
+  async function runWindow(
+    markerAt: string | null,
+    deadLetterAt: Date | Date[],
+    columnKind: 'timestamp without time zone' | 'timestamp with time zone' = 'timestamp without time zone',
+  ) {
     const db = postgres(testDbUrl, { max: 1 });
     try {
       // TEMP table: visible only to this session, so the disposable DB keeps no state from the test.
       await db.unsafe(
-        'CREATE TEMP TABLE ai_workflow_run (state text NOT NULL, finished_at timestamptz, updated_at timestamptz NOT NULL)',
+        `CREATE TEMP TABLE ai_workflow_run (state text NOT NULL, created_at ${columnKind} NOT NULL DEFAULT now(), finished_at ${columnKind}, updated_at ${columnKind} NOT NULL)`,
       );
-      await db.unsafe('INSERT INTO ai_workflow_run (state, finished_at, updated_at) VALUES ($1, $2, $2)', [
-        'dead_letter',
-        deadLetterAt,
-      ]);
-      const [row] = await db.unsafe(deadLetterWindowSql, [markerAt]);
-      return row;
+      await db`SET TIME ZONE 'Africa/Johannesburg'`;
+      for (const time of Array.isArray(deadLetterAt) ? deadLetterAt : [deadLetterAt]) {
+        await db.unsafe(
+          `INSERT INTO ai_workflow_run (state, finished_at, updated_at) VALUES ($1, $2::${columnKind}, $2::${columnKind})`,
+          ['dead_letter', time.toISOString()],
+        );
+      }
+      return await runWorkflowSql(db, markerAt);
     } finally {
       await db.end({ timeout: 2 });
     }
@@ -447,6 +615,43 @@ describe.skipIf(!dbConfigured)('dead-letter window SQL (disposable DB)', () => {
 
     expect(row.dead_letter_recent).toBe(0);
     expectWindowAt24Hours(row.dead_letter_window_start);
+  });
+
+  it.each(['timestamp without time zone', 'timestamp with time zone'] as const)(
+    'counts only new failures with a non-UTC session and %s columns',
+    async (kind) => {
+      const boundary = hoursAgo(1);
+      const row = await runWindow(boundary.toISOString(), [
+        new Date(boundary.getTime() - 1),
+        new Date(boundary.getTime() + 1),
+      ], kind);
+      expect(row.dead_letter).toBe(2);
+      expect(row.dead_letter_recent).toBe(1);
+    },
+  );
+
+  it('conservatively includes a failure at the same millisecond as restart', async () => {
+    const boundary = hoursAgo(1);
+    const row = await runWindow(boundary.toISOString(), boundary);
+    expect(row.dead_letter_recent).toBe(1);
+  });
+
+  it('counts only nonterminal rows created on or after the deploy restart', async () => {
+    const db = postgres(testDbUrl, { max: 1 });
+    const boundary = hoursAgo(1);
+    try {
+      await db.unsafe('CREATE TEMP TABLE ai_workflow_run (state text NOT NULL, created_at timestamp NOT NULL, finished_at timestamp, updated_at timestamp NOT NULL)');
+      await db`INSERT INTO ai_workflow_run (state, created_at, updated_at) VALUES
+        ('queued', ${new Date(boundary.getTime() - 1).toISOString()}, now()),
+        ('running', ${boundary.toISOString()}, now()),
+        ('succeeded', ${new Date(boundary.getTime() + 1).toISOString()}, now())`;
+      const row = await runWorkflowSql(db, boundary.toISOString(), boundary.toISOString());
+      expect(row.nonterminal).toBe(2);
+      expect(row.post_restart_nonterminal).toBe(1);
+      expect((await runWorkflowSql(db, boundary.toISOString())).post_restart_nonterminal).toBeNull();
+    } finally {
+      await db.end({ timeout: 2 });
+    }
   });
 });
 

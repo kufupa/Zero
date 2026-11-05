@@ -158,6 +158,15 @@ export const TRACK_LABELS = {
   'STO Rate': 'STO',
 };
 
+/** Return a unique native code and display label for a reviewed track. */
+export function normalizeCreateTrack(value) {
+  if (typeof value !== 'string' || value !== value.trim() || !value) return null;
+  const matches = Object.entries(TRACK_LABELS).filter(([display, code]) => value === display || value === code);
+  if (matches.length !== 1) return null;
+  const [display, lookupCode] = matches[0];
+  return { lookupCode, display };
+}
+
 export function parseTrackLookupText(text) {
   const norm = String(text || '').replace(/\s+/g, ' ').trim();
   if (!norm) return null;

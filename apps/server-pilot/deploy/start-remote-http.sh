@@ -5,6 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_PILOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd -- "$SERVER_PILOT/../.." && pwd)"
+source "$SCRIPT_DIR/build-identity.sh"
+nava_load_build_commit "$REPO_ROOT"
 
 # The PM2 CLI and saved process metadata need no remote auth or model secrets.
 # Validate and load them only in this child, after clearing the inherited env.
@@ -21,7 +23,7 @@ exec env -i \
   bash -ceu '
     writer="$SERVER_PILOT/deploy/write-ec2-remote-env.sh"
     launch_build_commit="${NAVA_BUILD_COMMIT:-}"
-    if [[ ! "$launch_build_commit" =~ ^[a-fA-F0-9]{40}$ ]]; then
+    if [[ "$launch_build_commit" != unknown && ! "$launch_build_commit" =~ ^[a-fA-F0-9]{40}$ ]]; then
       echo "remote build identity missing or invalid" >&2
       exit 2
     fi

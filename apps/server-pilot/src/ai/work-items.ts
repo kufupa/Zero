@@ -16,7 +16,7 @@ import {
   type SQL,
 } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
-import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
+import { aiWorkflowRun, mailActionLabel, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { sqlList } from '../db/schema/hitl.js';
 import { MESSAGE_ARRIVED_AT, MESSAGE_DELIVERED_AT, OUTLOOK_SYNCED } from './message-arrival-time.js';
 export { MESSAGE_ARRIVED_AT, MESSAGE_DELIVERED_AT, OUTLOOK_SYNCED } from './message-arrival-time.js';
@@ -53,8 +53,11 @@ import {
 import { aopQuoteChannelFromSender } from './aop-playbook.js';
 import { matchRoomType } from './room-types.js';
 import { normalizeEmailAddress, PUBLIC_MAIL_DOMAINS } from './never-spam.js';
-import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
+import { groundedSeparateAsk, isSelfSentPreStayInformationMail, preStaySourceText } from './existing-stay-information.js';
+import { collectNeedsYouPages, type NeedsYouCursor } from './work-items-list-pages.js';
+import { maskCardNumbers } from './card-mask.js';
 import { isNoReplyAddress } from '../mail/conversation-signals.js';
+import { paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
 import {
   getPropertyTransportIds,
   resolvePropertyTransport,
@@ -66,12 +69,19 @@ import {
   type ClassifierResult,
 } from './workflow-classifier/index.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
+import { staffQuoteSourceHash } from './staff-quote-workflow.js';
+import {
+  amendEmailValue, amendStayForRequest, parseAmendRequestField, projectAmendRequests,
+  validAmendRequestValue, type DraftSource,
+} from './pane-amend-draft.js';
+import { parseCancelRequestField, projectCancelRequests, validCancelRequestValue } from './pane-cancel-draft.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
 import { assertCreateDispatchFenceOwner, assertNoCreateDispatchFence, CreateFenceError,
   type CreateFenceIdentity } from './pane-create-dispatch-fence.js';
 import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
 import { handledRequestStates, hasOutstandingRequestHistory } from './reservationist-task-completion.js';
+import type { CloudCreateHoldProjection } from './pane-cloud-preview.js';
 
 /**
  * Work items for the Nava pane (U4). One work item is one person's job on one mail. Its `state` holds only the field
@@ -120,6 +130,7 @@ export function parseFieldPath(path: string): FieldPath | null {
 export const STAY_COMMITS_KEY = 'stays';
 export const PANE_STAY_ALREADY_BOOKED = 'pane_stay_already_booked';
 const STAY_ID_PATTERN = new RegExp(`^${ID}$`);
+const STAY_COMMIT_ID_PATTERN = /^[A-Za-z0-9_-]{1,120}$/;
 const STAY_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const STAY_SHOT_NAME = /^[a-z][a-z0-9-]{0,40}\.png$/;
 const STAY_SHOT_SHA256 = /^[a-f0-9]{64}$/;
@@ -136,6 +147,13 @@ export type StayCommitRecord = {
   shots?: StayCommitShot[];
   cmsReason?: 'saved_cms_mismatch';
   cmsMismatches?: Array<{ field: string; expected: unknown; actual: unknown }>;
+  /** Read-only projection; the server's dispatch and approval checks remain authoritative. */
+  cloudCreateHold?: CloudCreateHoldProjection;
+  cloudCreateTarget?: CloudCreateHoldProjection['target'];
+};
+type StayCommitWriteRecord = Omit<StayCommitRecord, 'cloudCreateTarget'> & {
+  /** Hold targets remain opaque in stored state; readers schema-validate before projecting them. */
+  cloudCreateTarget?: unknown;
 };
 export type StayCommitGuard =
   | { action: 'commit' }
@@ -216,19 +234,54 @@ export function stayCommitsOf(state: WorkState): Record<string, StayCommitRecord
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
   const out: Record<string, StayCommitRecord> = {};
   for (const [stayId, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (!STAY_ID_PATTERN.test(stayId)) continue;
+    if (!STAY_COMMIT_ID_PATTERN.test(stayId)) continue;
     const parsed = parseStayCommit(value);
     if (parsed) out[stayId] = parsed;
   }
   return out;
 }
 
+/** Project held Create identities only for pane reads; never write the projection back to state. */
+export async function paneStayCommitsOf(state: WorkState): Promise<Record<string, StayCommitRecord>> {
+  const commits = stayCommitsOf(state);
+  const rows = state[STAY_COMMITS_KEY];
+  const recovered = rows && typeof rows === 'object' && !Array.isArray(rows) &&
+    Object.values(rows).some((row) => row && typeof row === 'object' && !Array.isArray(row) &&
+      ((row as Record<string, unknown>).cloudCreateRecovered === true ||
+        (row as Record<string, unknown>).cloudCreateVerified === true));
+  if (state.cloudCreateBatchHolds === undefined && !recovered &&
+      !Object.values(commits).some((commit) => commit.status === 'unknown')) return commits;
+  // Load after work-items has initialized (Create imports its scope helpers).
+  const { cloudCreateHoldOf, cloudCreateBookedTargetOf } = await import('./pane-cloud-preview.js');
+  for (const [stayId, commit] of Object.entries(commits)) {
+    const hold = cloudCreateHoldOf(state, stayId);
+    const target = cloudCreateBookedTargetOf(state, stayId);
+    if (hold || target) commits[stayId] = { ...commit, ...(hold ? { cloudCreateHold: hold } : {}),
+      ...(target ? { cloudCreateTarget: target } : {}) };
+  }
+  return commits;
+}
+
 export function stayCommitOf(state: WorkState, stayId: string): StayCommitRecord | undefined {
   return stayCommitsOf(state)[stayId];
 }
 
-export function withStayCommit(state: WorkState, stayId: string, record: StayCommitRecord): WorkState {
-  return { ...state, [STAY_COMMITS_KEY]: { ...stayCommitsOf(state), [stayId]: record } };
+export function withStayCommit(state: WorkState, stayId: string, record: StayCommitWriteRecord): WorkState {
+  const raw = state[STAY_COMMITS_KEY];
+  const rows = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  // Validate the visible entries but retain their server-owned evidence when another stay changes.
+  const siblings = Object.fromEntries(Object.keys(stayCommitsOf(state)).map((id) => [id, rows[id]]));
+  const previous = rows[stayId];
+  const evidence = previous && typeof previous === 'object' && !Array.isArray(previous)
+    ? previous as Record<string, unknown> : {};
+  const held = evidence.status === 'unknown' || evidence.cloudCreateVerified === true;
+  return { ...state, [STAY_COMMITS_KEY]: { ...siblings, [stayId]: { ...record,
+    ...(held && Object.hasOwn(evidence, 'cloudCreateTarget') ? { cloudCreateTarget: evidence.cloudCreateTarget } : {}),
+    ...(held && Object.hasOwn(evidence, 'cloudCreateGrantId') ? { cloudCreateGrantId: evidence.cloudCreateGrantId } : {}),
+    ...(evidence.cloudCreateVerified === true ? { cloudCreateVerified: true } : {}),
+    ...(evidence.cloudCreateRecovered === true ? { cloudCreateRecovered: true } : {}),
+    ...(Object.hasOwn(evidence, 'cloudCreateRecoveredBatchId') ? { cloudCreateRecoveredBatchId: evidence.cloudCreateRecoveredBatchId } : {}),
+  } } };
 }
 
 export function stayCommitGuard(record: StayCommitRecord | undefined): StayCommitGuard {
@@ -276,8 +329,14 @@ export function withStayActionResult(
     screenshotRef: StayCommitScreenshotRef | null;
   },
 ): WorkState {
-  if (!STAY_ID_PATTERN.test(stayId)) return state;
+  if (!STAY_COMMIT_ID_PATTERN.test(stayId)) return state;
   const existing = stayCommitOf(state, stayId);
+  const stays = state[STAY_COMMITS_KEY];
+  const raw = stays && typeof stays === 'object' && !Array.isArray(stays)
+    ? (stays as Record<string, unknown>)[stayId] : null;
+  const held: Record<string, unknown> = raw && typeof raw === 'object' && !Array.isArray(raw) &&
+    (existing?.status === 'unknown' || (raw as Record<string, unknown>).cloudCreateRecovered === true)
+    ? raw as Record<string, unknown> : {};
   return withStayCommit(state, stayId, {
     confirmationNumber: result.confirmationNumber,
     status: existing?.status ?? 'booked',
@@ -285,6 +344,9 @@ export function withStayActionResult(
     ...(existing?.runId ? { runId: existing.runId } : {}),
     ...(existing?.shots ? { shots: existing.shots } : {}),
     ...(existing?.cmsReason ? { cmsReason: existing.cmsReason, cmsMismatches: existing.cmsMismatches } : {}),
+    ...(Object.hasOwn(held, 'cloudCreateTarget') ? { cloudCreateTarget: held.cloudCreateTarget } : {}),
+    ...(Object.hasOwn(held, 'cloudCreateGrantId') ? { cloudCreateGrantId: held.cloudCreateGrantId } : {}),
+    ...(held.cloudCreateRecovered === true ? { cloudCreateRecovered: true } : {}),
   });
 }
 
@@ -913,6 +975,11 @@ export function correctionsCarryTo(
   state: WorkState,
 ): boolean {
   if (before.stays === after.stays) return true;
+  // Request ids incorporate the extraction stay id. Never carry a person's
+  // request edits onto an independently re-extracted, different stay.
+  if (Object.keys(state).some((key) => parseAmendRequestField(key) || parseCancelRequestField(key)) &&
+      (before.stays.length !== after.stays.length ||
+        before.stays.some((stay) => !after.stays.some((next) => next.id === stay.id)))) return false;
   for (const key of Object.keys(state)) {
     const path = parseFieldPath(key);
     if (!path) continue;
@@ -949,8 +1016,8 @@ async function shouldRelink(db: WorkTx, fromId: string | null, nextId: string, s
 
 /**
  * Upserts the work item for (thread, kind, source message) and points it at this extraction when it is newer and her
- * saved values still fit it (see shouldRelink). Only the extraction link moves. `state` is never written here, so a
- * person's values survive a re-read. Returns the read the item is on.
+ * saved values still fit it (see shouldRelink). A relink advances the concurrency sequence without changing edit history.
+ * `state` is never written here, so a person's values survive a re-read. Returns the read the item is on.
  */
 export async function ensureWorkItem(
   db: DB,
@@ -1004,9 +1071,9 @@ export async function ensureWorkItem(
     if (!(await shouldRelink(tx, row.extractionId, input.extractionId, row.state))) return row;
     await tx
       .update(workItem)
-      .set({ extractionId: input.extractionId, updatedAt: new Date() })
+      .set({ extractionId: input.extractionId, revisionSeq: row.revisionSeq + 1, updatedAt: new Date() })
       .where(eq(workItem.id, row.id));
-    return { ...row, extractionId: input.extractionId };
+    return { ...row, extractionId: input.extractionId, revisionSeq: row.revisionSeq + 1 };
   });
 }
 
@@ -1252,6 +1319,9 @@ type ThreadMail = {
   id: string;
   direction: 'inbound' | 'outbound';
   fromAddress: string;
+  subject: string | null;
+  textBody: string | null;
+  htmlBody: string | null;
   receivedAt: Date | null;
   deliveredAt: Date | null;
   sentAt: Date | null;
@@ -1436,6 +1506,7 @@ export async function planThreadWork(
       // Written with explicit table names: drizzle leaves the columns of a select-list subquery unqualified, and then
       // "id" binds to the subquery's own table and the check is always false.
       touched: sql<boolean>`exists (select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id and ${personTouchSql('we')})`,
+      extractionPayload: mailExtraction.payload,
       origin,
     })
     .from(workItem)
@@ -1474,6 +1545,9 @@ export async function planThreadWork(
       id: message.id,
       direction: message.direction,
       fromAddress: message.fromAddress,
+      subject: message.subject,
+      textBody: message.textBody,
+      htmlBody: message.htmlBody,
       receivedAt: message.receivedAt,
       deliveredAt: MESSAGE_DELIVERED_AT,
       sentAt: message.sentAt,
@@ -1520,18 +1594,11 @@ export async function planThreadWork(
       .map(run => ({ id: run.id, result: run.metrics?.reservationistResult, source: run.metrics?.reservationistDraftSource })), requestStates.get(source.id));
     const untouched = !outstanding && !item.touched && Object.keys(item.state ?? {}).length === 0;
     const humanWritten = item.origin !== 'system_notice';
-    if (item.status === 'dismissed') {
-      if (outstanding && item.lastStatusActor === 'system' && item.lastStatusReason === SUPERSEDED_BY_THREAD) {
-        changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: null, from: 'dismissed' });
-        open.push({ id: item.id, kind, at, untouched: false, humanWritten });
-      }
-      continue;
-    }
-    if (item.status === 'done' && outstanding && item.lastStatusActor === 'system' && item.lastStatusReason === HOTEL_REPLIED) {
-      changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: item.sentMessageId });
-      open.push({ id: item.id, kind, at, untouched: false, humanWritten });
-      continue;
-    }
+    const payload = item.extractionPayload as MailExtractionPayload | null;
+    const separateAsk = currentKind && isSelfSentPreStayInformationMail({
+      fromAddress: source.fromAddress, mailboxAddress: mailboxEmail, subject: source.subject,
+      confirmationNumbers: Array.isArray(payload?.confirmationNumbers) ? payload.confirmationNumbers : [],
+    }) && separatePreStayAsk(item.kind, payload, source.textBody, source.htmlBody);
     const lastGuest = latest(guest.filter((x) => x.at > at));
     const lastHotel = latest(hotel.filter((x) => x.at > at));
     // ponytail: any hotel mail after the request counts as its answer, an acknowledgement included. No content check.
@@ -1547,10 +1614,34 @@ export async function planThreadWork(
             sentMessageId: lastHotel.m.id,
           }
         : undefined;
-    // A done `other` mail from this domain stays as it is (#172); only an exact sent-from match closes a needs-you `other`.
-    const domainOther = kind === 'other' && ownDomain(source);
     const closeOnReply =
       replyChange && replyChange.sentMessageId !== item.rejectedReplyId ? replyChange : undefined;
+    // A prior pure-information read may have been automatically closed as staff-sent.
+    if (separateAsk && item.status === 'done' && item.lastStatusActor === 'system' && item.lastStatusReason === STAFF_SENT_OTHER) {
+      if (closeOnReply && lastHotel) {
+        if (lastHotel.m.id !== item.sentMessageId) {
+          changes.push({ workItemId: item.id, kind, repoint: { sentAt: new Date(lastHotel.at), sentMessageId: lastHotel.m.id } });
+        }
+      } else {
+        changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: null });
+        open.push({ id: item.id, kind, at, untouched: false, humanWritten });
+      }
+      continue;
+    }
+    if (item.status === 'dismissed') {
+      if (outstanding && item.lastStatusActor === 'system' && item.lastStatusReason === SUPERSEDED_BY_THREAD) {
+        changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: null, from: 'dismissed' });
+        open.push({ id: item.id, kind, at, untouched: false, humanWritten });
+      }
+      continue;
+    }
+    if (item.status === 'done' && outstanding && item.lastStatusActor === 'system' && item.lastStatusReason === HOTEL_REPLIED) {
+      changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: item.sentMessageId });
+      open.push({ id: item.id, kind, at, untouched: false, humanWritten });
+      continue;
+    }
+    // A done `other` mail from this domain stays as it is (#172); only an exact sent-from match closes a needs-you `other`.
+    const domainOther = kind === 'other' && ownDomain(source);
     if (!untouched) {
       if (item.status === 'needs_you' && closeOnReply) {
         changes.push(closeOnReply);
@@ -1570,7 +1661,7 @@ export async function planThreadWork(
       }
       continue;
     }
-    const staffOther = kind === 'other' && ownSent(source);
+    const staffOther = kind === 'other' && ownSent(source) && !separateAsk;
     if (item.status === 'needs_you') {
       if (staffOther) {
         changes.push({ workItemId: item.id, kind, to: 'done', reason: STAFF_SENT_OTHER });
@@ -1752,6 +1843,7 @@ export type StoredWork =
       kind: string;
       /** A self-sent pre-stay confirmation is information about an existing stay, not booking work. */
       existingStayInformation: boolean;
+      separateAsk: string | null;
       /** Confirmation numbers stay available to staff even when the extraction kind is shown as `other`. */
       confirmationNumbers: string[];
       /** Null when the read has no work item yet. The pane then opens one (openStoredWork) before it logs edits. */
@@ -1776,6 +1868,13 @@ export type StoredWork =
       stayPreviews: Record<string, StayPreviewRecord>;
       /** Latest append-only field event per path, scoped to this transport and work item. */
       fieldProvenance: FieldProvenance;
+      /** Additive first-Amend draft; existing workflow reads stay backwards compatible. */
+      draftContractVersion?: 1;
+      source?: DraftSource & { extractionId: string };
+      draftStays?: FormStay[];
+      workflowRequests?: Array<ReturnType<typeof projectAmendRequests>['requests'][number] | ReturnType<typeof projectCancelRequests>['requests'][number]>;
+      draftFieldMeta?: ReturnType<typeof projectAmendRequests>['meta'];
+      unappliedEdits?: ReturnType<typeof projectAmendRequests>['unappliedEdits'];
       /** The read's source language (ISO 639-1), or null when unclear. */
       language: string | null;
       translation: StoredTranslation;
@@ -1795,8 +1894,9 @@ async function failureFor(db: DB, messageId: string): Promise<StoredWork> {
   return { status: 'failed', reason: copy ?? 'Nava could not read this email.' };
 }
 
-/** The one message in this transport with this Message-ID, or null (none, or not unique). */
-async function messageFor(db: DB, input: { transportId: string; internetMessageId: string }) {
+/** The exact selected message, or the unique RFC-only match for legacy callers. */
+async function messageFor(db: DB, input: { transportId: string; internetMessageId: string;
+  selection?: PaneSourceSelection; expectedMessageId?: string }) {
   const internetMessageId = canonicalInternetMessageId(input.internetMessageId);
   if (!internetMessageId) return null;
   const found = await db
@@ -1806,16 +1906,26 @@ async function messageFor(db: DB, input: { transportId: string; internetMessageI
       fromAddress: message.fromAddress,
       subject: message.subject,
       textBody: message.textBody,
+      htmlBody: message.htmlBody,
       mailboxAddress: mailboxTransport.email,
     })
     .from(message)
     .leftJoin(mailboxTransport, eq(mailboxTransport.id, message.transportId))
-    .where(and(eq(message.transportId, input.transportId), eq(message.messageIdHeader, internetMessageId)))
+    .where(and(eq(message.transportId, input.transportId), eq(message.messageIdHeader, internetMessageId),
+      paneSourceSelectionCondition(input.selection)))
     .limit(2);
-  return found.length === 1 ? found[0]! : null;
+  const result = found.length === 1 ? found[0]! : null;
+  return result && (!input.expectedMessageId || result.id === input.expectedMessageId) ? result : null;
 }
 
 type ReadyRead = NonNullable<Awaited<ReturnType<typeof succeededRead>>>;
+
+/** Old booking extractions never gain a work item or a separate-ask view. */
+function separatePreStayAsk(kind: string, payload: MailExtractionPayload | null, body: string | null, html: string | null): string | null {
+  if (kind !== 'other' || payload?.needsAction !== true ||
+      !['billing', 'group_event', 'other_actionable'].includes(payload.action ?? '')) return null;
+  return groundedSeparateAsk(maskCardNumbers(preStaySourceText(body, html)), payload.separateAsk);
+}
 
 const FIELD_PROVENANCE_EVENT_TYPES = ['field.seed', 'field.edit', 'field.accept', 'field.reject', 'field.reset'] as const;
 
@@ -1873,6 +1983,7 @@ async function readyView(
     fromAddress: string | null;
     subject: string | null;
     textBody: string | null;
+    htmlBody: string | null;
     mailboxAddress: string | null;
   },
   latest: ReadyRead,
@@ -1891,7 +2002,8 @@ async function readyView(
     subject: msg.subject,
     confirmationNumbers,
   });
-  const paneItem = existingStayInformation ? null : item;
+  const separateAsk = existingStayInformation ? separatePreStayAsk(read.kind, read.payload, msg.textBody, msg.htmlBody) : null;
+  const paneItem = existingStayInformation && !separateAsk ? null : item;
   const state = paneItem?.state ?? {};
   const selectedConfirmation = confirmationNumbers[0] ?? '';
   const synced = existingStayInformation
@@ -1915,10 +2027,41 @@ async function readyView(
   const sourceText = synced
     ? currentSourceText(synced)
     : [msg.subject ?? '', msg.textBody ?? ''].join('\n');
+  const draftSource = { threadId: msg.threadId, messageId: msg.id, sourceHash: staffQuoteSourceHash(msg) };
+  const [ownerLabel] = read.kind === 'cancellation' || read.kind === 'amendment'
+    ? await db.select({ action: mailActionLabel.action }).from(mailActionLabel)
+      .where(and(eq(mailActionLabel.transportId, transportId), eq(mailActionLabel.messageId, msg.id),
+        eq(mailActionLabel.source, 'owner'), eq(mailActionLabel.version, 'owner')))
+      .orderBy(desc(mailActionLabel.updatedAt), desc(mailActionLabel.id)).limit(1) : [];
+  const amend = read.kind === 'amendment' && !existingStayInformation
+    ? projectAmendRequests(draftSource, read.payload, state) : null;
+  const cancel = (read.kind === 'cancellation' || read.kind === 'amendment') && !existingStayInformation
+    ? projectCancelRequests(draftSource, read.payload, state, ownerLabel?.action, read.kind) : null;
+  const amendDraft = amend || cancel ? { requests: [...(amend?.requests ?? []), ...(cancel?.requests ?? [])],
+    meta: { ...amend?.meta, ...cancel?.meta }, unappliedEdits: amend?.unappliedEdits ?? [] } : null;
+  const draftStays = amendDraft ? formStays(read.payload, state).map((stay) => {
+    const value = <T>(path: string, fallback: T): T => Object.hasOwn(state, path) ? state[path] as T : fallback;
+    return {
+      ...stay,
+      requested: {
+        arrival: value(`stays[${stay.id}].requested.arrival`, stay.requested.arrival),
+        departure: value(`stays[${stay.id}].requested.departure`, stay.requested.departure),
+      },
+      rows: stay.rows.map((row) => ({
+        ...row,
+        rooms: value(`stays[${stay.id}].rows[${row.id}].count`, row.rooms),
+        adultsPerRoom: value(`stays[${stay.id}].rows[${row.id}].adults`, row.adultsPerRoom),
+        roomType: value(`stays[${stay.id}].rows[${row.id}].roomType`, row.roomType),
+        childAges: value(`stays[${stay.id}].rows[${row.id}].childAges`, row.childAges),
+        board: value(`stays[${stay.id}].rows[${row.id}].board`, row.board),
+      })),
+    };
+  }) : undefined;
   return {
     status: 'ready',
     kind: existingStayInformation ? 'other' : read.kind,
     existingStayInformation,
+    separateAsk,
     confirmationNumbers,
     workItemId: paneItem?.id ?? null,
     workItemStatus: paneItem?.status ?? null,
@@ -1942,12 +2085,20 @@ async function readyView(
           ),
     },
     contact: storedContact(read.payload, state),
-    stays: stayCommitsOf(state),
+    stays: await paneStayCommitsOf(state),
     stayPreviews: stayPreviewsOf(state),
     fieldProvenance: await latestFieldProvenance(db, {
       transportId,
       workItemId: paneItem?.id ?? null,
     }),
+    ...(amendDraft ? {
+      draftContractVersion: 1 as const,
+      source: { ...draftSource, extractionId: read.id },
+      draftStays,
+      workflowRequests: amendDraft.requests,
+      draftFieldMeta: amendDraft.meta,
+      unappliedEdits: amendDraft.unappliedEdits,
+    } : {}),
     language: read.language,
     translation: storedTranslation(read.translation),
   };
@@ -1960,7 +2111,7 @@ async function readyView(
  */
 export async function storedWorkFor(
   db: DB,
-  input: { transportId: string; internetMessageId: string },
+  input: { transportId: string; internetMessageId: string; selection?: PaneSourceSelection },
 ): Promise<StoredWork> {
   const msg = await messageFor(db, input);
   if (!msg) return { status: 'none' };
@@ -1972,7 +2123,9 @@ export async function storedWorkFor(
     subject: msg.subject,
     confirmationNumbers: payloadConfirmationNumbers(latest.payload),
   });
-  if (existingStayInformation) return readyView(db, msg, latest, null, input.transportId);
+  if (existingStayInformation && !separatePreStayAsk(latest.kind, latest.payload, msg.textBody, msg.htmlBody)) {
+    return readyView(db, msg, latest, null, input.transportId);
+  }
   const [item] = await db
     .select({
       id: workItem.id,
@@ -2002,7 +2155,7 @@ export async function storedWorkFor(
  */
 export async function openStoredWork(
   db: DB,
-  input: { transportId: string; internetMessageId: string },
+  input: { transportId: string; internetMessageId: string; selection?: PaneSourceSelection },
 ): Promise<StoredWork> {
   const msg = await messageFor(db, input);
   if (!msg) return { status: 'none' };
@@ -2014,7 +2167,7 @@ export async function openStoredWork(
       mailboxAddress: msg.mailboxAddress,
       subject: msg.subject,
       confirmationNumbers: payloadConfirmationNumbers(latest.payload),
-    })
+    }) && !separatePreStayAsk(latest.kind, latest.payload, msg.textBody, msg.htmlBody)
   ) {
     return readyView(db, msg, latest, null, input.transportId);
   }
@@ -2032,6 +2185,8 @@ export type FieldEventResult =
   | { status: 'not_found' }
   | { status: 'invalid_path' }
   | { status: 'invalid_value' }
+  | { status: 'stale_source' }
+  | { status: 'stale_revision' }
   | {
       status: 'recorded';
       aiValue: unknown;
@@ -2059,18 +2214,31 @@ export async function recordFieldEvent(
     fieldPath: string;
     value?: unknown;
     msSinceOpen?: number;
+    source?: DraftSource;
+    expectedSeq?: number;
+    expectedExtractionId?: string | null;
   },
 ): Promise<FieldEventResult> {
   const contact = contactFieldOf(input.fieldPath);
-  const path = contact ? null : parseFieldPath(input.fieldPath);
-  if (!contact && !path) return { status: 'invalid_path' };
+  const amendRequest = parseAmendRequestField(input.fieldPath);
+  const cancelRequest = parseCancelRequestField(input.fieldPath);
+  const request = amendRequest ?? cancelRequest;
+  const path = contact || request ? null : parseFieldPath(input.fieldPath);
+  if (!contact && !path && !request) return { status: 'invalid_path' };
   const personValue = input.value ?? null;
-  const fits = contact ? validContactValue(personValue) : path !== null && validFieldValue(path.field, personValue);
+  const fits = contact ? validContactValue(personValue) : cancelRequest && !amendRequest ? validCancelRequestValue(cancelRequest.field, personValue)
+    : amendRequest ? validAmendRequestValue(amendRequest.field, personValue)
+    : path !== null && validFieldValue(path.field, personValue);
+  if (request && ((input.type === 'field.accept' && input.value !== undefined) ||
+      (input.type === 'field.edit' && input.value === undefined))) return { status: 'invalid_value' };
   if (input.type !== 'field.accept' && !fits) return { status: 'invalid_value' };
   return db.transaction(async (tx) => {
     const [item] = await tx
       .select({
         extractionId: workItem.extractionId,
+        threadId: workItem.threadId,
+        sourceMessageId: workItem.sourceMessageId,
+        kind: workItem.kind,
         state: workItem.state,
         revision: workItem.revision,
         revisionHead: workItem.revisionHead,
@@ -2081,6 +2249,9 @@ export async function recordFieldEvent(
       .limit(1)
       .for('update');
     if (!item) return { status: 'not_found' as const };
+    if (input.expectedExtractionId !== undefined && input.expectedExtractionId !== item.extractionId) {
+      return { status: 'stale_revision' as const };
+    }
     const [read] = item.extractionId
       ? await tx
           .select({ payload: mailExtraction.payload, version: mailExtraction.extractorVersion })
@@ -2088,10 +2259,46 @@ export async function recordFieldEvent(
           .where(eq(mailExtraction.id, item.extractionId))
           .limit(1)
       : [];
-    const aiValue = aiValueAt(
-      read?.payload as MailExtractionPayload | null | undefined,
-      input.fieldPath,
-    );
+    const payload = read?.payload as MailExtractionPayload | null | undefined;
+    if (request || input.source || input.expectedSeq !== undefined) {
+      if (!input.source || input.expectedSeq === undefined || (request && item.kind !== 'amendment' && item.kind !== 'cancellation') ||
+          input.source.threadId !== item.threadId || input.source.messageId !== item.sourceMessageId) {
+        return { status: 'stale_source' as const };
+      }
+      if (input.expectedSeq !== item.revisionSeq) return { status: 'stale_revision' as const };
+      const [mail] = await tx.select({ id: message.id, subject: message.subject, textBody: message.textBody,
+        htmlBody: message.htmlBody }).from(message)
+        .where(and(eq(message.id, input.source.messageId), eq(message.transportId, input.transportId))).limit(1);
+      if (!mail || staffQuoteSourceHash(mail) !== input.source.sourceHash) return { status: 'stale_source' as const };
+    }
+    let aiValue: unknown;
+    if (request) {
+      // The common guard above guarantees the source is present here.
+      if (!input.source) return { status: 'stale_source' as const };
+      if (!payload) return { status: 'invalid_path' as const };
+      const [owner] = cancelRequest ? await tx.select({ action: mailActionLabel.action }).from(mailActionLabel)
+        .where(and(eq(mailActionLabel.transportId, input.transportId), eq(mailActionLabel.messageId, input.source.messageId),
+          eq(mailActionLabel.source, 'owner'), eq(mailActionLabel.version, 'owner')))
+        .orderBy(desc(mailActionLabel.updatedAt), desc(mailActionLabel.id)).limit(1) : [];
+      const cancel = cancelRequest ? projectCancelRequests(input.source, payload, item.state, owner?.action,
+        item.kind as MailKind).requests.find((entry) => entry.requestId === cancelRequest.requestId) : undefined;
+      if (cancel && cancelRequest) {
+        if (!validCancelRequestValue(cancelRequest.field, personValue) && input.type !== 'field.accept') return { status: 'invalid_value' as const };
+        const original = projectCancelRequests(input.source, payload, {}, owner?.action, item.kind as MailKind)
+          .requests.find((entry) => entry.requestId === cancelRequest.requestId);
+        aiValue = cancelRequest.field === 'target' ? original?.fields.value.target ?? null
+          : cancelRequest.field === 'cancel.note' ? original?.fields.value.cancellationNote ?? null : null;
+      } else {
+        const stay = amendRequest ? amendStayForRequest(input.source, payload, amendRequest.requestId) : undefined;
+        if (!stay || !amendRequest || item.kind !== 'amendment') return { status: 'invalid_path' as const };
+        aiValue = amendRequest.field === 'target'
+          ? projectAmendRequests(input.source, payload, {}).requests.find((entry) => entry.requestId === amendRequest.requestId)
+            ?.fields.value.target ?? null
+          : amendEmailValue(stay, amendRequest.field);
+      }
+    } else {
+      aiValue = aiValueAt(payload, input.fieldPath);
+    }
     const value = input.type === 'field.accept' ? aiValue : personValue;
     // state holds only a person's values. An accept clears the path, so the AI value shows as the extraction.
     const state = { ...item.state };
@@ -2157,7 +2364,7 @@ export async function recordStayCommit(
     fence?: CreateFenceIdentity;
   },
 ): Promise<StayCommitWriteResult> {
-  if (!STAY_ID_PATTERN.test(input.stayId)) return { status: 'not_found' };
+  if (!STAY_COMMIT_ID_PATTERN.test(input.stayId)) return { status: 'not_found' };
   return db.transaction(async (tx) => {
     const [item] = await tx
       .select({ state: workItem.state })
@@ -2193,7 +2400,7 @@ export async function recordStayActionResult(
     screenshotRef: StayCommitScreenshotRef | null;
   },
 ): Promise<{ status: 'recorded' } | { status: 'not_found' }> {
-  if (!STAY_ID_PATTERN.test(input.stayId)) return { status: 'not_found' };
+  if (!STAY_COMMIT_ID_PATTERN.test(input.stayId)) return { status: 'not_found' };
   return db.transaction(async (tx) => {
     const [item] = await tx
       .select({ state: workItem.state })
@@ -2294,7 +2501,7 @@ export async function acceptUneditedFields(
  */
 export async function workItemIdForMail(
   db: DB,
-  input: { transportId: string; internetMessageId: string },
+  input: { transportId: string; internetMessageId: string; selection?: PaneSourceSelection; expectedMessageId?: string },
 ): Promise<string | null> {
   const msg = await messageFor(db, input);
   if (!msg) return null;
@@ -2363,7 +2570,8 @@ export type NeedsYouChip = (typeof NEEDS_YOU_CHIPS)[number];
 /**
  * Work items in this transport with the given statuses, the Needs-you list. Stored origin `person` means human-written;
  * `system_notice` means automated and is excluded. A missing extraction or origin counts as human-written. Only quote,
- * booking, amendment, cancellation and voucher_pop items are included. Spam, trashed and deleted threads are left out.
+ * booking, amendment, cancellation and voucher_pop items are included, plus grounded separate pre-stay requests.
+ * Spam, trashed and deleted threads are left out.
  * Queued and In HMS come from the item's latest run on the HMS lane only (KTD14), so a follow-up or extraction run never
  * moves the chip. Otherwise a review item shows Review, and anything else needs her. Rows sort by chip in
  * NEEDS_YOU_CHIPS order, then the oldest mail first.
@@ -2372,82 +2580,90 @@ export async function listWorkItems(
   db: DB,
   input: { transportId: string; statuses: readonly string[]; limit: number; receivedSince?: Date },
 ) {
-  if (input.statuses.length === 0) return [];
-  // Stored origin `person` means human-written; `system_notice` means automated and is excluded.
-  // Coalesce keeps missing origin human-written.
-  const origin = sql<string>`coalesce(${mailExtraction.payload}->>'origin', 'person')`;
-  const hmsRunState = sql`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.executorLane} = 'hms' and (${aiWorkflowRun.workItemId} = ${workItem.id} or ${aiWorkflowRun.metrics}->'sharedWorkItemIds' @> jsonb_build_array(${workItem.id}::text) or ${aiWorkflowRun.metrics}->'batchLinks' @> jsonb_build_array(jsonb_build_object('workItemId', ${workItem.id}::text))) order by ${aiWorkflowRun.createdAt} desc limit 1)`;
-  const chipRank = sql<number>`case ${hmsRunState} when 'claimed' then 3 when 'running' then 3 when 'queued' then 2 when 'retry_wait' then 2 else case when ${workItem.status} = 'review' then 1 else 0 end end`
-    .mapWith(Number)
-    .as('chip_rank');
-  const rows = await db
-    .select({
-      id: workItem.id,
-      kind: workItem.kind,
-      status: workItem.status,
-      threadId: workItem.threadId,
-      sourceMessageId: workItem.sourceMessageId,
-      outlookEntryId:
-        sql<string | null>`${message.sourceProvenance} #>> '{evidence,locator,entryId}'`,
-      updatedAt: workItem.updatedAt,
-      sender: message.fromAddress,
-      subject: message.subject,
-      receivedAt: message.receivedAt,
-      confirmationNumbers: sql<unknown>`${mailExtraction.payload}->'confirmationNumbers'`,
-      reopenReason: sql<string | null>`(
-        select we.value->>'reasonLine'
-        from ${workEvent} as we
-        where we.work_item_id = ${workItem}.id
-          and we.type = 'status.changed'
-          and we.value->>'reason' = 'reply_needs_action'
-        order by we.at desc, we.id desc
-        limit 1
-      )`,
-      chipRank,
-    })
-    .from(workItem)
-    .innerJoin(mailThread, eq(mailThread.id, workItem.threadId))
-    .leftJoin(message, eq(message.id, workItem.sourceMessageId))
-    .leftJoin(mailExtraction, eq(mailExtraction.id, workItem.extractionId))
-    .where(
-      and(
-        eq(workItem.transportId, input.transportId),
-        inArray(workItem.status, [...input.statuses]),
-        inArray(workItem.kind, [...NEEDS_YOU_KINDS]),
-        ne(origin, 'system_notice'),
-        isNull(mailThread.spamAt),
-        isNull(mailThread.trashedAt),
-        ...(input.receivedSince ? [gte(message.receivedAt, input.receivedSince)] : []),
-      ),
-    )
-    .orderBy(
-      sql`chip_rank`,
-      asc(sql`coalesce(${message.receivedAt}, ${workItem.createdAt})`),
-      asc(workItem.id),
-    )
-    .limit(input.limit);
-  const [mailbox] = await db
-    .select({ email: mailboxTransport.email })
-    .from(mailboxTransport)
-    .where(eq(mailboxTransport.id, input.transportId))
-    .limit(1);
-  // Items opened before the pre-stay rule stay out of Needs You: the mail is about a stay already booked.
-  return rows
-    .filter(
-      (row) =>
-        !isSelfSentPreStayInformationMail({
+  if (input.statuses.length === 0 || input.limit <= 0) return [];
+  // Every candidate page must see the same order and source data.
+  return db.transaction(async (tx) => {
+    // Stored origin `person` means human-written; `system_notice` means automated and is excluded.
+    // Coalesce keeps missing origin human-written.
+    const origin = sql<string>`coalesce(${mailExtraction.payload}->>'origin', 'person')`;
+    const hmsRunState = sql`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.executorLane} = 'hms' and (${aiWorkflowRun.workItemId} = ${workItem.id} or ${aiWorkflowRun.metrics}->'sharedWorkItemIds' @> jsonb_build_array(${workItem.id}::text) or ${aiWorkflowRun.metrics}->'batchLinks' @> jsonb_build_array(jsonb_build_object('workItemId', ${workItem.id}::text))) order by ${aiWorkflowRun.createdAt} desc limit 1)`;
+    const chipRank = sql<number>`case ${hmsRunState} when 'claimed' then 3 when 'running' then 3 when 'queued' then 2 when 'retry_wait' then 2 else case when ${workItem.status} = 'review' then 1 else 0 end end`
+      .mapWith(Number);
+    const sortAge = sql`coalesce(${message.receivedAt}, ${workItem.createdAt})`;
+    const fetchPage = (cursor: NeedsYouCursor | null, size: number) => tx
+      .select({
+        id: workItem.id,
+        kind: workItem.kind,
+        status: workItem.status,
+        threadId: workItem.threadId,
+        sourceMessageId: workItem.sourceMessageId,
+        outlookEntryId:
+          sql<string | null>`${message.sourceProvenance} #>> '{evidence,locator,entryId}'`,
+        updatedAt: workItem.updatedAt,
+        sender: message.fromAddress,
+        subject: message.subject,
+        receivedAt: message.receivedAt,
+        confirmationNumbers: sql<unknown>`${mailExtraction.payload}->'confirmationNumbers'`,
+        extractionPayload: mailExtraction.payload,
+        sourceBody: message.textBody,
+        sourceHtml: message.htmlBody,
+        reopenReason: sql<string | null>`(
+          select we.value->>'reasonLine'
+          from ${workEvent} as we
+          where we.work_item_id = ${workItem}.id
+            and we.type = 'status.changed'
+            and we.value->>'reason' = 'reply_needs_action'
+          order by we.at desc, we.id desc
+          limit 1
+        )`,
+        chipRank: chipRank.as('chip_rank'),
+        // Preserve PostgreSQL's microseconds; JavaScript Date truncates them.
+        sortAge: sql<string>`${sortAge}::text`,
+      })
+      .from(workItem)
+      .innerJoin(mailThread, eq(mailThread.id, workItem.threadId))
+      .leftJoin(message, eq(message.id, workItem.sourceMessageId))
+      .leftJoin(mailExtraction, eq(mailExtraction.id, workItem.extractionId))
+      .where(
+        and(
+          eq(workItem.transportId, input.transportId),
+          inArray(workItem.status, [...input.statuses]),
+          or(
+            and(inArray(workItem.kind, [...NEEDS_YOU_KINDS]), ne(origin, 'system_notice')),
+            and(eq(workItem.kind, 'other'), sql`${mailExtraction.payload}->>'separateAsk' is not null`),
+          ),
+          isNull(mailThread.spamAt),
+          isNull(mailThread.trashedAt),
+          ...(input.receivedSince ? [gte(message.receivedAt, input.receivedSince)] : []),
+          ...(cursor ? [sql`(${chipRank}, ${sortAge}, ${workItem.id}) > (${cursor.rank}, ${cursor.age}::timestamp, ${cursor.id}::uuid)`] : []),
+        ),
+      )
+      .orderBy(sql`chip_rank`, asc(sortAge), asc(workItem.id))
+      .limit(size);
+    const [mailbox] = await tx
+      .select({ email: mailboxTransport.email })
+      .from(mailboxTransport)
+      .where(eq(mailboxTransport.id, input.transportId))
+      .limit(1);
+    return collectNeedsYouPages({
+      limit: input.limit,
+      fetchPage: async (cursor, size) => fetchPage(cursor, size),
+      validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, sourceBody, sourceHtml, ...row }) => {
+        const isPreStay = isSelfSentPreStayInformationMail({
           fromAddress: row.sender,
           mailboxAddress: mailbox?.email,
           subject: row.subject,
-          confirmationNumbers: Array.isArray(row.confirmationNumbers)
-            ? row.confirmationNumbers.filter((value): value is string => typeof value === 'string')
+          confirmationNumbers: Array.isArray(confirmationNumbers)
+            ? confirmationNumbers.filter((value): value is string => typeof value === 'string')
             : [],
-        }),
-    )
-    .map(({ chipRank: rank, confirmationNumbers: _confirmationNumbers, ...row }) => ({
-      ...row,
-      chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
-    }));
+        });
+        const payload = extractionPayload as MailExtractionPayload | null;
+        const separateAsk = isPreStay && separatePreStayAsk(row.kind, payload, sourceBody, sourceHtml);
+        if (isPreStay ? !separateAsk : row.kind === 'other') return null;
+        return { ...row, kind: separateAsk ? 'other_actionable' : row.kind, chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you' };
+      },
+    });
+  }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
 }
 
 export type WorkItemSection = { type: 'contact' } | { type: 'stay'; stayId: string };

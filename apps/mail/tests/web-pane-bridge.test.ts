@@ -5,6 +5,7 @@ import {
   isInboundMessage,
   latestInboundMessage,
   selectPreviewMessage,
+  singleInboundMessageId,
 } from '@/lib/workstation/web-pane-bridge';
 import { WorkstationEmailPayloadSchema } from '@/lib/workstation/bridge-protocol';
 import type { IGetThreadResponse } from '@zero/server/driver/types';
@@ -56,14 +57,17 @@ describe('latest inbound selection', () => {
       message({ id: 'in-1', receivedOn: '2026-10-08T09:00:00.000Z' }),
       message({
         id: 'in-2',
+        threadId: 'linked-thread',
         receivedOn: '2026-10-08T10:00:00.000Z',
         messageId: '<guest-2@example.com>',
       }),
       staffReply({ id: 'out-1' }),
     ];
     const selection = selectPreviewMessage(messages, MAILBOX, TRANSPORT);
-    expect(selection).toMatchObject({ status: 'ready', email: { entryId: 'in-2' } });
+    expect(selection).toMatchObject({ status: 'ready', threadId: 'linked-thread', email: { entryId: 'in-2' } });
     expect(latestInboundMessage(messages, MAILBOX)?.id).toBe('in-2');
+    expect(selectPreviewMessage([message({ id: 'older-payload', threadId: undefined })], MAILBOX, TRANSPORT))
+      .toMatchObject({ status: 'ready', threadId: undefined, email: { entryId: 'older-payload' } });
   });
 
   it('keeps a workflow preview bound to its listed thread when a linked thread is newer', () => {
@@ -89,6 +93,7 @@ describe('latest inbound selection', () => {
 
     expect(selection).toMatchObject({
       status: 'ready',
+      threadId: 'quotes-thread',
       email: {
         entryId: 'quotes-source-message',
         internetMessageId: '<quotes-source@example.com>',
@@ -137,6 +142,64 @@ describe('latest inbound selection', () => {
     expect(selectPreviewMessage([staffReply({ id: 'out-1' })], MAILBOX, TRANSPORT)).toEqual({
       status: 'unsynced',
       reason: 'no_inbound',
+    });
+  });
+});
+
+describe('exact webmail selection', () => {
+  const first = message({ id: 'in-1', messageId: '<first@example.com>' });
+  const second = message({ id: 'in-2', messageId: '<second@example.com>', receivedOn: '2026-10-09T09:00:00.000Z' });
+  const select = (id: string | null, messages = [first, second], thread = 'thread-1') =>
+    selectPreviewMessage(messages, MAILBOX, TRANSPORT, thread, id, true);
+
+  it('binds A, then B, then A even when B is the latest message', () => {
+    expect(select('in-1')).toMatchObject({ status: 'ready', threadId: 'thread-1', email: { entryId: 'in-1', internetMessageId: '<first@example.com>' } });
+    expect(select('in-2')).toMatchObject({ status: 'ready', email: { entryId: 'in-2', internetMessageId: '<second@example.com>' } });
+    expect(select('in-1')).toMatchObject({ status: 'ready', email: { entryId: 'in-1' } });
+  });
+
+  it('asks staff to select an email when a thread is opened without one', () => {
+    expect(select(null)).toEqual({ status: 'unsynced', reason: 'select_message' });
+  });
+
+  it('reports no guest email for sent-only threads, rather than asking for a missing selection', () => {
+    expect(select(null, [staffReply({ id: 'reply' })])).toEqual({ status: 'unsynced', reason: 'no_inbound' });
+    expect(select(null, [{ ...first, isDraft: true }])).toEqual({ status: 'unsynced', reason: 'no_inbound' });
+    expect(select(null, [{ ...first, threadId: 'linked' }])).toEqual({ status: 'unsynced', reason: 'no_inbound' });
+  });
+
+  it('auto-selects only a single unambiguous inbound in the current thread', () => {
+    expect(singleInboundMessageId([first, staffReply({ id: 'reply' })], MAILBOX, 'thread-1')).toBe('in-1');
+    expect(singleInboundMessageId([first, second], MAILBOX, 'thread-1')).toBeNull();
+    expect(singleInboundMessageId([first, { ...first, threadId: 'linked' }], MAILBOX, 'thread-1')).toBeNull();
+    expect(singleInboundMessageId([first], '', 'thread-1')).toBeNull();
+    expect(singleInboundMessageId([first], MAILBOX, 'other-thread')).toBeNull();
+    expect(select(null, [first, staffReply({ id: 'reply' })])).toMatchObject({
+      status: 'ready', email: { entryId: 'in-1' },
+    });
+    expect(select(null, [first, { ...first, threadId: 'linked' }])).toEqual({
+      status: 'unsynced', reason: 'select_message',
+    });
+  });
+
+  it('never falls back to the latest message when an explicit id is stale or belongs to a linked thread', () => {
+    expect(select('missing')).toEqual({ status: 'unsynced', reason: 'source_message_unavailable' });
+    expect(select('in-1', [first, second], 'another-thread')).toEqual({ status: 'unsynced', reason: 'source_message_unavailable' });
+    expect(select('in-1', [{ ...first, threadId: undefined }])).toEqual({ status: 'unsynced', reason: 'source_message_unavailable' });
+  });
+
+  it('refuses duplicate stored ids, drafts, outgoing messages and missing mailbox identity', () => {
+    const unavailable = { status: 'unsynced', reason: 'source_message_unavailable' };
+    expect(select('in-1', [first, { ...first, threadId: 'linked-thread' }])).toEqual(unavailable);
+    expect(select('in-1', [{ ...first, isDraft: true }, second])).toEqual(unavailable);
+    expect(select('in-1', [{ ...first, direction: 'outbound' }, second])).toEqual(unavailable);
+    expect(selectPreviewMessage([first], '', TRANSPORT, 'thread-1', 'in-1', true)).toEqual(unavailable);
+    expect(selectPreviewMessage([first], MAILBOX, '', 'thread-1', 'in-1', true)).toEqual(unavailable);
+  });
+
+  it('reports a missing internet Message-ID on the selected email, even if another has one', () => {
+    expect(select('in-1', [{ ...first, messageId: undefined }, second])).toEqual({
+      status: 'unsynced', reason: 'no_message_id',
     });
   });
 });

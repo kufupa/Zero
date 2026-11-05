@@ -6,6 +6,14 @@ set -euo pipefail
 : "${INSTANCE_ID:=i-008f737974a9ba9b3}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Do not let caller Git discovery overrides make a dirty script look like a
+# different clean checkout. Keep only transport/prompt settings.
+while IFS='=' read -r name _; do
+  case "$name" in
+    GIT_BRANCH|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|GIT_TERMINAL_PROMPT) ;;
+    GIT_*) unset "$name" ;;
+  esac
+done < <(env)
 DO_MIGRATE=0
 QUIESCED=0
 ALLOW_ROLLBACK=0
@@ -38,37 +46,33 @@ nava_refuse_if_hold() {
 }
 nava_refuse_if_hold
 
-# Text rule failed twice (SR3 lane deploys). Refuse unless cwd AND this
-# script's checkout are the recover-parse-failure worktree. Copied-script
-# unit tests set REMOTE_TEST_REPO (deploy-sandbox) or run outside a Zero
-# checkout; skip those.
-ops_deploy_is_recover() {
-  case "$1" in
-    */.worktrees/recover-parse-failure | */.worktrees/recover-parse-failure/*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
+# Deploy only from one clean checkout at the exact main revision that the
+# bundle will ship.
 ops_deploy_worktree_guard() {
-  if [ -n "${REMOTE_TEST_REPO:-}" ]; then
-    return 0
-  fi
-  local cwd toplevel script_tree check
-  cwd="$(pwd)"
-  toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  local cwd_tree script_tree head origin_main status
+  cwd_tree="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   script_tree="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
-  check="${toplevel:-$cwd}"
-  if ops_deploy_is_recover "$cwd" || ops_deploy_is_recover "$check"; then
-    if [ -n "$script_tree" ] && ! ops_deploy_is_recover "$script_tree"; then
-      echo "ops-deploy: refuse: script checkout must be .worktrees/recover-parse-failure (got ${script_tree})" >&2
-      exit 2
-    fi
-    return 0
+  if [ -z "$cwd_tree" ] || [ -z "$script_tree" ] || [ "$cwd_tree" != "$script_tree" ]; then
+    echo "ops-deploy: refuse: cwd and deploy script must belong to the same git worktree" >&2
+    exit 2
   fi
-  if [ -z "$toplevel" ] || [ ! -e "${toplevel}/apps/server-pilot/deploy/ops-deploy.sh" ]; then
-    return 0
+  if [ "${GIT_BRANCH:-main}" != main ] || [ "${ALLOW_UNPUSHED_DEPLOY:-0}" = 1 ]; then
+    echo "ops-deploy: refuse: main and the origin check are required" >&2
+    exit 2
   fi
-  echo "ops-deploy: refuse: cwd must be .worktrees/recover-parse-failure (got ${check})" >&2
-  exit 2
+  head="$(git -C "$script_tree" rev-parse --verify 'HEAD^{commit}')"
+  origin_main="$(git -C "$script_tree" rev-parse --verify 'refs/remotes/origin/main^{commit}' 2>/dev/null || true)"
+  if [ -z "$origin_main" ] || [ "$head" != "$origin_main" ]; then
+    echo "ops-deploy: refuse: worktree HEAD and origin/main must match" >&2
+    exit 2
+  fi
+  status="$(git -C "$script_tree" status --porcelain --untracked-files=normal)"
+  if [ -n "$status" ]; then
+    echo "ops-deploy: refuse: worktree is not clean" >&2
+    exit 2
+  fi
+  # sync-ec2-git-bundle.sh rechecks this against the fetched ref and bundle.
+  export NAVA_DEPLOY_EXPECTED_SHA="$head"
 }
 ops_deploy_worktree_guard
 
@@ -103,26 +107,34 @@ else
 fi
 
 REMOTE_NVM='export NVM_DIR=/home/ubuntu/.nvm; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; export PATH="$HOME/.local/share/pnpm:$PATH"'
+printf -v Q_EXPECTED_DEPLOY_SHA '%q' "$NAVA_DEPLOY_EXPECTED_SHA"
+# Each remote mutation holds the same lock as bundle checkout and refuses if
+# another deploy changed the checkout since this operator checked its HEAD.
+REMOTE_BOUND_PREFIX="set -euo pipefail; exec 9>>/home/ubuntu/.nava-deploy.lock; flock -x 9; [ \"\$(git -C /home/ubuntu/repos/zero rev-parse --verify 'HEAD^{commit}')\" = ${Q_EXPECTED_DEPLOY_SHA} ] || { echo 'ops-deploy: remote checkout changed' >&2; exit 20; };"
+remote_bound() {
+  bash "${SCRIPT_DIR}/ssm-run-command.sh" "${REMOTE_BOUND_PREFIX}
+$1"
+}
 
 # Every on-box pnpm install runs husky's prepare, which fails with EACCES while .husky/_/h is mode 0444.
 # Restore the owner write bit before the first install. A missing hook is skipped.
 step_finish
 echo "== ops-deploy: restore husky hook write bit =="
 step_mark 'ops-deploy: restore husky hook write bit'
-bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+remote_bound \
   'hook=/home/ubuntu/repos/zero/.husky/_/h; if [ -e "$hook" ]; then chmod u+w "$hook"; fi'
 
 step_finish
 echo "== ops-deploy: install dependencies before migration check =="
 step_mark 'ops-deploy: install dependencies before migration check'
-bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+remote_bound \
   "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && pnpm install --frozen-lockfile"
 
 if [ "$DO_MIGRATE" -eq 1 ]; then
   step_finish
   echo "== ops-deploy: migrate =="
   step_mark 'ops-deploy: migrate'
-  bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+  remote_bound \
     "${REMOTE_NVM}; cd /home/ubuntu/repos/zero/apps/server-pilot && set -a && source .env.production && set +a && NODE_EXTRA_CA_CERTS=/home/ubuntu/repos/zero/apps/server-pilot/deploy/rds-ca-global.pem pnpm db:migrate"
 fi
 
@@ -130,7 +142,7 @@ if [ "$QUIESCED" != "1" ]; then
   step_finish
   echo "== ops-deploy: verify database before remote env bootstrap =="
   step_mark 'ops-deploy: verify database before remote env bootstrap'
-  bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+  remote_bound \
     "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/check-migration-compatibility.sh"
 fi
 
@@ -138,7 +150,7 @@ if [ "$QUIESCED" != "1" ]; then
   step_finish
   echo "== ops-deploy: bootstrap isolated remote env when absent =="
   step_mark 'ops-deploy: bootstrap isolated remote env when absent'
-  bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+  remote_bound \
     "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && \
       if [ ! -e apps/server-pilot/.env.remote-common ] && [ ! -e apps/server-pilot/.env.remote-admin ]; then \
         bash apps/server-pilot/deploy/write-ec2-remote-env.sh; \
@@ -152,7 +164,7 @@ if [ "$QUIESCED" = "1" ]; then
   echo "== ops-deploy: on-box quiesced deploy (no PM2 / no HTTP health) =="
   step_mark 'ops-deploy: on-box quiesced deploy (no PM2 / no HTTP health)'
   # Rollback may select a deploy script from before --skip-install existed.
-  bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+  remote_bound \
     "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && \
       if bash apps/server-pilot/deploy/deploy-ec2.sh --skip-install --help >/dev/null 2>&1; then \
         bash apps/server-pilot/deploy/deploy-ec2.sh --quiesced --skip-install; \
@@ -165,18 +177,43 @@ if [ "$QUIESCED" != "1" ]; then
   step_finish
   echo "== ops-deploy: on-box deploy =="
   step_mark 'ops-deploy: on-box deploy'
-  bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+  DEPLOY_SSM_RESULT=""
+  # PM2 may drain several processes for up to 30 minutes each. Do not let
+  # the SSM execution or polling timeout interrupt the restart midway.
+  if DEPLOY_SSM_RESULT="$(SSM_EXECUTION_TIMEOUT_SECONDS=10800 SSM_MAX_POLL_SECONDS=11100 remote_bound \
     "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && \
-      if bash apps/server-pilot/deploy/deploy-ec2.sh --skip-install --help >/dev/null 2>&1; then \
-        bash apps/server-pilot/deploy/deploy-ec2.sh --skip-install; \
-      else \
-        bash apps/server-pilot/deploy/deploy-ec2.sh; \
-      fi"
+      bash apps/server-pilot/deploy/capture-deploy-ec2.sh")"; then
+    :
+  else
+    status=$?
+    printf '%s\n' "$DEPLOY_SSM_RESULT"
+    exit "$status"
+  fi
+  printf '%s\n' "$DEPLOY_SSM_RESULT"
+  DEPLOY_STARTED_AT="$(node - "$DEPLOY_SSM_RESULT" <<'NODE'
+try {
+  const output = String(JSON.parse(process.argv[2]).Stdout ?? "");
+  const prefix = "NAVA_PM2_RESTART_STARTED_AT=";
+  const line = output.split(/\r?\n/).find((value) => value.startsWith(prefix));
+  const timestamp = line?.slice(prefix.length) ?? "";
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(timestamp) ||
+      new Date(timestamp).toISOString() !== timestamp) process.exit(1);
+  process.stdout.write(timestamp);
+} catch {
+  process.exit(1);
+}
+NODE
+  )" || {
+    echo "ops-deploy: restart boundary unavailable; deploy may have occurred, readiness not verified" >&2
+    exit 20
+  }
+  export DEPLOY_STARTED_AT
+  echo "ops-deploy: readiness dead-letter boundary is current restart $DEPLOY_STARTED_AT"
 
   step_finish
   echo "== ops-deploy: health =="
   step_mark 'ops-deploy: health'
-  bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+  remote_bound \
     'curl -fsS http://127.0.0.1:8788/health && curl -fsS http://127.0.0.1:8789/health && curl --disable --noproxy "*" -fsS --connect-to "nava-admin.trynava.io:8443:172.31.12.112:8443" -H "Host: nava-admin.trynava.io" "http://nava-admin.trynava.io:8443/" >/dev/null'
 
   step_finish
@@ -274,7 +311,7 @@ if [ -n "${HMS_REGISTRY_CANDIDATE:-}" ]; then
   step_finish
   echo "== ops-deploy: source+registry CAS (source-registry-transaction) =="
   step_mark 'ops-deploy: source+registry CAS (source-registry-transaction)'
-  bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+  remote_bound \
     "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && \
       export HMS_REGISTRY_CANDIDATE='${HMS_REGISTRY_CANDIDATE}' \
         HMS_SOURCE_REGISTRY_CURRENT='${HMS_SOURCE_REGISTRY_CURRENT:?}' \
@@ -297,7 +334,7 @@ if [ "$QUIESCED" != "1" ]; then
   # The SSM helper runs payloads as ubuntu, so the directory, temp file, and marker are ubuntu-owned.
   # The marker records the boundary taken before readiness (READINESS_STARTED_AT), not this write time. A dead letter
   # that lands between readiness and this write is then inside the next deploy's window.
-  bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+  remote_bound \
     "readiness_started_at='${READINESS_STARTED_AT:?}'"'
      set -euo pipefail
      marker_dir=/home/ubuntu/.nava-deploy

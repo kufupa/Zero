@@ -7,7 +7,7 @@
  * when HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on.
  */
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,8 @@ import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env
 import { classifyHmsLoginOutage } from '../hms/property-outage.js';
 import { type PaneStayLock } from './pane-stay-save.js';
 import { type HmsReadTarget } from '../hms/hms-read-target.js';
+import type { HmsCloudRateLookup } from './hms-cloud-saved-stay-find.js';
+import { canonicalJson } from './draft-approval.js';
 
 const execFileAsync = promisify(execFile);
 const QUOTE_TOOL = fileURLToPath(new URL('../../tooling/playwright-quote/fetch-quote.mjs', import.meta.url));
@@ -35,11 +37,36 @@ const MAX_ROOM_GROUPS = 8;
 const MAX_NIGHTS = 30;
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
+const nativeCode = z.string().regex(/^[A-Z0-9]{1,12}$/);
+const nativeId = z.string().trim().min(1).max(40).refine(value => !/[\p{Cc}]/u.test(value));
+const partyRef = z.object({ nativeId, name: z.string().trim().min(1).max(200).refine(value => !/[\p{Cc}]/u.test(value)) }).strict();
+
+/** Pricing identity reconstructed by the route from the bound effective draft. */
+export const rateContextSchema = z.object({
+  propertyCode: z.string().min(1),
+  workflow: z.enum(['quote', 'create', 'amend']),
+  arrival: z.string().regex(ISO_DAY), departure: z.string().regex(ISO_DAY),
+  roomCode: nativeCode, quantity: z.number().int().min(1).max(99),
+  adults: z.number().int().min(1).max(9), childAges: z.array(z.number().int().min(0).max(99)).max(9),
+  board: z.enum(['room_only', 'bb', 'dbb']).nullable(), currency: z.string().regex(/^[A-Z]{3}$/),
+  agencyId: nativeId.nullable(), organizationId: nativeId.nullable(), guestProfileId: nativeId.nullable(),
+  sourceOfBusiness: z.string().nullable(), track: z.string().nullable(), guaranteeType: z.string().nullable(),
+  typedRatePlan: nativeCode.nullable(),
+  savedTarget: z.object({ confirmation: z.string().min(1), bookedArrival: z.string().regex(ISO_DAY),
+    nativePreimageDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict().nullable(),
+  retainRates: z.enum(['yes', 'no']).nullable(),
+}).strict();
+export type RateContext = z.infer<typeof rateContextSchema>;
+
+export { rateContextKey } from './rate-options.js';
+
 export const availabilityRequestSchema = z
   .object({
     kind: z.literal('availability'),
     arrival: z.string().regex(ISO_DAY),
     departure: z.string().regex(ISO_DAY),
+    rateContext: rateContextSchema.optional(),
+    rateParties: z.object({ organization: partyRef.optional(), agency: partyRef.optional() }).strict().optional(),
     rooms: z
       .array(
         z
@@ -56,7 +83,95 @@ export const availabilityRequestSchema = z
       .max(MAX_ROOM_GROUPS),
   })
   .strict();
+
+/** Refined job schema preserves availabilityRequestSchema.shape for existing pane route consumers. */
+export const availabilityJobRequestSchema = availabilityRequestSchema.superRefine((request, ctx) => {
+    const context = request.rateContext;
+    if (!context) {
+      if (request.rateParties) ctx.addIssue({ code: 'custom', message: 'Rate parties require a rate context.' });
+      return;
+    }
+    const room = request.rooms[0];
+    if (request.rooms.length !== 1 || !room || context.arrival !== request.arrival || context.departure !== request.departure ||
+        context.quantity !== room.quantity || context.adults !== room.adults ||
+        JSON.stringify(context.childAges) !== JSON.stringify(room.childAges) ||
+        !isRealIsoDay(context.arrival) || !isRealIsoDay(context.departure) ||
+        !(context.departure > context.arrival) ||
+        (Date.parse(context.departure) - Date.parse(context.arrival)) / 86_400_000 > MAX_NIGHTS) {
+      ctx.addIssue({ code: 'custom', message: 'Rate context must match one complete room scenario within 30 nights.' });
+    }
+    for (const [kind, id] of [['organization', context.organizationId], ['agency', context.agencyId]] as const) {
+      if ((request.rateParties?.[kind]?.nativeId ?? null) !== id) {
+        ctx.addIssue({ code: 'custom', message: `Rate ${kind} reference must match the context ID.` });
+      }
+    }
+  });
 export type AvailabilityRequest = z.infer<typeof availabilityRequestSchema>;
+
+/** Project only the current server draft and the exact saved-stay read. Explicit clears never fall back. */
+export function boundAmendRateRequest(input: {
+  propertyCode: string; requestId: string; stayId: string; rowId: string | null;
+  fields: Record<string, unknown>; state: Record<string, unknown>;
+  lookup: HmsCloudRateLookup; typedRatePlan?: string;
+}): { request: AvailabilityRequest; selectedCode: string | null; explicitCode: string | null; unchangedCode: string; draftContextKey: string } |
+  { reason: string } {
+  const { lookup, fields, state } = input;
+  if (!lookup?.native || !lookup.parties?.agency || !lookup.parties.organization || !lookup.group ||
+      !lookup.promotion || !lookup.arAccount || !lookup.sourceOfBusiness || !lookup.track) return { reason: 'SAVED_CONTEXT_READ_REQUIRED' };
+  const native = lookup.native;
+  const target = fields.target as { confirmation?: unknown; arrival?: unknown } | null;
+  if (!target || target.confirmation !== native.confirmation || target.arrival !== native.arrival ||
+      native.propertyCode !== input.propertyCode || native.status !== 'Reserved') return { reason: 'SAVED_TARGET_CHANGED' };
+  if (Object.values(lookup.parties).some(party => party.state === 'unknown') ||
+      [lookup.group, lookup.promotion, lookup.arAccount].some(field => field.state !== 'blank')) {
+    return { reason: 'SAVED_PARTY_CONTEXT_UNSUPPORTED' };
+  }
+  const requestPrefix = `requests[${input.requestId}].`;
+  const resolved = (field: string, fallback: unknown, structural?: string) => {
+    const path = structural ?? `${requestPrefix}${field}`;
+    return Object.hasOwn(state, path) ? state[path] : fields[field] ?? fallback;
+  };
+  const arrival = resolved('arrival', native.arrival, `stays[${input.stayId}].requested.arrival`);
+  const departure = resolved('departure', native.departure, `stays[${input.stayId}].requested.departure`);
+  const rowPrefix = input.rowId ? `stays[${input.stayId}].rows[${input.rowId}].` : null;
+  const adultPath = rowPrefix && Object.hasOwn(state, `${rowPrefix}adults`) ? `${rowPrefix}adults` :
+    `stays[${input.stayId}].totalAdults`;
+  const adults = resolved('adults', native.adults, adultPath);
+  const childAges = Object.hasOwn(state, `${requestPrefix}childAges`) ? state[`${requestPrefix}childAges`] :
+    rowPrefix && Object.hasOwn(state, `${rowPrefix}childAges`) ? state[`${rowPrefix}childAges`] :
+    fields.childAges ?? (native.children === 0 ? [] : native.childAges === 'unknown' ? null : native.childAges);
+  const requestedAges = Object.hasOwn(state, `${requestPrefix}childAges`) ||
+    (rowPrefix && Object.hasOwn(state, `${rowPrefix}childAges`)) || fields.childAges != null;
+  const children = resolved('children', requestedAges && Array.isArray(childAges) ? childAges.length : native.children,
+    `stays[${input.stayId}].totalChildren`);
+  if (!Array.isArray(childAges) || children !== childAges.length) {
+    return { reason: 'CHILD_AGES_UNRESOLVED' };
+  }
+  const selectedCode = resolved('ratePlan', native.ratePlan);
+  const roomCode = resolved('roomType', native.roomType);
+  const retainRates = resolved('retainRates', 'no');
+  const stableLookup = { ...lookup, observedAt: null };
+  const rateParties = Object.fromEntries(Object.entries(lookup.parties).flatMap(([kind, party]) =>
+    party.state === 'selected' ? [[kind, { nativeId: party.nativeId, name: party.name }]] : []));
+  const parsed = availabilityJobRequestSchema.safeParse({ kind: 'availability', arrival, departure,
+    rooms: [{ roomType: roomCode, quantity: 1, adults, childAges }], rateParties,
+    rateContext: { propertyCode: input.propertyCode, workflow: 'amend', arrival, departure, roomCode,
+      quantity: 1, adults, childAges, board: null, currency: lookup.currency,
+      agencyId: lookup.parties.agency.nativeId, organizationId: lookup.parties.organization.nativeId,
+      guestProfileId: native.guestId,
+      sourceOfBusiness: lookup.sourceOfBusiness.state === 'observed' ? lookup.sourceOfBusiness.value : null,
+      track: lookup.track.state === 'observed' ? lookup.track.value : null,
+      guaranteeType: native.guaranteeCode ?? null, typedRatePlan: input.typedRatePlan ?? null,
+      savedTarget: { confirmation: native.confirmation, bookedArrival: native.arrival,
+        nativePreimageDigest: createHash('sha256').update(canonicalJson(stableLookup)).digest('hex') }, retainRates },
+  });
+  if (!parsed.success || !nativeCode.safeParse(selectedCode).success) return { reason: 'RATE_DRAFT_INCOMPLETE' };
+  const context = parsed.data.rateContext!;
+  return { request: parsed.data, selectedCode: selectedCode as string,
+    explicitCode: Object.hasOwn(state, `${requestPrefix}ratePlan`) || fields.ratePlan != null ? selectedCode as string : null,
+    unchangedCode: native.ratePlan,
+    draftContextKey: createHash('sha256').update(canonicalJson({ ...context, typedRatePlan: selectedCode })).digest('hex') };
+}
 
 /** A real calendar day in YYYY-MM-DD form. 2026-02-30 and 2026-13-01 are not one. */
 function isRealIsoDay(value: string): boolean {
@@ -158,6 +273,7 @@ export const AVAILABILITY_MAX_OPTIONS_PER_GROUP = 200;
 
 /** The quote tool's v2 request for one probe. Groups carry no room or rate codes, so every room type is read. */
 export function quoteRequestFor(request: AvailabilityRequest, target: HmsReadTarget): Record<string, unknown> {
+  if (request.rateContext) throw new Error('CLOUD_RATE_CONTEXT_REQUIRED');
   const propertyCode = target.propertyCode.trim();
   if (!propertyCode) throw new Error('availability_probe_property_unknown');
   return {
@@ -653,6 +769,7 @@ export async function probeAvailability(
   request: AvailabilityRequest,
   deps: AvailabilityProbeDeps,
 ): Promise<AvailabilityProbeResult> {
+  if (request.rateContext) return { outcome: 'refused_input_invalid' };
   const lock = deps.lock();
   if (!lock) return { outcome: 'refused_lock_unavailable' };
   const spawn = availabilityProbeLoaders.spawn ?? ((quote) => defaultQuoteSpawn(quote, deps.target));

@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebPanePanel } from '../components/nava-pane/web-pane-panel';
 import NavaPreviewPage from '../app/(routes)/nava-preview/page';
@@ -14,10 +14,16 @@ import { readFileSync } from 'node:fs';
 
 const mocks = vi.hoisted(() => ({
   threadId: null as string | null,
+  sourceMessageId: null as string | null,
+  previewQuery: 'thread=thread-7',
+  setPreviewParams: vi.fn(),
   folder: 'inbox',
   searchListFolder: 'inbox',
   wide: true,
   useWebPreview: vi.fn(),
+  setMailSelection: vi.fn(),
+  setComposeState: vi.fn(),
+  flushCompose: vi.fn(),
 }));
 
 // Vitest loads react-resizable-panels through the node export condition, and that build has no
@@ -37,11 +43,22 @@ const readSource = (relativePath: string) =>
   readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), relativePath), 'utf8');
 
 vi.mock('../lib/workstation/web-pane-bridge', () => ({
-  useWebPreview: (args: { threadId: string; sourceThreadId?: string }) => mocks.useWebPreview(args),
+  useWebPreview: (args: { threadId: string; sourceThreadId?: string; sourceMessageId?: string; requireSelectedMessage?: boolean }) => mocks.useWebPreview(args),
 }));
 
 vi.mock('../components/nava-pane/nava-pane', () => ({
-  NavaPane: () => <div data-testid="nava-pane" />,
+  NavaPane: ({ onOpenThread, webSelectedMessageId, webSelectedThreadId }: { onOpenThread?: (threadId: string, sourceMessageId?: string) => void;
+    webSelectedMessageId?: string | null; webSelectedThreadId?: string }) => (
+    <div data-testid="nava-pane" data-web-selected-message={webSelectedMessageId ?? ''} data-web-selected-thread={webSelectedThreadId ?? ''}>
+      <button type="button" onClick={() => onOpenThread?.('thread-a', 'source-a')}>Open source A</button>
+      <button type="button" onClick={() => onOpenThread?.('thread-b', 'source-b')}>Open source B</button>
+      <button type="button" onClick={() => onOpenThread?.('thread-7')}>Open thread only</button>
+    </div>
+  ),
+}));
+
+vi.mock('@/lib/mail/compose-flush-registry', () => ({
+  flushComposeBeforeLeave: () => mocks.flushCompose(),
 }));
 
 vi.mock('../components/mail/thread-display', () => ({
@@ -108,13 +125,13 @@ vi.mock('react-router', () => ({
   ),
   useNavigate: () => vi.fn(),
   useParams: () => ({ folder: mocks.folder }),
-  useSearchParams: () => [new URLSearchParams('thread=thread-7')],
+  useSearchParams: () => [new URLSearchParams(mocks.previewQuery), mocks.setPreviewParams],
 }));
 vi.mock('nuqs', () => ({
   parseAsString: {},
-  useQueryState: (key: string) => [key === 'threadId' ? mocks.threadId : null, vi.fn()],
+  useQueryState: (key: string) => [key === 'threadId' ? mocks.threadId : null, mocks.setComposeState],
   // DS2-S5 516304d2f: MailLayoutContent reads threadId + sourceMessageId together.
-  useQueryStates: () => [{ threadId: mocks.threadId, sourceMessageId: null }, vi.fn()],
+  useQueryStates: () => [{ threadId: mocks.threadId, sourceMessageId: mocks.sourceMessageId }, mocks.setMailSelection],
 }));
 vi.mock('react-hotkeys-hook', () => ({
   useHotkeys: vi.fn(),
@@ -149,6 +166,7 @@ vi.mock('@/lib/auth-proxy', () => ({ authProxy: {} }));
 const readyPreview = () => ({
   selection: {
     status: 'ready',
+    threadId: 'linked-thread',
     email: {
       entryId: 'msg-1',
       storeId: 'transport-1',
@@ -174,9 +192,15 @@ const setNavaToggle = (open: boolean) => act(() => getDefaultStore().set(navaSid
 beforeEach(() => {
   localStorage.clear();
   mocks.threadId = null;
+  mocks.sourceMessageId = null;
+  mocks.previewQuery = 'thread=thread-7';
+  mocks.setPreviewParams.mockReset();
   mocks.folder = 'inbox';
   mocks.searchListFolder = 'inbox';
   mocks.wide = true;
+  mocks.setMailSelection.mockReset();
+  mocks.setComposeState.mockReset();
+  mocks.flushCompose.mockReset().mockResolvedValue(undefined);
   mocks.useWebPreview.mockReset();
   mocks.useWebPreview.mockImplementation(() => readyPreview());
   setNavaToggle(true);
@@ -192,11 +216,64 @@ describe('Nava pane beside the open thread', () => {
     render(<MailLayout />);
 
     expect(await screen.findByTestId('nava-pane')).toBeDefined();
-    expect(mocks.useWebPreview).toHaveBeenCalledWith({ threadId: 'thread-42' });
+    expect(screen.getByTestId('nava-pane').getAttribute('data-web-selected-message')).toBe('msg-1');
+    expect(mocks.useWebPreview).toHaveBeenCalledWith({ threadId: 'thread-42', requireSelectedMessage: true });
     expect(document.querySelector('[data-preview-thread="thread-42"]')).not.toBeNull();
     expect(panelSize('mail-list-panel')).toBe('30.0');
     expect(panelSize('mail-thread-panel')).toBe('42.0');
     expect(panelSize('mail-nava-panel')).toBe('28.0');
+  });
+
+  it('does not vouch for the latest inbound in the generic viewer', () => {
+    render(<WebPanePanel threadId="thread-42" />);
+    expect(screen.getByTestId('nava-pane').getAttribute('data-web-selected-message')).toBe('');
+    expect(screen.getByTestId('nava-pane').getAttribute('data-web-selected-thread')).toBe('linked-thread');
+  });
+
+  it('passes the selected stored message through the pane on A/B/A changes', async () => {
+    mocks.threadId = 'thread-42';
+    mocks.sourceMessageId = 'message-a';
+    const { rerender } = render(<MailLayout />);
+    expect(await screen.findByTestId('nava-pane')).toBeDefined();
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceMessageId: 'message-a', requireSelectedMessage: true });
+
+    mocks.sourceMessageId = 'message-b';
+    rerender(<MailLayout />);
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceMessageId: 'message-b', requireSelectedMessage: true });
+
+    mocks.sourceMessageId = 'message-a';
+    rerender(<MailLayout />);
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceMessageId: 'message-a', requireSelectedMessage: true });
+  });
+
+  it('keeps the latest work-item choice when compose flushes complete out of order', async () => {
+    let finishA: (() => void) | undefined;
+    let finishB: (() => void) | undefined;
+    mocks.flushCompose
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { finishA = resolve; }))
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { finishB = resolve; }));
+    mocks.threadId = 'thread-42';
+    render(<MailLayout />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open source A' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open source B' }));
+    await act(async () => { finishB?.(); });
+    await waitFor(() => expect(mocks.setMailSelection).toHaveBeenCalledWith({ threadId: 'thread-b', sourceMessageId: 'source-b' }));
+    await act(async () => { finishA?.(); });
+    expect(mocks.setMailSelection).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a pending work-item open undo a newer message choice or clear its draft', async () => {
+    let finish!: () => void;
+    mocks.flushCompose.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    mocks.threadId = 'thread-42';
+    mocks.sourceMessageId = 'message-a';
+    const { rerender } = render(<MailLayout />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open source A' }));
+    mocks.sourceMessageId = 'message-b';
+    rerender(<MailLayout />);
+    await act(async () => { finish(); });
+    expect(mocks.setMailSelection).not.toHaveBeenCalled();
+    expect(mocks.setComposeState).not.toHaveBeenCalled();
   });
 
   it('is hidden when the toggle is off, and the two-pane layout is unchanged', () => {
@@ -292,6 +369,7 @@ describe('workflow folder mail routing', () => {
     expect(mocks.useWebPreview).toHaveBeenCalledWith({
       threadId: 'thread-42',
       sourceThreadId: 'thread-42',
+      requireSelectedMessage: true,
     });
   });
 });
@@ -341,6 +419,40 @@ describe('shared WebPanePanel', () => {
     ).not.toBeNull();
   });
 
+  it('keeps a quote notice bound to its exact email in nava-preview', () => {
+    mocks.previewQuery = 'thread=thread-a&sourceMessageId=source-a';
+    const { rerender } = render(<NavaPreviewPage />);
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({
+      threadId: 'thread-a', sourceMessageId: 'source-a', requireSelectedMessage: true,
+    });
+    expect(screen.getByRole('link', { name: 'Open in webmail' }).getAttribute('href'))
+      .toBe('/mail/inbox?threadId=thread-a&sourceMessageId=source-a');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open source B' }));
+    expect(mocks.setPreviewParams).toHaveBeenCalledWith({ thread: 'thread-b', sourceMessageId: 'source-b' });
+    mocks.previewQuery = 'thread=thread-b&sourceMessageId=source-b';
+    rerender(<NavaPreviewPage />);
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({
+      threadId: 'thread-b', sourceMessageId: 'source-b', requireSelectedMessage: true,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Open thread only' }));
+    expect(mocks.setPreviewParams).toHaveBeenLastCalledWith({ thread: 'thread-7' });
+    expect(screen.getByRole('link', { name: /Quote request/ }).getAttribute('href')).toBe('/nava-preview?thread=thread-7');
+  });
+
+  it('requires an unambiguous source even when a preview thread has no message parameter', () => {
+    render(<NavaPreviewPage />);
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-7', requireSelectedMessage: true });
+    expect(screen.getByRole('link', { name: 'Open in webmail' }).getAttribute('href'))
+      .toBe('/mail/inbox?threadId=thread-7');
+  });
+
+  it('does not apply an orphan message parameter to the default thread', () => {
+    mocks.previewQuery = 'sourceMessageId=source-a';
+    render(<NavaPreviewPage />);
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-7', requireSelectedMessage: true });
+  });
+
   it('the preview page imports WebPanePanel instead of keeping its own copy', () => {
     const pageSource = readSource('../app/(routes)/nava-preview/page.tsx');
     expect(pageSource).toContain(
@@ -349,7 +461,6 @@ describe('shared WebPanePanel', () => {
     expect(pageSource).toContain('<WebPanePanel');
     expect(pageSource).toContain('key={selectedId}');
     expect(pageSource).toContain('threadId={selectedId}');
-    expect(pageSource).toContain('onOpenThread={(id) => setParams({ thread: id })}');
     expect(pageSource).not.toContain('function PreviewPanel');
   });
 });

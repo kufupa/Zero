@@ -7,6 +7,15 @@ const unchangedBusinessPartyFields = new Set([
   'taid1', 'ta1', 'bookingagencycontractid', 'bacontract', 'bookingagency1iatanumber',
   'companyid', 'company', 'companyname',
 ]);
+const savedIdentityFields = ['propertycode', 'confirmationnumber', 'guestid', 'PKID',
+  'reservationid', 'reservationstayid', 'recordid'];
+const cancelFinancialPartyFields = new Set(['araccountname', 'arprofileid', 'araccountid',
+  'guaranteecreditcardid', 'leaseguaranteecreditcardid']);
+const savedBusinessFields = new Set([...savedIdentityFields, ...blankSavedPartyFields,
+  'status', 'arrivaldate', 'departuredate', 'roomtype', 'rateplan', 'adults', 'children',
+  'child1', 'child2', 'child3', 'childages', 'track', 'guaranteetype', 'reservationnote', 'firstname', 'lastname',
+  'emailaddress', 'bookername', 'bookercontact', 'caller', 'udfchar06', 'udfchkbox04', 'udfchar09', 'udfchar13',
+  'cancelreason', 'cancellationnote', 'reservationstaystatus', 'cancelpolicyoverride']);
 
 function normalizeExpectedOrganization(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 2 ||
@@ -25,23 +34,133 @@ function date(value) {
     wire: `${value.slice(5, 7)}/${value.slice(8, 10)}/${value.slice(0, 4)}` };
 }
 
+// Real-mode callers provide the native guarantee selected and verified for this stay.
 export async function currentLabtestRecord(page, expected, options = {}) {
-  const { allowBlankNote = false, allowUnchangedBusinessParties = false } = options || {};
+  if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('LABTEST_RECORD_INPUT_INVALID');
+  const { expectedGuarantee, ...recordOptions } = options;
+  const cancelFinancials = options.allowCancelFinancialChanges === true;
+  if (!cancelFinancials && ((expectedGuarantee && options.allowRealGuest !== true) ||
+      (!expectedGuarantee && options.allowRealGuest === true))) throw new Error('LABTEST_RECORD_INPUT_INVALID');
+  return readLabtestRecord(page, expected, recordOptions,
+    expectedGuarantee ?? (cancelFinancials ? null : { code: 'NGI', display: 'Non-Guaranteed Individual' }));
+}
+
+// The Documents request does not save the surrounding stay form. Verify only
+// its exact native-stay target and the preserved CMS control; linked parties and notes
+// are not part of this native upload.
+export async function currentLabtestDocumentRecord(page, expected, context) {
+  const { confirmation, guestId, arrival, departure } = expected || {};
+  const allowRealGuest = expected?.allowRealGuest === true;
+  const firstName = expected?.firstName ?? (allowRealGuest ? null : 'Proof');
+  const lastName = expected?.lastName ?? (allowRealGuest ? null : 'Labtest');
+  const labtestGuest = firstName === 'Proof' && lastName === 'Labtest';
+  const status = expected?.status ?? (labtestGuest ? 'Reserved' : null);
+  const validName = (name) => typeof name === 'string' && name.length > 0 && name.length <= 200 &&
+    name === name.trim() && !/[\p{Cc}]/u.test(name);
+  const start = date(arrival), end = date(departure);
+  if (!context || Object.keys(context).length !== 1 || typeof context.cmsSend !== 'boolean' ||
+      (labtestGuest && context.cmsSend) ||
+      !/^\d+-\d+$/.test(confirmation || '') || confirmation.length > 100 ||
+      !/^\d{1,30}$/.test(guestId || '') || !start || !end || !validName(firstName) || !validName(lastName) || !validName(status) ||
+      (!allowRealGuest && !labtestGuest) ||
+      (labtestGuest && (arrival < '2027-01-01' || status !== 'Reserved')) ||
+      (expected?.nativeStayId !== undefined && !/^\d{1,100}$/.test(expected.nativeStayId)) ||
+      arrival >= departure) throw new Error('LABTEST_RECORD_INPUT_INVALID');
+  if (new URL(page.url()).origin !== ORIGIN || !/Infor HMS\s*-\s*HRCEN/i.test(await page.title())) {
+    throw new Error('PROPERTY_OR_ORIGIN_MISMATCH');
+  }
+  const frames = page.locator('.x-window:visible:not(.x-menu) iframe:visible');
+  if (await frames.count() !== 1) throw new Error('RECORD_FRAME_NOT_UNIQUE');
+  const frame = await (await frames.elementHandle())?.contentFrame();
+  if (!frame || new URL(frame.url()).origin !== ORIGIN) throw new Error('RECORD_FRAME_UNAVAILABLE');
+  const state = await frame.evaluate(({ expected, firstName, lastName, status, start, end, origin, context }) => {
+    if (location.origin !== origin) return null;
+    const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) &&
+      getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+    const names = ['confirmationnumber', 'status', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate', 'udfchkbox04'];
+    const fields = Object.fromEntries(names.map((name) => [name, [...document.querySelectorAll('input,textarea,select')]
+      .filter((el) => el.name === name && visible(el))]));
+    if (names.some((name) => fields[name].length !== 1)) return null;
+    const cmp = (name) => globalThis.Ext?.getCmp?.(fields[name][0].id.replace(/-inputEl$/, ''));
+    const form = cmp('guestid')?.up?.('form'), data = form?.getRecord?.()?.data;
+    if (!form?.el?.dom || !data || names.some((name) => !form.el.dom.contains(fields[name][0]))) return null;
+    const keys = Object.keys(data);
+    const unique = (key) => Object.hasOwn(data, key) && keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1;
+    const exact = (key, value) => unique(key) && String(data[key] ?? '').trim() === value;
+    const value = (name) => fields[name][0].value.trim();
+    if (!exact('propertycode', 'HRCEN') || !exact('confirmationnumber', expected.confirmation) ||
+        !exact('guestid', expected.guestId) || !exact('status', status) || !exact('firstname', firstName) ||
+        !exact('lastname', lastName) || !exact('arrivaldate', start.wire) || !exact('departuredate', end.wire) ||
+        value('confirmationnumber') !== expected.confirmation || value('guestid') !== expected.guestId ||
+        value('status') !== status || value('firstname') !== firstName || value('lastname') !== lastName ||
+        value('arrivaldate') !== start.display || value('departuredate') !== end.display ||
+        cmp('udfchkbox04')?.getValue?.() !== context.cmsSend) return null;
+    const native = {};
+    for (const key of ['PKID', 'bookingsessionid', 'reservationid', 'reservationstayid', 'recordid']) {
+      if (!unique(key) || !String(data[key] ?? '').trim()) return null;
+      native[key] = String(data[key]).trim();
+    }
+    if (!/^\d{1,100}$/.test(native.reservationid) || !/^\d{1,100}$/.test(native.reservationstayid) ||
+        (expected.nativeStayId && native.reservationstayid !== expected.nativeStayId)) return null;
+    return { native };
+  }, { expected, firstName, lastName, status, start, end, origin: ORIGIN, context });
+  if (!state) throw new Error('LABTEST_RECORD_UNVERIFIED');
+  return { frame, ...state, arrivalWire: start.wire, departureWire: end.wire };
+}
+
+export async function readCreatedLabtestRecord(page, expected, options = {}) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('LABTEST_RECORD_INPUT_INVALID');
+  const { expectedGuarantee, ...recordOptions } = options;
+  if (!expectedGuarantee) throw new Error('LABTEST_RECORD_INPUT_INVALID');
+  return readLabtestRecord(page, expected, recordOptions, expectedGuarantee);
+}
+
+function validGuarantee(expectedGuarantee, allowRealGuest) {
+  if (!expectedGuarantee || typeof expectedGuarantee !== 'object' || Array.isArray(expectedGuarantee) ||
+      Object.keys(expectedGuarantee).length !== 2 || !Object.hasOwn(expectedGuarantee, 'code') ||
+      !Object.hasOwn(expectedGuarantee, 'display') || typeof expectedGuarantee.code !== 'string' ||
+      !/^[A-Z0-9]{1,20}$/.test(expectedGuarantee.code) ||
+      (!allowRealGuest && !['NGI', 'GTDAGT'].includes(expectedGuarantee.code)) ||
+      typeof expectedGuarantee.display !== 'string' || !expectedGuarantee.display.trim() ||
+      expectedGuarantee.display.length > 200 || /[\p{Cc}]/u.test(expectedGuarantee.display) ||
+      expectedGuarantee.display !== expectedGuarantee.display.trim() ||
+      (expectedGuarantee.code === 'NGI' && expectedGuarantee.display !== 'Non-Guaranteed Individual')) {
+    return false;
+  }
+  return true;
+}
+
+async function readLabtestRecord(page, expected, options, expectedGuarantee) {
+  const { allowBlankNote = false, allowUnchangedBusinessParties = false,
+    preserveUnsentRecipient = false, allowModelOnlyPrimaryPartyIds = false, allowRealGuest = false,
+    allowCancelFinancialChanges = false } = options || {};
   const hasExpectedOrganization = Boolean(options && Object.hasOwn(options, 'expectedOrganization'));
   const expectedOrganization = hasExpectedOrganization
     ? normalizeExpectedOrganization(options.expectedOrganization) : null;
   const { confirmation, guestId, arrival, departure, roomType, ratePlan, note } = expected || {};
+  const firstName = expected?.firstName ?? (allowRealGuest ? null : 'Proof');
+  const lastName = expected?.lastName ?? (allowRealGuest ? null : 'Labtest');
+  const validName = (name) => typeof name === 'string' && name.length > 0 && name.length <= 256 &&
+    name === name.trim() && !/[\p{Cc}]/u.test(name);
   const start = date(arrival), end = date(departure);
   if (!options || typeof options !== 'object' || Array.isArray(options) ||
       Object.keys(options).some((key) => ![
         'allowBlankNote', 'allowUnchangedBusinessParties', 'expectedOrganization',
+        'preserveUnsentRecipient', 'allowModelOnlyPrimaryPartyIds', 'allowRealGuest', 'allowCancelFinancialChanges',
       ].includes(key)) ||
       typeof allowBlankNote !== 'boolean' || typeof allowUnchangedBusinessParties !== 'boolean' ||
+      typeof preserveUnsentRecipient !== 'boolean' || typeof allowModelOnlyPrimaryPartyIds !== 'boolean' ||
+      typeof allowRealGuest !== 'boolean' || typeof allowCancelFinancialChanges !== 'boolean' ||
+      (allowCancelFinancialChanges && !allowRealGuest) ||
+      (!allowCancelFinancialChanges && !validGuarantee(expectedGuarantee, allowRealGuest)) ||
+      !validName(firstName) || !validName(lastName) ||
+      (!allowRealGuest && (firstName !== 'Proof' || lastName !== 'Labtest')) ||
+      (allowModelOnlyPrimaryPartyIds && !allowUnchangedBusinessParties) ||
       (hasExpectedOrganization && (!expectedOrganization || !allowUnchangedBusinessParties)) ||
       !/^\d{6,}-\d+$/.test(confirmation || '') || !/^\d+$/.test(guestId || '') || !start || !end ||
-      arrival < '2027-01-01' || arrival >= departure || !/^[A-Z0-9]{1,12}$/.test(roomType || '') ||
+      (!allowRealGuest && arrival < '2027-01-01') || arrival >= departure || !/^[A-Z0-9]{1,12}$/.test(roomType || '') ||
       !/^[A-Z0-9]{1,12}$/.test(ratePlan || '') || typeof note !== 'string' ||
-      (!allowBlankNote && !note) || note.length > 200) {
+      (!allowRealGuest && !allowBlankNote && !note) || note.length > 2_000) {
     throw new Error('LABTEST_RECORD_INPUT_INVALID');
   }
   if (new URL(page.url()).origin !== ORIGIN || !/Infor HMS\s*-\s*HRCEN/i.test(await page.title())) {
@@ -52,11 +171,14 @@ export async function currentLabtestRecord(page, expected, options = {}) {
   const frame = await (await frames.elementHandle())?.contentFrame();
   if (!frame || new URL(frame.url()).origin !== ORIGIN) throw new Error('RECORD_FRAME_UNAVAILABLE');
   const state = await frame.evaluate(({ expected, start, end, origin, blankSavedPartyFields,
-    unchangedBusinessPartyFields, allowUnchangedBusinessParties, expectedOrganization }) => {
+    unchangedBusinessPartyFields, allowUnchangedBusinessParties, expectedOrganization, expectedGuarantee,
+    preserveUnsentRecipient, allowModelOnlyPrimaryPartyIds, firstName, lastName, allowRealGuest,
+    allowCancelFinancialChanges, cancelFinancialPartyFields }) => {
     if (location.origin !== origin) return null;
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
     const names = ['confirmationnumber', 'status', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
-      'roomtype', 'rateplan', 'track', 'guaranteetype', 'reservationnote', 'udfchkbox04', 'udfchar13', 'emailaddress'];
+      'roomtype', 'rateplan', 'track', ...(!allowCancelFinancialChanges ? ['guaranteetype'] : []),
+      'reservationnote', 'udfchkbox04', 'udfchar13', 'emailaddress'];
     const fields = Object.fromEntries(names.map((name) => [name, [...document.querySelectorAll('input,textarea,select')]
       .filter((el) => el.name === name && visible(el))]));
     if (names.some((name) => fields[name].length !== 1)) return null;
@@ -69,17 +191,39 @@ export async function currentLabtestRecord(page, expected, options = {}) {
     const exact = (key, value) => unique(key) && String(data[key] ?? '').trim() === value;
     const value = (name) => name === 'reservationnote' ? fields[name][0].value : fields[name][0].value.trim();
     if (!exact('propertycode', 'HRCEN') || !exact('confirmationnumber', expected.confirmation) ||
-        !exact('guestid', expected.guestId) || !exact('status', 'Reserved') || !exact('firstname', 'Proof') ||
-        !exact('lastname', 'Labtest') || value('confirmationnumber') !== expected.confirmation || value('status') !== 'Reserved' ||
-        value('guestid') !== expected.guestId || value('firstname') !== 'Proof' || value('lastname') !== 'Labtest' ||
+        !exact('guestid', expected.guestId) || !exact('status', 'Reserved') || !exact('firstname', firstName) ||
+        !exact('lastname', lastName) || !exact('arrivaldate', start.wire) || !exact('departuredate', end.wire) ||
+        (!allowCancelFinancialChanges && !exact('guaranteetype', expectedGuarantee.code)) ||
+        value('confirmationnumber') !== expected.confirmation || value('status') !== 'Reserved' ||
+        value('guestid') !== expected.guestId || value('firstname') !== firstName || value('lastname') !== lastName ||
         value('arrivaldate') !== start.display || value('departuredate') !== end.display || value('roomtype') !== expected.roomType ||
-        value('rateplan') !== expected.ratePlan || !value('track') || value('reservationnote') !== expected.note ||
-        value('guaranteetype') !== 'Non-Guaranteed Individual' || cmp('guaranteetype')?.getValue?.() !== 'NGI' ||
-        value('udfchar13') || value('emailaddress') || cmp('udfchkbox04')?.getValue?.() !== false) return null;
+        value('rateplan') !== expected.ratePlan || (!allowRealGuest && !value('track')) || value('reservationnote') !== expected.note ||
+        (!allowCancelFinancialChanges && (value('guaranteetype') !== expectedGuarantee.display ||
+          cmp('guaranteetype')?.getValue?.() !== expectedGuarantee.code)) ||
+        (!allowRealGuest && value('emailaddress'))) return null;
+    const cmsSend = cmp('udfchkbox04')?.getValue?.();
+    if (typeof cmsSend !== 'boolean' ||
+        ((!allowRealGuest || (firstName === 'Proof' && lastName === 'Labtest')) && cmsSend)) return null;
+    const recipient = fields.udfchar13[0].value;
+    const cmsMessageId = String(data.udfchar09 ?? formValues.udfchar09 ?? '');
+    if (typeof recipient !== 'string' || recipient.length > 1000 || /[\p{Cc}]/u.test(recipient) ||
+        cmsMessageId.length > 1000 || /[\p{Cc}]/u.test(cmsMessageId) ||
+        (!allowRealGuest && !preserveUnsentRecipient && recipient !== '') ||
+        ((allowRealGuest || preserveUnsentRecipient) &&
+          ((Object.hasOwn(data, 'udfchar13') && String(data.udfchar13 ?? '') !== recipient) ||
+           (Object.hasOwn(formValues, 'udfchar13') && String(formValues.udfchar13 ?? '') !== recipient)))) return null;
     const partyInputs = [...form.el.dom.querySelectorAll('input,textarea,select')].filter((el) =>
       visible(el) && blankSavedPartyFields.includes(el.name.toLowerCase()));
     const partyPreimage = {};
     for (const key of blankSavedPartyFields) {
+      if (allowCancelFinancialChanges && cancelFinancialPartyFields.includes(key)) {
+        partyPreimage[key] = String(data[key] ?? formValues[key] ?? '');
+        continue;
+      }
+      if (allowRealGuest && !Object.hasOwn(data, key)) {
+        partyPreimage[key] = String(formValues[key] ?? '');
+        continue;
+      }
       if (!unique(key)) return { issue: 'LABTEST_LINKED_PARTY_UNVERIFIED' };
       const value = data[key];
       const valueNames = Object.keys(formValues).filter((name) => name.toLowerCase() === key);
@@ -95,9 +239,13 @@ export async function currentLabtestRecord(page, expected, options = {}) {
         // The selected organization ID may exist only in Ext model data on the saved form.
         const selectedCompanyId = key === 'companyid' && expectedOrganization &&
           String(value).trim() === expectedOrganization.nativeId;
-        if (!allowUnchangedBusinessParties || !unchangedBusinessPartyFields.includes(key) ||
+        // HMS saves the two primary IDs in its model but does not render their
+        // own controls. Their paired, visible names are checked below.
+        const modelOnlyPrimaryId = allowModelOnlyPrimaryPartyIds && ['taid1', 'companyid'].includes(key) &&
+          /^\d{1,30}$/.test(String(value)) && !valueNames.length && !inputs.length;
+        if ((!allowRealGuest && (!allowUnchangedBusinessParties || !unchangedBusinessPartyFields.includes(key))) ||
             !['string', 'number'].includes(typeof value) || !String(value).trim() ||
-            (!valueNames.length && !inputs.length && !selectedCompanyId) ||
+            (!allowRealGuest && !valueNames.length && !inputs.length && !selectedCompanyId && !modelOnlyPrimaryId) ||
             (valueNames.length && String(formValues[key] ?? '') !== String(value)) ||
             (inputs.length && String(inputs[0].value ?? '') !== String(value))) {
           return { issue: 'LABTEST_LINKED_PARTY_UNVERIFIED' };
@@ -112,6 +260,16 @@ export async function currentLabtestRecord(page, expected, options = {}) {
           !linked('taid1'))) {
       return { issue: 'LABTEST_LINKED_PARTY_UNVERIFIED' };
     }
+    if (allowModelOnlyPrimaryPartyIds) {
+      for (const [id, names] of [['taid1', ['ta1']], ['companyid', ['company', 'companyname']]]) {
+        if (!linked(id)) continue;
+        const presentNames = names.filter((name) => linked(name));
+        if (!/^\d{1,30}$/.test(partyPreimage[id]) || !presentNames.length ||
+            new Set(presentNames.map((name) => partyPreimage[name])).size !== 1 ||
+            !partyInputs.some((el) => presentNames.includes(el.name) &&
+              String(el.value ?? '') === partyPreimage[el.name])) return { issue: 'LABTEST_LINKED_PARTY_UNVERIFIED' };
+      }
+    }
     if (expectedOrganization) {
       const organizationNames = ['company', 'companyname']
         .map((key) => partyPreimage[key]).filter((name) => name.trim());
@@ -123,7 +281,7 @@ export async function currentLabtestRecord(page, expected, options = {}) {
       if (partyPreimage.companyid !== expectedOrganization.nativeId || !organizationNames.length ||
           organizationNames.some((name) => name !== expectedOrganization.name) ||
           !visibleOrganizationNames.length || visibleOrganizationNames.some((name) => name !== expectedOrganization.name) ||
-          otherLinkedParties.some((key) => partyPreimage[key] !== '')) {
+          (!allowRealGuest && otherLinkedParties.some((key) => partyPreimage[key] !== ''))) {
         return { issue: 'LABTEST_LINKED_PARTY_UNVERIFIED' };
       }
     }
@@ -132,13 +290,16 @@ export async function currentLabtestRecord(page, expected, options = {}) {
       if (!unique(key) || !String(data[key] ?? '').trim()) return null;
       native[key] = String(data[key]).trim();
     }
-    return { native, track: value('track'), partyPreimage };
+    return { native, track: value('track'), partyPreimage, cmsSend, cmsMessageId,
+      cmsRecipient: recipient, guestEmail: value('emailaddress'), allowModelOnlyPrimaryPartyIds };
   }, { expected, start, end, origin: ORIGIN, blankSavedPartyFields,
     unchangedBusinessPartyFields: [...unchangedBusinessPartyFields], allowUnchangedBusinessParties,
-    expectedOrganization });
+    expectedOrganization, expectedGuarantee, preserveUnsentRecipient, allowModelOnlyPrimaryPartyIds, firstName, lastName, allowRealGuest,
+    allowCancelFinancialChanges, cancelFinancialPartyFields: [...cancelFinancialPartyFields] });
   if (state?.issue) throw new Error(state.issue);
   if (!state) throw new Error('LABTEST_RECORD_UNVERIFIED');
-  return { frame, ...state, arrivalWire: start.wire, departureWire: end.wire };
+  return { frame, ...state, arrivalWire: start.wire, departureWire: end.wire,
+    allowRealGuest, expectedFirstName: firstName, expectedLastName: lastName, expectedGuarantee };
 }
 
 // The saved-record form is submitted as a whole, so preserve its entire clean baseline.
@@ -182,16 +343,23 @@ export function blankLabtestParties(snapshot) {
     valueKeys.filter((name) => name.toLowerCase() === key).every((name) => name === key && values[name] === ''));
 }
 
-/** Permit only verified, unchanged primary agency/company links on an amendment. */
-export function unchangedLabtestBusinessParties(expected, snapshot) {
+/** Preserve existing business-party values; real stays may have A/R and guarantee links. */
+export function unchangedLabtestBusinessParties(expected, snapshot,
+  { allowModelOnlyPrimaryPartyIds = false, allowRealGuest = false, allowCancelFinancialChanges = false } = {}) {
   const data = snapshot?.data, values = snapshot?.values, controls = snapshot?.partyControls;
   if (!expected || typeof expected !== 'object' || Array.isArray(expected) ||
       Object.keys(expected).length !== blankSavedPartyFields.length ||
       !blankSavedPartyFields.every((key) => Object.hasOwn(expected, key) && typeof expected[key] === 'string') ||
       !data || typeof data !== 'object' || Array.isArray(data) ||
-      !values || typeof values !== 'object' || Array.isArray(values) || !Array.isArray(controls)) return false;
+      !values || typeof values !== 'object' || Array.isArray(values) || !Array.isArray(controls) ||
+      typeof allowCancelFinancialChanges !== 'boolean' || (allowCancelFinancialChanges && !allowRealGuest)) return false;
   const dataKeys = Object.keys(data), valueKeys = Object.keys(values);
   for (const key of blankSavedPartyFields) {
+    if (allowCancelFinancialChanges && cancelFinancialPartyFields.has(key)) continue;
+    if (allowRealGuest && !Object.hasOwn(data, key)) {
+      if (String(values[key] ?? '') !== expected[key]) return false;
+      continue;
+    }
     if (!Object.hasOwn(data, key) || dataKeys.filter((name) => name.toLowerCase() === key).length !== 1 ||
         String(data[key] ?? '') !== expected[key]) return false;
     const forms = valueKeys.filter((name) => name.toLowerCase() === key);
@@ -199,43 +367,54 @@ export function unchangedLabtestBusinessParties(expected, snapshot) {
     if (forms.length > 1 || forms.some((name) => name !== key) || inputs.length > 1 ||
         inputs.some((field) => field.name !== key || String(field.value ?? '') !== expected[key]) ||
         (forms.length && String(values[key] ?? '') !== expected[key])) return false;
-    if (expected[key] !== '' && (!unchangedBusinessPartyFields.has(key) || (!forms.length && !inputs.length))) return false;
+    const modelOnlyPrimaryId = allowModelOnlyPrimaryPartyIds && ['taid1', 'companyid'].includes(key) &&
+      /^\d{1,30}$/.test(expected[key]) && !forms.length && !inputs.length;
+    if (!allowRealGuest && expected[key] !== '' && (!unchangedBusinessPartyFields.has(key) ||
+        (!forms.length && !inputs.length && !modelOnlyPrimaryId))) return false;
   }
   const linked = (name) => Boolean(expected[name]?.trim());
+  if (allowModelOnlyPrimaryPartyIds) {
+    for (const [id, names] of [['taid1', ['ta1']], ['companyid', ['company', 'companyname']]]) {
+      if (!linked(id)) continue;
+      const presentNames = names.filter((name) => linked(name));
+      if (!/^\d{1,30}$/.test(expected[id]) || !presentNames.length ||
+          new Set(presentNames.map((name) => expected[name])).size !== 1 ||
+          !controls.some((field) => presentNames.includes(field.name) && field.value === expected[field.name])) return false;
+    }
+  }
   return linked('taid1') === linked('ta1') &&
     linked('companyid') === (linked('company') || linked('companyname')) &&
     (!(linked('bookingagencycontractid') || linked('bacontract') || linked('bookingagency1iatanumber')) || linked('taid1'));
 }
 
 export function unchangedLabtestRecord(before, after, changes) {
-  if (!before || !after) return false;
-  const allowed = new Set(Object.keys(changes));
-  if ([...after.dirtyFields, ...after.modifiedFields].some((name) => !allowed.has(name)) ||
-      (after.recordDirty && !after.modifiedFields.length) || (after.formDirty && !after.dirtyFields.length)) return false;
+  if (!before || !after || !changes || typeof changes !== 'object') return false;
+  const fields = new Set([...savedIdentityFields, ...Object.keys(changes)]);
   return ['values', 'data'].every((part) => {
-    const a = before[part], b = after[part], keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-    return [...keys].every((key) => Object.hasOwn(a, key) && Object.hasOwn(b, key) &&
-      (JSON.stringify(a[key]) === JSON.stringify(b[key]) ||
-       (allowed.has(key) && String(b[key] ?? '') === changes[key])));
+    const a = before[part], b = after[part];
+    if (!a || !b) return false;
+    return [...fields].every((key) => {
+      if (!Object.hasOwn(a, key) && !Object.hasOwn(b, key)) return !Object.hasOwn(changes, key);
+      return Object.hasOwn(a, key) && Object.hasOwn(b, key) &&
+        (Object.hasOwn(changes, key) ? String(b[key] ?? '') === String(changes[key]) ||
+          (part === 'data' && JSON.stringify(a[key]) === JSON.stringify(b[key])) :
+          JSON.stringify(a[key]) === JSON.stringify(b[key]));
+    });
   });
 }
 
 export function matchesLabtestBody(body, snapshot, changes) {
   const data = snapshot?.data;
   if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
-  const fields = Object.keys(data).filter((key) => key !== 'extId');
-  const controls = ['SYSTEM_FUNCTION_NAME', 'USER_FUNCTION_NAME', 'CURRENT_TAB_NAME'];
+  const fields = Object.keys(data).filter((key) => savedBusinessFields.has(key));
   if (!changes || typeof changes !== 'object' || Array.isArray(changes) ||
       Object.keys(changes).some((key) => !Object.hasOwn(data, key))) return false;
-  const keys = [...body.keys()], expected = new Set([...fields, ...controls]);
-  if (keys.length !== expected.size || new Set(keys).size !== keys.length ||
-      keys.some((key) => !expected.has(key)) || fields.some((key) => !body.has(key))) return false;
-  return fields.every((key) => {
+  if (!fields.length || typeof body?.getAll !== 'function') return false;
+  return [...new Set([...fields, ...Object.keys(changes)])].every((key) => {
+    if (body.getAll(key).length !== 1) return false;
     let value = data[key];
     if (Object.hasOwn(changes, key)) value = changes[key];
-    else if (key === 'sessionID' && value && typeof value === 'object' &&
-      Object.keys(value).length === 1 && typeof value.sessionID === 'string') value = value.sessionID;
-    else if (value != null && !['string', 'number', 'boolean'].includes(typeof value)) return false;
+    if (value != null && !['string', 'number', 'boolean'].includes(typeof value)) return false;
     return body.get(key) === String(value ?? '');
   });
 }

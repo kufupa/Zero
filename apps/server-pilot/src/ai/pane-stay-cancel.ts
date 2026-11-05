@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { paneStayHmsTargetForTransport, paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
+import type { CancelRequestBinding } from './pane-cloud-cancel.js';
 import { classifyAmendPayment, findStay, type AmendPaymentStay } from './pane-stay-lookup.js';
 import { tmpdir } from 'node:os';
 
@@ -41,15 +42,18 @@ const HELD_LOCK: PaneStayLock = { withLock: (fn) => fn() };
 
 export type PaneStayCancelMode = 'preview' | 'commit';
 
-export type PaneStayCancelPreviewInput = { confirmation: string; arrival: string };
+export type PaneStayCancelPreviewInput = CancelRequestBinding & { confirmation: string; arrival: string; workItemId?: string;
+  source?: { threadId: string; messageId: string; sourceHash: string } };
 export type PaneStayCancelCommitInput = PaneStayCancelPreviewInput & {
   reason: string;
   /** Digest the preview returned for this same stay. Absent means no preview was run. */
   previewDigest?: string;
+  cancellationNote?: string;
 };
 // Owner scope of runs and grants: `${userId}:${transportId}`, the same string the save path uses.
 // transportId from the route wins; a caller-supplied property never selects the hotel.
-type OwnedInput<T> = T & { owner: string; transportId?: string };
+type OwnedInput<T> = T & { owner: string; transportId?: string; actorUserId?: string;
+  sessionId?: string; sessionProfile?: 'legacy' | 'remote' };
 
 export type PaneStayCancelResult = {
   outcome: string;
@@ -57,6 +61,8 @@ export type PaneStayCancelResult = {
   statusAfter: string | null;
   reasons: string[];
   penaltyText: string | null;
+  /** Facts supplied by HMS, without inferring whether a charge will be applied. */
+  policyFacts?: string[];
   /** Operator-facing line for outcomes that need one (see PANE_CANCEL_MESSAGES), or a notice-window warning. */
   message: string | null;
   /** The arrival was a hint: HMS holds another date for this booking. Both dates are returned for the pane's text. */
@@ -69,6 +75,9 @@ export type PaneStayCancelResult = {
   runId: string | null;
   /** Set only when a preview finished as preview_ok. Commit sends it back with the same stay. */
   previewDigest: string | null;
+  /** Public target details from the independently read native record, shown before staff Go. */
+  previewStay?: { confirmation: string; firstName: string; lastName: string; arrival: string; departure: string; roomType: string;
+    guarantee?: string; depositReceived?: string | null };
 };
 
 // Operator-facing text per outcome. cancel_unconfirmed: the status did not read Cancelled within 60 s after OK, but HMS
@@ -266,10 +275,35 @@ export async function spawnPaneStayCancel(input: PaneStayCancelSpawnInput): Prom
 
 async function runPaneStayCancel(
   mode: PaneStayCancelMode,
-  input: OwnedInput<PaneStayCancelPreviewInput & { reason?: string; previewDigest?: string }>,
+  input: OwnedInput<PaneStayCancelPreviewInput & { reason?: string; previewDigest?: string; cancellationNote?: string }>,
 ): Promise<PaneStayCancelResult> {
-  // Tests inject mode and/or moneyState. Prod injects neither: money comes from the open
-  // record via classifyAmendPayment (unpaid only when that returns unpaid), never the request.
+  if (!/^\d+-\d+$/.test(input.confirmation) || !isRealIsoDate(input.arrival)) {
+    return refused('refused_input_invalid');
+  }
+  const reason = mode === 'commit' ? (input.reason ?? '').replace(/\s+/g, ' ').trim() : null;
+  if (mode === 'commit' && (!reason || reason.startsWith('-')))
+    return refused('refused_reason_missing');
+  // A commit needs the grant of a preview of this same stay. Both checks run before the lock and the browser.
+  const digest = paneCancelDigest(input);
+  const resolved = paneStayHmsTargetForTransport(
+    input.transportId ?? paneStayTransportIdFromOwner(input.owner),
+  );
+  if (!resolved.ok) return refused('refused_unknown_transport');
+  const target = resolved.target;
+  if (target.propertyCode === 'HRCEN') {
+    if (!input.transportId || !input.actorUserId || !input.workItemId || !input.source ||
+        input.owner !== `${input.actorUserId}:${input.transportId}`) return refused('refused_source_changed');
+    const cloud = await import('./pane-cloud-cancel.js');
+    const context = { transportId: input.transportId, actorUserId: input.actorUserId, sessionId: input.sessionId,
+      sessionProfile: input.sessionProfile, workItemId: input.workItemId, source: input.source,
+      confirmation: input.confirmation, arrival: input.arrival, target, requestId: input.requestId,
+      expectedSeq: input.expectedSeq, expectedExtractionId: input.expectedExtractionId };
+    if (mode === 'preview') return cloud.previewCloudCancel(context);
+    if (!input.previewDigest || !input.reason) return refused('cancel_preview_required');
+    return cloud.commitCloudCancel({ ...context, reason: input.reason, previewDigest: input.previewDigest,
+      cancellationNote: input.cancellationNote });
+  }
+  // The legacy non-Cloud path retains its existing payment and flag rules.
   const injectedMode = paneStayCancelLoaders.mode?.();
   const injectedMoney = paneStayCancelLoaders.moneyState?.() ?? null;
   let allowRealGuest = false;
@@ -281,23 +315,11 @@ async function runPaneStayCancel(
     allowRealGuest = moneyResolved && saveMode === 'on';
     const inputRefusal = checkCancelInput(input, { allowRealGuest });
     if (inputRefusal) return refused(inputRefusal);
-  } else if (!/^\d+-\d+$/.test(input.confirmation) || !isRealIsoDate(input.arrival)) {
-    return refused('refused_input_invalid');
   }
-  const reason = mode === 'commit' ? (input.reason ?? '').replace(/\s+/g, ' ').trim() : null;
-  if (mode === 'commit' && (!reason || reason.startsWith('-')))
-    return refused('refused_reason_missing');
-  // A commit needs the grant of a preview of this same stay. Both checks run before the lock and the browser.
-  const digest = paneCancelDigest(input);
   if (mode === 'commit') {
     if (input.previewDigest === undefined) return refused('cancel_preview_required');
     if (input.previewDigest !== digest) return refused('cancel_digest_mismatch');
   }
-  const resolved = paneStayHmsTargetForTransport(
-    input.transportId ?? paneStayTransportIdFromOwner(input.owner),
-  );
-  if (!resolved.ok) return refused('refused_unknown_transport');
-  const target = resolved.target;
   // The lock key is the session hotel. A caller-supplied property never selects it.
   const lock = paneStayCancelLoaders.lock ?? paneStayPropertyLock(target);
   if (!lock) return refused('refused_lock_unavailable');
@@ -334,8 +356,7 @@ async function runPaneStayCancel(
             return null;
           }
           const classified = classifyAmendPayment(found.stay);
-          const moneyState =
-            classified === 'unpaid' ? 'unpaid' : classified === 'paid' ? 'paid' : 'unknown';
+          const moneyState = classified === 'unpaid' ? 'unpaid' : classified === 'paid' ? 'paid' : 'unknown';
           const saveMode = paneWriteMode('cancel', moneyState);
           if (saveMode === 'off') {
             flagRefusal = 'refused_flag_off';

@@ -79,6 +79,7 @@ export function useStaffQuoteAutostart({
       isQuoteFixturePreview() ||
       quoteRunPending ||
       staffQuoteReadBackInFlight.current ||
+      quoteSession.phase === 'analysing' ||
       quoteSession.runningStepId ||
       quoteSession.analysis?.intent !== 'quote' ||
       !quoteSession.binding ||

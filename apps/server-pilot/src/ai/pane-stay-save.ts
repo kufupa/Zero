@@ -25,6 +25,7 @@ import {
 import { guestDatesDuplicateCheckViaCli } from './pane-stay-lookup.js';
 import { CreateFenceError } from './pane-create-dispatch-fence.js';
 import { persistHmsShots, readStoredHmsShot, type HmsShotMeta } from './hms-shots-store.js';
+import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
 
 const execFileAsync = promisify(execFile);
 const CREATE_LAB_STAY = fileURLToPath(
@@ -81,6 +82,7 @@ export type PaneStay = {
   reservationNote?: string;
   bookerName?: string;
   bookerEmail?: string;
+  confirmationSendMail?: boolean;
   confirmationRecipient?: { mode: 'self' | 'client' | 'custom'; address: string };
   marketSegment?: string;
   guestoptin4?: boolean;
@@ -134,15 +136,6 @@ function anyPaneWriteEnvSet(env: NodeJS.Dict<string>): boolean {
   return PANE_WRITE_ENV_NAMES.some((name) => env[name] !== undefined);
 }
 
-function parsePaidWriteFlag(name: string, value: string | undefined): PaneSaveMode {
-  const mode = parseLabOn(value);
-  if (mode === 'on') {
-    console.warn('pane_write_paid_on_ignored', { env: name });
-    return 'off';
-  }
-  return mode;
-}
-
 /** busy: the check could not get the property lock within the pane wait, so nothing was checked. */
 export type OsressDuplicateStatus = 'parked' | 'clear' | 'duplicate' | 'busy';
 
@@ -182,6 +175,7 @@ export type PaneStayResult = {
   runId?: string;
   /** Screenshot file names. Fetch the bytes with readPaneStayScreenshot. */
   screenshots?: string[];
+  hmsPrice?: { averageRate: string; totalRate: string; currency: string | null };
   /** Durable before/saved refs written under HMS_SHOTS_DIR. */
   shots?: HmsShotMeta[];
 };
@@ -253,9 +247,9 @@ export function paneWriteModes(env: NodeJS.Dict<string> = process.env): PaneWrit
     return {
       create: parseLabOn(env[PANE_WRITE_CREATE]),
       amendUnpaid: parseLabOn(env[PANE_WRITE_AMEND_UNPAID]),
-      amendPaid: parsePaidWriteFlag(PANE_WRITE_AMEND_PAID, env[PANE_WRITE_AMEND_PAID]),
+      amendPaid: parseLabOn(env[PANE_WRITE_AMEND_PAID]),
       cancelUnpaid: parseLabOn(env[PANE_WRITE_CANCEL_UNPAID]),
-      cancelPaid: parsePaidWriteFlag(PANE_WRITE_CANCEL_PAID, env[PANE_WRITE_CANCEL_PAID]),
+      cancelPaid: parseLabOn(env[PANE_WRITE_CANCEL_PAID]),
     };
   }
   const legacy = parseLabOn(env.RESERVATIONIST_PANE_SAVE);
@@ -654,6 +648,21 @@ export function paneStayPropertyLock(target: HmsReadTarget): PaneStayLock | null
   });
 }
 
+/** Caller must use an independently owned Cloud browser; borrowed sessions keep the property lock. */
+export function paneStayCloudTargetLock(target: HmsReadTarget, dispatchTarget: HmsDispatchTarget,
+  session: { kind: 'independent_cloud' }): PaneStayLock | null {
+  const databaseUrl = process.env.DATABASE_URL;
+  const parsed = hmsDispatchTargetSchema.safeParse(dispatchTarget);
+  if (!databaseUrl || session?.kind !== 'independent_cloud' || !parsed.success || target.propertyCode !== parsed.data.propertyCode ||
+      target.propertyCode !== 'HRCEN' || target.browserSlot !== 'centurion' ||
+      (parsed.data.kind === 'saved' && !parsed.data.nativeStayId)) return null;
+  return createPostgresPropertyReadLock({
+    tenantId: paneStayTenantId(),
+    propertyCode: `cloud-target:${hmsDispatchTargetKey(parsed.data)}`,
+    databaseUrl,
+  });
+}
+
 // An explicit propertyCode must name the session's hotel. Any other value would lock a key the session never
 // uses, so the lock could be bypassed. Such requests are refused before any lock or spawn.
 export function paneStayPropertyRefusal(
@@ -702,6 +711,11 @@ export async function runPaneStay(input: {
     return { status: 'refused', reason: resolved.reason };
   }
   const target = resolved.target;
+  // The legacy create runner does not participate in the shared Cloud write
+  // claim. Keep it available for preview, but never let it bypass that claim.
+  if (input.mode === 'commit' && target.propertyCode === PANE_STAY_PROPERTY_CODE) {
+    return { status: 'refused', reason: 'cloud_create_required' };
+  }
   if (target.browserSlot === 'davinci' && hmsDavinciCreateMode() === 'lab') {
     try {
       assertCreateLabStay(input.stay);

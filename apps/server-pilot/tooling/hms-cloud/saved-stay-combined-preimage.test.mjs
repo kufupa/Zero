@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { blankSavedPartyFields } from './labtest-party-fields.mjs';
 import { labtestCombinedAmendPreimageBinding as bind } from './saved-stay-combined-preimage.mjs';
+import { expectedLabtestAmendRecord } from './pane-amend-session.mjs';
 
 function fixture() {
   const expected = { confirmation:'12345678-1', guestId:'123', arrival:'2027-10-12', departure:'2027-10-13',
@@ -24,14 +25,14 @@ function fixture() {
 }
 const binding = ({expected, state, snapshot, changes}) => bind(expected, state, snapshot, changes);
 
-test('binds complete clean preimage and changes, not browser session identifiers', () => {
+test('binds business preimage and changes, not unrelated native fields or session identifiers', () => {
   const f = fixture(), first = binding(f);
   assert.match(first?.digest || '', /^[a-f0-9]{64}$/);
   f.state.native.bookingsessionid = f.snapshot.data.bookingsessionid = 'different';
   f.snapshot.data.sessionID = { sessionID:'different' }; f.snapshot.data.extId = 'different';
   assert.deepEqual(binding(f), first);
   f.snapshot.data.unrelated = 'changed';
-  assert.notDeepEqual(binding(f), first);
+  assert.deepEqual(binding(f), first);
   f.snapshot.data.unrelated = 'kept'; f.changes.retainRates = 'no';
   assert.notDeepEqual(binding(f), first);
 });
@@ -75,7 +76,7 @@ test('rejects invalid or empty changes and null dates', () => {
 });
 
 
-test('preserves unknown ages when only dates or adults change, never treats them as an empty list', () => {
+test('preserves unknown ages and accepts an explicit requested child edit for native verification', () => {
   const f = fixture();
   f.expected.childAges = null; f.expected.childCount = 0;
   for (const part of [f.snapshot.data, f.snapshot.values]) {
@@ -83,7 +84,7 @@ test('preserves unknown ages when only dates or adults change, never treats them
   }
   f.changes = { adults:2, departure:'2027-10-14' };
   const unknown = binding(f); assert.match(unknown?.digest || '', /^[a-f0-9]{64}$/);
-  f.changes = { childCount:0, childAges:[] }; assert.equal(binding(f), null);
+  f.changes = { childCount:1, childAges:[8] }; assert.match(binding(f)?.digest || '', /^[a-f0-9]{64}$/);
   f.changes = { adults:2, departure:'2027-10-14' }; f.expected.childAges = [];
   assert.equal(binding(f), null);
 });
@@ -112,9 +113,42 @@ test('rejects populated form ages when native model ages are unknown', () => {
   }
 });
 
-test('rejects sparse arrays even when extra properties mask missing indices', () => {
+test('ignores malformed unrelated native fields outside the business preimage', () => {
   const f = fixture();
   const sparse = Array(1); sparse.extra = 'not an element';
   f.snapshot.data.unrelated = sparse;
-  assert.equal(binding(f), null);
+  assert.match(binding(f)?.digest || '', /^[a-f0-9]{64}$/);
+});
+
+test('binds real expected identity and native guarantee in the complete saved baseline', () => {
+  const f = fixture();
+  Object.assign(f.expected, { firstName:'Alice', lastName:'Example', note:'x'.repeat(300) });
+  Object.assign(f.state, { allowRealGuest:true, expectedFirstName:'Alice', expectedLastName:'Example',
+    expectedGuarantee:{ code:'CC', display:'Credit Card' } });
+  for (const part of [f.snapshot.data, f.snapshot.values]) {
+    Object.assign(part, { firstname:'Alice', lastname:'Example', guaranteetype:'CC', reservationnote:f.expected.note });
+  }
+  const native = { source:'record_view_ext_model', propertyCode:'HRCEN', confirmation:f.expected.confirmation,
+    guestId:f.expected.guestId, reservationStayId:'30', reservationId:'20', recordId:'40', status:'Reserved',
+    firstName:'Alice', lastName:'Example', arrival:f.expected.arrival, departure:f.expected.departure,
+    roomType:f.expected.roomType, ratePlan:f.expected.ratePlan, adults:1, children:1, childAges:[8], guaranteeCode:'CC' };
+  const record = { nativePreimage:native, details:{ fields:[{ name:'reservationnote', rawValue:f.expected.note }] } };
+  assert.equal(expectedLabtestAmendRecord(record, native, { allowRealGuest:true })?.note, f.expected.note);
+  assert.match(binding(f)?.digest || '', /^[a-f0-9]{64}$/);
+  f.snapshot.data.lastname = 'Other'; assert.equal(binding(f), null);
+  f.snapshot.data.lastname = 'Example'; f.snapshot.values.guaranteetype = 'NGI'; assert.equal(binding(f), null);
+  f.snapshot.values.guaranteetype = 'CC'; f.expected.firstName = 'Other'; assert.equal(binding(f), null);
+  f.expected.firstName = 'Alice'; f.expected.arrival = '2020-01-01'; assert.equal(binding(f), null);
+});
+
+test('binds preserved unsent recipient and verified model-only primary party', () => {
+  const f = fixture();
+  f.state.cmsRecipient = 'desk@example.invalid'; f.state.allowModelOnlyPrimaryPartyIds = true;
+  f.state.partyPreimage.taid1 = '42'; f.state.partyPreimage.ta1 = 'Agency';
+  f.snapshot.data.taid1 = '42'; f.snapshot.data.ta1 = 'Agency';
+  f.snapshot.values.ta1 = 'Agency'; f.snapshot.partyControls.push({ name:'ta1', value:'Agency' });
+  f.snapshot.data.udfchar13 = f.snapshot.values.udfchar13 = f.state.cmsRecipient;
+  assert.match(binding(f)?.digest || '', /^[a-f0-9]{64}$/);
+  f.snapshot.partyControls[0].value = 'Different'; assert.equal(binding(f), null);
+  f.snapshot.partyControls[0].value = 'Agency'; f.snapshot.values.udfchar13 = 'changed'; assert.equal(binding(f), null);
 });

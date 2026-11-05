@@ -198,8 +198,16 @@ export async function openNewGuestStay(page) {
       await page.locator('[data-qtip="New Record (Ctrl+N)"]:visible').first().click();
       await agency.waitFor({ timeout: 25000 });
     }
+    try {
+      await page.waitForLoadState('networkidle', { timeout: 10000 });
+      await page.waitForFunction(() => typeof Ext?.Ajax?.isLoading === 'function' && !Ext.Ajax.isLoading(), null,
+        { timeout: 10000 });
+    } catch {
+      throw new Error('GUEST_STAY_STARTUP_UNSETTLED');
+    }
     await assertExpectedDialogs(page, nativeDialog);
     await assertNewGuestStay(page);
+    await assertSelectionProperty(page);
   } finally {
     page.off('dialog', onDialog);
   }

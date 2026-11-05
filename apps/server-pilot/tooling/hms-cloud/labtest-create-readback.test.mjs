@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readLabtestCreate, reconcileLabtestCreate } from './labtest-create-readback.mjs';
+import { CREATE_GUARANTEES } from './cloud-create-policy.mjs';
 
 const stay = { arrival: '2027-03-15', departure: '2027-03-17' };
 const expected = { ...stay, adults: 2, children: 2, childBands: { child1: 0, child2: 2, child3: 0 },
@@ -86,4 +87,50 @@ test('a failed reconciliation census never reads candidates', async () => {
   });
   assert.deepEqual(result, { census: { outcome: 'incomplete', issue: 'census_unverified' }, candidates: [] });
   assert.equal(reads, 0);
+});
+
+test('requires fresh native guarantee and stay identity when a code is requested', async () => {
+  const agentExpected = { ...expected, guarantee: 'Guaranteed By Agent', guaranteeCode: 'GTDAGT' };
+  const agentFields = fields({ ...values, guaranteetype: 'Guaranteed By Agent' });
+  const native = { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123-1', guestId: '123',
+    status: 'Reserved', firstName: 'Proof', lastName: 'Labtest', arrival: stay.arrival, departure: stay.departure,
+    roomType: 'DLXKNG', ratePlan: 'BAR', adults: 2, children: 2, guaranteeCode: 'GTDAGT' };
+  let request;
+  const read = (preimage, wanted = agentExpected) => readLabtestCreate({ confirmation: '123-1', stay, expected: wanted }, {
+    withSavedSession: async (operation) => operation({ runTool: async (input) => {
+      request = input;
+      return { outcome: 'ok', record: { nativePreimage: preimage, details: { fields: agentFields } } };
+    } }),
+  });
+  assert.deepEqual((await read(native)).mismatches, []);
+  assert.deepEqual((await read(native, { ...agentExpected, guestId: 123 })).mismatches, []);
+  assert.deepEqual((await read({ ...native, guestId: '999' }, { ...agentExpected, guestId: 123 })).mismatches,
+    [{ field: 'guaranteeTypeCode', issue: 'native_code_unverified' }]);
+  assert.equal(request.includeNativePreimage, true);
+  for (const preimage of [null, { ...native, guaranteeCode: 'NGI' }, { ...native, guestId: '999' },
+    { ...native, confirmation: '124-1' }, { ...native, propertyCode: 'HRDAV' },
+    { ...native, arrival: '2027-03-16' }, { ...native, source: 'unknown' }]) {
+    const result = await read(preimage);
+    assert.deepEqual(result.mismatches, [{ field: 'guaranteeTypeCode', issue: 'native_code_unverified' }]);
+  }
+});
+
+test('fresh real-guest readback requires the exact native code and visible label for every observed guarantee', async () => {
+  for (const [code, display] of Object.entries(CREATE_GUARANTEES)) {
+    const wanted = { ...expected, firstName: 'Ada', lastName: 'Moyo', allowRealGuest: true,
+      guarantee: display, guaranteeCode: code };
+    const native = { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123-1', guestId: '123',
+      status: 'Reserved', firstName: 'Ada', lastName: 'Moyo', arrival: stay.arrival, departure: stay.departure,
+      roomType: 'DLXKNG', ratePlan: 'BAR', adults: 2, children: 2, guaranteeCode: code };
+    const read = (nativePreimage, guarantee = display) => readLabtestCreate({ confirmation: '123-1', stay, expected: wanted }, {
+      withSavedSession: async (operation) => operation({ runTool: async (request) => {
+        assert.equal(request.guestName, 'Ada Moyo');
+        return { outcome: 'ok', record: { nativePreimage, details: { fields: fields({ ...values,
+          firstname: 'Ada', lastname: 'Moyo', guaranteetype: guarantee }) } } };
+      } }),
+    });
+    assert.deepEqual((await read(native)).mismatches, []);
+    assert.ok((await read({ ...native, guaranteeCode: 'OTHER' })).mismatches.some(({ field }) => field === 'guaranteeTypeCode'));
+    assert.ok((await read(native, 'Other')).mismatches.some(({ field }) => field === 'guaranteeType'));
+  }
 });

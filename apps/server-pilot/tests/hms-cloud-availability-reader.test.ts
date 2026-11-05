@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { projectCloudAvailability, runCloudAvailability, type CloudAvailabilityGroupRead } from '../src/ai/hms-cloud-availability-reader.js';
 import { CENTURION_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
+import { buildCloudRateCandidates } from '../src/ai/rate-options.js';
+import type { RateContext } from '../src/ai/hms-availability.js';
 
 const request = {
   kind: 'availability' as const,
@@ -111,6 +113,22 @@ describe('Cloud HMS read result projection', () => {
     expect(result.groups[0]?.options[0]?.nightly[0]).toEqual(expect.objectContaining({
       availableCount: 3, stockStatus: 'unknown', reasons: ['conditions_present'],
     }));
+  });
+
+  it('marks a negative native inventory unavailable rather than selectable as unchecked', () => {
+    const view = readView();
+    view.options[0]!.nights[1]!.roomsAvailable = -1;
+    // An unknown price does not erase the independent negative inventory observation.
+    view.options[0]!.nights[1]!.reasons = ['negative_stock', 'unknown'];
+    const result = projectCloudAvailability(request, [{ outcome: 'ok', view }]);
+    if (result.outcome !== 'read') throw new Error('expected read result');
+    const context: RateContext = {
+      propertyCode: 'HRCEN', workflow: 'amend', arrival: request.arrival, departure: request.departure,
+      roomCode: 'SUP', quantity: 2, adults: 2, childAges: [], board: null, currency: 'ZAR',
+      agencyId: null, organizationId: null, guestProfileId: null, sourceOfBusiness: null, track: null,
+      guaranteeType: null, typedRatePlan: null, savedTarget: null, retainRates: 'no',
+    };
+    expect(buildCloudRateCandidates(context, result.groups)[0]).toMatchObject({ state: 'unavailable' });
   });
 
   it('refuses an unsupported target before opening a Cloud session', async () => {

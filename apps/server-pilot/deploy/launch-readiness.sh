@@ -73,6 +73,10 @@ LAST_GOOD_DEPLOY_AT_B64="$(
   LAST_GOOD_DEPLOY_AT="${LAST_GOOD_DEPLOY_AT:-}" node -e \
     'process.stdout.write(Buffer.from(process.env.LAST_GOOD_DEPLOY_AT).toString("base64"))'
 )"
+DEPLOY_STARTED_AT_B64="$(
+  DEPLOY_STARTED_AT="${DEPLOY_STARTED_AT:-}" node -e \
+    'process.stdout.write(Buffer.from(process.env.DEPLOY_STARTED_AT).toString("base64"))'
+)"
 
 REMOTE_COMMAND="$(cat <<'REMOTE'
 set -euo pipefail
@@ -84,10 +88,6 @@ ENV_FILE="${ENV_FILE:-${SERVER_PILOT}/.env.production}"
 REMOTE_ADMIN_MODE="__REMOTE_ADMIN_MODE__"
 export REQUIRE_HOTEL_PROBE=1
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
-LAST_GOOD_DEPLOY_AT_B64="__LAST_GOOD_DEPLOY_AT_B64__"
-LAST_GOOD_DEPLOY_AT="$(node -e 'process.stdout.write(Buffer.from(process.argv[1], "base64").toString("utf8"))' "$LAST_GOOD_DEPLOY_AT_B64")"
-export LAST_GOOD_DEPLOY_AT
-
 ENV_LOADED=false
 if [ -r "$ENV_FILE" ]; then
   set +e
@@ -100,6 +100,11 @@ if [ -r "$ENV_FILE" ]; then
     ENV_LOADED=true
   fi
 fi
+
+# Restore the caller's validated window inputs after sourcing the runtime env.
+LAST_GOOD_DEPLOY_AT="$(node -e 'process.stdout.write(Buffer.from(process.argv[1], "base64").toString("utf8"))' "__LAST_GOOD_DEPLOY_AT_B64__")"
+DEPLOY_STARTED_AT="$(node -e 'process.stdout.write(Buffer.from(process.argv[1], "base64").toString("utf8"))' "__DEPLOY_STARTED_AT_B64__")"
+export LAST_GOOD_DEPLOY_AT DEPLOY_STARTED_AT
 
 CANONICAL_ORIGIN="https://nava.legacyhotels.co.za"
 : "${BETTER_AUTH_URL:?BETTER_AUTH_URL missing from production environment}"
@@ -395,6 +400,12 @@ const lastGoodDeployAt =
   isValidIsoTimestamp(rawLastGoodDeployAt)
     ? new Date(rawLastGoodDeployAt).toISOString()
     : null;
+const rawDeployStartedAt = process.env.DEPLOY_STARTED_AT;
+if (rawDeployStartedAt && !isValidIsoTimestamp(rawDeployStartedAt)) {
+  throw new Error("invalid current deploy restart boundary");
+}
+const deployStartedAt = rawDeployStartedAt ? new Date(rawDeployStartedAt).toISOString() : null;
+const deadLetterWindowAt = deployStartedAt ?? lastGoodDeployAt;
 
 const empty = {
   connected: false,
@@ -402,6 +413,7 @@ const empty = {
   centurionActiveCategoryCount: 0,
   workflowCategoryMissingCount: 0,
   workflowNonterminalCount: 0,
+  workflowPostRestartNonterminalCount: null,
   workflowDeadLetterCount: 0,
   workflowDeadLetterRecentCount: 0,
   workflowDeadLetterWindowStart: null,
@@ -455,27 +467,37 @@ try {
           AND c.is_active = true
       )
   `;
-  // Dead-letter window = last-good deploy, capped at 24 h back: a stale marker can never widen it.
-  // greatest() ignores a NULL marker, so no marker means now() - 24 h.
-  const [workflow] = await sql`
+  // Current restart takes precedence; a caller may supply a last-good marker.
+  // Pin the transaction timezone: deployed timestamp columns may be with or
+  // without timezone, and Drizzle writes the latter in UTC.
+  const [workflow] = await sql.begin('read only', async (tx) => {
+    await tx`SET LOCAL TIME ZONE 'UTC'`;
+    return tx`
     SELECT
       count(*) FILTER (
         WHERE state IN ('queued', 'claimed', 'running', 'retry_wait')
       )::int AS nonterminal,
+      CASE WHEN ${deployStartedAt}::timestamptz IS NULL THEN NULL ELSE
+        count(*) FILTER (
+          WHERE state IN ('queued', 'claimed', 'running', 'retry_wait')
+            AND created_at >= ${deployStartedAt}::timestamptz
+        )::int
+      END AS post_restart_nonterminal,
       count(*) FILTER (WHERE state = 'dead_letter')::int AS dead_letter,
       count(*) FILTER (
         WHERE state = 'dead_letter'
-          AND coalesce(finished_at, updated_at) > greatest(
-            ${lastGoodDeployAt}::timestamptz,
+          AND coalesce(finished_at, updated_at) >= greatest(
+            ${deadLetterWindowAt}::timestamptz,
             now() - interval '24 hours'
           )
       )::int AS dead_letter_recent,
       greatest(
-        ${lastGoodDeployAt}::timestamptz,
+        ${deadLetterWindowAt}::timestamptz,
         now() - interval '24 hours'
       ) AS dead_letter_window_start
     FROM ai_workflow_run
-  `;
+    `;
+  });
   const [outbound] = await sql`
     SELECT count(*)::int AS nonterminal
     FROM outbound_send_queue
@@ -496,6 +518,9 @@ try {
     centurionActiveCategoryCount: Number(categories?.count ?? 0),
     workflowCategoryMissingCount: Number(workflowCats?.missing ?? 0),
     workflowNonterminalCount: Number(workflow?.nonterminal ?? 0),
+    workflowPostRestartNonterminalCount: workflow?.post_restart_nonterminal == null
+      ? null
+      : Number(workflow.post_restart_nonterminal),
     workflowDeadLetterCount: Number(workflow?.dead_letter ?? 0),
     workflowDeadLetterRecentCount: Number(workflow?.dead_letter_recent ?? 0),
     workflowDeadLetterWindowStart: workflow?.dead_letter_window_start
@@ -568,6 +593,7 @@ REMOTE
 )"
 REMOTE_COMMAND="${REMOTE_COMMAND//__REMOTE_ADMIN_MODE__/$REMOTE_ADMIN_MODE}"
 REMOTE_COMMAND="${REMOTE_COMMAND//__LAST_GOOD_DEPLOY_AT_B64__/$LAST_GOOD_DEPLOY_AT_B64}"
+REMOTE_COMMAND="${REMOTE_COMMAND//__DEPLOY_STARTED_AT_B64__/$DEPLOY_STARTED_AT_B64}"
 
 SSM_RESULT=""
 SSM_EXIT=0
@@ -2025,6 +2051,7 @@ const securityGroupCoverageValid =
   exactSecurityGroupSet;
 const pm2Required = remote.pm2?.required ?? {};
 const db = remote.db ?? {};
+const nonterminalBacklogWaived = process.env.NAVA_ALLOW_PREEXISTING_NONTERMINAL_BACKLOG === "1";
 let detectedRemoteAdminState = "unknown";
 
 const checks = {
@@ -2049,7 +2076,13 @@ const checks = {
   centurionCategoriesActive: db.centurionActiveCategoryCount === 12,
   workflowCategoriesComplete: Number(db.workflowCategoryMissingCount ?? 0) === 0,
   workflowNonterminalBacklogEmpty: db.workflowNonterminalCount === 0,
-  // Fail on dead letters since the last good deploy, capped at the previous 24 hours.
+  // The waiver covers only work that predates this deployment's restart.
+  ...(nonterminalBacklogWaived ? {
+    workflowPostRestartBacklogEmpty:
+      Number.isSafeInteger(db.workflowPostRestartNonterminalCount) &&
+      db.workflowPostRestartNonterminalCount === 0,
+  } : {}),
+  // Fail on dead letters since this deploy's restart (or the last-good marker for standalone checks).
   workflowDeadLetterBacklogEmpty: Number(db.workflowDeadLetterRecentCount ?? 0) === 0,
   // Warn-only (see WARN_ONLY_CHECKS below): printed as a warning, never fails the gate.
   outboundBacklogEmpty: db.outboundNonterminalCount === 0,
@@ -2146,6 +2179,9 @@ if (remoteAdminMode) {
 }
 // Warn-only checks are reported in `warnings` and printed, but only `failures` decides READY.
 const WARN_ONLY_CHECKS = new Set(["outboundBacklogEmpty"]);
+// One-deploy owner waiver: keep the measured backlog visible, but do not
+// treat the existing paused-lane queue as a deploy failure.
+if (nonterminalBacklogWaived) WARN_ONLY_CHECKS.add("workflowNonterminalBacklogEmpty");
 const failedChecks = Object.entries(checks)
   .filter(([, passed]) => !passed)
   .map(([name]) => name);
@@ -2182,6 +2218,9 @@ const report = {
     workflowDeadLetterRecentCount: Number(db.workflowDeadLetterRecentCount ?? 0),
     workflowDeadLetterWindowStart: db.workflowDeadLetterWindowStart ?? null,
     workflowLastGoodDeployRejected: db.workflowLastGoodDeployRejected === true,
+    workflowNonterminalCount: db.workflowNonterminalCount ?? null,
+    workflowPostRestartNonterminalCount: db.workflowPostRestartNonterminalCount ?? null,
+    workflowNonterminalBacklogWaived: nonterminalBacklogWaived,
     outboundNonterminalCount: db.outboundNonterminalCount ?? null,
     counts: db.counts ?? {},
     pm2Restarts: {
@@ -2228,11 +2267,19 @@ if (report.observations.workflowLastGoodDeployRejected) {
   );
 }
 if (report.warnings.length) {
-  console.error(
-    `WARNING launch-readiness: ${report.warnings.join(",")} not met ` +
-      `(outboundNonterminalCount=${report.observations.outboundNonterminalCount}). ` +
-      "Warn-only: this does not fail the deploy. Check the outbound queue.",
-  );
+  if (report.warnings.includes("outboundBacklogEmpty")) {
+    console.error(
+      `WARNING launch-readiness: outboundBacklogEmpty not met ` +
+        `(outboundNonterminalCount=${report.observations.outboundNonterminalCount}). ` +
+        "Warn-only: this does not fail the deploy. Check the outbound queue.",
+    );
+  }
+  if (report.warnings.includes("workflowNonterminalBacklogEmpty")) {
+    console.error(
+      "WARNING launch-readiness: owner waived workflowNonterminalBacklogEmpty " +
+        `(workflowNonterminalCount=${report.observations.workflowNonterminalCount}).`,
+    );
+  }
 }
 NODE
 

@@ -27,6 +27,7 @@ import {
   type StaffQuoteRoomAlternative,
 } from '../ai/staff-quote-alternatives.js';
 import type { Auth } from '../lib/auth.js';
+import { resolveAuthSessionProfile, type AuthSessionProfile } from '../lib/auth-profile.js';
 import { getDb, type DB } from '../db/client.js';
 import {
   resolveMailboxContext,
@@ -49,7 +50,7 @@ export type TrpcSourceContext = {
 export type TrpcPrivateContext = {
   auth: Auth;
   reqHeaders: Headers;
-  sessionUser: { id: string; email: string; name: string | null };
+  sessionUser: { id: string; email: string; name: string | null; sessionId?: string; sessionProfile?: AuthSessionProfile };
 };
 
 export type TrpcMailboxContext = TrpcPrivateContext & MailboxContext;
@@ -94,15 +95,12 @@ export const publicProcedure = t.procedure;
 async function getSessionUser(
   auth: Auth,
   headers: Headers,
-): Promise<{
-  id: string;
-  email: string;
-  name: string | null;
-} | null> {
+): Promise<TrpcPrivateContext['sessionUser'] | null> {
   const session = await auth.api.getSession({ headers });
   if (!session?.user) return null;
   const u = session.user as { id: string; email: string; name?: string | null };
-  return { id: u.id, email: u.email, name: u.name ?? null };
+  return { id: u.id, email: u.email, name: u.name ?? null,
+    sessionId: session.session?.id, sessionProfile: resolveAuthSessionProfile() };
 }
 
 /**

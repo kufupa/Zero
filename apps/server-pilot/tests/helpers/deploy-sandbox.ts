@@ -3,11 +3,12 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -29,6 +30,7 @@ export function deploymentSandbox(url: string) {
     symlinkSync(join(serverRoot, dir), join(server, dir));
   }
   for (const file of [
+    'build-identity.sh',
     'deploy-ec2.sh',
     'ops-deploy.sh',
     'ops-restart.sh',
@@ -36,7 +38,14 @@ export function deploymentSandbox(url: string) {
     'check-migration-compatibility.sh',
   ]) {
     const source = join(serverRoot, 'deploy', file);
-    if (existsSync(source)) cpSync(source, join(deploy, file));
+    if (existsSync(source)) {
+      cpSync(source, join(deploy, file));
+      // Every lock in this fixture must stay inside the fixture.
+      const target = join(deploy, file);
+      writeFileSync(target, readFileSync(target, 'utf8').replaceAll(
+        '/home/ubuntu/.nava-deploy.lock', join(root, 'deploy.lock'),
+      ));
+    }
   }
   const script = (file: string, body: string) =>
     writeFileSync(file, `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`, { mode: 0o755 });
@@ -49,7 +58,7 @@ export function deploymentSandbox(url: string) {
   );
   script(
     join(deploy, 'ssm-run-command.sh'),
-    `node -e 'const {spawnSync}=require("node:child_process"); const command=process.argv[1].replaceAll("/home/ubuntu/repos/zero",process.env.REMOTE_TEST_REPO); const r=spawnSync("bash",["-euc",command],{stdio:"inherit",env:process.env}); process.exit(r.status??1)' "$1"`,
+    `node -e 'const {spawnSync}=require("node:child_process"); const command=process.argv[1].replaceAll("/home/ubuntu/repos/zero",process.env.REMOTE_TEST_REPO).replaceAll("/home/ubuntu/.nava-deploy.lock",process.env.REMOTE_TEST_ROOT+"/deploy.lock"); const r=spawnSync("bash",["-euc",command],{stdio:"inherit",env:process.env}); process.exit(r.status??1)' "$1"`,
   );
   script(join(bin, 'id'), 'echo 1000');
   script(
@@ -59,6 +68,15 @@ export function deploymentSandbox(url: string) {
   for (const command of ['sudo', 'pm2', 'curl'])
     script(join(bin, command), `printf ${command} > "$ACTIVATION_MARKER"\nexit 77`);
   writeFileSync(join(server, '.env.production'), `export DATABASE_URL=${JSON.stringify(url)}\n`);
+  // Exercise the real deploy worktree guard instead of a production test bypass.
+  writeFileSync(join(repo, '.gitignore'), '*\n!.gitignore\n');
+  execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+  execFileSync('git', ['-C', repo, 'add', '.gitignore']);
+  execFileSync('git', [
+    '-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+    'commit', '-qm', 'deploy fixture',
+  ]);
+  execFileSync('git', ['-C', repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD']);
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
@@ -78,7 +96,7 @@ export function deploymentSandbox(url: string) {
     marker,
     env,
     run: (file: string, args: string[] = []) =>
-      spawnSync('bash', [join(deploy, file), ...args], { env, encoding: 'utf8', timeout: 20_000 }),
+      spawnSync('bash', [join(deploy, file), ...args], { cwd: repo, env, encoding: 'utf8', timeout: 20_000 }),
     close: () => rmSync(root, { recursive: true, force: true }),
   };
 }

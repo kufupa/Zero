@@ -6,6 +6,8 @@ import {
   quoteAnalysisOf,
   workItemsFromTrpc,
   type ContactField,
+  type AmendDraftSnapshot,
+  type MailSourceSelection,
   type RecordFieldEventInput,
   type StoredContact,
   type StoredStayCommit,
@@ -39,6 +41,7 @@ export type StoredPane =
       /** The mail kind and current work-item state, shared with the pane's read-as and work-state banners. */
       kind: string;
       existingStayInformation?: boolean;
+      separateAsk?: string | null;
       confirmationNumbers?: string[];
       workItemStatus: string | null;
       /** Null when the read has no work item (it could not be opened): the read shows, edits are not logged. */
@@ -51,6 +54,7 @@ export type StoredPane =
       /** Latest per-path source from getByMessage. Null when the older server omits it. */
       fieldProvenance?: WorkItemProvenanceMap | null;
       refs?: Record<string, { stayId: string; rowId: string | null }>;
+      amendDraft?: AmendDraftSnapshot | null;
     };
 
 export type StoredDecision =
@@ -104,7 +108,7 @@ export type WorkItemPaneControls = {
   resetPending?: boolean;
 };
 
-type HistorySeqCursor = WorkItemHistoryCursor & { seq: number };
+type HistorySeqCursor = WorkItemHistoryCursor & { seq: number; extractionId?: string | null };
 type HistoryMutate = (
   input: { workItemId: string; expectedSeq: number },
   opts?: ReturnType<typeof inMailbox>,
@@ -373,19 +377,23 @@ function saveKey(workItemId: string, path: string): string {
 export function useStoredWork(args: {
   trpc: unknown;
   internetMessageId: string | null;
+  selection?: MailSourceSelection;
+  selectionEpoch?: number;
   /** Read an existing item without opening a new work item when this is a non-actionable channel/system message. */
   openMissingWorkItem?: boolean;
   /** The signed-in user, session and mailbox. A mailbox switch looks the mail up again in the new mailbox. */
   scope?: string | null;
 }) {
-  const { trpc, internetMessageId } = args;
+  const { trpc, internetMessageId, selection } = args;
   const openMissingWorkItem = args.openMissingWorkItem !== false;
   const scope = args.scope ?? '';
   // The lookup is for this mail in this mailbox. Either changing makes the last lookup someone else's.
-  const lookupKey = internetMessageId ? `${scope}\n${internetMessageId}` : null;
+  const lookupKey = internetMessageId
+    ? JSON.stringify([scope, internetMessageId, selection ?? null, args.selectionEpoch ?? null])
+    : null;
   const [lookup, setLookup] = useState<Lookup | null>(null);
   // Retries asked for on the mail on screen. A retry reads live, so the stored failure stops showing for that mail.
-  const [retries, setRetries] = useState<{ messageId: string | null; count: number }>({ messageId: null, count: 0 });
+  const [retries, setRetries] = useState<{ key: string | null; count: number }>({ key: null, count: 0 });
   const readyAt = useRef(0);
   const pending = useRef(new Map<string, PendingEvent>());
   // The newest send per save slot, so an older send's failure never stands in for a newer value.
@@ -397,6 +405,7 @@ export function useStoredWork(args: {
   // Every save slot she edited on this screen. A save still pending, failed or retrying has not reached the server yet,
   // so its field is never sent as an accept.
   const edited = useRef(new Set<string>());
+  const editGeneration = useRef(new Map<string, number>());
   const [saveFailed, setSaveFailed] = useState(false);
   // The work item whose translation is being asked for again, so "Translating…" shows for that mail only.
   const [translating, setTranslating] = useState<string | null>(null);
@@ -406,6 +415,7 @@ export function useStoredWork(args: {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyNeedsReload, setHistoryNeedsReload] = useState(false);
   const [cursorEpoch, setCursorEpoch] = useState(0);
+  const [amendRebinding, setAmendRebinding] = useState(false);
   const trpcRef = useRef(trpc);
   const lookupKeyRef = useRef(lookupKey);
   lookupKeyRef.current = lookupKey;
@@ -498,6 +508,7 @@ export function useStoredWork(args: {
 
   const schedule = useCallback(
     (path: string, workItemId: string, transportId: string | null, value: RecordFieldEventInput['value']) => {
+      editGeneration.current.set(workItemId, (editGeneration.current.get(workItemId) ?? 0) + 1);
       const key = saveKey(workItemId, path);
       edited.current.add(key);
       const existing = pending.current.get(key);
@@ -526,7 +537,7 @@ export function useStoredWork(args: {
     // The lookup goes out under the active mailbox, so its work item lives there.
     const transportId = getMailCacheScope().activeTransportId;
     const settle = (result: LookupResult) => {
-      if (!current || settled) return;
+      if (!current || settled || lookupKeyRef.current !== lookupKey) return;
       // A timeout starts the live read. Only a late ready payload can supersede that fallback; a late miss or
       // transport failure leaves the current live-read state alone and keeps Retry available there.
       if (timedOut && result.status !== 'ready') {
@@ -548,10 +559,12 @@ export function useStoredWork(args: {
     // The deadline covers the stored read. Once it is in, a slow open shows that read rather than reading live.
     void bindStoredWork({
       query: routes.getByMessage,
-      open: openMissingWorkItem ? routes.open : undefined,
+      open: routes.open,
+      allowOpen: openMissingWorkItem,
       internetMessageId,
+      selection,
       transportId,
-      isStale: () => !current,
+      isStale: () => !current || lookupKeyRef.current !== lookupKey,
       onRead: () => clearTimeout(timer),
       openTimeoutMs: STORED_LOOKUP_TIMEOUT_MS,
     }).then(settle);
@@ -564,7 +577,7 @@ export function useStoredWork(args: {
 
   const currentLookup = lookup && lookup.key === lookupKey ? lookup : null;
   const stored = currentLookup?.result ?? null;
-  const retried = retries.messageId === internetMessageId ? retries.count : 0;
+  const retried = retries.key === lookupKey ? retries.count : 0;
   let pane: StoredPane;
   if (!internetMessageId || !canLookUp) pane = { state: 'reading' };
   else if (!currentLookup) pane = { state: 'loading' };
@@ -574,6 +587,7 @@ export function useStoredWork(args: {
       analysis: quoteAnalysisOf(stored.analysis),
       kind: stored.kind,
       existingStayInformation: stored.existingStayInformation === true,
+      separateAsk: stored.separateAsk ?? null,
       confirmationNumbers: stored.confirmationNumbers ?? [],
       workItemStatus: stored.workItemStatus,
       workItemId: stored.workItemId,
@@ -583,6 +597,7 @@ export function useStoredWork(args: {
       translation: stored.translation,
       fieldProvenance: provenanceOf(stored),
       refs: stored.refs,
+      amendDraft: amendSnapshotOf(stored),
     };
   } else if (stored?.status === 'failed' && retried === 0) {
     pane = { state: 'failed', reason: stored.reason };
@@ -591,9 +606,10 @@ export function useStoredWork(args: {
 
   // Changes when the stored read changes or a retry is asked for, so the pane's analysis effect re-runs on it.
   const key = [
-    internetMessageId ?? '',
+    lookupKey ?? '',
     pane.state,
     pane.state === 'ready' ? (pane.workItemId ?? '') : '',
+    pane.state === 'ready' ? (pane.amendDraft?.source.extractionId ?? '') : '',
     pane.state === 'failed' ? pane.reason : '',
     String(retried),
     String(historyEpoch),
@@ -602,14 +618,66 @@ export function useStoredWork(args: {
   const readyRefs = stored?.status === 'ready' ? stored.refs : null;
   const readyWorkItemId = stored?.status === 'ready' ? stored.workItemId : null;
   const readyTransportId = currentLookup?.transportId ?? null;
+  const draftRef = useRef<AmendDraftSnapshot | null>(null);
+  draftRef.current = pane.state === 'ready' ? pane.amendDraft ?? null : null;
+
+  // Background saves stay pinned to their own draft; write approval also requires the visible selection.
+  const flushSnapshot = useCallback(async (draft: AmendDraftSnapshot, transportId: string, visible = false) => {
+    const selected = draftRef.current?.workItemId === draft.workItemId && readyTransportId === transportId;
+    if ((visible && (!readyWorkItemId || draft.workItemId !== readyWorkItemId || !lookupKey ||
+        readyTransportId !== transportId)) || ((visible || selected) && (historyPending || historyNeedsReload))) return null;
+    const keyNow = lookupKey;
+    const generation = editGeneration.current.get(draft.workItemId) ?? 0;
+    const active = () => {
+      const current = draftRef.current;
+      return (editGeneration.current.get(draft.workItemId) ?? 0) === generation && (!visible ||
+        (lookupKeyRef.current === keyNow && current?.workItemId === draft.workItemId &&
+          JSON.stringify(current.source) === JSON.stringify(draft.source)));
+    };
+    const unsettled = () => [...pending.current.values(), ...latest.current.values(), ...failed.current.values()]
+      .some((entry) => entry.workItemId === draft.workItemId);
+    flushAll();
+    await Promise.allSettled([...inFlight.current.entries()]
+      .filter(([key]) => key.startsWith(`${draft.workItemId}\n`)).map(([, promise]) => promise));
+    if (!active() || unsettled()) return null;
+    const query = historyRoutesFrom(trpcRef.current).revisionCursor?.query;
+    if (!query) return null;
+    try {
+      const pinned = inMailbox(transportId);
+      const cursor = await (pinned ? query({ workItemId: draft.workItemId }, pinned) : query({ workItemId: draft.workItemId }));
+      if (!active() || unsettled() || cursor.extractionId !== draft.source.extractionId ||
+          !Number.isSafeInteger(cursor.seq) || cursor.seq < 0 || !Number.isSafeInteger(cursor.revision) ||
+          !Number.isSafeInteger(cursor.revisionHead)) return null;
+      return cursor;
+    } catch { return null; }
+  }, [flushAll, historyNeedsReload, historyPending, lookupKey, readyTransportId, readyWorkItemId]);
 
   const retry = useCallback(() => {
-    if (!internetMessageId) return;
+    if (!lookupKey) return;
     setRetries((prev) => ({
-      messageId: internetMessageId,
-      count: (prev.messageId === internetMessageId ? prev.count : 0) + 1,
+      key: lookupKey,
+      count: (prev.key === lookupKey ? prev.count : 0) + 1,
     }));
-  }, [internetMessageId]);
+  }, [lookupKey]);
+
+  // A live first read can finish after the stored lookup returned none. Open its WorkItem without another selection.
+  const rebindAmendDraft = useCallback(async () => {
+    if (!internetMessageId || !lookupKey) return;
+    const keyNow = lookupKey;
+    const transportId = getMailCacheScope().activeTransportId;
+    setAmendRebinding(true);
+    try {
+      const routes = workItemsFromTrpc(trpcRef.current);
+      const result = await bindStoredWork({ query: routes.getByMessage, open: routes.open, internetMessageId,
+        selection, transportId, isStale: () => lookupKeyRef.current !== keyNow,
+        openTimeoutMs: STORED_LOOKUP_TIMEOUT_MS });
+      if (lookupKeyRef.current === keyNow && result.status === 'ready' && amendSnapshotOf(result)) {
+        setLookup({ key: keyNow, transportId, result, timedOut: false });
+      }
+    } finally {
+      if (lookupKeyRef.current === keyNow) setAmendRebinding(false);
+    }
+  }, [internetMessageId, lookupKey, selection]);
 
   /** Logs one edit (a field patch or a stay/row action) as field events. Only a stored read has a work item. */
   const recordGroups = useCallback(
@@ -709,7 +777,7 @@ export function useStoredWork(args: {
     const keyNow = lookupKey;
     if (!getByMessage || !messageId || !keyNow) return Promise.resolve();
     const pinned = inMailbox(readyTransportId);
-    const input = { internetMessageId: messageId };
+    const input = { internetMessageId: messageId, ...(selection ? { selection } : {}) };
     return (pinned ? getByMessage.query(input, pinned) : getByMessage.query(input))
       .then((result) => {
         if (lookupKeyRef.current !== keyNow) return;
@@ -725,12 +793,45 @@ export function useStoredWork(args: {
       });
   }, [internetMessageId, lookupKey, readyTransportId]);
 
+  // A conflict reload updates the projection without remounting an editor containing unsent input.
+  const reloadAmendDraft = useCallback(async (expected: AmendDraftSnapshot, transportId: string): Promise<AmendDraftSnapshot | null> => {
+    const getByMessage = workItemsFromTrpc(trpcRef.current).getByMessage;
+    if (!getByMessage || !internetMessageId || !lookupKey) return null;
+    const pinned = inMailbox(transportId);
+    const input = { internetMessageId, ...(selection ? { selection } : {}) };
+    const result = await (pinned ? getByMessage.query(input, pinned) : getByMessage.query(input));
+    if (lookupKeyRef.current !== lookupKey) return null;
+    const snapshot = amendSnapshotOf(result);
+    if (!snapshot || snapshot.workItemId !== expected.workItemId ||
+        JSON.stringify(snapshot.source) !== JSON.stringify(expected.source) ||
+        !snapshot.requests.some((request) => request.requestId === expected.requests[0]?.requestId)) return snapshot;
+    setLookup((previous) => previous?.key === lookupKey ? { ...previous, result } : previous);
+    setCursorEpoch((n) => n + 1);
+    return snapshot;
+  }, [internetMessageId, lookupKey, selection]);
+
+  const reloadRefreshedAmend = useCallback(async (expected: AmendDraftSnapshot, transportId: string,
+    extractionId: string, isCurrent: () => boolean): Promise<boolean> => {
+    const getByMessage = workItemsFromTrpc(trpcRef.current).getByMessage;
+    if (!getByMessage || !internetMessageId || !lookupKey) return false;
+    const pinned = inMailbox(transportId);
+    const input = { internetMessageId, ...(selection ? { selection } : {}) };
+    const result = await (pinned ? getByMessage.query(input, pinned) : getByMessage.query(input));
+    const fresh = amendSnapshotOf(result);
+    if (!isCurrent() || lookupKeyRef.current !== lookupKey || !fresh || fresh.workItemId !== expected.workItemId ||
+        fresh.source.extractionId !== extractionId || fresh.source.threadId !== expected.source.threadId ||
+        fresh.source.messageId !== expected.source.messageId || fresh.source.sourceHash !== expected.source.sourceHash) return false;
+    setLookup((previous) => previous?.key === lookupKey && isCurrent() ? { ...previous, result } : previous);
+    return true;
+  }, [internetMessageId, lookupKey, selection]);
+
   const historyRoutes = historyRoutesFrom(trpc);
   const historyAvailable = Boolean(readyWorkItemId && historyRoutes.undoRevision && historyRoutes.redoRevision);
   const resetAvailable = Boolean(readyWorkItemId && historyRoutes.resetSection);
 
   useEffect(() => {
     setHistoryEpoch(0);
+    setAmendRebinding(false);
     setHistoryCursor(null);
     setHistoryError(null);
     setHistoryNeedsReload(false);
@@ -755,7 +856,7 @@ export function useStoredWork(args: {
           Number.isSafeInteger(result.revisionHead) &&
           Number.isSafeInteger(result.seq)
         ) {
-          setHistoryCursor(result);
+          setHistoryCursor((previous) => previous && previous.seq > result.seq ? previous : result);
         }
       })
       .catch(() => {
@@ -871,8 +972,15 @@ export function useStoredWork(args: {
     /** How many times the person asked to read this mail again. A live read with a treat-as re-runs on it. */
     retryCount: retried,
     retry,
+    rebindAmendDraft,
+    amendRebinding,
     recordGroups,
     recordContact,
+    flushSnapshot,
+    reloadAmendDraft,
+    reloadRefreshedAmend,
+    noteAmendSave: (cursor: HistorySeqCursor) => setHistoryCursor((previous) =>
+      previous && previous.seq > cursor.seq ? previous : cursor),
     acceptUnedited,
     retryTranslation,
     translationBusy: translating !== null && translating === readyWorkItemId,
@@ -892,6 +1000,15 @@ export function useStoredWork(args: {
     resetSection,
     reloadHistory,
   };
+}
+
+function amendSnapshotOf(stored: StoredWork): AmendDraftSnapshot | null {
+  if (stored.status !== 'ready' || stored.draftContractVersion !== 1 || !stored.workItemId ||
+      !stored.source || stored.workItemExtractionId !== stored.source.extractionId ||
+      !Array.isArray(stored.workflowRequests) || !Number.isSafeInteger(stored.revisionSeq) ||
+      (stored.revisionSeq ?? -1) < 0) return null;
+  return { workItemId: stored.workItemId, source: stored.source, revisionSeq: stored.revisionSeq!,
+    requests: stored.workflowRequests, fieldMeta: stored.draftFieldMeta ?? {} };
 }
 
 function withStaffPaths(stored: StoredWork, events: FieldEvent[]): StoredWork {

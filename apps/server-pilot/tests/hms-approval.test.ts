@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { appRouter } from '../src/trpc/router.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
-import { aiWorkflowRun, message } from '../src/db/schema/mail.js';
+import { aiWorkflowRun, mailboxTransport, message } from '../src/db/schema/mail.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
 import {
   HMS_WRITE_EVIDENCE_PREFIX,
@@ -37,6 +37,8 @@ import { withIngestionDb } from './helpers/ingestion-db.js';
 
 const TRANSPORT_ID = 'transport-centurion';
 const TRANSPORT_EMAIL = 'centurion@legacyhotels.co.za';
+const DAVINCI_TRANSPORT_ID = 'transport-davinci';
+const DAVINCI_TRANSPORT_EMAIL = 'davinci@legacyhotels.co.za';
 const MINUTE = 60_000;
 // Seed time comes from the wall clock once. Every later step runs on this injected clock.
 const NOW = new Date();
@@ -91,13 +93,19 @@ function sha256(data: string | Buffer): string {
 // Each n is one inbound thread with one work item. A work item is unique per (thread, kind, source message).
 async function seedItem(
   db: DB,
-  opts: { n?: number; snapshotAt?: Date | null; hms?: unknown; form?: Record<string, unknown> } = {},
+  opts: { n?: number; snapshotAt?: Date | null; hms?: unknown; form?: Record<string, unknown>; transportId?: string } = {},
 ): Promise<string> {
   const n = opts.n ?? 1;
+  const transportId = opts.transportId ?? TRANSPORT_ID;
+  const transportEmail = transportId === DAVINCI_TRANSPORT_ID ? DAVINCI_TRANSPORT_EMAIL : TRANSPORT_EMAIL;
+  if (transportId === DAVINCI_TRANSPORT_ID) {
+    await db.insert(mailboxTransport).values({ id: transportId, email: transportEmail,
+      ownerHeaderValue: transportEmail, mailboxType: 'personal', sendFromConfig: { aliases: [] } }).onConflictDoNothing();
+  }
   await seedInboxThread(db, {
     threadId: `thread-${n}`,
-    transportId: TRANSPORT_ID,
-    transportEmail: TRANSPORT_EMAIL,
+    transportId,
+    transportEmail,
     messageId: `msg-${n}`,
   });
   const snapshotAt = opts.snapshotAt === undefined ? NOW : opts.snapshotAt;
@@ -111,7 +119,7 @@ async function seedItem(
   const [item] = await db
     .insert(workItem)
     .values({
-      transportId: TRANSPORT_ID,
+      transportId,
       threadId: `thread-${n}`,
       sourceMessageId: `msg-${n}`,
       kind: 'quote',
@@ -218,21 +226,22 @@ describe('HMS write approvals', () => {
         await expect(
           caller.hmsApproval.approve({
             workItemId,
+            internetMessageId: 'thread-1@example.com',
             formDigest: 'forged',
             hmsBeforeDigest: 'forged',
           } as never),
         ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
         // The card sends back the digest of the form it showed. A form edited since then is refused, not approved.
         await expect(
-          caller.hmsApproval.approve({ workItemId, formDigest: formDigest(EDITED_FORM) }),
+          caller.hmsApproval.approve({ workItemId, internetMessageId: 'thread-1@example.com', formDigest: formDigest(EDITED_FORM) }),
         ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'form_outdated' });
-        const granted = await caller.hmsApproval.approve({ workItemId, formDigest: formDigest(FORM) });
+        const granted = await caller.hmsApproval.approve({ workItemId, internetMessageId: 'thread-1@example.com', formDigest: formDigest(FORM) });
         expect(granted.runId).toEqual(expect.any(String));
         const [count] = await sql<{ n: number }[]>`
           SELECT count(*)::int AS n FROM work_event WHERE type = 'approval.granted'`;
         expect(count?.n).toBe(1);
         await expect(
-          caller.hmsApproval.approve({ workItemId, formDigest: formDigest(FORM) }),
+          caller.hmsApproval.approve({ workItemId, internetMessageId: 'thread-1@example.com', formDigest: formDigest(FORM) }),
         ).rejects.toMatchObject({
           code: 'PRECONDITION_FAILED',
           message: 'write_in_flight',
@@ -579,10 +588,10 @@ describe('HMS write approvals', () => {
       __setDbForTests({ db, conn: sql } as never);
       const caller = callerFor(TRANSPORT_ID);
       await expect(
-        caller.hmsApproval.resolveNeedsCheck({ workItemId, note: '' }),
+        caller.hmsApproval.resolveNeedsCheck({ workItemId, internetMessageId: 'thread-1@example.com', note: '' }),
       ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
       await expect(
-        caller.hmsApproval.resolveNeedsCheck({ workItemId, note: 'Booking reads amended in HMS' }),
+        caller.hmsApproval.resolveNeedsCheck({ workItemId, internetMessageId: 'thread-1@example.com', note: 'Booking reads amended in HMS' }),
       ).resolves.toEqual({ runId: claim.runId, resolution: 'staff_checked' });
       const events = await db.select().from(workEvent).where(eq(workEvent.workItemId, workItemId));
       expect(events.find((row) => (row.value as { resolvedRunId?: string })?.resolvedRunId)).toMatchObject({
@@ -923,10 +932,10 @@ describe('HMS write approvals', () => {
       __setDbForTests({ db, conn: sql } as never);
       setS3Storage(storage);
       await expect(
-        callerFor('transport-nava').hmsApproval.evidence({ workItemId, eventId: sealed.eventId }),
-      ).resolves.toEqual({ status: 'unavailable', reason: 'evidence_unavailable' });
+        callerFor('transport-nava').hmsApproval.evidence({ workItemId, internetMessageId: 'thread-1@example.com', eventId: sealed.eventId }),
+      ).rejects.toMatchObject({ code: 'NOT_FOUND' });
       await expect(
-        callerFor(TRANSPORT_ID).hmsApproval.evidence({ workItemId, eventId: sealed.eventId }),
+        callerFor(TRANSPORT_ID).hmsApproval.evidence({ workItemId, internetMessageId: 'thread-1@example.com', eventId: sealed.eventId }),
       ).resolves.toEqual({
         status: 'ok',
         dataUrl: `data:image/png;base64,${PNG_BYTES.toString('base64')}`,
@@ -1103,27 +1112,27 @@ describe('HMS write review and write state', () => {
       __setDbForTests({ db, conn: sql } as never);
       const caller = callerFor(TRANSPORT_ID);
       await expect(
-        caller.hmsApproval.review({ workItemId, decision: 'flag', note: '' } as never),
+        caller.hmsApproval.review({ workItemId, internetMessageId: 'thread-1@example.com', decision: 'flag', note: '' } as never),
       ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
       await expect(
-        caller.hmsApproval.review({ workItemId, decision: 'ok', note: 'not allowed' } as never),
+        caller.hmsApproval.review({ workItemId, internetMessageId: 'thread-1@example.com', decision: 'ok', note: 'not allowed' } as never),
       ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
       await expect(
-        caller.hmsApproval.review({ workItemId, runId, decision: 'flag', note: 'Check arrival in HMS' }),
+        caller.hmsApproval.review({ workItemId, internetMessageId: 'thread-1@example.com', runId, decision: 'flag', note: 'Check arrival in HMS' }),
       ).resolves.toEqual({ runId, status: 'needs_you' });
       // This form names no booking to read (no confirmation, arrival or action), so nothing reaches HMS.
-      await expect(caller.hmsApproval.reread({ workItemId })).resolves.toEqual({
+      await expect(caller.hmsApproval.reread({ workItemId, internetMessageId: 'thread-1@example.com' })).resolves.toEqual({
         status: 'refused',
         reason: 'form_invalid',
       });
       await expect(
-        callerFor('transport-nava').hmsApproval.review({ workItemId, runId, decision: 'ok' }),
+        callerFor('transport-nava').hmsApproval.review({ workItemId, internetMessageId: 'thread-1@example.com', runId, decision: 'ok' }),
       ).rejects.toMatchObject({ code: 'NOT_FOUND' });
       await expect(
-        callerFor('transport-nava').hmsApproval.writeState({ workItemId }),
+        callerFor('transport-nava').hmsApproval.writeState({ workItemId, internetMessageId: 'thread-1@example.com' }),
       ).rejects.toMatchObject({ code: 'NOT_FOUND' });
       await expect(
-        callerFor('transport-nava').hmsApproval.reread({ workItemId }),
+        callerFor('transport-nava').hmsApproval.reread({ workItemId, internetMessageId: 'thread-1@example.com' }),
       ).rejects.toMatchObject({ code: 'NOT_FOUND' });
     });
   });
@@ -1384,8 +1393,8 @@ describe('HMS attach form digest and unconfirmed upload (U9)', () => {
 
   it('upload_unconfirmed leaves needs-check open and refuses another approval', async () => {
     await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedItem(db, { form: ATTACH_FORM });
-      await approve(db, workItemId);
+      const workItemId = await seedItem(db, { form: ATTACH_FORM, transportId: DAVINCI_TRANSPORT_ID });
+      await approve(db, workItemId, { transportId: DAVINCI_TRANSPORT_ID });
       const claim = await claimWrite(db);
       await consumeHmsWriteApproval({ db, runId: claim.runId, fence: claim.fence, now: NOW });
       expect(
@@ -1396,13 +1405,14 @@ describe('HMS attach form digest and unconfirmed upload (U9)', () => {
           reason: 'upload_unconfirmed',
         }),
       ).toBe(true);
-      const view = await hmsWriteStateOf({ db, transportId: TRANSPORT_ID, workItemId, now: NOW });
+      const view = await hmsWriteStateOf({ db, transportId: DAVINCI_TRANSPORT_ID, workItemId, now: NOW });
       expect(view).toMatchObject({
         needsCheck: true,
         form: ATTACH_FORM,
         run: { lastError: 'upload_unconfirmed' },
       });
-      await expect(approve(db, workItemId)).rejects.toMatchObject({ refusal: 'needs_check_open' });
+      await expect(approve(db, workItemId, { transportId: DAVINCI_TRANSPORT_ID }))
+        .rejects.toMatchObject({ refusal: 'needs_check_open' });
     });
   });
 });

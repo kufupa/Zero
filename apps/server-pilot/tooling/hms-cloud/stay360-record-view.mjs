@@ -139,7 +139,8 @@ export async function readRecordViewFromStay360(page, confirmation, options = {}
     if (typeof property === 'string' && /^[A-Z0-9]{2,20}$/.test(property) &&
         titleProperty === property && new URL(page.url()).origin === new URL(frame.url()).origin) {
       // A missing or inconsistent observation stays unknown, without weakening the ordinary visible read.
-      nativePreimage = await readNativeSavedStayPreimage(frame, { propertyCode: property, confirmation: wanted }).catch(() => null);
+      nativePreimage = await readNativeSavedStayPreimage(frame, { propertyCode: property, confirmation: wanted },
+        { identityOnly: options.nativeIdentityOnly === true }).catch(() => null);
     }
   }
   notes.push(...await takeHandledNotes(page));

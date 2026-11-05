@@ -826,6 +826,9 @@ importers:
       superjson:
         specifier: 'catalog:'
         version: 2.2.2
+      tsx:
+        specifier: 4.20.5
+        version: 4.20.5
       zod:
         specifier: 'catalog:'
         version: 3.25.67
@@ -857,9 +860,6 @@ importers:
       react:
         specifier: 'catalog:'
         version: 19.1.0
-      tsx:
-        specifier: 4.20.5
-        version: 4.20.5
       typescript:
         specifier: 'catalog:'
         version: 5.8.3

@@ -1542,7 +1542,7 @@ async function proveThread(
   proof: QuoteProofThread,
   partyIndexSignals: PartyIndexSignals,
 ): Promise<void> {
-  await openThread(page, config.baseUrl, threadId, captured);
+  await openThread(page, config.baseUrl, threadId, captured, config.sourceMessageId);
   const kind = await page
     .locator(QUOTE_SELECTORS.intent)
     .first()

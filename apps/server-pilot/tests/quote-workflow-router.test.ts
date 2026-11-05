@@ -29,7 +29,7 @@ vi.mock('../src/ai/work-events.js', async (importOriginal) => {
 
 const enqueueHmsRead = vi.fn();
 
-function mailboxCaller() {
+function mailboxCaller(transportId = 'transport-1') {
   return appRouter.createCaller({
     auth: null as never,
     reqHeaders: new Headers(),
@@ -38,7 +38,7 @@ function mailboxCaller() {
       email: 'ropperman@legacyhotels.co.za',
       name: 'R Opperman',
     },
-    activeTransportId: 'transport-1',
+    activeTransportId: transportId,
     transportEmail: 'centurion@legacyhotels.co.za',
     accessRole: 'owner',
   } as never);
@@ -1433,18 +1433,20 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
 
   it('answers without waiting for the staff note to be kept, and logs a note that fails to keep', async () => {
     cacheLoaders.llmEnabled = () => false;
-    cacheLoaders.loadSyncedSelection = async () => ({
+    cacheLoaders.loadSyncedSelection = vi.fn(async () => ({
       subject: 'Quote request',
       bodyText: 'Please quote 2 adults 2027-11-12 to 2027-11-14.',
       preceding: [],
       attachments: [],
-    });
+      messageId: 'selected-note-mail',
+    }));
     const request = {
       internetMessageId: '<note-keep@x>',
       storeId: 'store-1',
       entryId: 'entry-1',
       folderEntryId: 'folder-1',
       staffNote: 'Arrival is now 2027-11-13',
+      selection: { kind: 'web' as const, messageId: 'selected-note-mail', threadId: 'selected-thread' },
     };
     // The writes are mocked, so the stub database is never queried.
     vi.mocked(getDb).mockReturnValue({} as never);
@@ -1455,6 +1457,10 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
       expect(await mailboxCaller().quoteWorkflow.analyseSelection({ ...request, selectionEpoch: 31 })).toMatchObject({
         status: 'ready',
       });
+      expect(cacheLoaders.loadSyncedSelection).toHaveBeenCalledWith(expect.objectContaining({ selection: request.selection }));
+      expect(workItemIdForMail).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        internetMessageId: 'note-keep@x', selection: request.selection, expectedMessageId: 'selected-note-mail',
+      }));
 
       vi.mocked(workItemIdForMail).mockResolvedValueOnce('wi-note');
       vi.mocked(recordStaffNote).mockRejectedValueOnce(new Error('db down'));
@@ -1609,7 +1615,7 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
 });
 
 const paneStay = {
-  firstName: 'Pat',
+  firstName: 'Proof',
   lastName: 'Labtest',
   arrival: '2027-09-14',
   departure: '2027-09-16',
@@ -1629,45 +1635,40 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
     paneStaySaveLoaders.mode = null;
   });
 
-  it('refuses preview and commit when RESERVATIONIST_PANE_SAVE is unset', async () => {
+  it('refuses unbound preview and commit even when the save flag is off', async () => {
     paneStaySaveLoaders.mode = () => 'off';
     paneStaySaveLoaders.spawn = async () => {
       throw new Error('must not spawn');
     };
-    await expect(mailboxCaller().quoteWorkflow.previewStay(paneStay)).resolves.toMatchObject({
+    await expect(mailboxCaller('transport-centurion').quoteWorkflow.previewStay(paneStay)).resolves.toMatchObject({
       status: 'refused',
-      reason: 'pane_save_flag_off',
+      reason: 'pane_preview_binding_required',
     });
     await expect(
-      mailboxCaller().quoteWorkflow.commitStay({ ...paneStay, previewDigest: '0'.repeat(64) }),
+      mailboxCaller('transport-centurion').quoteWorkflow.commitStay({ ...paneStay, previewDigest: '0'.repeat(64) }),
     ).resolves.toMatchObject({
       status: 'refused',
-      reason: 'pane_save_flag_off',
+      reason: 'pane_preview_binding_required',
     });
   });
 
-  it('commit refuses when the OSRESS guest-date reader is parked', async () => {
+  it('commit refuses before dispatch without a durable booking binding', async () => {
     paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.osressGuestDatesSearch = null;
     paneStaySaveLoaders.spawn = async () => {
       throw new Error('must not spawn');
     };
     await expect(
-      mailboxCaller().quoteWorkflow.commitStay({ ...paneStay, previewDigest: '0'.repeat(64) }),
+      mailboxCaller('transport-centurion').quoteWorkflow.commitStay({ ...paneStay, previewDigest: '0'.repeat(64) }),
     ).resolves.toMatchObject({
       status: 'refused',
-      reason: 'osress_reader_parked',
+      reason: 'pane_preview_binding_required',
     });
   });
 
-  it('passes the agency, organization, note and booker fields through to the save, and caps the note at 2000', async () => {
+  it('requires source binding and caps note and booker fields at the route', async () => {
     paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.lock = { withLock: async (fn) => fn() };
-    const seen: unknown[] = [];
-    paneStaySaveLoaders.spawn = async (input) => {
-      seen.push(input.stay);
-      return { outcome: 'previewed', clickedSave: false, confirmationNumber: '' };
-    };
     const extras = {
       bookingAgency: { name: 'XYZ TRAVEL' },
       organization: { nativeId: '4411', name: 'Bidvest' },
@@ -1675,11 +1676,10 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
       bookerName: 'Ann Booker',
       bookerEmail: 'ann@example.invalid',
     };
-    await expect(mailboxCaller().quoteWorkflow.previewStay({ ...paneStay, ...extras })).resolves.toMatchObject({
-      status: 'ok',
-      outcome: 'previewed',
+    await expect(mailboxCaller('transport-centurion').quoteWorkflow.previewStay({ ...paneStay, ...extras })).resolves.toMatchObject({
+      status: 'refused',
+      reason: 'pane_preview_binding_required',
     });
-    expect(seen[0]).toMatchObject(extras);
     await expect(
       mailboxCaller().quoteWorkflow.previewStay({ ...paneStay, reservationNote: 'x'.repeat(2001) }),
     ).rejects.toThrow();
@@ -1699,7 +1699,7 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
     ).rejects.toThrow();
   });
 
-  it('previewStay returns previewDigest and commitStay commits only with it, once', async () => {
+  it('does not let an unbound preview authorize a save', async () => {
     paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.lock = { withLock: async (fn) => fn() };
     paneStaySaveLoaders.osressGuestDatesSearch = async () => 'clear';
@@ -1707,16 +1707,19 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
       input.paneCommit
         ? { outcome: 'committed', clickedSave: true, confirmationNumber: '46184891-1' }
         : { outcome: 'previewed', clickedSave: false, confirmationNumber: '' };
-    const preview = await mailboxCaller().quoteWorkflow.previewStay(paneStay);
-    expect(preview).toMatchObject({ status: 'ok', outcome: 'previewed' });
-    const previewDigest = preview.previewDigest as string;
-    expect(previewDigest).toMatch(/^[0-9a-f]{64}$/);
+    const preview = await mailboxCaller('transport-centurion').quoteWorkflow.previewStay(paneStay);
+    expect(preview).toMatchObject({ status: 'refused', reason: 'pane_preview_binding_required' });
     await expect(
-      mailboxCaller().quoteWorkflow.commitStay({ ...paneStay, previewDigest }),
-    ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
-    await expect(
-      mailboxCaller().quoteWorkflow.commitStay({ ...paneStay, previewDigest }),
-    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
+      mailboxCaller('transport-centurion').quoteWorkflow.commitStay({ ...paneStay, previewDigest: '0'.repeat(64) }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_preview_binding_required' });
+  });
+
+  it('keeps the HRDAV route on its existing mode guard', async () => {
+    paneStaySaveLoaders.mode = () => 'off';
+    await expect(mailboxCaller('transport-davinci').quoteWorkflow.commitStay({ ...paneStay,
+      propertyCode: 'HRDAV', previewDigest: '0'.repeat(64) })).resolves.toMatchObject({
+      status: 'refused', reason: 'pane_save_flag_off',
+    });
   });
 });
 
@@ -1749,6 +1752,9 @@ describe('quoteWorkflow.analyseSelection without Outlook ids', () => {
     expect(seen).toHaveLength(1);
     // The route canonicalises the id (brackets stripped) before the loader sees it.
     expect(seen[0]).toMatchObject({ internetMessageId: 'preview-1@x' });
+    const selection = { kind: 'outlook' as const, storeId: 'native-store', entryId: 'native-entry' };
+    await mailboxCaller().quoteWorkflow.analyseSelection({ internetMessageId: '<preview-1@x>', selection, selectionEpoch: 3 });
+    expect(seen[1]).toMatchObject({ internetMessageId: 'preview-1@x', selection });
   });
 });
 
@@ -1820,8 +1826,9 @@ describe('quoteWorkflow.voucherFind', () => {
       };
     };
     voucherLoaders.readText = readText;
-    const reply = await mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: '<ABC@Host>' });
-    expect(seen).toEqual([{ transportId: 'transport-1', internetMessageId: 'abc@host' }]);
+    const selection = { kind: 'outlook' as const, storeId: 'native-store', entryId: 'native-entry', folderEntryId: 'folder' };
+    const reply = await mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: '<ABC@Host>', selection });
+    expect(seen).toEqual([{ transportId: 'transport-1', internetMessageId: 'abc@host', selection }]);
     expect(readText.mock.calls[0]?.[0].map((file) => file.id)).toEqual(['att-1']);
     expect(reply).toEqual({
       status: 'voucher',
@@ -1834,8 +1841,27 @@ describe('quoteWorkflow.voucherFind', () => {
         mimeType: 'application/pdf',
         sizeBytes: 100,
       },
+      files: [{ id: 'att-1', filename: 'Smith_VCH_1879000.pdf', mimeType: 'application/pdf', sizeBytes: 100 }],
       unreadPdfs: 0,
     });
+  });
+
+  it('binds a chosen PDF to the selected email and reads only that file for guest facts', async () => {
+    const readText = vi.fn(async (files: Array<{ id: string; filename: string; sizeBytes: number }>) =>
+      files.map((file) => ({ id: file.id, filename: file.filename, byteSize: file.sizeBytes, bytesPresent: true,
+        text: file.id === 'two' ? 'GUEST: Jones\nARRIVAL 2027-01-19' : 'GUEST: Smith\nARRIVAL 2027-01-18' })));
+    voucherLoaders.candidate = async () => ({ messageId: 'm1', threadId: 'thread-1', subject: 'Vouchers',
+      bodyText: 'Attached.', attachments: [attachmentRow('one', 'Smith_VCH.pdf'),
+        attachmentRow('two', 'Jones.pdf'), attachmentRow('inline', 'inline.pdf', { isInline: true })] });
+    voucherLoaders.readText = readText;
+    const reply = await mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: 'abc@host', attachmentId: 'two' });
+    expect(reply).toMatchObject({ status: 'voucher', file: { id: 'two' },
+      guest: { lastName: 'Jones', arrival: '2027-01-19' }, files: [{ id: 'one' }, { id: 'two' }] });
+    expect(readText.mock.calls[0]?.[0].map((file) => file.id)).toEqual(['two']);
+    await expect(mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: 'abc@host', attachmentId: 'inline' }))
+      .rejects.toThrow('selected PDF');
+    await expect(mailboxCaller().quoteWorkflow.voucherFind({ internetMessageId: 'abc@host', attachmentId: 'foreign' }))
+      .rejects.toThrow('selected PDF');
   });
 
   it('counts a voucher PDF the reader could not read, so the card can tell staff to check it', async () => {

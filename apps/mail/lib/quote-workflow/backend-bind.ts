@@ -38,8 +38,19 @@ export const STAFF_QUOTE_PILOT_MISSING = {
   connectedIntegration: 'connected executeStaffQuote / qualifiedQuoteProposalPdf / native insertion (U4)',
 } as const;
 
+/** Exact source locator supplied by the webmail selection or the native Outlook bridge. */
+export type MailSourceSelection =
+  | { kind: 'web'; messageId: string; threadId: string }
+  | { kind: 'outlook'; storeId: string; entryId: string; folderEntryId?: string };
+
+export type MailSourceInput = {
+  internetMessageId: string;
+  selection?: MailSourceSelection;
+};
+
 export type AnalyseSelectionInput = {
   internetMessageId?: string;
+  selection?: MailSourceSelection;
   storeId: string;
   /** The Outlook store's native EntryID; distinct from the canonical webmail sourceMessageId. */
   entryId: string;
@@ -188,12 +199,55 @@ export type StoredStayCommit = {
   screenshotRef: { runId: string; name: string } | null;
   runId?: string;
   shots?: Array<{ name: string; sha256: string; at: string }>;
+  cloudCreateTarget?: { propertyCode: 'HRCEN'; kind: 'create'; firstName: string; lastName: string; arrival: string };
+  cloudCreateHold?: {
+    target: { propertyCode: 'HRCEN'; kind: 'create'; firstName: string; lastName: string; arrival: string };
+    batch?: { id: string; rooms: Array<{
+      stayId: string;
+      target: { propertyCode: 'HRCEN'; kind: 'create'; firstName: string; lastName: string; arrival: string };
+    }> };
+  };
 };
 /** The translation the pane shows: aligned segments, or failed. Null when the read has none. */
 export type StoredTranslation =
   | { status: 'succeeded'; segments: Array<{ clean: string; literal: string }>; truncated: boolean }
   | { status: 'failed' }
   | null;
+
+export type AmendDraftSource = { threadId: string; messageId: string; sourceHash: string; extractionId: string };
+export type AmendDraftFields = {
+  target: { confirmation: string; arrival: string } | null;
+  arrival: string | null; departure: string | null; adults: number | null; children: number | null;
+  childAges: number[] | null; roomType: string | null; ratePlan: string | null; retainRates: 'yes' | 'no' | null;
+  firstName: string | null; lastName: string | null; guestEmail: string | null;
+  bookerName: string | null; bookerContact: string | null;
+  cms: { send: boolean | null; messageId: string | null; recipient: { mode: 'self' | 'client' | 'custom'; address: string } | null };
+};
+export type WorkflowDraftRequest = {
+  requestId: string; stayId: string; action: string; workflow: string; status: string;
+  fields: { kind: string; value: unknown } | null;
+};
+export type AmendDraftRequest = WorkflowDraftRequest & {
+  action: 'amend'; workflow: 'amend'; status: 'pending'; fields: { kind: 'amend'; value: AmendDraftFields };
+};
+export type AmendDraftSnapshot = {
+  workItemId: string; source: AmendDraftSource; revisionSeq: number; requests: WorkflowDraftRequest[];
+  fieldMeta: Record<string, { origin: 'staff' | 'email' | 'missing' }>;
+};
+
+/** Until requests can be selected in the pane, only a single pending Amend is unambiguous. */
+export function selectedAmendRequest(snapshot: AmendDraftSnapshot | null): AmendDraftRequest | null {
+  if (!snapshot || snapshot.requests.length !== 1) return null;
+  const request = snapshot.requests[0];
+  const fields = request?.fields;
+  const value = fields?.value;
+  if (!request || typeof request.requestId !== 'string' || !request.requestId ||
+      typeof request.stayId !== 'string' || !request.stayId || request.action !== 'amend' ||
+      request.workflow !== 'amend' || request.status !== 'pending' || fields?.kind !== 'amend' ||
+      !value || typeof value !== 'object' || Array.isArray(value) ||
+      !('cms' in value) || !value.cms || typeof value.cms !== 'object' || Array.isArray(value.cms)) return null;
+  return request as AmendDraftRequest;
+}
 
 /**
  * A mail's stored read from workItems.getByMessage. Ready carries its analysis and its work item (null until one is
@@ -207,10 +261,17 @@ export type StoredWork =
       /** The stored mail kind, used to keep the selected-email classification in the shared pane vocabulary. */
       kind: string;
       existingStayInformation?: boolean;
+      separateAsk?: string | null;
       confirmationNumbers?: string[];
       workItemId: string | null;
       workItemStatus: string | null;
       extractionId: string;
+      draftContractVersion?: 1;
+      source?: AmendDraftSource;
+      workItemExtractionId?: string | null;
+      revisionSeq?: number | null;
+      workflowRequests?: WorkflowDraftRequest[];
+      draftFieldMeta?: Record<string, { origin: 'staff' | 'email' | 'missing' }>;
       /** Group id to the stay and row it came from. A stay with dates and no rows has a null rowId. */
       refs: Record<string, { stayId: string; rowId: string | null }>;
       analysis: ReadyAnalyse;
@@ -228,7 +289,11 @@ export type RecordFieldEventInput = {
   type: 'field.edit' | 'field.accept' | 'field.reject';
   fieldPath: string;
   /** `true` only on a `.removed` path: the person deleted that stay or row. */
-  value?: string | number | number[] | true | null;
+  value?: string | number | number[] | boolean | null |
+    { confirmation: string; arrival: string } | { mode: 'self' | 'client' | 'custom'; address: string };
+  source?: Omit<AmendDraftSource, 'extractionId'>;
+  expectedSeq?: number;
+  expectedExtractionId?: string;
   msSinceOpen?: number;
 };
 
@@ -253,10 +318,18 @@ export type NeedsYouRow = {
 
 type WorkItemsClient = {
   getByMessage?: {
-    query: (input: { internetMessageId: string }, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
+    query: (input: MailSourceInput, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
   };
   open?: {
-    mutate: (input: { internetMessageId: string }, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
+    mutate: (input: MailSourceInput, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
+  };
+  refreshAmendExtraction?: {
+    mutate: (input: { workItemId: string; source: Omit<AmendDraftSource, 'extractionId'> },
+      opts?: { context: Record<string, unknown> }) => Promise<
+        | { status: 'current'; extractionId: string }
+        | { status: 'queued'; runId: string }
+        | { status: 'blocked'; reason: string }
+      >;
   };
   recordEvent?: {
     mutate: (input: RecordFieldEventInput, opts?: { context: Record<string, unknown> }) => Promise<unknown>;
@@ -269,10 +342,10 @@ type WorkItemsClient = {
   };
   retryTranslation?: { mutate: (input: { workItemId: string }) => Promise<TranslationRetryResult> };
   list?: {
-    query: (input: { limit?: number; statuses?: NeedsYouRow['status'][] }) => Promise<NeedsYouRow[]>;
+    query: (input: { limit?: number; statuses?: NeedsYouRow['status'][] }, opts?: ReturnType<typeof inMailbox>) => Promise<NeedsYouRow[]>;
   };
   dismiss?: {
-    mutate: (input: { workItemId: string }, opts?: ReturnType<typeof inMailbox>) => Promise<unknown>;
+    mutate: (input: { workItemId: string; expectedActor?: { userId: string; sessionId: string } }, opts?: ReturnType<typeof inMailbox>) => Promise<unknown>;
   };
 };
 
@@ -293,17 +366,23 @@ export async function bindStoredWork(args: {
   query?: WorkItemsClient['getByMessage'];
   open?: WorkItemsClient['open'];
   internetMessageId: string;
+  selection?: MailSourceSelection;
   /** The mailbox the lookup was made in. Null sends under whichever mailbox is active. */
   transportId?: string | null;
   /** True once the caller no longer wants this lookup. Checked after the read, before any open. */
   isStale?: () => boolean;
+  /** Suppress ordinary opens for channel/system mail; a grounded separate pre-stay ask still needs an item. */
+  allowOpen?: boolean;
   /** Called when the stored read is in and only the open is left, so the caller's lookup deadline can stop there. */
   onRead?: () => void;
   /** How long the open may take. Past it the read shows without an item, the same as a failed open. */
   openTimeoutMs?: number;
 }): Promise<StoredWork | { status: 'unavailable' }> {
   if (!args.query) return { status: 'unavailable' };
-  const input = { internetMessageId: args.internetMessageId };
+  const input: MailSourceInput = {
+    internetMessageId: args.internetMessageId,
+    ...(args.selection ? { selection: args.selection } : {}),
+  };
   const pinned = inMailbox(args.transportId ?? null);
   let stored: StoredWork;
   try {
@@ -314,7 +393,8 @@ export async function bindStoredWork(args: {
   if (
     stored.status !== 'ready' ||
     stored.workItemId ||
-    stored.existingStayInformation ||
+    (stored.existingStayInformation && !stored.separateAsk) ||
+    (args.allowOpen === false && !(stored.existingStayInformation && stored.separateAsk)) ||
     !args.open ||
     args.isStale?.()
   ) {

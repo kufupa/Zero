@@ -1,4 +1,6 @@
 import { formatStayDate } from './amend-find';
+import { inMailbox } from '@/lib/mail/mail-cache-scope';
+import { cancelChargeClientFromTrpc, type CancelChargeClient, type CancelRun } from './amend-cancel';
 
 /**
  * The HMS write as the approve and review cards see it (U18). The wire types mirror hmsWriteStateOf and the hmsApproval
@@ -27,6 +29,9 @@ export type HmsWriteView = {
     reviewed: 'ok' | 'flag' | null;
   } | null;
   needsCheck: boolean;
+  filingAvailable?: boolean;
+  cancelAvailable?: boolean;
+  manualResolve?: boolean;
 };
 
 export type HmsApproved = { grantId: string; runId: string; hmsReadAt: string; expiresAt: string };
@@ -47,6 +52,10 @@ export type HmsReviewInput =
   | { workItemId: string; runId: string; decision: 'ok' }
   | { workItemId: string; runId: string; decision: 'flag'; note: string };
 
+export type HmsCancelPreviewInput = { workItemId: string; formDigest: string; confirmation: string; arrival: string };
+export type HmsCancelGoInput = HmsCancelPreviewInput & { reason: string; previewDigest: string; cancellationNote: string };
+type CancelSource = { threadId: string; messageId: string; sourceHash: string };
+
 export type HmsApprovalClient = {
   writeState: (input: { workItemId: string }) => Promise<HmsWriteView>;
   approve: (input: { workItemId: string; formDigest: string }) => Promise<HmsApproved>;
@@ -54,22 +63,40 @@ export type HmsApprovalClient = {
   resolveNeedsCheck: (input: { workItemId: string; note: string }) => Promise<unknown>;
   reread: (input: { workItemId: string }) => Promise<HmsReread>;
   evidence: (input: { workItemId: string; eventId: string }) => Promise<HmsEvidenceReply>;
+  previewCancel?: (input: HmsCancelPreviewInput) => Promise<CancelRun>;
+  approveCancel?: (input: HmsCancelGoInput) => Promise<CancelRun>;
+  cancelCharge?: CancelChargeClient;
 };
+
+type MailboxOptions = NonNullable<ReturnType<typeof inMailbox>>;
+type MailboxCall<T> = T extends (input: infer Input) => infer Result
+  ? (input: Input & { internetMessageId: string; selectedSource?: CancelSource }, options: MailboxOptions) => Result
+  : never;
 
 type TrpcHmsApprovalRoutes = {
   hmsApproval?: {
-    writeState?: { query: HmsApprovalClient['writeState'] };
-    approve?: { mutate: HmsApprovalClient['approve'] };
-    review?: { mutate: HmsApprovalClient['review'] };
-    resolveNeedsCheck?: { mutate: HmsApprovalClient['resolveNeedsCheck'] };
-    reread?: { mutate: HmsApprovalClient['reread'] };
-    evidence?: { query: HmsApprovalClient['evidence'] };
+    writeState?: { query: (input: { workItemId: string; internetMessageId: string;
+      selectedSource?: CancelSource; cancelSource?: CancelSource },
+      options: MailboxOptions) => Promise<HmsWriteView> };
+    approve?: { mutate: (input: { workItemId: string; formDigest: string; internetMessageId: string;
+      selectedSource?: CancelSource;
+      cancel?: Omit<HmsCancelGoInput, 'workItemId' | 'formDigest'> & { source: CancelSource } },
+      options: MailboxOptions) => Promise<HmsApproved | CancelRun> };
+    previewCancel?: { mutate: (input: HmsCancelPreviewInput & { source: CancelSource; internetMessageId: string },
+      options: MailboxOptions) => Promise<CancelRun> };
+    review?: { mutate: MailboxCall<HmsApprovalClient['review']> };
+    resolveNeedsCheck?: { mutate: MailboxCall<HmsApprovalClient['resolveNeedsCheck']> };
+    reread?: { mutate: MailboxCall<HmsApprovalClient['reread']> };
+    evidence?: { query: MailboxCall<HmsApprovalClient['evidence']> };
   };
 };
 
-/** Binds the hmsApproval routes off a tRPC client. Null when one is missing, so no write card shows. */
-export function hmsApprovalFromTrpc(trpc: unknown): HmsApprovalClient | null {
-  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
+/** Pin every request to the mailbox and selected email the card belongs to. */
+export function hmsApprovalFromTrpc(
+  trpc: unknown, transportId: string | null, internetMessageId: string | null, source: CancelSource | null = null,
+): HmsApprovalClient | null {
+  const mailbox = inMailbox(transportId);
+  if (!mailbox || !internetMessageId?.trim() || !trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const routes = (trpc as TrpcHmsApprovalRoutes).hmsApproval;
   const writeState = routes?.writeState;
   const approve = routes?.approve;
@@ -77,14 +104,32 @@ export function hmsApprovalFromTrpc(trpc: unknown): HmsApprovalClient | null {
   const resolve = routes?.resolveNeedsCheck;
   const reread = routes?.reread;
   const evidence = routes?.evidence;
+  const previewCancel = routes?.previewCancel;
   if (!writeState || !approve || !review || !resolve || !reread || !evidence) return null;
+  const selectedSource = source && source.threadId.trim() && source.messageId.trim() && /^[a-f0-9]{64}$/.test(source.sourceHash)
+    ? { threadId: source.threadId, messageId: source.messageId, sourceHash: source.sourceHash } : null;
+  const selection = selectedSource ? { selectedSource } : {};
+  const charge = cancelChargeClientFromTrpc(trpc, transportId, selectedSource ?? undefined, internetMessageId);
   return {
-    writeState: (input) => writeState.query(input),
-    approve: (input) => approve.mutate(input),
-    review: (input) => review.mutate(input),
-    resolveNeedsCheck: (input) => resolve.mutate(input),
-    reread: (input) => reread.mutate(input),
-    evidence: (input) => evidence.query(input),
+    writeState: async (input) => {
+      const view = await writeState.query({ ...input, internetMessageId, ...selection }, mailbox);
+      if (view.form.action !== 'cancel' || view.cancelAvailable === undefined) return view;
+      if (!selectedSource) throw new Error('cancel_source_unavailable');
+      return writeState.query({ ...input, internetMessageId, ...selection, cancelSource: selectedSource }, mailbox);
+    },
+    approve: (input) => approve.mutate({ ...input, internetMessageId,
+      ...(selectedSource ? { selectedSource } : {}) }, mailbox) as Promise<HmsApproved>,
+    review: (input) => review.mutate({ ...input, internetMessageId, ...selection }, mailbox),
+    resolveNeedsCheck: (input) => resolve.mutate({ ...input, internetMessageId, ...selection }, mailbox),
+    reread: (input) => reread.mutate({ ...input, internetMessageId, ...selection }, mailbox),
+    evidence: (input) => evidence.query({ ...input, internetMessageId, ...selection }, mailbox),
+    ...(charge ? { cancelCharge: charge } : {}),
+    ...(selectedSource && previewCancel ? {
+      previewCancel: (input: HmsCancelPreviewInput) => previewCancel.mutate({ ...input, source: selectedSource, internetMessageId }, mailbox),
+      approveCancel: ({ workItemId, formDigest, ...cancel }: HmsCancelGoInput) =>
+        approve.mutate({ workItemId, formDigest, internetMessageId, selectedSource,
+          cancel: { ...cancel, source: selectedSource } }, mailbox) as Promise<CancelRun>,
+    } : {}),
   };
 }
 
@@ -148,6 +193,10 @@ const NEEDS_CHECK_REASON: Record<string, string> = {
   form_changed: 'The values changed after you approved them. Nothing was written.',
   reread_failed: 'Nava could not read HMS again before saving. Nothing was written.',
   LEASE_LOST: 'Nava lost its hold on the write, so the outcome is not known.',
+  confirmed_hold_unsettled: 'HMS lists the document by its code and name. The write still needs a safety check before another upload.',
+  cancel_penalty_pending: 'A cancellation penalty is pending. Check HMS before anything else.',
+  cancel_unconfirmed: 'HMS may have cancelled this booking. Check HMS before trying again.',
+  cancel_dispatch_unresolved: 'HMS may have cancelled this booking. Check HMS before trying again.',
 };
 
 const STOP_REASON: Record<string, string> = {
@@ -164,6 +213,7 @@ const REFUSAL_COPY: Record<string, string> = {
   not_found: 'This item is no longer here. Reopen the email and try again.',
   not_open: 'This item is already closed.',
   source_mail_missing: 'Nava cannot find the email this item came from.',
+  source_mail_changed: 'This write belongs to another email. Reopen the selected email.',
   write_in_flight: 'A write for this item is still running. Wait for it to finish.',
   needs_check_open: 'Check HMS first. The last write needs a check.',
   snapshot_missing: 'Re-read HMS first.',
@@ -177,6 +227,8 @@ const REFUSAL_COPY: Record<string, string> = {
   no_executed_write: 'Nothing was written, so there is nothing to review.',
   already_reviewed: 'This write is already reviewed.',
   form_outdated: 'The values changed since this card loaded. Check them, then approve again.',
+  amend_save_unavailable: 'Nava cannot save this change yet. Complete it in HMS.',
+  amend_reconciliation_required: 'The previous HMS outcome needs a verified readback before another change.',
   run_changed: 'Another write ran since this one loaded. Check the latest write, then review it.',
 };
 
@@ -272,7 +324,7 @@ export function writeStatusOf(view: HmsWriteView): WriteStatus {
     return {
       ...base,
       phase: 'written',
-      message: HMS_WRITE_COPY.written,
+      message: view.form.action === 'cancel' ? 'Cancelled in HMS. Check the screenshots.' : HMS_WRITE_COPY.written,
       review: true,
       // A form edited after the write was never written: review OK is refused, so approving again is offered.
       approve: !closed && (base.reviewed === 'flag' || base.changed),
@@ -297,7 +349,7 @@ export function writeStatusOf(view: HmsWriteView): WriteStatus {
   };
 }
 
-export type WriteRow = { key: string; label: string; before: string; after: string };
+export type WriteRow = { key: string; label: string; before: string; after: string; displayOnly?: boolean };
 
 const NOT_READ = 'Not read';
 const NONE = 'None';
@@ -312,10 +364,23 @@ const LEAF_LABELS: Record<string, string> = {
   departure: 'Departure',
   count: 'Rooms',
   adults: 'Adults',
+  children: 'Children',
   childAges: 'Child ages',
   roomType: 'Room type',
+  ratePlan: 'Rate plan',
+  retainRates: 'Retain current rates',
   board: 'Board',
   removed: 'Removed',
+  confirmation: 'Booking',
+  firstName: 'Guest first name',
+  lastName: 'Guest surname',
+  documentName: 'Document',
+  cmsSend: 'Send confirmation',
+  cmsMessageId: 'CMS message',
+  cmsRecipient: 'Confirmation recipient',
+  guestEmail: 'Guest email',
+  bookerName: 'Booker name',
+  bookerContact: 'Booker contact',
 };
 
 /** Scalar leaves of a nested form, keyed by dotted path. Arrays of scalars are one leaf. */
@@ -348,6 +413,7 @@ function valueText(key: string, value: unknown): string {
   if (Array.isArray(value)) return value.length > 0 ? value.map(scalarText).join(', ') : NONE;
   const text = scalarText(value);
   if (leafName(key) === 'board') return BOARD_LABELS[text] ?? text;
+  if (leafName(key) === 'retainRates' && (text === 'yes' || text === 'no')) return text === 'yes' ? 'Yes' : 'No';
   return ISO_DAY.test(text) ? formatStayDate(text) : text;
 }
 
@@ -370,29 +436,92 @@ function labelsOf(keys: readonly string[]): Map<string, string> {
 }
 
 /** Leaves that name the guest or their booking (a confirmation, a name, a file name). The preview gate masks them. */
-const GUEST_LEAF = /^confirmation$|name$|email$|phone$|^guest/i;
+const GUEST_LEAF = /^confirmation$|name$|email$|phone$|contact$|^guest|^cmsRecipient$/i;
 
 /** True when a write row shows a guest detail, so the pane marks it data-pii. */
 export function isGuestWriteRow(key: string): boolean {
   return GUEST_LEAF.test(leafName(key));
 }
 
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/** Display actual saved amounts and native availability quotes with their own labels. */
+function retainedPriceRows(form: Record<string, unknown>): WriteRow[] {
+  const prices = record(record(form.cloudAmend)?.approvedPrices);
+  const currency = prices?.currency;
+  if (prices?.version !== 2 || typeof currency !== 'string' || !/^[A-Z]{3}$/.test(currency)) return [];
+  const rows: WriteRow[] = [];
+  const formatted = (cents: unknown, unit: unknown = currency): string | null => {
+    if (typeof unit !== 'string' || !/^[A-Z]{3}$/.test(unit) ||
+        typeof cents !== 'string' || !/^\d{1,17}$/.test(cents)) return null;
+    const padded = cents.replace(/^0+(?=\d)/, '').padStart(3, '0');
+    return `${unit} ${padded.slice(0, -2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${padded.slice(-2)}`;
+  };
+  const add = (key: string, label: string, value: string | null) => {
+    if (!value) return;
+    rows.push({ key: `cloudAmend.approvedPrices.${key}`, label, before: value, after: value, displayOnly: true });
+  };
+  add('total', 'HMS stay total', formatted(prices.totalCents));
+  add('average', 'HMS average nightly rate', formatted(prices.averageCents));
+  if (Array.isArray(prices.options)) for (const [index, raw] of prices.options.entries()) {
+    const option = record(raw);
+    if (!option || typeof option.ratePlan !== 'string' || typeof option.roomType !== 'string' ||
+        !Array.isArray(option.nightly)) continue;
+    const nights = option.nightly.map(record).filter((night): night is Record<string, unknown> => night !== null)
+      .map((night) => typeof night.date === 'string' && formatted(night.amountCents, option.currency)
+        ? `${night.date}: ${formatted(night.amountCents, option.currency)}` : null).filter(Boolean);
+    if (nights.length) add(`option.${index}`, `${option.ratePlan} · ${option.roomType}`, nights.join(', '));
+  }
+  return rows;
+}
+
+export function cloudAmendApprovalHasPrices(form: Record<string, unknown>): boolean {
+  return !(form.action === 'amend' && record(form.cloudAmend)) ||
+    retainedPriceRows(form).some((row) => row.key === 'cloudAmend.approvedPrices.total');
+}
+
+/** The saved-record form also carries these unchanged values; show them before Go. */
+function preservedAmendRows(form: Record<string, unknown>): WriteRow[] {
+  const value = record(record(form.cloudAmend)?.preserved);
+  if (!value || !(value.agency === null || typeof value.agency === 'string') ||
+      !(value.organization === null || typeof value.organization === 'string')) return [];
+  return [
+    ['agency', 'Travel agency', value.agency || NONE],
+    ['organization', 'Company', value.organization || NONE],
+  ].map(([key, label, text]) => ({ key: `cloudAmend.preserved.${key}`, label, before: text, after: text, displayOnly: true }));
+}
+
 /**
- * The values the write changes, as before → after rows. A value that is the same before and after is left out. With no
- * stored read, the before side reads "Not read", so approval still shows what would be written.
+ * The values the write changes, as before → after rows. Explicit rate and confirmation choices remain visible even
+ * when unchanged. With no stored read, the before side reads "Not read".
  */
 export function writeRowsOf(view: Pick<HmsWriteView, 'form' | 'before'>): WriteRow[] {
-  const after = leavesOf(view.form);
+  // Only the reviewed amendment choices belong on this card. Source/native
+  // digests and unrelated work-item state are not staff decisions.
+  const cloudAmend = view.form.action === 'amend' && typeof view.form.cloudAmend === 'object' && view.form.cloudAmend !== null;
+  const amendFields = record(view.form.fields);
+  const shownFields = amendFields?.cmsSend === false
+    ? Object.fromEntries(Object.entries(amendFields).filter(([key]) => key !== 'cmsMessageId' && key !== 'cmsRecipient'))
+    : amendFields;
+  const after = leavesOf(cloudAmend ? { fields: shownFields } : view.form);
+  const filing = view.form.action === 'attach_document';
+  const filingFields = new Set(['documentName', 'confirmation', 'lastName', 'arrival']);
   const before = view.before ? leavesOf(view.before) : null;
   const labels = labelsOf([...after.keys()]);
   const rows: WriteRow[] = [];
   for (const [key, value] of after) {
+    if (filing && !filingFields.has(key)) continue;
     const beforeText =
-      before === null ? NOT_READ : before.has(key) ? valueText(key, before.get(key)) : NONE;
+      before === null ? NOT_READ : before.has(key) ? valueText(key, before.get(key)) : cloudAmend ? NOT_READ : NONE;
     const afterText = valueText(key, value);
-    if (beforeText !== afterText) {
+    const amendChoice = cloudAmend && (key === 'fields.ratePlan' || key === 'fields.cmsSend' ||
+      (amendFields?.cmsSend === true && (key === 'fields.cmsMessageId' || key === 'fields.cmsRecipient')));
+    if (filing || beforeText !== afterText || amendChoice) {
       rows.push({ key, label: labels.get(key) ?? key, before: beforeText, after: afterText });
     }
   }
+  if (cloudAmend) rows.push(...retainedPriceRows(view.form), ...preservedAmendRows(view.form));
   return rows;
 }

@@ -147,7 +147,8 @@ describe('booking card reload', () => {
       />,
     );
     expect(screen.queryByText('Booked in HMS – confirmation 98765-1')).toBeNull();
-    expect(screen.getAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.getAllByText('A previous booking could match this room. Check HMS before booking.')).toHaveLength(2);
 
     const session = initialQuoteSession();
     session.groups = [shared, { ...group, id: 'g2' }];
@@ -251,6 +252,14 @@ describe('booking card reload', () => {
     expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
     view.rerender(<BookingCards draft={draft} groups={[group]} paneSave={client} />);
     expect(screen.getByText('Booked, but HMS confirmation settings did not match — check CMS in HMS')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    const ownRow = { ...group, id: 's_aaaa1111_row' };
+    const ownDraft = bookedDraft();
+    ownDraft.draft.rooms[0]!.groupId = ownRow.id;
+    view.rerender(<BookingCards draft={ownDraft} groups={[ownRow]} paneSave={client} savedStays={{
+      room_s_aaaa1111_1: { confirmationNumber: '55555-1', status: 'booked', screenshotRef: null },
+    }} />);
+    expect(screen.getByText('Booked in HMS – confirmation 55555-1')).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
   });
 

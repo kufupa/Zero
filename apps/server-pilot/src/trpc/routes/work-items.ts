@@ -5,7 +5,7 @@ import { parseNeedsYouSince } from '../../env.js';
 import { getDb } from '../../db/client.js';
 import { mailThread, message } from '../../db/schema/mail.js';
 import { MAIL_KINDS, mailExtraction, workEvent, workItem, WORK_ITEM_STATUSES } from '../../db/schema/work.js';
-import { retryInboundTranslation } from '../../ai/extraction/inbound-run.js';
+import { refreshSelectedAmendExtraction, retryInboundTranslation } from '../../ai/extraction/inbound-run.js';
 import {
   acceptUneditedFields,
   dismissWorkItem,
@@ -38,6 +38,7 @@ import {
   useFollowUpDraft,
 } from '../../ai/quote-followup.js';
 import { mailboxProcedure, router } from '../trpc.js';
+import { paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
 
 const internetMessageId = z.string().min(1).max(998);
 const followUpDraftId = z.string().min(1).max(200);
@@ -86,13 +87,21 @@ const fieldEventInput = z
     workItemId: z.string().uuid(),
     type: z.enum(['field.edit', 'field.accept', 'field.reject']),
     fieldPath: z.string().min(1).max(200),
+    source: z.object({
+      threadId: z.string().min(1).max(200), messageId: z.string().min(1).max(200),
+      sourceHash: z.string().regex(/^[a-f0-9]{64}$/),
+    }).strict().optional(),
+    expectedSeq: z.number().int().nonnegative().safe().optional(),
+    expectedExtractionId: z.string().uuid().nullable().optional(),
     value: z
       .union([
-        z.string().max(200),
+        z.string().max(1000),
         z.number(),
         z.null(),
-        z.literal(true),
+        z.boolean(),
         z.array(z.number().int().min(0).max(17)).max(9),
+        z.object({ confirmation: z.string().max(200), arrival: z.string().max(10) }).strict(),
+        z.object({ mode: z.enum(['self', 'client', 'custom']), address: z.string().max(255) }).strict(),
       ])
       .optional(),
     msSinceOpen: z.number().int().min(0).max(86_400_000).optional(),
@@ -101,23 +110,35 @@ const fieldEventInput = z
 
 export const workItemsRouter = router({
   getByMessage: mailboxProcedure
-    .input(z.object({ internetMessageId }).strict())
+    .input(z.object({ internetMessageId, selection: paneSourceSelectionSchema.optional() }).strict())
     .query(({ input, ctx }) =>
       storedWorkFor(getDb(), {
         transportId: ctx.activeTransportId,
         internetMessageId: input.internetMessageId,
+        selection: input.selection,
       }),
     ),
+  /** Queue the current extractor for precisely the selected inbound Amendment, if it is stale. */
+  refreshAmendExtraction: mailboxProcedure
+    .input(z.object({
+      workItemId: z.string().uuid(),
+      source: z.object({ threadId: z.string().min(1).max(200), messageId: z.string().min(1).max(200),
+        sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+    }).strict())
+    .mutation(({ input, ctx }) => refreshSelectedAmendExtraction(getDb(), {
+      ...input, transportId: ctx.activeTransportId,
+    })),
   /**
    * Makes the work item for a stored read that has none yet, and returns the same view as getByMessage. The pane calls
    * it once, when getByMessage came back ready with a null workItemId, so getByMessage itself never writes.
    */
   open: mailboxProcedure
-    .input(z.object({ internetMessageId }).strict())
+    .input(z.object({ internetMessageId, selection: paneSourceSelectionSchema.optional() }).strict())
     .mutation(({ input, ctx }) =>
       openStoredWork(getDb(), {
         transportId: ctx.activeTransportId,
         internetMessageId: input.internetMessageId,
+        selection: input.selection,
       }),
     ),
   list: mailboxProcedure
@@ -147,6 +168,9 @@ export const workItemsRouter = router({
       fieldPath: input.fieldPath,
       value: input.value,
       msSinceOpen: input.msSinceOpen,
+      source: input.source,
+      expectedSeq: input.expectedSeq,
+      expectedExtractionId: input.expectedExtractionId,
     });
     if (result.status === 'not_found') {
       throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
@@ -156,6 +180,9 @@ export const workItemsRouter = router({
     }
     if (result.status === 'invalid_value') {
       throw new TRPCError({ code: 'BAD_REQUEST', message: 'Value does not fit this field.' });
+    }
+    if (result.status === 'stale_source' || result.status === 'stale_revision') {
+      throw new TRPCError({ code: 'CONFLICT', message: 'This email or draft changed. Reload before saving this field.' });
     }
     return {
       aiValue: result.aiValue,
@@ -319,8 +346,14 @@ export const workItemsRouter = router({
       return { status: 'done' as const, translation: storedTranslation(result.translation) };
     }),
   dismiss: mailboxProcedure
-    .input(z.object({ workItemId: z.string().uuid() }).strict())
+    .input(z.object({ workItemId: z.string().uuid(), expectedActor: z.object({
+      userId: z.string().min(1).max(200), sessionId: z.string().min(1).max(200),
+    }).strict().optional() }).strict())
     .mutation(async ({ input, ctx }) => {
+      if (input.expectedActor && (ctx.sessionUser.id !== input.expectedActor.userId ||
+          ctx.sessionUser.sessionId !== input.expectedActor.sessionId)) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'The signed-in session changed.' });
+      }
       const result = await dismissWorkItem(getDb(), {
         transportId: ctx.activeTransportId,
         workItemId: input.workItemId,

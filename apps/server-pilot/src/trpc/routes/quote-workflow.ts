@@ -1,7 +1,10 @@
 import {
   loadSyncedQuoteSelectionFromMailbox,
+  resolveThreadConfirmationEvidence,
+  isHmsConfirmation,
   type SyncedQuoteSelection,
 } from '../../ai/quote-workflow-synced-selection.js';
+import { paneSourceSelectionSchema, type PaneSourceSelection } from '../../mail/pane-source-selection.js';
 import {
   quoteWorkflowLlmEnabled,
   QUOTE_WORKFLOW_PROMPT_VERSION,
@@ -20,6 +23,9 @@ import {
   loadVoucherCandidate,
   pickVoucherFile,
   readVoucherAttachmentText,
+  readSelectedVoucherAttachment,
+  voucherFileMetadata,
+  voucherFilingFiles,
   voucherReadFiles,
   type VoucherCandidate,
   type VoucherFindReply,
@@ -37,6 +43,7 @@ import {
   type PaneStayResult,
 } from '../../ai/pane-stay-save.js';
 import { createWorkItemPreviewPersist } from '../../ai/pane-stay-preview-persist.js';
+import { cloudPreviewSelection, commitPaneCloud, previewPaneCloud } from '../../ai/pane-cloud-preview.js';
 import { isNoReplyAddress } from '../../mail/conversation-signals.js';
 import { recordStaffNote } from '../../ai/work-events.js';
 import {
@@ -45,14 +52,28 @@ import {
   stayCommitFromPaneResult,
   stayCommitGuard,
   workItemIdForMail,
+  formStays,
 } from '../../ai/work-items.js';
 import { getDb } from '../../db/client.js';
+import { mailThread, message } from '../../db/schema/mail.js';
+import { mailExtraction, workItem } from '../../db/schema/work.js';
+import { staffQuoteSourceHash } from '../../ai/staff-quote-workflow.js';
+import { boundAmendRateRequest, type RateContext } from '../../ai/hms-availability.js';
+import { rateContextKey, recommendRateCandidate, orderRateCandidates, type RateCandidate, type RateRecommendation } from '../../ai/rate-options.js';
+import { amendRequestId, projectAmendRequests } from '../../ai/pane-amend-draft.js';
+import { mailExtractionPayloadSchema } from '../../ai/extraction/schema.js';
+import { hmsJobQueueEnabled, queueRateCandidatesHmsJob, readRateCandidatesHmsJob, readHmsJobView } from '../../ai/hms-jobs.js';
+import type { HmsCloudRateLookup } from '../../ai/hms-cloud-saved-stay-find.js';
+import { paneStayHmsTargetForTransport } from '../../ai/pane-stay-spawn-env.js';
+import { loadPaneRateHistory } from '../../ai/pane-rate-recommendation.js';
+import { and, eq } from 'drizzle-orm';
 import { mailboxProcedure, router } from '../trpc.js';
 import { quotePaneConfigForProperty } from '../../hms/rate-catalogue.js';
 import { quoteTargetForTransport } from '../../hms/hms-quote-target.js';
 import { refuseProperty } from '../../hms/property-refusal.js';
 import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
 import { z } from 'zod';
+import { TRPCError } from '@trpc/server';
 
 export { hashSyncedQuoteSelection } from '../../ai/quote-workflow-analyse-selection.js';
 
@@ -91,6 +112,7 @@ export const paneStayInput = z.object({
   reservationNote: paneOptionalText(PANE_RESERVATION_NOTE_MAX),
   bookerName: paneOptionalText(PANE_BOOKER_NAME_MAX),
   bookerEmail: paneOptionalText(PANE_BOOKER_EMAIL_MAX),
+  confirmationSendMail: z.boolean().optional(),
   confirmationRecipient: z
     .object({
       mode: z.enum(['self', 'client', 'custom']),
@@ -104,14 +126,24 @@ export const paneStayInput = z.object({
     .optional(),
   stayId: z
     .string()
-    .regex(/^[A-Za-z0-9_-]{1,40}$/)
+    .regex(/^[A-Za-z0-9_-]{1,120}$/)
     .optional(),
   workItemId: z.string().uuid().optional(),
+  createSelection: cloudPreviewSelection.optional(),
 });
+const batchRoomInput = paneStayInput.extend({
+  stayId: z.string().regex(/^[A-Za-z0-9_-]{1,120}$/), workItemId: z.string().uuid(),
+  createSelection: cloudPreviewSelection, previewDigest: z.string().regex(/^[0-9a-f]{64}$/),
+});
+const paneCloudBatchInput = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('start'), id: z.string().uuid(), rooms: z.array(batchRoomInput).min(2).max(8) }).strict(),
+  z.object({ kind: z.literal('continue'), id: z.string().uuid(), index: z.number().int().min(1).max(7) }).strict(),
+]);
 
 export type LoadSyncedSelection = (input: {
   transportId: string;
   internetMessageId?: string;
+  selection?: PaneSourceSelection;
   entryId?: string;
   storeId?: string;
   signal?: AbortSignal;
@@ -141,24 +173,56 @@ export const quoteWorkflowLoaders: {
 
 /** Test seams for the voucher route: the stored candidate and the PDF text reader. Null uses the real ones. */
 export const voucherLoaders: {
-  candidate: ((input: { transportId: string; internetMessageId: string }) => Promise<VoucherCandidate | null>) | null;
+  candidate: ((input: { transportId: string; internetMessageId: string; selection?: PaneSourceSelection }) => Promise<VoucherCandidate | null>) | null;
   readText: ((files: QuoteAttachmentRow[], signal: AbortSignal) => Promise<SyncedQuoteAttachment[]>) | null;
 } = {
   candidate: null,
   readText: null,
 };
 
-const voucherFindInput = z.object({ internetMessageId: z.string().min(1).max(998) });
+const voucherFindInput = z.object({ internetMessageId: z.string().min(1).max(998),
+  selection: paneSourceSelectionSchema.optional(), attachmentId: z.string().min(1).max(200).optional() });
+
+const rateBinding = z.object({
+  workItemId: z.string().uuid(),
+  source: z.object({ threadId: z.string().trim().min(1).max(200), messageId: z.string().trim().min(1).max(200),
+    sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+  request: z.object({ requestId: z.string().regex(/^[a-f0-9]{64}$/),
+    stayId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/), rowId: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).nullable(),
+    roomIndex: z.number().int().nonnegative().max(7).nullable() }).strict(),
+  expectedSeq: z.number().int().nonnegative().safe(),
+}).strict();
+export const rateCandidatesInput = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('start'), binding: rateBinding,
+    typedRatePlan: z.string().regex(/^[A-Z0-9]{1,12}$/).optional(), forceRefresh: z.boolean().optional() }).strict(),
+  z.object({ kind: z.literal('read'), binding: rateBinding, jobId: z.string().uuid() }).strict(),
+]);
+export type RateCandidatesReply = {
+  status: 'queued' | 'running' | 'ready' | 'blocked' | 'failed' | 'stale';
+  requestId: string; jobId: string | null; contextKey: string | null; context: RateContext | null;
+  observedAt: string | null; expiresAt: string | null;
+  coverage: { candidateList: 'complete' | 'partial' | 'unknown'; reason: string | null };
+  options: RateCandidate[]; recommendation: RateRecommendation | null;
+  issues: Array<{ code: 'missing' | 'invalid' | 'conflict' | 'target_required' | 'not_checked' | 'unsupported' | 'identity_changed';
+    fieldPath: string | null; message: string; blocksPrepare: boolean; blocksGo: boolean }>;
+};
+
+function rateRefusal(requestId: string, status: 'blocked' | 'failed' | 'stale', reason: string, message: string): RateCandidatesReply {
+  return { status, requestId, jobId: null, contextKey: null, context: null, observedAt: null, expiresAt: null,
+    coverage: { candidateList: 'unknown', reason }, options: [], recommendation: null,
+    issues: [{ code: status === 'stale' ? 'identity_changed' : status === 'failed' ? 'not_checked' : 'unsupported',
+      fieldPath: null, message, blocksPrepare: false, blocksGo: false }] };
+}
 
 /**
- * Only internetMessageId selects the mail. storeId, entryId and folderEntryId are
- * optional and unused, so the web preview can analyse a thread without Outlook ids.
+ * Selection narrows the RFC match to a verified web message or synced Outlook locator when available.
  */
 export const analyseSelectionInput = z.object({
   internetMessageId: z.string().optional(),
   storeId: z.string().optional(),
   entryId: z.string().optional(),
   folderEntryId: z.string().optional(),
+  selection: paneSourceSelectionSchema.optional(),
   selectionEpoch: z.number().int(),
   treatAs: z.enum(['quote', 'create_booking']).optional(),
   staffNote: z.string().max(4000).optional(),
@@ -172,6 +236,109 @@ export const runStepInput = z.object({
 });
 
 export const quoteWorkflowRouter = router({
+  rateCandidates: mailboxProcedure.input(rateCandidatesInput).mutation(async ({ input, ctx }): Promise<RateCandidatesReply> => {
+    const { binding } = input;
+    const db = getDb();
+    const [selected] = await db.select({ item: workItem, mail: message, thread: mailThread, extraction: mailExtraction })
+      .from(workItem)
+      .innerJoin(message, and(eq(message.id, workItem.sourceMessageId), eq(message.transportId, workItem.transportId)))
+      .innerJoin(mailThread, and(eq(mailThread.id, workItem.threadId), eq(mailThread.transportId, workItem.transportId)))
+      .innerJoin(mailExtraction, and(eq(mailExtraction.id, workItem.extractionId), eq(mailExtraction.messageId, message.id)))
+      .where(and(eq(workItem.id, binding.workItemId), eq(workItem.transportId, ctx.activeTransportId),
+        eq(message.id, binding.source.messageId), eq(mailThread.id, binding.source.threadId))).limit(1);
+    const valid = selected && selected.mail.threadId === binding.source.threadId && selected.mail.direction === 'inbound' &&
+      !selected.mail.historyOnly && !selected.thread.historyOnly && selected.thread.trashedAt === null &&
+      selected.mail.sourceProvenance?.attention == null && selected.extraction.status === 'succeeded' &&
+      !['done', 'dismissed'].includes(selected.item.status) && selected.item.revisionSeq === binding.expectedSeq &&
+      staffQuoteSourceHash(selected.mail) === binding.source.sourceHash;
+    const requestId = binding.request.requestId;
+    const refuse = (status: 'blocked' | 'failed' | 'stale', reason: string, message: string) =>
+      rateRefusal(requestId, status, reason, message);
+    if (!valid || !selected) return refuse('stale', 'SOURCE_OR_REVISION_CHANGED', 'This request has changed. Refresh the email.');
+    const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
+    if (!target.ok || target.target.propertyCode !== 'HRCEN') return refuse('blocked', 'PROPERTY_CONTEXT_UNSUPPORTED', 'Rate lookup is not available for this hotel yet.');
+    const payload = mailExtractionPayloadSchema.safeParse(selected.extraction.payload);
+    if (!payload.success || amendRequestId(binding.source, binding.request.stayId) !== requestId) {
+      return refuse('stale', 'REQUEST_IDENTITY_CHANGED', 'This stay request has changed. Refresh the email.');
+    }
+    const state = selected.item.state;
+    const stay = formStays(payload.data, state).find(stay => stay.id === binding.request.stayId);
+    if (!stay || binding.request.roomIndex !== null || (binding.request.rowId !== null &&
+        !stay.rows.some(row => row.id === binding.request.rowId))) {
+      return refuse('stale', 'ROOM_IDENTITY_CHANGED', 'This room request has changed. Refresh the email.');
+    }
+    const request = projectAmendRequests(binding.source, payload.data, state).requests.find(request => request.requestId === requestId);
+    if (!request) return refuse('blocked', 'DURABLE_RATE_PARTIES_NOT_AVAILABLE', 'Rate lookup needs a saved stay with verified company or agency details. Prepare can still check the chosen rate.');
+    if (stay.rows.length > 1) return refuse('blocked', 'MULTI_ROOM_AMEND_CONTEXT_UNSUPPORTED', 'Choose one saved room before checking its rates.');
+    const row = stay.rows[0];
+    const countPath = row ? `stays[${stay.id}].rows[${row.id}].count` : null;
+    const count = countPath && Object.hasOwn(state, countPath) ? state[countPath] : row?.rooms;
+    if ((count != null && count !== 1) || (countPath && Object.hasOwn(state, countPath) && count === null)) {
+      return refuse('blocked', 'MULTI_ROOM_AMEND_CONTEXT_UNSUPPORTED', 'Rate lookup currently checks one saved room at a time.');
+    }
+    const savedTarget = request.fields.value.target as { confirmation?: unknown; arrival?: unknown } | null;
+    if (!savedTarget || typeof savedTarget.confirmation !== 'string' || typeof savedTarget.arrival !== 'string') {
+      return refuse('blocked', 'SAVED_TARGET_REQUIRED', 'Find the saved stay before checking rates.');
+    }
+    const saved = await readHmsJobView({ transportId: ctx.activeTransportId, threadId: binding.source.threadId,
+      messageId: binding.source.messageId, sourceHash: binding.source.sourceHash, selectedActorId: ctx.sessionUser.id,
+      kind: 'find', confirmation: savedTarget.confirmation, arrival: savedTarget.arrival }, db);
+    const lookup = saved?.result?.rateLookup as HmsCloudRateLookup | undefined;
+    const readTime = lookup?.observedAt ? Date.parse(lookup.observedAt) : NaN;
+    if (!lookup || saved?.status !== 'done' || saved.result?.outcome !== 'found' ||
+        !Number.isFinite(readTime) || readTime > Date.now() || Date.now() - readTime >= 5 * 60_000) {
+      return refuse('blocked', 'SAVED_CONTEXT_READ_REQUIRED', 'Refresh the saved stay to verify its company, agency and room details.');
+    }
+    const projected = boundAmendRateRequest({ propertyCode: target.target.propertyCode, requestId,
+      stayId: binding.request.stayId, rowId: binding.request.rowId ?? row?.id ?? null,
+      fields: { ...request.fields.value, adults: request.fields.value.adults ?? row?.adultsPerRoom ?? null },
+      state, lookup, ...(input.kind === 'start' && input.typedRatePlan ? { typedRatePlan: input.typedRatePlan } : {}) });
+    if ('reason' in projected) return refuse('blocked', projected.reason, 'Complete the stay and verified company or agency details before checking rates. Prepare can still check the chosen rate.');
+    const scope = { transportId: ctx.activeTransportId, threadId: binding.source.threadId,
+      messageId: binding.source.messageId, sourceHash: binding.source.sourceHash, workItemId: binding.workItemId,
+      requestId, userId: ctx.sessionUser.id, extractionId: selected.extraction.id,
+      draftContextKey: projected.draftContextKey,
+      roomBindingKey: JSON.stringify([binding.request.stayId, binding.request.rowId, binding.request.roomIndex]) };
+    let runId: string;
+    if (input.kind === 'start') {
+      if (!hmsJobQueueEnabled()) return refuse('blocked', 'RATE_QUEUE_DISABLED', 'Rate lookup is not available right now. Prepare can still check the chosen rate.');
+      runId = (await queueRateCandidatesHmsJob({ ...scope, request: projected.request,
+        partyContextVerified: true, forceRefresh: input.forceRefresh }, db)).run.id;
+    } else runId = input.jobId;
+    const job = await readRateCandidatesHmsJob({ ...scope, runId }, db);
+    if (!job || job.request?.kind !== 'availability' || !job.request.rateContext) {
+      return refuse('stale', 'RATE_JOB_CONTEXT_CHANGED', 'The stay details changed. Check rates again.');
+    }
+    const context = { ...projected.request.rateContext!, typedRatePlan: job.request.rateContext.typedRatePlan };
+    const contextKey = rateContextKey(context);
+    if (rateContextKey(job.request.rateContext) !== contextKey) return refuse('stale', 'RATE_JOB_CONTEXT_CHANGED', 'The stay details changed. Check rates again.');
+    const reply: RateCandidatesReply = { status: job.status === 'queued' || job.status === 'retrying' ? 'queued' : 'running',
+      requestId, jobId: job.runId, contextKey, context, observedAt: null, expiresAt: null,
+      coverage: { candidateList: 'unknown', reason: null }, options: [], recommendation: null, issues: [] };
+    if (job.status === 'failed') return { ...refuse('failed', 'RATE_READ_FAILED', 'Rates could not be checked. Refresh to try again.'), jobId: runId, contextKey, context };
+    if (job.status !== 'done') return reply;
+    if (job.result?.outcome === 'blocked') return { ...refuse('blocked', String(job.result.error ?? 'NATIVE_CONTEXT_UNSUPPORTED'), 'HMS could not verify this rate context. Prepare can still check the chosen rate.'), jobId: runId, contextKey, context };
+    if (job.result?.outcome !== 'read' || job.result.contextKey !== contextKey || !Array.isArray(job.result.rateCandidates)) {
+      return { ...refuse('failed', 'RATE_RESULT_UNVERIFIED', 'HMS did not return verified rate observations.'), jobId: runId, contextKey, context };
+    }
+    const observedAt = typeof job.result.observedAt === 'string' ? job.result.observedAt : null;
+    const observed = observedAt ? Date.parse(observedAt) : NaN;
+    if (!Number.isFinite(observed) || observed > Date.now() || Date.now() - observed >= 5 * 60_000) {
+      return { ...refuse('stale', 'RATE_OBSERVATION_EXPIRED', 'These rate observations have expired. Check rates again.'), jobId: runId, contextKey, context };
+    }
+    const history = await loadPaneRateHistory(context, db);
+    const options = orderRateCandidates(context, job.result.rateCandidates as RateCandidate[], history);
+    const coverage = job.result.coverage as { candidateList?: 'complete' | 'partial' | 'unknown'; reason?: string | null } | undefined;
+    return { ...reply, status: 'ready', observedAt, expiresAt: new Date(observed + 5 * 60_000).toISOString(),
+      coverage: { candidateList: coverage?.candidateList ?? 'unknown', reason: coverage?.reason ?? null }, options,
+      recommendation: recommendRateCandidate({ ...context, typedRatePlan: projected.explicitCode ?? context.typedRatePlan }, options, projected.unchangedCode, history),
+      issues: [{ code: 'not_checked', fieldPath: null,
+        message: 'Nightly prices are observations. Prepare checks the chosen rate, full stay and retained pricing.',
+        blocksPrepare: false, blocksGo: false }, ...history.issues.map(reason => ({ code: 'not_checked' as const,
+          fieldPath: null, message: reason === 'NO_NATIVE_ID_BOUND_RATE_HISTORY'
+            ? 'No rate history is linked to these native company and agency IDs.' : 'Some rate history is unavailable; native rate observations are still shown.',
+          blocksPrepare: false, blocksGo: false }))] };
+  }),
   rateCatalogue: mailboxProcedure.query(async ({ ctx }) => {
     const resolved = resolvePropertyTransport(ctx.activeTransportId);
     if (resolved.kind === 'collector') {
@@ -200,6 +367,7 @@ export const quoteWorkflowRouter = router({
       const synced = await loader({
         transportId: ctx.activeTransportId,
         internetMessageId,
+        ...(input.selection ? { selection: input.selection } : {}),
         entryId: input.entryId,
         storeId: input.storeId,
         signal: AbortSignal.timeout(15_000),
@@ -227,11 +395,12 @@ export const quoteWorkflowRouter = router({
       // The "Tell Nava" text is kept masked on the mail's work item (v5 B2). Best effort and not awaited: a slow database
       // never holds the answer, and a note that fails to save is logged, not thrown.
       const note = input.staffNote?.trim();
-      if (note && internetMessageId) {
+      if (note && internetMessageId && (!input.selection || synced.messageId)) {
         const transportId = ctx.activeTransportId;
         const userId = ctx.sessionUser.id;
         void (async () => {
-          const workItemId = await workItemIdForMail(getDb(), { transportId, internetMessageId });
+          const workItemId = await workItemIdForMail(getDb(), { transportId, internetMessageId,
+            selection: input.selection, expectedMessageId: synced.messageId });
           if (workItemId) await recordStaffNote(getDb(), { workItemId, userId, note });
         })().catch((error: unknown) => {
           console.warn('staff_note_not_kept', error instanceof Error ? error.message : 'unknown');
@@ -248,6 +417,7 @@ export const quoteWorkflowRouter = router({
     const candidate = await (voucherLoaders.candidate ?? loadVoucherCandidate)({
       transportId: ctx.activeTransportId,
       internetMessageId,
+      ...(input.selection ? { selection: input.selection } : {}),
     });
     if (!candidate) return { status: 'unsynced' };
     const files = candidate.attachments.filter((attachment) => !attachment.isInline);
@@ -257,20 +427,45 @@ export const quoteWorkflowRouter = router({
       attachmentNames: files.map((attachment) => attachment.filename),
     });
     if (!voucher) return { status: 'not_voucher' };
-    const readable = voucherReadFiles(files);
-    const texts = await (voucherLoaders.readText ?? readVoucherAttachmentText)(readable, AbortSignal.timeout(15_000));
+    const filingFiles = voucherFilingFiles(files);
+    const selected = input.attachmentId ? filingFiles.find((file) => file.id === input.attachmentId) : undefined;
+    if (input.attachmentId && !selected) {
+      throw new TRPCError({ code: 'BAD_REQUEST', message: 'The selected PDF is unavailable for this email.' });
+    }
+    // Once staff select a file, only that file supplies voucher facts. Never
+    // let another attachment's text determine where this file is filed.
+    const readable = selected ? [selected] : voucherReadFiles(files);
+    const signal = AbortSignal.timeout(15_000);
+    const scope = {
+          transportId: ctx.activeTransportId, messageId: candidate.messageId, internetMessageId,
+          ...(input.selection ? { selection: input.selection } : {}),
+        };
+    const selectedRead = selected && !voucherLoaders.readText
+      ? await readSelectedVoucherAttachment(selected, signal, scope) : null;
+    const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
+    if (selected && !voucherLoaders.readText && !selectedRead && target.ok && target.target.propertyCode === 'HRCEN') {
+      throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'The selected PDF changed or is unavailable.' });
+    }
+    const texts = voucherLoaders.readText ? await voucherLoaders.readText(readable, signal)
+      : selectedRead ? selectedRead.texts : await readVoucherAttachmentText(readable, signal, scope);
+    const confirmation = resolveThreadConfirmationEvidence([
+      { filename: '', text: `${candidate.subject}\n${candidate.bodyText}` },
+      ...texts.map((entry) => ({ filename: '', text: entry.text })),
+    ]).confirmation;
     // A voucher PDF whose text was not read (over the reader's cap, scanned, or unreadable) is counted for the card.
     const withText = new Set(texts.filter((entry) => entry.text?.trim()).map((entry) => entry.id));
     return {
       status: 'voucher',
       messageId: candidate.messageId,
       threadId: candidate.threadId,
-      guest: extractVoucherGuest({
+      guest: { ...extractVoucherGuest({
         subject: candidate.subject,
         bodyText: candidate.bodyText,
         attachmentTexts: texts.map((text) => text.text ?? ''),
-      }),
-      file: pickVoucherFile(files),
+      }), ...(confirmation && isHmsConfirmation(confirmation) ? { confirmationNumber: confirmation } : {}) },
+      file: selected ? voucherFileMetadata(selected) : pickVoucherFile(files),
+      files: filingFiles.map(voucherFileMetadata),
+      ...(selectedRead ? { documentSource: selectedRead.source } : {}),
       unreadPdfs: readable.filter((file) => !withText.has(file.id)).length,
     };
   }),
@@ -283,12 +478,12 @@ export const quoteWorkflowRouter = router({
   }),
   previewStay: mailboxProcedure
     .input(paneStayInput)
-    .use(({ ctx, next }) =>
+    .use(({ input, ctx, next }) =>
       recordToolOutcome(
         () => ({
           kind: 'stay_preview',
           transportId: ctx.activeTransportId,
-          messageId: null,
+          messageId: input.createSelection?.source.messageId ?? null,
           userId: ctx.sessionUser.id,
         }),
         classifyStayPreview,
@@ -296,7 +491,14 @@ export const quoteWorkflowRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
-    const { stayId, workItemId, ...stay } = input;
+    const { stayId, workItemId, createSelection, confirmationSendMail, ...stay } = input;
+    const target = resolvePropertyTransport(ctx.activeTransportId);
+    if (target.kind === 'property' && target.property.propertyCode === 'HRCEN') {
+      if (!workItemId || !stayId || !createSelection) return { status: 'refused' as const, reason: 'pane_preview_binding_required' };
+      return previewPaneCloud(getDb(), { transportId: ctx.activeTransportId, mailboxAddress: ctx.transportEmail,
+        actorUserId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile,
+        workItemId, stayId, selection: createSelection, stay: { ...stay, confirmationSendMail } });
+    }
     const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
     const previewPersist =
       workItemId && stayId
@@ -317,6 +519,7 @@ export const quoteWorkflowRouter = router({
         previewDigest: z.string().regex(/^[0-9a-f]{64}$/),
         // Rooms 2+ of one booking name room 1's stay; the server reads its confirmation from this work item.
         parentStayId: z.string().trim().min(1).max(200).optional(),
+        batch: paneCloudBatchInput.optional(),
       }),
     )
     .use(({ input, ctx, next }) =>
@@ -324,7 +527,7 @@ export const quoteWorkflowRouter = router({
         () => ({
           kind: 'stay_commit',
           transportId: ctx.activeTransportId,
-          messageId: null,
+          messageId: input.createSelection?.source.messageId ?? null,
           userId: ctx.sessionUser.id,
         }),
         (value: PaneStayResult) => classifyStayCommit(value, input.previewDigest),
@@ -332,7 +535,23 @@ export const quoteWorkflowRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
-      const { previewDigest, stayId, workItemId, parentStayId, ...stay } = input;
+      const { previewDigest, stayId, workItemId, parentStayId, createSelection, confirmationSendMail, batch, ...stay } = input;
+      const target = resolvePropertyTransport(ctx.activeTransportId);
+      if (target.kind === 'property' && target.property.propertyCode === 'HRCEN') {
+        if (!workItemId || !stayId || !createSelection) return { status: 'refused' as const, reason: 'pane_preview_binding_required' };
+        if (parentStayId) return { status: 'refused' as const, reason: 'pane_save_parent_unsupported' };
+        if (batch?.kind === 'start' && batch.rooms.some((room) => room.workItemId !== workItemId)) {
+          return { status: 'refused' as const, reason: 'pane_preview_binding_required' };
+        }
+        const cloudBatch = batch?.kind === 'start' ? { ...batch, rooms: batch.rooms.map((room) => {
+          const { stayId: roomId, workItemId: _workItemId, createSelection: selection, previewDigest: roomDigest, ...roomStay } = room;
+          return { stayId: roomId, selection, previewDigest: roomDigest, stay: roomStay };
+        }) } : batch;
+        return commitPaneCloud(getDb(), { transportId: ctx.activeTransportId, mailboxAddress: ctx.transportEmail,
+          actorUserId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile,
+          workItemId, stayId, selection: createSelection, stay: { ...stay, confirmationSendMail }, batch: cloudBatch }, previewDigest);
+      }
+      if (batch) return { status: 'refused' as const, reason: 'pane_batch_property_unsupported' };
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
       const previewPersist =
         workItemId && stayId

@@ -4,9 +4,9 @@ The writer refuses to dispatch unless its browser context blocks service workers
 and has no active service workers. This protects request interception; it does
 not by itself prove what HMS does server-side.
 
-Owner authorization applies to fake Labtest writes only. This standalone
-interface does not authenticate staff approval and does not authorize writes
-for real guests.
+Real-guest writes go through the pane's staff Go (PRODUCT.md). The writer is
+being generalized from its Labtest origin; check business fields, not whole
+request bodies or key sets (AGENTS.md).
 
 `searchLabtestPreimage` and `saveNewLabtestStay` operate on one caller-owned,
 authenticated page. Install the shared read-only guard and serialize page
@@ -17,6 +17,12 @@ incomplete results and stale proof do not authorize a save.
 The search checks that the request's date offsets match the displayed range.
 If the property's calendar date and UTC differ, it refuses the preimage rather
 than guessing the offset anchor; retry when the dates agree.
+
+The fake writer supports `NGI` and `GTDAGT` only. An agent-guarantee save
+requires the current page's `selectGuestStayDropdown` result as
+`guaranteeSelection`, including matching code, submitted value and display.
+The current form and outgoing native body are checked again with full schema
+proof. The agent-guarantee save itself has not yet been proved in HMS.
 
 The legacy core-only save call remains available for existing callers. It does
 not claim explicit occupancy or Source of Business coverage and cannot save a
@@ -88,8 +94,12 @@ Strict proof snapshots the full native `record.getData()` key set and requires
 the one outgoing form payload to match every expected value, alongside the
 three fixed OSRESV/HDR controls. A read-only comparison found 985 unique
 `record.getData()` keys, matching the 985 non-control keys in the captured
-988-key save request; proof mode pins that observed field-key set and fails
-closed if it changes. This is a schema allowlist: complete model/body equality
+988-key save request; proof mode pins that observed field-key set. A later
+unsaved HRCEN draft and blocked native request had the same fields plus
+`confirmcheckinautoaddons` and `confirmratenotallowedforrestemplate`, both
+blank. The native client sets them only after their respective confirmation
+dialogs. Proof mode accepts the pair only when both are blank, and fails closed
+for any other field-set change. This is a schema allowlist: complete model/body equality
 alone would also accept a newly added field without establishing whether it
 carries a create-side effect. Any field-set change therefore needs re-review
 before proof mode is enabled. Raw `record.data` had 1,109 keys, including 123
@@ -109,7 +119,8 @@ agree across those same native surfaces. It describes the selected guest's
 history, not this stay's duration. Exact arrival and departure values in both
 the visible form and outgoing request define stay length (for example,
 2027-12-11 through 2027-12-13 is two nights). Every request must still match
-the full 985-key expected snapshot; all other values stay pinned to the model.
+the full expected snapshot, including any blank confirmation flags; all other
+values stay pinned to the model.
 
 One strict full-body Proof Labtest create dispatched successfully with an agency,
 organization, no A/R account, zero children and CMS message `03`; fresh saved
@@ -162,9 +173,10 @@ page-lifetime no-POST fence remains unchanged. No billing-reference save has
 been proven in live HMS.
 
 The save also requires the current verified Proof Labtest profile, a new HRCEN
-stay, dates in 2027 or later, the Non-Guaranteed Individual (`NGI`) guarantee,
-no guarantee card, CMS Send unchecked, and blank CMS recipient and guest
-email. The save action and core identity/party fields are exact-matched on the
+stay, dates in 2027 or later, an `NGI` or `GTDAGT` guarantee, no guarantee
+card, CMS Send unchecked, and blank CMS recipient and guest email. A `GTDAGT`
+save also requires the current verified `guaranteeSelection` described above.
+The save action and core identity/party fields are exact-matched on the
 legacy path; strict proof mode also exact-matches whichever occupancy, source
 and party selections were supplied, plus the full serialized model. One exact request from the current main frame may
 pass through the page fence and writer-local context guard. Every other

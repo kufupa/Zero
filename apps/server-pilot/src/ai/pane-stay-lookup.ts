@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import type { HmsCloudRateLookup } from './hms-cloud-saved-stay-find.js';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -7,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import { classifyHmsLoginOutage } from '../hms/property-outage.js';
-import type { HmsReadTarget } from '../hms/hms-read-target.js';
+import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
 import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
@@ -82,6 +83,7 @@ export type PaneStayFindOutcome = 'found' | 'not_found' | 'ambiguous' | 'executi
 export type PaneStayFindInput = { confirmation: string; arrival?: string };
 
 export type PaneStayFindResult = {
+  rateLookup?: HmsCloudRateLookup;
   outcome:
     | PaneStayFindOutcome
     | 'refused_flag_off'
@@ -131,6 +133,7 @@ export type PaneStayGuestSearchResult = {
 
 /** What one stay-lookup.mjs run reports in its result.json. Screenshots are absolute paths. */
 export type PaneStayLookupSpawnResult = {
+  rateLookup?: HmsCloudRateLookup;
   outcome: string;
   reason: string | null;
   stay: PaneStayFields | null;
@@ -391,9 +394,40 @@ async function defaultSpawn(
   input: PaneStayLookupSpawnInput,
   target: HmsReadTarget,
 ): Promise<PaneStayLookupSpawnResult> {
+  if (input.mode === 'find' && target.propertyCode === CENTURION_HMS_READ_TARGET.propertyCode) {
+    const cloud = await import('./hms-cloud-saved-stay-find.js');
+    const request = { confirmation: input.confirmation, ...(input.arrival ? { arrival: input.arrival } : {}) };
+    const result = cloud.projectCloudStayFind(request, await cloud.runCloudStayFind({
+      request, target, signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
+    }));
+    // The mounted pane must not present a partial or mismatched record as a found stay.
+    if (result.outcome === 'found' && (!result.nativePreimage || result.nativePreimage.confirmation !== input.confirmation)) {
+      return { ...refused('execution_failure'), reason: 'SAVED_STAY_IDENTITY_UNVERIFIED', rows: [], runId: undefined };
+    }
+    return { ...result, rows: [], runId: result.runId ?? undefined };
+  }
   const runId = randomUUID();
   const dir = join(tmpdir(), `pane-lookup-${runId}`);
   await mkdir(dir, { mode: 0o700 });
+  if (input.mode === 'search-guest' && target.propertyCode === CENTURION_HMS_READ_TARGET.propertyCode) {
+    const keys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
+    if (keys.some((key) => target[key] !== CENTURION_HMS_READ_TARGET[key])) {
+      await rm(dir, { recursive: true, force: true });
+      throw new Error('CLOUD_READ_TARGET_UNSUPPORTED');
+    }
+    try {
+      const moduleUrl = new URL('../../tooling/hms-cloud/pane-guest-search.mjs', import.meta.url);
+      const cloud = await import(moduleUrl.href) as { searchGuestInCloud: (request: Extract<PaneStayLookupSpawnInput,
+        { mode: 'search-guest' }> & { dir: string }) =>
+        Promise<Partial<PaneStayLookupSpawnResult>> };
+      const result = await cloud.searchGuestInCloud({ ...input, dir });
+      return { outcome: result.outcome ?? 'execution_failure', reason: result.reason ?? null, stay: null,
+        rows: result.rows ?? [], screenshots: result.screenshots ?? [], runId, runDir: dir };
+    } catch (error) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
+  }
   let runError: unknown = null;
   try {
     await execFileAsync('node', buildStayLookupArgs(input, dir, target.propertyCode), {
@@ -468,6 +502,7 @@ export async function findStay(input: PaneStayFindInput, deps: PaneStayLookupDep
     outcome,
     reason: run.reason,
     stay,
+    ...(outcome === 'found' && run.rateLookup ? { rateLookup: run.rateLookup } : {}),
     ...(commercial ? { commercial } : {}),
     arrivalMismatch: run.arrivalMismatch === true,
     requestedArrival: run.requestedArrival ?? input.arrival ?? null,

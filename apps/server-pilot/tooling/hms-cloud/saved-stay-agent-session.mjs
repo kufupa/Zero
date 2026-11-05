@@ -40,11 +40,15 @@ function readFailure(error, stage, shallow) {
 }
 
 /** Own guarded pages; calls submitted through runTool execute in order. */
-export async function withSavedStayAgentSession(operation, { signal } = {}) {
+export async function withSavedStayAgentSession(operation, { signal, readOnly = false, readOnlyConfirmation, cloudTargetKey } = {}) {
   if (typeof operation !== 'function') throw new Error('SESSION_CALLBACK_REQUIRED');
+  if (typeof readOnly !== 'boolean') throw new Error('READ_ONLY_OPTION_INVALID');
+  if (readOnly && !/^\d+-\d+$/.test(readOnlyConfirmation || '')) throw new Error('READ_CONFIRMATION_REQUIRED');
   signal?.throwIfAborted();
+  const installStrictGuard = readOnly ? (await import('./saved-stay-read-guard.mjs')).installSavedStayReadGuard : undefined;
+  const prepareContext = installStrictGuard && ((context) => installStrictGuard(context, { confirmation: readOnlyConfirmation }));
   return withCenturionStay360Page(async (page) => {
-    await installReadOnlyGuard(page.context());
+    if (!readOnly) await installReadOnlyGuard(page.context());
     let current = null, recordOpen = false, pendingCancel = null, sealed = false, nativeDialog = null;
     let accepting = true, tail = Promise.resolve();
     let interruptRead;
@@ -84,6 +88,10 @@ export async function withSavedStayAgentSession(operation, { signal } = {}) {
         'cancelHotelAvailabilityParty'].includes(tool)) {
         return { outcome: 'input_gap', issue: 'UNKNOWN_TOOL' };
       }
+      if (readOnly && tool !== 'read') return { outcome: 'refused', issue: 'READ_ONLY_SESSION' };
+      if (readOnly && request.confirmation !== readOnlyConfirmation) {
+        return { outcome: 'refused', issue: 'READ_ONLY_CONFIRMATION_MISMATCH' };
+      }
       if (nativeDialog) return { outcome: /penalt|fee|charge|deposit/i.test(nativeDialog.message)
         ? 'fee_dialog_pending' : 'unexpected_dialog', issue: 'NATIVE_DIALOG', nativeDialog };
       if (sealed) return { outcome: 'refused', issue: 'FRESH_SESSION_REQUIRED' };
@@ -108,7 +116,8 @@ export async function withSavedStayAgentSession(operation, { signal } = {}) {
         if (request.view === 'shallow') return { outcome: 'ok', shallow };
         try {
           const record = await readRecord(page, shallow.confirmation,
-            request.includeNativePreimage === true ? { nativePropertyCode: 'HRCEN' } : {});
+            request.includeNativePreimage === true ? { nativePropertyCode: 'HRCEN',
+              nativeIdentityOnly: readOnly && request.includeNativeIdentityOnly === true } : {});
           recordOpen = true;
           const statuses = record.details.fields.filter((field) => field.name === 'status');
           current = { confirmation: shallow.confirmation, status: statuses.length === 1 ? statuses[0].value : null,
@@ -245,14 +254,20 @@ export async function withSavedStayAgentSession(operation, { signal } = {}) {
       tail = result.then(() => undefined, () => undefined);
       return result;
     };
-    try { return await operation({ runTool }); }
+    const screenshotRecord = async () => {
+      await tail;
+      if (!readOnly || !recordOpen || sealed || nativeDialog || !accepting) throw new Error('RECORD_SCREENSHOT_UNAVAILABLE');
+      return page.screenshot({ fullPage: true });
+    };
+    try { return await operation({ runTool, screenshotRecord }); }
     finally {
       accepting = false;
       await tail;
       releaseAvailability?.();
       await availabilityTask;
     }
-  }, { headless: true, signal, blockServiceWorkers: true });
+  }, { headless: true, signal, blockServiceWorkers: true, cloudTargetKey,
+    ...(prepareContext && { prepareContext }) });
 }
 
 const writeLine = (value) => new Promise((done, fail) => {

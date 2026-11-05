@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 import { AmendLookupPanel } from '../components/quote-workflow/amend-lookup-panel';
@@ -40,6 +40,8 @@ import {
 } from '../lib/quote-workflow/amend-find';
 import { AMEND_SAVE_COPY, type CancelRun } from '../lib/quote-workflow/amend-cancel';
 import { amendmentOf, initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
+import { getMailCacheScope, setMailCacheScope } from '../lib/mail/mail-cache-scope';
+import { cloudAmendClientFromTrpc, type CloudAmendRequest } from '../lib/quote-workflow/cloud-amend-client';
 import type { QuoteAmendment, QuoteSession } from '../lib/quote-workflow/types';
 
 // brain.getCapabilities answers with this flag. Tests set it before rendering.
@@ -187,7 +189,7 @@ type LookupStatusInput =
       kind: 'find' | 'search_guest' | 'party' | 'availability';
       confirmation?: string;
       lastName?: string;
-      arrival?: string;
+      arrival?: string | null;
       departure?: string | null;
     };
 type LookupTrpcOptions = {
@@ -209,12 +211,14 @@ function lookupTrpc(
 ) {
   const jobs = new Map<string, HmsJobView>();
   let issued = 0;
-  const finish = (request: HmsJobRequest, reply: unknown): { runId: string } => {
+  const finish = (request: HmsJobRequest, reply: unknown, sourceMessageId?: string, sourceHash?: string): { runId: string } => {
     // A call that answers with nothing is a failed call, as it was before the job route.
     if (!reply) throw new Error('no reply from HMS');
     const runId = `run-${++issued}`;
     jobs.set(runId, {
       runId,
+      sourceMessageId,
+      sourceHash,
       request,
       prefetch: false,
       status: 'done',
@@ -232,7 +236,7 @@ function lookupTrpc(
       ? { confirmation: input.confirmation, arrival: input.arrival }
       : { confirmation: input.confirmation };
     if (input.autoStart && !options.autoStartFind) return { runId: null };
-    return finish({ kind: 'find', ...request }, await findStay(request));
+    return finish({ kind: 'find', ...request }, await findStay(request), input.messageId, input.sourceHash);
   });
   const jobStatus = vi.fn(async (input: LookupStatusInput) => {
     if (options.status) return options.status(input);
@@ -259,7 +263,7 @@ function lookupTrpc(
       queueSearchGuest: {
         mutate: async ({ threadId, ...input }: GuestSearchInput & { threadId: string }) => {
           void threadId;
-          return finish({ kind: 'search_guest', ...input }, await searchGuest(input));
+          return finish({ kind: 'search_guest', ...input }, await searchGuest(input), input.messageId, input.sourceHash);
         },
       },
       jobStatus: { query: jobStatus },
@@ -975,6 +979,89 @@ function syncTrpc(
     },
   };
 }
+
+describe('exact selected-email HMS lookup', () => {
+  it.each(['2026-10-13', null])('does not resume an old booked-arrival search when the current arrival is %s', async (arrival) => {
+    const previous: HmsJobView = { runId: RUN_ID, sourceMessageId: 'msg-1', sourceHash: 'a'.repeat(64),
+      request: { kind: 'find', confirmation: CONFIRMATION, arrival: '2026-10-12' }, prefetch: false,
+      status: 'done', position: null, attempts: 1, failureClass: null, asOf: AS_OF,
+      result: unpaidFound() as unknown as Record<string, unknown> };
+    const findStay = vi.fn().mockResolvedValue(unpaidFound());
+    const trpc = lookupTrpc(findStay, undefined, undefined, { readback: previous, autoStartFind: true });
+    const session = sessionWith({ ...AMEND, arrival });
+    session.binding = { ...session.binding!, internetMessageId: '<one@example.test>' };
+    render(<AmendLookupPanel session={session} trpc={trpc} readOnlyAmend={{ propertyCode: 'HRCEN',
+      selectionCurrent: true, ratePlans: [] }} />);
+    await waitFor(() => expect(trpc.queueFind).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: THREAD, messageId: 'msg-1', sourceHash: 'a'.repeat(64), confirmation: CONFIRMATION,
+      ...(arrival ? { arrival } : {}), autoStart: true,
+    }), { context: { activeTransportId: 't1' } }));
+    expect(trpc.jobStatus).toHaveBeenCalledWith(expect.objectContaining({ kind: 'find', arrival }),
+      { context: { activeTransportId: 't1' } });
+    if (arrival === null) expect(trpc.queueFind.mock.calls[0]![0].arrival).toBeUndefined();
+  });
+
+  it('keeps find, search and both status reads on the original mailbox and rejects another message', async () => {
+    const previous = getMailCacheScope();
+    const queueFind = vi.fn().mockResolvedValue({ runId: RUN_ID });
+    const queueSearch = vi.fn().mockResolvedValue({ runId: RUN_ID });
+    const sourceHash = 'a'.repeat(64);
+    const status = vi.fn().mockResolvedValue({
+      runId: RUN_ID, sourceMessageId: 'msg-old', sourceHash, request: { kind: 'find', confirmation: CONFIRMATION },
+      prefetch: false, status: 'done', position: null, attempts: 1, failureClass: null, asOf: null, result: {},
+    });
+    const trpc = { paneStayLookup: { queueFind: { mutate: queueFind }, queueSearchGuest: { mutate: queueSearch },
+      jobStatus: { query: status }, screenshot: { query: vi.fn() } } };
+    try {
+      setMailCacheScope({ userId: 'user-1', activeTransportId: 'mailbox-a' });
+      const client = amendFindClientFromTrpc(trpc, 'mailbox-a');
+      expect(hmsJobTransport(client, THREAD, null, { exactSource: true })).toBeNull();
+      expect(hmsJobTransport(client, THREAD, 'msg-old', { exactSource: true, sourceHash: '' })).toBeNull();
+      const transport = hmsJobTransport(client, THREAD, 'msg-old', { exactSource: true, sourceHash })!;
+      setMailCacheScope({ userId: 'user-1', activeTransportId: 'mailbox-b' });
+      const pinned = { context: { activeTransportId: 'mailbox-a' } };
+      await transport.queue({ kind: 'find', confirmation: CONFIRMATION });
+      await transport.queue({ kind: 'search_guest', lastName: 'Mokoena', arrival: '2027-09-14' });
+      expect(queueFind).toHaveBeenCalledWith(expect.objectContaining({ threadId: THREAD, messageId: 'msg-old', sourceHash }), pinned);
+      expect(queueSearch).toHaveBeenCalledWith(expect.objectContaining({ threadId: THREAD, messageId: 'msg-old', sourceHash }), pinned);
+      expect(await transport.status({ kind: 'find', confirmation: CONFIRMATION })).toMatchObject({ sourceMessageId: 'msg-old' });
+      expect(status).toHaveBeenLastCalledWith({ threadId: THREAD, messageId: 'msg-old', sourceHash, kind: 'find', confirmation: CONFIRMATION }, pinned);
+      expect(await transport.status({ runId: RUN_ID })).toMatchObject({ sourceMessageId: 'msg-old' });
+      expect(status).toHaveBeenLastCalledWith({ runId: RUN_ID, threadId: THREAD, messageId: 'msg-old', sourceHash }, pinned);
+      status.mockResolvedValueOnce({ ...await status.mock.results[0]!.value, sourceMessageId: 'msg-new' });
+      expect(await transport.status({ runId: RUN_ID })).toBeNull();
+      status.mockResolvedValueOnce({ ...await status.mock.results[0]!.value, sourceMessageId: null });
+      expect(await transport.status({ kind: 'search_guest', lastName: 'Mokoena', arrival: '2027-09-14' })).toBeNull();
+      status.mockResolvedValueOnce({ ...await status.mock.results[0]!.value, sourceHash: 'b'.repeat(64) });
+      expect(await transport.status({ runId: RUN_ID })).toBeNull();
+
+      setMailCacheScope({ userId: 'user-1', activeTransportId: 'mailbox-a' });
+      const request = { workItemId: RUN_ID, source: { threadId: THREAD, messageId: 'msg-old', sourceHash },
+        confirmation: CONFIRMATION, arrival: '2026-10-12', changes: { ratePlan: 'BAR', retainRates: 'no' as const,
+          cmsSend: false, cmsMessageId: '', cmsRecipient: '', bookerContact: '+2782123456783' } };
+      const view = { status: 'needs_you', formDigest: DIGEST, form: { action: 'amend', confirmation: CONFIRMATION,
+        arrival: request.arrival, fields: { ...request.changes, bookerContact: '+[card ••••6783]' },
+        cloudAmend: { bound: true } }, before: null, snapshot: null, grant: null, run: null, needsCheck: false };
+      const cloud = { hmsApproval: { cloudAmendReady: { query: vi.fn().mockResolvedValue({ ready: true }) },
+        bindCloudAmend: { mutate: vi.fn().mockResolvedValue({ status: 'bound', formDigest: DIGEST,
+          previewDigest: DIGEST, readAt: '2026-10-12T00:00:00.000Z' }) },
+        cloudAmendState: { query: vi.fn(async () => view) }, approveCloudAmend: { mutate: vi.fn() },
+        reviewCloudAmend: { mutate: vi.fn() }, cloudAmendEvidence: { query: vi.fn() } } };
+      const amend = await cloudAmendClientFromTrpc(cloud, request, {
+        transportId: 'mailbox-a', signal: new AbortController().signal, isCurrent: () => true,
+      });
+      const draft = { requestId: 'b'.repeat(64), stayId: 'stay-1', expectedSeq: 3 };
+      expect(await amend?.prepare(draft)).toBe(true);
+      expect(cloud.hmsApproval.bindCloudAmend.mutate).toHaveBeenCalledWith(expect.objectContaining({ draft }), expect.anything());
+      expect(await amend?.approval.writeState({ workItemId: RUN_ID })).toMatchObject({ formDigest: DIGEST });
+      view.formDigest = 'b'.repeat(64);
+      await expect(amend?.approval.writeState({ workItemId: RUN_ID })).rejects.toThrow('state_changed');
+      amend?.dispose();
+    } finally {
+      setMailCacheScope(previous);
+    }
+  });
+});
 
 describe('AmendLookupPanel with the job queue off', () => {
   it('finds the booking synchronously through findStay, with no job polled and no as-of stamp', async () => {
@@ -1706,7 +1793,182 @@ describe('AmendLookupPanel cancel from the pane', () => {
     expect(within(dialog).getByRole('img').getAttribute('src')).toBe(SHOT_PNG);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
     expect(screen.queryByRole('dialog')).toBeNull();
-  });
+    cleanup();
+    const previousScope = getMailCacheScope();
+    setMailCacheScope({ userId: 'user-1', activeTransportId: 't1' });
+    try {
+      const session = sessionWith(CANCEL);
+      session.binding = { ...session.binding!, internetMessageId: '<cancel@example.test>' };
+      const source = { threadId: THREAD, messageId: 'msg-1', sourceHash: 'a'.repeat(64), extractionId: RUN_ID };
+      const requestId = 'b'.repeat(64);
+      const snapshot = { workItemId: RUN_ID, source, revisionSeq: 10, fieldMeta: {}, requests: [{ requestId,
+        stayId: 'stay-1', action: 'cancel', workflow: 'cancel', status: 'pending', fields: { kind: 'cancel',
+          value: { target: { confirmation: CONFIRMATION, arrival: CANCEL_ARRIVAL }, reason: null as string | null, cancellationNote: 'Saved note' } } }] };
+      const record = vi.fn(() => true);
+      const cursor11 = { seq: 11, revision: 2, revisionHead: 2 };
+      const cursor12 = { seq: 12, revision: 3, revisionHead: 3 };
+      const flush = vi.fn().mockResolvedValueOnce(cursor11).mockResolvedValue(cursor12);
+      const original = { ...PREVIEW_OK, previewStay: { confirmation: CONFIRMATION,
+        firstName: 'Thabo', lastName: 'Mokoena', arrival: CANCEL_ARRIVAL,
+        departure: CANCEL.departure!, roomType: 'DLXKNG' } };
+      const freshDigest = 'c'.repeat(64);
+      let finishRefresh: (run: CancelRun) => void = () => {};
+      const nativePreview = vi.fn().mockResolvedValueOnce(original).mockImplementationOnce(() =>
+        new Promise<CancelRun>((resolve) => { finishRefresh = resolve; }));
+      const nativeCommit = vi.fn().mockResolvedValue(cancelRun({ outcome: 'cancelled', statusAfter: 'Cancelled', runId: RUN_ID }));
+      const findStay = vi.fn().mockResolvedValue(unpaidFound({ arrival: CANCEL_ARRIVAL, departure: CANCEL.departure ?? '' }, []));
+      const cloud = { ...lookupTrpc(findStay), hmsApproval: { writeState: { query: vi.fn().mockResolvedValue({ form: {}, run: null, needsCheck: false }) } },
+        paneStayCancel: { previewCancel: { mutate: nativePreview }, commitCancel: { mutate: nativeCommit }, paneStayScreenshot: { query: shot } } };
+      const renderCloud = (draft = snapshot) => render(<AmendLookupPanel session={session} trpc={cloud} workItemId={RUN_ID} readOnlyAmend={{ propertyCode: 'HRCEN',
+        selectionCurrent: true, requireDurableDraft: true, ratePlans: [], requestDraft: { available: true,
+          record, held: vi.fn(() => undefined), flush, retry: vi.fn(), pending: false, error: null, retryable: false,
+          snapshot: draft } }} />);
+      renderCloud();
+      await pressFind();
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+      expect((await screen.findByLabelText('Cancellation note (optional)') as HTMLInputElement).value).toBe('Saved note');
+      expect(nativePreview).toHaveBeenCalledWith(expect.objectContaining({ requestId, expectedSeq: 11,
+        expectedExtractionId: RUN_ID }), expect.anything());
+      fireEvent.change(screen.getByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+      fireEvent.change(screen.getByLabelText('Cancellation note (optional)'), { target: { value: 'Changed note' } });
+      expect(record).toHaveBeenCalledWith(requestId, 'cancel.reason', 'Duplicate Booking', true);
+      expect(record).toHaveBeenCalledWith(requestId, 'cancel.note', 'Changed note', true);
+      const go = screen.getByRole('button', { name: 'Cancel booking in HMS' }) as HTMLButtonElement;
+      expect(go.disabled).toBe(false);
+      fireEvent.click(go);
+      fireEvent.click(go);
+      await waitFor(() => expect(nativePreview).toHaveBeenCalledTimes(2));
+      expect(nativeCommit).not.toHaveBeenCalled();
+      await act(async () => finishRefresh({ ...original, previewDigest: freshDigest }));
+      await waitFor(() => expect(nativeCommit).toHaveBeenCalledWith(expect.objectContaining({ requestId, expectedSeq: 12,
+        expectedExtractionId: RUN_ID, reason: 'Duplicate Booking', cancellationNote: 'Changed note',
+        previewDigest: freshDigest }), expect.anything()));
+      expect(nativeCommit).toHaveBeenCalledTimes(1);
+
+      for (const changed of [
+        { statusBefore: 'Checked In' },
+        { previewStay: { ...original.previewStay, firstName: 'Changed' } },
+        { penaltyText: 'New fee' },
+        { policyFacts: ['New policy'] },
+        { reasons: ['Test Reservations'] },
+      ]) {
+        cleanup();
+        flush.mockReset().mockResolvedValueOnce(cursor11).mockResolvedValue(cursor12);
+        nativePreview.mockReset().mockResolvedValueOnce(original).mockResolvedValueOnce({ ...original, ...changed, previewDigest: freshDigest });
+        nativeCommit.mockClear();
+        renderCloud();
+        await pressFind();
+        fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+        fireEvent.change(await screen.findByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+        await screen.findByText(/Cancellation details changed\. Review them/);
+        expect(nativeCommit).not.toHaveBeenCalled();
+        if ('statusBefore' in changed) expect(screen.getByText('Status in HMS: Checked In')).toBeTruthy();
+        if ('previewStay' in changed) expect(screen.getByText('Guest: Changed Mokoena')).toBeTruthy();
+        if ('penaltyText' in changed) expect(screen.getByText('HMS says: New fee.')).toBeTruthy();
+        if ('policyFacts' in changed) expect(screen.getByText('New policy')).toBeTruthy();
+        const nextGo = screen.getByRole('button', { name: 'Cancel booking in HMS' }) as HTMLButtonElement;
+        if ('reasons' in changed) {
+          expect(nextGo.disabled).toBe(true);
+        } else {
+          expect(nextGo.disabled).toBe(false);
+          fireEvent.click(nextGo);
+          await waitFor(() => expect(nativeCommit).toHaveBeenCalledWith(expect.objectContaining({ expectedSeq: 12,
+            previewDigest: freshDigest }), expect.anything()));
+          expect(nativeCommit).toHaveBeenCalledTimes(1);
+        }
+      }
+
+      cleanup();
+      flush.mockReset().mockResolvedValueOnce(cursor11).mockResolvedValue(cursor12);
+      nativePreview.mockReset().mockResolvedValueOnce(original).mockResolvedValueOnce({ ...original, previewDigest: freshDigest });
+      nativeCommit.mockClear();
+      const saved = { ...snapshot, requests: snapshot.requests.map((request) => ({ ...request, fields: { ...request.fields,
+        value: { ...request.fields.value, reason: 'Duplicate Booking' } } })) };
+      renderCloud(saved);
+      await pressFind();
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+      await waitFor(() => expect((screen.getByRole('button', { name: 'Cancel booking in HMS' }) as HTMLButtonElement).disabled).toBe(false));
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+      await waitFor(() => expect(nativeCommit).toHaveBeenCalledWith(expect.objectContaining({ expectedSeq: 12,
+        previewDigest: freshDigest, reason: 'Duplicate Booking' }), expect.anything()));
+      expect(nativePreview).toHaveBeenCalledTimes(2);
+      expect(nativeCommit).toHaveBeenCalledTimes(1);
+
+      cleanup();
+      flush.mockReset().mockResolvedValueOnce(cursor11).mockResolvedValue(cursor12);
+      nativePreview.mockReset().mockResolvedValueOnce(original).mockResolvedValueOnce({ ...original,
+        previewStay: { ...original.previewStay, confirmation: '98765-1' }, previewDigest: freshDigest });
+      nativeCommit.mockClear();
+      renderCloud();
+      await pressFind();
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+      fireEvent.change(await screen.findByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+      await screen.findByText('Nava could not confirm the cancellation details. Check the booking in HMS.');
+      expect(nativeCommit).not.toHaveBeenCalled();
+
+      cleanup();
+      flush.mockReset().mockResolvedValueOnce(cursor11).mockResolvedValue(cursor12);
+      nativePreview.mockReset().mockResolvedValueOnce(original).mockRejectedValueOnce(new Error('preview failed'));
+      nativeCommit.mockClear();
+      renderCloud();
+      await pressFind();
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+      fireEvent.change(await screen.findByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+      await screen.findByText('Could not check the saved changes. Nothing was cancelled; try again.');
+      expect(nativeCommit).not.toHaveBeenCalled();
+
+      cleanup();
+      flush.mockReset().mockResolvedValueOnce(cursor11).mockResolvedValue(cursor12);
+      nativePreview.mockReset().mockResolvedValueOnce(original).mockResolvedValueOnce({ ...original, previewDigest: freshDigest });
+      nativeCommit.mockReset().mockRejectedValue(new Error('write outcome unknown'));
+      renderCloud();
+      await pressFind();
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+      fireEvent.change(await screen.findByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+      await screen.findByText('HMS may have cancelled this booking. Check HMS before trying again.');
+      expect(nativeCommit).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole('button', { name: 'Cancel booking in HMS' })).toBeNull();
+
+      cleanup();
+      flush.mockReset().mockResolvedValueOnce(cursor11).mockResolvedValue(cursor12);
+      nativePreview.mockReset().mockResolvedValueOnce(original).mockImplementationOnce(() =>
+        new Promise<CancelRun>((resolve) => { finishRefresh = resolve; }));
+      nativeCommit.mockReset();
+      findStay.mockReset().mockResolvedValueOnce(unpaidFound({ arrival: CANCEL_ARRIVAL, departure: CANCEL.departure ?? '' }, []))
+        .mockImplementationOnce(() => new Promise(() => {}));
+      renderCloud();
+      await pressFind();
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+      fireEvent.change(await screen.findByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+      await waitFor(() => expect(nativePreview).toHaveBeenCalledTimes(2));
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh HMS lookup' }));
+      await waitFor(() => expect(findStay).toHaveBeenCalledTimes(2));
+      await act(async () => finishRefresh({ ...original, previewDigest: freshDigest }));
+      expect(nativeCommit).not.toHaveBeenCalled();
+
+      cleanup();
+      flush.mockReset().mockResolvedValueOnce(cursor11).mockResolvedValue(cursor12);
+      nativePreview.mockReset().mockResolvedValueOnce(original).mockImplementationOnce(() =>
+        new Promise<CancelRun>((resolve) => { finishRefresh = resolve; }));
+      nativeCommit.mockReset();
+      findStay.mockReset().mockResolvedValue(unpaidFound({ arrival: CANCEL_ARRIVAL, departure: CANCEL.departure ?? '' }, []));
+      renderCloud();
+      await pressFind();
+      fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+      fireEvent.change(await screen.findByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
+      await waitFor(() => expect(nativePreview).toHaveBeenCalledTimes(2));
+      setMailCacheScope({ userId: 'another-user', activeTransportId: 't1' });
+      await act(async () => finishRefresh({ ...original, previewDigest: freshDigest }));
+      expect(nativeCommit).not.toHaveBeenCalled();
+      await screen.findByText('Nava could not check the previous cancellation. Check HMS before trying again.');
+    } finally { setMailCacheScope(previousScope); }
+  }, 30000);
 
   it('does not carry a preview over to another booking picked from the name search', async () => {
     capabilities.paneSave = true;
@@ -1765,7 +2027,7 @@ describe('AmendLookupPanel cancel from the pane', () => {
     expect(screen.queryByRole('button', { name: 'Cancel booking in HMS' })).toBeNull();
   }, 15_000);
 
-  it('says so when HMS shows no cancellation fee', async () => {
+  it('asks staff to check any cancellation charge when none was shown', async () => {
     capabilities.paneSave = true;
     const preview = vi.fn().mockResolvedValue({ ...PREVIEW_OK, penaltyText: null });
     await renderCancel({ preview });
@@ -1773,10 +2035,10 @@ describe('AmendLookupPanel cancel from the pane', () => {
     fireEvent.change(await screen.findByLabelText('Cancellation reason'), {
       target: { value: 'Duplicate Booking' },
     });
-    expect(screen.getByText('HMS showed no cancellation fee.')).toBeTruthy();
+    expect(screen.getByText('Check any cancellation charge in HMS.')).toBeTruthy();
     expect(
       screen.getByText(
-        "Nava will cancel 57291630-1 for Thabo Mokoena. HMS showed no cancellation fee. This can't be undone from here.",
+        "Nava will cancel 57291630-1 for Thabo Mokoena. Check any cancellation charge in HMS. This can't be undone from here.",
       ),
     ).toBeTruthy();
   });
@@ -2121,5 +2383,163 @@ describe('AmendLookupPanel amend form', () => {
     expect(await screen.findByTestId('amend-check-banner')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Preview' })).toBeNull();
     expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('reviews the selected HMS booking and keeps a submitted run visible after editing', async () => {
+    capabilities.paneSave = true;
+    capabilities.paneSaveMode = 'lab';
+    const preview = vi.fn(), commit = vi.fn(), findStay = vi.fn().mockResolvedValue(found({
+      guaranteeType: 'Guaranteed By Agent', depositReceived: '20',
+    }));
+    const trpc = amendTrpc(findStay, preview, commit);
+    const session = sessionWith({ ...AMEND, requestedArrival: '2026-10-13', requestedDeparture: '2026-10-15' });
+    session.binding = { ...session.binding!, internetMessageId: '<one@example.test>' };
+    const panel = render(<AmendLookupPanel session={session} trpc={trpc} readOnlyAmend={{ propertyCode: 'HRCEN', selectionCurrent: true,
+      ratePlans: [{ code: 'CORP', name: 'Corporate', board: 'bed_breakfast' }] }} />);
+    await pressFind();
+    const form = await screen.findByTestId('amend-form');
+    expect(screen.queryByTestId('amend-payment-banner')).toBeNull();
+    fireEvent.change(within(form).getByLabelText('Requested adults'), { target: { value: '3' } });
+    fireEvent.change(within(form).getByLabelText('Requested children'), { target: { value: '1' } });
+    fireEvent.change(within(form).getByLabelText('Requested child ages'), { target: { value: '6' } });
+    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'corpor' } });
+    fireEvent.click(screen.getByRole('button', { name: 'CORP · Corporate' }));
+    fireEvent.change(screen.getByLabelText('Retain the current rate?'), { target: { value: 'yes' } });
+    expect((within(form).getByLabelText('Requested adults') as HTMLInputElement).value).toBe('3');
+    expect((within(form).getByLabelText('Requested child ages') as HTMLInputElement).value).toBe('6');
+    expect((screen.getByLabelText('Rate plan') as HTMLInputElement).value).toBe('CORP');
+    expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
+      { name: 'Yes', selected: true })).toBeTruthy();
+    expect(screen.getByText(/new total cannot be verified while retaining rates/i)).toBeTruthy();
+    expect((screen.getByLabelText('Send HMS confirmation') as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByRole('button', { name: /^(Preview|Approve)$/ })).toBeNull();
+    expect(trpc.queueFind).toHaveBeenCalledWith(expect.objectContaining({ threadId: THREAD, messageId: 'msg-1' }),
+      { context: { activeTransportId: 't1' } });
+    expect(preview).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+    const callsBeforeRefresh = trpc.queueFind.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh HMS lookup' }));
+    await waitFor(() => expect(trpc.queueFind).toHaveBeenCalledTimes(callsBeforeRefresh + 1));
+    expect(trpc.queueFind).toHaveBeenLastCalledWith(expect.objectContaining({ threadId: THREAD, messageId: 'msg-1',
+      sourceHash: 'a'.repeat(64), confirmation: CONFIRMATION, arrival: AMEND.arrival }),
+      { context: { activeTransportId: 't1' } });
+    await waitFor(() => expect((screen.getByLabelText('Requested adults') as HTMLInputElement).value).toBe('3'));
+    expect((screen.getByLabelText('Requested child ages') as HTMLInputElement).value).toBe('6');
+    expect((screen.getByLabelText('Rate plan') as HTMLInputElement).value).toBe('CORP');
+    expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
+      { name: 'Yes', selected: true })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Retain the current rate?'), { target: { value: 'no' } });
+    expect(preview).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+
+    const previousScope = getMailCacheScope();
+    setMailCacheScope({ userId: 'user-1', activeTransportId: 't1' });
+    try {
+      let stored: { status: string; formDigest: string; form: Record<string, unknown>; before: Record<string, unknown>;
+        snapshot: { readAt: string; stale: boolean }; grant: null;
+        run: { runId: string; state: string; failureClass: null; lastError: null; evidence: []; reviewed: null } | null;
+        needsCheck: boolean } | null = null;
+      const pendingGo: { finish?: () => void } = {};
+      const nextRun = () => {
+        if (stored) stored.run = { runId: 'c2cd7d45-2784-4b6c-a835-6df0f885bd6d', state: 'succeeded',
+          failureClass: null, lastError: null, evidence: [], reviewed: null };
+      };
+      const state = vi.fn(async () => stored ?? { form: {}, run: null });
+      const review = vi.fn().mockResolvedValue({ runId: RUN_ID, status: 'done' });
+      const cloud = { ...trpc, hmsApproval: {
+        cloudAmendReady: { query: vi.fn().mockResolvedValue({ ready: true }) },
+        bindCloudAmend: { mutate: vi.fn(async (request: CloudAmendRequest) => {
+          stored = { status: 'needs_you', formDigest: DIGEST, form: { action: 'amend', confirmation: request.confirmation,
+            arrival: request.arrival, fields: request.changes, cloudAmend: { bound: true,
+              approvedPrices: { version: 2, currency: 'ZAR', totalCents: '10000', options: [] },
+              preserved: { agency: null, organization: null } } }, before: { fields: {} },
+          snapshot: { readAt: AS_OF, stale: false }, grant: null,
+          run: { runId: 'b0f24507-0c25-4c82-a929-bc3ce167d3ef', state: 'failed', failureClass: null,
+            lastError: null, evidence: [], reviewed: null }, needsCheck: false };
+          return { status: 'bound', formDigest: DIGEST, previewDigest: DIGEST, readAt: AS_OF };
+        }) },
+        cloudAmendState: { query: state },
+        approveCloudAmend: { mutate: vi.fn(() => new Promise((resolve) => {
+          pendingGo.finish = () => {
+            if (stored) stored.run = { runId: RUN_ID, state: 'succeeded', failureClass: null,
+              lastError: null, evidence: [], reviewed: null };
+            resolve({ grantId: RUN_ID, runId: RUN_ID, hmsReadAt: AS_OF, expiresAt: AS_OF });
+          };
+        })) },
+        reviewCloudAmend: { mutate: review }, cloudAmendEvidence: { query: vi.fn() },
+      } };
+      panel.rerender(<AmendLookupPanel session={session} trpc={cloud} workItemId={RUN_ID} readOnlyAmend={{
+        propertyCode: 'HRCEN', selectionCurrent: true, ratePlans: [{ code: 'CORP', name: 'Corporate', board: 'bed_breakfast' }],
+      }} />);
+      await pressFind();
+      fireEvent.change(await screen.findByLabelText('Confirmation recipient'), { target: { value: 'guest@example.test' } });
+      fireEvent.click(await screen.findByRole('button', { name: 'Review change for approval' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Approve again' }));
+      await waitFor(() => expect(pendingGo.finish).toBeDefined());
+      const readsBeforeEdit = state.mock.calls.length;
+      fireEvent.change(screen.getByLabelText('Requested adults'), { target: { value: '2' } });
+      await waitFor(() => expect(state.mock.calls.length).toBeGreaterThan(readsBeforeEdit));
+      await screen.findByText(/Nothing was confirmed in HMS/);
+      pendingGo.finish?.();
+      fireEvent.click(await screen.findByRole('button', { name: 'Review OK' }, { timeout: 6500 }));
+      await waitFor(() => expect(review).toHaveBeenCalledWith(expect.objectContaining({
+        workItemId: RUN_ID, runId: RUN_ID, decision: 'ok', source: { threadId: THREAD, messageId: 'msg-1', sourceHash: 'a'.repeat(64) },
+      }), expect.anything()));
+      await screen.findByText('HMS write reviewed.');
+      nextRun();
+      fireEvent.click(await screen.findByRole('button', { name: 'Review OK' }, { timeout: 6500 }));
+      await waitFor(() => expect(review).toHaveBeenLastCalledWith(expect.objectContaining({
+        runId: 'c2cd7d45-2784-4b6c-a835-6df0f885bd6d', decision: 'ok',
+      }), expect.anything()));
+    } finally {
+      setMailCacheScope(previousScope);
+    }
+  }, 16000);
+
+  it('clears local choices when the selected email or booking changes', async () => {
+    const findStay = vi.fn(async ({ confirmation }: { confirmation: string }) => unpaidFound({ confirmation }));
+    const trpc = amendTrpc(findStay, vi.fn(), vi.fn());
+    const options = { propertyCode: 'HRCEN' as const, selectionCurrent: true,
+      ratePlans: [{ code: 'CORP', name: 'Corporate', board: 'bed_breakfast' as const }] };
+    const makeSession = (confirmation: string, messageId: string, epoch: number) => {
+      const session = sessionWith({ ...AMEND, confirmationNumber: confirmation,
+        requestedArrival: '2026-10-13', requestedDeparture: '2026-10-15' });
+      session.binding = { ...session.binding!, entryId: `entry-${epoch}`, selectionEpoch: epoch,
+        internetMessageId: `<${messageId}@example.test>` };
+      session.staffSource = { ...session.staffSource!, messageId, sourceHash: (epoch === 7 ? 'a' : 'b').repeat(64) };
+      return session;
+    };
+    const view = render(<AmendLookupPanel session={makeSession(CONFIRMATION, 'msg-1', 7)} trpc={trpc} readOnlyAmend={options} />);
+    await pressFind();
+    fireEvent.change(await screen.findByLabelText('Requested adults'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'CORP' } });
+    fireEvent.change(screen.getByLabelText('Retain the current rate?'), { target: { value: 'yes' } });
+
+    view.rerender(<AmendLookupPanel session={makeSession(CONFIRMATION, 'msg-2', 8)} trpc={trpc} readOnlyAmend={options} />);
+    await pressFind();
+    expect((await screen.findByLabelText('Requested adults') as HTMLInputElement).value).toBe('1');
+    expect((screen.getByLabelText('Rate plan') as HTMLInputElement).value).toBe('BAR');
+    expect(within(screen.getByLabelText('Retain the current rate?')).getByRole('option',
+      { name: 'No', selected: true })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'CORP' } });
+
+    view.rerender(<AmendLookupPanel session={makeSession('57291631-1', 'msg-2', 8)} trpc={trpc} readOnlyAmend={options} />);
+    await pressFind();
+    expect((await screen.findByLabelText('Requested adults') as HTMLInputElement).value).toBe('1');
+    expect((screen.getByLabelText('Rate plan') as HTMLInputElement).value).toBe('BAR');
+  });
+
+  it('hides the local editor when its selected email is no longer current', async () => {
+    const findStay = vi.fn().mockResolvedValue(unpaidFound());
+    const session = sessionWith({ ...AMEND, requestedDeparture: '2026-10-15' });
+    session.binding = { ...session.binding!, internetMessageId: '<one@example.test>' };
+    const trpc = amendTrpc(findStay, vi.fn(), vi.fn());
+    const options = { propertyCode: 'HRCEN' as const, selectionCurrent: true, ratePlans: [] };
+    const view = render(<AmendLookupPanel session={session} trpc={trpc} readOnlyAmend={options} />);
+    await pressFind();
+    expect(await screen.findByLabelText('Requested adults')).toBeTruthy();
+    view.rerender(<AmendLookupPanel session={session} trpc={trpc} readOnlyAmend={{ ...options, selectionCurrent: false }} />);
+    expect(screen.queryByLabelText('Requested adults')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Find this booking in HMS' }).hasAttribute('disabled')).toBe(true);
   });
 });

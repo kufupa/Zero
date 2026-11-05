@@ -7,8 +7,10 @@ import {
   unchangedLabtestBusinessParties,
   unchangedLabtestRecord,
 } from './labtest-record.mjs';
+import { blankSavedPartyFields } from './labtest-party-fields.mjs';
 import { installLabtestSaveRouteChain as installLabtestContactSaveRouteChain } from './saved-stay-save-route-chain.mjs';
 import { labtestAmendOutcome as contactAmendOutcome, runLabtestAmendSave } from './labtest-amend-save.mjs';
+import { isLabtestAmendStageContext } from './labtest-amend-save.mjs';
 export { installLabtestContactSaveRouteChain };
 export { contactAmendOutcome };
 
@@ -19,6 +21,59 @@ const CONTACT_FIELDS = Object.freeze({
   bookerContact: Object.freeze({ name: 'udfchar06', label: 'Booker Contact' }),
 });
 const CONTACT_FIELD_NAMES = new Set(Object.values(CONTACT_FIELDS).map(({ name }) => name));
+const PRESERVED_BUSINESS_FIELDS = ['status', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
+  'roomtype', 'rateplan', 'adults', 'children', 'child1', 'child2', 'child3', 'childages',
+  'track', 'guaranteetype', 'reservationnote', 'emailaddress', 'udfchkbox04', 'udfchar09',
+  'udfchar13', 'caller', 'udfchar06', ...blankSavedPartyFields];
+
+/** Stage requested guest, booker and CMS fields in the already fenced saved form. */
+export async function stageSavedGuestFieldsForComposition(context, changes) {
+  if (!isLabtestAmendStageContext(context) || !context.isActive()) throw new Error('AMEND_STAGE_NOT_ACTIVE');
+  const specs = { firstName: 'firstname', lastName: 'lastname', guestEmail: 'emailaddress',
+    bookerName: 'caller', bookerContact: 'udfchar06', cmsMessageId: 'udfchar09', cmsRecipient: 'udfchar13' };
+  for (const [key, name] of Object.entries(specs)) {
+    if (!Object.hasOwn(changes, key)) continue;
+    const value = changes[key];
+    if (typeof value !== 'string' || value.length > 1000 || /[\p{Cc}]/u.test(value)) throw new Error('CONTACT_VALUE_INVALID');
+    const control = context.frame.locator(`input[name="${name}"]:visible,textarea[name="${name}"]:visible`);
+    if (await control.count() !== 1) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
+    const changed = await control.evaluate((element, next) => {
+      const cmp = globalThis.Ext?.getCmp?.(element.id.replace(/-inputEl$/, ''));
+      const guests = [...document.querySelectorAll('input[name="guestid"]')].filter((node) =>
+        (node.offsetWidth || node.offsetHeight) && getComputedStyle(node).visibility !== 'hidden' && !node.closest('.x-window'));
+      const panel = guests.length === 1 ? globalThis.Ext?.getCmp?.(guests[0].id.replace(/-inputEl$/, ''))?.up?.('form') : null;
+      if (!panel?.el?.dom?.contains(element) || cmp?.up?.('form') !== panel || !cmp?.getValue) return false;
+      if (String(cmp.getValue() ?? '') === next && element.value === next) return true;
+      if (!cmp.setValue || element.disabled || element.readOnly || cmp.readOnly || cmp.isDisabled?.()) return false;
+      cmp.setValue(next);
+      cmp.fireEvent?.('blur', cmp);
+      return String(cmp.getValue() ?? '') === next && element.value === next;
+    }, value);
+    if (!changed || !context.isActive()) throw new Error('CONTACT_EDIT_UNVERIFIED');
+    await control.blur();
+    if (!context.isActive()) throw new Error('CONTACT_EDIT_UNVERIFIED');
+  }
+  if (Object.hasOwn(changes, 'cmsSend')) {
+    const control = context.frame.locator('input[name="udfchkbox04"]:visible');
+    if (typeof changes.cmsSend !== 'boolean' || await control.count() !== 1) throw new Error('CMS_CONTROL_UNAVAILABLE');
+    const before = await control.evaluate((element) => globalThis.Ext?.getCmp?.(element.id.replace(/-inputEl$/, ''))?.getValue?.());
+    if (typeof before !== 'boolean') throw new Error('CMS_CONTROL_UNAVAILABLE');
+    if (before !== changes.cmsSend) await control.click({ timeout: 5000 });
+    const after = await control.evaluate((element) => globalThis.Ext?.getCmp?.(element.id.replace(/-inputEl$/, ''))?.getValue?.());
+    if (after !== changes.cmsSend || !context.isActive()) throw new Error('CMS_EDIT_UNVERIFIED');
+  }
+  const synced = await context.frame.evaluate(() => {
+    const guests = [...document.querySelectorAll('input[name="guestid"]')].filter((node) =>
+      (node.offsetWidth || node.offsetHeight) && getComputedStyle(node).visibility !== 'hidden' && !node.closest('.x-window'));
+    const panel = guests.length === 1 ? globalThis.Ext?.getCmp?.(guests[0].id.replace(/-inputEl$/, ''))?.up?.('form') : null;
+    const record = panel?.getRecord?.();
+    if (!record || typeof panel.updateRecord !== 'function') return false;
+    panel.updateRecord(record);
+    return true;
+  });
+  if (!synced || !context.isActive()) throw new Error('CONTACT_EDIT_UNVERIFIED');
+  return snapshotLabtestRecord(context.frame);
+}
 
 function uniqueSnapshotField(snapshot, name) {
   const read = (source) => {
@@ -108,7 +163,16 @@ export function matchesLabtestContactAmendDraft(before, after, field, value) {
 export function matchesLabtestBookerContactDraft(before, after, changes) {
   return validContactChanges(changes) &&
     Object.entries(changes).every(([name, value]) => after?.values?.[name] === value) &&
-    unchangedLabtestRecord(before, after, changes);
+    unchangedLabtestRecord(before, after, changes) &&
+    ['values', 'data'].every((part) => PRESERVED_BUSINESS_FIELDS.every((name) => {
+      if (Object.hasOwn(changes, name)) return true;
+      const previous = before?.[part], current = after?.[part];
+      if (!previous || !current) return false;
+      const matches = Object.keys(current).filter((key) => key.toLowerCase() === name.toLowerCase());
+      if (matches.length > 1 || (matches.length === 1 && matches[0] !== name)) return false;
+      return Object.hasOwn(previous, name) === Object.hasOwn(current, name) &&
+        JSON.stringify(previous[name]) === JSON.stringify(current[name]);
+    }));
 }
 
 async function editableContactField(frame, snapshot, spec, value) {

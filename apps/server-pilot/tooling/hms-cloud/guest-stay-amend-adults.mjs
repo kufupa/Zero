@@ -7,7 +7,9 @@ import {
   unchangedLabtestBusinessParties,
   unchangedLabtestRecord,
 } from './labtest-record.mjs';
-import { runLabtestAmendSave } from './labtest-amend-save.mjs';
+import { blankSavedPartyFields } from './labtest-party-fields.mjs';
+import { isLabtestAmendStageContext, runLabtestAmendSave } from './labtest-amend-save.mjs';
+import { savedChildOccupancy } from './guest-stay-amend-children.mjs';
 
 const MAX_ADULTS = 16;
 const EFFECT_KIND = Object.freeze({
@@ -95,7 +97,7 @@ function normalizedAmount(value) {
   return decimals ? integer + '.' + decimals : integer;
 }
 
-function matchesObservedEffect(before, after, name) {
+export function matchesObservedAdultEffect(before, after, name) {
   const kind = Object.hasOwn(EFFECT_KIND, name) ? EFFECT_KIND[name] : null;
   const oldModel = field(before, 'data', name), newModel = field(after, 'data', name);
   const oldForm = field(before, 'values', name), newForm = field(after, 'values', name);
@@ -139,7 +141,7 @@ function wireDate(value) {
 
 function previewTargetMatches(expected, snapshot) {
   const required = {
-    propertycode: 'HRCEN', status: 'Reserved', firstname: 'Proof', lastname: 'Labtest',
+    propertycode: 'HRCEN', status: 'Reserved', firstname: expected?.firstName ?? 'Proof', lastname: expected?.lastName ?? 'Labtest',
     confirmationnumber: expected?.confirmation, guestid: expected?.guestId,
     arrivaldate: wireDate(expected?.arrival), departuredate: wireDate(expected?.departure),
     roomtype: expected?.roomType, rateplan: expected?.ratePlan, reservationnote: expected?.note,
@@ -181,17 +183,14 @@ export function labtestAdultAmendDraftDelta(before, after, adults) {
     changed.add(name);
   }
   const changedFields = [...changed].sort();
-  const approved = changedFields.filter((name) => name === 'adults' || matchesObservedEffect(before, after, name));
+  const approved = changedFields.filter((name) => name === 'adults' || matchesObservedAdultEffect(before, after, name));
   const unapprovedFields = changedFields.filter((name) => !approved.includes(name));
   const formChanges = approved.filter((name) => {
     const oldForm = field(before, 'values', name), newForm = field(after, 'values', name);
     return newForm?.present === true && (oldForm?.present !== true || !same(oldForm.value, newForm.value));
   });
   const bodyChanges = Object.fromEntries(formChanges.map((name) => [name, String(after.values[name] ?? '')]));
-  const allowedChanges = Object.fromEntries(approved.map((name) => [name,
-    String(formChanges.includes(name) ? after.values[name] ?? '' : after.data[name] ?? ''),
-  ]));
-  if (!unchangedLabtestRecord(before, after, allowedChanges)) unapprovedFields.push('snapshot');
+  if (!unchangedLabtestRecord(before, after, { adults: String(adults) })) unapprovedFields.push('snapshot');
   unapprovedFields.sort();
   const nativeSideEffects = approved.filter((name) => name !== 'adults').map((name) => summarizeEffect(before, after, name));
   return {
@@ -249,7 +248,7 @@ async function selectAdultOption(frame, baseline, requested, commit, assertActiv
   if (await input.count() !== 1) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
   // The shared lifecycle can time out while the locator count is pending.
   assertActive();
-  const outcome = await input.evaluate((element, { beforeAdult, adults, commitChange, preimage, deadline }) => {
+  const outcome = await input.evaluate((element, { beforeAdult, adults, commitChange, preimage, deadline, partyFields }) => {
     const component = globalThis.Ext?.getCmp?.(element.id?.replace(/-inputEl$/, ''));
     const guestInputs = [...document.querySelectorAll('input[name="guestid"]')].filter((item) =>
       Boolean((item.offsetWidth || item.offsetHeight) && getComputedStyle(item).visibility !== 'hidden'));
@@ -282,27 +281,19 @@ async function selectAdultOption(frame, baseline, requested, commit, assertActiv
     const target = targets[0];
     const record = form.getRecord?.();
     if (!record || typeof form.updateRecord !== 'function' || typeof record.set !== 'function') return 'ADULT_EDIT_UNVERIFIED';
-    // updateRecord copies the form into the native model. Recheck both complete
-    // preimages in this same browser turn, immediately before any mutation.
-    const equal = (a, b, ancestors = new Set()) => {
-      if (Object.is(a, b)) return true;
-      if (!a || !b || typeof a !== 'object' || typeof b !== 'object' ||
-          Array.isArray(a) !== Array.isArray(b) || ancestors.has(a)) return false;
-      const tag = Object.prototype.toString.call(a);
-      if (tag !== Object.prototype.toString.call(b) || !['[object Object]', '[object Array]'].includes(tag) ||
-          (Array.isArray(a) && a.length !== b.length)) return false;
-      const keys = Object.keys(a), otherKeys = Object.keys(b);
-      if (keys.length !== otherKeys.length || keys.some((key) => !Object.hasOwn(b, key))) return false;
-      ancestors.add(a);
-      try { return keys.every((key) => equal(a[key], b[key], ancestors)); }
-      finally { ancestors.delete(a); }
-    };
-    const nativeForm = form.getForm?.();
-    if (record.dirty !== false || Object.keys(record.modified || {}).length ||
-        typeof nativeForm?.isDirty !== 'function' || nativeForm.isDirty() ||
-        !equal(record.data, preimage.data) || !equal(nativeForm.getValues?.(), preimage.values)) {
-      return 'ADULT_PREIMAGE_UNVERIFIED';
-    }
+    // Check the selected record and business fields immediately before editing.
+    const nativeForm = form.getForm?.(), data = record.data;
+    const business = ['propertycode', 'confirmationnumber', 'guestid', 'reservationstayid', 'reservationid',
+      'recordid', 'status', 'firstname', 'lastname', 'arrivaldate', 'departuredate', 'roomtype', 'rateplan',
+      'adults', 'children', 'child1', 'child2', 'child3', 'childages', 'track', 'guaranteetype',
+      'reservationnote', 'emailaddress', 'udfchkbox04', 'udfchar09', 'udfchar13', 'caller', 'udfchar06',
+      ...partyFields];
+    const values = nativeForm?.getValues?.();
+    const unchanged = (before, after, name) => before && after &&
+      Object.hasOwn(before, name) === Object.hasOwn(after, name) &&
+      JSON.stringify(before[name]) === JSON.stringify(after[name]);
+    if (!data || !values || business.some((name) => !unchanged(preimage.data, data, name) ||
+      !unchanged(preimage.values, values, name))) return 'ADULT_PREIMAGE_UNVERIFIED';
     if (!commitChange) return true;
     // Compare in the browser's own monotonic clock, not Node's wall clock.
     if (performance.now() >= deadline) return 'AMEND_TIMEOUT';
@@ -316,9 +307,43 @@ async function selectAdultOption(frame, baseline, requested, commit, assertActiv
     const actual = value && typeof value === 'object' ? read(value, valueField) : value;
     return String(actual ?? '') === String(adults) && element.value === target.label ? true : 'ADULT_EDIT_UNVERIFIED';
   }, { beforeAdult: adultValue(baseline), adults: requested, commitChange: commit,
-    preimage: { data: baseline.data, values: baseline.values }, deadline: deadlineAt });
+    preimage: { data: baseline.data, values: baseline.values }, deadline: deadlineAt, partyFields: blankSavedPartyFields });
   if (outcome !== true) throw new Error(typeof outcome === 'string' ? outcome : 'ADULT_EDIT_UNVERIFIED');
   return input;
+}
+
+/** Stage an adult change inside the shared, still-active saved-stay request fence. */
+export async function stageSavedAdultForComposition(context, expected, adults) {
+  const active = () => {
+    if (!isLabtestAmendStageContext(context) || !context.isActive() || context.remainingMs() <= 0) {
+      throw new Error('AMEND_STAGE_NOT_ACTIVE');
+    }
+  };
+  active();
+  if (!isAdultCount(expected?.adults) || !isAdultCount(adults) || adults === expected.adults ||
+      !context.baseline || !context.frame) throw new Error('ADULT_COUNT_INVALID');
+  const before = await snapshotLabtestRecord(context.frame);
+  active();
+  if (!cleanLabtestRecord(before) || !previewTargetMatches(expected, before) ||
+      adultValue(before) !== String(expected.adults)) {
+    throw new Error('ADULT_PREIMAGE_UNVERIFIED');
+  }
+  const browserNow = await context.frame.evaluate(() => performance.now());
+  active();
+  if (!Number.isFinite(browserNow)) throw new Error('BROWSER_CLOCK_UNAVAILABLE');
+  const deadline = browserNow + context.remainingMs();
+  await selectAdultOption(context.frame, before, adults, false, active, deadline);
+  active();
+  await selectAdultOption(context.frame, before, adults, true, active, deadline);
+  active();
+  const after = await snapshotLabtestRecord(context.frame);
+  active();
+  const delta = labtestAdultAmendDraftDelta(before, after, adults);
+  const previousChildren = savedChildOccupancy(before), currentChildren = savedChildOccupancy(after);
+  if (!previewTargetMatches(expected, after) || adultValue(after) !== String(adults) ||
+      !previousChildren.valid || !currentChildren.valid || previousChildren.count !== currentChildren.count ||
+      !same(previousChildren.ages, currentChildren.ages)) throw new Error('AMEND_DRAFT_CHANGED');
+  return { snapshot: after, delta };
 }
 
 /**

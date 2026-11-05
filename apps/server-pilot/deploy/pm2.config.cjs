@@ -6,16 +6,22 @@ const path = require('node:path');
  * computes from its own module URL, so warmed files are hits for the pane.
  */
 const LUNA_ANALYSE_CACHE_DIR = path.resolve(__dirname, '..', '.private', 'luna-analyse-cache');
+// A claimed HMS write may take up to 25 minutes. Allow its shutdown and
+// cleanup to finish before PM2 resorts to SIGKILL.
+const SHUTDOWN_TIMEOUT_MS = 30 * 60_000;
 
 /** @type {import('pm2').StartOptions} */
 module.exports = {
   apps: [
     {
       name: 'http',
-      script: 'dist/main.js',
+      script: 'deploy/start-guarded-server.sh',
+      interpreter: '/bin/bash',
+      args: 'http',
       cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
       instances: 1,
       exec_mode: 'fork',
+      kill_timeout: SHUTDOWN_TIMEOUT_MS,
       autorestart: true,
       min_uptime: 10_000,
       max_restarts: 10,
@@ -36,6 +42,7 @@ module.exports = {
       cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
       instances: 1,
       exec_mode: 'fork',
+      kill_timeout: SHUTDOWN_TIMEOUT_MS,
       autorestart: true,
       min_uptime: 10_000,
       max_restarts: 10,
@@ -49,10 +56,13 @@ module.exports = {
     },
     {
       name: 'worker',
-      script: 'dist/mail/ingest/worker.js',
+      script: 'deploy/start-guarded-server.sh',
+      interpreter: '/bin/bash',
+      args: 'worker',
       cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
       instances: 1,
       exec_mode: 'fork',
+      kill_timeout: SHUTDOWN_TIMEOUT_MS,
       autorestart: true,
       min_uptime: 10_000,
       max_restarts: 10,
@@ -63,10 +73,13 @@ module.exports = {
     },
     {
       name: 'ai-worker',
-      script: 'dist/ai/worker.js',
+      script: 'deploy/start-guarded-server.sh',
+      interpreter: '/bin/bash',
+      args: 'ai-worker',
       cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
       instances: 1,
       exec_mode: 'fork',
+      kill_timeout: SHUTDOWN_TIMEOUT_MS,
       autorestart: true,
       min_uptime: 10_000,
       max_restarts: 10,
@@ -89,11 +102,12 @@ module.exports = {
       // Child-only HMS_EVIDENCE_HMAC_KEY via asm-exec resolve arg (never in env/config).
       name: 'hms-ai-worker',
       script: '/usr/local/bin/asm-exec',
-      args: '-- /usr/bin/env HMS_EVIDENCE_HMAC_KEY={{resolve:secretsmanager:nava-zero/server-pilot/hms-evidence-hmac}} /usr/bin/node dist/ai/worker.js',
+      args: '-- /usr/bin/env HMS_EVIDENCE_HMAC_KEY={{resolve:secretsmanager:nava-zero/server-pilot/hms-evidence-hmac}} /bin/bash deploy/start-guarded-server.sh ai-worker',
       interpreter: 'none',
       cwd: '/home/ubuntu/repos/zero/apps/server-pilot',
       instances: 1,
       exec_mode: 'fork',
+      kill_timeout: SHUTDOWN_TIMEOUT_MS,
       autorestart: false,
       min_uptime: 10_000,
       max_restarts: 0,
