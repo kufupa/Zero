@@ -10,7 +10,7 @@ function snapshot(id: string): AmendDraftSnapshot {
   return {
     workItemId: `work-${id}`, revisionSeq: 0, fieldMeta: {},
     source: { threadId: `thread-${id}`, messageId: `mail-${id}`, sourceHash: id, extractionId: `extract-${id}` },
-    requests: [{ requestId: `request-${id}`, stayId: 'stay', fields: { kind: 'amend', value: {
+    requests: [{ requestId: `request-${id}`, stayId: 'stay', action: 'amend', workflow: 'amend', status: 'pending', fields: { kind: 'amend', value: {
       target: null, arrival: null, departure: null, adults: null, children: null, childAges: null,
       roomType: null, ratePlan: null, retainRates: null, firstName: null, lastName: null, guestEmail: null,
       bookerName: null, bookerContact: null, cms: { send: null, messageId: null, recipient: null },

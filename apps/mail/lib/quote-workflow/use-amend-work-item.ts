@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
-import { workItemsFromTrpc, type AmendDraftSnapshot, type RecordFieldEventInput } from './backend-bind';
+import { selectedAmendRequest, workItemsFromTrpc, type AmendDraftSnapshot, type RecordFieldEventInput } from './backend-bind';
 
 export type AmendDraftField = 'target' | 'arrival' | 'departure' | 'adults' | 'children' | 'childAges' | 'roomType' |
   'ratePlan' | 'retainRates' | 'firstName' | 'lastName' | 'guestEmail' | 'bookerName' | 'bookerContact' |
@@ -22,7 +22,7 @@ export function useAmendWorkItem(args: {
   refs.current = args;
   const sessions = useRef(new Map<string, Session>());
   const [, render] = useState(0);
-  const request = args.snapshot?.requests.length === 1 ? args.snapshot.requests[0] : null;
+  const request = selectedAmendRequest(args.snapshot);
   const key = args.snapshot && request && args.transportId
     ? JSON.stringify([args.transportId, args.snapshot.workItemId, args.snapshot.source, request.requestId]) : null;
   let session = key ? sessions.current.get(key) ?? null : null;
@@ -54,7 +54,8 @@ export function useAmendWorkItem(args: {
         const { threadId, messageId, sourceHash } = item.snapshot.source;
         try {
           const input: RecordFieldEventInput = { workItemId: item.snapshot.workItemId, type: 'field.edit',
-            fieldPath: path, value: entry.value, source: { threadId, messageId, sourceHash }, expectedSeq: item.seq };
+            fieldPath: path, value: entry.value, source: { threadId, messageId, sourceHash }, expectedSeq: item.seq,
+            expectedExtractionId: item.snapshot.source.extractionId };
           const pinned = inMailbox(item.transportId);
           const result = await (pinned ? mutate(input, pinned) : mutate(input));
           const saved = result && typeof result === 'object' ? result as Record<string, unknown> : null;
@@ -75,7 +76,7 @@ export function useAmendWorkItem(args: {
           else try { fresh = await refs.current.reload(item.snapshot, item.transportId); } catch { reloadFailed = true; }
           const same = fresh && fresh.workItemId === item.snapshot.workItemId &&
             JSON.stringify(fresh.source) === JSON.stringify(item.snapshot.source) &&
-            fresh.requests.some((candidate) => candidate.requestId === item.snapshot.requests[0]?.requestId);
+            selectedAmendRequest(fresh)?.requestId === selectedAmendRequest(item.snapshot)?.requestId;
           if (same && fresh) { item.snapshot = fresh; item.seq = fresh.revisionSeq; }
           item.error = reloadFailed ? 'Could not save or reload. Your entries are held here.'
             : same ? 'Draft changed or could not save. Check your entries, then retry.'
@@ -96,7 +97,7 @@ export function useAmendWorkItem(args: {
 
   const record = useCallback((field: AmendDraftField, value: RecordFieldEventInput['value'], valid = true) => {
     if (!session) return;
-    const request = session.snapshot.requests[0];
+    const request = selectedAmendRequest(session.snapshot);
     if (!request) return;
     const structural: Partial<Record<AmendDraftField, string>> = {
       arrival: `stays[${request.stayId}].requested.arrival`, departure: `stays[${request.stayId}].requested.departure`,
@@ -111,7 +112,7 @@ export function useAmendWorkItem(args: {
   }, [session, pump, changed]);
   const flush = useCallback(() => session ? pump(session) : Promise.resolve(false), [session, pump]);
   const binding = useCallback(() => {
-    const request = session?.snapshot.requests[0];
+    const request = selectedAmendRequest(session?.snapshot ?? null);
     return session && request && !session.entries.size && !session.running && !session.error
       ? { requestId: request.requestId, stayId: request.stayId, expectedSeq: session.seq } : null;
   }, [session]);
@@ -122,7 +123,7 @@ export function useAmendWorkItem(args: {
     void refs.current.reload(session.snapshot, session.transportId).then((fresh) => {
       const same = fresh && fresh.workItemId === session.snapshot.workItemId &&
         JSON.stringify(fresh.source) === JSON.stringify(session.snapshot.source) &&
-        fresh.requests.some((candidate) => candidate.requestId === session.snapshot.requests[0]?.requestId);
+        selectedAmendRequest(fresh)?.requestId === selectedAmendRequest(session.snapshot)?.requestId;
       if (!same || !fresh) {
         session.error = 'Email or draft changed. Your unsaved entries are held here.';
         session.retryable = !fresh || currentKey.current !== session.key;

@@ -108,7 +108,7 @@ export type WorkItemPaneControls = {
   resetPending?: boolean;
 };
 
-type HistorySeqCursor = WorkItemHistoryCursor & { seq: number };
+type HistorySeqCursor = WorkItemHistoryCursor & { seq: number; extractionId?: string | null };
 type HistoryMutate = (
   input: { workItemId: string; expectedSeq: number },
   opts?: ReturnType<typeof inMailbox>,
@@ -405,6 +405,7 @@ export function useStoredWork(args: {
   // Every save slot she edited on this screen. A save still pending, failed or retrying has not reached the server yet,
   // so its field is never sent as an accept.
   const edited = useRef(new Set<string>());
+  const editGeneration = useRef(new Map<string, number>());
   const [saveFailed, setSaveFailed] = useState(false);
   // The work item whose translation is being asked for again, so "Translating…" shows for that mail only.
   const [translating, setTranslating] = useState<string | null>(null);
@@ -507,6 +508,7 @@ export function useStoredWork(args: {
 
   const schedule = useCallback(
     (path: string, workItemId: string, transportId: string | null, value: RecordFieldEventInput['value']) => {
+      editGeneration.current.set(workItemId, (editGeneration.current.get(workItemId) ?? 0) + 1);
       const key = saveKey(workItemId, path);
       edited.current.add(key);
       const existing = pending.current.get(key);
@@ -616,6 +618,31 @@ export function useStoredWork(args: {
   const readyRefs = stored?.status === 'ready' ? stored.refs : null;
   const readyWorkItemId = stored?.status === 'ready' ? stored.workItemId : null;
   const readyTransportId = currentLookup?.transportId ?? null;
+
+  const flushSnapshot = useCallback(async (draft: AmendDraftSnapshot, transportId: string) => {
+    if (!readyWorkItemId || draft.workItemId !== readyWorkItemId || !lookupKey ||
+        readyTransportId !== transportId || historyPending || historyNeedsReload) return null;
+    const keyNow = lookupKey;
+    const generation = editGeneration.current.get(draft.workItemId) ?? 0;
+    const active = () => lookupKeyRef.current === keyNow &&
+      (editGeneration.current.get(draft.workItemId) ?? 0) === generation;
+    const unsettled = () => [...pending.current.values(), ...latest.current.values(), ...failed.current.values()]
+      .some((entry) => entry.workItemId === draft.workItemId);
+    flushAll();
+    await Promise.allSettled([...inFlight.current.entries()]
+      .filter(([key]) => key.startsWith(`${draft.workItemId}\n`)).map(([, promise]) => promise));
+    if (!active() || unsettled()) return null;
+    const query = historyRoutesFrom(trpcRef.current).revisionCursor?.query;
+    if (!query) return null;
+    try {
+      const pinned = inMailbox(transportId);
+      const cursor = await (pinned ? query({ workItemId: draft.workItemId }, pinned) : query({ workItemId: draft.workItemId }));
+      if (!active() || unsettled() || cursor.extractionId !== draft.source.extractionId ||
+          !Number.isSafeInteger(cursor.seq) || cursor.seq < 0 || !Number.isSafeInteger(cursor.revision) ||
+          !Number.isSafeInteger(cursor.revisionHead)) return null;
+      return cursor;
+    } catch { return null; }
+  }, [flushAll, historyNeedsReload, historyPending, lookupKey, readyTransportId, readyWorkItemId]);
 
   const retry = useCallback(() => {
     if (!lookupKey) return;
@@ -941,6 +968,7 @@ export function useStoredWork(args: {
     amendRebinding,
     recordGroups,
     recordContact,
+    flushSnapshot,
     reloadAmendDraft,
     reloadRefreshedAmend,
     noteAmendSave: (cursor: HistorySeqCursor) => setHistoryCursor((previous) =>
@@ -968,7 +996,8 @@ export function useStoredWork(args: {
 
 function amendSnapshotOf(stored: StoredWork): AmendDraftSnapshot | null {
   if (stored.status !== 'ready' || stored.draftContractVersion !== 1 || !stored.workItemId ||
-      !stored.source || !Array.isArray(stored.workflowRequests) || !Number.isSafeInteger(stored.revisionSeq) ||
+      !stored.source || stored.workItemExtractionId !== stored.source.extractionId ||
+      !Array.isArray(stored.workflowRequests) || !Number.isSafeInteger(stored.revisionSeq) ||
       (stored.revisionSeq ?? -1) < 0) return null;
   return { workItemId: stored.workItemId, source: stored.source, revisionSeq: stored.revisionSeq!,
     requests: stored.workflowRequests, fieldMeta: stored.draftFieldMeta ?? {} };

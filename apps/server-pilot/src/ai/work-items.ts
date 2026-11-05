@@ -16,7 +16,7 @@ import {
   type SQL,
 } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
-import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
+import { aiWorkflowRun, mailActionLabel, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { sqlList } from '../db/schema/hitl.js';
 import { MESSAGE_ARRIVED_AT, MESSAGE_DELIVERED_AT, OUTLOOK_SYNCED } from './message-arrival-time.js';
 export { MESSAGE_ARRIVED_AT, MESSAGE_DELIVERED_AT, OUTLOOK_SYNCED } from './message-arrival-time.js';
@@ -74,6 +74,7 @@ import {
   amendEmailValue, amendStayForRequest, parseAmendRequestField, projectAmendRequests,
   validAmendRequestValue, type DraftSource,
 } from './pane-amend-draft.js';
+import { parseCancelRequestField, projectCancelRequests, validCancelRequestValue } from './pane-cancel-draft.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
 import { assertCreateDispatchFenceOwner, assertNoCreateDispatchFence, CreateFenceError,
@@ -976,7 +977,7 @@ export function correctionsCarryTo(
   if (before.stays === after.stays) return true;
   // Request ids incorporate the extraction stay id. Never carry a person's
   // request edits onto an independently re-extracted, different stay.
-  if (Object.keys(state).some((key) => parseAmendRequestField(key)) &&
+  if (Object.keys(state).some((key) => parseAmendRequestField(key) || parseCancelRequestField(key)) &&
       (before.stays.length !== after.stays.length ||
         before.stays.some((stay) => !after.stays.some((next) => next.id === stay.id)))) return false;
   for (const key of Object.keys(state)) {
@@ -1871,7 +1872,7 @@ export type StoredWork =
       draftContractVersion?: 1;
       source?: DraftSource & { extractionId: string };
       draftStays?: FormStay[];
-      workflowRequests?: ReturnType<typeof projectAmendRequests>['requests'];
+      workflowRequests?: Array<ReturnType<typeof projectAmendRequests>['requests'][number] | ReturnType<typeof projectCancelRequests>['requests'][number]>;
       draftFieldMeta?: ReturnType<typeof projectAmendRequests>['meta'];
       unappliedEdits?: ReturnType<typeof projectAmendRequests>['unappliedEdits'];
       /** The read's source language (ISO 639-1), or null when unclear. */
@@ -2027,8 +2028,17 @@ async function readyView(
     ? currentSourceText(synced)
     : [msg.subject ?? '', msg.textBody ?? ''].join('\n');
   const draftSource = { threadId: msg.threadId, messageId: msg.id, sourceHash: staffQuoteSourceHash(msg) };
-  const amendDraft = read.kind === 'amendment' && !existingStayInformation
+  const [ownerLabel] = read.kind === 'cancellation' || read.kind === 'amendment'
+    ? await db.select({ action: mailActionLabel.action }).from(mailActionLabel)
+      .where(and(eq(mailActionLabel.transportId, transportId), eq(mailActionLabel.messageId, msg.id),
+        eq(mailActionLabel.source, 'owner'), eq(mailActionLabel.version, 'owner')))
+      .orderBy(desc(mailActionLabel.updatedAt), desc(mailActionLabel.id)).limit(1) : [];
+  const amend = read.kind === 'amendment' && !existingStayInformation
     ? projectAmendRequests(draftSource, read.payload, state) : null;
+  const cancel = (read.kind === 'cancellation' || read.kind === 'amendment') && !existingStayInformation
+    ? projectCancelRequests(draftSource, read.payload, state, ownerLabel?.action, read.kind) : null;
+  const amendDraft = amend || cancel ? { requests: [...(amend?.requests ?? []), ...(cancel?.requests ?? [])],
+    meta: { ...amend?.meta, ...cancel?.meta }, unappliedEdits: amend?.unappliedEdits ?? [] } : null;
   const draftStays = amendDraft ? formStays(read.payload, state).map((stay) => {
     const value = <T>(path: string, fallback: T): T => Object.hasOwn(state, path) ? state[path] as T : fallback;
     return {
@@ -2206,14 +2216,18 @@ export async function recordFieldEvent(
     msSinceOpen?: number;
     source?: DraftSource;
     expectedSeq?: number;
+    expectedExtractionId?: string | null;
   },
 ): Promise<FieldEventResult> {
   const contact = contactFieldOf(input.fieldPath);
-  const request = parseAmendRequestField(input.fieldPath);
+  const amendRequest = parseAmendRequestField(input.fieldPath);
+  const cancelRequest = parseCancelRequestField(input.fieldPath);
+  const request = amendRequest ?? cancelRequest;
   const path = contact || request ? null : parseFieldPath(input.fieldPath);
   if (!contact && !path && !request) return { status: 'invalid_path' };
   const personValue = input.value ?? null;
-  const fits = contact ? validContactValue(personValue) : request ? validAmendRequestValue(request.field, personValue)
+  const fits = contact ? validContactValue(personValue) : cancelRequest && !amendRequest ? validCancelRequestValue(cancelRequest.field, personValue)
+    : amendRequest ? validAmendRequestValue(amendRequest.field, personValue)
     : path !== null && validFieldValue(path.field, personValue);
   if (request && ((input.type === 'field.accept' && input.value !== undefined) ||
       (input.type === 'field.edit' && input.value === undefined))) return { status: 'invalid_value' };
@@ -2235,6 +2249,9 @@ export async function recordFieldEvent(
       .limit(1)
       .for('update');
     if (!item) return { status: 'not_found' as const };
+    if (input.expectedExtractionId !== undefined && input.expectedExtractionId !== item.extractionId) {
+      return { status: 'stale_revision' as const };
+    }
     const [read] = item.extractionId
       ? await tx
           .select({ payload: mailExtraction.payload, version: mailExtraction.extractorVersion })
@@ -2244,7 +2261,7 @@ export async function recordFieldEvent(
       : [];
     const payload = read?.payload as MailExtractionPayload | null | undefined;
     if (request || input.source || input.expectedSeq !== undefined) {
-      if (!input.source || input.expectedSeq === undefined || (request && item.kind !== 'amendment') ||
+      if (!input.source || input.expectedSeq === undefined || (request && item.kind !== 'amendment' && item.kind !== 'cancellation') ||
           input.source.threadId !== item.threadId || input.source.messageId !== item.sourceMessageId) {
         return { status: 'stale_source' as const };
       }
@@ -2258,12 +2275,27 @@ export async function recordFieldEvent(
     if (request) {
       // The common guard above guarantees the source is present here.
       if (!input.source) return { status: 'stale_source' as const };
-      const stay = payload ? amendStayForRequest(input.source, payload, request.requestId) : undefined;
-      if (!stay || !payload) return { status: 'invalid_path' as const };
-      aiValue = request.field === 'target'
-        ? projectAmendRequests(input.source, payload, {}).requests.find((entry) => entry.requestId === request.requestId)
-          ?.fields.value.target ?? null
-        : amendEmailValue(stay, request.field);
+      if (!payload) return { status: 'invalid_path' as const };
+      const [owner] = cancelRequest ? await tx.select({ action: mailActionLabel.action }).from(mailActionLabel)
+        .where(and(eq(mailActionLabel.transportId, input.transportId), eq(mailActionLabel.messageId, input.source.messageId),
+          eq(mailActionLabel.source, 'owner'), eq(mailActionLabel.version, 'owner')))
+        .orderBy(desc(mailActionLabel.updatedAt), desc(mailActionLabel.id)).limit(1) : [];
+      const cancel = cancelRequest ? projectCancelRequests(input.source, payload, item.state, owner?.action,
+        item.kind as MailKind).requests.find((entry) => entry.requestId === cancelRequest.requestId) : undefined;
+      if (cancel && cancelRequest) {
+        if (!validCancelRequestValue(cancelRequest.field, personValue) && input.type !== 'field.accept') return { status: 'invalid_value' as const };
+        const original = projectCancelRequests(input.source, payload, {}, owner?.action, item.kind as MailKind)
+          .requests.find((entry) => entry.requestId === cancelRequest.requestId);
+        aiValue = cancelRequest.field === 'target' ? original?.fields.value.target ?? null
+          : cancelRequest.field === 'cancel.note' ? original?.fields.value.cancellationNote ?? null : null;
+      } else {
+        const stay = amendRequest ? amendStayForRequest(input.source, payload, amendRequest.requestId) : undefined;
+        if (!stay || !amendRequest || item.kind !== 'amendment') return { status: 'invalid_path' as const };
+        aiValue = amendRequest.field === 'target'
+          ? projectAmendRequests(input.source, payload, {}).requests.find((entry) => entry.requestId === amendRequest.requestId)
+            ?.fields.value.target ?? null
+          : amendEmailValue(stay, amendRequest.field);
+      }
     } else {
       aiValue = aiValueAt(payload, input.fieldPath);
     }

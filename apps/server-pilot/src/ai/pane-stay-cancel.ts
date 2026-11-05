@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { paneStayHmsTargetForTransport, paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
+import type { CancelRequestBinding } from './pane-cloud-cancel.js';
 import { classifyAmendPayment, findStay, type AmendPaymentStay } from './pane-stay-lookup.js';
 import { tmpdir } from 'node:os';
 
@@ -41,7 +42,7 @@ const HELD_LOCK: PaneStayLock = { withLock: (fn) => fn() };
 
 export type PaneStayCancelMode = 'preview' | 'commit';
 
-export type PaneStayCancelPreviewInput = { confirmation: string; arrival: string; workItemId?: string;
+export type PaneStayCancelPreviewInput = CancelRequestBinding & { confirmation: string; arrival: string; workItemId?: string;
   source?: { threadId: string; messageId: string; sourceHash: string } };
 export type PaneStayCancelCommitInput = PaneStayCancelPreviewInput & {
   reason: string;
@@ -295,7 +296,8 @@ async function runPaneStayCancel(
     const cloud = await import('./pane-cloud-cancel.js');
     const context = { transportId: input.transportId, actorUserId: input.actorUserId, sessionId: input.sessionId,
       sessionProfile: input.sessionProfile, workItemId: input.workItemId, source: input.source,
-      confirmation: input.confirmation, arrival: input.arrival, target };
+      confirmation: input.confirmation, arrival: input.arrival, target, requestId: input.requestId,
+      expectedSeq: input.expectedSeq, expectedExtractionId: input.expectedExtractionId };
     if (mode === 'preview') return cloud.previewCloudCancel(context);
     if (!input.previewDigest || !input.reason) return refused('cancel_preview_required');
     return cloud.commitCloudCancel({ ...context, reason: input.reason, previewDigest: input.previewDigest,

@@ -53,6 +53,8 @@ const amendProposalSchema = z.object({
   cmsMessageId: amendTextProposal(null).optional(),
   cmsRecipient: amendProposalValue(z.string(), z.enum(['guest', 'booker'])).optional(),
 }).strict().describe('Only explicit current amendment requests for this stay, each with an exact source excerpt.');
+const cancelProposalSchema = z.object({ cancelNote: amendTextProposal(null).optional() }).strict()
+  .describe('An explicitly requested cancellation note with its exact source excerpt.');
 
 const mailExtractionObjectSchema = z.object({
   separateAsk: z.string().max(200).nullable().optional().describe(
@@ -133,6 +135,7 @@ const mailExtractionObjectSchema = z.object({
         .optional()
         .describe('Action for this stay; same enum as top-level action. Top-level action remains a summary.'),
       amendProposal: amendProposalSchema.optional(),
+      workflowProposal: cancelProposalSchema.optional(),
       rows: z.array(
         z.object({
           roomType: nullableText.describe(
@@ -202,6 +205,7 @@ export type ExtractionStay = {
   guests?: ExtractionGuest[];
   action?: MailAction;
   amendProposal?: z.infer<typeof amendProposalSchema>;
+  workflowProposal?: z.infer<typeof cancelProposalSchema>;
 };
 
 const sourceStaySchema = mailExtractionObjectSchema.shape.stays.element;
@@ -400,6 +404,16 @@ function sanitizeAmendProposal(
   return Object.keys(result).length ? result : undefined;
 }
 
+function sanitizeCancelProposal(proposal: z.infer<typeof cancelProposalSchema> | undefined, currentMessageText: string) {
+  const note = proposal?.cancelNote;
+  if (!note || !note.excerpt || groundedSeparateAsk(maskCardNumbers(currentMessageText), note.excerpt) !== note.excerpt ||
+      maskCardNumbers(note.excerpt) !== note.excerpt || /[\p{Cc}]/u.test(note.value)) return undefined;
+  const value = note.value.trim();
+  if (!value || value.length > 200 || cleanText(value, 200) !== value ||
+      !note.excerpt.toLowerCase().includes(value.toLowerCase())) return undefined;
+  return { cancelNote: { ...note, value } };
+}
+
 /**
  * Validates and grounds the model output. Confirmation numbers must be digits-dash-digits and appear verbatim
  * in the text the model read. The contact email must appear in that text too. Anything else is dropped to null.
@@ -466,6 +480,8 @@ export function sanitizeExtraction(
       ...(output.kind === 'amendment' && (stay.action === undefined || stay.action === 'amend')
         ? { amendProposal: sanitizeAmendProposal(stay.amendProposal, input.currentMessageText ?? input.sourceText) }
         : {}),
+      ...(stay.workflowProposal ? { workflowProposal: sanitizeCancelProposal(stay.workflowProposal,
+        input.currentMessageText ?? input.sourceText) } : {}),
     };
   });
   const identityStays = prepared.map((stay) => ({ requested: stay.requested, guests: stay.guests }));
@@ -486,6 +502,7 @@ export function sanitizeExtraction(
       ...(stay.guests !== undefined ? { guests: stay.guests } : {}),
       ...(stay.action !== undefined ? { action: stay.action } : {}),
       ...(stay.amendProposal ? { amendProposal: stay.amendProposal } : {}),
+      ...(stay.workflowProposal ? { workflowProposal: stay.workflowProposal } : {}),
     };
   });
   const reversedDateWarnings = output.stays.slice(0, MAX_STAYS).flatMap((stay, index) => {

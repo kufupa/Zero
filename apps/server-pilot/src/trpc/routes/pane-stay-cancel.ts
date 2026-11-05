@@ -1,5 +1,6 @@
 import { commitCancel, paneCancelDigest, previewCancel } from '../../ai/pane-stay-cancel.js';
-import { approveCloudCancelCharge, pendingCloudCancelCharge } from '../../ai/pane-cloud-cancel.js';
+import { approveCloudCancelCharge, cancelRequestBindingFields, completeCancelRequestBinding,
+  pendingCloudCancelCharge } from '../../ai/pane-cloud-cancel.js';
 import {
   classifyCancelCommit,
   classifyCancelPreview,
@@ -19,7 +20,8 @@ const source = z.object({ threadId: z.string().trim().min(1).max(200), messageId
   sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 
 // strict(): no propertyCode or other key reaches the module. The lock is always the session hotel.
-const previewCancelInput = z.object({ confirmation, arrival, workItemId: z.string().uuid().optional(), source: source.optional() }).strict();
+const previewCancelInput = z.object({ confirmation, arrival, workItemId: z.string().uuid().optional(),
+  source: source.optional(), ...cancelRequestBindingFields }).strict().refine(completeCancelRequestBinding);
 const chargeInput = z.object({ workItemId: z.string().uuid(), runId: z.string().uuid(), source, confirmation, arrival,
   internetMessageId: z.string().min(1).max(998).optional() }).strict();
 const acceptChargeInput = chargeInput.extend({ challengeId: z.string().uuid(),
@@ -32,6 +34,7 @@ const commitCancelInput = z
     arrival,
     workItemId: z.string().uuid().optional(),
     source: source.optional(),
+    ...cancelRequestBindingFields,
     reason: z
       .string()
       .trim()
@@ -41,7 +44,7 @@ const commitCancelInput = z
     previewDigest: z.string().regex(/^[0-9a-f]{64}$/),
     cancellationNote: z.string().max(200).optional(),
   })
-  .strict();
+  .strict().refine(completeCancelRequestBinding);
 
 // Screenshot of a run: only a run id this server issued to this owner, and a PNG name from the run.
 const paneStayScreenshotInput = z

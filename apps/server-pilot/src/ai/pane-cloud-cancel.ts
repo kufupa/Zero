@@ -2,11 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstat, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
-import { aiWorkflowRun } from '../db/schema/mail.js';
-import { workEvent, workItem } from '../db/schema/work.js';
+import { aiWorkflowRun, mailActionLabel } from '../db/schema/mail.js';
+import { MAIL_KINDS, workEvent, workItem } from '../db/schema/work.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import { canonicalJson } from './draft-approval.js';
 import { approveHmsWrite, assertHmsSelectedSource, assertHmsUnchangedBeforeSave, assertNoOpenWrite, consumeHmsWriteApproval,
@@ -20,6 +20,9 @@ import { assertNoCreateDispatchFence, type CreateFenceTransaction } from './pane
 import { lockCreateSource, withLockedCreateSource, type LockedCreateSource } from './pane-create-source-loader.js';
 import { paneStayClock, paneWriteMode, registerPaneRun } from './pane-stay-save.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
+import { mailExtractionPayloadSchema, type MailKind } from './extraction/schema.js';
+import type { AttachmentRead } from './extraction/extract.js';
+import { projectCancelRequests } from './pane-cancel-draft.js';
 import type { PaneStayCancelResult } from './pane-stay-cancel.js';
 import type { PaneHmsWriteResult } from './pane-hms-write.js';
 
@@ -27,6 +30,14 @@ const hash = (value: unknown) => createHash('sha256').update(canonicalJson(value
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const id = z.string().trim().min(1).max(200);
 export const cancelSelectionSchema = z.object({ threadId: id, messageId: id, sourceHash: digest }).strict();
+export const cancelRequestBindingFields = { requestId: digest.optional(),
+  expectedSeq: z.number().int().nonnegative().safe().optional(), expectedExtractionId: z.string().uuid().optional() };
+export type CancelRequestBinding = { requestId?: string; expectedSeq?: number; expectedExtractionId?: string };
+export const completeCancelRequestBinding = (input: CancelRequestBinding) => {
+  const count = [input.requestId, input.expectedSeq, input.expectedExtractionId].filter((value) => value !== undefined).length;
+  return count === 0 || count === 3;
+};
+const requestSchema = z.object({ requestId: digest, proposalDigest: digest }).strict();
 const cursorSchema = z.object({ extractionId: z.string().uuid(), revision: z.number().int().nonnegative().safe(),
   revisionHead: z.number().int().nonnegative().safe(), seq: z.number().int().nonnegative().safe() }).strict()
   .refine((value) => value.revision <= value.revisionHead);
@@ -45,15 +56,15 @@ const previewBodySchema = z.object({ version: z.literal(1), nonce: z.string().uu
   reasons: z.array(reasonSchema).min(1).max(100), policyFacts: z.array(z.string().trim().min(1).max(260)).max(12),
   penaltyText: z.string().trim().min(1).max(2000).nullable(), actorUserId: id, sessionId: z.string().min(1).max(512),
   sessionProfile: z.enum(['legacy', 'remote']), readAt: z.string().datetime(), expiresAt: z.number().int(),
-  reviewFormDigest: digest.optional() }).strict();
+  reviewFormDigest: digest.optional(), request: requestSchema.optional() }).strict();
 const previewSchema = previewBodySchema.extend({ digest }).strict();
 export const cloudCancelDispatchSchema = z.object({ version: z.literal(1), source: cancelSelectionSchema,
   cursor: cursorSchema, sourceDigest: digest, accessId: id, preimage: preimageSchema,
   reasonCode: reasonSchema.shape.value, reasonLabel: reasonSchema.shape.display,
-  cancellationNote: z.string().max(200), previewDigest: digest }).strict();
+  cancellationNote: z.string().max(200), previewDigest: digest, request: requestSchema.optional() }).strict();
 export type CloudCancelDispatch = z.infer<typeof cloudCancelDispatchSchema>;
 
-type CancelContext = { db?: DB; transportId: string; actorUserId: string; sessionId?: string;
+type CancelContext = CancelRequestBinding & { db?: DB; transportId: string; actorUserId: string; sessionId?: string;
   sessionProfile?: 'legacy' | 'remote'; workItemId: string; source: z.infer<typeof cancelSelectionSchema>;
   confirmation: string; arrival: string; target: HmsReadTarget; env?: NodeJS.Dict<string>;
   selectedInternetMessageId?: string; expectedFormDigest?: string };
@@ -89,6 +100,49 @@ function key(input: CancelContext, cursor: z.infer<typeof cursorSchema>) {
   return { transportId: input.transportId, workItemId: input.workItemId,
     threadId: input.source.threadId, messageId: input.source.messageId, cursor };
 }
+
+/** Resolve only a currently actionable request from the selected extraction. */
+export function selectedEffectiveCancel(input: { source: z.infer<typeof cancelSelectionSchema>; extractionId: string;
+  payload: unknown; state: Record<string, unknown>; ownerAction: unknown; kind: MailKind;
+  attachments: AttachmentRead[] | null; requestId: string; confirmation: string; arrival: string;
+  proposalDigest?: string }) {
+  const payload = mailExtractionPayloadSchema.safeParse(input.payload);
+  if (!payload.success) return null;
+  const request = projectCancelRequests(input.source, payload.data, input.state,
+    input.ownerAction, input.kind).requests.find((entry) => entry.requestId === input.requestId);
+  if (!request || request.action !== 'cancel' || request.workflow !== 'cancel' || request.status !== 'pending' ||
+      request.fields?.kind !== 'cancel' || (input.proposalDigest && input.proposalDigest !== request.proposalDigest)) return null;
+  const fields = z.object({ target: z.object({ confirmation: z.string(), arrival: z.string() }).passthrough(),
+    reason: z.string().nullable(), cancellationNote: z.string().nullable() }).passthrough().safeParse(request.fields.value);
+  if (!fields.success || fields.data.target.confirmation !== input.confirmation || fields.data.target.arrival !== input.arrival) return null;
+  return { requestId: request.requestId, proposalDigest: request.proposalDigest,
+    reason: fields.data.reason, cancellationNote: fields.data.cancellationNote ?? '' };
+}
+
+async function lockedEffectiveCancel(tx: CreateFenceTransaction, source: LockedCreateSource, input: {
+  transportId: string; source: z.infer<typeof cancelSelectionSchema>; requestId: string; confirmation: string; arrival: string;
+  proposalDigest?: string }) {
+  const [owner] = await tx.select({ action: mailActionLabel.action }).from(mailActionLabel)
+    .where(and(eq(mailActionLabel.transportId, input.transportId), eq(mailActionLabel.messageId, input.source.messageId),
+      eq(mailActionLabel.source, 'owner'), eq(mailActionLabel.version, 'owner')))
+    .orderBy(desc(mailActionLabel.updatedAt), desc(mailActionLabel.id)).limit(1).for('share');
+  const kind = source.snapshot.extraction.kind;
+  if (!kind || !(MAIL_KINDS as readonly string[]).includes(kind)) throw new Error('cancel_request_changed');
+  const selected = selectedEffectiveCancel({ ...input, extractionId: source.snapshot.extraction.id,
+    payload: source.snapshot.extraction.payload, state: source.item.state, ownerAction: owner?.action,
+    kind: kind as MailKind, attachments: source.snapshot.extraction.attachments as AttachmentRead[] | null });
+  if (!selected) throw new Error('cancel_request_changed');
+  return selected;
+}
+
+function assertExpectedCursor(input: CancelContext, cursor: z.infer<typeof cursorSchema>) {
+  const valid = z.object(cancelRequestBindingFields).safeParse({ requestId: input.requestId,
+    expectedSeq: input.expectedSeq, expectedExtractionId: input.expectedExtractionId });
+  if (!valid.success || !completeCancelRequestBinding(input) || (input.requestId !== undefined &&
+      (input.expectedSeq !== cursor.seq || input.expectedExtractionId !== cursor.extractionId))) {
+    throw new Error('cancel_request_changed');
+  }
+}
 async function checkSource(tx: CreateFenceTransaction, locked: LockedCreateSource, input: CancelContext,
   accessId?: string, sourceDigest?: string) {
   await assertNoCreateDispatchFence(tx, { transportId: input.transportId, workItemId: input.workItemId });
@@ -120,6 +174,12 @@ export async function lockSelectedCloudCancel(tx: CreateFenceTransaction, input:
     const context = { ...input, confirmation: bound.preimage.confirmation, arrival: bound.preimage.arrival,
       target: {} as HmsReadTarget };
     await checkSource(lockedTx, source, context, bound.accessId, bound.sourceDigest);
+    if (bound.request) {
+      const request = await lockedEffectiveCancel(lockedTx, source, { ...context, ...bound.request });
+      if (request.reason !== bound.reasonLabel || request.cancellationNote !== bound.cancellationNote) {
+        throw new Error('cancel_request_changed');
+      }
+    }
     return source.item;
   });
 }
@@ -135,13 +195,16 @@ export async function previewCloudCancel(input: CancelContext): Promise<PaneStay
   let native: NativeResult | null = null, keepRun = false;
   try {
     const cursor = await cursorFor(db, input);
+    assertExpectedCursor(input, cursor);
     const initial = await withLockedCreateSource(db, key(input, cursor), async (tx, source) => {
       const locked = await checkSource(tx, source, input);
       await assertNoOpenWrite(tx as DB, input.workItemId);
       if (input.expectedFormDigest !== undefined && (formDigest(source.item.state) !== input.expectedFormDigest ||
           source.item.state.action !== 'cancel' || source.item.state.confirmation !== input.confirmation ||
           source.item.state.arrival !== input.arrival)) throw new Error('cancel_form_changed');
-      return { ...locked, stateDigest: formDigest(withoutPreview(source.item.state)) };
+      const selected = input.requestId ? await lockedEffectiveCancel(tx, source, { ...input, requestId: input.requestId }) : null;
+      return { ...locked, stateDigest: formDigest(withoutPreview(source.item.state)),
+        request: selected ? { requestId: selected.requestId, proposalDigest: selected.proposalDigest } : undefined };
     });
     // Preview is read-only, so staff can prepare a real booking while the write flag is in lab mode.
     native = await runCloudCancellation({ mode: 'preview', target: input.target, confirmation: input.confirmation,
@@ -161,12 +224,14 @@ export async function previewCloudCancel(input: CancelContext): Promise<PaneStay
       preimage: expected.data, reasons: reasons.data, policyFacts: policyFacts.data, penaltyText: penaltyText.data,
       actorUserId: input.actorUserId, sessionId: input.sessionId,
       sessionProfile: input.sessionProfile, readAt: new Date(now).toISOString(), expiresAt: now + 10 * 60_000,
-      ...(input.expectedFormDigest ? { reviewFormDigest: input.expectedFormDigest } : {}) });
+      ...(input.expectedFormDigest ? { reviewFormDigest: input.expectedFormDigest } : {}),
+      ...(initial.request ? { request: initial.request } : {}) });
     const preview = { ...body, digest: hash(body) };
     await withLockedCreateSource(db, key(input, cursor), async (tx, source) => {
       await checkSource(tx, source, input, initial.accessId, initial.sourceDigest);
       await assertNoOpenWrite(tx as DB, input.workItemId);
       if (formDigest(withoutPreview(source.item.state)) !== initial.stateDigest) throw new Error('cancel_state_changed');
+      if (initial.request) await lockedEffectiveCancel(tx, source, { ...input, ...initial.request });
       await tx.update(workItem).set({ state: { ...source.item.state, [previewKey]: preview }, updatedAt: new Date() })
         .where(eq(workItem.id, input.workItemId));
     });
@@ -199,6 +264,7 @@ export async function commitCloudCancel(input: CancelContext & { reason: string;
   let approvalAttempted = false;
   try {
     const cursor = await cursorFor(db, input);
+    assertExpectedCursor(input, cursor);
     const bound = await withLockedCreateSource(db, key(input, cursor), async (tx, source) => {
       const preview = previewSchema.safeParse(source.item.state[previewKey]);
       if (!preview.success) throw new Error('cancel_preview_changed');
@@ -210,14 +276,20 @@ export async function commitCloudCancel(input: CancelContext & { reason: string;
           grant.reviewFormDigest !== input.expectedFormDigest ||
           (grant.preimage.allowRealGuest && mode !== 'on') || canonicalJson(grant.source) !== canonicalJson(input.source) ||
           canonicalJson(grant.cursor) !== canonicalJson(cursor) ||
+          grant.request?.requestId !== input.requestId ||
           formDigest(withoutPreview(source.item.state)) !== grant.stateDigest) throw new Error('cancel_preview_changed');
       const selected = grant.reasons.filter((reason) => reason.display === input.reason);
       if (selected.length !== 1) throw new Error('cancel_reason_changed');
       await checkSource(tx, source, input, grant.accessId, grant.sourceDigest);
       await assertNoOpenWrite(tx as DB, input.workItemId);
+      if (grant.request) {
+        const request = await lockedEffectiveCancel(tx, source, { ...input, ...grant.request });
+        if (request.reason !== input.reason || request.cancellationNote !== note) throw new Error('cancel_request_changed');
+      }
       const cloudCancel = cloudCancelDispatchSchema.parse({ version: 1, source: grant.source, cursor: grant.cursor,
         sourceDigest: grant.sourceDigest, accessId: grant.accessId, preimage: grant.preimage,
-        reasonCode: selected[0]!.value, reasonLabel: selected[0]!.display, cancellationNote: note, previewDigest });
+        reasonCode: selected[0]!.value, reasonLabel: selected[0]!.display, cancellationNote: note, previewDigest,
+        ...(grant.request ? { request: grant.request } : {}) });
       const state: Record<string, unknown> = { ...withoutPreview(source.item.state) };
       // A work item may previously have held a Filing or Amend form. Only the new Cancel form is approved.
       for (const key of ['action', 'confirmation', 'arrival', 'lastName', 'attachmentId', 'documentName', 'pdfSha256',

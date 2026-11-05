@@ -92,6 +92,7 @@ const fieldEventInput = z
       sourceHash: z.string().regex(/^[a-f0-9]{64}$/),
     }).strict().optional(),
     expectedSeq: z.number().int().nonnegative().safe().optional(),
+    expectedExtractionId: z.string().uuid().nullable().optional(),
     value: z
       .union([
         z.string().max(1000),
@@ -169,6 +170,7 @@ export const workItemsRouter = router({
       msSinceOpen: input.msSinceOpen,
       source: input.source,
       expectedSeq: input.expectedSeq,
+      expectedExtractionId: input.expectedExtractionId,
     });
     if (result.status === 'not_found') {
       throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });

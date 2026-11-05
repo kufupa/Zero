@@ -3158,9 +3158,9 @@ describe('NavaPane', () => {
     const amendment = bridgeMockState.analysisOverride?.amendment as { requestedDeparture?: string } | undefined;
     bridgeMockState.storedWork = { ...STORED_AMENDMENT,
       analysis: { ...STORED_AMENDMENT.analysis, amendment },
-      draftContractVersion: 1, revisionSeq: 0,
+      draftContractVersion: 1, revisionSeq: 0, workItemExtractionId: 'ex-amendment',
       source: { threadId: 'thread-1', messageId: 'mail-1', sourceHash: 'ab'.repeat(32), extractionId: 'ex-amendment' },
-      draftFieldMeta: {}, workflowRequests: [{ requestId: 'b'.repeat(64), stayId: 'stay-1', fields: { kind: 'amend', value: {
+      draftFieldMeta: {}, workflowRequests: [{ requestId: 'b'.repeat(64), stayId: 'stay-1', action: 'amend', workflow: 'amend', status: 'pending', fields: { kind: 'amend', value: {
         target: { confirmation: '77945494-1', arrival: '2026-10-17' }, arrival: null,
         departure: amendment?.requestedDeparture ?? null, adults: null, children: null, childAges: null,
         roomType: null, ratePlan: null, retainRates: null, firstName: null, lastName: null, guestEmail: null,
