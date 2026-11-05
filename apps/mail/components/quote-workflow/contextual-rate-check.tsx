@@ -106,7 +106,7 @@ export function ContextualRateCheck({ group, session, pane, evidence, plans, onC
     const next = { seq: result.seq, revision: result.revision!, revisionHead: result.revisionHead! };
     if (isCurrent()) {
       savedRate.current = { key: savedRateKey, value: code };
-      draft.onSave(next);
+      draft.onSave(next, cursor.seq, draft.snapshot);
     }
     return next;
   };
@@ -147,7 +147,7 @@ export function ContextualRateCheck({ group, session, pane, evidence, plans, onC
         return fail('The stay or company details changed. Check the draft and try again.');
       }
       const rateBinding = { ...binding, expectedSeq: selected.seq };
-      draft.onSave({ seq: selected.seq, revision: selected.revision!, revisionHead: selected.revisionHead! });
+      draft.onSave({ seq: selected.seq, revision: selected.revision!, revisionHead: selected.revisionHead! }, cursor.seq, draft.snapshot);
       let context: string | null = null, polls = 0;
       const receive = async (reply: RateReply): Promise<void> => {
         if (!active()) return;

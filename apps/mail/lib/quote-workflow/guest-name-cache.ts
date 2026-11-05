@@ -1,6 +1,13 @@
 const PREFIX = 'nava.guest-name.v1:';
 const memory = new Map<string, string>();
 
+export function guestNameCacheKey(transportId: string, binding: {
+  storeId?: string | null; folderEntryId?: string | null; entryId?: string | null; internetMessageId?: string | null;
+}): string {
+  return `${transportId}::${JSON.stringify([binding.storeId ?? '', binding.folderEntryId ?? '',
+    binding.entryId ?? '', binding.internetMessageId ?? ''])}`;
+}
+
 export function rememberGuestName(key: string, name: string): void {
   if (!key) return;
   memory.set(key, name);
@@ -23,6 +30,11 @@ export function recalledGuestName(key: string): string | null {
   } catch {
     return null;
   }
+}
+
+export function forgetGuestName(key: string): void {
+  memory.delete(key);
+  try { sessionStorage.removeItem(`${PREFIX}${key}`); } catch { /* Memory is still cleared. */ }
 }
 
 export function resetGuestNameCacheForTests(options?: { keepSession?: boolean }): void {

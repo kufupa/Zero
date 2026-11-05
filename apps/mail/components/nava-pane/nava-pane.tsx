@@ -45,6 +45,7 @@ import {
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
 import { forgetPaneEdits, overlayRememberedGroups, paneEditKey, recalledPaneEdits, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
+import { forgetGuestName, guestNameCacheKey, recalledGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import { sectionHasStaffEdit, storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
 import { useAmendWorkItem } from '@/lib/quote-workflow/use-amend-work-item';
 import { useRequestWorkItem } from '@/lib/quote-workflow/use-request-work-item';
@@ -667,6 +668,18 @@ export function NavaPane({
     quoteSession.treatAs,
     quoteSession.staffNote,
   );
+  const contactMessageKey = selectedIdentity ?? '';
+  const contactCorrectionKey = `${currentScope ?? ''}::${contactMessageKey}`;
+  const [contactCorrection, setContactCorrection] = useState<{
+    key: string; fields: Partial<Record<ContactField, string | null>>;
+  } | null>(null);
+  const pendingContactCorrections = useRef<{
+    key: string; fields: Partial<Record<ContactField, string | null>>;
+  } | null>(null);
+  const hasCachedEdits = Boolean(contactCorrection?.key === contactCorrectionKey && Object.keys(contactCorrection.fields).length) ||
+    Boolean(activeConnection?.id && selectedIdentity && recalledPaneEdits(paneEditKey(activeConnection.id, selectedIdentity))) ||
+    Boolean(activeConnection?.id && activeEmail?.entryId &&
+      recalledGuestName(guestNameCacheKey(activeConnection.id, activeEmail)) !== null);
   // The stored read for the selected mail. A ready or failed read stands in for the live read. A treat-as or a staff
   // note asks for a fresh read, so the stored read is not used then, and it does not re-trigger the effect below.
   const storedWork = useStoredWork({
@@ -676,14 +689,27 @@ export function NavaPane({
     selectionEpoch: contextRevision.current.selectionEpoch,
     openMissingWorkItem: !isNonActionableBySourceOrSubject,
     scope: currentScope,
+    hasCachedEdits,
+    onFullReload: () => {
+      if (activeConnection?.id && selectedIdentity) forgetPaneEdits(paneEditKey(activeConnection.id, selectedIdentity));
+      if (activeConnection?.id && activeEmail?.entryId) forgetGuestName(guestNameCacheKey(activeConnection.id, activeEmail));
+      requestWorkItem.discard();
+      amendWorkItem.discard();
+      setContactCorrection(null);
+      pendingContactCorrections.current = null;
+      const binding = quoteSessionRef.current.binding;
+      dispatchQuote({ type: 'reset' });
+      if (binding && isCurrentBinding(binding)) dispatchQuote({ type: 'selection', binding });
+    },
   });
   const amendWorkItem = useAmendWorkItem({ trpc: trpcClient,
     snapshot: storedWork.pane.state === 'ready' ? storedWork.pane.amendDraft ?? null : null,
     transportId: storedWork.transportId ?? activeConnection?.id ?? null,
-    reload: storedWork.reloadAmendDraft, onSave: storedWork.noteAmendSave });
+    reload: storedWork.reloadAmendDraft, canSaveSnapshot: storedWork.canSaveSnapshot, flushSnapshot: storedWork.flushSnapshot,
+    onSave: storedWork.noteAmendSave });
   const requestWorkItem = useRequestWorkItem({ trpc: trpcClient,
     snapshot: storedWork.pane.state === 'ready' ? storedWork.pane.amendDraft ?? null : null,
-    transportId: storedWork.transportId, flushSnapshot: storedWork.flushSnapshot,
+    transportId: storedWork.transportId, flushSnapshot: storedWork.flushSnapshot, canSaveSnapshot: storedWork.canSaveSnapshot,
     reload: storedWork.reloadAmendDraft, onSave: storedWork.noteAmendSave });
   const amendRefresh = useAmendExtractionRefresh({ trpc: trpcClient,
     snapshot: !amendSourceChanged && storedWork.pane.state === 'ready' && storedWork.pane.kind === 'amendment'
@@ -696,8 +722,6 @@ export function NavaPane({
     selfSentPreStayBySubject ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
   const isNonActionableMessage = isNonActionableMailSource || isExistingStayInformation;
-  const contactMessageKey = selectedIdentity ?? '';
-  const contactCorrectionKey = `${currentScope ?? ''}::${contactMessageKey}`;
   const contactEditorKey = `${contactCorrectionKey}|${
     storedWork.pane.state === 'ready'
       ? `ready:${storedWork.pane.workItemId ?? ''}${storedWork.historyEpoch ? `:h${storedWork.historyEpoch}` : ''}`
@@ -712,14 +736,6 @@ export function NavaPane({
         ? { ...senderFallback, company: null, endClient: null, phone: null }
         : null;
   const normalizedContact = sourceContact ? { ...sourceContact } : null;
-  const [contactCorrection, setContactCorrection] = useState<{
-    key: string;
-    fields: Partial<Record<ContactField, string | null>>;
-  } | null>(null);
-  const pendingContactCorrections = useRef<{
-    key: string;
-    fields: Partial<Record<ContactField, string | null>>;
-  } | null>(null);
   const contactFields = contactCorrection?.key === contactCorrectionKey ? contactCorrection.fields : null;
   const documentContact = contactFields
     ? {
@@ -749,10 +765,10 @@ export function NavaPane({
             flush: storedWork.flushForBinding,
             onSave: storedWork.noteAmendSave,
           } } : {}),
-          onResetContact: storedWork.resetAvailable && !requestWorkItem.pending
+          onResetContact: storedWork.resetAvailable && !requestWorkItem.pending && !storedWork.saveFailed
             ? () => storedWork.resetSection({ type: 'contact' })
             : undefined,
-          onResetStay: storedWork.resetAvailable && !requestWorkItem.pending
+          onResetStay: storedWork.resetAvailable && !requestWorkItem.pending && !storedWork.saveFailed
             ? (stayId: string) => storedWork.resetSection({ type: 'stay', stayId })
             : undefined,
           resetPending: storedWork.historyPending || storedWork.historyNeedsReload,
@@ -2304,7 +2320,7 @@ export function NavaPane({
                 serverCursor={storedWork.historyCursor}
                 onUndo={storedWork.undo}
                 onRedo={storedWork.redo}
-                pending={storedWork.historyPending || storedWork.historyNeedsReload || amendWorkItem.pending || amendRefresh.pending || requestWorkItem.pending}
+                pending={storedWork.historyPending || storedWork.historyNeedsReload || storedWork.saveFailed || amendWorkItem.pending || amendRefresh.pending || requestWorkItem.pending}
               />
             ) : null}
             {storedWork.historyError ? (
@@ -2313,17 +2329,18 @@ export function NavaPane({
                 {storedWork.historyNeedsReload ? (
                   <button
                     type="button"
-                    disabled={storedWork.historyPending}
-                    onClick={storedWork.reloadHistory}
+                    disabled={storedWork.historyPending || requestWorkItem.saving || amendWorkItem.saving || amendRefresh.pending}
+                    onClick={() => { requestWorkItem.discard(); amendWorkItem.discard(); storedWork.reloadHistory(); }}
                     className="rounded-[3px] text-[11px] font-semibold text-[#64748b] hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:text-[#94a3b8]"
                   >
-                    Reload
+                    {hasCachedEdits || storedWork.saveFailed || requestWorkItem.pending || amendWorkItem.pending
+                      ? 'Reload and discard unsaved changes' : 'Reload'}
                   </button>
                 ) : null}
               </p>
             ) : null}
             {requestWorkItem.error ? <p role="status" className="px-1 text-[11px] text-amber-900">
-              {requestWorkItem.error}{' '}{requestWorkItem.retryable ? <button type="button" className="font-semibold underline"
+              {requestWorkItem.error}{' '}{requestWorkItem.retryable && !storedWork.historyNeedsReload ? <button type="button" className="font-semibold underline"
                 onClick={requestWorkItem.retry}>Retry save</button> : null}
             </p> : null}
           </div>
@@ -2478,7 +2495,7 @@ export function NavaPane({
             {storedWork.saveFailed ? (
               <p role="status" className="flex items-center gap-2 px-1 text-[11px] text-[#b45309]">
                 Couldn&apos;t save change.
-                <button type="button" className="font-semibold underline" onClick={storedWork.retrySave}>
+                <button type="button" disabled={storedWork.historyNeedsReload} className="font-semibold underline" onClick={storedWork.retrySave}>
                   Retry
                 </button>
               </p>

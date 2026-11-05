@@ -16,7 +16,10 @@ type Session = {
 export function useAmendWorkItem(args: {
   trpc: unknown; snapshot: AmendDraftSnapshot | null; transportId: string | null;
   reload: (expected: AmendDraftSnapshot, transportId: string) => Promise<AmendDraftSnapshot | null>;
-  onSave: (cursor: { seq: number; revision: number; revisionHead: number }) => void;
+  canSaveSnapshot?: (snapshot: AmendDraftSnapshot, transportId: string, seq: number) => boolean;
+  flushSnapshot?: (snapshot: AmendDraftSnapshot, transportId: string) => Promise<{ seq: number } | null>;
+  onSave: (cursor: { seq: number; revision: number; revisionHead: number }, previousSeq?: number,
+    snapshot?: AmendDraftSnapshot) => void;
 }) {
   const refs = useRef(args);
   refs.current = args;
@@ -47,9 +50,17 @@ export function useAmendWorkItem(args: {
     const run = async () => {
       const mutate = workItemsFromTrpc(refs.current.trpc).recordEvent?.mutate;
       if (!mutate) { item.error = 'Changes could not be saved. Retry.'; item.retryable = true; changed(item); return false; }
+      if (refs.current.flushSnapshot) {
+        const cursor = await refs.current.flushSnapshot(item.snapshot, item.transportId);
+        if (!cursor) { item.error = 'Save the stay changes, then retry.'; item.retryable = true; changed(item); return false; }
+        item.seq = cursor.seq;
+      }
       while (true) {
         const next = [...item.entries].find(([, entry]) => entry.valid);
         if (!next) break;
+        if (refs.current.canSaveSnapshot && !refs.current.canSaveSnapshot(item.snapshot, item.transportId, item.seq)) {
+          item.error = 'Draft changed. Reload to review it.'; item.retryable = false; changed(item); return false;
+        }
         const [path, entry] = next;
         const { threadId, messageId, sourceHash } = item.snapshot.source;
         try {
@@ -62,10 +73,11 @@ export function useAmendWorkItem(args: {
           if (!saved || !Number.isSafeInteger(saved.seq) || saved.seq !== item.seq + 1 ||
               !Number.isSafeInteger(saved.revision) || !Number.isSafeInteger(saved.revisionHead) ||
               saved.workItemExtractionId !== item.snapshot.source.extractionId) throw new Error('Unexpected save response');
+          const previousSeq = item.seq;
           item.seq = saved.seq as number;
           if (item.entries.get(path) === entry) item.entries.delete(path);
-          if (currentKey.current === item.key) refs.current.onSave({ seq: item.seq,
-            revision: saved.revision as number, revisionHead: saved.revisionHead as number });
+          refs.current.onSave({ seq: item.seq, revision: saved.revision as number,
+            revisionHead: saved.revisionHead as number }, previousSeq, item.snapshot);
           changed(item);
         } catch {
           let fresh: AmendDraftSnapshot | null = null;
@@ -110,7 +122,15 @@ export function useAmendWorkItem(args: {
     session.timer = setTimeout(() => void pump(session), 800);
     changed(session);
   }, [session, pump, changed]);
-  const flush = useCallback(() => session ? pump(session) : Promise.resolve(false), [session, pump]);
+  const flush = useCallback(async () => {
+    if (!session || !(await pump(session))) return false;
+    if (refs.current.flushSnapshot) {
+      const cursor = await refs.current.flushSnapshot(session.snapshot, session.transportId);
+      if (!cursor) return false;
+      session.seq = cursor.seq;
+    }
+    return true;
+  }, [session, pump]);
   const binding = useCallback(() => {
     const request = selectedAmendRequest(session?.snapshot ?? null);
     return session && request && !session.entries.size && !session.running && !session.error
@@ -140,8 +160,15 @@ export function useAmendWorkItem(args: {
       changed(session);
     });
   }, [session, pump, changed]);
+  const discard = useCallback(() => {
+    if (!session || session.running) return;
+    if (session.timer) clearTimeout(session.timer);
+    session.timer = null; session.entries.clear(); session.error = null; session.retryable = false;
+    changed(session);
+  }, [session, changed]);
   useEffect(() => () => { if (session) void pump(session); }, [session, pump]);
-  return { request, source: args.snapshot?.source ?? null, fieldMeta: args.snapshot?.fieldMeta ?? {}, record, flush, binding, retry,
+  return { request, source: args.snapshot?.source ?? null, fieldMeta: args.snapshot?.fieldMeta ?? {}, record, flush, binding, retry, discard,
+    saving: Boolean(session?.running),
     error: session?.error ?? null, retryable: session?.retryable ?? false,
     pending: Boolean(session && (session.entries.size || session.running || session.error)), available: Boolean(session),
     editVersion: session?.editVersion ?? 0, requestCount: args.snapshot?.requests.length ?? 0 };

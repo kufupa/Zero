@@ -3,8 +3,7 @@ import { Field, Section, SecondaryButton, StepState, paneFieldClass } from '@/co
 import { ContactBlock } from '@/components/nava-pane/blocks/contact-block';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
-import { recalledGuestName, rememberGuestName } from '@/lib/quote-workflow/guest-name-cache';
-import { paneEditKey } from '@/lib/quote-workflow/pane-edits';
+import { guestNameCacheKey, recalledGuestName, rememberGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type { QuoteSession, StaffQuoteHeader } from '@/lib/quote-workflow/types';
 import { sectionHasStaffEdit, type WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
@@ -47,7 +46,7 @@ export function guestEditorKeyFor(session: QuoteSession, fallback?: string | nul
   const guestMessageKey = session.binding?.internetMessageId?.trim() || session.binding?.entryId;
   return (
     (session.binding && guestMessageKey
-      ? paneEditKey(session.binding.transportId, guestMessageKey)
+      ? guestNameCacheKey(session.binding.transportId, session.binding)
       : null) ??
     fallback ??
     session.staffSource?.messageId ??
@@ -274,7 +273,7 @@ export function QuotePeopleStep({
         />
       ) : null}
       <GuestNameField
-        key={`guest:${guestEditorKey}`}
+        key={`guest:${guestEditorKey}:${workItemPane?.historyEpoch ?? 0}`}
         session={session}
         contact={contact}
         guestEditorKey={guestEditorKey}

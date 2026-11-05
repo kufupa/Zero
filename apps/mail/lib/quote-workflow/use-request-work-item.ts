@@ -12,8 +12,9 @@ type Session = { key: string; snapshot: AmendDraftSnapshot; transportId: string;
 export function useRequestWorkItem(args: {
   trpc: unknown; snapshot: AmendDraftSnapshot | null; transportId: string | null;
   flushSnapshot: (snapshot: AmendDraftSnapshot, transportId: string, visible?: boolean) => Promise<Cursor | null>;
+  canSaveSnapshot?: (snapshot: AmendDraftSnapshot, transportId: string, seq: number) => boolean;
   reload: (snapshot: AmendDraftSnapshot, transportId: string) => Promise<AmendDraftSnapshot | null>;
-  onSave: (cursor: Cursor) => void;
+  onSave: (cursor: Cursor, previousSeq?: number, snapshot?: AmendDraftSnapshot) => void;
 }) {
   const refs = useRef(args);
   refs.current = args;
@@ -47,6 +48,9 @@ export function useRequestWorkItem(args: {
       while (true) {
         const next = [...item.entries].find(([, entry]) => entry.valid);
         if (!next) break;
+        if (refs.current.canSaveSnapshot && !refs.current.canSaveSnapshot(item.snapshot, item.transportId, cursor.seq)) {
+          item.error = 'Draft changed. Reload to review it.'; item.retryable = false; changed(item); return false;
+        }
         const [path, entry] = next;
         const source = item.snapshot.source;
         try {
@@ -56,10 +60,11 @@ export function useRequestWorkItem(args: {
           const result = await mutate(input, mailbox) as { seq?: number; revision?: number; revisionHead?: number; workItemExtractionId?: string };
           if (result?.seq !== cursor.seq + 1 || !Number.isSafeInteger(result.revision) || !Number.isSafeInteger(result.revisionHead) ||
               result.workItemExtractionId !== source.extractionId) throw new Error('Unexpected save response');
+          const previousSeq = cursor.seq;
           cursor = { seq: result.seq, revision: result.revision!, revisionHead: result.revisionHead! };
           item.saved.set(path, entry.value);
           if (item.entries.get(path) === entry) item.entries.delete(path);
-          if (currentKey.current === item.key) refs.current.onSave(cursor);
+          refs.current.onSave(cursor, previousSeq, item.snapshot);
           changed(item);
         } catch {
           let fresh: AmendDraftSnapshot | null = null;
@@ -139,8 +144,15 @@ export function useRequestWorkItem(args: {
       session.snapshot = fresh; session.error = null; void pump(session);
     }).catch(() => { session.error = 'Could not reload. Your entries are held here.'; session.retryable = true; changed(session); });
   }, [session, pump, changed]);
+  const discard = useCallback(() => {
+    if (!session || session.running) return;
+    if (session.timer) clearTimeout(session.timer);
+    session.timer = null; session.entries.clear(); session.saved.clear(); session.error = null; session.retryable = false;
+    changed(session);
+  }, [session, changed]);
   useEffect(() => () => { if (session) void pump(session); }, [session, pump]);
-  return { snapshot: session?.snapshot ?? null, available: Boolean(session), record, held, flush, retry,
+  return { snapshot: session?.snapshot ?? null, available: Boolean(session), record, held, flush, retry, discard,
+    saving: Boolean(session?.running),
     pending: Boolean(session && (session.entries.size || session.running || session.error)), error: session?.error ?? null,
     retryable: session?.retryable ?? false };
 }
