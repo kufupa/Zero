@@ -51,13 +51,15 @@ export function ratePlanChoices(
     const code = option.rateCode.trim().toUpperCase();
     if (!code) continue;
     const event = option.hint === 'event_rate';
+    const known = choices.get(code);
     choices.set(code, {
       code,
       name: option.rateLabel.trim() || choices.get(code)?.name || code,
       board: RATE_OPTION_BOARD[option.board],
       ...(event ? { event: true } : {}),
       ...(option.contract ? { contract: true } : {}),
-      category: event ? 'other' : option.contract ? 'contract' : 'other',
+      ...(known?.government ? { government: true } : {}),
+      category: event ? 'other' : known?.category ?? (option.contract ? 'contract' : 'other'),
       readByNava: true,
     });
   }

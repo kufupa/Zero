@@ -112,9 +112,9 @@ export function ContextualRateCheck({ group, session, pane, evidence, plans, onC
     if (result?.seq !== cursor.seq + 1 || !Number.isSafeInteger(result.revision) || !Number.isSafeInteger(result.revisionHead) ||
         result.workItemExtractionId !== source.extractionId) return null;
     const next = { seq: result.seq, revision: result.revision!, revisionHead: result.revisionHead! };
+    draft.onSave(next, cursor.seq, draft.snapshot);
     if (isCurrent()) {
       savedRate.current = { key: savedRateKey, value: code };
-      draft.onSave(next, cursor.seq, draft.snapshot);
     }
     return next;
   };
@@ -147,15 +147,15 @@ export function ContextualRateCheck({ group, session, pane, evidence, plans, onC
         : { kind: 'none', ratePlan: rate || null };
       create?.onContextChange?.();
       const selected = await client!.quoteWorkflow!.rateContextSelection!.mutate({ kind: 'select', binding, selection }, mailbox);
-      if (!active()) return;
       if (selected.status !== 'recorded' || selected.requestId !== request.requestId || selected.previousSeq !== cursor.seq ||
           typeof selected.seq !== 'number' || (selected.seq !== cursor.seq && selected.seq !== cursor.seq + 1) ||
           selected.workItemExtractionId !== source.extractionId ||
           !Number.isSafeInteger(selected.revision) || !Number.isSafeInteger(selected.revisionHead)) {
         return fail('The stay or company details changed. Check the draft and try again.');
       }
-      const rateBinding = { ...binding, expectedSeq: selected.seq };
       draft.onSave({ seq: selected.seq, revision: selected.revision!, revisionHead: selected.revisionHead! }, cursor.seq, draft.snapshot);
+      if (!active()) return;
+      const rateBinding = { ...binding, expectedSeq: selected.seq };
       let context: string | null = null, polls = 0;
       const receive = async (reply: RateReply): Promise<void> => {
         if (!active()) return;
