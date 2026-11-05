@@ -1,3 +1,4 @@
+import { failedReadFingerprint } from './extraction/retry-binding.js';
 import {
   and,
   asc,
@@ -1870,7 +1871,7 @@ export type FieldProvenance = Record<string, { source: FieldProvenanceSource; va
 
 export type StoredWork =
   | { status: 'none' }
-  | { status: 'failed'; reason: string }
+  | { status: 'failed'; reason: string; extractionId: string; extractorVersion: string; fingerprint: string; source: { threadId: string; messageId: string; sourceHash: string } }
   | {
       status: 'ready';
       /** The stored extraction kind, for the pane's shared reservation-staff vocabulary. */
@@ -1914,22 +1915,22 @@ export type StoredWork =
       translation: StoredTranslation;
     };
 
-async function failureFor(db: DB, messageId: string): Promise<StoredWork> {
+async function failureFor(db: DB, msg: { id: string; threadId: string; subject: string | null; textBody: string | null; htmlBody: string | null }): Promise<StoredWork> {
   const [latest] = await db
-    .select({ status: mailExtraction.status, usage: mailExtraction.usage })
+    .select({ id: mailExtraction.id, extractorVersion: mailExtraction.extractorVersion, status: mailExtraction.status, usage: mailExtraction.usage, attachments: mailExtraction.attachments })
     .from(mailExtraction)
-    .where(eq(mailExtraction.messageId, messageId))
+    .where(eq(mailExtraction.messageId, msg.id))
     .orderBy(desc(mailExtraction.createdAt))
     .limit(1);
   if (!latest || latest.status !== 'failed') return { status: 'none' };
   const code = latest.usage?.failureReason;
   const copy =
     typeof code === 'string' && Object.hasOwn(FAILURE_COPY, code) ? FAILURE_COPY[code] : undefined;
-  return { status: 'failed', reason: copy ?? 'Nava could not read this email.' };
+  return { status: 'failed', reason: copy ?? 'Nava could not read this email.', extractionId: latest.id, extractorVersion: latest.extractorVersion, fingerprint: failedReadFingerprint(latest), source: { threadId: msg.threadId, messageId: msg.id, sourceHash: staffQuoteSourceHash(msg) } };
 }
 
 /** The exact selected message, or the unique RFC-only match for legacy callers. */
-async function messageFor(db: DB, input: { transportId: string; internetMessageId: string;
+export async function messageFor(db: DB, input: { transportId: string; internetMessageId: string;
   selection?: PaneSourceSelection; expectedMessageId?: string }) {
   const internetMessageId = canonicalInternetMessageId(input.internetMessageId);
   if (!internetMessageId) return null;
@@ -2151,7 +2152,7 @@ export async function storedWorkFor(
   const msg = await messageFor(db, input);
   if (!msg) return { status: 'none' };
   const latest = await succeededRead(db, msg.id);
-  if (!latest) return failureFor(db, msg.id);
+  if (!latest) return failureFor(db, msg);
   const existingStayInformation = isSelfSentPreStayInformationMail({
     fromAddress: msg.fromAddress,
     mailboxAddress: msg.mailboxAddress,
@@ -2195,7 +2196,7 @@ export async function openStoredWork(
   const msg = await messageFor(db, input);
   if (!msg) return { status: 'none' };
   const latest = await succeededRead(db, msg.id);
-  if (!latest) return failureFor(db, msg.id);
+  if (!latest) return failureFor(db, msg);
   if (
     isSelfSentPreStayInformationMail({
       fromAddress: msg.fromAddress,

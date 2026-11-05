@@ -5,7 +5,7 @@ import { parseNeedsYouSince } from '../../env.js';
 import { getDb } from '../../db/client.js';
 import { mailThread, message } from '../../db/schema/mail.js';
 import { MAIL_KINDS, mailExtraction, workEvent, workItem, WORK_ITEM_STATUSES } from '../../db/schema/work.js';
-import { refreshSelectedAmendExtraction, retryInboundTranslation } from '../../ai/extraction/inbound-run.js';
+import { failedReadRetryStatus, refreshSelectedAmendExtraction, retryInboundTranslation, retrySelectedFailedRead } from '../../ai/extraction/inbound-run.js';
 import {
   acceptUneditedFields,
   dismissWorkItem,
@@ -138,6 +138,15 @@ export const workItemsRouter = router({
         selection: input.selection,
       }),
     ),
+  retryFailedRead: mailboxProcedure.input(z.object({ internetMessageId, selection: paneSourceSelectionSchema,
+    extractionId: z.string().uuid(), extractorVersion: z.string().min(1).max(200),
+    fingerprint: z.string().regex(/^[a-f0-9]{64}$/), source: voucherReviewSource }).strict())
+    .mutation(({ input, ctx }) => retrySelectedFailedRead(getDb(), {
+      ...input, transportId: ctx.activeTransportId, actorId: ctx.sessionUser.id,
+    })),
+  failedReadRetryStatus: mailboxProcedure.input(z.object({ internetMessageId, selection: paneSourceSelectionSchema,
+    extractionId: z.string().uuid(), runId: z.string().uuid() }).strict())
+    .query(({ input, ctx }) => failedReadRetryStatus(getDb(), { ...input, transportId: ctx.activeTransportId })),
   /** Queue the current extractor for precisely the selected inbound Amendment, if it is stale. */
   refreshAmendExtraction: mailboxProcedure
     .input(z.object({

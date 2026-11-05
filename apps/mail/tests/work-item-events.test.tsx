@@ -372,14 +372,14 @@ describe('useStoredWork', () => {
     await waitFor(() => expect(result.current.pane.state).toBe('reading'));
   });
 
-  it('keeps a stored failure until the person retries, then reads live', async () => {
+  it('keeps a stored failure when durable retry is unavailable', async () => {
     const { trpc } = fakeTrpc(() => ({ status: 'failed', reason: 'The read timed out.' }));
     const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
     await waitFor(() => expect(result.current.pane.state).toBe('failed'));
     expect(result.current.pane).toEqual({ state: 'failed', reason: 'The read timed out.' });
     const failedKey = result.current.key;
     act(() => result.current.retry());
-    expect(result.current.pane.state).toBe('reading');
+    expect(result.current.pane).toEqual({ state: 'failed', reason: 'This read cannot be retried here. Reopen the email and try again.' });
     expect(result.current.key).not.toBe(failedKey);
   });
 

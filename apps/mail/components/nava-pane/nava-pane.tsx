@@ -907,7 +907,7 @@ export function NavaPane({
   };
   // Keep the lookup deadline separate from its payload: a late ready result changes the decision to stored, not to
   // another live read. With a treat-as or note, only Retry read (its count) re-runs the live analysis.
-  const storedGate = storedOverridden
+  const storedGate = storedOverridden && !storedWork.retryInProgress
     ? `override|${storedWork.retryCount}`
     : `${storedWork.key}|timed-out:${storedWork.lookupTimedOut}`;
   useEffect(() => {
@@ -2569,6 +2569,7 @@ export function NavaPane({
               userEmail={session?.user?.email ?? ''}
               mailbox={activeConnection?.email ?? ''}
             >
+            {storedWork.retrySlow ? <p role="status">Nava is still reading this email. This is taking longer than usual.</p> : null}
             <QuoteWorkflowPanel
               session={quoteSession}
               bridge={bridge}

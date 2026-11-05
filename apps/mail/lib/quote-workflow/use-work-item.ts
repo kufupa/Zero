@@ -35,6 +35,7 @@ const MAX_MS_SINCE_OPEN = 86_400_000;
 
 export type StoredPane =
   | { state: 'loading' }
+  | { state: 'retrying' }
   | { state: 'reading' }
   | { state: 'failed'; reason: string }
   | {
@@ -70,6 +71,7 @@ export type StoredDecision =
  * result is not used. Loading waits, so the live read does not start twice.
  */
 export function storedDecision(pane: StoredPane, overridden: boolean): StoredDecision {
+  if (pane.state === 'retrying') return { kind: 'wait' };
   if (overridden) return { kind: 'live' };
   if (pane.state === 'loading') return { kind: 'wait' };
   if (pane.state === 'ready') return { kind: 'ready', analysis: pane.analysis };
@@ -424,8 +426,11 @@ export function useStoredWork(args: {
     ? JSON.stringify([scope, internetMessageId, selection ?? null, args.selectionEpoch ?? null])
     : null;
   const [lookup, setLookup] = useState<Lookup | null>(null);
-  // Retries asked for on the mail on screen. A retry reads live, so the stored failure stops showing for that mail.
+  // Retry count is used by explicit live analysis overrides; failed stored reads use the durable queue.
   const [retries, setRetries] = useState<{ key: string | null; count: number }>({ key: null, count: 0 });
+  const [retryingRead, setRetryingRead] = useState<{ key: string; runId: string | null; extractionId: string; transportId: string | null } | null>(null);
+  const retryInFlight = useRef(false);
+  const [retrySlow, setRetrySlow] = useState(false);
   const readyAt = useRef(0);
   const pending = useRef(new Map<string, PendingEvent>());
   // The newest send per save slot, so an older send's failure never stands in for a newer value.
@@ -461,6 +466,15 @@ export function useStoredWork(args: {
   useEffect(() => {
     trpcRef.current = trpc;
   }, [trpc]);
+  useEffect(() => {
+    setRetryingRead((previous) => previous?.key === lookupKey ? previous : null);
+  }, [lookupKey]);
+  useEffect(() => {
+    setRetrySlow(false);
+    if (!retryingRead || retryingRead.key !== lookupKey) return;
+    const timer = setTimeout(() => setRetrySlow(true), 30_000);
+    return () => clearTimeout(timer);
+  }, [retryingRead?.key, lookupKey]);
 
   const invalidateForm = useCallback((revision: FormRevision) => {
     revision.invalid = true;
@@ -613,9 +627,8 @@ export function useStoredWork(args: {
     const transportId = getMailCacheScope().activeTransportId;
     const settle = (result: LookupResult) => {
       if (!current || settled || lookupKeyRef.current !== lookupKey) return;
-      // A timeout starts the live read. Only a late ready payload can supersede that fallback; a late miss or
-      // transport failure leaves the current live-read state alone and keeps Retry available there.
-      if (timedOut && result.status !== 'ready') {
+      // A late stored success or failure supersedes the fallback; a miss or transport failure does not.
+      if (timedOut && result.status !== 'ready' && result.status !== 'failed') {
         settled = true;
         return;
       }
@@ -655,6 +668,7 @@ export function useStoredWork(args: {
   const retried = retries.key === lookupKey ? retries.count : 0;
   let pane: StoredPane;
   if (!internetMessageId || !canLookUp) pane = { state: 'reading' };
+  else if (retryingRead?.key === lookupKey) pane = { state: 'retrying' };
   else if (!currentLookup) pane = { state: 'loading' };
   else if (stored?.status === 'ready') {
     pane = {
@@ -674,7 +688,7 @@ export function useStoredWork(args: {
       refs: stored.refs,
       amendDraft: amendSnapshotOf(stored),
     };
-  } else if (stored?.status === 'failed' && retried === 0) {
+  } else if (stored?.status === 'failed') {
     pane = { state: 'failed', reason: stored.reason };
   } else if (currentLookup.timedOut || stored) pane = { state: 'reading' };
   else pane = { state: 'loading' };
@@ -763,12 +777,74 @@ export function useStoredWork(args: {
   }, [flushSnapshot, readyTransportId]);
 
   const retry = useCallback(() => {
-    if (!lookupKey) return;
-    setRetries((prev) => ({
-      key: lookupKey,
-      count: (prev.key === lookupKey ? prev.count : 0) + 1,
-    }));
-  }, [lookupKey]);
+    if (!lookupKey || !internetMessageId || retryInFlight.current || retryingRead?.key === lookupKey) return;
+    if (stored?.status !== 'failed') {
+      setRetries((prev) => ({ key: lookupKey, count: (prev.key === lookupKey ? prev.count : 0) + 1 }));
+      return;
+    }
+    const route = workItemsFromTrpc(trpcRef.current).retryFailedRead;
+    const status = workItemsFromTrpc(trpcRef.current).failedReadRetryStatus;
+    if (!route || !status || !selection || !stored.extractionId || !stored.extractorVersion || !stored.fingerprint || !stored.source) {
+      setLookup((previous) => previous?.key === lookupKey ? { ...previous,
+        result: { ...stored, reason: 'This read cannot be retried here. Reopen the email and try again.' } } : previous);
+      return;
+    }
+    const keyNow = lookupKey;
+    const transportId = currentLookup?.transportId ?? null;
+    const extractionId = stored.extractionId;
+    const pinned = inMailbox(transportId);
+    retryInFlight.current = true;
+    setRetryingRead({ key: keyNow, runId: null, extractionId, transportId });
+    const input = { internetMessageId, selection, extractionId, extractorVersion: stored.extractorVersion,
+      fingerprint: stored.fingerprint, source: stored.source };
+    void (pinned ? route.mutate(input, pinned) : route.mutate(input)).then((result) => {
+      if (lookupKeyRef.current !== keyNow) return;
+      if (result.status === 'queued') setRetryingRead({ key: keyNow, runId: result.runId, extractionId, transportId });
+      else {
+        setRetryingRead(null);
+        setLookup((previous) => previous?.key === keyNow ? { ...previous,
+          result: { ...stored, reason: 'Could not start the read. Reopen the email and try again.' } } : previous);
+      }
+    }).catch(() => {
+      if (lookupKeyRef.current !== keyNow) return;
+      setRetryingRead(null);
+      setLookup((previous) => previous?.key === keyNow ? { ...previous,
+        result: { ...stored, reason: 'Could not start the read. Try again.' } } : previous);
+    }).finally(() => { retryInFlight.current = false; });
+  }, [lookupKey, internetMessageId, selection, stored, currentLookup, retryingRead]);
+
+  useEffect(() => {
+    if (!retryingRead?.runId || retryingRead.key !== lookupKey || !internetMessageId || !selection) return;
+    let current = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const { key: keyNow, runId, extractionId, transportId } = retryingRead;
+    const poll = async () => {
+      const routes = workItemsFromTrpc(trpcRef.current);
+      const pinned = inMailbox(transportId);
+      try {
+        if (!routes.failedReadRetryStatus) throw new Error('Retry status unavailable');
+        const input = { internetMessageId, selection, runId, extractionId };
+        const result = await (pinned ? routes.failedReadRetryStatus.query(input, pinned) : routes.failedReadRetryStatus.query(input));
+        if (!current || lookupKeyRef.current !== keyNow) return;
+        if (result.status === 'reading') { timer = setTimeout(poll, 2000); return; }
+        const fresh = await bindStoredWork({ query: routes.getByMessage, open: routes.open, internetMessageId,
+          selection, transportId, allowOpen: openMissingWorkItem,
+          isStale: () => !current || lookupKeyRef.current !== keyNow, openTimeoutMs: STORED_LOOKUP_TIMEOUT_MS });
+        if (!current || lookupKeyRef.current !== keyNow) return;
+        setRetryingRead(null);
+        if (fresh.status === 'ready') readyAt.current = Date.now();
+        setLookup({ key: keyNow, transportId, result: fresh.status === 'unavailable'
+          ? { status: 'failed', reason: 'Could not check the read. Reopen the email and try again.' } : fresh, timedOut: false });
+      } catch {
+        if (!current || lookupKeyRef.current !== keyNow) return;
+        setRetryingRead(null);
+        setLookup((previous) => previous?.key === keyNow && previous.result?.status === 'failed' ? { ...previous,
+          result: { ...previous.result, reason: 'Could not check the read. Try again.' } } : previous);
+      }
+    };
+    void poll();
+    return () => { current = false; clearTimeout(timer); };
+  }, [retryingRead, lookupKey, internetMessageId, selection, openMissingWorkItem]);
 
   // A live first read can finish after the stored lookup returned none. Open its WorkItem without another selection.
   const rebindAmendDraft = useCallback(async () => {
@@ -1189,6 +1265,8 @@ export function useStoredWork(args: {
     /** How many times the person asked to read this mail again. A live read with a treat-as re-runs on it. */
     retryCount: retried,
     retry,
+    retryInProgress: retryingRead?.key === lookupKey,
+    retrySlow: retryingRead?.key === lookupKey && retrySlow,
     rebindAmendDraft,
     amendRebinding,
     recordGroups,
