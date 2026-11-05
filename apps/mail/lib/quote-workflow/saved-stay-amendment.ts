@@ -47,6 +47,36 @@ export function savedStayAmendReviewBasis(stay: StayRecordWire,
   return JSON.stringify([extractionRevision, request, fields]);
 }
 
+/** Accept only an acknowledged local projection whose changed entries match the visible edits. */
+export function savedStayAmendOwnEcho(acceptedBasis: string, stay: StayRecordWire, request: SavedStayAmendRequest,
+  extractionRevision: string, draft: SavedStayAmendDraft, touched: Array<keyof SavedStayAmendDraft>): boolean {
+  try {
+    const [priorRevision, priorRequest, priorStay] = JSON.parse(acceptedBasis);
+    const [, , currentStay] = JSON.parse(savedStayAmendReviewBasis(stay, request, extractionRevision));
+    if (priorRevision !== extractionRevision || JSON.stringify(priorStay) !== JSON.stringify(currentStay) ||
+        !priorRequest || typeof priorRequest !== 'object' || Array.isArray(priorRequest)) return false;
+    const fields = ['arrival', 'departure', 'adults', 'children', 'childAges'] as const;
+    if (Object.keys(priorRequest).some((key) => key !== 'cleared' && !fields.some((field) => field === key))) return false;
+    for (const field of fields) {
+      const previous = priorRequest[field] ?? null;
+      const current = request[field] ?? null;
+      const wasCleared = field !== 'childAges' && Boolean(priorRequest.cleared?.[field]);
+      const isCleared = field !== 'childAges' && Boolean(request.cleared?.[field]);
+      if (JSON.stringify(previous) === JSON.stringify(current) && wasCleared === isCleared) continue;
+      if (!touched.includes(field) && !(field === 'departure' && touched.includes('nights'))) return false;
+      if (isCleared) { if (draft[field] !== '') return false; continue; }
+      if (field === 'childAges') {
+        const ages = draft.childAges.trim() ? draft.childAges.split(',').map((value) => value.trim()) : [];
+        if (ages.some((value) => !/^(0|[1-9]\d?)$/.test(value) || Number(value) > 17) ||
+            JSON.stringify(ages.map(Number)) !== JSON.stringify(current)) return false;
+      } else if (field === 'adults' || field === 'children') {
+        if (!/^(0|[1-9]\d*)$/.test(draft[field]) || Number(draft[field]) !== current) return false;
+      } else if (draft[field] !== current) return false;
+    }
+    return true;
+  } catch { return false; }
+}
+
 /** Candidate only: the server must resolve property/ownership, re-read the preimage and issue the grant. */
 export type SavedStayCloudWriteCandidate = {
   executor: 'cloud-write/v1';
