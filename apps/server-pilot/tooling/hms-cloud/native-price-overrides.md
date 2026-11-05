@@ -28,6 +28,9 @@ The callback receives the paused native request, `continueOnce`, and the
 review binding; it must explicitly await `continueOnce` to dispatch. Neither a
 handle nor a digest grants authority. After an attempt the session requires a
 fresh read, and missing readback evidence is reported as unknown.
+HMS can change `recordId` on Save: readback reports it separately as
+`verification.nativeRecordId`, while the stable stay, guest and business fields
+are checked for preservation. The pre-submit drift check still includes it.
 
 The lower-level helpers remain available:
 
