@@ -13,6 +13,7 @@ export function failedReadFingerprint(row: {
 
 export type FailedReadRetry = {
   failedId: string;
+  extractorVersion: string;
   fingerprint: string;
   sourceHash: string;
   selectionHash: string;
@@ -26,7 +27,7 @@ export function failedReadRetryOf(metrics: unknown): FailedReadRetry | null {
   const value = (metrics as { failedReadRetry?: Partial<FailedReadRetry> } | null)?.failedReadRetry;
   const selection = paneSourceSelectionSchema.safeParse(value?.selection);
   if (!value || typeof value.failedId !== 'string' || typeof value.actorId !== 'string' ||
-      typeof value.internetMessageId !== 'string' || !selection.success ||
+      typeof value.internetMessageId !== 'string' || typeof value.extractorVersion !== 'string' || !selection.success ||
       ![value.fingerprint, value.sourceHash, value.selectionHash, value.attachmentHash].every((s) => typeof s === 'string' && /^[a-f0-9]{64}$/.test(s))) return null;
   return { ...value, selection: selection.data } as FailedReadRetry;
 }

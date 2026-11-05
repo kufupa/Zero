@@ -263,7 +263,7 @@ export async function retrySelectedFailedRead(db: DB, input: {
   extractionId: string; extractorVersion: string; fingerprint: string;
   source: { threadId: string; messageId: string; sourceHash: string };
 }) {
-  if (!inboundExtractionEnabled() || input.extractorVersion !== EXTRACTION_VERSION) return { status: 'blocked' as const };
+  if (!inboundExtractionEnabled()) return { status: 'blocked' as const };
   const selected = await messageFor(db, { ...input, expectedMessageId: input.source.messageId });
   if (!selected || selected.threadId !== input.source.threadId || staffQuoteSourceHash(selected) !== input.source.sourceHash) {
     return { status: 'blocked' as const };
@@ -291,7 +291,7 @@ export async function retrySelectedFailedRead(db: DB, input: {
       eq(mailboxAccess.userId, input.actorId), eq(mailboxAccess.transportId, input.transportId))).limit(1).for('share');
     if (!access) return { status: 'blocked' as const };
     const [read] = await tx.select().from(mailExtraction).where(and(eq(mailExtraction.id, input.extractionId),
-      eq(mailExtraction.messageId, mail.id), eq(mailExtraction.extractorVersion, EXTRACTION_VERSION)))
+      eq(mailExtraction.messageId, mail.id), eq(mailExtraction.extractorVersion, input.extractorVersion)))
       .limit(1).for('update');
     if (!read || read.status !== 'failed' || failedReadFingerprint(read) !== input.fingerprint) return { status: 'blocked' as const };
     const history = read.usage?.retryHistory;
@@ -303,13 +303,23 @@ export async function retrySelectedFailedRead(db: DB, input: {
     const [success] = await tx.select({ id: mailExtraction.id }).from(mailExtraction).where(and(
       eq(mailExtraction.messageId, mail.id), eq(mailExtraction.status, 'succeeded'))).limit(1);
     if (item || success) return { status: 'blocked' as const };
+    if (input.extractorVersion !== EXTRACTION_VERSION) {
+      const [current] = await tx.select({ id: mailExtraction.id }).from(mailExtraction).where(and(
+        eq(mailExtraction.messageId, mail.id), eq(mailExtraction.extractorVersion, EXTRACTION_VERSION))).limit(1);
+      if (current) return { status: 'blocked' as const };
+    }
     const [active] = await tx.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(and(
       eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.triggerMessageId, mail.id),
       eq(aiWorkflowRun.runKind, 'inbound_extraction'), inArray(aiWorkflowRun.state, NONTERMINAL_AI_RUN_STATES),
       sql`${aiWorkflowRun.metrics}->'failedReadRetry'->>'failedId' = ${read.id}`,
       sql`${aiWorkflowRun.metrics}->'failedReadRetry'->>'fingerprint' = ${input.fingerprint}`)).limit(1);
     if (active) return { status: 'queued' as const, runId: active.id };
-    const binding: FailedReadRetry = { failedId: read.id, fingerprint: input.fingerprint,
+    const [otherActive] = await tx.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(and(
+      eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.triggerMessageId, mail.id),
+      eq(aiWorkflowRun.runKind, 'inbound_extraction'), eq(aiWorkflowRun.promptVersion, EXTRACTION_VERSION),
+      inArray(aiWorkflowRun.state, NONTERMINAL_AI_RUN_STATES))).limit(1);
+    if (otherActive) return { status: 'blocked' as const };
+    const binding: FailedReadRetry = { failedId: read.id, extractorVersion: read.extractorVersion, fingerprint: input.fingerprint,
       sourceHash: input.source.sourceHash, selectionHash, attachmentHash, actorId: input.actorId,
       internetMessageId: input.internetMessageId, selection: input.selection };
     const run = await enqueueAiRun({ transportId: input.transportId, threadId: thread.id, triggerMessageId: mail.id,
@@ -437,7 +447,8 @@ export async function runInboundExtraction(
     .limit(1);
   if (!trigger || trigger.direction !== 'inbound') return 'skipped';
   const retry = failedReadRetryOf(run.metrics);
-  if (retry && !deps.claim) return 'stale_source';
+  const retryRequested = Boolean(run.metrics && Object.hasOwn(run.metrics, 'failedReadRetry'));
+  if ((retryRequested && !retry) || (retry && !deps.claim)) return 'stale_source';
   if (retry) {
     const [access] = await db.select({ id: mailboxAccess.id }).from(mailboxAccess).where(and(
       eq(mailboxAccess.userId, retry.actorId), eq(mailboxAccess.transportId, run.transportId))).limit(1);
@@ -455,8 +466,14 @@ export async function runInboundExtraction(
       ),
     )
     .limit(1);
-  if (retry && (!existing || existing.id !== retry.failedId || existing.status !== 'failed' ||
-      failedReadFingerprint(existing) !== retry.fingerprint)) return 'stale_source';
+  if (retry) {
+    const [failed] = retry.extractorVersion === EXTRACTION_VERSION ? [existing] : await db.select().from(mailExtraction)
+      .where(and(eq(mailExtraction.id, retry.failedId), eq(mailExtraction.messageId, run.triggerMessageId),
+        eq(mailExtraction.extractorVersion, retry.extractorVersion))).limit(1);
+    if (!failed || failed.id !== retry.failedId || failed.status !== 'failed' ||
+        failedReadFingerprint(failed) !== retry.fingerprint ||
+        (retry.extractorVersion !== EXTRACTION_VERSION && existing)) return 'stale_source';
+  }
   if (existing && !retry) {
     await ensureWorkItemForMessage(db, { transportId: run.transportId, messageId: run.triggerMessageId });
     return 'exists';
@@ -535,7 +552,7 @@ export async function runInboundExtraction(
       if (!mail || staffQuoteSourceHash(mail) !== retry.sourceHash ||
           await retryAttachmentHash(tx, mail.id) !== retry.attachmentHash) return;
       const [read] = await tx.select().from(mailExtraction).where(and(eq(mailExtraction.id, retry.failedId),
-        eq(mailExtraction.messageId, mail.id), eq(mailExtraction.extractorVersion, EXTRACTION_VERSION)))
+        eq(mailExtraction.messageId, mail.id), eq(mailExtraction.extractorVersion, retry.extractorVersion)))
         .limit(1).for('update');
       if (!read || read.status !== 'failed' || failedReadFingerprint(read) !== retry.fingerprint) return;
       const [access] = await tx.select({ id: mailboxAccess.id }).from(mailboxAccess).where(and(
@@ -549,9 +566,17 @@ export async function runInboundExtraction(
       const history = Array.isArray(rawHistory) ? rawHistory : [];
       if (!access || item || success || history.length >= MAX_FAILED_READ_HISTORY) return;
       const { retryHistory: _previous, ...priorUsage } = read.usage ?? {};
-      const prior = { retryRunId: deps.claim!.runId, actorId: retry.actorId, usage: priorUsage, attachments: read.attachments, observedAt: new Date().toISOString() };
-      await tx.update(mailExtraction).set({ ...row, usage: { ...row.usage, retryHistory: [...history, prior] } })
-        .where(and(eq(mailExtraction.id, read.id), eq(mailExtraction.status, 'failed')));
+      const prior = { extractionId: read.id, extractorVersion: read.extractorVersion, retryRunId: deps.claim!.runId,
+        actorId: retry.actorId, usage: priorUsage, attachments: read.attachments, observedAt: new Date().toISOString() };
+      const value = { ...row, usage: { ...row.usage, retryHistory: [...history, prior] } };
+      if (retry.extractorVersion === EXTRACTION_VERSION) {
+        await tx.update(mailExtraction).set(value).where(and(eq(mailExtraction.id, read.id), eq(mailExtraction.status, 'failed')));
+      } else {
+        // A different deployed extractor gets its own genuine result; the old failure stays intact.
+        const [inserted] = await tx.insert(mailExtraction).values({ ...value, extractorVersion: EXTRACTION_VERSION })
+          .onConflictDoNothing({ target: [mailExtraction.messageId, mailExtraction.extractorVersion] }).returning({ id: mailExtraction.id });
+        if (!inserted) return;
+      }
       await after?.(tx);
       written = true;
     });
@@ -768,7 +793,7 @@ export async function executeInboundExtractionRun(input: {
         input.signal,
       );
   if (outcome === 'stale_version') {
-    if (failedReadRetryOf(run.metrics)) {
+    if (run.metrics && Object.hasOwn(run.metrics, 'failedReadRetry')) {
       await markAiRunPolicyRefused({ ...claim, lastError: 'Retry no longer matches the deployed extractor.' }, db);
       return { runId: run.id, state: 'dead_letter' };
     }
