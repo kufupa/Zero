@@ -940,26 +940,21 @@ describe('prepareUnquotedBookingDraft route', () => {
     expect(result.draft.rooms[0]?.request).toMatchObject({ ratePlan: 'BCO1B' });
   });
 
-  it('returns unavailable when room or adult counts are missing', async () => {
+  it('keeps incomplete room and occupancy details editable', async () => {
     const first = analysis().groups[0]!;
-    await expect(
-      draftCaller().workstation.prepareUnquotedBookingDraft({
-        ...unquotedInput,
-        analysis: analysis({ groups: [{ ...first, rooms: null }] }),
-      }),
-    ).resolves.toMatchObject({ status: 'unavailable' });
-    await expect(
-      draftCaller().workstation.prepareUnquotedBookingDraft({
-        ...unquotedInput,
-        analysis: analysis({ groups: [{ ...first, adultsPerRoom: null }] }),
-      }),
-    ).resolves.toMatchObject({ status: 'unavailable' });
-    await expect(
-      draftCaller().workstation.prepareUnquotedBookingDraft({
-        ...unquotedInput,
-        analysis: analysis({ groups: [{ ...first, childAges: null }] }),
-      }),
-    ).resolves.toMatchObject({ status: 'unavailable' });
+    const withoutCount = await draftCaller().workstation.prepareUnquotedBookingDraft({
+      ...unquotedInput, analysis: analysis({ groups: [{ ...first, rooms: null }] }),
+    });
+    expect(withoutCount.status).toBe('ready');
+    if (withoutCount.status === 'ready') expect(withoutCount.draft.rooms).toHaveLength(1);
+    for (const field of ['adultsPerRoom', 'childAges'] as const) {
+      const result = await draftCaller().workstation.prepareUnquotedBookingDraft({
+        ...unquotedInput, analysis: analysis({ groups: [{ ...first, [field]: null }] }),
+      });
+      expect(result.status).toBe('ready');
+      if (result.status === 'ready') expect(result.draft.rooms[0]?.request)
+        .not.toHaveProperty(field === 'adultsPerRoom' ? 'adults' : 'childAges');
+    }
   });
 
   it('returns unavailable for a quote workflow or a second stay', async () => {

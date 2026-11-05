@@ -20,7 +20,7 @@ import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDisp
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 import { digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from './pane-create-cloud-input.js';
 import { assertNoCreateDispatchFence, type CreateFenceTransaction } from './pane-create-dispatch-fence.js';
-import { activePaneCreateIdentity, legacyPaneCreateRoomId, paneCreateIdentitySchema, paneCreateRoomAliases, paneCreateRoomId,
+import { activePaneCreateIdentity, currentPaneCreateDatesMatch, legacyPaneCreateRoomId, paneCreateIdentitySchema, paneCreateRoomAliases, paneCreateRoomId,
   type PaneCreateIdentity } from './pane-create-scope.js';
 import { lockCreateSource, withLockedCreateSource, type LockedCreateSource } from './pane-create-source-loader.js';
 import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
@@ -28,11 +28,14 @@ import { PANE_PREVIEW_TTL_MS, PANE_SAVE_UNCONFIRMED, paneStayCreateTarget, paneS
   paneStayCloudTargetLock, paneStaySaveLoaders, paneStaySaveMode, registerPaneRun, type PaneStay, type PaneStayResult } from './pane-stay-save.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 
+const cloudPreviewSource = z.object({ messageId: z.string().trim().min(1).max(200),
+  threadId: z.string().trim().min(1).max(200), sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 export const cloudPreviewSelection = z.object({
-  source: z.object({ messageId: z.string().trim().min(1).max(200), threadId: z.string().trim().min(1).max(200),
-    sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+  source: cloudPreviewSource,
   identity: paneCreateIdentitySchema, nativeGuestId: z.string().regex(/^\d+$/).optional(),
-}).strict();
+  expectedSeq: z.number().int().nonnegative().safe().optional(), expectedExtractionId: z.string().uuid().optional(),
+}).strict().refine((selection) => (selection.expectedSeq === undefined) === (selection.expectedExtractionId === undefined),
+  { message: 'Expected sequence and extraction must be supplied together.' });
 type Input = { transportId: string; mailboxAddress: string; actorUserId: string; workItemId: string; stayId: string;
   sessionId?: string; sessionProfile?: 'legacy' | 'remote';
   selection: z.infer<typeof cloudPreviewSelection>; stay: PaneStay; batch?: PaneCloudBatch };
@@ -110,7 +113,7 @@ const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
 });
 const grantSchema = z.object({ version: z.literal('pane-cloud-preview/v1'), grantId: z.string().uuid(),
   digest, actorUserId: z.string().min(1), sessionId: z.string().min(1), sessionProfile: z.enum(['legacy', 'remote']),
-  accessId: z.string().min(1), source: cloudPreviewSelection.shape.source,
+  accessId: z.string().min(1), source: cloudPreviewSource,
   identity: paneCreateIdentitySchema, nativeGuestId: z.string().regex(/^\d+$/), cursor: cursorSchema,
   sourceDigest: digest, stateDigest: digest, requestDigest: digest, stayDigest: digest,
   approvedRequest: z.record(z.string(), z.unknown()),
@@ -177,6 +180,10 @@ async function checkSource(tx: CreateFenceTransaction, source: LockedCreateSourc
   const payload = source.snapshot.extraction.payload;
   if (!activePaneCreateIdentity(payload, source.item.state, input.selection.identity,
     { legacyKey: input.stayId === legacyPaneCreateRoomId(input.selection.identity) })) throw new Error('cloud_create_scope_changed');
+  if (input.selection.expectedSeq !== undefined &&
+      !currentPaneCreateDatesMatch(payload, source.item.state, input.selection.identity, input.stay)) {
+    throw new Error('cloud_create_scope_changed');
+  }
   const confirmations = payload && Array.isArray(payload.confirmationNumbers)
     ? payload.confirmationNumbers.filter((value): value is string => typeof value === 'string') : [];
   if (!actor.mailboxAddress || isSelfSentPreStayInformationMail({ fromAddress: mail.fromAddress, mailboxAddress: actor.mailboxAddress,
@@ -537,7 +544,12 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
     { allowRealGuest: admission.allowRealGuest });
   if (mapped.outcome !== 'ok') return refused(mapped.reason);
   try {
-    const cursor = await currentCursor(db, input), key = sourceKey(input, cursor);
+    const cursor = await currentCursor(db, input);
+    if (input.selection.expectedSeq !== undefined &&
+        (input.selection.expectedSeq !== cursor.seq || input.selection.expectedExtractionId !== cursor.extractionId)) {
+      return refused('cloud_create_scope_changed');
+    }
+    const key = sourceKey(input, cursor);
     const before = await withLockedCreateSource(db, key, (tx, source) => checkSource(tx, source, input));
     const sourceUnchanged = async () => {
       const after = await withLockedCreateSource(db, key, (tx, source) => checkSource(tx, source, input, before.accessId));

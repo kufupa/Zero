@@ -7,6 +7,7 @@ import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-p
 import { DRAFT_GROUP_ID, initialQuoteSession, reduceQuoteSession, stayTotal } from '@/lib/quote-workflow/session';
 import type { StoredWork } from '@/lib/quote-workflow/backend-bind';
 import { setMailCacheScope, transportForCall } from '@/lib/mail/mail-cache-scope';
+import { useRequestWorkItem } from '@/lib/quote-workflow/use-request-work-item';
 import type { QuoteAnalysis, QuoteSession, StayGroupRequirement } from '@/lib/quote-workflow/types';
 import {
   fieldEventsBetween,
@@ -420,9 +421,9 @@ describe('useStoredWork', () => {
     }
   });
 
-  it('logs five quick edits to one field as one event after the quiet period', async () => {
+  it('logs quick edits and binds booking writes to the reviewed revision', async () => {
     const { trpc, mutate } = fakeTrpc(() => READY);
-    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
+    const { result, unmount } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
     await waitFor(() => expect(result.current.pane.state).toBe('ready'));
     act(() => {
       for (const quantity of [2, 3, 4, 5, 6]) result.current.recordGroups([G1], [{ ...G1, quantity }]);
@@ -438,6 +439,79 @@ describe('useStoredWork', () => {
         msSinceOpen: expect.any(Number),
       }),
     );
+    unmount();
+    setMailCacheScope({ userId: 'revision-user', activeTransportId: 'revision-transport' });
+    try {
+      let seq = 7;
+      const source = { threadId: 'thread-r', messageId: 'message-r', sourceHash: 'hash-r', extractionId: 'ex-r' };
+      const read = () => ({ ...READY, workItemId: 'wi-revision', extractionId: 'ex-r', workItemExtractionId: 'ex-r',
+        draftContractVersion: 1 as const, revisionSeq: seq, source, workflowRequests: [{ requestId: 'request-r', stayId: 'st-1',
+          action: 'new_booking', workflow: 'create', status: 'pending', fields: { kind: 'create', value: [
+            { rowId: 'rw-1', roomIndex: 0, ratePlan: seq >= 10 ? 'CORP' : 'BAR' },
+          ] } }] });
+      const save = vi.fn(async (input: { expectedSeq?: number }) => {
+        if (input.expectedSeq !== seq) throw Object.assign(new Error('conflict'), { data: { code: 'CONFLICT' } });
+        const previousSeq = seq++;
+        return { previousSeq, seq, revision: seq, revisionHead: seq, workItemExtractionId: 'ex-r' };
+      });
+      const routes = { workItems: { getByMessage: { query: vi.fn(async () => read()) }, recordEvent: { mutate: save },
+        revisionCursor: { query: vi.fn(async () => ({ seq, revision: seq, revisionHead: seq, extractionId: 'ex-r' })) } } };
+      const onFullReload = vi.fn();
+      const mount = (hasCachedEdits = false) => renderHook(() => {
+        const stored = useStoredWork({ trpc: routes, internetMessageId: 'revision-mail', scope: 'revision-scope', onFullReload, hasCachedEdits });
+        const draft = stored.pane.state === 'ready' ? stored.pane.amendDraft ?? null : null;
+        const queue = useRequestWorkItem({ trpc: routes, snapshot: draft, transportId: stored.transportId,
+          flushSnapshot: stored.flushSnapshot, canSaveSnapshot: stored.canSaveSnapshot,
+          reload: stored.reloadAmendDraft, onSave: stored.noteAmendSave });
+        return { stored, queue };
+      });
+      const bound = mount();
+      await waitFor(() => expect(bound.result.current.queue.available).toBe(true));
+      act(() => {
+        bound.result.current.stored.recordGroups([G1], [{ ...G1, quantity: 2 }]);
+        bound.result.current.stored.recordContact('email', 'staff@example.com');
+      });
+      let cursor: Awaited<ReturnType<typeof bound.result.current.queue.flush>> = null;
+      await act(async () => { cursor = await bound.result.current.queue.flush(); });
+      expect(cursor).toMatchObject({ seq: 9 });
+      expect(save.mock.calls.map(([input]) => input.expectedSeq)).toEqual([7, 8]);
+      seq += 1; // Another staff member changed a room, contact or rate to CORP.
+      act(() => { expect(bound.result.current.queue.record('request-r', 'rows[rw-1].rooms[0].ratePlan', 'BAR')).toBe(true); });
+      await act(async () => { cursor = await bound.result.current.queue.flush(); });
+      expect(cursor).toBeNull();
+      expect(save).toHaveBeenCalledTimes(2);
+      expect(bound.result.current.stored.historyNeedsReload).toBe(true);
+      act(() => { bound.result.current.queue.discard(); bound.result.current.stored.reloadHistory(); });
+      await waitFor(() => expect(bound.result.current.stored.historyNeedsReload).toBe(false));
+      expect(onFullReload).toHaveBeenCalledTimes(1);
+      await act(async () => { cursor = await bound.result.current.queue.flush(); });
+      expect(cursor).toMatchObject({ seq: 10 });
+      seq += 1;
+      act(() => bound.result.current.stored.recordContact('phone', '123'));
+      await act(async () => { await bound.result.current.stored.flushForBinding(); });
+      await waitFor(() => expect(bound.result.current.stored.historyNeedsReload).toBe(true));
+      expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ fieldPath: 'contact.phone', expectedSeq: 10 }), expect.anything());
+      bound.unmount();
+      const reopened = mount(true);
+      await waitFor(() => expect(reopened.result.current.queue.available).toBe(true));
+      await act(async () => { cursor = await reopened.result.current.queue.flush(); });
+      expect(cursor).toBeNull();
+      expect(reopened.result.current.stored.historyNeedsReload).toBe(true);
+      reopened.unmount();
+      const switched = renderHook(({ epoch }) => useStoredWork({ trpc: routes, internetMessageId: 'revision-mail',
+        scope: 'revision-scope', selectionEpoch: epoch, hasCachedEdits: epoch > 0 }), { initialProps: { epoch: 0 } });
+      await waitFor(() => expect(switched.result.current.pane.state).toBe('ready'));
+      const oldDraft = switched.result.current.pane.state === 'ready' ? switched.result.current.pane.amendDraft : null;
+      expect(oldDraft).toBeTruthy();
+      switched.rerender({ epoch: 1 });
+      await waitFor(() => expect(switched.result.current.pane.state).toBe('ready'));
+      await act(async () => { cursor = await switched.result.current.flushSnapshot(oldDraft!, 'revision-transport'); });
+      expect(cursor).toBeNull();
+      expect(switched.result.current.historyNeedsReload).toBe(true);
+      switched.unmount();
+    } finally {
+      setMailCacheScope({ userId: null, activeTransportId: null });
+    }
   });
 
   it('sends a pending edit at once when the pane unmounts', async () => {

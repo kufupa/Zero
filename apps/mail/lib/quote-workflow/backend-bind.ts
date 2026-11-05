@@ -232,8 +232,43 @@ export type AmendDraftRequest = WorkflowDraftRequest & {
 };
 export type AmendDraftSnapshot = {
   workItemId: string; source: AmendDraftSource; revisionSeq: number; requests: WorkflowDraftRequest[];
-  fieldMeta: Record<string, { origin: 'staff' | 'email' | 'missing' }>;
+  fieldMeta: Record<string, { origin: 'staff' | 'email' | 'missing'; attributedTo?: string | null;
+    evidence?: { messageId: string; excerpt: string; source?: { kind: 'message' | 'attachment_text' | 'attachment_vision';
+      id: string; page?: number; digest?: string; reviewRequired?: boolean } } | null }>;
 };
+
+/** A source label is a search suggestion; it never supplies an HMS identity. */
+export function sourceCreatePartyNames(snapshot: AmendDraftSnapshot | null | undefined) {
+  const names = { agency: new Map<string, string>(), company: new Map<string, string>() };
+  const picks = { agency: new Map<string, { nativeId: string; name: string }>(), company: new Map<string, { nativeId: string; name: string }>() };
+  const pickedRooms = { agency: 0, company: 0 };
+  let rooms = 0;
+  for (const request of snapshot?.requests ?? []) {
+    if (request.action !== 'new_booking' || request.fields?.kind !== 'create' || !Array.isArray(request.fields.value)) continue;
+    for (const room of request.fields.value) {
+      if (!room || typeof room !== 'object') continue;
+      rooms += 1;
+      for (const [kind, field] of [['agency', 'sourceAgencyName'], ['company', 'sourceOrganizationName']] as const) {
+        const value: unknown = (room as Record<string, unknown>)[field];
+        if (typeof value !== 'string' || !value.trim()) continue;
+        const label = value.trim();
+        names[kind].set(label.replace(/\s+/g, ' ').toLowerCase(), label);
+      }
+      for (const [kind, field] of [['agency', 'bookingAgency'], ['company', 'organization']] as const) {
+        const value: unknown = (room as Record<string, unknown>)[field];
+        if (!value || typeof value !== 'object') continue;
+        const { nativeId, name } = value as Record<string, unknown>;
+        if (typeof nativeId !== 'string' || !nativeId.trim() || typeof name !== 'string' || !name.trim()) continue;
+        picks[kind].set(nativeId, { nativeId, name });
+        pickedRooms[kind] += 1;
+      }
+    }
+  }
+  return { agency: names.agency.size === 1 ? [...names.agency.values()][0]! : '',
+    company: names.company.size === 1 ? [...names.company.values()][0]! : '',
+    agencyPick: rooms > 0 && pickedRooms.agency === rooms && picks.agency.size === 1 ? [...picks.agency.values()][0] : undefined,
+    companyPick: rooms > 0 && pickedRooms.company === rooms && picks.company.size === 1 ? [...picks.company.values()][0] : undefined };
+}
 
 /** Until requests can be selected in the pane, only a single pending Amend is unambiguous. */
 export function selectedAmendRequest(snapshot: AmendDraftSnapshot | null): AmendDraftRequest | null {
@@ -271,7 +306,7 @@ export type StoredWork =
       workItemExtractionId?: string | null;
       revisionSeq?: number | null;
       workflowRequests?: WorkflowDraftRequest[];
-      draftFieldMeta?: Record<string, { origin: 'staff' | 'email' | 'missing' }>;
+      draftFieldMeta?: AmendDraftSnapshot['fieldMeta'];
       /** Group id to the stay and row it came from. A stay with dates and no rows has a null rowId. */
       refs: Record<string, { stayId: string; rowId: string | null }>;
       analysis: ReadyAnalyse;
@@ -290,7 +325,8 @@ export type RecordFieldEventInput = {
   fieldPath: string;
   /** `true` only on a `.removed` path: the person deleted that stay or row. */
   value?: string | number | number[] | boolean | null |
-    { confirmation: string; arrival: string } | { mode: 'self' | 'client' | 'custom'; address: string };
+    { confirmation: string; arrival: string } | { mode: 'self' | 'client' | 'custom'; address: string } |
+    { nativeId: string; firstName: string; lastName: string } | { nativeId: string; name: string; code?: string };
   source?: Omit<AmendDraftSource, 'extractionId'>;
   expectedSeq?: number;
   expectedExtractionId?: string;

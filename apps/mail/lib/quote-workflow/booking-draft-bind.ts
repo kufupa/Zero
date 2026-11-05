@@ -27,6 +27,7 @@ export type PrepareUnquotedBookingDraftInput = {
   inputRevision: number;
   analysis: LunaAnalysisWire;
   rateCode?: string;
+  groupIds?: string[];
 };
 
 export type PrepareBookingDraftResult =

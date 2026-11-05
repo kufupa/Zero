@@ -49,11 +49,11 @@ export function ratePlanChoices(
   }
   for (const option of hmsOptions) {
     const code = option.rateCode.trim().toUpperCase();
-    if (!code || choices.has(code)) continue;
+    if (!code) continue;
     const event = option.hint === 'event_rate';
     choices.set(code, {
       code,
-      name: code,
+      name: option.rateLabel.trim() || choices.get(code)?.name || code,
       board: RATE_OPTION_BOARD[option.board],
       ...(event ? { event: true } : {}),
       ...(option.contract ? { contract: true } : {}),

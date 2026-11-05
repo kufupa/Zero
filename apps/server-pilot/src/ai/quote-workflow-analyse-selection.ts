@@ -95,6 +95,11 @@ export function hashSyncedQuoteSelection(
     hash.update('\0');
     hash.update(attachment.bytesPresent ? '1' : '0');
     if (attachment.pdf) hash.update(Buffer.from(attachment.pdf));
+    if (attachment.image) {
+      hash.update('\0image\n');
+      hash.update(attachment.image.mediaType);
+      hash.update(attachment.image.data);
+    }
   }
   if (extras?.staffNote?.trim()) {
     hash.update('\0staffNote\n');

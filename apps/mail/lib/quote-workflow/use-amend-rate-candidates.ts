@@ -10,7 +10,7 @@ type RateCandidate = {
   price: { currency: string; averagePerNightMinor: number | null; totalMinor: number | null;
     totalBasis: 'native' | 'nightly_sum' } | null;
 };
-type RateReply = {
+export type RateReply = {
   status: 'queued' | 'running' | 'ready' | 'blocked' | 'failed' | 'stale';
   requestId: string; jobId: string | null; contextKey: string | null; observedAt: string | null; expiresAt: string | null;
   coverage: { candidateList: 'complete' | 'partial' | 'unknown'; reason: string | null };
@@ -19,7 +19,7 @@ type RateReply = {
 };
 type RateBinding = {
   workItemId: string; source: { threadId: string; messageId: string; sourceHash: string };
-  request: { requestId: string; stayId: string; rowId: null; roomIndex: null }; expectedSeq: number;
+  request: { requestId: string; stayId: string; rowId: null; roomIndex: null }; expectedSeq: number; expectedExtractionId: string;
 };
 type RateRoute = { mutate: (input: { kind: 'start'; binding: RateBinding; typedRatePlan?: string; forceRefresh?: boolean } |
   { kind: 'read'; binding: RateBinding; jobId: string }, options: { context: { activeTransportId: string } }) => Promise<RateReply> };
@@ -30,23 +30,30 @@ export function useAmendRateCandidates(args: {
   trpc: unknown; transportId: string | null; workItemId: string | null;
   source: { threadId: string; messageId: string; sourceHash: string }; confirmation: string;
   draft: ReturnType<typeof useAmendWorkItem> | null;
+  selectedRatePlan?: string; contextKey?: string; locked?: boolean;
 }) {
   const latest = useRef(args);
   latest.current = args;
   const route = (args.trpc as { quoteWorkflow?: { rateCandidates?: RateRoute } } | null)?.quoteWorkflow?.rateCandidates;
   const key = JSON.stringify([args.transportId, args.workItemId, args.source, args.confirmation,
-    args.draft?.request?.requestId, args.draft?.request?.stayId, args.draft?.editVersion]);
+    args.draft?.source, args.draft?.request?.requestId, args.draft?.request?.stayId, args.draft?.editVersion,
+    args.selectedRatePlan, args.contextKey, args.locked]);
   const currentKey = useRef(key);
   currentKey.current = key;
   const generation = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [view, setView] = useState<RateView | null>(null);
   useEffect(() => () => { generation.current += 1; if (timer.current) clearTimeout(timer.current); }, [key]);
-  const check = useCallback(async (typedRatePlan?: string) => {
+  const check = useCallback(async (typedRatePlan?: string, forceRefresh = true) => {
     const current = latest.current;
     const mutate = (current.trpc as { quoteWorkflow?: { rateCandidates?: RateRoute } } | null)?.quoteWorkflow?.rateCandidates?.mutate;
     const mailbox = inMailbox(current.transportId);
-    if (!mutate || !mailbox || !current.draft || !current.workItemId) return;
+    if (!mutate || !mailbox || !current.draft?.source || !current.workItemId || current.locked) return;
+    const rateCode = (typedRatePlan ?? current.selectedRatePlan ?? '').trim().toUpperCase();
+    if (!/^[A-Z0-9]{1,12}$/.test(rateCode)) {
+      if (forceRefresh) setView({ key: currentKey.current, status: 'blocked', message: 'Choose or type a valid rate code first.' });
+      return;
+    }
     if (timer.current) clearTimeout(timer.current);
     const mine = ++generation.current;
     const startedKey = currentKey.current;
@@ -61,7 +68,8 @@ export function useAmendRateCandidates(args: {
         return;
       }
       const binding: RateBinding = { workItemId: current.workItemId, source: current.source,
-        request: { requestId: cursor.requestId, stayId: cursor.stayId, rowId: null, roomIndex: null }, expectedSeq: cursor.expectedSeq };
+        request: { requestId: cursor.requestId, stayId: cursor.stayId, rowId: null, roomIndex: null }, expectedSeq: cursor.expectedSeq,
+        expectedExtractionId: current.draft.source.extractionId };
       let expectedContext: string | null = null;
       let polls = 0;
       const accept = async (reply: RateReply): Promise<void> => {
@@ -74,6 +82,7 @@ export function useAmendRateCandidates(args: {
             setView({ key: startedKey, status: 'blocked', message: 'Rates are still being checked. Try again.' }); return;
           }
           expectedContext = reply.contextKey;
+          if (polls >= 8) setView({ key: startedKey, status: 'checking', message: 'HMS is still checking this rate. You can keep editing the stay.' });
           const jobId = reply.jobId;
           timer.current = setTimeout(() => { void mutate({ kind: 'read', binding, jobId }, mailbox).then(accept).catch(failed); }, 4000);
           return;
@@ -88,12 +97,20 @@ export function useAmendRateCandidates(args: {
         }, Math.max(0, Date.parse(reply.expiresAt) - Date.now()));
       };
       const failed = () => { if (active()) setView({ key: startedKey, status: 'blocked', message: 'Rates could not be checked. Try again.' }); };
-      await accept(await mutate({ kind: 'start', binding, ...(typedRatePlan ? { typedRatePlan } : {}) }, mailbox));
+      await accept(await mutate({ kind: 'start', binding, typedRatePlan: rateCode,
+        ...(forceRefresh ? { forceRefresh: true } : {}) }, mailbox));
     } catch {
       if (active()) setView({ key: startedKey, status: 'blocked', message: 'Rates could not be checked. Try again.' });
     }
   }, []);
-  return { available: Boolean(route && args.draft?.available && args.draft.request && args.workItemId && args.transportId),
+  const available = Boolean(route && args.draft?.source && args.draft?.available && args.draft.request && args.workItemId && args.transportId);
+  useEffect(() => {
+    if (!available || args.locked || !/^[A-Z0-9]{1,12}$/.test((args.selectedRatePlan ?? '').trim().toUpperCase())) return;
+    const scheduled = setTimeout(() => void check(undefined, false), 500);
+    timer.current = scheduled;
+    return () => clearTimeout(scheduled);
+  }, [key, available, args.locked, args.selectedRatePlan, check]);
+  return { available,
     view: view?.key === key ? view : null, check };
 }
 

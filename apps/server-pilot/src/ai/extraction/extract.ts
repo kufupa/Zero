@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { ModelAdapter, ModelInvokeInput, ModelInvokeResult } from '../bedrock/adapter.js';
 import { createAzureLunaModel, lunaCallBudget, LunaModelAdapter } from '../bedrock/luna.js';
@@ -24,6 +25,7 @@ import {
   type MailAction,
   type MailExtractionPayload,
   type MailKind,
+  type CurrentProposalSource,
 } from './schema.js';
 import { receivedDateAtHotel, stayDateSourceText, stayDateYearEvidenceText } from '../stay-date-anchoring.js';
 
@@ -64,6 +66,7 @@ export const EXTRACTION_RULES = `Mail extraction. Return only the JSON object de
 - confirmationNumbers are existing booking or confirmation numbers exactly as written. Never invent or reformat one.
 - For each stay, guests is optional: that stay's named guests, each with name as written and confirmationNumber exactly as written for that guest, or null. Never invent or reformat a confirmation number.
 - For each stay, action is optional and uses the same enum as top-level action. Top-level kind and action remain a summary of the mail.
+- For Create, workflowProposal contains only explicitly stated current facts for that stay, each with its current source excerpt and role. For attachment facts include source={kind:"attachment_text",id:<the attachment source id>} or source={kind:"attachment_vision",id:<the attachment source id>,page:<the actually shown page>}. A visual excerpt is an observed label, not verified text. Body facts may omit source; never cite prior thread messages as current facts. Omit conflicting or illegible facts and add a missing question for staff. Do not invent a digest or review flag; the server supplies them. Guest firstName, lastName, guestEmail and guestMobile belong to the guest; bookerName and bookerEmail to the booker; agencyName and organizationName to their named parties. Business codes, reservationNote, cmsSend and cmsMessageId have null attribution; cmsRecipient belongs to an explicitly identified guest or booker. Never treat the sender as the guest without explicit evidence, infer a code, invent an HMS profile or party ID, or copy historical details as a current request. Omit unknown fields.
 - For cancellation, workflowProposal.cancelNote is optional and contains only a note explicitly requested for that stay in the current message, with the exact excerpt and null attribution. Never infer a note.
 - For an amendment stay, amendProposal contains only changes explicitly requested NOW in the target message, never a current booking fact, historical quote, inferred identity or native ID. For each field give the value, an exact target-message excerpt of at most 200 characters proving that field and attributedTo: guest for firstName, lastName and guestEmail; booker for bookerName and bookerContact; guest or booker for an explicitly identified cmsRecipient; null for ratePlan, retainRates, cmsSend and cmsMessageId. Never assign the sender or booker's details to the guest. Use a ratePlan or CMS message ID only when its exact code is requested. retainRates is yes only for an explicit request to keep the current rate, no only for an explicit reprice request. cmsSend is true or false only for an explicit request to send or not send the confirmation. Omit every unstated or ambiguous field.
 - contact is the sender or booker's name, email and phone, as written.
@@ -133,7 +136,7 @@ export function usageOf(result: ModelInvokeResult | undefined, startedAt: number
   };
 }
 
-type VisualAttachmentMarker = { id: string; filename: string; pages: number };
+type VisualAttachmentMarker = { id: string; filename: string; pages: number; pageNumbers?: number[] };
 type PromptAttachmentAudit = { id: string; status: 'read' | 'not_read'; reason?: string; truncated?: boolean };
 export type VisionPageRender = { pages: VisionPage[]; sourcePageCount?: number | null; truncated?: boolean | null };
 
@@ -155,6 +158,7 @@ export function buildInboundPrompt(
   user: string;
   attachmentReads: PromptAttachmentAudit[];
   threadContextTruncated: boolean;
+  currentProposalSources: CurrentProposalSource[];
 } {
   const receivedDate = receivedDateAtHotel(selection.receivedAt);
   const received = receivedDate
@@ -185,11 +189,11 @@ export function buildInboundPrompt(
   if (markers.length) {
     parts.push(
       `VISUAL ATTACHMENTS (image inputs included in this call):\n${markers
-        .map((marker) => `- ${cleanText(marker.filename, 200) ?? 'attachment'}: ${marker.pages} image page(s)`)
+        .map((marker) => `- ${cleanText(marker.filename, 200) ?? 'attachment'}: ${marker.pages} image page(s); attachment source id=${JSON.stringify(marker.id)}${marker.pageNumbers ? `; pages=${marker.pageNumbers.join(',')}` : ''}`)
         .join('\n')}`,
     );
   }
-  const attachmentRanges: Array<{ id: string; end: number; excerpted: boolean }> = [];
+  const attachmentRanges: Array<{ id: string; start: number; end: number; text: string; excerpted: boolean }> = [];
   for (const attachment of selection.attachments) {
     const rawText = attachment.text?.trim();
     if (!rawText) continue;
@@ -198,9 +202,10 @@ export function buildInboundPrompt(
     const excerpted = masked.length > text.length;
     const filename = cleanText(attachment.filename, 200) ?? 'attachment';
     const block = `--- ${filename} ---\n${text}${excerpted ? '\n[Attachment text excerpt truncated at 20000 characters.]' : ''}`;
-    parts.push(`ATTACHMENT TEXT (${filename}):\n${block}`);
+    const previousEnd = parts.join('\n\n').length;
+    parts.push(`ATTACHMENT TEXT (${filename}; source id=${JSON.stringify(attachment.id)}):\n${block}`);
     const full = parts.join('\n\n');
-    attachmentRanges.push({ id: attachment.id, end: full.length, excerpted });
+    attachmentRanges.push({ id: attachment.id, start: full.indexOf(text, previousEnd), end: full.length, text, excerpted });
   }
   const context = promptThreadContext(selection);
   if (context.text) parts.push(`THREAD CONTEXT (prior thread messages; chronological):\n${context.text}`);
@@ -230,11 +235,17 @@ export function buildInboundPrompt(
     }
     return { id: range.id, status: 'read' };
   });
+  const currentProposalSources: CurrentProposalSource[] = attachmentRanges.flatMap((range) => {
+    const text = range.start < 0 ? '' : range.text.slice(0, Math.max(0, user.length - range.start));
+    return text ? [{ kind: 'attachment_text' as const, id: range.id, text,
+      digest: createHash('sha256').update(text).digest('hex') }] : [];
+  });
   return {
     system: `${hotelRulesForProperty(options.propertyCode)}\n${EXTRACTION_RULES}\n\n${ACTION_CLASSIFICATION_RULES}\n\nThread context status: ${threadContextTruncated ? 'incomplete; some prior thread messages were clipped or omitted' : context.text ? 'included without prompt-budget truncation' : 'no prior thread messages provided'}.`,
     user,
     attachmentReads,
     threadContextTruncated,
+    currentProposalSources,
   };
 }
 
@@ -373,6 +384,7 @@ export type PreparedExtractionVision = {
   images: Array<{ filename: string; mediaType: 'image/png' | 'image/jpeg'; data: Uint8Array }>;
   attachmentReads: AttachmentRead[];
   visualAttachments: VisualAttachmentMarker[];
+  currentProposalSources: CurrentProposalSource[];
 };
 
 /**
@@ -393,6 +405,7 @@ export async function prepareExtractionVisionImages(
   const images: PreparedExtractionVision['images'] = [];
   const attachmentReads: AttachmentRead[] = [];
   const visualAttachments: VisualAttachmentMarker[] = [];
+  const currentProposalSources: CurrentProposalSource[] = [];
   let directBytes = 0;
   const renderPdf = options.renderPdf ?? renderPdfPagesForVision;
 
@@ -456,6 +469,8 @@ export async function prepareExtractionVisionImages(
         images.push({ filename, mediaType, data });
         directBytes += data.byteLength;
         visualAttachments.push({ id: attachment.id, filename, pages: 1 });
+        currentProposalSources.push({ kind: 'attachment_vision', id: attachment.id, page: 1,
+          digest: createHash('sha256').update(data).digest('hex') });
         addAudit(attachment, { status: 'read' });
       }
       continue;
@@ -497,6 +512,7 @@ export async function prepareExtractionVisionImages(
     const includedPages = cappedPages.slice(0, slots);
     const filename = cleanText(attachment.filename) ?? 'scanned-pdf';
     const beforePdf = images.length;
+    const pageNumbers: number[] = [];
     includedPages.forEach((page, index) => {
       if (
         page.mediaType !== 'image/jpeg' ||
@@ -507,9 +523,12 @@ export async function prepareExtractionVisionImages(
       }
       const pageName = `${filename} - page ${index + 1}.jpg`;
       images.push({ filename: pageName, mediaType: 'image/jpeg', data: page.data });
+      pageNumbers.push(index + 1);
+      currentProposalSources.push({ kind: 'attachment_vision', id: attachment.id, page: index + 1,
+        digest: createHash('sha256').update(attachment.pdf!).update(page.data).digest('hex') });
     });
     const pdfImages = images.length - beforePdf;
-    if (pdfImages > 0) visualAttachments.push({ id: attachment.id, filename, pages: pdfImages });
+    if (pdfImages > 0) visualAttachments.push({ id: attachment.id, filename, pages: pdfImages, pageNumbers });
     const truncated =
       rendererTruncated ??
       (sourcePageCount === null
@@ -527,7 +546,7 @@ export async function prepareExtractionVisionImages(
     });
   }
 
-  return { images, attachmentReads, visualAttachments };
+  return { images, attachmentReads, visualAttachments, currentProposalSources };
 }
 
 export function createAzureExtractionAdapter(env: NodeJS.ProcessEnv = process.env): ModelAdapter | null {
@@ -678,7 +697,9 @@ export async function extractInboundMail(input: {
   const sanitized = sanitizeExtraction(parsed.data, {
     messageId: input.messageId,
     sourceText: prompt.user,
-    currentMessageText: input.selection.currentBodyText ?? input.selection.bodyText,
+    currentMessageText: (input.selection.currentBodyText ?? input.selection.bodyText).slice(0, EXTRACTION_TARGET_BODY_MAX_CHARS),
+    currentMessageSubject: maskCardNumbers(input.selection.subject).slice(0, 5_000),
+    currentProposalSources: [...prompt.currentProposalSources, ...vision.currentProposalSources],
     dateAnchor: {
       receivedAt: input.selection.receivedAt,
       sourceText: stayDateSourceText(input.selection),
