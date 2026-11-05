@@ -441,7 +441,10 @@ function validateItems(items) {
       if (item[key] == null || !['string', 'number'].includes(typeof item[key])) fail('ADDONS_FIELD_INVALID', 'needs_input', { field: key });
       if (['startDate', 'endDate'].includes(key) && (!/^\d{4}-\d{2}-\d{2}$/.test(item[key]) || !day(item[key]))) fail('ADDONS_DATE_INVALID', 'needs_input', { field: key });
       if (['quantity', 'unitPrice'].includes(key) && (!decimal(item[key]) || (key === 'quantity' && Number(decimal(item[key])) <= 0))) fail('ADDONS_NUMBER_INVALID', 'needs_input', { field: key });
-      if (typeof item[key] === 'string' && /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(item[key])) fail('ADDONS_FIELD_INVALID', 'needs_input', { field: key });
+      if (typeof item[key] === 'string' && [...item[key]].some((char) => {
+        const code = char.charCodeAt(0);
+        return code <= 8 || code === 11 || code === 12 || (code >= 14 && code <= 31);
+      })) fail('ADDONS_FIELD_INVALID', 'needs_input', { field: key });
     }
   }
 }
@@ -660,7 +663,7 @@ export async function saveStay360AddOns(page, confirmation, preparedId, options 
     } finally {
       // Quarantine prevents a late callback from sending its paused request.
       // Keep the caller's reservation lock until its journal callback settles.
-      await Promise.allSettled([...state.callbacks]);
+      await Promise.allSettled(state.callbacks);
     }
   });
 }
@@ -813,7 +816,7 @@ export async function saveStay360AddOnChanges(page, confirmation, preparedId, op
     } finally {
       state.quarantined = true;
       state.prepared.clear();
-      await Promise.allSettled([...state.callbacks]);
+      await Promise.allSettled(state.callbacks);
     }
   });
 }

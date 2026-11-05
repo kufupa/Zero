@@ -572,8 +572,8 @@ function matchesSave(page, request, expected) {
     if (expected.roomTypeForCharge === undefined && (chargeKeys.length > 1 ||
         chargeKeys.some(name => name !== 'roomtypecharge' || clean(body.get(name))))) return false;
     if (expected.roomTypeForCharge !== undefined) {
-      const priceFields = ['averagerate', 'totalrate', 'averageratecurr', 'totalratecurr'];
-      const fields = keys.filter(name => priceFields.includes(name.toLowerCase()))
+      const priceFields = new Set(['averagerate', 'totalrate', 'averageratecurr', 'totalratecurr']);
+      const fields = keys.filter(name => priceFields.has(name.toLowerCase()))
         .map(name => ({ name: name.toLowerCase(), value: body.getAll(name).length === 1 ? body.get(name) : null }));
       const pricing = compareChargeRoomPricing(fields, expected.checkedPricing);
       if (Object.values(pricing).some(value => value !== 'MATCHED')) return false;
