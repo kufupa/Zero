@@ -7,7 +7,7 @@ import { panePop3AttachmentCandidate } from '../mail/artifacts/pane-pop3-attachm
 import { getS3Storage } from '../storage/s3.js';
 import { handledRequestKeys, handledRequestStates } from './reservationist-task-completion.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
-import { isVoucherMail, voucherFilingFiles } from './voucher-filing-file.js';
+import { isVoucherMail, isVoucherNamedFile, voucherFilingFiles } from './voucher-filing-file.js';
 import { HMS_LABTEST_ATTACH_PROMPT_VERSION } from './run-ledger.js';
 import { resolveOutlookVoucherSnapshot } from './voucher-filing-source.js';
 
@@ -32,7 +32,7 @@ export function voucherReviewFiles(transportId: string, kind: string, payload: u
   if (!isVoucherMail({ subject: mail.subject ?? '', bodyText: mail.textBody ?? '',
     attachmentNames: current.map((file) => file.filename) })) return [];
   const eligible = voucherFilingFiles(current);
-  const named = eligible.filter((file) => /voucher|_vch_|(?:^|[^a-z0-9])(?:pop|proof[_ -]?of[_ -]?payment|remittance)(?:[^a-z0-9]|$)/i.test(file.filename));
+  const named = eligible.filter((file) => isVoucherNamedFile(file.filename));
   const candidates = named.length ? named : eligible;
   return candidates.map((file) => ({ attachmentId: file.id, key: voucherFileKey(transportId, mail, file) }));
 }
