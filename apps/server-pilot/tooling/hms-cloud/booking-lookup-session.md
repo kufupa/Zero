@@ -57,7 +57,7 @@ response keeps the underlying module's outcome and fields alongside `id` and
 | `inspectRoomRateCandidate` | Current `searchId` and `nativeId` and/or `code` |
 | `selectRoomType`, `selectRoomTypeForCharge` | Current field-matched `searchId` and explicit `nativeId` and/or `code`; optional lookup `options` |
 | `closeRoomRatePicker` | Closes the current room or rate catalog picker |
-| `selectGuestStayRatePlan` | Explicit current rate `code`; optional verified Proof Labtest `guestProfileId` |
+| `selectGuestStayRatePlan` | Explicit current rate `code`; optional verified `guestProfileId`; charge-room rechecks also require `createDraft` below |
 | `searchGuestStaySourceBusiness` | Optional description `query`, `field: "description"` and lookup `options` |
 | `inspectGuestStaySourceBusiness` | Current `searchId`; optional `nativeCode`, `offset`, `limit` |
 | `selectGuestStaySourceBusiness` | Current `searchId` and explicit `nativeCode`; optional lookup `options` |
@@ -65,8 +65,8 @@ response keeps the underlying module's outcome and fields alongside `id` and
 | `readQuote` | `criteria`, optional positive integer `roomQuantity`, `view`, private `snapshotPath` |
 | `viewQuoteSnapshot` | Current `snapshotHandle` and bounded `view` filters |
 | `closeHotelAvailability` | Closes the availability iframe and verifies the blank-confirmation draft |
-| `saveNewLabtestStay` | Labtest-only: `preimageId`, `arrival`, `departure`, `guestId`, `roomType`, `ratePlan`, `guaranteeType`, `note`; optional `createFieldProof` and independent top-level `agencySelection`, `organizationSelection`, `arSelection` results |
-| `readSavedLabtestRecord` | `confirmation` returned by a successful organization-only create in this same session; opens a fresh guarded Record View |
+| `saveNewLabtestStay` | Labtest-only: `preimageId`, `arrival`, `departure`, `guestId`, `roomType`, `ratePlan`, `guaranteeType`, `note`; optional `roomTypeForCharge`, `createFieldProof` and independent top-level `agencySelection`, `organizationSelection`, `arSelection` results |
+| `readSavedLabtestRecord` | `confirmation` from a successful organization or charge-room create in this same session; opens a fresh guarded Record View |
 
 Guest searches invalidate earlier guest search IDs; inspection, selection and
 closing use the current picker. The availability party kinds are `organization`,
@@ -82,6 +82,18 @@ Centurion browser block service workers before login. The programmatic default r
 the JSONL CLI always blocks them.
 The guarded create wrapper opts in; callers of the low-level save or charge-room
 price recheck must use a blocked context or the action is refused.
+
+For a charge-room recheck, select the booked room and charge room first, then
+call `selectGuestStayRatePlan` with the rate `code`, the selected guest's
+`guestProfileId`, and a `createDraft` describing the staged form:
+`{ propertyCode, guest: { nativeId, firstName, lastName }, adults, childCount,
+roomType, guaranteeType, note, cmsSend, track, source, parties }`. `roomType` is
+the booked room. `track`, when present, is `{ code, display }`; `source` is
+`{ nativeCode, description }`; `parties` contains any selected `agency` and
+`organization` as `{ nativeId, name }`. Include `cmsMessageId` and
+`cmsRecipient` when staged. Values must match the current draft. Check the
+result has `chargeRoomPricing: 'checked'`, then pass the chosen charge code as
+`roomTypeForCharge` to `saveNewLabtestStay` with its other required inputs.
 
 ### Opt-in Labtest save session
 
