@@ -627,7 +627,7 @@ function isRoutineSystemMail(
   const authoredBody = /<(?:html|body|div|p|br|table|blockquote)(?:\s|>|\/)/i.test(input.body)
     ? preStaySourceText(null, input.body) : input.body;
   const agentServiceRequest = [...authoredBody.matchAll(
-    /\b(?:please|kindly|(?:could|can|would)\s+you|(?:we|i)\s+(?:need|request))\b[^.!?\n]{0,80}\b(?:refund|book|reserve|amend|change|cancel|send|issue|confirm|quote)\b|\b(?:refund|invoice|quotation|amendment)\s+(?:request|requested|required)\b/gi,
+    /\b(?:please|kindly|(?:could|can|would)\s+you|(?:we|i)\s+(?:need|request|would\s+like|(?:are|am)\s+requesting)|request\s+for)\b[^.!?\n]{0,80}\b(?:refund|book|reserve|amend|change|cancel|send|issue|confirm|quote)\b|\b(?:refund|invoice|quotation|amendment)\s+(?:request|requested|required)\b/gi,
   )].some((match) => groundedSeparateAsk(authoredBody, match[0]) === match[0]);
   if (agentServiceRequest && /\b(?:tbo(?:\s+holidays)?|travelit)\b/i.test(haystack)) return false;
 
