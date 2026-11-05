@@ -48,10 +48,12 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
     if (routes.includes('workstation.quoteProposalPdf')) return 60_000;
     // voucherFind: a 15 s text read, then up to 20 s for a scanned PDF's vision read (SCANNED_PDF_VISION).
     // retryTranslation: one translation call, bounded by the server at 40 s (TRANSLATE_DEADLINE_MS).
+    // retryFailedRead loads the selected source and attachments before the queue returns its run id (15 s read bound).
     if (
       routes.includes('quoteWorkflow.analyseSelection') ||
       routes.includes('quoteWorkflow.voucherFind') ||
-      routes.includes('workItems.retryTranslation')
+      routes.includes('workItems.retryTranslation') ||
+      routes.includes('workItems.retryFailedRead')
     )
       return 45_000;
   } catch {
