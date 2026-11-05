@@ -2480,7 +2480,7 @@ describe('AmendLookupPanel amend form', () => {
       }} />);
       await pressFind();
       fireEvent.change(await screen.findByLabelText('Confirmation recipient'), { target: { value: 'guest@example.test' } });
-      fireEvent.click(await screen.findByRole('button', { name: 'Review change for approval' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Prepare in HMS' }));
       fireEvent.click(await screen.findByRole('button', { name: 'Approve again' }));
       await waitFor(() => expect(pendingGo.finish).toBeDefined());
       const readsBeforeEdit = state.mock.calls.length;
