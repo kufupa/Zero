@@ -371,8 +371,12 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
       await waitGrid(page, id, rows.length);
       current = await readWindow(page, id);
       if (!only(controls('selfiltervaluectrl'), '') ||
+          current.controls.filter(control => control.name?.startsWith('ff_')).some(control => clean(control.value)) ||
           JSON.stringify(await formFields(page)) !== formState) throw new Error('ROOM_FILTER_RESET_UNVERIFIED');
-      nativeFilters = [];
+      // The reset request can contain other native filters. Preserve those
+      // observations instead of assuming clearing the text cleared them all.
+      nativeFilters = [...new URLSearchParams(reset.request().postData() || '')]
+        .filter(([name]) => /filter/i.test(name)).map(([name, value]) => ({ name, value }));
       nativeFilterReset = true;
       initialMetadata = metadata;
     }
@@ -399,6 +403,13 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
   const c = coverage(metadata, rows.length);
   if (current.footer && (current.footer.loaded !== rows.length ||
       (c.total != null && current.footer.total !== c.total))) throw new Error('PICKER_COVERAGE_MISMATCH');
+  const filterValues = nativeFilters.filter(item => item.name.toLowerCase() === 'filtervalue');
+  const filterOperators = nativeFilters.filter(item => item.name.toLowerCase() === 'filteroperator');
+  const clearedTextFilter = filterValues.length === 1 && !clean(filterValues[0].value) &&
+    filterOperators.length === 1 && /^contains$/i.test(clean(filterOperators[0].value));
+  const textFilterNames = new Set(['filterfields', 'filteroperator', 'filtervalue']);
+  nativeFilters = nativeFilters.filter(item => clean(item.value) &&
+    !(clearedTextFilter && textFilterNames.has(item.name.toLowerCase())));
   const catalogCoverage = !roomKind(kind) ? c : nativeFilters.length
     ? { ...c, total: null, complete: false, possiblyTruncated: true, nativeFiltered: true,
       filteredResultTotal: c.total, filteredResultComplete: c.complete }

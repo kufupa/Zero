@@ -4,7 +4,10 @@
 compares its visible Record View against the expected Proof Labtest create.
 It reports missing, ambiguous and mismatched fields; notes are compared exactly.
 An omitted source or organization is not compared. Child ages are represented
-by the counts and age bands exposed by Record View, not exact individual ages.
+by the counts and age bands exposed by Record View. For charge-room creates,
+the checked price and its occupancy, individual ages, and source code are also
+compared with the clean native preimage. Missing criteria are reported as
+unknown and prevent a full match.
 
 The expected stay, guest ID, note, room, rate, displayed guarantee and all
 three child bands are required. `guarantee` is the displayed label, not the

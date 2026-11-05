@@ -12,7 +12,8 @@ import { installPageRequestFence } from './page-request-fence.mjs';
 import { takeHandledNotes } from '../playwright-quote/stay360-notes.mjs';
 import { readConfirmationFromStay360 } from './stay360-confirmation.mjs';
 import { readRecordViewFromStay360 } from './stay360-record-view.mjs';
-import { readCreatedLabtestRecord } from './labtest-record.mjs';
+import { cleanLabtestRecord, readCreatedLabtestRecord, snapshotLabtestRecord } from './labtest-record.mjs';
+import { blankSavedPartyFields } from './labtest-party-fields.mjs';
 import { loadHmsBookingMemory, queryHmsBookingMemory } from './hms-booking-memory.mjs';
 import {
   openNewGuestStay, searchPrimaryBookingAgency, searchOrganization, searchArAccount,
@@ -35,7 +36,7 @@ import {
 import { selectGuestStayRatePlan, currentCheckedChargeRate } from './guest-stay-rate-plan.mjs';
 import { searchLabtestPreimage } from './labtest-preimage.mjs';
 import { guaranteeDisplayForSave, normalizeOrganizationSelection, saveNewLabtestStay } from './guest-stay-save.mjs';
-import { createCloudTargetKey, validCreateGuest } from './cloud-create-policy.mjs';
+import { createCloudTargetKey, isLabtestGuest, validCreateGuest } from './cloud-create-policy.mjs';
 import {
   searchGuestStaySourceBusiness, inspectGuestStaySourceBusiness,
   selectGuestStaySourceBusiness, closeGuestStaySourceBusinessPicker,
@@ -43,7 +44,8 @@ import {
 import { readQuote } from './quote-read.mjs';
 import { getQuoteView } from './quote-view.mjs';
 import { validCreateNote } from './create-request-binding.mjs';
-import { compareChargeRoomPricing } from './charge-room-pricing.mjs';
+import { compareChargeRoomCriteria, compareChargeRoomPricing } from './charge-room-pricing.mjs';
+import { compareCreatePartyRecord, extractCreatePartySnapshot } from './create-party-readback.mjs';
 
 const PROPERTY = 'HRCEN';
 const GUEST_STAY_CHECK_AVAILABILITY_PATH = '/web/base/OSRESV.HDR.getcheckavailability';
@@ -99,12 +101,22 @@ export function labtestRecordOptionsForOrganizationSelection(selection) {
 export function buildLabtestOrganizationReadbackTarget(saveResult, request, selectedOrganization,
   { allowRealGuest = false, expectedGuest, cloudTargetKey } = {}) {
   const recordOptions = labtestRecordOptionsForOrganizationSelection(selectedOrganization);
+  const chargeRoom = request?.roomTypeForCharge !== undefined;
+  const hasOrganization = request?.organizationSelection != null;
+  const agency = request?.agencySelection ? { nativeId: String(request.agencySelection.nativeId ?? '').trim(),
+    name: String(request.agencySelection.displayedAgency ?? '').trim() } : null;
+  const arAccount = request?.arSelection ? { nativeId: String(request.arSelection.nativeId ?? '').trim(),
+    name: String(request.arSelection.displayedArAccount ?? '').trim(), profileId: String(saveResult?.arProfileId ?? '').trim() } : null;
+  const validParty = party => !party || (/^\d+$/.test(party.nativeId) && party.name &&
+    (!Object.hasOwn(party, 'profileId') || (party.profileId.length > 0 && party.profileId.length <= 100)));
   const confirmation = saveResult?.confirmation;
   const guaranteeDisplay = guaranteeDisplayForSave(request?.guaranteeType, request?.guaranteeSelection);
   const guest = allowRealGuest ? expectedGuest : { firstName: 'Proof', lastName: 'Labtest' };
   if (!validCreateGuest(guest) || saveResult?.outcome !== 'saved_same_form' || !/^\d{6,}-\d+$/.test(confirmation || '') ||
-      !request || typeof request !== 'object' || !guaranteeDisplay || request.agencySelection != null || !recordOptions ||
-      !sameSessionOrganizationSelection(selectedOrganization, request.organizationSelection) ||
+      !request || typeof request !== 'object' || !guaranteeDisplay ||
+      (!chargeRoom && (request.agencySelection != null || !hasOrganization)) ||
+      (hasOrganization && (!recordOptions || !sameSessionOrganizationSelection(selectedOrganization, request.organizationSelection))) ||
+      !validParty(agency) || !validParty(arAccount) ||
       !/^\d+$/.test(String(request.guestId ?? '').trim()) ||
       typeof request.arrival !== 'string' || typeof request.departure !== 'string' ||
       (cloudTargetKey !== undefined && cloudTargetKey !== createCloudTargetKey(guest, request.arrival)) ||
@@ -120,7 +132,9 @@ export function buildLabtestOrganizationReadbackTarget(saveResult, request, sele
       ...(request.roomTypeForCharge !== undefined ? { roomTypeForCharge: request.roomTypeForCharge,
         checkedPricing: structuredClone(saveResult.checkedPricing) } : {}),
     },
-    expectedOrganization: recordOptions.expectedOrganization,
+    expectedOrganization: hasOrganization ? recordOptions.expectedOrganization : null,
+    ...(agency ? { expectedAgency: agency } : {}), ...(arAccount ? { expectedArAccount: arAccount } : {}),
+    ...(request.billingReference !== undefined ? { expectedBillingReference: request.billingReference } : {}),
     expectedGuarantee: { code: request.guaranteeType, display: guaranteeDisplay },
     allowRealGuest: allowRealGuest || !['NGI', 'GTDAGT'].includes(request.guaranteeType),
     ...(cloudTargetKey ? { cloudTargetKey } : {}),
@@ -130,7 +144,8 @@ export function buildLabtestOrganizationReadbackTarget(saveResult, request, sele
 function sessionState(page) {
   let state = sessionEvidence.get(page);
   if (!state) {
-    state = { organizationSelection: null, savedOrganizationCreate: null, chargeRoom: null, chargeRateChecked: false };
+    state = { organizationSelection: null, savedOrganizationCreate: null, chargeRoom: null,
+      chargeRateChecked: false, chargeRateRecheckAllowed: false };
     sessionEvidence.set(page, state);
   }
   return state;
@@ -157,25 +172,58 @@ export async function readSavedOrganizationCreate(state, request, { openSession 
           throw new Error('LABTEST_CHARGE_ROOM_UNVERIFIED');
         }
         pricing = compareChargeRoomPricing(view?.details?.fields, target.expected.checkedPricing);
-        if (pricing.averageRate !== 'MATCHED' || pricing.totalRate !== 'MATCHED' || pricing.currency === 'CHANGED') {
+        if (pricing.averageRate !== 'MATCHED' || pricing.totalRate !== 'MATCHED' || pricing.currency !== 'MATCHED') {
           throw new Error('LABTEST_CHARGE_PRICE_UNVERIFIED');
         }
       }
+      const extraParties = Boolean(target.expectedAgency || target.expectedArAccount);
       const record = await readCreatedLabtestRecord(page, target.expected, {
-        allowUnchangedBusinessParties: true, expectedOrganization: target.expectedOrganization,
-        expectedGuarantee: target.expectedGuarantee, ...(target.allowRealGuest ? { allowRealGuest: true } : {}),
+        ...(!extraParties && target.expectedOrganization ? { allowUnchangedBusinessParties: true,
+          expectedOrganization: target.expectedOrganization } : {}),
+        expectedGuarantee: target.expectedGuarantee, ...(target.allowRealGuest || extraParties ? { allowRealGuest: true } : {}),
       });
-      const organizationName = record.partyPreimage.company || record.partyPreimage.companyname;
-      if (record.partyPreimage.companyid !== target.expectedOrganization.nativeId ||
-          organizationName !== target.expectedOrganization.name) throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
+      if (extraParties) {
+        const partySnapshot = await record.frame.evaluate(extractCreatePartySnapshot);
+        const parties = compareCreatePartyRecord(partySnapshot, { ...target.expected,
+          agency: target.expectedAgency, organization: target.expectedOrganization, arAccount: target.expectedArAccount,
+          ...(target.expectedBillingReference !== undefined ? { billingReference: target.expectedBillingReference } : {}) });
+        if (parties.outcome !== 'verified') throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
+      }
+      const snapshot = await snapshotLabtestRecord(record.frame), data = snapshot?.data;
+      if (!cleanLabtestRecord(snapshot) || !data || typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error('LABTEST_RECORD_UNVERIFIED');
+      }
+      const exact = (name, wanted) => {
+        const keys = Object.keys(data).filter(key => key.toLowerCase() === name);
+        return keys.length === 1 && ['string', 'number'].includes(typeof data[keys[0]]) &&
+          String(data[keys[0]]).trim() === String(wanted ?? '').trim();
+      };
+      let otherPartiesBlank = false;
+      if (!extraParties) {
+        const organizationFields = new Set(target.expectedOrganization ? ['companyid', 'company', 'companyname'] : []);
+        otherPartiesBlank = blankSavedPartyFields.every(name => organizationFields.has(name) || exact(name, ''));
+        if (!otherPartiesBlank && isLabtestGuest(target.expected)) {
+          throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
+        }
+      }
+      let criteria;
+      if (target.expected.roomTypeForCharge !== undefined) {
+        criteria = compareChargeRoomCriteria(target.expected.checkedPricing, data);
+        if (Object.values(criteria).includes('CHANGED')) throw new Error('LABTEST_CHARGE_CRITERIA_UNVERIFIED');
+      }
+      const organizationName = target.expectedOrganization ? record.partyPreimage.company || record.partyPreimage.companyname : null;
+      if (!extraParties && target.expectedOrganization && (record.partyPreimage.companyid !== target.expectedOrganization.nativeId ||
+          organizationName !== target.expectedOrganization.name)) throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
       return {
-        outcome: 'read_back_verified', confirmation: target.confirmation, property: PROPERTY,
+        outcome: extraParties || !otherPartiesBlank || (criteria && Object.values(criteria).includes('UNKNOWN'))
+          ? 'partially_verified' : 'read_back_verified', confirmation: target.confirmation, property: PROPERTY,
         stay: { arrival: target.expected.arrival, departure: target.expected.departure,
           roomType: target.expected.roomType, ratePlan: target.expected.ratePlan,
           ...(target.expected.roomTypeForCharge !== undefined ? { roomTypeForCharge: target.expected.roomTypeForCharge } : {}) },
-        organization: { nativeId: record.partyPreimage.companyid, name: organizationName },
-        ...(pricing ? { pricing } : {}),
-        otherLinkedPartiesBlank: true,
+        ...(target.expectedOrganization ? { organization: { nativeId: record.partyPreimage.companyid, name: organizationName } } : {}),
+        ...(pricing ? { pricing, criteria } : {}),
+        ...(extraParties ? { selectedParties: 'MATCHED', otherLinkedParties: 'UNKNOWN' } :
+          otherPartiesBlank ? { otherLinkedPartiesBlank: true } : { otherLinkedParties: 'UNKNOWN' }),
       };
     }, { blockServiceWorkers: true, prepareContext: installReadOnlyGuard,
       ...(target.cloudTargetKey ? { cloudTargetKey: target.cloudTargetKey } : {}) });
@@ -457,7 +505,11 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
     } : null;
     let result;
     const previousChargeRateChecked = tool === 'selectGuestStayRatePlan' && state.chargeRateChecked;
-    if (tool === 'selectGuestStayRatePlan') state.chargeRateChecked = false;
+    const previousChargeRecheckAllowed = tool === 'selectGuestStayRatePlan' && state.chargeRateRecheckAllowed;
+    if (tool === 'selectGuestStayRatePlan') {
+      state.chargeRateChecked = false;
+      state.chargeRateRecheckAllowed = false;
+    }
     if (['readGuestStay', 'closeGuestProfilePicker', 'cancelHotelAvailabilityParty', 'closeHotelAvailability',
       'closeRoomRatePicker', 'closeGuestStaySourceBusinessPicker'].includes(tool)) {
       result = await action(page);
@@ -511,7 +563,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
         const availability = createAuthority?.m1CreateRateAvailabilityOptions?.();
         if (availability) Object.assign(options, availability);
         else if (state.chargeRoom && request.createDraft && createAuthority?.withM1CreateRateAvailability) {
-          if (previousChargeRateChecked) createAuthority.invalidateM1CreateRateAvailability?.();
+          if (previousChargeRecheckAllowed) createAuthority.invalidateM1CreateRateAvailability?.();
           result = await createAuthority.withM1CreateRateAvailability(async () => {
             const recheck = createAuthority.m1CreateRateAvailabilityOptions();
             if (!recheck) return { outcome: 'refused', issue: 'CHARGE_ROOM_PRICE_RECHECK_UNAVAILABLE' };
@@ -525,24 +577,43 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
     }
     if (tool === 'selectOrganization') state.organizationSelection = organizationSelectionProof(result);
     if (tool === 'selectRoomTypeForCharge') {
-      state.chargeRoom = result?.outcome === 'selected_unsaved' ? result.code : null;
-      state.chargeRateChecked = false;
-      if (state.chargeRoom) createAuthority?.invalidateM1CreateRateAvailability?.();
+      if (result?.outcome === 'selected_unsaved') {
+        state.chargeRoom = result.code;
+        state.chargeRateChecked = false;
+        state.chargeRateRecheckAllowed = true;
+        createAuthority?.invalidateM1CreateRateAvailability?.();
+      } else if (result?.outcome === 'selection_uncertain') {
+        state.chargeRoom = null;
+        state.chargeRateChecked = false;
+        state.chargeRateRecheckAllowed = false;
+      }
     }
     if (tool === 'selectGuestStayRatePlan' && state.chargeRoom && result?.outcome === 'selected_unsaved' && result.rateAvailability) {
       const checked = await currentCheckedChargeRate(page, { roomTypeForCharge: state.chargeRoom,
         roomType: request.createDraft?.roomType, ratePlan: result.code,
         arrival: result.arrivalDate, departure: result.departureDate });
       state.chargeRateChecked = checked;
+      state.chargeRateRecheckAllowed = checked;
       result = checked ? { ...result, chargeRoomPricing: 'checked' } :
         { ...result, outcome: 'selection_uncertain', issue: 'CHARGE_ROOM_PRICE_CHECK_UNVERIFIED' };
     } else if (tool === 'selectGuestStayRatePlan' && state.chargeRoom && result?.outcome === 'selected_unsaved') {
+      // A verified rate edit invalidates the old price, but it does not make
+      // the next native availability check unsafe.
+      state.chargeRateRecheckAllowed = previousChargeRecheckAllowed;
       result = { ...result, chargeRoomPricing: 'requires_recheck' };
     } else if (tool === 'selectGuestStayRatePlan' && (result?.outcome === 'input_gap' ||
-        (result?.outcome === 'execution_failure' && result.issue === 'RATE_AVAILABILITY_CONTROL_UNAVAILABLE'))) {
+        (result?.outcome === 'criteria_unavailable' && result.issue !== 'RATE_PRICE_UNCONFIRMED') ||
+        (result?.outcome === 'execution_failure' &&
+          ['RATE_AVAILABILITY_CONTROL_UNAVAILABLE', 'CURRENT_RATE_CODE_UNVERIFIED'].includes(result.issue)))) {
       // No price check was attempted; a corrected call or a later edit can
       // still recheck a previously verified price.
       state.chargeRateChecked = previousChargeRateChecked;
+      state.chargeRateRecheckAllowed = previousChargeRecheckAllowed;
+    } else if (tool === 'selectGuestStayRatePlan' && state.chargeRoom &&
+        result?.outcome === 'criteria_unavailable' && result.issue === 'RATE_PRICE_UNCONFIRMED') {
+      // The native availability request completed and no price was proven.
+      // A later check is safe, but this result must not authorize a Save.
+      state.chargeRateRecheckAllowed = true;
     }
     if (tool === 'saveNewLabtestStay' && result?.outcome === 'saved_same_form') {
       state.savedOrganizationCreate = buildLabtestOrganizationReadbackTarget(
@@ -722,7 +793,7 @@ export async function runBookingLookupSessionCli(args = process.argv.slice(2)) {
     } finally {
       lines.close();
     }
-  }, { labtestDates, blockServiceWorkers: labtestDates !== undefined });
+  }, { labtestDates, blockServiceWorkers: true });
 }
 
 export function main() {
