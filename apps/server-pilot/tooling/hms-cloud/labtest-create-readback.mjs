@@ -83,7 +83,8 @@ export async function readLabtestCreate({ confirmation, stay, expected }, { with
       native.firstName === firstName && native.lastName === lastName && native.arrival === expected.arrival &&
       native.departure === expected.departure && native.roomType === expected.roomType && native.ratePlan === expected.ratePlan;
     const data = identityMatches ? { adults: native.adults, children: native.children,
-      childages: Array.isArray(native.childAges) ? native.childAges : null, sourceofbus: native.sourceBusinessCode,
+      childages: Array.isArray(native.childAges) ? native.childAges : native.childAgesWire ?? null,
+      sourceofbus: native.sourceBusinessCode,
       ...Object.fromEntries(['child1', 'child2', 'child3'].map(name => [name, uniqueValue(fields, name)])) } : null;
     criteria = compareChargeRoomCriteria(expected.checkedPricing, data);
     if (Object.values(criteria).some(value => value !== 'MATCHED')) {

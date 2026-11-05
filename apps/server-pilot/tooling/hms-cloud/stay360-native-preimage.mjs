@@ -86,6 +86,7 @@ export function projectNativeSavedStayPreimage(snapshot, expected, { identityOnl
   const commercial = { ...(company ? { company } : {}), ...(agency ? { agency } : {}) };
   const sourceBusinessCode = field('sourceofbus');
   return { ...identity, roomType: field('roomtype'), ratePlan: field('rateplan'), adults, children, childAges,
+    ...(rawAges === '' && children === 0 ? { childAgesWire: '' } : {}),
     ...(sourceBusinessCode !== null ? { sourceBusinessCode } : {}),
     ...(verifiedGuarantee ? { guaranteeCode: verifiedGuarantee } : {}),
     ...(company || agency ? { commercial } : {}) };
