@@ -72,6 +72,10 @@ One primary action per step. No dead controls. The layout may be redesigned (see
 - **HMS reads and unsaved staging** on real guests and bookings are always allowed. This is how tools are proven on real email: run the real tool on a real email's details and stop before Save.
 - **Labtest writes** (Proof Labtest guest, 2027+ stays) are always allowed; never ask. Keep CMS send off on Labtest.
 - **Uncertain write:** never blind-retry; re-read HMS first. This prevents double bookings.
+- **Deploy main:** from a clean worktree at fetched `origin/main`, run that checkout's `apps/server-pilot/deploy/ops-deploy.sh`. Verify the runtime SHA, effective flags on all PM2 processes, and health.
+
+Engineering and verification rules live in `AGENTS.md`.
+
 ## Done
 
 A workflow is done when deployed main runs it for real guests. That means:
