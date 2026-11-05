@@ -83,7 +83,7 @@ describe('storedDecision', () => {
 
   it('reads live whenever the person asked for a treat-as or a staff note', () => {
     expect(storedDecision(ready, true)).toEqual({ kind: 'live' });
-    expect(storedDecision({ state: 'loading' }, true)).toEqual({ kind: 'live' });
+    expect(storedDecision({ state: 'loading' }, true)).toEqual({ kind: 'wait' });
   });
 
   it('waits while the stored read is loading, so the live read does not start twice', () => {

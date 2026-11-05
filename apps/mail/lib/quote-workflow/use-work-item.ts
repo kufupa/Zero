@@ -71,11 +71,10 @@ export type StoredDecision =
  * result is not used. Loading waits, so the live read does not start twice.
  */
 export function storedDecision(pane: StoredPane, overridden: boolean): StoredDecision {
-  if (pane.state === 'retrying') return { kind: 'wait' };
-  if (overridden) return { kind: 'live' };
-  if (pane.state === 'loading') return { kind: 'wait' };
-  if (pane.state === 'ready') return { kind: 'ready', analysis: pane.analysis };
+  if (pane.state === 'retrying' || pane.state === 'loading') return { kind: 'wait' };
   if (pane.state === 'failed') return { kind: 'failed', reason: pane.reason };
+  if (overridden) return { kind: 'live' };
+  if (pane.state === 'ready') return { kind: 'ready', analysis: pane.analysis };
   return { kind: 'live' };
 }
 
@@ -833,7 +832,7 @@ export function useStoredWork(args: {
         if (!current || lookupKeyRef.current !== keyNow) return;
         setRetryingRead(null);
         if (fresh.status === 'ready') readyAt.current = Date.now();
-        setLookup({ key: keyNow, transportId, result: fresh.status === 'unavailable'
+        setLookup({ key: keyNow, transportId, result: fresh.status === 'unavailable' || fresh.status === 'none' || result.status === 'blocked'
           ? { status: 'failed', reason: 'Could not check the read. Reopen the email and try again.' } : fresh, timedOut: false });
       } catch {
         if (!current || lookupKeyRef.current !== keyNow) return;
