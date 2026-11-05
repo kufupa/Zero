@@ -110,7 +110,9 @@ organization, it verifies the native ID/name against the same-session
 selection. An organization search or new guest profile selection invalidates
 that proof. Charge-room creates with an agency or A/R return
 `partially_verified`: selected parties are checked, while other linked parties
-are unknown. Cross-session caller-supplied IDs are not supported.
+are unknown. The same outcome reports unknown saved pricing criteria or
+unverified inherited parties; individual criteria report `MATCHED`, `CHANGED`,
+or `UNKNOWN`. Cross-session caller-supplied IDs are not supported.
 See [guest-stay-save.md](./guest-stay-save.md) for all
 guards and the limits of browser-side email observations.
 

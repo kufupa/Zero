@@ -4,7 +4,7 @@ import { searchLabtestPreimage } from './labtest-preimage.mjs';
 import { withSavedStayAgentSession } from './saved-stay-agent-session.mjs';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
 import { CREATE_GUARANTEES, createCloudTargetKey, isLabtestGuest, validCreateGuest } from './cloud-create-policy.mjs';
-import { compareChargeRoomPricing } from './charge-room-pricing.mjs';
+import { compareChargeRoomCriteria, compareChargeRoomPricing } from './charge-room-pricing.mjs';
 
 const same = (a, b) => String(a ?? '').trim().toLocaleLowerCase() === String(b ?? '').trim().toLocaleLowerCase();
 const uniqueValue = (fields, name) => {
@@ -66,7 +66,7 @@ export async function readLabtestCreate({ confirmation, stay, expected }, { with
   const lastName = expected.allowRealGuest ? expected.lastName : 'Labtest';
   const read = await withSavedSession(({ runTool }) => runTool({ tool: 'read', confirmation,
     guestName: `${firstName} ${lastName}`, arrivalDate: stay.arrival,
-    ...(expected.guaranteeCode ? { includeNativePreimage: true } : {}) }),
+    ...(expected.guaranteeCode || expected.roomTypeForCharge !== undefined ? { includeNativePreimage: true } : {}) }),
   { readOnly: true, readOnlyConfirmation: confirmation, ...(cloudTargetKey ? { cloudTargetKey } : {}) });
   const fields = read?.record?.details?.fields;
   if (read?.outcome !== 'ok' || !Array.isArray(fields)) return { issue: 'readback_unverified', detail: read };
@@ -74,6 +74,21 @@ export async function readLabtestCreate({ confirmation, stay, expected }, { with
   const pricing = expected.roomTypeForCharge !== undefined ? compareChargeRoomPricing(fields, expected.checkedPricing) : null;
   if (pricing && (pricing.averageRate !== 'MATCHED' || pricing.totalRate !== 'MATCHED' || pricing.currency !== 'MATCHED')) {
     mismatches.push({ field: 'checkedPricing', issue: 'saved_price_unverified', pricing });
+  }
+  let criteria;
+  if (expected.roomTypeForCharge !== undefined) {
+    const native = read.record.nativePreimage;
+    const identityMatches = native?.source === 'record_view_ext_model' && native.propertyCode === 'HRCEN' &&
+      native.confirmation === confirmation && native.guestId === String(expected.guestId) && native.status === 'Reserved' &&
+      native.firstName === firstName && native.lastName === lastName && native.arrival === expected.arrival &&
+      native.departure === expected.departure && native.roomType === expected.roomType && native.ratePlan === expected.ratePlan;
+    const data = identityMatches ? { adults: native.adults, children: native.children,
+      childages: Array.isArray(native.childAges) ? native.childAges : null, sourceofbus: native.sourceBusinessCode,
+      ...Object.fromEntries(['child1', 'child2', 'child3'].map(name => [name, uniqueValue(fields, name)])) } : null;
+    criteria = compareChargeRoomCriteria(expected.checkedPricing, data);
+    if (Object.values(criteria).some(value => value !== 'MATCHED')) {
+      mismatches.push({ field: 'checkedPricingCriteria', issue: 'saved_criteria_unverified', criteria });
+    }
   }
   if (expected.guaranteeCode) {
     const native = read.record.nativePreimage;
@@ -84,7 +99,7 @@ export async function readLabtestCreate({ confirmation, stay, expected }, { with
       native.adults === expected.adults && native.children === expected.children && native.guaranteeCode === expected.guaranteeCode;
     if (!verified) mismatches.push({ field: 'guaranteeTypeCode', issue: 'native_code_unverified' });
   }
-  return { fields, captureScope: read.record.details.captureScope, mismatches, ...(pricing ? { pricing } : {}) };
+  return { fields, captureScope: read.record.details.captureScope, mismatches, ...(pricing ? { pricing, criteria } : {}) };
 }
 
 const readCensus = (stay, expected, cloudTargetKey) => withCenturionStay360Page((page) => searchLabtestPreimage(page, {

@@ -2,7 +2,7 @@
 // This is not an approval, a write grant, or proof that an ID is stable across sessions.
 const KEYS = ['propertycode', 'confirmationnumber', 'guestid', 'status', 'firstname', 'lastname',
   'arrivaldate', 'departuredate', 'roomtype', 'rateplan', 'adults', 'children', 'child1', 'child2', 'child3',
-  'childages', 'reservationstayid', 'reservationid', 'recordid', 'guaranteetype', 'companyid', 'company', 'taid1', 'ta1'];
+  'childages', 'sourceofbus', 'reservationstayid', 'reservationid', 'recordid', 'guaranteetype', 'companyid', 'company', 'taid1', 'ta1'];
 const FORM_KEYS = ['confirmationnumber', 'guestid', 'status', 'firstname', 'lastname', 'arrivaldate',
   'departuredate', 'roomtype', 'rateplan', 'adults', 'children', 'child1', 'child2', 'child3'];
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -84,7 +84,9 @@ export function projectNativeSavedStayPreimage(snapshot, expected, { identityOnl
   const company = verifiedParty(data, snapshot.controls, 'companyid', 'company');
   const agency = verifiedParty(data, snapshot.controls, 'taid1', 'ta1');
   const commercial = { ...(company ? { company } : {}), ...(agency ? { agency } : {}) };
+  const sourceBusinessCode = field('sourceofbus');
   return { ...identity, roomType: field('roomtype'), ratePlan: field('rateplan'), adults, children, childAges,
+    ...(sourceBusinessCode !== null ? { sourceBusinessCode } : {}),
     ...(verifiedGuarantee ? { guaranteeCode: verifiedGuarantee } : {}),
     ...(company || agency ? { commercial } : {}) };
 }

@@ -36,7 +36,7 @@ import {
 import { selectGuestStayRatePlan, currentCheckedChargeRate } from './guest-stay-rate-plan.mjs';
 import { searchLabtestPreimage } from './labtest-preimage.mjs';
 import { guaranteeDisplayForSave, normalizeOrganizationSelection, saveNewLabtestStay } from './guest-stay-save.mjs';
-import { createCloudTargetKey, validCreateGuest } from './cloud-create-policy.mjs';
+import { createCloudTargetKey, isLabtestGuest, validCreateGuest } from './cloud-create-policy.mjs';
 import {
   searchGuestStaySourceBusiness, inspectGuestStaySourceBusiness,
   selectGuestStaySourceBusiness, closeGuestStaySourceBusinessPicker,
@@ -44,7 +44,7 @@ import {
 import { readQuote } from './quote-read.mjs';
 import { getQuoteView } from './quote-view.mjs';
 import { validCreateNote } from './create-request-binding.mjs';
-import { compareChargeRoomPricing } from './charge-room-pricing.mjs';
+import { compareChargeRoomCriteria, compareChargeRoomPricing } from './charge-room-pricing.mjs';
 import { compareCreatePartyRecord, extractCreatePartySnapshot } from './create-party-readback.mjs';
 
 const PROPERTY = 'HRCEN';
@@ -193,33 +193,35 @@ export async function readSavedOrganizationCreate(state, request, { openSession 
       if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('LABTEST_RECORD_UNVERIFIED');
       const exact = (name, wanted) => {
         const keys = Object.keys(data).filter(key => key.toLowerCase() === name);
-        return keys.length === 1 && String(data[keys[0]] ?? '').trim() === String(wanted ?? '').trim();
+        return keys.length === 1 && ['string', 'number'].includes(typeof data[keys[0]]) &&
+          String(data[keys[0]]).trim() === String(wanted ?? '').trim();
       };
+      let otherPartiesBlank = false;
       if (!extraParties) {
         const organizationFields = new Set(target.expectedOrganization ? ['companyid', 'company', 'companyname'] : []);
-        if (blankSavedPartyFields.some(name => !organizationFields.has(name) && !exact(name, ''))) {
+        otherPartiesBlank = blankSavedPartyFields.every(name => organizationFields.has(name) || exact(name, ''));
+        if (!otherPartiesBlank && isLabtestGuest(target.expected)) {
           throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
         }
       }
+      let criteria;
       if (target.expected.roomTypeForCharge !== undefined) {
-        const checked = target.expected.checkedPricing, occupancy = checked?.occupancy;
-        if (!occupancy || occupancy.adults == null || occupancy.children == null || checked.sourceCode == null) {
-          throw new Error('LABTEST_CHARGE_CRITERIA_UNVERIFIED');
-        }
-        if (!Object.entries(occupancy).every(([name, value]) => exact(name, value)) ||
-            !exact('sourceofbus', checked.sourceCode)) throw new Error('LABTEST_CHARGE_CRITERIA_UNVERIFIED');
+        criteria = compareChargeRoomCriteria(target.expected.checkedPricing, data);
+        if (Object.values(criteria).includes('CHANGED')) throw new Error('LABTEST_CHARGE_CRITERIA_UNVERIFIED');
       }
       const organizationName = target.expectedOrganization ? record.partyPreimage.company || record.partyPreimage.companyname : null;
       if (!extraParties && target.expectedOrganization && (record.partyPreimage.companyid !== target.expectedOrganization.nativeId ||
           organizationName !== target.expectedOrganization.name)) throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
       return {
-        outcome: extraParties ? 'partially_verified' : 'read_back_verified', confirmation: target.confirmation, property: PROPERTY,
+        outcome: extraParties || !otherPartiesBlank || (criteria && Object.values(criteria).includes('UNKNOWN'))
+          ? 'partially_verified' : 'read_back_verified', confirmation: target.confirmation, property: PROPERTY,
         stay: { arrival: target.expected.arrival, departure: target.expected.departure,
           roomType: target.expected.roomType, ratePlan: target.expected.ratePlan,
           ...(target.expected.roomTypeForCharge !== undefined ? { roomTypeForCharge: target.expected.roomTypeForCharge } : {}) },
         ...(target.expectedOrganization ? { organization: { nativeId: record.partyPreimage.companyid, name: organizationName } } : {}),
-        ...(pricing ? { pricing } : {}),
-        ...(extraParties ? { selectedParties: 'MATCHED', otherLinkedParties: 'UNKNOWN' } : { otherLinkedPartiesBlank: true }),
+        ...(pricing ? { pricing, criteria } : {}),
+        ...(extraParties ? { selectedParties: 'MATCHED', otherLinkedParties: 'UNKNOWN' } :
+          otherPartiesBlank ? { otherLinkedPartiesBlank: true } : { otherLinkedParties: 'UNKNOWN' }),
       };
     }, { blockServiceWorkers: true, prepareContext: installReadOnlyGuard,
       ...(target.cloudTargetKey ? { cloudTargetKey: target.cloudTargetKey } : {}) });
