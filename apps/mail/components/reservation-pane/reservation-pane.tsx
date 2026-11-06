@@ -91,6 +91,23 @@ function valueFor(snapshot: ReservationPaneSnapshot, path: string): unknown {
   return field ? field.value : draftAtPath(snapshot, path);
 }
 
+/** Read a source subtree with all source-bound staff leaf overrides applied. */
+function effectiveValueFor(snapshot: ReservationPaneSnapshot, path: string, sourceValue?: unknown): unknown {
+  const field = snapshot.fields[path];
+  const raw = field ? field.value : sourceValue ?? draftAtPath(snapshot, path);
+  const override = snapshot.session.draft.fieldOverrides[path] ?? field?.override;
+  let value = raw;
+  if (override?.state === 'set') value = override.value;
+  else if (override?.state === 'none' || override?.state === 'clear' || override?.state === 'unknown') return null;
+  else if (record(raw)?.kind === 'none') return null;
+
+  if (Array.isArray(value)) return value.map((item, index) => effectiveValueFor(snapshot, `${path}/${index}`, item));
+  const objectValue = record(value);
+  if (objectValue) return Object.fromEntries(Object.entries(objectValue).map(([key, child]) =>
+    [key, effectiveValueFor(snapshot, `${path}/${encodeURIComponent(key)}`, child)]));
+  return value;
+}
+
 function nativeSelectionValue(snapshot: ReservationPaneSnapshot, path: string): unknown {
   const field = snapshot.fields[path];
   const suggestion = draftAtPath(snapshot, path.replace(/\/nativeSelectionRef$/u, '/suggestedRef'));
@@ -531,7 +548,7 @@ function isRequestPrepared(snapshot: ReservationPaneSnapshot, request: Reservati
 
 function amendTargets(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection) {
   const body = `${requestPath(request)}/body`;
-  const scope = record(valueFor(snapshot, `${body}/targets`));
+  const scope = record(effectiveValueFor(snapshot, `${body}/targets`));
   const rows = Array.isArray(scope?.include) ? scope.include : [];
   return { body, scope, rows: rows.map((value, index) => ({ value: record(value) ?? {}, index })) };
 }
@@ -725,10 +742,13 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
       const quote = current.session.draft.proposal.content.requests.find((request) => request.kind === 'quote'
         && `/proposal/content/requests/${encodeURIComponent(request.id)}/body` === path);
       const quoteReview = quote ? quoteReviewInfo(current, quote.id) : null;
-      const required = field?.required === true || typeof suggestedSelection === 'string' || Boolean(quoteReview?.items.length);
+      const explicitAmendReview = isAmendClearOrEmptyReviewPath(current, path);
+      const required = field?.required === true || typeof suggestedSelection === 'string' || Boolean(quoteReview?.items.length) || explicitAmendReview;
       const review = current.session.draft.staffReviews[path];
       if (!required || (quoteReview?.items.length ? quoteReview.accepted : (field?.review ?? review?.status) === 'accepted')) return;
-      if (!hasValue(field?.value ?? suggestedSelection ?? valueFor(current, path))) throw new Error('Enter or resolve this value before marking it reviewed.');
+      if (!explicitAmendReview && !hasValue(field?.value ?? suggestedSelection ?? valueFor(current, path))) {
+        throw new Error('Enter or resolve this value before marking it reviewed.');
+      }
       const next = await client.review({ source: bound, snapshot: current, fieldPath: path, decision: 'accepted' });
       applySnapshot(next, bound);
     });
@@ -1103,7 +1123,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
         const freshResult = record(fresh?.result);
         const freshRef = fresh && fresh.criteria.inputDigest === preview.criteria.inputDigest && fresh.status === 'complete'
           && freshResult?.matchesApprovedNative === false ? fresh.ref : undefined;
-        if (freshRef) {
+        if (freshRef && fresh) {
           const paths = Array.isArray(fresh.criteria.reviewPaths) ? fresh.criteria.reviewPaths.filter((path): path is string => typeof path === 'string') : [];
           if (!paths.length || !paths.every((path) => serviceReviewAcceptedAfter(current, path, fresh.observedAt))) {
             throw new Error('Review every field and native amount in the latest saved-stay prepare before Go.');
@@ -2015,6 +2035,34 @@ function changeHasUsefulValue(change: Record<string, unknown>): boolean {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= 1000;
 }
 
+function isAmendClearOrEmptyReviewPath(snapshot: ReservationPaneSnapshot, path: string): boolean {
+  const requests = snapshot.session.draft.proposal.content.requests.filter((request) => request.kind === 'amend');
+  for (const request of requests) {
+    const body = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
+    const groups: Array<{ path: string; changes: unknown[] }> = [];
+    const sharedPath = `${body}/sharedChanges`;
+    const shared = effectiveValueFor(snapshot, sharedPath);
+    groups.push({ path: sharedPath, changes: Array.isArray(shared) ? shared : [] });
+    const perTargetPath = `${body}/perTarget`;
+    const perTarget = effectiveValueFor(snapshot, perTargetPath);
+    if (Array.isArray(perTarget)) perTarget.forEach((rawPerTarget, perIndex) => {
+      const per = record(rawPerTarget);
+      const changePath = `${perTargetPath}/${perIndex}/changes`;
+      groups.push({ path: changePath, changes: Array.isArray(per?.changes) ? per.changes : [] });
+    });
+    for (const group of groups) {
+      for (const [index, rawChange] of group.changes.entries()) {
+        const change = record(rawChange);
+        if (!change || path !== `${group.path}/${index}/value`) continue;
+        const field = text(change.field);
+        if (change.op === 'clear' && AMEND_CLEAR_FIELDS.some((value) => value === field)) return true;
+        if (change.op === 'set' && field === 'childAges' && Array.isArray(change.value) && change.value.length === 0) return true;
+      }
+    }
+  }
+  return false;
+}
+
 function centsLabel(price: Record<string, unknown> | null, key: 'averageCents' | 'totalCents'): string | null {
   const value = price?.[key];
   if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
@@ -2028,11 +2076,11 @@ function AmendEditor(props: EditorProps & {
 }) {
   const { body, scope, rows } = amendTargets(props.snapshot, props.request);
   const perTargetPath = `${body}/perTarget`;
-  const rawPerTargets = valueFor(props.snapshot, perTargetPath);
+  const rawPerTargets = effectiveValueFor(props.snapshot, perTargetPath);
   const perTargets = Array.isArray(rawPerTargets) ? rawPerTargets.map((value, index) => ({ value: record(value) ?? {}, index })) : [];
   const excludes = Array.isArray(scope?.exclude) ? scope.exclude : [];
   const sharedChangesPath = `${body}/sharedChanges`;
-  const rawSharedChanges = valueFor(props.snapshot, sharedChangesPath);
+  const rawSharedChanges = effectiveValueFor(props.snapshot, sharedChangesPath);
   const sharedChanges = Array.isArray(rawSharedChanges) ? rawSharedChanges.map((value) => record(value) ?? {}) : [];
   const addTarget = () => {
     const id = `amend_target_${crypto.randomUUID().replaceAll('-', '')}`;
@@ -2089,7 +2137,7 @@ function AmendEditor(props: EditorProps & {
       const perRoot = per ? `${perTargetPath}/${per.index}` : null;
       const ratePath = perRoot ? `${perRoot}/rateHandling` : null;
       const changesPath = perRoot ? `${perRoot}/changes` : null;
-      const rawChanges = changesPath ? valueFor(props.snapshot, changesPath) : null;
+      const rawChanges = changesPath ? effectiveValueFor(props.snapshot, changesPath) : null;
       const targetChanges = Array.isArray(rawChanges) ? rawChanges.map((value) => record(value) ?? {}) : [];
       const allChanges = [...sharedChanges, ...targetChanges];
       const prep = latestAmendPreparation(props.snapshot, props.request.id, hintId);
@@ -2194,7 +2242,7 @@ function AmendChangeList(props: EditorProps & { path: string; label: string; cha
   </section>;
 }
 
-function AmendChangeRow(props: EditorProps & { path: string; change: Record<string, unknown> }) {
+function AmendChangeRow(props: EditorProps & { path: string; change: Record<string, unknown>; shared?: boolean }) {
   const { path, change } = props;
   const op = text(change.op);
   const fieldName = text(props.editValue(`${path}/field`)) || text(change.field);
@@ -2234,7 +2282,8 @@ function AmendChangeRow(props: EditorProps & { path: string; change: Record<stri
         max={spec.type === 'number' ? (fieldName === 'adults' ? 16 : 9) : undefined}
         help={spec.type === 'code' ? 'Use the native HMS code; current price/availability is displayed only after Prepare.' : undefined} /> : null}
     {op === 'set' && fieldName === 'childAges' && Array.isArray(currentValue) && currentValue.length === 0
-        && props.snapshot.fields[valuePath]?.required && props.snapshot.fields[valuePath]?.review !== 'accepted' && props.onDone
+        && props.snapshot.fields[valuePath]?.review !== 'accepted'
+        && props.snapshot.session.draft.staffReviews[valuePath]?.status !== 'accepted' && props.onDone
       ? <button type="button" className={styles.inlineButton} disabled={Boolean(props.busy)} onClick={() => props.onDone?.(valuePath)}>Confirm zero children</button> : null}
     {op === 'clear' && !unsupported && <div className={styles.notice}>
       <span>This explicitly clears {spec?.label ?? fieldName}; HMS applies only supported contact/CMS clears.</span>
