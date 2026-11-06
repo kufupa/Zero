@@ -28,6 +28,7 @@ import { workItemsRouter } from './routes/work-items.js';
 import { workflowFoldersRouter } from './routes/workflow-folders.js';
 import { ratesRouter } from './routes/rates.js';
 import { hmsApprovalRouter } from './routes/hms-approval.js';
+import { reservationWorkflowV2Router } from './routes/reservation-workflow-v2.js';
 
 export const appRouter = router({
   mail: mailRouter,
@@ -54,6 +55,7 @@ export const appRouter = router({
   workflowFolders: workflowFoldersRouter,
   rates: ratesRouter,
   hmsApproval: hmsApprovalRouter,
+  reservationWorkflowV2: reservationWorkflowV2Router,
 });
 
 export type AppRouter = typeof appRouter;

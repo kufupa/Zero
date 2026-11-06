@@ -1,6 +1,6 @@
 import { useLayoutEffect } from 'react';
 import { useWebPreview, type PreviewSelection } from '@/lib/workstation/web-pane-bridge';
-import { NavaPane } from '@/components/nava-pane/nava-pane';
+import { ReservationPaneHost } from '@/components/nava-pane/reservation-pane-host';
 import {
   HmsJobNoticeBanner,
   HmsJobRunningChip,
@@ -27,9 +27,6 @@ export function WebPanePanel({
   sourceThreadId,
   sourceMessageId,
   requireSelectedMessage = false,
-  onOpenThread,
-  goldLabelEnabled = false,
-  hmsNoticesManagedByParent = false,
 }: {
   threadId: string;
   sourceThreadId?: string;
@@ -81,14 +78,10 @@ export function WebPanePanel({
       data-preview-thread={threadId}
       className="h-full overflow-y-auto"
     >
-      <NavaPane
+      <ReservationPaneHost
         bridge={bridge}
         preview
-        webSelectedMessageId={requireSelectedMessage ? activeEmail?.entryId ?? null : null}
         webSelectedThreadId={selection.threadId}
-        onOpenThread={onOpenThread}
-        goldLabelEnabled={goldLabelEnabled}
-        hmsNoticesManagedByParent={hmsNoticesManagedByParent}
       />
     </div>
   );
