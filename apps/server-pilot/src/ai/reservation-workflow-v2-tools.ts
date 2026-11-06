@@ -34,13 +34,13 @@ import {
   resolveNeverDispatchedCreate,
   type HmsLabtestWriteHandle,
 } from './hms-labtest-dispatch.js';
-import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
+import { hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
 import { persistHmsShots, verifyStoredHmsShot } from './hms-shots-store.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS, isPropertyReadLockDeadline } from '../hms/property-read-lock.js';
 import { paneStayCloudTargetLock, paneStayCreateTarget, paneStayPropertyLock, paneWriteMode } from './pane-stay-save.js';
 import { findStay } from './pane-stay-lookup.js';
-import { isLabtestGuest } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
+import { createCloudTargetKey, isLabtestGuest } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
 import { lockCreateActorSession } from './pane-create-actor-lock.js';
 import { stayCommitsOf } from './work-items.js';
 
@@ -369,7 +369,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     guestCandidate = candidateFromObservation(draft, 'guest_candidate', selectedGuestRef, `${firstName} ${lastName}`,
       undefined, requestId, allocationId, guestRefPath);
     if (guestCandidate && (!sameName(guestCandidate.firstName, firstName) || !sameName(guestCandidate.lastName, lastName) ||
-        (guest.email && !sameName(guestCandidate.email, guest.email)) || !text(guestCandidate.nativeId))) guestCandidate = null;
+        (text(guest.email) && !sameName(guestCandidate.email, guest.email)) || !text(guestCandidate.nativeId))) guestCandidate = null;
   } else if (mode !== 'lookup') issues.push(`${guestPath}:existing_profile_selection_required`);
   if (!guestCandidate && mode !== 'lookup') issues.push(`${guestPath}:native_profile_unverified`);
   const selectedGuestRefValue = typeof selectedGuestRef === 'string' ? selectedGuestRef : null;
@@ -1026,6 +1026,7 @@ export async function reservationWorkflowV2Prepare(ctx: ReservationWorkflowV2Ser
       createReservation: (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<NativeCreate>;
     };
     const native = await tool.createReservation(compiled.nativeInput, { allowRealGuest: true, expectedGuest: compiled.expectedGuest,
+      cloudTargetKey: createCloudTargetKey(compiled.expectedGuest, record(compiled.nativeInput.stay)?.arrival),
       requireExplicitGuestSelection: true, capturePrepareScreenshot: true, allowCommitOnlyBillingReference: true });
     const mapped = mapNativeOutcome(native), price = validPrice(native.ratePlanAvailability);
     const prepareShot = await persistPreparedScreenshot(ctx, input.workItemId, native.screenshots?.filled);
@@ -1453,11 +1454,12 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
   let priorSiblingsVerified = false;
   const liveOptions: Record<string, unknown> = {
     allowRealGuest: admission.allowRealGuest, expectedGuest: compiled.expectedGuest,
+    cloudTargetKey: createCloudTargetKey(compiled.expectedGuest, record(compiled.nativeInput.stay)?.arrival),
     expectedRequestDigest: prepared.digest, expectedRateAvailability: prepared.price,
     allowCommitOnlyBillingReference: true,
     ...(siblingVerifier ? { verifyLabtestMatches: async (census: unknown) => {
       priorSiblingsVerified = await siblingVerifier.verifyBatchSiblings(census, priorSiblings,
-        { cloudTargetKey: hmsDispatchTargetKey(targetResult.data) });
+        { cloudTargetKey: createCloudTargetKey(compiled.expectedGuest, record(compiled.nativeInput.stay)?.arrival) });
       return priorSiblingsVerified;
     } } : {}),
     authorizeCandidate: async () => {
