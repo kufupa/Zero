@@ -102,7 +102,8 @@ function leaf(draft: ReservationWorkflowV2Draft, path: string, sourceValue: unkn
     if (override.state === 'unknown') return { issue: 'unknown_staff_value' };
     if (override.state === 'set') return { value: override.value, path };
     if (override.state === 'none' || override.state === 'clear') return { value: undefined, path, unset: true };
-    if (override.state === 'inherit') return { value: sourceValue, path };
+    if (override.state === 'inherit') return record(sourceValue)?.kind === 'none'
+      ? { value: undefined, path, unset: true } : { value: sourceValue, path };
   }
   if (sourceValue && typeof sourceValue === 'object' && !Array.isArray(sourceValue) &&
       (sourceValue as { kind?: unknown }).kind === 'none') return { value: undefined, path, unset: true };
@@ -289,7 +290,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
       { path: ptr(...req.slice(1).split('/').map(decodeURIComponent), 'shared', field), value: body.shared[field as keyof typeof body.shared] },
     ];
     for (const choice of choices) {
-      if (draft.fieldOverrides[choice.path]?.state === 'inherit') continue;
+      if (choice.path !== choices[choices.length - 1]!.path && draft.fieldOverrides[choice.path]?.state === 'inherit') continue;
       const resolved = leaf(draft, choice.path, choice.value);
       if ('issue' in resolved) return resolved;
       if (resolved.value !== undefined && resolved.value !== null) {
