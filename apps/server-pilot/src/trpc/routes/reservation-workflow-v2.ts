@@ -39,6 +39,8 @@ import { reservationWorkflowV2QuoteLookup, reservationWorkflowV2QuotePrepare,
   reservationWorkflowV2QuoteExecute, reservationWorkflowV2QuoteReconcile } from '../../ai/reservation-workflow-v2-quote.js';
 import { reservationWorkflowV2CancelLookup, reservationWorkflowV2CancelPrepare,
   reservationWorkflowV2CancelExecute, reservationWorkflowV2CancelReconcile } from '../../ai/reservation-workflow-v2-cancel.js';
+import { reservationWorkflowV2AmendLookup, reservationWorkflowV2AmendPrepare,
+  reservationWorkflowV2AmendExecute, reservationWorkflowV2AmendReconcile } from '../../ai/reservation-workflow-v2-amend.js';
 import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
 import { guardCenturionHmsMailboxOrigin } from '../../hms/mailbox-hms-origin-bind.js';
 import { paneSourceSelectionCondition, paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
@@ -197,6 +199,7 @@ export const reservationWorkflowV2Router = router({
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteLookup(scoped, input);
     if (workflow.kind === 'create') return reservationWorkflowV2Lookup(scoped, input);
     if (workflow.kind === 'cancel') return reservationWorkflowV2CancelLookup(scoped, input);
+    if (workflow.kind === 'amend') return reservationWorkflowV2AmendLookup(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
   prepare: mailboxProcedure.input(reservationWorkflowV2PrepareInputSchema).mutation(async ({ input, ctx }) => {
@@ -206,6 +209,7 @@ export const reservationWorkflowV2Router = router({
     if (workflow.kind === 'quote') return reservationWorkflowV2QuotePrepare(scoped, input);
     if (workflow.kind === 'create') return reservationWorkflowV2Prepare(scoped, input);
     if (workflow.kind === 'cancel') return reservationWorkflowV2CancelPrepare(scoped, input);
+    if (workflow.kind === 'amend') return reservationWorkflowV2AmendPrepare(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
   execute: mailboxProcedure.input(reservationWorkflowV2ExecuteInputSchema).mutation(async ({ input, ctx }) => {
@@ -215,6 +219,7 @@ export const reservationWorkflowV2Router = router({
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteExecute(scoped, input);
     if (workflow.kind === 'create') return reservationWorkflowV2Execute(scoped, input);
     if (workflow.kind === 'cancel') return reservationWorkflowV2CancelExecute(scoped, input);
+    if (workflow.kind === 'amend') return reservationWorkflowV2AmendExecute(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
   lookupServices: mailboxProcedure.input(servicesInput).mutation(async ({ input, ctx }) =>
@@ -228,6 +233,7 @@ export const reservationWorkflowV2Router = router({
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteReconcile(scoped, input);
     if (workflow.kind === 'create') return reservationWorkflowV2Reconcile(scoped, input);
     if (workflow.kind === 'cancel') return reservationWorkflowV2CancelReconcile(scoped, input);
+    if (workflow.kind === 'amend') return reservationWorkflowV2AmendReconcile(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
 });

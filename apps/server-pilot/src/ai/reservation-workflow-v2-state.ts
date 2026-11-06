@@ -259,9 +259,20 @@ function editableCancelBodyField(draft: ReservationWorkflowV2Draft, parts: strin
   return Boolean(hint?.id && ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture', 'suggestedRef'].includes(parts[8]!));
 }
 
+function editableAmendTargetSuggestedRef(draft: ReservationWorkflowV2Draft, parts: string[]): boolean {
+  if (parts.length !== 9 || parts[0] !== 'proposal' || parts[1] !== 'content' || parts[2] !== 'requests' ||
+      parts[4] !== 'body' || parts[5] !== 'targets' || parts[6] !== 'include' || parts[8] !== 'suggestedRef' ||
+      !/^(?:0|[1-9]\d*)$/.test(parts[7] ?? '')) return false;
+  const request = draft.proposal.content.requests.find((entry) => entry.id === parts[3]);
+  if (request?.kind !== 'amend') return false;
+  const hint = request.body.targets.include[Number(parts[7])];
+  return Boolean(hint?.id);
+}
+
 function editablePath(draft: ReservationWorkflowV2Draft, path: string): boolean {
   const parts = pathParts(path);
   if (!parts || parts.length < 5) return false;
+  if (editableAmendTargetSuggestedRef(draft, parts)) return true;
   const [, section, collection, stableId, branch] = parts;
   if (section !== 'content' || !['requests', 'services', 'documents'].includes(collection!)) return false;
   const rows = collection === 'requests' ? draft.proposal.content.requests :

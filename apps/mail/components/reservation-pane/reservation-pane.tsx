@@ -1127,7 +1127,7 @@ type EditorProps = {
   busy?: boolean;
   onStage: (path: string, value: unknown, state?: PendingReservationEdit['state']) => void;
   onBlur: (path: string) => void;
-  onDone?: (path: string) => void;
+  onDone?: (path: string, note?: string) => void;
   editValue: (path: string) => unknown;
   hasPendingEdit?: (path: string) => boolean;
   onOpenEvidence?: (ref: string) => void;
