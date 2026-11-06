@@ -126,6 +126,9 @@ export interface ReservationWorkflowClient {
     kind: 'voucher' | 'payment_proof' }): Promise<ReservationPaneSnapshot>;
   lookupServices(input: ReservationCommandContext & { requestId: string; allocationId: string; serviceId?: string }): Promise<ReservationPaneSnapshot>;
   previewServices(input: ReservationCommandContext & { requestId: string; allocationId: string; serviceId?: string }): Promise<ReservationPaneSnapshot>;
+  executeServices(input: ReservationCommandContext & { requestId: string; allocationId: string; serviceId: string;
+    idempotencyKey: string; reviewedPrepareRef?: string }): Promise<ReservationPaneSnapshot>;
+  reconcileServices(input: ReservationCommandContext & { operationId: string }): Promise<ReservationPaneSnapshot>;
 }
 
 export type ReservationWorkflowV2WireSource = ReservationWorkflowV2Source;

@@ -41,6 +41,9 @@ export type ReservationWorkflowV2TrpcClient = {
       kind: 'voucher' | 'payment_proof' }>;
     lookupServices: MutationProcedure<ItemInput & { requestId: string; allocationId: string; serviceId?: string }>;
     prepareServices: MutationProcedure<ItemInput & { requestId: string; allocationId: string; serviceId?: string }>;
+    executeServices: MutationProcedure<ItemInput & { requestId: string; allocationId: string; serviceId: string; go: true;
+      idempotencyKey: string; reviewedPrepareRef?: string }>;
+    reconcileServices: MutationProcedure<ItemInput & { operationId: string }>;
   };
 };
 
@@ -297,7 +300,8 @@ function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot
     flattenFields(request, root, fields, draft);
     requests.push({ id: request.id, kind: request.kind, text: request.requestText,
       fieldPaths: Object.keys(fields).filter((path) => path.startsWith(`${root}/`)),
-      supported: (request.kind === 'create' || request.kind === 'quote' || request.kind === 'amend' || request.kind === 'cancel' || request.kind === 'filing') && draft.propertyCode === 'HRCEN' });
+      supported: (request.kind === 'create' || request.kind === 'quote' || request.kind === 'amend'
+        || request.kind === 'cancel' || request.kind === 'filing') && draft.propertyCode === 'HRCEN' });
   }
   for (const [index, row] of draft.proposal.content.services.entries()) {
     flattenFields(row, pointer('proposal', 'content', 'services', index), fields, draft);
@@ -377,8 +381,16 @@ function operationNotice(result: unknown, success: string[]): string | undefined
   if (!isRecord(result)) return 'The reservation service returned an unreadable native-tool result.';
   if (success.includes(String(result.status))) return undefined;
   const status = isString(result.status) ? result.status.replaceAll('_', ' ') : 'unknown outcome';
-  const issue = isString(result.issue) ? result.issue.replaceAll('_', ' ') : null;
+  const issue = nativeIssueText(result.issue);
   return issue ? `Infor check: ${status} — ${issue}.` : `Infor check: ${status}.`;
+}
+
+function nativeIssueText(issue: unknown): string | null {
+  if (!isString(issue)) return null;
+  if (issue === 'amend_automatic_recovery_unavailable_operator_must_verify_writer_closed') {
+    return 'The save outcome is uncertain. Contact Nava support before making another change to this stay.';
+  }
+  return issue.replaceAll('_', ' ');
 }
 
 function serviceOperationNotice(result: unknown, success: string[]): string | undefined {
@@ -557,7 +569,8 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       await refreshAfterStale(input, command.source, result);
       const snapshot = await load(input, command.source);
       const notice = serviceOperationNotice(result, ['ok']);
-      return notice ? { ...snapshot, serviceNotice: `Add-On catalogue: ${notice}` } : snapshot;
+      return { ...snapshot, ...(notice ? { serviceNotice: `Add-On catalogue: ${notice}` } : {}),
+        ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
     async previewServices(command) {
       const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
@@ -566,7 +579,28 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       await refreshAfterStale(input, command.source, result);
       const snapshot = await load(input, command.source);
       const notice = serviceOperationNotice(result, ['prepared']);
-      return notice ? { ...snapshot, serviceNotice: `Add-On preview only; nothing saved: ${notice}` } : snapshot;
+      return { ...snapshot, ...(notice ? { serviceNotice: `Add-On preview only; nothing saved: ${notice}` } : {}),
+        ...(isRecord(result) ? { workflowReply: result } : {}) };
+    },
+    async executeServices(command) {
+      const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
+        serviceId: command.serviceId, go: true as const, idempotencyKey: command.idempotencyKey,
+        ...(command.reviewedPrepareRef ? { reviewedPrepareRef: command.reviewedPrepareRef } : {}) };
+      const result = await api.executeServices.mutate(input, mailboxOptions(command.source));
+      await refreshAfterStale(input, command.source, result);
+      const snapshot = await load(input, command.source);
+      const notice = serviceOperationNotice(result, ['succeeded', 'already_succeeded']);
+      return { ...snapshot, ...(notice ? { serviceNotice: `Add-On save: ${notice}` } : {}),
+        ...(isRecord(result) ? { workflowReply: result } : {}) };
+    },
+    async reconcileServices(command) {
+      const input = { ...itemInput(command), operationId: command.operationId };
+      const result = await api.reconcileServices.mutate(input, mailboxOptions(command.source));
+      await refreshAfterStale(input, command.source, result);
+      const snapshot = await load(input, command.source);
+      const notice = serviceOperationNotice(result, ['succeeded', 'failed']);
+      return { ...snapshot, ...(notice ? { serviceNotice: `Add-On reconciliation: ${notice}` } : {}),
+        ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
   };
 }

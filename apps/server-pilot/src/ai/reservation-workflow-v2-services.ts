@@ -32,11 +32,11 @@ type ServiceProposal = ReservationWorkflowV2Draft['proposal']['content']['servic
 type CreateRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'create' }>;
 type ServiceTarget = ServiceProposal['targets'][number];
 type ServiceTargetRef = Extract<ServiceTarget['target'], { kind: 'allocation' }>;
-type ServiceRow = { service: ServiceProposal; serviceIndex: number; target: ServiceTarget; targetIndex: number;
+export type ReservationWorkflowV2ServiceRow = { service: ServiceProposal; serviceIndex: number; target: ServiceTarget; targetIndex: number;
   targetRef: ServiceTargetRef };
 type ServiceLinkResult = { outcome: 'not_found' | 'needs_input'; issue: string } |
-  { outcome: 'ok'; createRequest: CreateRequest; rows: ServiceRow[] };
-type CompiledServiceItem = { outcome: 'ok'; items: AddOnItem; candidate: Record<string, unknown>; candidateRef: string;
+  { outcome: 'ok'; createRequest: CreateRequest; rows: ReservationWorkflowV2ServiceRow[] };
+export type ReservationWorkflowV2CompiledServiceItem = { outcome: 'ok'; items: AddOnItem; candidate: Record<string, unknown>; candidateRef: string;
   serviceId: string; targetRef: ServiceTargetRef; serviceIndex: number; targetIndex: number;
   fieldPaths: Record<string, string>; reviewPaths: string[]; inputDigest: string } |
   { outcome: 'needs_input' | 'unsupported'; issue: string; fields: string[]; reviewPaths?: string[];
@@ -81,10 +81,13 @@ function effectiveServiceField(draft: ReservationWorkflowV2Draft, service: Recor
   target: Record<string, unknown>, targetIndex: number, field: string): Effective {
   const targetValue = record(target.fields)?.[field];
   const targetPath = pointer('proposal', 'content', 'services', serviceIndex, 'targets', targetIndex, 'fields', field);
+  const sharedPath = pointer('proposal', 'content', 'services', serviceIndex, 'sharedFields', field);
+  if (draft.fieldOverrides[targetPath]?.state === 'inherit') {
+    return effective(draft, sharedPath, record(service.sharedFields)?.[field]);
+  }
   const local = effective(draft, targetPath, targetValue);
   if ('issue' in local || local.none || (local.value !== undefined && local.value !== null &&
       (typeof local.value !== 'string' || local.value.trim() !== ''))) return local;
-  const sharedPath = pointer('proposal', 'content', 'services', serviceIndex, 'sharedFields', field);
   return effective(draft, sharedPath, record(service.sharedFields)?.[field]);
 }
 
@@ -117,13 +120,13 @@ function targetRefOf(value: unknown) {
     ? { kind: 'allocation' as const, requestId, allocationId } : null;
 }
 
-function servicesForAllocation(draft: ReservationWorkflowV2Draft, input: Input): ServiceLinkResult {
+export function reservationWorkflowV2ServicesForAllocation(draft: ReservationWorkflowV2Draft, input: Input): ServiceLinkResult {
   const createRequest = draft.proposal.content.requests.find(request => request.id === input.requestId);
   if (!createRequest || createRequest.kind !== 'create') return { outcome: 'not_found' as const, issue: 'create_request_not_found' };
   if (!createRequest.body.allocations.some(allocation => allocation.id === input.allocationId)) {
     return { outcome: 'not_found' as const, issue: 'create_allocation_not_found' };
   }
-  const rows: ServiceRow[] = [];
+  const rows: ReservationWorkflowV2ServiceRow[] = [];
   const targetKeys = new Set<string>();
   for (const [serviceIndex, service] of draft.proposal.content.services.entries()) {
     if (input.serviceId && service.id !== input.serviceId) continue;
@@ -149,8 +152,7 @@ function servicesForAllocation(draft: ReservationWorkflowV2Draft, input: Input):
   return { outcome: 'ok' as const, createRequest, rows };
 }
 
-function candidateFor(draft: ReservationWorkflowV2Draft, input: Input, row: ServiceRow):
-  { issue: string; path: string } | { candidate: Record<string, unknown>; path: string; observation: ReservationWorkflowV2Observation } {
+function candidateFor(draft: ReservationWorkflowV2Draft, input: Input, row: ReservationWorkflowV2ServiceRow) {
   const service = row.service as unknown as Record<string, unknown>;
   const path = pointer('proposal', 'content', 'services', row.serviceIndex, 'itemCandidateRef');
   const candidateRef = valueAt(draft, path, service.itemCandidateRef);
@@ -167,12 +169,13 @@ function candidateFor(draft: ReservationWorkflowV2Draft, input: Input, row: Serv
   return { candidate: record(candidate)!, path, observation: observation! };
 }
 
-function compileServiceItem(draft: ReservationWorkflowV2Draft, input: Input, row: ServiceRow): CompiledServiceItem {
+export function reservationWorkflowV2CompileServiceItem(draft: ReservationWorkflowV2Draft, input: Input,
+  row: ReservationWorkflowV2ServiceRow): ReservationWorkflowV2CompiledServiceItem {
   const service = row.service as unknown as Record<string, unknown>;
   const target = row.target as unknown as Record<string, unknown>;
   if (service.operation !== 'add') return { outcome: 'unsupported', issue: 'saved_addon_edit_remove_not_connected', fields: [] };
   const candidate = candidateFor(draft, input, row);
-  if ('issue' in candidate) return { outcome: 'needs_input' as const, issue: candidate.issue, fields: [candidate.path] };
+  if ('issue' in candidate) return { outcome: 'needs_input' as const, issue: candidate.issue ?? 'service_candidate_unavailable', fields: [candidate.path] };
 
   const items: AddOnItem = { code: String(candidate.candidate.code) };
   const paths: Record<string, string> = {};
@@ -214,15 +217,14 @@ function compileServiceItem(draft: ReservationWorkflowV2Draft, input: Input, row
   const quantityScope = record(service.quantityRequest)?.scope;
   const targetQuantityPath = pointer('proposal', 'content', 'services', row.serviceIndex, 'targets', row.targetIndex, 'fields', 'quantity');
   const targetQuantitySet = paths.quantity === targetQuantityPath ||
-    (quantityScope === 'per_target' && paths.quantity === pointer('proposal', 'content', 'services', row.serviceIndex, 'quantityRequest', 'value'));
+    (quantityScope === 'per_target' && [
+      pointer('proposal', 'content', 'services', row.serviceIndex, 'quantityRequest', 'value'),
+      pointer('proposal', 'content', 'services', row.serviceIndex, 'sharedFields', 'quantity'),
+    ].some((path) => path === paths.quantity));
   const serviceTargets = row.service.targets;
   if (!targetQuantitySet && !(quantityScope === 'overall' && serviceTargets.length === 1)) {
     errors.push('quantity:whole_booking_allocation_unresolved');
   }
-  if (!items.unitPrice) errors.push('unitPrice:source_price_required');
-  if (!items.quantity) errors.push('quantity:target_quantity_required');
-  if (!items.startDate || !items.endDate) errors.push('dates:explicit_source_or_staff_values_required');
-  if (items.startDate && items.endDate && items.startDate >= items.endDate) errors.push('dates:range_invalid');
   if (quantityScope === 'overall' && serviceTargets.length === 1 && !items.quantity) {
     const quantityRequest = record(service.quantityRequest);
     const quantityPath = pointer('proposal', 'content', 'services', row.serviceIndex, 'quantityRequest', 'value');
@@ -234,16 +236,24 @@ function compileServiceItem(draft: ReservationWorkflowV2Draft, input: Input, row
       if (!accepted(draft, quantityPath)) reviewPaths.add(quantityPath);
     }
   }
+  if (!items.unitPrice) errors.push('unitPrice:source_price_required');
+  if (!items.quantity) errors.push('quantity:target_quantity_required');
+  if (!items.startDate || !items.endDate) errors.push('dates:explicit_source_or_staff_values_required');
+  if (items.startDate && items.endDate && items.startDate >= items.endDate) errors.push('dates:range_invalid');
   if (serviceTargets.length > 1 && quantityScope === 'overall' && !targetQuantitySet) {
     errors.push('quantity:whole_booking_quantity_must_not_be_split');
   }
   if (errors.length) return { outcome: 'needs_input' as const, issue: 'service_fields_incomplete_or_ambiguous', fields: errors,
     reviewPaths: [...reviewPaths], candidate: candidate.candidate, paths };
-  const allPaths = [candidate.path, ...Object.values(paths)];
+  const allPaths = [candidate.path, ...Object.entries(paths).filter(([field]) => Object.hasOwn(items, field)).map(([, path]) => path)];
   return { outcome: 'ok' as const, items, candidate: candidate.candidate, candidateRef: candidate.observation.ref,
     serviceId: service.id as string, targetRef: row.targetRef, serviceIndex: row.serviceIndex, targetIndex: row.targetIndex,
     fieldPaths: paths, reviewPaths: [...new Set([...reviewPaths, ...allPaths.filter(path => !accepted(draft, path))])],
     inputDigest: hash({ serviceId: service.id, targetRef: row.targetRef, items, candidate: candidate.candidate }) };
+}
+
+export function reservationWorkflowV2ServiceReviewPaths(plan: Extract<ReservationWorkflowV2CompiledServiceItem, { outcome: 'ok' }>): string[] {
+  return [...new Set(Object.entries(plan.fieldPaths).filter(([field]) => Object.hasOwn(plan.items, field)).map(([, path]) => path))];
 }
 
 async function currentDraft(ctx: ReservationWorkflowV2ServerContext, input: Input) {
@@ -302,7 +312,7 @@ async function appendServiceObservation(ctx: ReservationWorkflowV2ServerContext,
 }
 
 function serviceTargets(draft: ReservationWorkflowV2Draft, input: Input) {
-  return servicesForAllocation(draft, input);
+  return reservationWorkflowV2ServicesForAllocation(draft, input);
 }
 
 /** Read the native ITEM catalogue for linked Add-On requests on an unsaved Create stay. */
@@ -390,18 +400,18 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
   const compiledCreate = compileReservationWorkflowV2Create(loaded.draft, input.requestId, input.allocationId, ctx.property.propertyCode);
   if (compiledCreate.outcome !== 'ok') return { status: compiledCreate.outcome, issue: compiledCreate.issue,
     ...(compiledCreate.fields ? { fields: compiledCreate.fields } : {}) };
-  const compiled = linked.rows.map(row => ({ row, plan: compileServiceItem(loaded.draft!, input, row) }));
+  const compiled = linked.rows.map(row => ({ row, plan: reservationWorkflowV2CompileServiceItem(loaded.draft!, input, row) }));
   const invalid = compiled.filter(item => item.plan.outcome === 'needs_input');
   if (invalid.length) return { status: 'needs_input', issue: 'service_preview_fields_unresolved',
     services: invalid.map(item => ({ serviceId: item.row.service.id, ...(item.plan as object) })),
     unsupportedServices: compiled.filter(item => item.plan.outcome === 'unsupported').map(item => ({
       serviceId: item.row.service.id, targetRef: item.row.targetRef,
-      issue: (item.plan as Exclude<CompiledServiceItem, { outcome: 'ok' }>).issue,
+      issue: item.plan.outcome !== 'ok' ? item.plan.issue : 'service_preview_unavailable',
     })) };
   const plans = compiled.flatMap(item => item.plan.outcome === 'ok' ? [item.plan] : []);
   if (!plans.length) return { status: 'unsupported', issue: 'saved_addon_edit_remove_not_connected', saved: false,
     services: compiled.map(item => ({ serviceId: item.row.service.id, targetRef: item.row.targetRef,
-      status: 'unsupported', issue: (item.plan as Exclude<CompiledServiceItem, { outcome: 'ok' }>).issue })) };
+      status: 'unsupported', issue: item.plan.outcome !== 'ok' ? item.plan.issue : 'service_preview_unavailable' })) };
   try {
     const addonTool = await import(new URL('../../tooling/hms-cloud/stay360-addons.mjs', import.meta.url).href) as {
       previewUnsavedStay360AddOns: (page: unknown, options: Record<string, unknown>) => Promise<Record<string, unknown>>;
@@ -454,7 +464,7 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
     }
     results.unshift(...compiled.filter(item => item.plan.outcome === 'unsupported').map(item => ({
       status: 'unsupported', serviceId: item.row.service.id, targetRef: item.row.targetRef,
-      issue: (item.plan as Exclude<CompiledServiceItem, { outcome: 'ok' }>).issue, saved: false,
+      issue: item.plan.outcome !== 'ok' ? item.plan.issue : 'service_preview_unavailable', saved: false,
     })));
     return { status: !unsupported.length && results.every(result => result.status === 'prepared') ? 'prepared' : 'partial',
       requestId: input.requestId, allocationId: input.allocationId, nativeCreate: {
@@ -464,3 +474,9 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
     return { status: 'failed', issue: 'native_service_preview_failed', saved: false };
   }
 }
+
+export { reservationWorkflowV2ExecuteServices, reservationWorkflowV2ReconcileServices,
+  reservationWorkflowV2ServicesExecuteInputSchema }
+  from './reservation-workflow-v2-services-execute.js';
+export type { ReservationWorkflowV2ServicesExecuteInput, ReservationWorkflowV2ServicesResult, ReservationWorkflowV2ServicesStatus }
+  from './reservation-workflow-v2-services-execute.js';

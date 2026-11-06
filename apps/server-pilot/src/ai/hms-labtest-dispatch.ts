@@ -15,7 +15,7 @@ const identifier = z.string().min(1).max(256).refine((s) => s === s.trim() &&
   ![...s].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127));
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const uuid = z.string().uuid().transform((value) => value.toLowerCase());
-const operation = z.enum(['create', 'attach_document', 'amend', 'cancel']);
+const operation = z.enum(['create', 'attach_document', 'amend', 'cancel', 'add_on']);
 const shot = z.object({ runId: z.string().uuid(), sha256: digest }).strict();
 const claimSchema = z.object({
   workItemId: uuid, transportId: identifier, actorUserId: identifier, grantId: uuid,
@@ -33,7 +33,7 @@ const resolutionSchema = z.object({ version: z.literal(1), kind: z.literal('reso
   holdId: uuid, operation, confirmation: z.string().max(40).regex(/^\d+-\d+$/),
   nativeStayId: z.string().trim().regex(/^\d{1,100}$/).optional(),
   nativeReadback: z.record(z.string(), z.unknown()).optional(),
-  readbackDigest: digest, savedShot: shot, recovered: z.literal(true).optional() }).strict();
+  readbackDigest: digest, savedShot: shot.optional(), recovered: z.literal(true).optional() }).strict();
 const noDispatchSchema = z.object({ version: z.literal(1), kind: z.literal('not_dispatched'),
   holdId: uuid, operation: z.enum(['create', 'attach_document', 'cancel']) }).strict();
 const eventSchema = z.discriminatedUnion('kind', [intentSchema, resolutionSchema, noDispatchSchema]);
@@ -156,8 +156,21 @@ export function hmsLabtestIntentTarget(intent: HmsLabtestIntent): HmsDispatchTar
 }
 
 function resolutionMatchesIntent(intent: Intent, evidence: { confirmation: string; nativeStayId?: string;
-  nativeReadback?: Record<string, unknown>; readbackDigest: string },
+  nativeReadback?: Record<string, unknown>; readbackDigest: string; savedShot?: { runId: string; sha256: string } },
   requireNative: boolean): boolean {
+  if (intent.operation === 'add_on') {
+    const readback = evidence.nativeReadback, recovery = object(intent.recovery), service = object(recovery.serviceIntent);
+    const coverage = object(service.baselineCoverage);
+    if (!readback || !evidence.nativeStayId || !/^\d{1,100}$/.test(String(readback.nativeId ?? '')) ||
+        !Array.isArray(service.baselineIds) || service.baselineIds.includes(readback.nativeId) ||
+        coverage.complete !== true || coverage.loaded !== service.baselineIds.length ||
+        coverage.reportedTotal !== service.baselineIds.length || !Object.keys(object(service.approvedItem)).length ||
+        service.operationId !== intent.grantId || service.workItemId !== intent.workItemId ||
+        service.transportId !== intent.transportId || service.sourceDigest !== intent.sourceDigest ||
+        service.dispatchDigest !== intent.requestDigest ||
+        createHash('sha256').update(canonicalJson(service.approvedItem)).digest('hex') !== intent.approvedDigest ||
+        canonicalJson(readback.item) !== canonicalJson(service.approvedItem)) return false;
+  } else if (!evidence.savedShot) return false;
   const target = hmsLabtestIntentTarget(intent);
   if (!target) return intent.operation === 'create';
   if (target.kind !== 'saved') return true;
@@ -520,7 +533,7 @@ export async function resolveHmsLabtestDispatch(db: DB, handle: HmsLabtestWriteH
 // function nor its trusted reader accepts evidence or callbacks from clients.
 async function recoverPositiveDispatch<P extends { confirmation: string; nativeStayId?: string;
   nativeReadback?: Record<string, unknown>; readbackDigest: string;
-  savedShot: { runId: string; sha256: string } }>(db: DB, holdId: string, kind: z.infer<typeof operation>, driver: {
+  savedShot?: { runId: string; sha256: string } }>(db: DB, holdId: string, kind: z.infer<typeof operation>, driver: {
     withLock: <T>(intent: Intent, action: () => Promise<T>) => Promise<T>;
     prove: (intent: Intent) => Promise<P>;
     record: (tx: CreateFenceTransaction, intent: Intent, proof: P) => Promise<void>;
@@ -582,6 +595,16 @@ export async function recoverHmsLabtestAmend(db: DB, holdId: string): Promise<vo
     withLock: driver.withAmendRecoveryLock,
     prove: (intent) => driver.proveAmendRecovery(db, intent),
     record: driver.recordRecoveredAmend,
+  });
+}
+
+/** Positive-only Add-On reconciliation under the same target hold as every other writer. */
+export async function recoverHmsLabtestAddOn(db: DB, holdId: string): Promise<void> {
+  const driver = await import('./reservation-workflow-v2-services-execute.js');
+  await recoverPositiveDispatch(db, holdId, 'add_on', {
+    withLock: driver.withServiceRecoveryLock,
+    prove: (intent) => driver.proveServiceRecovery(db, intent),
+    record: driver.recordRecoveredService,
   });
 }
 
