@@ -32,11 +32,12 @@ import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDisp
   recoverHmsLabtestV2Attach, resolveHmsLabtestDispatch, resolveNeverDispatchedAttach,
   type HmsLabtestIntent, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { persistHmsShots, readStoredHmsShot, verifyStoredHmsShot } from './hms-shots-store.js';
+import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 
 export type ReservationWorkflowV2FilingContext = {
   db: DB;
   transport: { id: string };
-  user: { id: string };
+  user: { id: string; sessionId?: string; sessionProfile?: 'legacy' | 'remote' };
   property: { propertyCode: string };
 };
 type Outcome = { status: string; issue?: string; [key: string]: unknown };
@@ -511,6 +512,9 @@ async function currentV2Source(tx: WorkTransaction, ctx: ReservationWorkflowV2Fi
 async function authorizeCurrentFiling(tx: WorkTransaction, ctx: ReservationWorkflowV2FilingContext,
   input: ReservationWorkflowV2ExecuteInput, selection: FilingSelection, prepared: NonNullable<ReturnType<typeof getPrepared>>,
   form: AttachForm, approvedDigest: string) {
+  await lockCreateActorAccess(tx, { actorUserId: ctx.user.id, transportId: ctx.transport.id });
+  await lockCreateActorSession(tx, { actorUserId: ctx.user.id, sessionId: ctx.user.sessionId,
+    sessionProfile: ctx.user.sessionProfile });
   const item = await (await import('./pane-filing-source.js')).lockBoundFilingSource(tx as DB, { transportId: ctx.transport.id,
     workItemId: input.workItemId, form });
   if (!item || item.id !== input.workItemId || item.transportId !== ctx.transport.id ||
@@ -561,6 +565,7 @@ async function recordUnknown(ctx: ReservationWorkflowV2FilingContext, input: Res
 /** Staff Go → one exact intercepted Cloud Documents upload → fresh metadata readback and durable target receipt. */
 export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflowV2FilingContext,
   input: ReservationWorkflowV2ExecuteInput): Promise<Outcome> {
+  if (!ctx.user.sessionId || !ctx.user.sessionProfile) return { status: 'refused', issue: 'authenticated_staff_session_required' };
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;
   if (ctx.property.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'filing_property_unavailable' };
@@ -929,8 +934,8 @@ export async function reservationWorkflowV2FilingReconcile(ctx: ReservationWorkf
       sql`${workEvent.value}->>'kind' = 'intent'`, sql`${workEvent.value}->>'grantId' = ${input.operationId}`)).limit(2);
   const intents = rows.map((row) => record(row.value)).filter((value) => value?.kind === 'intent' &&
     value.operation === 'attach_document' && value.grantId === input.operationId);
-  if (!intents.length) return recordNotDispatched(initial.draft.generationId,
-    'No durable HRCEN upload intent exists for this Go.');
+  if (!intents.length) return { status: 'needs_reconcile', operationId: input.operationId,
+    issue: 'filing_dispatch_intent_not_yet_observed' };
   const intent = intents.find((value) => record(value.recovery)?.operationId === input.operationId &&
     record(value.recovery)?.requestId === result.requestId && record(value.recovery)?.workItemId === input.workItemId);
   if (!intent || typeof intent.holdId !== 'string' || !z.string().uuid().safeParse(intent.holdId).success) {
