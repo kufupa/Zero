@@ -131,7 +131,8 @@ function servicesForAllocation(draft: ReservationWorkflowV2Draft, input: Input):
   return { outcome: 'ok' as const, createRequest, rows };
 }
 
-function candidateFor(draft: ReservationWorkflowV2Draft, input: Input, row: ServiceRow) {
+function candidateFor(draft: ReservationWorkflowV2Draft, input: Input, row: ServiceRow):
+  { issue: string; path: string } | { candidate: Record<string, unknown>; path: string; observation: ReservationWorkflowV2Observation } {
   const service = row.service as unknown as Record<string, unknown>;
   const path = pointer('proposal', 'content', 'services', row.serviceIndex, 'itemCandidateRef');
   const candidateRef = valueAt(draft, path, service.itemCandidateRef);
@@ -159,7 +160,7 @@ function compileServiceItem(draft: ReservationWorkflowV2Draft, input: Input, row
   const paths: Record<string, string> = {};
   const errors: string[] = [];
   const reviewPaths = new Set<string>();
-  for (const field of ['quantity', 'startDate', 'endDate', 'unitPrice', 'frequency', 'pricingControl', 'folio', 'comment']) {
+  for (const field of ['quantity', 'startDate', 'endDate', 'unitPrice', 'frequency', 'pricingControl', 'folio', 'comment'] as const) {
     const value = effectiveServiceField(draft, service, row.serviceIndex, target, row.targetIndex, field);
     paths[field] = value.path;
     if ('issue' in value) { errors.push(`${field}:${value.issue}`); continue; }
@@ -337,7 +338,7 @@ export async function reservationWorkflowV2LookupServices(ctx: ReservationWorkfl
       }
     }
     if (!observations.length) {
-      const detail = { status: listing?.outcome ?? 'failed', issue: listing?.issue ?? native.issue ?? 'native_item_catalogue_empty',
+      const detail = { status: text(listing?.outcome) ?? 'failed', issue: text(listing?.issue) ?? native.issue ?? 'native_item_catalogue_empty',
         requestId: input.requestId, allocationId: input.allocationId };
       return detail;
     }
@@ -377,12 +378,12 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
     services: invalid.map(item => ({ serviceId: item.row.service.id, ...(item.plan as object) })),
     unsupportedServices: compiled.filter(item => item.plan.outcome === 'unsupported').map(item => ({
       serviceId: item.row.service.id, targetRef: item.row.targetRef,
-      issue: (item.plan as Extract<CompiledServiceItem, { outcome: 'unsupported' }>).issue,
+      issue: (item.plan as Exclude<CompiledServiceItem, { outcome: 'ok' }>).issue,
     })) };
   const plans = compiled.flatMap(item => item.plan.outcome === 'ok' ? [item.plan] : []);
   if (!plans.length) return { status: 'unsupported', issue: 'saved_addon_edit_remove_not_connected', saved: false,
     services: compiled.map(item => ({ serviceId: item.row.service.id, targetRef: item.row.targetRef,
-      status: 'unsupported', issue: (item.plan as Extract<CompiledServiceItem, { outcome: 'unsupported' }>).issue })) };
+      status: 'unsupported', issue: (item.plan as Exclude<CompiledServiceItem, { outcome: 'ok' }>).issue })) };
   try {
     const addonTool = await import(new URL('../../tooling/hms-cloud/stay360-addons.mjs', import.meta.url).href) as {
       previewUnsavedStay360AddOns: (page: unknown, options: Record<string, unknown>) => Promise<Record<string, unknown>>;
@@ -430,12 +431,12 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
       if (stored.status !== 'ok') return { ...stored };
       results.push({ status: complete ? 'prepared' : 'needs_input', serviceId: plan.serviceId,
         observationRef: observation.ref, targetRef: plan.targetRef, item: businessItem,
-        issue: nativeItem?.issue ?? preview?.issue ?? native.issue,
+        issue: text(nativeItem?.issue) ?? text(preview?.issue) ?? native.issue,
         reviewPaths: plan.reviewPaths, saved: false });
     }
     results.unshift(...compiled.filter(item => item.plan.outcome === 'unsupported').map(item => ({
       status: 'unsupported', serviceId: item.row.service.id, targetRef: item.row.targetRef,
-      issue: (item.plan as Extract<CompiledServiceItem, { outcome: 'unsupported' }>).issue, saved: false,
+      issue: (item.plan as Exclude<CompiledServiceItem, { outcome: 'ok' }>).issue, saved: false,
     })));
     return { status: !unsupported.length && results.every(result => result.status === 'prepared') ? 'prepared' : 'partial',
       requestId: input.requestId, allocationId: input.allocationId, nativeCreate: {
