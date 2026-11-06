@@ -210,7 +210,19 @@ function shouldReviewPath(draft: ReservationWorkflowV2Draft, path: string, value
   return value === null || typeof value !== 'object';
 }
 
+function isQuoteBookingIntentPath(draft: ReservationWorkflowV2Draft, path: string): boolean {
+  const parts = path.split('/').slice(1).map((part) => {
+    try { return decodeURIComponent(part); } catch { return ''; }
+  });
+  if (parts.length !== 6 || parts[0] !== 'proposal' || parts[1] !== 'content' || parts[2] !== 'requests'
+      || parts[4] !== 'body' || parts[5] !== 'provisionalBookingRequested') return false;
+  return draft.proposal.content.requests.some((request) => request.id === parts[3] && request.kind === 'quote');
+}
+
 function requiredForPath(draft: ReservationWorkflowV2Draft, path: string, value: unknown): boolean {
+  // Quote execution always requires a staff decision on this intent, regardless
+  // of the model's field-review hint. Keep it reviewable even when unchanged.
+  if (isQuoteBookingIntentPath(draft, path)) return true;
   if (!shouldReviewPath(draft, path, value)) return false;
   return draft.fieldReviewRequirements[path]?.required !== false;
 }
