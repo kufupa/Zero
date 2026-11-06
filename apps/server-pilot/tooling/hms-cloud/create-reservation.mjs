@@ -373,6 +373,7 @@ function draftRequestBinding(input, state, output, formFields) {
 /** Prepare an unsaved draft or execute the server-authorized create. */
 export async function createReservation(input, { withSession = withBookingLookupSession, withSavedSession = withSavedStayAgentSession,
   partyReadback = readCreateParties, census, authorizeCandidate, dispatchCandidate, expectedRequestDigest,
+  expectedRateAvailability,
   capturePrepareScreenshot = false, requireExplicitGuestSelection = false, selectTrack = fillTrackBeforeGuarantee,
   verifyLabtestMatches, allowRealGuest = false, expectedGuest, cloudTargetKey } = {}) {
   if ((authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
@@ -382,6 +383,10 @@ export async function createReservation(input, { withSession = withBookingLookup
       (expectedRequestDigest !== undefined &&
         (input?.mode !== 'commit' || typeof expectedRequestDigest !== 'string' ||
           !/^[0-9a-f]{64}$/.test(expectedRequestDigest) || !authorizeCandidate)) ||
+      (expectedRateAvailability !== undefined && (input?.mode !== 'commit' || !expectedRequestDigest ||
+        !expectedRateAvailability || typeof expectedRateAvailability !== 'object' || Array.isArray(expectedRateAvailability) ||
+        !['averageRate', 'totalRate', 'currency'].every(key => typeof expectedRateAvailability[key] === 'string' &&
+          expectedRateAvailability[key].trim()))) ||
       typeof capturePrepareScreenshot !== 'boolean' || (capturePrepareScreenshot && input?.mode !== 'prepare') ||
       typeof requireExplicitGuestSelection !== 'boolean' || (requireExplicitGuestSelection && input?.mode !== 'prepare') ||
       typeof allowRealGuest !== 'boolean' || (allowRealGuest && (!validCreateGuest(expectedGuest) ||
@@ -670,6 +675,13 @@ export async function createReservation(input, { withSession = withBookingLookup
         if (binding?.outcome !== 'ok' || binding.normalizedRequestDigest !== expectedRequestDigest) {
           stop('refused', 'approved_request_changed');
         }
+      }
+      if (expectedRateAvailability !== undefined &&
+          (!output.ratePlanAvailability || ['averageRate', 'totalRate', 'currency'].some(key =>
+            output.ratePlanAvailability[key] !== expectedRateAvailability[key]) ||
+           formValue(form.fields, 'averagerate') !== expectedRateAvailability.averageRate ||
+           formValue(form.fields, 'totalrate') !== expectedRateAvailability.totalRate)) {
+        stop('refused', 'approved_rate_changed');
       }
       output.applied.guaranteeType = formValue(form.fields, 'guaranteetype');
       state.dir = join('/tmp', `hms-cloud-create-${randomUUID()}`); await mkdir(state.dir, { mode: 0o700 });

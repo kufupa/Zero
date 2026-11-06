@@ -15,11 +15,13 @@ following requests use the same `{ id, tool, ... }` envelope:
 | --- | --- | --- |
 | `readSavedStayRates` | none; optional `includeReasons: true` | native nightly amounts, currency, totals and digest; optionally saved reason descriptions |
 | `listRateOverrideReasons` | none | current native codes and descriptions; coverage may be unknown |
-| `prepareRateOverride` | `date`, `amountCents`, `currency`, `reasonCode` | one-use `preparedId`, reviewed baseline and staged change |
+| `prepareRateOverride` | `date`, `amountCents`, `currency`, `reasonCode`; optional `endDate` | one-use `preparedId`, reviewed baseline and staged change |
 | `commitRateOverride` | `preparedId` | dispatch evidence and independent readback |
 
-`date` is one night in the selected stay; `amountCents` is a positive integer
-string different from that night's saved amount. A new preparation replaces
+`date` is the first night in the selected stay. `endDate` defaults to `date`;
+when supplied, it is the inclusive last night and must be before departure.
+`amountCents` is a positive integer string different from at least one selected
+night's saved amount. A new preparation replaces
 the prior handle; handles expire when the session closes. Prepare is unsaved
 and works for verified real guests. Commit
 requires a backend-supplied `dispatchRateOverride` callback and is restricted
@@ -58,7 +60,7 @@ The lower-level helpers remain available:
    with the exact current native preimage as `selected`. In the callback call
    `prepareSavedStayRateOverride(page, state, target, change)`.
 2. The change is `{ startDate, endDate, amountCents, currency, reason }`. Both
-   dates must be the same night within the stay, amounts are positive integer
+   dates are inclusive nights within the stay, amounts are positive integer
    cent strings, and currency must match the saved nightly rates. `reason` is
    the explicit native code; it is not inferred.
 3. The result is `STAGED_UNSAVED`, with `review`, a digest of saved nightly
@@ -77,8 +79,46 @@ The lower-level helpers remain available:
 The rate `target` is `{ propertyCode, confirmation, guestId, nativeStayId,
 firstName, lastName, arrival, departure }`. The session input's `target` is the
 browser target `{ propertyCode, browserSlot, origin }`; its `selected` is the
-full fresh record preimage, not the smaller rate target. No new-stay numeric
-editor or multi-night operation is established by these tools.
+full fresh record preimage, not the smaller rate target. Multi-night staging has
+been observed without Submit; persistence across a range still needs a Labtest
+Save and fresh readback.
+
+## New stay with a numeric rate
+
+`withNewStayRateOverrideSession` in `create-reservation-rate-override.mjs`
+composes an existing Create with one subsequent Stay Wizard override. Calls use
+the `{ id, tool, ... }` envelope and run in order within the owning session.
+
+| Tool | Required fields | Result |
+| --- | --- | --- |
+| `prepareNewStayRateOverride` | `reservation` (the Create input without `mode`); `rate: { amountCents, currency, reasonCode, reasonDescription }` | create preview, whole-stay change, opaque `preparedId`, review digest and explicit write sequence |
+| `commitNewStayRateOverride` | `preparedId` | create outcome, confirmation and rate write/readback, including partial or uncertain results |
+
+The rate applies to every night from arrival through the night before departure.
+The reservation must include `sourceOfBusiness`; HMS required it on the tested draft.
+The native override cannot be staged on the unsaved stay: preparation shows
+the requested price and the existing native price, not an HMS-approved override
+or proposed total. The code and description must be chosen from current HMS
+reasons; they are checked against the actual stay after Create. HMS confirmation
+sending must be off. A requested `cms.send: true` is refused.
+
+In one priced HRCEN new-stay draft, Average Rate and Total Rate were read-only;
+the tested Rate Shop price details had no editable amount either. This does not
+establish behavior for every property, rate plan or account permission.
+
+Commit is Labtest-only, requires the `NGI` guarantee, and currently excludes
+stays with children or an A/R account. It requires trusted host `authorizeCandidate`,
+`dispatchCandidate` and `dispatchRateOverride` callbacks. The host must bind
+staff authority to the review, keep durable attempt/recovery records for both
+writes and serialize writes to the same stay. An opaque ID is not authority.
+The tool verifies the original Create request and its native price again before
+Create, checks price fields in the paused Save and the saved price against that preview, then opens the newly
+created stay, checks its identity and reviewed business fields, stages the rate,
+checks the saved rate baseline, and independently reads back the result.
+A failure after Create returns
+`created_rate_unverified` with the confirmation; an uncertain Create must be
+reconciled before any retry. Neither outcome is a successful rate override.
+This combined flow has not yet been proven with a Labtest Save and readback.
 
 ## Room type for charge on a new stay
 

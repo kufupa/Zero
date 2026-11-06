@@ -1,4 +1,4 @@
-// Saved-stay, single inclusive night only. Wizard Submit writes immediately;
+// Saved-stay, inclusive night range. Wizard Submit writes immediately;
 // its pre-Submit grid and totals still describe the saved stay, not the override.
 import { createHash } from 'node:crypto';
 import { cleanLabtestRecord, snapshotLabtestRecord } from './labtest-record.mjs';
@@ -42,16 +42,18 @@ function checkedRates(rates, target) {
 
 /** Current saved rates are authoritative for the preimage only; no proposed total is known. */
 export function reviewSavedStayRateOverride(target, change, rates) {
-  const start = dateTime(target?.arrival), end = dateTime(target?.departure), night = dateTime(change?.startDate);
+  const start = dateTime(target?.arrival), end = dateTime(target?.departure);
+  const firstNight = dateTime(change?.startDate), lastNight = dateTime(change?.endDate);
   if (target?.propertyCode !== 'HRCEN' || !/^\d+-\d+$/.test(target.confirmation || '') ||
       !isDigits(target.guestId) || !isDigits(target.nativeStayId) || start === null || end === null ||
       ![target.firstName, target.lastName].every(name => typeof name === 'string' && name.trim() &&
         name === name.trim() && name.length <= 256 && !/\p{Cc}/u.test(name)) ||
-      night === null || night < start || night >= end || change?.startDate !== change?.endDate ||
+      firstNight === null || lastNight === null || firstNight < start || lastNight < firstNight || lastNight >= end ||
       typeof change.amountCents !== 'string' || !/^[1-9]\d{0,13}$/.test(change.amountCents) ||
       !/^[A-Z0-9]{1,20}$/.test(change.reason || '') || !checkedRates(rates, target) ||
       change.currency !== rates.currency) throw new Error('RATE_OVERRIDE_REVIEW_INVALID');
-  if (rates.nightly.find(row => row.date === change.startDate)?.chargeCents === change.amountCents) {
+  if (rates.nightly.filter(row => row.date >= change.startDate && row.date <= change.endDate)
+    .every(row => row.chargeCents === change.amountCents)) {
     throw new Error('RATE_OVERRIDE_AMOUNT_UNCHANGED');
   }
   const reviewed = {
@@ -390,16 +392,23 @@ export async function readSavedStayRateReasons(page, state, target) {
 /** A saved description can match without proving which native code was saved. */
 export function compareSavedStayRateOverrideReason(review, observation, expectedDescription = null) {
   if (!validReview(review)) throw new Error('RATE_OVERRIDE_REVIEW_INVALID');
-  const matches = observation?.coverage?.complete === true && Array.isArray(observation.nights)
-    ? observation.nights.filter(row => row?.date === review.change.startDate) : [];
-  const description = matches.length === 1 && typeof matches[0].description === 'string' ? matches[0].description : null;
   const expected = typeof expectedDescription === 'string' && expectedDescription.trim() ? expectedDescription : null;
-  return { date: review.change.startDate, expected: { code: review.change.reason, description: expected },
-    observed: { code: null, description },
-    descriptionStatus: description === null || expected === null ? 'UNKNOWN' :
-      description.trim() === expected.trim() ? 'MATCHED' : 'CHANGED',
+  const nights = review.savedRates.nightly.filter(row => row.date >= review.change.startDate && row.date <= review.change.endDate)
+    .map(({ date }) => {
+      const matches = observation?.coverage?.complete === true && Array.isArray(observation.nights)
+        ? observation.nights.filter(row => row?.date === date) : [];
+      const description = matches.length === 1 && typeof matches[0].description === 'string' ? matches[0].description : null;
+      return { date, observed: { code: null, description },
+        descriptionStatus: description === null || expected === null ? 'UNKNOWN' :
+          description.trim() === expected.trim() ? 'MATCHED' : 'CHANGED', codeStatus: 'UNKNOWN' };
+    });
+  const descriptionStatus = nights.some(night => night.descriptionStatus === 'CHANGED') ? 'CHANGED' :
+    nights.every(night => night.descriptionStatus === 'MATCHED') ? 'MATCHED' : 'UNKNOWN';
+  const shared = { expected: { code: review.change.reason, description: expected }, descriptionStatus,
     codeStatus: 'UNKNOWN', source: 'stay_wizard', observedAt: observation?.observedAt ?? null,
     ...(observation?.issue && { issue: observation.issue }) };
+  return nights.length === 1 ? { date: nights[0].date, ...shared, observed: nights[0].observed }
+    : { ...shared, nights };
 }
 
 /** Stage only. Caller owns the browser, staff approval, native Submit and uncertain-write reconciliation. */
@@ -498,12 +507,11 @@ export function compareSavedStayRateOverrideReadback(review, fresh) {
       return { nightly: 'UNKNOWN', reason: 'READBACK_UNVERIFIED' };
     }
     const oldRows = review.savedRates.nightly, rows = fresh.nightly;
-    const index = oldRows.findIndex((row) => row.date === review.change.startDate);
-    if (index < 0 || oldRows[index].chargeCents === review.change.amountCents ||
-        rows[index].chargeCents !== review.change.amountCents ||
-        rows[index].totalChargeCents !== review.change.amountCents ||
-        rows[index].roomTypeName !== oldRows[index].roomTypeName || rows[index].ratePlanName !== oldRows[index].ratePlanName ||
-        rows.some((row, i) => i !== index && !same(row, oldRows[i]))) {
+    if (rows.some((row, i) => {
+      const previous = oldRows[i], targeted = row.date >= review.change.startDate && row.date <= review.change.endDate;
+      return targeted ? row.chargeCents !== review.change.amountCents || row.totalChargeCents !== review.change.amountCents ||
+        row.roomTypeName !== previous.roomTypeName || row.ratePlanName !== previous.ratePlanName : !same(row, previous);
+    })) {
       return { nightly: 'UNKNOWN', reason: 'NIGHTLY_VALUES_UNVERIFIED' };
     }
     return { nightly: 'MATCHED', nativeTotals: structuredClone(fresh.totals),

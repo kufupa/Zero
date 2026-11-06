@@ -29,11 +29,19 @@ function verifiedRecordOptions(record, allowRealGuest) {
 
 // Stable business fields only: session IDs and unrelated native form fields
 // can change between browsers and do not define this review.
-function preservedFields(selected, expected, state) {
+const visibleBusinessNames = ['sourceofbusinessdesc', 'reasonforstay', 'track', 'marketsegment', 'roomtypecharge',
+  'caller', 'udfchar06', 'guestoptin4', 'billingreference'];
+function preservedFields(selected, expected, state, fields) {
   const { source, propertyCode, confirmation, reservationStayId, reservationId, recordId, guestId,
     status, firstName, lastName, arrival, departure, roomType, ratePlan, adults, children, childAges } = selected;
+  const visibleBusiness = {};
+  for (const name of visibleBusinessNames) {
+    const matches = Array.isArray(fields) ? fields.filter(field => field?.name === name) : [];
+    if (matches.length === 1 && matches[0].value !== undefined) visibleBusiness[name] = matches[0].value;
+  }
   return structuredClone({ source, propertyCode, confirmation, reservationStayId, reservationId, recordId, guestId,
     status, firstName, lastName, arrival, departure, roomType, ratePlan, adults, children, childAges,
+    sourceBusinessCode: selected.sourceBusinessCode ?? null, visibleBusiness,
     note: expected.note, guarantee: state.expectedGuarantee, parties: state.partyPreimage,
     cmsSend: state.cmsSend, cmsMessageId: state.cmsMessageId, cmsRecipient: state.cmsRecipient,
     guestEmail: state.guestEmail });
@@ -56,7 +64,7 @@ export async function withRateOverrideSavedStay(input, operation) {
     const state = await currentLabtestRecord(page, expected, verifiedRecordOptions(record, allowRealGuest));
     if (isLabtest(selected) && state.cmsSend !== false) throw new Error('RATE_OVERRIDE_CMS_MUST_BE_OFF');
     const session = Object.freeze({ page, state, selected: record.nativePreimage,
-      preserved: preservedFields(record.nativePreimage, expected, state) });
+      preserved: preservedFields(record.nativePreimage, expected, state, record.details.fields) });
     const proof = { active: true, used: false, page, frame: state.frame, allowRealGuest, selected: structuredClone(selected) };
     labtestSessions.set(session, proof);
     try { return await operation(session); }
@@ -175,13 +183,13 @@ export async function readBackSavedStayRateOverride(review, { target, cloudTarge
       // drift check, but compare the stable stay identity and business fields
       // separately when reading back the saved result.
       const { recordId: beforeRecordId, ...beforeFields } = beforePreserved;
-      const { recordId: afterRecordId, ...afterFields } = preservedFields(native, expected, state);
+      const { recordId: afterRecordId, ...afterFields } = preservedFields(native, expected, state, record.details.fields);
       const same = JSON.stringify(beforeFields) === JSON.stringify(afterFields);
       comparison.nativeRecordId = beforeRecordId === afterRecordId ? 'MATCHED' : 'CHANGED';
       const unknownChildAges = beforePreserved.children > 0 && beforePreserved.childAges === 'unknown';
       comparison.preservedFields = same ? (unknownChildAges ? 'PARTIAL' : 'MATCHED') : 'CHANGED';
       comparison.preservedScope = ['identity', 'dates', 'room', 'ratePlan', 'occupancy', 'note',
-        'guarantee', 'parties', 'cms', 'guestEmail'];
+        'guarantee', 'parties', 'cms', 'guestEmail', 'visibleBusiness'];
       if (unknownChildAges) comparison.unknownPreservedFields = ['childAges'];
       comparison.otherStayFields = 'UNKNOWN';
     }

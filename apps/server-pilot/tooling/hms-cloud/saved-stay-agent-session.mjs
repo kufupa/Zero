@@ -185,12 +185,14 @@ export async function withSavedStayAgentSession(operation, { signal, readOnly = 
         }
         if (tool === 'prepareRateOverride') {
           pendingRate = null;
+          const endDate = request.endDate === undefined ? request.date : request.endDate;
           if (!validNight(request.date) || request.date < selected.arrival || request.date >= selected.departure ||
+              !validNight(endDate) || endDate < request.date || endDate >= selected.departure ||
               typeof request.amountCents !== 'string' || !/^[1-9]\d{0,13}$/.test(request.amountCents) ||
               !/^[A-Z]{3}$/.test(request.currency || '') || !/^[A-Z0-9]{1,20}$/.test(request.reasonCode || '')) {
             return { outcome: 'input_gap', issue: 'RATE_OVERRIDE_INPUT_INVALID' };
           }
-          const change = { startDate: request.date, endDate: request.date, amountCents: request.amountCents,
+          const change = { startDate: request.date, endDate, amountCents: request.amountCents,
             currency: request.currency, reason: request.reasonCode };
           try {
             const prepared = await withRateOverrideSavedStay(sessionInput, async session => {
@@ -204,7 +206,7 @@ export async function withSavedStayAgentSession(operation, { signal, readOnly = 
               reasonDescription: prepared.reasonDescription });
             pendingRate = { preparedId, reviewDigest, ...prepared };
             return { outcome: 'prepared', preparedId, reviewedBaseline: publicRates(prepared.review.savedRates),
-              change: { date: request.date, amountCents: request.amountCents, currency: request.currency,
+              change: { date: request.date, ...(request.endDate !== undefined && { endDate }), amountCents: request.amountCents, currency: request.currency,
                 reasonCode: request.reasonCode, reasonDescription: prepared.reasonDescription }, reviewDigest,
               proposedTotals: null, totalsSource: prepared.totalsSource };
           } catch (error) { return { outcome: 'refused', issue: safeIssue(error, 'RATE_PREPARATION_FAILED') }; }
