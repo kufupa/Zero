@@ -1499,11 +1499,11 @@ function QuotePartyField(props: EditorProps & { path: string; role: 'agency' | '
   const party = record(props.editValue(props.path)) ?? record(draftAtPath(props.snapshot, props.path)) ?? {};
   const namePath = `${props.path}/name`;
   const name = text(props.editValue(namePath) ?? party.name);
-  const nameField = props.snapshot.fields[namePath] ?? {
+  const nameField = { ...props.snapshot.fields[namePath],
     path: namePath, value: name,
     required: props.snapshot.session.draft.fieldReviewRequirements[namePath]?.required !== false,
     review: props.snapshot.session.draft.staffReviews[namePath]?.status ?? 'pending',
-    provenance: 'source' as const,
+    provenance: props.snapshot.fields[namePath]?.provenance ?? 'source' as const,
     evidenceRefs: props.snapshot.session.draft.fieldReviewRequirements[namePath]?.evidenceRefs ??
       props.snapshot.session.draft.proposal.sourceClaims.find((claim) => claim.path === namePath)?.sourceRefs ?? [],
   };
