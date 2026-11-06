@@ -260,10 +260,10 @@ function requestBody(draft: ReservationWorkflowV2Draft, requestId: string) {
 }
 
 function selectedStay(draft: ReservationWorkflowV2Draft, requestId: string, hintId: string,
-  hint: Record<string, unknown>):
+  hint: Record<string, unknown>, hintIndex: number):
   { selected: HmsCloudNativePreimage; ref: string; path: string } | { issue: string; fields?: string[] } {
-  const path = ptr('proposal', 'content', 'requests', requestId, 'body', 'targets', 'include', hintIndex, 'nativeSelectionRef');
-  const resolved = effectiveLeaf(draft, path, undefined);
+  const path = ptr('proposal', 'content', 'requests', requestId, 'body', 'targets', 'include', hintIndex, 'suggestedRef');
+  const resolved = effectiveLeaf(draft, path, hint.suggestedRef);
   if (resolved === UNKNOWN) return { issue: 'target_selection_unknown', fields: [path] };
   if (resolved === NONE || typeof resolved !== 'string') return { issue: 'native_target_selection_required', fields: [path] };
   const observation = draft.observations.find((item) => item.ref === resolved && item.kind === 'stay_candidate' &&
@@ -305,7 +305,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
   if (scope.exclude.some((value) => record(value)?.id === hintId)) {
     return { outcome: 'needs_input', issue: 'amend_target_excluded' };
   }
-  const chosen = selectedStay(draft, requestId, hintId, hint);
+  const chosen = selectedStay(draft, requestId, hintId, hint, hintIndex);
   if ('issue' in chosen) return { outcome: 'needs_input', issue: chosen.issue, fields: chosen.fields ?? [] };
   const targetPath = ptr('proposal', 'content', 'requests', requestId, 'body', 'perTarget');
   const perTargetUnknown = new Set<string>();
@@ -559,7 +559,7 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReservationWorkflowV
         lookups.push({ requestId: request.id, hintId, status: 'excluded' });
         continue;
       }
-      const selectionPath = ptr('proposal', 'content', 'requests', request.id, 'body', 'targets', 'include', index, 'nativeSelectionRef');
+      const selectionPath = ptr('proposal', 'content', 'requests', request.id, 'body', 'targets', 'include', index, 'suggestedRef');
       const result = await lookupHint(loaded.draft, target, request.id, hintId, hint, selectionPath);
       observations.push(...result.rows.map((row) => row.observation));
       if (result.observation) observations.push(result.observation);
