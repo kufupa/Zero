@@ -25,6 +25,7 @@ export type ReservationAttachmentView = {
   sourceRef: string;
   name: string;
   mimeType?: string;
+  size?: number;
   uploadability: 'ready' | 'checking' | 'unsupported' | 'unknown';
   detail?: string;
 };
