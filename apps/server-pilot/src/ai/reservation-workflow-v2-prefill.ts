@@ -906,8 +906,7 @@ function applyDefaultCmsSendPolicy(
   const proposal = structuredClone(proposalInput);
   if (propertyCode !== 'HRCEN') return proposal;
   for (const request of proposal.content.requests) {
-    if (request.kind !== 'create' || !request.body.allocations.some((allocation) =>
-      Boolean(allocation.guest.firstName?.trim() && allocation.guest.lastName?.trim()))) continue;
+    if (request.kind !== 'create') continue;
     const cmsSend = request.body.shared.cmsSend;
     if (cmsSend === false || isRecord(cmsSend) && cmsSend.kind === 'none') continue;
     if (cmsSend !== null && cmsSend !== undefined) continue;
