@@ -270,7 +270,7 @@ export function buildReservationWorkflowV2CandidateReadPlan(input: {
   const add = (kind: ReservationWorkflowV2Observation['kind'], requestId: string,
     discriminator: string, criteria: Record<string, unknown>, sourceRefs: string[]) => {
     const id = stableId(input.source.messageId, kind, requestId, discriminator);
-    plan.push({ id, ref: `obs_${id}`, kind, propertyCode: input.propertyCode, criteria, sourceRefs: [...new Set(sourceRefs)] });
+    plan.push({ id, ref: `obs_r_${plan.length}`, kind, propertyCode: input.propertyCode, criteria, sourceRefs: [...new Set(sourceRefs)] });
   };
   for (const request of input.extraction.requests) {
     const requestDates = request.dates.map((date) => ({ arrival: date.arrival?.value ?? null,
@@ -1212,7 +1212,7 @@ export async function runReservationWorkflowV2Prefill(input: {
       selfPreStay ? 'self_prestay' as const : undefined;
   if (skippedReason) {
     const evidence = sourceBound ? sourceEvidence({ source: input.source, selection: input.selection, vision: { currentProposalSources: [] } }) : [];
-    const observations = sourceBound ? [seedObservation({ ref: `obs_source_${generationId}`, generationId,
+    const observations = sourceBound ? [seedObservation({ ref: 'obs_source', generationId,
       propertyCode: input.propertyCode, source: input.source, sourceRefs: evidence.map((row) => row.ref),
       status: 'partial', result: { evidenceRefs: evidence.map((row) => row.ref), skippedBeforeAttachmentRead: true },
       complete: false, notes: ['Policy/source guard stopped prefill before vision or candidate reads.'],
@@ -1231,7 +1231,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     enabled: extractionVisionEnabled(input.env ?? process.env), signal: input.signal,
   });
   const evidence = sourceEvidence({ source: input.source, selection: input.selection, vision });
-  const observations: ReservationWorkflowV2Observation[] = [seedObservation({ ref: `obs_source_${generationId}`,
+  const observations: ReservationWorkflowV2Observation[] = [seedObservation({ ref: 'obs_source',
     generationId, propertyCode: input.propertyCode, source: input.source, sourceRefs: evidence.map((row) => row.ref),
     status: vision.attachmentReads.some((row) => row.status !== 'read') ? 'partial' : 'complete',
     result: { evidenceRefs: evidence.map((row) => row.ref), visionAttachmentReads: vision.attachmentReads,
@@ -1286,7 +1286,7 @@ export async function runReservationWorkflowV2Prefill(input: {
   const readErrors: ReservationWorkflowV2Draft['errors'] = completePlan.length > plan.length
     ? [{ stage: 'lookup', code: 'candidate_read_cap', message: `Read plan capped at ${MAX_CANDIDATE_READS}; ${completePlan.length - plan.length} additional source-derived reads remain unrun.` }]
     : [];
-  if (completePlan.length > plan.length) observations.push(seedObservation({ ref: `obs_read_cap_${generationId}`,
+  if (completePlan.length > plan.length) observations.push(seedObservation({ ref: 'obs_cap',
     generationId, propertyCode: input.propertyCode, source: input.source, sourceRefs: extraction.requests.flatMap((row) => row.requestText.sourceRefs),
     status: 'partial', kind: 'source', criteria: { cap: MAX_CANDIDATE_READS, planned: completePlan.length, run: plan.length },
     result: { unrunCount: completePlan.length - plan.length }, complete: false, notes: ['Some planned reads were left unrun by the bounded prefill cap.'] }));
