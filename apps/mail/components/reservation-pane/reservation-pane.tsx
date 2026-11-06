@@ -71,8 +71,11 @@ function draftAtPath(snapshot: ReservationPaneSnapshot, path: string): unknown {
       value = Number.isInteger(numericIndex) && numericIndex >= 0 && String(numericIndex) === part
         ? value[numericIndex] : value.find((item) => record(item)?.id === part);
     }
-    else if (record(value)) value = value[part];
-    else return undefined;
+    else {
+      const objectValue = record(value);
+      if (!objectValue) return undefined;
+      value = objectValue[part];
+    }
   }
   return value;
 }
@@ -1078,7 +1081,7 @@ function FilingEditor({ snapshot, request, source, onOpenAttachment }: {
   const requestDocs = Array.isArray(linkedRefs) ? linkedRefs : [];
   const docs = snapshot.session.draft.proposal.content.documents.filter((document) =>
     document.ownerRequestId === request.id || requestDocs.includes(document.id));
-  const targetScope = draftAtPath(snapshot, `${bodyPath(request)}/targets`);
+  const targetScope = draftAtPath(snapshot, `${requestPath(request)}/body/targets`);
   return <>
     <div className={styles.sectionHeader}><div><h2>Filing source and destination</h2><p>Files stay bound to admitted email bytes and exact existing reservation targets.</p></div></div>
     {docs.length === 0 ? <div className={styles.notice}>No document is bound to this Filing request.</div> : docs.map((document) => {
