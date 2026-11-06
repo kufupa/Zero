@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import styles from './reservation-pane.module.css';
 import { initialReservationUiState, reduceReservationUi, type PendingReservationEdit } from '@/lib/reservation-workflow/reducer';
+import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
 import { ReservationWorkflowStaleRevisionError } from '@/lib/reservation-workflow/types';
 import type {
   ReservationFieldProjection,
@@ -597,33 +598,38 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   const runGo = useCallback(() => {
     const bound = sourceRef.current;
     void enqueue('Creating reservations in Infor', bound, async () => {
-      if (pending.current.size) await flushEdits(bound);
-      let current = snapshotRef.current;
-      const request = current?.requests.find((item) => item.id === activeRequestRef.current);
-      if (!current || !request || request.kind !== 'create') throw new Error('Only connected Create requests can be sent to Infor in this release.');
-      const { allocations } = createSections(current, request);
-      if (!allocations.length) throw new Error('This saved Create request has no room allocations to submit.');
-      if (!isInputReady(current, request)) throw new Error('Complete each room and select the exact existing guest profile first.');
-      if (hasUnreviewedRequiredFields(current, request)) throw new Error('Review every required field before Go.');
-      if (!isRequestPrepared(current, request)) throw new Error('Native price and availability are stale. Wait for the automatic Infor check before Go.');
-      for (const allocation of allocations) {
-        const allocationId = String(allocation.value.id ?? '');
-        const alreadyDone = current.operationResults.some((result) => result.requestId === request.id
-          && result.allocationId === allocationId && result.workflow === 'create' && result.status === 'succeeded');
-        if (alreadyDone) continue;
-        const uncertain = current.operationResults.some((result) => result.requestId === request.id
-          && result.allocationId === allocationId && result.workflow === 'create' && result.status === 'unknown');
-        if (uncertain) throw new Error(`Room ${allocationId} has an uncertain save. Reconcile it before retrying.`);
-        const idempotencyKey = crypto.randomUUID();
-        current = await client.execute({ source: bound, snapshot: current, requestId: request.id, allocationId, idempotencyKey });
-        applySnapshot(current, bound);
-        const outcome = current.operationResults.find((result) => result.id === idempotencyKey)
-          ?? [...current.operationResults].reverse().find((result) => result.requestId === request.id && result.allocationId === allocationId);
-        if (!outcome || outcome.status !== 'succeeded') {
-          throw new Error(current.serviceNotice ?? (outcome?.status === 'unknown'
-            ? 'Infor save outcome is uncertain. Reconcile the room before retrying.'
-            : `Infor did not confirm room ${allocationId}.`));
+      beginMutation();
+      try {
+        if (pending.current.size) await flushEdits(bound);
+        let current = snapshotRef.current;
+        const request = current?.requests.find((item) => item.id === activeRequestRef.current);
+        if (!current || !request || request.kind !== 'create') throw new Error('Only connected Create requests can be sent to Infor in this release.');
+        const { allocations } = createSections(current, request);
+        if (!allocations.length) throw new Error('This saved Create request has no room allocations to submit.');
+        if (!isInputReady(current, request)) throw new Error('Complete each room and select the exact existing guest profile first.');
+        if (hasUnreviewedRequiredFields(current, request)) throw new Error('Review every required field before Go.');
+        if (!isRequestPrepared(current, request)) throw new Error('Native price and availability are stale. Wait for the automatic Infor check before Go.');
+        for (const allocation of allocations) {
+          const allocationId = String(allocation.value.id ?? '');
+          const alreadyDone = current.operationResults.some((result) => result.requestId === request.id
+            && result.allocationId === allocationId && result.workflow === 'create' && result.status === 'succeeded');
+          if (alreadyDone) continue;
+          const uncertain = current.operationResults.some((result) => result.requestId === request.id
+            && result.allocationId === allocationId && result.workflow === 'create' && result.status === 'unknown');
+          if (uncertain) throw new Error(`Room ${allocationId} has an uncertain save. Reconcile it before retrying.`);
+          const idempotencyKey = crypto.randomUUID();
+          current = await client.execute({ source: bound, snapshot: current, requestId: request.id, allocationId, idempotencyKey });
+          applySnapshot(current, bound);
+          const outcome = current.operationResults.find((result) => result.id === idempotencyKey)
+            ?? [...current.operationResults].reverse().find((result) => result.requestId === request.id && result.allocationId === allocationId);
+          if (!outcome || outcome.status !== 'succeeded') {
+            throw new Error(current.serviceNotice ?? (outcome?.status === 'unknown'
+              ? 'Infor save outcome is uncertain. Reconcile the room before retrying.'
+              : `Infor did not confirm room ${allocationId}.`));
+          }
         }
+      } finally {
+        endMutation();
       }
     });
   }, [applySnapshot, client, enqueue, flushEdits]);
