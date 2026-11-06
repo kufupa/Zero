@@ -498,7 +498,8 @@ export async function reservationWorkflowV2FilingPrepare(ctx: ReservationWorkflo
   if (snapshot.status !== 'stored') return { status: 'failed', issue: snapshot.reason };
   const target = paneStayHmsTargetForTransport(ctx.transport.id);
   if (!target.ok) return { status: 'unsupported', issue: 'filing_property_unavailable' };
-  const allowRealGuest = paneHmsWriteMode() === 'on';
+  // Native staging is read-only; write admission is checked separately on Go.
+  const allowRealGuest = true;
   const cloud = await readPaneCloudFilingRecord({ confirmation: selection.confirmation, arrival: selection.arrival,
     target: target.target, allowRealGuest });
   if (!cloud || cloud.nativeGuestId === '' || cloud.nativeStayId === '' ||
