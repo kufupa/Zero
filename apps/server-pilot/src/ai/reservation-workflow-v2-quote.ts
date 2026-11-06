@@ -239,7 +239,9 @@ function compileQuote(
   const resolved = (fieldPath: string, sourceValue: unknown) => {
     const value = resolvedLeaf(draft, fieldPath, sourceValue);
     if ('issue' in value) issues.push(`${fieldPath}:${value.issue}`);
-    else if (execute && value.value !== undefined && value.value !== null && !reviewAccepted(draft, fieldPath)) {
+    else if (execute && value.value !== undefined && value.value !== null &&
+        !(Array.isArray(value.value) && value.value.length === 0) &&
+        !fieldPath.endsWith('/occupancy/scope') && !reviewAccepted(draft, fieldPath)) {
       reviewPaths.add(fieldPath);
     }
     return value;
