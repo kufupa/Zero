@@ -95,6 +95,16 @@ function quoteBodyPath(requestId: string): string {
   return ptr('proposal', 'content', 'requests', requestId, 'body');
 }
 
+function quoteInputOverrides(draft: ReservationWorkflowV2Draft, requestId: string) {
+  const index = draft.proposal.content.requests.findIndex((request) => request.id === requestId);
+  const prefixes = [ptr('proposal', 'content', 'requests', requestId), ptr('proposal', 'content', 'requests', index)];
+  return Object.fromEntries(Object.entries(draft.fieldOverrides)
+    .filter(([path]) => prefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`)))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([path, override]) => [path, { state: override.state,
+      ...(override.state === 'set' ? { value: override.value } : {}) }]));
+}
+
 function quoteRequests(draft: ReservationWorkflowV2Draft, requestId?: string): QuoteRequest[] {
   return draft.proposal.content.requests.filter((request): request is QuoteRequest =>
     request.kind === 'quote' && (!requestId || request.id === requestId));
@@ -467,6 +477,7 @@ function quoteObservation(
     inputDigest,
     sourceHash: draft.source.sourceHash,
     nativeInputDigest: result.inputDigest ?? null,
+    inputOverrides: quoteInputOverrides(draft, compiled.request.id),
     observedAt: new Date().toISOString(),
     freshUntil: result.freshUntil ?? null,
     totalMinor: result.totalMinor ?? null,
@@ -913,7 +924,10 @@ export async function reservationWorkflowV2QuoteExecute(
   const extrasReviewItems = Array.isArray(rawExtrasReviewItems)
     ? rawExtrasReviewItems.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())) : [];
   const extrasReviewPath = quoteBodyPath(request.id);
-  if (extrasReviewItems.length && !reviewAccepted(loaded.draft, extrasReviewPath)) {
+  const extrasReview = loaded.draft.staffReviews[extrasReviewPath];
+  const extrasAccepted = extrasReview?.status === 'accepted' &&
+    Date.parse(extrasReview.at ?? '') >= Date.parse(preparedObservation.observedAt);
+  if (extrasReviewItems.length && !extrasAccepted) {
     return { status: 'needs_review', issue: 'quote_extras_require_staff_acceptance',
       fields: [extrasReviewPath], extrasReviewItems, extrasReviewPath };
   }

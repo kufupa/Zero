@@ -179,11 +179,32 @@ function quoteRateOptions(snapshot: ReservationPaneSnapshot, requestId: string, 
   return groupId ? options.filter((option) => option.groupId === groupId) : options;
 }
 
+function quoteInputOverrides(snapshot: ReservationPaneSnapshot, requestId: string) {
+  const draft = snapshot.session.draft;
+  const index = draft.proposal.content.requests.findIndex((request) => request.id === requestId);
+  const prefixes = [`/proposal/content/requests/${encodeURIComponent(requestId)}`, `/proposal/content/requests/${index}`];
+  return Object.fromEntries(Object.entries(draft.fieldOverrides)
+    .filter(([path]) => prefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`)))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([path, override]) => [path, { state: override.state,
+      ...(override.state === 'set' ? { value: override.value } : {}) }]));
+}
+
+function quoteReviewInfo(snapshot: ReservationPaneSnapshot, requestId: string) {
+  const observation = latestQuotePriceObservation(snapshot, requestId);
+  const rawItems = record(observation?.result)?.extrasReviewItems;
+  const items = Array.isArray(rawItems) ? rawItems.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())) : [];
+  const path = `/proposal/content/requests/${encodeURIComponent(requestId)}/body`;
+  const review = snapshot.session.draft.staffReviews[path];
+  return { path, items, accepted: review?.status === 'accepted' && Boolean(observation) &&
+    Date.parse(review.at ?? '') >= Date.parse(observation!.observedAt) };
+}
+
 function isQuotePrepared(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
   const preparation = [...snapshot.operationResults].reverse().find((result) => result.requestId === request.id
     && result.workflow === 'quote' && result.status === 'prepared');
   if (!preparation || preparation.generationId !== snapshot.session.draft.generationId
-      || preparation.draftRevision !== snapshot.session.revision || !Array.isArray(preparation.observationRefs)) return false;
+      || !Array.isArray(preparation.observationRefs)) return false;
   return preparation.observationRefs.some((ref) => {
     const observation = snapshot.session.draft.observations.find((item) => item.ref === ref && item.kind === 'rate_availability');
     const result = record(observation?.result);
@@ -193,6 +214,7 @@ function isQuotePrepared(snapshot: ReservationPaneSnapshot, request: Reservation
       && observation.generationId === snapshot.session.draft.generationId
       && observation.propertyCode === snapshot.session.draft.propertyCode
       && observation.sourceMessageId === snapshot.session.draft.source.messageId
+      && JSON.stringify(result?.inputOverrides) === JSON.stringify(quoteInputOverrides(snapshot, request.id))
       && criteria?.workflow === 'quote' && criteria.requestId === request.id
       && criteria.inputDigest === result?.inputDigest && typeof result?.inputDigest === 'string'
       && criteria.sourceHash === snapshot.session.draft.source.sourceHash
@@ -578,9 +600,12 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
       if (!current) throw new Error('The source-bound reservation draft is still loading.');
       const field = current.fields[path];
       const suggestedSelection = path.endsWith('/nativeSelectionRef') ? nativeSelectionValue(current, path) : null;
-      const required = field?.required === true || typeof suggestedSelection === 'string';
+      const quote = current.session.draft.proposal.content.requests.find((request) => request.kind === 'quote'
+        && `/proposal/content/requests/${encodeURIComponent(request.id)}/body` === path);
+      const quoteReview = quote ? quoteReviewInfo(current, quote.id) : null;
+      const required = field?.required === true || typeof suggestedSelection === 'string' || Boolean(quoteReview?.items.length);
       const review = current.session.draft.staffReviews[path];
-      if (!required || (field?.review ?? review?.status) === 'accepted') return;
+      if (!required || (quoteReview?.items.length ? quoteReview.accepted : (field?.review ?? review?.status) === 'accepted')) return;
       if (!hasValue(field?.value ?? suggestedSelection ?? valueFor(current, path))) throw new Error('Enter or resolve this value before marking it reviewed.');
       const next = await client.review({ source: bound, snapshot: current, fieldPath: path, decision: 'accepted' });
       applySnapshot(next, bound);
@@ -766,6 +791,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     && result.workflow === activeRequest?.kind) ?? [];
   const canGenerateQuote = Boolean(snapshot && activeRequest?.kind === 'quote' && activeRequest.supported
     && isQuotePrepared(snapshot, activeRequest) && !hasUnreviewedRequiredFields(snapshot, activeRequest)
+    && (!quoteReviewInfo(snapshot, activeRequest.id).items.length || quoteReviewInfo(snapshot, activeRequest.id).accepted)
     && !ui.pendingEdits.length && !ui.busyAction && !hasUncertain);
 
   return (
@@ -1452,6 +1478,7 @@ function QuoteEditor(props: EditorProps & { busy: boolean; onLookup: () => void;
     })}
     {groups.length === 0 && <div className={styles.notice}>This saved Quote request has no native quote groups; the server cannot price or generate outputs until source-backed groups are available.</div>}
     <QuotePriceSummary snapshot={props.snapshot} request={props.request} />
+    <QuoteReviewNotice {...props} />
     <div className={styles.sectionHeader}><div><h2>Commercial and client details</h2><p>Native company/agency results must be explicitly selected and reviewed.</p></div></div>
     <section className={styles.card}>
       <QuotePartyField {...props} path={`${body}/parties/agency`} role="agency" label="Agency" />
@@ -1605,6 +1632,18 @@ function QuotePriceSummary({ snapshot, request }: { snapshot: ReservationPaneSna
     {freshUntil && Number.isFinite(freshUntil) && <small className={styles.help}>Native price valid until {new Date(freshUntil).toLocaleString()}.</small>}
     <small className={fresh ? styles.help : styles.problem}>{prepared ? 'Current HMS price and availability are ready. Go only creates requested unsent artifacts.'
       : fresh ? 'This read is not yet a prepared quote for the current draft.' : 'No current price is confirmed; Go stays blocked.'}</small>
+  </section>;
+}
+
+function QuoteReviewNotice(props: EditorProps) {
+  const review = quoteReviewInfo(props.snapshot, props.request.id);
+  if (!review.items.length) return null;
+  return <section className={styles.card} aria-label="Quote rate and allowance review">
+    <div className={styles.cardTitle}><b>Review before generating</b></div>
+    {review.items.map((item, index) => <p className={styles.problem} key={index}>{item}</p>)}
+    {review.accepted ? <small className={styles.accepted}>Reviewed for this native price.</small>
+      : <button type="button" className={styles.secondaryButton} disabled={props.busy}
+        onClick={() => props.onDone?.(review.path)}>Accept displayed rate and allowances</button>}
   </section>;
 }
 
