@@ -719,6 +719,14 @@ function serviceFreshReviewAccepted(snapshot: ReservationPaneSnapshot, path: str
     && Date.parse(review.at) > Date.parse(observedAt);
 }
 
+const FRESH_SERVICE_NATIVE_FIELDS = [
+  ['code', 'Native ITEM code'], ['name', 'Native ITEM name'], ['itemId', 'Native ITEM ID'],
+  ['quantity', 'Quantity'], ['startDate', 'Service start'], ['endDate', 'Service end'],
+  ['unitPrice', 'Unit price'], ['frequency', 'Frequency'], ['pricingControl', 'Pricing basis'],
+  ['folio', 'Folio'], ['comment', 'Comment'], ['currency', 'Currency'],
+  ['averageDaily', 'Average daily'], ['totalCost', 'Total cost'], ['status', 'HMS status'],
+] as const;
+
 function isRequestPrepared(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
   const allocations = createSections(snapshot, request).allocations;
   return allocations.length > 0 && allocations.every(({ value }) => {
@@ -1834,6 +1842,8 @@ function ServiceEditor(props: EditorProps & {
   const freshReviewsComplete = Boolean(freshCurrent && freshPrepare && freshPaths.length > 0
     && freshPaths.every((path) => serviceFreshReviewAccepted(snapshot, path, props.requestId, allocationId,
       service.id, freshPrepare.ref, freshPrepare.observedAt)));
+  const approvedNative = record(freshResult?.previouslyApprovedNative) ?? {};
+  const preparedNative = record(freshResult?.native) ?? {};
   const createSaved = snapshot.operationResults.some((result) => result.requestId === props.requestId
     && result.allocationId === allocationId && result.workflow === 'create' && result.status === 'succeeded');
   const createReceipt = [...snapshot.operationResults].reverse().find((result) => result.requestId === props.requestId
@@ -1912,22 +1922,28 @@ function ServiceEditor(props: EditorProps & {
       <div className={styles.cardTitle}><b>Fresh Add-On prepare on saved confirmation</b><small>{text(record(freshResult.target)?.confirmation)} · not saved</small></div>
       <div className={styles.readValue}>Approved preview: {text(record(freshResult.previouslyApprovedNative)?.currency)} {text(record(freshResult.previouslyApprovedNative)?.totalCost)} total
         {' · '}Current saved-target prepare: {text(record(freshResult.native)?.currency)} {text(record(freshResult.native)?.totalCost)} total</div>
-      <p className={styles.help}>These values were read from a new native prepare on the saved stay. Inspect each field and explicitly review it after this observation before the second Go.</p>
-      {freshPaths.map((path) => {
-        const leaf = path.split('/').at(-1) ?? '';
-        const fieldName = leaf === 'value' ? 'quantity' : leaf;
-        const freshValue = record(freshResult.native)?.[fieldName];
-        const approvedValue = record(freshResult.previouslyApprovedNative)?.[fieldName];
-        const reviewed = serviceFreshReviewAccepted(snapshot, path, props.requestId, allocationId,
-          service.id, freshPrepare.ref, freshPrepare.observedAt);
-        return <div className={styles.candidateOption} key={path}>
-          <span><b>{humanize(fieldName)}</b><small>Approved preview: {text(approvedValue) || '—'} · Current saved prepare: {text(freshValue) || '—'}</small></span>
-          {reviewed ? <span className={styles.accepted}>✓ Reviewed after fresh prepare</span>
-            : <button type="button" className={styles.inlineButton} disabled={props.busy} onClick={() => props.onAcceptReview?.(path,
-              serviceFreshReviewNote(props.requestId, allocationId, service.id, freshPrepare.ref))}>Review this native value</button>}
+      <p className={styles.help}>Compare the complete saved-stay item with the original unsaved native preview. Defaults, dates, quantity, pricing basis, unit and average prices, folio, and comment are shown even when the email did not request them.</p>
+      {FRESH_SERVICE_NATIVE_FIELDS.map(([key, label]) => {
+        const before = approvedNative[key], after = preparedNative[key];
+        const changed = JSON.stringify(before) !== JSON.stringify(after);
+        const beforeText = hasValue(before) ? text(before) : 'Not returned';
+        const afterText = hasValue(after) ? text(after) : 'Not returned';
+        return <div className={styles.candidateOption} key={key}>
+          <span><b>{label}{changed ? ' · changed' : ''}</b><small>{changed
+            ? `Approved unsaved preview: ${beforeText} → Saved-stay prepare: ${afterText}`
+            : `Saved-stay prepare: ${afterText} · same as approved preview`}</small></span>
         </div>;
       })}
-      {!freshReviewsComplete && <small className={styles.problem}>Go stays blocked until every field above is reviewed after this exact prepare.</small>}
+      {freshReviewsComplete
+        ? <span className={styles.accepted}>✓ Complete prepared HMS item reviewed after this exact observation</span>
+        : freshPaths.length > 0 && props.onAcceptReview
+          ? <button type="button" className={styles.inlineButton} disabled={props.busy} onClick={() => {
+            const note = serviceFreshReviewNote(props.requestId, allocationId, service.id, freshPrepare.ref);
+            for (const path of freshPaths) if (!serviceFreshReviewAccepted(snapshot, path, props.requestId, allocationId,
+              service.id, freshPrepare.ref, freshPrepare.observedAt)) props.onAcceptReview?.(path, note);
+          }}>I reviewed the complete prepared HMS item</button>
+          : <small className={styles.problem}>A complete native review acknowledgement is unavailable; Go stays blocked.</small>}
+      {!freshReviewsComplete && <small className={styles.problem}>Go stays blocked until this full displayed item is acknowledged after the exact prepare.</small>}
     </section>}
     {priorService?.status === 'unknown' && <div className={styles.alert}>The Add-On Save may have dispatched. Reconcile its receipt below before any retry.</div>}
     {priorService?.status === 'succeeded' && <div className={styles.profileReady}>
