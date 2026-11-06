@@ -375,7 +375,6 @@ export async function readQuoteAttachments(
     matters.map(async (row): Promise<SyncedQuoteAttachment | null> => {
       const base = {
         id: row.id,
-        messageId: row.messageId,
         filename: row.filename,
         mimeType: row.mimeType,
         byteSize: row.sizeBytes,
@@ -412,6 +411,17 @@ export async function readQuoteAttachments(
     }),
   );
   return results.filter((result): result is SyncedQuoteAttachment => result !== null);
+}
+
+function attachParentMessageIds(
+  results: SyncedQuoteAttachment[],
+  rows: readonly Pick<QuoteAttachmentRow, 'id' | 'messageId'>[],
+): SyncedQuoteAttachment[] {
+  const parentById = new Map(rows.map((row) => [row.id, row.messageId]));
+  return results.map((result) => {
+    const messageId = parentById.get(result.id);
+    return messageId ? { ...result, messageId } : result;
+  });
 }
 
 /** Locators come only from this mailbox's attachment rows; the caller never supplies keys. */
@@ -806,6 +816,14 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     includeVisionImages: input.includeVisionImages === true,
     db,
   });
+  const selectedAttachments = await readQuoteAttachments(selectedRows, reader, {
+    includeVisionImages: input.includeVisionImages === true,
+    trackVisionImages: input.trackVisionImages === true,
+  });
+  const priorAttachments = input.sourceCutoffOnly ? await readQuoteAttachments(priorAttachmentRows, reader, {
+    includeVisionImages: input.includeVisionImages === true,
+    trackVisionImages: input.trackVisionImages === true,
+  }) : [];
 
   return {
     subject: row.subject ?? '',
@@ -819,18 +837,12 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     ).toISOString(),
     preceding,
     ...(threadMessages ? { threadMessages } : {}),
-    attachments: await readQuoteAttachments(selectedRows, reader, {
-      includeVisionImages: input.includeVisionImages === true,
-      trackVisionImages: input.trackVisionImages === true,
-    }),
-    ...(input.sourceCutoffOnly ? { threadAttachments: await readQuoteAttachments(priorAttachmentRows, reader, {
-      includeVisionImages: input.includeVisionImages === true,
-      trackVisionImages: input.trackVisionImages === true,
-    }) } : {}),
+    attachments: input.sourceCutoffOnly ? attachParentMessageIds(selectedAttachments, selectedRows) : selectedAttachments,
+    ...(input.sourceCutoffOnly ? { threadAttachments: attachParentMessageIds(priorAttachments, priorAttachmentRows) } : {}),
     messageId: row.id,
     threadId: row.threadId,
     fromAddress: row.fromAddress,
-    participants: [...new Set([row.fromAddress, ...row.toAddresses, ...row.ccAddresses]
+    participants: [...new Set([row.fromAddress, ...(row.toAddresses ?? []), ...(row.ccAddresses ?? [])]
       .map((address) => address.trim().toLowerCase()).filter(Boolean))],
     threadConfirmation: !input.sourceCutoffOnly && siblingRows.length
       ? resolveThreadConfirmationEvidence(await readQuoteAttachments(siblingRows, reader))
