@@ -103,13 +103,13 @@ function nativeSelectionValue(snapshot: ReservationPaneSnapshot, path: string): 
 }
 
 function inheritedValue(snapshot: ReservationPaneSnapshot, paths: string[]): unknown {
-  for (const path of paths) {
+  for (const [index, path] of paths.entries()) {
     const field = snapshot.fields[path];
     const override = field?.override;
     if (override) {
       if (override.state === 'unknown' || override.state === 'none' || override.state === 'clear') return null;
       if (override.state === 'set') return field.value;
-      if (override.state === 'inherit') continue;
+      if (override.state === 'inherit' && index < paths.length - 1) continue;
     }
     const base = draftAtPath(snapshot, path);
     if (record(base)?.kind === 'none') return null;
@@ -303,13 +303,13 @@ function isInputReady(snapshot: ReservationPaneSnapshot, request: ReservationReq
 }
 
 function effectiveCreatePath(snapshot: ReservationPaneSnapshot, paths: string[]): string | null {
-  for (const path of paths) {
+  for (const [index, path] of paths.entries()) {
     const field = snapshot.fields[path];
     const override = field?.override;
     if (override) {
       if (override.state === 'unknown' || override.state === 'none' || override.state === 'clear') return null;
       if (override.state === 'set') return hasValue(field.value) ? path : null;
-      if (override.state === 'inherit') continue;
+      if (override.state === 'inherit' && index < paths.length - 1) continue;
     }
     const base = draftAtPath(snapshot, path);
     if (record(base)?.kind === 'none') return null;
@@ -1255,9 +1255,13 @@ function PartyField(props: EditorProps & { path: string; label: string }) {
 
 function ScopedCodeField(props: EditorProps & { path: string; label: string; inherited: string }) {
   const field = props.snapshot.fields[props.path];
-  const ownsValue = ['set', 'none', 'clear'].includes(field?.override?.state ?? '');
+  const sourceValue = draftAtPath(props.snapshot, props.path);
+  const hasSourceValue = sourceValue !== null && sourceValue !== undefined;
+  const ownsValue = field?.override
+    ? ['set', 'none', 'clear'].includes(field.override.state)
+    : hasSourceValue;
   const [own, setOwn] = useState(ownsValue);
-  useEffect(() => { setOwn(ownsValue); }, [field?.override?.updatedAt, field?.override?.state]);
+  useEffect(() => { setOwn(ownsValue); }, [field?.override?.updatedAt, field?.override?.state, sourceValue]);
   const mode = own ? 'own' : field?.override?.state === 'unknown' ? 'unknown' : 'inherit';
   return <div className={styles.scoped}>
     <FieldShell path={`${props.path}-mode`} label={props.label} field={field} onOpenEvidence={props.onOpenEvidence}
