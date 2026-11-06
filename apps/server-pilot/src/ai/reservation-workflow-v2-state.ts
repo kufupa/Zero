@@ -235,16 +235,35 @@ function pathParts(path: string): string[] | null {
 const NEVER_EDIT = new Set(['id', 'kind', 'sourceRefs', 'serviceRefs', 'documentRefs', 'candidateRefs', 'priceObservationRefs',
   'evidenceRefs', 'lookupResultRefs', 'annotations', 'issues', 'sourceClaims', 'observations', 'suggestedRef']);
 
+function editableCancelBodyField(draft: ReservationWorkflowV2Draft, parts: string[]): boolean {
+  if (parts[0] !== 'proposal' || parts[1] !== 'content' || parts[2] !== 'requests' || parts[4] !== 'body') return false;
+  const request = draft.proposal.content.requests.find((entry) => entry.id === parts[3]);
+  if (request?.kind !== 'cancel') return false;
+  if (parts.length === 7 && parts[5] === 'targets' && parts[6] === 'mode') return true;
+  if (parts.length === 7 && parts[5] === 'reason' && parts[6] === 'text') return true;
+  if (parts.length === 6 && parts[5] === 'cancellationNote') return true;
+  if (parts.length !== 9 || parts[5] !== 'targets' || parts[6] !== 'include' ||
+      !/^(?:0|[1-9]\d*)$/.test(parts[7] ?? '')) return false;
+  const hint = request.body.targets.include[Number(parts[7])];
+  return Boolean(hint?.id && ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture', 'suggestedRef'].includes(parts[8]!));
+}
+
 function editablePath(draft: ReservationWorkflowV2Draft, path: string): boolean {
   const parts = pathParts(path);
-  if (!parts || parts.length < 5 || parts.some((part) => NEVER_EDIT.has(part))) return false;
+  if (!parts || parts.length < 5) return false;
   const [, section, collection, stableId, branch] = parts;
   if (section !== 'content' || !['requests', 'services', 'documents'].includes(collection!)) return false;
   const rows = collection === 'requests' ? draft.proposal.content.requests :
     collection === 'services' ? draft.proposal.content.services : draft.proposal.content.documents;
   const rowIndex = /^(?:0|[1-9]\d*)$/.test(stableId ?? '') ? Number(stableId) : -1;
   if (!rows.some((entry) => entry.id === stableId) && !(Number.isSafeInteger(rowIndex) && rowIndex >= 0 && rowIndex < rows.length)) return false;
-  if (collection === 'requests') return branch === 'body' || (branch === 'requestText' && parts.length === 5);
+  if (collection === 'requests') {
+    const request = rows.find((entry) => entry.id === stableId) ?? rows[rowIndex];
+    if (request?.kind === 'cancel') return branch === 'requestText' && parts.length === 5 || editableCancelBodyField(draft, parts);
+    if (parts.some((part) => NEVER_EDIT.has(part))) return false;
+    return branch === 'body' || (branch === 'requestText' && parts.length === 5);
+  }
+  if (parts.some((part) => NEVER_EDIT.has(part))) return false;
   return true;
 }
 

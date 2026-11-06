@@ -315,10 +315,26 @@ function approvalDigest(compiled: Extract<CancelCompile, { outcome: 'ok' }>, fre
     native: { reasons: fresh.reasons, policyFacts: fresh.policyFacts, penaltyText: fresh.penaltyText } });
 }
 
+function supportedCancelOverride(path: string, bodyPath: string, body: Record<string, unknown>): boolean {
+  const prefix = `${bodyPath}/`;
+  if (!path.startsWith(prefix)) return false;
+  let parts: string[];
+  try { parts = path.slice(prefix.length).split('/').map(decodeURIComponent); }
+  catch { return false; }
+  if (parts.length === 1 && parts[0] === 'cancellationNote') return true;
+  if (parts.length === 2 && parts[0] === 'reason' && parts[1] === 'text') return true;
+  if (parts.length === 2 && parts[0] === 'targets' && parts[1] === 'mode') return true;
+  if (parts.length !== 4 || parts[0] !== 'targets' || parts[1] !== 'include' ||
+      !/^(?:0|[1-9]\d*)$/.test(parts[2] ?? '') ||
+      !['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture', 'suggestedRef'].includes(parts[3] ?? '')) return false;
+  const targets = record(body.targets), rows = targets?.include;
+  return Array.isArray(rows) && Boolean(record(rows[Number(parts[2])])?.id);
+}
+
 function resolvedSelection(draft: ReservationWorkflowV2Draft, requestId: string, hint: CancelHint, hintIndex: number):
   { path: string; ref: string; observation: ReservationWorkflowV2Observation; preimage: CancelPreimage;
     preflight: Record<string, unknown> } | { issue: string } {
-  const path = ptr('proposal', 'content', 'requests', requestId, 'body', 'targets', 'include', hintIndex, 'nativeSelectionRef');
+  const path = ptr('proposal', 'content', 'requests', requestId, 'body', 'targets', 'include', hintIndex, 'suggestedRef');
   const override = draft.fieldOverrides[path];
   if (!override || override.state !== 'set' || typeof override.value !== 'string') return { issue: 'cancel_native_target_selection_required' };
   const ref = override.value;
@@ -343,9 +359,8 @@ function compileCancel(draft: ReservationWorkflowV2Draft, requestId: string, hin
     return { outcome: 'unsupported', issue: 'cancel_body_contains_unsupported_fields', fields: Object.keys(loaded.body) };
   }
   const bodyOverridePrefix = `${loaded.bodyPath}/`;
-  const unsupportedOverrides = Object.keys(draft.fieldOverrides).filter((path) => path.startsWith(bodyOverridePrefix) &&
-    !['targets', 'reason', 'cancellationNote', 'previewObservationRefs'].includes(
-      path.slice(bodyOverridePrefix.length).split('/')[0] ?? ''));
+  const unsupportedOverrides = Object.keys(draft.fieldOverrides).filter((path) =>
+    path === loaded.bodyPath || (path.startsWith(bodyOverridePrefix) && !supportedCancelOverride(path, loaded.bodyPath, loaded.body!)));
   if (unsupportedOverrides.length) return { outcome: 'unsupported', issue: 'cancel_contains_unsupported_staff_overrides',
     fields: unsupportedOverrides };
   const targets = record(loaded.body.targets), rows = targetHintRows(loaded.body);
@@ -425,10 +440,10 @@ async function recordOperation(ctx: ReservationWorkflowV2CancelContext,
 }
 
 function lookupHintPath(requestId: string, index: number): string {
-  return ptr('proposal', 'content', 'requests', requestId, 'body', 'targets', 'include', index, 'nativeSelectionRef');
+  return ptr('proposal', 'content', 'requests', requestId, 'body', 'targets', 'include', index, 'suggestedRef');
 }
 
-/** Resolve target hints to fresh native identities; only a staff-set nativeSelectionRef becomes an action binding. */
+/** Resolve target hints to fresh native identities; only a staff-set suggestedRef becomes an action binding. */
 export async function reservationWorkflowV2CancelLookup(ctx: ReservationWorkflowV2CancelContext,
   input: ReservationWorkflowV2LookupInput): Promise<CancelOutcome> {
   const loaded = await currentDraft(ctx, input);
@@ -459,7 +474,7 @@ export async function reservationWorkflowV2CancelLookup(ctx: ReservationWorkflow
         (!hint.bookedDeparture || day.safeParse(hint.bookedDeparture).success);
       const fieldPath = lookupHintPath(request.id, index);
       if (!valid) {
-        lookups.push({ status: 'needs_input', requestId: request.id, hintId: hint.id,
+        lookups.push({ status: 'needs_input', requestId: request.id, hintId: hint.id, selectionPath: fieldPath,
           issue: 'exact_confirmation_and_valid_dates_required' });
         continue;
       }
@@ -487,6 +502,7 @@ export async function reservationWorkflowV2CancelLookup(ctx: ReservationWorkflow
       item.sourceRefs = uniqueRefs([request.sourceRefs, targets.sourceRefs, hint.sourceRefs, hint.candidateRefs, hint.suggestedRef]);
       observations.push(item);
       lookups.push({ status: complete ? 'found' : 'partial', requestId: request.id, hintId: hint.id,
+        selectionPath: fieldPath,
         ...(preimage ? { candidate: { observationRef: item.ref, confirmation: preimage.confirmation,
           guestName: `${preimage.firstName} ${preimage.lastName}`, arrival: preimage.arrival,
           departure: preimage.departure, nativeStayId: preimage.nativeStayId } } : {}),
