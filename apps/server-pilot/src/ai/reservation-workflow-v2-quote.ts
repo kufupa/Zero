@@ -229,7 +229,7 @@ function pricedDinnerFallbackMatches(
 ): boolean {
   const facts = record(factsValue);
   const fallbackGroupIds = Array.isArray(fallbackGroupIdsValue) ? fallbackGroupIdsValue : [];
-  if ((input.salesStrategy !== 'BAR' && input.salesStrategy !== 'Government') ||
+  if ((input.salesStrategy !== 'BAR' && input.salesStrategy !== 'Government' && input.salesStrategy !== 'GOV') ||
       actual.board !== 'breakfast' || typeof actual.rateCode !== 'string' || !isPublicRateCode(actual.rateCode) ||
       !fallbackGroupIds.includes(expected.id) || !facts || facts.revisionId !== revision.id ||
       facts.authorizationId !== revision.authorizationId || facts.sourceHash !== input.sourceHash) return false;
