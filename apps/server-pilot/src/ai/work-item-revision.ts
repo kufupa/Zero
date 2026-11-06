@@ -4,6 +4,7 @@ import { workEvent, workItem } from '../db/schema/work.js';
 
 /** Nested HMS commits. Same key as STAY_COMMITS_KEY in work-items.ts. Undo never touches it. */
 const STAY_COMMITS_KEY = 'stays';
+const RESERVATION_V2_KEY = 'reservationWorkflowV2';
 const SOURCE_TYPES = ['field.edit', 'field.reject', 'field.accept', 'field.reset'] as const;
 
 export type PaneState = Record<string, unknown>;
@@ -26,13 +27,19 @@ export type PaneRevisionEvidence = {
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
 
 function isPaneFieldKey(key: string): boolean {
-  return key.startsWith('stays[') || key.startsWith('requests[') || key.startsWith('contact.') || key === 'followUp.draft';
+  return key.startsWith('stays[') || key.startsWith('requests[') || key.startsWith('contact.') || key === 'followUp.draft' ||
+    key === RESERVATION_V2_KEY;
 }
 
 export function paneStateOf(state: PaneState): PaneState {
   const pane: PaneState = {};
   for (const [key, value] of Object.entries(state)) {
-    if (isPaneFieldKey(key)) pane[key] = value;
+    if (key === RESERVATION_V2_KEY) {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const draft = value as Record<string, unknown>;
+        pane[key] = { fieldOverrides: draft.fieldOverrides ?? {}, staffReviews: draft.staffReviews ?? {} };
+      }
+    } else if (isPaneFieldKey(key)) pane[key] = value;
   }
   return pane;
 }
@@ -40,10 +47,17 @@ export function paneStateOf(state: PaneState): PaneState {
 export function withPaneState(state: PaneState, pane: PaneState): PaneState {
   const next: PaneState = {};
   for (const [key, value] of Object.entries(state)) {
-    if (!isPaneFieldKey(key)) next[key] = value;
+    if (!isPaneFieldKey(key) || key === RESERVATION_V2_KEY) next[key] = value;
   }
   for (const [key, value] of Object.entries(paneStateOf(pane))) {
-    next[key] = value;
+    if (key === RESERVATION_V2_KEY) {
+      const current = state[key] && typeof state[key] === 'object' && !Array.isArray(state[key])
+        ? state[key] as Record<string, unknown> : {};
+      const restored = value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown> : {};
+      // Undo only human-owned editable/review state. Current observations, proposal and native results survive.
+      next[key] = { ...current, fieldOverrides: restored.fieldOverrides ?? {}, staffReviews: restored.staffReviews ?? {} };
+    } else next[key] = value;
   }
   if (Object.hasOwn(state, STAY_COMMITS_KEY)) next[STAY_COMMITS_KEY] = state[STAY_COMMITS_KEY];
   return next;
@@ -161,13 +175,19 @@ async function applyHistoryMove(
     }
     const snapshot = await latestEvidence(tx, input.workItemId, undo ? revision : revision + 1);
     if (!snapshot) return { status: 'at_boundary' as const, revision, revisionHead, seq };
-    if (!extractionMatches(snapshot.extractionId, item.extractionId)) {
+    const v2WithoutLegacyRead = item.extractionId === null && snapshot.extractionId === null &&
+      Object.hasOwn(asState(item.state), RESERVATION_V2_KEY);
+    if (!extractionMatches(snapshot.extractionId, item.extractionId) && !v2WithoutLegacyRead) {
       return { status: 'history_stale' as const, revision, revisionHead, seq };
     }
     const restored = undo ? snapshot.previousPaneState : snapshot.paneState;
     const nextRevision = undo ? revision - 1 : revision + 1;
     const nextSeq = seq + 1;
     const state = withPaneState(item.state, restored);
+  const v2 = state[RESERVATION_V2_KEY];
+  if (v2 && typeof v2 === 'object' && !Array.isArray(v2)) {
+    state[RESERVATION_V2_KEY] = { ...(v2 as Record<string, unknown>), revision: nextRevision };
+  }
     // Undo/redo invalidates an earlier filing review, even when pane fields return to their old values.
     if (state.action === 'attach_document') {
       state.filingHistorySeq = nextSeq;

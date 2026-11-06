@@ -1,7 +1,7 @@
-import { NavaPane } from '@/components/nava-pane/nava-pane';
+import { ReservationPaneHost } from '@/components/nava-pane/reservation-pane-host';
 import { useOutlookBridge } from '@/lib/workstation/use-outlook-bridge';
 
 export default function OutlookPanePage() {
   const bridge = useOutlookBridge();
-  return <NavaPane bridge={bridge} />;
+  return <ReservationPaneHost bridge={bridge} />;
 }

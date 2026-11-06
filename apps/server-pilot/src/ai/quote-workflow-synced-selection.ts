@@ -42,6 +42,8 @@ export type SyncedQuoteAttachment = {
   /** Preserved for extraction vision admission; other callers may ignore it. */
   isInline?: boolean;
   bytesPresent: boolean;
+  /** Stable parent message id, used to keep historical document evidence on its own source row. */
+  messageId?: string;
   /** Why staff must review this attachment themselves. */
   readFailure?: string;
   /** Readable source still needs review because some rows were omitted or number groups were masked. */
@@ -51,6 +53,10 @@ export type SyncedQuoteAttachment = {
 export type QuoteAttachmentReviewReason = 'ambiguous number groups' | 'spreadsheet text truncated';
 
 export type SyncedThreadMessage = {
+  /** Stable DB id so downstream source registries can identify historical evidence exactly. */
+  messageId?: string;
+  /** Mailbox arrival clock, distinct from the sender-authored date used for causal ordering. */
+  arrivedAt?: string;
   direction: 'inbound' | 'outbound';
   timestamp?: string;
   subject: string;
@@ -69,12 +75,16 @@ export type SyncedQuoteSelection = {
   preceding: Array<{ bodyText: string; direction?: 'inbound' | 'outbound' }>;
   /** Optional full thread state, limited to prior messages, for inbound action classification. */
   threadMessages?: SyncedThreadMessage[];
+  /** Source-cutoff-only documents from causal prior messages; excludes later sibling confirmations. */
+  threadAttachments?: SyncedQuoteAttachment[];
   attachments: SyncedQuoteAttachment[];
   /** Stable DB ids of the selected message and its thread. Not part of the source hash. */
   messageId?: string;
   threadId?: string;
   /** Sender address of the selected message. Only the route reads it, to flag no-reply senders, so it is not hashed. */
   fromAddress?: string;
+  /** Selected message's participant set; context only, never a standalone cross-thread match key. */
+  participants?: string[];
   /** Sibling/later confirmation files. Not guest-request body or `attachments`. */
   threadConfirmation?: ThreadConfirmationResolution;
 };
@@ -403,6 +413,17 @@ export async function readQuoteAttachments(
   return results.filter((result): result is SyncedQuoteAttachment => result !== null);
 }
 
+function attachParentMessageIds(
+  results: SyncedQuoteAttachment[],
+  rows: readonly Pick<QuoteAttachmentRow, 'id' | 'messageId'>[],
+): SyncedQuoteAttachment[] {
+  const parentById = new Map(rows.map((row) => [row.id, row.messageId]));
+  return results.map((result) => {
+    const messageId = parentById.get(result.id);
+    return messageId ? { ...result, messageId } : result;
+  });
+}
+
 /** Locators come only from this mailbox's attachment rows; the caller never supplies keys. */
 export function createArtifactReader(
   rows: QuoteAttachmentRow[],
@@ -669,7 +690,9 @@ export function orderThreadContext(
         left.timestamp.getTime() - right.timestamp.getTime() ||
         left.candidate.id.localeCompare(right.candidate.id),
     )
-    .map(({ candidate, timestamp }) => ({
+    .map(({ candidate, timestamp, mailbox }) => ({
+      messageId: candidate.id,
+      arrivedAt: mailbox.toISOString(),
       direction: candidate.direction,
       timestamp: timestamp.toISOString(),
       subject: candidate.subject ?? '',
@@ -699,6 +722,8 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
   messageId?: string;
   /** Include all prior thread messages for action classification, instead of only causal preceding text. */
   includeThreadState?: boolean;
+  /** Reservation prefill: load only selected + causally prior attachments, not later sibling confirmation files. */
+  sourceCutoffOnly?: boolean;
   /** Include bounded non-inline PNG/JPEG reads for the extraction vision route. */
   includeVisionImages?: boolean;
   /** Keep image metadata for an honest unread audit while the vision gate is off. */
@@ -728,6 +753,8 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
       arrivedAt: MESSAGE_ARRIVED_AT,
       direction: message.direction,
       fromAddress: message.fromAddress,
+      toAddresses: message.toAddresses,
+      ccAddresses: message.ccAddresses,
     })
     .from(message)
     .where(
@@ -759,7 +786,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     .where(and(eq(message.transportId, input.transportId), eq(message.threadId, row.threadId)));
 
   const preceding = orderCausalPreceding(row, threadRows);
-  const threadMessages = input.includeThreadState
+  const threadMessages = input.includeThreadState || input.sourceCutoffOnly
     ? orderThreadContext(
         freezeOutboundToMailboxArrival(row),
         threadRows.map((item) => freezeOutboundToMailboxArrival(item)),
@@ -779,12 +806,24 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
   ).filter((item) => threadIdSet.has(item.messageId));
   const selectedRows = rows.filter((item) => item.messageId === row.id);
   const siblingRows = rows.filter((item) => item.messageId !== row.id);
+  const causalPriorIds = new Set(threadMessages?.map((item) => item.messageId).filter((id): id is string => Boolean(id)) ?? []);
+  const priorAttachmentRows = input.sourceCutoffOnly
+    ? siblingRows.filter((item) => causalPriorIds.has(item.messageId))
+    : [];
 
   const signal = input.signal ?? AbortSignal.timeout(15_000);
   const reader = await readerForRows(rows, input.transportId, signal, {
     includeVisionImages: input.includeVisionImages === true,
     db,
   });
+  const selectedAttachments = await readQuoteAttachments(selectedRows, reader, {
+    includeVisionImages: input.includeVisionImages === true,
+    trackVisionImages: input.trackVisionImages === true,
+  });
+  const priorAttachments = input.sourceCutoffOnly ? await readQuoteAttachments(priorAttachmentRows, reader, {
+    includeVisionImages: input.includeVisionImages === true,
+    trackVisionImages: input.trackVisionImages === true,
+  }) : [];
 
   return {
     subject: row.subject ?? '',
@@ -798,14 +837,15 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     ).toISOString(),
     preceding,
     ...(threadMessages ? { threadMessages } : {}),
-    attachments: await readQuoteAttachments(selectedRows, reader, {
-      includeVisionImages: input.includeVisionImages === true,
-      trackVisionImages: input.trackVisionImages === true,
-    }),
+    attachments: input.sourceCutoffOnly ? attachParentMessageIds(selectedAttachments, selectedRows) : selectedAttachments,
+    ...(input.sourceCutoffOnly ? { threadAttachments: attachParentMessageIds(priorAttachments, priorAttachmentRows) } : {}),
     messageId: row.id,
     threadId: row.threadId,
     fromAddress: row.fromAddress,
-    threadConfirmation: siblingRows.length
+    participants: [...new Set([row.fromAddress, ...(row.toAddresses ?? []), ...(row.ccAddresses ?? [])]
+      .filter((address): address is string => typeof address === 'string')
+      .map((address) => address.trim().toLowerCase()).filter(Boolean))],
+    threadConfirmation: !input.sourceCutoffOnly && siblingRows.length
       ? resolveThreadConfirmationEvidence(await readQuoteAttachments(siblingRows, reader))
       : { confirmation: null, reason: null },
   };

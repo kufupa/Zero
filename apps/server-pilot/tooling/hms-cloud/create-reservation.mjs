@@ -24,14 +24,15 @@ const candidate = ({ nativeId, firstName, lastName, email, phoneNumber, city, co
 
 export const REAL_GUEST_CREATE_AUTHORIZATION_HOLD = 'trusted_staff_create_authorization_unavailable';
 
-function validate(input, allowRealGuest = false) {
+function validate(input, allowRealGuest = false, allowCommitOnlyBillingReference = false) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { outcome: 'needs_input', issue: 'invalid_input' };
   if (!['prepare', 'commit'].includes(input.mode)) return { outcome: 'needs_input', issue: 'mode_required' };
   if (input.propertyCode !== 'HRCEN') return { outcome: 'unsupported', issue: 'property_not_supported' };
   const fidelity = inspectRequest(input);
   if (Object.hasOwn(input, 'billingReference') && input.billingReference != null &&
       !validCreateBillingReference(input.billingReference)) fidelity.invalid.push('billingReference');
-  if (Object.hasOwn(input, 'billingReference') && input.mode === 'prepare' && input.billingReference != null) {
+  if (Object.hasOwn(input, 'billingReference') && input.mode === 'prepare' && input.billingReference != null &&
+      !allowCommitOnlyBillingReference) {
     fidelity.unsupported.push({ field: 'billingReference', issue: 'commit_only' });
   }
   if (input.cms?.messageId != null && !code(input.cms.messageId, 100)) fidelity.invalid.push('cms.messageId');
@@ -337,7 +338,7 @@ async function stageUnresolvedGuestName(runTool, propertyCode, search, lookup) {
 }
 
 function draftRequestBinding(input, state, output, formFields) {
-  if (Object.hasOwn(input, 'billingReference') || !state.guest || !state.adult || !state.children || !state.guarantee ||
+  if (!state.guest || !state.adult || !state.children || !state.guarantee ||
       formValue(formFields, 'udfchkbox04') !== (input.cms?.send === true)) return null;
   const parties = {};
   for (const [stateKey, key, displayKey] of [
@@ -358,6 +359,7 @@ function draftRequestBinding(input, state, output, formFields) {
     ...(state.source ? { sourceOfBusiness: { nativeCode: state.source.nativeCode, description: state.source.candidate.description } } : {}),
     ...(state.reason ? { reasonForStay: { value: String(state.reason.actual.value), display: state.reason.actual.display } } : {}),
     ...(Object.keys(parties).length ? { parties } : {}),
+    ...(input.billingReference != null ? { billingReference: input.billingReference } : {}),
     ...(Object.hasOwn(output.applied, 'note') ? { note: output.applied.note } : {}),
     ...(state.cms ? { cmsMessageId: state.cms.actual } : {}),
     ...(state.cmsRecipient !== undefined ? { cmsRecipient: state.cmsRecipient } : {}),
@@ -367,13 +369,16 @@ function draftRequestBinding(input, state, output, formFields) {
     sendHmsConfirmation: input.cms?.send === true
       ? { kind: 'send', recipient: state.cmsRecipient } : { kind: 'never' },
   };
-  return digestCloudCreateRequest(request);
+  const binding = digestCloudCreateRequest(request);
+  const profileId = text(String(state.arAccount?.nativeReadback?.arprofileid ?? state.arAccount?.profileId ?? ''));
+  return { ...binding, ...(profileId && /^\d+$/.test(profileId) ? { arAccountProfileId: profileId } : {}) };
 }
 
 /** Prepare an unsaved draft or execute the server-authorized create. */
 export async function createReservation(input, { withSession = withBookingLookupSession, withSavedSession = withSavedStayAgentSession,
   partyReadback = readCreateParties, census, authorizeCandidate, dispatchCandidate, expectedRequestDigest,
   expectedRateAvailability,
+  allowCommitOnlyBillingReference = false,
   capturePrepareScreenshot = false, requireExplicitGuestSelection = false, selectTrack = fillTrackBeforeGuarantee,
   verifyLabtestMatches, allowRealGuest = false, expectedGuest, cloudTargetKey } = {}) {
   if ((authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
@@ -388,6 +393,7 @@ export async function createReservation(input, { withSession = withBookingLookup
         !['averageRate', 'totalRate', 'currency'].every(key => typeof expectedRateAvailability[key] === 'string' &&
           expectedRateAvailability[key].trim()))) ||
       typeof capturePrepareScreenshot !== 'boolean' || (capturePrepareScreenshot && input?.mode !== 'prepare') ||
+      typeof allowCommitOnlyBillingReference !== 'boolean' ||
       typeof requireExplicitGuestSelection !== 'boolean' || (requireExplicitGuestSelection && input?.mode !== 'prepare') ||
       typeof allowRealGuest !== 'boolean' || (allowRealGuest && (!validCreateGuest(expectedGuest) ||
         (input?.cms?.send === true && isLabtestGuest(expectedGuest)) ||
@@ -396,11 +402,12 @@ export async function createReservation(input, { withSession = withBookingLookup
         cloudTargetKey !== createCloudTargetKey(expectedGuest, input?.stay?.arrival)))) {
     return { outcome: 'refused', issue: 'SAVE_GUARD_CALLBACKS_INVALID', approvalReady: false };
   }
-  const checked = validate(input, allowRealGuest);
+  const checked = validate(input, allowRealGuest, allowCommitOnlyBillingReference);
   if (checked.outcome) return { ...checked, approvalReady: false };
   const commit = input.mode === 'commit', missing = checked.missing;
   const output = { outcome: 'needs_input', approvalReady: false, applied: {}, appliedVerification: { visibleFields: false },
     warnings: [], suggestedCmsMessageId: '03', missing,
+    ...(allowCommitOnlyBillingReference && input.billingReference != null ? { commitOnlyFields: ['billingReference'] } : {}),
     ...(checked.unsupportedFields.length ? { unsupportedFields: checked.unsupportedFields } : {}) };
   if (commit && missing.length) return output;
   const stay = input.stay || {}, room = input.room || {}, state = {};
@@ -653,7 +660,8 @@ export async function createReservation(input, { withSession = withBookingLookup
         if (output.outcome === 'prepared') {
           const binding = draftRequestBinding(input, state, output, form.fields);
           if (binding?.outcome === 'ok') {
-            output.requestBinding = { request: binding.request, digest: binding.normalizedRequestDigest };
+            output.requestBinding = { request: binding.request, digest: binding.normalizedRequestDigest,
+              ...(binding.arAccountProfileId ? { arAccountProfileId: binding.arAccountProfileId } : {}) };
           } else if (binding) output.requestBindingIssue = binding.issue;
           if (capturePrepareScreenshot && output.requestBinding) {
             const dir = join('/tmp', `hms-cloud-create-${randomUUID()}`);

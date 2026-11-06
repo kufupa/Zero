@@ -2271,6 +2271,7 @@ export async function storedWorkFor(
       ),
     )
     .limit(1);
+  if (item && Object.hasOwn(item.state, 'reservationWorkflowV2')) return { status: 'none' };
   return readyView(db, msg, latest, item ?? null, input.transportId);
 }
 
@@ -2298,6 +2299,10 @@ export async function openStoredWork(
   ) {
     return readyView(db, msg, latest, null, input.transportId);
   }
+  const [v2Item] = await db.select({ state: workItem.state }).from(workItem)
+    .where(and(eq(workItem.transportId, input.transportId), eq(workItem.threadId, msg.threadId),
+      eq(workItem.sourceMessageId, msg.id))).limit(1);
+  if (v2Item && Object.hasOwn(v2Item.state, 'reservationWorkflowV2')) return { status: 'none' };
   const item = await ensureWorkItem(db, {
     transportId: input.transportId,
     threadId: msg.threadId,
@@ -2373,6 +2378,7 @@ export async function recordFieldEvent(
       .limit(1)
       .for('update');
     if (!item) return { status: 'not_found' as const };
+    if (Object.hasOwn(item.state, 'reservationWorkflowV2')) return { status: 'invalid_path' as const };
     if (input.expectedExtractionId !== undefined && input.expectedExtractionId !== item.extractionId) {
       return { status: 'stale_revision' as const };
     }
@@ -2619,12 +2625,13 @@ export async function acceptUneditedFields(
 ): Promise<{ status: 'not_found' } | { status: 'recorded'; accepted: number }> {
   return db.transaction(async (tx) => {
     const [item] = await tx
-      .select({ extractionId: workItem.extractionId })
+      .select({ extractionId: workItem.extractionId, state: workItem.state })
       .from(workItem)
       .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
       .limit(1)
       .for('update');
     if (!item) return { status: 'not_found' as const };
+    if (Object.hasOwn(item.state, 'reservationWorkflowV2')) return { status: 'recorded' as const, accepted: 0 };
     const paths = [...new Set(input.fieldPaths)].filter(
       (path) => !path.endsWith('.removed') && (contactFieldOf(path) !== null || parseFieldPath(path) !== null),
     );

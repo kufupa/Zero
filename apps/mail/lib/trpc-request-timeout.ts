@@ -4,6 +4,15 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
   try {
     const pathname = new URL(raw, 'https://timeout.invalid').pathname;
     const routes = decodeURIComponent(pathname.split('/').at(-1) ?? '').split(',');
+    // V2 uses the same bounded native runners as the existing pane. Keep the
+    // whole read/prepare/save response alive, including source and lock waits.
+    if (routes.some((route) => [
+      'reservationWorkflowV2.ensure', 'reservationWorkflowV2.lookup',
+      'reservationWorkflowV2.prepare', 'reservationWorkflowV2.execute',
+      'reservationWorkflowV2.reconcile', 'reservationWorkflowV2.lookupServices',
+      'reservationWorkflowV2.prepareServices', 'reservationWorkflowV2.executeServices',
+      'reservationWorkflowV2.reconcileServices',
+    ].includes(route))) return 27 * 60_000;
     // A pane save runs the duplicate read (up to 5 minutes) and the save (up to 20) under the hotel lock.
     if (routes.includes('quoteWorkflow.previewStay') || routes.includes('quoteWorkflow.commitStay'))
       return 27 * 60_000;
