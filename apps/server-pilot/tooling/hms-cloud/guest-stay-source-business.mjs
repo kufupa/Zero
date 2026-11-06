@@ -60,6 +60,15 @@ function invalidate(scope) {
   void previous.fieldHandle.dispose().catch(() => {});
 }
 
+// HMS sometimes starts this unrelated support script while the picker closes.
+// Keep it blocked, but do not mistake that blocked GET for a source change.
+function isSupportScript(request) {
+  try {
+    return request.method() === 'GET' && request.resourceType() === 'script' &&
+      new URL(request.url()).origin === 'https://inforsaas.service-now.com';
+  } catch { return false; }
+}
+
 async function guardPage(page) {
   if (scopes.has(page)) return scopes.get(page);
   const scope = { search: null, expected: null, nativeDialog: false, blockedWrites: 0, blockedOther: 0 };
@@ -70,6 +79,7 @@ async function guardPage(page) {
       expected.used = true;
       return route.fallback(); // The context read-only guard still gets the request.
     }
+    if (isSupportScript(request)) return route.abort();
     if (['GET', 'HEAD', 'OPTIONS'].includes(request.method())) scope.blockedOther += 1;
     else { scope.blockedWrites += 1; invalidate(scope); }
     return route.abort();
