@@ -38,6 +38,8 @@ import {
 import { reservationWorkflowV2LookupServices, reservationWorkflowV2PreviewServices } from '../../ai/reservation-workflow-v2-services.js';
 import { reservationWorkflowV2QuoteLookup, reservationWorkflowV2QuotePrepare,
   reservationWorkflowV2QuoteExecute, reservationWorkflowV2QuoteReconcile } from '../../ai/reservation-workflow-v2-quote.js';
+import { reservationWorkflowV2AmendLookup, reservationWorkflowV2AmendPrepare,
+  reservationWorkflowV2AmendExecute, reservationWorkflowV2AmendReconcile } from '../../ai/reservation-workflow-v2-amend.js';
 import { reservationWorkflowV2FilingLookup, reservationWorkflowV2FilingPrepare,
   reservationWorkflowV2FilingExecute, reservationWorkflowV2FilingReconcile } from '../../ai/reservation-workflow-v2-filing.js';
 import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
@@ -210,6 +212,7 @@ export const reservationWorkflowV2Router = router({
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteLookup(scoped, input);
     if (workflow.kind === 'filing') return reservationWorkflowV2FilingLookup(scoped, input);
     if (workflow.kind === 'create') return reservationWorkflowV2Lookup(scoped, input);
+    if (workflow.kind === 'amend') return reservationWorkflowV2AmendLookup(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
   prepare: mailboxProcedure.input(reservationWorkflowV2PrepareInputSchema).mutation(async ({ input, ctx }) => {
@@ -219,6 +222,7 @@ export const reservationWorkflowV2Router = router({
     if (workflow.kind === 'quote') return reservationWorkflowV2QuotePrepare(scoped, input);
     if (workflow.kind === 'filing') return reservationWorkflowV2FilingPrepare(scoped, input);
     if (workflow.kind === 'create') return reservationWorkflowV2Prepare(scoped, input);
+    if (workflow.kind === 'amend') return reservationWorkflowV2AmendPrepare(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
   execute: mailboxProcedure.input(reservationWorkflowV2ExecuteInputSchema).mutation(async ({ input, ctx }) => {
@@ -228,6 +232,7 @@ export const reservationWorkflowV2Router = router({
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteExecute(scoped, input);
     if (workflow.kind === 'filing') return reservationWorkflowV2FilingExecute(scoped, input);
     if (workflow.kind === 'create') return reservationWorkflowV2Execute(scoped, input);
+    if (workflow.kind === 'amend') return reservationWorkflowV2AmendExecute(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
   lookupServices: mailboxProcedure.input(servicesInput).mutation(async ({ input, ctx }) =>
@@ -241,6 +246,7 @@ export const reservationWorkflowV2Router = router({
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteReconcile(scoped, input);
     if (workflow.kind === 'filing') return reservationWorkflowV2FilingReconcile(scoped, input);
     if (workflow.kind === 'create') return reservationWorkflowV2Reconcile(scoped, input);
+    if (workflow.kind === 'amend') return reservationWorkflowV2AmendReconcile(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
 });

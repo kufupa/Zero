@@ -246,9 +246,39 @@ function pathParts(path: string): string[] | null {
 const NEVER_EDIT = new Set(['id', 'kind', 'sourceRefs', 'serviceRefs', 'documentRefs', 'candidateRefs', 'priceObservationRefs',
   'evidenceRefs', 'lookupResultRefs', 'annotations', 'issues', 'sourceClaims', 'observations', 'suggestedRef']);
 
+function effectiveSavedTargetRows(draft: ReservationWorkflowV2Draft, requestId: string): unknown[] {
+  const request = draft.proposal.content.requests.find((entry) => entry.id === requestId);
+  if (!request || (request.kind !== 'amend' && request.kind !== 'cancel')) return [];
+  let value: unknown = request.body;
+  let path = `/proposal/content/requests/${encodeURIComponent(requestId)}/body`;
+  for (const key of ['', 'targets', 'include']) {
+    if (key) {
+      value = value && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>)[key] : undefined;
+      path += `/${key}`;
+    }
+    const override = draft.fieldOverrides[path];
+    if (override?.state === 'set') value = override.value;
+    else if (override && override.state !== 'inherit') value = undefined;
+  }
+  return Array.isArray(value) ? value : [];
+}
+
+
+function editableAmendTargetSuggestedRef(draft: ReservationWorkflowV2Draft, parts: string[]): boolean {
+  if (parts.length !== 9 || parts[0] !== 'proposal' || parts[1] !== 'content' || parts[2] !== 'requests' ||
+      parts[4] !== 'body' || parts[5] !== 'targets' || parts[6] !== 'include' || parts[8] !== 'suggestedRef' ||
+      !/^(?:0|[1-9]\d*)$/.test(parts[7] ?? '')) return false;
+  const request = draft.proposal.content.requests.find((entry) => entry.id === parts[3]);
+  if (request?.kind !== 'amend') return false;
+  const hint = effectiveSavedTargetRows(draft, request.id)[Number(parts[7])];
+  return Boolean(hint && typeof hint === 'object' && !Array.isArray(hint) && typeof (hint as { id?: unknown }).id === 'string');
+}
+
 function editablePath(draft: ReservationWorkflowV2Draft, path: string): boolean {
   const parts = pathParts(path);
   if (!parts || parts.length < 5) return false;
+  if (editableAmendTargetSuggestedRef(draft, parts)) return true;
   const documentKind = parts[2] === 'documents' && parts.length === 5 && parts[4] === 'kind';
   const request = draft.proposal.content.requests.find((entry) => entry.id === parts[3]);
   const targetPath = `/proposal/content/requests/${encodeURIComponent(parts[3] ?? '')}/body/targets`;

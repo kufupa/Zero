@@ -249,7 +249,8 @@ export async function prepareCloudPaneAmend(input, { openSession = withCenturion
       { current, snapshot, bind, quote, recordOptions: nativeOptions(input, record) }));
       if (result.issue === 'PREPARE_ONLY' && result.nativeDigest && result.approvedPrices && result.preserved) {
         return { outcome: 'prepared', nativeDigest: result.nativeDigest,
-          approvedPrices: result.approvedPrices, preserved: result.preserved };
+          approvedPrices: result.approvedPrices, preserved: result.preserved,
+          recoveryBaseline: result.recoveryBaseline };
       }
       return { outcome: 'refused', issue: result.issue || 'AMEND_PREPARE_UNVERIFIED' };
     }, protectedSession.options);
@@ -552,6 +553,17 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         deadlineAt: performance.now() + 6 * 60_000 }) : null;
       const rateStageGate = needsAvailability ? createSavedRateStageRequestGate({ frame: state.frame, selected,
         deadlineAt: performance.now() + 6 * 60_000 }) : null;
+      const recoveryBaseline = { beforeNote: expected.note, beforeParties: structuredClone(state.partyPreimage),
+        beforeRecipient: preserved.cmsRecipient,
+        beforeGuestEmail: preserved.guestEmail !== undefined ? preserved.guestEmail :
+          typeof baseline?.data?.emailaddress === 'string' && typeof baseline?.values?.emailaddress === 'string' &&
+            baseline.data.emailaddress === baseline.values.emailaddress ? baseline.data.emailaddress : null,
+        beforeBookerName: typeof baseline?.data?.caller === 'string' && typeof baseline?.values?.caller === 'string' &&
+          baseline.data.caller === baseline.values.caller ? baseline.data.caller : null,
+        beforeBookerContact: typeof baseline?.data?.udfchar06 === 'string' && typeof baseline?.values?.udfchar06 === 'string' &&
+          baseline.data.udfchar06 === baseline.values.udfchar06 ? baseline.data.udfchar06 : null,
+        beforeGuaranteeCode: state.expectedGuarantee?.code ?? 'NGI',
+        beforeSavedRates: savedRates ? structuredClone(savedRates) : null };
       if (prepareOnly) {
         try { quoted = await bounded(quote(input, state)); } catch { quoted = null; }
       } else {
@@ -564,14 +576,18 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         if (!evidence || !/^[0-9a-f-]{36}$/i.test(evidence.eventId || '') || !/^[a-f0-9]{64}$/.test(evidence.sha256 || '')) {
           throw new Error('AMEND_EVIDENCE_REQUIRED');
         }
-        captureBefore({ beforeNote: expected.note, beforeParties: structuredClone(state.partyPreimage),
-          beforeRecipient: preserved.cmsRecipient, beforeGuestEmail: preserved.guestEmail ?? '',
-          beforeGuaranteeCode: state.expectedGuarantee?.code ?? 'NGI',
+      captureBefore({ beforeNote: expected.note, beforeParties: structuredClone(state.partyPreimage),
+          beforeRecipient: recoveryBaseline.beforeRecipient,
+          beforeGuestEmail: recoveryBaseline.beforeGuestEmail,
+          beforeBookerName: recoveryBaseline.beforeBookerName,
+          beforeBookerContact: recoveryBaseline.beforeBookerContact,
+          beforeGuaranteeCode: recoveryBaseline.beforeGuaranteeCode,
           beforeSavedRates: savedRates ? structuredClone(savedRates) : null,
           beforeEvidence: { eventId: evidence.eventId, sha256: evidence.sha256 } });
       }
       preparedState = { frame: state.frame, state, baseline, save, childStageGate, roomStageGate, rateStageGate,
-        savedRateDigest: savedRates?.digest ?? null, enableComposedStage: true, allowRealGuest: input.allowRealGuest === true };
+        savedRateDigest: savedRates?.digest ?? null, recoveryBaseline,
+        enableComposedStage: true, allowRealGuest: input.allowRealGuest === true };
       return preparedState;
     },
     stage: async (bounded, prepared, context) => {
@@ -602,7 +618,8 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
     },
     validate: async (_bounded, prepared, staged) => Boolean(staged?.draft && valid(staged.draft, prepared) &&
       (needsAvailability || staged.approvedPrices)),
-    stageDetails: (staged) => ({ nativeDigest, preserved, approvedPrices: staged?.approvedPrices ?? null }),
+    stageDetails: (staged) => ({ nativeDigest, preserved, approvedPrices: staged?.approvedPrices ?? null,
+      ...(prepareOnly ? { recoveryBaseline: preparedState?.recoveryBaseline ?? null } : {}) }),
     ...(availability ? { availability } : {}),
     beforeSave: async (bounded, prepared, staged, scope) => {
       rateScope = scope;
@@ -733,7 +750,12 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
       for (const [name, actual] of Object.entries({ guestEmail, bookerName, bookerContact })) {
         if (Object.hasOwn(changes, name) && changes[name] !== actual) return { outcome: 'unverified' };
       }
-      if ((!Object.hasOwn(changes, 'guestEmail') && guestEmail !== (input.beforeGuestEmail ?? '')) ||
+      if ((!Object.hasOwn(changes, 'guestEmail') &&
+          (typeof input.beforeGuestEmail !== 'string' || guestEmail !== input.beforeGuestEmail)) ||
+          (!Object.hasOwn(changes, 'bookerName') &&
+            (typeof input.beforeBookerName !== 'string' || bookerName !== input.beforeBookerName)) ||
+          (!Object.hasOwn(changes, 'bookerContact') &&
+            (typeof input.beforeBookerContact !== 'string' || bookerContact !== input.beforeBookerContact)) ||
           state.cmsSend !== changes.cmsSend ||
           (changes.cmsSend && (cmsRecipient !== changes.cmsRecipient || cmsMessageId !== changes.cmsMessageId)) ||
           (!changes.cmsSend && cmsRecipient !== input.beforeRecipient)) return { outcome: 'unverified' };

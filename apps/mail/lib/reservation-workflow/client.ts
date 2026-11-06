@@ -297,7 +297,7 @@ function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot
     flattenFields(request, root, fields, draft);
     requests.push({ id: request.id, kind: request.kind, text: request.requestText,
       fieldPaths: Object.keys(fields).filter((path) => path.startsWith(`${root}/`)),
-      supported: (request.kind === 'create' || request.kind === 'quote' || request.kind === 'filing') && draft.propertyCode === 'HRCEN' });
+      supported: (request.kind === 'create' || request.kind === 'quote' || request.kind === 'amend' || request.kind === 'filing') && draft.propertyCode === 'HRCEN' });
   }
   for (const [index, row] of draft.proposal.content.services.entries()) {
     flattenFields(row, pointer('proposal', 'content', 'services', index), fields, draft);
@@ -325,11 +325,15 @@ function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot
         const observation = draft.observations.find((entry) => entry.ref === ref);
         const criteria = isRecord(observation?.criteria) ? observation.criteria : null;
         const observedResult = isRecord(observation?.result) ? observation.result : null;
+        const nativeReadback = isRecord(observedResult?.nativeReadback) ? observedResult.nativeReadback : null;
+        const confirmation = isString(observedResult?.confirmation) ? observedResult.confirmation
+          : isString(nativeReadback?.confirmation) ? nativeReadback.confirmation : null;
         if (!observation || !criteria || !observedResult || observation.generationId !== result.generationId
             || criteria.workflow !== result.workflow || criteria.requestId !== result.requestId
-            || result.allocationId !== null && criteria.allocationId !== result.allocationId
-            || !isString(observedResult.confirmation)) return [];
-        return [{ ref, confirmation: observedResult.confirmation }];
+            || result.allocationId != null && criteria.allocationId !== result.allocationId
+              && criteria.hintId !== result.allocationId
+            || !confirmation) return [];
+        return [{ ref, confirmation }];
       });
       const receipt = linked.at(-1);
       return { ...result, ...(receipt ? { confirmation: receipt.confirmation, confirmationObservationRef: receipt.ref } : {}) };
@@ -507,7 +511,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       await refreshAfterStale(input, command.source, raw);
       const result = okResult(raw);
       const notice = operationNotice(result, ['ok']) ?? quoteLookupNotice(result) ?? filingLookupNotice(result);
-      return { ...await load(input, command.source), ...(notice ? { serviceNotice: notice } : {}) };
+      return { ...await load(input, command.source), ...(notice ? { serviceNotice: notice } : {}), ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
     async prepare(command) {
       const input = { ...itemInput(command), requestId: command.requestId,
@@ -517,7 +521,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       const snapshot = await load(input, command.source);
       const isQuote = command.snapshot.requests.some((request) => request.id === command.requestId && request.kind === 'quote');
       const notice = isQuote ? quoteOperationNotice(result, ['prepared'], 'Quote price preparation') : operationNotice(result, ['prepared']);
-      return notice ? { ...snapshot, serviceNotice: notice } : snapshot;
+      return { ...snapshot, ...(notice ? { serviceNotice: notice } : {}), ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
     async execute(command) {
       const input = { ...itemInput(command), requestId: command.requestId,
@@ -529,8 +533,8 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       const isQuote = command.snapshot.requests.some((request) => request.id === command.requestId && request.kind === 'quote');
       const notice = isQuote ? quoteOperationNotice(result, ['succeeded', 'already_succeeded'], 'Unsent quote generation')
         : operationNotice(result, ['succeeded', 'already_succeeded']);
-      return notice ? { ...snapshot, serviceNotice: isQuote
-        ? `${notice} No email was sent and no reservation was saved.` : notice } : snapshot;
+      const displayNotice = notice ? isQuote ? `${notice} No email was sent and no reservation was saved.` : notice : null;
+      return { ...snapshot, ...(displayNotice ? { serviceNotice: displayNotice } : {}), ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
     async reconcile(command) {
       const input = { ...itemInput(command), operationId: command.operationId };
@@ -538,7 +542,8 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       await refreshAfterStale(input, command.source, result);
       const snapshot = await load(input, command.source);
       const notice = operationNotice(result, ['succeeded', 'failed']);
-      return notice ? { ...snapshot, serviceNotice: notice } : snapshot;
+      return { ...snapshot, ...(notice ? { serviceNotice: notice } : {}),
+        ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
     async configureFiling(command) {
       const input = { ...itemInput(command), requestId: command.requestId, attachmentId: command.attachmentId,
