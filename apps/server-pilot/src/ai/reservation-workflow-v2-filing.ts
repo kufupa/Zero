@@ -22,7 +22,7 @@ import { isSelectedHmsInboundMessage } from './hms-jobs.js';
 import { bindAttachDocumentForm, paneHmsWriteMode, parseHmsWriteForm, prepareHmsWriteSnapshot,
   readPaneCloudFilingRecord, type AttachForm, type CloudFilingRecord } from './pane-hms-write.js';
 import { previewFiling } from './pane-filing-preview.js';
-import { readBoundFilingSource, lockBoundFilingSource } from './pane-filing-source.js';
+import { readBoundFilingSource, lockBoundFilingSource, type BoundFilingForm } from './pane-filing-source.js';
 import { findStay } from './pane-stay-lookup.js';
 import { paneStayCloudTargetLock, paneStayPropertyLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
@@ -293,12 +293,15 @@ function approvedStay(cloud: CloudFilingRecord, allowRealGuest: boolean) {
   return { ...cloud.stay, nativeGuestId: cloud.nativeGuestId, nativeStayId: cloud.nativeStayId, allowRealGuest };
 }
 
-function itemAttachForm(state: Record<string, unknown>): AttachForm | null {
+type V2BoundAttachForm = AttachForm & BoundFilingForm;
+
+function itemAttachForm(state: Record<string, unknown>): V2BoundAttachForm | null {
   const form = parseHmsWriteForm(state);
   return form?.action === 'attach_document' && typeof form.pdfSha256 === 'string' &&
     typeof form.sourceSnapshotDigest === 'string' && typeof form.sourceThreadId === 'string' &&
     typeof form.sourceHash === 'string' && typeof form.documentCode === 'string' &&
-    typeof form.filingStateDigest === 'string' ? form as AttachForm : null;
+    typeof form.filingStateDigest === 'string' && typeof form.sourceMessageId === 'string' &&
+    typeof form.sourceInternetMessageId === 'string' ? form as V2BoundAttachForm : null;
 }
 
 async function persistFilingShots(ctx: ReservationWorkflowV2FilingContext, input: {
@@ -365,14 +368,9 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReservationWorkflow
     const hints = scope && scope.mode === 'explicit' ? scope.include : [];
     if (hints.length !== 1) { lookups.push({ status: 'needs_input', requestId: request.id, issue: 'select_one_saved_stay' }); continue; }
     const hint = hints[0]!;
-    const known = [...loaded.draft.observations].find((observation) => observation.kind === 'stay_candidate' &&
-      observation.status === 'complete' && observation.coverage.complete && observation.criteria.requestId === request.id &&
-      observation.generationId === loaded.draft.generationId && observation.propertyCode === loaded.draft.propertyCode &&
-      observation.sourceMessageId === input.source.messageId && observation.criteria.workflow === 'filing' &&
-      observation.criteria.targetHintId === hint.id && record(observation.result)?.outcome === 'found' &&
-      record(record(observation.result)?.stay)?.confirmation === hint.confirmation);
-    let candidate = known;
-    if (!candidate && hint.confirmation) {
+    // Explicit Lookup refreshes native state; old observations remain for receipt provenance.
+    let candidate: ReservationWorkflowV2Observation | undefined;
+    if (hint.confirmation) {
       const found = await findStay({ confirmation: hint.confirmation, ...(hint.bookedArrival ? { arrival: hint.bookedArrival } : {}) }, {
         target: target.target, lock: () => paneStayPropertyLock(target.target),
         acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
@@ -489,7 +487,8 @@ function getPrepared(draft: ReservationWorkflowV2Draft, requestId: string, docum
       typeof result.sha256 !== 'string' || typeof result.sourceSnapshotDigest !== 'string' || typeof result.filingStateDigest !== 'string' ||
       typeof target.nativeGuestId !== 'string' || typeof target.nativeStayId !== 'string' ||
       typeof target.confirmation !== 'string' || typeof target.arrival !== 'string' || typeof target.departure !== 'string') return null;
-  return { ...prepared, result: { ...result, filingStateDigest: result.filingStateDigest }, target };
+  return { ...prepared, result: { ...result, semanticDigest: result.semanticDigest, documentCode: result.documentCode,
+    sha256: result.sha256, sourceSnapshotDigest: result.sourceSnapshotDigest, filingStateDigest: result.filingStateDigest }, target };
 }
 
 function recoveryMatchesDraft(draft: ReservationWorkflowV2Draft, recovery: V2FilingRecovery): boolean {
@@ -544,7 +543,7 @@ async function currentV2Source(tx: WorkTransaction, ctx: ReservationWorkflowV2Fi
 
 async function authorizeCurrentFiling(tx: WorkTransaction, ctx: ReservationWorkflowV2FilingContext,
   input: ReservationWorkflowV2ExecuteInput, selection: FilingSelection, prepared: NonNullable<ReturnType<typeof getPrepared>>,
-  form: AttachForm, approvedDigest: string, attempt: ReservationWorkflowV2Observation) {
+  form: V2BoundAttachForm, approvedDigest: string, attempt: ReservationWorkflowV2Observation) {
   await lockCreateActorAccess(tx, { actorUserId: ctx.user.id, transportId: ctx.transport.id });
   await lockCreateActorSession(tx, { actorUserId: ctx.user.id, sessionId: ctx.user.sessionId,
     sessionProfile: ctx.user.sessionProfile });
