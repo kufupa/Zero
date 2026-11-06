@@ -1848,8 +1848,10 @@ function ServiceEditor(props: EditorProps & {
     && result.allocationId === allocationId && result.workflow === 'create' && result.status === 'succeeded');
   const createReceipt = [...snapshot.operationResults].reverse().find((result) => result.requestId === props.requestId
     && result.allocationId === allocationId && result.workflow === 'create' && result.status === 'succeeded');
-  const recoveredCreate = Boolean(createReceipt?.observationRefs.some((ref) => snapshot.session.draft.observations.some((item) =>
-    item.ref === ref && item.criteria.workflow === 'create' && item.criteria.recovered === true)));
+  const createObservationRefs = Array.isArray(createReceipt?.observationRefs)
+    ? createReceipt.observationRefs.filter((ref): ref is string => typeof ref === 'string') : [];
+  const recoveredCreate = createObservationRefs.some((ref) => snapshot.session.draft.observations.some((item) =>
+    item.ref === ref && item.criteria.workflow === 'create' && item.criteria.recovered === true));
   const priorService = serviceOperationResult(snapshot, props.requestId, allocationId, service.id);
   const serviceRefs = Array.isArray(priorService?.observationRefs)
     ? priorService.observationRefs.filter((ref): ref is string => typeof ref === 'string') : [];
