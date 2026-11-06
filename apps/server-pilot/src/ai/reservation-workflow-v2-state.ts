@@ -246,17 +246,38 @@ function pathParts(path: string): string[] | null {
 const NEVER_EDIT = new Set(['id', 'kind', 'sourceRefs', 'serviceRefs', 'documentRefs', 'candidateRefs', 'priceObservationRefs',
   'evidenceRefs', 'lookupResultRefs', 'annotations', 'issues', 'sourceClaims', 'observations', 'suggestedRef']);
 
+function effectiveSavedTargetRows(draft: ReservationWorkflowV2Draft, requestId: string): unknown[] {
+  const request = draft.proposal.content.requests.find((entry) => entry.id === requestId);
+  if (!request || (request.kind !== 'amend' && request.kind !== 'cancel')) return [];
+  let value: unknown = request.body;
+  let path = `/proposal/content/requests/${encodeURIComponent(requestId)}/body`;
+  for (const key of ['', 'targets', 'include']) {
+    if (key) {
+      value = value && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>)[key] : undefined;
+      path += `/${key}`;
+    }
+    const override = draft.fieldOverrides[path];
+    if (override?.state === 'set') value = override.value;
+    else if (override && override.state !== 'inherit') value = undefined;
+  }
+  return Array.isArray(value) ? value : [];
+}
+
 function editableCancelBodyField(draft: ReservationWorkflowV2Draft, parts: string[]): boolean {
   if (parts[0] !== 'proposal' || parts[1] !== 'content' || parts[2] !== 'requests' || parts[4] !== 'body') return false;
   const request = draft.proposal.content.requests.find((entry) => entry.id === parts[3]);
   if (request?.kind !== 'cancel') return false;
   if (parts.length === 7 && parts[5] === 'targets' && parts[6] === 'mode') return true;
+  if (parts.length === 7 && parts[5] === 'targets' && parts[6] === 'include') return true;
   if (parts.length === 7 && parts[5] === 'reason' && parts[6] === 'text') return true;
   if (parts.length === 6 && parts[5] === 'cancellationNote') return true;
   if (parts.length !== 9 || parts[5] !== 'targets' || parts[6] !== 'include' ||
       !/^(?:0|[1-9]\d*)$/.test(parts[7] ?? '')) return false;
-  const hint = request.body.targets.include[Number(parts[7])];
-  return Boolean(hint?.id && ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture', 'suggestedRef'].includes(parts[8]!));
+  const hint = effectiveSavedTargetRows(draft, request.id)[Number(parts[7])];
+  return Boolean(hint && typeof hint === 'object' && !Array.isArray(hint) &&
+    typeof (hint as { id?: unknown }).id === 'string' &&
+    ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture', 'suggestedRef'].includes(parts[8]!));
 }
 
 function editableAmendTargetSuggestedRef(draft: ReservationWorkflowV2Draft, parts: string[]): boolean {
@@ -265,8 +286,25 @@ function editableAmendTargetSuggestedRef(draft: ReservationWorkflowV2Draft, part
       !/^(?:0|[1-9]\d*)$/.test(parts[7] ?? '')) return false;
   const request = draft.proposal.content.requests.find((entry) => entry.id === parts[3]);
   if (request?.kind !== 'amend') return false;
-  const hint = request.body.targets.include[Number(parts[7])];
-  return Boolean(hint?.id);
+  const hint = effectiveSavedTargetRows(draft, request.id)[Number(parts[7])];
+  return Boolean(hint && typeof hint === 'object' && !Array.isArray(hint) && typeof (hint as { id?: unknown }).id === 'string');
+}
+
+/** Only an empty Cancel scope may receive a new blank staff-owned hint. */
+function validCancelIncludeEdit(draft: ReservationWorkflowV2Draft, path: string, override: V2Override): boolean {
+  const parts = pathParts(path);
+  if (!parts || parts.length !== 7 || parts[2] !== 'requests' || parts[4] !== 'body' ||
+      parts[5] !== 'targets' || parts[6] !== 'include') return true;
+  const request = draft.proposal.content.requests.find((entry) => entry.id === parts[3]);
+  if (request?.kind !== 'cancel') return true;
+  if (effectiveSavedTargetRows(draft, request.id).length || override.state !== 'set' ||
+      !Array.isArray(override.value) || override.value.length !== 1) return false;
+  const hint: unknown = override.value[0];
+  if (!hint || typeof hint !== 'object' || Array.isArray(hint)) return false;
+  const row = hint as Record<string, unknown>;
+  return Object.keys(row).length === 4 && typeof row.id === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(row.id) &&
+    Array.isArray(row.candidateRefs) && row.candidateRefs.length === 0 && row.suggestedRef === null &&
+    Array.isArray(row.sourceRefs) && row.sourceRefs.length === 0;
 }
 
 function editablePath(draft: ReservationWorkflowV2Draft, path: string): boolean {
@@ -280,7 +318,8 @@ function editablePath(draft: ReservationWorkflowV2Draft, path: string): boolean 
   const rowIndex = /^(?:0|[1-9]\d*)$/.test(stableId ?? '') ? Number(stableId) : -1;
   if (!rows.some((entry) => entry.id === stableId) && !(Number.isSafeInteger(rowIndex) && rowIndex >= 0 && rowIndex < rows.length)) return false;
   if (collection === 'requests') {
-    const request = rows.find((entry) => entry.id === stableId) ?? rows[rowIndex];
+    const request = draft.proposal.content.requests.find((entry) => entry.id === stableId) ??
+      draft.proposal.content.requests[rowIndex];
     if (request?.kind === 'cancel') return branch === 'requestText' && parts.length === 5 || editableCancelBodyField(draft, parts);
     if (parts.some((part) => NEVER_EDIT.has(part))) return false;
     return branch === 'body' || (branch === 'requestText' && parts.length === 5);
@@ -345,7 +384,7 @@ export async function editReservationWorkflowV2Draft(ctx: Context, input: Mutati
   if (current.status !== 'ok') return current;
   if (!editablePath(current.draft, input.fieldPath)) return { status: 'invalid_path' };
   const override = validateOverride(input.value);
-  if (!override) return { status: 'invalid_value' };
+  if (!override || !validCancelIncludeEdit(current.draft, input.fieldPath, override)) return { status: 'invalid_value' };
   return mutateDraft(ctx, { ...input, override, eventType: 'field.edit', value: override });
 }
 
