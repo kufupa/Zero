@@ -475,7 +475,8 @@ export function createReservationWorkflowV2CandidateReader(input: {
               (read.field === 'email'
                 ? typeof row.email === 'string' && row.email.trim().toLocaleLowerCase('en-US') === read.query.toLocaleLowerCase('en-US')
                 : row.lastName.trim().toLocaleLowerCase('en-US') === read.query.toLocaleLowerCase('en-US')));
-          const requiredFields = ['guestid', 'firstname', 'lastname', ...(read.field === 'email' ? ['emailaddress'] : [])];
+          const requiredFields = loaded === 0 ? [] :
+            ['guestid', 'firstname', 'lastname', ...(read.field === 'email' ? ['emailaddress'] : [])];
           const completeEnumeration = ['matches', 'no_match'].includes(String(search.outcome)) && searchId &&
             criteria.field === read.field && criteria.query === read.query && loaded !== null &&
             coverage.possiblyTruncated === false && coverage.truncated === false && coverage.serverMoreRecords === false &&
