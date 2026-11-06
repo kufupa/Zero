@@ -23,7 +23,7 @@ function exactText(value, { max = 200, allowBlank = false } = {}) {
 // The HMS reservation note is a 2,000-character textarea. Keep its line feeds
 // exactly as staff reviewed them; other control characters are unsupported.
 export function validCreateNote(value) {
-  return typeof value === 'string' && value.length <= 2_000 && Boolean(value.trim()) &&
+  return typeof value === 'string' && value.length <= 2_000 &&
     ![...value].some((char) => (char.charCodeAt(0) < 32 && char !== '\n') || char.charCodeAt(0) === 127);
 }
 
