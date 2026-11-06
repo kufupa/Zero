@@ -67,6 +67,9 @@ type V2FilingRecovery = {
 };
 type PositiveFilingProof = { confirmation: string; nativeStayId: string; nativeReadback: TargetReadback;
   readbackDigest: string; savedShot: { runId: string; sha256: string } };
+type ClosedWriterBinding = { handle: HmsLabtestWriteHandle; writer: unknown; requestDigest: string };
+
+const FILING_WRITER_CLOSED_FIELD = 'nava.reservation.workflow.v2.filing.writer_closed.v1';
 
 const record = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -80,6 +83,45 @@ const sourceEvidenceRef = (messageId: string, role: string, identity: string): s
   `src_${sha256(`${messageId}\u001f${role}\u001f${identity}`).slice(0, 12)}`;
 const stateContext = (ctx: ReservationWorkflowV2FilingContext): ReservationWorkflowV2Context => ({ db: ctx.db,
   transportId: ctx.transport.id, userId: ctx.user.id, propertyCode: ctx.property.propertyCode });
+
+/** Persist only the host runner's proof that this claimed writer is closed and its callbacks drained. */
+async function recordFilingWriterClosed(ctx: ReservationWorkflowV2FilingContext, input: ReservationWorkflowV2ExecuteInput,
+  binding: ClosedWriterBinding, sourceSnapshotDigest: string): Promise<void> {
+  await ctx.db.transaction(async (tx) => {
+    const [row] = await tx.select({ value: workEvent.value, actorKind: workEvent.actorKind, type: workEvent.type,
+      workItemId: workEvent.workItemId }).from(workEvent).where(and(eq(workEvent.id, binding.handle.holdId),
+      eq(workEvent.fieldPath, 'nava.hms.labtest.dispatch.v1'))).limit(1);
+    const intent = record(row?.value), recovery = record(intent?.recovery), source = record(recovery?.source);
+    if (!row || row.actorKind !== 'system' || row.type !== 'write.evidence' || row.workItemId !== input.workItemId ||
+        !intent || intent.kind !== 'intent' || intent.operation !== 'attach_document' || intent.holdId !== binding.handle.holdId ||
+        intent.ownerDigest !== sha256(binding.handle.ownerToken) || intent.workItemId !== input.workItemId ||
+        intent.transportId !== ctx.transport.id || intent.actorUserId !== ctx.user.id || intent.grantId !== input.idempotencyKey ||
+        intent.propertyCode !== ctx.property.propertyCode || intent.sourceDigest !== sourceSnapshotDigest ||
+        intent.requestDigest !== binding.requestDigest || recovery?.workItemId !== input.workItemId ||
+        recovery.operationId !== input.idempotencyKey || recovery.requestId !== input.requestId ||
+        source?.messageId !== input.source.messageId || source.threadId !== input.source.threadId ||
+        source.sourceHash !== input.source.sourceHash || source.arrivedAt !== input.source.arrivedAt ||
+        canonicalJson(recovery.writer) !== canonicalJson(binding.writer)) throw new Error('filing_writer_closed_scope_invalid');
+    await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', actorUserId: ctx.user.id,
+      type: 'write.evidence', fieldPath: FILING_WRITER_CLOSED_FIELD,
+      value: { version: 1, kind: 'writer_closed', holdId: binding.handle.holdId, operationId: input.idempotencyKey,
+        workItemId: input.workItemId, transportId: ctx.transport.id, actorUserId: ctx.user.id,
+        sourceDigest: sourceSnapshotDigest, requestDigest: binding.requestDigest,
+        ownerDigest: intent.ownerDigest, writerDigest: digestJson(binding.writer) } });
+  });
+}
+
+async function hasFilingWriterClosedReceipt(db: DB, intent: HmsLabtestIntent, recovery: V2FilingRecovery): Promise<boolean> {
+  const rows = await db.select({ value: workEvent.value, actorKind: workEvent.actorKind, actorUserId: workEvent.actorUserId })
+    .from(workEvent).where(and(eq(workEvent.workItemId, intent.workItemId), eq(workEvent.type, 'write.evidence'),
+      eq(workEvent.fieldPath, FILING_WRITER_CLOSED_FIELD), sql`${workEvent.value}->>'holdId' = ${intent.holdId}`)).limit(2);
+  const expected = { version: 1, kind: 'writer_closed', holdId: intent.holdId, operationId: intent.grantId,
+    workItemId: intent.workItemId, transportId: intent.transportId, actorUserId: intent.actorUserId,
+    sourceDigest: intent.sourceDigest, requestDigest: intent.requestDigest,
+    ownerDigest: intent.ownerDigest, writerDigest: digestJson(recovery.writer) };
+  return rows.some((row) => row.actorKind === 'system' && row.actorUserId === intent.actorUserId &&
+    canonicalJson(row.value) === canonicalJson(expected));
+}
 
 async function currentDraft(ctx: ReservationWorkflowV2FilingContext, input: {
   workItemId: string; source: ReservationWorkflowV2Source; expectedRevision: number; expectedSeq: number;
@@ -721,6 +763,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
   const stage = await mkdtemp(join(tmpdir(), 'reservation-v2-filing-'));
   const sourcePath = join(stage, 'upload.pdf');
   let dispatch: HmsLabtestWriteHandle | null = null;
+  let closedWriterBinding: ClosedWriterBinding | null = null;
   let provedNoDispatch = false;
   let keepCloudEvidence = false;
   let native: Record<string, unknown> = {};
@@ -804,6 +847,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
         // result. Leave them intact rather than writing an unproven failure.
         const handle = await tryClaim();
         dispatch = handle;
+        closedWriterBinding = { handle, writer, requestDigest };
         const claimObservation = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
           'partial', { outcome: 'dispatch_claimed', dispatchHoldId: handle.holdId,
             requestDigest, sourcePdfSha256: pdfSha256, actualStoredSha256: null,
@@ -826,6 +870,11 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
       },
     };
     native = await lock.withLock(() => attachModule.runCloudPaneAttach(runInput), acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+    const closedWriter = closedWriterBinding as ClosedWriterBinding | null;
+    if (closedWriter && native.writerSessionClosed === true && native.dispatchCallbacksDrained === true) {
+      // This receipt only makes a later positive read eligible; it never releases the hold itself.
+      await recordFilingWriterClosed(ctx, input, closedWriter, sourceSnapshotDigest).catch(() => {});
+    }
     cloudRoot = typeof native.cleanupRoot === 'string' ? native.cleanupRoot : null;
     const screenshots = Array.isArray(native.screenshots) ? native.screenshots.filter((path): path is string => typeof path === 'string') : [];
     const beforePath = screenshots.find((path) => basename(path) === 'before.png');
@@ -1069,9 +1118,12 @@ export async function proveReservationWorkflowV2AttachRecovery(db: DB, intent: H
     eq(mailboxAccess.userId, intent.actorUserId), eq(mailboxAccess.transportId, intent.transportId))).limit(1);
   if (!access) throw new Error('filing_recovery_access_unavailable');
   const attachReader = await import(new URL('../../tooling/hms-cloud/pane-attach-session.mjs', import.meta.url).href) as {
-    provePositiveAttachRecovery: (intent: HmsLabtestIntent) => Promise<Record<string, unknown>>;
+    provePositiveAttachRecovery: (intent: HmsLabtestIntent, options?: { writerQuiesced: (writer: unknown) => boolean }) => Promise<Record<string, unknown>>;
   };
-  const proof = await attachReader.provePositiveAttachRecovery(intent);
+  const closed = await hasFilingWriterClosedReceipt(db, intent, recovery.data);
+  const proof = await attachReader.provePositiveAttachRecovery(intent, closed ? {
+    writerQuiesced: (writer) => canonicalJson(writer) === canonicalJson(recovery.data.writer),
+  } : undefined);
   const nativeReadback = targetReadback(proof.readback);
   if (proof.outcome !== 'verified' || !nativeReadback || nativeReadback.confirmation !== recovery.data.confirmation ||
       nativeReadback.nativeStayId !== recovery.data.nativeStayId || nativeReadback.nativeGuestId !== recovery.data.nativeGuestId ||
