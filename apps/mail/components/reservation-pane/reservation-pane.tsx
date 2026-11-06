@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import styles from './reservation-pane.module.css';
 import { initialReservationUiState, reduceReservationUi, type PendingReservationEdit } from '@/lib/reservation-workflow/reducer';
+import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
 import { ReservationWorkflowStaleRevisionError } from '@/lib/reservation-workflow/types';
 import type {
   ReservationFieldProjection,
@@ -27,6 +28,9 @@ const KIND_LABEL: Record<ReservationWorkflowKind, string> = {
   create: 'Create', quote: 'Quote', amend: 'Amend', cancel: 'Cancel', services: 'Services', filing: 'Filing', other: 'Other',
 };
 const KINDS: ReservationWorkflowKind[] = ['create', 'quote', 'amend', 'cancel', 'services', 'filing'];
+const CREATE_SHARED_REVIEW_FIELDS = new Set(['roomType', 'ratePlan', 'bookingAgency', 'organization', 'arAccount', 'guaranteeType',
+  'track', 'reasonForStay', 'sourceOfBusiness', 'billingReference', 'reservationNote', 'guestOptIn',
+  'bookerName', 'bookerContact', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
 const record = (value: unknown): Record<string, unknown> | null => value && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : null;
 const text = (value: unknown): string => {
@@ -46,8 +50,8 @@ const sameIdentityText = (left: unknown, right: unknown) => text(left).normalize
   === text(right).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
 
 function guestSelectionMatches(snapshot: ReservationPaneSnapshot, path: string, guest: { firstName: unknown; lastName: unknown; email?: unknown }): boolean {
-  const selection = snapshot.fields[path];
-  const ref = selection?.override?.state === 'set' && typeof selection.value === 'string' ? selection.value : null;
+  const selected = nativeSelectionValue(snapshot, path);
+  const ref = typeof selected === 'string' ? selected : null;
   if (!ref) return false;
   const observation = snapshot.session.draft.observations.find((item) => item.ref === ref && item.kind === 'guest_candidate'
     && item.status === 'complete' && ((Array.isArray(item.criteria.fieldPaths) && item.criteria.fieldPaths.includes(path))
@@ -87,21 +91,30 @@ function valueFor(snapshot: ReservationPaneSnapshot, path: string): unknown {
   return field ? field.value : draftAtPath(snapshot, path);
 }
 
+function nativeSelectionValue(snapshot: ReservationPaneSnapshot, path: string): unknown {
+  const field = snapshot.fields[path];
+  const suggestion = draftAtPath(snapshot, path.replace(/\/nativeSelectionRef$/u, '/suggestedRef'));
+  if (field?.override) {
+    if (field.override.state === 'set') return field.value;
+    if (field.override.state === 'inherit') return typeof suggestion === 'string' ? suggestion : null;
+    return null;
+  }
+  const value = valueFor(snapshot, path);
+  return hasValue(value) ? value : typeof suggestion === 'string' ? suggestion : null;
+}
+
 function inheritedValue(snapshot: ReservationPaneSnapshot, paths: string[]): unknown {
-  for (const path of paths) {
+  for (const [index, path] of paths.entries()) {
     const field = snapshot.fields[path];
     const override = field?.override;
     if (override) {
       if (override.state === 'unknown' || override.state === 'none' || override.state === 'clear') return null;
       if (override.state === 'set') return field.value;
-      if (override.state === 'inherit') {
-        const base = draftAtPath(snapshot, path);
-        if (base !== null && base !== undefined && record(base)?.kind !== 'none') return field.value;
-        continue;
-      }
+      if (override.state === 'inherit' && index < paths.length - 1) continue;
     }
     const base = draftAtPath(snapshot, path);
-    if (base !== null && base !== undefined && record(base)?.kind !== 'none') return field?.value ?? base;
+    if (record(base)?.kind === 'none') return null;
+    if (base !== null && base !== undefined) return field?.value ?? base;
   }
   return null;
 }
@@ -291,18 +304,13 @@ function isInputReady(snapshot: ReservationPaneSnapshot, request: ReservationReq
 }
 
 function effectiveCreatePath(snapshot: ReservationPaneSnapshot, paths: string[]): string | null {
-  for (const path of paths) {
+  for (const [index, path] of paths.entries()) {
     const field = snapshot.fields[path];
     const override = field?.override;
     if (override) {
       if (override.state === 'unknown' || override.state === 'none' || override.state === 'clear') return null;
       if (override.state === 'set') return hasValue(field.value) ? path : null;
-      if (override.state === 'inherit') {
-        const base = draftAtPath(snapshot, path);
-        if (record(base)?.kind === 'none') return null;
-        if (hasValue(base)) return path;
-        continue;
-      }
+      if (override.state === 'inherit' && index < paths.length - 1) continue;
     }
     const base = draftAtPath(snapshot, path);
     if (record(base)?.kind === 'none') return null;
@@ -315,7 +323,10 @@ function createReviewPaths(snapshot: ReservationPaneSnapshot, request: Reservati
   const { body, data, sections, allocations } = createSections(snapshot, request);
   if (!data) return [];
   const paths = new Set<string>();
-  const addWhenSet = (path: string) => { if (hasValue(valueFor(snapshot, path))) paths.add(path); };
+  const addWhenSet = (path: string) => {
+    const value = path.endsWith('/nativeSelectionRef') ? nativeSelectionValue(snapshot, path) : valueFor(snapshot, path);
+    if (hasValue(value)) paths.add(path);
+  };
   const sharedFields = ['bookingAgency', 'organization', 'arAccount', 'sourceOfBusiness', 'reasonForStay',
     'billingReference', 'track', 'guestOptIn', 'bookerName', 'bookerContact', 'reservationNote',
     'cmsSend', 'cmsMessageId', 'cmsRecipient'];
@@ -346,10 +357,43 @@ function createReviewPaths(snapshot: ReservationPaneSnapshot, request: Reservati
   return [...paths];
 }
 
+function filingDocuments(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection) {
+  const requestData = snapshot.session.draft.proposal.content.requests.find((entry) => entry.id === request.id);
+  if (!requestData || requestData.kind !== 'filing') return [];
+  return snapshot.session.draft.proposal.content.documents.filter((document) =>
+    document.ownerRequestId === request.id && requestData.documentRefs.includes(document.id));
+}
+
+function filingTargetHints(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection) {
+  const scope = record(draftAtPath(snapshot, `${requestPath(request)}/body/targets`));
+  const include = Array.isArray(scope?.include) ? scope.include : [];
+  return { scope, include: include.map(record).filter((item): item is Record<string, unknown> => Boolean(item)) };
+}
+
+function filingTargetPath(request: ReservationRequestProjection, hintId: string): string {
+  return `${requestPath(request)}/body/targets/include/${encoded(hintId)}/suggestedRef`;
+}
+
+function filingReviewPaths(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): string[] {
+  const paths: string[] = [];
+  for (const document of filingDocuments(snapshot, request)) {
+    const root = `/proposal/content/documents/${encoded(document.id)}`;
+    paths.push(`${root}/documentSourceRef`, `${root}/kind`, `${root}/handling`);
+    if (document.requestedName !== null) paths.push(`${root}/requestedName`);
+    if (document.requestedDescription !== null) paths.push(`${root}/requestedDescription`);
+  }
+  const { scope, include } = filingTargetHints(snapshot, request);
+  if (scope?.mode === 'explicit' && include.length === 1 && typeof include[0]?.id === 'string') {
+    paths.push(filingTargetPath(request, include[0].id));
+  }
+  return paths;
+}
+
+
 function isRenderedCreateReviewPath(request: ReservationRequestProjection, path: string): boolean {
   const prefix = requestPath(request) + '/body';
-  if (path.startsWith(`${prefix}/shared/`)) return true;
   const relative = path.slice(`${prefix}/`.length).split('/');
+  if (relative[0] === 'shared') return CREATE_SHARED_REVIEW_FIELDS.has(relative[1] ?? '');
   if (relative[0] === 'dateSections') {
     return ['arrival', 'departure'].includes(relative.at(-1) ?? '')
       || relative[2] === 'defaults' && ['roomType', 'ratePlan', 'guaranteeType'].includes(relative.at(-1) ?? '');
@@ -362,11 +406,16 @@ function isRenderedCreateReviewPath(request: ReservationRequestProjection, path:
 }
 
 function hasUnreviewedRequiredFields(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
-  const paths = request.kind === 'create' ? createReviewPaths(snapshot, request) : request.fieldPaths;
+  const paths = request.kind === 'create' ? createReviewPaths(snapshot, request)
+    : request.kind === 'filing' ? filingReviewPaths(snapshot, request) : request.fieldPaths;
   return paths.some((path) => {
     const field = snapshot.fields[path];
-    if (!field?.required || !hasValue(field.value)) return false;
-    return field.review !== 'accepted';
+    const selectedValue = request.kind === 'create' && path.endsWith('/nativeSelectionRef')
+      ? nativeSelectionValue(snapshot, path) : undefined;
+    const value = field?.value ?? selectedValue ?? valueFor(snapshot, path);
+    const required = field?.required === true || typeof selectedValue === 'string';
+    const review = field?.review ?? snapshot.session.draft.staffReviews[path]?.status;
+    return required && hasValue(value) && review !== 'accepted';
   });
 }
 
@@ -440,6 +489,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   const activeRequest = snapshot?.requests.find((request) => request.id === activeRequestRef.current)
     ?? snapshot?.requests.find((request) => request.kind === activeKindRef.current);
   const activeKind = activeRequest?.kind ?? activeKindRef.current;
+  const activeRequests = snapshot?.requests.filter((request) => request.kind === activeKind) ?? [];
 
   const applySnapshot = useCallback((next: ReservationPaneSnapshot, bound: ReservationSourceContext) => {
     if (sourceRef.current.selectionEpoch !== bound.selectionEpoch || sourceRef.current.messageId !== bound.messageId
@@ -518,10 +568,11 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
       const current = snapshotRef.current;
       if (!current) throw new Error('The source-bound reservation draft is still loading.');
       const field = current.fields[path];
-      const required = field?.required === true;
+      const suggestedSelection = path.endsWith('/nativeSelectionRef') ? nativeSelectionValue(current, path) : null;
+      const required = field?.required === true || typeof suggestedSelection === 'string';
       const review = current.session.draft.staffReviews[path];
       if (!required || (field?.review ?? review?.status) === 'accepted') return;
-      if (!hasValue(field?.value ?? valueFor(current, path))) throw new Error('Enter or resolve this value before marking it reviewed.');
+      if (!hasValue(field?.value ?? suggestedSelection ?? valueFor(current, path))) throw new Error('Enter or resolve this value before marking it reviewed.');
       const next = await client.review({ source: bound, snapshot: current, fieldPath: path, decision: 'accepted' });
       applySnapshot(next, bound);
     });
@@ -588,33 +639,38 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   const runGo = useCallback(() => {
     const bound = sourceRef.current;
     void enqueue('Creating reservations in Infor', bound, async () => {
-      if (pending.current.size) await flushEdits(bound);
-      let current = snapshotRef.current;
-      const request = current?.requests.find((item) => item.id === activeRequestRef.current);
-      if (!current || !request || request.kind !== 'create') throw new Error('Only connected Create requests can be sent to Infor in this release.');
-      const { allocations } = createSections(current, request);
-      if (!allocations.length) throw new Error('This saved Create request has no room allocations to submit.');
-      if (!isInputReady(current, request)) throw new Error('Complete each room and select the exact existing guest profile first.');
-      if (hasUnreviewedRequiredFields(current, request)) throw new Error('Review every required field before Go.');
-      if (!isRequestPrepared(current, request)) throw new Error('Native price and availability are stale. Wait for the automatic Infor check before Go.');
-      for (const allocation of allocations) {
-        const allocationId = String(allocation.value.id ?? '');
-        const alreadyDone = current.operationResults.some((result) => result.requestId === request.id
-          && result.allocationId === allocationId && result.workflow === 'create' && result.status === 'succeeded');
-        if (alreadyDone) continue;
-        const uncertain = current.operationResults.some((result) => result.requestId === request.id
-          && result.allocationId === allocationId && result.workflow === 'create' && result.status === 'unknown');
-        if (uncertain) throw new Error(`Room ${allocationId} has an uncertain save. Reconcile it before retrying.`);
-        const idempotencyKey = crypto.randomUUID();
-        current = await client.execute({ source: bound, snapshot: current, requestId: request.id, allocationId, idempotencyKey });
-        applySnapshot(current, bound);
-        const outcome = current.operationResults.find((result) => result.id === idempotencyKey)
-          ?? [...current.operationResults].reverse().find((result) => result.requestId === request.id && result.allocationId === allocationId);
-        if (!outcome || outcome.status !== 'succeeded') {
-          throw new Error(current.serviceNotice ?? (outcome?.status === 'unknown'
-            ? 'Infor save outcome is uncertain. Reconcile the room before retrying.'
-            : `Infor did not confirm room ${allocationId}.`));
+      beginMutation();
+      try {
+        if (pending.current.size) await flushEdits(bound);
+        let current = snapshotRef.current;
+        const request = current?.requests.find((item) => item.id === activeRequestRef.current);
+        if (!current || !request || request.kind !== 'create') throw new Error('Only connected Create requests can be sent to Infor in this release.');
+        const { allocations } = createSections(current, request);
+        if (!allocations.length) throw new Error('This saved Create request has no room allocations to submit.');
+        if (!isInputReady(current, request)) throw new Error('Complete each room and select the exact existing guest profile first.');
+        if (hasUnreviewedRequiredFields(current, request)) throw new Error('Review every required field before Go.');
+        if (!isRequestPrepared(current, request)) throw new Error('Native price and availability are stale. Wait for the automatic Infor check before Go.');
+        for (const allocation of allocations) {
+          const allocationId = String(allocation.value.id ?? '');
+          const alreadyDone = current.operationResults.some((result) => result.requestId === request.id
+            && result.allocationId === allocationId && result.workflow === 'create' && result.status === 'succeeded');
+          if (alreadyDone) continue;
+          const uncertain = current.operationResults.some((result) => result.requestId === request.id
+            && result.allocationId === allocationId && result.workflow === 'create' && result.status === 'unknown');
+          if (uncertain) throw new Error(`Room ${allocationId} has an uncertain save. Reconcile it before retrying.`);
+          const idempotencyKey = crypto.randomUUID();
+          current = await client.execute({ source: bound, snapshot: current, requestId: request.id, allocationId, idempotencyKey });
+          applySnapshot(current, bound);
+          const outcome = current.operationResults.find((result) => result.id === idempotencyKey)
+            ?? [...current.operationResults].reverse().find((result) => result.requestId === request.id && result.allocationId === allocationId);
+          if (!outcome || outcome.status !== 'succeeded') {
+            throw new Error(current.serviceNotice ?? (outcome?.status === 'unknown'
+              ? 'Infor save outcome is uncertain. Reconcile the room before retrying.'
+              : `Infor did not confirm room ${allocationId}.`));
+          }
         }
+      } finally {
+        endMutation();
       }
     });
   }, [applySnapshot, client, enqueue, flushEdits]);
@@ -731,11 +787,22 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
           })}
         </nav>
         <main className={styles.main}>
+          {snapshot.issues.filter((issue) => !activeRequest || !issue.path || issue.path.startsWith(`${requestPath(activeRequest)}/`)).map((issue, index) =>
+            <div className={styles.issueLine} key={`${issue.kind}-${index}`}><b>{humanize(issue.kind)}</b><span>{issue.explanation}</span></div>)}
           {activeRequest ? <>
             <div className={styles.titleRow}><div><small className={styles.eyebrow}>{KIND_LABEL[activeRequest.kind]}</small><h1>{activeRequest.text || `${KIND_LABEL[activeRequest.kind]} reservation work`}</h1></div>
               <span className={activeRequest.supported ? styles.connected : styles.notConnected}>{activeRequest.supported ? 'Connected' : 'Review only'}</span></div>
-            {snapshot.issues.filter((issue) => !issue.path || issue.path.startsWith(`${requestPath(activeRequest)}/`)).map((issue, index) =>
-              <div className={styles.issueLine} key={`${issue.kind}-${index}`}><b>{humanize(issue.kind)}</b><span>{issue.explanation}</span></div>)}
+            {activeRequests.length > 1 && <section className={styles.card}>
+              <label htmlFor="reservation-request-picker">Choose a {KIND_LABEL[activeKind].toLowerCase()} request</label>
+              <select id="reservation-request-picker" className={styles.select} value={activeRequest.id} onChange={(event) => {
+                const selected = activeRequests.find((request) => request.id === event.target.value);
+                if (selected) chooseRequest(selected);
+              }}>
+                {activeRequests.map((request, index) => <option key={request.id} value={request.id}>
+                  {`Request ${index + 1} · ${request.text || 'Details unavailable'}`}
+                </option>)}
+              </select>
+            </section>}
             {activeRequest.kind === 'create' && displayedResult.some((result) => result.status === 'succeeded') && <div className={styles.notice}>At least one room already has an HMS confirmation. Later edits and undo affect the draft only; they do not change a saved reservation.</div>}
             {activeRequest.kind === 'create'
                 ? <CreateEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur} onDone={markDone} editValue={editValue} hasPendingEdit={hasPendingEdit}
@@ -814,6 +881,7 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
       <TextField {...props} path={`${body}/shared/sourceOfBusiness`} label="Source of business code"
         help="Editable source-bound value. Use the exact supported Infor code; no unobserved catalogue is invented." />
       <TextField {...props} path={`${body}/shared/billingReference`} label="Billing reference" />
+      <TextField {...props} path={`${body}/shared/reservationNote`} label="Shared reservation note" multiline />
     </div>
 
     <div className={styles.sectionHeader}><div><h2>Dates and room allocation</h2><p>Each room retains its own guest and occupancy. Empty child ages remain unknown—not zero.</p></div></div>
@@ -1132,7 +1200,8 @@ function PartyField(props: EditorProps & { path: string; label: string }) {
   const field = props.snapshot.fields[props.path];
   const selectionPath = `${props.path}/nativeSelectionRef`;
   const selection = props.snapshot.fields[selectionPath];
-  const selectedRef = selection?.override?.state === 'set' && typeof selection.value === 'string' ? selection.value : null;
+  const selectedValue = nativeSelectionValue(props.snapshot, selectionPath);
+  const selectedRef = typeof selectedValue === 'string' ? selectedValue : null;
   const tail = props.path.split('/').pop();
   const role = tail === 'bookingAgency' || tail === 'agency' ? 'agency' : tail === 'arAccount' ? 'ar_account' : 'organization';
   const candidates = props.snapshot.session.draft.observations.flatMap((observation) => {
@@ -1152,6 +1221,8 @@ function PartyField(props: EditorProps & { path: string; label: string }) {
       onBlur={() => props.onBlur(props.path)} />
     <FieldValueState {...props} path={props.path} />
     {selectedMatches && <small className={styles.accepted}>Native candidate selected.</small>}
+    {selectedMatches && selectedRef && (selection?.review ?? props.snapshot.session.draft.staffReviews[selectionPath]?.status) !== 'accepted' && props.onDone
+      ? <button type="button" className={styles.inlineButton} onClick={() => props.onDone?.(selectionPath)}>Confirm selected party</button> : null}
     {selectedRef && !selectedMatches && <small className={styles.problem}>Saved native selection no longer matches this party name. Select a matching result again.</small>}
     {!selectedMatches && candidates.map(({ observationRef, candidate }, index) => {
       const exact = sameIdentityText(candidate?.name, current.name) && hasValue(candidate?.nativeId);
@@ -1167,9 +1238,15 @@ function PartyField(props: EditorProps & { path: string; label: string }) {
 
 function ScopedCodeField(props: EditorProps & { path: string; label: string; inherited: string }) {
   const field = props.snapshot.fields[props.path];
-  const ownsValue = ['set', 'none', 'clear'].includes(field?.override?.state ?? '');
+  const sourceValue = draftAtPath(props.snapshot, props.path);
+  const hasSourceValue = sourceValue !== null && sourceValue !== undefined;
+  const ownsValue = field?.override?.state === 'inherit'
+    ? false
+    : field?.override
+      ? true
+      : hasSourceValue;
   const [own, setOwn] = useState(ownsValue);
-  useEffect(() => { setOwn(ownsValue); }, [field?.override?.updatedAt, field?.override?.state]);
+  useEffect(() => { setOwn(ownsValue); }, [field?.override?.updatedAt, field?.override?.state, sourceValue]);
   const mode = own ? 'own' : field?.override?.state === 'unknown' ? 'unknown' : 'inherit';
   return <div className={styles.scoped}>
     <FieldShell path={`${props.path}-mode`} label={props.label} field={field} onOpenEvidence={props.onOpenEvidence}
@@ -1226,8 +1303,8 @@ function GuestProfileStatus({ snapshot, path, expected, onStage, onBlur, onDone 
   onStage: EditorProps['onStage']; onBlur: EditorProps['onBlur'];
   onDone?: EditorProps['onDone'];
 }) {
-  const selectedValue = valueFor(snapshot, path);
-  const selectedRef = snapshot.fields[path]?.override?.state === 'set' && typeof selectedValue === 'string' ? selectedValue : null;
+  const selectedValue = nativeSelectionValue(snapshot, path);
+  const selectedRef = typeof selectedValue === 'string' ? selectedValue : null;
   const selectedObservation = selectedRef ? snapshot.session.draft.observations.find((item) => item.ref === selectedRef && item.kind === 'guest_candidate') : null;
   const candidates = snapshot.session.draft.observations.filter((item) => item.kind === 'guest_candidate'
     && item.criteria.requestId === path.split('/')[4] && item.status === 'complete'
@@ -1239,7 +1316,7 @@ function GuestProfileStatus({ snapshot, path, expected, onStage, onBlur, onDone 
   return <div className={selected ? styles.profileReady : styles.profileWarning} data-profile-path={path}>
     <b>{selected ? 'Existing guest profile selected' : selectedRef ? 'Selection no longer matches this guest' : 'Select an existing Infor guest profile'}</b>
     <span>{selectedObservation ? `Native match · ${selectedObservation.status}` : selectedRef ?? 'A typed name alone is not a profile selection.'}</span>
-    {selected && snapshot.fields[path]?.required && snapshot.fields[path]?.review !== 'accepted' && onDone
+    {selected && selectedRef && (snapshot.fields[path]?.review ?? snapshot.session.draft.staffReviews[path]?.status) !== 'accepted' && onDone
       ? <button type="button" className={styles.inlineButton} onClick={() => onDone(path)}>Confirm selected guest</button> : null}
     {!selected && candidates.length > 0 && <div className={styles.candidateList}>
       {candidates.map(({ observationRef, candidate }, index) => {
