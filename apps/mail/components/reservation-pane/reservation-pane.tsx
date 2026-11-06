@@ -1257,9 +1257,11 @@ function ScopedCodeField(props: EditorProps & { path: string; label: string; inh
   const field = props.snapshot.fields[props.path];
   const sourceValue = draftAtPath(props.snapshot, props.path);
   const hasSourceValue = sourceValue !== null && sourceValue !== undefined;
-  const ownsValue = field?.override
-    ? ['set', 'none', 'clear'].includes(field.override.state)
-    : hasSourceValue;
+  const ownsValue = field?.override?.state === 'inherit'
+    ? false
+    : field?.override
+      ? true
+      : hasSourceValue;
   const [own, setOwn] = useState(ownsValue);
   useEffect(() => { setOwn(ownsValue); }, [field?.override?.updatedAt, field?.override?.state, sourceValue]);
   const mode = own ? 'own' : field?.override?.state === 'unknown' ? 'unknown' : 'inherit';
