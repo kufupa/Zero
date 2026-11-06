@@ -321,6 +321,9 @@ function compileQuote(
   };
 
   const provisional = resolved(path('provisionalBookingRequested'), request.body.provisionalBookingRequested);
+  if (execute && draft.staffReviews[path('provisionalBookingRequested')]?.status !== 'accepted') {
+    reviewPaths.add(path('provisionalBookingRequested'));
+  }
   if ('issue' in provisional || provisional.value !== false) {
     issues.push(`${path('provisionalBookingRequested')}:${!('issue' in provisional) && provisional.value === true
       ? 'separate_create_required' : 'quote_only_choice_required'}`);
