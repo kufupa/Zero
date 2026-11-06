@@ -18,10 +18,36 @@ const name = (value) => typeof value === 'string' && value.length > 0 && value.l
   value === value.trim() && !/[\p{Cc}]/u.test(value);
 const READ_BUDGET_MS = 15 * 60_000;
 const COMMIT_BUDGET_MS = 20 * 60_000;
+const neverDispatchedCancelProofs = new WeakMap();
 const lookupOptions = (firstName, lastName, arrival) => {
   const guestName = firstName && lastName ? `${firstName} ${lastName}` : '';
   return { ...(guestName && guestName.length <= 256 ? { guestName } : {}), arrivalDate: arrival };
 };
+
+/** A one-use no-dispatch proof is scoped to the exact V2 cancel run and saved stay. */
+export function consumeNeverDispatchedCancelProof(proof, intent) {
+  const binding = proof && typeof proof === 'object' ? neverDispatchedCancelProofs.get(proof) : null;
+  const target = intent?.target, recovery = intent?.recovery;
+  if (!binding || intent?.operation !== 'cancel' || intent?.propertyCode !== 'HRCEN' ||
+      target?.propertyCode !== binding.propertyCode || target?.kind !== 'saved' ||
+      target?.confirmation !== binding.confirmation || target?.nativeStayId !== binding.nativeStayId ||
+      recovery?.confirmation !== binding.confirmation || recovery?.nativeStayId !== binding.nativeStayId ||
+      recovery?.cloudTargetKey !== binding.cloudTargetKey || recovery?.runId !== binding.runId) return false;
+  neverDispatchedCancelProofs.delete(proof);
+  return true;
+}
+
+function neverDispatchedCancelProof(input) {
+  const expected = input?.expected;
+  if (input?.mode !== 'commit' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.runId || '') ||
+      input.target?.propertyCode !== 'HRCEN' || !/^\d+-\d+$/.test(input.confirmation || '') ||
+      expected?.confirmation !== input.confirmation || !digits(expected?.nativeStayId) ||
+      typeof input.cloudTargetKey !== 'string' || !input.cloudTargetKey) return null;
+  const proof = Object.freeze({});
+  neverDispatchedCancelProofs.set(proof, { runId: input.runId, propertyCode: input.target.propertyCode,
+    confirmation: expected.confirmation, nativeStayId: expected.nativeStayId, cloudTargetKey: input.cloudTargetKey });
+  return proof;
+}
 const field = (record, key) => {
   const fields = record?.details?.fields;
   if (!Array.isArray(fields)) return null;
@@ -217,9 +243,16 @@ export async function runCloudPaneCancel(input, { openSession = withCenturionSta
     result = { outcome: dispatched ? 'uncertain' : 'execution_failure', requestDispatched: dispatched };
   }
   const screenshots = input.mode === 'read' ? [] : [join(root, 'before.png')];
-  if (!result.requestDispatched && !chargeAuthorityAttempted) return { ...result,
-    ...(result.outcome === 'fee_dialog_pending' ? { outcome: 'refused_penalty' } : {}), runDir: root, screenshots, writerSessionClosed,
-    dispatchCallbacksDrained: pendingChargeAuthority === 0 && (confirmAttempted ? result.dispatchCallbacksDrained === true : true) };
+  if (!result.requestDispatched && !chargeAuthorityAttempted) {
+    const dispatchCallbacksDrained = pendingChargeAuthority === 0 &&
+      (confirmAttempted ? result.dispatchCallbacksDrained === true : true);
+    const neverDispatchedProof = result.requestDispatched === false && writerSessionClosed && dispatchCallbacksDrained &&
+      !chargeDecisionRequested && !chargeDispatchAttempted && result.chargeApproved !== true && result.chargeDispatched !== true
+      ? neverDispatchedCancelProof(input) : null;
+    return { ...result, ...(result.outcome === 'fee_dialog_pending' ? { outcome: 'refused_penalty' } : {}), runDir: root,
+      screenshots, writerSessionClosed, dispatchCallbacksDrained,
+      ...(neverDispatchedProof ? { neverDispatchedProof } : {}) };
+  }
   let nativeReadback = null;
   try {
     nativeReadback = await openSession(async (page) => {
