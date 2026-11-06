@@ -113,8 +113,19 @@ function effectiveTree(draft: ReservationWorkflowV2Draft, path: string, source: 
   if (resolved === UNKNOWN) { unknownPaths.add(path); return undefined; }
   if (resolved === NONE) return NONE;
   if (Array.isArray(resolved)) return resolved.map((value, index) => effectiveTree(draft, `${path}/${index}`, value, unknownPaths));
-  if (resolved && typeof resolved === 'object') return Object.fromEntries(Object.entries(resolved).map(([key, value]) =>
-    [key, effectiveTree(draft, `${path}/${encodeURIComponent(key)}`, value, unknownPaths)]));
+  if (resolved && typeof resolved === 'object') {
+    const sourceRecord = resolved as Record<string, unknown>;
+    const keys = new Set(Object.keys(sourceRecord));
+    const prefix = `${path}/`;
+    for (const overridePath of Object.keys(draft.fieldOverrides)) {
+      if (!overridePath.startsWith(prefix)) continue;
+      const child = overridePath.slice(prefix.length).split('/')[0];
+      if (!child) continue;
+      try { keys.add(decodeURIComponent(child)); } catch { /* Invalid paths are rejected at mutation. */ }
+    }
+    return Object.fromEntries([...keys].map((key) =>
+      [key, effectiveTree(draft, `${path}/${encodeURIComponent(key)}`, sourceRecord[key], unknownPaths)]));
+  }
   return resolved;
 }
 
