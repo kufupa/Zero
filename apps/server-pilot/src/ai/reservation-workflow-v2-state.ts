@@ -355,8 +355,6 @@ function editablePath(draft: ReservationWorkflowV2Draft, path: string): boolean 
     && targets?.mode === 'explicit' && Array.isArray(targets.include)
     && targets.include.some((hint: unknown) => Boolean(hint && typeof hint === 'object' && !Array.isArray(hint)
       && (hint as { id?: unknown }).id === parts[7]));
-  if (parts.some((part, index) => NEVER_EDIT.has(part) && !(index === parts.length - 1 &&
-      ((part === 'kind' && documentKind) || (part === 'suggestedRef' && targetSelection))))) return false;
   const [, section, collection, stableId, branch] = parts;
   if (section !== 'content' || !['requests', 'services', 'documents'].includes(collection!)) return false;
   const rows = collection === 'requests' ? draft.proposal.content.requests :
@@ -367,8 +365,12 @@ function editablePath(draft: ReservationWorkflowV2Draft, path: string): boolean 
     const request = draft.proposal.content.requests.find((entry) => entry.id === stableId) ??
       draft.proposal.content.requests[rowIndex];
     if (request?.kind === 'cancel') return branch === 'requestText' && parts.length === 5 || editableCancelBodyField(draft, parts);
-    if (parts.some((part) => NEVER_EDIT.has(part))) return false;
+    if (parts.some((part) => NEVER_EDIT.has(part) && !(part === 'suggestedRef' && targetSelection))) return false;
     return branch === 'body' || (branch === 'requestText' && parts.length === 5);
+  }
+  if (collection === 'documents') {
+    if (parts.some((part) => NEVER_EDIT.has(part) && !(part === 'kind' && documentKind))) return false;
+    return true;
   }
   if (parts.some((part) => NEVER_EDIT.has(part))) return false;
   return true;
