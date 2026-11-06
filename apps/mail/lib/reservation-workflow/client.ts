@@ -37,6 +37,8 @@ export type ReservationWorkflowV2TrpcClient = {
     prepare: MutationProcedure<ItemInput & { requestId: string; allocationId?: string }>;
     execute: MutationProcedure<ItemInput & { requestId: string; allocationId?: string; go: true; idempotencyKey: string }>;
     reconcile: MutationProcedure<ItemInput & { operationId: string }>;
+    configureFiling: MutationProcedure<ItemInput & { requestId: string; attachmentId: string; confirmation: string;
+      kind: 'voucher' | 'payment_proof' }>;
     lookupServices: MutationProcedure<ItemInput & { requestId: string; allocationId: string; serviceId?: string }>;
     prepareServices: MutationProcedure<ItemInput & { requestId: string; allocationId: string; serviceId?: string }>;
   };
@@ -161,8 +163,11 @@ function isFilingTargetSelectionPath(draft: ReservationWorkflowV2Draft, path: st
   if (parts[0] !== 'proposal' || parts[1] !== 'content' || parts[2] !== 'requests' || parts.length !== 9
       || parts[4] !== 'body' || parts[5] !== 'targets' || parts[6] !== 'include' || parts[8] !== 'suggestedRef') return false;
   const request = draft.proposal.content.requests.find((entry) => entry.id === parts[3] && entry.kind === 'filing');
-  return Boolean(request?.kind === 'filing' && request.body.targets?.mode === 'explicit'
-    && request.body.targets.include.some((hint) => hint.id === parts[7]));
+  if (request?.kind !== 'filing') return false;
+  const targetsPath = pointer('proposal', 'content', 'requests', request.id, 'body', 'targets');
+  const rawTargets = effectiveValue(wireValueAtPath(draft, targetsPath), draft.fieldOverrides[targetsPath]);
+  return Boolean(isRecord(rawTargets) && rawTargets.mode === 'explicit' && Array.isArray(rawTargets.include)
+    && rawTargets.include.some((hint) => isRecord(hint) && hint.id === parts[7]));
 }
 
 function shouldReviewPath(draft: ReservationWorkflowV2Draft, path: string, value: unknown): boolean {
@@ -442,8 +447,12 @@ function filingDocumentOwnerForPath(snapshot: ReservationPaneSnapshot, path: str
   const document = snapshot.session.draft.proposal.content.documents.find((entry) => entry.id === parts[3]);
   if (!document?.ownerRequestId) return null;
   const request = snapshot.session.draft.proposal.content.requests.find((entry) => entry.id === document.ownerRequestId
-    && entry.kind === 'filing' && entry.documentRefs.includes(document.id));
-  return request?.kind === 'filing' ? request.id : null;
+    && entry.kind === 'filing');
+  if (request?.kind !== 'filing') return null;
+  const refsPath = pointer('proposal', 'content', 'requests', request.id, 'documentRefs');
+  const refs = snapshot.fields[refsPath]?.value !== undefined ? snapshot.fields[refsPath]?.value : request.documentRefs;
+  if (!Array.isArray(refs) || !refs.includes(document.id)) return null;
+  return request.id;
 }
 
 function requestOwnsPath(snapshot: ReservationPaneSnapshot, path: string): boolean {
@@ -530,6 +539,11 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       const snapshot = await load(input, command.source);
       const notice = operationNotice(result, ['succeeded', 'failed']);
       return notice ? { ...snapshot, serviceNotice: notice } : snapshot;
+    },
+    async configureFiling(command) {
+      const input = { ...itemInput(command), requestId: command.requestId, attachmentId: command.attachmentId,
+        confirmation: command.confirmation, kind: command.kind };
+      return refreshAfter(api.configureFiling, input, command.source);
     },
     async lookupServices(command) {
       const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
