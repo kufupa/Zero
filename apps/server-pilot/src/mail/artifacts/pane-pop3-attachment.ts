@@ -32,7 +32,8 @@ export async function panePop3AttachmentCandidate(input: Identity & { db: DB; bu
       !row.mailboxId || !row.uidl || row.direction !== 'inbound' || row.historyOnly || row.isInline ||
       row.provenance?.attention != null || row.filename.length > 120 || /["\\/\p{Cc}]/u.test(row.filename) ||
       Buffer.from(row.filename, 'utf8').toString('utf8') !== row.filename || !/\.pdf$/i.test(row.filename) ||
-      !['application/pdf', 'application/octet-stream'].includes(row.mimeType) ||
+      !['application/pdf', 'application/x-pdf', 'application/octet-stream'].includes(
+        row.mimeType.split(';', 1)[0]?.trim().toLowerCase() ?? '') ||
       !Number.isSafeInteger(row.sizeBytes) || row.sizeBytes <= 0 || row.sizeBytes > PANE_ATTACH_MAX_BYTES ||
       (row.sha256 !== null && !/^[a-f0-9]{64}$/.test(row.sha256))) return null;
   // Reconciled POP3 attachments can retain their ingest message ID in the
