@@ -841,7 +841,7 @@ function addRequestConfirmationSafety(input: {
   extraction: ReservationWorkflowV2Extraction;
 }): { proposal: ReservationWorkflowV2Proposal } {
   const proposal = structuredClone(input.proposal);
-  for (const request of proposal.content.requests) {
+  for (const [requestIndex, request] of proposal.content.requests.entries()) {
     if (request.kind !== 'create' && request.kind !== 'amend' && request.kind !== 'cancel') continue;
     const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction);
     if (extracted) {
