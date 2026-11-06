@@ -40,6 +40,7 @@ const digest = z.string().regex(/^[a-f0-9]{64}$/);
 export const reservationWorkflowV2ServicesExecuteInputSchema = reservationWorkflowV2ExecuteInputSchema.extend({
   allocationId: z.string().min(1).max(80),
   serviceId: z.string().min(1).max(80),
+  reviewedPrepareRef: z.string().min(1).max(160).optional(),
 }).strict();
 export type ReservationWorkflowV2ServicesExecuteInput = z.infer<typeof reservationWorkflowV2ServicesExecuteInputSchema>;
 type ExecuteInput = ReservationWorkflowV2ServicesExecuteInput;
@@ -56,7 +57,8 @@ type StoredIntent = {
 };
 type CompiledOk = Extract<ReservationWorkflowV2CompiledServiceItem, { outcome: 'ok' }>;
 type ApprovedService = { draft: ReservationWorkflowV2Draft; plan: CompiledOk;
-  preview: ReservationWorkflowV2Observation; create: CreateApproval };
+  preview: ReservationWorkflowV2Observation; approvalObservation: ReservationWorkflowV2Observation;
+  approvalItem: Record<string, unknown>; create: CreateApproval };
 type CreateApproval = { operationId: string; confirmation: string; observation: ReservationWorkflowV2Observation;
   expectedGuest: { firstName: string; lastName: string }; guestId: string; arrival: string; departure: string;
   semanticDigest: string; requestDigest: string };
@@ -100,6 +102,81 @@ function previewFor(draft: ReservationWorkflowV2Draft, input: ReservationWorkflo
       native.status !== 'VALID' || typeof native.unitPrice !== 'string' || typeof native.averageDaily !== 'string' ||
       typeof native.totalCost !== 'string' || typeof native.currency !== 'string') return null;
   return observation;
+}
+
+function requestedItemMatches(native: Record<string, unknown>, plan: CompiledOk): boolean {
+  return native.code === plan.candidate.code && native.itemId === plan.candidate.itemId && native.status === 'VALID' &&
+    Object.entries(plan.items).every(([key, value]) => native[key] === value);
+}
+
+function freshReviewAccepted(draft: ReservationWorkflowV2Draft, observation: ReservationWorkflowV2Observation,
+  paths: string[]): boolean {
+  const observedAt = Date.parse(observation.observedAt);
+  return paths.length > 0 && Number.isFinite(observedAt) && paths.every((path) => {
+    const review = draft.staffReviews[path];
+    const reviewedAt = review?.at ? Date.parse(review.at) : NaN;
+    return review?.status === 'accepted' && Number.isFinite(reviewedAt) && reviewedAt > observedAt;
+  });
+}
+
+function savedFreshPrepareFor(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2ServicesInput,
+  plan: CompiledOk, preview: ReservationWorkflowV2Observation, create: CreateApproval):
+  { observation: ReservationWorkflowV2Observation; native: Record<string, unknown> } | null {
+  const observation = [...draft.observations].reverse().find((item) => item.kind === 'service_preview' &&
+    item.propertyCode === 'HRCEN' && item.generationId === draft.generationId &&
+    item.criteria.workflow === 'services' && item.criteria.kind === 'saved_addon_fresh_prepare' &&
+    item.criteria.serviceId === plan.serviceId && item.criteria.requestId === input.requestId &&
+    item.criteria.allocationId === input.allocationId && item.criteria.inputDigest === plan.inputDigest &&
+    item.criteria.targetRef && canonicalJson(item.criteria.targetRef) === canonicalJson(plan.targetRef));
+  if (!observation || observation.status !== 'complete' || observation.coverage.complete !== true) return null;
+  const criteria = observation.criteria, result = object(observation.result), native = normalizedItem(result?.native);
+  const requested = object(result?.requestedFields), previous = normalizedItem(result?.previouslyApprovedNative);
+  const target = object(result?.target), candidate = object(result?.itemCandidate);
+  const approvedObservationRef = text(criteria.approvedObservationRef);
+  const parent = approvedObservationRef === preview.ref ? preview :
+    draft.observations.find((item) => item.ref === approvedObservationRef);
+  const parentNative = normalizedItem(object(parent?.result)?.native);
+  const expectedPaths = Object.values(plan.fieldPaths);
+  const reviewPaths = Array.isArray(criteria.reviewPaths) && criteria.reviewPaths.every((path): path is string =>
+    typeof path === 'string') ? criteria.reviewPaths : [];
+  if (!result || !target || !candidate || result.operation !== 'add' || result.saved !== false ||
+      result.priceWasNativeCalculated !== true ||
+      result.matchesApprovedNative !== false || result.createConfirmation !== create.confirmation ||
+      result.createObservationRef !== create.observation.ref || criteria.createObservationRef !== create.observation.ref ||
+      result.approvedObservationRef !== approvedObservationRef ||
+      criteria.unsavedPreviewRef !== preview.ref || !approvedObservationRef || !parent || !parentNative || !native ||
+      !requested || canonicalJson(requested) !== canonicalJson(plan.items) ||
+      canonicalJson(previous) !== canonicalJson(parentNative) || !requestedItemMatches(native, plan) ||
+      !text(native.unitPrice) || !text(native.averageDaily) || !text(native.totalCost) || !text(native.currency) ||
+      canonicalJson(result.targetRef) !== canonicalJson(plan.targetRef) ||
+      candidate?.code !== plan.candidate.code || candidate?.itemId !== plan.candidate.itemId ||
+      observation.sourceMessageId !== input.source.messageId ||
+      !observation.sourceRefs.includes(preview.ref) || !observation.sourceRefs.includes(create.observation.ref) ||
+      !observation.sourceRefs.includes(approvedObservationRef ?? '') ||
+      target.propertyCode !== 'HRCEN' ||
+      !sameName(target.guestName, `${create.expectedGuest.firstName} ${create.expectedGuest.lastName}`) ||
+      target.confirmation !== create.confirmation || target.arrival !== create.arrival ||
+      target.departure !== create.departure || !/^\d{1,100}$/.test(String(target.nativeStayId ?? '')) ||
+      reviewPaths.length !== expectedPaths.length || canonicalJson(reviewPaths) !== canonicalJson(expectedPaths)) return null;
+  if (parent.ref !== preview.ref) {
+    const parentCriteria = parent.criteria, parentResult = object(parent.result);
+    if (parent.kind !== 'service_preview' || parent.status !== 'complete' || parent.coverage.complete !== true ||
+        parent.propertyCode !== 'HRCEN' || parent.generationId !== draft.generationId ||
+        parent.sourceMessageId !== input.source.messageId ||
+        parentCriteria.workflow !== 'services' || parentCriteria.kind !== 'saved_addon_fresh_prepare' ||
+        parentCriteria.serviceId !== plan.serviceId || parentCriteria.requestId !== input.requestId ||
+        parentCriteria.allocationId !== input.allocationId || parentCriteria.inputDigest !== plan.inputDigest ||
+        !parentCriteria.targetRef ||
+        canonicalJson(parentCriteria.targetRef) !== canonicalJson(plan.targetRef) ||
+        !parentResult || parentResult.saved !== false || parentResult.priceWasNativeCalculated !== true ||
+        parentResult.matchesApprovedNative !== false ||
+        object(parentResult.target)?.confirmation !== create.confirmation ||
+        object(parentResult.target)?.arrival !== create.arrival ||
+        object(parentResult.target)?.departure !== create.departure ||
+        object(parentResult?.target)?.nativeStayId !== target.nativeStayId ||
+        !requestedItemMatches(parentNative, plan)) return null;
+  }
+  return { observation, native };
 }
 
 function createApproval(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2ServicesInput): CreateApproval | null {
@@ -157,8 +234,10 @@ function supportedGuestAdmission(approval: CreateApproval): { allowed: true } | 
   return { allowed: true };
 }
 
-function approvedService(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2ServicesInput):
-  { outcome: 'ok'; value: ApprovedService } | { outcome: 'needs_input' | 'unsupported'; issue: string; fields?: string[] } {
+function approvedService(draft: ReservationWorkflowV2Draft,
+  input: ReservationWorkflowV2ServicesInput & { reviewedPrepareRef?: string }):
+  { outcome: 'ok'; value: ApprovedService } |
+  { outcome: 'needs_input' | 'needs_review' | 'unsupported'; issue: string; fields?: string[]; observationRef?: string } {
   const links = reservationWorkflowV2ServicesForAllocation(draft, input);
   if (links.outcome !== 'ok') return { outcome: 'needs_input', issue: links.issue };
   if (!links.rows.length) return { outcome: 'needs_input', issue: 'service_target_not_found' };
@@ -177,7 +256,23 @@ function approvedService(draft: ReservationWorkflowV2Draft, input: ReservationWo
   const preview = previewFor(draft, input, row, compiled);
   if (!preview) return { outcome: 'needs_input', issue: 'current_native_unsaved_addon_preview_required',
     fields: Object.values(compiled.fieldPaths) };
-  return { outcome: 'ok', value: { draft, plan: compiled, preview, create } };
+  const savedPrepare = savedFreshPrepareFor(draft, input, compiled, preview, create);
+  if (input.reviewedPrepareRef && (!savedPrepare || savedPrepare.observation.ref !== input.reviewedPrepareRef)) {
+    return { outcome: 'needs_review', issue: 'saved_addon_review_reference_stale',
+      fields: Object.values(compiled.fieldPaths), ...(savedPrepare ? { observationRef: savedPrepare.observation.ref } : {}) };
+  }
+  if (savedPrepare && input.reviewedPrepareRef !== savedPrepare.observation.ref) {
+    return { outcome: 'needs_review', issue: 'saved_addon_fresh_prepare_review_reference_required',
+      fields: Object.values(compiled.fieldPaths), observationRef: savedPrepare.observation.ref };
+  }
+  if (savedPrepare && !freshReviewAccepted(draft, savedPrepare.observation, Object.values(compiled.fieldPaths))) {
+    return { outcome: 'needs_review', issue: 'saved_addon_fresh_prepare_staff_review_required',
+      fields: Object.values(compiled.fieldPaths), observationRef: savedPrepare.observation.ref };
+  }
+  const approvalObservation = savedPrepare?.observation ?? preview;
+  const approvalItem = savedPrepare?.native ?? normalizedItem(object(preview.result)?.native);
+  if (!approvalItem) return { outcome: 'needs_input', issue: 'approved_addon_item_unavailable' };
+  return { outcome: 'ok', value: { draft, plan: compiled, preview, approvalObservation, approvalItem, create } };
 }
 
 function sourceContextMatches(draft: ReservationWorkflowV2Draft, ctx: ReservationWorkflowV2ServerContext,
@@ -249,7 +344,10 @@ async function assertFreshGuard(tx: DispatchTx, ctx: ReservationWorkflowV2Server
   const approved = approvedService(draft, input);
   if (approved.outcome !== 'ok' || approved.value.create.operationId !== expected.create.operationId ||
       approved.value.create.confirmation !== expected.create.confirmation ||
-      approved.value.plan.inputDigest !== expected.plan.inputDigest || approved.value.preview.ref !== expected.preview.ref ||
+      approved.value.plan.inputDigest !== expected.plan.inputDigest ||
+      approved.value.preview.ref !== expected.preview.ref ||
+      approved.value.approvalObservation.ref !== expected.approvalObservation.ref ||
+      canonicalJson(approved.value.approvalItem) !== canonicalJson(expected.approvalItem) ||
       !acceptedService(draft, approved.value.plan)) throw new Error('reservation_workflow_v2_services_approval_changed');
   if (process.env.PANE_CLOUD_CREATE_DISPATCH !== 'on') throw new Error('cloud_create_dispatch_flag_off');
   const mode = paneWriteMode('create');
@@ -265,6 +363,14 @@ async function assertFreshGuard(tx: DispatchTx, ctx: ReservationWorkflowV2Server
       nativeTarget.departure !== expected.create.departure || !sameName(nativeTarget.guestName,
         `${expected.create.expectedGuest.firstName} ${expected.create.expectedGuest.lastName}`)) {
     throw new Error('services_native_target_changed');
+  }
+  if (expected.approvalObservation.ref !== expected.preview.ref) {
+    const reviewedTarget = object(object(expected.approvalObservation.result)?.target);
+    if (reviewedTarget?.confirmation !== nativeTarget.confirmation ||
+        reviewedTarget.nativeStayId !== nativeTarget.nativeStayId ||
+        reviewedTarget.arrival !== nativeTarget.arrival || reviewedTarget.departure !== nativeTarget.departure) {
+      throw new Error('services_reviewed_preview_target_changed');
+    }
   }
 }
 
@@ -300,12 +406,13 @@ async function readSavedNativeTarget(approval: CreateApproval): Promise<NativeTa
     arrival: approval.arrival, departure: approval.departure };
 }
 
-function nativeMatchesApproval(preparedItem: unknown, preview: ReservationWorkflowV2Observation, plan: CompiledOk):
+function nativeMatchesApproval(preparedItem: unknown, approvalItem: unknown, preview: ReservationWorkflowV2Observation,
+  plan: CompiledOk):
   { matches: boolean; native: Record<string, unknown> | null; approved: Record<string, unknown> | null } {
-  const approved = normalizedItem(object(preview.result)?.native), native = normalizedItem(preparedItem);
+  const approved = normalizedItem(approvalItem), native = normalizedItem(preparedItem);
+  const requested = object(object(preview.result)?.requestedFields);
   const matches = Boolean(approved && native && canonicalJson(approved) === canonicalJson(native) &&
-    native.code === plan.candidate.code && native.itemId === plan.candidate.itemId && native.status === 'VALID' &&
-    canonicalJson(object(preview.result)?.requestedFields) === canonicalJson(plan.items));
+    requested && canonicalJson(requested) === canonicalJson(plan.items) && requestedItemMatches(native, plan));
   return { matches, native, approved };
 }
 
@@ -323,7 +430,7 @@ async function claimServiceDispatch(ctx: ReservationWorkflowV2ServerContext, inp
   const baselineIds = Array.isArray(dispatch.baselineIds) ? dispatch.baselineIds.filter((value): value is string =>
     typeof value === 'string' && /^\d{1,100}$/.test(value)) : [];
   const baselineCoverage = object(dispatch.baselineCoverage);
-  const item = normalizedItem(object(approved.preview.result)?.native);
+  const item = normalizedItem(approved.approvalItem);
   const dispatchedItem = object(dispatch.item);
   const dispatchFields = ['code', 'quantity', 'startDate', 'endDate', 'unitPrice', 'frequency', 'pricingControl',
     'folio', 'comment', 'currency', 'totalCost'];
@@ -331,17 +438,17 @@ async function claimServiceDispatch(ctx: ReservationWorkflowV2ServerContext, inp
       !nativeTargetMatches(dispatch.target, target) ||
       baselineCoverage?.complete !== true || !item || !dispatchedItem ||
       dispatchFields.some((key) => !Object.hasOwn(dispatchedItem, key) || dispatchedItem[key] !== item[key]) ||
-      !nativeMatchesApproval(item, approved.preview, approved.plan).matches ||
+      !nativeMatchesApproval(item, approved.approvalItem, approved.preview, approved.plan).matches ||
       baselineIds.length !== new Set(baselineIds).size) throw new Error('services_save_dispatch_binding_invalid');
   const dispatchDigest = hash({ operationId, serviceId: approved.plan.serviceId, target, item,
-    inputDigest: approved.plan.inputDigest, previewObservationRef: approved.preview.ref, baselineIds });
+    inputDigest: approved.plan.inputDigest, previewObservationRef: approved.approvalObservation.ref, baselineIds });
   const intent: StoredIntent = { version: 1, kind: 'intent', operationId, workItemId: input.workItemId,
     transportId: ctx.transport.id, actorUserId: ctx.user.id, sessionId: ctx.user.sessionId!,
     sessionProfile: ctx.user.sessionProfile!, propertyCode: 'HRCEN', sourceDigest: input.source.sourceHash,
     requestId: input.requestId, allocationId: input.allocationId, serviceId: input.serviceId,
     targetRef: approved.plan.targetRef, target, generationId: approved.draft.generationId,
     createOperationId: approved.create.operationId,
-    createObservationRef: approved.create.observation.ref, previewObservationRef: approved.preview.ref,
+    createObservationRef: approved.create.observation.ref, previewObservationRef: approved.approvalObservation.ref,
     inputDigest: approved.plan.inputDigest, approvedItem: item, dispatchDigest,
     draftRevision: input.expectedRevision, baselineIds, baselineCoverage, createdAt: new Date().toISOString() };
   const intentRef = randomUUID();
@@ -349,7 +456,10 @@ async function claimServiceDispatch(ctx: ReservationWorkflowV2ServerContext, inp
     const { item: workItemRow, draft } = await currentDraftTx(tx, ctx, input, true);
     const current = approvedService(draft, input);
     if (current.outcome !== 'ok' || current.value.plan.inputDigest !== approved.plan.inputDigest ||
-        current.value.preview.ref !== approved.preview.ref || current.value.create.confirmation !== target.confirmation) {
+        current.value.preview.ref !== approved.preview.ref ||
+        current.value.approvalObservation.ref !== approved.approvalObservation.ref ||
+        canonicalJson(current.value.approvalItem) !== canonicalJson(approved.approvalItem) ||
+        current.value.create.confirmation !== target.confirmation) {
       throw new Error('services_current_approval_changed');
     }
     await assertFreshGuard(tx, ctx, input, approved, target, true);
@@ -380,7 +490,7 @@ async function claimServiceDispatch(ctx: ReservationWorkflowV2ServerContext, inp
     if (priorSucceeded) throw new Error('services_already_succeeded');
     const operation = { id: operationId, generationId: draft.generationId, requestId: input.requestId,
       allocationId: input.allocationId, workflow: 'services' as const, status: 'unknown' as const,
-      draftRevision: input.expectedRevision, observationRefs: [approved.preview.ref], updatedAt: new Date().toISOString(),
+      draftRevision: input.expectedRevision, observationRefs: [approved.approvalObservation.ref], updatedAt: new Date().toISOString(),
       summary: 'Add-On Save may dispatch; fresh HMS reconciliation required before retry' };
     const operationResults = appendOperationResult(draft, operation);
     const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft, operationResults });
@@ -393,7 +503,7 @@ async function claimServiceDispatch(ctx: ReservationWorkflowV2ServerContext, inp
       type: 'write.evidence',
       fieldPath: `reservationWorkflowV2:operationResults:${operationId}`,
       value: { id: operationId, requestId: input.requestId, allocationId: input.allocationId,
-        workflow: 'services', status: 'unknown', observationRefs: [approved.preview.ref] },
+        workflow: 'services', status: 'unknown', observationRefs: [approved.approvalObservation.ref] },
       evidence: { sourceHash: input.source.sourceHash, seq: input.expectedSeq, summary: operation.summary } });
   });
   return intent;
@@ -474,24 +584,30 @@ function serviceObservationFromRef(ref: string, intent: StoredIntent, input: Res
 async function appendFreshPrepare(ctx: ReservationWorkflowV2ServerContext, input: ReservationWorkflowV2ServicesInput,
   approved: ApprovedService, target: NativeTarget, comparison: { matches: boolean;
     native: Record<string, unknown> | null; approved: Record<string, unknown> | null }, prepareVerified: boolean): Promise<string | null> {
-  const nativeVerified = prepareVerified && Boolean(comparison.native && comparison.native.status === 'VALID' &&
+  const nativeVerified = prepareVerified && Boolean(comparison.native && requestedItemMatches(comparison.native, approved.plan) &&
     text(comparison.native.unitPrice) && text(comparison.native.averageDaily) && text(comparison.native.totalCost) &&
     text(comparison.native.currency));
+  const unsavedNative = normalizedItem(object(approved.preview.result)?.native);
+  const matchesUnsavedPreview = Boolean(comparison.native && unsavedNative &&
+    canonicalJson(comparison.native) === canonicalJson(unsavedNative));
+  const reviewPaths = Object.values(approved.plan.fieldPaths);
   const result = { operation: 'add', saved: false, targetRef: approved.plan.targetRef, serviceId: approved.plan.serviceId,
     createConfirmation: approved.create.confirmation, createObservationRef: approved.create.observation.ref,
     itemCandidate: approved.plan.candidate, requestedFields: approved.plan.items,
     native: comparison.native, previouslyApprovedNative: comparison.approved,
-    matchesUnsavedPreview: comparison.matches, hostValuesRequireReview: Object.values(approved.plan.fieldPaths),
-    target: { confirmation: target.confirmation, arrival: target.arrival, departure: target.departure,
-      nativeStayId: target.nativeStayId }, priceWasNativeCalculated: Boolean(nativeVerified && comparison.native?.averageDaily &&
-      comparison.native?.totalCost) };
+    approvedObservationRef: approved.approvalObservation.ref, matchesApprovedNative: comparison.matches,
+    matchesUnsavedPreview, hostValuesRequireReview: reviewPaths,
+    target: { propertyCode: 'HRCEN', confirmation: target.confirmation, guestName: target.guestName,
+      arrival: target.arrival, departure: target.departure, nativeStayId: target.nativeStayId },
+    priceWasNativeCalculated: nativeVerified };
   const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: approved.draft.generationId,
     kind: 'service_preview', status: nativeVerified ? 'complete' : 'partial', observedAt: new Date().toISOString(),
-    propertyCode: 'HRCEN', sourceMessageId: input.source.messageId, sourceRefs: [approved.preview.ref, approved.create.observation.ref],
+    propertyCode: 'HRCEN', sourceMessageId: input.source.messageId,
+    sourceRefs: [...new Set([approved.preview.ref, approved.create.observation.ref, approved.approvalObservation.ref])],
     criteria: { workflow: 'services', kind: 'saved_addon_fresh_prepare', requestId: input.requestId,
       allocationId: input.allocationId, serviceId: input.serviceId, targetRef: approved.plan.targetRef,
       inputDigest: approved.plan.inputDigest, createObservationRef: approved.create.observation.ref,
-      unsavedPreviewRef: approved.preview.ref, reviewPaths: Object.values(approved.plan.fieldPaths) },
+      unsavedPreviewRef: approved.preview.ref, approvedObservationRef: approved.approvalObservation.ref, reviewPaths },
     coverage: { complete: nativeVerified, notes: nativeVerified ? [] : ['saved_target_prepare_incomplete'] }, result };
   const stored = await appendReservationWorkflowV2Observation(stateContext(ctx), { workItemId: input.workItemId,
     source: input.source, observation });
@@ -552,7 +668,8 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
   }
   const approvedResult = approvedService(loaded.draft, input);
   if (approvedResult.outcome !== 'ok') return { status: approvedResult.outcome, issue: approvedResult.issue,
-    ...(approvedResult.fields ? { fields: approvedResult.fields } : {}) };
+    ...(approvedResult.fields ? { fields: approvedResult.fields } : {}),
+    ...(approvedResult.observationRef ? { observationRef: approvedResult.observationRef } : {}) };
   const approved = approvedResult.value;
   if (prior?.status === 'succeeded') {
     const priorObservation = prior.observationRefs.map((ref) => loaded.draft!.observations.find((item) => item.ref === ref))
@@ -598,13 +715,17 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
           items: [approved.plan.items] }));
         const nativeItem = object(Array.isArray(prepared?.items) ? prepared.items[0] : null);
         const itemFields = nativeItem?.item ?? nativeItem;
-        const compared = nativeMatchesApproval(itemFields, approved.preview, approved.plan);
+        const compared = nativeMatchesApproval(itemFields, approved.approvalItem, approved.preview, approved.plan);
         if (prepared?.outcome !== 'prepared' || prepared.propertyCode !== 'HRCEN' || prepared.saved !== false ||
             typeof prepared.preparedId !== 'string' || !compared.matches) {
           const prepareVerified = prepared?.outcome === 'prepared' && prepared.propertyCode === 'HRCEN' &&
             prepared.saved === false && typeof prepared.preparedId === 'string';
           const observationRef = await appendFreshPrepare(ctx, input, approved, target, compared, prepareVerified);
-          return { status: 'needs_review', issue: 'saved_addon_prepare_differs_from_approved_preview',
+          const reviewable = prepareVerified && Boolean(compared.native && requestedItemMatches(compared.native, approved.plan) &&
+            text(compared.native.unitPrice) && text(compared.native.averageDaily) &&
+            text(compared.native.totalCost) && text(compared.native.currency));
+          return { status: reviewable ? 'needs_review' : 'needs_input',
+            issue: reviewable ? 'saved_addon_prepare_differs_from_approved_item' : 'saved_addon_fresh_prepare_unverified',
             observationRef, saved: false, native: compared.native, approved: compared.approved };
         }
         const save = await runTool({ tool: 'save', confirmation: target.confirmation, preparedId: prepared.preparedId });
@@ -614,7 +735,8 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
           const actual = object(prepared), items = Array.isArray(actual?.items) ? actual.items : [];
           if (!actual || actual.confirmation !== target.confirmation ||
               !nativeTargetMatches(actual.target, target) ||
-              items.length !== 1 || !nativeMatchesApproval(items[0], approved.preview, approved.plan).matches ||
+              items.length !== 1 || !nativeMatchesApproval(items[0], approved.approvalItem,
+                approved.preview, approved.plan).matches ||
               canonicalJson(actual.requestedItems) !== canonicalJson([approved.plan.items])) return false;
           try {
             await ctx.db.transaction(async (tx) => assertFreshGuard(tx, ctx, input, approved, target, true));
@@ -652,7 +774,8 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
       const resultEvidence = { operation: 'add', saved: true, requestId: input.requestId, allocationId: input.allocationId,
         serviceId: input.serviceId, targetRef: approved.plan.targetRef, confirmation: target.confirmation,
         nativeStayId: target.nativeStayId, nativeId: verified.nativeId, requestedFields: approved.plan.items,
-        itemCandidate: approved.plan.candidate, native: verified.native, previewObservationRef: approved.preview.ref,
+        itemCandidate: approved.plan.candidate, native: verified.native,
+        previewObservationRef: approved.approvalObservation.ref, unsavedPreviewObservationRef: approved.preview.ref,
         createObservationRef: approved.create.observation.ref, priceWasNativeCalculated: true,
         freshReadback: verified.readback };
       const readbackDigest = hash({ operationId: claimed.operationId, target, nativeId: verified.nativeId,
@@ -679,7 +802,7 @@ function verifySavedResult(save: Record<string, unknown>, approved: ApprovedServ
   const details = Array.isArray(readback?.details) ? readback.details.map(object).filter(Boolean) : [];
   const nativeId = text(verified[0]?.nativeId);
   const actual = normalizedItem(details.find((detail) => detail.nativeId === nativeId)?.fields);
-  const expected = normalizedItem(object(approved.preview.result)?.native);
+  const expected = normalizedItem(approved.approvalItem);
   return { ok: save.outcome === 'saved' && reconciliation?.outcome === 'verified' && verified.length === 1 &&
     Array.isArray(reconciliation.mismatches) && reconciliation.mismatches.length === 0 && readback?.outcome === 'ok' &&
     Boolean(nativeId && actual && expected && canonicalJson(actual) === canonicalJson(expected) &&
