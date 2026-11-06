@@ -26,7 +26,7 @@ This file is the single agent entry point. `PRODUCT.md` covers what staff get an
   - Check those business fields before Save and read them back after.
   - Don't pin whole native request bodies, field-key sets or field counts. HMS form drift must not stop writes.
 - **Reuse what worked.** The legacy `tooling/playwright-quote/` tools encode proven HMS steps (for example, Check Availability before Save). Port the step list before rebuilding a flow.
-- **One connected workflow per PR** (pane → route → tool). About 500 changed product lines is guidance, not a cap.
+- About 500 changed product lines per PR is guidance, not a cap.
 - **No new tests** unless the owner asks. Run only the existing focused checks for files you touched.
 - **Prove tools in the backend, not by clicking the pane:**
   1. Run the real tool on a real email's details and stop before Save.
