@@ -213,6 +213,18 @@ type CreateCompile = { outcome: 'ok'; nativeInput: Record<string, unknown>; expe
 
 const existingConfirmationPath = (requestId: string) => ptr('proposal', 'content', 'requests', requestId, 'confirmationReference');
 
+function exactSourceConfirmationClaim(draft: ReservationWorkflowV2Draft, path: string) {
+  const claims = draft.proposal.sourceClaims.filter((claim) =>
+    (claim.path === path || claim.path.startsWith(`${path}/`)) &&
+    /^\d{6,10}-\d{1,4}$/.test(claim.raw.trim()) && claim.sourceRefs.length > 0);
+  const confirmations = new Set(claims.map((claim) => claim.raw.trim()));
+  // PNR/voucher/trip labels do not make an exact hotel confirmation ambiguous.
+  // Two different exact confirmations do: never select the first arbitrarily.
+  if (confirmations.size !== 1 || !claims[0]) return undefined;
+  return { ...claims[0], raw: claims[0].raw.trim(),
+    sourceRefs: [...new Set(claims.flatMap((claim) => claim.sourceRefs))].sort() };
+}
+
 function sourceConfirmationClaim(draft: ReservationWorkflowV2Draft, requestId: string) {
   const path = existingConfirmationPath(requestId);
   const claims = draft.proposal.sourceClaims.filter((claim) => claim.path === path || claim.path.startsWith(`${path}/`));
@@ -220,10 +232,10 @@ function sourceConfirmationClaim(draft: ReservationWorkflowV2Draft, requestId: s
     (issue.path === path || issue.path === `/requests/${requestId}/confirmationReference`) &&
     (issue.kind === 'existing_confirmation_requires_lookup' || issue.kind === 'existing_confirmation_requires_review'));
   if (!guarded && claims.length === 0) return { required: false as const, path };
-  if (claims.length !== 1 || !claims[0] || !/^\d{6,10}-\d{1,4}$/.test(claims[0].raw) || !claims[0].sourceRefs.length) {
+  const claim = exactSourceConfirmationClaim(draft, path);
+  if (!claim) {
     return { required: true as const, path, issue: 'existing_confirmation_requires_lookup' as const };
   }
-  const claim = claims[0];
   const observation = [...draft.observations].reverse().find((entry) => entry.kind === 'stay_candidate' &&
     entry.generationId === draft.generationId && entry.propertyCode === draft.propertyCode &&
     entry.sourceMessageId === draft.source.messageId &&
@@ -431,7 +443,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     ...(optional.sourceOfBusiness != null ? { sourceOfBusiness: optional.sourceOfBusiness } : {}),
     ...(optional.reasonForStay != null ? { reasonForStay: optional.reasonForStay } : {}),
     ...(Object.keys(nativeParties).length ? { parties: nativeParties } : {}),
-    ...(optional.reservationNote != null ? { note: optional.reservationNote } : {}),
+    note: optional.reservationNote ?? '',
     ...(optional.billingReference != null ? { billingReference: optional.billingReference } : {}),
     ...(optional.track != null ? { track: optional.track } : {}),
     ...(optional.guestOptIn === false ? { guestoptin4: false } : {}),
@@ -728,9 +740,8 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
   const nativeObservations: ReservationWorkflowV2Observation[] = [];
   for (const request of createRequests) {
     const path = existingConfirmationPath(request.id);
-    const claims = loaded.draft.proposal.sourceClaims.filter((claim) => claim.path === path || claim.path.startsWith(`${path}/`));
     if (!sourceConfirmationClaim(loaded.draft, request.id).required) continue;
-    const claim = claims.length === 1 ? claims[0] : undefined;
+    const claim = exactSourceConfirmationClaim(loaded.draft, path);
     const confirmation = claim?.raw ?? null;
     let outcome = 'unavailable', reason: string | null = 'source_confirmation_claim_missing_or_mismatched';
     let stay: Record<string, unknown> | null = null;
