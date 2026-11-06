@@ -22,7 +22,7 @@ import {
   reviewReservationWorkflowV2Draft,
   moveReservationWorkflowV2History,
 } from '../../ai/reservation-workflow-v2-state.js';
-import { createReservationWorkflowV2CandidateReader, ensureReservationWorkflowV2Prefill } from '../../ai/reservation-workflow-v2-prefill.js';
+import { ensureReservationWorkflowV2Prefill } from '../../ai/reservation-workflow-v2-prefill.js';
 import { createAzureExtractionAdapter } from '../../ai/extraction/extract.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../../ai/quote-workflow-synced-selection.js';
 import {
@@ -118,9 +118,7 @@ export const reservationWorkflowV2Router = router({
       includeVisionImages: true, trackVisionImages: true });
     if (!selection) return { status: 'invalid_source' as const };
     return withPreparation(ensureReservationWorkflowV2Prefill({ context: scoped, source: canonicalSource, selection,
-      mailboxAddress: ctx.transportEmail, adapter: createAzureExtractionAdapter(),
-      readCandidate: createReservationWorkflowV2CandidateReader({ db: scoped.db, transportId: scoped.transportId,
-        propertyCode: scoped.propertyCode, source: canonicalSource }) }), scoped.propertyCode);
+      mailboxAddress: ctx.transportEmail, adapter: createAzureExtractionAdapter() }), scoped.propertyCode);
   }),
   get: mailboxProcedure.input(reservationWorkflowV2ItemInputSchema).query(({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
