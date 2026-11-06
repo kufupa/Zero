@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import styles from './reservation-pane.module.css';
 import { initialReservationUiState, reduceReservationUi, type PendingReservationEdit } from '@/lib/reservation-workflow/reducer';
 import type {
@@ -204,13 +204,15 @@ function isInputReady(snapshot: ReservationPaneSnapshot, request: ReservationReq
     const profileSelected = guestSelectionMatches(snapshot, `${allocRoot}/guest/nativeSelectionRef`, {
       firstName, lastName, email: fieldOrBase(snapshot, `${allocRoot}/guest/email`, guest.email),
     });
-    const required = [
-      `${sectionRoot}/arrival`, `${sectionRoot}/departure`, `${allocRoot}/guest/firstName`, `${allocRoot}/guest/lastName`,
-      `${allocRoot}/occupancy/adults`, `${allocRoot}/occupancy/childCount`, `${allocRoot}/overrides/roomType`, `${allocRoot}/overrides/ratePlan`,
-    ];
-    const accepted = required.every((path) => !snapshot.fields[path]?.required || snapshot.fields[path]?.review === 'accepted');
     return hasValue(arrival) && hasValue(departure) && hasValue(room) && hasValue(rate) && hasValue(firstName) && hasValue(lastName)
-      && typeof adults === 'number' && adults >= 1 && ageReady && accepted && profileSelected;
+      && typeof adults === 'number' && adults >= 1 && ageReady && profileSelected;
+  });
+}
+
+function hasUnreviewedRequiredFields(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
+  return request.fieldPaths.some((path) => {
+    const field = snapshot.fields[path];
+    return field?.required && (field.review !== 'accepted' || !hasValue(field.value));
   });
 }
 
@@ -284,7 +286,6 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   const activeRequest = snapshot?.requests.find((request) => request.id === activeRequestRef.current)
     ?? snapshot?.requests.find((request) => request.kind === activeKindRef.current);
   const activeKind = activeRequest?.kind ?? activeKindRef.current;
-  const activeFields = useMemo(() => activeRequest?.fieldPaths ?? [], [activeRequest]);
 
   const applySnapshot = useCallback((next: ReservationPaneSnapshot, bound: ReservationSourceContext) => {
     if (sourceRef.current.selectionEpoch !== bound.selectionEpoch || sourceRef.current.messageId !== bound.messageId
@@ -418,7 +419,8 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
       if (!current || !request || request.kind !== 'create') throw new Error('Only connected Create requests can be sent to Infor in this release.');
       const { allocations } = createSections(current, request);
       if (!allocations.length) throw new Error('This saved Create request has no room allocations to submit.');
-      if (!isInputReady(current, request)) throw new Error('Complete each room, select the exact existing guest profile, and review its required values first.');
+      if (!isInputReady(current, request)) throw new Error('Complete each room and select the exact existing guest profile first.');
+      if (hasUnreviewedRequiredFields(current, request)) throw new Error('Review every required field before Go.');
       if (!isRequestPrepared(current, request)) throw new Error('Native price and availability are stale. Wait for the automatic Infor check before Go.');
       for (const allocation of allocations) {
         const allocationId = String(allocation.value.id ?? '');
@@ -480,10 +482,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     });
   }, [applySnapshot, client, enqueue, flushEdits]);
 
-  const reviewRequired = activeFields.some((path) => {
-    const field = snapshot?.fields[path];
-    return field?.required && (field.review !== 'accepted' || !hasValue(field.value));
-  });
+  const reviewRequired = Boolean(snapshot && activeRequest && hasUnreviewedRequiredFields(snapshot, activeRequest));
   const hasUncertain = snapshot?.operationResults.some((result) => result.requestId === activeRequest?.id && result.status === 'unknown') ?? false;
   const canGo = Boolean(snapshot && activeRequest?.kind === 'create' && activeRequest.supported
     && isRequestPrepared(snapshot, activeRequest) && !reviewRequired && !ui.pendingEdits.length
@@ -650,7 +649,7 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
           <TextField {...props} path={`${allocationRoot}/guest/email`} label="Guest email" type="email" />
           <TextField {...props} path={`${allocationRoot}/guest/mobile`} label="Guest mobile" type="tel" />
         </div>
-        <GuestProfileStatus snapshot={snapshot} path={profileChoicePath} guest={guest}
+        <GuestProfileStatus snapshot={snapshot} path={profileChoicePath}
           expected={{ firstName: Object.hasOwn(snapshot.fields, `${allocationRoot}/guest/firstName`)
             ? props.editValue(`${allocationRoot}/guest/firstName`) : guest.firstName,
             lastName: Object.hasOwn(snapshot.fields, `${allocationRoot}/guest/lastName`)
@@ -961,8 +960,8 @@ function BooleanField(props: EditorProps & { path: string; label: string }) {
   </FieldShell>;
 }
 
-function GuestProfileStatus({ snapshot, path, guest, expected, onStage, onBlur }: {
-  snapshot: ReservationPaneSnapshot; path: string; guest: Record<string, unknown>;
+function GuestProfileStatus({ snapshot, path, expected, onStage, onBlur }: {
+  snapshot: ReservationPaneSnapshot; path: string;
   expected: { firstName: unknown; lastName: unknown; email: unknown };
   onStage: EditorProps['onStage']; onBlur: EditorProps['onBlur'];
 }) {
@@ -1019,7 +1018,6 @@ function QuoteEditor(props: EditorProps) {
   if (!quote || !Array.isArray(quote.groups)) return <div className={styles.alert}>The saved Quote request has no v2 quote body.</div>;
   const groups = quote.groups.map((value, index) => ({ value: record(value) ?? {}, index }));
   const client = record(quote.client) ?? {};
-  const parties = record(quote.parties) ?? {};
   const money = Array.isArray(quote.requestedMoney) ? quote.requestedMoney : [];
   const intent = record(quote.outputIntent) ?? {};
   return <>
@@ -1106,7 +1104,7 @@ function FilingEditor({ snapshot, request, source, onOpenAttachment }: {
         const refs = record(targetScope)?.[side];
         const list = Array.isArray(refs) ? refs : [];
         return <div className={styles.targetScope} key={side}><b>{humanize(side)}</b>{list.length
-          ? list.map((value, index) => <small key={index}>{JSON.stringify(value)}</small>)
+          ? list.map((value) => <small key={`${side}-${text(record(value)?.id) || JSON.stringify(value)}`}>{JSON.stringify(value)}</small>)
           : <small>None recorded</small>}</div>;
       })}
     </section>}
