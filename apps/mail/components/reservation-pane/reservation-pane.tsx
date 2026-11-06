@@ -896,7 +896,7 @@ function CreateEditor(props: EditorProps & { busy: boolean; prepareBlockedReason
       </div>
       <TextField {...props} path={`${body}/shared/reasonForStay`} label="Reason for stay" />
       <TextField {...props} path={`${body}/shared/sourceOfBusiness`} label="Source of business code"
-        help="Editable source-bound value. Use the exact supported Infor code; no unobserved catalogue is invented." />
+        help="Required by Infor before Save. Enter the native code, for example EMA for E-Mail; confirm the source for this booking." />
       <TextField {...props} path={`${body}/shared/billingReference`} label="Billing reference" />
       <TextField {...props} path={`${body}/shared/reservationNote`} label="Shared reservation note" multiline />
     </div>

@@ -415,6 +415,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
       const missingReview = reviewed(draft, resolved.path, resolved.value); if (missingReview) reviewPaths.add(missingReview);
     }
   }
+  if (mode !== 'lookup' && !text(optional.sourceOfBusiness)) issues.push('sourceOfBusiness:native_required');
   if (optional.guestOptIn === true) issues.push('guestOptIn:true_not_supported');
   const supportedGuarantee = new Set(['AVOUCH', 'CNFREC', 'DEPREQ', 'GRPDEF', 'GTDAGT', 'GTDCMP', 'GTDCC', 'GTDDEP', 'NGG', 'NGI']);
   if (typeof arrival !== 'string' || !isoDate.safeParse(arrival).success || typeof departure !== 'string' ||
