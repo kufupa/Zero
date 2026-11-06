@@ -217,7 +217,10 @@ export function reservationWorkflowV2CompileServiceItem(draft: ReservationWorkfl
   const quantityScope = record(service.quantityRequest)?.scope;
   const targetQuantityPath = pointer('proposal', 'content', 'services', row.serviceIndex, 'targets', row.targetIndex, 'fields', 'quantity');
   const targetQuantitySet = paths.quantity === targetQuantityPath ||
-    (quantityScope === 'per_target' && paths.quantity === pointer('proposal', 'content', 'services', row.serviceIndex, 'quantityRequest', 'value'));
+    (quantityScope === 'per_target' && [
+      pointer('proposal', 'content', 'services', row.serviceIndex, 'quantityRequest', 'value'),
+      pointer('proposal', 'content', 'services', row.serviceIndex, 'sharedFields', 'quantity'),
+    ].some((path) => path === paths.quantity));
   const serviceTargets = row.service.targets;
   if (!targetQuantitySet && !(quantityScope === 'overall' && serviceTargets.length === 1)) {
     errors.push('quantity:whole_booking_allocation_unresolved');
