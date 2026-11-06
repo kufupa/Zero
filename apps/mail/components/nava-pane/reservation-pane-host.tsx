@@ -143,7 +143,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
       }
       if (currentOwner.current !== owner) return;
       setSourceEvidencePreview({ owner, reference, title: 'Source item not available in this email',
-        text: 'This admitted reference does not resolve to the currently selected email or one of its readable attachments. Open its related message in the mailbox to inspect it; no source text has been substituted.' });
+        text: 'This source is not available in the selected email. Check related emails or the reservation in Infor to review it.' });
     } catch {
       toast.error('Nava could not resolve this source reference.');
     }
@@ -251,7 +251,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
         <DialogContent showOverlay className="max-h-[85dvh] max-w-3xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{currentEvidencePreview?.title ?? 'Source evidence'}</DialogTitle>
-            <DialogDescription>Read-only source view · {currentEvidencePreview?.reference ?? ''}</DialogDescription>
+            <DialogDescription>Review the original email or attachment.</DialogDescription>
           </DialogHeader>
           {currentEvidencePreview && <pre className="max-h-[65dvh] overflow-auto whitespace-pre-wrap break-words rounded-md border bg-white p-3 text-xs leading-relaxed">
             {currentEvidencePreview.text}
