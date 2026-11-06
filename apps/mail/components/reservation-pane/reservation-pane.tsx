@@ -49,8 +49,8 @@ const sameIdentityText = (left: unknown, right: unknown) => text(left).normalize
   === text(right).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
 
 function guestSelectionMatches(snapshot: ReservationPaneSnapshot, path: string, guest: { firstName: unknown; lastName: unknown; email?: unknown }): boolean {
-  const selection = snapshot.fields[path];
-  const ref = selection?.override?.state === 'set' && typeof selection.value === 'string' ? selection.value : null;
+  const selected = nativeSelectionValue(snapshot, path);
+  const ref = typeof selected === 'string' ? selected : null;
   if (!ref) return false;
   const observation = snapshot.session.draft.observations.find((item) => item.ref === ref && item.kind === 'guest_candidate'
     && item.status === 'complete' && ((Array.isArray(item.criteria.fieldPaths) && item.criteria.fieldPaths.includes(path))
@@ -88,6 +88,18 @@ function draftAtPath(snapshot: ReservationPaneSnapshot, path: string): unknown {
 function valueFor(snapshot: ReservationPaneSnapshot, path: string): unknown {
   const field = snapshot.fields[path];
   return field ? field.value : draftAtPath(snapshot, path);
+}
+
+function nativeSelectionValue(snapshot: ReservationPaneSnapshot, path: string): unknown {
+  const field = snapshot.fields[path];
+  const suggestion = draftAtPath(snapshot, path.replace(/\/nativeSelectionRef$/u, '/suggestedRef'));
+  if (field?.override) {
+    if (field.override.state === 'set') return field.value;
+    if (field.override.state === 'inherit') return typeof suggestion === 'string' ? suggestion : null;
+    return null;
+  }
+  const value = valueFor(snapshot, path);
+  return hasValue(value) ? value : typeof suggestion === 'string' ? suggestion : null;
 }
 
 function inheritedValue(snapshot: ReservationPaneSnapshot, paths: string[]): unknown {
@@ -236,7 +248,10 @@ function createReviewPaths(snapshot: ReservationPaneSnapshot, request: Reservati
   const { body, data, sections, allocations } = createSections(snapshot, request);
   if (!data) return [];
   const paths = new Set<string>();
-  const addWhenSet = (path: string) => { if (hasValue(valueFor(snapshot, path))) paths.add(path); };
+  const addWhenSet = (path: string) => {
+    const value = path.endsWith('/nativeSelectionRef') ? nativeSelectionValue(snapshot, path) : valueFor(snapshot, path);
+    if (hasValue(value)) paths.add(path);
+  };
   const sharedFields = ['bookingAgency', 'organization', 'arAccount', 'sourceOfBusiness', 'reasonForStay',
     'billingReference', 'track', 'guestOptIn', 'bookerName', 'bookerContact', 'reservationNote',
     'cmsSend', 'cmsMessageId', 'cmsRecipient'];
@@ -267,6 +282,74 @@ function createReviewPaths(snapshot: ReservationPaneSnapshot, request: Reservati
   return [...paths];
 }
 
+function filingDocuments(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection) {
+  const requestData = snapshot.session.draft.proposal.content.requests.find((entry) => entry.id === request.id);
+  if (!requestData || requestData.kind !== 'filing') return [];
+  return snapshot.session.draft.proposal.content.documents.filter((document) =>
+    document.ownerRequestId === request.id && requestData.documentRefs.includes(document.id));
+}
+
+function filingTargetHints(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection) {
+  const scope = record(draftAtPath(snapshot, `${requestPath(request)}/body/targets`));
+  const include = Array.isArray(scope?.include) ? scope.include : [];
+  return { scope, include: include.map(record).filter((item): item is Record<string, unknown> => Boolean(item)) };
+}
+
+function filingTargetPath(request: ReservationRequestProjection, hintId: string): string {
+  return `${requestPath(request)}/body/targets/include/${encoded(hintId)}/suggestedRef`;
+}
+
+function filingReviewPaths(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): string[] {
+  const paths: string[] = [];
+  for (const document of filingDocuments(snapshot, request)) {
+    const root = `/proposal/content/documents/${encoded(document.id)}`;
+    paths.push(`${root}/documentSourceRef`, `${root}/kind`, `${root}/handling`);
+    if (document.requestedName !== null) paths.push(`${root}/requestedName`);
+    if (document.requestedDescription !== null) paths.push(`${root}/requestedDescription`);
+  }
+  const { scope, include } = filingTargetHints(snapshot, request);
+  if (scope?.mode === 'explicit' && include.length === 1 && typeof include[0]?.id === 'string') {
+    paths.push(filingTargetPath(request, include[0].id));
+  }
+  return paths;
+}
+
+function filingTargetObservation(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection) {
+  const { scope, include } = filingTargetHints(snapshot, request);
+  if (scope?.mode !== 'explicit' || include.length !== 1 || (Array.isArray(scope.exclude) && scope.exclude.length > 0)) return null;
+  const hint = include[0]!;
+  if (typeof hint.id !== 'string') return null;
+  const path = filingTargetPath(request, hint.id);
+  const selectedRef = valueFor(snapshot, path);
+  if (typeof selectedRef !== 'string') return null;
+  const observation = snapshot.session.draft.observations.find((entry) => entry.ref === selectedRef && entry.kind === 'stay_candidate'
+    && entry.status === 'complete' && record(entry.coverage)?.complete === true
+    && entry.criteria.workflow === 'filing' && entry.criteria.requestId === request.id && entry.criteria.targetHintId === hint.id
+    && record(entry.result)?.outcome === 'found');
+  const stay = record(record(observation?.result)?.stay);
+  if (!observation || !stay || (hasValue(hint.confirmation) && hint.confirmation !== stay.confirmation)
+      || (hasValue(hint.bookedArrival) && hint.bookedArrival !== stay.arrival)
+      || (hasValue(hint.bookedDeparture) && hint.bookedDeparture !== stay.departure)
+      || (hasValue(hint.guestName) && !sameIdentityText(hint.guestName, `${text(stay.firstName)} ${text(stay.lastName)}`))) return null;
+  return { hint, path, observation, stay };
+}
+
+function filingSourceObservation(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection, documentId: string) {
+  return [...snapshot.session.draft.observations].reverse().find((entry) => entry.kind === 'document'
+    && entry.status === 'complete' && record(entry.coverage)?.complete === true
+    && entry.criteria.workflow === 'filing' && entry.criteria.requestId === request.id && entry.criteria.documentId === documentId
+    && record(entry.result)?.outcome === 'ready');
+}
+
+function isFilingReadyForPrepare(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
+  const documents = filingDocuments(snapshot, request);
+  if (documents.length !== 1 || documents[0]!.handling !== 'filing_requested'
+      || !['voucher', 'payment_proof'].includes(documents[0]!.kind) || !filingTargetObservation(snapshot, request)) return false;
+  const source = filingSourceObservation(snapshot, request, documents[0]!.id);
+  return Boolean(source && typeof record(source.result)?.sha256 === 'string'
+    && typeof record(source.result)?.sourceSnapshotDigest === 'string');
+}
+
 function isRenderedCreateReviewPath(request: ReservationRequestProjection, path: string): boolean {
   const prefix = requestPath(request) + '/body';
   const relative = path.slice(`${prefix}/`.length).split('/');
@@ -283,11 +366,16 @@ function isRenderedCreateReviewPath(request: ReservationRequestProjection, path:
 }
 
 function hasUnreviewedRequiredFields(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
-  const paths = request.kind === 'create' ? createReviewPaths(snapshot, request) : request.fieldPaths;
+  const paths = request.kind === 'create' ? createReviewPaths(snapshot, request)
+    : request.kind === 'filing' ? filingReviewPaths(snapshot, request) : request.fieldPaths;
   return paths.some((path) => {
     const field = snapshot.fields[path];
-    if (!field?.required || !hasValue(field.value)) return false;
-    return field.review !== 'accepted';
+    const selectedValue = request.kind === 'create' && path.endsWith('/nativeSelectionRef')
+      ? nativeSelectionValue(snapshot, path) : undefined;
+    const value = field?.value ?? selectedValue ?? valueFor(snapshot, path);
+    const required = field?.required === true || typeof selectedValue === 'string';
+    const review = field?.review ?? snapshot.session.draft.staffReviews[path]?.status;
+    return required && hasValue(value) && review !== 'accepted';
   });
 }
 
@@ -437,10 +525,11 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
       const current = snapshotRef.current;
       if (!current) throw new Error('The source-bound reservation draft is still loading.');
       const field = current.fields[path];
-      const required = field?.required === true;
+      const suggestedSelection = path.endsWith('/nativeSelectionRef') ? nativeSelectionValue(current, path) : null;
+      const required = field?.required === true || typeof suggestedSelection === 'string';
       const review = current.session.draft.staffReviews[path];
       if (!required || (field?.review ?? review?.status) === 'accepted') return;
-      if (!hasValue(field?.value ?? valueFor(current, path))) throw new Error('Enter or resolve this value before marking it reviewed.');
+      if (!hasValue(field?.value ?? suggestedSelection ?? valueFor(current, path))) throw new Error('Enter or resolve this value before marking it reviewed.');
       const next = await client.review({ source: bound, snapshot: current, fieldPath: path, decision: 'accepted' });
       applySnapshot(next, bound);
     });
@@ -1014,7 +1103,8 @@ function PartyField(props: EditorProps & { path: string; label: string }) {
   const field = props.snapshot.fields[props.path];
   const selectionPath = `${props.path}/nativeSelectionRef`;
   const selection = props.snapshot.fields[selectionPath];
-  const selectedRef = selection?.override?.state === 'set' && typeof selection.value === 'string' ? selection.value : null;
+  const selectedValue = nativeSelectionValue(props.snapshot, selectionPath);
+  const selectedRef = typeof selectedValue === 'string' ? selectedValue : null;
   const tail = props.path.split('/').pop();
   const role = tail === 'bookingAgency' || tail === 'agency' ? 'agency' : tail === 'arAccount' ? 'ar_account' : 'organization';
   const candidates = props.snapshot.session.draft.observations.flatMap((observation) => {
@@ -1034,7 +1124,7 @@ function PartyField(props: EditorProps & { path: string; label: string }) {
       onBlur={() => props.onBlur(props.path)} />
     <FieldValueState {...props} path={props.path} />
     {selectedMatches && <small className={styles.accepted}>Native candidate selected.</small>}
-    {selectedMatches && selection?.required && selection.review !== 'accepted' && props.onDone
+    {selectedMatches && selectedRef && (selection?.review ?? props.snapshot.session.draft.staffReviews[selectionPath]?.status) !== 'accepted' && props.onDone
       ? <button type="button" className={styles.inlineButton} onClick={() => props.onDone?.(selectionPath)}>Confirm selected party</button> : null}
     {selectedRef && !selectedMatches && <small className={styles.problem}>Saved native selection no longer matches this party name. Select a matching result again.</small>}
     {!selectedMatches && candidates.map(({ observationRef, candidate }, index) => {
@@ -1110,8 +1200,8 @@ function GuestProfileStatus({ snapshot, path, expected, onStage, onBlur, onDone 
   onStage: EditorProps['onStage']; onBlur: EditorProps['onBlur'];
   onDone?: EditorProps['onDone'];
 }) {
-  const selectedValue = valueFor(snapshot, path);
-  const selectedRef = snapshot.fields[path]?.override?.state === 'set' && typeof selectedValue === 'string' ? selectedValue : null;
+  const selectedValue = nativeSelectionValue(snapshot, path);
+  const selectedRef = typeof selectedValue === 'string' ? selectedValue : null;
   const selectedObservation = selectedRef ? snapshot.session.draft.observations.find((item) => item.ref === selectedRef && item.kind === 'guest_candidate') : null;
   const candidates = snapshot.session.draft.observations.filter((item) => item.kind === 'guest_candidate'
     && item.criteria.requestId === path.split('/')[4] && item.status === 'complete'
@@ -1123,7 +1213,7 @@ function GuestProfileStatus({ snapshot, path, expected, onStage, onBlur, onDone 
   return <div className={selected ? styles.profileReady : styles.profileWarning} data-profile-path={path}>
     <b>{selected ? 'Existing guest profile selected' : selectedRef ? 'Selection no longer matches this guest' : 'Select an existing Infor guest profile'}</b>
     <span>{selectedObservation ? `Native match · ${selectedObservation.status}` : selectedRef ?? 'A typed name alone is not a profile selection.'}</span>
-    {selected && snapshot.fields[path]?.required && snapshot.fields[path]?.review !== 'accepted' && onDone
+    {selected && selectedRef && (snapshot.fields[path]?.review ?? snapshot.session.draft.staffReviews[path]?.status) !== 'accepted' && onDone
       ? <button type="button" className={styles.inlineButton} onClick={() => onDone(path)}>Confirm selected guest</button> : null}
     {!selected && candidates.length > 0 && <div className={styles.candidateList}>
       {candidates.map(({ observationRef, candidate }, index) => {
