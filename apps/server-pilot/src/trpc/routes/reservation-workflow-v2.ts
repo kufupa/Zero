@@ -32,6 +32,7 @@ import {
   reservationWorkflowV2Execute,
   reservationWorkflowV2Reconcile,
 } from '../../ai/reservation-workflow-v2-tools.js';
+import { reservationWorkflowV2LookupServices, reservationWorkflowV2PreviewServices } from '../../ai/reservation-workflow-v2-services.js';
 import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
 import { guardCenturionHmsMailboxOrigin } from '../../hms/mailbox-hms-origin-bind.js';
 import { paneSourceSelectionCondition, paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
@@ -63,6 +64,10 @@ async function withPreparation<T extends { status: string }>(reply: Promise<T>, 
   const draft = 'draft' in result ? result.draft as ReservationWorkflowV2Draft | null : null;
   return { ...result, preparationViews: draft ? reservationWorkflowV2PreparationViews(draft, propertyCode) : [] };
 }
+
+const servicesInput = reservationWorkflowV2PrepareInputSchema.extend({
+  allocationId: z.string().min(1).max(80), serviceId: z.string().min(1).max(80).optional(),
+}).strict();
 
 /** Source, state and tools share the authenticated mailbox; clients cannot select another hotel. */
 export const reservationWorkflowV2Router = router({
@@ -146,6 +151,10 @@ export const reservationWorkflowV2Router = router({
     reservationWorkflowV2Prepare(await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source), input)),
   execute: mailboxProcedure.input(reservationWorkflowV2ExecuteInputSchema).mutation(async ({ input, ctx }) =>
     reservationWorkflowV2Execute(await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source), input)),
+  lookupServices: mailboxProcedure.input(servicesInput).mutation(async ({ input, ctx }) =>
+    reservationWorkflowV2LookupServices(await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source), input)),
+  prepareServices: mailboxProcedure.input(servicesInput).mutation(async ({ input, ctx }) =>
+    reservationWorkflowV2PreviewServices(await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source), input)),
   reconcile: mailboxProcedure.input(reservationWorkflowV2ReconcileInputSchema).mutation(async ({ input, ctx }) =>
     reservationWorkflowV2Reconcile(await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source), input)),
 });
