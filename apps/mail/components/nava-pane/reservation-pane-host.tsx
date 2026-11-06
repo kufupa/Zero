@@ -121,7 +121,11 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
           subject: email.subject,
           sender: email.senderEmail,
           receivedAt: result.source.arrivedAt,
-          attachments: [],
+          attachments: result.attachments.filter((item) => !item.isInline).map((item) => ({
+            sourceRef: item.id, name: item.filename, mimeType: item.mimeType,
+            uploadability: item.mimeType === 'application/pdf' && item.sizeBytes <= 10 * 1024 * 1024
+              ? 'unknown' as const : 'unsupported' as const,
+          })),
         } });
       } catch {
         if (alive && currentOwner.current === owner) setSourceError('Nava could not open this email. Check your connection.');
