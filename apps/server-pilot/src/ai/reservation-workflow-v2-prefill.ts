@@ -1279,9 +1279,9 @@ export async function runReservationWorkflowV2Prefill(input: {
   if (selfPreStay) {
     // Match the established pre-stay rule: a grounded separate ask is surfaced
     // for staff review, but this existing-stay email cannot grant a new write.
-    const body = input.selection.currentBodyText ?? input.selection.bodyText;
+    const body = maskCardNumbers(input.selection.currentBodyText ?? input.selection.bodyText);
     const requests = extraction.requests.flatMap((request) =>
-      groundedSeparateAsk(body, request.requestText.raw) ? [{ ...request, kind: 'other' as const }] : []);
+      groundedSeparateAsk(body, request.requestText.raw, 2000) ? [{ ...request, kind: 'other' as const }] : []);
     if (!requests.length) return { ...base, extraction, status: 'prefill_failed',
       proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence,
         reason: 'Self-sent pre-stay mail has no separate current request.' }),

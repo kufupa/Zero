@@ -67,9 +67,9 @@ export function currentAuthoredMessageText(body: string | null | undefined): str
 }
 
 /** Accept only an excerpt of the current message, not a model summary or thread history. */
-export function groundedSeparateAsk(body: string | null | undefined, value: unknown): string | null {
+export function groundedSeparateAsk(body: string | null | undefined, value: unknown, maxCharacters = 200): string | null {
   if (typeof value !== 'string') return null;
   const excerpt = value.trim();
-  if (!excerpt || excerpt.length > 200) return null;
+  if (!excerpt || excerpt.length > maxCharacters) return null;
   return currentAuthoredMessageText(body).includes(excerpt) ? excerpt : null;
 }
