@@ -172,7 +172,7 @@ export function reservationWorkflowV2CompileServiceItem(draft: ReservationWorkfl
   const target = row.target as unknown as Record<string, unknown>;
   if (service.operation !== 'add') return { outcome: 'unsupported', issue: 'saved_addon_edit_remove_not_connected', fields: [] };
   const candidate = candidateFor(draft, input, row);
-  if ('issue' in candidate) return { outcome: 'needs_input' as const, issue: candidate.issue, fields: [candidate.path] };
+  if ('issue' in candidate) return { outcome: 'needs_input' as const, issue: candidate.issue ?? 'service_candidate_unavailable', fields: [candidate.path] };
 
   const items: AddOnItem = { code: String(candidate.candidate.code) };
   const paths: Record<string, string> = {};
@@ -396,12 +396,12 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
     services: invalid.map(item => ({ serviceId: item.row.service.id, ...(item.plan as object) })),
     unsupportedServices: compiled.filter(item => item.plan.outcome === 'unsupported').map(item => ({
       serviceId: item.row.service.id, targetRef: item.row.targetRef,
-      issue: (item.plan as Extract<ReservationWorkflowV2CompiledServiceItem, { outcome: 'unsupported' }>).issue,
+      issue: item.plan.outcome !== 'ok' ? item.plan.issue : 'service_preview_unavailable',
     })) };
   const plans = compiled.flatMap(item => item.plan.outcome === 'ok' ? [item.plan] : []);
   if (!plans.length) return { status: 'unsupported', issue: 'saved_addon_edit_remove_not_connected', saved: false,
     services: compiled.map(item => ({ serviceId: item.row.service.id, targetRef: item.row.targetRef,
-      status: 'unsupported', issue: (item.plan as Extract<ReservationWorkflowV2CompiledServiceItem, { outcome: 'unsupported' }>).issue })) };
+      status: 'unsupported', issue: item.plan.outcome !== 'ok' ? item.plan.issue : 'service_preview_unavailable' })) };
   try {
     const addonTool = await import(new URL('../../tooling/hms-cloud/stay360-addons.mjs', import.meta.url).href) as {
       previewUnsavedStay360AddOns: (page: unknown, options: Record<string, unknown>) => Promise<Record<string, unknown>>;
@@ -454,7 +454,7 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
     }
     results.unshift(...compiled.filter(item => item.plan.outcome === 'unsupported').map(item => ({
       status: 'unsupported', serviceId: item.row.service.id, targetRef: item.row.targetRef,
-      issue: (item.plan as Extract<ReservationWorkflowV2CompiledServiceItem, { outcome: 'unsupported' }>).issue, saved: false,
+      issue: item.plan.outcome !== 'ok' ? item.plan.issue : 'service_preview_unavailable', saved: false,
     })));
     return { status: !unsupported.length && results.every(result => result.status === 'prepared') ? 'prepared' : 'partial',
       requestId: input.requestId, allocationId: input.allocationId, nativeCreate: {

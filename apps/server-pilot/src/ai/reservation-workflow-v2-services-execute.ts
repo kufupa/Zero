@@ -220,7 +220,7 @@ function createApproval(draft: ReservationWorkflowV2Draft, input: ReservationWor
   const prepareResult = object(prepare?.result), binding = object(prepareResult?.requestBinding);
   const request = object(binding?.request), guest = object(compiled.nativeInput.guest), stay = object(compiled.nativeInput.stay);
   const expectedGuest = compiled.expectedGuest;
-  if (!observation || !result || !/^\d{6,10}-\d{1,2}$/.test(confirmation ?? '') ||
+  if (!observation || !result || !confirmation || !/^\d{6,10}-\d{1,2}$/.test(confirmation) ||
       result.priceMatched !== true || !object(result.savedShot) || !digest.safeParse(result.requestDigest).success ||
       !prepare || prepare.criteria.semanticDigest !== compiled.semanticDigest || !binding ||
       binding.digest !== result.requestDigest || !request || !guest || !/^[0-9]{1,30}$/.test(String(guest.profileId ?? '')) ||
@@ -691,7 +691,7 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
     return { status: 'needs_reconcile', issue: 'service_operation_already_unknown' };
   }
   const approvedResult = approvedService(loaded.draft, input);
-  if (approvedResult.outcome !== 'ok') return { status: approvedResult.outcome, issue: approvedResult.issue,
+  if (approvedResult.outcome !== 'ok') return { status: approvedResult.outcome, issue: approvedResult.issue ?? undefined,
     ...(approvedResult.fields ? { fields: approvedResult.fields } : {}),
     ...(approvedResult.observationRef ? { observationRef: approvedResult.observationRef } : {}) };
   const approved = approvedResult.value;
@@ -705,7 +705,7 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
     return { status: 'refused', issue: 'services_operation_id_reused' };
   }
   const admission = supportedGuestAdmission(approved.create);
-  if (!admission.allowed) return { status: 'refused', issue: admission.issue };
+  if (!admission.allowed) return { status: 'refused', issue: admission.issue ?? undefined };
   if (loaded.draft.operationResults.some((entry) => entry.workflow === 'services' && entry.requestId === input.requestId &&
       entry.allocationId === input.allocationId && entry.status === 'succeeded' && entry.observationRefs.some((ref) =>
         loaded.draft!.observations.some((observation) => observation.ref === ref && observation.criteria.serviceId === input.serviceId &&
@@ -723,7 +723,7 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
   if (!lock) return { status: 'needs_reconcile', issue: 'service_target_lock_unavailable' };
   let claimed: StoredIntent | null = null, claimAttempted = false;
   try {
-    return await lock.withLock(async () => {
+    return await lock.withLock(async (): Promise<ReservationWorkflowV2ServicesResult> => {
       const addon = await import(new URL('../../tooling/hms-cloud/stay360-addons-session.mjs', import.meta.url).href) as {
         withStay360AddOnSession: (callback: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<unknown>,
           options: Record<string, unknown>) => Promise<unknown>;
@@ -782,7 +782,7 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
       });
       const objectResult = object(result), saveResult = object(objectResult?.save);
       if (!saveResult) {
-        if (objectResult?.status === 'needs_review') return { ...objectResult, serviceId: input.serviceId,
+        if (objectResult?.status === 'needs_review') return { ...objectResult, status: 'needs_review', serviceId: input.serviceId,
           requestId: input.requestId, allocationId: input.allocationId };
         return { status: 'needs_input', issue: text(objectResult?.issue) ?? 'native_addon_save_not_started', saved: false };
       }
@@ -790,7 +790,7 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
         ? { status: 'needs_reconcile', operationId: input.idempotencyKey, issue: 'services_save_claim_unconfirmed', saved: false }
         : { status: 'refused', issue: text(saveResult.issue) ?? 'services_save_not_authorized', saved: false };
       const verified = verifySavedResult(saveResult, approved);
-      if (!verified.ok) return { status: 'needs_reconcile', operationId: claimed.operationId,
+      if (!verified.ok || !verified.nativeId || !verified.native) return { status: 'needs_reconcile', operationId: claimed.operationId,
         issue: 'addon_save_or_fresh_readback_unverified', nativeOutcome: saveResult.outcome ?? null };
       const current = await getReservationWorkflowV2Draft(stateContext(ctx), input);
       if (current.status !== 'ok') return { status: 'needs_reconcile', operationId: claimed.operationId,
@@ -813,7 +813,7 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
         observationRef };
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
   } catch (error) {
-    if (claimed || claimAttempted) return { status: 'needs_reconcile', operationId: claimed?.operationId ?? input.idempotencyKey,
+    if (claimed || claimAttempted) return { status: 'needs_reconcile', operationId: (claimed as StoredIntent | null)?.operationId ?? input.idempotencyKey,
       issue: isPropertyReadLockDeadline(error) ? 'service_target_lock_busy' : 'native_addon_outcome_unknown' };
     return { status: 'failed', issue: isPropertyReadLockDeadline(error) ? 'service_target_lock_busy' : 'native_addon_prepare_failed', saved: false };
   }
@@ -825,7 +825,7 @@ function verifySavedResult(save: Record<string, unknown>, approved: ApprovedServ
   const readback = object(reconciliation?.readback);
   const details = Array.isArray(readback?.details) ? readback.details.map(object).filter(Boolean) : [];
   const nativeId = text(verified[0]?.nativeId);
-  const actual = normalizedItem(details.find((detail) => detail.nativeId === nativeId)?.fields);
+  const actual = normalizedItem(details.find((detail) => detail?.nativeId === nativeId)?.fields);
   const expected = normalizedItem(approved.approvalItem);
   return { ok: save.outcome === 'saved' && reconciliation?.outcome === 'verified' && verified.length === 1 &&
     Array.isArray(reconciliation.mismatches) && reconciliation.mismatches.length === 0 && readback?.outcome === 'ok' &&
@@ -864,7 +864,7 @@ export async function reservationWorkflowV2ReconcileServices(ctx: ReservationWor
   const planItem = normalizedItem(intent.approvedItem), reconciliation = object(result);
   const verified = Array.isArray(reconciliation?.verified) ? reconciliation.verified.map(object).filter(Boolean) : [];
   const readback = object(reconciliation?.readback), details = Array.isArray(readback?.details) ? readback.details.map(object).filter(Boolean) : [];
-  const nativeId = text(verified[0]?.nativeId), native = normalizedItem(details.find((detail) => detail.nativeId === nativeId)?.fields);
+  const nativeId = text(verified[0]?.nativeId), native = normalizedItem(details.find((detail) => detail?.nativeId === nativeId)?.fields);
   if (reconciliation?.outcome !== 'verified' || verified.length !== 1 || !nativeId || !native || !planItem ||
       canonicalJson(native) !== canonicalJson(planItem) || !Array.isArray(reconciliation.mismatches) || reconciliation.mismatches.length) {
     return { status: 'needs_reconcile', operationId: input.operationId, issue: 'service_positive_readback_not_proven', reconciliation: result };
