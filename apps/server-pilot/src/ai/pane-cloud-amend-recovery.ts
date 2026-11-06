@@ -7,14 +7,11 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
 import { workEvent, workItem } from '../db/schema/work.js';
-import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
-import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
+import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import { persistHmsShots, verifyStoredHmsShot } from './hms-shots-store.js';
 import { canonicalJson } from './draft-approval.js';
-import { hmsDispatchTargetKey, hmsDispatchTargetSchema } from './hms-dispatch-target.js';
+import { hmsDispatchTargetKey } from './hms-dispatch-target.js';
 import { hmsLabtestIntentTarget, type HmsLabtestIntent } from './hms-labtest-dispatch.js';
-import { paneStayCloudTargetLock } from './pane-stay-save.js';
-import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Observation } from './reservation-workflow-v2-contract.js';
 import { hasReservationWorkflowV2Draft, reservationWorkflowV2DraftOf,
   RESERVATION_WORKFLOW_V2_STATE_KEY } from './reservation-workflow-v2-state.js';
@@ -90,25 +87,9 @@ function checkedRecovery(intent: HmsLabtestIntent) {
   return { recovery: parsed.data, dispatchTarget: target };
 }
 
-/** Hold the same exact saved stay while reading and committing the positive recovery receipt. */
-export async function withAmendRecoveryLock<T>(intent: HmsLabtestIntent, action: () => Promise<T>): Promise<T> {
-  const { recovery, dispatchTarget } = checkedRecovery(intent);
-  const resolved = paneStayHmsTargetForTransport(intent.transportId);
-  const keys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
-  if (!resolved.ok || keys.some((key) => resolved.target[key] !== CENTURION_HMS_READ_TARGET[key])) {
-    throw new Error('amend_recovery_property_unavailable');
-  }
-  const parsedTarget = hmsDispatchTargetSchema.safeParse(dispatchTarget);
-  const normalizedTarget = parsedTarget.success ? parsedTarget.data : null;
-  const lock = normalizedTarget
-    ? paneStayCloudTargetLock(resolved.target, normalizedTarget, { kind: 'independent_cloud' }) : null;
-  if (!lock || !normalizedTarget || hmsDispatchTargetKey(dispatchTarget) !== hmsDispatchTargetKey(normalizedTarget) ||
-      !recovery.selected.confirmation || !recovery.selected.reservationStayId) {
-    throw new Error('amend_recovery_target_lock_unavailable');
-  }
-  return lock.withLock(() => recoveryLock.run({ holdId: intent.holdId,
-    targetKey: hmsDispatchTargetKey(dispatchTarget), target: resolved.target }, action),
-  acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+/** An advisory lock alone cannot prove the original writer and browser have stopped. */
+export async function withAmendRecoveryLock<T>(_intent: HmsLabtestIntent, _action: () => Promise<T>): Promise<T> {
+  throw new Error('amend_automatic_recovery_unavailable_operator_must_verify_writer_closed');
 }
 
 /** Re-read the approved native after-state in a fresh guarded session; never retries Save. */

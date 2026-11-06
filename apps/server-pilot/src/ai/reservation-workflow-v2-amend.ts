@@ -1006,9 +1006,10 @@ export async function reservationWorkflowV2AmendReconcile(ctx: ReservationWorkfl
     if (typeof recover !== 'function') return { status: 'needs_reconcile', operationId: input.operationId,
       dispatchHoldId: intent.holdId, issue: 'positive_amend_recovery_unavailable' };
     await (recover as (db: DB, holdId: string) => Promise<void>)(ctx.db, intent.holdId);
-  } catch {
+  } catch (error) {
     return { status: 'needs_reconcile', operationId: input.operationId, dispatchHoldId: intent.holdId,
-      issue: 'fresh_amend_readback_not_positive' };
+      issue: error instanceof Error && error.message === 'amend_automatic_recovery_unavailable_operator_must_verify_writer_closed'
+        ? error.message : 'fresh_amend_readback_not_positive' };
   }
   const resolved = await getReservationWorkflowV2Draft(stateContext(ctx), input);
   if (resolved.status !== 'ok') return resolved;
