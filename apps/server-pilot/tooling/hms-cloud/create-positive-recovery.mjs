@@ -51,7 +51,7 @@ export async function provePositiveCreateRecovery(intent, { census = censusDefau
         !CREATE_GUARANTEES[request.guaranteeType] ||
         (request.sendHmsConfirmation.kind === 'send' && (isLabtestGuest(guest) ||
           !request.cmsMessageId || request.cmsRecipient !== request.sendHmsConfirmation.recipient)) ||
-        typeof request.note !== 'string' ||
+        (request.note !== undefined && typeof request.note !== 'string') ||
         recovery.guaranteeDisplay !== CREATE_GUARANTEES[request.guaranteeType] ||
         (request.parties?.arAccount && !/^\d+$/.test(String(recovery.arAccountProfileId ?? ''))) ||
         (request.billingReference !== undefined && !request.parties?.arAccount)) return blocked('intent_unverified');
