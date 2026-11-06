@@ -291,7 +291,7 @@ export const reservationWorkflowV2ObservationSchema = z.object({
   observedAt: z.string().datetime({ offset: true }),
   propertyCode: z.string().min(1).max(80),
   sourceMessageId: z.string().max(500).nullable(),
-  sourceRefs: z.array(refSchema).max(100),
+  sourceRefs: z.array(refSchema).max(500),
   criteria: z.record(z.unknown()),
   coverage: z.object({ complete: z.boolean(), notes: z.array(z.string().max(500)).max(50) }).strict(),
   result: z.record(z.unknown()),
