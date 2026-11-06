@@ -1021,7 +1021,9 @@ export async function runReservationWorkflowV2Prefill(input: {
       maxImages: EXTRACTION_MAX_IMAGES, maxPdfPages: EXTRACTION_MAX_PDF_PAGES },
     complete: !vision.attachmentReads.some((row) => row.status !== 'read'),
   })];
-  const base = { generationId, extraction: empty, sourceBound: true, observations,
+  const base: Pick<ReservationWorkflowV2PrefillResult,
+    'generationId' | 'extraction' | 'sourceBound' | 'observations' | 'fieldReviewRequirements' | 'errors'> = {
+    generationId, extraction: empty, sourceBound: true, observations,
     fieldReviewRequirements: {} as ReservationWorkflowV2Draft['fieldReviewRequirements'], errors: [] as ReservationWorkflowV2Draft['errors'] };
   const fallback = (reason: string, error = { stage: 'extract' as const, code: 'extract_unavailable', message: reason }): ReservationWorkflowV2PrefillResult => ({
     ...base, status: 'partial', sourceBound: true,

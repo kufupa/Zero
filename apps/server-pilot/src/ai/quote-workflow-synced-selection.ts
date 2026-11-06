@@ -843,6 +843,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     threadId: row.threadId,
     fromAddress: row.fromAddress,
     participants: [...new Set([row.fromAddress, ...(row.toAddresses ?? []), ...(row.ccAddresses ?? [])]
+      .filter((address): address is string => typeof address === 'string')
       .map((address) => address.trim().toLowerCase()).filter(Boolean))],
     threadConfirmation: !input.sourceCutoffOnly && siblingRows.length
       ? resolveThreadConfirmationEvidence(await readQuoteAttachments(siblingRows, reader))
