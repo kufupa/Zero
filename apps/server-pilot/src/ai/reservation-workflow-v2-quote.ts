@@ -320,7 +320,7 @@ function compileQuote(
     return value;
   };
 
-  const provisional = resolvedLeaf(draft, path('provisionalBookingRequested'), request.body.provisionalBookingRequested);
+  const provisional = resolved(path('provisionalBookingRequested'), request.body.provisionalBookingRequested);
   if ('issue' in provisional || provisional.value !== false) {
     issues.push(`${path('provisionalBookingRequested')}:${!('issue' in provisional) && provisional.value === true
       ? 'separate_create_required' : 'quote_only_choice_required'}`);
