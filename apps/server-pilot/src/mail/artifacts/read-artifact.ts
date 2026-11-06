@@ -186,9 +186,10 @@ function sealedBytesMatch(locator: AttachmentLocator, body: Buffer): boolean {
  * %PDF- magic is checked when the bytes are parsed.
  */
 function storedPdfTypes(locator: Pick<AttachmentLocator, 'mimeType' | 's3Key'>): string[] {
-  if (locator.mimeType === 'application/pdf') return ['application/pdf'];
-  if (locator.mimeType === 'application/octet-stream' && /\.pdf$/i.test(locator.s3Key)) {
-    return ['application/octet-stream', 'application/pdf'];
+  const declared = locator.mimeType.split(';', 1)[0]?.trim().toLowerCase();
+  if (declared === 'application/pdf' || declared === 'application/x-pdf') return ['application/pdf', 'application/x-pdf'];
+  if (declared === 'application/octet-stream' && /\.pdf$/i.test(locator.s3Key)) {
+    return ['application/octet-stream', 'application/pdf', 'application/x-pdf'];
   }
   return [];
 }
@@ -196,7 +197,7 @@ function storedPdfTypes(locator: Pick<AttachmentLocator, 'mimeType' | 's3Key'>):
 /** The stored content type is one this row may hold: its declared type, or the PDF types of a PDF row. */
 function storedTypeOk(locator: Pick<AttachmentLocator, 'mimeType' | 's3Key'>, stored: string): boolean {
   const pdfTypes = storedPdfTypes(locator);
-  return pdfTypes.length > 0 ? pdfTypes.includes(stored) : stored === locator.mimeType;
+  return pdfTypes.length > 0 ? pdfTypes.includes(stored.split(';', 1)[0]?.trim().toLowerCase() ?? '') : stored === locator.mimeType;
 }
 
 /** Image bytes by magic: PNG, JPEG, GIF or WebP. Logos and signature images are skipped, not reported. */
