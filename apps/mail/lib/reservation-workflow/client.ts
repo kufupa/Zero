@@ -271,7 +271,21 @@ function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot
     path.startsWith(`${pointer('proposal', 'content', 'requests', request.id)}/`));
   const runtimeDraft = draft as unknown as { operationResults?: unknown; errors?: Array<{ stage: string; code: string; message: string }> };
   const operationResults = Array.isArray(runtimeDraft.operationResults)
-    ? runtimeDraft.operationResults.filter(isRecord) : [];
+    ? runtimeDraft.operationResults.filter(isRecord).map((result) => {
+      const refs = Array.isArray(result.observationRefs) ? result.observationRefs.filter(isString) : [];
+      const linked = refs.flatMap((ref) => {
+        const observation = draft.observations.find((entry) => entry.ref === ref);
+        const criteria = isRecord(observation?.criteria) ? observation.criteria : null;
+        const observedResult = isRecord(observation?.result) ? observation.result : null;
+        if (!observation || !criteria || !observedResult || observation.generationId !== result.generationId
+            || criteria.workflow !== result.workflow || criteria.requestId !== result.requestId
+            || result.allocationId !== null && criteria.allocationId !== result.allocationId
+            || !isString(observedResult.confirmation)) return [];
+        return [{ ref, confirmation: observedResult.confirmation }];
+      });
+      const receipt = linked.at(-1);
+      return { ...result, ...(receipt ? { confirmation: receipt.confirmation, confirmationObservationRef: receipt.ref } : {}) };
+    }) : [];
   const createRequests = draft.proposal.content.requests.filter((request) => request.kind === 'create');
   const allocations = createRequests.flatMap((request) => {
     const path = pointer('proposal', 'content', 'requests', request.id, 'body', 'allocations');
