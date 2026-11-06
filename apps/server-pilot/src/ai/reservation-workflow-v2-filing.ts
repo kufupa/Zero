@@ -109,6 +109,21 @@ function exactPdfName(value: string): boolean {
     !/[\\/\p{Cc}]/u.test(value);
 }
 
+const filingHintSchema = z.object({ id: z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/),
+  confirmation: z.string().max(200).optional(), guestName: z.string().max(300).optional(),
+  bookedArrival: z.string().max(40).optional(), bookedDeparture: z.string().max(40).optional(),
+  candidateRefs: z.array(z.string().min(1).max(160)).max(100), suggestedRef: z.string().min(1).max(160).nullable(),
+  sourceRefs: z.array(z.string().min(1).max(160)).max(100) }).strict();
+const filingTargetsSchema = z.object({ mode: z.enum(['explicit', 'scoped_all', 'unresolved']),
+  include: z.array(filingHintSchema).max(100), exclude: z.array(filingHintSchema).max(100),
+  sourceRefs: z.array(z.string().min(1).max(160)).max(100) }).strict();
+
+function filingTargets(draft: ReservationWorkflowV2Draft, request: FilingRequest) {
+  const path = ptr('proposal', 'content', 'requests', request.id, 'body', 'targets');
+  const parsed = filingTargetsSchema.safeParse(effectiveValue(draft, path, request.body.targets));
+  return parsed.success ? parsed.data : null;
+}
+
 async function attachmentForDocument(ctx: ReservationWorkflowV2FilingContext, draft: ReservationWorkflowV2Draft,
   document: FilingDocument): Promise<{ attachmentId: string; filename: string; mimeType: string } | null> {
   const rows = await ctx.db.select({ id: attachment.id, filename: attachment.filename, mimeType: attachment.mimeType,
@@ -133,14 +148,16 @@ function filingRequestAndDocument(draft: ReservationWorkflowV2Draft, requestId: 
   const requestIndex = draft.proposal.content.requests.findIndex((entry) => entry.id === requestId && entry.kind === 'filing');
   const request = draft.proposal.content.requests[requestIndex];
   if (!request || request.kind !== 'filing') return null;
+  const refs = effectiveValue(draft, ptr('proposal', 'content', 'requests', request.id, 'documentRefs'), request.documentRefs);
+  if (!Array.isArray(refs) || !refs.every((ref) => typeof ref === 'string')) return null;
   const docs = draft.proposal.content.documents.flatMap((document, documentIndex) =>
-    document.ownerRequestId === request.id && request.documentRefs.includes(document.id) ? [{ document, documentIndex }] : []);
+    document.ownerRequestId === request.id && refs.includes(document.id) ? [{ document, documentIndex }] : []);
   if (docs.length !== 1) return null; // This first slice binds one selected PDF to one stay.
   return { request, requestIndex, document: docs[0]!.document, documentIndex: docs[0]!.documentIndex };
 }
 
 function findTargetHint(draft: ReservationWorkflowV2Draft, request: FilingRequest, document: FilingDocument) {
-  const scope = request.body.targets;
+  const scope = filingTargets(draft, request);
   if (!scope || scope.mode !== 'explicit' || scope.include.length !== 1 || scope.exclude.length) return null;
   const hint = scope.include[0]!;
   if (!document.targetRefs.some((target) => target.kind === 'saved_target' && target.requestId === request.id && target.hintId === hint.id)) return null;
@@ -343,7 +360,7 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReservationWorkflow
     if (!pair) { lookups.push({ status: 'needs_input', requestId: request.id, issue: 'select_one_document' }); continue; }
     const file = await attachmentForDocument(ctx, loaded.draft, pair.document);
     if (!file) { lookups.push({ status: 'needs_input', requestId: request.id, issue: 'source_pdf_not_admitted' }); continue; }
-    const scope = request.body.targets;
+    const scope = filingTargets(loaded.draft, request);
     const hints = scope && scope.mode === 'explicit' ? scope.include : [];
     if (hints.length !== 1) { lookups.push({ status: 'needs_input', requestId: request.id, issue: 'select_one_saved_stay' }); continue; }
     const hint = hints[0]!;
@@ -477,12 +494,15 @@ function getPrepared(draft: ReservationWorkflowV2Draft, requestId: string, docum
 function recoveryMatchesDraft(draft: ReservationWorkflowV2Draft, recovery: V2FilingRecovery): boolean {
   const prepare = draft.observations.find((entry) => entry.ref === recovery.prepareObservationRef);
   const target = draft.observations.find((entry) => entry.ref === recovery.targetObservationRef);
-  const pair = filingRequestAndDocument(draft, recovery.requestId);
+  // Editable selection may have been undone after dispatch; recovery remains tied to
+  // the original host document and sealed preparation, never the current selection.
+  const request = draft.proposal.content.requests.find((entry) => entry.id === recovery.requestId && entry.kind === 'filing');
+  const document = draft.proposal.content.documents.find((entry) => entry.id === recovery.documentId && entry.ownerRequestId === recovery.requestId);
   const preparedResult = record(prepare?.result), preparedTarget = record(preparedResult?.target);
   const stay = record(record(target?.result)?.stay);
-  if (!prepare || !target || !pair || !preparedResult || !preparedTarget || !stay) return false;
+  if (!prepare || !target || !request || !document || !preparedResult || !preparedTarget || !stay) return false;
   return draft.generationId === prepare.generationId && draft.propertyCode === 'HRCEN' &&
-    pair.document.id === recovery.documentId && pair.document.documentSourceRef === recovery.documentSourceRef &&
+    document.documentSourceRef === recovery.documentSourceRef &&
     target?.kind === 'stay_candidate' && target.status === 'complete' && target.coverage.complete &&
     target.propertyCode === 'HRCEN' && target.criteria.workflow === 'filing' &&
     target.criteria.requestId === recovery.requestId &&

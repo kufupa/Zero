@@ -1,8 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { MAIL_KINDS, workEvent, workItem } from '../db/schema/work.js';
-import { mailboxAccess, mailThread, message } from '../db/schema/mail.js';
+import { attachment, mailboxAccess, mailThread, message } from '../db/schema/mail.js';
 import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
@@ -251,9 +251,17 @@ function editablePath(draft: ReservationWorkflowV2Draft, path: string): boolean 
   if (!parts || parts.length < 5) return false;
   const documentKind = parts[2] === 'documents' && parts.length === 5 && parts[4] === 'kind';
   const request = draft.proposal.content.requests.find((entry) => entry.id === parts[3]);
+  const targetPath = `/proposal/content/requests/${encodeURIComponent(parts[3] ?? '')}/body/targets`;
+  const targetOverride = draft.fieldOverrides[targetPath];
+  const rawTargets = targetOverride?.state === 'set' ? targetOverride.value
+    : targetOverride && targetOverride.state !== 'inherit' ? null : request?.kind === 'filing' ? request.body.targets : null;
+  const targets = rawTargets && typeof rawTargets === 'object' && !Array.isArray(rawTargets)
+    ? rawTargets as { mode?: unknown; include?: unknown } : null;
   const targetSelection = request?.kind === 'filing' && parts.length === 9 && parts[4] === 'body'
     && parts[5] === 'targets' && parts[6] === 'include' && parts[8] === 'suggestedRef'
-    && request.body.targets?.mode === 'explicit' && request.body.targets.include.some((hint) => hint.id === parts[7]);
+    && targets?.mode === 'explicit' && Array.isArray(targets.include)
+    && targets.include.some((hint: unknown) => Boolean(hint && typeof hint === 'object' && !Array.isArray(hint)
+      && (hint as { id?: unknown }).id === parts[7]));
   if (parts.some((part, index) => NEVER_EDIT.has(part) && !(index === parts.length - 1 &&
       ((part === 'kind' && documentKind) || (part === 'suggestedRef' && targetSelection))))) return false;
   const [, section, collection, stableId, branch] = parts;
@@ -324,6 +332,75 @@ export async function editReservationWorkflowV2Draft(ctx: Context, input: Mutati
   const override = validateOverride(input.value);
   if (!override) return { status: 'invalid_value' };
   return mutateDraft(ctx, { ...input, override, eventType: 'field.edit', value: override });
+}
+
+/** Bind one staff-selected source attachment and an exact confirmation without a native write. */
+export async function configureReservationWorkflowV2Filing(ctx: Context, input: MutationInput & {
+  requestId: string; attachmentId: string; confirmation: string; kind: 'voucher' | 'payment_proof';
+}): Promise<ReservationWorkflowV2StateResult> {
+  if (!propertyMatches(ctx)) return { status: 'wrong_property' };
+  if (!ctx.userId || !/^\d+-\d+$/.test(input.confirmation) || !input.attachmentId) return { status: 'invalid_value' };
+  return ctx.db.transaction(async (tx) => {
+    const item = await loadItem(tx, ctx, input.workItemId, true);
+    if (!item) return { status: 'not_found' as const };
+    if (item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq) return { status: 'stale_revision' as const };
+    const current = await buildResult(tx, ctx, item, input.source);
+    if (current.status !== 'ok') return current;
+    const draft = current.draft;
+    const request = draft.proposal.content.requests.find((entry) => entry.id === input.requestId && entry.kind === 'filing');
+    if (!request || request.kind !== 'filing') return { status: 'not_found' as const };
+    const [file] = await tx.select({ id: attachment.id, filename: attachment.filename, mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes, isInline: attachment.isInline }).from(attachment).where(and(
+      eq(attachment.id, input.attachmentId), eq(attachment.messageId, input.source.messageId))).limit(1);
+    if (!file || file.isInline || file.sizeBytes > 10 * 1024 * 1024 ||
+        (!/\.pdf$/i.test(file.filename) && file.mimeType.toLowerCase() !== 'application/pdf')) return { status: 'invalid_value' as const };
+    const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+    const targetId = `staff_target_${hash(`${request.id}\u001f${input.confirmation}`).slice(0, 20)}`;
+    const documentId = `staff_document_${hash(`${request.id}\u001f${file.id}\u001f${input.confirmation}`).slice(0, 20)}`;
+    const documentSourceRef = `src_${hash(`${input.source.messageId}\u001fattachment_text\u001f${file.id}`).slice(0, 12)}`;
+    const document = { id: documentId, ownerRequestId: request.id, documentSourceRef, kind: input.kind,
+      handling: 'filing_requested' as const,
+      targetRefs: [{ kind: 'saved_target' as const, requestId: request.id, hintId: targetId }],
+      requestedName: null, requestedDescription: null, uploadArtifactRef: null, sourceRefs: [] };
+    const existing = draft.proposal.content.documents.find((row) => row.id === documentId);
+    if (existing && (existing.ownerRequestId !== request.id || existing.documentSourceRef !== documentSourceRef ||
+        !existing.targetRefs.some((ref) => ref.kind === 'saved_target' && ref.requestId === request.id && ref.hintId === targetId))) {
+      return { status: 'invalid_value' as const };
+    }
+    if (!existing && draft.proposal.content.documents.length >= 200) return { status: 'invalid_value' as const };
+    const root = `/proposal/content/requests/${encodeURIComponent(request.id)}`;
+    const docsPath = `${root}/documentRefs`, targetsPath = `${root}/body/targets`;
+    const docRoot = `/proposal/content/documents/${encodeURIComponent(documentId)}`;
+    const now = new Date().toISOString();
+    const overrides = { ...draft.fieldOverrides }, reviews = { ...draft.staffReviews };
+    // Configuration replaces the whole target selection; no old candidate or review may authorize it.
+    for (const path of Object.keys(overrides)) if (path === targetsPath || path.startsWith(`${targetsPath}/`)) delete overrides[path];
+    for (const path of Object.keys(reviews)) if (path === targetsPath || path.startsWith(`${targetsPath}/`)) delete reviews[path];
+    overrides[docsPath] = { state: 'set', value: [documentId], updatedAt: now };
+    overrides[targetsPath] = { state: 'set', value: { mode: 'explicit', include: [{ id: targetId,
+      confirmation: input.confirmation, candidateRefs: [], suggestedRef: null, sourceRefs: [] }], exclude: [], sourceRefs: [] }, updatedAt: now };
+    for (const [field, value] of [['documentSourceRef', documentSourceRef], ['kind', input.kind],
+      ['handling', 'filing_requested']] as const) {
+      const path = `${docRoot}/${field}`;
+      overrides[path] = { state: 'set', value, updatedAt: now };
+      reviews[path] = { status: 'accepted', note: 'Selected by staff', at: now };
+    }
+    const next = reservationWorkflowV2DraftSchema.parse({ ...draft, revision: item.revision + 1,
+      proposal: { ...draft.proposal, content: { ...draft.proposal.content,
+        documents: existing ? draft.proposal.content.documents : [...draft.proposal.content.documents, document] } },
+      fieldOverrides: overrides, staffReviews: reviews });
+    const nextState = { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next };
+    const advanced = advancePaneRevision({ revision: item.revision, revisionHead: item.revisionHead,
+      seq: item.revisionSeq, previousState: item.state, nextState, extractionId: item.extractionId });
+    await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'user', actorUserId: ctx.userId,
+      type: 'field.edit', fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:${root}/filingSelection`,
+      value: { requestId: request.id, attachmentId: file.id, confirmation: input.confirmation, kind: input.kind },
+      evidence: advanced.evidence });
+    await tx.update(workItem).set({ state: nextState, revision: advanced.revision, revisionHead: advanced.revisionHead,
+      revisionSeq: item.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, item.id));
+    return { status: 'ok' as const, draft: next, revision: advanced.revision,
+      revisionHead: advanced.revisionHead, seq: item.revisionSeq + 1 };
+  });
 }
 
 export async function reviewReservationWorkflowV2Draft(ctx: Context, input: MutationInput & {

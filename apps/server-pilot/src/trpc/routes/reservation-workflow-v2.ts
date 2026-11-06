@@ -23,6 +23,7 @@ import {
   editReservationWorkflowV2Draft,
   reviewReservationWorkflowV2Draft,
   moveReservationWorkflowV2History,
+  configureReservationWorkflowV2Filing,
 } from '../../ai/reservation-workflow-v2-state.js';
 import { ensureReservationWorkflowV2Prefill } from '../../ai/reservation-workflow-v2-prefill.js';
 import { createAzureExtractionAdapter } from '../../ai/extraction/extract.js';
@@ -110,6 +111,12 @@ async function nativeWorkflow(
   return kind ? { kind, result: null } : { kind: null, result: { status: 'not_found' as const } };
 }
 
+const configureFilingInput = reservationWorkflowV2ItemInputSchema.extend({
+  requestId: z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/),
+  attachmentId: z.string().min(1).max(500), confirmation: z.string().trim().regex(/^\d+-\d+$/).max(200),
+  kind: z.enum(['voucher', 'payment_proof']),
+}).strict();
+
 const servicesInput = reservationWorkflowV2PrepareInputSchema.extend({
   allocationId: z.string().min(1).max(80), serviceId: z.string().min(1).max(80).optional(),
 }).strict();
@@ -189,6 +196,12 @@ export const reservationWorkflowV2Router = router({
   redo: mailboxProcedure.input(reservationWorkflowV2ItemInputSchema).mutation(({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
     return withPreparation(moveReservationWorkflowV2History(scoped, { ...input, direction: 'redo' }), scoped.propertyCode);
+  }),
+  configureFiling: mailboxProcedure.input(configureFilingInput).mutation(async ({ input, ctx }) => {
+    const native = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
+    const scoped = { db: native.db, transportId: native.transport.id, userId: native.user.id,
+      propertyCode: native.property.propertyCode };
+    return withPreparation(configureReservationWorkflowV2Filing(scoped, input), scoped.propertyCode);
   }),
   lookup: mailboxProcedure.input(reservationWorkflowV2LookupInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
