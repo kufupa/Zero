@@ -497,7 +497,7 @@ export async function reservationWorkflowV2CancelLookup(ctx: ReservationWorkflow
         { outcome: complete ? 'found' : 'needs_review', ...(reason ? { issue: reason } : {}),
           ...(preimage ? { preimage, target: expectedTargetIdentity(preimage) } : {}),
           ...(preflightFacts ? { preflight: { outcome: 'prepared_for_human_review', ...preflightFacts },
-            preflightObservedAt: preflight.observedAt } : {}),
+            preflightObservedAt: preflight.outcome === 'ok' ? preflight.observedAt : null } : {}),
           sourceRefs: uniqueRefs([request.sourceRefs, targets.sourceRefs, hint.sourceRefs, hint.candidateRefs, hint.suggestedRef]) },
         complete ? [] : [reason ?? 'cancel_lookup_incomplete']);
       item.sourceRefs = uniqueRefs([request.sourceRefs, targets.sourceRefs, hint.sourceRefs, hint.candidateRefs, hint.suggestedRef]);
@@ -700,42 +700,28 @@ async function persistCancelResolution(tx: Tx, ctx: ReservationWorkflowV2CancelC
 
 async function persistCancelNotDispatched(tx: Tx, ctx: ReservationWorkflowV2CancelContext,
   input: ReservationWorkflowV2ExecuteInput, compiled: Extract<CancelCompile, { outcome: 'ok' }>,
-  result: ReservationWorkflowV2Observation, summary: string, actorSession: CancelActorSession): Promise<void> {
-  const [item] = await tx.select({ state: workItem.state, revision: workItem.revision, revisionSeq: workItem.revisionSeq,
-    sourceMessageId: workItem.sourceMessageId, threadId: workItem.threadId })
+  result: ReservationWorkflowV2Observation, summary: string): Promise<void> {
+  const [item] = await tx.select({ state: workItem.state })
     .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id)))
     .limit(1).for('update');
   const draft = item && reservationWorkflowV2DraftOf(item.state as Record<string, unknown>);
   const operation = draft && operationById(draft, input.idempotencyKey);
-  if (!item || !draft || !operation || item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq ||
-      item.sourceMessageId !== input.source.messageId || item.threadId !== input.source.threadId ||
+  if (!item || !draft || !operation || draft.workItemId !== input.workItemId ||
+      draft.source.messageId !== input.source.messageId || draft.source.threadId !== input.source.threadId ||
       draft.source.sourceHash !== input.source.sourceHash || draft.source.arrivedAt !== input.source.arrivedAt ||
       draft.transportId !== ctx.transport.id || draft.propertyCode !== 'HRCEN' ||
       operation.status !== 'unknown' || operation.requestId !== compiled.requestId ||
-      operation.allocationId !== compiled.hintId || result.generationId !== draft.generationId ||
-      result.sourceMessageId !== draft.source.messageId ||
-      result.sourceRefs.some((ref) => !draft.observations.some((entry) => entry.ref === ref))) {
+      operation.allocationId !== compiled.hintId || operation.draftRevision !== input.expectedRevision ||
+      operation.generationId !== draft.generationId || result.generationId !== draft.generationId ||
+      result.sourceMessageId !== draft.source.messageId) {
     throw new Error('reservation_workflow_v2_cancel_no_dispatch_changed');
   }
-  const [source] = await tx.select({ id: message.id, threadId: message.threadId, direction: message.direction,
-    historyOnly: message.historyOnly, sourceProvenance: message.sourceProvenance, subject: message.subject,
-    textBody: message.textBody, htmlBody: message.htmlBody, arrivedAt: MESSAGE_ARRIVED_AT })
-    .from(message).innerJoin(mailThread, and(eq(mailThread.id, message.threadId), eq(mailThread.transportId, message.transportId)))
-    .where(and(eq(message.id, input.source.messageId), eq(message.threadId, input.source.threadId),
-      eq(message.transportId, ctx.transport.id), eq(message.direction, 'inbound'), eq(message.historyOnly, false),
-      eq(mailThread.historyOnly, false), isNull(mailThread.trashedAt), isNull(mailThread.spamAt))).limit(1).for('share');
-  const [access] = await tx.select({ id: mailboxAccess.id }).from(mailboxAccess)
-    .where(and(eq(mailboxAccess.userId, ctx.user.id), eq(mailboxAccess.transportId, ctx.transport.id))).limit(1).for('share');
-  if (!source || !access || source.sourceProvenance?.attention != null ||
-      staffQuoteSourceHash(source) !== input.source.sourceHash || !(source.arrivedAt instanceof Date) ||
-      source.arrivedAt.toISOString() !== input.source.arrivedAt) throw new Error('reservation_workflow_v2_cancel_source_changed');
-  await lockCreateActorSession(tx, { actorUserId: ctx.user.id, ...actorSession });
-  const failed = { id: operation.id, generationId: draft.generationId, requestId: compiled.requestId,
-    allocationId: compiled.hintId, workflow: 'cancel' as const, status: 'failed' as const,
-    draftRevision: input.expectedRevision, observationRefs: [result.ref], updatedAt: new Date().toISOString(),
+  const failure = { ...result, sourceRefs: result.sourceRefs.filter((ref) => draft.observations.some((entry) => entry.ref === ref)) };
+  const failed = { ...operation, status: 'failed' as const,
+    observationRefs: [failure.ref], updatedAt: new Date().toISOString(),
     summary: summary.slice(0, 2000) };
   const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft,
-    observations: [...draft.observations, result],
+    observations: [...draft.observations, failure],
     operationResults: [...draft.operationResults.filter((entry) => entry.id !== failed.id), failed] });
   await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>),
     [RESERVATION_WORKFLOW_V2_STATE_KEY]: nextDraft }, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
@@ -984,6 +970,7 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
       } catch {
         native = native ?? { outcome: 'execution_failure', issue: claimError ?? 'cancel_native_runner_failed', requestDispatched: false };
       }
+      const activeHandle = handle as HmsLabtestWriteHandle | null;
       try {
       const readback = z.object({ confirmation: z.string(), nativeStayId: z.string().regex(/^\d{1,100}$/),
         nativeGuestId: z.string().regex(/^\d{1,30}$/), status: z.string().regex(/^cancel(?:l)?ed$/i),
@@ -996,13 +983,13 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
         acceptedPenaltyText === fresh.penaltyText && native.chargeApproved === true && native.chargeDispatched === false;
       const noNewFinancialState = native.penaltyText === fresh.penaltyText && native.zeroPenaltyNotice == null &&
         financialStateMatches && native.outcome !== 'cancel_penalty_pending';
-      const completed = Boolean(handle && native.outcome === 'cancelled' && native.requestDispatched === true &&
+      const completed = Boolean(activeHandle && native.outcome === 'cancelled' && native.requestDispatched === true &&
         native.writerSessionClosed === true && native.dispatchCallbacksDrained === true && exactReadback && noNewFinancialState);
-      if (!completed || !handle) {
+      if (!completed || !activeHandle) {
         const nativePenaltyObserved = Object.prototype.hasOwnProperty.call(native, 'penaltyText') &&
           (native.penaltyText === null || (typeof native.penaltyText === 'string' && native.penaltyText.length <= 2000 &&
             native.penaltyText === native.penaltyText.trim() && !/[\p{Cc}]/u.test(native.penaltyText)));
-        if (!handle && !claimError && native.requestDispatched === false && native.writerSessionClosed === true &&
+        if (!activeHandle && !claimError && native.requestDispatched === false && native.writerSessionClosed === true &&
             native.dispatchCallbacksDrained === true && nativePenaltyObserved && native.penaltyText !== fresh.penaltyText) {
           const changedFresh = { ...fresh, penaltyText: native.penaltyText as string | null };
           const changedApproval = approvalDigest(compiled, changedFresh);
@@ -1017,18 +1004,18 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
             preflight: fresh.preflight, penaltyText: changedFresh.penaltyText,
             feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit', financialReview };
         }
-        if (handle && native.neverDispatchedProof && native.requestDispatched === false &&
+        if (activeHandle && native.neverDispatchedProof && native.requestDispatched === false &&
             native.writerSessionClosed === true && native.dispatchCallbacksDrained === true &&
             native.chargeApproved !== true && native.zeroPenaltyNotice == null && acceptedPenaltyText === null) {
           const notDispatched = observation(loaded.draft, input, compiled.requestId, compiled.hintId, 'execute', 'failed',
             { semanticDigest: compiled.semanticDigest, approvedDigest: approval, prepareObservationRef: prepared.item.ref,
-              dispatchHoldId: handle.holdId, claimRequestDigest, requestDigest: claimRequestDigest,
+              dispatchHoldId: activeHandle.holdId, claimRequestDigest, requestDigest: claimRequestDigest,
               target: expectedTargetIdentity(fresh.preimage) },
             { outcome: 'not_dispatched', issue: native.issue ?? 'cancel_native_request_not_continued', requestDispatched: false,
-              dispatchHoldId: handle.holdId, claimRequestDigest, requestDigest: claimRequestDigest, runId,
+              dispatchHoldId: activeHandle.holdId, claimRequestDigest, requestDigest: claimRequestDigest, runId,
               sourceRefs: compiled.sourceRefs }, ['closed_cancel_session_proved_request_never_dispatched']);
           try {
-            await resolveNeverDispatchedCancel(ctx.db, handle, native.neverDispatchedProof, async (tx, intent) => {
+            await resolveNeverDispatchedCancel(ctx.db, activeHandle, native.neverDispatchedProof, async (tx, intent) => {
               const recovery = record(intent.recovery), intentTarget = hmsDispatchTargetSchema.safeParse(intent.target);
               if (intent.transportId !== ctx.transport.id || intent.workItemId !== input.workItemId ||
                   intent.actorUserId !== ctx.user.id || intent.grantId !== input.idempotencyKey ||
@@ -1049,17 +1036,17 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
                 throw new Error('reservation_workflow_v2_cancel_no_dispatch_scope_changed');
               }
               await persistCancelNotDispatched(tx, ctx, input, compiled, notDispatched,
-                'Native cancellation session proved the request was never dispatched', actorSession.data);
+                'Native cancellation session proved the request was never dispatched');
             });
             return { status: 'failed', operationId: input.idempotencyKey, issue: 'cancel_native_not_dispatched' };
           } catch {
-            return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: handle.holdId,
+            return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: activeHandle.holdId,
               issue: 'cancel_no_dispatch_release_unconfirmed' };
           }
         }
-        if (!handle && claimError) return { status: 'needs_reconcile', operationId: input.idempotencyKey,
+        if (!activeHandle && claimError) return { status: 'needs_reconcile', operationId: input.idempotencyKey,
           issue: 'cancel_dispatch_claim_outcome_unknown' };
-        if (!handle && native.neverDispatchedProof && native.requestDispatched === false &&
+        if (!activeHandle && native.neverDispatchedProof && native.requestDispatched === false &&
             native.writerSessionClosed === true && native.dispatchCallbacksDrained === true &&
             native.chargeApproved !== true && native.zeroPenaltyNotice == null && acceptedPenaltyText === null &&
             await consumeNeverDispatchedCancelProof(native.neverDispatchedProof, { runId, target: expectedTarget,
@@ -1074,21 +1061,21 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
           return saved.status === 'ok' ? { status: 'failed', operationId: input.idempotencyKey,
             issue: 'cancel_native_not_dispatched' } : saved;
         }
-        if (!handle) return { status: 'needs_reconcile', operationId: input.idempotencyKey,
+        if (!activeHandle) return { status: 'needs_reconcile', operationId: input.idempotencyKey,
           issue: 'cancel_no_dispatch_unverified' };
-        const issue = handle ? (native.zeroPenaltyNotice != null || !financialStateMatches || !noNewFinancialState
+        const issue = activeHandle ? (native.zeroPenaltyNotice != null || !financialStateMatches || !noNewFinancialState
           ? 'cancel_financial_state_unverified' : 'cancel_native_outcome_unconfirmed') : claimError ?? native.issue ?? native.outcome;
         const uncertain = observation(loaded.draft, input, compiled.requestId, compiled.hintId, 'execute',
           'partial', { semanticDigest: compiled.semanticDigest, approvedDigest: approval,
-            prepareObservationRef: prepared.item.ref, dispatchHoldId: handle.holdId },
+            prepareObservationRef: prepared.item.ref, dispatchHoldId: activeHandle.holdId },
           { outcome: native.outcome ?? 'unknown', issue, requestDispatched: native.requestDispatched ?? false,
             nativeReadback: native.nativeReadback ?? null, penaltyText: native.penaltyText ?? null,
-            zeroPenaltyNotice: native.zeroPenaltyNotice ?? null, dispatchHoldId: handle.holdId,
+            zeroPenaltyNotice: native.zeroPenaltyNotice ?? null, dispatchHoldId: activeHandle.holdId,
             claimRequestDigest, requestDigest: nativeRequestDigest, sourceRefs: compiled.sourceRefs },
           ['durable_cancel_hold_requires_reconciliation']);
         const saved = await recordOperation(ctx, input, compiled.requestId, compiled.hintId, uncertain,
           'unknown', 'Native cancel may have dispatched; do not retry before reconciliation', input.idempotencyKey);
-        return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: handle.holdId,
+        return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: activeHandle.holdId,
           issue: saved.status === 'ok' ? issue : 'cancel_unknown_receipt_unavailable' };
       }
       const afterPath = screenshotPath(native, 'after.png');
@@ -1097,24 +1084,24 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
         { path: afterPath!, sourceDir: runDir }) : null;
       if (!savedShot || !readback.success) {
         const unresolved = observation(loaded.draft, input, compiled.requestId, compiled.hintId, 'execute', 'partial',
-          { semanticDigest: compiled.semanticDigest, approvedDigest: approval, dispatchHoldId: handle.holdId },
+          { semanticDigest: compiled.semanticDigest, approvedDigest: approval, dispatchHoldId: activeHandle.holdId },
           { outcome: 'cancelled', issue: 'cancel_readback_evidence_unavailable', nativeReadback: native.nativeReadback ?? null },
           ['positive_cancel_readback_evidence_missing']);
         await recordOperation(ctx, input, compiled.requestId, compiled.hintId, unresolved, 'unknown',
           'HMS reported a possible cancellation but durable readback evidence is missing', input.idempotencyKey);
-        return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: handle.holdId,
+        return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: activeHandle.holdId,
           issue: 'cancel_readback_evidence_unavailable' };
       }
       const success = observation(loaded.draft, input, compiled.requestId, compiled.hintId, 'execute', 'complete',
         { semanticDigest: compiled.semanticDigest, approvedDigest: approval, prepareObservationRef: prepared.item.ref,
-          dispatchHoldId: handle.holdId, target: expectedTargetIdentity(fresh.preimage), baselineDigest: sha256(fresh.preimage),
+          dispatchHoldId: activeHandle.holdId, target: expectedTargetIdentity(fresh.preimage), baselineDigest: sha256(fresh.preimage),
           financialDigest: sha256({ preflight: stablePreflight(fresh.preflight), penaltyText: fresh.penaltyText }) },
         { outcome: 'cancelled', sourceRefs: compiled.sourceRefs, preimage: fresh.preimage,
           preflight: fresh.preflight, penaltyText: fresh.penaltyText, nativeReadback: readback.data,
           readbackDigest: sha256(readback.data), savedShot: { runId, sha256: savedShot.sha256 } });
       success.sourceRefs = compiled.sourceRefs;
       try {
-        await resolveHmsLabtestDispatch(ctx.db, handle, { operation: 'cancel', confirmation: readback.data.confirmation,
+        await resolveHmsLabtestDispatch(ctx.db, activeHandle, { operation: 'cancel', confirmation: readback.data.confirmation,
           nativeStayId: readback.data.nativeStayId, nativeReadback: readback.data,
           readbackDigest: sha256(readback.data), savedShot: { runId, sha256: savedShot.sha256 } }, async (tx, intent) => {
           if (intent.transportId !== ctx.transport.id || intent.workItemId !== input.workItemId ||
@@ -1130,12 +1117,12 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
         });
       } catch {
         const unresolved = observation(loaded.draft, input, compiled.requestId, compiled.hintId, 'execute', 'partial',
-          { semanticDigest: compiled.semanticDigest, approvedDigest: approval, dispatchHoldId: handle.holdId },
+          { semanticDigest: compiled.semanticDigest, approvedDigest: approval, dispatchHoldId: activeHandle.holdId },
           { outcome: 'cancelled', issue: 'cancel_durable_resolution_unconfirmed', nativeReadback: readback.data,
             savedShot: { runId, sha256: savedShot.sha256 } }, ['durable_cancel_hold_unresolved']);
         await recordOperation(ctx, input, compiled.requestId, compiled.hintId, unresolved, 'unknown',
           'Cancellation readback passed but durable hold resolution is unresolved', input.idempotencyKey);
-        return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: handle.holdId,
+        return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: activeHandle.holdId,
           issue: 'cancel_durable_resolution_unconfirmed' };
       }
       return { status: 'succeeded', operationId: input.idempotencyKey, requestId: compiled.requestId,
@@ -1202,8 +1189,9 @@ export async function reservationWorkflowV2CancelReconcile(ctx: ReservationWorkf
     return { status: 'needs_reconcile', operationId: input.operationId, dispatchHoldId: intent.holdId,
       issue: 'cancel_recovery_evidence_scope_unverified', holdReleased: false };
   }
+  const savedTarget = boundTarget.data;
   const owner = `${intent.actorUserId}:${intent.transportId}`;
-  const targetLock = paneStayCloudTargetLock(target, boundTarget.data, { kind: 'independent_cloud' });
+  const targetLock = paneStayCloudTargetLock(target, savedTarget, { kind: 'independent_cloud' });
   if (!targetLock) return { status: 'needs_reconcile', operationId: input.operationId, dispatchHoldId: intent.holdId,
     issue: 'cancel_target_lock_unavailable', holdReleased: false };
   try {
@@ -1219,8 +1207,8 @@ export async function reservationWorkflowV2CancelReconcile(ctx: ReservationWorkf
         nativeGuestId: z.string().regex(/^\d{1,30}$/), status: z.string().regex(/^cancel(?:l)?ed$/i),
         reasonCode: z.string(), cancellationNote: z.string() }).passthrough().safeParse(observed.readback);
       if (observed.outcome !== 'verified' || !readback.success || !Buffer.isBuffer(observed.screenshot) ||
-          observed.confirmation !== boundTarget.data.confirmation || readback.data.confirmation !== boundTarget.data.confirmation ||
-          readback.data.nativeStayId !== boundTarget.data.nativeStayId || readback.data.nativeGuestId !== intent.nativeGuestId ||
+          observed.confirmation !== savedTarget.confirmation || readback.data.confirmation !== savedTarget.confirmation ||
+          readback.data.nativeStayId !== savedTarget.nativeStayId || readback.data.nativeGuestId !== intent.nativeGuestId ||
           readback.data.reasonCode !== recovery.reasonCode || readback.data.cancellationNote !== recovery.cancellationNote) {
         throw new Error('cancel_recovery_readback_unavailable');
       }
