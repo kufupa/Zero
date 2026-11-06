@@ -136,9 +136,11 @@ function matches(request, state, pending) {
   }
   if (!exact(body, 'propertycode', 'HRCEN') || !exact(body, 'SYSTEM_FUNCTION_NAME', 'OSENEX') ||
       !exact(body, 'USER_FUNCTION_NAME', 'OSENEX') || !noConfirmation(body)) return false;
-  if (pending.kind === 'open') {
-    return url.pathname === PATH && !body.has('pageaction') && !body.has('action') &&
-      /^\d+$/.test(body.get('reservationstayid') || '') && /^\d+$/.test(body.get('account') || '');
+  if (pending.kind === 'open' || pending.kind === 'open_unsaved') {
+    const identity = pending.kind === 'open_unsaved'
+      ? exact(body, 'reservationstayid', '') && exact(body, 'account', '')
+      : /^\d+$/.test(body.get('reservationstayid') || '') && /^\d+$/.test(body.get('account') || '');
+    return url.pathname === PATH && !body.has('pageaction') && !body.has('action') && identity;
   }
   if (!exact(body, 'reservationstayid', state.native.stayId) || !exact(body, 'account', state.native.account)) return false;
   if (pending.kind === 'type') {
@@ -210,7 +212,9 @@ async function initializeState(page) {
       return route.abort();
     }
     pending.request = request;
-    if (pending.kind === 'open') state.native = { stayId: body.get('reservationstayid'), account: body.get('account') };
+    if (pending.kind === 'open' || pending.kind === 'open_unsaved') {
+      state.native = { stayId: body.get('reservationstayid'), account: body.get('account') };
+    }
     if (['save', 'edit', 'remove'].includes(pending.kind)) {
       try {
         if (pending.beforeDispatch) {
@@ -309,6 +313,61 @@ async function ensureOpen(page, state, confirmation) {
   await popup(page).waitFor({ state: 'visible', timeout: 20000 });
 }
 
+function uniqueFormValue(fields, name) {
+  const matches = fields.filter(field => field && field.name === name);
+  return matches.length === 1 ? String(matches[0].value ?? '').trim() : null;
+}
+
+async function bindUnsavedCreate(page, state, expected, readForm) {
+  if (typeof readForm !== 'function') fail('ADDONS_CREATE_FORM_READER_REQUIRED', 'needs_input');
+  const read = await readForm();
+  if (read?.outcome !== 'ok' || !Array.isArray(read.fields)) fail('ADDONS_CREATE_FORM_READBACK_REQUIRED', 'needs_input');
+  const fields = read.fields;
+  const confirmation = uniqueFormValue(fields, 'confirmationnumber');
+  const guestId = uniqueFormValue(fields, 'guestid');
+  const firstName = uniqueFormValue(fields, 'firstname'), lastName = uniqueFormValue(fields, 'lastname');
+  const arrival = day(uniqueFormValue(fields, 'arrivaldate')), departure = day(uniqueFormValue(fields, 'departuredate'));
+  const adults = uniqueFormValue(fields, 'adults'), children = uniqueFormValue(fields, 'children');
+  const expectedChildren = expected?.stay?.childAges?.length;
+  const childrenMatch = Number.isInteger(expectedChildren) &&
+    (children === String(expectedChildren) || (expectedChildren === 0 && children === ''));
+  const roomType = uniqueFormValue(fields, 'roomtype'), ratePlan = uniqueFormValue(fields, 'rateplan');
+  const averageRate = uniqueFormValue(fields, 'averagerate'), totalRate = uniqueFormValue(fields, 'totalrate');
+  const property = await page.evaluate(() => document.documentElement.dataset.propertyCode ??
+    /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(document.title)?.[1] ?? null);
+  if (property !== 'HRCEN' || confirmation !== '' || guestId !== String(expected?.guest?.profileId ?? '') ||
+      firstName !== expected?.guest?.firstName || lastName !== expected?.guest?.lastName ||
+      arrival !== expected?.stay?.arrival || departure !== expected?.stay?.departure ||
+      adults !== String(expected?.stay?.adults ?? '') || !childrenMatch ||
+      roomType !== expected?.room?.roomType || ratePlan !== expected?.room?.ratePlan || !averageRate || !totalRate) {
+    fail('ADDONS_CREATE_CONTEXT_MISMATCH', 'needs_input');
+  }
+  const target = { kind: 'unsaved_create', propertyCode: 'HRCEN', guest: {
+    nativeId: guestId, firstName, lastName,
+  }, stay: { arrival, departure, adults: Number(adults), childAges: structuredClone(expected.stay.childAges) },
+  room: { roomType, ratePlan }, createRateReadback: { averageRate, totalRate } };
+  if (state.target && JSON.stringify(state.target) !== JSON.stringify(target)) fail('ADDONS_TARGET_CHANGED');
+  if (state.native && (state.native.stayId !== '' || state.native.account !== '')) fail('ADDONS_TARGET_CHANGED');
+  state.target = target;
+  state.native = { stayId: '', account: '' };
+  return target;
+}
+
+async function ensureUnsavedCreateOpen(page, state, expected, readForm) {
+  const current = await bindUnsavedCreate(page, state, expected, readForm);
+  if (await popup(page).count()) {
+    if (!state.target || JSON.stringify(state.target) !== JSON.stringify(current)) fail('ADDONS_UNOWNED_POPUP');
+    return current;
+  }
+  await dismissNotesOrThrow(page);
+  const card = page.locator('.gs-panel:visible').filter({ has: page.locator('.x-panel-header-text').filter({ hasText: /^Add-Ons$/ }) });
+  const open = card.locator('a.gs-header-btn:visible').filter({ has: page.locator('[data-testid="btn_ADDONS"]') });
+  if (await open.count() !== 1) fail('ADDONS_BUTTON_NOT_UNIQUE', 'needs_input');
+  await step(page, state, { kind: 'open_unsaved' }, () => open.click());
+  await popup(page).waitFor({ state: 'visible', timeout: 20000 });
+  return current;
+}
+
 async function loadedRows(page, testId, locator) {
   return locator.evaluate((element, wanted) => {
     const grids = (globalThis.Ext?.ComponentQuery?.query('grid') || []).filter(grid =>
@@ -381,7 +440,11 @@ async function form(page, state) {
 }
 
 async function selectItem(page, state, code) {
-  const found = await catalogue(page, state), matches = found.candidates.filter(item => item.code === code);
+  const found = await catalogue(page, state);
+  if (found.coverage?.complete !== true) fail('ADDONS_CATALOGUE_INCOMPLETE', 'needs_input', {
+    options: found.candidates.map(({ code, name, itemId }) => ({ code, name, itemId })), coverage: found.coverage,
+  });
+  const matches = found.candidates.filter(item => item.code === code);
   if (matches.length !== 1) {
     await closePicker(page);
     fail(matches.length ? 'ADDONS_ITEM_AMBIGUOUS' : 'ADDONS_ITEM_NOT_LOADED', 'needs_input', { options: found.candidates, coverage: found.coverage });
@@ -588,6 +651,47 @@ export async function prepareStay360AddOns(page, confirmation, items) {
     state.prepared.set(preparedId, prepared);
     return { outcome: 'prepared', preparedId, confirmation, propertyCode: 'HRCEN', items: previews,
       baselineCoverage: prepared.baselineCoverage, availabilityVerified: false, saved: false };
+  });
+}
+
+/** Preview Add-Ons against the exact, unsaved New Guest Stay currently owned by Create.
+ * This never returns a save capability or session/prepared token; each caller must
+ * run a fresh saved-target Prepare before any future Add-On Save.
+ */
+export async function previewUnsavedStay360AddOns(page, { expectedCreate, readForm, items } = {}) {
+  try { items = structuredClone(items); } catch { return { outcome: 'needs_input', issue: 'ADDONS_ITEM_INVALID' }; }
+  return run(page, async state => {
+    validateItems(items);
+    const target = await ensureUnsavedCreateOpen(page, state, expectedCreate, readForm);
+    const previews = [];
+    for (const requested of items) {
+      try {
+        const item = await stageOne(page, state, requested);
+        previews.push({ outcome: 'prepared', requested: structuredClone(requested), item });
+      } catch (error) {
+        const issueResult = problem(error);
+        const options = Array.isArray(issueResult.options)
+          ? issueResult.options.map(candidate => ({ code: candidate.code, name: candidate.name, itemId: candidate.itemId })) : undefined;
+        previews.push({ outcome: issueResult.outcome, issue: issueResult.issue,
+          ...(issueResult.preview ? { item: issueResult.preview } : {}), ...(options ? { options } : {}) });
+        if (state.quarantined) break;
+      }
+    }
+    const complete = previews.length === items.length && previews.every(preview => preview.outcome === 'prepared');
+    return { outcome: complete ? 'prepared' : 'partial', propertyCode: 'HRCEN', unsaved: true, saved: false,
+      target, items: previews };
+  });
+}
+
+/** Read the current native ITEM catalogue from the same verified unsaved New Guest Stay. */
+export async function listUnsavedStay360AddOnItems(page, { expectedCreate, readForm } = {}) {
+  return run(page, async state => {
+    const target = await ensureUnsavedCreateOpen(page, state, expectedCreate, readForm);
+    const found = await catalogue(page, state, 'ITEM');
+    await closePicker(page);
+    return { outcome: 'ok', propertyCode: 'HRCEN', unsaved: true, target,
+      candidates: found.candidates.map(({ code, name, itemId }) => ({ code, name, itemId })),
+      coverage: found.coverage };
   });
 }
 

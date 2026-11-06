@@ -401,6 +401,12 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     semanticDigest: sha256({ nativeInput, guestName }), preparedBinding: null };
 }
 
+/** Reuse the same Create field compiler when a service preview needs its owning unsaved stay. */
+export function compileReservationWorkflowV2Create(draft: ReservationWorkflowV2Draft, requestId: string,
+  allocationId: string, propertyCode: string): CreateCompile {
+  return compileCreate(draft, requestId, allocationId, propertyCode, 'prepare');
+}
+
 function mapNativeOutcome(native: NativeCreate): Outcome {
   if (native.outcome === 'prepared' && native.requestBinding && native.ratePlanAvailability) {
     return { status: 'prepared', native };
