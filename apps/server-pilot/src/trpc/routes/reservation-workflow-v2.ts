@@ -4,8 +4,10 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb } from '../../db/client.js';
 import { attachment, mailThread, message } from '../../db/schema/mail.js';
+import { workItem } from '../../db/schema/work.js';
 import { MESSAGE_ARRIVED_AT } from '../../ai/message-arrival-time.js';
 import { staffQuoteSourceHash } from '../../ai/staff-quote-workflow.js';
+import { stayCommitsOf } from '../../ai/work-items.js';
 import {
   reservationWorkflowV2ItemInputSchema,
   reservationWorkflowV2EnsureInputSchema,
@@ -67,7 +69,28 @@ async function nativeContext(user: { id: string; sessionId?: string; sessionProf
 async function withPreparation<T extends { status: string }>(reply: Promise<T>, propertyCode: string) {
   const result = await reply;
   const draft = 'draft' in result ? result.draft as ReservationWorkflowV2Draft | null : null;
-  return { ...result, preparationViews: draft ? reservationWorkflowV2PreparationViews(draft, propertyCode) : [] };
+  if (!draft) return { ...result, preparationViews: [] };
+  // This is a read-only projection from the validated source WorkItem. Legacy
+  // stays have no reliable allocation mapping, so never turn them into v2 results.
+  const [item] = await getDb().select({ state: workItem.state }).from(workItem)
+    .where(and(eq(workItem.id, draft.workItemId), eq(workItem.transportId, draft.transportId),
+      eq(workItem.threadId, draft.source.threadId), eq(workItem.sourceMessageId, draft.source.messageId))).limit(1);
+  if (!item) return { status: 'not_found' as const, preparationViews: [] };
+  const legacyCreateReceipts = Object.entries(stayCommitsOf(item.state)).map(([stayId, receipt]) => ({
+    stayId, status: receipt.status, confirmationNumber: receipt.confirmationNumber,
+  }));
+  const views = reservationWorkflowV2PreparationViews(draft, propertyCode);
+  if (!legacyCreateReceipts.length) return { ...result, preparationViews: views, legacyCreateReceipts };
+  const receiptSummary = legacyCreateReceipts.slice(0, 3).map((receipt) =>
+    `${receipt.stayId}: ${receipt.status}${receipt.confirmationNumber ?
+      `; confirmation ${receipt.confirmationNumber.slice(0, 60)}` : '; confirmation unavailable'}`
+  ).join('; ');
+  const remainder = legacyCreateReceipts.length > 3 ? `; and ${legacyCreateReceipts.length - 3} more` : '';
+  const warning = `Create is blocked to prevent duplicates. Review previous legacy results in Infor: ${receiptSummary}${remainder}.`;
+  return { ...result, legacyCreateReceipts,
+    draft: { ...draft, errors: [...draft.errors.slice(0, 99),
+      { stage: 'persist' as const, code: 'legacy_create_receipts', message: warning.slice(0, 1000) }] },
+    preparationViews: views.map((view) => ({ ...view, current: false, issue: 'Previous legacy Create results require review in Infor.' })) };
 }
 
 async function nativeWorkflow(

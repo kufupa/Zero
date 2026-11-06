@@ -108,9 +108,9 @@ async function buildResult(db: WorkTx, ctx: Context, item: ItemRow, source: Rese
   if (!mail) return { status: 'invalid_source' };
   const draft = reservationWorkflowV2DraftOf(item.state);
   if (!draft) return { status: hasReservationWorkflowV2Draft(item.state) ? 'invalid_state' : 'not_found' };
-  if (draft.transportId !== ctx.transportId || draft.propertyCode !== ctx.propertyCode ||
+  if (draft.workItemId !== item.id || draft.transportId !== ctx.transportId || draft.propertyCode !== ctx.propertyCode ||
       draft.source.sourceHash !== source.sourceHash || draft.source.messageId !== source.messageId ||
-      draft.source.threadId !== source.threadId) return { status: 'invalid_source' };
+      draft.source.threadId !== source.threadId || draft.source.arrivedAt !== source.arrivedAt) return { status: 'invalid_source' };
   return { status: 'ok', draft: { ...draft, revision: item.revision }, revision: item.revision,
     revisionHead: item.revisionHead, seq: item.revisionSeq };
 }

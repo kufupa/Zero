@@ -29,7 +29,7 @@ import { PANE_PREVIEW_TTL_MS, PANE_SAVE_UNCONFIRMED, paneStayCreateTarget, paneS
   paneStayCloudTargetLock, paneStaySaveLoaders, paneStaySaveMode, registerPaneRun, type PaneStay, type PaneStayResult } from './pane-stay-save.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Observation } from './reservation-workflow-v2-contract.js';
-import { hasReservationWorkflowV2Draft, reservationWorkflowV2DraftOf } from './reservation-workflow-v2-state.js';
+import { reservationWorkflowV2DraftOf } from './reservation-workflow-v2-state.js';
 
 const cloudPreviewSource = z.object({ messageId: z.string().trim().min(1).max(200),
   threadId: z.string().trim().min(1).max(200), sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
@@ -911,15 +911,21 @@ export async function recordRecoveredCreate(tx: CreateFenceTransaction, intent: 
   const [current] = await tx.select({ state: workItem.state }).from(workItem)
     .where(and(eq(workItem.id, intent.workItemId), eq(workItem.transportId, intent.transportId))).limit(1).for('update');
   if (!current) throw new Error('cloud_create_recovery_scope_changed');
-  if (hasReservationWorkflowV2Draft(current.state)) {
+  // A v2 draft can be seeded while an earlier legacy dispatch is unresolved.
+  // Choose the recovery path from the original intent, not the current state.
+  // Partial v2 markers fail closed instead of falling through to legacy recovery.
+  const recovery = intent.recovery;
+  const v2Intent = ['requestId', 'allocationId', 'operationId'].some((key) => Object.hasOwn(recovery, key));
+  if (v2Intent) {
     const draft = reservationWorkflowV2DraftOf(current.state);
-    const recovery = intent.recovery;
     const requestId = typeof recovery.requestId === 'string' ? recovery.requestId : '';
     const allocationId = typeof recovery.allocationId === 'string' ? recovery.allocationId : '';
     const operationId = typeof recovery.operationId === 'string' ? recovery.operationId : '';
     const prior = draft?.operationResults.find((result) => result.id === operationId && result.workflow === 'create' &&
       result.requestId === requestId && result.allocationId === allocationId && result.status === 'unknown');
-    if (!draft || intent.transportId !== draft.transportId || intent.propertyCode !== draft.propertyCode ||
+    if (!draft || !requestId || !allocationId || !operationId ||
+        intent.grantId !== operationId.toLowerCase() || intent.stayId !== `${requestId}_${allocationId}` ||
+        intent.transportId !== draft.transportId || intent.propertyCode !== draft.propertyCode ||
         intent.sourceDigest !== draft.source.sourceHash || !prior || proof.confirmation.length > 40 ||
         !proof.nativeReadback || proof.nativeReadback.confirmation !== proof.confirmation) {
       throw new Error('reservation_workflow_v2_create_recovery_scope_changed');
