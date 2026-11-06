@@ -15,7 +15,7 @@ import type {
 } from './reservation-workflow-v2-contract.js';
 import { findParty } from './pane-party-lookup.js';
 import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
-import { isPublicRateCode, staffQuoteInput } from './staff-quote-workflow.js';
+import { staffQuoteInput } from './staff-quote-workflow.js';
 import { runStaffQuote } from './staff-quote-run.js';
 import { buildStaysProposalPdf } from '../quote-proposal/proposal-pdf.js';
 import {
@@ -227,10 +227,11 @@ function pricedDinnerFallbackMatches(
   factsValue: unknown,
   fallbackGroupIdsValue: unknown,
 ): boolean {
+  // The authorized native B&B retry can select a verified company contract as well as public rates.
   const facts = record(factsValue);
   const fallbackGroupIds = Array.isArray(fallbackGroupIdsValue) ? fallbackGroupIdsValue : [];
   if ((input.salesStrategy !== 'BAR' && input.salesStrategy !== 'Government' && input.salesStrategy !== 'GOV') ||
-      actual.board !== 'breakfast' || typeof actual.rateCode !== 'string' || !isPublicRateCode(actual.rateCode) ||
+      actual.board !== 'breakfast' || typeof actual.rateCode !== 'string' || !actual.rateCode.trim() ||
       !fallbackGroupIds.includes(expected.id) || !facts || facts.revisionId !== revision.id ||
       facts.authorizationId !== revision.authorizationId || facts.sourceHash !== input.sourceHash) return false;
 
