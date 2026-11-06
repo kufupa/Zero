@@ -27,6 +27,9 @@ const KIND_LABEL: Record<ReservationWorkflowKind, string> = {
   create: 'Create', quote: 'Quote', amend: 'Amend', cancel: 'Cancel', services: 'Services', filing: 'Filing', other: 'Other',
 };
 const KINDS: ReservationWorkflowKind[] = ['create', 'quote', 'amend', 'cancel', 'services', 'filing'];
+const CREATE_SHARED_REVIEW_FIELDS = new Set(['roomType', 'ratePlan', 'bookingAgency', 'organization', 'arAccount', 'guaranteeType',
+  'track', 'reasonForStay', 'sourceOfBusiness', 'billingReference', 'reservationNote', 'guestOptIn',
+  'bookerName', 'bookerContact', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
 const record = (value: unknown): Record<string, unknown> | null => value && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : null;
 const text = (value: unknown): string => {
@@ -348,8 +351,8 @@ function createReviewPaths(snapshot: ReservationPaneSnapshot, request: Reservati
 
 function isRenderedCreateReviewPath(request: ReservationRequestProjection, path: string): boolean {
   const prefix = requestPath(request) + '/body';
-  if (path.startsWith(`${prefix}/shared/`)) return true;
   const relative = path.slice(`${prefix}/`.length).split('/');
+  if (relative[0] === 'shared') return CREATE_SHARED_REVIEW_FIELDS.has(relative[1] ?? '');
   if (relative[0] === 'dateSections') {
     return ['arrival', 'departure'].includes(relative.at(-1) ?? '')
       || relative[2] === 'defaults' && ['roomType', 'ratePlan', 'guaranteeType'].includes(relative.at(-1) ?? '');
@@ -814,6 +817,7 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
       <TextField {...props} path={`${body}/shared/sourceOfBusiness`} label="Source of business code"
         help="Editable source-bound value. Use the exact supported Infor code; no unobserved catalogue is invented." />
       <TextField {...props} path={`${body}/shared/billingReference`} label="Billing reference" />
+      <TextField {...props} path={`${body}/shared/reservationNote`} label="Shared reservation note" multiline />
     </div>
 
     <div className={styles.sectionHeader}><div><h2>Dates and room allocation</h2><p>Each room retains its own guest and occupancy. Empty child ages remain unknown—not zero.</p></div></div>
