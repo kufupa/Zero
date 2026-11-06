@@ -589,6 +589,10 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReservationWorkflow
   if (!loaded.draft) return loaded.result;
   const compiled = compileBase(loaded.draft, input.requestId, input.allocationId, 'prepare');
   if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [] };
+  if (typeof compiled.target.children === 'number' && compiled.target.children > 0 &&
+      !Array.isArray(compiled.target.childAges)) {
+    return { status: 'needs_input', issue: 'amend_child_age_baseline_unavailable', fields: ['childAges'] };
+  }
   const locked = targetWriteLock(ctx, compiled.selected);
   if (!locked?.lock) return { status: 'unsupported', issue: 'amend_target_lock_unavailable' };
   const module = await nativeModule();
@@ -619,6 +623,10 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReservationWorkflow
           !(typeof recoveryBaseline.beforeGuestEmail === 'string' || recoveryBaseline.beforeGuestEmail === null) ||
           !(typeof recoveryBaseline.beforeBookerName === 'string' || recoveryBaseline.beforeBookerName === null) ||
           !(typeof recoveryBaseline.beforeBookerContact === 'string' || recoveryBaseline.beforeBookerContact === null) ||
+          (!Object.hasOwn(changes, 'guestEmail') && typeof recoveryBaseline.beforeGuestEmail !== 'string') ||
+          (!Object.hasOwn(changes, 'bookerName') && typeof recoveryBaseline.beforeBookerName !== 'string') ||
+          (!Object.hasOwn(changes, 'bookerContact') && typeof recoveryBaseline.beforeBookerContact !== 'string') ||
+          (!changes.cmsSend && typeof afterPreserved.cmsMessageId !== 'string') ||
           typeof recoveryBaseline.beforeGuaranteeCode !== 'string' ||
           !/^[A-Z0-9]{1,40}$/.test(recoveryBaseline.beforeGuaranteeCode) ||
           !(recoveryBaseline.beforeSavedRates === null || record(recoveryBaseline.beforeSavedRates)) ||
@@ -648,7 +656,7 @@ function observationForWrite(draft: ReservationWorkflowV2Draft, input: Reservati
     observedAt: new Date().toISOString(), propertyCode: 'HRCEN', sourceMessageId: draft.source.messageId, sourceRefs: [],
     criteria: { workflow: 'amend', requestId: input.requestId, hintId, draftRevision: draft.revision,
       idempotencyKey: input.idempotencyKey },
-    coverage: { complete: status === 'complete', notes: status === 'complete' ? [] : [String(record(outcome)?.issue ?? record(outcome)?.outcome ?? 'amend_save_unverified')] },
+    coverage: { complete: status === 'complete', notes: status === 'complete' ? [] : [String(record(result)?.issue ?? record(result)?.outcome ?? 'amend_save_unverified')] },
     result } satisfies ReservationWorkflowV2Observation;
 }
 
@@ -678,7 +686,7 @@ async function persistResolvedResult(tx: WriteTx, ctx: ReservationWorkflowV2Amen
 
 async function authorizeCurrentAmend(tx: WriteTx, ctx: ReservationWorkflowV2AmendContext,
   input: ReservationWorkflowV2ExecuteInput, compiled: Compile & { outcome: 'ok' }, prepared: ReservationWorkflowV2Observation,
-  approvedDigest: string) {
+  approvedDigest: string, attempt: ReservationWorkflowV2Observation) {
   const [item] = await tx.select({ state: workItem.state, revision: workItem.revision, revisionSeq: workItem.revisionSeq,
     sourceMessageId: workItem.sourceMessageId, threadId: workItem.threadId })
     .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1).for('update');
@@ -686,7 +694,9 @@ async function authorizeCurrentAmend(tx: WriteTx, ctx: ReservationWorkflowV2Amen
   if (!item || !draft || item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq ||
       item.sourceMessageId !== input.source.messageId || item.threadId !== input.source.threadId ||
       draft.revision !== input.expectedRevision || draft.propertyCode !== 'HRCEN' || draft.transportId !== ctx.transport.id ||
-      draft.source.sourceHash !== input.source.sourceHash || draft.source.arrivedAt !== input.source.arrivedAt) {
+      draft.source.messageId !== input.source.messageId || draft.source.threadId !== input.source.threadId ||
+      draft.source.sourceHash !== input.source.sourceHash || draft.source.arrivedAt !== input.source.arrivedAt ||
+      draft.generationId !== attempt.generationId) {
     throw new Error('reservation_workflow_v2_amend_stale');
   }
   const [source] = await tx.select({ id: message.id, threadId: message.threadId, transportId: message.transportId,
@@ -698,20 +708,50 @@ async function authorizeCurrentAmend(tx: WriteTx, ctx: ReservationWorkflowV2Amen
       eq(mailThread.historyOnly, false), isNull(mailThread.trashedAt), isNull(mailThread.spamAt))).limit(1).for('share');
   const [access] = await tx.select({ id: mailboxAccess.id }).from(mailboxAccess)
     .where(and(eq(mailboxAccess.userId, ctx.user.id), eq(mailboxAccess.transportId, ctx.transport.id))).limit(1).for('share');
-  const operation = draft.operationResults.find((row) => row.id === input.idempotencyKey && row.status === 'unknown' &&
-    row.workflow === 'amend' && row.requestId === input.requestId && row.allocationId === compiled.hintId);
+  const existing = draft.operationResults.filter((row) => row.id === input.idempotencyKey);
+  const retryableFailure = existing.length === 1 && existing[0]!.status === 'failed' &&
+    existing[0]!.workflow === 'amend' && existing[0]!.requestId === input.requestId &&
+    existing[0]!.allocationId === compiled.hintId;
+  const competingOperation = draft.operationResults.some((row) => row.id !== input.idempotencyKey &&
+    row.workflow === 'amend' && row.requestId === input.requestId && row.allocationId === compiled.hintId &&
+    (row.status === 'succeeded' || row.status === 'unknown'));
   const current = source && staffQuoteSourceHash(source);
   const live = compileBase(draft, input.requestId, compiled.hintId, 'execute');
   const livePrepared = preparedObservation(draft, compiled);
-  if (!access || !source || source.sourceProvenance?.attention != null || current !== input.source.sourceHash || !operation ||
+  const attemptResult = record(attempt.result);
+  if (!access || !source || source.sourceProvenance?.attention != null || current !== input.source.sourceHash ||
+      existing.length > 1 || (existing.length === 1 && !retryableFailure) || competingOperation ||
       live.outcome !== 'ok' || live.baseDigest !== compiled.baseDigest || !livePrepared || livePrepared.ref !== prepared.ref ||
       livePrepared.criteria.semanticDigest !== prepared.criteria.semanticDigest ||
-      livePrepared.criteria.semanticDigest !== approvedDigest || !hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN',
-        kind: 'saved', confirmation: compiled.selected.confirmation, nativeStayId: compiled.selected.reservationStayId }).success) {
+      canonicalJson(livePrepared.result) !== canonicalJson(prepared.result) ||
+      livePrepared.criteria.semanticDigest !== approvedDigest || attempt.kind !== 'stay_candidate' ||
+      attempt.status !== 'partial' || attempt.criteria.workflow !== 'amend' ||
+      attempt.criteria.requestId !== input.requestId || attempt.criteria.hintId !== compiled.hintId ||
+      attempt.criteria.idempotencyKey !== input.idempotencyKey || attempt.sourceMessageId !== draft.source.messageId ||
+      attemptResult?.outcome !== 'dispatch_pending' || attemptResult.approvedDigest !== approvedDigest ||
+      typeof attemptResult.requestDigest !== 'string' || !/^[a-f0-9]{64}$/.test(attemptResult.requestDigest) ||
+      draft.observations.some((row) => row.ref === attempt.ref) ||
+      !hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'saved',
+        confirmation: compiled.selected.confirmation, nativeStayId: compiled.selected.reservationStayId }).success) {
     throw new Error('reservation_workflow_v2_amend_source_changed');
   }
   await lockCreateActorSession(tx, { actorUserId: ctx.user.id, sessionId: ctx.user.sessionId,
     sessionProfile: ctx.user.sessionProfile });
+
+  const nextResult = { id: input.idempotencyKey, generationId: draft.generationId, requestId: input.requestId,
+    allocationId: compiled.hintId, workflow: 'amend' as const, status: 'unknown' as const,
+    draftRevision: draft.revision, observationRefs: [attempt.ref], updatedAt: new Date().toISOString(),
+    summary: 'Native Amend claim acquired; outcome pending reconciliation' };
+  const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft, observations: [...draft.observations, attempt],
+    operationResults: [...draft.operationResults.filter((row) => row.id !== input.idempotencyKey), nextResult] });
+  await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>),
+    [RESERVATION_WORKFLOW_V2_STATE_KEY]: nextDraft }, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
+  await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
+    fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:operationResults:${nextResult.id}`,
+    value: { id: nextResult.id, requestId: nextResult.requestId, allocationId: nextResult.allocationId,
+      workflow: 'amend', status: 'unknown', observationRefs: nextResult.observationRefs },
+    evidence: { sourceHash: input.source.sourceHash, seq: input.expectedSeq, approvedDigest,
+      prepareObservationRef: prepared.ref, summary: nextResult.summary } });
 }
 
 function readbackMatches(readback: unknown, prepared: Record<string, unknown>): Record<string, unknown> | null {
@@ -782,13 +822,6 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
   let expectedEpoch: string;
   try { expectedEpoch = await captureHmsLabtestDispatchEpoch(ctx.db, locked.dispatchTarget, input.workItemId); }
   catch { return { status: 'needs_reconcile', issue: 'amend_dispatch_history_unavailable' }; }
-  const attempt = observationForWrite(loaded.draft, input, compiled.hintId, 'partial', {
-    outcome: 'dispatch_pending', approvedDigest: prepared.criteria.semanticDigest, prepareObservationRef: prepared.ref,
-    target: preparedResult.target, before: compiled.selected, approvedPrices: price, semanticInput: preparedResult.semanticInput,
-  });
-  const recorded = await recordObservation(ctx, input, attempt, 'unknown', 'Go accepted; native amendment claim pending',
-    input.idempotencyKey, compiled.hintId);
-  if (recorded.status !== 'ok') return recorded;
   const native = await nativeModule();
   const work = await mkdtemp(join(tmpdir(), 'reservation-v2-amend-'));
   const beforeScreenshot = join(work, 'before.png'), afterScreenshot = join(work, 'after.png');
@@ -827,8 +860,15 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
       recovery: { ...claimInputBase.recovery, firstPhase: step.phase,
         runId, beforeShot: dispatchState.beforeShot } };
     approvedClaim = canonicalJson(claimInput);
+    const attempt = observationForWrite(loaded.draft!, input, compiled.hintId, 'partial', {
+      outcome: 'dispatch_pending', requestDigest: step.requestDigest,
+      approvedDigest: prepared.criteria.semanticDigest, prepareObservationRef: prepared.ref,
+      target: preparedResult.target, before: compiled.selected, approvedPrices: price,
+      beforeShot: dispatchState.beforeShot, semanticInput: preparedResult.semanticInput,
+    });
     dispatchState.handle = await claimHmsLabtestDispatch(ctx.db, claimInput,
-      async (tx) => authorizeCurrentAmend(tx, ctx, input, compiled, prepared, prepared.criteria.semanticDigest as string),
+      async (tx) => authorizeCurrentAmend(tx, ctx, input, compiled, prepared,
+        prepared.criteria.semanticDigest as string, attempt),
       expectedEpoch);
     return dispatchState.handle;
   };
@@ -860,21 +900,16 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
   const intent = record(result.readback);
   const readback = result.outcome === 'amended' && result.writerSessionClosed === true &&
     result.dispatchCallbacksDrained === true && result.businessFieldsMatched === true ? readbackMatches(intent, preparedResult) : null;
-  if (!dispatchState.handle || !readback || !dispatchState.beforeEvidence ||
-      !dispatchState.beforeShot || !dispatchState.afterShot) {
-    const uncertain = observationForWrite(loaded.draft, input, compiled.hintId,
-      dispatchState.handle || dispatchState.claimAttempted ? 'partial' : result.outcome === 'not_dispatched' ? 'failed' : 'partial', {
-        nativeOutcome: result.outcome ?? 'unknown', issue: result.issue ?? 'fresh_amend_readback_unverified',
-        dispatchHoldId: dispatchState.handle?.holdId ?? null, prepareObservationRef: prepared.ref,
-        beforeShot: dispatchState.beforeShot, savedShot: dispatchState.afterShot, nativeReadback: intent,
-      });
-    const status = !dispatchState.handle && result.outcome === 'not_dispatched' && !dispatchState.claimAttempted ? 'failed' : 'unknown';
-    await recordObservation(ctx, input, uncertain, status, status === 'failed'
-      ? 'Native amendment was not dispatched' : 'Amendment may have saved; fresh positive reconciliation required',
-    input.idempotencyKey, compiled.hintId);
-    return status === 'failed' ? { status: 'failed', operationId: input.idempotencyKey, issue: result.issue ?? 'amend_not_dispatched' }
-      : { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: dispatchState.handle?.holdId ?? null,
-        issue: 'amend_readback_or_durable_receipt_unverified' };
+  if (!dispatchState.handle) {
+    if (dispatchState.claimAttempted) return { status: 'needs_reconcile', operationId: input.idempotencyKey,
+      issue: 'amend_dispatch_claim_unconfirmed' };
+    return result.outcome === 'not_dispatched'
+      ? { status: 'failed', operationId: input.idempotencyKey, issue: result.issue ?? 'amend_not_dispatched' }
+      : { status: 'refused', issue: result.issue ?? 'amend_dispatch_not_authorized' };
+  }
+  if (!readback || !dispatchState.beforeEvidence || !dispatchState.beforeShot || !dispatchState.afterShot) {
+    return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: dispatchState.handle.holdId,
+      issue: 'amend_readback_or_durable_receipt_unverified' };
   }
   const handle = dispatchState.handle as HmsLabtestWriteHandle;
   const beforeShot = dispatchState.beforeShot as { runId: string; sha256: string };
@@ -911,6 +946,7 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
 export async function reservationWorkflowV2AmendReconcile(ctx: ReservationWorkflowV2AmendContext,
   input: ReservationWorkflowV2ReconcileInput): Promise<Outcome> {
   if (!z.string().uuid().safeParse(input.operationId).success) return { status: 'invalid_input', issue: 'operation_id_must_be_uuid' };
+  if (ctx.property.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'property_not_supported' };
   const loaded = await getReservationWorkflowV2Draft(stateContext(ctx), input);
   if (loaded.status !== 'ok') return loaded;
   const operation = loaded.draft.operationResults.find((row) => row.id === input.operationId);
@@ -924,23 +960,30 @@ export async function reservationWorkflowV2AmendReconcile(ctx: ReservationWorkfl
       eq(workEvent.fieldPath, 'nava.hms.labtest.dispatch.v1'))).limit(5000);
   const intents = rows.map((row) => record(row.value)).filter((row): row is Record<string, unknown> =>
     Boolean(row && row.kind === 'intent' && row.operation === 'amend' && row.grantId === input.operationId));
-  if (!intents.length) {
-    const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: loaded.draft.generationId,
-      kind: 'stay_candidate', status: 'failed', observedAt: new Date().toISOString(), propertyCode: 'HRCEN',
-      sourceMessageId: loaded.draft.source.messageId, sourceRefs: [],
-      criteria: { workflow: 'amend', operationId: input.operationId, sourceHash: input.source.sourceHash },
-      coverage: { complete: false, notes: ['durable_amend_claim_not_found'] },
-      result: { outcome: 'not_dispatched', issue: 'No durable HMS Amend claim exists for this Go.' } };
-    const base = { workItemId: input.workItemId, source: input.source };
-    const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), { ...base, observation });
-    if (appended.status !== 'ok') return appended;
-    return recordReservationWorkflowV2Result(stateContext(ctx), { ...base, result: { ...operation, status: 'failed',
-      observationRefs: [...operation.observationRefs, observation.ref], updatedAt: new Date().toISOString(),
-      summary: 'No durable claim; native Save was not dispatched' } });
-  }
-  const intent = intents.find((row) => record(row.recovery)?.requestId === operation.requestId &&
-    record(row.recovery)?.hintId === operation.allocationId &&
-    record(row.recovery)?.operationId === operation.id && row.sourceDigest === input.source.sourceHash);
+  if (!intents.length) return { status: 'needs_reconcile', operationId: input.operationId,
+    issue: 'amend_claim_not_yet_observed' };
+  const attempt = loaded.draft.observations.find((observation) => operation.observationRefs.includes(observation.ref) &&
+    observation.kind === 'stay_candidate' && observation.status === 'partial' &&
+    observation.criteria.workflow === 'amend' && observation.criteria.requestId === operation.requestId &&
+    observation.criteria.hintId === operation.allocationId && observation.criteria.idempotencyKey === operation.id);
+  const attemptResult = record(attempt?.result), prepareObservationRef = text(attemptResult?.prepareObservationRef);
+  const prepared = prepareObservationRef && loaded.draft.observations.find((observation) =>
+    observation.ref === prepareObservationRef && observation.kind === 'rate_availability' &&
+    observation.status === 'complete' && observation.criteria.workflow === 'amend' &&
+    observation.criteria.requestId === operation.requestId && observation.criteria.hintId === operation.allocationId &&
+    observation.criteria.semanticDigest === attemptResult?.approvedDigest);
+  const preparedResult = record(prepared?.result), before = record(preparedResult?.before);
+  const expectedTarget = before ? hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'saved',
+    confirmation: before.confirmation, nativeStayId: before.reservationStayId }) : null;
+  const intent = intents.find((row) => {
+    const recovery = record(row.recovery), target = hmsDispatchTargetSchema.safeParse(row.target);
+    if (row.workItemId !== input.workItemId || row.transportId !== ctx.transport.id || row.propertyCode !== 'HRCEN' ||
+        row.sourceDigest !== input.source.sourceHash || row.approvedDigest !== attemptResult?.approvedDigest ||
+        recovery?.requestId !== operation.requestId || recovery.hintId !== operation.allocationId ||
+        recovery.operationId !== operation.id || recovery.prepareObservationRef !== prepareObservationRef ||
+        recovery.draftRevision !== operation.draftRevision || !expectedTarget?.success || !target.success) return false;
+    return hmsDispatchTargetKey(target.data) === hmsDispatchTargetKey(expectedTarget.data);
+  });
   if (!intent || typeof intent.holdId !== 'string' || !z.string().uuid().safeParse(intent.holdId).success) {
     return { status: 'needs_reconcile', operationId: input.operationId, issue: 'amend_dispatch_intent_scope_unverified' };
   }
