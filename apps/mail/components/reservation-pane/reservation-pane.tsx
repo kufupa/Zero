@@ -1481,8 +1481,9 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
         <div className={styles.sourceMeta}>✉ <span>Selected email</span>{source.receivedAt && <time>{source.receivedAt}</time>}</div>
         <strong>{source.subject || 'Untitled email'}</strong><small>{source.sender || 'Sender unavailable'}</small>
         {source.attachments.length > 0 && <div className={styles.attachmentList}>
-          {source.attachments.map((item) => <button type="button" key={item.sourceRef} disabled={item.uploadability !== 'ready' || !onOpenAttachment}
-            onClick={() => onOpenAttachment?.(item.sourceRef)}><span>▤</span>{item.name}<small>{item.uploadability === 'ready' ? 'Ready' : item.uploadability}</small></button>)}
+          {source.attachments.map((item) => <button type="button" key={item.sourceRef} disabled={!onOpenAttachment}
+            aria-label={`Open source attachment ${item.name}`} onClick={() => onOpenAttachment?.(item.sourceRef)}>
+            <span>▤</span>{item.name}<small>Open source · Filing {humanize(item.uploadability)}</small></button>)}
         </div>}
       </section>
       {loadError && <div className={styles.alert} role="alert">{loadError}</div>}
@@ -2657,8 +2658,28 @@ function QuoteEditor(props: EditorProps & { busy: boolean; onLookup: () => void;
   const requestedArtifactsValue = props.editValue(artifactPath);
   const requestedArtifacts = Array.isArray(requestedArtifactsValue) ? requestedArtifactsValue
     : Array.isArray(intent.artifacts) ? intent.artifacts : [];
+  const bookingIntentPath = `${body}/provisionalBookingRequested`;
+  const bookingIntentValue = props.editValue(bookingIntentPath);
   return <>
     <div className={styles.notice}>Quote makes source-bound, unsent customer outputs only. It never creates a booking or sends email. This adapter supports one shared date range per quote run and per-room occupancy.</div>
+    <section className={styles.card}>
+      <div className={styles.cardTitle}><b>Booking intent</b><small>Staff decision required</small></div>
+      <FieldShell path={bookingIntentPath} label="Does the customer also want a separate reservation created?"
+        field={props.snapshot.fields[bookingIntentPath]} onOpenEvidence={props.onOpenEvidence} onDone={props.onDone}>
+        <select id={bookingIntentPath} className={styles.select}
+          value={bookingIntentValue === true ? 'yes' : bookingIntentValue === false ? 'no' : ''}
+          disabled={props.busy} onChange={(event) => {
+            if (event.target.value !== 'yes' && event.target.value !== 'no') return;
+            props.onStage(bookingIntentPath, event.target.value === 'yes');
+            props.onBlur(bookingIntentPath);
+          }}>
+          <option value="">Choose an intent</option>
+          <option value="no">No — quote only</option>
+          <option value="yes">Yes — a separate Create is requested</option>
+        </select>
+        <small className={styles.help}>“Yes” records a request for a separate Create workflow; it does not create a stay here. Quote only prepares unsent customer outputs.</small>
+      </FieldShell>
+    </section>
     <div className={styles.twoCol}>
       <button type="button" className={styles.secondaryButton} disabled={props.busy} onClick={props.onLookup}>Search native parties and quote availability</button>
       <button type="button" className={styles.secondaryButton} disabled={props.busy} onClick={props.onPrepare}>Prepare current native quote price</button>

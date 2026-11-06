@@ -146,7 +146,7 @@ function wireValueAtPath(draft: ReservationWorkflowV2Draft, path: string): unkno
 
 const reviewedAggregateArrays = new Set(['childAges', 'roomCodes', 'artifacts']);
 const nonReviewMetadata = new Set(['requestText', 'title', 'dateSectionId', 'requestedRooms', 'unassignedGuestNames',
-  'requestedTotals', 'scope', 'provisionalBookingRequested', 'profileIntent', 'candidateRefs', 'suggestedRef', 'sourceRefs', 'serviceRefs', 'documentRefs', 'targetRefs',
+  'requestedTotals', 'scope', 'profileIntent', 'candidateRefs', 'suggestedRef', 'sourceRefs', 'serviceRefs', 'documentRefs', 'targetRefs',
   'priceObservationRefs', 'lookupResultRefs', 'evidenceRefs', 'ownerRequestId', 'uploadArtifactRef', 'id', 'kind']);
 const nonReviewSubtrees = new Set(['requestedTotals', 'unassignedGuestNames']);
 const partyFieldNames = new Set(['bookingAgency', 'organization', 'arAccount', 'agency', 'company']);

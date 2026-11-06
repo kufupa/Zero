@@ -339,7 +339,8 @@ export async function reservationWorkflowV2LookupServices(ctx: ReservationWorkfl
       listUnsavedStay360AddOnItems: (page: unknown, options: Record<string, unknown>) => Promise<Record<string, unknown>>;
     };
     const { native, addon } = await createThenAddon(compiled, (page, readForm) =>
-      addonTool.listUnsavedStay360AddOnItems(page, { expectedCreate: compiled.nativeInput, readForm }));
+      addonTool.listUnsavedStay360AddOnItems(page, { expectedCreate: compiled.nativeInput,
+        expectedGuest: compiled.expectedGuest, readForm }));
     const listing = record(addon);
     const candidates = Array.isArray(listing?.candidates) ? listing.candidates.map(record).filter(Boolean) : [];
     const coverage = record(listing?.coverage);
@@ -418,7 +419,8 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
     };
     const items = plans.map(plan => plan.items);
     const { native, addon } = await createThenAddon(compiledCreate, (page, readForm) =>
-      addonTool.previewUnsavedStay360AddOns(page, { expectedCreate: compiledCreate.nativeInput, readForm, items }));
+      addonTool.previewUnsavedStay360AddOns(page, { expectedCreate: compiledCreate.nativeInput,
+        expectedGuest: compiledCreate.expectedGuest, readForm, items }));
     const preview = record(addon), nativeItems = Array.isArray(preview?.items) ? preview.items.map(record) : [];
     const createBound = native.outcome === 'prepared' && typeof record(native.requestBinding)?.digest === 'string' &&
       record(native.ratePlanAvailability) !== null;

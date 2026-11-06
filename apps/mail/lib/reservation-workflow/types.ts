@@ -18,6 +18,7 @@ export type ReservationSourceContext = {
   subject: string;
   sender: string;
   receivedAt?: string;
+  sourceText?: string;
   attachments: ReservationAttachmentView[];
 };
 
@@ -25,6 +26,7 @@ export type ReservationAttachmentView = {
   sourceRef: string;
   name: string;
   mimeType?: string;
+  size?: number;
   uploadability: 'ready' | 'checking' | 'unsupported' | 'unknown';
   detail?: string;
 };

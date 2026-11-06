@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSession } from '@/lib/auth-client';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { trpcClient } from '@/providers/query-provider';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
+import { openAttachmentViaBlob } from '@/lib/attachment-access';
+import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
 import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
 import { OutlookPaneSignIn } from '@/app/(routes)/outlook-pane/outlook-pane-sign-in';
@@ -10,6 +12,8 @@ import { SelectedEmailBlock } from './blocks/selected-email';
 import { ReservationWorkspace } from '@/components/reservation-pane/reservation-workspace';
 import { createTrpcReservationWorkflowClient } from '@/lib/reservation-workflow/client';
 import type { ReservationSourceContext } from '@/lib/reservation-workflow/types';
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { toast } from 'sonner';
 import {
   createPaneVersionWatch, fetchPaneVersion, loadedPaneBuild, PANE_RELEASE_POLL_MS,
   reloadAtEmailSwitch, reloadPane, type PaneVersion,
@@ -25,6 +29,15 @@ type ResolvedSource = {
   owner: string;
   source: ReservationSourceContext;
 };
+
+type SourceEvidencePreview = { owner: string | null; reference: string; title: string; text: string };
+
+async function sourceEvidenceRef(messageId: string, role: string, identity: string): Promise<string> {
+  const input = new TextEncoder().encode(`${messageId}\u001f${role}\u001f${identity}`);
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', input);
+  const hex = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `src_${hex.slice(0, 12)}`;
+}
 
 /** Installed bridge/auth/sync remain shared; the old quote workflow is never mounted here. */
 export function ReservationPaneHost({ bridge, preview = false, webSelectedThreadId }: Props) {
@@ -59,12 +72,82 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
   const currentOwner = useRef(owner);
   currentOwner.current = owner;
   const [resolved, setResolved] = useState<ResolvedSource | null>(null);
+  const source = resolved?.owner === owner ? resolved.source : null;
+  const [sourceEvidencePreview, setSourceEvidencePreview] = useState<SourceEvidencePreview | null>(null);
   const [sourceError, setSourceError] = useState<string | null>(null);
   const client = useMemo(() => createTrpcReservationWorkflowClient(trpcClient), []);
   const [pendingBuild, setPendingBuild] = useState<PaneVersion | null>(null);
   const [loadedBuild] = useState(() => loadedPaneBuild());
   const lastSelection = useRef<string | null>(null);
   const [reloading, setReloading] = useState(false);
+
+  const openAttachment = useCallback(async (sourceRef: string) => {
+    if (!source) return;
+    const attachment = source.attachments.find((item) => item.sourceRef === sourceRef);
+    if (!attachment) {
+      toast.error('This attachment is no longer part of the selected email.');
+      return;
+    }
+    const mailboxOptions = inMailbox(source.mailboxId);
+    if (!mailboxOptions) {
+      toast.error('The selected mailbox is unavailable. Reopen the email and try again.');
+      return;
+    }
+    try {
+      const mail = trpcClient.mail as unknown as {
+        getAttachment: { query(input: { messageId: string; attachmentId: string }, options: { context: { activeTransportId: string } }): Promise<{ url: string }> };
+      };
+      await openAttachmentViaBlob({ messageId: source.messageId, attachmentId: attachment.sourceRef,
+        filename: attachment.name, mimeType: attachment.mimeType ?? 'application/octet-stream', size: attachment.size }, {
+        getSignedUrl: async (messageId, attachmentId) => {
+          const result = await mail.getAttachment.query({ messageId, attachmentId }, mailboxOptions);
+          return result.url;
+        },
+      });
+    } catch (error) {
+      toast.error(error instanceof Error && error.message === 'Popup blocked'
+        ? 'Allow popups to open this attachment.' : 'Nava could not open this source attachment.');
+    }
+  }, [source]);
+
+  const openEvidence = useCallback(async (reference: string) => {
+    if (!source) return;
+    try {
+      const currentMessageRef = await sourceEvidenceRef(source.messageId, 'message', source.messageId);
+      if (currentOwner.current !== owner) return;
+      if (currentMessageRef === reference) {
+        const headers = [
+          `From: ${source.sender}`,
+          `Subject: ${source.subject || 'Untitled email'}`,
+          `Received: ${source.receivedAt || source.arrivedAt}`,
+        ];
+        const body = source.sourceText?.trim() || '[This synced email has no readable message text.]';
+        setSourceEvidencePreview({ owner, reference, title: 'Selected email evidence', text: `${headers.join('\n')}\n\n${body}` });
+        return;
+      }
+      for (const attachment of source.attachments) {
+        const textRef = await sourceEvidenceRef(source.messageId, 'attachment_text', attachment.sourceRef);
+        if (currentOwner.current !== owner) return;
+        if (textRef === reference) {
+          await openAttachment(attachment.sourceRef);
+          return;
+        }
+        for (let page = 1; page <= 3; page += 1) {
+          const visionRef = await sourceEvidenceRef(source.messageId, 'attachment_vision', `${attachment.sourceRef}:${page}`);
+          if (currentOwner.current !== owner) return;
+          if (visionRef === reference) {
+            await openAttachment(attachment.sourceRef);
+            return;
+          }
+        }
+      }
+      if (currentOwner.current !== owner) return;
+      setSourceEvidencePreview({ owner, reference, title: 'Source item not available in this email',
+        text: 'This source is not available in the selected email. Check related emails or the reservation in Infor to review it.' });
+    } catch {
+      toast.error('Nava could not resolve this source reference.');
+    }
+  }, [email?.bodyText, email?.receivedTime, email?.senderName, email?.subject, openAttachment, owner, source]);
 
   useEffect(() => {
     if (!import.meta.env.PROD || !loadedBuild) return;
@@ -118,11 +201,12 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
           arrivedAt: result.source.arrivedAt,
           internetMessageId: result.internetMessageId,
           selectionEpoch: selectedEpoch,
-          subject: email.subject,
-          sender: email.senderEmail,
+          subject: result.sourceSubject,
+          sender: result.sourceSender,
+          sourceText: result.sourceText,
           receivedAt: result.source.arrivedAt,
           attachments: result.attachments.filter((item) => !item.isInline).map((item) => ({
-            sourceRef: item.id, name: item.filename, mimeType: item.mimeType,
+            sourceRef: item.id, name: item.filename, mimeType: item.mimeType, size: item.sizeBytes,
             uploadability: /\.pdf$/iu.test(item.filename) &&
               ['application/pdf', 'application/x-pdf', 'application/octet-stream'].includes(
                 item.mimeType.split(';', 1)[0]?.trim().toLowerCase() ?? '') &&
@@ -142,7 +226,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
   if (sessionLoading || connectionLoading) return <p className="p-4 text-sm text-slate-600">Loading Nava…</p>;
   if (!session?.user || bridge.requiresRelogin) return <OutlookPaneSignIn />;
   if (reloading) return <p className="p-4 text-sm text-slate-600">Loading the latest Nava pane…</p>;
-  const source = resolved?.owner === owner ? resolved.source : null;
+  const currentEvidencePreview = sourceEvidencePreview?.owner === owner ? sourceEvidencePreview : null;
   return (
     <div className="flex h-full min-h-0 flex-col bg-slate-50 text-slate-800">
       <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-white p-3">
@@ -162,7 +246,20 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
       <SelectedEmailBlock activeEmail={email} />
       {sourceError ? <p role="status" className="p-3 text-sm text-slate-600">{sourceError}</p> : null}
       {email && !source && !sourceError ? <p role="status" className="p-3 text-sm text-slate-600">Opening selected email…</p> : null}
-      {source ? <ReservationWorkspace key={`${owner}:${source.selectionEpoch}`} source={source} client={client} /> : null}
+      {source ? <ReservationWorkspace key={`${owner}:${source.selectionEpoch}`} source={source} client={client}
+        onOpenEvidence={(reference) => void openEvidence(reference)} onOpenAttachment={(reference) => void openAttachment(reference)} /> : null}
+      <Dialog open={currentEvidencePreview !== null} onOpenChange={(open) => { if (!open) setSourceEvidencePreview(null); }}>
+        <DialogContent showOverlay className="max-h-[85dvh] max-w-3xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{currentEvidencePreview?.title ?? 'Source evidence'}</DialogTitle>
+            <DialogDescription>Review the original email or attachment.</DialogDescription>
+          </DialogHeader>
+          {currentEvidencePreview && <pre className="max-h-[65dvh] overflow-auto whitespace-pre-wrap break-words rounded-md border bg-white p-3 text-xs leading-relaxed">
+            {currentEvidencePreview.text}
+          </pre>}
+          <DialogClose asChild><button type="button" className="rounded-md border px-3 py-2 text-sm">Close</button></DialogClose>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

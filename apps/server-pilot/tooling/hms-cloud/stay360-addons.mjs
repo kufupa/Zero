@@ -318,8 +318,12 @@ function uniqueFormValue(fields, name) {
   return matches.length === 1 ? String(matches[0].value ?? '').trim() : null;
 }
 
-async function bindUnsavedCreate(page, state, expected, readForm) {
+async function bindUnsavedCreate(page, state, expected, expectedGuest, readForm) {
   if (typeof readForm !== 'function') fail('ADDONS_CREATE_FORM_READER_REQUIRED', 'needs_input');
+  if (typeof expectedGuest?.firstName !== 'string' || !expectedGuest.firstName ||
+      typeof expectedGuest?.lastName !== 'string' || !expectedGuest.lastName) {
+    fail('ADDONS_CREATE_GUEST_EXPECTED_REQUIRED', 'needs_input');
+  }
   const read = await readForm();
   if (read?.outcome !== 'ok' || !Array.isArray(read.fields)) fail('ADDONS_CREATE_FORM_READBACK_REQUIRED', 'needs_input');
   const fields = read.fields;
@@ -336,7 +340,7 @@ async function bindUnsavedCreate(page, state, expected, readForm) {
   const property = await page.evaluate(() => document.documentElement.dataset.propertyCode ??
     /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(document.title)?.[1] ?? null);
   if (property !== 'HRCEN' || confirmation !== '' || guestId !== String(expected?.guest?.profileId ?? '') ||
-      firstName !== expected?.guest?.firstName || lastName !== expected?.guest?.lastName ||
+      firstName !== expectedGuest.firstName || lastName !== expectedGuest.lastName ||
       arrival !== expected?.stay?.arrival || departure !== expected?.stay?.departure ||
       adults !== String(expected?.stay?.adults ?? '') || !childrenMatch ||
       roomType !== expected?.room?.roomType || ratePlan !== expected?.room?.ratePlan || !averageRate || !totalRate) {
@@ -353,8 +357,8 @@ async function bindUnsavedCreate(page, state, expected, readForm) {
   return target;
 }
 
-async function ensureUnsavedCreateOpen(page, state, expected, readForm) {
-  const current = await bindUnsavedCreate(page, state, expected, readForm);
+async function ensureUnsavedCreateOpen(page, state, expected, expectedGuest, readForm) {
+  const current = await bindUnsavedCreate(page, state, expected, expectedGuest, readForm);
   if (await popup(page).count()) {
     if (!state.target || JSON.stringify(state.target) !== JSON.stringify(current)) fail('ADDONS_UNOWNED_POPUP');
     return current;
@@ -658,11 +662,11 @@ export async function prepareStay360AddOns(page, confirmation, items) {
  * This never returns a save capability or session/prepared token; each caller must
  * run a fresh saved-target Prepare before any future Add-On Save.
  */
-export async function previewUnsavedStay360AddOns(page, { expectedCreate, readForm, items } = {}) {
+export async function previewUnsavedStay360AddOns(page, { expectedCreate, expectedGuest, readForm, items } = {}) {
   try { items = structuredClone(items); } catch { return { outcome: 'needs_input', issue: 'ADDONS_ITEM_INVALID' }; }
   return run(page, async state => {
     validateItems(items);
-    const target = await ensureUnsavedCreateOpen(page, state, expectedCreate, readForm);
+    const target = await ensureUnsavedCreateOpen(page, state, expectedCreate, expectedGuest, readForm);
     const previews = [];
     for (const requested of items) {
       try {
@@ -684,9 +688,9 @@ export async function previewUnsavedStay360AddOns(page, { expectedCreate, readFo
 }
 
 /** Read the current native ITEM catalogue from the same verified unsaved New Guest Stay. */
-export async function listUnsavedStay360AddOnItems(page, { expectedCreate, readForm } = {}) {
+export async function listUnsavedStay360AddOnItems(page, { expectedCreate, expectedGuest, readForm } = {}) {
   return run(page, async state => {
-    const target = await ensureUnsavedCreateOpen(page, state, expectedCreate, readForm);
+    const target = await ensureUnsavedCreateOpen(page, state, expectedCreate, expectedGuest, readForm);
     const found = await catalogue(page, state, 'ITEM');
     await closePicker(page);
     return { outcome: 'ok', propertyCode: 'HRCEN', unsaved: true, target,

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { MAIL_KINDS, workEvent, workItem } from '../db/schema/work.js';
 import { attachment, mailboxAccess, mailThread, message } from '../db/schema/mail.js';
@@ -229,6 +229,78 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
       revisionHead: itemRow.revisionHead, seq: itemRow.revisionSeq };
   });
   return saved;
+}
+
+/** Only an untouched extraction failure is eligible for a bounded retry. */
+function retryablePrefill(draft: ReservationWorkflowV2Draft): boolean {
+  return draft.status === 'partial' && draft.errors.some((error) => error.stage === 'extract' &&
+    ['extract_unavailable', 'model_timeout', 'model_error'].includes(error.code)) &&
+    draft.proposal.content.requests.length === 1 && draft.proposal.content.requests[0]?.kind === 'other' &&
+    !draft.proposal.content.services.length && !draft.proposal.content.documents.length &&
+    draft.observations.length === 1 && draft.observations[0]?.kind === 'source' &&
+    !draft.operationResults.length && !Object.keys(draft.fieldOverrides).length && !Object.keys(draft.staffReviews).length;
+}
+
+type PrefillRetryInput = { source: ReservationWorkflowV2SourceInput; workItemId: string;
+  revision: number; seq: number; draft: ReservationWorkflowV2Draft };
+
+async function hasPrefillRetryActivity(tx: WorkTx, workItemId: string): Promise<boolean> {
+  const [activity] = await tx.select({ id: workEvent.id }).from(workEvent).where(and(eq(workEvent.workItemId, workItemId),
+    or(and(eq(workEvent.actorKind, 'user'), ne(workEvent.type, 'pane.opened')),
+      eq(workEvent.type, 'write.evidence'), eq(workEvent.type, 'hms.lookup.finished')))).limit(1);
+  return Boolean(activity);
+}
+
+/** Claim at most two retry attempts per failed generation, with a durable cooldown. */
+export async function claimReservationWorkflowV2PrefillRetry(ctx: Context, input: PrefillRetryInput): Promise<boolean> {
+  if (!propertyMatches(ctx) || !retryablePrefill(input.draft)) return false;
+  return ctx.db.transaction(async (tx) => {
+    await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
+    const item = await loadItem(tx, ctx, input.workItemId, true);
+    if (!item || item.revision !== input.revision || item.revisionSeq !== input.seq) return false;
+    const current = await buildResult(tx, ctx, item, input.source);
+    if (current.status !== 'ok' || !retryablePrefill(current.draft) ||
+        JSON.stringify(current.draft) !== JSON.stringify(input.draft) || await hasPrefillRetryActivity(tx, item.id)) return false;
+    const fieldPath = `${RESERVATION_WORKFLOW_V2_STATE_KEY}:prefill_retry:${current.draft.generationId}`;
+    const attempts = await tx.select({ at: workEvent.at }).from(workEvent).where(and(
+      eq(workEvent.workItemId, item.id), eq(workEvent.type, 'field.seed'), eq(workEvent.fieldPath, fieldPath)))
+      .orderBy(desc(workEvent.at)).limit(2);
+    if (attempts.length >= 2 || (attempts[0] && Date.now() - attempts[0].at.getTime() < 15 * 60_000)) return false;
+    await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'system', type: 'field.seed', fieldPath,
+      value: { generationId: current.draft.generationId, attempt: attempts.length + 1 },
+      evidence: { sourceHash: input.source.sourceHash } });
+    return true;
+  });
+}
+
+/** Install a successful retry only if the original fallback is still unchanged. */
+export async function replaceReservationWorkflowV2PrefillRetry(ctx: Context,
+  input: PrefillRetryInput & { seed: ReservationWorkflowV2Seed }): Promise<ReservationWorkflowV2StateResult> {
+  if (!propertyMatches(ctx)) return { status: 'wrong_property' };
+  return ctx.db.transaction(async (tx) => {
+    await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
+    const item = await loadItem(tx, ctx, input.workItemId, true);
+    if (!item) return { status: 'not_found' as const };
+    const current = await buildResult(tx, ctx, item, input.source);
+    if (current.status !== 'ok') return current;
+    if (item.revision !== input.revision || item.revisionSeq !== input.seq || !retryablePrefill(current.draft) ||
+        JSON.stringify(current.draft) !== JSON.stringify(input.draft) || await hasPrefillRetryActivity(tx, item.id)) return current;
+    const next = reservationWorkflowV2DraftSchema.parse({ ...current.draft, revision: item.revision + 1,
+      generationId: input.seed.generationId ?? randomUUID(), status: input.seed.status, proposal: input.seed.proposal,
+      observations: input.seed.observations, fieldReviewRequirements: input.seed.fieldReviewRequirements ?? {},
+      errors: input.seed.errors ?? [] });
+    const nextState = { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next };
+    const advanced = advancePaneRevision({ revision: item.revision, revisionHead: item.revisionHead,
+      seq: item.revisionSeq, previousState: item.state, nextState, extractionId: item.extractionId });
+    await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'ai', type: 'field.seed',
+      fieldPath: RESERVATION_WORKFLOW_V2_STATE_KEY,
+      value: { contractVersion: RESERVATION_WORKFLOW_V2_VERSION, status: next.status, generationId: next.generationId },
+      aiSource: RESERVATION_PREFILL_SCHEMA_VERSION, evidence: advanced.evidence });
+    await tx.update(workItem).set({ state: nextState, revision: advanced.revision, revisionHead: advanced.revisionHead,
+      revisionSeq: item.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, item.id));
+    return { status: 'ok' as const, draft: next, revision: advanced.revision,
+      revisionHead: advanced.revisionHead, seq: item.revisionSeq + 1 };
+  });
 }
 
 type MutationInput = { workItemId: string; source: ReservationWorkflowV2SourceInput; expectedRevision: number; expectedSeq: number };
