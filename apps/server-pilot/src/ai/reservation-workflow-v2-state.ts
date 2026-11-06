@@ -237,7 +237,14 @@ const NEVER_EDIT = new Set(['id', 'kind', 'sourceRefs', 'serviceRefs', 'document
 
 function editablePath(draft: ReservationWorkflowV2Draft, path: string): boolean {
   const parts = pathParts(path);
-  if (!parts || parts.length < 5 || parts.some((part) => NEVER_EDIT.has(part))) return false;
+  if (!parts || parts.length < 5) return false;
+  const documentKind = parts[2] === 'documents' && parts.length === 5 && parts[4] === 'kind';
+  const request = draft.proposal.content.requests.find((entry) => entry.id === parts[3]);
+  const targetSelection = request?.kind === 'filing' && parts.length === 9 && parts[4] === 'body'
+    && parts[5] === 'targets' && parts[6] === 'include' && parts[8] === 'suggestedRef'
+    && request.body.targets?.mode === 'explicit' && request.body.targets.include.some((hint) => hint.id === parts[7]);
+  if (parts.some((part, index) => NEVER_EDIT.has(part) && !(index === parts.length - 1 &&
+      ((part === 'kind' && documentKind) || (part === 'suggestedRef' && targetSelection))))) return false;
   const [, section, collection, stableId, branch] = parts;
   if (section !== 'content' || !['requests', 'services', 'documents'].includes(collection!)) return false;
   const rows = collection === 'requests' ? draft.proposal.content.requests :
