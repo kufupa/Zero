@@ -48,6 +48,17 @@ const hasValue = (value: unknown) => value !== null && value !== undefined
 const humanize = (value: string) => value.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').replace(/^./, (letter) => letter.toUpperCase());
 const sameIdentityText = (left: unknown, right: unknown) => text(left).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase()
   === text(right).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
+const normalizeGuestName = (value: unknown) => text(value).trim().replace(/^(?:(?:mr|mrs|ms|miss|dr|prof|professor)\.?\s+)+/i, '')
+  .normalize('NFKC').toLocaleLowerCase('en-US').replace(/[\u2018\u2019\u02bc]/g, "'")
+  .replace(/\s+/gu, ' ')
+  .replace(/(^|\s)((?:[a-z]\.\s*)+[a-z]\.?)(?=\s|$)/g, (_match, prefix: string, initials: string) =>
+    prefix + initials.replace(/[.\s]/g, ''))
+  .replace(/\b([a-z])\.(?=\s|$)/g, '$1')
+  .replace(/\b(?:[a-z]\s+)+[a-z]\b/g, (initials) => initials.replace(/\s+/g, ''));
+const sameGuestName = (left: unknown, right: unknown) => {
+  const name = normalizeGuestName(left);
+  return Boolean(name && name === normalizeGuestName(right));
+};
 
 function guestSelectionMatches(snapshot: ReservationPaneSnapshot, path: string, guest: { firstName: unknown; lastName: unknown; email?: unknown }): boolean {
   const selected = nativeSelectionValue(snapshot, path);
@@ -60,8 +71,8 @@ function guestSelectionMatches(snapshot: ReservationPaneSnapshot, path: string, 
   const candidates: unknown[] = Array.isArray(result?.candidates) ? result.candidates : [];
   return candidates.some((value) => {
     const candidate = record(value);
-    return Boolean(candidate && sameIdentityText(candidate.firstName, guest.firstName)
-      && sameIdentityText(candidate.lastName, guest.lastName)
+    return Boolean(candidate && sameGuestName(candidate.firstName, guest.firstName)
+      && sameGuestName(candidate.lastName, guest.lastName)
       && (!hasValue(guest.email) || sameIdentityText(candidate.email, guest.email)) && hasValue(candidate.nativeId));
   });
 }
@@ -2153,14 +2164,19 @@ function GuestProfileStatus({ snapshot, path, expected, onStage, onBlur, onDone 
       return Array.isArray(result?.candidates) ? result.candidates.map((candidate) => ({ observationRef: item.ref, candidate: record(candidate) })) : [];
     }).filter((item): item is { observationRef: string; candidate: Record<string, unknown> } => Boolean(item.candidate));
   const selected = guestSelectionMatches(snapshot, path, expected) ? selectedRef : null;
+  const selectedCandidates = candidates.filter(({ observationRef, candidate }) => observationRef === selected &&
+    sameGuestName(candidate.firstName, expected.firstName) && sameGuestName(candidate.lastName, expected.lastName) &&
+    (!hasValue(expected.email) || sameIdentityText(candidate.email, expected.email)) && hasValue(candidate.nativeId));
+  const selectedCandidate = selectedCandidates.length === 1 ? selectedCandidates[0]!.candidate : null;
   return <div className={selected ? styles.profileReady : styles.profileWarning} data-profile-path={path}>
     <b>{selected ? 'Existing guest profile selected' : selectedRef ? 'Selection no longer matches this guest' : 'Select an existing Infor guest profile'}</b>
-    <span>{selectedObservation ? `Native match · ${selectedObservation.status}` : selectedRef ?? 'A typed name alone is not a profile selection.'}</span>
+    <span>{selectedCandidate ? `${text(selectedCandidate.firstName)} ${text(selectedCandidate.lastName)} · Profile ${text(selectedCandidate.nativeId)}` :
+      selectedObservation ? `Native match · ${selectedObservation.status}` : selectedRef ?? 'A typed name alone is not a profile selection.'}</span>
     {selected && selectedRef && (snapshot.fields[path]?.review ?? snapshot.session.draft.staffReviews[path]?.status) !== 'accepted' && onDone
       ? <button type="button" className={styles.inlineButton} onClick={() => onDone(path)}>Confirm selected guest</button> : null}
     {!selected && candidates.length > 0 && <div className={styles.candidateList}>
       {candidates.map(({ observationRef, candidate }, index) => {
-        const matchesGuest = sameIdentityText(candidate.firstName, expected.firstName) && sameIdentityText(candidate.lastName, expected.lastName)
+        const matchesGuest = sameGuestName(candidate.firstName, expected.firstName) && sameGuestName(candidate.lastName, expected.lastName)
           && (!hasValue(expected.email) || sameIdentityText(candidate.email, expected.email)) && hasValue(candidate.nativeId);
         return <div className={styles.candidateOption} key={`${observationRef}-${String(candidate.nativeId ?? index)}`}>
           <span><b>{text(candidate.firstName)} {text(candidate.lastName)}</b><small>{text(candidate.email) || `Profile ${text(candidate.nativeId)}`}</small></span>
