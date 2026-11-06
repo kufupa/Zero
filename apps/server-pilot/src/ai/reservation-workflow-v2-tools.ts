@@ -34,7 +34,7 @@ import {
   resolveNeverDispatchedCreate,
   type HmsLabtestWriteHandle,
 } from './hms-labtest-dispatch.js';
-import { hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
+import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
 import { persistHmsShots, verifyStoredHmsShot } from './hms-shots-store.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS, isPropertyReadLockDeadline } from '../hms/property-read-lock.js';
@@ -1352,7 +1352,7 @@ async function verifiedEarlierCreateSiblings(ctx: ReservationWorkflowV2ServerCon
     const binding = preparedObservation && record(record(preparedObservation.result)?.requestBinding);
     const approvedRequest = record(binding?.request);
     const approvedGuest = record(approvedRequest?.guest), approvedStay = record(approvedRequest?.stay);
-    if (!approvedGuest || !approvedStay || approvedGuest.nativeId == null ||
+    if (!approvedRequest || !approvedGuest || !approvedStay || approvedGuest.nativeId == null ||
         !/^\d+$/.test(String(approvedGuest.nativeId)) || !sameName(approvedGuest.firstName, compiled.expectedGuest.firstName) ||
         !sameName(approvedGuest.lastName, compiled.expectedGuest.lastName) || approvedStay.arrival !== currentStay.arrival) continue;
     candidates.push({ operationId: operation.id, allocationId: operation.allocationId,

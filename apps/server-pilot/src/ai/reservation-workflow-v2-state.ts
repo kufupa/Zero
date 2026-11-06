@@ -258,7 +258,15 @@ function updateDraft(current: ReservationWorkflowV2Draft, input: {
 }): ReservationWorkflowV2Draft {
   const fieldOverrides = { ...current.fieldOverrides };
   const staffReviews = { ...current.staffReviews };
-  if (input.override) fieldOverrides[input.fieldPath] = input.override;
+  if (input.override) {
+    fieldOverrides[input.fieldPath] = input.override;
+    // A review belongs to the displayed value and scope; replacing a parent also replaces its child values.
+    for (const path of Object.keys(staffReviews)) {
+      if (path === input.fieldPath || path.startsWith(`${input.fieldPath}/`) || input.fieldPath.startsWith(`${path}/`)) {
+        delete staffReviews[path];
+      }
+    }
+  }
   if (input.review) staffReviews[input.fieldPath] = input.review;
   return reservationWorkflowV2DraftSchema.parse({ ...current, revision: current.revision + 1, fieldOverrides, staffReviews });
 }
