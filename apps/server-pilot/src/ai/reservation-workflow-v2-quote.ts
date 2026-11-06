@@ -465,7 +465,7 @@ function compileQuote(
     selectionEpoch: draft.revision,
     inputRevision: draft.revision,
     groups: nativeGroups,
-    salesStrategy: strategy,
+    salesStrategy: strategy === 'GOV' ? 'Government' : strategy,
     company: company.party?.name ?? '',
     agency: agency.party?.name ?? '',
     attention,
