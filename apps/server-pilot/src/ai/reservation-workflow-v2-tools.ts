@@ -1043,7 +1043,7 @@ function nativeInputMatchesBinding(compiled: Extract<CreateCompile, { outcome: '
       sameName(record(bound.reasonForStay)?.display, input.reasonForStay)) &&
     (input.note === undefined || bound.note === input.note) &&
     (input.billingReference === undefined || bound.billingReference === input.billingReference) &&
-    (input.track === undefined || sameName(record(bound.track)?.display, input.track)) &&
+    (input.track === undefined || input.track === record(bound.track)?.lookupCode || input.track === record(bound.track)?.display) &&
     (input.guestoptin4 !== false || bound.guestOptIn === false) &&
     (input.booker === undefined || canonicalJson(bound.booker) === canonicalJson(input.booker)) &&
     (input.cms === undefined || (record(bound.sendHmsConfirmation)?.kind === (record(input.cms)?.send === true ? 'send' : 'never') &&
