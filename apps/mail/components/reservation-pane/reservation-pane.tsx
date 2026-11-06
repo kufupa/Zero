@@ -1857,8 +1857,7 @@ function QuoteRateChoices(props: EditorProps & { group: Record<string, unknown>;
             {typeof option.roomsLeft === 'number' ? ` · ${option.roomsLeft} rooms left` : ''}{option.priced === 'summary' ? ' · summary only' : ''}</small></span>
         <button type="button" disabled={props.busy || !roomCode || !rateCode || !board} aria-pressed={selected}
           onClick={() => {
-            const rateCodes = props.editValue(roomCodesPath);
-            props.onStage(roomCodesPath, [...new Set([...(Array.isArray(rateCodes) ? rateCodes.map(text).filter(Boolean) : []), roomCode])]);
+            props.onStage(roomCodesPath, [roomCode]);
             props.onStage(ratePath, rateCode);
             props.onStage(boardPath, board);
             props.onBlur(roomCodesPath); props.onBlur(ratePath); props.onBlur(boardPath);
