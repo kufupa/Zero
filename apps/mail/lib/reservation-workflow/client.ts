@@ -144,7 +144,7 @@ function flattenFields(value: unknown, path: string, out: ReservationPaneSnapsho
     const requirement = draft.fieldReviewRequirements[path];
     const review = draft.staffReviews[path];
     out[path] = { path, value: effectiveValue(value, override), ...(override ? { override } : {}),
-      required: requirement?.required ?? false, review: review?.status ?? 'pending',
+      required: requirement?.required !== false, review: review?.status ?? 'pending',
       provenance: override?.state === 'set' ? 'manual' : annotation?.basis ?? 'unknown',
       evidenceRefs: annotation?.evidenceRefs ?? [] };
     value.forEach((item, index) => flattenFields(item, `${path}/${index}`, out, draft));
@@ -158,7 +158,7 @@ function flattenFields(value: unknown, path: string, out: ReservationPaneSnapsho
     const review = draft.staffReviews[path];
     out[path] = {
       path, value: effectiveValue(value, override), ...(override ? { override } : {}),
-      required: requirement?.required ?? false, review: review?.status ?? 'pending',
+      required: requirement?.required !== false, review: review?.status ?? 'pending',
       provenance: override?.state === 'set' ? 'manual' : annotation?.basis ?? (claim ? 'source' : 'unknown'),
       evidenceRefs: annotation?.evidenceRefs ?? claim?.sourceRefs ?? [],
       ...(review?.status === 'flagged' && review.note ? { issue: review.note } : {}),
@@ -182,7 +182,7 @@ function flattenFields(value: unknown, path: string, out: ReservationPaneSnapsho
     path,
     value: effectiveValue(value, override),
     ...(override ? { override } : {}),
-    required: reviewRequirement?.required ?? false,
+    required: reviewRequirement?.required !== false,
     review: review?.status ?? 'pending',
     provenance: override?.state === 'set' ? 'manual' : annotation?.basis ?? (claim ? 'source' : 'unknown'),
     evidenceRefs: annotation?.evidenceRefs ?? claim?.sourceRefs ?? [],
@@ -205,16 +205,16 @@ function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot
     flattenFields(row, pointer('proposal', 'content', 'services', index), fields, draft);
   }
   for (const row of draft.proposal.content.documents) flattenFields(row, pointer('proposal', 'content', 'documents', row.id), fields, draft);
-  for (const path of Object.keys(draft.fieldOverrides)) {
+  for (const path of new Set([...Object.keys(draft.fieldOverrides), ...Object.keys(draft.fieldReviewRequirements)])) {
     if (fields[path]) continue;
     const override = draft.fieldOverrides[path];
     const requirement = draft.fieldReviewRequirements[path];
     const review = draft.staffReviews[path];
     const annotation = draft.proposal.annotations.find((entry) => entry.path === path);
     const claim = draft.proposal.sourceClaims.find((entry) => entry.path === path);
-    fields[path] = { path, value: effectiveValue(wireValueAtPath(draft, path), override), override,
-      required: requirement?.required ?? false, review: review?.status ?? 'pending',
-      provenance: override.state === 'set' ? 'manual' : annotation?.basis ?? (claim ? 'source' : 'unknown'),
+    fields[path] = { path, value: effectiveValue(wireValueAtPath(draft, path), override), ...(override ? { override } : {}),
+      required: requirement?.required !== false, review: review?.status ?? 'pending',
+      provenance: override?.state === 'set' ? 'manual' : annotation?.basis ?? (claim ? 'source' : 'unknown'),
       evidenceRefs: annotation?.evidenceRefs ?? claim?.sourceRefs ?? [],
       ...(review?.status === 'flagged' && review.note ? { issue: review.note } : {}) };
   }

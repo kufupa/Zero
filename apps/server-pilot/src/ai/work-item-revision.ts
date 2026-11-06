@@ -51,8 +51,8 @@ export function withPaneState(state: PaneState, pane: PaneState): PaneState {
   }
   for (const [key, value] of Object.entries(paneStateOf(pane))) {
     if (key === RESERVATION_V2_KEY) {
-      const current = next[key] && typeof next[key] === 'object' && !Array.isArray(next[key])
-        ? next[key] as Record<string, unknown> : {};
+      const current = state[key] && typeof state[key] === 'object' && !Array.isArray(state[key])
+        ? state[key] as Record<string, unknown> : {};
       const restored = value && typeof value === 'object' && !Array.isArray(value)
         ? value as Record<string, unknown> : {};
       // Undo only human-owned editable/review state. Current observations, proposal and native results survive.

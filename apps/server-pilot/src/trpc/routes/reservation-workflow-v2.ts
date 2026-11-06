@@ -53,11 +53,12 @@ const sourceInput = z.object({
   selection: paneSourceSelectionSchema,
 }).strict();
 
-async function nativeContext(userId: string, transportId: string, source: { threadId: string; messageId: string }) {
-  const scoped = context(userId, transportId);
+async function nativeContext(user: { id: string; sessionId?: string; sessionProfile?: 'legacy' | 'remote' },
+  transportId: string, source: { threadId: string; messageId: string }) {
+  const scoped = context(user.id, transportId);
   const origin = await guardCenturionHmsMailboxOrigin({ transportId, threadId: source.threadId, messageId: source.messageId });
   if (!origin.ok) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: origin.message });
-  return { db: scoped.db, transport: { id: transportId }, user: { id: userId },
+  return { db: scoped.db, transport: { id: transportId }, user: { ...user },
     property: { propertyCode: scoped.propertyCode } };
 }
 
@@ -165,7 +166,7 @@ export const reservationWorkflowV2Router = router({
     return withPreparation(moveReservationWorkflowV2History(scoped, { ...input, direction: 'redo' }), scoped.propertyCode);
   }),
   lookup: mailboxProcedure.input(reservationWorkflowV2LookupInputSchema).mutation(async ({ input, ctx }) => {
-    const scoped = await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source);
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
     const workflow = await nativeWorkflow(scoped, input, input.requestId);
     if (workflow.result) return workflow.result;
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteLookup(scoped, input);
@@ -173,7 +174,7 @@ export const reservationWorkflowV2Router = router({
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
   prepare: mailboxProcedure.input(reservationWorkflowV2PrepareInputSchema).mutation(async ({ input, ctx }) => {
-    const scoped = await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source);
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
     const workflow = await nativeWorkflow(scoped, input, input.requestId);
     if (workflow.result) return workflow.result;
     if (workflow.kind === 'quote') return reservationWorkflowV2QuotePrepare(scoped, input);
@@ -181,7 +182,7 @@ export const reservationWorkflowV2Router = router({
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
   execute: mailboxProcedure.input(reservationWorkflowV2ExecuteInputSchema).mutation(async ({ input, ctx }) => {
-    const scoped = await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source);
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
     const workflow = await nativeWorkflow(scoped, input, input.requestId);
     if (workflow.result) return workflow.result;
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteExecute(scoped, input);
@@ -189,11 +190,11 @@ export const reservationWorkflowV2Router = router({
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
   lookupServices: mailboxProcedure.input(servicesInput).mutation(async ({ input, ctx }) =>
-    reservationWorkflowV2LookupServices(await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source), input)),
+    reservationWorkflowV2LookupServices(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
   prepareServices: mailboxProcedure.input(servicesInput).mutation(async ({ input, ctx }) =>
-    reservationWorkflowV2PreviewServices(await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source), input)),
+    reservationWorkflowV2PreviewServices(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
   reconcile: mailboxProcedure.input(reservationWorkflowV2ReconcileInputSchema).mutation(async ({ input, ctx }) => {
-    const scoped = await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source);
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
     const workflow = await nativeWorkflow(scoped, input, undefined, input.operationId);
     if (workflow.result) return workflow.result;
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteReconcile(scoped, input);

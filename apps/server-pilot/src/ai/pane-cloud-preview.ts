@@ -900,7 +900,7 @@ export async function proveCreateRecovery(intent: HmsLabtestIntent): Promise<Cre
     }
     return { confirmation: observed.confirmation, readbackDigest: hash(observed.readback),
       savedShot: { runId, sha256: saved.sha256 }, shots,
-      nativeReadback: observed.readback as Record<string, unknown> };
+      nativeReadback: { ...observed.readback as Record<string, unknown>, confirmation: observed.confirmation } };
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 

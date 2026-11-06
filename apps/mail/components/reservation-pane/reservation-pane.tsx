@@ -181,10 +181,11 @@ function observedNativeCodes(snapshot: ReservationPaneSnapshot, path: string): A
 function isInputReady(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
   const { body, data, sections, allocations } = createSections(snapshot, request);
   if (!data || allocations.length === 0) return false;
-  if (sections.some(({ value: section }) => typeof section.requestedRooms === 'number'
-      && allocations.filter(({ value }) => value.dateSectionId === section.id).length !== section.requestedRooms)) return false;
-  const readyScalar = (path: string) => hasValue(valueFor(snapshot, path));
-  if (!readyScalar(`${body}/shared/guaranteeType`)) return false;
+  if (sections.some(({ value: section, index }) => {
+    const requestedRooms = valueFor(snapshot, `${body}/dateSections/${index}/requestedRooms`);
+    return typeof requestedRooms === 'number'
+      && allocations.filter(({ value }) => value.dateSectionId === section.id).length !== requestedRooms;
+  })) return false;
   return allocations.every(({ value: allocation, index }) => {
     const dateIndex = Array.isArray(data.dateSections)
       ? data.dateSections.findIndex((entry) => record(entry)?.id === allocation.dateSectionId) : -1;
@@ -194,6 +195,7 @@ function isInputReady(snapshot: ReservationPaneSnapshot, request: ReservationReq
     const departure = valueFor(snapshot, `${sectionRoot}/departure`);
     const room = inheritedValue(snapshot, [`${allocRoot}/overrides/roomType`, `${sectionRoot}/defaults/roomType`, `${body}/shared/roomType`]);
     const rate = inheritedValue(snapshot, [`${allocRoot}/overrides/ratePlan`, `${sectionRoot}/defaults/ratePlan`, `${body}/shared/ratePlan`]);
+    const guarantee = inheritedValue(snapshot, [`${allocRoot}/overrides/guaranteeType`, `${sectionRoot}/defaults/guaranteeType`, `${body}/shared/guaranteeType`]);
     const guest = record(allocation.guest) ?? {};
     const firstName = fieldOrBase(snapshot, `${allocRoot}/guest/firstName`, guest.firstName);
     const lastName = fieldOrBase(snapshot, `${allocRoot}/guest/lastName`, guest.lastName);
@@ -207,7 +209,7 @@ function isInputReady(snapshot: ReservationPaneSnapshot, request: ReservationReq
     const profileSelected = guestSelectionMatches(snapshot, `${allocRoot}/guest/nativeSelectionRef`, {
       firstName, lastName, email: fieldOrBase(snapshot, `${allocRoot}/guest/email`, guest.email),
     });
-    return hasValue(arrival) && hasValue(departure) && hasValue(room) && hasValue(rate) && hasValue(firstName) && hasValue(lastName)
+    return hasValue(arrival) && hasValue(departure) && hasValue(room) && hasValue(rate) && hasValue(guarantee) && hasValue(firstName) && hasValue(lastName)
       && typeof adults === 'number' && adults >= 1 && ageReady && profileSelected;
   });
 }
@@ -215,7 +217,11 @@ function isInputReady(snapshot: ReservationPaneSnapshot, request: ReservationReq
 function hasUnreviewedRequiredFields(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
   return request.fieldPaths.some((path) => {
     const field = snapshot.fields[path];
-    return field?.required && (field.review !== 'accepted' || !hasValue(field.value));
+    if (!field?.required || !hasValue(field.value)) return false;
+    if (request.kind === 'create' && path.endsWith('/occupancy/childAges')
+        && Array.isArray(field.value) && field.value.length === 0
+        && valueFor(snapshot, path.replace(/\/childAges$/u, '/childCount')) === 0) return false;
+    return field.review !== 'accepted';
   });
 }
 
@@ -357,6 +363,19 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     return pendingEdit ? pendingEdit.state === 'set' ? pendingEdit.value : null : snapshotRef.current?.fields[path]?.value ?? null;
   }, []);
   const hasPendingEdit = useCallback((path: string) => pending.current.has(path), []);
+  const markDone = useCallback((path: string) => {
+    const bound = sourceRef.current;
+    void enqueue('Marking value reviewed', bound, async () => {
+      if (pending.current.has(path)) await flushEdits(bound, [path]);
+      const current = snapshotRef.current;
+      if (!current) throw new Error('The source-bound reservation draft is still loading.');
+      const field = current.fields[path];
+      if (!field?.required || field.review === 'accepted') return;
+      if (!hasValue(field.value)) throw new Error('Enter or resolve this value before marking it reviewed.');
+      const next = await client.review({ source: bound, snapshot: current, fieldPath: path, decision: 'accepted' });
+      applySnapshot(next, bound);
+    });
+  }, [applySnapshot, client, enqueue, flushEdits]);
 
   const chooseRequest = useCallback((request: ReservationRequestProjection) => {
     activeRequestRef.current = request.id;
@@ -381,19 +400,22 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
 
   const prepareAll = useCallback(async (auto = false) => {
     const bound = sourceRef.current;
-    const current = snapshotRef.current;
-    const request = current?.requests.find((item) => item.id === activeRequestRef.current)
+    let current = snapshotRef.current;
+    let request = current?.requests.find((item) => item.id === activeRequestRef.current)
       ?? current?.requests.find((item) => item.kind === 'create');
     if (!current || !request || request.kind !== 'create') return;
+    if (pending.current.size) {
+      await flushEdits(bound);
+      current = snapshotRef.current;
+      request = current?.requests.find((item) => item.id === request?.id && item.kind === 'create');
+    }
+    if (!current || !request || request.kind !== 'create' || !isInputReady(current, request)) return;
     const { allocations } = createSections(current, request);
-    if (!allocations.length || !isInputReady(current, request)) return;
+    if (!allocations.length) return;
     const key = `${bound.selectionEpoch}:${current.session.revision}:${request.id}`;
     if (auto && triedPrepare.current.has(key)) return;
     triedPrepare.current.add(key);
-    if (pending.current.size) {
-      await flushEdits(bound);
-    }
-    let latest = snapshotRef.current ?? current;
+    let latest = current;
     for (const allocation of allocations) {
       const next = await client.prepare({ source: bound, snapshot: latest, requestId: request.id, allocationId: String(allocation.value.id ?? '') });
       latest = next;
@@ -533,7 +555,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
               <div className={styles.issueLine} key={`${issue.kind}-${index}`}><b>{humanize(issue.kind)}</b><span>{issue.explanation}</span></div>)}
             {displayedResult.some((result) => result.status === 'succeeded') && <div className={styles.notice}>At least one room already has an HMS confirmation. Later edits and undo affect the draft only; they do not change a saved reservation.</div>}
             {activeRequest.kind === 'create'
-                ? <CreateEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur} editValue={editValue} hasPendingEdit={hasPendingEdit}
+                ? <CreateEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur} onDone={markDone} editValue={editValue} hasPendingEdit={hasPendingEdit}
                   busy={Boolean(ui.busyAction) || ui.pendingEdits.length > 0}
                   onLookupServices={(allocationId, serviceId) => runServiceAction('lookup', activeRequest.id, allocationId, serviceId)}
                   onPreviewServices={(allocationId, serviceId) => runServiceAction('preview', activeRequest.id, allocationId, serviceId)}
@@ -573,6 +595,7 @@ type EditorProps = {
   busy?: boolean;
   onStage: (path: string, value: unknown, state?: PendingReservationEdit['state']) => void;
   onBlur: (path: string) => void;
+  onDone?: (path: string) => void;
   editValue: (path: string) => unknown;
   hasPendingEdit?: (path: string) => boolean;
   onOpenEvidence?: (ref: string) => void;
@@ -609,21 +632,25 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
     {sections.sections.map(({ value: section, index }) => {
       const sectionRoot = `${body}/dateSections/${index}`;
       const allocationCount = sections.allocations.filter(({ value }) => value.dateSectionId === section.id).length;
+      const requestedRooms = valueFor(snapshot, `${sectionRoot}/requestedRooms`);
       return <section className={styles.card} key={String(section.id ?? index)}>
-        <div className={styles.cardTitle}><b>{text(section.title) || `Date section ${index + 1}`}</b><small>{text(section.requestedRooms) || 'Room count unresolved'}</small></div>
+        <div className={styles.cardTitle}><b>{text(section.title) || `Date section ${index + 1}`}</b><small>{text(requestedRooms) || 'Room count unresolved'}</small></div>
         <div className={styles.twoCol}>
           <TextField {...props} path={`${sectionRoot}/arrival`} label="Arrival" type="date" />
           <TextField {...props} path={`${sectionRoot}/departure`} label="Departure" type="date" />
         </div>
-        <div className={styles.fixedValue}><span>Requested rooms / existing allocations</span><b>{text(section.requestedRooms) || 'Unresolved'} / {allocationCount}</b>
+        <div className={styles.fixedValue}><span>Requested rooms / existing allocations</span><b>{text(requestedRooms) || 'Unresolved'} / {allocationCount}</b>
           <small>Addition persists as a source-bound edit. Removing/reordering rows awaits server rebasing of index-bound review and evidence paths.</small></div>
-        {typeof section.requestedRooms === 'number' && allocationCount !== section.requestedRooms && <small className={styles.problem}>Room count and saved allocation rows differ. Create stays blocked until the server draft is structurally reconciled.</small>}
+        {typeof requestedRooms === 'number' && allocationCount !== requestedRooms && <small className={styles.problem}>Room count and saved allocation rows differ. Create stays blocked until the server draft is structurally reconciled.</small>}
         <button type="button" className={styles.secondaryButton} disabled={props.busy || typeof section.id !== 'string'} onClick={() => {
           const allocationPath = `${body}/allocations`;
           const requestedRoomsPath = `${sectionRoot}/requestedRooms`;
           const nextRows = [...sections.allocations.map(({ value }) => value), emptyRoomAllocation(String(section.id))];
+          const effectiveRequestedRooms = fieldOrBase(snapshot, requestedRoomsPath, requestedRooms);
+          const nextRequestedRooms = typeof effectiveRequestedRooms === 'number' && effectiveRequestedRooms > allocationCount
+            ? effectiveRequestedRooms : allocationCount + 1;
           props.onStage(allocationPath, nextRows);
-          props.onStage(requestedRoomsPath, allocationCount + 1);
+          props.onStage(requestedRoomsPath, nextRequestedRooms);
           props.onBlur(allocationPath);
           props.onBlur(requestedRoomsPath);
         }}>Add room to these dates</button>
@@ -674,9 +701,11 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
               }
             }} />
         </div>
-        {childCount !== null && childCount > 0 && <div className={styles.ageGrid}>
-          <span>Child ages — one exact age for each child</span>
-        <FieldValueState {...props} path={agePath} />
+        {childCount !== null && childCount > 0 && <FieldShell path={agePath} label="Child ages"
+          field={snapshot.fields[agePath]} onOpenEvidence={props.onOpenEvidence} onDone={props.onDone}>
+          <div className={styles.ageGrid}>
+          <span>Enter one exact age for each child</span>
+          <FieldValueState {...props} path={agePath} />
           {Array.from({ length: childCount }, (_, ageIndex) => <TextField key={ageIndex} {...props}
             path={`${agePath}/${ageIndex}`} label={`Child ${ageIndex + 1} age`} type="number" min={0} max={17}
             valueOverride={ages[ageIndex] ?? null} blurPath={agePath} hideState onValue={(value) => {
@@ -684,7 +713,8 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
             }} />)}
           {ages.length !== childCount || ages.some((age) => typeof age !== 'number')
             ? <small className={styles.problem}>Child count and complete ages must match.</small> : null}
-        </div>}
+          </div>
+        </FieldShell>}
         <ScopedCodeField {...props} path={`${allocationRoot}/overrides/roomType`} label="Room category for this room" inherited={text(props.editValue(`${body}/dateSections/${Math.max(0, sections.sections.findIndex((entry) => entry.value.id === allocation.dateSectionId))}/defaults/roomType`)) || 'Date-section default'} />
         <ScopedCodeField {...props} path={`${allocationRoot}/overrides/ratePlan`} label="Rate plan for this room" inherited={text(props.editValue(`${body}/dateSections/${Math.max(0, sections.sections.findIndex((entry) => entry.value.id === allocation.dateSectionId))}/defaults/ratePlan`)) || text(props.editValue(`${body}/shared/ratePlan`)) || 'Shared rate plan'} />
         <div className={styles.fixedValue}><span>Charge category</span><b>Infor default</b><small>Per-room charge-category override is not supported by the connected native Create tool.</small></div>
@@ -810,8 +840,9 @@ function ServiceEditor(props: EditorProps & {
   </section>;
 }
 
-function FieldShell({ path, label, field, children, onOpenEvidence }: {
+function FieldShell({ path, label, field, children, onOpenEvidence, onDone }: {
   path: string; label: string; field?: ReservationFieldProjection; children: ReactNode; onOpenEvidence?: (ref: string) => void;
+  onDone?: (path: string) => void;
 }) {
   const showEvidence = Boolean(field && (field.provenance === 'source' || field.provenance === 'inferred' || field.provenance === 'assumption'));
   return <div className={styles.field} data-path={path}>
@@ -819,6 +850,8 @@ function FieldShell({ path, label, field, children, onOpenEvidence }: {
       {showEvidence && <span className={styles.purpleDot} title={`From ${field?.provenance}`}>●</span>}
       {field?.required && field.review !== 'accepted' ? <span className={styles.required}>Review</span>
         : field?.review === 'accepted' ? <span className={styles.accepted}>✓ Reviewed</span> : null}
+      {field?.required && field.review !== 'accepted' && hasValue(field.value) && onDone
+        ? <button type="button" className={styles.inlineButton} onClick={() => onDone(path)}>Done</button> : null}
     </div></div>
     {children}
     {field?.issue && <small className={styles.problem}>{field.issue}</small>}
@@ -844,7 +877,7 @@ function TextField(props: EditorProps & { path: string; label: string; type?: 't
       const next = props.type === 'number' ? raw === '' ? null : Number(raw) : raw;
       props.onValue ? props.onValue(next) : props.onStage(props.path, next, raw === '' ? 'none' : 'set');
     }} onBlur={commitOnBlur} />;
-  return <FieldShell path={props.path} label={props.label} field={field} onOpenEvidence={props.onOpenEvidence}>
+  return <FieldShell path={props.path} label={props.label} field={field} onOpenEvidence={props.onOpenEvidence} onDone={props.onDone}>
     {props.multiline ? <textarea id={props.path} className={styles.textarea} rows={3} value={text(value)} onChange={(event) => props.onStage(props.path, event.target.value, event.target.value ? 'set' : 'none')} onBlur={commitOnBlur} /> : input}
     {!props.hideState && <FieldValueState {...props} path={props.blurPath ?? props.path} />}
     {props.help && <small className={styles.help}>{props.help}</small>}
@@ -857,7 +890,7 @@ function CodeField(props: EditorProps & { path: string; label: string; help?: st
   const options = observedNativeCodes(props.snapshot, props.path);
   const selectedOption = options.find((option) => option.code === text(value));
   const roomOrRate = ['roomType', 'ratePlan'].includes(props.path.split('/').at(-1) ?? '');
-  return <FieldShell path={props.path} label={props.label} field={field} onOpenEvidence={props.onOpenEvidence}>
+  return <FieldShell path={props.path} label={props.label} field={field} onOpenEvidence={props.onOpenEvidence} onDone={props.onDone}>
     <input id={props.path} className={styles.input} value={text(value)} placeholder="Native code"
       onChange={(event) => props.onStage(props.path, event.target.value, event.target.value ? 'set' : 'none')} onBlur={() => props.onBlur(props.path)} />
     {!props.hideState && <FieldValueState {...props} path={props.path} />}
@@ -893,7 +926,7 @@ function PartyField(props: EditorProps & { path: string; label: string }) {
   });
   const selectedCandidate = candidates.find((item) => item.observationRef === selectedRef)?.candidate;
   const selectedMatches = Boolean(selectedCandidate && sameIdentityText(selectedCandidate.name, current.name) && hasValue(selectedCandidate.nativeId));
-  return <FieldShell path={props.path} label={props.label} field={field} onOpenEvidence={props.onOpenEvidence}>
+  return <FieldShell path={props.path} label={props.label} field={field} onOpenEvidence={props.onOpenEvidence} onDone={props.onDone}>
     <input id={props.path} className={styles.input} value={String(current.name ?? '')} placeholder="Enter the requested party name"
       onChange={(event) => props.onStage(props.path, { ...current, name: event.target.value, suggestedRef: current.suggestedRef ?? null, candidateRefs: current.candidateRefs ?? [] }, event.target.value ? 'set' : 'none')}
       onBlur={() => props.onBlur(props.path)} />
@@ -919,7 +952,8 @@ function ScopedCodeField(props: EditorProps & { path: string; label: string; inh
   useEffect(() => { setOwn(ownsValue); }, [field?.override?.updatedAt, field?.override?.state]);
   const mode = own ? 'own' : field?.override?.state === 'unknown' ? 'unknown' : 'inherit';
   return <div className={styles.scoped}>
-    <FieldShell path={`${props.path}-mode`} label={props.label} field={field} onOpenEvidence={props.onOpenEvidence}>
+    <FieldShell path={`${props.path}-mode`} label={props.label} field={field} onOpenEvidence={props.onOpenEvidence}
+      onDone={props.onDone ? () => props.onDone?.(props.path) : undefined}>
       <select id={`${props.path}-mode`} className={styles.select} value={mode} onChange={(event) => {
         const value = event.target.value;
         if (value === 'own') {
@@ -953,7 +987,7 @@ function FieldValueState(props: EditorProps & { path: string }) {
 
 function BooleanField(props: EditorProps & { path: string; label: string }) {
   const value = props.editValue(props.path);
-  return <FieldShell path={props.path} label={props.label} field={props.snapshot.fields[props.path]} onOpenEvidence={props.onOpenEvidence}>
+  return <FieldShell path={props.path} label={props.label} field={props.snapshot.fields[props.path]} onOpenEvidence={props.onOpenEvidence} onDone={props.onDone}>
     <select id={props.path} className={styles.select} value={value == null ? '' : value ? 'true' : 'false'} onChange={(event) => {
       const next = event.target.value;
       props.onStage(props.path, next === 'true' ? true : next === 'false' ? false : undefined,
