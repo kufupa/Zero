@@ -81,6 +81,13 @@ export type ReservationPaneSnapshot = {
   loadError?: string;
 };
 
+export class ReservationWorkflowStaleRevisionError extends Error {
+  constructor(readonly snapshot: ReservationPaneSnapshot) {
+    super('The reservation draft changed elsewhere. Latest saved values were loaded; your unsaved edits are preserved for review before saving again.');
+    this.name = 'ReservationWorkflowStaleRevisionError';
+  }
+}
+
 export type ReservationWorkflowKind = ReservationRequestProjection['kind'];
 
 export type ReservationCommandContext = {
@@ -110,8 +117,8 @@ export interface ReservationWorkflowClient {
   undo(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;
   redo(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;
   lookup(input: ReservationCommandContext & { requestId?: string }): Promise<ReservationPaneSnapshot>;
-  prepare(input: ReservationCommandContext & { requestId: string; allocationId: string }): Promise<ReservationPaneSnapshot>;
-  execute(input: ReservationCommandContext & { requestId: string; allocationId: string; idempotencyKey: string }): Promise<ReservationPaneSnapshot>;
+  prepare(input: ReservationCommandContext & { requestId: string; allocationId?: string }): Promise<ReservationPaneSnapshot>;
+  execute(input: ReservationCommandContext & { requestId: string; allocationId?: string; idempotencyKey: string }): Promise<ReservationPaneSnapshot>;
   reconcile(input: ReservationCommandContext & { operationId: string }): Promise<ReservationPaneSnapshot>;
   lookupServices(input: ReservationCommandContext & { requestId: string; allocationId: string; serviceId?: string }): Promise<ReservationPaneSnapshot>;
   previewServices(input: ReservationCommandContext & { requestId: string; allocationId: string; serviceId?: string }): Promise<ReservationPaneSnapshot>;

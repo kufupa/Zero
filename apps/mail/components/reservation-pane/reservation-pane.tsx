@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import styles from './reservation-pane.module.css';
 import { initialReservationUiState, reduceReservationUi, type PendingReservationEdit } from '@/lib/reservation-workflow/reducer';
+import { ReservationWorkflowStaleRevisionError } from '@/lib/reservation-workflow/types';
 import type {
   ReservationFieldProjection,
   ReservationPaneSnapshot,
@@ -151,15 +152,89 @@ function emptyRoomAllocation(dateSectionId: string) {
   };
 }
 
+function latestQuotePriceObservation(snapshot: ReservationPaneSnapshot, requestId: string) {
+  return [...snapshot.session.draft.observations].reverse().find((observation) => observation.kind === 'rate_availability'
+    && observation.criteria.workflow === 'quote' && observation.criteria.requestId === requestId);
+}
+
+function quoteRateOptions(snapshot: ReservationPaneSnapshot, requestId: string, groupId?: string): Array<Record<string, unknown>> {
+  const observation = latestQuotePriceObservation(snapshot, requestId);
+  if (!observation || observation.status !== 'complete' || record(observation.coverage)?.complete !== true) return [];
+  const result = record(observation.result);
+  const options = Array.isArray(result?.rateOptions) ? result.rateOptions.map(record).filter((value): value is Record<string, unknown> => Boolean(value)) : [];
+  return groupId ? options.filter((option) => option.groupId === groupId) : options;
+}
+
+function isQuotePrepared(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
+  const preparation = [...snapshot.operationResults].reverse().find((result) => result.requestId === request.id
+    && result.workflow === 'quote' && result.status === 'prepared');
+  if (!preparation || preparation.generationId !== snapshot.session.draft.generationId
+      || preparation.draftRevision !== snapshot.session.revision || !Array.isArray(preparation.observationRefs)) return false;
+  return preparation.observationRefs.some((ref) => {
+    const observation = snapshot.session.draft.observations.find((item) => item.ref === ref && item.kind === 'rate_availability');
+    const result = record(observation?.result);
+    const criteria = record(observation?.criteria);
+    const freshUntil = typeof result?.freshUntil === 'string' ? Date.parse(result.freshUntil) : Number.NaN;
+    return observation?.status === 'complete' && record(observation.coverage)?.complete === true
+      && observation.generationId === snapshot.session.draft.generationId
+      && observation.propertyCode === snapshot.session.draft.propertyCode
+      && observation.sourceMessageId === snapshot.session.draft.source.messageId
+      && criteria?.workflow === 'quote' && criteria.requestId === request.id
+      && criteria.inputDigest === result?.inputDigest && typeof result?.inputDigest === 'string'
+      && criteria.sourceHash === snapshot.session.draft.source.sourceHash
+      && Number.isFinite(freshUntil) && freshUntil > Date.now();
+  });
+}
+
+function quoteReceiptObservations(snapshot: ReservationPaneSnapshot, requestId: string) {
+  const operationIds = new Set(snapshot.operationResults.filter((result) => result.workflow === 'quote' && result.requestId === requestId)
+    .map((result) => text(result.id)).filter(Boolean));
+  return snapshot.session.draft.observations.filter((observation) => observation.kind === 'document'
+    && observation.criteria.workflow === 'quote' && observation.criteria.requestId === requestId
+    && typeof observation.criteria.operationId === 'string' && operationIds.has(observation.criteria.operationId));
+}
+
+function deliverQuoteArtifact(artifact: Record<string, unknown>, open = false) {
+  const encodedBytes = artifact.bytesBase64;
+  const mimeType = text(artifact.mimeType);
+  const fileName = text(artifact.fileName) || 'quote-artifact';
+  if (typeof encodedBytes !== 'string' || !encodedBytes || !mimeType || typeof window === 'undefined') return;
+  try {
+    const binary = window.atob(encodedBytes);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+    if (open && mimeType === 'application/pdf') window.open(url, '_blank', 'noopener,noreferrer');
+    else {
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      link.click();
+    }
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch {
+    // The receipt stays visible; malformed bytes never become a fake download link.
+  }
+}
+
 function observedNativeCodes(snapshot: ReservationPaneSnapshot, path: string): Array<{ code: string; meaning: string; ref: string }> {
   const leaf = path.split('/').at(-1);
-  const catalogKey = leaf === 'roomType' ? 'room' : leaf === 'ratePlan' ? 'ratePlan' : null;
+  const catalogKey = leaf === 'roomType' ? 'room' : leaf === 'ratePlan' ? 'ratePlan' : leaf === 'board' ? 'board' : null;
   if (!catalogKey) return [];
   const requestId = path.split('/')[4];
   const choices = new Map<string, { code: string; meaning: string; ref: string }>();
   for (const observation of snapshot.session.draft.observations) {
     if (observation.kind !== 'rate_availability' || observation.status !== 'complete'
         || observation.criteria.requestId !== requestId || record(observation.coverage)?.complete !== true) continue;
+    if (observation.criteria.workflow === 'quote') {
+      const options = quoteRateOptions(snapshot, requestId);
+      for (const option of options) {
+        const code = text(catalogKey === 'room' ? option.roomCode : catalogKey === 'ratePlan' ? option.rateCode : option.board).trim();
+        if (!code || choices.has(code)) continue;
+        const meaning = text(catalogKey === 'room' ? option.roomLabel : catalogKey === 'ratePlan' ? option.rateLabel : option.boardLabel).trim() || code;
+        choices.set(code, { code, meaning, ref: observation.ref });
+      }
+      continue;
+    }
     const groups = record(observation.result)?.groups;
     if (!Array.isArray(groups)) continue;
     for (const groupValue of groups) {
@@ -315,13 +390,14 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
         }
       } catch (error) {
         if (sourceRef.current.selectionEpoch === bound.selectionEpoch) {
+          if (error instanceof ReservationWorkflowStaleRevisionError) applySnapshot(error.snapshot, bound);
           dispatch({ type: 'action-error', message: error instanceof Error ? error.message : 'Reservation action did not complete.' });
         }
       }
     });
     queue.current = run.then(() => undefined, () => undefined);
     return run;
-  }, []);
+  }, [applySnapshot]);
 
   const stage = useCallback((path: string, value: unknown, state: PendingReservationEdit['state'] = 'set') => {
     const edit = { path, value, state, sequence: ++sequence.current };
@@ -360,7 +436,9 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   const editOnBlur = useCallback((path: string) => { void saveEdits([path]); }, [saveEdits]);
   const editValue = useCallback((path: string): unknown => {
     const pendingEdit = pending.current.get(path);
-    return pendingEdit ? pendingEdit.state === 'set' ? pendingEdit.value : null : snapshotRef.current?.fields[path]?.value ?? null;
+    if (pendingEdit) return pendingEdit.state === 'set' ? pendingEdit.value : null;
+    const current = snapshotRef.current;
+    return current ? valueFor(current, path) ?? null : null;
   }, []);
   const hasPendingEdit = useCallback((path: string) => pending.current.has(path), []);
   const markDone = useCallback((path: string) => {
@@ -370,8 +448,10 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
       const current = snapshotRef.current;
       if (!current) throw new Error('The source-bound reservation draft is still loading.');
       const field = current.fields[path];
-      if (!field?.required || field.review === 'accepted') return;
-      if (!hasValue(field.value)) throw new Error('Enter or resolve this value before marking it reviewed.');
+      const required = current.session.draft.fieldReviewRequirements[path]?.required !== false;
+      const review = current.session.draft.staffReviews[path];
+      if (!required || (field?.review ?? review?.status) === 'accepted') return;
+      if (!hasValue(field?.value ?? valueFor(current, path))) throw new Error('Enter or resolve this value before marking it reviewed.');
       const next = await client.review({ source: bound, snapshot: current, fieldPath: path, decision: 'accepted' });
       applySnapshot(next, bound);
     });
@@ -469,6 +549,36 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     });
   }, [applySnapshot, client, enqueue, flushEdits]);
 
+  const prepareQuote = useCallback((requestId: string) => {
+    const bound = sourceRef.current;
+    void enqueue('Preparing native quote price and availability', bound, async () => {
+      if (pending.current.size) await flushEdits(bound);
+      const current = snapshotRef.current;
+      const request = current?.requests.find((item) => item.id === requestId && item.kind === 'quote');
+      if (!current || !request || !request.supported) throw new Error('This Quote request is not connected to the current native quote service.');
+      const next = await client.prepare({ source: bound, snapshot: current, requestId });
+      applySnapshot(next, bound);
+      if (next.serviceNotice) throw new Error(next.serviceNotice);
+    });
+  }, [applySnapshot, client, enqueue, flushEdits]);
+
+  const generateQuote = useCallback((requestId: string) => {
+    const bound = sourceRef.current;
+    void enqueue('Generating unsent quote outputs', bound, async () => {
+      if (pending.current.size) await flushEdits(bound);
+      const current = snapshotRef.current;
+      const request = current?.requests.find((item) => item.id === requestId && item.kind === 'quote');
+      if (!current || !request || !request.supported) throw new Error('This Quote request is not connected to the current quote output service.');
+      if (current.operationResults.some((result) => result.workflow === 'quote' && result.requestId === request.id && result.status === 'unknown')) {
+        throw new Error('Quote output receipt is uncertain. Reconcile the saved operation before retrying.');
+      }
+      if (!isQuotePrepared(current, request)) throw new Error('Native Quote price/availability is not current. Prepare it again before generating files.');
+      if (hasUnreviewedRequiredFields(current, request)) throw new Error('Review every required Quote field before generating outputs.');
+      const next = await client.execute({ source: bound, snapshot: current, requestId: request.id, idempotencyKey: crypto.randomUUID() });
+      applySnapshot(next, bound);
+    });
+  }, [applySnapshot, client, enqueue, flushEdits]);
+
   const reconcile = useCallback((operationId: string) => {
     const bound = sourceRef.current;
     void enqueue('Reconciling the Infor save outcome', bound, async () => {
@@ -513,7 +623,10 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     && isRequestPrepared(snapshot, activeRequest) && !reviewRequired && !ui.pendingEdits.length
     && !ui.busyAction && !hasUncertain);
   const displayedResult = snapshot?.operationResults.filter((result) => result.requestId === activeRequest?.id
-    && result.workflow === 'create') ?? [];
+    && result.workflow === activeRequest?.kind) ?? [];
+  const canGenerateQuote = Boolean(snapshot && activeRequest?.kind === 'quote' && activeRequest.supported
+    && isQuotePrepared(snapshot, activeRequest) && !hasUnreviewedRequiredFields(snapshot, activeRequest)
+    && !ui.pendingEdits.length && !ui.busyAction && !hasUncertain);
 
   return (
     <div className={styles.pane} data-reservation-pane="v2" data-source-message={source.messageId}>
@@ -553,7 +666,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
               <span className={activeRequest.supported ? styles.connected : styles.notConnected}>{activeRequest.supported ? 'Connected' : 'Review only'}</span></div>
             {snapshot.issues.filter((issue) => !issue.path || issue.path.startsWith(`${requestPath(activeRequest)}/`)).map((issue, index) =>
               <div className={styles.issueLine} key={`${issue.kind}-${index}`}><b>{humanize(issue.kind)}</b><span>{issue.explanation}</span></div>)}
-            {displayedResult.some((result) => result.status === 'succeeded') && <div className={styles.notice}>At least one room already has an HMS confirmation. Later edits and undo affect the draft only; they do not change a saved reservation.</div>}
+            {activeRequest.kind === 'create' && displayedResult.some((result) => result.status === 'succeeded') && <div className={styles.notice}>At least one room already has an HMS confirmation. Later edits and undo affect the draft only; they do not change a saved reservation.</div>}
             {activeRequest.kind === 'create'
                 ? <CreateEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur} onDone={markDone} editValue={editValue} hasPendingEdit={hasPendingEdit}
                   busy={Boolean(ui.busyAction) || ui.pendingEdits.length > 0}
@@ -564,11 +677,13 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
               : activeRequest.kind === 'filing'
                 ? <FilingEditor snapshot={snapshot} request={activeRequest} source={source} onOpenAttachment={onOpenAttachment} />
                 : activeRequest.kind === 'quote'
-                  ? <QuoteEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur} editValue={editValue} onOpenEvidence={onOpenEvidence} />
+                  ? <QuoteEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur} onDone={markDone} editValue={editValue}
+                    onOpenEvidence={onOpenEvidence} busy={Boolean(ui.busyAction) || Boolean(ui.pendingEdits.length)}
+                    onLookup={refreshNative} onPrepare={() => prepareQuote(activeRequest.id)} />
                   : <RequestReview snapshot={snapshot} request={activeRequest} />}
             {displayedResult.map((result, index) => <OperationResult key={String(result.id ?? index)} result={result}
               onReconcile={reconcile} busy={Boolean(ui.busyAction)} />)}
-            {activeRequest.kind !== 'create' && <div className={styles.notice}>This v2 request is visible from saved source facts. Its native operation is not connected in the current UI route, so no Go action is offered.</div>}
+            {activeRequest.kind !== 'create' && activeRequest.kind !== 'quote' && <div className={styles.notice}>This v2 request is visible from saved source facts. Its native operation is not connected in the current UI route, so no Go action is offered.</div>}
           </> : <>
             <div className={styles.titleRow}><div><small className={styles.eyebrow}>{KIND_LABEL[activeKind]}</small><h1>{activeKind === 'create' ? 'New reservation' : `${KIND_LABEL[activeKind]} request`}</h1></div></div>
             {activeKind === 'create'
@@ -579,10 +694,13 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
         <footer className={styles.footer}>
           <div className={styles.footerMessage} aria-live="polite">
             {ui.busyAction ? <><span className={styles.spinner} />{ui.busyAction}</> : ui.actionError ?? snapshot.serviceNotice ?? (activeRequest?.kind === 'create' && isRequestPrepared(snapshot, activeRequest)
-              ? 'Current Infor unsaved form and price are ready for review.' : snapshot.preparation.message)}
+              ? 'Current Infor unsaved form and price are ready for review.' : activeRequest?.kind === 'quote' && isQuotePrepared(snapshot, activeRequest)
+                ? 'Current native quote price and availability are prepared; outputs remain unsent.' : snapshot.preparation.message)}
           </div>
           {ui.pendingEdits.length > 0 && <button type="button" className={styles.secondaryButton} disabled={Boolean(ui.busyAction)} onClick={() => { void saveEdits(); }}>Save {ui.pendingEdits.length} edit{ui.pendingEdits.length === 1 ? '' : 's'}</button>}
           {activeKind === 'create' && activeRequest && <button type="button" className={styles.goButton} disabled={!canGo} onClick={runGo}>Create · {createSections(snapshot, activeRequest).allocations.length} room reservations</button>}
+          {activeRequest?.kind === 'quote' && <button type="button" className={styles.goButton} disabled={!canGenerateQuote}
+            onClick={() => generateQuote(activeRequest.id)}>Generate unsent quote</button>}
         </footer>
       </>}
     </div>
@@ -919,7 +1037,9 @@ function PartyField(props: EditorProps & { path: string; label: string }) {
   const role = tail === 'bookingAgency' || tail === 'agency' ? 'agency' : tail === 'arAccount' ? 'ar_account' : 'organization';
   const candidates = props.snapshot.session.draft.observations.flatMap((observation) => {
     if (observation.kind !== 'party_candidate' || observation.status !== 'complete'
-        || observation.criteria.role !== role || observation.criteria.fieldPath !== selectionPath) return [];
+        || observation.criteria.role !== role
+        || observation.criteria.fieldPath !== selectionPath
+          && !(Array.isArray(observation.criteria.fieldPaths) && observation.criteria.fieldPaths.includes(selectionPath))) return [];
     const results = record(observation.result);
     const rows = Array.isArray(results?.candidates) ? results.candidates : [];
     return rows.map((candidate) => ({ observationRef: observation.ref, candidate: record(candidate) })).filter((item) => item.candidate);
@@ -1049,7 +1169,7 @@ function NativePriceSummary({ snapshot, request }: { snapshot: ReservationPaneSn
   </div>;
 }
 
-function QuoteEditor(props: EditorProps) {
+function QuoteEditor(props: EditorProps & { busy: boolean; onLookup: () => void; onPrepare: () => void }) {
   const body = `${requestPath(props.request)}/body`;
   const quote = record(draftAtPath(props.snapshot, body));
   if (!quote || !Array.isArray(quote.groups)) return <div className={styles.alert}>The saved Quote request has no v2 quote body.</div>;
@@ -1057,42 +1177,90 @@ function QuoteEditor(props: EditorProps) {
   const client = record(quote.client) ?? {};
   const money = Array.isArray(quote.requestedMoney) ? quote.requestedMoney : [];
   const intent = record(quote.outputIntent) ?? {};
+  const artifactPath = `${body}/outputIntent/artifacts`;
+  const requestedArtifactsValue = props.editValue(artifactPath);
+  const requestedArtifacts = Array.isArray(requestedArtifactsValue) ? requestedArtifactsValue
+    : Array.isArray(intent.artifacts) ? intent.artifacts : [];
   return <>
-    <div className={styles.notice}>Quote groups remain whole-party or per-room as stated; no adult split or booking is inferred. Outputs below are intent only and remain unsent.</div>
-    <div className={styles.sectionHeader}><div><h2>Stay requirements</h2><p>Native prices are read-only observations; no nightly amount override.</p></div></div>
+    <div className={styles.notice}>Quote makes source-bound, unsent customer outputs only. It never creates a booking or sends email. This adapter supports one shared date range per quote run and per-room occupancy.</div>
+    <div className={styles.twoCol}>
+      <button type="button" className={styles.secondaryButton} disabled={props.busy} onClick={props.onLookup}>Search native parties and quote availability</button>
+      <button type="button" className={styles.secondaryButton} disabled={props.busy} onClick={props.onPrepare}>Prepare current native quote price</button>
+    </div>
+    <div className={styles.sectionHeader}><div><h2>Stay requirements</h2><p>HMS owns price and availability; no nightly amount can be typed into this form.</p></div></div>
     {groups.map(({ value: group, index }) => {
       const root = `${body}/groups/${index}`;
+      const occupancyRoot = `${root}/occupancy`;
       const occupancy = record(group.occupancy) ?? {};
+      const childCountPath = `${occupancyRoot}/childCount`;
+      const agesPath = `${occupancyRoot}/childAges`;
+      const countValue = props.editValue(childCountPath) ?? occupancy.childCount;
+      const childCount = typeof countValue === 'number' ? countValue : null;
+      const agesValue = props.editValue(agesPath);
+      const ages = Array.isArray(agesValue) ? agesValue : Array.isArray(occupancy.childAges) ? occupancy.childAges : [];
+      const roomCodesPath = `${root}/roomCodes`;
+      const roomCodesValue = props.editValue(roomCodesPath);
+      const roomCodes = Array.isArray(roomCodesValue) ? roomCodesValue.map(text).filter(Boolean)
+        : Array.isArray(group.roomCodes) ? group.roomCodes.map(text).filter(Boolean) : [];
+      const dateGroupCount = groups.filter(({ value: other }) => other.arrival === group.arrival && other.departure === group.departure).length;
       return <section className={styles.card} key={String(group.id ?? index)}>
-        <div className={styles.cardTitle}><b>Quote group {index + 1}</b><small>{text(occupancy.scope) || 'Occupancy scope unresolved'}</small></div>
+        <div className={styles.cardTitle}><b>Quote group {index + 1}</b><small>{text(occupancy.scope) || 'Occupancy scope unresolved'} · {dateGroupCount === groups.length ? 'shared dates' : 'separate date range not supported in one run'}</small></div>
         <div className={styles.twoCol}><TextField {...props} path={`${root}/arrival`} label="Arrival" type="date" /><TextField {...props} path={`${root}/departure`} label="Departure" type="date" /></div>
-        <div className={styles.twoCol}><TextField {...props} path={`${root}/quantity`} label="Rooms" type="number" min={1} /><CodeField {...props} path={`${root}/board`} label="Board code" /></div>
-        <CodeField {...props} path={`${root}/ratePlan`} label="Rate plan code" />
-        <FieldShell path={`${root}/roomCodes`} label="Requested room categories" field={props.snapshot.fields[`${root}/roomCodes`]}>
-          <div className={styles.readValue}>{Array.isArray(group.roomCodes) && group.roomCodes.length ? group.roomCodes.join(', ') : 'No room category resolved'}</div>
+        <div className={styles.twoCol}><TextField {...props} path={`${root}/quantity`} label="Rooms" type="number" min={1} /><CodeField {...props} path={`${root}/ratePlan`} label="Native rate-plan code" help="A pinned rate is checked against a fresh HMS quote; otherwise HMS chooses the quote rate." /></div>
+        <CodeField {...props} path={`${root}/board`} label="Board code" help="Supported codes: room_only, bb, dinner_bb. Native observed meanings appear after quote lookup." />
+        <TextField {...props} path={roomCodesPath} label="Room-category codes" valueOverride={roomCodes}
+          onValue={(value) => props.onStage(roomCodesPath, typeof value === 'string'
+            ? [...new Set(value.split(',').map((code) => code.trim()).filter(Boolean))] : [])}
+          help="Optional native categories, comma-separated. Leave blank when the request does not pin a room type." />
+        <QuoteRateChoices {...props} group={group} groupId={String(group.id ?? '')} groupRoot={root} />
+        <FieldShell path={`${occupancyRoot}/scope`} label="Occupancy applies to" field={props.snapshot.fields[`${occupancyRoot}/scope`]}
+          onOpenEvidence={props.onOpenEvidence} onDone={props.onDone}>
+          <select id={`${occupancyRoot}/scope`} className={styles.select} value={text(props.editValue(`${occupancyRoot}/scope`)) || text(occupancy.scope)} onChange={(event) => {
+            props.onStage(`${occupancyRoot}/scope`, event.target.value); props.onBlur(`${occupancyRoot}/scope`);
+          }}><option value="">Unresolved</option><option value="per_room">Per room — supported</option><option value="whole_group">Whole group — unsupported by native quote</option><option value="unresolved">Unresolved</option></select>
+          <small className={styles.help}>Native quote requires an explicit per-room occupancy scenario. No whole-party adult split is inferred.</small>
         </FieldShell>
-        <FieldShell path={`${root}/occupancy/scope`} label="Occupancy applies to" field={props.snapshot.fields[`${root}/occupancy/scope`]}>
-          <select id={`${root}/occupancy/scope`} className={styles.select} value={text(props.editValue(`${root}/occupancy/scope`))} onChange={(event) => {
-            props.onStage(`${root}/occupancy/scope`, event.target.value); props.onBlur(`${root}/occupancy/scope`);
-          }}><option value="">Unresolved</option><option value="per_room">Per room</option><option value="whole_group">Whole group</option><option value="unresolved">Unresolved</option></select>
-        </FieldShell>
-        <div className={styles.twoCol}><TextField {...props} path={`${root}/occupancy/adults`} label="Adults" type="number" min={1} /><TextField {...props} path={`${root}/occupancy/childCount`} label="Children" type="number" min={0} /></div>
-        <FieldShell path={`${root}/occupancy/childAges`} label="Child ages" field={props.snapshot.fields[`${root}/occupancy/childAges`]}>
-          <div className={styles.readValue}>{Array.isArray(occupancy.childAges) ? occupancy.childAges.map((age) => age == null ? 'unknown' : String(age)).join(', ') || 'None' : 'Unknown'}</div>
-        </FieldShell>
+        <div className={styles.twoCol}>
+          <TextField {...props} path={`${occupancyRoot}/adults`} label="Adults per room" type="number" min={1} max={6} />
+          <TextField {...props} path={childCountPath} label="Children per room" type="number" min={0} max={12} hideState
+            blurPaths={[childCountPath, agesPath]} onValue={(value) => {
+              if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 12) {
+                props.onStage(childCountPath, value);
+                props.onStage(agesPath, Array.from({ length: value }, (_, ageIndex) => ages[ageIndex] ?? null));
+              } else {
+                props.onStage(childCountPath, undefined, 'unknown');
+                props.onStage(agesPath, undefined, 'unknown');
+              }
+            }} />
+        </div>
+        {childCount !== null && childCount >= 0 && <FieldShell path={agesPath} label="Child ages"
+          field={props.snapshot.fields[agesPath]} onOpenEvidence={props.onOpenEvidence} onDone={props.onDone}>
+          <div className={styles.ageGrid}>
+          <span>{childCount === 0 ? 'No child ages (zero children).' : 'Exact age for each child'}</span><FieldValueState {...props} path={agesPath} />
+          {childCount > 0 && Array.from({ length: childCount }, (_, ageIndex) => <TextField key={`${String(group.id ?? index)}-child-${ageIndex}`} {...props}
+            path={`${agesPath}/${ageIndex}`} label={`Child ${ageIndex + 1} age`} type="number" min={0} max={17}
+            valueOverride={ages[ageIndex] ?? null} blurPath={agesPath} hideState onValue={(value) => {
+              const next = [...ages]; next[ageIndex] = value === null ? null : Number(value); props.onStage(agesPath, next);
+            }} />)}
+          {childCount > 0 && (ages.length !== childCount || ages.some((age) => typeof age !== 'number'))
+            ? <small className={styles.problem}>Enter one known exact age for every child.</small> : null}
+          </div>
+        </FieldShell>}
       </section>;
     })}
-    <div className={styles.sectionHeader}><div><h2>Commercial and client details</h2></div></div>
+    {groups.length === 0 && <div className={styles.notice}>This saved Quote request has no native quote groups; the server cannot price or generate outputs until source-backed groups are available.</div>}
+    <QuotePriceSummary snapshot={props.snapshot} request={props.request} />
+    <div className={styles.sectionHeader}><div><h2>Commercial and client details</h2><p>Native company/agency results must be explicitly selected and reviewed.</p></div></div>
     <section className={styles.card}>
-      <PartyField {...props} path={`${body}/parties/agency`} label="Agency" />
-      <PartyField {...props} path={`${body}/parties/company`} label="Company" />
-      <TextField {...props} path={`${body}/salesStrategy`} label="Sales strategy" />
+      <QuotePartyField {...props} path={`${body}/parties/agency`} role="agency" label="Agency" />
+      <QuotePartyField {...props} path={`${body}/parties/company`} role="company" label="Company" />
+      <QuoteSalesStrategyField {...props} path={`${body}/salesStrategy`} label="Sales strategy" />
       <TextField {...props} path={`${body}/client/attention`} label="Attention" />
-      <div className={styles.twoCol}><TextField {...props} path={`${body}/client/email`} label="Email" type="email" /><TextField {...props} path={`${body}/client/telephone`} label="Telephone" type="tel" /></div>
+      <div className={styles.twoCol}><TextField {...props} path={`${body}/client/email`} label="Email for cover letter" type="email" /><TextField {...props} path={`${body}/client/telephone`} label="Telephone" type="tel" /></div>
       <TextField {...props} path={`${body}/notes`} label="Quote notes" multiline />
     </section>
     <section className={styles.card}>
-      <div className={styles.cardTitle}><b>Requested amounts</b><small>Source claims only</small></div>
+      <div className={styles.cardTitle}><b>Requested amounts</b><small>Source claims only; staff-priced allowances are not connected.</small></div>
       {money.length === 0 ? <div className={styles.readValue}>No requested amount</div> : money.map((value, index) => {
         const item = record(value) ?? {};
         return <div className={styles.moneyRow} key={String(item.id ?? index)}>
@@ -1101,9 +1269,171 @@ function QuoteEditor(props: EditorProps) {
           <small>Targets: {Array.isArray(item.targetRefs) ? item.targetRefs.length : 0} · evidence refs: {Array.isArray(item.sourceRefs) ? item.sourceRefs.length : 0}</small>
         </div>;
       })}
-      <div className={styles.fixedValue}><span>Unsent outputs requested</span><b>{Array.isArray(intent.artifacts) && intent.artifacts.length ? intent.artifacts.map((item) => humanize(String(item))).join(', ') : 'None mapped'}</b><small>No reply, PDF, or spreadsheet is generated by this connected route yet.</small></div>
     </section>
+    <section className={styles.card}>
+      <div className={styles.cardTitle}><b>Unsent customer outputs</b><small>No artifact is sent from Nava.</small></div>
+      <FieldShell path={artifactPath} label="Generate" field={props.snapshot.fields[artifactPath]}
+        onOpenEvidence={props.onOpenEvidence} onDone={props.onDone}>
+        <div className={styles.candidateList}>
+          {([
+            ['email_quote', 'Email cover preview'], ['pdf_quote', 'PDF attachment'], ['xlsx_quote', 'Excel workbook'],
+          ] as const).map(([kind, label]) => <label className={styles.candidateOption} key={kind}>
+            <span><b>{label}</b><small>{kind === 'email_quote' ? 'Cover text only; no send.' : 'Stored on this source-bound quote receipt.'}</small></span>
+            <input type="checkbox" checked={requestedArtifacts.includes(kind)} onChange={(event) => {
+              const next = event.target.checked ? [...new Set([...requestedArtifacts, kind])] : requestedArtifacts.filter((value) => value !== kind);
+              props.onStage(artifactPath, next); props.onBlur(artifactPath);
+            }} />
+          </label>)}
+        </div>
+        {requestedArtifacts.includes('email_quote') && !requestedArtifacts.some((value) => value === 'pdf_quote' || value === 'xlsx_quote')
+          && <small className={styles.problem}>The native quote adapter requires a PDF or Excel attachment with an email-cover preview.</small>}
+      </FieldShell>
+    </section>
+    <QuoteArtifactReceipts snapshot={props.snapshot} request={props.request} />
     {Object.keys(client).length === 0 && <span className={styles.help}>No client identity was extracted.</span>}
+  </>;
+}
+
+function QuotePartyField(props: EditorProps & { path: string; role: 'agency' | 'company'; label: string }) {
+  const party = record(props.editValue(props.path)) ?? record(draftAtPath(props.snapshot, props.path)) ?? {};
+  const namePath = `${props.path}/name`;
+  const name = text(props.editValue(namePath) ?? party.name);
+  const nameField = props.snapshot.fields[namePath] ?? {
+    path: namePath, value: name,
+    required: props.snapshot.session.draft.fieldReviewRequirements[namePath]?.required !== false,
+    review: props.snapshot.session.draft.staffReviews[namePath]?.status ?? 'pending',
+    provenance: 'source' as const,
+    evidenceRefs: props.snapshot.session.draft.fieldReviewRequirements[namePath]?.evidenceRefs ??
+      props.snapshot.session.draft.proposal.sourceClaims.find((claim) => claim.path === namePath)?.sourceRefs ?? [],
+  };
+  const selectionPath = `${props.path}/nativeSelectionRef`;
+  const selectedRef = props.snapshot.fields[selectionPath]?.override?.state === 'set'
+    && typeof props.snapshot.fields[selectionPath]?.value === 'string' ? props.snapshot.fields[selectionPath]!.value as string : null;
+  const candidates = props.snapshot.session.draft.observations.flatMap((observation) => {
+    if (observation.kind !== 'party_candidate' || observation.status !== 'complete' || record(observation.coverage)?.complete !== true
+        || observation.criteria.workflow !== 'quote' || observation.criteria.requestId !== props.request.id
+        || observation.criteria.role !== props.role || !sameIdentityText(observation.criteria.searchName, name)) return [];
+    const candidate = record(observation.result);
+    return candidate && hasValue(candidate.nativeId) && hasValue(candidate.name) ? [{ observation, candidate }] : [];
+  });
+  const selected = candidates.find((entry) => entry.observation.ref === selectedRef
+    && sameIdentityText(entry.candidate.name, name));
+  return <FieldShell path={props.path} label={props.label} field={props.snapshot.fields[props.path]}
+    onOpenEvidence={props.onOpenEvidence} onDone={props.onDone}>
+    <TextField {...props} path={namePath} label={`${props.label} name`} fieldOverride={nameField} />
+    <FieldValueState {...props} path={props.path} />
+    {selected ? <small className={styles.accepted}>Native {props.role} selected: {text(selected.candidate.name)} · {text(selected.candidate.nativeId)}</small>
+      : <small className={styles.help}>{selectedRef ? 'Selected native result no longer matches this name.' : 'Search native parties, then select the exact matching company or agency.'}</small>}
+    {!selected && candidates.map(({ observation, candidate }) => <div className={styles.candidateOption} key={observation.ref}>
+      <span><b>{text(candidate.name)}</b><small>Native {props.role} · {text(candidate.nativeId)}</small></span>
+      <button type="button" disabled={props.busy} onClick={() => { props.onStage(selectionPath, observation.ref); props.onBlur(selectionPath); }}>Select</button>
+    </div>)}
+  </FieldShell>;
+}
+
+function QuoteSalesStrategyField(props: EditorProps & { path: string; label: string }) {
+  const value = text(props.editValue(props.path));
+  const choices = ['BAR', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR', 'DOML', 'OTHER', 'Government'];
+  return <FieldShell path={props.path} label={props.label} field={props.snapshot.fields[props.path]}
+    onOpenEvidence={props.onOpenEvidence} onDone={props.onDone}>
+    <select id={props.path} className={styles.select} value={value} onChange={(event) => {
+      props.onStage(props.path, event.target.value); props.onBlur(props.path);
+    }}><option value="">Choose supported strategy code</option>
+      {value && !choices.includes(value) && <option value={value}>{value} · not in native quote adapter</option>}
+      {choices.map((code) => <option key={code} value={code}>{code} · {humanize(code)}</option>)}
+    </select>
+  </FieldShell>;
+}
+
+function quoteMoney(minor: unknown, currency: unknown): string {
+  if (typeof minor !== 'number' || !Number.isSafeInteger(minor)) return '';
+  return `${text(currency) || 'ZAR'} ${(minor / 100).toFixed(2)}`;
+}
+
+function QuoteRateChoices(props: EditorProps & { group: Record<string, unknown>; groupId: string; groupRoot: string }) {
+  const { snapshot, request, groupId, groupRoot } = props;
+  const options = quoteRateOptions(snapshot, request.id, groupId);
+  const observation = latestQuotePriceObservation(snapshot, request.id);
+  if (!options.length) return <small className={styles.help}>Native room/rate meanings appear after a complete quote lookup; a later Prepare refreshes current price.</small>;
+  const roomCodesPath = `${groupRoot}/roomCodes`;
+  const boardPath = `${groupRoot}/board`;
+  const ratePath = `${groupRoot}/ratePlan`;
+  return <div className={styles.candidateList}>
+    {options.map((option, index) => {
+      const roomCode = text(option.roomCode);
+      const rateCode = text(option.rateCode);
+      const board = text(option.board);
+      const optionId = text(option.id) || `${roomCode}-${rateCode}-${board}-${index}`;
+      const currentRate = text(props.editValue(ratePath));
+      const currentRoomCodes = props.editValue(roomCodesPath);
+      const currentBoard = text(props.editValue(boardPath));
+      const selected = currentRate === rateCode && currentBoard === board
+        && Array.isArray(currentRoomCodes) && currentRoomCodes.map(text).includes(roomCode);
+      return <div className={styles.candidateOption} key={`${observation?.ref}-${optionId}`}>
+        <span><b>{roomCode} · {text(option.roomLabel) || roomCode} / {rateCode} · {text(option.rateLabel) || rateCode}</b>
+          <small>{text(option.boardLabel) || board} · {quoteMoney(option.perNightMinor, option.currency)} per night · {quoteMoney(option.totalMinor, option.currency)} total
+            {typeof option.roomsLeft === 'number' ? ` · ${option.roomsLeft} rooms left` : ''}{option.priced === 'summary' ? ' · summary only' : ''}</small></span>
+        <button type="button" disabled={props.busy || !roomCode || !rateCode || !board} aria-pressed={selected}
+          onClick={() => {
+            const rateCodes = props.editValue(roomCodesPath);
+            props.onStage(roomCodesPath, [...new Set([...(Array.isArray(rateCodes) ? rateCodes.map(text).filter(Boolean) : []), roomCode])]);
+            props.onStage(ratePath, rateCode);
+            props.onStage(boardPath, board);
+            props.onBlur(roomCodesPath); props.onBlur(ratePath); props.onBlur(boardPath);
+          }}>{selected ? 'Selected option' : 'Use observed option'}</button>
+      </div>;
+    })}
+  </div>;
+}
+
+function QuotePriceSummary({ snapshot, request }: { snapshot: ReservationPaneSnapshot; request: ReservationRequestProjection }) {
+  const observation = latestQuotePriceObservation(snapshot, request.id);
+  if (!observation) return <div className={styles.notice}>No native quote price has been observed yet. Search parties, select exact native matches, then look up and prepare the quote.</div>;
+  const result = record(observation.result);
+  const freshUntil = typeof result?.freshUntil === 'string' ? Date.parse(result.freshUntil) : Number.NaN;
+  const fresh = observation.status === 'complete' && record(observation.coverage)?.complete === true && Number.isFinite(freshUntil) && freshUntil > Date.now();
+  const prepared = isQuotePrepared(snapshot, request);
+  const notes = record(observation.coverage)?.notes;
+  const issue = text(result?.issue) || (Array.isArray(notes) ? text(notes[0]) : '');
+  return <section className={styles.card} aria-label="Native Quote price and availability">
+    <div className={styles.cardTitle}><b>Native HMS quote price</b><small>{prepared ? 'Prepared for current saved fields' : fresh ? 'Observed; prepare again before generating outputs' : 'Expired or incomplete'}</small></div>
+    {hasValue(result?.totalMinor) ? <div className={styles.priceRow}><b>{quoteMoney(result?.totalMinor, result?.currency)}</b>
+      <small>{text(result?.arrivalDate)} – {text(result?.departureDate)} · native quote total</small></div>
+      : <div className={styles.notice}>{issue ? humanize(issue) : 'No current native quote total was returned.'}</div>}
+    {freshUntil && Number.isFinite(freshUntil) && <small className={styles.help}>Native price valid until {new Date(freshUntil).toLocaleString()}.</small>}
+    <small className={fresh ? styles.help : styles.problem}>{prepared ? 'Current HMS price and availability are ready. Go only creates requested unsent artifacts.'
+      : fresh ? 'This read is not yet a prepared quote for the current draft.' : 'No current price is confirmed; Go stays blocked.'}</small>
+  </section>;
+}
+
+function QuoteArtifactReceipts({ snapshot, request }: { snapshot: ReservationPaneSnapshot; request: ReservationRequestProjection }) {
+  const receipts = quoteReceiptObservations(snapshot, request.id);
+  if (!receipts.length) return <div className={styles.notice}>No quote output receipt exists yet. Generate is enabled only after a current native Prepare and required-field review.</div>;
+  return <>
+    {receipts.map((observation) => {
+      const result = record(observation.result) ?? {};
+      const artifacts = Array.isArray(result.artifacts) ? result.artifacts.map(record).filter((item): item is Record<string, unknown> => Boolean(item)) : [];
+      const cover = record(result.coverEmail);
+      const failures = Array.isArray(result.failures) ? result.failures.map(text).filter(Boolean) : [];
+      return <section className={styles.card} key={observation.ref}>
+        <div className={styles.cardTitle}><b>Quote output receipt</b><small>{observation.coverage.complete ? 'Complete' : 'Partial or failed'}</small></div>
+        <div className={styles.notice}>Email sent: no. Reservation saved: no.</div>
+        {artifacts.length ? artifacts.map((artifact, index) => {
+          const name = text(artifact.fileName) || `quote-output-${index + 1}`;
+          const mime = text(artifact.mimeType);
+          const hasBytes = typeof artifact.bytesBase64 === 'string' && artifact.bytesBase64.length > 0;
+          return <div className={styles.attachmentBound} key={`${text(artifact.sha256) || name}-${index}`}>
+            <b>{name}</b><small>{humanize(text(artifact.kind) || 'quote output')} · {mime || 'MIME type unavailable'} · {text(artifact.sizeBytes)} bytes</small>
+            {hasBytes ? <div className={styles.twoCol}>
+              <button type="button" className={styles.inlineButton} onClick={() => deliverQuoteArtifact(artifact)}>Download</button>
+              {mime === 'application/pdf' && <button type="button" className={styles.inlineButton} onClick={() => deliverQuoteArtifact(artifact, true)}>Open PDF</button>}
+            </div> : <small className={styles.problem}>This receipt has no artifact bytes; no download is offered.</small>}
+          </div>;
+        }) : <div className={styles.notice}>No output bytes were returned for this receipt.</div>}
+        {cover && <div className={styles.fixedValue}><b>Email cover preview · not sent</b><span>To: {text(cover.to)}</span><span>{text(cover.subject)}</span><small className={styles.coverText}>{text(cover.body)}</small></div>}
+        {failures.map((failure) => <small className={styles.problem} key={failure}>{humanize(failure)}</small>)}
+      </section>;
+    })}
   </>;
 }
 

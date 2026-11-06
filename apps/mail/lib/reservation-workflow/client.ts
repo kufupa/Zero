@@ -1,4 +1,5 @@
 import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Draft, type ReservationWorkflowV2Source } from '../../../server-pilot/src/ai/reservation-workflow-v2-contract.js';
+import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import type {
   ReservationCommandContext,
   ReservationEditCommand,
@@ -10,6 +11,7 @@ import type {
   ReservationWorkflowClient,
   ReservationWorkflowV2Session,
 } from './types';
+import { ReservationWorkflowStaleRevisionError } from './types';
 
 type ItemInput = {
   workItemId: string;
@@ -18,8 +20,9 @@ type ItemInput = {
   expectedSeq: number;
 };
 type StateResult = { status: string; draft?: unknown; revision?: number; revisionHead?: number; seq?: number; preparationViews?: unknown };
-type QueryProcedure<I> = { query(input: I): Promise<unknown> };
-type MutationProcedure<I> = { mutate(input: I): Promise<unknown> };
+type MailboxCallOptions = NonNullable<ReturnType<typeof inMailbox>>;
+type QueryProcedure<I> = { query(input: I, options?: MailboxCallOptions): Promise<unknown> };
+type MutationProcedure<I> = { mutate(input: I, options?: MailboxCallOptions): Promise<unknown> };
 
 /** Narrow structural type for the published v2 router; no legacy quote/session DTOs cross this boundary. */
 export type ReservationWorkflowV2TrpcClient = {
@@ -60,12 +63,18 @@ function itemInput(context: ReservationCommandContext): ItemInput {
   };
 }
 
+function mailboxOptions(source: ReservationSourceContext): MailboxCallOptions {
+  const options = inMailbox(source.mailboxId);
+  if (!options) throw new Error('The selected Nava mailbox is unavailable; reopen this email before continuing.');
+  return options;
+}
+
 function errorFor(result: StateResult): Error {
   const detail = result.status.replaceAll('_', ' ');
   const messages: Record<string, string> = {
     invalid_source: 'The selected email changed. Reopen the email before editing this draft.',
     wrong_property: 'This email is not admitted for the connected property.',
-    stale_revision: 'The draft changed elsewhere. Reloading the current saved values.',
+    stale_revision: 'The draft changed elsewhere. Reopen this email to load the latest saved values.',
     invalid_path: 'This field is not editable in the reservation draft yet.',
     invalid_value: 'The value was not accepted by the reservation service.',
     history_stale: 'History changed. Reload the current reservation draft.',
@@ -163,6 +172,13 @@ function flattenFields(value: unknown, path: string, out: ReservationPaneSnapsho
       evidenceRefs: annotation?.evidenceRefs ?? claim?.sourceRefs ?? [],
       ...(review?.status === 'flagged' && review.note ? { issue: review.note } : {}),
     };
+    if (value.kind !== 'none') {
+      for (const [key, child] of Object.entries(value)) {
+        if (['id', 'kind', 'sourceRefs', 'candidateRefs', 'suggestedRef', 'serviceRefs', 'documentRefs',
+          'priceObservationRefs', 'lookupResultRefs', 'evidenceRefs'].includes(key)) continue;
+        flattenFields(child, `${path}/${pointerPart(key)}`, out, draft);
+      }
+    }
     return;
   }
   if (isRecord(value) && value.kind !== 'none') {
@@ -199,7 +215,7 @@ function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot
     flattenFields(request, root, fields, draft);
     requests.push({ id: request.id, kind: request.kind, text: request.requestText,
       fieldPaths: Object.keys(fields).filter((path) => path.startsWith(`${root}/`)),
-      supported: request.kind === 'create' && draft.propertyCode === 'HRCEN' });
+      supported: (request.kind === 'create' || request.kind === 'quote') && draft.propertyCode === 'HRCEN' });
   }
   for (const [index, row] of draft.proposal.content.services.entries()) {
     flattenFields(row, pointer('proposal', 'content', 'services', index), fields, draft);
@@ -278,6 +294,27 @@ function serviceOperationNotice(result: unknown, success: string[]): string | un
   return fields.size ? `${notice} Review: ${[...fields].join(', ')}.` : notice;
 }
 
+function quoteLookupNotice(result: unknown): string | undefined {
+  if (!isRecord(result) || !Array.isArray(result.quotes)) return undefined;
+  const issues = result.quotes.flatMap((value) => {
+    if (!isRecord(value) || value.status === 'priced') return [];
+    const status = isString(value.status) ? value.status.replaceAll('_', ' ') : 'unknown outcome';
+    const issue = isString(value.issue) ? value.issue.replaceAll('_', ' ') : null;
+    const fields = Array.isArray(value.fields) ? value.fields.filter(isString).join(', ') : '';
+    return [`Quote check: ${status}${issue ? ` — ${issue}` : ''}${fields ? `; review ${fields}` : ''}.`];
+  });
+  return issues.length ? issues.join(' ') : undefined;
+}
+
+function quoteOperationNotice(result: unknown, success: string[], action: string): string | undefined {
+  if (!isRecord(result)) return `${action}: unreadable native quote response.`;
+  if (success.includes(String(result.status))) return undefined;
+  const status = isString(result.status) ? result.status.replaceAll('_', ' ') : 'unknown outcome';
+  const issue = isString(result.issue) ? result.issue.replaceAll('_', ' ') : null;
+  const fields = Array.isArray(result.fields) ? result.fields.filter(isString) : [];
+  return `${action}: ${status}${issue ? ` — ${issue}` : ''}${fields.length ? `; review ${fields.join(', ')}` : ''}.`;
+}
+
 function serviceOwnerForPath(snapshot: ReservationPaneSnapshot, path: string): string | null {
   const parts = path.split('/').slice(1).map((part) => {
     try { return decodeURIComponent(part); } catch { return ''; }
@@ -304,78 +341,98 @@ function requestOwnsPath(snapshot: ReservationPaneSnapshot, path: string): boole
 /** Typed adapter to reservationWorkflowV2. All mutations refresh the single canonical server draft. */
 export function createTrpcReservationWorkflowClient<T extends ReservationWorkflowV2TrpcClient>(trpcClient: T): ReservationWorkflowClient {
   const api = trpcClient.reservationWorkflowV2;
-  const load = async (input: ItemInput) => project(decodeDraft(await api.get.query({
+  const load = async (input: ItemInput, source: ReservationSourceContext) => project(decodeDraft(await api.get.query({
     workItemId: input.workItemId, source: input.source, expectedRevision: input.expectedRevision, expectedSeq: input.expectedSeq,
-  })));
+  }, mailboxOptions(source))));
+  const refreshAfterStale = async (input: ItemInput, source: ReservationSourceContext, result: unknown) => {
+    if (!isRecord(result) || result.status !== 'stale_revision') return;
+    throw new ReservationWorkflowStaleRevisionError(await load(input, source));
+  };
   const refreshAfter = async <I extends ItemInput & Record<string, unknown>>(
-    procedure: MutationProcedure<I>, input: I,
+    procedure: MutationProcedure<I>, input: I, source: ReservationSourceContext,
   ): Promise<ReservationPaneSnapshot> => {
-    const result = okResult(await procedure.mutate(input));
+    const raw = await procedure.mutate(input, mailboxOptions(source));
+    await refreshAfterStale(input, source, raw);
+    const result = okResult(raw);
     if (result.status === 'ok' && result.draft) return project(decodeDraft(result));
     return load({ workItemId: input.workItemId, source: input.source,
       expectedRevision: typeof result.revision === 'number' ? result.revision : input.expectedRevision,
-      expectedSeq: typeof result.seq === 'number' ? result.seq : input.expectedSeq });
+      expectedSeq: typeof result.seq === 'number' ? result.seq : input.expectedSeq }, source);
   };
   return {
     async ensure({ source }) {
       const wire = apiSource(source);
       return project(decodeDraft(await api.ensure.mutate({
         ...(source.internetMessageId ? { internetMessageId: source.internetMessageId } : {}), source: wire,
-      })));
+      }, mailboxOptions(source))));
     },
-    get(command) { return load(itemInput(command)); },
+    get(command) { return load(itemInput(command), command.source); },
     async edit(command: ReservationEditCommand) {
       const input = { ...itemInput(command), fieldPath: command.fieldPath,
         value: { state: command.state, ...(command.state === 'set' ? { value: command.value } : {}), updatedAt: new Date().toISOString() } };
-      return refreshAfter(api.edit, input);
+      return refreshAfter(api.edit, input, command.source);
     },
     async review(command: ReservationReviewCommand) {
       if (!requestOwnsPath(command.snapshot, command.fieldPath)) throw new Error('The field is not part of a source-bound reservation request.');
       return refreshAfter(api.review, { ...itemInput(command), fieldPath: command.fieldPath,
-        decision: command.decision, ...(command.note ? { note: command.note } : {}) });
+        decision: command.decision, ...(command.note ? { note: command.note } : {}) }, command.source);
     },
-    undo(command) { return refreshAfter(api.undo, itemInput(command)); },
-    redo(command) { return refreshAfter(api.redo, itemInput(command)); },
+    undo(command) { return refreshAfter(api.undo, itemInput(command), command.source); },
+    redo(command) { return refreshAfter(api.redo, itemInput(command), command.source); },
     async lookup(command) {
       const input = { ...itemInput(command), ...(command.requestId ? { requestId: command.requestId } : {}) };
-      const result = okResult(await api.lookup.mutate(input));
-      return { ...await load(input), ...(operationNotice(result, ['ok']) ? { serviceNotice: operationNotice(result, ['ok']) } : {}) };
+      const raw = await api.lookup.mutate(input, mailboxOptions(command.source));
+      await refreshAfterStale(input, command.source, raw);
+      const result = okResult(raw);
+      const notice = operationNotice(result, ['ok']) ?? quoteLookupNotice(result);
+      return { ...await load(input, command.source), ...(notice ? { serviceNotice: notice } : {}) };
     },
     async prepare(command) {
-      const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId };
-      const result = await api.prepare.mutate(input);
-      const snapshot = await load(input);
-      const notice = operationNotice(result, ['prepared']);
+      const input = { ...itemInput(command), requestId: command.requestId,
+        ...(command.allocationId ? { allocationId: command.allocationId } : {}) };
+      const result = await api.prepare.mutate(input, mailboxOptions(command.source));
+      await refreshAfterStale(input, command.source, result);
+      const snapshot = await load(input, command.source);
+      const isQuote = command.snapshot.requests.some((request) => request.id === command.requestId && request.kind === 'quote');
+      const notice = isQuote ? quoteOperationNotice(result, ['prepared'], 'Quote price preparation') : operationNotice(result, ['prepared']);
       return notice ? { ...snapshot, serviceNotice: notice } : snapshot;
     },
     async execute(command) {
-      const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
+      const input = { ...itemInput(command), requestId: command.requestId,
+        ...(command.allocationId ? { allocationId: command.allocationId } : {}),
         go: true as const, idempotencyKey: command.idempotencyKey };
-      const result = await api.execute.mutate(input);
-      const snapshot = await load(input);
-      const notice = operationNotice(result, ['succeeded', 'already_succeeded']);
-      return notice ? { ...snapshot, serviceNotice: notice } : snapshot;
+      const result = await api.execute.mutate(input, mailboxOptions(command.source));
+      await refreshAfterStale(input, command.source, result);
+      const snapshot = await load(input, command.source);
+      const isQuote = command.snapshot.requests.some((request) => request.id === command.requestId && request.kind === 'quote');
+      const notice = isQuote ? quoteOperationNotice(result, ['succeeded', 'already_succeeded'], 'Unsent quote generation')
+        : operationNotice(result, ['succeeded', 'already_succeeded']);
+      return notice ? { ...snapshot, serviceNotice: isQuote
+        ? `${notice} No email was sent and no reservation was saved.` : notice } : snapshot;
     },
     async reconcile(command) {
       const input = { ...itemInput(command), operationId: command.operationId };
-      const result = await api.reconcile.mutate(input);
-      const snapshot = await load(input);
+      const result = await api.reconcile.mutate(input, mailboxOptions(command.source));
+      await refreshAfterStale(input, command.source, result);
+      const snapshot = await load(input, command.source);
       const notice = operationNotice(result, ['succeeded', 'failed']);
       return notice ? { ...snapshot, serviceNotice: notice } : snapshot;
     },
     async lookupServices(command) {
       const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
         ...(command.serviceId ? { serviceId: command.serviceId } : {}) };
-      const result = await api.lookupServices.mutate(input);
-      const snapshot = await load(input);
+      const result = await api.lookupServices.mutate(input, mailboxOptions(command.source));
+      await refreshAfterStale(input, command.source, result);
+      const snapshot = await load(input, command.source);
       const notice = serviceOperationNotice(result, ['ok']);
       return notice ? { ...snapshot, serviceNotice: `Add-On catalogue: ${notice}` } : snapshot;
     },
     async previewServices(command) {
       const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
         ...(command.serviceId ? { serviceId: command.serviceId } : {}) };
-      const result = await api.prepareServices.mutate(input);
-      const snapshot = await load(input);
+      const result = await api.prepareServices.mutate(input, mailboxOptions(command.source));
+      await refreshAfterStale(input, command.source, result);
+      const snapshot = await load(input, command.source);
       const notice = serviceOperationNotice(result, ['prepared']);
       return notice ? { ...snapshot, serviceNotice: `Add-On preview only; nothing saved: ${notice}` } : snapshot;
     },
