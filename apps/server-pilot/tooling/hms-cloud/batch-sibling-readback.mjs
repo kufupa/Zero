@@ -31,8 +31,7 @@ export async function verifyBatchSiblings(census, siblings, {
           !CREATE_GUARANTEES[request.guaranteeType] ||
           !validCreateDates(request.stay.arrival, request.stay.departure, true, true) ||
           (sameTarget && (!row || !sameCreateGuest(row, request.guest) || row.status !== 'Reserved' ||
-            row.arrival !== request.stay.arrival || row.departure !== request.stay.departure)) ||
-          !request.sourceOfBusiness || !request.note) return false;
+            row.arrival !== request.stay.arrival || row.departure !== request.stay.departure))) return false;
       const ages = request.stay.childAges;
       const expected = { arrival: request.stay.arrival, departure: request.stay.departure,
         adults: request.stay.adults, children: ages.length,
@@ -41,7 +40,8 @@ export async function verifyBatchSiblings(census, siblings, {
           child3: ages.filter((age) => age >= 13).length },
         roomType: request.room.roomType, ratePlan: request.room.ratePlan, note: request.note,
         guestId: request.guest.nativeId, firstName: request.guest.firstName, lastName: request.guest.lastName,
-        allowRealGuest: true, source: request.sourceOfBusiness.description,
+        allowRealGuest: true,
+        ...(request.sourceOfBusiness ? { source: request.sourceOfBusiness.description } : {}),
         organization: request.parties?.organization?.name ?? '', guarantee: CREATE_GUARANTEES[request.guaranteeType],
         guaranteeCode: request.guaranteeType, cmsSend: request.sendHmsConfirmation.kind === 'send',
         ...(request.cmsMessageId !== undefined ? { cmsMessageId: request.cmsMessageId } : {}),

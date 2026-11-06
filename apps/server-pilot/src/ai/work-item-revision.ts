@@ -47,7 +47,7 @@ export function paneStateOf(state: PaneState): PaneState {
 export function withPaneState(state: PaneState, pane: PaneState): PaneState {
   const next: PaneState = {};
   for (const [key, value] of Object.entries(state)) {
-    if (!isPaneFieldKey(key)) next[key] = value;
+    if (!isPaneFieldKey(key) || key === RESERVATION_V2_KEY) next[key] = value;
   }
   for (const [key, value] of Object.entries(paneStateOf(pane))) {
     if (key === RESERVATION_V2_KEY) {

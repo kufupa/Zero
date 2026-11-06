@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { MAIL_KINDS, workEvent, workItem } from '../db/schema/work.js';
 import { mailboxAccess, mailThread, message } from '../db/schema/mail.js';
@@ -24,6 +24,13 @@ type State = Record<string, unknown>;
 export type ReservationWorkflowV2Context = { db: DB; transportId: string; userId?: string | null; propertyCode: string };
 type Context = ReservationWorkflowV2Context;
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
+
+/** Serialize source seeding and legacy/v2 Create authorization for the same email. */
+export async function lockReservationWorkflowV2Source(tx: Parameters<Parameters<DB['transaction']>[0]>[0],
+  transportId: string, messageId: string): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(
+    ${JSON.stringify(['reservation-v2-source', transportId, messageId])}, 0))`);
+}
 
 export type ReservationWorkflowV2Seed = {
   generationId?: string;
@@ -133,7 +140,7 @@ export async function getReservationWorkflowV2DraftForSource(ctx: Context, input
     state: workItem.state, revision: workItem.revision, revisionHead: workItem.revisionHead,
     revisionSeq: workItem.revisionSeq }).from(workItem)
     .where(and(eq(workItem.transportId, ctx.transportId), eq(workItem.threadId, input.source.threadId),
-      eq(workItem.sourceMessageId, input.source.messageId)))
+      eq(workItem.sourceMessageId, input.source.messageId), sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`))
     .orderBy(desc(workItem.updatedAt), desc(workItem.id)).limit(1);
   if (!item || !hasReservationWorkflowV2Draft(item.state as State)) return { status: 'not_found' };
   return buildResult(ctx.db, ctx, { ...item, state: item.state as State }, input.source);
@@ -155,6 +162,9 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
 }): Promise<ReservationWorkflowV2StateResult> {
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
   const saved = await ctx.db.transaction(async (tx) => {
+    // Serialize v2 seeding for the email, even if competing runs infer different
+    // legacy WorkItem kinds. Background reads may still add other-kind rows.
+    await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
     const [mail] = await sourceMail(tx, ctx, input.source).then((row) => row ? [row] : []);
     if (!mail || !(await hasMailboxAccess(tx, ctx))) return { status: 'invalid_source' as const };
     let [item] = await tx.select({ id: workItem.id, transportId: workItem.transportId, threadId: workItem.threadId,
@@ -163,7 +173,8 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
       revisionSeq: workItem.revisionSeq }).from(workItem)
       .where(and(eq(workItem.transportId, ctx.transportId), eq(workItem.threadId, input.source.threadId),
         eq(workItem.sourceMessageId, input.source.messageId)))
-      .orderBy(desc(workItem.updatedAt), desc(workItem.id)).limit(1).for('update');
+      .orderBy(desc(sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`),
+        desc(workItem.updatedAt), desc(workItem.id)).limit(1).for('update');
     if (!item) {
       const kind = initialKind(input.seed);
       const [inserted] = await tx.insert(workItem).values({ transportId: ctx.transportId, threadId: input.source.threadId,
