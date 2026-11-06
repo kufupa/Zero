@@ -106,6 +106,16 @@ function leaf(draft: ReservationWorkflowV2Draft, path: string, sourceValue: unkn
   return { value: sourceValue, path };
 }
 
+function effectiveSubtree(draft: ReservationWorkflowV2Draft, source: unknown, path: string): unknown {
+  const resolved = leaf(draft, path, source);
+  if ('issue' in resolved || resolved.unset) return null;
+  const value = resolved.value;
+  if (Array.isArray(value)) return value.map((item, index) => effectiveSubtree(draft, item, `${path}/${index}`));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) =>
+    [key, effectiveSubtree(draft, item, `${path}/${encodeURIComponent(key)}`)]));
+  return value;
+}
+
 function accepted(draft: ReservationWorkflowV2Draft, path: string): boolean {
   return draft.fieldReviewRequirements[path]?.required === false || draft.staffReviews[path]?.status === 'accepted';
 }
@@ -200,14 +210,20 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   mode: 'prepare' | 'lookup' | 'execute' = 'prepare'): CreateCompile {
   const request = draft.proposal.content.requests.find((entry) => entry.id === requestId);
   if (!request || request.kind !== 'create') return { outcome: 'needs_input', issue: 'create_request_not_found' };
-  const body = request.body;
+  const req = ptr('proposal', 'content', 'requests', requestId, 'body');
+  const body = effectiveSubtree(draft, request.body, req) as typeof request.body | null;
+  if (!body || !Array.isArray(body.allocations) || !Array.isArray(body.dateSections) || !body.shared) {
+    return { outcome: 'needs_input', issue: 'create_body_incomplete' };
+  }
   const allocationIndex = body.allocations.findIndex((entry) => entry.id === allocationId);
   if (allocationIndex < 0) return { outcome: 'needs_input', issue: 'allocation_not_found' };
   const allocation = body.allocations[allocationIndex]!;
   const dateIndex = body.dateSections.findIndex((entry) => entry.id === allocation.dateSectionId);
   if (dateIndex < 0) return { outcome: 'needs_input', issue: 'date_section_not_found' };
   const section = body.dateSections[dateIndex]!;
-  const req = ptr('proposal', 'content', 'requests', requestId, 'body');
+  if (!allocation.occupancy || !allocation.guest || !allocation.overrides || !section.defaults) {
+    return { outcome: 'needs_input', issue: 'allocation_fields_incomplete' };
+  }
   const alloc = ptr('proposal', 'content', 'requests', requestId, 'body', 'allocations', allocationIndex);
   const dates = ptr('proposal', 'content', 'requests', requestId, 'body', 'dateSections', dateIndex);
   const issues: string[] = [], reviewPaths = new Set<string>();
@@ -260,7 +276,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   }
   if (adults !== null && (!Number.isInteger(adults) || adults < 1)) issues.push(`${adultsPath}:invalid`);
   if (childCount !== null && (!Number.isInteger(childCount) || childCount < 0)) issues.push(`${childrenPath}:invalid`);
-  if (childAges !== null && (!childAges.every((age) => Number.isInteger(age) && age !== null && age >= 0 && age <= 17) ||
+  if (childAges !== null && (!Array.isArray(childAges) || !childAges.every((age) => Number.isInteger(age) && age !== null && age >= 0 && age <= 17) ||
       (childCount !== null && childCount !== childAges.length))) issues.push(`${agesPath}:invalid`);
   const guestPath = ptr(...alloc.slice(1).split('/').map(decodeURIComponent), 'guest');
   const guest = allocation.guest;
@@ -636,6 +652,23 @@ function preparedFor(draft: ReservationWorkflowV2Draft, requestId: string, alloc
   if (bindingParties?.arAccount && (!arAccountProfileId || !/^\d+$/.test(arAccountProfileId))) return null;
   return { result, observation, stored, request: binding.request, digest: binding.digest, price, arAccountProfileId,
     prepareShot: shot && typeof shot.runId === 'string' && typeof shot.sha256 === 'string' ? shot : null };
+}
+
+/** Price currentness depends on native business values, not the staff review revision. */
+export function reservationWorkflowV2PreparationViews(draft: ReservationWorkflowV2Draft, propertyCode: string) {
+  return draft.proposal.content.requests.flatMap((request) => {
+    if (request.kind !== 'create') return [];
+    const body = effectiveSubtree(draft, request.body, ptr('proposal', 'content', 'requests', request.id, 'body')) as typeof request.body | null;
+    if (!body || !Array.isArray(body.allocations)) return [];
+    return body.allocations.map((allocation) => {
+      const compiled = compileCreate(draft, request.id, allocation.id, propertyCode, 'prepare');
+      if (compiled.outcome !== 'ok') return { requestId: request.id, allocationId: allocation.id,
+        current: false, issue: compiled.issue };
+      const prepared = preparedFor(draft, request.id, allocation.id, compiled.semanticDigest);
+      return { requestId: request.id, allocationId: allocation.id, current: Boolean(prepared),
+        ...(prepared ? { price: prepared.price } : {}) };
+    });
+  });
 }
 
 function nativeReadbackPrice(fields: unknown): { averageRate: string; totalRate: string; currency: string } | null {
