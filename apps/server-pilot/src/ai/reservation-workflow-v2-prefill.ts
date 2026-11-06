@@ -52,7 +52,7 @@ const SYNTHESIS_RULES = `Build an editable reservation-workflow proposal only fr
 Output shape: {"proposal":{"schemaVersion":"reservation-prefill.v0.2","content":{"requests":[],"services":[],"documents":[]},"annotations":[],"issues":[],"sourceClaims":[],"lookupResultRefs":[]},"reviewRequirements":{}}. This is shape only: preserve every source-supported request. annotations, issues, sourceClaims and lookupResultRefs are siblings of content, never children of content. For amend, rateHandling and currentObservationRefs belong only in a perTarget[] row next to its hintId; never at body root. request.documentRefs contains document entity IDs from content.documents, never src_ evidence refs; cite attachment context in request.sourceRefs and do not infer filing from an attachment alone. Cross-thread mail reviewCandidates are unverified leads, never eligible target matches or candidateRefs. Every reference must be exact and admitted.`;
 const SYNTHESIS_SHAPE_RULES = `Use this schema-valid empty envelope as the exact top-level/container template (populate arrays without changing their locations; reuse extraction request IDs and order):
 {"proposal":{"schemaVersion":"reservation-prefill.v0.2","content":{"requests":[],"services":[],"documents":[]},"annotations":[],"issues":[],"sourceClaims":[],"lookupResultRefs":[]},"reviewRequirements":{}}
-Each request's sourceRefs, serviceRefs and documentRefs are required arrays, including when empty. Reuse extraction request IDs; host links a request to source facts only by exact ID or a unique one-to-one source/text match, and fails closed when ambiguous. For Amend and Cancel, preserve every source-cited exact confirmation as an include hint with confirmation, sourceRefs, candidateRefs:[], suggestedRef:null and mode:"unresolved" unless an exact admitted host observation supports a target. Do not fabricate a native target. For Create, reservationNote belongs in body.shared.reservationNote, never at body root. Do not emit global review keys such as humanReviewRequired or beforeExecution: reviewRequirements is keyed by field-path strings, and each value is exactly {"required":true,"reasons":["..."],"evidenceRefs":["admitted-ref"]}. Use {} when no additional review requirement is needed. Preserve every source-supported field in the schema; if a field cannot be represented confidently, retain sourceClaims and add a visible issue rather than dropping the request or inventing a value. An exact source confirmation linked to a Create means possible prior booking, not proof of a native stay; do not transform it into a native ID and require staff to verify before Execute. Confirmation text remains a source claim unless an exact admitted host observation verifies a match; never copy it into a native-selection field.`;
+Each request's sourceRefs, serviceRefs and documentRefs are required arrays, including when empty. Reuse extraction request IDs; host links a request to source facts only by exact ID or a unique one-to-one source/text match, and fails closed when ambiguous. For Amend and Cancel, preserve every source-cited exact confirmation as an include hint with confirmation, sourceRefs, candidateRefs:[], suggestedRef:null and mode:"unresolved" unless an exact admitted host observation supports a target. Do not fabricate a native target. For Create, reservationNote belongs in body.shared.reservationNote, never at body root. Do not emit global review keys such as humanReviewRequired or beforeExecution: reviewRequirements is keyed by field-path strings, and each value is exactly {"required":true,"reasons":["..."],"evidenceRefs":["admitted-ref"]}. Use {} when no additional review requirement is needed. Preserve every source-supported field in the schema; if a field cannot be represented confidently, retain sourceClaims and add a visible issue rather than dropping the request or inventing a value. An exact source confirmation linked to a Create means possible prior booking, not proof of a native stay. Keep it as a sourceClaim only; the host adds the existing_confirmation_requires_lookup issue at /proposal/content/requests/{finalRequestId}/confirmationReference and requires exact native lookup before Execute. Do not transform it into a native ID or claim that a stay exists; never copy it into a native-selection field.`;
 
 const OMIT_UNKNOWN_CLAIM = Symbol('omit-uncited-unknown-claim');
 function omitUncitedUnknownClaims(value: unknown): unknown {
@@ -812,40 +812,41 @@ function addUnresolvedTargetHints(
 
 function addCreateExistingReferenceGuard(input: {
   proposal: ReservationWorkflowV2Proposal;
-  requirements: ReservationWorkflowV2Draft['fieldReviewRequirements'];
   requestIndex: number;
   hints: ExactConfirmationHint[];
 }): void {
   if (!input.hints.length) return;
   const request = input.proposal.content.requests[input.requestIndex];
   if (!request || request.kind !== 'create') return;
+  const path = `/proposal/content/requests/${request.id}/confirmationReference`;
   const sourceRefs = [...new Set(input.hints.flatMap((hint) => hint.sourceRefs))].slice(0, 100);
-  input.proposal.issues.push({ path: `/requests/${request.id}/existingReservationCheck`,
-    kind: 'possible_existing_stay',
-    explanation: 'This Create request cites an exact confirmation number. It may describe an existing stay; staff must verify no matching stay exists before Execute. No native booking was inferred.',
-    evidenceRefs: sourceRefs });
-  for (const [allocationIndex] of (request.body.allocations ?? []).entries()) {
-    const path = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/allocations/${allocationIndex}/guest/firstName`;
-    const existing = input.requirements[path] ?? { required: true, reasons: [], evidenceRefs: [] };
-    input.requirements[path] = { required: true,
-      reasons: [...new Set([...existing.reasons, 'Verify that no matching existing stay exists before executing this Create request.'])].slice(0, 20),
-      evidenceRefs: [...new Set([...existing.evidenceRefs, ...sourceRefs])].slice(0, 100) };
+  for (const hint of input.hints) {
+    const claimPath = input.hints.length === 1 ? path : `${path}/${hint.index}`;
+    const alreadyPresent = input.proposal.sourceClaims.some((claim) => claim.path === claimPath &&
+      claim.raw === hint.value && claim.sourceRefs.length === hint.sourceRefs.length &&
+      hint.sourceRefs.every((ref) => claim.sourceRefs.includes(ref)));
+    if (!alreadyPresent) input.proposal.sourceClaims.push({ path: claimPath, raw: hint.value,
+      sourceRefs: [...hint.sourceRefs] });
+  }
+  request.sourceRefs = [...new Set([...request.sourceRefs, ...input.hints.flatMap((hint) => hint.sourceRefs)])].slice(0, 100);
+  if (!input.proposal.issues.some((row) => row.path === path && row.kind === 'existing_confirmation_requires_lookup')) {
+    input.proposal.issues.push({ path, kind: 'existing_confirmation_requires_lookup',
+      explanation: 'This Create request cites an exact source confirmation. A complete native lookup must establish that no matching stay exists before Execute; no native booking or result was inferred.',
+      evidenceRefs: sourceRefs });
   }
 }
 
 function addRequestConfirmationSafety(input: {
   proposal: ReservationWorkflowV2Proposal;
   extraction: ReservationWorkflowV2Extraction;
-  requirements?: ReservationWorkflowV2Draft['fieldReviewRequirements'];
-}): { proposal: ReservationWorkflowV2Proposal; requirements: ReservationWorkflowV2Draft['fieldReviewRequirements'] } {
+}): { proposal: ReservationWorkflowV2Proposal } {
   const proposal = structuredClone(input.proposal);
-  const requirements = structuredClone(input.requirements ?? {});
   for (const [requestIndex, request] of proposal.content.requests.entries()) {
     if (request.kind !== 'create' && request.kind !== 'amend' && request.kind !== 'cancel') continue;
     const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction);
     if (extracted) {
       const hints = exactConfirmationHints(extracted);
-      if (request.kind === 'create') addCreateExistingReferenceGuard({ proposal, requirements, requestIndex, hints });
+      if (request.kind === 'create') addCreateExistingReferenceGuard({ proposal, requestIndex, hints });
       else addUnresolvedTargetHints(proposal, requestIndex, extracted, hints);
       continue;
     }
@@ -854,12 +855,12 @@ function addRequestConfirmationSafety(input: {
     const citedHints = input.extraction.requests.filter((candidate) => candidate.kind === request.kind)
       .flatMap(exactConfirmationHints).filter((hint) => hint.sourceRefs.some((ref) => request.sourceRefs.includes(ref)));
     if (!citedHints.length) continue;
-    if (request.kind === 'create') addCreateExistingReferenceGuard({ proposal, requirements, requestIndex, hints: citedHints });
+    if (request.kind === 'create') addCreateExistingReferenceGuard({ proposal, requestIndex, hints: citedHints });
     proposal.issues.push({ path: `/requests/${request.id}/confirmationReference`, kind: 'confirmation_request_link_ambiguous',
       explanation: 'An exact source confirmation could not be linked to one extracted request. No native target was inferred; staff must resolve the correspondence before execution.',
       evidenceRefs: [...new Set(citedHints.flatMap((hint) => hint.sourceRefs))].slice(0, 100) });
   }
-  return { proposal, requirements };
+  return { proposal };
 }
 
 type BoundGuestObservation = { originalRef: string; observation: ReservationWorkflowV2Observation; candidateCount: number };
@@ -1203,10 +1204,9 @@ export async function runReservationWorkflowV2Prefill(input: {
   const guestBinding = finalParsed?.success ? bindGuestProfileObservations({ proposal: finalParsed.data.proposal,
     extraction, observations, generationId }) : null;
   const finalObservations = guestBinding?.observations ?? observations;
-  const referenceSafety = guestBinding ? addRequestConfirmationSafety({ proposal: guestBinding.proposal, extraction,
-    requirements: finalParsed?.success ? finalParsed.data.reviewRequirements : {} }) : null;
+  const referenceSafety = guestBinding ? addRequestConfirmationSafety({ proposal: guestBinding.proposal, extraction }) : null;
   const finalProposal = referenceSafety?.proposal ?? (finalParsed?.success ? finalParsed.data.proposal : null);
-  const finalReviewRequirements = referenceSafety?.requirements ?? (finalParsed?.success ? finalParsed.data.reviewRequirements ?? {} : {});
+  const finalReviewRequirements = finalParsed?.success ? finalParsed.data.reviewRequirements ?? {} : {};
   const proposalIssue = finalParsed?.success && finalProposal
     ? validateProposal(finalProposal, evidence, finalObservations) : null;
   const reviewIssue = finalParsed?.success ? validateReviewRequirementRefs(finalReviewRequirements, evidence, finalObservations) : null;
@@ -1218,9 +1218,9 @@ export async function runReservationWorkflowV2Prefill(input: {
     else error = { code: 'invalid_proposal_refs', message: `Synthesis reference validation failed (${proposalIssue ?? reviewIssue}); source extraction remains editable.` };
     const reason = error.message;
     const fallbackProposal = buildFallbackProposal({ extraction, source: input.source, evidence, reason });
-    const fallbackSafety = addRequestConfirmationSafety({ proposal: fallbackProposal, extraction, requirements: {} });
+    const fallbackSafety = addRequestConfirmationSafety({ proposal: fallbackProposal, extraction });
     return { ...base, status: 'partial', observations: finalObservations,
-      proposal: fallbackSafety.proposal, fieldReviewRequirements: fallbackSafety.requirements,
+      proposal: fallbackSafety.proposal, fieldReviewRequirements: {},
       errors: [...readErrors, { stage: 'synthesis', ...error }] };
   }
   return { ...base, observations: finalObservations,
