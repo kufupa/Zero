@@ -1554,7 +1554,8 @@ function QuotePartyField(props: EditorProps & { path: string; role: 'agency' | '
     && sameIdentityText(entry.candidate.name, name));
   return <FieldShell path={props.path} label={props.label} field={props.snapshot.fields[props.path]}
     onOpenEvidence={props.onOpenEvidence} onDone={props.onDone}>
-    <TextField {...props} path={namePath} label={`${props.label} name`} fieldOverride={nameField} />
+    <TextField {...props} path={namePath} label={`${props.label} name`} fieldOverride={nameField}
+      valueOverride={parentEmpty ? '' : undefined} busy={props.busy || Boolean(parentEmpty)} />
     <FieldValueState {...props} path={props.path} />
     {selected ? <small className={styles.accepted}>Native {props.role} selected: {text(selected.candidate.name)} · {text(selected.candidate.nativeId)}</small>
       : <small className={styles.help}>{selectedRef ? 'Selected native result no longer matches this name.' : 'Search native parties, then select the exact matching company or agency.'}</small>}

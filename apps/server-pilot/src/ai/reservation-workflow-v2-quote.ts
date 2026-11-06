@@ -510,9 +510,15 @@ function quoteObservation(
 function matchingPreparedQuote(
   draft: ReservationWorkflowV2Draft,
   compiled: Extract<CompiledQuote, { status: 'ok' }>,
+  preparedOnly = false,
 ) {
   const now = Date.now();
+  const preparedOperation = preparedOnly ? [...operationResults(draft)].reverse().find((result) =>
+    result.workflow === 'quote' && result.requestId === compiled.request.id && result.status === 'prepared'
+    && result.generationId === draft.generationId) : null;
+  const preparedRefs = new Set(preparedOperation?.observationRefs ?? []);
   return [...draft.observations].reverse().find((observation) => {
+    if (preparedOnly && !preparedRefs.has(observation.ref)) return false;
     if (observation.kind !== 'rate_availability' || observation.status !== 'complete' || !observation.coverage.complete ||
         observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
         observation.sourceMessageId !== draft.source.messageId) return false;
@@ -916,7 +922,7 @@ export async function reservationWorkflowV2QuoteExecute(
   if (prior?.status === 'unknown') return { status: 'needs_reconcile', operationId: prior.id };
   const compiled = compileQuote(loaded.draft, request, true);
   if (compiled.status !== 'ok') return { status: compiled.status, issue: compiled.issue, fields: compiled.fields };
-  const preparedObservation = matchingPreparedQuote(loaded.draft, compiled);
+  const preparedObservation = matchingPreparedQuote(loaded.draft, compiled, true);
   if (!preparedObservation) return { status: 'needs_prepare', issue: 'current_native_quote_prepare_required' };
   const quoteResult = record(preparedObservation.result);
   const prepared = record(quoteResult?.revision);
