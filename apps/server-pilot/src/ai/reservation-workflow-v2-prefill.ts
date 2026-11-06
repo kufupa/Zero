@@ -98,6 +98,14 @@ function normalizeSynthesisOutput(value: unknown, evidence: ReservationWorkflowV
       delete content[key];
     }
   }
+  if (!Object.hasOwn(normalized, 'reviewRequirements') && Object.hasOwn(proposal, 'reviewRequirements')) {
+    normalized.reviewRequirements = proposal.reviewRequirements;
+    delete proposal.reviewRequirements;
+  }
+  if (!Object.hasOwn(normalized, 'reviewRequirements') && Object.hasOwn(content, 'reviewRequirements')) {
+    normalized.reviewRequirements = content.reviewRequirements;
+    delete content.reviewRequirements;
+  }
   const attachmentContextIssues: Array<Record<string, unknown>> = [];
   const requestShapeIssues: Array<Record<string, unknown>> = [];
   if (Array.isArray(content.requests)) {
@@ -699,6 +707,140 @@ function buildFallbackProposal(input: {
   return fallback;
 }
 
+function preserveConfirmationSourceClaims(
+  proposal: ReservationWorkflowV2Proposal,
+  extraction: ReservationWorkflowV2Extraction,
+): ReservationWorkflowV2Proposal {
+  const sourceClaims = [...proposal.sourceClaims];
+  for (const request of extraction.requests) {
+    request.confirmationHints.forEach((hint, hintIndex) => {
+      const sourceRefs = [...hint.sourceRefs];
+      const alreadyPresent = sourceClaims.some((claim) => claim.raw === hint.raw &&
+        sourceRefs.length === claim.sourceRefs.length && sourceRefs.every((ref) => claim.sourceRefs.includes(ref)));
+      if (!alreadyPresent) sourceClaims.push({ path: `/requests/${request.id}/confirmationHints/${hintIndex}`,
+        raw: hint.raw, sourceRefs });
+    });
+  }
+  return { ...proposal, sourceClaims };
+}
+
+function normalizedIdentity(value: string | null | undefined): string {
+  return (value ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('en-US')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function extractionRefsForRequest(request: ReservationWorkflowV2Extraction['requests'][number]): Set<string> {
+  const refs = new Set<string>(request.requestText.sourceRefs);
+  request.dates.forEach((date) => { date.arrival?.sourceRefs.forEach((ref) => refs.add(ref)); date.departure?.sourceRefs.forEach((ref) => refs.add(ref)); });
+  request.roomCount?.sourceRefs.forEach((ref) => refs.add(ref));
+  request.occupancy.forEach((row) => { row.adults?.sourceRefs.forEach((ref) => refs.add(ref)); row.childCount?.sourceRefs.forEach((ref) => refs.add(ref));
+    row.childAges?.forEach((claim) => claim.sourceRefs.forEach((ref) => refs.add(ref))); });
+  request.guests.forEach((guest) => { guest.name?.sourceRefs.forEach((ref) => refs.add(ref)); guest.email?.sourceRefs.forEach((ref) => refs.add(ref)); });
+  request.confirmationHints.forEach((claim) => claim.sourceRefs.forEach((ref) => refs.add(ref)));
+  return refs;
+}
+
+function extractionRequestForProposal(
+  request: ReservationWorkflowV2Proposal['content']['requests'][number],
+  index: number,
+  extraction: ReservationWorkflowV2Extraction,
+): ReservationWorkflowV2Extraction['requests'][number] | null {
+  const exactId = extraction.requests.filter((candidate) => candidate.id === request.id && candidate.kind === request.kind);
+  if (exactId.length === 1) return exactId[0]!;
+  const proposalRefs = new Set(request.sourceRefs);
+  const matches = extraction.requests.filter((candidate) => candidate.kind === request.kind &&
+    (candidate.requestText.raw.trim() === request.requestText.trim() ||
+      [...extractionRefsForRequest(candidate)].some((ref) => proposalRefs.has(ref))));
+  if (matches.length === 1) return matches[0]!;
+  const atIndex = extraction.requests[index];
+  if (atIndex?.kind === request.kind && atIndex.requestText.raw.trim() === request.requestText.trim()) return atIndex;
+  return null;
+}
+
+type BoundGuestObservation = { originalRef: string; observation: ReservationWorkflowV2Observation; candidateCount: number };
+function bindGuestProfileObservations(input: {
+  proposal: ReservationWorkflowV2Proposal;
+  extraction: ReservationWorkflowV2Extraction;
+  observations: ReservationWorkflowV2Observation[];
+  generationId: string;
+}): { proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[] } {
+  const proposal = structuredClone(preserveConfirmationSourceClaims(input.proposal, input.extraction));
+  const added: ReservationWorkflowV2Observation[] = [];
+  const newLookupRefs: string[] = [];
+  for (const [requestIndex, request] of proposal.content.requests.entries()) {
+    if (request.kind !== 'create') continue;
+    const extractedRequest = extractionRequestForProposal(request, requestIndex, input.extraction);
+    if (!extractedRequest) continue;
+    const extractedGuests = extractedRequest.guests.filter((guest) => guest.role === 'guest');
+    const sourceRequestRefs = extractionRefsForRequest(extractedRequest);
+    for (const [allocationIndex, allocation] of request.body.allocations.entries()) {
+      const guest = allocation.guest;
+      const originalRefs = [...new Set([...guest.candidateRefs, ...(guest.suggestedRef ? [guest.suggestedRef] : [])])];
+      const originalSuggestedRef = guest.suggestedRef;
+      const fullName = [guest.firstName, guest.lastName].filter((part): part is string => typeof part === 'string' && part.trim().length > 0).join(' ');
+      const email = typeof guest.email === 'string' ? guest.email.trim().toLocaleLowerCase('en-US') : '';
+      const sourceGuests = guest.profileIntent === 'requested_new' ? [] : extractedGuests.filter((sourceGuest) => {
+        const sourceName = typeof sourceGuest.name?.value === 'string' ? sourceGuest.name.value : '';
+        const sourceEmail = typeof sourceGuest.email?.value === 'string' ? sourceGuest.email.value.trim().toLocaleLowerCase('en-US') : '';
+        return Boolean(email && sourceEmail && email === sourceEmail) ||
+          Boolean(fullName && sourceName && normalizedIdentity(fullName) === normalizedIdentity(sourceName));
+      });
+      const matchedGuestRefs = new Set(sourceGuests.flatMap((sourceGuest) => [
+        ...(sourceGuest.name?.sourceRefs ?? []), ...(sourceGuest.email?.sourceRefs ?? []),
+      ]));
+      const reads = input.observations.filter((observation) => observation.kind === 'guest_candidate' &&
+        observation.criteria.requestId === extractedRequest.id && observation.criteria.role === 'guest' &&
+        observation.sourceRefs.some((ref) => matchedGuestRefs.has(ref)));
+      const bound: BoundGuestObservation[] = [];
+      if (sourceGuests.length) for (const read of reads) {
+        const fieldPath = `/proposal/content/requests/${request.id}/body/allocations/${allocationIndex}/guest/nativeSelectionRef`;
+        const suggestedFieldPath = `/proposal/content/requests/${request.id}/body/allocations/${allocationIndex}/guest/suggestedRef`;
+        const ref = `obs_${stableId(read.ref, request.id, allocation.id, 'guest-binding')}`;
+        const observation: ReservationWorkflowV2Observation = { ...read, ref, generationId: input.generationId,
+          criteria: { ...read.criteria, workflow: 'create', role: 'guest', requestId: request.id, allocationId: allocation.id,
+            fieldPath, fieldPaths: [fieldPath, suggestedFieldPath] } };
+        added.push(observation);
+        const rows = Array.isArray(read.result.candidates) ? read.result.candidates.filter((row) => isRecord(row) &&
+          typeof row.nativeId === 'string' && /^\d+$/.test(row.nativeId)) : [];
+        bound.push({ originalRef: read.ref, observation, candidateCount: rows.length });
+        newLookupRefs.push(ref);
+      }
+      const boundByOriginal = new Map(bound.map((row) => [row.originalRef, row]));
+      const selectableRefs = bound.filter((row) => row.candidateCount > 0).map((row) => row.observation.ref);
+      const remappedRefs = originalRefs.flatMap((ref) => {
+        const row = boundByOriginal.get(ref);
+        return row?.candidateCount ? [row.observation.ref] : [];
+      });
+      const retainedRefs = [...new Set([...selectableRefs, ...remappedRefs])].slice(0, 100);
+      const suggested = originalSuggestedRef ? boundByOriginal.get(originalSuggestedRef) : undefined;
+      const suggestedRefWasCleared = Boolean(originalSuggestedRef && suggested && suggested.candidateCount !== 1);
+      guest.candidateRefs = retainedRefs;
+      // A suggested observation is meaningful only when its host read returned exactly one profile.
+      guest.suggestedRef = suggested?.candidateCount === 1 ? suggested.observation.ref : null;
+      const removedRefs = [...new Set([...originalRefs.filter((ref) => !boundByOriginal.get(ref)?.candidateCount),
+        ...(suggestedRefWasCleared && originalSuggestedRef ? [originalSuggestedRef] : [])])];
+      if (removedRefs.length) {
+        const evidenceRefs = [...new Set([...matchedGuestRefs, ...removedRefs.filter((ref) =>
+          input.observations.some((observation) => observation.ref === ref))])].slice(0, 100);
+        proposal.issues.push({ path: `/requests/${request.id}/allocations/${allocation.id}/guest/candidateRefs`,
+          kind: 'unbound_guest_candidate',
+          explanation: 'Unbound or empty guest-profile references were removed from selectable candidates; only source-identity-matched host reads can populate this field.',
+          evidenceRefs });
+      }
+      if (!sourceGuests.length && (guest.firstName || guest.lastName || guest.email)) {
+        const queryRefs = input.observations.filter((observation) => observation.kind === 'guest_candidate' &&
+          observation.criteria.requestId === extractedRequest.id).map((observation) => observation.ref);
+        if (queryRefs.length) proposal.issues.push({ path: `/requests/${request.id}/allocations/${allocation.id}/guest`,
+          kind: 'guest_identity_unmatched',
+          explanation: 'Native guest candidates were not linked because the final Create identity did not exactly match an extracted guest claim.',
+          evidenceRefs: [...new Set([...sourceRequestRefs, ...queryRefs])].slice(0, 100) });
+      }
+    }
+  }
+  proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, ...newLookupRefs])].slice(0, 1000);
+  return { proposal, observations: [...input.observations, ...added] };
+}
+
 function validateProposal(proposal: ReservationWorkflowV2Proposal, evidence: ReservationWorkflowV2Evidence[], observations: ReservationWorkflowV2Observation[]): string | null {
   const sourceRefs = new Set(evidence.map((row) => row.ref));
   const observationRefs = new Set(observations.map((row) => row.ref));
@@ -952,7 +1094,12 @@ export async function runReservationWorkflowV2Prefill(input: {
     responseSchema: zodToJsonSchema(reservationWorkflowV2ModelOutputSchema, { $refStrategy: 'none' }) as Record<string, unknown>,
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
   const finalParsed = finalPass.ok ? reservationWorkflowV2ModelOutputSchema.safeParse(normalizeSynthesisOutput(finalPass.result.output, evidence)) : null;
-  const proposalIssue = finalParsed?.success ? validateProposal(finalParsed.data.proposal, evidence, observations) : null;
+  const guestBinding = finalParsed?.success ? bindGuestProfileObservations({ proposal: finalParsed.data.proposal,
+    extraction, observations, generationId }) : null;
+  const finalObservations = guestBinding?.observations ?? observations;
+  const finalProposal = guestBinding?.proposal ?? (finalParsed?.success ? finalParsed.data.proposal : null);
+  const proposalIssue = finalParsed?.success && finalProposal
+    ? validateProposal(finalProposal, evidence, finalObservations) : null;
   const reviewIssue = finalParsed?.success ? validateReviewRequirementRefs(finalParsed.data.reviewRequirements, evidence, observations) : null;
   if (!finalPass.ok || !finalParsed?.success || proposalIssue || reviewIssue) {
     let error: { code: string; message: string };
@@ -961,11 +1108,13 @@ export async function runReservationWorkflowV2Prefill(input: {
     else if (!finalParsed.success) error = { code: 'invalid_typed_synthesis', message: `Synthesis ${summarizeSchemaIssues(finalParsed.error)}; source extraction remains editable.` };
     else error = { code: 'invalid_proposal_refs', message: `Synthesis reference validation failed (${proposalIssue ?? reviewIssue}); source extraction remains editable.` };
     const reason = error.message;
-    return { ...base, status: 'partial', proposal: buildFallbackProposal({ extraction, source: input.source, evidence, reason }),
+    return { ...base, status: 'partial', observations: finalObservations,
+      proposal: buildFallbackProposal({ extraction, source: input.source, evidence, reason }),
       errors: [...readErrors, { stage: 'synthesis', ...error }] };
   }
-  return { ...base, status: readErrors.length || observations.some((row) => row.status !== 'complete') ? 'partial' : 'ready', proposal: finalParsed.data.proposal,
-    fieldReviewRequirements: finalParsed.data.reviewRequirements ?? {}, errors: readErrors };
+  return { ...base, observations: finalObservations,
+    status: readErrors.length || finalObservations.some((row) => row.status !== 'complete') ? 'partial' : 'ready',
+    proposal: finalProposal!, fieldReviewRequirements: finalParsed.data.reviewRequirements ?? {}, errors: readErrors };
 }
 
 /** Route-level ensure: prefill happens before canonical persistence; an existing v2 draft is never replaced. */
