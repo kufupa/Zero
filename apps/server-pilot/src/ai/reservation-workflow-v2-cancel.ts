@@ -142,8 +142,18 @@ function effectiveSubtree(draft: ReservationWorkflowV2Draft, source: unknown, pa
   if ('issue' in resolved || resolved.unset) return null;
   const value = resolved.value;
   if (Array.isArray(value)) return value.map((item, index) => effectiveSubtree(draft, item, `${path}/${index}`));
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) =>
-    [key, effectiveSubtree(draft, item, `${path}/${encodeURIComponent(key)}`)]));
+  if (value && typeof value === 'object') {
+    const fields = new Set(Object.keys(value));
+    const prefix = `${path}/`;
+    for (const fieldPath of Object.keys(draft.fieldOverrides)) {
+      if (!fieldPath.startsWith(prefix)) continue;
+      const rest = fieldPath.slice(prefix.length);
+      if (!rest || rest.includes('/')) continue;
+      try { fields.add(decodeURIComponent(rest)); } catch { /* Ignore malformed paths; editable paths are validated. */ }
+    }
+    return Object.fromEntries([...fields].map((key) => [key, effectiveSubtree(draft,
+      (value as Record<string, unknown>)[key], `${path}/${encodeURIComponent(key)}`)]));
+  }
   return value;
 }
 
