@@ -34,6 +34,8 @@ export type ReservationWorkflowV2TrpcClient = {
     prepare: MutationProcedure<ItemInput & { requestId: string; allocationId?: string }>;
     execute: MutationProcedure<ItemInput & { requestId: string; allocationId?: string; go: true; idempotencyKey: string }>;
     reconcile: MutationProcedure<ItemInput & { operationId: string }>;
+    lookupServices: MutationProcedure<ItemInput & { requestId: string; allocationId: string; serviceId?: string }>;
+    prepareServices: MutationProcedure<ItemInput & { requestId: string; allocationId: string; serviceId?: string }>;
   };
 };
 
@@ -199,7 +201,9 @@ function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot
       fieldPaths: Object.keys(fields).filter((path) => path.startsWith(`${root}/`)),
       supported: request.kind === 'create' && draft.propertyCode === 'HRCEN' });
   }
-  for (const row of draft.proposal.content.services) flattenFields(row, pointer('proposal', 'content', 'services', row.id), fields, draft);
+  for (const [index, row] of draft.proposal.content.services.entries()) {
+    flattenFields(row, pointer('proposal', 'content', 'services', index), fields, draft);
+  }
   for (const row of draft.proposal.content.documents) flattenFields(row, pointer('proposal', 'content', 'documents', row.id), fields, draft);
   for (const path of Object.keys(draft.fieldOverrides)) {
     if (fields[path]) continue;
@@ -262,8 +266,39 @@ function operationNotice(result: unknown, success: string[]): string | undefined
   return issue ? `Infor check: ${status} — ${issue}.` : `Infor check: ${status}.`;
 }
 
+function serviceOperationNotice(result: unknown, success: string[]): string | undefined {
+  const notice = operationNotice(result, success);
+  if (!notice || !isRecord(result)) return notice;
+  const fields = new Set<string>();
+  if (Array.isArray(result.fields)) for (const field of result.fields) if (isString(field)) fields.add(field);
+  if (Array.isArray(result.services)) for (const value of result.services) {
+    const row = isRecord(value) ? value : null;
+    if (Array.isArray(row?.fields)) for (const field of row.fields) if (isString(field)) fields.add(field);
+  }
+  return fields.size ? `${notice} Review: ${[...fields].join(', ')}.` : notice;
+}
+
+function serviceOwnerForPath(snapshot: ReservationPaneSnapshot, path: string): string | null {
+  const parts = path.split('/').slice(1).map((part) => {
+    try { return decodeURIComponent(part); } catch { return ''; }
+  });
+  if (parts[0] !== 'proposal' || parts[1] !== 'content' || parts[2] !== 'services' || parts.length < 5) return null;
+  const rawIndex = parts[3]!;
+  const serviceIndex = Number(rawIndex);
+  const services = snapshot.session.draft.proposal.content.services;
+  const service = Number.isInteger(serviceIndex) && serviceIndex >= 0 && String(serviceIndex) === rawIndex
+    ? services[serviceIndex] : services.find((row) => row.id === rawIndex);
+  if (!service) return null;
+  const requests = snapshot.session.draft.proposal.content.requests.filter((request) => request.kind === 'create');
+  const direct = requests.find((request) => request.id === service.ownerRequestId);
+  if (direct) return direct.id;
+  return requests.find((request) => request.serviceRefs.includes(service.id) || service.targets.some((target) =>
+    target.target.kind === 'allocation' && target.target.requestId === request.id))?.id ?? null;
+}
+
 function requestOwnsPath(snapshot: ReservationPaneSnapshot, path: string): boolean {
-  return snapshot.requests.some((request) => path.startsWith(`${pointer('proposal', 'content', 'requests', request.id)}/`));
+  return snapshot.requests.some((request) => path.startsWith(`${pointer('proposal', 'content', 'requests', request.id)}/`))
+    || serviceOwnerForPath(snapshot, path) !== null;
 }
 
 /** Typed adapter to reservationWorkflowV2. All mutations refresh the single canonical server draft. */
@@ -327,6 +362,22 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       const snapshot = await load(input);
       const notice = operationNotice(result, ['succeeded', 'failed']);
       return notice ? { ...snapshot, serviceNotice: notice } : snapshot;
+    },
+    async lookupServices(command) {
+      const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
+        ...(command.serviceId ? { serviceId: command.serviceId } : {}) };
+      const result = await api.lookupServices.mutate(input);
+      const snapshot = await load(input);
+      const notice = serviceOperationNotice(result, ['ok']);
+      return notice ? { ...snapshot, serviceNotice: `Add-On catalogue: ${notice}` } : snapshot;
+    },
+    async previewServices(command) {
+      const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
+        ...(command.serviceId ? { serviceId: command.serviceId } : {}) };
+      const result = await api.prepareServices.mutate(input);
+      const snapshot = await load(input);
+      const notice = serviceOperationNotice(result, ['prepared']);
+      return notice ? { ...snapshot, serviceNotice: `Add-On preview only; nothing saved: ${notice}` } : snapshot;
     },
   };
 }

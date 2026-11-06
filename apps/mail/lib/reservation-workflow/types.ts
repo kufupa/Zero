@@ -113,6 +113,8 @@ export interface ReservationWorkflowClient {
   prepare(input: ReservationCommandContext & { requestId: string; allocationId: string }): Promise<ReservationPaneSnapshot>;
   execute(input: ReservationCommandContext & { requestId: string; allocationId: string; idempotencyKey: string }): Promise<ReservationPaneSnapshot>;
   reconcile(input: ReservationCommandContext & { operationId: string }): Promise<ReservationPaneSnapshot>;
+  lookupServices(input: ReservationCommandContext & { requestId: string; allocationId: string; serviceId?: string }): Promise<ReservationPaneSnapshot>;
+  previewServices(input: ReservationCommandContext & { requestId: string; allocationId: string; serviceId?: string }): Promise<ReservationPaneSnapshot>;
 }
 
 export type ReservationWorkflowV2WireSource = ReservationWorkflowV2Source;

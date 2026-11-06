@@ -76,9 +76,6 @@
 .input, .textarea, .select { display: block; width: 100%; min-width: 0; min-height: 34px; padding: 7px 8px; border: 1px solid #dcd8e2; border-radius: 7px; outline: none; color: var(--ink); background: white; font: inherit; font-size: 12px; }
 .input:focus, .textarea:focus, .select:focus { border-color: #9477c3; box-shadow: 0 0 0 2px rgb(104 69 167 / 12%); }
 .textarea { resize: vertical; }
-.codeControl { position: relative; }
-.codeControl > span { position: absolute; top: 8px; right: 9px; color: var(--muted); pointer-events: none; }
-.codeControl .input { padding-right: 23px; }
 .help { color: var(--muted); font-size: 10px; }
 .problem { color: #a34034; font-size: 10px; }
 .evidence { color: var(--muted); font-size: 10px; }
@@ -115,6 +112,9 @@
 .priceRow { display: grid; gap: 2px; padding: 8px 9px; border: 1px solid #cfe6d8; border-radius: 8px; background: #f5fbf7; font-size: 10px; }
 .priceRow b { font-size: 11px; }
 .priceRow small { color: var(--muted); }
+.serviceBlock { display: grid; gap: 7px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.serviceCard { display: grid; gap: 7px; padding: 9px; border: 1px solid #ddd6e8; border-radius: 8px; background: #fbfaff; }
+.serviceCard > p { margin: 0; }
 .policyLine { margin: 3px 1px 10px; color: var(--muted); font-size: 10px; }
 
 .notice, .alert { margin: 9px 0; padding: 9px 10px; border: 1px solid #e7d8b8; border-radius: 8px; color: #715313; background: #fff9eb; font-size: 11px; }

@@ -105,6 +105,25 @@ function fieldOrBase(snapshot: ReservationPaneSnapshot, path: string, base: unkn
   return Object.hasOwn(snapshot.fields, path) ? snapshot.fields[path]?.value : base;
 }
 
+function createRequestForField(snapshot: ReservationPaneSnapshot, path: string): string | null {
+  const request = snapshot.requests.find((item) => path.startsWith(`${requestPath(item)}/`));
+  if (request) return request.id;
+  const parts = path.split('/').slice(1).map((part) => {
+    try { return decodeURIComponent(part); } catch { return ''; }
+  });
+  if (parts[0] !== 'proposal' || parts[1] !== 'content' || parts[2] !== 'services' || parts.length < 5) return null;
+  const rawIndex = parts[3]!;
+  const index = Number(rawIndex);
+  const services = snapshot.session.draft.proposal.content.services;
+  const service = Number.isInteger(index) && index >= 0 && String(index) === rawIndex
+    ? services[index] : services.find((row) => row.id === rawIndex);
+  if (!service) return null;
+  const creates = snapshot.session.draft.proposal.content.requests.filter((item) => item.kind === 'create');
+  return creates.find((item) => item.id === service.ownerRequestId)?.id
+    ?? creates.find((item) => item.serviceRefs.includes(service.id) || service.targets.some((target) =>
+      target.target.kind === 'allocation' && target.target.requestId === item.id))?.id ?? null;
+}
+
 function createSections(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection) {
   const body = requestPath(request) + '/body';
   const row = record(draftAtPath(snapshot, body));
@@ -127,6 +146,33 @@ function emptyRoomAllocation(dateSectionId: string) {
     occupancy: { adults: null, childCount: null, childAges: null },
     priceObservationRefs: [],
   };
+}
+
+function observedNativeCodes(snapshot: ReservationPaneSnapshot, path: string): Array<{ code: string; meaning: string; ref: string }> {
+  const leaf = path.split('/').at(-1);
+  const catalogKey = leaf === 'roomType' ? 'room' : leaf === 'ratePlan' ? 'ratePlan' : null;
+  if (!catalogKey) return [];
+  const requestId = path.split('/')[4];
+  const choices = new Map<string, { code: string; meaning: string; ref: string }>();
+  for (const observation of snapshot.session.draft.observations) {
+    if (observation.kind !== 'rate_availability' || observation.status !== 'complete'
+        || observation.criteria.requestId !== requestId || record(observation.coverage)?.complete !== true) continue;
+    const groups = record(observation.result)?.groups;
+    if (!Array.isArray(groups)) continue;
+    for (const groupValue of groups) {
+      const options = record(groupValue)?.options;
+      if (!Array.isArray(options)) continue;
+      for (const optionValue of options) {
+        const value = record(optionValue);
+        const nativeChoice = record(value?.[catalogKey]);
+        const code = text(nativeChoice?.code).trim();
+        if (!code) continue;
+        const meaning = text(nativeChoice?.label).trim() || code;
+        if (!choices.has(code)) choices.set(code, { code, meaning, ref: observation.ref });
+      }
+    }
+  }
+  return [...choices.values()];
 }
 
 function isInputReady(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
@@ -166,6 +212,33 @@ function isInputReady(snapshot: ReservationPaneSnapshot, request: ReservationReq
     return hasValue(arrival) && hasValue(departure) && hasValue(room) && hasValue(rate) && hasValue(firstName) && hasValue(lastName)
       && typeof adults === 'number' && adults >= 1 && ageReady && accepted && profileSelected;
   });
+}
+
+function serviceRowsForAllocation(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection, allocationId: string) {
+  return snapshot.session.draft.proposal.content.services.flatMap((service, serviceIndex) => {
+    const createRequest = snapshot.session.draft.proposal.content.requests.find((item) => item.id === request.id);
+    const targetsRequest = service.targets.some((target) => target.target.kind === 'allocation' && target.target.requestId === request.id);
+    const hasLink = service.ownerRequestId === request.id || createRequest?.kind === 'create'
+      && (createRequest.serviceRefs.includes(service.id) || targetsRequest);
+    if (!hasLink) return [];
+    return service.targets.flatMap((target, targetIndex) => target.target.kind === 'allocation'
+      && target.target.requestId === request.id && target.target.allocationId === allocationId
+      ? [{ service, serviceIndex, target, targetIndex }] : []);
+  });
+}
+
+function serviceFieldValue(snapshot: ReservationPaneSnapshot, serviceIndex: number, targetIndex: number,
+  field: string, pendingValue?: { present: boolean; value: unknown }): unknown {
+  const targetPath = `/proposal/content/services/${serviceIndex}/targets/${targetIndex}/fields/${field}`;
+  if (pendingValue?.present) return pendingValue.value;
+  const target = snapshot.fields[targetPath];
+  if (target?.override) {
+    if (target.override.state === 'set') return target.value;
+    if (target.override.state === 'unknown' || target.override.state === 'none' || target.override.state === 'clear') return null;
+    if (target.override.state === 'inherit') return valueFor(snapshot, `/proposal/content/services/${serviceIndex}/sharedFields/${field}`);
+  }
+  const targetValue = Object.hasOwn(snapshot.fields, targetPath) ? target.value : draftAtPath(snapshot, targetPath);
+  return hasValue(targetValue) ? targetValue : valueFor(snapshot, `/proposal/content/services/${serviceIndex}/sharedFields/${field}`);
 }
 
 function isRequestPrepared(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
@@ -253,9 +326,9 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     let current = snapshotRef.current;
     if (!current) throw new Error('The source-bound reservation draft is still loading.');
     for (const edit of edits) {
-      const request = current.requests.find((item) => edit.path.startsWith(`${requestPath(item)}/`));
-      if (!request) throw new Error('This value has no matching field in the saved v2 request; the server did not accept a local-only draft.');
-      const next = await client.edit({ source: bound, snapshot: current, requestId: request.id,
+      const requestId = createRequestForField(current, edit.path);
+      if (!requestId) throw new Error('This value has no source-bound Create or linked service request; no local-only draft was accepted.');
+      const next = await client.edit({ source: bound, snapshot: current, requestId,
         fieldPath: edit.path, state: edit.state, ...(edit.state === 'set' ? { value: edit.value } : {}) });
       current = next;
       applySnapshot(next, bound);
@@ -279,6 +352,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     const pendingEdit = pending.current.get(path);
     return pendingEdit ? pendingEdit.state === 'set' ? pendingEdit.value : null : snapshotRef.current?.fields[path]?.value ?? null;
   }, []);
+  const hasPendingEdit = useCallback((path: string) => pending.current.has(path), []);
 
   const chooseRequest = useCallback((request: ReservationRequestProjection) => {
     activeRequestRef.current = request.id;
@@ -378,6 +452,22 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     });
   }, [applySnapshot, client, enqueue]);
 
+  const runServiceAction = useCallback((mode: 'lookup' | 'preview', requestId: string, allocationId: string, serviceId: string) => {
+    const bound = sourceRef.current;
+    void enqueue(mode === 'lookup' ? 'Loading native Add-On catalogue' : 'Previewing unsaved Add-On on this room', bound, async () => {
+      if (pending.current.size) await flushEdits(bound);
+      const current = snapshotRef.current;
+      const request = current?.requests.find((item) => item.id === requestId && item.kind === 'create');
+      if (!current || !request) throw new Error('The owning Create request is no longer available.');
+      if (!isInputReady(current, request)) {
+        throw new Error('Complete every Create room and select each exact existing guest profile before native Add-On lookup or preview.');
+      }
+      const command = { source: bound, snapshot: current, requestId, allocationId, serviceId };
+      const next = mode === 'lookup' ? await client.lookupServices(command) : await client.previewServices(command);
+      applySnapshot(next, bound);
+    });
+  }, [applySnapshot, client, enqueue, flushEdits]);
+
   const undoRedo = useCallback((direction: 'undo' | 'redo') => {
     const bound = sourceRef.current;
     void enqueue(direction === 'undo' ? 'Undoing last edit' : 'Redoing edit', bound, async () => {
@@ -398,7 +488,8 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   const canGo = Boolean(snapshot && activeRequest?.kind === 'create' && activeRequest.supported
     && isRequestPrepared(snapshot, activeRequest) && !reviewRequired && !ui.pendingEdits.length
     && !ui.busyAction && !hasUncertain);
-  const displayedResult = snapshot?.operationResults.filter((result) => result.requestId === activeRequest?.id) ?? [];
+  const displayedResult = snapshot?.operationResults.filter((result) => result.requestId === activeRequest?.id
+    && result.workflow === 'create') ?? [];
 
   return (
     <div className={styles.pane} data-reservation-pane="v2" data-source-message={source.messageId}>
@@ -440,8 +531,10 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
               <div className={styles.issueLine} key={`${issue.kind}-${index}`}><b>{humanize(issue.kind)}</b><span>{issue.explanation}</span></div>)}
             {displayedResult.some((result) => result.status === 'succeeded') && <div className={styles.notice}>At least one room already has an HMS confirmation. Later edits and undo affect the draft only; they do not change a saved reservation.</div>}
             {activeRequest.kind === 'create'
-                ? <CreateEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur} editValue={editValue}
+                ? <CreateEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur} editValue={editValue} hasPendingEdit={hasPendingEdit}
                   busy={Boolean(ui.busyAction) || ui.pendingEdits.length > 0}
+                  onLookupServices={(allocationId, serviceId) => runServiceAction('lookup', activeRequest.id, allocationId, serviceId)}
+                  onPreviewServices={(allocationId, serviceId) => runServiceAction('preview', activeRequest.id, allocationId, serviceId)}
                   onOpenEvidence={onOpenEvidence} onPrepare={() => { void enqueue('Checking Infor now', sourceRef.current, () => prepareAll(false)); }}
                   onLookup={refreshNative} />
               : activeRequest.kind === 'filing'
@@ -479,10 +572,13 @@ type EditorProps = {
   onStage: (path: string, value: unknown, state?: PendingReservationEdit['state']) => void;
   onBlur: (path: string) => void;
   editValue: (path: string) => unknown;
+  hasPendingEdit?: (path: string) => boolean;
   onOpenEvidence?: (ref: string) => void;
 };
 
-function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => void; onLookup: () => void }) {
+function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => void; onLookup: () => void;
+  onLookupServices: (allocationId: string, serviceId: string) => void;
+  onPreviewServices: (allocationId: string, serviceId: string) => void }) {
   const { snapshot, request } = props;
   const sections = createSections(snapshot, request);
   const data = sections.data;
@@ -543,6 +639,7 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
       const countValue = fieldOrBase(snapshot, `${allocationRoot}/occupancy/childCount`, occupancy.childCount);
       const childCount = typeof countValue === 'number' ? countValue : null;
       const profileChoicePath = `${allocationRoot}/guest/nativeSelectionRef`;
+      const serviceRows = serviceRowsForAllocation(snapshot, request, String(allocation.id ?? ''));
       return <section className={styles.card} key={String(allocation.id ?? index)}>
         <div className={styles.cardTitle}><b>Room reservation {index + 1}</b><small>{text(allocation.dateSectionId) ? `Dates: ${text(allocation.dateSectionId)}` : 'Date section not assigned'}</small></div>
         <div className={styles.twoCol}>
@@ -591,6 +688,14 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
         <div className={styles.fixedValue}><span>Charge category</span><b>Infor default</b><small>Per-room charge-category override is not supported by the connected native Create tool.</small></div>
         <TextField {...props} path={`${allocationRoot}/overrides/reservationNote`} label="Reservation note" multiline />
         {Array.isArray(allocation.priceObservationRefs) && allocation.priceObservationRefs.length > 0 && <small className={styles.help}>Native price evidence: {allocation.priceObservationRefs.length} observation reference(s).</small>}
+        {serviceRows.length > 0 && <div className={styles.serviceBlock}>
+          <div className={styles.sectionHeader}><div><h3>Targeted Add-On services</h3><p>Native catalog and price previews attach to this unsaved room; service Save is not connected.</p></div></div>
+          {serviceRows.map(({ service, serviceIndex, target, targetIndex }) => <ServiceEditor key={`${service.id}-${targetIndex}`}
+            {...props} service={service} serviceIndex={serviceIndex} target={target} targetIndex={targetIndex}
+            requestId={request.id} allocationId={String(allocation.id ?? '')}
+            onLookup={() => props.onLookupServices(String(allocation.id ?? ''), service.id)}
+            onPreview={() => props.onPreviewServices(String(allocation.id ?? ''), service.id)} />)}
+        </div>}
       </section>;
     })}
     {sections.allocations.length === 0 && <div className={styles.notice}>No room allocations yet. Add one to a date section above to build the reservation.</div>}
@@ -606,10 +711,101 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
       </>}
     </section>
 
-    {snapshot.session.draft.proposal.content.services.some((service) => service.ownerRequestId === request.id)
-      ? <div className={styles.notice}>This email also contains service requests. They remain separately visible in the saved draft; Create will not silently apply them.</div> : null}
+    {snapshot.session.draft.proposal.content.services.some((service) => service.ownerRequestId === request.id
+      || service.targets.some((target) => target.target.kind === 'allocation' && target.target.requestId === request.id))
+      ? <div className={styles.notice}>Service catalogue and amount previews remain unsaved; a Create confirmation does not imply an Add-On was saved.</div> : null}
     <div className={styles.policyLine}>Shared fields apply to each room unless a room-level value is explicitly set.</div>
   </>;
+}
+
+type LinkedServiceRow = ReturnType<typeof serviceRowsForAllocation>[number];
+
+function ServiceEditor(props: EditorProps & {
+  service: LinkedServiceRow['service'];
+  serviceIndex: number;
+  target: LinkedServiceRow['target'];
+  targetIndex: number;
+  requestId: string;
+  allocationId: string;
+  onLookup: () => void;
+  onPreview: () => void;
+}) {
+  const { snapshot, service, serviceIndex, targetIndex, allocationId } = props;
+  const createReady = isInputReady(snapshot, props.request);
+  const serviceRoot = `/proposal/content/services/${serviceIndex}`;
+  const targetRoot = `${serviceRoot}/targets/${targetIndex}`;
+  const itemPath = `${serviceRoot}/itemCandidateRef`;
+  const selectedRef = snapshot.fields[itemPath]?.override?.state === 'set' && typeof snapshot.fields[itemPath]?.value === 'string'
+    ? snapshot.fields[itemPath]!.value as string : null;
+  const catalogueRows = snapshot.session.draft.observations.filter((observation) => observation.kind === 'service_preview'
+    && observation.criteria.workflow === 'services' && observation.criteria.kind === 'catalogue_candidate'
+    && observation.criteria.requestId === props.requestId && observation.criteria.sourceAllocationId === allocationId
+    && observation.criteria.serviceId === service.id && observation.criteria.fieldPath === itemPath)
+    .flatMap((observation) => {
+      const candidate = record(record(observation.result)?.candidate);
+      return candidate ? [{ observation, candidate }] : [];
+    });
+  const selected = catalogueRows.find((row) => row.observation.ref === selectedRef && row.observation.status === 'complete'
+    && record(row.observation.coverage)?.complete === true);
+  const latestPreview = [...snapshot.session.draft.observations].reverse().find((observation) => observation.kind === 'service_preview'
+    && observation.criteria.workflow === 'services' && observation.criteria.kind === 'unsaved_addon_preview'
+    && observation.criteria.requestId === props.requestId && observation.criteria.allocationId === allocationId
+    && observation.criteria.serviceId === service.id);
+  const previewResult = record(latestPreview?.result);
+  const native = record(previewResult?.native);
+  const previewCurrent = latestPreview?.criteria.draftRevision === snapshot.session.revision;
+  const fields = [
+    ['quantity', 'Target quantity', 'text'], ['startDate', 'Service start', 'date'], ['endDate', 'Service end', 'date'],
+    ['unitPrice', 'Source unit price', 'text'], ['frequency', 'Frequency', 'text'], ['pricingControl', 'Pricing control', 'text'],
+    ['folio', 'Folio', 'text'], ['comment', 'Service comment', 'text'],
+  ] as const;
+  return <section className={styles.serviceCard}>
+    <div className={styles.cardTitle}><b>{service.requestedText || service.code || 'Add-On service'}</b><small>{humanize(service.operation)} · room {allocationId}</small></div>
+    <p className={styles.help}>Choose a host-observed ITEM, then review exact target, dates, quantity and source price. All actions below are preview-only.</p>
+    {service.operation !== 'add' && <div className={styles.notice}>Saved Add-On edit/remove is not connected. This row cannot be previewed as a new Add-On.</div>}
+    <FieldShell path={itemPath} label="Native Add-On ITEM" field={snapshot.fields[itemPath]} onOpenEvidence={props.onOpenEvidence}>
+      {selected ? <div className={styles.readValue}>{text(selected.candidate.code)} · {text(selected.candidate.name)}</div>
+        : <small className={styles.help}>{selectedRef ? 'Saved ITEM choice is not verified against the current native catalogue.' : 'No staff-selected native ITEM.'}</small>}
+      {catalogueRows.length > 0 && <div className={styles.candidateList}>
+        {catalogueRows.map(({ observation, candidate }, index) => {
+          const complete = observation.status === 'complete' && record(observation.coverage)?.complete === true;
+          return <div className={styles.candidateOption} key={`${observation.ref}-${text(candidate.itemId) || index}`}>
+            <span><b>{text(candidate.code)} · {text(candidate.name)}</b><small>{complete ? 'Complete native ITEM observation' : 'Incomplete native catalogue coverage; cannot be selected'}</small></span>
+            {complete ? <button type="button" disabled={props.busy} onClick={() => { props.onStage(itemPath, observation.ref); props.onBlur(itemPath); }}>Select</button>
+              : <small>Unavailable</small>}
+          </div>;
+        })}
+      </div>}
+      {catalogueRows.length === 0 && <small className={styles.help}>Load the native Add-On catalogue after this room’s Create inputs are ready.</small>}
+    </FieldShell>
+    <TextField {...props} path={`${serviceRoot}/quantityRequest/value`} label={`Requested quantity · ${humanize(service.quantityRequest.scope)} scope`} />
+    <div className={styles.twoCol}>
+      {fields.map(([field, label, type]) => {
+        const path = `${targetRoot}/fields/${field}`;
+        const sharedPath = `${serviceRoot}/sharedFields/${field}`;
+        const targetField = snapshot.fields[path];
+        const displayField = targetField?.override || hasValue(targetField?.value) ? targetField : snapshot.fields[sharedPath];
+        return <TextField key={field} {...props} path={path} label={label} type={type}
+          valueOverride={serviceFieldValue(snapshot, serviceIndex, targetIndex, field,
+            { present: props.hasPendingEdit?.(path) ?? false, value: props.editValue(path) })} fieldOverride={displayField}
+          help="Target value overrides the shared service value when set." />;
+      })}
+    </div>
+    <div className={styles.twoCol}>
+      <button type="button" className={styles.secondaryButton} disabled={props.busy || !createReady || service.operation !== 'add'} onClick={props.onLookup}>Load native ITEM choices</button>
+      <button type="button" className={styles.secondaryButton} disabled={props.busy || !createReady || service.operation !== 'add' || !selected} onClick={props.onPreview}>Preview this Add-On · not saved</button>
+    </div>
+    {!createReady && <small className={styles.help}>Complete every Create room and select each existing guest profile before loading or previewing Add-On values.</small>}
+    {latestPreview && <div className={latestPreview.status === 'complete' ? styles.result : styles.notice}>
+      <b>Native Add-On preview · {latestPreview.status === 'complete' ? 'not saved' : 'needs attention'}</b>
+      {previewCurrent ? <small>Preview matches the current saved draft revision.</small>
+        : <small className={styles.problem}>Draft changed since this preview. Re-run it before relying on these values.</small>}
+      {native ? <span>{text(native.code)} · {text(native.name)} · quantity {text(native.quantity)} · {text(native.currency)} {text(native.totalCost)} total</span>
+        : <small>{text(previewResult?.issue) || 'No complete native Add-On price result was returned.'}</small>}
+      {previewResult?.saved === false && <small>Saved: no. Create does not save this Add-On.</small>}
+    </div>}
+    <small className={styles.help}>This workflow can load native ITEM choices and preview exact amounts on the unsaved Create stay. It never saves an Add-On.</small>
+  </section>;
 }
 
 function FieldShell({ path, label, field, children, onOpenEvidence }: {
@@ -631,8 +827,8 @@ function FieldShell({ path, label, field, children, onOpenEvidence }: {
   </div>;
 }
 
-function TextField(props: EditorProps & { path: string; label: string; type?: 'text' | 'email' | 'date' | 'number' | 'tel'; min?: number; max?: number; multiline?: boolean; help?: string; valueOverride?: unknown; onValue?: (value: unknown) => void; blurPath?: string; blurPaths?: string[]; hideState?: boolean }) {
-  const field = props.snapshot.fields[props.path];
+function TextField(props: EditorProps & { path: string; label: string; type?: 'text' | 'email' | 'date' | 'number' | 'tel'; min?: number; max?: number; multiline?: boolean; help?: string; valueOverride?: unknown; fieldOverride?: ReservationFieldProjection; onValue?: (value: unknown) => void; blurPath?: string; blurPaths?: string[]; hideState?: boolean }) {
+  const field = props.fieldOverride ?? props.snapshot.fields[props.path];
   const value = props.valueOverride !== undefined ? props.valueOverride : props.editValue(props.path);
   const rawValue = text(value);
   const inputValue = props.type === 'date' && rawValue.length > 10 ? rawValue.slice(0, 10) : rawValue;
@@ -656,13 +852,25 @@ function TextField(props: EditorProps & { path: string; label: string; type?: 't
 function CodeField(props: EditorProps & { path: string; label: string; help?: string; hideState?: boolean }) {
   const field = props.snapshot.fields[props.path];
   const value = props.editValue(props.path);
+  const options = observedNativeCodes(props.snapshot, props.path);
+  const selectedOption = options.find((option) => option.code === text(value));
+  const roomOrRate = ['roomType', 'ratePlan'].includes(props.path.split('/').at(-1) ?? '');
   return <FieldShell path={props.path} label={props.label} field={field} onOpenEvidence={props.onOpenEvidence}>
-    <div className={styles.codeControl}><input id={props.path} className={styles.input} value={text(value)} placeholder="Native code"
+    <input id={props.path} className={styles.input} value={text(value)} placeholder="Native code"
       onChange={(event) => props.onStage(props.path, event.target.value, event.target.value ? 'set' : 'none')} onBlur={() => props.onBlur(props.path)} />
-      <span aria-hidden="true">⌄</span></div>
     {!props.hideState && <FieldValueState {...props} path={props.path} />}
-    <select className={styles.select} disabled value="" aria-label={`${props.label} native meaning options`}><option value="">Native code meanings appear after HMS catalog lookup</option></select>
-    <small className={styles.help}>{props.help ?? 'Code is typed here. The current native tool returns validation/price for this code, not a reusable code catalogue.'}</small>
+    {options.length > 0 && <select className={styles.select} value={selectedOption?.code ?? ''} aria-label={`${props.label} observed native choices`} onChange={(event) => {
+      const code = event.target.value;
+      props.onStage(props.path, code, 'set');
+      props.onBlur(props.path);
+    }}><option value="">Choose a code observed in this email’s availability reads</option>
+      {options.map((option) => <option key={`${option.code}-${option.ref}`} value={option.code}>{option.code} · {option.meaning}</option>)}
+    </select>}
+    {selectedOption && <small className={styles.help}>Observed meaning: {selectedOption.meaning}</small>}
+    <small className={styles.help}>{props.help ?? (options.length
+      ? 'Observed room/rate choices are source-bound native results, not a guarantee of current availability.'
+      : roomOrRate ? 'Type the native code. No complete room/rate catalogue has been observed for this email yet.'
+        : 'Type the supported native code. A field-specific code/meaning catalogue is not connected here yet.')}</small>
   </FieldShell>;
 }
 
