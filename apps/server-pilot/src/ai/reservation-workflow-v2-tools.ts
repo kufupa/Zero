@@ -45,6 +45,7 @@ import { findStay } from './pane-stay-lookup.js';
 import { createCloudTargetKey, isLabtestGuest } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
 import { lockCreateActorSession } from './pane-create-actor-lock.js';
 import { stayCommitsOf } from './work-items.js';
+import { sameGuestName } from './guest-name-match.js';
 
 type V2StateContext = { db: DB; transportId: string; userId: string; propertyCode: string };
 export type ReservationWorkflowV2ServerContext = {
@@ -184,7 +185,7 @@ function candidateFromObservation(draft: ReservationWorkflowV2Draft, kind: 'gues
   const candidates = getCandidateRows(output).filter((candidate) => {
     const candidateName = candidate.name ?? [candidate.firstName, candidate.lastName].filter(Boolean).join(' ');
     const roleMatches = !role || !observation.criteria.role || observation.criteria.role === role;
-    return roleMatches && sameName(candidateName, expectedName);
+    return roleMatches && (kind === 'guest_candidate' ? sameGuestName(candidateName, expectedName) : sameName(candidateName, expectedName));
   });
   return candidates.length === 1 ? candidates[0]! : null;
 }
@@ -373,7 +374,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   if (typeof selectedGuestRef === 'string' && firstName && lastName) {
     guestCandidate = candidateFromObservation(draft, 'guest_candidate', selectedGuestRef, `${firstName} ${lastName}`,
       undefined, requestId, allocationId, guestRefPath);
-    if (guestCandidate && (!sameName(guestCandidate.firstName, firstName) || !sameName(guestCandidate.lastName, lastName) ||
+    if (guestCandidate && (!sameGuestName(guestCandidate.firstName, firstName) || !sameGuestName(guestCandidate.lastName, lastName) ||
         (text(guest.email) && !sameName(guestCandidate.email, guest.email)) || !text(guestCandidate.nativeId))) guestCandidate = null;
   } else if (mode !== 'lookup') issues.push(`${guestPath}:existing_profile_selection_required`);
   if (!guestCandidate && mode !== 'lookup') issues.push(`${guestPath}:native_profile_unverified`);
@@ -471,7 +472,8 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     firstName: String(guestCandidate.firstName), lastName: String(guestCandidate.lastName),
   } : { firstName, lastName };
   const guestName = `${expectedGuest.firstName} ${expectedGuest.lastName}`;
-  const targetParsed = hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'create', firstName, lastName, arrival });
+  const targetParsed = hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'create',
+    firstName: expectedGuest.firstName, lastName: expectedGuest.lastName, arrival });
   if (!targetParsed.success || targetParsed.data.kind !== 'create') return { outcome: 'needs_input', issue: 'invalid_create_target' };
   // The exact binding is only available after HMS has staged and read back the fields.
   return { outcome: 'ok', nativeInput, expectedGuest, target: targetParsed.data,

@@ -22,6 +22,7 @@ import { PANE_PROPERTY_LOCK_WAIT_MS, acquisitionWithin } from '../hms/property-r
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { findParty } from './pane-party-lookup.js';
 import { findStay, searchGuest, searchGuestCloudBatch, type GuestSearchQuery } from './pane-stay-lookup.js';
+import { normalizeGuestName, sameGuestName } from './guest-name-match.js';
 import { availabilityRequestSchema } from './hms-availability.js';
 import { probeCloudRateAvailability } from './hms-cloud-availability-reader.js';
 import {
@@ -527,7 +528,7 @@ export function createReservationWorkflowV2CandidateReader(input: {
               // being the requested guest; exact source identity is checked separately at binding.
               (read.field === 'email'
                 ? typeof row.email === 'string' && row.email.trim().toLocaleLowerCase('en-US').includes(read.query.toLocaleLowerCase('en-US'))
-                : row.lastName.trim().toLocaleLowerCase('en-US').includes(read.query.toLocaleLowerCase('en-US'))));
+                : Boolean(normalizeGuestName(read.query)) && normalizeGuestName(row.lastName).includes(normalizeGuestName(read.query))));
           const requiredFields = loaded === 0 ? [] :
             ['guestid', 'firstname', 'lastname', ...(read.field === 'email' ? ['emailaddress'] : [])];
           const completeEnumeration = ['matches', 'no_match'].includes(String(search.outcome)) && searchId &&
@@ -850,20 +851,6 @@ function preserveConfirmationSourceClaims(
   return { ...proposal, sourceClaims };
 }
 
-function normalizedIdentity(value: string | null | undefined): string {
-  return (value ?? '').trim().replace(/^(?:(?:mr|mrs|ms|miss|dr|prof|professor)\.?\s+)+/i, '')
-    .normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('en-US')
-    // Dots and apostrophes inside a name are formatting, but word boundaries must survive:
-    // "Anna Lee" is not "Ann Alee". Join separated single-letter initials only.
-    .replace(/[.']/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
-    .replace(/\b(?:[a-z]\s+)+[a-z]\b/g, (initials) => initials.replace(/\s+/g, ''));
-}
-
-function sameIdentity(left: string, right: string): boolean {
-  const normalized = normalizedIdentity(left);
-  return Boolean(normalized && normalized === normalizedIdentity(right));
-}
-
 function extractionRefsForRequest(request: ReservationWorkflowV2Extraction['requests'][number]): Set<string> {
   const refs = new Set<string>(request.requestText.sourceRefs);
   request.dates.forEach((date) => { date.arrival?.sourceRefs.forEach((ref) => refs.add(ref)); date.departure?.sourceRefs.forEach((ref) => refs.add(ref)); });
@@ -1041,7 +1028,7 @@ function bindGuestProfileObservations(input: {
       const sourceGuests = guest.profileIntent === 'requested_new' ? [] : extractedGuests.filter((sourceGuest) => {
         const sourceName = typeof sourceGuest.name?.value === 'string' ? sourceGuest.name.value : '';
         const sourceEmail = typeof sourceGuest.email?.value === 'string' ? sourceGuest.email.value.trim().toLocaleLowerCase('en-US') : '';
-        const nameMatches = Boolean(fullName && sourceName && sameIdentity(fullName, sourceName));
+        const nameMatches = Boolean(fullName && sourceName && sameGuestName(fullName, sourceName));
         const emailMatches = Boolean(email && sourceEmail && email === sourceEmail);
         return (nameMatches || emailMatches) && (!fullName || nameMatches) && (!email || emailMatches);
       });
@@ -1059,7 +1046,7 @@ function bindGuestProfileObservations(input: {
           const sourceName = typeof sourceGuest.name?.value === 'string' ? sourceGuest.name.value : '';
           const sourceEmail = typeof sourceGuest.email?.value === 'string' ? sourceGuest.email.value.trim().toLocaleLowerCase('en-US') : '';
           return Boolean(readEmail && sourceEmail && readEmail === sourceEmail) ||
-            Boolean(readName && sourceName && sameIdentity(readName, sourceName));
+            Boolean(readName && sourceName && sameGuestName(readName, sourceName));
         });
         if (!matchingSourceGuests.length || read.status !== 'complete' || read.coverage.complete !== true ||
             !['matches', 'no_match'].includes(String(read.result.outcome))) continue;
@@ -1073,7 +1060,7 @@ function bindGuestProfileObservations(input: {
           const exactSourceMatch = matchingSourceGuests.some((sourceGuest) => {
             const sourceName = typeof sourceGuest.name?.value === 'string' ? sourceGuest.name.value : '';
             const sourceEmail = typeof sourceGuest.email?.value === 'string' ? sourceGuest.email.value.trim().toLocaleLowerCase('en-US') : '';
-            const nameMatches = Boolean(sourceName && sameIdentity(`${row.firstName} ${row.lastName}`, sourceName));
+            const nameMatches = Boolean(sourceName && sameGuestName(`${row.firstName} ${row.lastName}`, sourceName));
             const emailMatches = Boolean(sourceEmail && verifiedFields.includes('emailaddress') && typeof row.email === 'string' &&
               row.email.trim().toLocaleLowerCase('en-US') === sourceEmail);
             return sourceEmail ? emailMatches && (!sourceName || nameMatches) : nameMatches;
