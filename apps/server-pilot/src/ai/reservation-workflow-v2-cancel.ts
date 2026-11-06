@@ -194,7 +194,8 @@ function observation(draft: ReservationWorkflowV2Draft, input: ReservationWorkfl
   criteria: Record<string, unknown>, result: Record<string, unknown>, notes: string[] = []): ReservationWorkflowV2Observation {
   return { ref: randomUUID(), generationId: draft.generationId, kind: 'stay_candidate', status,
     observedAt: new Date().toISOString(), propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId,
-    sourceRefs: [], criteria: { workflow: 'cancel', stage, requestId, hintId, draftRevision: input.expectedRevision, ...criteria },
+    sourceRefs: uniqueRefs([criteria.sourceRefs, result.sourceRefs]),
+    criteria: { workflow: 'cancel', stage, requestId, hintId, draftRevision: input.expectedRevision, ...criteria },
     coverage: { complete: status === 'complete', notes: status === 'complete' ? [] : notes }, result };
 }
 
@@ -343,7 +344,7 @@ function compileCancel(draft: ReservationWorkflowV2Draft, requestId: string, hin
   const bodyOverridePrefix = `${loaded.bodyPath}/`;
   const unsupportedOverrides = Object.keys(draft.fieldOverrides).filter((path) => path.startsWith(bodyOverridePrefix) &&
     !['targets', 'reason', 'cancellationNote', 'previewObservationRefs'].includes(
-      decodeURIComponent(path.slice(bodyOverridePrefix.length).split('/')[0] ?? '')));
+      path.slice(bodyOverridePrefix.length).split('/')[0] ?? ''));
   if (unsupportedOverrides.length) return { outcome: 'unsupported', issue: 'cancel_contains_unsupported_staff_overrides',
     fields: unsupportedOverrides };
   const targets = record(loaded.body.targets), rows = targetHintRows(loaded.body);
@@ -534,8 +535,6 @@ export async function reservationWorkflowV2CancelPrepare(ctx: ReservationWorkflo
   if (!target) return { status: 'unsupported', issue: 'cancel_property_session_unavailable' };
   const compiled = compileCancel(loaded.draft, input.requestId, input.allocationId, ctx.property.propertyCode);
   if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [] };
-  const mode = paneWriteMode('cancel', 'unpaid');
-  if (mode === 'off') return { status: 'unsupported', issue: 'cancel_flag_off' };
   const fresh = await freshPreview(target, compiled.preimage.confirmation, compiled.hint, true,
     hmsDispatchTargetKey(dispatchTarget(compiled.preimage)));
   if (fresh.outcome !== 'ok') {
