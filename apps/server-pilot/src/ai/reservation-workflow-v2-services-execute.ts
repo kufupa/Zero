@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { mailboxAccess, mailThread, message } from '../db/schema/mail.js';
 import { workEvent, workItem } from '../db/schema/work.js';
@@ -41,6 +41,7 @@ import {
 } from './reservation-workflow-v2-services.js';
 
 const DISPATCH_FIELD = 'nava.reservation.workflow.v2.services.dispatch.v1';
+const WRITER_CLOSED_FIELD = 'nava.reservation.workflow.v2.services.writer_closed.v1';
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 export const reservationWorkflowV2ServicesExecuteInputSchema = reservationWorkflowV2ExecuteInputSchema.extend({
   allocationId: z.string().min(1).max(80),
@@ -82,7 +83,7 @@ type StoredIntent = {
   generationId: string;
   createOperationId: string; createObservationRef: string; previewObservationRef: string; inputDigest: string;
   approvedItem: Record<string, unknown>; dispatchDigest: string; draftRevision: number; baselineIds: string[];
-  baselineCoverage: Record<string, unknown>; createdAt: string;
+  baselineCoverage: Record<string, unknown>; writer: Record<string, unknown>; createdAt: string;
 };
 type CompiledOk = Extract<ReservationWorkflowV2CompiledServiceItem, { outcome: 'ok' }>;
 type ApprovedService = { draft: ReservationWorkflowV2Draft; plan: CompiledOk;
@@ -455,9 +456,14 @@ function appendOperationResult(draft: ReservationWorkflowV2Draft, result: Reserv
 }
 
 async function claimServiceDispatch(ctx: ReservationWorkflowV2ServerContext, input: ExecuteInput,
-  approved: ApprovedService, target: NativeTarget, dispatch: Record<string, unknown>, expectedEpoch: string):
+  approved: ApprovedService, target: NativeTarget, dispatch: Record<string, unknown>, writer: unknown, expectedEpoch: string):
   Promise<{ intent: StoredIntent; handle: HmsLabtestWriteHandle }> {
   const operationId = input.idempotencyKey;
+  const writerIdentity = object(writer);
+  const writerTool = await import(new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url).href) as {
+    centurionWriterCurrent: (value: unknown) => boolean;
+  };
+  if (!writerIdentity || !writerTool.centurionWriterCurrent(writerIdentity)) throw new Error('services_writer_identity_unavailable');
   const baselineIds = Array.isArray(dispatch.baselineIds) ? dispatch.baselineIds.filter((value): value is string =>
     typeof value === 'string' && /^\d{1,100}$/.test(value)) : [];
   const baselineCoverage = object(dispatch.baselineCoverage);
@@ -474,7 +480,8 @@ async function claimServiceDispatch(ctx: ReservationWorkflowV2ServerContext, inp
       !nativeMatchesApproval(item, approved.approvalItem, approved.preview, approved.plan).matches ||
       baselineIds.length !== new Set(baselineIds).size) throw new Error('services_save_dispatch_binding_invalid');
   const dispatchDigest = hash({ operationId, serviceId: approved.plan.serviceId, target, item,
-    inputDigest: approved.plan.inputDigest, previewObservationRef: approved.approvalObservation.ref, baselineIds });
+    inputDigest: approved.plan.inputDigest, previewObservationRef: approved.approvalObservation.ref, baselineIds,
+    writer: writerIdentity });
   const intent: StoredIntent = { version: 1, kind: 'intent', operationId, workItemId: input.workItemId,
     transportId: ctx.transport.id, actorUserId: ctx.user.id, sessionId: ctx.user.sessionId!,
     sessionProfile: ctx.user.sessionProfile!, propertyCode: 'HRCEN', sourceDigest: input.source.sourceHash,
@@ -483,7 +490,8 @@ async function claimServiceDispatch(ctx: ReservationWorkflowV2ServerContext, inp
     createOperationId: approved.create.operationId,
     createObservationRef: approved.create.observation.ref, previewObservationRef: approved.approvalObservation.ref,
     inputDigest: approved.plan.inputDigest, approvedItem: item, dispatchDigest,
-    draftRevision: input.expectedRevision, baselineIds, baselineCoverage, createdAt: new Date().toISOString() };
+    draftRevision: input.expectedRevision, baselineIds, baselineCoverage, writer: writerIdentity,
+    createdAt: new Date().toISOString() };
   const intentRef = randomUUID();
   const handle = await claimHmsLabtestDispatch(ctx.db, { workItemId: input.workItemId, transportId: ctx.transport.id,
     actorUserId: ctx.user.id, grantId: operationId, propertyCode: 'HRCEN',
@@ -547,6 +555,45 @@ async function claimServiceDispatch(ctx: ReservationWorkflowV2ServerContext, inp
       evidence: { sourceHash: input.source.sourceHash, seq: input.expectedSeq, summary: operation.summary } });
   }, expectedEpoch);
   return { intent, handle };
+}
+
+/** Record closure only after the owning native session returned and drained its dispatch callback. */
+async function recordServiceWriterClosed(ctx: ReservationWorkflowV2ServerContext, input: ExecuteInput,
+  intent: StoredIntent, handle: HmsLabtestWriteHandle): Promise<void> {
+  await ctx.db.transaction(async (tx) => {
+    const [row] = await tx.select({ value: workEvent.value, actorKind: workEvent.actorKind,
+      type: workEvent.type, workItemId: workEvent.workItemId }).from(workEvent)
+      .where(and(eq(workEvent.id, handle.holdId), eq(workEvent.fieldPath, 'nava.hms.labtest.dispatch.v1'))).limit(1);
+    const common = object(row?.value), recovery = object(common?.recovery);
+    const ownerDigest = createHash('sha256').update(handle.ownerToken).digest('hex');
+    if (!row || row.actorKind !== 'system' || row.type !== 'write.evidence' || row.workItemId !== input.workItemId ||
+        !common || common.kind !== 'intent' || common.operation !== 'add_on' || common.holdId !== handle.holdId ||
+        common.ownerDigest !== ownerDigest || common.workItemId !== input.workItemId ||
+        common.transportId !== ctx.transport.id || common.actorUserId !== ctx.user.id ||
+        common.propertyCode !== ctx.property.propertyCode || common.grantId !== input.idempotencyKey ||
+        common.sourceDigest !== input.source.sourceHash || common.approvedDigest !== hash(intent.approvedItem) ||
+        common.requestDigest !== intent.dispatchDigest || canonicalJson(recovery?.serviceIntent) !== canonicalJson(intent)) {
+      throw new Error('services_writer_closed_scope_invalid');
+    }
+    await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', actorUserId: ctx.user.id,
+      type: 'write.evidence', fieldPath: WRITER_CLOSED_FIELD,
+      value: { version: 1, kind: 'writer_closed', holdId: handle.holdId, operationId: intent.operationId,
+        workItemId: intent.workItemId, transportId: intent.transportId, actorUserId: intent.actorUserId,
+        sourceDigest: intent.sourceDigest, dispatchDigest: intent.dispatchDigest, ownerDigest,
+        writerDigest: hash(intent.writer) } });
+  });
+}
+
+async function hasServiceWriterClosedReceipt(db: DB, common: HmsLabtestIntent, intent: StoredIntent): Promise<boolean> {
+  const rows = await db.select({ value: workEvent.value, actorKind: workEvent.actorKind, actorUserId: workEvent.actorUserId })
+    .from(workEvent).where(and(eq(workEvent.workItemId, intent.workItemId), eq(workEvent.type, 'write.evidence'),
+      eq(workEvent.fieldPath, WRITER_CLOSED_FIELD), sql`${workEvent.value}->>'holdId' = ${common.holdId}`)).limit(2);
+  const expected = { version: 1, kind: 'writer_closed', holdId: common.holdId, operationId: intent.operationId,
+    workItemId: intent.workItemId, transportId: intent.transportId, actorUserId: intent.actorUserId,
+    sourceDigest: intent.sourceDigest, dispatchDigest: intent.dispatchDigest, ownerDigest: common.ownerDigest,
+    writerDigest: hash(intent.writer) };
+  return rows.some((row) => row.actorKind === 'system' && row.actorUserId === intent.actorUserId &&
+    canonicalJson(row.value) === canonicalJson(expected));
 }
 
 async function appendServiceEvent(ctx: ReservationWorkflowV2ServerContext, intent: StoredIntent,
@@ -657,7 +704,7 @@ function decodeIntent(value: unknown): StoredIntent | null {
   if (!candidate || candidate.version !== 1 || candidate.kind !== 'intent' || typeof candidate.operationId !== 'string' ||
       typeof candidate.target !== 'object' || !object(candidate.target) || !digest.safeParse(candidate.sourceDigest).success ||
       !digest.safeParse(candidate.dispatchDigest).success || !Array.isArray(candidate.baselineIds) ||
-      !object(candidate.baselineCoverage)) return null;
+      !object(candidate.baselineCoverage) || !object(candidate.writer)) return null;
   return candidate as unknown as StoredIntent;
 }
 
@@ -788,11 +835,12 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
             return true;
           } catch { return false; }
         },
-        beforeDispatch: async (dispatch: unknown) => {
+        captureWriterIdentity: true,
+        beforeDispatch: async (dispatch: unknown, writer: unknown) => {
           const raw = object(dispatch);
           if (!raw) throw new Error('services_save_dispatch_invalid');
           claimAttempted = true;
-          const claim = await claimServiceDispatch(ctx, input, approved, target, raw, epoch);
+          const claim = await claimServiceDispatch(ctx, input, approved, target, raw, writer, epoch);
           claimed = claim.intent;
           sharedHandle = claim.handle;
           return true;
@@ -803,6 +851,13 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
         },
         withWriteLock: async (_confirmation: string, save: () => Promise<unknown>) => save(),
       });
+      const closedIntent = claimed as StoredIntent | null;
+      const closedHandle = sharedHandle as HmsLabtestWriteHandle | null;
+      if (closedIntent && closedHandle) {
+        // The session returns only after its browser closes and the save callback drains.
+        // This permits positive recovery; it does not itself release the hold.
+        await recordServiceWriterClosed(ctx, input, closedIntent, closedHandle).catch(() => {});
+      }
       const objectResult = object(result), saveResult = object(objectResult?.save);
       if (!saveResult) {
         if (objectResult?.status === 'needs_review') return { ...objectResult, status: 'needs_review', serviceId: input.serviceId,
@@ -882,7 +937,7 @@ function recoveryIntent(common: HmsLabtestIntent): StoredIntent {
       !sameName(`${common.firstName} ${common.lastName}`, intent.target.guestName) ||
       hash({ operationId: intent.operationId, serviceId: intent.serviceId, target: intent.target,
         item: intent.approvedItem, inputDigest: intent.inputDigest, previewObservationRef: intent.previewObservationRef,
-        baselineIds: intent.baselineIds }) !== intent.dispatchDigest ||
+        baselineIds: intent.baselineIds, writer: intent.writer }) !== intent.dispatchDigest ||
       intent.baselineCoverage.complete !== true || intent.baselineCoverage.loaded !== intent.baselineIds.length ||
       intent.baselineCoverage.reportedTotal !== intent.baselineIds.length ||
       !intent.baselineIds.every((id) => /^\d{1,100}$/.test(id)) ||
@@ -901,10 +956,16 @@ export async function withServiceRecoveryLock<T>(common: HmsLabtestIntent, actio
   return lock.withLock(action, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
 }
 
-export async function proveServiceRecovery(_db: DB, common: HmsLabtestIntent) {
+export async function proveServiceRecovery(db: DB, common: HmsLabtestIntent) {
   const scope = serviceRecoveryContext.getStore();
   const intent = recoveryIntent(common);
   if (!scope) throw new Error('service_recovery_scope_missing');
+  const writerTool = await import(new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url).href) as {
+    centurionWriterQuiesced: (value: unknown) => boolean;
+  };
+  if (!(await hasServiceWriterClosedReceipt(db, common, intent)) && !writerTool.centurionWriterQuiesced(intent.writer)) {
+    throw new Error('service_writer_not_quiesced');
+  }
   const target = await readSavedNativeTarget({ expectedGuest: { firstName: common.firstName, lastName: common.lastName },
     guestId: common.nativeGuestId, confirmation: intent.target.confirmation,
     arrival: intent.target.arrival, departure: intent.target.departure });

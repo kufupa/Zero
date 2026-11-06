@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
-import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
+import { centurionWriterIdentity, withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
 import { readConfirmationFromStay360 } from './stay360-confirmation.mjs';
 import { readRecordViewFromStay360 } from './stay360-record-view.mjs';
 import { readStay360AddOns, listStay360AddOnItems, listStay360AddOnCatalogue, prepareStay360AddOns, saveStay360AddOns, prepareStay360AddOnChanges, saveStay360AddOnChanges } from './stay360-addons.mjs';
@@ -197,7 +197,13 @@ export async function withStay360AddOnSession(operation, options = {}) {
             if (lastSave.kind === 'changes') closed = true;
           } else lastSave = await saveStay360AddOns(page, confirmation, request.preparedId, {
             authorize: options.authorize || (prepared => authorizeLabtest(prepared, withPage)),
-            beforeDispatch: options.beforeDispatch, afterDispatch: options.afterDispatch,
+            beforeDispatch: options.captureWriterIdentity && options.beforeDispatch
+              ? dispatch => {
+                  const writer = centurionWriterIdentity(page);
+                  if (!writer) throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
+                  return options.beforeDispatch(dispatch, writer);
+                } : options.beforeDispatch,
+            afterDispatch: options.afterDispatch,
             readBaseline: prepared => withPage(async freshPage => {
               await readConfirmationFromStay360(freshPage, prepared.confirmation, {
                 guestName: prepared.target.guestName, arrivalDate: prepared.target.arrival,
