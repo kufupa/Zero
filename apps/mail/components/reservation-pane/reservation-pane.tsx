@@ -1612,12 +1612,16 @@ function QuoteArtifactReceipts({ snapshot, request }: { snapshot: ReservationPan
   if (!receipts.length) return <div className={styles.notice}>No quote output receipt exists yet. Generate is enabled only after a current native Prepare and required-field review.</div>;
   return <>
     {receipts.map((observation) => {
+      const operation = snapshot.operationResults.find((item) => item.workflow === 'quote' && item.requestId === request.id
+        && item.id === observation.criteria.operationId);
+      const currentDraft = operation?.draftRevision === snapshot.session.revision;
       const result = record(observation.result) ?? {};
       const artifacts = Array.isArray(result.artifacts) ? result.artifacts.map(record).filter((item): item is Record<string, unknown> => Boolean(item)) : [];
       const cover = record(result.coverEmail);
       const failures = Array.isArray(result.failures) ? result.failures.map(text).filter(Boolean) : [];
       return <section className={styles.card} key={observation.ref}>
-        <div className={styles.cardTitle}><b>Quote output receipt</b><small>{observation.coverage.complete ? 'Complete' : 'Partial or failed'}</small></div>
+        <div className={styles.cardTitle}><b>Quote output receipt</b><small>{currentDraft ? 'Current draft' : 'Earlier draft'} · {observation.coverage.complete ? 'Complete' : 'Partial or failed'}</small></div>
+        {!currentDraft && <div className={styles.problem}>These files reflect an earlier draft. Generate new outputs after reviewing your current changes.</div>}
         <div className={styles.notice}>Email sent: no. Reservation saved: no.</div>
         {artifacts.length ? artifacts.map((artifact, index) => {
           const name = text(artifact.fileName) || `quote-output-${index + 1}`;
