@@ -35,6 +35,8 @@ import {
   reservationWorkflowV2Reconcile,
 } from '../../ai/reservation-workflow-v2-tools.js';
 import { reservationWorkflowV2LookupServices, reservationWorkflowV2PreviewServices } from '../../ai/reservation-workflow-v2-services.js';
+import { reservationWorkflowV2QuoteLookup, reservationWorkflowV2QuotePrepare,
+  reservationWorkflowV2QuoteExecute, reservationWorkflowV2QuoteReconcile } from '../../ai/reservation-workflow-v2-quote.js';
 import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
 import { guardCenturionHmsMailboxOrigin } from '../../hms/mailbox-hms-origin-bind.js';
 import { paneSourceSelectionCondition, paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
@@ -66,15 +68,15 @@ async function withPreparation<T extends { status: string }>(reply: Promise<T>, 
   const result = await reply;
   const draft = 'draft' in result ? result.draft as ReservationWorkflowV2Draft | null : null;
   if (!draft) return { ...result, preparationViews: [] };
-  // This is a read-only projection from the validated source WorkItem. Legacy
-  // stays have no reliable allocation mapping, so never turn them into v2 results.
-  const [item] = await getDb().select({ state: workItem.state }).from(workItem)
-    .where(and(eq(workItem.id, draft.workItemId), eq(workItem.transportId, draft.transportId),
-      eq(workItem.threadId, draft.source.threadId), eq(workItem.sourceMessageId, draft.source.messageId))).limit(1);
-  if (!item) return { status: 'not_found' as const, preparationViews: [] };
-  const legacyCreateReceipts = Object.entries(stayCommitsOf(item.state)).map(([stayId, receipt]) => ({
+  // A source can have several legacy classifications. Show their receipts
+  // without guessing an allocation mapping onto the v2 draft.
+  const items = await getDb().select({ id: workItem.id, state: workItem.state }).from(workItem)
+    .where(and(eq(workItem.transportId, draft.transportId), eq(workItem.threadId, draft.source.threadId),
+      eq(workItem.sourceMessageId, draft.source.messageId)));
+  if (!items.some((item) => item.id === draft.workItemId)) return { status: 'not_found' as const, preparationViews: [] };
+  const legacyCreateReceipts = items.flatMap((item) => Object.entries(stayCommitsOf(item.state)).map(([stayId, receipt]) => ({
     stayId, status: receipt.status, confirmationNumber: receipt.confirmationNumber,
-  }));
+  })));
   const views = reservationWorkflowV2PreparationViews(draft, propertyCode);
   if (!legacyCreateReceipts.length) return { ...result, preparationViews: views, legacyCreateReceipts };
   const receiptSummary = legacyCreateReceipts.slice(0, 3).map((receipt) =>
@@ -87,6 +89,23 @@ async function withPreparation<T extends { status: string }>(reply: Promise<T>, 
     draft: { ...draft, errors: [...draft.errors.slice(0, 99),
       { stage: 'persist' as const, code: 'legacy_create_receipts', message: warning.slice(0, 1000) }] },
     preparationViews: views.map((view) => ({ ...view, current: false, issue: 'Previous legacy Create results require review in Infor.' })) };
+}
+
+async function nativeWorkflow(
+  ctx: Awaited<ReturnType<typeof nativeContext>>,
+  input: z.infer<typeof reservationWorkflowV2ItemInputSchema>,
+  requestId?: string,
+  operationId?: string,
+) {
+  const current = await getReservationWorkflowV2Draft({ db: ctx.db, userId: ctx.user.id,
+    transportId: ctx.transport.id, propertyCode: ctx.property.propertyCode }, input);
+  if (current.status !== 'ok') return { kind: null, result: current };
+  if (current.revision !== input.expectedRevision || current.seq !== input.expectedSeq) {
+    return { kind: null, result: { status: 'stale_revision' as const } };
+  }
+  const kind = operationId ? current.draft.operationResults.find((row) => row.id === operationId)?.workflow
+    : requestId ? current.draft.proposal.content.requests.find((row) => row.id === requestId)?.kind : 'create';
+  return kind ? { kind, result: null } : { kind: null, result: { status: 'not_found' as const } };
 }
 
 const servicesInput = reservationWorkflowV2PrepareInputSchema.extend({
@@ -169,16 +188,40 @@ export const reservationWorkflowV2Router = router({
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
     return withPreparation(moveReservationWorkflowV2History(scoped, { ...input, direction: 'redo' }), scoped.propertyCode);
   }),
-  lookup: mailboxProcedure.input(reservationWorkflowV2LookupInputSchema).mutation(async ({ input, ctx }) =>
-    reservationWorkflowV2Lookup(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
-  prepare: mailboxProcedure.input(reservationWorkflowV2PrepareInputSchema).mutation(async ({ input, ctx }) =>
-    reservationWorkflowV2Prepare(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
-  execute: mailboxProcedure.input(reservationWorkflowV2ExecuteInputSchema).mutation(async ({ input, ctx }) =>
-    reservationWorkflowV2Execute(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
+  lookup: mailboxProcedure.input(reservationWorkflowV2LookupInputSchema).mutation(async ({ input, ctx }) => {
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
+    const workflow = await nativeWorkflow(scoped, input, input.requestId);
+    if (workflow.result) return workflow.result;
+    if (workflow.kind === 'quote') return reservationWorkflowV2QuoteLookup(scoped, input);
+    if (workflow.kind === 'create') return reservationWorkflowV2Lookup(scoped, input);
+    return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
+  }),
+  prepare: mailboxProcedure.input(reservationWorkflowV2PrepareInputSchema).mutation(async ({ input, ctx }) => {
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
+    const workflow = await nativeWorkflow(scoped, input, input.requestId);
+    if (workflow.result) return workflow.result;
+    if (workflow.kind === 'quote') return reservationWorkflowV2QuotePrepare(scoped, input);
+    if (workflow.kind === 'create') return reservationWorkflowV2Prepare(scoped, input);
+    return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
+  }),
+  execute: mailboxProcedure.input(reservationWorkflowV2ExecuteInputSchema).mutation(async ({ input, ctx }) => {
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
+    const workflow = await nativeWorkflow(scoped, input, input.requestId);
+    if (workflow.result) return workflow.result;
+    if (workflow.kind === 'quote') return reservationWorkflowV2QuoteExecute(scoped, input);
+    if (workflow.kind === 'create') return reservationWorkflowV2Execute(scoped, input);
+    return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
+  }),
   lookupServices: mailboxProcedure.input(servicesInput).mutation(async ({ input, ctx }) =>
     reservationWorkflowV2LookupServices(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
   prepareServices: mailboxProcedure.input(servicesInput).mutation(async ({ input, ctx }) =>
     reservationWorkflowV2PreviewServices(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
-  reconcile: mailboxProcedure.input(reservationWorkflowV2ReconcileInputSchema).mutation(async ({ input, ctx }) =>
-    reservationWorkflowV2Reconcile(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
+  reconcile: mailboxProcedure.input(reservationWorkflowV2ReconcileInputSchema).mutation(async ({ input, ctx }) => {
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
+    const workflow = await nativeWorkflow(scoped, input, undefined, input.operationId);
+    if (workflow.result) return workflow.result;
+    if (workflow.kind === 'quote') return reservationWorkflowV2QuoteReconcile(scoped, input);
+    if (workflow.kind === 'create') return reservationWorkflowV2Reconcile(scoped, input);
+    return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
+  }),
 });

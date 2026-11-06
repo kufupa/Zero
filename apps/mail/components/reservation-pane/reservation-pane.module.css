@@ -115,6 +115,7 @@
 .serviceBlock { display: grid; gap: 7px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
 .serviceCard { display: grid; gap: 7px; padding: 9px; border: 1px solid #ddd6e8; border-radius: 8px; background: #fbfaff; }
 .serviceCard > p { margin: 0; }
+.coverText { white-space: pre-wrap; }
 .policyLine { margin: 3px 1px 10px; color: var(--muted); font-size: 10px; }
 
 .notice, .alert { margin: 9px 0; padding: 9px 10px; border: 1px solid #e7d8b8; border-radius: 8px; color: #715313; background: #fff9eb; font-size: 11px; }

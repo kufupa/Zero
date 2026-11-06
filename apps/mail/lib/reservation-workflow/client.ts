@@ -141,7 +141,7 @@ function wireValueAtPath(draft: ReservationWorkflowV2Draft, path: string): unkno
 
 const reviewedAggregateArrays = new Set(['childAges', 'roomCodes', 'artifacts']);
 const nonReviewMetadata = new Set(['requestText', 'title', 'dateSectionId', 'requestedRooms', 'unassignedGuestNames',
-  'requestedTotals', 'scope', 'profileIntent', 'candidateRefs', 'suggestedRef', 'sourceRefs', 'serviceRefs', 'documentRefs', 'targetRefs',
+  'requestedTotals', 'scope', 'provisionalBookingRequested', 'profileIntent', 'candidateRefs', 'suggestedRef', 'sourceRefs', 'serviceRefs', 'documentRefs', 'targetRefs',
   'priceObservationRefs', 'lookupResultRefs', 'evidenceRefs', 'id', 'kind']);
 const nonReviewSubtrees = new Set(['requestedTotals', 'unassignedGuestNames']);
 const partyFieldNames = new Set(['bookingAgency', 'organization', 'arAccount', 'agency', 'company']);
@@ -151,6 +151,15 @@ function shouldReviewPath(draft: ReservationWorkflowV2Draft, path: string, value
     try { return decodeURIComponent(part); } catch { return ''; }
   });
   const leaf = parts.at(-1) ?? '';
+  for (let length = parts.length - 1; length > 0; length -= 1) {
+    const override = draft.fieldOverrides[`/${parts.slice(0, length).map(encodeURIComponent).join('/')}`];
+    if (override && ['none', 'clear', 'unknown'].includes(override.state)) return false;
+  }
+  if (leaf === 'name' && parts[2] === 'requests' && parts[4] === 'body' && parts[5] === 'parties'
+      && ['agency', 'company'].includes(parts[6] ?? '')) {
+    const request = draft.proposal.content.requests.find((item, index) => item.id === parts[3] || String(index) === parts[3]);
+    if (request?.kind === 'quote') return true;
+  }
   if (nonReviewMetadata.has(leaf) || parts.some((part) => nonReviewSubtrees.has(part))) return false;
   if (parts.length > 1 && Array.isArray(wireValueAtPath(draft, `/${parts.slice(0, -1).map(encodeURIComponent).join('/')}`))) return false;
   if (Array.isArray(value)) return reviewedAggregateArrays.has(leaf);
@@ -249,7 +258,7 @@ function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot
     flattenFields(request, root, fields, draft);
     requests.push({ id: request.id, kind: request.kind, text: request.requestText,
       fieldPaths: Object.keys(fields).filter((path) => path.startsWith(`${root}/`)),
-      supported: request.kind === 'create' && draft.propertyCode === 'HRCEN' });
+      supported: (request.kind === 'create' || request.kind === 'quote') && draft.propertyCode === 'HRCEN' });
   }
   for (const [index, row] of draft.proposal.content.services.entries()) {
     flattenFields(row, pointer('proposal', 'content', 'services', index), fields, draft);
@@ -341,6 +350,27 @@ function serviceOperationNotice(result: unknown, success: string[]): string | un
   return fields.size ? `${notice} Review: ${[...fields].join(', ')}.` : notice;
 }
 
+function quoteLookupNotice(result: unknown): string | undefined {
+  if (!isRecord(result) || !Array.isArray(result.quotes)) return undefined;
+  const issues = result.quotes.flatMap((value) => {
+    if (!isRecord(value) || value.status === 'priced') return [];
+    const status = isString(value.status) ? value.status.replaceAll('_', ' ') : 'unknown outcome';
+    const issue = isString(value.issue) ? value.issue.replaceAll('_', ' ') : null;
+    const fields = Array.isArray(value.fields) ? value.fields.filter(isString).join(', ') : '';
+    return [`Quote check: ${status}${issue ? ` — ${issue}` : ''}${fields ? `; review ${fields}` : ''}.`];
+  });
+  return issues.length ? issues.join(' ') : undefined;
+}
+
+function quoteOperationNotice(result: unknown, success: string[], action: string): string | undefined {
+  if (!isRecord(result)) return `${action}: unreadable native quote response.`;
+  if (success.includes(String(result.status))) return undefined;
+  const status = isString(result.status) ? result.status.replaceAll('_', ' ') : 'unknown outcome';
+  const issue = isString(result.issue) ? result.issue.replaceAll('_', ' ') : null;
+  const fields = Array.isArray(result.fields) ? result.fields.filter(isString) : [];
+  return `${action}: ${status}${issue ? ` — ${issue}` : ''}${fields.length ? `; review ${fields.join(', ')}` : ''}.`;
+}
+
 function serviceOwnerForPath(snapshot: ReservationPaneSnapshot, path: string): string | null {
   const parts = path.split('/').slice(1).map((part) => {
     try { return decodeURIComponent(part); } catch { return ''; }
@@ -410,7 +440,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       const raw = await api.lookup.mutate(input, mailboxOptions(command.source));
       await refreshAfterStale(input, command.source, raw);
       const result = okResult(raw);
-      const notice = operationNotice(result, ['ok']);
+      const notice = operationNotice(result, ['ok']) ?? quoteLookupNotice(result);
       return { ...await load(input, command.source), ...(notice ? { serviceNotice: notice } : {}) };
     },
     async prepare(command) {
@@ -419,17 +449,22 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       const result = await api.prepare.mutate(input, mailboxOptions(command.source));
       await refreshAfterStale(input, command.source, result);
       const snapshot = await load(input, command.source);
-      const notice = operationNotice(result, ['prepared']);
+      const isQuote = command.snapshot.requests.some((request) => request.id === command.requestId && request.kind === 'quote');
+      const notice = isQuote ? quoteOperationNotice(result, ['prepared'], 'Quote price preparation') : operationNotice(result, ['prepared']);
       return notice ? { ...snapshot, serviceNotice: notice } : snapshot;
     },
     async execute(command) {
-      const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
+      const input = { ...itemInput(command), requestId: command.requestId,
+        ...(command.allocationId ? { allocationId: command.allocationId } : {}),
         go: true as const, idempotencyKey: command.idempotencyKey };
       const result = await api.execute.mutate(input, mailboxOptions(command.source));
       await refreshAfterStale(input, command.source, result);
       const snapshot = await load(input, command.source);
-      const notice = operationNotice(result, ['succeeded', 'already_succeeded']);
-      return notice ? { ...snapshot, serviceNotice: notice } : snapshot;
+      const isQuote = command.snapshot.requests.some((request) => request.id === command.requestId && request.kind === 'quote');
+      const notice = isQuote ? quoteOperationNotice(result, ['succeeded', 'already_succeeded'], 'Unsent quote generation')
+        : operationNotice(result, ['succeeded', 'already_succeeded']);
+      return notice ? { ...snapshot, serviceNotice: isQuote
+        ? `${notice} No email was sent and no reservation was saved.` : notice } : snapshot;
     },
     async reconcile(command) {
       const input = { ...itemInput(command), operationId: command.operationId };
