@@ -5,7 +5,7 @@ profiles. Creation never searches or selects an existing person. A name match
 is not proof of identity.
 
 The supplied runner is a **Proof Labtest-only** caller. It does not authorize a
-real-guest Save or implement staff approval. It exposes three operations:
+real-guest Save or implement staff approval. Its existing input remains valid:
 
 ```js
 import { randomUUID } from 'node:crypto';
@@ -27,12 +27,40 @@ if (prepared.outcome === 'ready') {
 const profile = await runner.readGuestProfile({ nativeId: '12345' });
 ```
 
+The optional title and contact fields use a versioned review. Obtain choices
+from HMS, choose explicitly, and pass the returned review back unchanged:
+
+```js
+const titles = await runner.listGuestProfileCreationOptions({ field: 'title' });
+const input = {
+  guest: { firstName: 'Proof', lastName: 'Labtest', mobile: '+27000000000',
+    email: 'proof.labtest@example.invalid', titleCode: 'MR',
+    phoneNumber: '+27000000001', phoneTypeCode: 'DAY', emailTypeCode: 'PRIM' },
+  confirmDuplicateName: true,
+};
+const prepared = await runner.prepareGuestProfile(input);
+if (prepared.outcome === 'ready') {
+  const result = await runner.createGuestProfile({ ...input,
+    expectedReview: prepared.review, expectedPreviewDigest: prepared.previewDigest,
+    attemptId: randomUUID() });
+}
+```
+
+The codes above are examples, not inferred defaults. List `title`, `phoneType`
+or `emailType`; check coverage and select a current code before Prepare.
+The implementation has staged these fields together on an unsaved HRCEN form;
+an additional unsaved preview used a linked inbound message's name and mobile
+with title from its exact-ID master profile.
+Their persistence remains unverified until a permitted Labtest Save and fresh
+exact-ID readback succeed on deployed main.
+
 ## Inputs
 
 | Operation | Required | Optional |
 | --- | --- | --- |
-| `prepareGuestProfile` | `guest.firstName`, `guest.lastName`, `guest.mobile`: nonblank strings | `guest.email`, `propertyCode: 'HRCEN'`, `confirmDuplicateName` boolean (default `false`), `expectedPreviewDigest` to compare against a prior preview |
-| `createGuestProfile` | Same guest fields, `expectedPreviewDigest` from Prepare, stable `attemptId` | Same optional fields; `retryOfAttemptId` only for the reviewed recovery described below |
+| `listGuestProfileCreationOptions` | `field`: `title`, `phoneType` or `emailType` | `propertyCode: 'HRCEN'` |
+| `prepareGuestProfile` | `guest.firstName`, `guest.lastName`, `guest.mobile`: nonblank strings | `guest.email`, `guest.titleCode`, `guest.phoneNumber`, `guest.phoneTypeCode`, `guest.emailTypeCode`, `propertyCode: 'HRCEN'`, `confirmDuplicateName` boolean (default `false`), `expectedPreviewDigest` to compare against a prior preview |
+| `createGuestProfile` | Same guest fields, `expectedPreviewDigest` from Prepare, stable `attemptId`; `expectedReview` when extra fields are supplied | Same optional fields; `retryOfAttemptId` only for the reviewed recovery described below |
 | `readGuestProfile` | `nativeId`: numeric string | `propertyCode: 'HRCEN'`; `attemptId` to reconcile that attempt using its recorded ID |
 
 Guest values are trimmed, limited to 200 characters and must not contain
@@ -43,20 +71,28 @@ all four supported consent controls off. The runner refuses other guest names;
 the low-level module's callback interface is trusted infrastructure, not a
 staff authorization system.
 
+Extra fields, when present, must be nonblank strings; explicit null or blank is
+not a clear operation. A phone type needs an additional guest phone number; an
+email type needs a guest email. These do not replace mobile, a booker's contact,
+the stay's guest email or a CMS recipient. The form's verified defaults are
+shown in `review.effective`; they are never guessed from a name or address.
+Prepare rechecks supplied codes against its own current native options.
+
 ## Results
 
 - `ready`: normalized `businessFields`, `previewDigest`, native required-field
   names and an available Save control. No Save was sent. The digest binds the
-  values and duplicate decision; it does not itself prove approval or that a
-  previous Prepare ran.
+  values and duplicate decision; for extra fields it also binds the version-2
+  `review` and effective native values. It does not itself prove approval or
+  that a previous Prepare ran.
 - `created`: `attemptId`, native ID, dispatched phase and a fresh exact-ID
   `readback`. All supported values match, including blank email, ACTIVE and
   four false consent values. The readback includes `consent` and
   `consentCoverage`; an unreadable consent value is `null`, never assumed off.
 - `confirmation_required`: HMS asked the recognized duplicate-name question
   but the reviewed input did not permit Yes. No automatic confirmation occurs.
-- `not_dispatched`, `needs_input`, `input_gap`, `review_required` or
-  `unavailable`: validation, preparation, authorization or journal failed.
+- `not_dispatched`, `needs_input`, `input_gap`, `review_required`,
+  `unavailable` or `unsupported`: validation, preparation, authorization or journal failed.
   Inspect `issue` before deciding what to do.
 - `uncertain` or `reconciliation_required`: inspect `attemptId`, `phase`,
   `dispatched` and `nativeId`; a `null` dispatch state means it is unknown.
@@ -79,6 +115,13 @@ duplicate decision changes. That grouping prevents retries; it does not claim
 those values identify a person. This is local shared-directory protection, not
 a distributed exactly-once guarantee or a replacement for the existing
 browser/property ownership and write serialization mechanisms.
+
+Version-1 claims and digests remain readable for requests without extra fields.
+Version-2 claims retain the reviewed request and effective fields. Optional
+title or contact changes do not change the core-field intent key and cannot
+release an unresolved attempt. A version-2 Save restages and compares the
+review, checks the native request, then compares the saved fields on a fresh
+master read. A digest or caller-supplied review is not write authority.
 
 If HMS returned an ID, call `readGuestProfile({ nativeId, attemptId })`. The
 runner compares the fresh master read with the recorded approved fields and,

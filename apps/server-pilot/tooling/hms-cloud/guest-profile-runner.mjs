@@ -7,7 +7,8 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import {
   createGuestProfile as nativeCreate, prepareGuestProfile as nativePrepare, readGuestProfile as nativeRead,
-  matchesProfileReadback, profileBusinessFields, profilePreviewDigest,
+  listGuestProfileCreationOptions as nativeListOptions, hasExtendedProfileFields, matchesProfileReadback,
+  matchesProfileReview, profileBusinessFields, profileInputIssue, profilePreviewDigest, profileReviewDigest,
 } from './guest-profile-create.mjs';
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -96,9 +97,12 @@ async function readAttempt(dir, attemptKey) {
   const parts = {};
   for (const name of names) parts[name] = await readRecord(dir, file(attemptKey, name));
   const claim = parts.claim;
-  if (!claim || claim.version !== 1 || !validAttempt(claim.attemptId) || hash(claim.attemptId) !== attemptKey ||
+  if (!claim || ![1, 2].includes(claim.version) || !validAttempt(claim.attemptId) || hash(claim.attemptId) !== attemptKey ||
       !claim.fields || claim.fields.firstName !== 'Proof' || claim.fields.lastName !== 'Labtest' ||
-      typeof claim.previewDigest !== 'string' || claim.previewDigest !== profilePreviewDigest(claim.fields, claim.confirmDuplicateName) ||
+      typeof claim.previewDigest !== 'string' ||
+      (claim.version === 1 && (hasExtendedProfileFields(claim.fields) || claim.previewDigest !== profilePreviewDigest(claim.fields, claim.confirmDuplicateName))) ||
+      (claim.version === 2 && (!matchesProfileReview(claim.review, claim.fields, claim.confirmDuplicateName) ||
+        claim.previewDigest !== profileReviewDigest(claim.review))) ||
       claim.intentKey !== intentKey(claim.fields) || typeof claim.confirmDuplicateName !== 'boolean') throw new Error('PROFILE_JOURNAL_CORRUPT');
   const chain = await intentChain(dir, claim.intentKey);
   if (chain.length && !chain.includes(attemptKey)) {
@@ -121,7 +125,7 @@ async function readAttempt(dir, attemptKey) {
     if (result && (result.attemptId !== claim.attemptId || typeof result.outcome !== 'string')) throw new Error('PROFILE_JOURNAL_CORRUPT');
     if (result?.nativeId != null && !/^\d+$/.test(result.nativeId)) throw new Error('PROFILE_JOURNAL_CORRUPT');
     if (result?.outcome === 'created' && (!successful?.nativeId || result.nativeId !== successful.nativeId ||
-        !matchesProfileReadback(result.readback, claim.fields, successful.nativeId))) throw new Error('PROFILE_JOURNAL_CORRUPT');
+        !matchesProfileReadback(result.readback, claim.fields, successful.nativeId, claim.review))) throw new Error('PROFILE_JOURNAL_CORRUPT');
     if (result?.outcome === 'confirmation_required' && (!parts['initial-response']?.question || parts.confirm)) {
       throw new Error('PROFILE_JOURNAL_CORRUPT');
     }
@@ -167,31 +171,41 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
   const prepare = dependencies.prepareGuestProfile ?? nativePrepare;
   const create = dependencies.createGuestProfile ?? nativeCreate;
   const read = dependencies.readGuestProfile ?? nativeRead;
+  const listOptions = dependencies.listGuestProfileCreationOptions ?? nativeListOptions;
   let dirPromise;
   const directory = () => dirPromise ??= privateDirectory(runtimeDir);
 
   async function prepareGuestProfile(input) {
-    if (!profileBusinessFields(input)) return { outcome: 'needs_input', issue: 'GUEST_NAME_AND_MOBILE_REQUIRED' };
+    if (!profileBusinessFields(input)) return { outcome: 'needs_input', issue: profileInputIssue(input) };
     return prepare(input, sessionOptions);
   }
 
   async function createGuestProfile(input) {
-    if (!own(input, ['propertyCode', 'guest', 'confirmDuplicateName', 'expectedPreviewDigest', 'attemptId', 'retryOfAttemptId']) ||
+    if (!own(input, ['propertyCode', 'guest', 'confirmDuplicateName', 'expectedPreviewDigest', 'expectedReview', 'attemptId', 'retryOfAttemptId']) ||
         !validAttempt(input.attemptId) || (input.retryOfAttemptId != null && !validAttempt(input.retryOfAttemptId))) {
       return { outcome: 'not_dispatched', issue: 'PROFILE_ATTEMPT_INPUT_INVALID', dispatched: false };
     }
     const { attemptId, retryOfAttemptId, ...business } = input;
     const fields = profileBusinessFields(business);
+    if (!fields) {
+      const issue = profileInputIssue(business);
+      if (issue !== 'GUEST_NAME_AND_MOBILE_REQUIRED') return { outcome: 'needs_input', issue, attemptId, dispatched: false };
+    }
     if (!fields || fields.firstName !== 'Proof' || fields.lastName !== 'Labtest') {
       return { outcome: 'not_dispatched', issue: 'PROFILE_LABTEST_ONLY', attemptId, dispatched: false };
     }
     const confirmDuplicateName = business.confirmDuplicateName === true;
-    const previewDigest = profilePreviewDigest(fields, confirmDuplicateName);
+    const extended = hasExtendedProfileFields(fields);
+    if (extended && !matchesProfileReview(business.expectedReview, fields, confirmDuplicateName)) {
+      return { outcome: 'review_required', issue: 'PROFILE_PREVIEW_CHANGED', attemptId, dispatched: false };
+    }
+    const previewDigest = extended ? profileReviewDigest(business.expectedReview) : profilePreviewDigest(fields, confirmDuplicateName);
     if (business.expectedPreviewDigest !== previewDigest) return { outcome: 'review_required', issue: 'PROFILE_PREVIEW_CHANGED', attemptId, dispatched: false };
     let dir;
     try { dir = await directory(); } catch { return { outcome: 'not_dispatched', issue: 'PROFILE_JOURNAL_UNAVAILABLE', attemptId, dispatched: false }; }
     const attemptKey = hash(attemptId), key = intentKey(fields);
-    const claim = { version: 1, attemptId, fields, confirmDuplicateName, previewDigest, intentKey: key };
+    const claim = { version: extended ? 2 : 1, attemptId, fields, confirmDuplicateName, previewDigest, intentKey: key,
+      ...(extended && { review: structuredClone(business.expectedReview) }) };
     try {
       await writeOnce(dir, file(attemptKey, 'claim'), claim);
     } catch (error) {
@@ -243,7 +257,8 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
     }
     const observed = { phase: null, dispatched: false, nativeId: null };
     const authorized = context => context.previewDigest === previewDigest && context.confirmDuplicateName === confirmDuplicateName &&
-      same(context.fields, fields) && (context.phase === 'initial' || context.phase === 'confirm_distinct' && confirmDuplicateName);
+      same(context.fields, fields) && (!extended || same(context.review, claim.review)) &&
+      (context.phase === 'initial' || context.phase === 'confirm_distinct' && confirmDuplicateName);
     const dispatchCandidate = async (context, proceed) => {
       if (!authorized(context)) throw new Error('PROFILE_AUTHORIZATION_MISMATCH');
       const phase = context.phase === 'initial' ? 'initial' : 'confirm';
@@ -301,7 +316,7 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
     if (!parts.successful?.nativeId || business.nativeId !== parts.successful.nativeId ||
         business.propertyCode != null && business.propertyCode !== 'HRCEN') return held(attemptId, parts);
     const readback = await read(business, sessionOptions);
-    if (!matchesProfileReadback(readback, parts.claim.fields, parts.successful.nativeId)) return { ...held(attemptId, parts), readback };
+    if (!matchesProfileReadback(readback, parts.claim.fields, parts.successful.nativeId, parts.claim.review)) return { ...held(attemptId, parts), readback };
     if (parts.reconcile) return { ...readback, reconciliation: parts.reconcile };
     if (parts.result?.outcome === 'created') return { ...readback, reconciliation: parts.result };
     const result = { outcome: 'created', attemptId, phase: parts.confirm ? 'confirm_distinct' : 'initial',
@@ -315,5 +330,6 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
     } catch { return { ...held(attemptId, parts, 'PROFILE_RECONCILIATION_JOURNAL_UNAVAILABLE'), readback }; }
   }
 
-  return Object.freeze({ prepareGuestProfile, createGuestProfile, readGuestProfile });
+  return Object.freeze({ listGuestProfileCreationOptions: input => listOptions(input, sessionOptions),
+    prepareGuestProfile, createGuestProfile, readGuestProfile });
 }
