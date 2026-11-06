@@ -1173,6 +1173,7 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
   const prior = resultForId(loaded.draft, input.idempotencyKey);
   if (prior?.status === 'succeeded') return { status: 'succeeded', operationId: prior.id,
     summary: prior.summary, observationRefs: prior.observationRefs };
+  if (prior?.status === 'failed') return { status: 'failed', operationId: prior.id, summary: prior.summary };
   const roomResult = [...loaded.draft.operationResults].reverse().find((entry) => entry.requestId === input.requestId &&
     entry.allocationId === input.allocationId && entry.workflow === 'create' &&
     (entry.status === 'succeeded' || entry.status === 'unknown'));
@@ -1380,25 +1381,11 @@ export async function reservationWorkflowV2Reconcile(ctx: ReservationWorkflowV2S
   const intents = dispatchRows.map((entry) => record(entry.value)).filter((entry): entry is Record<string, unknown> =>
     Boolean(entry && entry.kind === 'intent' && entry.operation === 'create' && entry.grantId === input.operationId));
   if (!intents.length) {
-    const observation: ReservationWorkflowV2Observation = {
-      ref: randomUUID(), generationId: initial.draft.generationId, kind: 'stay_candidate', status: 'failed', observedAt: new Date().toISOString(),
-      propertyCode: initial.draft.propertyCode, sourceMessageId: initial.draft.source.messageId, sourceRefs: [],
-      criteria: { workflow: 'create', operationId: input.operationId, sourceHash: input.source.sourceHash },
-      coverage: { complete: false, notes: ['durable_create_claim_not_found'] },
-      result: { outcome: 'not_dispatched', issue: 'No durable HMS Create claim exists for this Go.' },
-    };
-    const current = await getReservationWorkflowV2Draft(stateContext(ctx), input);
-    if (current.status !== 'ok') return current;
-    const base = { workItemId: input.workItemId, source: input.source,
-      expectedRevision: current.revision, expectedSeq: current.seq };
-    const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), { ...base, observation });
-    if (appended.status !== 'ok') return appended;
-    const failed = await recordReservationWorkflowV2Result(stateContext(ctx), { ...base, result: {
-      id: input.operationId, generationId: current.draft.generationId, requestId: result.requestId, allocationId: result.allocationId,
-      workflow: 'create', status: 'failed', draftRevision: result.draftRevision, observationRefs: [observation.ref],
-      updatedAt: new Date().toISOString(), summary: 'No durable claim; Save was not dispatched',
-    } });
-    return failed.status === 'ok' ? { status: 'failed', operationId: input.operationId, issue: 'create_not_dispatched' } : failed;
+    // Reconcile may overlap the writer between its pending receipt and claim.
+    // Absence is not proof that Save was never dispatched; only the writer's
+    // positive never-dispatched proof can release this operation for a retry.
+    return { status: 'needs_reconcile', operationId: input.operationId,
+      issue: 'create_claim_not_yet_observed' };
   }
   const intent = intents.find((entry) => entry.recovery && record(entry.recovery)?.operationId === result.id &&
     record(entry.recovery)?.requestId === result.requestId && record(entry.recovery)?.allocationId === result.allocationId);

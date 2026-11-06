@@ -378,6 +378,13 @@ export async function recordReservationWorkflowV2Result(ctx: Context, input: {
         input.result.observationRefs.some((ref) => !currentDraft.observations.some((o) => o.ref === ref))) {
       return { status: 'invalid_value' as const };
     }
+    const previous = currentDraft.operationResults.find((result) => result.id === input.result.id);
+    if (previous && (previous.requestId !== input.result.requestId || previous.allocationId !== input.result.allocationId ||
+        previous.workflow !== input.result.workflow)) return { status: 'invalid_value' as const };
+    // A later catch or concurrent reconciliation must not erase positive Save
+    // evidence and make this room eligible for another Create.
+    if (previous?.status === 'succeeded') return { status: 'ok' as const, draft: currentDraft,
+      revision: item.revision, revisionHead: item.revisionHead, seq: item.revisionSeq };
     const operationResults = [...currentDraft.operationResults.filter((result) => result.id !== input.result.id), input.result];
     const next = reservationWorkflowV2DraftSchema.parse({ ...currentDraft, revision: item.revision, operationResults });
     const nextState = { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next };
