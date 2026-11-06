@@ -2355,8 +2355,7 @@ function AmendChangeRow(props: EditorProps & { path: string; change: Record<stri
         : <TextField {...props} path={valuePath} label={spec.label} type={spec.type === 'date' ? 'date'
         : spec.type === 'number' ? 'number' : spec.type === 'email' ? 'email' : 'text'} min={spec.type === 'number' ? 0 : undefined}
         max={spec.type === 'number' ? (fieldName === 'adults' ? 16 : 9) : undefined}
-        hideClear={fieldName === 'cmsMessageId' || fieldName === 'cmsRecipient'}
-        help={spec.type === 'code' ? 'Use the native HMS code; current price/availability is displayed only after Prepare.' : undefined} /> : null}
+        hideClear={fieldName === 'cmsMessageId' || fieldName === 'cmsRecipient'} /> : null}
     {op === 'set' && fieldName === 'childAges' && Array.isArray(currentValue) && currentValue.length === 0
         && props.snapshot.fields[valuePath]?.review !== 'accepted'
         && props.snapshot.session.draft.staffReviews[valuePath]?.status !== 'accepted' && props.onDone
