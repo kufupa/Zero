@@ -77,25 +77,25 @@ const prefillRequestFactsSchema = z.object({
   id: idSchema,
   kind: z.enum(['quote', 'create', 'amend', 'cancel', 'services', 'filing', 'other']),
   requestText: extractedClaimSchema,
-  dates: z.array(z.object({ arrival: extractedClaimSchema.optional(), departure: extractedClaimSchema.optional() }).strict()).max(100),
+  dates: z.array(z.object({ arrival: extractedClaimSchema.optional(), departure: extractedClaimSchema.optional() }).strict()).max(100).default([]),
   roomCount: extractedClaimSchema.optional(),
   occupancy: z.array(z.object({ scope: z.enum(['per_room', 'whole_group', 'unknown']),
     adults: extractedClaimSchema.optional(), childCount: extractedClaimSchema.optional(),
-    childAges: z.array(extractedClaimSchema).max(12).optional() }).strict()).max(100),
-  guests: z.array(guestHintSchema).max(200),
-  parties: z.array(partyHintSchema).max(100),
-  confirmationHints: z.array(extractedClaimSchema).max(100),
-  roomTypeHints: z.array(extractedClaimSchema).max(100),
-  rateHints: z.array(extractedClaimSchema).max(100),
-  boardHints: z.array(extractedClaimSchema).max(100),
-  serviceHints: z.array(extractedClaimSchema).max(200),
-  documentRefs: z.array(refSchema).max(200),
+    childAges: z.array(extractedClaimSchema).max(12).optional() }).strict()).max(100).default([]),
+  guests: z.array(guestHintSchema).max(200).default([]),
+  parties: z.array(partyHintSchema).max(100).default([]),
+  confirmationHints: z.array(extractedClaimSchema).max(100).default([]),
+  roomTypeHints: z.array(extractedClaimSchema).max(100).default([]),
+  rateHints: z.array(extractedClaimSchema).max(100).default([]),
+  boardHints: z.array(extractedClaimSchema).max(100).default([]),
+  serviceHints: z.array(extractedClaimSchema).max(200).default([]),
+  documentRefs: z.array(refSchema).max(200).default([]),
 }).strict();
 
 /** Typed first pass. Host derives lookups from these cited facts; the model does not author arbitrary queries. */
 export const reservationWorkflowV2ExtractionSchema = z.object({
-  requests: z.array(prefillRequestFactsSchema).max(200),
-  issues: z.array(z.object({ explanation: z.string().max(1000), sourceRefs: z.array(refSchema).max(20) }).strict()).max(200),
+  requests: z.array(prefillRequestFactsSchema).max(200).default([]),
+  issues: z.array(z.object({ explanation: z.string().max(1000), sourceRefs: z.array(refSchema).max(20) }).strict()).max(200).default([]),
 }).strict();
 export type ReservationWorkflowV2Extraction = z.infer<typeof reservationWorkflowV2ExtractionSchema>;
 export const reservationWorkflowV2PrefillInputSchema = z.object({
@@ -285,6 +285,7 @@ export type ReservationWorkflowV2Proposal = z.infer<typeof reservationWorkflowV2
 /** Host-owned evidence. Model output can cite these refs but cannot create or edit registry entries. */
 export const reservationWorkflowV2ObservationSchema = z.object({
   ref: refSchema,
+  generationId: z.string().uuid(),
   kind: z.enum(['source', 'mail_candidate', 'stay_candidate', 'guest_candidate', 'party_candidate',
     'rate_availability', 'service_preview', 'document']),
   status: z.enum(['complete', 'partial', 'unavailable', 'failed']),
@@ -313,6 +314,24 @@ const fieldReviewRequirementSchema = z.object({
 }).strict();
 const staffReviewSchema = z.object({ status: z.enum(['pending', 'accepted', 'flagged']),
   note: z.string().max(1000).nullable(), at: z.string().datetime({ offset: true }).nullable() }).strict();
+const operationResultSchema = z.object({
+  id: refSchema,
+  generationId: z.string().uuid(),
+  requestId: idSchema,
+  allocationId: idSchema.nullable(),
+  workflow: z.enum(['create', 'quote', 'amend', 'cancel', 'services', 'filing']),
+  status: z.enum(['prepared', 'succeeded', 'failed', 'unknown']),
+  draftRevision: z.number().int().nonnegative(),
+  observationRefs: z.array(refSchema).max(100),
+  updatedAt: z.string().datetime({ offset: true }),
+  summary: z.string().max(2000).nullable(),
+}).strict();
+export const reservationWorkflowV2FieldOverrideSchema = z.object({
+  state: z.enum(['set', 'none', 'unknown', 'inherit', 'clear']),
+  value: z.unknown().optional(),
+  updatedAt: z.string().datetime({ offset: true }),
+}).strict();
+export type ReservationWorkflowV2FieldOverride = z.infer<typeof reservationWorkflowV2FieldOverrideSchema>;
 
 /** Single canonical state JSONB value stored on WorkItem; extraction/prefill never writes into pane-owned overrides. */
 export const reservationWorkflowV2DraftSchema = z.object({
@@ -329,12 +348,10 @@ export const reservationWorkflowV2DraftSchema = z.object({
   observations: z.array(reservationWorkflowV2ObservationSchema).max(5000),
   fieldReviewRequirements: z.record(fieldReviewRequirementSchema),
   staffReviews: z.record(staffReviewSchema),
+  /** Native results are separate from editable history and cannot be rolled back by undo. */
+  operationResults: z.array(operationResultSchema).max(2000),
   /** Staff-only leaf overrides; value envelopes preserve set/none/unknown/inherit/clear distinctly. */
-  fieldOverrides: z.record(z.object({
-    state: z.enum(['set', 'none', 'unknown', 'inherit', 'clear']),
-    value: z.unknown().optional(),
-    updatedAt: z.string().datetime({ offset: true }),
-  }).strict()),
+  fieldOverrides: z.record(reservationWorkflowV2FieldOverrideSchema),
   errors: z.array(z.object({ stage: z.enum(['extract', 'lookup', 'synthesis', 'persist']),
     code: z.string().min(1).max(100), message: z.string().max(1000) }).strict()).max(100),
 }).strict();
@@ -349,13 +366,14 @@ export type ReservationWorkflowV2ModelOutput = z.infer<typeof reservationWorkflo
 
 export type ReservationWorkflowV2ApiSource = ReservationWorkflowV2Source;
 export const reservationWorkflowV2EnsureInputSchema = z.object({
-  internetMessageId: z.string().min(1).max(998),
+  /** Optional display/routing convenience only; canonical messageId on `source` is authoritative. */
+  internetMessageId: z.string().min(1).max(998).nullable().optional(),
   source: reservationWorkflowV2SourceSchema,
 }).strict();
 export type ReservationWorkflowV2EnsureInput = z.infer<typeof reservationWorkflowV2EnsureInputSchema>;
 export const reservationWorkflowV2ItemInputSchema = z.object({
   workItemId: z.string().uuid(), source: reservationWorkflowV2SourceSchema,
-  expectedRevision: z.number().int().nonnegative(),
+  expectedRevision: z.number().int().nonnegative(), expectedSeq: z.number().int().nonnegative(),
 }).strict();
 export type ReservationWorkflowV2ItemInput = z.infer<typeof reservationWorkflowV2ItemInputSchema>;
 export const reservationWorkflowV2EditInputSchema = reservationWorkflowV2ItemInputSchema.extend({
