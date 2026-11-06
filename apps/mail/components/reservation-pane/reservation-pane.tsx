@@ -1857,14 +1857,15 @@ function CancelEditor(props: EditorProps & {
   onPrepare: (hintId: string) => void; onAcceptPreview: (hintId: string) => void; onExecute: (hintId: string) => void;
 }) {
   const body = `${requestPath(props.request)}/body`;
-  const scope = record(valueFor(props.snapshot, `${body}/targets`));
+  const scope = record(effectiveValueFor(props.snapshot, `${body}/targets`));
   const include = Array.isArray(scope?.include) ? scope.include.map((value, index) => ({ value: record(value) ?? {}, index })) : [];
   const reasonPath = `${body}/reason/text`;
   const notePath = `${body}/cancellationNote`;
   const reason = text(props.editValue(reasonPath));
   const note = text(props.editValue(notePath));
   const excludes = Array.isArray(scope?.exclude) ? scope.exclude : [];
-  const unhandledRefs = props.request.serviceRefs.length > 0 || props.request.documentRefs.length > 0;
+  const sourceRequest = props.snapshot.session.draft.proposal.content.requests.find((request) => request.id === props.request.id);
+  const unhandledRefs = Boolean(sourceRequest && (sourceRequest.serviceRefs.length > 0 || sourceRequest.documentRefs.length > 0));
   const targetMode = text(props.editValue(`${body}/targets/mode`));
   const hint = include.length === 1 ? include[0] : null;
   const hintId = hint ? String(hint.value.id ?? '') : '';
@@ -1943,7 +1944,17 @@ function CancelEditor(props: EditorProps & {
           </div>)}</div>}
           {!candidates.length && <small>Enter the exact confirmation and original dates from the email, then run native Lookup.</small>}
         </div>
-      </> : <div className={styles.alert}>This Cancel tool requires exactly one explicit saved-stay hint. Split multiple stays into separate requests before proceeding.</div>}
+      </> : <div className={styles.alert}>
+        {include.length === 0
+          ? <>Add one exact saved-stay hint from the message before lookup. The target must be confirmed in Infor; no broad cancellation is allowed. <button type="button" className={styles.inlineButton} disabled={props.busy} onClick={() => {
+            const id = `cancel_target_${crypto.randomUUID().replaceAll('-', '')}`;
+            const includePath = `${body}/targets/include`;
+            props.onStage(includePath, [{ id, candidateRefs: [], suggestedRef: null, sourceRefs: [] }]);
+            props.onStage(`${body}/targets/mode`, 'explicit');
+            props.onBlur(includePath); props.onBlur(`${body}/targets/mode`);
+          }}>Add exact saved-stay hint</button></>
+          : <>This Cancel tool requires exactly one explicit saved-stay hint. Split multiple stays into separate requests before proceeding.</>}
+      </div>}
       {excludes.length > 0 && <div className={styles.alert}>Excluded targets are unsupported. No cancellation action is offered for this scope.</div>}
       <button type="button" className={styles.secondaryButton} disabled={!props.request.supported || targetMode !== 'explicit' || include.length !== 1 || excludes.length > 0 || props.busy}
         onClick={props.onLookup}>Find exact stay and current preflight in Infor</button>
@@ -1974,7 +1985,7 @@ function CancelEditor(props: EditorProps & {
         text(record(previewResult.target)?.arrival)} → {text(record(previewResult.target)?.departure)}</div>}
       {previewResult.penaltyText ? <div className={styles.alert}><b>Current native penalty / charge text</b><span>{text(previewResult.penaltyText)}</span></div>
         : <div className={styles.notice}>No penalty text was returned in this preview; fee state remains explicit below.</div>}
-      {previewResult.roomScope && <div className={styles.notice}>Native room scope: {text(previewResult.roomScope) || JSON.stringify(previewResult.roomScope)}</div>}
+      {Boolean(previewResult.roomScope) && <div className={styles.notice}>Native room scope: {text(previewResult.roomScope) || JSON.stringify(previewResult.roomScope)}</div>}
       {Array.isArray(previewResult.policyFacts) && previewResult.policyFacts.length > 0 && <ul className={styles.help}>
         {previewResult.policyFacts.map((fact, index) => <li key={`${index}-${text(fact)}`}>{text(fact)}</li>)}
       </ul>}
