@@ -141,7 +141,7 @@ function wireValueAtPath(draft: ReservationWorkflowV2Draft, path: string): unkno
 
 const reviewedAggregateArrays = new Set(['childAges', 'roomCodes', 'artifacts']);
 const nonReviewMetadata = new Set(['requestText', 'title', 'dateSectionId', 'requestedRooms', 'unassignedGuestNames',
-  'requestedTotals', 'scope', 'profileIntent', 'candidateRefs', 'suggestedRef', 'sourceRefs', 'serviceRefs', 'documentRefs', 'targetRefs',
+  'requestedTotals', 'scope', 'provisionalBookingRequested', 'profileIntent', 'candidateRefs', 'suggestedRef', 'sourceRefs', 'serviceRefs', 'documentRefs', 'targetRefs',
   'priceObservationRefs', 'lookupResultRefs', 'evidenceRefs', 'ownerRequestId', 'uploadArtifactRef', 'id', 'kind']);
 const nonReviewSubtrees = new Set(['requestedTotals', 'unassignedGuestNames']);
 const partyFieldNames = new Set(['bookingAgency', 'organization', 'arAccount', 'agency', 'company']);
@@ -170,6 +170,15 @@ function shouldReviewPath(draft: ReservationWorkflowV2Draft, path: string, value
     try { return decodeURIComponent(part); } catch { return ''; }
   });
   const leaf = parts.at(-1) ?? '';
+  for (let length = parts.length - 1; length > 0; length -= 1) {
+    const override = draft.fieldOverrides[`/${parts.slice(0, length).map(encodeURIComponent).join('/')}`];
+    if (override && ['none', 'clear', 'unknown'].includes(override.state)) return false;
+  }
+  if (leaf === 'name' && parts[2] === 'requests' && parts[4] === 'body' && parts[5] === 'parties'
+      && ['agency', 'company'].includes(parts[6] ?? '')) {
+    const request = draft.proposal.content.requests.find((item, index) => item.id === parts[3] || String(index) === parts[3]);
+    if (request?.kind === 'quote') return true;
+  }
   const documentKind = isFilingDocumentKindPath(path);
   const filingTarget = isFilingTargetSelectionPath(draft, path);
   if (nonReviewMetadata.has(leaf) && !(documentKind || (leaf === 'suggestedRef' && filingTarget))

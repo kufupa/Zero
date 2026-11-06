@@ -19,6 +19,7 @@ import {
 import {
   appendReservationWorkflowV2Observation,
   getReservationWorkflowV2Draft,
+  lockReservationWorkflowV2Source,
   recordReservationWorkflowV2Result,
   reservationWorkflowV2DraftOf,
 } from './reservation-workflow-v2-state.js';
@@ -104,7 +105,8 @@ function leaf(draft: ReservationWorkflowV2Draft, path: string, sourceValue: unkn
     if (override.state === 'unknown') return { issue: 'unknown_staff_value' };
     if (override.state === 'set') return { value: override.value, path };
     if (override.state === 'none' || override.state === 'clear') return { value: undefined, path, unset: true };
-    if (override.state === 'inherit') return { value: sourceValue, path };
+    if (override.state === 'inherit') return record(sourceValue)?.kind === 'none'
+      ? { value: undefined, path, unset: true } : { value: sourceValue, path };
   }
   if (sourceValue && typeof sourceValue === 'object' && !Array.isArray(sourceValue) &&
       (sourceValue as { kind?: unknown }).kind === 'none') return { value: undefined, path, unset: true };
@@ -113,7 +115,8 @@ function leaf(draft: ReservationWorkflowV2Draft, path: string, sourceValue: unkn
 
 function effectiveSubtree(draft: ReservationWorkflowV2Draft, source: unknown, path: string): unknown {
   const resolved = leaf(draft, path, source);
-  if ('issue' in resolved || resolved.unset) return null;
+  if ('issue' in resolved) return null;
+  if (resolved.unset) return { kind: 'none' };
   const value = resolved.value;
   if (Array.isArray(value)) return value.map((item, index) => effectiveSubtree(draft, item, `${path}/${index}`));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) =>
@@ -283,6 +286,9 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   if (!body || !Array.isArray(body.allocations) || !Array.isArray(body.dateSections) || !body.shared) {
     return { outcome: 'needs_input', issue: 'create_body_incomplete' };
   }
+  if (body.allocations.length < 1 || body.allocations.length > 8) {
+    return { outcome: 'needs_input', issue: 'create_requires_one_to_eight_rooms', fields: [`${req}/allocations`] };
+  }
   const allocationIndex = body.allocations.findIndex((entry) => entry.id === allocationId);
   if (allocationIndex < 0) return { outcome: 'needs_input', issue: 'allocation_not_found' };
   const allocation = body.allocations[allocationIndex]!;
@@ -302,6 +308,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
       { path: ptr(...req.slice(1).split('/').map(decodeURIComponent), 'shared', field), value: body.shared[field as keyof typeof body.shared] },
     ];
     for (const choice of choices) {
+      if (choice.path !== choices[choices.length - 1]!.path && draft.fieldOverrides[choice.path]?.state === 'inherit') continue;
       const resolved = leaf(draft, choice.path, choice.value);
       if ('issue' in resolved) return resolved;
       if (resolved.value !== undefined && resolved.value !== null) {
@@ -408,6 +415,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
       const missingReview = reviewed(draft, resolved.path, resolved.value); if (missingReview) reviewPaths.add(missingReview);
     }
   }
+  if (mode !== 'lookup' && !text(optional.sourceOfBusiness)) issues.push('sourceOfBusiness:native_required');
   if (optional.guestOptIn === true) issues.push('guestOptIn:true_not_supported');
   const supportedGuarantee = new Set(['AVOUCH', 'CNFREC', 'DEPREQ', 'GRPDEF', 'GTDAGT', 'GTDCMP', 'GTDCC', 'GTDDEP', 'NGG', 'NGI']);
   if (typeof arrival !== 'string' || !isoDate.safeParse(arrival).success || typeof departure !== 'string' ||
@@ -1279,11 +1287,24 @@ async function authorizeCurrentCreate(tx: Parameters<Parameters<DB['transaction'
   input: ReservationWorkflowV2ExecuteInput, expectedDigest: string, semanticDigest: string,
   requestId: string, allocationId: string, priorSiblings: VerifiedCreateSibling[],
   attempt: ReservationWorkflowV2Observation) {
-  const [item] = await tx.select({ state: workItem.state, revision: workItem.revision,
+  await lockReservationWorkflowV2Source(tx, ctx.transport.id, input.source.messageId);
+  // Match the legacy writer's thread → message → WorkItem lock order.
+  const [thread] = await tx.select({ id: mailThread.id }).from(mailThread)
+    .where(and(eq(mailThread.id, input.source.threadId), eq(mailThread.transportId, ctx.transport.id),
+      eq(mailThread.historyOnly, false), isNull(mailThread.trashedAt), isNull(mailThread.spamAt))).limit(1).for('share');
+  const [source] = await tx.select({ id: message.id, threadId: message.threadId, transportId: message.transportId,
+    direction: message.direction, historyOnly: message.historyOnly, sourceProvenance: message.sourceProvenance,
+    subject: message.subject, textBody: message.textBody, htmlBody: message.htmlBody })
+    .from(message).where(and(eq(message.id, input.source.messageId), eq(message.threadId, input.source.threadId),
+      eq(message.transportId, ctx.transport.id), eq(message.direction, 'inbound'), eq(message.historyOnly, false)))
+    .limit(1).for('share');
+  const items = await tx.select({ id: workItem.id, state: workItem.state, revision: workItem.revision,
     revisionSeq: workItem.revisionSeq, sourceMessageId: workItem.sourceMessageId, threadId: workItem.threadId })
-    .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1).for('update');
+    .from(workItem).where(and(eq(workItem.transportId, ctx.transport.id), eq(workItem.threadId, input.source.threadId),
+      eq(workItem.sourceMessageId, input.source.messageId))).orderBy(workItem.id).for('update');
+  const item = items.find((entry) => entry.id === input.workItemId);
   const draft = item && reservationWorkflowV2DraftOf(item.state as Record<string, unknown>);
-  if (item && Object.keys(stayCommitsOf(item.state)).length > 0) {
+  if (items.some((entry) => Object.keys(stayCommitsOf(entry.state)).length > 0)) {
     throw new Error('reservation_workflow_v2_legacy_create_requires_review');
   }
   if (!item || !draft || item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq ||
@@ -1295,13 +1316,6 @@ async function authorizeCurrentCreate(tx: Parameters<Parameters<DB['transaction'
       draft.generationId !== attempt.generationId) {
     throw new Error('reservation_workflow_v2_create_stale');
   }
-  const [source] = await tx.select({ id: message.id, threadId: message.threadId, transportId: message.transportId,
-    direction: message.direction, historyOnly: message.historyOnly, sourceProvenance: message.sourceProvenance,
-    subject: message.subject, textBody: message.textBody, htmlBody: message.htmlBody })
-    .from(message).innerJoin(mailThread, and(eq(mailThread.id, message.threadId), eq(mailThread.transportId, message.transportId)))
-    .where(and(eq(message.id, input.source.messageId), eq(message.threadId, input.source.threadId),
-      eq(message.transportId, ctx.transport.id), eq(message.direction, 'inbound'), eq(message.historyOnly, false),
-      eq(mailThread.historyOnly, false), isNull(mailThread.trashedAt))).limit(1).for('share');
   const [access] = await tx.select({ id: mailboxAccess.id }).from(mailboxAccess)
     .where(and(eq(mailboxAccess.userId, ctx.user.id), eq(mailboxAccess.transportId, ctx.transport.id))).limit(1).for('share');
   const current = source && staffQuoteSourceHash(source);
@@ -1312,7 +1326,7 @@ async function authorizeCurrentCreate(tx: Parameters<Parameters<DB['transaction'
   const competingOperation = draft.operationResults.some((result) =>
     result.requestId === requestId && result.allocationId === allocationId && result.workflow === 'create' &&
     (result.status === 'succeeded' || result.status === 'unknown'));
-  if (!access || !source || source.sourceProvenance?.attention != null || current !== input.source.sourceHash ||
+  if (!thread || !access || !source || source.sourceProvenance?.attention != null || current !== input.source.sourceHash ||
       compiled.outcome !== 'ok' || !admission?.allowed || competingOperation ||
       compiled.semanticDigest !== semanticDigest || !prepared || prepared.digest !== expectedDigest || operation ||
       draft.observations.some((entry) => entry.ref === attempt.ref)) {
