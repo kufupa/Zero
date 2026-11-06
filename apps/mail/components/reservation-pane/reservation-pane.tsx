@@ -142,6 +142,19 @@ function createRequestForField(snapshot: ReservationPaneSnapshot, path: string):
       target.target.kind === 'allocation' && target.target.requestId === item.id))?.id ?? null;
 }
 
+function serviceIdForField(snapshot: ReservationPaneSnapshot, path: string): string | null {
+  const parts = path.split('/').slice(1).map((part) => {
+    try { return decodeURIComponent(part); } catch { return ''; }
+  });
+  if (parts[0] !== 'proposal' || parts[1] !== 'content' || parts[2] !== 'services' || parts.length < 5) return null;
+  const rawIndex = parts[3]!;
+  const index = Number(rawIndex);
+  const services = snapshot.session.draft.proposal.content.services;
+  const service = Number.isInteger(index) && index >= 0 && String(index) === rawIndex
+    ? services[index] : services.find((row) => row.id === rawIndex);
+  return service?.id ?? null;
+}
+
 function createSections(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection) {
   const body = requestPath(request) + '/body';
   const row = record(draftAtPath(snapshot, body));
@@ -471,6 +484,43 @@ function serviceFieldValue(snapshot: ReservationPaneSnapshot, serviceIndex: numb
   return hasValue(targetValue) ? targetValue : valueFor(snapshot, `/proposal/content/services/${serviceIndex}/sharedFields/${field}`);
 }
 
+type ServicePreviewStamp = { inputDigest: string; signature: string };
+
+function serviceInputSignature(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection,
+  serviceIndex: number, targetIndex: number): string {
+  const serviceRoot = `/proposal/content/services/${serviceIndex}`;
+  const targetRoot = `${serviceRoot}/targets/${targetIndex}`;
+  const service = snapshot.session.draft.proposal.content.services[serviceIndex];
+  const target = service?.targets[targetIndex];
+  const createValues = request.fieldPaths.map((path) => [path, valueFor(snapshot, path)]);
+  const serviceFields = ['quantity', 'startDate', 'endDate', 'unitPrice', 'frequency', 'pricingControl', 'folio', 'comment']
+    .map((field) => [field, serviceFieldValue(snapshot, serviceIndex, targetIndex, field)]);
+  return JSON.stringify({ serviceId: service?.id, operation: service?.operation, quantityRequest: valueFor(snapshot, `${serviceRoot}/quantityRequest`),
+    sharedFields: valueFor(snapshot, `${serviceRoot}/sharedFields`), itemCandidateRef: valueFor(snapshot, `${serviceRoot}/itemCandidateRef`),
+    target: target?.target ?? null, targetFields: serviceFields, createValues });
+}
+
+function latestServiceFreshPrepare(snapshot: ReservationPaneSnapshot, requestId: string, allocationId: string, serviceId: string) {
+  return [...snapshot.session.draft.observations].reverse().find((item) => item.kind === 'service_preview'
+    && item.criteria.workflow === 'services' && item.criteria.kind === 'saved_addon_fresh_prepare'
+    && item.criteria.requestId === requestId && item.criteria.allocationId === allocationId
+    && item.criteria.serviceId === serviceId) ?? null;
+}
+
+function serviceOperationResult(snapshot: ReservationPaneSnapshot, requestId: string, allocationId: string, serviceId: string) {
+  return [...snapshot.operationResults].reverse().find((result) => result.requestId === requestId
+    && result.allocationId === allocationId && result.workflow === 'services'
+    && Array.isArray(result.observationRefs) && result.observationRefs.some((ref) => snapshot.session.draft.observations.some((item) =>
+      item.ref === ref && item.criteria.workflow === 'services' && item.criteria.serviceId === serviceId
+        && item.criteria.requestId === requestId && item.criteria.allocationId === allocationId))) ?? null;
+}
+
+function serviceReviewAcceptedAfter(snapshot: ReservationPaneSnapshot, path: string, observedAt: string): boolean {
+  const review = snapshot.session.draft.staffReviews[path];
+  return review?.status === 'accepted' && typeof review.at === 'string'
+    && Date.parse(review.at) > Date.parse(observedAt);
+}
+
 function isRequestPrepared(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
   const allocations = createSections(snapshot, request).allocations;
   return allocations.length > 0 && allocations.every(({ value }) => {
@@ -529,6 +579,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   const [ui, dispatch] = useReducer(reduceReservationUi, source.selectionEpoch, initialReservationUiState);
   const [amendPreparedRefs, setAmendPreparedRefs] = useState<Record<string, string>>({});
   const [cancelReviewBindings, setCancelReviewBindings] = useState<Record<string, CancelFinancialReview>>({});
+  const [servicePreviewStamps, setServicePreviewStamps] = useState<Record<string, ServicePreviewStamp>>({});
   const sourceRef = useRef(source);
   const snapshotRef = useRef(snapshot);
   const pending = useRef(new Map<string, PendingReservationEdit>());
@@ -546,6 +597,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     triedPrepare.current.clear();
     setAmendPreparedRefs({});
     setCancelReviewBindings({});
+    setServicePreviewStamps({});
     activeRequestRef.current = null;
     activeKindRef.current = 'create';
     dispatch({ type: 'source-changed', selectionEpoch: source.selectionEpoch });
@@ -615,6 +667,12 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
       for (const key of Object.keys(next)) if (key.startsWith(`${cancel.id}:`)) delete next[key];
       return next;
     });
+    const create = current?.requests.find((request) => request.kind === 'create'
+      && path.startsWith(`${requestPath(request)}/body/`));
+    if (create) setServicePreviewStamps({});
+    const serviceId = current ? serviceIdForField(current, path) : null;
+    if (serviceId) setServicePreviewStamps((previous) => Object.fromEntries(Object.entries(previous)
+      .filter(([key]) => !key.endsWith(`:${serviceId}`))));
     const edit = { path, value, state, sequence: ++sequence.current };
     pending.current.set(path, edit);
     dispatch({ type: 'stage-edit', edit });
@@ -813,7 +871,10 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     void enqueue('Reconciling the Infor save outcome', bound, async () => {
       const current = snapshotRef.current;
       if (!current) return;
-      const next = await client.reconcile({ source: bound, snapshot: current, operationId });
+      const operation = current.operationResults.find((result) => result.id === operationId);
+      const next = operation?.workflow === 'services'
+        ? await client.reconcileServices({ source: bound, snapshot: current, operationId })
+        : await client.reconcile({ source: bound, snapshot: current, operationId });
       applySnapshot(next, bound);
     });
   }, [applySnapshot, client, enqueue]);
@@ -972,18 +1033,90 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   const runServiceAction = useCallback((mode: 'lookup' | 'preview', requestId: string, allocationId: string, serviceId: string) => {
     const bound = sourceRef.current;
     void enqueue(mode === 'lookup' ? 'Loading native Add-On catalogue' : 'Previewing unsaved Add-On on this room', bound, async () => {
-      if (pending.current.size) await flushEdits(bound);
-      const current = snapshotRef.current;
-      const request = current?.requests.find((item) => item.id === requestId && item.kind === 'create');
-      if (!current || !request) throw new Error('The owning Create request is no longer available.');
-      if (!isInputReady(current, request)) {
-        throw new Error('Complete every Create room and select each exact existing guest profile before native Add-On lookup or preview.');
+      beginMutation();
+      try {
+        if (pending.current.size) await flushEdits(bound);
+        const current = snapshotRef.current;
+        const request = current?.requests.find((item) => item.id === requestId && item.kind === 'create');
+        if (!current || !request) throw new Error('The owning Create request is no longer available.');
+        if (!isInputReady(current, request)) {
+          throw new Error('Complete every Create room and select each exact existing guest profile before native Add-On lookup or preview.');
+        }
+        const linked = serviceRowsForAllocation(current, request, allocationId).find((row) => row.service.id === serviceId);
+        if (!linked) throw new Error('This Add-On is not linked to the selected Create room.');
+        const command = { source: bound, snapshot: current, requestId, allocationId, serviceId };
+        const next = mode === 'lookup' ? await client.lookupServices(command) : await client.previewServices(command);
+        applySnapshot(next, bound);
+        if (mode === 'preview') {
+          const preview = [...next.session.draft.observations].reverse().find((item) => item.kind === 'service_preview'
+            && item.criteria.workflow === 'services' && item.criteria.kind === 'unsaved_addon_preview'
+            && item.criteria.requestId === requestId && item.criteria.allocationId === allocationId
+            && item.criteria.serviceId === serviceId && item.status === 'complete');
+          const key = `${requestId}:${allocationId}:${serviceId}`;
+          if (typeof preview?.criteria.inputDigest === 'string') {
+            setServicePreviewStamps((previous) => ({ ...previous, [key]: { inputDigest: preview.criteria.inputDigest as string,
+              signature: serviceInputSignature(current, request, linked.serviceIndex, linked.targetIndex) } }));
+          } else {
+            setServicePreviewStamps((previous) => { const copy = { ...previous }; delete copy[key]; return copy; });
+          }
+        }
+      } finally {
+        endMutation();
       }
-      const command = { source: bound, snapshot: current, requestId, allocationId, serviceId };
-      const next = mode === 'lookup' ? await client.lookupServices(command) : await client.previewServices(command);
-      applySnapshot(next, bound);
     });
   }, [applySnapshot, client, enqueue, flushEdits]);
+
+  const runServiceExecute = useCallback((requestId: string, allocationId: string, serviceId: string) => {
+    const bound = sourceRef.current;
+    void enqueue('Verifying and saving this Add-On on the confirmed HMS stay', bound, async () => {
+      beginMutation();
+      try {
+        if (pending.current.size) await flushEdits(bound);
+        const current = snapshotRef.current;
+        const request = current?.requests.find((item) => item.id === requestId && item.kind === 'create');
+        if (!current || !request) throw new Error('The owning Create request is no longer available.');
+        if (!isInputReady(current, request)) throw new Error('The source-bound Create inputs are incomplete; do not attach an Add-On to an unresolved stay.');
+        if (!current.operationResults.some((result) => result.requestId === requestId && result.allocationId === allocationId
+          && result.workflow === 'create' && result.status === 'succeeded')) {
+          throw new Error('Save the Create room and verify its Infor confirmation before saving this Add-On.');
+        }
+        const prior = serviceOperationResult(current, requestId, allocationId, serviceId);
+        if (prior?.status === 'unknown') throw new Error('This Add-On Save outcome is uncertain. Reconcile it before retrying.');
+        if (prior?.status === 'succeeded') throw new Error('This Add-On already has a verified HMS receipt.');
+        const linked = serviceRowsForAllocation(current, request, allocationId).find((row) => row.service.id === serviceId);
+        if (!linked) throw new Error('This Add-On is not linked to the selected Create room.');
+        const previewStamp = servicePreviewStamps[`${requestId}:${allocationId}:${serviceId}`];
+        const preview = [...current.session.draft.observations].reverse().find((item) => item.kind === 'service_preview'
+          && item.status === 'complete' && item.criteria.workflow === 'services' && item.criteria.kind === 'unsaved_addon_preview'
+          && item.criteria.requestId === requestId && item.criteria.allocationId === allocationId
+          && item.criteria.serviceId === serviceId && item.criteria.inputDigest === previewStamp?.inputDigest);
+        if (!previewStamp || serviceInputSignature(current, request, linked.serviceIndex, linked.targetIndex) !== previewStamp.signature) {
+          throw new Error('Re-run the complete unsaved Add-On preview after the last service/Create edit.');
+        }
+        if (!preview) throw new Error('Re-run the complete unsaved Add-On preview after the last service/Create edit.');
+        const unsavedReviewPaths = Array.isArray(record(preview.result)?.hostValuesRequireReview)
+          ? (record(preview.result)?.hostValuesRequireReview as unknown[]).filter((path): path is string => typeof path === 'string') : [];
+        if (unsavedReviewPaths.some((path) => current.session.draft.staffReviews[path]?.status !== 'accepted')) {
+          throw new Error('Review the service input fields against the unsaved native preview before Go.');
+        }
+        const fresh = latestServiceFreshPrepare(current, requestId, allocationId, serviceId);
+        const freshResult = record(fresh?.result);
+        const freshRef = fresh && fresh.criteria.inputDigest === preview.criteria.inputDigest && fresh.status === 'complete'
+          && freshResult?.matchesApprovedNative === false ? fresh.ref : undefined;
+        if (freshRef) {
+          const paths = Array.isArray(fresh.criteria.reviewPaths) ? fresh.criteria.reviewPaths.filter((path): path is string => typeof path === 'string') : [];
+          if (!paths.length || !paths.every((path) => serviceReviewAcceptedAfter(current, path, fresh.observedAt))) {
+            throw new Error('Review every field and native amount in the latest saved-stay prepare before Go.');
+          }
+        }
+        const next = await client.executeServices({ source: bound, snapshot: current, requestId, allocationId, serviceId,
+          idempotencyKey: crypto.randomUUID(), ...(freshRef ? { reviewedPrepareRef: freshRef } : {}) });
+        applySnapshot(next, bound);
+      } finally {
+        endMutation();
+      }
+    });
+  }, [applySnapshot, client, enqueue, flushEdits, servicePreviewStamps]);
 
   const undoRedo = useCallback((direction: 'undo' | 'redo') => {
     const bound = sourceRef.current;
@@ -994,6 +1127,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
       const next = direction === 'undo' ? await client.undo({ source: bound, snapshot: current })
         : await client.redo({ source: bound, snapshot: current });
       applySnapshot(next, bound);
+      setServicePreviewStamps({});
     });
   }, [applySnapshot, client, enqueue, flushEdits]);
 
@@ -1003,7 +1137,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     && isInputReady(snapshot, activeRequest) && isRequestPrepared(snapshot, activeRequest) && !reviewRequired && !ui.pendingEdits.length
     && !ui.busyAction && !hasUncertain);
   const displayedResult = snapshot?.operationResults.filter((result) => result.requestId === activeRequest?.id
-    && result.workflow === activeRequest?.kind) ?? [];
+    && (result.workflow === activeRequest?.kind || activeRequest?.kind === 'create' && result.workflow === 'services')) ?? [];
   const canGenerateQuote = Boolean(snapshot && activeRequest?.kind === 'quote' && activeRequest.supported
     && isQuotePrepared(snapshot, activeRequest) && !hasUnreviewedRequiredFields(snapshot, activeRequest)
     && (!quoteReviewInfo(snapshot, activeRequest.id).items.length || quoteReviewInfo(snapshot, activeRequest.id).accepted)
@@ -1066,6 +1200,8 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
                   prepareBlockedReason={hasLegacyCreateReceiptIssue(snapshot) ? 'A legacy Create save cannot be matched safely to this v2 room. Refreshing native price is disabled to avoid creating an unrelated or duplicate reservation.' : undefined}
                   onLookupServices={(allocationId, serviceId) => runServiceAction('lookup', activeRequest.id, allocationId, serviceId)}
                   onPreviewServices={(allocationId, serviceId) => runServiceAction('preview', activeRequest.id, allocationId, serviceId)}
+                  onExecuteServices={(allocationId, serviceId) => runServiceExecute(activeRequest.id, allocationId, serviceId)}
+                  servicePreviewStamps={servicePreviewStamps}
                   onOpenEvidence={onOpenEvidence} onPrepare={() => { void enqueue('Checking Infor now', sourceRef.current, () => prepareAll(false)); }}
                   onLookup={refreshNative} />
                 </fieldset>
@@ -1135,7 +1271,8 @@ type EditorProps = {
 
 function CreateEditor(props: EditorProps & { busy: boolean; prepareBlockedReason?: string; onPrepare: () => void; onLookup: () => void;
   onLookupServices: (allocationId: string, serviceId: string) => void;
-  onPreviewServices: (allocationId: string, serviceId: string) => void }) {
+  onPreviewServices: (allocationId: string, serviceId: string) => void;
+  onExecuteServices: (allocationId: string, serviceId: string) => void; servicePreviewStamps: Record<string, ServicePreviewStamp> }) {
   const { snapshot, request } = props;
   const sections = createSections(snapshot, request);
   const data = sections.data;
@@ -1264,8 +1401,10 @@ function CreateEditor(props: EditorProps & { busy: boolean; prepareBlockedReason
           {serviceRows.map(({ service, serviceIndex, target, targetIndex }) => <ServiceEditor key={`${service.id}-${targetIndex}`}
             {...props} service={service} serviceIndex={serviceIndex} target={target} targetIndex={targetIndex}
             requestId={request.id} allocationId={String(allocation.id ?? '')}
+            previewStamp={props.servicePreviewStamps[`${request.id}:${String(allocation.id ?? '')}:${service.id}`]}
             onLookup={() => props.onLookupServices(String(allocation.id ?? ''), service.id)}
-            onPreview={() => props.onPreviewServices(String(allocation.id ?? ''), service.id)} />)}
+            onPreview={() => props.onPreviewServices(String(allocation.id ?? ''), service.id)}
+            onExecute={() => props.onExecuteServices(String(allocation.id ?? ''), service.id)} />)}
         </div>}
       </section>;
     })}
@@ -1292,7 +1431,7 @@ function CreateEditor(props: EditorProps & { busy: boolean; prepareBlockedReason
 
     {snapshot.session.draft.proposal.content.services.some((service) => service.ownerRequestId === request.id
       || service.targets.some((target) => target.target.kind === 'allocation' && target.target.requestId === request.id))
-      ? <div className={styles.notice}>Service catalogue and amount previews remain unsaved; a Create confirmation does not imply an Add-On was saved.</div> : null}
+      ? <div className={styles.notice}>A Create confirmation does not save Add-Ons. Each service needs its own verified target receipt and fresh readback.</div> : null}
     <div className={styles.policyLine}>Shared fields apply to each room unless a room-level value is explicitly set.</div>
   </>;
 }
@@ -1324,8 +1463,10 @@ function ServiceEditor(props: EditorProps & {
   targetIndex: number;
   requestId: string;
   allocationId: string;
+  previewStamp?: ServicePreviewStamp;
   onLookup: () => void;
   onPreview: () => void;
+  onExecute: () => void;
 }) {
   const { snapshot, service, serviceIndex, targetIndex, allocationId } = props;
   const createReady = isInputReady(snapshot, props.request);
@@ -1350,7 +1491,35 @@ function ServiceEditor(props: EditorProps & {
     && observation.criteria.serviceId === service.id);
   const previewResult = record(latestPreview?.result);
   const native = record(previewResult?.native);
-  const previewCurrent = latestPreview?.criteria.draftRevision === snapshot.session.revision;
+  const previewCurrent = Boolean(latestPreview?.status === 'complete' && props.previewStamp
+    && latestPreview.criteria.inputDigest === props.previewStamp.inputDigest
+    && serviceInputSignature(snapshot, props.request, serviceIndex, targetIndex) === props.previewStamp.signature);
+  const unsavedReviewPaths = Array.isArray(previewResult?.hostValuesRequireReview)
+    ? previewResult.hostValuesRequireReview.filter((path): path is string => typeof path === 'string') : [];
+  const unsavedInputsReviewed = unsavedReviewPaths.every((path) => snapshot.session.draft.staffReviews[path]?.status === 'accepted');
+  const freshPrepare = latestServiceFreshPrepare(snapshot, props.requestId, allocationId, service.id);
+  const freshResult = record(freshPrepare?.result);
+  const freshCurrent = Boolean(freshPrepare && previewCurrent && freshPrepare.status === 'complete'
+    && freshPrepare.criteria.inputDigest === latestPreview?.criteria.inputDigest && freshResult?.matchesApprovedNative === false);
+  const freshPaths = freshCurrent && freshPrepare && Array.isArray(freshPrepare.criteria.reviewPaths)
+    ? freshPrepare.criteria.reviewPaths.filter((path): path is string => typeof path === 'string') : [];
+  const freshReviewsComplete = freshCurrent && freshPaths.length > 0
+    && freshPaths.every((path) => serviceReviewAcceptedAfter(snapshot, path, freshPrepare!.observedAt));
+  const createSaved = snapshot.operationResults.some((result) => result.requestId === props.requestId
+    && result.allocationId === allocationId && result.workflow === 'create' && result.status === 'succeeded');
+  const createReceipt = [...snapshot.operationResults].reverse().find((result) => result.requestId === props.requestId
+    && result.allocationId === allocationId && result.workflow === 'create' && result.status === 'succeeded');
+  const priorService = serviceOperationResult(snapshot, props.requestId, allocationId, service.id);
+  const serviceRefs = Array.isArray(priorService?.observationRefs)
+    ? priorService.observationRefs.filter((ref): ref is string => typeof ref === 'string') : [];
+  const receiptObservation = snapshot.session.draft.observations.find((observation) => serviceRefs.includes(observation.ref)
+    && observation.kind === 'service_preview' && observation.criteria.kind === 'saved_addon_receipt'
+    && observation.criteria.serviceId === service.id && observation.criteria.requestId === props.requestId
+    && observation.criteria.allocationId === allocationId);
+  const savedReceipt = record(receiptObservation?.result);
+  const canExecute = createReady && createSaved && service.operation === 'add' && Boolean(selected) && previewCurrent
+    && unsavedInputsReviewed && priorService?.status !== 'unknown' && priorService?.status !== 'succeeded'
+    && (!freshCurrent || freshReviewsComplete) && !props.busy;
   const fields = [
     ['quantity', 'Target quantity', 'text'], ['startDate', 'Service start', 'date'], ['endDate', 'Service end', 'date'],
     ['unitPrice', 'Source unit price', 'text'], ['frequency', 'Frequency', 'text'], ['pricingControl', 'Pricing control', 'text'],
@@ -1358,7 +1527,7 @@ function ServiceEditor(props: EditorProps & {
   ] as const;
   return <section className={styles.serviceCard}>
     <div className={styles.cardTitle}><b>{service.requestedText || service.code || 'Add-On service'}</b><small>{humanize(service.operation)} · room {allocationId}</small></div>
-    <p className={styles.help}>Choose a host-observed ITEM, then review exact target, dates, quantity and source price. All actions below are preview-only.</p>
+    <p className={styles.help}>Choose a host-observed ITEM and review the unsaved native amount. After the owning Create has a verified confirmation, Go re-prepares on that saved stay; changed saved-target values require a separate review before Add-On Save.</p>
     {service.operation !== 'add' && <div className={styles.notice}>Saved Add-On edit/remove is not connected. This row cannot be previewed as a new Add-On.</div>}
     <FieldShell path={itemPath} label="Native Add-On ITEM" field={snapshot.fields[itemPath]} onOpenEvidence={props.onOpenEvidence}>
       {selected ? <div className={styles.readValue}>{text(selected.candidate.code)} · {text(selected.candidate.name)}</div>
@@ -1385,6 +1554,7 @@ function ServiceEditor(props: EditorProps & {
         return <TextField key={field} {...props} path={path} label={label} type={type}
           valueOverride={serviceFieldValue(snapshot, serviceIndex, targetIndex, field,
             { present: props.hasPendingEdit?.(path) ?? false, value: props.editValue(path) })} fieldOverride={displayField}
+          onDone={props.onDone ? () => props.onDone?.(displayField?.path ?? path) : undefined}
           help="Target value overrides the shared service value when set." />;
       })}
     </div>
@@ -1393,15 +1563,46 @@ function ServiceEditor(props: EditorProps & {
       <button type="button" className={styles.secondaryButton} disabled={props.busy || !createReady || service.operation !== 'add' || !selected} onClick={props.onPreview}>Preview this Add-On · not saved</button>
     </div>
     {!createReady && <small className={styles.help}>Complete every Create room and select each existing guest profile before loading or previewing Add-On values.</small>}
+    {selected && !createSaved && <div className={styles.notice}>Save this Create room and verify its confirmation before an Add-On can be saved.</div>}
+    {createReceipt && <div className={styles.fixedValue}><span>Saved Create target</span><b>{text(createReceipt.confirmation) || 'Confirmation receipt present'}</b><small>HMS Add-On operations below are bound to this room, not a guest-name search.</small></div>}
     {latestPreview && <div className={latestPreview.status === 'complete' ? styles.result : styles.notice}>
       <b>Native Add-On preview · {latestPreview.status === 'complete' ? 'not saved' : 'needs attention'}</b>
-      {previewCurrent ? <small>Preview matches the current saved draft revision.</small>
-        : <small className={styles.problem}>Draft changed since this preview. Re-run it before relying on these values.</small>}
+      {previewCurrent ? <small>Complete native preview still matches this service input; a Create receipt alone does not invalidate it.</small>
+        : <small className={styles.problem}>No current complete preview matches the latest service/Create inputs. Re-run it before Go.</small>}
       {native ? <span>{text(native.code)} · {text(native.name)} · quantity {text(native.quantity)} · {text(native.currency)} {text(native.totalCost)} total</span>
         : <small>{text(previewResult?.issue) || 'No complete native Add-On price result was returned.'}</small>}
       {previewResult?.saved === false && <small>Saved: no. Create does not save this Add-On.</small>}
+      {!unsavedInputsReviewed && unsavedReviewPaths.length > 0 && <small className={styles.problem}>Review the service input fields above before Add-On Go.</small>}
     </div>}
-    <small className={styles.help}>This workflow can load native ITEM choices and preview exact amounts on the unsaved Create stay. It never saves an Add-On.</small>
+    {freshCurrent && freshPrepare && freshResult && <section className={styles.card}>
+      <div className={styles.cardTitle}><b>Fresh Add-On prepare on saved confirmation</b><small>{text(record(freshResult.target)?.confirmation)} · not saved</small></div>
+      <div className={styles.readValue}>Approved preview: {text(record(freshResult.previouslyApprovedNative)?.currency)} {text(record(freshResult.previouslyApprovedNative)?.totalCost)} total
+        {' · '}Current saved-target prepare: {text(record(freshResult.native)?.currency)} {text(record(freshResult.native)?.totalCost)} total</div>
+      <p className={styles.help}>These values were read from a new native prepare on the saved stay. Inspect each field and explicitly review it after this observation before the second Go.</p>
+      {freshPaths.map((path) => {
+        const leaf = path.split('/').at(-1) ?? '';
+        const fieldName = leaf === 'value' ? 'quantity' : leaf;
+        const freshValue = record(freshResult.native)?.[fieldName];
+        const approvedValue = record(freshResult.previouslyApprovedNative)?.[fieldName];
+        const reviewed = serviceReviewAcceptedAfter(snapshot, path, freshPrepare.observedAt);
+        return <div className={styles.candidateOption} key={path}>
+          <span><b>{humanize(fieldName)}</b><small>Approved preview: {text(approvedValue) || '—'} · Current saved prepare: {text(freshValue) || '—'}</small></span>
+          {reviewed ? <span className={styles.accepted}>✓ Reviewed after fresh prepare</span>
+            : <button type="button" className={styles.inlineButton} disabled={props.busy} onClick={() => props.onDone?.(path)}>Review this native value</button>}
+        </div>;
+      })}
+      {!freshReviewsComplete && <small className={styles.problem}>Go stays blocked until every field above is reviewed after this exact prepare.</small>}
+    </section>}
+    {priorService?.status === 'unknown' && <div className={styles.alert}>The Add-On Save may have dispatched. Reconcile its receipt below before any retry.</div>}
+    {priorService?.status === 'succeeded' && <div className={styles.profileReady}>
+      <b>Verified Add-On saved on confirmation {text(savedReceipt?.confirmation) || '—'}</b>
+      <span>{text(record(savedReceipt?.native)?.code)} · {text(record(savedReceipt?.native)?.name)} · native ID {text(savedReceipt?.nativeId)}</span>
+      <small>{text(record(savedReceipt?.native)?.currency)} {text(record(savedReceipt?.native)?.totalCost)} · fresh HMS readback confirmed</small>
+    </div>}
+    {createSaved && service.operation === 'add' && <button type="button" className={styles.goButton} disabled={!canExecute} onClick={props.onExecute}>
+      {freshCurrent ? 'Go · save the reviewed HMS Add-On' : 'Go · recheck saved stay, then save Add-On'}
+    </button>}
+    <small className={styles.help}>Each service save is separate from the reservation and records its own native receipt and readback.</small>
   </section>;
 }
 

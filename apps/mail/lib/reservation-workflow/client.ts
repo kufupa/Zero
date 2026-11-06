@@ -39,6 +39,9 @@ export type ReservationWorkflowV2TrpcClient = {
     reconcile: MutationProcedure<ItemInput & { operationId: string }>;
     lookupServices: MutationProcedure<ItemInput & { requestId: string; allocationId: string; serviceId?: string }>;
     prepareServices: MutationProcedure<ItemInput & { requestId: string; allocationId: string; serviceId?: string }>;
+    executeServices: MutationProcedure<ItemInput & { requestId: string; allocationId: string; serviceId: string; go: true;
+      idempotencyKey: string; reviewedPrepareRef?: string }>;
+    reconcileServices: MutationProcedure<ItemInput & { operationId: string }>;
   };
 };
 
@@ -486,7 +489,8 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       await refreshAfterStale(input, command.source, result);
       const snapshot = await load(input, command.source);
       const notice = serviceOperationNotice(result, ['ok']);
-      return notice ? { ...snapshot, serviceNotice: `Add-On catalogue: ${notice}` } : snapshot;
+      return { ...snapshot, ...(notice ? { serviceNotice: `Add-On catalogue: ${notice}` } : {}),
+        ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
     async previewServices(command) {
       const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
@@ -495,7 +499,28 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       await refreshAfterStale(input, command.source, result);
       const snapshot = await load(input, command.source);
       const notice = serviceOperationNotice(result, ['prepared']);
-      return notice ? { ...snapshot, serviceNotice: `Add-On preview only; nothing saved: ${notice}` } : snapshot;
+      return { ...snapshot, ...(notice ? { serviceNotice: `Add-On preview only; nothing saved: ${notice}` } : {}),
+        ...(isRecord(result) ? { workflowReply: result } : {}) };
+    },
+    async executeServices(command) {
+      const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
+        serviceId: command.serviceId, go: true as const, idempotencyKey: command.idempotencyKey,
+        ...(command.reviewedPrepareRef ? { reviewedPrepareRef: command.reviewedPrepareRef } : {}) };
+      const result = await api.executeServices.mutate(input, mailboxOptions(command.source));
+      await refreshAfterStale(input, command.source, result);
+      const snapshot = await load(input, command.source);
+      const notice = serviceOperationNotice(result, ['succeeded', 'already_succeeded']);
+      return { ...snapshot, ...(notice ? { serviceNotice: `Add-On save: ${notice}` } : {}),
+        ...(isRecord(result) ? { workflowReply: result } : {}) };
+    },
+    async reconcileServices(command) {
+      const input = { ...itemInput(command), operationId: command.operationId };
+      const result = await api.reconcileServices.mutate(input, mailboxOptions(command.source));
+      await refreshAfterStale(input, command.source, result);
+      const snapshot = await load(input, command.source);
+      const notice = serviceOperationNotice(result, ['succeeded', 'failed']);
+      return { ...snapshot, ...(notice ? { serviceNotice: `Add-On reconciliation: ${notice}` } : {}),
+        ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
   };
 }
