@@ -43,6 +43,26 @@ export const reservationWorkflowV2ServicesExecuteInputSchema = reservationWorkfl
   reviewedPrepareRef: z.string().min(1).max(160).optional(),
 }).strict();
 export type ReservationWorkflowV2ServicesExecuteInput = z.infer<typeof reservationWorkflowV2ServicesExecuteInputSchema>;
+export type ReservationWorkflowV2ServicesResult = {
+  status: string;
+  issue?: string;
+  operationId?: string;
+  requestId?: string;
+  allocationId?: string;
+  serviceId?: string;
+  targetRef?: { kind: 'allocation'; requestId: string; allocationId: string };
+  confirmation?: string;
+  nativeId?: string;
+  item?: Record<string, unknown>;
+  saved?: boolean;
+  observationRef?: string;
+  observationRefs?: string[];
+  summary?: string;
+  recovered?: boolean;
+  idempotent?: boolean;
+  fields?: string[];
+  [key: string]: unknown;
+};
 type ExecuteInput = ReservationWorkflowV2ServicesExecuteInput;
 type DispatchTx = CreateFenceTransaction;
 type StoredIntent = {
@@ -649,7 +669,7 @@ function reconcileSave(intent: StoredIntent, receiptEvent: Record<string, unknow
  * never a Save. The service dispatch intent is separate from Create/Amend dispatch kinds.
  */
 export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkflowV2ServerContext,
-  rawInput: ReservationWorkflowV2ServicesExecuteInput): Promise<Record<string, unknown>> {
+  rawInput: ReservationWorkflowV2ServicesExecuteInput): Promise<ReservationWorkflowV2ServicesResult> {
   const parsed = reservationWorkflowV2ServicesExecuteInputSchema.safeParse(rawInput);
   if (!parsed.success) return { status: 'invalid_input', issue: 'service_execute_input_invalid' };
   const input = parsed.data;
@@ -811,7 +831,7 @@ function verifySavedResult(save: Record<string, unknown>, approved: ApprovedServ
 
 /** Positive-only recovery for an Add-On Save whose callback/receipt was interrupted. */
 export async function reservationWorkflowV2ReconcileServices(ctx: ReservationWorkflowV2ServerContext,
-  input: ReservationWorkflowV2ReconcileInput): Promise<Record<string, unknown>> {
+  input: ReservationWorkflowV2ReconcileInput): Promise<ReservationWorkflowV2ServicesResult> {
   if (!z.string().uuid().safeParse(input.operationId).success || ctx.property.propertyCode !== 'HRCEN') {
     return { status: 'invalid_input', issue: 'service_operation_id_invalid' };
   }

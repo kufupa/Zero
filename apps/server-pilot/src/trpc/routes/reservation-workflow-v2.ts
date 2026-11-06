@@ -34,7 +34,13 @@ import {
   reservationWorkflowV2Execute,
   reservationWorkflowV2Reconcile,
 } from '../../ai/reservation-workflow-v2-tools.js';
-import { reservationWorkflowV2LookupServices, reservationWorkflowV2PreviewServices } from '../../ai/reservation-workflow-v2-services.js';
+import {
+  reservationWorkflowV2ExecuteServices,
+  reservationWorkflowV2LookupServices,
+  reservationWorkflowV2PreviewServices,
+  reservationWorkflowV2ReconcileServices,
+  reservationWorkflowV2ServicesExecuteInputSchema,
+} from '../../ai/reservation-workflow-v2-services.js';
 import { reservationWorkflowV2QuoteLookup, reservationWorkflowV2QuotePrepare,
   reservationWorkflowV2QuoteExecute, reservationWorkflowV2QuoteReconcile } from '../../ai/reservation-workflow-v2-quote.js';
 import { reservationWorkflowV2CancelLookup, reservationWorkflowV2CancelPrepare,
@@ -236,4 +242,8 @@ export const reservationWorkflowV2Router = router({
     if (workflow.kind === 'amend') return reservationWorkflowV2AmendReconcile(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
+  executeServices: mailboxProcedure.input(reservationWorkflowV2ServicesExecuteInputSchema).mutation(async ({ input, ctx }) =>
+    reservationWorkflowV2ExecuteServices(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
+  reconcileServices: mailboxProcedure.input(reservationWorkflowV2ReconcileInputSchema).mutation(async ({ input, ctx }) =>
+    reservationWorkflowV2ReconcileServices(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
 });
