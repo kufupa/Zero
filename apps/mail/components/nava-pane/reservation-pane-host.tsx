@@ -123,8 +123,9 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
           receivedAt: result.source.arrivedAt,
           attachments: result.attachments.filter((item) => !item.isInline).map((item) => ({
             sourceRef: item.id, name: item.filename, mimeType: item.mimeType,
-            uploadability: (item.mimeType === 'application/pdf' ||
-              (item.mimeType === 'application/octet-stream' && /\.pdf$/iu.test(item.filename))) &&
+            uploadability: /\.pdf$/iu.test(item.filename) &&
+              ['application/pdf', 'application/x-pdf', 'application/octet-stream'].includes(
+                item.mimeType.split(';', 1)[0]?.trim().toLowerCase() ?? '') &&
               item.sizeBytes > 0 && item.sizeBytes <= 10 * 1024 * 1024
               ? 'unknown' as const : 'unsupported' as const,
           })),
