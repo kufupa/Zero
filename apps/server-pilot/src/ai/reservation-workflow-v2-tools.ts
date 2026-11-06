@@ -452,6 +452,122 @@ async function recordNativeObservation(ctx: ReservationWorkflowV2ServerContext, 
   } });
 }
 
+type PartyLookup = { outcome: 'query'; name: string; selectionPath: string } |
+  { outcome: 'not_requested' | 'needs_input'; issue?: string };
+type EffectivePath = { outcome: 'value'; value: unknown; path: string } | { outcome: 'unset' | 'unknown' };
+
+function appendPtr(path: string, ...parts: Array<string | number>): string {
+  return ptr(...path.slice(1).split('/').map(decodeURIComponent), ...parts);
+}
+
+function effectivePathValue(draft: ReservationWorkflowV2Draft, source: unknown, basePath: string,
+  parts: Array<string | number>): EffectivePath {
+  const root = leaf(draft, basePath, source);
+  if ('issue' in root) return { outcome: 'unknown' };
+  if (root.unset) return { outcome: 'unset' };
+  let value = root.value, path = basePath;
+  for (const part of parts) {
+    const child = Array.isArray(value) && typeof part === 'number' ? value[part]
+      : record(value)?.[String(part)];
+    path = appendPtr(path, part);
+    const resolved = leaf(draft, path, child);
+    if ('issue' in resolved) return { outcome: 'unknown' };
+    if (resolved.unset || (resolved.value && typeof resolved.value === 'object' &&
+        (resolved.value as { kind?: unknown }).kind === 'none')) return { outcome: 'unset' };
+    value = resolved.value;
+  }
+  return { outcome: 'value', value, path };
+}
+
+function effectiveLookupText(draft: ReservationWorkflowV2Draft, bodySource: unknown, requestPath: string,
+  parts: Array<string | number>): { outcome: 'value'; value: string } | { outcome: 'none' | 'missing' | 'unknown' } {
+  const resolved = effectivePathValue(draft, bodySource, requestPath, parts);
+  if (resolved.outcome === 'unknown') return { outcome: 'unknown' };
+  if (resolved.outcome === 'unset') return { outcome: 'none' };
+  const value = text(resolved.value);
+  return value ? { outcome: 'value', value } : { outcome: 'missing' };
+}
+
+function effectivePartyLookup(draft: ReservationWorkflowV2Draft, requestPath: string, bodySource: unknown,
+  allocationIndex: number, dateIndex: number, field: 'bookingAgency' | 'organization' | 'arAccount'): PartyLookup {
+  const choices = [
+    ['allocations', allocationIndex, 'overrides', field],
+    ['dateSections', dateIndex, 'defaults', field],
+    ['shared', field],
+  ];
+  for (const parts of choices) {
+    const resolved = effectivePathValue(draft, bodySource, requestPath, parts);
+    if (resolved.outcome === 'unknown') return { outcome: 'needs_input', issue: 'party_name_unknown' };
+    if (resolved.outcome === 'unset') return { outcome: 'not_requested' };
+    if (resolved.value === undefined || resolved.value === null) continue;
+    const party = record(resolved.value);
+    if (!party) return { outcome: 'needs_input', issue: 'party_value_invalid' };
+    const nameResult = effectivePathValue(draft, bodySource, requestPath, [...parts, 'name']);
+    if (nameResult.outcome === 'unknown') return { outcome: 'needs_input', issue: 'party_name_unknown' };
+    if (nameResult.outcome === 'unset') return { outcome: 'needs_input', issue: 'party_name_query_required' };
+    const name = text(nameResult.value);
+    if (!name) return { outcome: 'needs_input', issue: 'party_name_query_required' };
+    return { outcome: 'query', name, selectionPath: appendPtr(resolved.path, 'nativeSelectionRef') };
+  }
+  return { outcome: 'not_requested' };
+}
+
+function verifiedNativeFields(result: unknown): string[] {
+  const correlation = record(result)?.correlation;
+  return Array.isArray(correlation?.verifiedFields)
+    ? correlation.verifiedFields.filter((field): field is string => typeof field === 'string') : [];
+}
+
+function guestCandidateViews(candidates: unknown, verifiedFields: string[]) {
+  const verified = new Set(verifiedFields);
+  const rows = Array.isArray(candidates) ? candidates.map(record) : [];
+  const valid = rows.every((candidate) => candidate && /^\d{1,30}$/.test(String(candidate.nativeId ?? '')) &&
+    text(candidate.firstName) && text(candidate.lastName));
+  return { valid, rows: rows.filter((candidate): candidate is Record<string, unknown> => Boolean(candidate))
+    .map((candidate) => ({ nativeId: text(candidate.nativeId), firstName: text(candidate.firstName), lastName: text(candidate.lastName),
+      ...(verified.has('emailaddress') && text(candidate.email) ? { email: text(candidate.email) } : {}),
+      ...(verified.has('phonenumber') && text(candidate.phoneNumber) ? { phoneNumber: text(candidate.phoneNumber) } : {}),
+      ...(verified.has('city') && text(candidate.city) ? { city: text(candidate.city) } : {}),
+      ...(verified.has('country') && text(candidate.country) ? { country: text(candidate.country) } : {}) })) };
+}
+
+function partyCandidateViews(candidates: unknown, role: 'agency' | 'organization' | 'ar_account', verifiedFields: string[]) {
+  const verified = new Set(verifiedFields);
+  const rows = Array.isArray(candidates) ? candidates.map(record) : [];
+  const valid = rows.every((candidate) => candidate && /^\d{1,30}$/.test(String(candidate.nativeId ?? '')) &&
+    text(candidate.name));
+  return { valid, rows: rows.filter((candidate): candidate is Record<string, unknown> => Boolean(candidate)).map((candidate) => ({
+    nativeId: text(candidate.nativeId), name: text(candidate.name),
+    ...(verified.has('address') && text(candidate.address) ? { address: text(candidate.address) } : {}),
+    ...(verified.has('city') && text(candidate.city) ? { city: text(candidate.city) } : {}),
+    ...(verified.has('country') && text(candidate.country) ? { country: text(candidate.country) } : {}),
+    ...(role !== 'ar_account' && verified.has('contactfirstname') && text(candidate.contactFirstName)
+      ? { contactFirstName: text(candidate.contactFirstName) } : {}),
+    ...(role !== 'ar_account' && verified.has('contactlastname') && text(candidate.contactLastName)
+      ? { contactLastName: text(candidate.contactLastName) } : {}),
+    ...(role !== 'ar_account' && verified.has('contactphone') && text(candidate.contactPhone)
+      ? { contactPhone: text(candidate.contactPhone) } : {}),
+    ...(role === 'ar_account' && verified.has('firstname') && text(candidate.contactFirstName)
+      ? { contactFirstName: text(candidate.contactFirstName) } : {}),
+    ...(role === 'ar_account' && verified.has('lastname') && text(candidate.contactLastName)
+      ? { contactLastName: text(candidate.contactLastName) } : {}),
+    ...(role === 'ar_account' && verified.has('phonenumber') && text(candidate.contactPhone)
+      ? { contactPhone: text(candidate.contactPhone) } : {}),
+    ...(role === 'agency' && candidate.referenceNumberEvidence === 'response_grid_correlated' && text(candidate.referenceNumber)
+      ? { referenceNumber: text(candidate.referenceNumber) } : {}),
+    ...(role === 'agency' && candidate.referenceNumberTypeEvidence === 'response_grid_correlated' && text(candidate.referenceNumberType)
+      ? { referenceNumberType: text(candidate.referenceNumberType) } : {}),
+    ...(role === 'organization' && verified.has('corporateaccountnumber') && text(candidate.corporateAccountNumber)
+      ? { corporateAccountNumber: text(candidate.corporateAccountNumber) } : {}),
+    ...(role === 'ar_account' && verified.has('araccountnumber') && text(candidate.accountNumber)
+      ? { accountNumber: text(candidate.accountNumber) } : {}),
+    ...(role === 'ar_account' && verified.has('arstatuscodedesc') && text(candidate.status)
+      ? { status: text(candidate.status) } : {}),
+    ...(role === 'ar_account' && verified.has('accttype') && text(candidate.accountType)
+      ? { accountType: text(candidate.accountType) } : {}),
+  })) };
+}
+
 /** Read current, source-bound v2 observations; callers cannot supply lookup candidates. */
 export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2ServerContext,
   input: ReservationWorkflowV2LookupInput): Promise<Outcome> {
@@ -459,79 +575,193 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
   if (!loaded.draft) return loaded.result;
   const requests = loaded.draft.proposal.content.requests.filter((request) => !input.requestId || request.id === input.requestId);
   if (input.requestId && !requests.length) return { status: 'not_found' };
-  const nativeObservations: ReservationWorkflowV2Observation[] = [], results: Outcome[] = [];
-  for (const request of requests) {
-    if (request.kind !== 'create') continue;
-    for (const allocation of request.body.allocations) {
-      const compiled = compileCreate(loaded.draft, request.id, allocation.id, ctx.property.propertyCode, 'lookup');
-      if (compiled.outcome !== 'ok') {
-        results.push({ status: compiled.outcome, requestId: request.id, allocationId: allocation.id,
-          issue: compiled.issue, fields: compiled.fields ?? [] });
-        continue;
-      }
-      try {
-        const tool = await import(new URL('../../tooling/hms-cloud/create-reservation.mjs', import.meta.url).href) as {
-          createReservation: (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<NativeCreate & {
-            guestCandidates?: unknown; guestCoverage?: unknown; guestCorrelation?: unknown; guestSearchOutcome?: unknown;
-            partySearches?: Record<string, unknown>;
-          }>;
-        };
-        const native = await tool.createReservation(compiled.nativeInput, { allowRealGuest: true,
-          expectedGuest: compiled.expectedGuest, requireExplicitGuestSelection: true,
-          allowCommitOnlyBillingReference: true });
-        const guestInfo = record(native.guestCandidates) ||
-          (Array.isArray(native.guestCandidates) ? { candidates: native.guestCandidates } : null);
-        if (guestInfo) {
-          const coverage = record(native.guestCoverage);
-          const complete = Boolean(coverage && coverage.possiblyTruncated === false &&
-            (coverage.serverMoreRecords === false || (Number.isInteger(coverage.loaded) && coverage.loaded === coverage.total)));
-          nativeObservations.push({ ref: randomUUID(), generationId: loaded.draft.generationId,
-            kind: 'guest_candidate', status: complete ? 'complete' : 'partial',
-            observedAt: new Date().toISOString(), propertyCode: loaded.draft.propertyCode,
-            sourceMessageId: loaded.draft.source.messageId, sourceRefs: [],
-            criteria: { workflow: 'create', requestId: request.id, allocationId: allocation.id,
-              fieldPaths: [
-                ptr('proposal', 'content', 'requests', request.id, 'body', 'allocations',
-                  request.body.allocations.findIndex((item) => item.id === allocation.id), 'guest', 'suggestedRef'),
-                ptr('proposal', 'content', 'requests', request.id, 'body', 'allocations',
-                  request.body.allocations.findIndex((item) => item.id === allocation.id), 'guest', 'nativeSelectionRef'),
-              ],
-              outcome: native.guestSearchOutcome ?? native.outcome },
-            coverage: { complete, notes: complete ? [] : ['native_guest_search_incomplete'] },
-            result: guestInfo });
+  if (ctx.property.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'property_not_supported' };
+  const createRequests = requests.filter((request) => request.kind === 'create');
+  if (!createRequests.length) return { status: 'unsupported', issue: 'create_lookup_not_applicable' };
+  const nativeObservations: ReservationWorkflowV2Observation[] = [];
+  const partySpecs = [
+    { key: 'agency', field: 'bookingAgency', role: 'agency', tool: 'searchPrimaryBookingAgency', idField: 'travelagencyid', nameField: 'travelagencyname' },
+    { key: 'organization', field: 'organization', role: 'organization', tool: 'searchOrganization', idField: 'companyid', nameField: 'companyname' },
+    { key: 'arAccount', field: 'arAccount', role: 'ar_account', tool: 'searchArAccount', idField: 'araccountid', nameField: 'araccountname' },
+  ] as const;
+  const bookingTool = await import(new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url).href) as {
+    withBookingLookupSession: (operation: (session: { runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
+      Promise<unknown>, options?: Record<string, unknown>) => Promise<unknown>;
+  };
+  let sessionResult: Record<string, unknown> | null = null;
+  try {
+    sessionResult = record(await bookingTool.withBookingLookupSession(async ({ runTool }) => {
+      const perAllocation: Outcome[] = [];
+      for (const request of createRequests) {
+        const requestPath = ptr('proposal', 'content', 'requests', request.id, 'body');
+        const body = effectiveSubtree(loaded.draft!, request.body, requestPath) as typeof request.body | null;
+        if (!body || !Array.isArray(body.allocations) || !Array.isArray(body.dateSections)) {
+          perAllocation.push({ status: 'needs_input', requestId: request.id, issue: 'create_body_incomplete' });
+          continue;
         }
-        for (const [role, field] of [['agency', 'bookingAgency'], ['organization', 'organization'], ['arAccount', 'arAccount']] as const) {
-          const raw = native.partySearches?.[role];
-          const party = record(raw);
-          if (!party) continue;
-          const coverage = record(party.coverage);
-          const complete = Boolean(party.outcome === 'matches' && coverage && coverage.possiblyTruncated === false);
-          const selectionPath = compiled.partySelectionPaths[field];
-          if (!selectionPath) continue;
-          nativeObservations.push({ ref: randomUUID(), generationId: loaded.draft.generationId,
-            kind: 'party_candidate', status: complete ? 'complete' : 'partial',
-            observedAt: new Date().toISOString(), propertyCode: loaded.draft.propertyCode,
-            sourceMessageId: loaded.draft.source.messageId, sourceRefs: [],
-            criteria: { workflow: 'create', requestId: request.id, allocationId: allocation.id, role, fieldPath: selectionPath },
-            coverage: { complete, notes: complete ? [] : ['native_party_search_incomplete'] }, result: party });
+        for (const [allocationIndex, allocationValue] of body.allocations.entries()) {
+          const allocation = record(allocationValue);
+          const allocationId = text(allocation?.id);
+          const dateSectionId = text(allocation?.dateSectionId);
+          const dateIndex = dateSectionId
+            ? body.dateSections.findIndex((section) => record(section)?.id === dateSectionId) : -1;
+          if (!allocation || !allocationId || dateIndex < 0) {
+            perAllocation.push({ status: 'needs_input', requestId: request.id, ...(allocationId ? { allocationId } : {}),
+              issue: 'allocation_date_section_unresolved' });
+            continue;
+          }
+          const guestPath = appendPtr(requestPath, 'allocations', allocationIndex, 'guest');
+          const intent = effectivePathValue(loaded.draft!, request.body, requestPath,
+            ['allocations', allocationIndex, 'guest', 'profileIntent']);
+          const first = effectiveLookupText(loaded.draft!, request.body, requestPath,
+            ['allocations', allocationIndex, 'guest', 'firstName']);
+          const last = effectiveLookupText(loaded.draft!, request.body, requestPath,
+            ['allocations', allocationIndex, 'guest', 'lastName']);
+          const email = effectiveLookupText(loaded.draft!, request.body, requestPath,
+            ['allocations', allocationIndex, 'guest', 'email']);
+          const guestSearch: Outcome = intent.outcome === 'value' && intent.value === 'requested_new'
+            ? { status: 'unsupported', issue: 'requested_new_guest_profile_unsupported' }
+            : intent.outcome !== 'value' || intent.value !== 'existing_or_unknown'
+              ? { status: 'needs_input', issue: 'guest_profile_intent_unknown' }
+              : { status: 'needs_input', issue: 'guest_name_query_required' };
+          let guestInfo: Record<string, unknown> | null = null;
+          if (intent.outcome === 'value' && intent.value === 'existing_or_unknown' &&
+              first.outcome === 'value' && last.outcome === 'value') {
+            const found = await runTool({ tool: 'searchGuestProfiles', field: 'lastName', query: last.value });
+            const initial = Array.isArray(found.candidates) ? found.candidates.map(record).filter(Boolean) : [];
+            const coverage = record(found.coverage);
+            let candidates = [...initial];
+            let enumerationComplete = true;
+            const loadedCount = typeof coverage?.loaded === 'number' && Number.isInteger(coverage.loaded)
+              ? coverage.loaded : null;
+            if (loadedCount !== null && loadedCount > candidates.length) {
+              for (let offset = candidates.length; offset < loadedCount; offset += 50) {
+                const inspected = await runTool({ tool: 'inspectGuestProfileCandidates', searchId: found.searchId,
+                  offset, limit: 50 });
+                const pageRows = Array.isArray(inspected.candidates) ? inspected.candidates.map(record).filter(Boolean) : [];
+                if (inspected.outcome !== 'current' || inspected.searchId !== found.searchId || !pageRows.length) {
+                  enumerationComplete = false;
+                  break;
+                }
+                candidates.push(...pageRows);
+              }
+            }
+            const close = await runTool({ tool: 'closeGuestProfilePicker' });
+            const verifiedFields = verifiedNativeFields(found);
+            const requiredFields = ['guestid', 'firstname', 'lastname', ...(email.outcome === 'value' ? ['emailaddress'] : [])];
+            const projected = guestCandidateViews(candidates, verifiedFields);
+            const criteria = record(found.criteria);
+            const complete = Boolean(['matches', 'no_match'].includes(String(found.outcome)) && found.searchId &&
+              criteria?.field === 'lastName' && criteria.query === last.value &&
+              coverage?.possiblyTruncated === false && loadedCount !== null && candidates.length === loadedCount &&
+              enumerationComplete && requiredFields.every((field) => verifiedFields.includes(field)) && projected.valid &&
+              close.outcome === 'closed_unsaved' && email.outcome !== 'unknown');
+            guestInfo = { outcome: complete ? found.outcome : 'partial', searchOutcome: found.outcome,
+              criteria, coverage, correlation: { verifiedFields }, candidates: projected.rows,
+              query: { field: 'lastName', value: last.value, firstName: first.value,
+                ...(email.outcome === 'value' ? { email: email.value } : {}) }, closeOutcome: close.outcome };
+            if (found.searchId && ['matches', 'no_match'].includes(String(found.outcome))) {
+              const suggestedPath = appendPtr(guestPath, 'suggestedRef');
+              const selectionPath = appendPtr(guestPath, 'nativeSelectionRef');
+              nativeObservations.push({ ref: randomUUID(), generationId: loaded.draft!.generationId, kind: 'guest_candidate',
+                status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
+                propertyCode: loaded.draft!.propertyCode, sourceMessageId: loaded.draft!.source.messageId, sourceRefs: [],
+                criteria: { workflow: 'create', kind: 'guest_profile', requestId: request.id, allocationId,
+                  fieldPaths: [suggestedPath, selectionPath], query: { field: 'lastName', value: last.value,
+                    firstName: first.value, ...(email.outcome === 'value' ? { email: email.value } : {}) },
+                  coverage, correlation: { verifiedFields } },
+                coverage: { complete: Boolean(complete), notes: complete ? [] : ['native_guest_profile_lookup_incomplete'] },
+                result: { outcome: found.outcome, criteria: record(found.criteria), coverage,
+                  correlation: { verifiedFields }, candidates: projected.rows } });
+            }
+            Object.assign(guestSearch, { status: complete ? found.outcome : 'partial',
+              ...(guestInfo ? { guestCandidates: guestInfo } : {}),
+              ...(complete ? {} : { issue: found.issue ?? 'native_guest_profile_lookup_incomplete' }) });
+            if (close.outcome !== 'closed_unsaved') {
+              perAllocation.push({ status: 'failed', requestId: request.id, allocationId,
+                guestCandidates: guestInfo, issue: 'guest_picker_close_unverified' });
+              return { lookups: perAllocation, observations: nativeObservations, sessionSafe: false };
+            }
+          } else if (intent.outcome === 'value' && intent.value === 'existing_or_unknown') {
+            guestSearch.issue = first.outcome === 'unknown' || last.outcome === 'unknown'
+              ? 'guest_name_unknown' : 'guest_name_query_required';
+          }
+          const partySearches: Record<string, unknown> = {};
+          let allocationStatus = guestSearch.status;
+          for (const spec of partySpecs) {
+            const party = effectivePartyLookup(loaded.draft!, requestPath, request.body,
+              allocationIndex, dateIndex, spec.field);
+            if (party.outcome === 'not_requested') {
+              partySearches[spec.key] = { status: 'not_requested' };
+              continue;
+            }
+            if (party.outcome === 'needs_input') {
+              partySearches[spec.key] = { status: 'needs_input', issue: party.issue };
+              if (allocationStatus === 'ok' || allocationStatus === 'matches' || allocationStatus === 'no_match') allocationStatus = 'partial';
+              continue;
+            }
+            const found = await runTool({ tool: spec.tool, query: party.name });
+            const closed = await runTool({ tool: 'closeGuestStayPartyPicker', propertyCode: ctx.property.propertyCode });
+            const coverage = record(found.coverage), verifiedFields = verifiedNativeFields(found);
+            const candidates = Array.isArray(found.candidates) ? found.candidates.map(record).filter(Boolean) : [];
+            const projected = partyCandidateViews(candidates, spec.role, verifiedFields);
+            const criteria = record(found.criteria);
+            const complete = ['matches', 'no_match'].includes(String(found.outcome)) && typeof found.searchId === 'string' &&
+              criteria?.query === party.name && coverage?.possiblyTruncated === false &&
+              typeof coverage.loaded === 'number' && Number.isInteger(coverage.loaded) && candidates.length === coverage.loaded &&
+              verifiedFields.includes(spec.idField) && verifiedFields.includes(spec.nameField) && projected.valid &&
+              closed.outcome === 'closed_unsaved';
+            const info = { outcome: complete ? found.outcome : 'partial', searchOutcome: found.outcome,
+              query: party.name, searchId: typeof found.searchId === 'string' ? found.searchId : null,
+              criteria, coverage, correlation: { verifiedFields }, candidates: projected.rows,
+              closeOutcome: closed.outcome };
+            partySearches[spec.key] = info;
+            if (found.searchId && ['matches', 'no_match'].includes(String(found.outcome))) {
+              nativeObservations.push({ ref: randomUUID(), generationId: loaded.draft!.generationId,
+                kind: 'party_candidate', status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
+                propertyCode: loaded.draft!.propertyCode, sourceMessageId: loaded.draft!.source.messageId, sourceRefs: [],
+                criteria: { workflow: 'create', kind: 'party_name', requestId: request.id, allocationId,
+                  role: spec.role, fieldPaths: [party.selectionPath], query: party.name, coverage,
+                  correlation: { verifiedFields } },
+                coverage: { complete: Boolean(complete), notes: complete ? [] : ['native_party_lookup_incomplete'] },
+                result: { outcome: found.outcome, criteria: record(found.criteria), coverage,
+                  correlation: { verifiedFields }, candidates: projected.rows } });
+            }
+            if (!complete) allocationStatus = 'partial';
+            if (closed.outcome !== 'closed_unsaved') {
+              perAllocation.push({ status: 'failed', requestId: request.id, allocationId,
+                guestCandidates: guestInfo, partySearches, issue: 'party_picker_close_unverified' });
+              return { lookups: perAllocation, observations: nativeObservations, sessionSafe: false };
+            }
+          }
+          perAllocation.push({ status: allocationStatus, requestId: request.id, allocationId,
+            guestCandidates: guestInfo, partySearches,
+            ...(guestSearch.issue ? { issue: guestSearch.issue } : {}) });
         }
-        results.push({ status: native.outcome ?? 'unknown', requestId: request.id, allocationId: allocation.id,
-          guestCandidates: guestInfo, partySearches: native.partySearches ?? {}, ratePlanAvailability: native.ratePlanAvailability,
-          missing: native.missing ?? [], issue: native.issue });
-      } catch {
-        results.push({ status: 'failed', requestId: request.id, allocationId: allocation.id, issue: 'native_create_lookup_failed' });
       }
-    }
+      return { lookups: perAllocation, observations: nativeObservations, sessionSafe: true };
+    }, { memory: null, blockServiceWorkers: true }));
+  } catch {
+    return { status: 'failed', issue: 'native_create_lookup_failed', requestId: input.requestId ?? null };
   }
+  if (!sessionResult || sessionResult.sessionSafe !== true || !Array.isArray(sessionResult.observations) ||
+      !Array.isArray(sessionResult.lookups)) {
+    return { status: 'failed', issue: 'native_lookup_session_not_clean', requestId: input.requestId ?? null,
+      lookups: sessionResult?.lookups ?? [] };
+  }
+  const observations = sessionResult.observations.filter((item): item is ReservationWorkflowV2Observation =>
+    Boolean(item && typeof item === 'object' && !Array.isArray(item)));
+  const fresh = await currentDraft(ctx, input);
+  if (!fresh.draft) return fresh.result;
   for (const observation of nativeObservations) {
     const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), { workItemId: input.workItemId,
       source: input.source, observation });
     if (appended.status !== 'ok') return appended;
   }
-  return { status: 'ok', revision: loaded.result.status === 'ok' ? loaded.result.revision : input.expectedRevision,
-    seq: loaded.result.status === 'ok' ? loaded.result.seq : input.expectedSeq,
-    requests, lookups: results,
-    observations: [...loaded.draft.observations, ...nativeObservations], operationResults: loaded.draft.operationResults };
+  return { status: 'ok', revision: fresh.result.status === 'ok' ? fresh.result.revision : input.expectedRevision,
+    seq: fresh.result.status === 'ok' ? fresh.result.seq : input.expectedSeq,
+    requests, lookups: sessionResult.lookups,
+    observations: [...fresh.draft.observations, ...observations], operationResults: fresh.draft.operationResults };
 }
 
 /** Compile one reviewed room against host-admitted IDs, then ask HMS for live unsaved availability. */
