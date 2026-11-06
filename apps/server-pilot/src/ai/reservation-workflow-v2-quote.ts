@@ -91,6 +91,10 @@ function ptr(...parts: Array<string | number>): string {
   return `/${parts.map((part) => encodeURIComponent(String(part))).join('/')}`;
 }
 
+function quoteBodyPath(requestId: string): string {
+  return ptr('proposal', 'content', 'requests', requestId, 'body');
+}
+
 function quoteRequests(draft: ReservationWorkflowV2Draft, requestId?: string): QuoteRequest[] {
   return draft.proposal.content.requests.filter((request): request is QuoteRequest =>
     request.kind === 'quote' && (!requestId || request.id === requestId));
@@ -147,17 +151,23 @@ function selectedParty(
   const selectionPath = ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role, 'nativeSelectionRef');
   const partyLeaf = resolvedLeaf(draft, basePath, raw);
   if ('issue' in partyLeaf) return { reviewPaths: [], issue: `${role}_${partyLeaf.issue}` };
-  if (partyLeaf.value === null) return { reviewPaths: [], issue: `${role}_name_unresolved` };
-  if (partyLeaf.value === undefined || isNone(partyLeaf.value)) {
-    const explicitlyUnset = raw !== undefined || partyLeaf.overridden;
-    const reviewPaths = execute && explicitlyUnset && !reviewAccepted(draft, basePath) ? [basePath] : [];
-    return { reviewPaths };
-  }
   const value = record(partyLeaf.value);
-  const named = resolvedLeaf(draft, namePath, value?.name);
+  // Child name edits can create a party even when extraction supplied null or no party object.
+  // An explicit parent clear still wins over stale child overrides.
+  const allowChildName = !partyLeaf.overridden && !isNone(raw);
+  const named = !value && !allowChildName
+    ? { value: undefined, path: namePath }
+    : resolvedLeaf(draft, namePath, value?.name);
   if ('issue' in named) return { reviewPaths: [], issue: `${role}_${named.issue}` };
   const name = cleanText(named.value);
-  if (!name) return { reviewPaths: [], issue: value ? `${role}_name_unresolved` : undefined };
+  if (!name) {
+    if (partyLeaf.value === undefined || isNone(partyLeaf.value)) {
+      const explicitlyUnset = raw !== undefined || partyLeaf.overridden;
+      const reviewPaths = execute && explicitlyUnset && !reviewAccepted(draft, basePath) ? [basePath] : [];
+      return { reviewPaths };
+    }
+    return { reviewPaths: [], issue: `${role}_name_unresolved` };
+  }
   const selected = resolvedLeaf(draft, selectionPath, value?.suggestedRef ?? null);
   if ('issue' in selected) return { reviewPaths: [], issue: `${role}_${selected.issue}` };
   const ref = typeof selected.value === 'string' ? selected.value : null;
@@ -416,7 +426,9 @@ function compileQuote(
   ])].filter((ref) => draft.observations.some((observation) => observation.ref === ref));
   return {
     status: 'ok', request, input,
-    inputDigest: hash({ sourceHash: draft.source.sourceHash, requestId: request.id, input }),
+    // Staff acknowledgement advances pane revisions without changing quote scope.
+    inputDigest: hash({ sourceHash: draft.source.sourceHash, requestId: request.id,
+      input: { ...input, selectionEpoch: 0, inputRevision: 0 } }),
     reviewPaths: [...reviewPaths], sourceRefs, outputKinds,
   };
 }
@@ -464,6 +476,8 @@ function quoteObservation(
     rowRates: result.rowRates ?? [],
     rateOptions: result.rateOptions ?? [],
     availabilityBoard: result.availabilityBoard ?? [],
+    extrasReviewItems: Array.isArray(result.extrasReviewItems)
+      ? result.extrasReviewItems.filter((item): item is string => typeof item === 'string') : [],
     revision,
     facts: prepared?.facts ?? null,
     rowPrices: prepared?.rowPrices ?? [],
@@ -507,11 +521,15 @@ async function persistObservation(
   input: QuoteBaseInput,
   observation: ReservationWorkflowV2Observation,
   operation?: QuoteOperationResult,
+  options: { allowRevisionAdvance?: boolean } = {},
 ) {
   const current = await getReservationWorkflowV2Draft(stateContext(ctx), { workItemId: input.workItemId, source: input.source });
   if (current.status !== 'ok') return current;
-  if (current.revision !== input.expectedRevision || current.seq !== input.expectedSeq ||
-      current.draft.generationId !== observation.generationId) return { status: 'stale_revision' as const };
+  if (current.draft.generationId !== observation.generationId ||
+      (!options.allowRevisionAdvance &&
+        (current.revision !== input.expectedRevision || current.seq !== input.expectedSeq))) {
+    return { status: 'stale_revision' as const };
+  }
   const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), {
     workItemId: input.workItemId, source: input.source, observation,
   });
@@ -562,6 +580,9 @@ function operationResult(
 
 function pricePayload(observation: ReservationWorkflowV2Observation) {
   const result = record(observation.result) ?? {};
+  const extrasReviewItems = Array.isArray(result.extrasReviewItems)
+    ? result.extrasReviewItems.filter((item): item is string => typeof item === 'string') : [];
+  const requestId = cleanText(record(observation.criteria)?.requestId);
   return {
     observationRef: observation.ref,
     workflowRunId: result.workflowRunId,
@@ -574,6 +595,8 @@ function pricePayload(observation: ReservationWorkflowV2Observation) {
     rowRates: result.rowRates,
     rateOptions: result.rateOptions,
     availabilityBoard: result.availabilityBoard,
+    extrasReviewItems,
+    ...(extrasReviewItems.length && requestId ? { extrasReviewPath: quoteBodyPath(requestId) } : {}),
   };
 }
 
@@ -634,11 +657,13 @@ async function lookupPartyCandidates(
     const prior = draft.observations.filter((entry) => {
       const criteria = record(entry.criteria);
       return entry.kind === 'party_candidate' && entry.generationId === draft.generationId &&
+        entry.propertyCode === draft.propertyCode && entry.sourceMessageId === draft.source.messageId &&
         criteria?.workflow === 'quote' && criteria.requestId === request.id && criteria.role === role &&
         sameName(criteria.searchName, name);
     });
-    if (prior.length) {
-      candidates.push(...prior.filter((entry) => entry.status === 'complete').map((entry) => ({
+    const reusable = prior.filter((entry) => entry.status === 'complete' && entry.coverage.complete);
+    if (reusable.length) {
+      candidates.push(...reusable.map((entry) => ({
         ...entry.result, ref: entry.ref,
       })));
       continue;
@@ -884,6 +909,14 @@ export async function reservationWorkflowV2QuoteExecute(
   if (!prepared || quoteResult?.sourceHash && quoteResult.sourceHash !== input.source.sourceHash) {
     return { status: 'needs_prepare', issue: 'prepared_quote_source_changed' };
   }
+  const rawExtrasReviewItems = quoteResult?.extrasReviewItems;
+  const extrasReviewItems = Array.isArray(rawExtrasReviewItems)
+    ? rawExtrasReviewItems.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())) : [];
+  const extrasReviewPath = quoteBodyPath(request.id);
+  if (extrasReviewItems.length && !reviewAccepted(loaded.draft, extrasReviewPath)) {
+    return { status: 'needs_review', issue: 'quote_extras_require_staff_acceptance',
+      fields: [extrasReviewPath], extrasReviewItems, extrasReviewPath };
+  }
   const result = operationResult(loaded.draft, request.id, input.idempotencyKey, 'unknown', [],
     'Quote output generation started; no reservation save or email send is performed');
   const marked = await persistResult(ctx, input, loaded.draft.generationId, result);
@@ -904,7 +937,7 @@ export async function reservationWorkflowV2QuoteExecute(
     };
     const failure = operationResult(loaded.draft, request.id, input.idempotencyKey, 'failed', [failureObservation.ref],
       'Quote artifact generation failed; no reservation saved and no email sent');
-    const saved = await persistObservation(ctx, input, failureObservation, failure);
+    const saved = await persistObservation(ctx, input, failureObservation, failure, { allowRevisionAdvance: true });
     return saved.status === 'ok' ? { status: 'failed', operationId: input.idempotencyKey,
       issue: 'quote_artifact_generation_failed', observationRef: failureObservation.ref } : saved;
   }
@@ -924,7 +957,7 @@ export async function reservationWorkflowV2QuoteExecute(
     complete ? 'succeeded' : 'failed', [observation.ref],
     complete ? `Generated ${generated.artifacts.length} unsent quote artifact(s); no reservation saved or email sent`
       : `Generated ${generated.artifacts.length} artifact(s); some requested outputs failed, no reservation saved or email sent`);
-  const saved = await persistObservation(ctx, input, observation, final);
+  const saved = await persistObservation(ctx, input, observation, final, { allowRevisionAdvance: true });
   return saved.status === 'ok'
     ? { status: complete ? 'succeeded' : generated.artifacts.length ? 'partial' : 'failed',
         operationId: input.idempotencyKey, observationRef: observation.ref, summary: final.summary,
