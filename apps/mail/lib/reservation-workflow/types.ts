@@ -77,6 +77,8 @@ export type ReservationPaneSnapshot = {
     message: string;
   };
   serviceNotice?: string;
+  /** Ephemeral last v2 native response; used only for workflow-specific review bindings. */
+  workflowReply?: Record<string, unknown>;
   loading?: boolean;
   loadError?: string;
 };

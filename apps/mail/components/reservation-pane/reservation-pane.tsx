@@ -479,12 +479,33 @@ function isRequestPrepared(snapshot: ReservationPaneSnapshot, request: Reservati
   });
 }
 
+function amendTargets(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection) {
+  const body = `${requestPath(request)}/body`;
+  const scope = record(valueFor(snapshot, `${body}/targets`));
+  const rows = Array.isArray(scope?.include) ? scope.include : [];
+  return { body, scope, rows: rows.map((value, index) => ({ value: record(value) ?? {}, index })) };
+}
+
+function latestAmendPreparation(snapshot: ReservationPaneSnapshot, requestId: string, hintId: string) {
+  return [...snapshot.session.draft.observations].reverse().find((item) => item.kind === 'rate_availability'
+    && item.status === 'complete' && item.criteria.workflow === 'amend' && item.criteria.requestId === requestId
+    && item.criteria.hintId === hintId && record(item.result)?.outcome === 'prepared') ?? null;
+}
+
+function amendSelection(snapshot: ReservationPaneSnapshot, path: string): string | null {
+  const override = snapshot.session.draft.fieldOverrides[path];
+  if (override) return override.state === 'set' && typeof override.value === 'string' ? override.value : null;
+  const suggested = draftAtPath(snapshot, path);
+  return typeof suggested === 'string' ? suggested : null;
+}
+
 function hasLegacyCreateReceiptIssue(snapshot: ReservationPaneSnapshot): boolean {
   return snapshot.issues.some((issue) => issue.kind === 'legacy_create_receipts');
 }
 
 export function ReservationPane({ source, snapshot, loadError, client, onSnapshot, onOpenEvidence, onOpenAttachment }: ReservationPaneProps) {
   const [ui, dispatch] = useReducer(reduceReservationUi, source.selectionEpoch, initialReservationUiState);
+  const [amendPreparedRefs, setAmendPreparedRefs] = useState<Record<string, string>>({});
   const sourceRef = useRef(source);
   const snapshotRef = useRef(snapshot);
   const pending = useRef(new Map<string, PendingReservationEdit>());
@@ -500,6 +521,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   useEffect(() => {
     pending.current.clear();
     triedPrepare.current.clear();
+    setAmendPreparedRefs({});
     activeRequestRef.current = null;
     activeKindRef.current = 'create';
     dispatch({ type: 'source-changed', selectionEpoch: source.selectionEpoch });
@@ -554,6 +576,14 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
 
   const stage = useCallback((path: string, value: unknown, state: PendingReservationEdit['state'] = 'set') => {
     if (busyActionRef.current) return;
+    const current = snapshotRef.current;
+    const amend = current?.requests.find((request) => request.kind === 'amend'
+      && path.startsWith(`${requestPath(request)}/body/`));
+    if (amend) setAmendPreparedRefs((previous) => {
+      const next = { ...previous };
+      for (const key of Object.keys(next)) if (key.startsWith(`${amend.id}:`)) delete next[key];
+      return next;
+    });
     const edit = { path, value, state, sequence: ++sequence.current };
     pending.current.set(path, edit);
     dispatch({ type: 'stage-edit', edit });
@@ -757,6 +787,65 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     });
   }, [applySnapshot, client, enqueue]);
 
+  const acceptReview = useCallback((fieldPath: string, note?: string) => {
+    const bound = sourceRef.current;
+    void enqueue('Recording staff review', bound, async () => {
+      if (pending.current.has(fieldPath)) await flushEdits(bound, [fieldPath]);
+      const current = snapshotRef.current;
+      if (!current) throw new Error('The source-bound reservation draft is still loading.');
+      const next = await client.review({ source: bound, snapshot: current, fieldPath, decision: 'accepted', ...(note ? { note } : {}) });
+      applySnapshot(next, bound);
+    });
+  }, [applySnapshot, client, enqueue, flushEdits]);
+
+  const runAmendAction = useCallback((mode: 'lookup' | 'prepare' | 'execute', requestId: string, hintId?: string) => {
+    const bound = sourceRef.current;
+    const targetKey = hintId ? `${requestId}:${hintId}` : null;
+    const label = mode === 'lookup' ? 'Finding exact saved stays in Infor'
+      : mode === 'prepare' ? 'Preparing unsaved amendment and price in Infor' : 'Saving amendment in Infor';
+    void enqueue(label, bound, async () => {
+      beginMutation();
+      try {
+        if (pending.current.size) await flushEdits(bound);
+        const current = snapshotRef.current;
+        const request = current?.requests.find((item) => item.id === requestId && item.kind === 'amend');
+        if (!current || !request) throw new Error('The source-bound Amend request is no longer available.');
+        if (mode === 'lookup') {
+          const next = await client.lookup({ source: bound, snapshot: current, requestId });
+          applySnapshot(next, bound);
+          return;
+        }
+        if (!hintId) throw new Error('Choose one exact saved stay target first.');
+        if (mode === 'prepare') {
+          const next = await client.prepare({ source: bound, snapshot: current, requestId, allocationId: hintId });
+          applySnapshot(next, bound);
+          const prepared = latestAmendPreparation(next, requestId, hintId);
+          if (next.workflowReply?.status === 'prepared' && prepared) {
+            setAmendPreparedRefs((previous) => ({ ...previous, [targetKey!]: prepared.ref }));
+          } else {
+            setAmendPreparedRefs((previous) => { const copy = { ...previous }; delete copy[targetKey!]; return copy; });
+          }
+          return;
+        }
+        const prepared = latestAmendPreparation(current, requestId, hintId);
+        if (!prepared || amendPreparedRefs[targetKey!] !== prepared.ref) {
+          throw new Error('Prepare this exact amendment again after the last edit before Go.');
+        }
+        const prior = current.operationResults.find((result) => result.requestId === requestId
+          && result.allocationId === hintId && result.workflow === 'amend'
+          && (result.status === 'succeeded' || result.status === 'unknown'));
+        if (prior?.status === 'unknown') throw new Error('This amendment has an uncertain save. Reconcile it before retrying.');
+        if (prior?.status === 'succeeded') throw new Error('This saved stay is already amended; later edits do not change the Infor reservation.');
+        const next = await client.execute({ source: bound, snapshot: current, requestId, allocationId: hintId,
+          idempotencyKey: crypto.randomUUID() });
+        applySnapshot(next, bound);
+        setAmendPreparedRefs((previous) => { const copy = { ...previous }; delete copy[targetKey!]; return copy; });
+      } finally {
+        endMutation();
+      }
+    });
+  }, [amendPreparedRefs, applySnapshot, client, enqueue, flushEdits]);
+
   const runServiceAction = useCallback((mode: 'lookup' | 'preview', requestId: string, allocationId: string, serviceId: string) => {
     const bound = sourceRef.current;
     void enqueue(mode === 'lookup' ? 'Loading native Add-On catalogue' : 'Previewing unsaved Add-On on this room', bound, async () => {
@@ -857,6 +946,15 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
                   onOpenEvidence={onOpenEvidence} onPrepare={() => { void enqueue('Checking Infor now', sourceRef.current, () => prepareAll(false)); }}
                   onLookup={refreshNative} />
                 </fieldset>
+              : activeRequest.kind === 'amend'
+                ? <fieldset disabled={Boolean(ui.busyAction) || busyActionRef.current} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
+                  <AmendEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur}
+                    onDone={acceptReview} editValue={editValue} onOpenEvidence={onOpenEvidence}
+                    preparedRefs={amendPreparedRefs} busy={Boolean(ui.busyAction) || ui.pendingEdits.length > 0}
+                    onLookup={() => runAmendAction('lookup', activeRequest.id)}
+                    onPrepare={(hintId) => runAmendAction('prepare', activeRequest.id, hintId)}
+                    onExecute={(hintId) => runAmendAction('execute', activeRequest.id, hintId)} />
+                </fieldset>
               : activeRequest.kind === 'filing'
                 ? <FilingEditor snapshot={snapshot} request={activeRequest} source={source} onOpenAttachment={onOpenAttachment} />
                 : activeRequest.kind === 'quote'
@@ -866,7 +964,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
                   : <RequestReview snapshot={snapshot} request={activeRequest} />}
             {displayedResult.map((result, index) => <OperationResult key={String(result.id ?? index)} result={result}
               onReconcile={reconcile} busy={Boolean(ui.busyAction)} />)}
-            {activeRequest.kind !== 'create' && activeRequest.kind !== 'quote' && <div className={styles.notice}>This v2 request is visible from saved source facts. Its native operation is not connected in the current UI route, so no Go action is offered.</div>}
+            {activeRequest.kind !== 'create' && activeRequest.kind !== 'quote' && activeRequest.kind !== 'amend' && <div className={styles.notice}>This v2 request is visible from saved source facts. Its native operation is not connected in the current UI route, so no Go action is offered.</div>}
           </> : <>
             <div className={styles.titleRow}><div><small className={styles.eyebrow}>{KIND_LABEL[activeKind]}</small><h1>{activeKind === 'create' ? 'New reservation' : `${KIND_LABEL[activeKind]} request`}</h1></div></div>
             {activeKind === 'create'
@@ -878,7 +976,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
           <div className={styles.footerMessage} aria-live="polite">
             {ui.busyAction ? <><span className={styles.spinner} />{ui.busyAction}</> : ui.actionError ?? snapshot.serviceNotice ?? (activeRequest?.kind === 'create' && isRequestPrepared(snapshot, activeRequest)
               ? 'Current Infor unsaved form and price are ready for review.' : activeRequest?.kind === 'quote' && isQuotePrepared(snapshot, activeRequest)
-                ? 'Current native quote price and availability are prepared; outputs remain unsent.' : snapshot.preparation.message)}
+                ? 'Current native quote price and availability are prepared; outputs remain unsent.' : activeRequest?.kind === 'amend' ? 'Each saved stay needs an exact native match and current unsaved Prepare before Go.' : snapshot.preparation.message)}
           </div>
           {ui.pendingEdits.length > 0 && <button type="button" className={styles.secondaryButton} disabled={Boolean(ui.busyAction)} onClick={() => { void saveEdits(); }}>Save {ui.pendingEdits.length} edit{ui.pendingEdits.length === 1 ? '' : 's'}</button>}
           {activeKind === 'create' && activeRequest && <button type="button" className={styles.goButton} disabled={!canGo || busyActionRef.current} onClick={runGo}>Create · {createSections(snapshot, activeRequest).allocations.length} room reservations</button>}
@@ -896,7 +994,7 @@ type EditorProps = {
   busy?: boolean;
   onStage: (path: string, value: unknown, state?: PendingReservationEdit['state']) => void;
   onBlur: (path: string) => void;
-  onDone?: (path: string) => void;
+  onDone?: (path: string, note?: string) => void;
   editValue: (path: string) => unknown;
   hasPendingEdit?: (path: string) => boolean;
   onOpenEvidence?: (ref: string) => void;
@@ -1397,6 +1495,272 @@ function NativePriceSummary({ snapshot, request }: { snapshot: ReservationPaneSn
         <small>{view?.current ? 'Current HMS price and availability' : 'Not confirmed current; Go stays blocked'}</small>
       </div>;
     })}
+  </div>;
+}
+
+const AMEND_FIELDS = [
+  { value: 'arrival', label: 'Arrival', type: 'date' }, { value: 'departure', label: 'Departure', type: 'date' },
+  { value: 'adults', label: 'Adults', type: 'number' }, { value: 'childCount', label: 'Children', type: 'number' },
+  { value: 'childAges', label: 'Child ages', type: 'ages' }, { value: 'roomType', label: 'Room category', type: 'code' },
+  { value: 'ratePlan', label: 'Rate plan', type: 'code' }, { value: 'firstName', label: 'Guest first name', type: 'text' },
+  { value: 'lastName', label: 'Guest last name', type: 'text' }, { value: 'guestEmail', label: 'Guest email', type: 'email' },
+  { value: 'bookerName', label: 'Booker name', type: 'text' }, { value: 'bookerContact', label: 'Booker contact', type: 'text' },
+  { value: 'cmsSend', label: 'Send confirmation email', type: 'boolean' },
+  { value: 'cmsMessageId', label: 'Confirmation template ID', type: 'text' },
+  { value: 'cmsRecipient', label: 'Confirmation recipient', type: 'email' },
+] as const;
+const AMEND_CLEAR_FIELDS = ['guestEmail', 'bookerName', 'bookerContact', 'cmsSend', 'cmsMessageId', 'cmsRecipient'];
+const AMEND_PRICE_FIELDS = new Set(['arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'ratePlan']);
+const AMEND_UNSUPPORTED_FIELDS = new Set(['roomTypeForCharge', 'reservationNote']);
+
+function changeSupported(change: Record<string, unknown>): boolean {
+  const op = text(change.op), field = text(change.field);
+  if (op === 'shift_dates' || op === 'shift_departure') return typeof change.days === 'number' && Number.isSafeInteger(change.days);
+  if (op === 'clear') return AMEND_CLEAR_FIELDS.some((value) => value === field);
+  return op === 'set' && AMEND_FIELDS.some((item) => item.value === field);
+}
+
+function changeHasUsefulValue(change: Record<string, unknown>): boolean {
+  const op = text(change.op), field = text(change.field);
+  if (op === 'clear') return AMEND_CLEAR_FIELDS.some((value) => value === field);
+  if (op === 'shift_dates' || op === 'shift_departure') return Number.isSafeInteger(change.days) && change.days !== 0;
+  const value = change.value;
+  if (field === 'childAges') return Array.isArray(value) && value.every((age) => typeof age === 'number' && Number.isInteger(age) && age >= 0 && age <= 17);
+  if (field === 'adults') return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 16;
+  if (field === 'childCount') return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 9;
+  if (field === 'arrival' || field === 'departure') return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+  if (field === 'roomType' || field === 'ratePlan') return typeof value === 'string' && /^[A-Z0-9]{1,12}$/.test(value);
+  if (field === 'cmsSend') return typeof value === 'boolean';
+  if (field === 'guestEmail' || field === 'cmsRecipient') return typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= 1000;
+}
+
+function centsLabel(price: Record<string, unknown> | null, key: 'averageCents' | 'totalCents'): string | null {
+  const value = price?.[key];
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
+  const padded = value.padStart(3, '0');
+  return `${padded.slice(0, -2)}.${padded.slice(-2)}`;
+}
+
+function AmendEditor(props: EditorProps & {
+  preparedRefs: Record<string, string>; busy: boolean; onLookup: () => void;
+  onPrepare: (hintId: string) => void; onExecute: (hintId: string) => void;
+}) {
+  const { body, scope, rows } = amendTargets(props.snapshot, props.request);
+  const perTargetPath = `${body}/perTarget`;
+  const rawPerTargets = valueFor(props.snapshot, perTargetPath);
+  const perTargets = Array.isArray(rawPerTargets) ? rawPerTargets.map((value, index) => ({ value: record(value) ?? {}, index })) : [];
+  const excludes = Array.isArray(scope?.exclude) ? scope.exclude : [];
+  const sharedChangesPath = `${body}/sharedChanges`;
+  const rawSharedChanges = valueFor(props.snapshot, sharedChangesPath);
+  const sharedChanges = Array.isArray(rawSharedChanges) ? rawSharedChanges.map((value) => record(value) ?? {}) : [];
+  const addTarget = () => {
+    const id = `amend_target_${crypto.randomUUID().replaceAll('-', '')}`;
+    const includePath = `${body}/targets/include`;
+    const include = rows.map(({ value }) => value);
+    const per = perTargets.map(({ value }) => value);
+    props.onStage(includePath, [...include, { id, candidateRefs: [], suggestedRef: null, sourceRefs: [] }]);
+    props.onStage(`${body}/targets/mode`, 'explicit');
+    if (!per.some((item) => item.hintId === id)) per.push({ hintId: id, changes: [], rateHandling: null, currentObservationRefs: [] });
+    props.onStage(perTargetPath, per);
+    props.onBlur(includePath); props.onBlur(`${body}/targets/mode`); props.onBlur(perTargetPath);
+  };
+  const addPerTarget = (hintId: string) => {
+    const per = perTargets.map(({ value }) => value);
+    if (per.some((item) => item.hintId === hintId)) return;
+    per.push({ hintId, changes: [], rateHandling: null, currentObservationRefs: [] });
+    props.onStage(perTargetPath, per); props.onBlur(perTargetPath);
+  };
+  if (!scope) return <div className={styles.alert}>The saved Amend request has no exact saved-stay scope. Nothing can be looked up or amended from a guessed target.</div>;
+  const unsupportedShared = sharedChanges.some((change) => !changeSupported(change));
+  const unsupportedTarget = (per: Record<string, unknown> | undefined) => {
+    const changes = Array.isArray(per?.changes) ? per.changes.map((value) => record(value) ?? {}) : [];
+    return changes.some((change) => !changeSupported(change)) || changes.some((change) => AMEND_UNSUPPORTED_FIELDS.has(text(change.field)));
+  };
+
+  return <>
+    <div className={styles.notice}>Amend applies only to an exact saved stay selected from fresh native lookup. Prepare shows unsaved HMS price/readback; Go saves one stay. No manual nightly price is accepted.</div>
+    <section className={styles.card}>
+      <div className={styles.cardTitle}><b>Target scope</b><small>{humanize(text(scope.mode) || 'unresolved')} · {rows.length} stay hint(s)</small></div>
+      <FieldShell path={`${body}/targets/mode`} label="Scope" field={props.snapshot.fields[`${body}/targets/mode`]}>
+        <select className={styles.select} value={text(props.editValue(`${body}/targets/mode`))} onChange={(event) => {
+          props.onStage(`${body}/targets/mode`, event.target.value); props.onBlur(`${body}/targets/mode`);
+        }}><option value="unresolved">Unresolved</option><option value="explicit">Explicit saved stays</option></select>
+      </FieldShell>
+      {excludes.length > 0 && <div className={styles.alert}>This native Amend route cannot apply excluded stays. Clear the unsupported exclusion in the source-bound draft before continuing.</div>}
+      <button type="button" className={styles.secondaryButton} disabled={props.busy} onClick={props.onLookup}>Find exact stays in Infor</button>
+      <button type="button" className={styles.secondaryButton} disabled={props.busy || rows.length >= 100} onClick={addTarget}>Add saved-stay hint</button>
+    </section>
+    {rows.map(({ value: hint, index }) => {
+      const hintId = String(hint.id ?? '');
+      const hintRoot = `${body}/targets/include/${index}`;
+      const selectionPath = `${hintRoot}/suggestedRef`;
+      const selectedRef = amendSelection(props.snapshot, selectionPath);
+      const candidates = props.snapshot.session.draft.observations.flatMap((observation) => {
+        const criteria = observation.criteria;
+        if (observation.kind !== 'stay_candidate' || observation.status !== 'complete' || criteria.workflow !== 'amend'
+            || criteria.requestId !== props.request.id || criteria.hintId !== hintId || criteria.selectionPath !== selectionPath) return [];
+        const candidate = record(record(observation.result)?.candidate);
+        return candidate ? [{ ref: observation.ref, candidate }] : [];
+      });
+      const selectedObservation = candidates.find((item) => item.ref === selectedRef);
+      const selectionReview = props.snapshot.session.draft.staffReviews[selectionPath]?.status === 'accepted';
+      const per = perTargets.find((item) => item.value.hintId === hintId);
+      const perRoot = per ? `${perTargetPath}/${per.index}` : null;
+      const ratePath = perRoot ? `${perRoot}/rateHandling` : null;
+      const changesPath = perRoot ? `${perRoot}/changes` : null;
+      const rawChanges = changesPath ? valueFor(props.snapshot, changesPath) : null;
+      const targetChanges = Array.isArray(rawChanges) ? rawChanges.map((value) => record(value) ?? {}) : [];
+      const allChanges = [...sharedChanges, ...targetChanges];
+      const prep = latestAmendPreparation(props.snapshot, props.request.id, hintId);
+      const prepRefCurrent = Boolean(prep && props.preparedRefs[`${props.request.id}:${hintId}`] === prep.ref);
+      const prepResult = record(prep?.result);
+      const approvedPrice = record(prepResult?.approvedPrices);
+      const priceTotal = centsLabel(approvedPrice, 'totalCents');
+      const priceAverage = centsLabel(approvedPrice, 'averageCents');
+      const rateHandling = ratePath ? text(props.editValue(ratePath)) : '';
+      const pricingChanged = allChanges.some((change) => change.op === 'shift_dates' || change.op === 'shift_departure'
+        || change.op === 'set' && AMEND_PRICE_FIELDS.has(text(change.field)));
+      const needsReprice = pricingChanged && rateHandling !== 'reprice';
+      const targetUnsupported = unsupportedShared || unsupportedTarget(per?.value);
+      const changePathsReviewed = allChanges.every((change, changeIndex) => {
+        const isShared = changeIndex < sharedChanges.length;
+        const localIndex = isShared ? changeIndex : changeIndex - sharedChanges.length;
+        const changeRoot = isShared ? `${sharedChangesPath}/${localIndex}` : `${changesPath}/${localIndex}`;
+        const path = change.op === 'shift_dates' || change.op === 'shift_departure' ? `${changeRoot}/days`
+          : change.op === 'clear' || change.op === 'set' ? `${changeRoot}/value` : '';
+        return Boolean(path && props.snapshot.session.draft.staffReviews[path]?.status === 'accepted');
+      });
+      const rateReviewed = Boolean(ratePath && props.snapshot.session.draft.staffReviews[ratePath]?.status === 'accepted');
+      const changesReady = allChanges.length > 0 && allChanges.every((change) => changeSupported(change) && changeHasUsefulValue(change));
+      const prior = props.snapshot.operationResults.find((result) => result.requestId === props.request.id
+        && result.allocationId === hintId && result.workflow === 'amend' && (result.status === 'succeeded' || result.status === 'unknown'));
+      const canPrepare = props.request.supported && !props.busy && !targetUnsupported && Boolean(selectedObservation)
+        && Boolean(per && rateHandling) && changesReady;
+      const canExecute = canPrepare && prepRefCurrent && changePathsReviewed && rateReviewed && !needsReprice
+        && selectionReview && prior?.status !== 'unknown' && prior?.status !== 'succeeded';
+      const targetValue = record(prepResult?.target);
+      return <section className={styles.card} key={hintId || index}>
+        <div className={styles.cardTitle}><b>Saved stay {index + 1}</b><small>{hintId || 'Target identifier missing'}</small></div>
+        <div className={styles.twoCol}>
+          <TextField {...props} path={`${hintRoot}/confirmation`} label="Confirmation" />
+          <TextField {...props} path={`${hintRoot}/guestName`} label="Guest name" />
+        </div>
+        <div className={styles.twoCol}>
+          <TextField {...props} path={`${hintRoot}/bookedArrival`} label="Booked arrival hint" type="date" />
+          <TextField {...props} path={`${hintRoot}/bookedDeparture`} label="Booked departure hint" type="date" />
+        </div>
+        <div className={styles.profileWarning}>
+          <b>{selectedObservation && selectionReview ? 'Exact native stay selected and reviewed' : selectedObservation ? 'Native stay selected · staff confirmation required' : 'Select an exact native stay'}</b>
+          {selectedObservation && <span>{text(selectedObservation.candidate.confirmation)} · {text(selectedObservation.candidate.firstName)} {text(selectedObservation.candidate.lastName)} · {text(selectedObservation.candidate.arrival)} → {text(selectedObservation.candidate.departure)} · {text(selectedObservation.candidate.roomType)} / {text(selectedObservation.candidate.ratePlan)}</span>}
+          {candidates.length > 0 && <div className={styles.candidateList}>{candidates.map(({ ref, candidate }) => <div className={styles.candidateOption} key={ref}>
+            <span><b>{text(candidate.confirmation)} · {text(candidate.firstName)} {text(candidate.lastName)}</b><small>{text(candidate.arrival)} → {text(candidate.departure)} · {text(candidate.roomType)} / {text(candidate.ratePlan)}</small></span>
+            <button type="button" disabled={props.busy} onClick={() => { props.onStage(selectionPath, ref); props.onBlur(selectionPath); }}>{selectedRef === ref ? 'Confirm selected' : 'Select exact stay'}</button>
+          </div>)}</div>}
+          {!candidates.length && <small>Enter exact confirmation and/or original stay hints, then refresh native lookup. A source suggestion alone is not a native match.</small>}
+        </div>
+        {per ? <>
+          <FieldShell path={ratePath!} label="Rate handling" field={props.snapshot.fields[ratePath!] }>
+            <select className={styles.select} value={rateHandling} onChange={(event) => {
+              const value = event.target.value;
+              props.onStage(ratePath!, value, value ? 'set' : 'none'); props.onBlur(ratePath!);
+            }}><option value="">Choose rate handling</option><option value="retain">Retain existing rate</option><option value="reprice">Reprice from current HMS rates</option></select>
+            <small className={styles.help}>A date, occupancy, room-category or rate-plan change requires Reprice. Rate amounts remain native-only.</small>
+          </FieldShell>
+          <AmendChangeList {...props} path={sharedChangesPath} label="Changes shared across selected stays" changes={sharedChanges} shared />
+          <AmendChangeList {...props} path={changesPath!} label="Changes for this stay" changes={targetChanges} />
+          {targetUnsupported && <div className={styles.alert}>A change in this request is not supported by the connected Amend native tools. Remove or correct it in the source request; no write will be offered.</div>}
+          {needsReprice && <div className={styles.problem}>This change can affect price. Choose “Reprice from current HMS rates” before Prepare.</div>}
+          {prepResult && <div className={prepRefCurrent ? styles.profileReady : styles.profileWarning}>
+            <b>{prepRefCurrent ? 'Current unsaved Amend preview' : 'Previous preview · changes since then require Prepare again'}</b>
+            <span>{priceAverage && approvedPrice ? `${text(approvedPrice.currency)} ${priceAverage} average / night` : 'No native average price was returned'}
+              {priceTotal && approvedPrice ? ` · ${text(approvedPrice.currency)} ${priceTotal} total` : ''}</span>
+            {targetValue && <small>Prepared target: {text(targetValue.arrival)} → {text(targetValue.departure)} · {text(targetValue.roomType)} / {text(targetValue.ratePlan)}</small>}
+          </div>}
+          <div className={styles.twoCol}>
+            <button type="button" className={styles.secondaryButton} disabled={!canPrepare} onClick={() => props.onPrepare(hintId)}>Prepare unsaved price and availability</button>
+            <button type="button" className={styles.goButton} disabled={!canExecute} onClick={() => props.onExecute(hintId)}>Go · amend this stay</button>
+          </div>
+          {prior?.status === 'succeeded' && <div className={styles.notice}>This stay already has a verified Amend receipt. Later edits affect the draft only.</div>}
+          {prior?.status === 'unknown' && <div className={styles.alert}>Amend outcome is uncertain. Reconcile the operation below before retrying.</div>}
+        </> : <div className={styles.notice}>
+          No per-stay change record exists yet. <button type="button" className={styles.inlineButton} disabled={props.busy} onClick={() => addPerTarget(hintId)}>Add rate handling and changes for this stay</button>
+        </div>}
+      </section>;
+    })}
+    {rows.length === 0 && <div className={styles.notice}>Add the exact saved-stay confirmation and dates from the selected email, then resolve them against Infor.</div>}
+    {!props.request.supported && <div className={styles.alert}>Amend is not enabled for this property in the connected native route.</div>}
+  </>;
+}
+
+function AmendChangeList(props: EditorProps & { path: string; label: string; changes: Record<string, unknown>[]; shared?: boolean }) {
+  const add = (op: 'set' | 'clear' | 'shift_dates' | 'shift_departure') => {
+    const row = op === 'shift_dates' || op === 'shift_departure'
+      ? { op, days: 0, sourceRefs: [] }
+      : op === 'clear' ? { op, field: 'guestEmail', sourceRefs: [] }
+        : { op, field: 'arrival', value: '', sourceRefs: [] };
+    props.onStage(props.path, [...props.changes, row]); props.onBlur(props.path);
+  };
+  return <section className={styles.card}>
+    <div className={styles.cardTitle}><b>{props.label}</b><small>{props.changes.length} change(s)</small></div>
+    {props.changes.map((change, index) => <AmendChangeRow key={`${props.path}-${index}`} {...props} path={`${props.path}/${index}`} change={change} />)}
+    {props.changes.length === 0 && <small className={styles.help}>No changes recorded. Add only the exact fields requested; shared changes apply to every included stay.</small>}
+    <div className={styles.twoCol}>
+      <button type="button" className={styles.secondaryButton} disabled={Boolean(props.busy)} onClick={() => add('set')}>Add field change</button>
+      <button type="button" className={styles.secondaryButton} disabled={Boolean(props.busy)} onClick={() => add('clear')}>Add allowed field clear</button>
+      <button type="button" className={styles.secondaryButton} disabled={Boolean(props.busy)} onClick={() => add('shift_dates')}>Shift arrival and departure</button>
+      <button type="button" className={styles.secondaryButton} disabled={Boolean(props.busy)} onClick={() => add('shift_departure')}>Shift departure only</button>
+    </div>
+  </section>;
+}
+
+function AmendChangeRow(props: EditorProps & { path: string; change: Record<string, unknown> }) {
+  const { path, change } = props;
+  const op = text(change.op);
+  const fieldName = text(props.editValue(`${path}/field`)) || text(change.field);
+  const spec = AMEND_FIELDS.find((item) => item.value === fieldName);
+  const unsupported = !changeSupported(change) || AMEND_UNSUPPORTED_FIELDS.has(fieldName);
+  const valuePath = `${path}/value`;
+  const currentValue = props.editValue(valuePath);
+  const updateField = (field: string) => {
+    props.onStage(`${path}/field`, field);
+    if (op === 'set') props.onStage(valuePath, '', 'set');
+    props.onBlur(`${path}/field`); if (op === 'set') props.onBlur(valuePath);
+  };
+  return <div className={styles.serviceCard}>
+    <div className={styles.cardTitle}><b>{op === 'set' ? 'Set field' : op === 'clear' ? 'Clear field' : op === 'shift_dates' ? 'Shift both dates' : op === 'shift_departure' ? 'Shift departure' : 'Unsupported source change'}</b>
+      <small>{props.shared ? 'Shared across stays' : 'This stay only'}</small></div>
+    {op === 'set' || op === 'clear' ? <FieldShell path={`${path}/field`} label="Native field" field={props.snapshot.fields[`${path}/field`]}>
+      <select className={styles.select} value={fieldName} onChange={(event) => updateField(event.target.value)}>
+        {(op === 'clear' ? AMEND_FIELDS.filter((item) => AMEND_CLEAR_FIELDS.some((value) => value === item.value)) : AMEND_FIELDS)
+          .map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}
+      </select>
+    </FieldShell> : null}
+    {op === 'shift_dates' || op === 'shift_departure' ? <TextField {...props} path={`${path}/days`} label="Days to shift" type="number" min={-3660} max={3660} /> : null}
+    {op === 'set' && spec ? spec.type === 'boolean' ? <FieldShell path={valuePath} label={spec.label} field={props.snapshot.fields[valuePath]}>
+      <select className={styles.select} value={currentValue == null || currentValue === '' ? '' : currentValue ? 'true' : 'false'} onChange={(event) => {
+        const value = event.target.value;
+        props.onStage(valuePath, value === 'true', value ? 'set' : 'unknown'); props.onBlur(valuePath);
+      }}><option value="">Choose explicitly</option><option value="true">Yes</option><option value="false">No</option></select>
+    </FieldShell> : spec.type === 'ages' ? <TextField {...props} path={valuePath} label={spec.label} valueOverride={Array.isArray(currentValue) ? currentValue.join(', ') : text(currentValue)}
+      help="Enter comma-separated exact ages. Leave empty only to explicitly set zero children." onValue={(value) => {
+        const raw = text(value).trim();
+        if (!raw) { props.onStage(valuePath, [], 'set'); return; }
+        const parts = raw.split(',').map((item) => item.trim());
+        const ages = parts.map(Number);
+        props.onStage(valuePath, parts.every((item) => /^\d+$/.test(item)) && ages.every((age) => age <= 17) ? ages : raw);
+      }} /> : <TextField {...props} path={valuePath} label={spec.label} type={spec.type === 'date' ? 'date'
+        : spec.type === 'number' ? 'number' : spec.type === 'email' ? 'email' : 'text'} min={spec.type === 'number' ? 0 : undefined}
+        max={spec.type === 'number' ? (fieldName === 'adults' ? 16 : 9) : undefined}
+        help={spec.type === 'code' ? 'Use the native HMS code; current price/availability is displayed only after Prepare.' : undefined} /> : null}
+    {op === 'set' && fieldName === 'childAges' && Array.isArray(currentValue) && currentValue.length === 0
+        && props.snapshot.fields[valuePath]?.required && props.snapshot.fields[valuePath]?.review !== 'accepted' && props.onDone
+      ? <button type="button" className={styles.inlineButton} disabled={Boolean(props.busy)} onClick={() => props.onDone?.(valuePath)}>Confirm zero children</button> : null}
+    {op === 'clear' && !unsupported && <div className={styles.notice}>
+      <span>This explicitly clears {spec?.label ?? fieldName}; HMS applies only supported contact/CMS clears.</span>
+      <button type="button" className={styles.inlineButton} disabled={Boolean(props.busy)} onClick={() => props.onDone?.(valuePath)}>Confirm this clear</button>
+    </div>}
+    {unsupported && <div className={styles.alert}>This source change is unsupported by the connected native Amend module. Do not proceed until request is corrected.</div>}
   </div>;
 }
 
