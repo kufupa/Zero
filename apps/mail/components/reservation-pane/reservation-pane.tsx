@@ -315,41 +315,6 @@ function filingReviewPaths(snapshot: ReservationPaneSnapshot, request: Reservati
   return paths;
 }
 
-function filingTargetObservation(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection) {
-  const { scope, include } = filingTargetHints(snapshot, request);
-  if (scope?.mode !== 'explicit' || include.length !== 1 || (Array.isArray(scope.exclude) && scope.exclude.length > 0)) return null;
-  const hint = include[0]!;
-  if (typeof hint.id !== 'string') return null;
-  const path = filingTargetPath(request, hint.id);
-  const selectedRef = valueFor(snapshot, path);
-  if (typeof selectedRef !== 'string') return null;
-  const observation = snapshot.session.draft.observations.find((entry) => entry.ref === selectedRef && entry.kind === 'stay_candidate'
-    && entry.status === 'complete' && record(entry.coverage)?.complete === true
-    && entry.criteria.workflow === 'filing' && entry.criteria.requestId === request.id && entry.criteria.targetHintId === hint.id
-    && record(entry.result)?.outcome === 'found');
-  const stay = record(record(observation?.result)?.stay);
-  if (!observation || !stay || (hasValue(hint.confirmation) && hint.confirmation !== stay.confirmation)
-      || (hasValue(hint.bookedArrival) && hint.bookedArrival !== stay.arrival)
-      || (hasValue(hint.bookedDeparture) && hint.bookedDeparture !== stay.departure)
-      || (hasValue(hint.guestName) && !sameIdentityText(hint.guestName, `${text(stay.firstName)} ${text(stay.lastName)}`))) return null;
-  return { hint, path, observation, stay };
-}
-
-function filingSourceObservation(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection, documentId: string) {
-  return [...snapshot.session.draft.observations].reverse().find((entry) => entry.kind === 'document'
-    && entry.status === 'complete' && record(entry.coverage)?.complete === true
-    && entry.criteria.workflow === 'filing' && entry.criteria.requestId === request.id && entry.criteria.documentId === documentId
-    && record(entry.result)?.outcome === 'ready');
-}
-
-function isFilingReadyForPrepare(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
-  const documents = filingDocuments(snapshot, request);
-  if (documents.length !== 1 || documents[0]!.handling !== 'filing_requested'
-      || !['voucher', 'payment_proof'].includes(documents[0]!.kind) || !filingTargetObservation(snapshot, request)) return false;
-  const source = filingSourceObservation(snapshot, request, documents[0]!.id);
-  return Boolean(source && typeof record(source.result)?.sha256 === 'string'
-    && typeof record(source.result)?.sourceSnapshotDigest === 'string');
-}
 
 function isRenderedCreateReviewPath(request: ReservationRequestProjection, path: string): boolean {
   const prefix = requestPath(request) + '/body';
@@ -713,6 +678,8 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
           })}
         </nav>
         <main className={styles.main}>
+          {snapshot.issues.filter((issue) => !activeRequest || !issue.path || issue.path.startsWith(`${requestPath(activeRequest)}/`)).map((issue, index) =>
+            <div className={styles.issueLine} key={`${issue.kind}-${index}`}><b>{humanize(issue.kind)}</b><span>{issue.explanation}</span></div>)}
           {activeRequest ? <>
             <div className={styles.titleRow}><div><small className={styles.eyebrow}>{KIND_LABEL[activeRequest.kind]}</small><h1>{activeRequest.text || `${KIND_LABEL[activeRequest.kind]} reservation work`}</h1></div>
               <span className={activeRequest.supported ? styles.connected : styles.notConnected}>{activeRequest.supported ? 'Connected' : 'Review only'}</span></div>
@@ -727,9 +694,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
                 </option>)}
               </select>
             </section>}
-            {snapshot.issues.filter((issue) => !issue.path || issue.path.startsWith(`${requestPath(activeRequest)}/`)).map((issue, index) =>
-              <div className={styles.issueLine} key={`${issue.kind}-${index}`}><b>{humanize(issue.kind)}</b><span>{issue.explanation}</span></div>)}
-            {displayedResult.some((result) => result.status === 'succeeded') && <div className={styles.notice}>At least one room already has an HMS confirmation. Later edits and undo affect the draft only; they do not change a saved reservation.</div>}
+            {activeRequest.kind === 'create' && displayedResult.some((result) => result.status === 'succeeded') && <div className={styles.notice}>At least one room already has an HMS confirmation. Later edits and undo affect the draft only; they do not change a saved reservation.</div>}
             {activeRequest.kind === 'create'
                 ? <CreateEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur} onDone={markDone} editValue={editValue} hasPendingEdit={hasPendingEdit}
                   busy={Boolean(ui.busyAction) || ui.pendingEdits.length > 0}
