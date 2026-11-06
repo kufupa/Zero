@@ -219,10 +219,6 @@ export function reservationWorkflowV2CompileServiceItem(draft: ReservationWorkfl
   if (!targetQuantitySet && !(quantityScope === 'overall' && serviceTargets.length === 1)) {
     errors.push('quantity:whole_booking_allocation_unresolved');
   }
-  if (!items.unitPrice) errors.push('unitPrice:source_price_required');
-  if (!items.quantity) errors.push('quantity:target_quantity_required');
-  if (!items.startDate || !items.endDate) errors.push('dates:explicit_source_or_staff_values_required');
-  if (items.startDate && items.endDate && items.startDate >= items.endDate) errors.push('dates:range_invalid');
   if (quantityScope === 'overall' && serviceTargets.length === 1 && !items.quantity) {
     const quantityRequest = record(service.quantityRequest);
     const quantityPath = pointer('proposal', 'content', 'services', row.serviceIndex, 'quantityRequest', 'value');
@@ -234,6 +230,10 @@ export function reservationWorkflowV2CompileServiceItem(draft: ReservationWorkfl
       if (!accepted(draft, quantityPath)) reviewPaths.add(quantityPath);
     }
   }
+  if (!items.unitPrice) errors.push('unitPrice:source_price_required');
+  if (!items.quantity) errors.push('quantity:target_quantity_required');
+  if (!items.startDate || !items.endDate) errors.push('dates:explicit_source_or_staff_values_required');
+  if (items.startDate && items.endDate && items.startDate >= items.endDate) errors.push('dates:range_invalid');
   if (serviceTargets.length > 1 && quantityScope === 'overall' && !targetQuantitySet) {
     errors.push('quantity:whole_booking_quantity_must_not_be_split');
   }
