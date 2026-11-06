@@ -454,6 +454,10 @@ function isRequestPrepared(snapshot: ReservationPaneSnapshot, request: Reservati
   });
 }
 
+function hasLegacyCreateReceiptIssue(snapshot: ReservationPaneSnapshot): boolean {
+  return snapshot.issues.some((issue) => issue.kind === 'legacy_create_receipts');
+}
+
 export function ReservationPane({ source, snapshot, loadError, client, onSnapshot, onOpenEvidence, onOpenAttachment }: ReservationPaneProps) {
   const [ui, dispatch] = useReducer(reduceReservationUi, source.selectionEpoch, initialReservationUiState);
   const sourceRef = useRef(source);
@@ -605,6 +609,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     let request = current?.requests.find((item) => item.id === activeRequestRef.current)
       ?? current?.requests.find((item) => item.kind === 'create');
     if (!current || !request || request.kind !== 'create') return;
+    if (hasLegacyCreateReceiptIssue(current)) return;
     if (pending.current.size) {
       await flushEdits(bound);
       current = snapshotRef.current;
@@ -627,6 +632,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
 
   useEffect(() => {
     if (!snapshot || activeKind !== 'create' || !activeRequest || snapshot.preparation.state === 'current') return;
+    if (hasLegacyCreateReceiptIssue(snapshot)) return;
     if (!isInputReady(snapshot, activeRequest)) return;
     const key = `${source.selectionEpoch}:${snapshot.session.revision}:${activeRequest.id}`;
     if (triedPrepare.current.has(key)) return;
@@ -787,7 +793,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
           })}
         </nav>
         <main className={styles.main}>
-          {snapshot.issues.filter((issue) => !activeRequest || !issue.path || issue.path.startsWith(`${requestPath(activeRequest)}/`)).map((issue, index) =>
+          {snapshot.issues.filter((issue) => issue.kind === 'legacy_create_receipts' || !activeRequest || !issue.path || issue.path.startsWith(`${requestPath(activeRequest)}/`)).map((issue, index) =>
             <div className={styles.issueLine} key={`${issue.kind}-${index}`}><b>{humanize(issue.kind)}</b><span>{issue.explanation}</span></div>)}
           {activeRequest ? <>
             <div className={styles.titleRow}><div><small className={styles.eyebrow}>{KIND_LABEL[activeRequest.kind]}</small><h1>{activeRequest.text || `${KIND_LABEL[activeRequest.kind]} reservation work`}</h1></div>
@@ -807,6 +813,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
             {activeRequest.kind === 'create'
                 ? <CreateEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur} onDone={markDone} editValue={editValue} hasPendingEdit={hasPendingEdit}
                   busy={Boolean(ui.busyAction) || ui.pendingEdits.length > 0}
+                  prepareBlockedReason={hasLegacyCreateReceiptIssue(snapshot) ? 'A legacy Create save cannot be matched safely to this v2 room. Refreshing native price is disabled to avoid creating an unrelated or duplicate reservation.' : undefined}
                   onLookupServices={(allocationId, serviceId) => runServiceAction('lookup', activeRequest.id, allocationId, serviceId)}
                   onPreviewServices={(allocationId, serviceId) => runServiceAction('preview', activeRequest.id, allocationId, serviceId)}
                   onOpenEvidence={onOpenEvidence} onPrepare={() => { void enqueue('Checking Infor now', sourceRef.current, () => prepareAll(false)); }}
@@ -856,7 +863,7 @@ type EditorProps = {
   onOpenEvidence?: (ref: string) => void;
 };
 
-function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => void; onLookup: () => void;
+function CreateEditor(props: EditorProps & { busy: boolean; prepareBlockedReason?: string; onPrepare: () => void; onLookup: () => void;
   onLookupServices: (allocationId: string, serviceId: string) => void;
   onPreviewServices: (allocationId: string, serviceId: string) => void }) {
   const { snapshot, request } = props;
@@ -886,7 +893,8 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
 
     <div className={styles.sectionHeader}><div><h2>Dates and room allocation</h2><p>Each room retains its own guest and occupancy. Empty child ages remain unknown—not zero.</p></div></div>
     <div className={styles.twoCol}><button type="button" className={styles.secondaryButton} onClick={props.onLookup}>Refresh native guest and party matches</button>
-      <button type="button" className={styles.secondaryButton} onClick={props.onPrepare}>Refresh current Infor price</button></div>
+      <button type="button" className={styles.secondaryButton} disabled={props.busy || Boolean(props.prepareBlockedReason)} onClick={props.onPrepare}>Refresh current Infor price</button></div>
+    {props.prepareBlockedReason && <div className={styles.alert}>{props.prepareBlockedReason}</div>}
     {sections.sections.map(({ value: section, index }) => {
       const sectionRoot = `${body}/dateSections/${index}`;
       const allocationCount = sections.allocations.filter(({ value }) => value.dateSectionId === section.id).length;
