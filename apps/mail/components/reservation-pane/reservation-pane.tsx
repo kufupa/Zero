@@ -167,7 +167,7 @@ function emptyRoomAllocation(dateSectionId: string) {
 }
 
 function latestQuotePriceObservation(snapshot: ReservationPaneSnapshot, requestId: string) {
-  return [...snapshot.session.draft.observations].reverse().find((observation) => observation.kind === 'rate_availability'
+  return preparedQuoteObservation(snapshot, requestId) ?? [...snapshot.session.draft.observations].reverse().find((observation) => observation.kind === 'rate_availability'
     && observation.criteria.workflow === 'quote' && observation.criteria.requestId === requestId);
 }
 
@@ -200,13 +200,12 @@ function quoteReviewInfo(snapshot: ReservationPaneSnapshot, requestId: string) {
     Date.parse(review.at ?? '') >= Date.parse(observation!.observedAt) };
 }
 
-function isQuotePrepared(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
-  const preparation = [...snapshot.operationResults].reverse().find((result) => result.requestId === request.id
+function preparedQuoteObservation(snapshot: ReservationPaneSnapshot, requestId: string) {
+  const preparation = [...snapshot.operationResults].reverse().find((result) => result.requestId === requestId
     && result.workflow === 'quote' && result.status === 'prepared');
   if (!preparation || preparation.generationId !== snapshot.session.draft.generationId
-      || !Array.isArray(preparation.observationRefs)) return false;
-  return preparation.observationRefs.some((ref) => {
-    const observation = snapshot.session.draft.observations.find((item) => item.ref === ref && item.kind === 'rate_availability');
+      || !Array.isArray(preparation.observationRefs)) return null;
+  return preparation.observationRefs.map((ref) => snapshot.session.draft.observations.find((item) => item.ref === ref && item.kind === 'rate_availability')).find((observation) => {
     const result = record(observation?.result);
     const criteria = record(observation?.criteria);
     const freshUntil = typeof result?.freshUntil === 'string' ? Date.parse(result.freshUntil) : Number.NaN;
@@ -214,12 +213,16 @@ function isQuotePrepared(snapshot: ReservationPaneSnapshot, request: Reservation
       && observation.generationId === snapshot.session.draft.generationId
       && observation.propertyCode === snapshot.session.draft.propertyCode
       && observation.sourceMessageId === snapshot.session.draft.source.messageId
-      && JSON.stringify(result?.inputOverrides) === JSON.stringify(quoteInputOverrides(snapshot, request.id))
-      && criteria?.workflow === 'quote' && criteria.requestId === request.id
+      && JSON.stringify(result?.inputOverrides) === JSON.stringify(quoteInputOverrides(snapshot, requestId))
+      && criteria?.workflow === 'quote' && criteria.requestId === requestId
       && criteria.inputDigest === result?.inputDigest && typeof result?.inputDigest === 'string'
       && criteria.sourceHash === snapshot.session.draft.source.sourceHash
       && Number.isFinite(freshUntil) && freshUntil > Date.now();
   });
+}
+
+function isQuotePrepared(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
+  return Boolean(preparedQuoteObservation(snapshot, request.id));
 }
 
 function quoteReceiptObservations(snapshot: ReservationPaneSnapshot, requestId: string) {
@@ -1250,7 +1253,7 @@ function PartyField(props: EditorProps & { path: string; label: string }) {
   const tail = props.path.split('/').pop();
   const role = tail === 'bookingAgency' || tail === 'agency' ? 'agency' : tail === 'arAccount' ? 'ar_account' : 'organization';
   const candidates = props.snapshot.session.draft.observations.flatMap((observation) => {
-    if (observation.kind !== 'party_candidate' || observation.status !== 'complete'
+    if (parentEmpty || observation.kind !== 'party_candidate' || observation.status !== 'complete'
         || observation.criteria.role !== role
         || observation.criteria.fieldPath !== selectionPath
           && !(Array.isArray(observation.criteria.fieldPaths) && observation.criteria.fieldPaths.includes(selectionPath))) return [];
@@ -1524,19 +1527,21 @@ function QuoteEditor(props: EditorProps & { busy: boolean; onLookup: () => void;
 }
 
 function QuotePartyField(props: EditorProps & { path: string; role: 'agency' | 'company'; label: string }) {
-  const party = record(props.editValue(props.path)) ?? record(draftAtPath(props.snapshot, props.path)) ?? {};
+  const parentOverride = props.snapshot.session.draft.fieldOverrides[props.path];
+  const parentEmpty = parentOverride && ['none', 'clear', 'unknown'].includes(parentOverride.state);
+  const party = parentEmpty ? {} : record(props.editValue(props.path)) ?? record(draftAtPath(props.snapshot, props.path)) ?? {};
   const namePath = `${props.path}/name`;
-  const name = text(props.editValue(namePath) ?? party.name);
+  const name = parentEmpty ? '' : text(props.editValue(namePath) ?? party.name);
   const nameField = { ...props.snapshot.fields[namePath],
     path: namePath, value: name,
-    required: props.snapshot.session.draft.fieldReviewRequirements[namePath]?.required !== false,
+    required: !parentEmpty && props.snapshot.session.draft.fieldReviewRequirements[namePath]?.required !== false,
     review: props.snapshot.session.draft.staffReviews[namePath]?.status ?? 'pending',
     provenance: props.snapshot.fields[namePath]?.provenance ?? 'source' as const,
     evidenceRefs: props.snapshot.session.draft.fieldReviewRequirements[namePath]?.evidenceRefs ??
       props.snapshot.session.draft.proposal.sourceClaims.find((claim) => claim.path === namePath)?.sourceRefs ?? [],
   };
   const selectionPath = `${props.path}/nativeSelectionRef`;
-  const selectedRef = props.snapshot.fields[selectionPath]?.override?.state === 'set'
+  const selectedRef = !parentEmpty && props.snapshot.fields[selectionPath]?.override?.state === 'set'
     && typeof props.snapshot.fields[selectionPath]?.value === 'string' ? props.snapshot.fields[selectionPath]!.value as string : null;
   const candidates = props.snapshot.session.draft.observations.flatMap((observation) => {
     if (observation.kind !== 'party_candidate' || observation.status !== 'complete' || record(observation.coverage)?.complete !== true

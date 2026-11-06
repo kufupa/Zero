@@ -792,11 +792,14 @@ export async function reservationWorkflowV2QuotePrepare(
   if (compiled.status !== 'ok') return { status: compiled.status, issue: compiled.issue, fields: compiled.fields };
   const existing = matchingPreparedQuote(loaded.draft, compiled);
   if (existing) {
-    const result = operationResult(loaded.draft, request.id, randomUUID(), 'prepared', [existing.ref],
+    // Preserve the native capture time/expiry while binding reused pricing to current inputs.
+    const refreshed: ReservationWorkflowV2Observation = { ...existing, ref: randomUUID(),
+      result: { ...existing.result, inputOverrides: quoteInputOverrides(loaded.draft, request.id) } };
+    const result = operationResult(loaded.draft, request.id, randomUUID(), 'prepared', [refreshed.ref],
       'Current HMS quote price and availability prepared; no reservation or email created');
-    const saved = await persistResult(ctx, input, loaded.draft.generationId, result);
+    const saved = await persistObservation(ctx, input, refreshed, result);
     return saved.status === 'ok' ? { status: 'prepared', requestId: request.id, operationId: result.id,
-      quote: pricePayload(existing), observationRef: existing.ref } : saved;
+      quote: pricePayload(refreshed), observationRef: refreshed.ref } : saved;
   }
   try {
     const priced = await priceQuote(ctx, input, loaded.draft, compiled);
