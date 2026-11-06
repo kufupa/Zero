@@ -1913,8 +1913,13 @@ function ServiceEditor(props: EditorProps & {
       <b>Native Add-On preview · {latestPreview.status === 'complete' ? 'not saved' : 'needs attention'}</b>
       {previewCurrent ? <small>Complete native preview still matches this service input; a Create receipt alone does not invalidate it.</small>
         : <small className={styles.problem}>No current complete preview matches the latest service/Create inputs. Re-run it before Go.</small>}
-      {native ? <span>{text(native.code)} · {text(native.name)} · quantity {text(native.quantity)} · {text(native.currency)} {text(native.totalCost)} total</span>
-        : <small>{text(previewResult?.issue) || 'No complete native Add-On price result was returned.'}</small>}
+      {native ? <>
+        <span>{text(native.code)} · {text(native.name)}</span>
+        {FRESH_SERVICE_NATIVE_FIELDS.map(([key, label]) => <div className={styles.candidateOption} key={key}>
+          <span><b>{label}</b><small>{hasValue(native[key]) ? text(native[key]) : 'Not returned'}</small></span>
+        </div>)}
+        <small>Add-On Go approves these displayed native values; a fresh saved-stay prepare must match them or require another review.</small>
+      </> : <small>{text(previewResult?.issue) || 'No complete native Add-On price result was returned.'}</small>}
       {previewResult?.saved === false && <small>Saved: no. Create does not save this Add-On.</small>}
       {!unsavedInputsReviewed && unsavedReviewPaths.length > 0 && <small className={styles.problem}>Review the service input fields above before Add-On Go.</small>}
     </div>}
