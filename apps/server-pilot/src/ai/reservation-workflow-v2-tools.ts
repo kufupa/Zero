@@ -1210,9 +1210,6 @@ async function persistOperationResultInTransaction(tx: Parameters<Parameters<DB[
   const [item] = await tx.select({ state: workItem.state, revision: workItem.revision, revisionSeq: workItem.revisionSeq })
     .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1).for('update');
   const draft = item && reservationWorkflowV2DraftOf(item.state as Record<string, unknown>);
-  if (item && Object.keys(stayCommitsOf(item.state)).length > 0) {
-    throw new Error('reservation_workflow_v2_legacy_create_requires_review');
-  }
   if (!draft || draft.source.sourceHash !== input.source.sourceHash || draft.revision !== input.expectedRevision ||
       item?.revisionSeq !== input.expectedSeq || draft.propertyCode !== ctx.property.propertyCode) {
     throw new Error('reservation_workflow_v2_result_scope_changed');
@@ -1245,6 +1242,9 @@ async function authorizeCurrentCreate(tx: Parameters<Parameters<DB['transaction'
     revisionSeq: workItem.revisionSeq, sourceMessageId: workItem.sourceMessageId, threadId: workItem.threadId })
     .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1).for('update');
   const draft = item && reservationWorkflowV2DraftOf(item.state as Record<string, unknown>);
+  if (item && Object.keys(stayCommitsOf(item.state)).length > 0) {
+    throw new Error('reservation_workflow_v2_legacy_create_requires_review');
+  }
   if (!item || !draft || item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq ||
       item.sourceMessageId !== input.source.messageId || item.threadId !== input.source.threadId ||
       draft.revision !== input.expectedRevision || draft.propertyCode !== ctx.property.propertyCode ||
