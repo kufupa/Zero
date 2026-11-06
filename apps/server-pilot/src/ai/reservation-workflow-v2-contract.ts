@@ -6,7 +6,6 @@ export const RESERVATION_PREFILL_SCHEMA_VERSION = 'reservation-prefill.v0.2' as 
 
 const idSchema = z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/);
 const refSchema = z.string().min(1).max(160);
-const nullableText = z.string().max(2000).nullable();
 const noneSchema = z.object({ kind: z.literal('none') }).strict();
 const value = (schema: z.ZodTypeAny) => z.union([schema, noneSchema, z.null()]);
 const occupancySchema = z.object({

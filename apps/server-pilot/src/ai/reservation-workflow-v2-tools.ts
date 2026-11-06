@@ -31,7 +31,6 @@ import {
   recoverHmsLabtestCreate,
   resolveHmsLabtestDispatch,
   resolveNeverDispatchedCreate,
-  type HmsLabtestIntent,
   type HmsLabtestWriteHandle,
 } from './hms-labtest-dispatch.js';
 import { hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
