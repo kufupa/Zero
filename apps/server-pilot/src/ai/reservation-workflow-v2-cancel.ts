@@ -152,6 +152,16 @@ function uniqueRefs(values: unknown[]): string[] {
     .filter((value): value is string => typeof value === 'string' && value.length > 0);
 }
 
+/** Evidence refs are not observation refs; preserve them in the result and link their admitted source observation. */
+function sourceObservationRefs(draft: ReservationWorkflowV2Draft, values: unknown[]): string[] {
+  const refs = new Set(uniqueRefs(values));
+  return draft.observations.filter((item) => item.generationId === draft.generationId &&
+    item.propertyCode === draft.propertyCode && item.sourceMessageId === draft.source.messageId &&
+    (refs.has(item.ref) || (item.kind === 'source' && Array.isArray(item.result.evidenceRefs) &&
+      item.result.evidenceRefs.some((ref) => typeof ref === 'string' && refs.has(ref)))))
+    .map((item) => item.ref);
+}
+
 function cancelRequest(draft: ReservationWorkflowV2Draft, requestId: string) {
   return draft.proposal.content.requests.find((request) => request.id === requestId && request.kind === 'cancel') ?? null;
 }
@@ -196,7 +206,7 @@ function observation(draft: ReservationWorkflowV2Draft, input: ReservationWorkfl
   criteria: Record<string, unknown>, result: Record<string, unknown>, notes: string[] = []): ReservationWorkflowV2Observation {
   return { ref: randomUUID(), generationId: draft.generationId, kind: 'stay_candidate', status,
     observedAt: new Date().toISOString(), propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId,
-    sourceRefs: uniqueRefs([criteria.sourceRefs, result.sourceRefs]),
+    sourceRefs: sourceObservationRefs(draft, [criteria.sourceRefs, result.sourceRefs]),
     criteria: { workflow: 'cancel', stage, requestId, hintId, draftRevision: input.expectedRevision, ...criteria },
     coverage: { complete: status === 'complete', notes: status === 'complete' ? [] : notes }, result };
 }
@@ -231,11 +241,12 @@ async function cancellationPreflight(target: HmsReadTarget, confirmation: string
       return { outcome: 'failed', issue: projected.reason ?? (typeof raw?.issue === 'string' ? raw.issue : 'CANCELLATION_PREFLIGHT_UNAVAILABLE') };
     }
     const facts = {
-      target: raw.target, stay: raw.stay, roomScope: raw.roomScope, money: raw.money, folio: raw.folio,
+      target: raw.target, stay: { ...(record(raw.stay) ?? {}), arrivalDate: projected.stay.arrivalDate,
+        departureDate: projected.stay.departureDate }, roomScope: raw.roomScope, money: raw.money, folio: raw.folio,
       policy: raw.policy, fee: raw.fee, action: raw.action,
     };
-    const stay = record(raw.stay), status = record(stay?.status), actualArrival = record(stay?.arrivalDate),
-      actualDeparture = record(stay?.departureDate), roomScope = record(raw.roomScope), fee = record(raw.fee),
+    const stay = record(raw.stay), status = record(stay?.status), actualArrival = projected.stay.arrivalDate,
+      actualDeparture = projected.stay.departureDate, roomScope = record(raw.roomScope), fee = record(raw.fee),
       policy = record(raw.policy), action = record(raw.action), nativeTarget = record(raw.target);
     if (nativeTarget?.confirmation !== confirmation || nativeTarget.verified !== true ||
         status?.state !== 'observed' || status.value !== 'Reserved' || actualArrival?.state !== 'observed' ||
@@ -287,7 +298,8 @@ async function freshPreview(target: HmsReadTarget, confirmation: string, hint: C
     if (native.outcome !== 'preview_ok' || native.requestDispatched !== false || native.writerSessionClosed !== true ||
         !expected.success || !reasons.success || !policyFacts.success || !penaltyText.success ||
         expected.data.confirmation !== confirmation || expected.data.arrival !== arrival || expected.data.departure !== departure ||
-        expected.data.allowRealGuest !== true) {
+        (!expected.data.allowRealGuest && (expected.data.firstName !== 'Proof' || expected.data.lastName !== 'Labtest' ||
+          expected.data.arrival < '2027-01-01' || expected.data.cmsSend !== false))) {
       return { outcome: 'failed', issue: native.outcome === 'refused_scope_unverified' ? 'CANCELLATION_SCOPE_UNVERIFIED' :
         native.issue ?? native.outcome ?? 'CANCELLATION_PREVIEW_UNAVAILABLE', runDir: safeRunDir(native.runDir) ? native.runDir : null };
     }
@@ -325,6 +337,9 @@ function supportedCancelOverride(path: string, bodyPath: string, body: Record<st
   if (parts.length === 1 && parts[0] === 'cancellationNote') return true;
   if (parts.length === 2 && parts[0] === 'reason' && parts[1] === 'text') return true;
   if (parts.length === 2 && parts[0] === 'targets' && parts[1] === 'mode') return true;
+  if (parts.length === 2 && parts[0] === 'targets' && parts[1] === 'include') return true;
+  if (parts[0] === 'previewObservationRefs' && (parts.length === 1 ||
+      (parts.length === 2 && /^(?:0|[1-9]\d*)$/.test(parts[1] ?? '')))) return true;
   if (parts.length !== 4 || parts[0] !== 'targets' || parts[1] !== 'include' ||
       !/^(?:0|[1-9]\d*)$/.test(parts[2] ?? '') ||
       !['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture', 'suggestedRef'].includes(parts[3] ?? '')) return false;
@@ -500,7 +515,6 @@ export async function reservationWorkflowV2CancelLookup(ctx: ReservationWorkflow
             preflightObservedAt: preflight.outcome === 'ok' ? preflight.observedAt : null } : {}),
           sourceRefs: uniqueRefs([request.sourceRefs, targets.sourceRefs, hint.sourceRefs, hint.candidateRefs, hint.suggestedRef]) },
         complete ? [] : [reason ?? 'cancel_lookup_incomplete']);
-      item.sourceRefs = uniqueRefs([request.sourceRefs, targets.sourceRefs, hint.sourceRefs, hint.candidateRefs, hint.suggestedRef]);
       observations.push(item);
       lookups.push({ status: complete ? 'found' : 'partial', requestId: request.id, hintId: hint.id,
         selectionPath: fieldPath,
@@ -780,7 +794,7 @@ function preparedObservation(draft: ReservationWorkflowV2Draft, input: Reservati
       preflightObservedAt: fresh.observedAt, reasons: fresh.reasons, policyFacts: fresh.policyFacts,
       penaltyText: fresh.penaltyText, feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit',
       roomScope: fresh.preflight.roomScope, baselineChangedSinceLookup: canonicalJson(compiled.preimage) !== canonicalJson(fresh.preimage) }),
-    sourceRefs: compiled.sourceRefs };
+    sourceRefs: sourceObservationRefs(draft, [compiled.sourceRefs]) };
 }
 
 function reviewRequestFor(previewRefs: string[], reviewPath: string, item: ReservationWorkflowV2Observation,
@@ -827,7 +841,9 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
   try {
     lockResult = await targetLock.withLock(async () => {
       const mode = paneWriteMode('cancel', 'unpaid');
-      if (mode !== 'on') return { status: 'unsupported', issue: 'cancel_real_guest_write_flag_off' };
+      const labtest = !compiled.preimage.allowRealGuest && compiled.preimage.firstName === 'Proof' &&
+        compiled.preimage.lastName === 'Labtest' && compiled.preimage.arrival >= '2027-01-01' && !compiled.preimage.cmsSend;
+      if (mode !== 'on' && !(mode === 'lab' && labtest)) return { status: 'unsupported', issue: 'cancel_real_guest_write_flag_off' };
       const epoch = await captureHmsLabtestDispatchEpoch(ctx.db, expectedTarget, input.workItemId)
         .catch(() => null);
       if (!epoch) return { status: 'needs_reconcile', issue: 'cancel_dispatch_history_unavailable' };
@@ -883,7 +899,10 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
       let beforeReceipt: { runId: string; name: 'before.png'; sha256: string } | null = null;
       let nativeRequestDigest: string | null = null, claimRequestDigest: string | null = null, claimDigest: string | null = null;
       let beforeScreenshotPath: string | null = null, acceptedPenaltyText: string | null = null;
-      const continuationAllowed = () => paneWriteMode('cancel', 'unpaid') === 'on';
+      const continuationAllowed = () => {
+        const currentMode = paneWriteMode('cancel', 'unpaid');
+        return currentMode === 'on' || (currentMode === 'lab' && labtest);
+      };
       const acquireClaim = async (requestDigest: string, beforePath: string) => {
         if (handle || !z.string().regex(/^[a-f0-9]{64}$/).safeParse(requestDigest).success ||
             !safeRunDir(dirname(beforePath)) || beforePath !== join(dirname(beforePath), 'before.png')) {
@@ -1099,7 +1118,7 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
         { outcome: 'cancelled', sourceRefs: compiled.sourceRefs, preimage: fresh.preimage,
           preflight: fresh.preflight, penaltyText: fresh.penaltyText, nativeReadback: readback.data,
           readbackDigest: sha256(readback.data), savedShot: { runId, sha256: savedShot.sha256 } });
-      success.sourceRefs = compiled.sourceRefs;
+      success.sourceRefs = sourceObservationRefs(loaded.draft, [compiled.sourceRefs]);
       try {
         await resolveHmsLabtestDispatch(ctx.db, activeHandle, { operation: 'cancel', confirmation: readback.data.confirmation,
           nativeStayId: readback.data.nativeStayId, nativeReadback: readback.data,
@@ -1219,9 +1238,11 @@ export async function reservationWorkflowV2CancelReconcile(ctx: ReservationWorkf
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
     const positive = observation(initial.draft, input, operation.requestId, operation.allocationId ?? 'cancel',
       'reconcile', 'partial', { operationId: input.operationId, dispatchHoldId: intent.holdId,
+        approvedDigest: intent.approvedDigest,
         positiveReadbackDigest: sha256(proof.readback) },
       { outcome: 'cancelled_readback_verified', confirmation: proof.readback.confirmation,
         nativeStayId: proof.readback.nativeStayId, nativeReadback: proof.readback, savedShot: proof.screenshot,
+        dispatchHoldId: intent.holdId, claimRequestDigest, requestDigest: exactCancelRequestDigest,
         financialState: 'unknown_after_interrupted_cancel', holdReleased: false },
       ['penalty_or_fee_state_cannot_be_recovered_from_status_readback']);
     await recordOperation(ctx, input, operation.requestId, operation.allocationId ?? 'cancel', positive, 'unknown',

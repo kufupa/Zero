@@ -272,6 +272,8 @@ function editableCancelBodyField(draft: ReservationWorkflowV2Draft, parts: strin
   if (parts.length === 7 && parts[5] === 'targets' && parts[6] === 'include') return true;
   if (parts.length === 7 && parts[5] === 'reason' && parts[6] === 'text') return true;
   if (parts.length === 6 && parts[5] === 'cancellationNote') return true;
+  if (parts.length === 7 && parts[5] === 'previewObservationRefs' &&
+      /^(?:0|[1-9]\d*)$/.test(parts[6] ?? '') && Number(parts[6]) < 100) return true;
   if (parts.length !== 9 || parts[5] !== 'targets' || parts[6] !== 'include' ||
       !/^(?:0|[1-9]\d*)$/.test(parts[7] ?? '')) return false;
   const hint = effectiveSavedTargetRows(draft, request.id)[Number(parts[7])];
@@ -307,6 +309,35 @@ function validCancelIncludeEdit(draft: ReservationWorkflowV2Draft, path: string,
     Array.isArray(row.sourceRefs) && row.sourceRefs.length === 0;
 }
 
+function cancelPreviewPath(draft: ReservationWorkflowV2Draft, path: string) {
+  const parts = pathParts(path);
+  if (!parts || parts.length !== 7 || parts[2] !== 'requests' || parts[4] !== 'body' ||
+      parts[5] !== 'previewObservationRefs' || !/^(?:0|[1-9]\d*)$/.test(parts[6] ?? '')) return null;
+  const request = draft.proposal.content.requests.find((entry) => entry.id === parts[3]);
+  if (!request || request.kind !== 'cancel') return null;
+  const parent = path.slice(0, path.lastIndexOf('/'));
+  const override = draft.fieldOverrides[parent];
+  const value = override?.state === 'set' ? override.value : request.body.previewObservationRefs;
+  return { request, parent, index: Number(parts[6]), refs: Array.isArray(value) ? value : [] };
+}
+
+/** Only a host-recorded, ready preview for this exact target may be added for staff review. */
+function validCancelPreviewEdit(draft: ReservationWorkflowV2Draft, path: string, override: V2Override): boolean {
+  const preview = cancelPreviewPath(draft, path);
+  if (!preview) return true;
+  if (preview.index !== preview.refs.length || preview.index >= 100 || override.state !== 'set' ||
+      typeof override.value !== 'string' || preview.refs.includes(override.value)) return false;
+  const hints = effectiveSavedTargetRows(draft, preview.request.id);
+  const hint = hints.length === 1 && hints[0] && typeof hints[0] === 'object' && !Array.isArray(hints[0])
+    ? hints[0] as { id?: unknown } : null;
+  return draft.observations.some((item) => item.ref === override.value && item.kind === 'stay_candidate' &&
+    item.status === 'complete' && item.generationId === draft.generationId && item.propertyCode === draft.propertyCode &&
+    item.sourceMessageId === draft.source.messageId && item.criteria.workflow === 'cancel' &&
+    item.criteria.stage === 'prepare' && item.criteria.requestId === preview.request.id &&
+    item.criteria.hintId === hint?.id && item.result.ready === true && typeof item.result.approvalDigest === 'string' &&
+    item.criteria.approvalDigest === item.result.approvalDigest);
+}
+
 function editablePath(draft: ReservationWorkflowV2Draft, path: string): boolean {
   const parts = pathParts(path);
   if (!parts || parts.length < 5) return false;
@@ -339,6 +370,11 @@ function updateDraft(current: ReservationWorkflowV2Draft, input: {
   const fieldOverrides = { ...current.fieldOverrides };
   const staffReviews = { ...current.staffReviews };
   if (input.override) {
+    const preview = cancelPreviewPath(current, input.fieldPath);
+    if (preview && input.override.state === 'set') {
+      fieldOverrides[preview.parent] = { state: 'set', value: [...preview.refs, input.override.value],
+        updatedAt: input.override.updatedAt };
+    }
     fieldOverrides[input.fieldPath] = input.override;
     // A review belongs to the displayed value and scope; replacing a parent also replaces its child values.
     for (const path of Object.keys(staffReviews)) {
@@ -384,7 +420,8 @@ export async function editReservationWorkflowV2Draft(ctx: Context, input: Mutati
   if (current.status !== 'ok') return current;
   if (!editablePath(current.draft, input.fieldPath)) return { status: 'invalid_path' };
   const override = validateOverride(input.value);
-  if (!override || !validCancelIncludeEdit(current.draft, input.fieldPath, override)) return { status: 'invalid_value' };
+  if (!override || !validCancelIncludeEdit(current.draft, input.fieldPath, override) ||
+      !validCancelPreviewEdit(current.draft, input.fieldPath, override)) return { status: 'invalid_value' };
   return mutateDraft(ctx, { ...input, override, eventType: 'field.edit', value: override });
 }
 
