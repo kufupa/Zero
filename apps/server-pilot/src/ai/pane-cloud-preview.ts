@@ -3,7 +3,7 @@ import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { basename, dirname, join } from 'node:path';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
 import { message } from '../db/schema/mail.js';
@@ -29,7 +29,8 @@ import { PANE_PREVIEW_TTL_MS, PANE_SAVE_UNCONFIRMED, paneStayCreateTarget, paneS
   paneStayCloudTargetLock, paneStaySaveLoaders, paneStaySaveMode, registerPaneRun, type PaneStay, type PaneStayResult } from './pane-stay-save.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Observation } from './reservation-workflow-v2-contract.js';
-import { reservationWorkflowV2DraftOf } from './reservation-workflow-v2-state.js';
+import { lockReservationWorkflowV2Source, RESERVATION_WORKFLOW_V2_STATE_KEY,
+  reservationWorkflowV2DraftOf } from './reservation-workflow-v2-state.js';
 
 const cloudPreviewSource = z.object({ messageId: z.string().trim().min(1).max(200),
   threadId: z.string().trim().min(1).max(200), sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
@@ -718,7 +719,16 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
             nativeGuestId: grant.nativeGuestId, operation: 'create', stayId: input.stayId, sourceDigest: grant.sourceDigest,
             approvedDigest: grant.requestDigest, requestDigest: firstRequestDigest,
             recovery: { request: grant.approvedRequest, previewShot: grant.previewShot, ...recovery } }, async (tx, claim) => {
-            try { await lockCreateSource(tx, key, async (lockedTx, source) => {
+            try {
+              // Once v2 owns this email, an old pane cannot start a separate Create.
+              // The same transaction lock serializes this check with v2 seeding/Go.
+              await lockReservationWorkflowV2Source(tx, input.transportId, input.selection.source.messageId);
+              const [v2] = await tx.select({ id: workItem.id }).from(workItem).where(and(
+                eq(workItem.transportId, input.transportId), eq(workItem.threadId, input.selection.source.threadId),
+                eq(workItem.sourceMessageId, input.selection.source.messageId),
+                sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`)).limit(1);
+              if (v2) throw new Error('cloud_create_scope_changed');
+              await lockCreateSource(tx, key, async (lockedTx, source) => {
               const current = await checkSource(lockedTx, source, input, grant.accessId);
               const liveGrant = grantOf(source.item.state, input.stayId), stays = source.item.state.stays;
               const mode = paneStaySaveLoaders.mode?.() ?? paneStaySaveMode();
@@ -751,7 +761,8 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
                   status: 'unknown', confirmationNumber: null, screenshotRef: null, cloudCreateGrantId: grant.grantId,
                   cloudCreateTarget: dispatchTarget } } };
               await lockedTx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
-            }); } catch (error) { authorizationError = error; throw error; }
+              });
+            } catch (error) { authorizationError = error; throw error; }
             }, epoch);
           } catch (error) { claimError = error; throw error; }
           try {

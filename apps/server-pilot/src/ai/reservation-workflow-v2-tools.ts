@@ -19,6 +19,7 @@ import {
 import {
   appendReservationWorkflowV2Observation,
   getReservationWorkflowV2Draft,
+  lockReservationWorkflowV2Source,
   recordReservationWorkflowV2Result,
   reservationWorkflowV2DraftOf,
 } from './reservation-workflow-v2-state.js';
@@ -32,15 +33,16 @@ import {
   readResolvedHmsLabtestCreates,
   resolveHmsLabtestDispatch,
   resolveNeverDispatchedCreate,
+  type HmsLabtestIntent,
   type HmsLabtestWriteHandle,
 } from './hms-labtest-dispatch.js';
-import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
+import { hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
 import { persistHmsShots, verifyStoredHmsShot } from './hms-shots-store.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS, isPropertyReadLockDeadline } from '../hms/property-read-lock.js';
 import { paneStayCloudTargetLock, paneStayCreateTarget, paneStayPropertyLock, paneWriteMode } from './pane-stay-save.js';
 import { findStay } from './pane-stay-lookup.js';
-import { isLabtestGuest } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
+import { createCloudTargetKey, isLabtestGuest } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
 import { lockCreateActorSession } from './pane-create-actor-lock.js';
 import { stayCommitsOf } from './work-items.js';
 
@@ -284,6 +286,9 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   if (!body || !Array.isArray(body.allocations) || !Array.isArray(body.dateSections) || !body.shared) {
     return { outcome: 'needs_input', issue: 'create_body_incomplete' };
   }
+  if (body.allocations.length < 1 || body.allocations.length > 8) {
+    return { outcome: 'needs_input', issue: 'create_requires_one_to_eight_rooms', fields: [`${req}/allocations`] };
+  }
   const allocationIndex = body.allocations.findIndex((entry) => entry.id === allocationId);
   if (allocationIndex < 0) return { outcome: 'needs_input', issue: 'allocation_not_found' };
   const allocation = body.allocations[allocationIndex]!;
@@ -369,7 +374,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     guestCandidate = candidateFromObservation(draft, 'guest_candidate', selectedGuestRef, `${firstName} ${lastName}`,
       undefined, requestId, allocationId, guestRefPath);
     if (guestCandidate && (!sameName(guestCandidate.firstName, firstName) || !sameName(guestCandidate.lastName, lastName) ||
-        (guest.email && !sameName(guestCandidate.email, guest.email)) || !text(guestCandidate.nativeId))) guestCandidate = null;
+        (text(guest.email) && !sameName(guestCandidate.email, guest.email)) || !text(guestCandidate.nativeId))) guestCandidate = null;
   } else if (mode !== 'lookup') issues.push(`${guestPath}:existing_profile_selection_required`);
   if (!guestCandidate && mode !== 'lookup') issues.push(`${guestPath}:native_profile_unverified`);
   const selectedGuestRefValue = typeof selectedGuestRef === 'string' ? selectedGuestRef : null;
@@ -410,6 +415,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
       const missingReview = reviewed(draft, resolved.path, resolved.value); if (missingReview) reviewPaths.add(missingReview);
     }
   }
+  if (mode !== 'lookup' && !text(optional.sourceOfBusiness)) issues.push('sourceOfBusiness:native_required');
   if (optional.guestOptIn === true) issues.push('guestOptIn:true_not_supported');
   const supportedGuarantee = new Set(['AVOUCH', 'CNFREC', 'DEPREQ', 'GRPDEF', 'GTDAGT', 'GTDCMP', 'GTDCC', 'GTDDEP', 'NGG', 'NGI']);
   if (typeof arrival !== 'string' || !isoDate.safeParse(arrival).success || typeof departure !== 'string' ||
@@ -1026,6 +1032,7 @@ export async function reservationWorkflowV2Prepare(ctx: ReservationWorkflowV2Ser
       createReservation: (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<NativeCreate>;
     };
     const native = await tool.createReservation(compiled.nativeInput, { allowRealGuest: true, expectedGuest: compiled.expectedGuest,
+      cloudTargetKey: createCloudTargetKey(compiled.expectedGuest, record(compiled.nativeInput.stay)?.arrival),
       requireExplicitGuestSelection: true, capturePrepareScreenshot: true, allowCommitOnlyBillingReference: true });
     const mapped = mapNativeOutcome(native), price = validPrice(native.ratePlanAvailability);
     const prepareShot = await persistPreparedScreenshot(ctx, input.workItemId, native.screenshots?.filled);
@@ -1238,53 +1245,100 @@ async function persistOperationResultInTransaction(tx: Parameters<Parameters<DB[
     evidence: { sourceHash: input.source.sourceHash, seq: input.expectedSeq, summary } });
 }
 
+/** A one-use native proof permits a failure receipt even if the email or access changed after the claim. */
+async function persistNeverDispatchedCreate(tx: Parameters<Parameters<DB['transaction']>[0]>[0], ctx: ReservationWorkflowV2ServerContext,
+  input: ReservationWorkflowV2ExecuteInput, intent: Readonly<HmsLabtestIntent>, generationId: string, approvedDigest: string) {
+  const [item] = await tx.select({ state: workItem.state }).from(workItem)
+    .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1).for('update');
+  const draft = item && reservationWorkflowV2DraftOf(item.state);
+  const prior = draft?.operationResults.find((entry) => entry.id === input.idempotencyKey && entry.workflow === 'create' &&
+    entry.requestId === input.requestId && entry.allocationId === input.allocationId && entry.status === 'unknown');
+  if (!item || !draft || !prior || draft.workItemId !== input.workItemId || draft.transportId !== ctx.transport.id ||
+      draft.propertyCode !== ctx.property.propertyCode || draft.generationId !== generationId ||
+      draft.source.threadId !== input.source.threadId || draft.source.messageId !== input.source.messageId ||
+      draft.source.sourceHash !== input.source.sourceHash || draft.source.arrivedAt !== input.source.arrivedAt ||
+      intent.workItemId !== input.workItemId.toLowerCase() || intent.transportId !== ctx.transport.id ||
+      intent.actorUserId !== ctx.user.id || intent.propertyCode !== ctx.property.propertyCode ||
+      intent.grantId !== input.idempotencyKey.toLowerCase() || intent.stayId !== `${input.requestId}_${input.allocationId}` ||
+      intent.sourceDigest !== input.source.sourceHash || intent.approvedDigest !== approvedDigest ||
+      intent.recovery.requestId !== input.requestId || intent.recovery.allocationId !== input.allocationId ||
+      intent.recovery.operationId !== input.idempotencyKey) {
+    throw new Error('reservation_workflow_v2_never_dispatched_scope_changed');
+  }
+  const observation = nativeObservation(draft, input, { outcome: 'not_dispatched' }, 'failed', {
+    issue: 'native_route_proved_save_never_dispatched', dispatchHoldId: intent.holdId,
+  });
+  const summary = 'Native route proved Save was never dispatched';
+  const result = { ...prior, status: 'failed' as const, observationRefs: [observation.ref],
+    updatedAt: new Date().toISOString(), summary };
+  const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft,
+    observations: [...draft.observations, observation],
+    operationResults: [...draft.operationResults.filter((entry) => entry.id !== prior.id), result] });
+  await tx.update(workItem).set({ state: { ...item.state, reservationWorkflowV2: nextDraft }, updatedAt: new Date() })
+    .where(eq(workItem.id, input.workItemId));
+  await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
+    fieldPath: `reservationWorkflowV2:operationResults:${prior.id}`,
+    value: { id: prior.id, requestId: prior.requestId, allocationId: prior.allocationId,
+      workflow: 'create', status: 'failed', observationRefs: [observation.ref] },
+    evidence: { sourceHash: input.source.sourceHash, dispatchHoldId: intent.holdId, summary } });
+}
+
 async function authorizeCurrentCreate(tx: Parameters<Parameters<DB['transaction']>[0]>[0], ctx: ReservationWorkflowV2ServerContext,
   input: ReservationWorkflowV2ExecuteInput, expectedDigest: string, semanticDigest: string,
-  requestId: string, allocationId: string, priorSiblings: VerifiedCreateSibling[]) {
-  const [item] = await tx.select({ state: workItem.state, revision: workItem.revision,
+  requestId: string, allocationId: string, priorSiblings: VerifiedCreateSibling[],
+  attempt: ReservationWorkflowV2Observation) {
+  await lockReservationWorkflowV2Source(tx, ctx.transport.id, input.source.messageId);
+  // Match the legacy writer's thread → message → WorkItem lock order.
+  const [thread] = await tx.select({ id: mailThread.id }).from(mailThread)
+    .where(and(eq(mailThread.id, input.source.threadId), eq(mailThread.transportId, ctx.transport.id),
+      eq(mailThread.historyOnly, false), isNull(mailThread.trashedAt), isNull(mailThread.spamAt))).limit(1).for('share');
+  const [source] = await tx.select({ id: message.id, threadId: message.threadId, transportId: message.transportId,
+    direction: message.direction, historyOnly: message.historyOnly, sourceProvenance: message.sourceProvenance,
+    subject: message.subject, textBody: message.textBody, htmlBody: message.htmlBody })
+    .from(message).where(and(eq(message.id, input.source.messageId), eq(message.threadId, input.source.threadId),
+      eq(message.transportId, ctx.transport.id), eq(message.direction, 'inbound'), eq(message.historyOnly, false)))
+    .limit(1).for('share');
+  const items = await tx.select({ id: workItem.id, state: workItem.state, revision: workItem.revision,
     revisionSeq: workItem.revisionSeq, sourceMessageId: workItem.sourceMessageId, threadId: workItem.threadId })
-    .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1).for('update');
+    .from(workItem).where(and(eq(workItem.transportId, ctx.transport.id), eq(workItem.threadId, input.source.threadId),
+      eq(workItem.sourceMessageId, input.source.messageId))).orderBy(workItem.id).for('update');
+  const item = items.find((entry) => entry.id === input.workItemId);
   const draft = item && reservationWorkflowV2DraftOf(item.state as Record<string, unknown>);
-  if (item && Object.keys(stayCommitsOf(item.state)).length > 0) {
+  if (items.some((entry) => Object.keys(stayCommitsOf(entry.state)).length > 0)) {
     throw new Error('reservation_workflow_v2_legacy_create_requires_review');
   }
   if (!item || !draft || item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq ||
       item.sourceMessageId !== input.source.messageId || item.threadId !== input.source.threadId ||
       draft.revision !== input.expectedRevision || draft.propertyCode !== ctx.property.propertyCode ||
-      draft.source.sourceHash !== input.source.sourceHash || draft.transportId !== ctx.transport.id) {
+      draft.workItemId !== input.workItemId || draft.transportId !== ctx.transport.id ||
+      draft.source.threadId !== input.source.threadId || draft.source.messageId !== input.source.messageId ||
+      draft.source.sourceHash !== input.source.sourceHash || draft.source.arrivedAt !== input.source.arrivedAt ||
+      draft.generationId !== attempt.generationId) {
     throw new Error('reservation_workflow_v2_create_stale');
   }
-  const [source] = await tx.select({ id: message.id, threadId: message.threadId, transportId: message.transportId,
-    direction: message.direction, historyOnly: message.historyOnly, sourceProvenance: message.sourceProvenance,
-    subject: message.subject, textBody: message.textBody, htmlBody: message.htmlBody })
-    .from(message).innerJoin(mailThread, and(eq(mailThread.id, message.threadId), eq(mailThread.transportId, message.transportId)))
-    .where(and(eq(message.id, input.source.messageId), eq(message.threadId, input.source.threadId),
-      eq(message.transportId, ctx.transport.id), eq(message.direction, 'inbound'), eq(message.historyOnly, false),
-      eq(mailThread.historyOnly, false), isNull(mailThread.trashedAt))).limit(1).for('share');
   const [access] = await tx.select({ id: mailboxAccess.id }).from(mailboxAccess)
     .where(and(eq(mailboxAccess.userId, ctx.user.id), eq(mailboxAccess.transportId, ctx.transport.id))).limit(1).for('share');
   const current = source && staffQuoteSourceHash(source);
   const compiled = compileCreate(draft, requestId, allocationId, ctx.property.propertyCode, 'execute');
   const admission = compiled.outcome === 'ok' ? createDispatchAdmission(compiled) : null;
   const prepared = preparedFor(draft, requestId, allocationId, compiled.outcome === 'ok' ? compiled.semanticDigest : undefined);
-  const operation = draft.operationResults.find((result) => result.id === input.idempotencyKey && result.status === 'unknown' &&
-    result.requestId === requestId && result.allocationId === allocationId && result.workflow === 'create');
-  const competingOperation = draft.operationResults.some((result) => result.id !== input.idempotencyKey &&
+  const operation = draft.operationResults.find((result) => result.id === input.idempotencyKey);
+  const competingOperation = draft.operationResults.some((result) =>
     result.requestId === requestId && result.allocationId === allocationId && result.workflow === 'create' &&
     (result.status === 'succeeded' || result.status === 'unknown'));
-  if (!access || !source || source.sourceProvenance?.attention != null || current !== input.source.sourceHash ||
+  if (!thread || !access || !source || source.sourceProvenance?.attention != null || current !== input.source.sourceHash ||
       compiled.outcome !== 'ok' || !admission?.allowed || competingOperation ||
-      compiled.semanticDigest !== semanticDigest || !prepared || prepared.digest !== expectedDigest || !operation) {
+      compiled.semanticDigest !== semanticDigest || !prepared || prepared.digest !== expectedDigest || operation ||
+      draft.observations.some((entry) => entry.ref === attempt.ref)) {
     throw new Error('reservation_workflow_v2_create_source_changed');
   }
   if (priorSiblings.length) {
+    const receipts = await readResolvedHmsLabtestCreates(tx, input.workItemId);
     const siblingEvidenceValid = priorSiblings.every((sibling) => {
       const prior = draft.operationResults.find((result) => result.id === sibling.operationId && result.status === 'succeeded' &&
         result.workflow === 'create' && result.requestId === requestId && result.allocationId === sibling.allocationId);
-      const success = prior && draft.observations.find((entry) => prior.observationRefs.includes(entry.ref) &&
-        entry.kind === 'stay_candidate' && entry.status === 'complete' && entry.criteria.idempotencyKey === prior.id &&
-        entry.criteria.requestId === requestId && entry.criteria.allocationId === sibling.allocationId &&
-        record(entry.result)?.confirmation === sibling.confirmation && record(entry.result)?.requestDigest === sibling.requestDigest);
+      const matches = receipts.filter((receipt) => siblingReceiptMatches(receipt, sibling, ctx, input));
+      const success = prior && matches.length === 1 && siblingSuccessObservation(draft, prior, matches[0]!, sibling.requestDigest);
       const preparedSibling = draft.observations.some((entry) => {
         const binding = record(record(entry.result)?.requestBinding);
         return entry.kind === 'rate_availability' && entry.status === 'complete' && entry.criteria.workflow === 'create' &&
@@ -1293,16 +1347,24 @@ async function authorizeCurrentCreate(tx: Parameters<Parameters<DB['transaction'
       });
       return Boolean(success && preparedSibling);
     });
-    const receipts = await readResolvedHmsLabtestCreates(tx, input.workItemId);
-    const siblingReceiptsValid = priorSiblings.every((sibling) => receipts.filter(({ intent, resolution }) =>
-      intent.transportId === ctx.transport.id && intent.actorUserId === ctx.user.id && intent.grantId === sibling.operationId &&
-      intent.stayId === sibling.stayId && intent.nativeGuestId === sibling.nativeGuestId &&
-      intent.sourceDigest === input.source.sourceHash && intent.approvedDigest === sibling.requestDigest &&
-      resolution.confirmation === sibling.confirmation && resolution.recovered !== true).length === 1);
-    if (!siblingEvidenceValid || !siblingReceiptsValid) throw new Error('reservation_workflow_v2_create_prior_room_changed');
+    if (!siblingEvidenceValid) throw new Error('reservation_workflow_v2_create_prior_room_changed');
   }
   await lockCreateActorSession(tx, { actorUserId: ctx.user.id, sessionId: ctx.user.sessionId,
     sessionProfile: ctx.user.sessionProfile });
+  // Claim intent and pending receipt must commit together. A crash cannot leave
+  // an unknown result with no dispatch history to reconcile.
+  const result = { id: input.idempotencyKey, generationId: draft.generationId, requestId, allocationId,
+    workflow: 'create' as const, status: 'unknown' as const, draftRevision: draft.revision,
+    observationRefs: [attempt.ref], updatedAt: new Date().toISOString(), summary: 'Native Create claimed; outcome pending reconciliation' };
+  const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft,
+    observations: [...draft.observations, attempt], operationResults: [...draft.operationResults, result] });
+  await tx.update(workItem).set({ state: { ...item.state, reservationWorkflowV2: nextDraft }, updatedAt: new Date() })
+    .where(eq(workItem.id, input.workItemId));
+  await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
+    fieldPath: `reservationWorkflowV2:operationResults:${result.id}`,
+    value: { id: result.id, requestId, allocationId, workflow: 'create', status: result.status,
+      observationRefs: result.observationRefs },
+    evidence: { sourceHash: input.source.sourceHash, seq: input.expectedSeq, summary: result.summary } });
 }
 
 function nativeInputMatchesBinding(compiled: Extract<CreateCompile, { outcome: 'ok' }>, request: unknown): boolean {
@@ -1343,6 +1405,42 @@ type VerifiedCreateSibling = {
   confirmation: string; requestDigest: string; approvedRequest: Record<string, unknown>;
 };
 
+type ResolvedCreateReceipt = Awaited<ReturnType<typeof readResolvedHmsLabtestCreates>>[number];
+type CreateOperation = ReservationWorkflowV2Draft['operationResults'][number];
+
+function siblingReceiptMatches(receipt: ResolvedCreateReceipt, sibling: VerifiedCreateSibling,
+  ctx: ReservationWorkflowV2ServerContext, input: ReservationWorkflowV2ExecuteInput): boolean {
+  const { intent, resolution } = receipt;
+  return intent.transportId === ctx.transport.id && intent.propertyCode === ctx.property.propertyCode &&
+    intent.actorUserId === ctx.user.id && intent.grantId === sibling.operationId.toLowerCase() &&
+    intent.stayId === sibling.stayId && intent.nativeGuestId === sibling.nativeGuestId &&
+    intent.sourceDigest === input.source.sourceHash && intent.approvedDigest === sibling.requestDigest &&
+    intent.recovery.requestId === input.requestId && intent.recovery.allocationId === sibling.allocationId &&
+    intent.recovery.operationId === sibling.operationId &&
+    canonicalJson(intent.recovery.request) === canonicalJson(sibling.approvedRequest) &&
+    resolution.confirmation === sibling.confirmation;
+}
+
+function siblingSuccessObservation(draft: ReservationWorkflowV2Draft, operation: CreateOperation,
+  receipt: ResolvedCreateReceipt, requestDigest: string): ReservationWorkflowV2Observation | undefined {
+  return draft.observations.find((entry) => {
+    if (!operation.observationRefs.includes(entry.ref) || entry.kind !== 'stay_candidate' || entry.status !== 'complete' ||
+        !entry.coverage.complete || entry.generationId !== draft.generationId || entry.propertyCode !== draft.propertyCode ||
+        entry.sourceMessageId !== draft.source.messageId || entry.criteria.workflow !== 'create' ||
+        entry.criteria.requestId !== operation.requestId || entry.criteria.allocationId !== operation.allocationId ||
+        record(entry.result)?.confirmation !== receipt.resolution.confirmation) return false;
+    if (!receipt.resolution.recovered) return entry.criteria.idempotencyKey === operation.id &&
+      record(entry.result)?.requestDigest === requestDigest;
+    const result = record(entry.result);
+    const observedReadback = record(result?.nativeReadback), resolvedReadback = record(receipt.resolution.nativeReadback);
+    return entry.criteria.recovered === true && entry.criteria.operationId === operation.id &&
+      Boolean(observedReadback && resolvedReadback && observedReadback.confirmation === receipt.resolution.confirmation) &&
+      result?.readbackDigest === receipt.resolution.readbackDigest &&
+      canonicalJson(result?.savedShot) === canonicalJson(receipt.resolution.savedShot) &&
+      canonicalJson(observedReadback) === canonicalJson(resolvedReadback);
+  });
+}
+
 /** Earlier successful rooms may clear a same-name/arrival census only after fresh record and party readback. */
 async function verifiedEarlierCreateSiblings(ctx: ReservationWorkflowV2ServerContext, draft: ReservationWorkflowV2Draft,
   input: ReservationWorkflowV2ExecuteInput, compiled: Extract<CreateCompile, { outcome: 'ok' }>):
@@ -1350,17 +1448,24 @@ async function verifiedEarlierCreateSiblings(ctx: ReservationWorkflowV2ServerCon
   const currentGuestId = text(record(compiled.nativeInput.guest)?.profileId);
   const currentStay = record(compiled.nativeInput.stay);
   if (!currentGuestId || !currentStay) return { siblings: [] };
+  const operations = draft.operationResults.filter((operation) => operation.workflow === 'create' &&
+    operation.status === 'succeeded' && operation.requestId === input.requestId &&
+    operation.allocationId != null && operation.allocationId !== input.allocationId);
+  if (!operations.length) return { siblings: [] };
+  let completed: ResolvedCreateReceipt[];
+  try { completed = await ctx.db.transaction((tx) => readResolvedHmsLabtestCreates(tx, input.workItemId)); }
+  catch { return { siblings: [], issue: 'create_prior_room_receipt_unavailable' }; }
   const candidates: VerifiedCreateSibling[] = [];
-  for (const operation of draft.operationResults) {
-    if (operation.workflow !== 'create' || operation.status !== 'succeeded' || operation.requestId !== input.requestId ||
-        operation.allocationId == null || operation.allocationId === input.allocationId) continue;
-    const savedObservation = draft.observations.find((entry) => operation.observationRefs.includes(entry.ref) &&
-      entry.kind === 'stay_candidate' && entry.status === 'complete' && entry.criteria.workflow === 'create' &&
-      entry.criteria.requestId === input.requestId && entry.criteria.allocationId === operation.allocationId &&
-      entry.criteria.idempotencyKey === operation.id);
-    const savedResult = savedObservation && record(savedObservation.result);
-    const confirmation = text(savedResult?.confirmation), requestDigest = text(savedResult?.requestDigest);
-    if (!confirmation || !requestDigest || !/^\d{6,10}-\d{1,2}$/.test(confirmation)) continue;
+  for (const operation of operations) {
+    if (!operation.allocationId) continue;
+    const receipts = completed.filter(({ intent }) => intent.transportId === ctx.transport.id &&
+      intent.actorUserId === ctx.user.id && intent.grantId === operation.id.toLowerCase() &&
+      intent.stayId === `${input.requestId}_${operation.allocationId}` && intent.sourceDigest === input.source.sourceHash &&
+      intent.recovery.requestId === input.requestId && intent.recovery.allocationId === operation.allocationId &&
+      intent.recovery.operationId === operation.id);
+    if (receipts.length !== 1) continue;
+    const receipt = receipts[0]!, requestDigest = receipt.intent.approvedDigest, confirmation = receipt.resolution.confirmation;
+    if (!siblingSuccessObservation(draft, operation, receipt, requestDigest)) continue;
     const preparedObservation = [...draft.observations].reverse().find((entry) => {
       const binding = record(record(entry.result)?.requestBinding);
       return entry.kind === 'rate_availability' && entry.status === 'complete' && entry.criteria.workflow === 'create' &&
@@ -1373,28 +1478,17 @@ async function verifiedEarlierCreateSiblings(ctx: ReservationWorkflowV2ServerCon
     if (!approvedRequest || !approvedGuest || !approvedStay || approvedGuest.nativeId == null ||
         !/^\d+$/.test(String(approvedGuest.nativeId)) || !sameName(approvedGuest.firstName, compiled.expectedGuest.firstName) ||
         !sameName(approvedGuest.lastName, compiled.expectedGuest.lastName) || approvedStay.arrival !== currentStay.arrival) continue;
-    candidates.push({ operationId: operation.id, allocationId: operation.allocationId,
+    const candidate = { operationId: operation.id, allocationId: operation.allocationId,
       stayId: `${input.requestId}_${operation.allocationId}`, nativeGuestId: String(approvedGuest.nativeId),
-      confirmation, requestDigest, approvedRequest });
+      confirmation, requestDigest, approvedRequest };
+    if (!siblingReceiptMatches(receipt, candidate, ctx, input)) return { siblings: [], issue: 'create_prior_room_receipt_unverified' };
+    candidates.push(candidate);
   }
   if (!candidates.length) return { siblings: [] };
-  let completed: Awaited<ReturnType<typeof readResolvedHmsLabtestCreates>>;
-  try { completed = await ctx.db.transaction((tx) => readResolvedHmsLabtestCreates(tx, input.workItemId)); }
-  catch { return { siblings: [], issue: 'create_prior_room_receipt_unavailable' }; }
-  const siblings: VerifiedCreateSibling[] = [];
-  for (const candidate of candidates) {
-    const receipt = completed.filter(({ intent, resolution }) => intent.transportId === ctx.transport.id &&
-      intent.actorUserId === ctx.user.id && intent.grantId === candidate.operationId && intent.stayId === candidate.stayId &&
-      intent.nativeGuestId === candidate.nativeGuestId && intent.sourceDigest === input.source.sourceHash &&
-      intent.approvedDigest === candidate.requestDigest && resolution.confirmation === candidate.confirmation &&
-      resolution.recovered !== true);
-    if (receipt.length !== 1) return { siblings: [], issue: 'create_prior_room_receipt_unverified' };
-    siblings.push(candidate);
-  }
-  if (new Set(siblings.map((sibling) => sibling.confirmation)).size !== siblings.length) {
+  if (new Set(candidates.map((sibling) => sibling.confirmation)).size !== candidates.length) {
     return { siblings: [], issue: 'create_prior_room_confirmation_ambiguous' };
   }
-  return { siblings };
+  return { siblings: candidates };
 }
 
 /** Commit a reviewed native Create using one Go-bound durable target claim. */
@@ -1453,11 +1547,12 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
   let priorSiblingsVerified = false;
   const liveOptions: Record<string, unknown> = {
     allowRealGuest: admission.allowRealGuest, expectedGuest: compiled.expectedGuest,
+    cloudTargetKey: createCloudTargetKey(compiled.expectedGuest, record(compiled.nativeInput.stay)?.arrival),
     expectedRequestDigest: prepared.digest, expectedRateAvailability: prepared.price,
     allowCommitOnlyBillingReference: true,
     ...(siblingVerifier ? { verifyLabtestMatches: async (census: unknown) => {
       priorSiblingsVerified = await siblingVerifier.verifyBatchSiblings(census, priorSiblings,
-        { cloudTargetKey: hmsDispatchTargetKey(targetResult.data) });
+        { cloudTargetKey: createCloudTargetKey(compiled.expectedGuest, record(compiled.nativeInput.stay)?.arrival) });
       return priorSiblingsVerified;
     } } : {}),
     authorizeCandidate: async () => {
@@ -1492,9 +1587,6 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
         beforeShot, preimage, idempotencyKey: input.idempotencyKey,
         priorRoomConfirmations: priorSiblings.map(({ confirmation, requestDigest }) => ({ confirmation, requestDigest })),
       });
-      const recorded = await recordNativeObservation(ctx, input, attempt, 'unknown',
-        'Go accepted; native Create claim pending', input.idempotencyKey);
-      if (recorded.status !== 'ok') throw new Error('reservation_v2_create_receipt_unavailable');
       let dispatch: HmsLabtestWriteHandle | null = null;
       try {
         dispatch = await claimHmsLabtestDispatch(ctx.db, {
@@ -1509,15 +1601,13 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
             ratePlanAvailability: prepared.price, arAccountProfileId: prepared.arAccountProfileId,
             priorRoomConfirmations: priorSiblings.map(({ confirmation, requestDigest }) => ({ confirmation, requestDigest })) },
         }, async (tx) => authorizeCurrentCreate(tx, ctx, input, prepared.digest, compiled.semanticDigest,
-          input.requestId, input.allocationId!, priorSiblings), expectedEpoch);
+          input.requestId, input.allocationId!, priorSiblings, attempt), expectedEpoch);
       } catch (error) {
         if (error instanceof HmsLabtestDispatchError && error.reason === 'occupied') {
           claimIssue = 'create_target_held_for_reconciliation';
         }
-        const failed = nativeObservation(loaded.draft, input, { outcome: 'claim_failed' }, 'failed', {
-          requestDigest, issue: claimIssue ?? 'create_claim_failed', prepareObservationRef: prepared.observation.ref,
-        });
-        await recordNativeObservation(ctx, input, failed, 'failed', 'Native Create claim was not acquired', input.idempotencyKey);
+        // An ambiguous commit may have persisted the intent and pending result;
+        // never overwrite that evidence with an unproven failed result.
         throw error;
       }
       dispatchHandle = dispatch;
@@ -1531,7 +1621,8 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
       if (claimRecorded.status !== 'ok') {
         const proof = next.proveNeverDispatched?.();
         if (proof) {
-          await resolveNeverDispatchedCreate(ctx.db, dispatch, proof, request, async () => {});
+          await resolveNeverDispatchedCreate(ctx.db, dispatch, proof, request, async (tx, intent) =>
+            persistNeverDispatchedCreate(tx, ctx, input, intent, loaded.draft!.generationId, prepared.digest));
           releaseProvedNeverDispatched = true;
           dispatchHandle = null;
         }
@@ -1541,13 +1632,10 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
       catch (error) {
         const proof = next.proveNeverDispatched?.();
         if (proof) {
-          await resolveNeverDispatchedCreate(ctx.db, dispatch, proof, request, async () => {});
+          await resolveNeverDispatchedCreate(ctx.db, dispatch, proof, request, async (tx, intent) =>
+            persistNeverDispatchedCreate(tx, ctx, input, intent, loaded.draft!.generationId, prepared.digest));
           releaseProvedNeverDispatched = true;
           dispatchHandle = null;
-          const failed = nativeObservation(loaded.draft, input, { outcome: 'not_dispatched' }, 'failed', {
-            requestDigest, prepareObservationRef: prepared.observation.ref,
-          });
-          await recordNativeObservation(ctx, input, failed, 'failed', 'Native route proved Save was never dispatched', input.idempotencyKey);
         }
         throw error;
       }
