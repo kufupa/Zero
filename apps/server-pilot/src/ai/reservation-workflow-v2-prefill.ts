@@ -529,6 +529,43 @@ function validateProposal(proposal: ReservationWorkflowV2Proposal, evidence: Res
   const observationRefs = new Set(observations.map((row) => row.ref));
   const all = new Set([...sourceRefs, ...observationRefs]);
   const refsValid = (refs: string[]) => refs.every((ref) => all.has(ref));
+  const nestedRefsValid = (value: unknown, key = ''): boolean => {
+    if (Array.isArray(value)) {
+      if (key === 'sourceRefs') return value.every((ref) => typeof ref === 'string' && sourceRefs.has(ref));
+      if (['candidateRefs', 'priceObservationRefs', 'lookupResultRefs', 'previewObservationRefs', 'observationRefs'].includes(key)) {
+        return value.every((ref) => typeof ref === 'string' && observationRefs.has(ref));
+      }
+      if (key === 'evidenceRefs') return value.every((ref) => typeof ref === 'string' && all.has(ref));
+      return value.every((child) => nestedRefsValid(child));
+    }
+    if (!value || typeof value !== 'object') return true;
+    return Object.entries(value as Record<string, unknown>).every(([childKey, child]) => {
+      if (childKey === 'suggestedRef' || childKey === 'itemCandidateRef' || childKey === 'previewObservationRef') {
+        return child === null || (typeof child === 'string' && observationRefs.has(child));
+      }
+      if (childKey === 'documentSourceRef') return typeof child === 'string' && sourceRefs.has(child);
+      return nestedRefsValid(child, childKey);
+    });
+  };
+  const requestsById = new Map(proposal.content.requests.map((request) => [request.id, request]));
+  const targetRefsValid = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.every(targetRefsValid);
+    if (!value || typeof value !== 'object') return true;
+    const row = value as Record<string, unknown>;
+    if (['allocation', 'quote_group', 'saved_target'].includes(String(row.kind))) {
+      const request = typeof row.requestId === 'string' ? requestsById.get(row.requestId) : undefined;
+      if (!request) return false;
+      if (row.kind === 'allocation') return request.kind === 'create' && request.body.allocations.some((item) => item.id === row.allocationId);
+      if (row.kind === 'quote_group') return request.kind === 'quote' && request.body.groups.some((item) => item.id === row.groupId);
+      const body = 'targets' in request.body ? request.body.targets : null;
+      const scope = body && typeof body === 'object' ? body as { include?: unknown; exclude?: unknown } : null;
+      const hints = [...(Array.isArray(scope?.include) ? scope.include : []), ...(Array.isArray(scope?.exclude) ? scope.exclude : [])];
+      return hints.some((hint) => Boolean(hint && typeof hint === 'object' &&
+        (hint as Record<string, unknown>).id === row.hintId));
+    }
+    return Object.values(row).every(targetRefsValid);
+  };
+  if (!nestedRefsValid(proposal) || !targetRefsValid(proposal)) return false;
   if (!proposal.lookupResultRefs.every((ref) => observationRefs.has(ref))) return false;
   if (!proposal.annotations.every((row) => refsValid(row.evidenceRefs)) ||
       !proposal.issues.every((row) => refsValid(row.evidenceRefs)) ||
