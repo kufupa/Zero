@@ -128,7 +128,7 @@ export const reservationWorkflowV2Router = router({
   }),
   edit: mailboxProcedure.input(reservationWorkflowV2EditInputSchema).mutation(({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
-    return withPreparation(editReservationWorkflowV2Draft(scoped, input), scoped.propertyCode);
+    return withPreparation(editReservationWorkflowV2Draft(scoped, { ...input, value: input.value }), scoped.propertyCode);
   }),
   review: mailboxProcedure.input(reservationWorkflowV2ReviewInputSchema).mutation(({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);

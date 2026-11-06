@@ -798,7 +798,8 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
             intent.actorUserId !== input.actorUserId || intent.grantId !== grant.grantId || intent.stayId !== input.stayId ||
             intent.approvedDigest !== grant.requestDigest) throw new Error('cloud_create_result_scope_changed');
         await recordRecoveredCreate(tx, intent, { confirmation: confirmationNumber, readbackDigest: hash(native.readback),
-          savedShot: { runId: shots.runId, sha256: savedShot.sha256 }, shots: shots.shots }, input.batch?.id, false);
+          savedShot: { runId: shots.runId, sha256: savedShot.sha256 }, shots: shots.shots,
+          nativeReadback: { ...native.readback, confirmation: confirmationNumber } }, input.batch?.id, false);
       });
       const hmsPrice = savedHmsPrice(native.readback.fields);
       return { status: 'ok', outcome: 'committed', confirmationNumber, clickedSave: true,

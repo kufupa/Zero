@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
 import { mailboxAccess, mailThread, message } from '../db/schema/mail.js';
@@ -435,7 +435,7 @@ function operationObservation(draft: ReservationWorkflowV2Draft, requestId: stri
 
 async function recordNativeObservation(ctx: ReservationWorkflowV2ServerContext, input: ReservationWorkflowV2PrepareInput,
   observation: ReservationWorkflowV2Observation, status: 'prepared' | 'failed' | 'unknown', summary: string | null,
-  operationId = randomUUID()) {
+  operationId: string = randomUUID()) {
   const base = { workItemId: input.workItemId, source: input.source, expectedRevision: input.expectedRevision,
     expectedSeq: input.expectedSeq };
   const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), { ...base, observation });
@@ -536,7 +536,7 @@ export async function reservationWorkflowV2Prepare(ctx: ReservationWorkflowV2Ser
   if (!loaded.draft) return loaded.result;
   if (!input.allocationId) return { status: 'needs_input', issue: 'allocation_required' };
   const compiled = compileCreate(loaded.draft, input.requestId, input.allocationId, ctx.property.propertyCode);
-  if (compiled.outcome !== 'ok') return compiled;
+  if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [] };
   try {
     const tool = await import(new URL('../../tooling/hms-cloud/create-reservation.mjs', import.meta.url).href) as {
       createReservation: (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<NativeCreate>;
@@ -773,7 +773,7 @@ async function authorizeCurrentCreate(tx: Parameters<Parameters<DB['transaction'
     .from(message).innerJoin(mailThread, and(eq(mailThread.id, message.threadId), eq(mailThread.transportId, message.transportId)))
     .where(and(eq(message.id, input.source.messageId), eq(message.threadId, input.source.threadId),
       eq(message.transportId, ctx.transport.id), eq(message.direction, 'inbound'), eq(message.historyOnly, false),
-      eq(mailThread.historyOnly, false), eq(mailThread.trashedAt, null))).limit(1).for('share');
+      eq(mailThread.historyOnly, false), isNull(mailThread.trashedAt))).limit(1).for('share');
   const [access] = await tx.select({ id: mailboxAccess.id }).from(mailboxAccess)
     .where(and(eq(mailboxAccess.userId, ctx.user.id), eq(mailboxAccess.transportId, ctx.transport.id))).limit(1).for('share');
   const current = source && staffQuoteSourceHash(source);
@@ -838,7 +838,7 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
     return { status: 'needs_reconcile', operationId: roomResult?.id ?? prior!.id };
   }
   const compiled = compileCreate(loaded.draft, input.requestId, input.allocationId, ctx.property.propertyCode, 'execute');
-  if (compiled.outcome !== 'ok') return compiled;
+  if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [] };
   const prepared = preparedFor(loaded.draft, input.requestId, input.allocationId, compiled.semanticDigest);
   if (!prepared || !prepared.prepareShot || prepared.result.draftRevision > input.expectedRevision ||
       !nativeInputMatchesBinding(compiled, prepared.request)) {
@@ -858,7 +858,7 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
   const nativeModule = await import(new URL('../../tooling/hms-cloud/create-reservation.mjs', import.meta.url).href) as {
     createReservation: (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<NativeCreate>;
   };
-  const nativeInput = { ...compiled.nativeInput, mode: 'commit' };
+  const nativeInput: Record<string, unknown> = { ...compiled.nativeInput, mode: 'commit' };
   let dispatchHandle: HmsLabtestWriteHandle | null = null;
   let releaseProvedNeverDispatched = false;
   let claimIssue: string | null = null;
@@ -953,7 +953,8 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
     acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS)); }
   catch (error) { native = { outcome: 'uncertain', issue: isPropertyReadLockDeadline(error) ? 'create_lock_busy' : 'native_create_invocation_failed' }; }
   if (claimIssue) return { status: 'needs_reconcile', issue: claimIssue };
-  if (!dispatchHandle) return { status: releaseProvedNeverDispatched ? 'failed' : 'refused',
+  const activeDispatch = dispatchHandle as HmsLabtestWriteHandle | null;
+  if (!activeDispatch) return { status: releaseProvedNeverDispatched ? 'failed' : 'refused',
     issue: native.issue ?? native.outcome ?? 'native_create_not_dispatched', native };
   const confirmation = typeof native.confirmation === 'string' ? native.confirmation : '';
   const fields = native.readback?.fields;
@@ -967,33 +968,33 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
     (!billingRequested || native.save?.billingReferenceStaged === true) && priceMatches(savedPrice, prepared.price);
   if (!success) {
     const uncertain = nativeObservation(loaded.draft, input, native, 'partial', {
-      dispatchHoldId: dispatchHandle.holdId, confirmation: confirmation || null, nativeOutcome: native.outcome ?? 'unknown',
+      dispatchHoldId: activeDispatch.holdId, confirmation: confirmation || null, nativeOutcome: native.outcome ?? 'unknown',
       issue: native.issue ?? (priceMatches(savedPrice, prepared.price) ? 'create_readback_unverified' : 'saved_price_mismatch'),
       pricePlanExpected: prepared.price, priceReadback: savedPrice, nativeReadback: native.readback ?? null,
       prepareObservationRef: prepared.observation.ref,
     });
     const savedResult = await recordNativeObservation(ctx, input, uncertain, 'unknown',
       'Create Save may have dispatched; fresh reconciliation required', input.idempotencyKey);
-    return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: dispatchHandle.holdId,
-      issue: savedResult.status === 'ok' ? uncertain.result.nativeOutcome : 'unknown_receipt_persist_failed' };
+    return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: activeDispatch.holdId,
+      issue: savedResult.status === 'ok' ? String(uncertain.result.nativeOutcome ?? 'unknown') : 'unknown_receipt_persist_failed' };
   }
   const paths = record(native.screenshots);
   const savedShots = await persistSavedScreenshot(ctx, input.workItemId, paths?.before, paths?.after);
   if (!savedShots) {
     const uncertain = nativeObservation(loaded.draft, input, native, 'partial', {
-      dispatchHoldId: dispatchHandle.holdId, confirmation, issue: 'saved_screenshot_persist_failed', nativeReadback: native.readback,
+      dispatchHoldId: activeDispatch.holdId, confirmation, issue: 'saved_screenshot_persist_failed', nativeReadback: native.readback,
       prepareObservationRef: prepared.observation.ref,
     });
     await recordNativeObservation(ctx, input, uncertain, 'unknown', 'Create exists but saved proof is unavailable', input.idempotencyKey);
-    return { status: 'needs_reconcile', operationId: input.idempotencyKey, confirmation, dispatchHoldId: dispatchHandle.holdId };
+    return { status: 'needs_reconcile', operationId: input.idempotencyKey, confirmation, dispatchHoldId: activeDispatch.holdId };
   }
   const successObservation = nativeObservation(loaded.draft, input, native, 'complete', {
     confirmation, requestDigest: prepared.digest, ratePlanAvailability: prepared.price, savedPrice,
     priceMatched: true, nativeReadback: native.readback, savedShot: savedShots.savedShot,
-    dispatchHoldId: dispatchHandle.holdId, prepareObservationRef: prepared.observation.ref,
+    dispatchHoldId: activeDispatch.holdId, prepareObservationRef: prepared.observation.ref,
   });
   try {
-    await resolveHmsLabtestDispatch(ctx.db, dispatchHandle, { operation: 'create', confirmation,
+    await resolveHmsLabtestDispatch(ctx.db, activeDispatch, { operation: 'create', confirmation,
       readbackDigest: sha256(native.readback), savedShot: savedShots.savedShot }, async (tx, intent) => {
       if (intent.workItemId !== input.workItemId || intent.transportId !== ctx.transport.id ||
           intent.actorUserId !== ctx.user.id || intent.grantId !== input.idempotencyKey || intent.stayId !== `${input.requestId}_${input.allocationId}` ||
@@ -1006,12 +1007,12 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
     });
   } catch {
     const uncertain = nativeObservation(loaded.draft, input, native, 'partial', {
-      dispatchHoldId: dispatchHandle.holdId, confirmation, issue: 'durable_create_resolution_unconfirmed',
+      dispatchHoldId: activeDispatch.holdId, confirmation, issue: 'durable_create_resolution_unconfirmed',
       nativeReadback: native.readback, savedShot: savedShots.savedShot,
       prepareObservationRef: prepared.observation.ref,
     });
     await recordNativeObservation(ctx, input, uncertain, 'unknown', 'Create readback passed but durable release is unresolved', input.idempotencyKey);
-    return { status: 'needs_reconcile', operationId: input.idempotencyKey, confirmation, dispatchHoldId: dispatchHandle.holdId };
+    return { status: 'needs_reconcile', operationId: input.idempotencyKey, confirmation, dispatchHoldId: activeDispatch.holdId };
   }
   return { status: 'succeeded', operationId: input.idempotencyKey, requestId: input.requestId,
     allocationId: input.allocationId, confirmation, price: savedPrice, observationRef: successObservation.ref };
