@@ -523,6 +523,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   const activeRequest = snapshot?.requests.find((request) => request.id === activeRequestRef.current)
     ?? snapshot?.requests.find((request) => request.kind === activeKindRef.current);
   const activeKind = activeRequest?.kind ?? activeKindRef.current;
+  const activeRequests = snapshot?.requests.filter((request) => request.kind === activeKind) ?? [];
 
   const applySnapshot = useCallback((next: ReservationPaneSnapshot, bound: ReservationSourceContext) => {
     if (sourceRef.current.selectionEpoch !== bound.selectionEpoch || sourceRef.current.messageId !== bound.messageId
@@ -818,6 +819,17 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
           {activeRequest ? <>
             <div className={styles.titleRow}><div><small className={styles.eyebrow}>{KIND_LABEL[activeRequest.kind]}</small><h1>{activeRequest.text || `${KIND_LABEL[activeRequest.kind]} reservation work`}</h1></div>
               <span className={activeRequest.supported ? styles.connected : styles.notConnected}>{activeRequest.supported ? 'Connected' : 'Review only'}</span></div>
+            {activeRequests.length > 1 && <section className={styles.card}>
+              <label htmlFor="reservation-request-picker">Choose a {KIND_LABEL[activeKind].toLowerCase()} request</label>
+              <select id="reservation-request-picker" className={styles.select} value={activeRequest.id} onChange={(event) => {
+                const selected = activeRequests.find((request) => request.id === event.target.value);
+                if (selected) chooseRequest(selected);
+              }}>
+                {activeRequests.map((request, index) => <option key={request.id} value={request.id}>
+                  {`Request ${index + 1} · ${request.text || 'Details unavailable'}`}
+                </option>)}
+              </select>
+            </section>}
             {snapshot.issues.filter((issue) => !issue.path || issue.path.startsWith(`${requestPath(activeRequest)}/`)).map((issue, index) =>
               <div className={styles.issueLine} key={`${issue.kind}-${index}`}><b>{humanize(issue.kind)}</b><span>{issue.explanation}</span></div>)}
             {activeRequest.kind === 'create' && displayedResult.some((result) => result.status === 'succeeded') && <div className={styles.notice}>At least one room already has an HMS confirmation. Later edits and undo affect the draft only; they do not change a saved reservation.</div>}
