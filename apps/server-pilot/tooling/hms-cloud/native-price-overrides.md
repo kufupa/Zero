@@ -118,7 +118,7 @@ checks the saved rate baseline, and independently reads back the result.
 A failure after Create returns
 `created_rate_unverified` with the confirmation; an uncertain Create must be
 reconciled before any retry. Neither outcome is a successful rate override.
-This combined flow has not yet been proven with a Labtest Save and readback.
+Validate the combined flow with a Labtest Save and fresh readback on deployed main.
 
 ## Room type for charge on a new stay
 
