@@ -239,11 +239,15 @@ export function reservationWorkflowV2CompileServiceItem(draft: ReservationWorkfl
   }
   if (errors.length) return { outcome: 'needs_input' as const, issue: 'service_fields_incomplete_or_ambiguous', fields: errors,
     reviewPaths: [...reviewPaths], candidate: candidate.candidate, paths };
-  const allPaths = [candidate.path, ...Object.values(paths)];
+  const allPaths = [candidate.path, ...Object.entries(paths).filter(([field]) => Object.hasOwn(items, field)).map(([, path]) => path)];
   return { outcome: 'ok' as const, items, candidate: candidate.candidate, candidateRef: candidate.observation.ref,
     serviceId: service.id as string, targetRef: row.targetRef, serviceIndex: row.serviceIndex, targetIndex: row.targetIndex,
     fieldPaths: paths, reviewPaths: [...new Set([...reviewPaths, ...allPaths.filter(path => !accepted(draft, path))])],
     inputDigest: hash({ serviceId: service.id, targetRef: row.targetRef, items, candidate: candidate.candidate }) };
+}
+
+export function reservationWorkflowV2ServiceReviewPaths(plan: Extract<ReservationWorkflowV2CompiledServiceItem, { outcome: 'ok' }>): string[] {
+  return [...new Set(Object.entries(plan.fieldPaths).filter(([field]) => Object.hasOwn(plan.items, field)).map(([, path]) => path))];
 }
 
 async function currentDraft(ctx: ReservationWorkflowV2ServerContext, input: Input) {
