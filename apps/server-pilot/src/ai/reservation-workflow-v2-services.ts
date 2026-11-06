@@ -335,7 +335,7 @@ export async function reservationWorkflowV2LookupServices(ctx: ReservationWorkfl
     const coverage = record(listing?.coverage);
     const complete = native.outcome === 'prepared' && typeof record(native.requestBinding)?.digest === 'string' &&
       record(native.ratePlanAvailability) !== null && listing?.outcome === 'ok' && listing.unsaved === true &&
-      listing.saved === false && listing.propertyCode === 'HRCEN' && coverage?.complete === true;
+      listing.saved !== true && listing.propertyCode === 'HRCEN' && coverage?.complete === true;
     const observations: ReservationWorkflowV2Observation[] = [];
     const serviceRows = new Map(addRows.map(row => [row.service.id, row]));
     for (const row of serviceRows.values()) {

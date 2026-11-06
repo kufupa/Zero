@@ -51,11 +51,12 @@ const sourceInput = z.object({
   selection: paneSourceSelectionSchema,
 }).strict();
 
-async function nativeContext(userId: string, transportId: string, source: { threadId: string; messageId: string }) {
-  const scoped = context(userId, transportId);
+async function nativeContext(user: { id: string; sessionId?: string; sessionProfile?: 'legacy' | 'remote' },
+  transportId: string, source: { threadId: string; messageId: string }) {
+  const scoped = context(user.id, transportId);
   const origin = await guardCenturionHmsMailboxOrigin({ transportId, threadId: source.threadId, messageId: source.messageId });
   if (!origin.ok) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: origin.message });
-  return { db: scoped.db, transport: { id: transportId }, user: { id: userId },
+  return { db: scoped.db, transport: { id: transportId }, user: { ...user },
     property: { propertyCode: scoped.propertyCode } };
 }
 
@@ -146,15 +147,15 @@ export const reservationWorkflowV2Router = router({
     return withPreparation(moveReservationWorkflowV2History(scoped, { ...input, direction: 'redo' }), scoped.propertyCode);
   }),
   lookup: mailboxProcedure.input(reservationWorkflowV2LookupInputSchema).mutation(async ({ input, ctx }) =>
-    reservationWorkflowV2Lookup(await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source), input)),
+    reservationWorkflowV2Lookup(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
   prepare: mailboxProcedure.input(reservationWorkflowV2PrepareInputSchema).mutation(async ({ input, ctx }) =>
-    reservationWorkflowV2Prepare(await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source), input)),
+    reservationWorkflowV2Prepare(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
   execute: mailboxProcedure.input(reservationWorkflowV2ExecuteInputSchema).mutation(async ({ input, ctx }) =>
-    reservationWorkflowV2Execute(await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source), input)),
+    reservationWorkflowV2Execute(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
   lookupServices: mailboxProcedure.input(servicesInput).mutation(async ({ input, ctx }) =>
-    reservationWorkflowV2LookupServices(await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source), input)),
+    reservationWorkflowV2LookupServices(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
   prepareServices: mailboxProcedure.input(servicesInput).mutation(async ({ input, ctx }) =>
-    reservationWorkflowV2PreviewServices(await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source), input)),
+    reservationWorkflowV2PreviewServices(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
   reconcile: mailboxProcedure.input(reservationWorkflowV2ReconcileInputSchema).mutation(async ({ input, ctx }) =>
-    reservationWorkflowV2Reconcile(await nativeContext(ctx.sessionUser.id, ctx.activeTransportId, input.source), input)),
+    reservationWorkflowV2Reconcile(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
 });
