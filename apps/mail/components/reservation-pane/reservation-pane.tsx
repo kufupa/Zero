@@ -97,14 +97,11 @@ function inheritedValue(snapshot: ReservationPaneSnapshot, paths: string[]): unk
     if (override) {
       if (override.state === 'unknown' || override.state === 'none' || override.state === 'clear') return null;
       if (override.state === 'set') return field.value;
-      if (override.state === 'inherit') {
-        const base = draftAtPath(snapshot, path);
-        if (base !== null && base !== undefined && record(base)?.kind !== 'none') return field.value;
-        continue;
-      }
+      if (override.state === 'inherit') continue;
     }
     const base = draftAtPath(snapshot, path);
-    if (base !== null && base !== undefined && record(base)?.kind !== 'none') return field?.value ?? base;
+    if (record(base)?.kind === 'none') return null;
+    if (base !== null && base !== undefined) return field?.value ?? base;
   }
   return null;
 }
@@ -300,12 +297,7 @@ function effectiveCreatePath(snapshot: ReservationPaneSnapshot, paths: string[])
     if (override) {
       if (override.state === 'unknown' || override.state === 'none' || override.state === 'clear') return null;
       if (override.state === 'set') return hasValue(field.value) ? path : null;
-      if (override.state === 'inherit') {
-        const base = draftAtPath(snapshot, path);
-        if (record(base)?.kind === 'none') return null;
-        if (hasValue(base)) return path;
-        continue;
-      }
+      if (override.state === 'inherit') continue;
     }
     const base = draftAtPath(snapshot, path);
     if (record(base)?.kind === 'none') return null;
