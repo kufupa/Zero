@@ -129,6 +129,15 @@ function createRequestForField(snapshot: ReservationPaneSnapshot, path: string):
   const parts = path.split('/').slice(1).map((part) => {
     try { return decodeURIComponent(part); } catch { return ''; }
   });
+  if (parts[0] === 'proposal' && parts[1] === 'content' && parts[2] === 'documents' && parts.length >= 5) {
+    const document = snapshot.session.draft.proposal.content.documents.find((entry) => entry.id === parts[3]);
+    if (!document?.ownerRequestId) return null;
+    const request = snapshot.session.draft.proposal.content.requests.find((entry) => entry.id === document.ownerRequestId
+      && entry.kind === 'filing');
+    const requestRoot = request ? `/proposal/content/requests/${encoded(request.id)}` : '';
+    const refs = request ? valueFor(snapshot, `${requestRoot}/documentRefs`) : null;
+    return request && Array.isArray(refs) && refs.includes(document.id) ? request.id : null;
+  }
   if (parts[0] !== 'proposal' || parts[1] !== 'content' || parts[2] !== 'services' || parts.length < 5) return null;
   const rawIndex = parts[3]!;
   const index = Number(rawIndex);
@@ -385,12 +394,23 @@ function createReviewPaths(snapshot: ReservationPaneSnapshot, request: Reservati
 function filingDocuments(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection) {
   const requestData = snapshot.session.draft.proposal.content.requests.find((entry) => entry.id === request.id);
   if (!requestData || requestData.kind !== 'filing') return [];
-  return snapshot.session.draft.proposal.content.documents.filter((document) =>
-    document.ownerRequestId === request.id && requestData.documentRefs.includes(document.id));
+  const refs = valueFor(snapshot, `${requestPath(request)}/documentRefs`);
+  if (!Array.isArray(refs)) return [];
+  return refs.flatMap((ref) => typeof ref === 'string' ? snapshot.session.draft.proposal.content.documents.filter((document) =>
+    document.id === ref && document.ownerRequestId === request.id) : []);
+}
+
+function filingDocumentPath(documentId: string, field: string): string {
+  return `/proposal/content/documents/${encoded(documentId)}/${encoded(field)}`;
+}
+
+function filingDocumentValue(snapshot: ReservationPaneSnapshot, document: { id: string; kind: string; handling: string }, field: 'kind' | 'handling'): unknown {
+  const path = filingDocumentPath(document.id, field);
+  return Object.hasOwn(snapshot.fields, path) ? snapshot.fields[path]?.value : document[field];
 }
 
 function filingTargetHints(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection) {
-  const scope = record(draftAtPath(snapshot, `${requestPath(request)}/body/targets`));
+  const scope = record(valueFor(snapshot, `${requestPath(request)}/body/targets`));
   const include = Array.isArray(scope?.include) ? scope.include : [];
   return { scope, include: include.map(record).filter((item): item is Record<string, unknown> => Boolean(item)) };
 }
@@ -414,6 +434,110 @@ function filingReviewPaths(snapshot: ReservationPaneSnapshot, request: Reservati
   return paths;
 }
 
+function filingTargetObservation(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection) {
+  const { scope, include } = filingTargetHints(snapshot, request);
+  if (scope?.mode !== 'explicit' || include.length !== 1 || (Array.isArray(scope.exclude) && scope.exclude.length > 0)) return null;
+  const hint = include[0]!;
+  if (typeof hint.id !== 'string') return null;
+  const path = filingTargetPath(request, hint.id);
+  const selectedRef = valueFor(snapshot, path);
+  if (typeof selectedRef !== 'string') return null;
+  const draft = snapshot.session.draft;
+  const observation = snapshot.session.draft.observations.find((entry) => entry.ref === selectedRef && entry.kind === 'stay_candidate'
+    && entry.status === 'complete' && record(entry.coverage)?.complete === true && entry.generationId === draft.generationId
+    && entry.propertyCode === draft.propertyCode && entry.sourceMessageId === draft.source.messageId
+    && entry.criteria.workflow === 'filing' && entry.criteria.requestId === request.id && entry.criteria.targetHintId === hint.id
+    && record(entry.result)?.outcome === 'found');
+  const stay = record(record(observation?.result)?.stay);
+  if (!observation || !stay || (hasValue(hint.confirmation) && hint.confirmation !== stay.confirmation)
+      || (hasValue(hint.bookedArrival) && hint.bookedArrival !== stay.arrival)
+      || (hasValue(hint.bookedDeparture) && hint.bookedDeparture !== stay.departure)
+      || (hasValue(hint.guestName) && !sameIdentityText(hint.guestName, `${text(stay.firstName)} ${text(stay.lastName)}`))) return null;
+  return { hint, path, observation, stay };
+}
+
+function filingTargetCandidates(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection,
+  hint: Record<string, unknown>) {
+  const draft = snapshot.session.draft;
+  return draft.observations.flatMap((observation) => {
+    if (observation.kind !== 'stay_candidate' || observation.status !== 'complete' || record(observation.coverage)?.complete !== true
+        || observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode
+        || observation.sourceMessageId !== draft.source.messageId || observation.criteria.workflow !== 'filing'
+        || observation.criteria.requestId !== request.id || observation.criteria.targetHintId !== hint.id) return [];
+    const result = record(observation.result);
+    const stay = record(result?.stay);
+    if (result?.outcome !== 'found' || !stay) return [];
+    const matches = (!hasValue(hint.confirmation) || hint.confirmation === stay.confirmation)
+      && (!hasValue(hint.bookedArrival) || hint.bookedArrival === stay.arrival)
+      && (!hasValue(hint.bookedDeparture) || hint.bookedDeparture === stay.departure)
+      && (!hasValue(hint.guestName) || sameIdentityText(hint.guestName, `${text(stay.firstName)} ${text(stay.lastName)}`));
+    return [{ observation, stay, matches }];
+  });
+}
+
+function filingSourceObservation(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection, documentId: string,
+  targetObservationRef?: string) {
+  const draft = snapshot.session.draft;
+  return [...snapshot.session.draft.observations].reverse().find((entry) => entry.kind === 'document'
+    && entry.status === 'complete' && record(entry.coverage)?.complete === true
+    && entry.generationId === draft.generationId && entry.propertyCode === draft.propertyCode && entry.sourceMessageId === draft.source.messageId
+    && entry.criteria.workflow === 'filing' && entry.criteria.requestId === request.id && entry.criteria.documentId === documentId
+    && (!targetObservationRef || entry.criteria.targetObservationRef === targetObservationRef)
+    && record(entry.result)?.outcome === 'ready');
+}
+
+function isFilingReadyForPrepare(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
+  const documents = filingDocuments(snapshot, request);
+  const target = filingTargetObservation(snapshot, request);
+  const document = documents[0];
+  if (documents.length !== 1 || !document || filingDocumentValue(snapshot, document, 'handling') !== 'filing_requested'
+      || !['voucher', 'payment_proof'].includes(String(filingDocumentValue(snapshot, document, 'kind'))) || !target) return false;
+  const source = filingSourceObservation(snapshot, request, documents[0]!.id, target.observation.ref);
+  return Boolean(source && typeof record(source.result)?.sha256 === 'string'
+    && typeof record(source.result)?.sourceSnapshotDigest === 'string');
+}
+
+function isFilingReadyForLookup(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
+  const documents = filingDocuments(snapshot, request);
+  const document = documents[0];
+  const { scope, include } = filingTargetHints(snapshot, request);
+  return documents.length === 1 && Boolean(document)
+    && Boolean(document?.documentSourceRef)
+    && filingDocumentValue(snapshot, document!, 'handling') === 'filing_requested'
+    && ['voucher', 'payment_proof'].includes(String(filingDocumentValue(snapshot, document!, 'kind')))
+    && scope?.mode === 'explicit' && include.length === 1
+    && (!Array.isArray(scope.exclude) || scope.exclude.length === 0)
+    && typeof include[0]?.confirmation === 'string' && /^\d+-\d+$/u.test(include[0].confirmation);
+}
+
+function hasCurrentFilingPreparation(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
+  const documents = filingDocuments(snapshot, request);
+  const target = filingTargetObservation(snapshot, request);
+  const source = documents.length === 1 && target
+    ? filingSourceObservation(snapshot, request, documents[0]!.id, target.observation.ref) : undefined;
+  if (!target || !source) return false;
+  const draft = snapshot.session.draft;
+  const operation = [...snapshot.operationResults].reverse().find((result) => result.workflow === 'filing'
+    && result.requestId === request.id && result.generationId === draft.generationId && result.status === 'prepared');
+  if (!operation || !Array.isArray(operation.observationRefs)) return false;
+  return operation.observationRefs.some((ref) => {
+    const observation = draft.observations.find((entry) => entry.ref === ref && entry.kind === 'document'
+      && entry.status === 'complete' && entry.generationId === draft.generationId
+      && entry.criteria.workflow === 'filing' && entry.criteria.requestId === request.id
+      && entry.criteria.documentId === documents[0]!.id && entry.criteria.targetObservationRef === target.observation.ref);
+    const result = record(observation?.result);
+    const preparedTarget = record(result?.target);
+    const sourceResult = record(source.result);
+    return result?.outcome === 'prepared' && typeof result.semanticDigest === 'string'
+      && result.sha256 === sourceResult?.sha256 && result.sourceSnapshotDigest === sourceResult?.sourceSnapshotDigest
+      && preparedTarget?.confirmation === target.stay.confirmation && preparedTarget?.arrival === target.stay.arrival;
+  });
+}
+
+function filingPreparationStamp(snapshot: ReservationPaneSnapshot, source: ReservationSourceContext): string {
+  const draft = snapshot.session.draft;
+  return [source.selectionEpoch, source.messageId, source.sourceHash, draft.generationId, snapshot.session.revision, snapshot.session.seq].join(':');
+}
 
 function isRenderedCreateReviewPath(request: ReservationRequestProjection, path: string): boolean {
   const prefix = requestPath(request) + '/body';
@@ -433,12 +557,13 @@ function isRenderedCreateReviewPath(request: ReservationRequestProjection, path:
 function hasUnreviewedRequiredFields(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
   const paths = request.kind === 'create' ? createReviewPaths(snapshot, request)
     : request.kind === 'filing' ? filingReviewPaths(snapshot, request) : request.fieldPaths;
+  const filingRequired = request.kind === 'filing' ? new Set(filingReviewPaths(snapshot, request)) : null;
   return paths.some((path) => {
     const field = snapshot.fields[path];
     const selectedValue = request.kind === 'create' && path.endsWith('/nativeSelectionRef')
       ? nativeSelectionValue(snapshot, path) : undefined;
     const value = field?.value ?? selectedValue ?? valueFor(snapshot, path);
-    const required = field?.required === true || typeof selectedValue === 'string';
+    const required = field?.required === true || typeof selectedValue === 'string' || filingRequired?.has(path) === true;
     const review = field?.review ?? snapshot.session.draft.staffReviews[path]?.status;
     return required && hasValue(value) && review !== 'accepted';
   });
@@ -485,6 +610,7 @@ function hasLegacyCreateReceiptIssue(snapshot: ReservationPaneSnapshot): boolean
 
 export function ReservationPane({ source, snapshot, loadError, client, onSnapshot, onOpenEvidence, onOpenAttachment }: ReservationPaneProps) {
   const [ui, dispatch] = useReducer(reduceReservationUi, source.selectionEpoch, initialReservationUiState);
+  const [filingPreparedStamps, setFilingPreparedStamps] = useState<Record<string, string>>({});
   const sourceRef = useRef(source);
   const snapshotRef = useRef(snapshot);
   const pending = useRef(new Map<string, PendingReservationEdit>());
@@ -502,6 +628,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     triedPrepare.current.clear();
     activeRequestRef.current = null;
     activeKindRef.current = 'create';
+    setFilingPreparedStamps({});
     dispatch({ type: 'source-changed', selectionEpoch: source.selectionEpoch });
   }, [source.selectionEpoch, source.messageId]);
 
@@ -603,10 +730,12 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
       if (!current) throw new Error('The source-bound reservation draft is still loading.');
       const field = current.fields[path];
       const suggestedSelection = path.endsWith('/nativeSelectionRef') ? nativeSelectionValue(current, path) : null;
+      const filingSelection = current.requests.some((request) => request.kind === 'filing'
+        && filingReviewPaths(current, request).includes(path));
       const quote = current.session.draft.proposal.content.requests.find((request) => request.kind === 'quote'
         && `/proposal/content/requests/${encodeURIComponent(request.id)}/body` === path);
       const quoteReview = quote ? quoteReviewInfo(current, quote.id) : null;
-      const required = field?.required === true || typeof suggestedSelection === 'string' || Boolean(quoteReview?.items.length);
+      const required = field?.required === true || typeof suggestedSelection === 'string' || Boolean(quoteReview?.items.length) || filingSelection;
       const review = current.session.draft.staffReviews[path];
       if (!required || (quoteReview?.items.length ? quoteReview.accepted : (field?.review ?? review?.status) === 'accepted')) return;
       if (!hasValue(field?.value ?? suggestedSelection ?? valueFor(current, path))) throw new Error('Enter or resolve this value before marking it reviewed.');
@@ -747,6 +876,101 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     });
   }, [applySnapshot, client, enqueue, flushEdits]);
 
+  const lookupFiling = useCallback((requestId: string) => {
+    const bound = sourceRef.current;
+    void enqueue('Finding exact saved stay and verifying its source PDF', bound, async () => {
+      let current = snapshotRef.current;
+      if (!current) throw new Error('The source-bound reservation draft is still loading.');
+      if (pending.current.size) {
+        await flushEdits(bound);
+        current = snapshotRef.current;
+      }
+      const request = current?.requests.find((item) => item.id === requestId && item.kind === 'filing');
+      if (!current || !request?.supported) throw new Error('This Filing request is not connected to the selected source.');
+      if (!isFilingReadyForLookup(current, request)) {
+        throw new Error('Choose one PDF, enter the exact existing confirmation, and select its document kind before Lookup.');
+      }
+      const next = await client.lookup({ source: bound, snapshot: current, requestId });
+      applySnapshot(next, bound);
+      if (next.serviceNotice) throw new Error(next.serviceNotice);
+    });
+  }, [applySnapshot, client, enqueue, flushEdits]);
+
+  const configureFiling = useCallback((requestId: string, selection: { attachmentId: string; confirmation: string;
+    kind: 'voucher' | 'payment_proof' }): Promise<boolean> => {
+    const bound = sourceRef.current;
+    let configured = false;
+    const run = enqueue('Saving selected PDF and exact confirmation', bound, async () => {
+      if (pending.current.size) await flushEdits(bound);
+      const current = snapshotRef.current;
+      const request = current?.requests.find((item) => item.id === requestId && item.kind === 'filing');
+      const attachment = bound.attachments.find((item) => item.sourceRef === selection.attachmentId);
+      const isPdf = Boolean(attachment && (attachment.mimeType?.toLowerCase() === 'application/pdf'
+        || /\.pdf$/iu.test(attachment.name)) && attachment.uploadability !== 'unsupported');
+      if (!current || !request?.supported) throw new Error('This Filing request is not connected to the selected source.');
+      if (!isPdf) throw new Error('Choose an eligible PDF attachment from this selected email.');
+      const confirmation = selection.confirmation.trim();
+      if (!/^\d+-\d+$/u.test(confirmation)) throw new Error('Enter the exact existing Infor confirmation in digits-digits format.');
+      const next = await client.configureFiling({ source: bound, snapshot: current, requestId: request.id,
+        attachmentId: selection.attachmentId, confirmation, kind: selection.kind });
+      setFilingPreparedStamps((previous) => { const copy = { ...previous }; delete copy[request.id]; return copy; });
+      applySnapshot(next, bound);
+      configured = true;
+    });
+    return run.then(() => configured);
+  }, [applySnapshot, client, enqueue, flushEdits]);
+
+  const prepareFiling = useCallback((requestId: string) => {
+    const bound = sourceRef.current;
+    void enqueue('Preparing exact PDF and saved stay in Infor · no save', bound, async () => {
+      if (pending.current.size) await flushEdits(bound);
+      const current = snapshotRef.current;
+      const request = current?.requests.find((item) => item.id === requestId && item.kind === 'filing');
+      if (!current || !request?.supported) throw new Error('This Filing request is not connected to the selected source.');
+      if (!isFilingReadyForPrepare(current, request)) throw new Error('Run Lookup and select one exact source-bound PDF and saved stay before Prepare.');
+      if (hasUnreviewedRequiredFields(current, request)) throw new Error('Confirm the source PDF, document facts, and selected stay before Prepare.');
+      const next = await client.prepare({ source: bound, snapshot: current, requestId });
+      applySnapshot(next, bound);
+      if (next.serviceNotice) throw new Error(next.serviceNotice);
+      if (!hasCurrentFilingPreparation(next, request)) throw new Error('Infor did not record a current Filing preparation. Nothing was uploaded.');
+      setFilingPreparedStamps((prior) => ({ ...prior, [request.id]: filingPreparationStamp(next, bound) }));
+    });
+  }, [applySnapshot, client, enqueue, flushEdits]);
+
+  const fileFiling = useCallback((requestId: string) => {
+    const bound = sourceRef.current;
+    void enqueue('Filing verified PDF to Infor', bound, async () => {
+      beginMutation();
+      try {
+        if (pending.current.size) await flushEdits(bound);
+        const current = snapshotRef.current;
+        const request = current?.requests.find((item) => item.id === requestId && item.kind === 'filing');
+        if (!current || !request?.supported) throw new Error('This Filing request is not connected to the selected source.');
+        const previous = current.operationResults.find((result) => result.workflow === 'filing' && result.requestId === request.id
+          && (result.status === 'unknown' || result.status === 'succeeded'));
+        if (previous?.status === 'unknown') throw new Error('Filing outcome is uncertain. Reconcile the saved operation before retrying.');
+        if (previous?.status === 'succeeded') throw new Error('This Filing request already has a confirmed Infor receipt; no duplicate upload was started.');
+        if (filingPreparedStamps[request.id] !== filingPreparationStamp(current, bound)
+            || !isFilingReadyForPrepare(current, request) || hasUnreviewedRequiredFields(current, request)
+            || !hasCurrentFilingPreparation(current, request)) {
+          throw new Error('Filing preparation is stale. Review the source and selected stay, then Prepare again before File.');
+        }
+        const idempotencyKey = crypto.randomUUID();
+        const next = await client.execute({ source: bound, snapshot: current, requestId: request.id, idempotencyKey });
+        applySnapshot(next, bound);
+        const outcome = next.operationResults.find((result) => result.id === idempotencyKey)
+          ?? [...next.operationResults].reverse().find((result) => result.workflow === 'filing' && result.requestId === request.id);
+        if (!outcome || outcome.status !== 'succeeded') {
+          throw new Error(next.serviceNotice ?? (outcome?.status === 'unknown'
+            ? 'The PDF may have reached Infor. Reconcile its saved operation before retrying.'
+            : 'Infor did not confirm a saved PDF listing/readback. Check the Filing receipt before retrying.'));
+        }
+      } finally {
+        endMutation();
+      }
+    });
+  }, [applySnapshot, client, enqueue, filingPreparedStamps, flushEdits]);
+
   const reconcile = useCallback((operationId: string) => {
     const bound = sourceRef.current;
     void enqueue('Reconciling the Infor save outcome', bound, async () => {
@@ -796,6 +1020,20 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     && isQuotePrepared(snapshot, activeRequest) && !hasUnreviewedRequiredFields(snapshot, activeRequest)
     && (!quoteReviewInfo(snapshot, activeRequest.id).items.length || quoteReviewInfo(snapshot, activeRequest.id).accepted)
     && !ui.pendingEdits.length && !ui.busyAction && !hasUncertain);
+  const filingPreparedStamp = snapshot && activeRequest?.kind === 'filing'
+    ? filingPreparationStamp(snapshot, source) : null;
+  const filingCompleted = Boolean(snapshot && activeRequest?.kind === 'filing'
+    && snapshot.operationResults.some((result) => result.workflow === 'filing' && result.requestId === activeRequest.id && result.status === 'succeeded'));
+  const filingBlockedByUncertainty = Boolean(snapshot && activeRequest?.kind === 'filing'
+    && snapshot.operationResults.some((result) => result.workflow === 'filing' && result.requestId === activeRequest.id && result.status === 'unknown'));
+  const canPrepareFiling = Boolean(snapshot && activeRequest?.kind === 'filing' && activeRequest.supported
+    && isFilingReadyForPrepare(snapshot, activeRequest) && !hasUnreviewedRequiredFields(snapshot, activeRequest)
+    && !ui.pendingEdits.length && !ui.busyAction && !filingCompleted && !filingBlockedByUncertainty);
+  const canFileFiling = Boolean(snapshot && activeRequest?.kind === 'filing' && activeRequest.supported
+    && filingPreparedStamp && filingPreparedStamps[activeRequest.id] === filingPreparedStamp
+    && isFilingReadyForPrepare(snapshot, activeRequest) && hasCurrentFilingPreparation(snapshot, activeRequest)
+    && !hasUnreviewedRequiredFields(snapshot, activeRequest) && !ui.pendingEdits.length && !ui.busyAction
+    && !filingCompleted && !filingBlockedByUncertainty);
 
   return (
     <div className={styles.pane} data-reservation-pane="v2" data-source-message={source.messageId}>
@@ -858,7 +1096,11 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
                   onLookup={refreshNative} />
                 </fieldset>
               : activeRequest.kind === 'filing'
-                ? <FilingEditor snapshot={snapshot} request={activeRequest} source={source} onOpenAttachment={onOpenAttachment} />
+                ? <FilingEditor key={`${source.selectionEpoch}:${activeRequest.id}`} snapshot={snapshot} request={activeRequest} source={source} onOpenAttachment={onOpenAttachment}
+                    onStage={stage} onBlur={editOnBlur} onDone={markDone} editValue={editValue} onOpenEvidence={onOpenEvidence}
+                    busy={Boolean(ui.busyAction) || Boolean(ui.pendingEdits.length)} canPrepare={canPrepareFiling} canFile={canFileFiling}
+                    onConfigure={(selection) => configureFiling(activeRequest.id, selection)}
+                    onLookup={() => lookupFiling(activeRequest.id)} onPrepare={() => prepareFiling(activeRequest.id)} onFile={() => fileFiling(activeRequest.id)} />
                 : activeRequest.kind === 'quote'
                   ? <QuoteEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur} onDone={markDone} editValue={editValue}
                     onOpenEvidence={onOpenEvidence} busy={Boolean(ui.busyAction) || Boolean(ui.pendingEdits.length)}
@@ -866,7 +1108,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
                   : <RequestReview snapshot={snapshot} request={activeRequest} />}
             {displayedResult.map((result, index) => <OperationResult key={String(result.id ?? index)} result={result}
               onReconcile={reconcile} busy={Boolean(ui.busyAction)} />)}
-            {activeRequest.kind !== 'create' && activeRequest.kind !== 'quote' && <div className={styles.notice}>This v2 request is visible from saved source facts. Its native operation is not connected in the current UI route, so no Go action is offered.</div>}
+            {activeRequest.kind !== 'create' && activeRequest.kind !== 'quote' && activeRequest.kind !== 'filing' && <div className={styles.notice}>This v2 request is visible from saved source facts. Its native operation is not connected in the current UI route, so no Go action is offered.</div>}
           </> : <>
             <div className={styles.titleRow}><div><small className={styles.eyebrow}>{KIND_LABEL[activeKind]}</small><h1>{activeKind === 'create' ? 'New reservation' : `${KIND_LABEL[activeKind]} request`}</h1></div></div>
             {activeKind === 'create'
@@ -878,7 +1120,10 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
           <div className={styles.footerMessage} aria-live="polite">
             {ui.busyAction ? <><span className={styles.spinner} />{ui.busyAction}</> : ui.actionError ?? snapshot.serviceNotice ?? (activeRequest?.kind === 'create' && isRequestPrepared(snapshot, activeRequest)
               ? 'Current Infor unsaved form and price are ready for review.' : activeRequest?.kind === 'quote' && isQuotePrepared(snapshot, activeRequest)
-                ? 'Current native quote price and availability are prepared; outputs remain unsent.' : snapshot.preparation.message)}
+                ? 'Current native quote price and availability are prepared; outputs remain unsent.'
+                : activeRequest?.kind === 'filing' && filingCompleted ? 'Infor confirmed this PDF filing. Review the source-bound receipt below.'
+                  : activeRequest?.kind === 'filing' && filingPreparedStamp && filingPreparedStamps[activeRequest.id] === filingPreparedStamp
+                    ? 'Current PDF and existing stay are prepared; no save has been performed.' : snapshot.preparation.message)}
           </div>
           {ui.pendingEdits.length > 0 && <button type="button" className={styles.secondaryButton} disabled={Boolean(ui.busyAction)} onClick={() => { void saveEdits(); }}>Save {ui.pendingEdits.length} edit{ui.pendingEdits.length === 1 ? '' : 's'}</button>}
           {activeKind === 'create' && activeRequest && <button type="button" className={styles.goButton} disabled={!canGo || busyActionRef.current} onClick={runGo}>Create · {createSections(snapshot, activeRequest).allocations.length} room reservations</button>}
@@ -1689,45 +1934,224 @@ function QuoteArtifactReceipts({ snapshot, request }: { snapshot: ReservationPan
   </>;
 }
 
-function FilingEditor({ snapshot, request, source, onOpenAttachment }: {
-  snapshot: ReservationPaneSnapshot; request: ReservationRequestProjection; source: ReservationSourceContext;
-  onOpenAttachment?: (ref: string) => void;
+function FilingReviewControl({ snapshot, path, label, value, busy, onDone }: {
+  snapshot: ReservationPaneSnapshot; path: string; label: string; value: unknown; busy: boolean; onDone?: (path: string) => void;
 }) {
-  const linkedRefs = draftAtPath(snapshot, `${requestPath(request)}/documentRefs`);
-  const requestDocs = Array.isArray(linkedRefs) ? linkedRefs : [];
-  const docs = snapshot.session.draft.proposal.content.documents.filter((document) =>
-    document.ownerRequestId === request.id || requestDocs.includes(document.id));
-  const targetScope = draftAtPath(snapshot, `${requestPath(request)}/body/targets`);
+  const review = snapshot.fields[path]?.review ?? snapshot.session.draft.staffReviews[path]?.status;
+  return <div className={styles.valueState}>
+    <small>{review === 'accepted' ? `Confirmed · ${label}` : `Confirm source · ${label}`}</small>
+    {review !== 'accepted' && hasValue(value) && <button type="button" className={styles.inlineButton} disabled={busy}
+      onClick={() => onDone?.(path)}>Confirm</button>}
+  </div>;
+}
+
+function filingObservationResult(snapshot: ReservationPaneSnapshot, operation: Record<string, unknown>) {
+  const refs = Array.isArray(operation.observationRefs) ? operation.observationRefs.filter((ref): ref is string => typeof ref === 'string') : [];
+  return [...snapshot.session.draft.observations].reverse().find((observation) => refs.includes(observation.ref)
+    && observation.kind === 'document' && observation.criteria.workflow === 'filing'
+    && observation.criteria.requestId === operation.requestId);
+}
+
+function FilingEditor(props: EditorProps & { source: ReservationSourceContext; busy: boolean; canPrepare: boolean; canFile: boolean;
+  onConfigure: (selection: { attachmentId: string; confirmation: string; kind: 'voucher' | 'payment_proof' }) => Promise<boolean>;
+  onLookup: () => void; onPrepare: () => void; onFile: () => void; onOpenAttachment?: (ref: string) => void }) {
+  const { snapshot, request, source } = props;
+  const docs = filingDocuments(snapshot, request);
+  const { scope, include } = filingTargetHints(snapshot, request);
+  const hint = scope?.mode === 'explicit' && include.length === 1 && (!Array.isArray(scope.exclude) || scope.exclude.length === 0)
+    ? include[0] : null;
+  const targetPath = typeof hint?.id === 'string' ? filingTargetPath(request, hint.id) : null;
+  const selectedTarget = filingTargetObservation(snapshot, request);
+  const selectedRef = targetPath ? props.editValue(targetPath) : null;
+  const candidates = hint ? filingTargetCandidates(snapshot, request, hint) : [];
+  const targetReview = targetPath ? snapshot.session.draft.staffReviews[targetPath]?.status : undefined;
+  const sourceProof = docs.length === 1 && selectedTarget
+    ? filingSourceObservation(snapshot, request, docs[0]!.id, selectedTarget.observation.ref) : undefined;
+  const proofResult = record(sourceProof?.result);
+  const filingResults = snapshot.operationResults.filter((result) => result.workflow === 'filing' && result.requestId === request.id);
+  const savedReceipt = filingResults.some((result) => result.status === 'succeeded');
+  const eligiblePdfs = source.attachments.filter((attachment) => (attachment.mimeType?.toLowerCase() === 'application/pdf'
+    || /\.pdf$/iu.test(attachment.name)) && attachment.uploadability !== 'unsupported');
+  const sourceDocumentKind = docs.length === 1 ? filingDocumentValue(snapshot, docs[0]!, 'kind') : null;
+  const [attachmentId, setAttachmentId] = useState('');
+  const [confirmation, setConfirmation] = useState(() => typeof hint?.confirmation === 'string' ? hint.confirmation : '');
+  const [kind, setKind] = useState<'voucher' | 'payment_proof' | ''>(() =>
+    sourceDocumentKind === 'voucher' || sourceDocumentKind === 'payment_proof' ? sourceDocumentKind : '');
+  const selectedAttachment = eligiblePdfs.find((attachment) => attachment.sourceRef === attachmentId);
+  const validConfirmation = /^\d+-\d+$/u.test(confirmation.trim());
+  const canConfigure = Boolean(request.supported && selectedAttachment && validConfirmation
+    && (kind === 'voucher' || kind === 'payment_proof'));
+  const originalConfigurationKey = JSON.stringify(['', typeof hint?.confirmation === 'string' ? hint.confirmation.trim() : '',
+    sourceDocumentKind === 'voucher' || sourceDocumentKind === 'payment_proof' ? sourceDocumentKind : '']);
+  const currentConfigurationKey = JSON.stringify([attachmentId, confirmation.trim(), kind]);
+  const [savedConfigurationKey, setSavedConfigurationKey] = useState<string | null>(null);
+  const configurationCurrent = currentConfigurationKey === originalConfigurationKey || currentConfigurationKey === savedConfigurationKey;
+  const canLookup = request.supported && configurationCurrent && isFilingReadyForLookup(snapshot, request);
+
   return <>
-    <div className={styles.sectionHeader}><div><h2>Filing source and destination</h2><p>Files stay bound to admitted email bytes and exact existing reservation targets.</p></div></div>
-    {docs.length === 0 ? <div className={styles.notice}>No document is bound to this Filing request.</div> : docs.map((document) => {
-      const attachment = source.attachments.find((item) => item.sourceRef === document.documentSourceRef);
+    <div className={styles.sectionHeader}><div><h2>File an admitted PDF to an existing stay</h2>
+      <p>Choose the email PDF and exact confirmation if prefill missed them. Lookup is read-only, Prepare does not save, and File requires the selected exact stay.</p></div></div>
+    <section className={styles.card}>
+      <div className={styles.cardTitle}><b>PDF and existing confirmation</b><small>Selected email · no native write</small></div>
+      <div className={styles.field}>
+        <div className={styles.labelRow}><label htmlFor="filing-source-attachment">PDF attachment</label></div>
+        <select id="filing-source-attachment" className={styles.select} value={attachmentId} disabled={props.busy}
+          onChange={(event) => setAttachmentId(event.target.value)}>
+          <option value="">Choose a PDF from this email</option>
+          {eligiblePdfs.map((attachment) => <option key={attachment.sourceRef} value={attachment.sourceRef}>
+            {attachment.name}{attachment.uploadability === 'unknown' || attachment.uploadability === 'checking' ? ' · verify on lookup' : ''}
+          </option>)}
+        </select>
+        {!eligiblePdfs.length && <small className={styles.problem}>This email has no eligible PDF attachment. Filing cannot continue with a guessed or demo document.</small>}
+      </div>
+      <div className={styles.twoCol}>
+        <div className={styles.field}>
+          <div className={styles.labelRow}><label htmlFor="filing-confirmation">Existing Infor confirmation</label></div>
+          <input id="filing-confirmation" className={styles.input} type="text" inputMode="numeric" maxLength={200}
+            placeholder="Digits-digits" pattern="[0-9]+-[0-9]+" value={confirmation} disabled={props.busy}
+            aria-invalid={confirmation.trim() !== '' && !validConfirmation}
+            onChange={(event) => setConfirmation(event.target.value)} />
+          {confirmation.trim() !== '' && !validConfirmation && <small className={styles.problem}>Enter the exact confirmation as digits-digits.</small>}
+        </div>
+        <div className={styles.field}>
+          <div className={styles.labelRow}><label htmlFor="filing-document-kind">Document kind</label></div>
+          <select id="filing-document-kind" className={styles.select} value={kind} disabled={props.busy}
+            onChange={(event) => setKind(event.target.value === 'voucher' || event.target.value === 'payment_proof' ? event.target.value : '')}>
+            <option value="">Choose document kind</option><option value="voucher">Voucher</option><option value="payment_proof">Payment proof</option>
+          </select>
+        </div>
+      </div>
+      <p className={styles.help}>Saving this selection adds a staff-selected filing document with no extracted file name or description. It preserves extracted document rows, replaces only the active document/target selection, and does not run Lookup or upload anything.</p>
+      <button type="button" className={styles.secondaryButton} disabled={props.busy || !canConfigure}
+        onClick={() => {
+          if (kind !== 'voucher' && kind !== 'payment_proof') return;
+          void props.onConfigure({ attachmentId, confirmation: confirmation.trim(), kind }).then((saved) => {
+            if (saved) setSavedConfigurationKey(currentConfigurationKey);
+          });
+        }}>
+        Save PDF and confirmation selection
+      </button>
+      <small className={styles.help}>Next: Lookup, select one exact stay, Lookup again to bind the PDF to that stay, then Prepare and File.</small>
+      {!configurationCurrent && <small className={styles.problem}>Save the changed PDF, confirmation, and kind before Lookup or Prepare.</small>}
+    </section>
+    <div className={styles.twoCol}>
+      <button type="button" className={styles.secondaryButton} disabled={props.busy || !canLookup} onClick={props.onLookup}>
+        {sourceProof ? 'Lookup selected stay and PDF again' : 'Lookup existing stay and PDF'}
+      </button>
+      <button type="button" className={styles.secondaryButton} disabled={props.busy || !configurationCurrent || !props.canPrepare} onClick={props.onPrepare}>Prepare PDF in Infor · no save</button>
+    </div>
+    {docs.length !== 1 && <div className={styles.alert}>The active Filing selection needs exactly one document; currently there are {docs.length}. Choose a PDF above to set the active document. Existing extracted documents remain in the saved draft.</div>}
+    {docs.map((document) => {
+      const root = `/proposal/content/documents/${encoded(document.id)}`;
+      const sourcePath = `${root}/documentSourceRef`;
+      const kindPath = `${root}/kind`;
+      const handlingPath = `${root}/handling`;
+      const documentKind = text(props.editValue(kindPath)) || document.kind;
+      const documentHandling = text(props.editValue(handlingPath)) || document.handling;
       return <section className={styles.card} key={document.id}>
-        <div className={styles.cardTitle}><b>{humanize(document.kind)}</b><small>{document.handling === 'filing_requested' ? 'Filing requested' : document.handling}</small></div>
-        {attachment ? <div className={styles.attachmentBound}><b>{attachment.name}</b><small>{attachment.mimeType ?? 'Unknown file type'} · {attachment.uploadability}</small>
-          {onOpenAttachment && <button type="button" className={styles.inlineButton} disabled={attachment.uploadability !== 'ready'} onClick={() => onOpenAttachment(attachment.sourceRef)}>Open admitted attachment</button>}</div>
-          : <div className={styles.alert}>Saved source evidence ref: {document.documentSourceRef}. It does not match a host attachment ID; no file-bytes binding is available yet.</div>}
-        <div className={styles.fixedValue}><span>Targets in saved request</span><b>{document.targetRefs.length || 'Unresolved'}</b><small>No destination is inferred from a guest name.</small></div>
+        <div className={styles.cardTitle}><b>Source document</b><small>{humanize(documentKind)} · {humanize(documentHandling)}</small></div>
+        <FieldShell path={sourcePath} label="Source PDF evidence" field={snapshot.fields[sourcePath]} onOpenEvidence={props.onOpenEvidence}>
+          <div className={styles.readValue}>{document.documentSourceRef}</div>
+        </FieldShell>
+        <FilingReviewControl snapshot={snapshot} path={sourcePath} label="PDF source" value={document.documentSourceRef} busy={props.busy} onDone={props.onDone} />
+        <div className={styles.twoCol}>
+          <FieldShell path={kindPath} label="Document kind" field={snapshot.fields[kindPath]} onOpenEvidence={props.onOpenEvidence}>
+            <select id={kindPath} className={styles.select} value={text(props.editValue(kindPath)) || document.kind} disabled={props.busy} onChange={(event) => {
+              props.onStage(kindPath, event.target.value);
+              props.onBlur(kindPath);
+            }}>
+              <option value="voucher">Voucher</option><option value="payment_proof">Payment proof</option>
+              <option value="other">Other</option><option value="unclassified">Unclassified</option>
+            </select>
+          </FieldShell>
+          <FieldShell path={handlingPath} label="Requested action" field={snapshot.fields[handlingPath]} onOpenEvidence={props.onOpenEvidence}>
+            <select id={handlingPath} className={styles.select} value={text(props.editValue(handlingPath)) || document.handling} disabled={props.busy} onChange={(event) => {
+              props.onStage(handlingPath, event.target.value);
+              props.onBlur(handlingPath);
+            }}>
+              <option value="filing_requested">File this document</option><option value="context">Keep as context</option><option value="unclear">Unclear</option>
+            </select>
+          </FieldShell>
+        </div>
+        <FilingReviewControl snapshot={snapshot} path={kindPath} label="document kind" value={documentKind} busy={props.busy} onDone={props.onDone} />
+        <FilingReviewControl snapshot={snapshot} path={handlingPath} label="filing action" value={documentHandling} busy={props.busy} onDone={props.onDone} />
+        {document.requestedName !== null && <>
+          <FieldShell path={`${root}/requestedName`} label="Requested file name" field={snapshot.fields[`${root}/requestedName`]} onOpenEvidence={props.onOpenEvidence}>
+            <div className={styles.readValue}>{document.requestedName}</div>
+          </FieldShell>
+          <FilingReviewControl snapshot={snapshot} path={`${root}/requestedName`} label="requested file name" value={document.requestedName} busy={props.busy} onDone={props.onDone} />
+        </>}
+        {document.requestedDescription !== null && <>
+          <FieldShell path={`${root}/requestedDescription`} label="Requested description" field={snapshot.fields[`${root}/requestedDescription`]} onOpenEvidence={props.onOpenEvidence}>
+            <div className={styles.readValue}>{document.requestedDescription}</div>
+          </FieldShell>
+          <FilingReviewControl snapshot={snapshot} path={`${root}/requestedDescription`} label="requested description" value={document.requestedDescription} busy={props.busy} onDone={props.onDone} />
+        </>}
+        {sourceProof ? <div className={styles.fixedValue}>
+          <b>Native lookup verified a source PDF</b><span>{text(proofResult?.documentName)}</span>
+          <small>SHA-256 of the admitted source PDF: {text(proofResult?.sha256)}</small>
+        </div> : <div className={styles.notice}>Lookup has not yet verified this filing document’s PDF bytes against the selected stay. No upload happens during Lookup.</div>}
       </section>;
     })}
-    {!docs.length && source.attachments.length > 0 && <section className={styles.card}>
-      <div className={styles.cardTitle}><b>Attachments on selected email</b><small>No filing document is linked to them</small></div>
+    {source.attachments.length > 0 && <section className={styles.card}>
+      <div className={styles.cardTitle}><b>Attachments on selected email</b><small>PDF selected above; native lookup verifies its admitted contents</small></div>
       {source.attachments.map((attachment) => <div className={styles.attachmentBound} key={attachment.sourceRef}>
         <b>{attachment.name}</b><small>{attachment.mimeType ?? 'Unknown file type'} · {attachment.uploadability}</small>
-        {onOpenAttachment && <button type="button" className={styles.inlineButton} disabled={attachment.uploadability !== 'ready'} onClick={() => onOpenAttachment(attachment.sourceRef)}>Open admitted attachment</button>}
+        {props.onOpenAttachment && <button type="button" className={styles.inlineButton} disabled={attachment.uploadability !== 'ready'} onClick={() => props.onOpenAttachment?.(attachment.sourceRef)}>Open attachment</button>}
       </div>)}
     </section>}
-    {record(targetScope) && <section className={styles.card}>
-      <div className={styles.cardTitle}><b>Saved target scope</b><small>{humanize(String(record(targetScope)?.mode ?? 'unresolved'))}</small></div>
-      {['include', 'exclude'].map((side) => {
-        const refs = record(targetScope)?.[side];
-        const list = Array.isArray(refs) ? refs : [];
-        return <div className={styles.targetScope} key={side}><b>{humanize(side)}</b>{list.length
-          ? list.map((value) => <small key={`${side}-${text(record(value)?.id) || JSON.stringify(value)}`}>{JSON.stringify(value)}</small>)
-          : <small>None recorded</small>}</div>;
+    <section className={styles.card}>
+      <div className={styles.cardTitle}><b>Exact existing reservation</b><small>One explicit included stay; no excluded targets</small></div>
+      {!hint || !targetPath ? <div className={styles.alert}>The saved draft does not contain exactly one explicit stay target. A source-bound target hint is required; no guest-name-only search or new stay is available.</div> : <>
+        <div className={styles.twoCol}>
+          <div className={styles.fixedValue}><span>Confirmation</span><b>{text(hint.confirmation) || 'Not provided'}</b></div>
+          <div className={styles.fixedValue}><span>Booked arrival</span><b>{text(hint.bookedArrival) || 'Not provided'}</b></div>
+        </div>
+        {hasValue(hint.bookedDeparture) && <div className={styles.fixedValue}><span>Booked departure assertion</span><b>{text(hint.bookedDeparture)}</b></div>}
+        {hasValue(hint.guestName) && <div className={styles.fixedValue}><span>Guest-name assertion</span><b>{text(hint.guestName)}</b></div>}
+        {!hasValue(hint.confirmation) && <div className={styles.alert}>This native lookup currently searches by a source-bound confirmation (and optional arrival), not by name. Correct the source draft before lookup.</div>}
+        {selectedTarget ? <div className={styles.fixedValue}>
+          <b>Exact saved stay selected</b><span>{text(selectedTarget.stay.confirmation)} · {text(selectedTarget.stay.arrival)}–{text(selectedTarget.stay.departure)}</span>
+          <small>{text(selectedTarget.stay.firstName)} {text(selectedTarget.stay.lastName)} · {text(selectedTarget.stay.status)}</small>
+        </div> : selectedRef ? <div className={styles.alert}>The saved selection no longer matches the source-bound confirmation/date assertions. Run Lookup and select an exact current result.</div>
+          : <div className={styles.notice}>Select the exact complete stay returned by Lookup. A name match alone is not accepted.</div>}
+        {targetPath && hasValue(selectedRef) && targetReview !== 'accepted' && <FilingReviewControl snapshot={snapshot} path={targetPath}
+          label="selected existing stay" value={selectedRef} busy={props.busy} onDone={props.onDone} />}
+        {candidates.map(({ observation, stay, matches }) => <div className={styles.candidateOption} key={observation.ref}>
+          <span><b>{text(stay.confirmation)} · {text(stay.arrival)}–{text(stay.departure)}</b>
+            <small>{text(stay.firstName)} {text(stay.lastName)} · {text(stay.status)} · observation {observation.ref}</small></span>
+          {matches ? <button type="button" className={styles.inlineButton} disabled={props.busy} onClick={() => {
+            props.onStage(targetPath!, observation.ref);
+            props.onBlur(targetPath!);
+          }}>{selectedRef === observation.ref ? 'Selected' : 'Select exact stay'}</button>
+            : <small className={styles.problem}>Does not match all populated confirmation/date/name assertions.</small>}
+        </div>)}
+      </>}
+    </section>
+    {filingResults.length > 0 && <section className={styles.card}>
+      <div className={styles.cardTitle}><b>Filing receipts</b><small>Source-bound native outcomes</small></div>
+      {filingResults.map((operation, index) => {
+        const observation = filingObservationResult(snapshot, operation);
+        const result = record(observation?.result);
+        const target = record(result?.target) ?? record(result?.nativeReadback);
+        const status = text(operation.status) || 'unknown';
+        return <div className={styles.fixedValue} key={text(operation.id) || index}>
+          <b>{status === 'prepared' ? 'Prepared only · no save performed' : status === 'succeeded' ? 'Uploaded and verified by fresh Infor listing/readback' : `Filing ${humanize(status)}`}</b>
+          {hasValue(target?.confirmation) && <span>Confirmation {text(target?.confirmation)}</span>}
+          {hasValue(result?.documentCode) && <span>Infor document code {text(result?.documentCode)}</span>}
+          {hasValue(result?.documentName) && <span>{text(result?.documentName)}</span>}
+          {hasValue(result?.sourcePdfSha256 ?? result?.sha256) && <small>Source PDF SHA-256: {text(result?.sourcePdfSha256 ?? result?.sha256)}</small>}
+          {status === 'succeeded' && result?.storedBytesHashVerified === false && result.actualStoredSha256 === null
+            && <small>HMS does not expose stored bytes to this reader; the uploaded bytes’ hash was not verified.</small>}
+          {status === 'unknown' && <small>Do not retry. Reconcile this saved operation first.</small>}
+        </div>;
       })}
+      {savedReceipt && <div className={styles.notice}>The saved Infor record cannot be undone by changing this email draft.</div>}
     </section>}
-    <div className={styles.notice}>Filing execution is not connected in the current route. No local receipt or success state is created.</div>
+    <div className={styles.twoCol}>
+      <button type="button" className={styles.goButton} disabled={props.busy || !configurationCurrent || !props.canFile || savedReceipt} onClick={props.onFile}>File verified PDF to Infor</button>
+    </div>
+    {!props.canFile && <small className={styles.help}>File is enabled only after one source PDF and one exact stay are verified, all required facts are confirmed, and the current form is prepared.</small>}
   </>;
 }
 

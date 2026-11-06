@@ -23,6 +23,7 @@ import {
   editReservationWorkflowV2Draft,
   reviewReservationWorkflowV2Draft,
   moveReservationWorkflowV2History,
+  configureReservationWorkflowV2Filing,
 } from '../../ai/reservation-workflow-v2-state.js';
 import { ensureReservationWorkflowV2Prefill } from '../../ai/reservation-workflow-v2-prefill.js';
 import { createAzureExtractionAdapter } from '../../ai/extraction/extract.js';
@@ -37,6 +38,8 @@ import {
 import { reservationWorkflowV2LookupServices, reservationWorkflowV2PreviewServices } from '../../ai/reservation-workflow-v2-services.js';
 import { reservationWorkflowV2QuoteLookup, reservationWorkflowV2QuotePrepare,
   reservationWorkflowV2QuoteExecute, reservationWorkflowV2QuoteReconcile } from '../../ai/reservation-workflow-v2-quote.js';
+import { reservationWorkflowV2FilingLookup, reservationWorkflowV2FilingPrepare,
+  reservationWorkflowV2FilingExecute, reservationWorkflowV2FilingReconcile } from '../../ai/reservation-workflow-v2-filing.js';
 import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
 import { guardCenturionHmsMailboxOrigin } from '../../hms/mailbox-hms-origin-bind.js';
 import { paneSourceSelectionCondition, paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
@@ -107,6 +110,12 @@ async function nativeWorkflow(
     : requestId ? current.draft.proposal.content.requests.find((row) => row.id === requestId)?.kind : 'create';
   return kind ? { kind, result: null } : { kind: null, result: { status: 'not_found' as const } };
 }
+
+const configureFilingInput = reservationWorkflowV2ItemInputSchema.extend({
+  requestId: z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/),
+  attachmentId: z.string().min(1).max(500), confirmation: z.string().trim().regex(/^\d+-\d+$/).max(200),
+  kind: z.enum(['voucher', 'payment_proof']),
+}).strict();
 
 const servicesInput = reservationWorkflowV2PrepareInputSchema.extend({
   allocationId: z.string().min(1).max(80), serviceId: z.string().min(1).max(80).optional(),
@@ -188,11 +197,18 @@ export const reservationWorkflowV2Router = router({
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
     return withPreparation(moveReservationWorkflowV2History(scoped, { ...input, direction: 'redo' }), scoped.propertyCode);
   }),
+  configureFiling: mailboxProcedure.input(configureFilingInput).mutation(async ({ input, ctx }) => {
+    const native = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
+    const scoped = { db: native.db, transportId: native.transport.id, userId: native.user.id,
+      propertyCode: native.property.propertyCode };
+    return withPreparation(configureReservationWorkflowV2Filing(scoped, input), scoped.propertyCode);
+  }),
   lookup: mailboxProcedure.input(reservationWorkflowV2LookupInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
     const workflow = await nativeWorkflow(scoped, input, input.requestId);
     if (workflow.result) return workflow.result;
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteLookup(scoped, input);
+    if (workflow.kind === 'filing') return reservationWorkflowV2FilingLookup(scoped, input);
     if (workflow.kind === 'create') return reservationWorkflowV2Lookup(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
@@ -201,6 +217,7 @@ export const reservationWorkflowV2Router = router({
     const workflow = await nativeWorkflow(scoped, input, input.requestId);
     if (workflow.result) return workflow.result;
     if (workflow.kind === 'quote') return reservationWorkflowV2QuotePrepare(scoped, input);
+    if (workflow.kind === 'filing') return reservationWorkflowV2FilingPrepare(scoped, input);
     if (workflow.kind === 'create') return reservationWorkflowV2Prepare(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
@@ -209,6 +226,7 @@ export const reservationWorkflowV2Router = router({
     const workflow = await nativeWorkflow(scoped, input, input.requestId);
     if (workflow.result) return workflow.result;
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteExecute(scoped, input);
+    if (workflow.kind === 'filing') return reservationWorkflowV2FilingExecute(scoped, input);
     if (workflow.kind === 'create') return reservationWorkflowV2Execute(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
@@ -221,6 +239,7 @@ export const reservationWorkflowV2Router = router({
     const workflow = await nativeWorkflow(scoped, input, undefined, input.operationId);
     if (workflow.result) return workflow.result;
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteReconcile(scoped, input);
+    if (workflow.kind === 'filing') return reservationWorkflowV2FilingReconcile(scoped, input);
     if (workflow.kind === 'create') return reservationWorkflowV2Reconcile(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
