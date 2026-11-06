@@ -553,3 +553,13 @@ export async function recoverHmsLabtestAmend(db: DB, holdId: string): Promise<vo
     record: driver.recordRecoveredAmend,
   });
 }
+
+/** Positive-only recovery for v2 Filing intents, which use the same native upload gate without a legacy grant. */
+export async function recoverHmsLabtestV2Attach(db: DB, holdId: string): Promise<void> {
+  const driver = await import('./reservation-workflow-v2-filing.js');
+  await recoverPositiveDispatch(db, holdId, 'attach_document', {
+    withLock: driver.withReservationWorkflowV2AttachRecoveryLock,
+    prove: (intent) => driver.proveReservationWorkflowV2AttachRecovery(db, intent),
+    record: driver.recordReservationWorkflowV2AttachRecovery,
+  });
+}

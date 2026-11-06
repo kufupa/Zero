@@ -37,6 +37,8 @@ export type ReservationWorkflowV2TrpcClient = {
     prepare: MutationProcedure<ItemInput & { requestId: string; allocationId?: string }>;
     execute: MutationProcedure<ItemInput & { requestId: string; allocationId?: string; go: true; idempotencyKey: string }>;
     reconcile: MutationProcedure<ItemInput & { operationId: string }>;
+    configureFiling: MutationProcedure<ItemInput & { requestId: string; attachmentId: string; confirmation: string;
+      kind: 'voucher' | 'payment_proof' }>;
     lookupServices: MutationProcedure<ItemInput & { requestId: string; allocationId: string; serviceId?: string }>;
     prepareServices: MutationProcedure<ItemInput & { requestId: string; allocationId: string; serviceId?: string }>;
   };
@@ -142,9 +144,31 @@ function wireValueAtPath(draft: ReservationWorkflowV2Draft, path: string): unkno
 const reviewedAggregateArrays = new Set(['childAges', 'roomCodes', 'artifacts']);
 const nonReviewMetadata = new Set(['requestText', 'title', 'dateSectionId', 'requestedRooms', 'unassignedGuestNames',
   'requestedTotals', 'scope', 'provisionalBookingRequested', 'profileIntent', 'candidateRefs', 'suggestedRef', 'sourceRefs', 'serviceRefs', 'documentRefs', 'targetRefs',
-  'priceObservationRefs', 'lookupResultRefs', 'evidenceRefs', 'id', 'kind']);
+  'priceObservationRefs', 'lookupResultRefs', 'evidenceRefs', 'ownerRequestId', 'uploadArtifactRef', 'id', 'kind']);
 const nonReviewSubtrees = new Set(['requestedTotals', 'unassignedGuestNames']);
 const partyFieldNames = new Set(['bookingAgency', 'organization', 'arAccount', 'agency', 'company']);
+
+function isFilingDocumentKindPath(path: string): boolean {
+  const parts = path.split('/').slice(1).map((part) => {
+    try { return decodeURIComponent(part); } catch { return ''; }
+  });
+  return parts[0] === 'proposal' && parts[1] === 'content' && parts[2] === 'documents'
+    && parts.length === 5 && parts[4] === 'kind';
+}
+
+function isFilingTargetSelectionPath(draft: ReservationWorkflowV2Draft, path: string): boolean {
+  const parts = path.split('/').slice(1).map((part) => {
+    try { return decodeURIComponent(part); } catch { return ''; }
+  });
+  if (parts[0] !== 'proposal' || parts[1] !== 'content' || parts[2] !== 'requests' || parts.length !== 9
+      || parts[4] !== 'body' || parts[5] !== 'targets' || parts[6] !== 'include' || parts[8] !== 'suggestedRef') return false;
+  const request = draft.proposal.content.requests.find((entry) => entry.id === parts[3] && entry.kind === 'filing');
+  if (request?.kind !== 'filing') return false;
+  const targetsPath = pointer('proposal', 'content', 'requests', request.id, 'body', 'targets');
+  const rawTargets = effectiveValue(wireValueAtPath(draft, targetsPath), draft.fieldOverrides[targetsPath]);
+  return Boolean(isRecord(rawTargets) && rawTargets.mode === 'explicit' && Array.isArray(rawTargets.include)
+    && rawTargets.include.some((hint) => isRecord(hint) && hint.id === parts[7]));
+}
 
 function shouldReviewPath(draft: ReservationWorkflowV2Draft, path: string, value: unknown): boolean {
   const parts = path.split('/').slice(1).map((part) => {
@@ -160,7 +184,10 @@ function shouldReviewPath(draft: ReservationWorkflowV2Draft, path: string, value
     const request = draft.proposal.content.requests.find((item, index) => item.id === parts[3] || String(index) === parts[3]);
     if (request?.kind === 'quote') return true;
   }
-  if (nonReviewMetadata.has(leaf) || parts.some((part) => nonReviewSubtrees.has(part))) return false;
+  const documentKind = isFilingDocumentKindPath(path);
+  const filingTarget = isFilingTargetSelectionPath(draft, path);
+  if (nonReviewMetadata.has(leaf) && !(documentKind || (leaf === 'suggestedRef' && filingTarget))
+      || parts.some((part) => nonReviewSubtrees.has(part))) return false;
   if (parts.length > 1 && Array.isArray(wireValueAtPath(draft, `/${parts.slice(0, -1).map(encodeURIComponent).join('/')}`))) return false;
   if (Array.isArray(value)) return reviewedAggregateArrays.has(leaf);
   if (isRecord(value) && Array.isArray(value.candidateRefs)) return partyFieldNames.has(leaf);
@@ -218,21 +245,33 @@ function flattenFields(value: unknown, path: string, out: ReservationPaneSnapsho
     };
     if (value.kind !== 'none') {
       for (const [key, child] of Object.entries(value)) {
+        const childPath = `${path}/${pointerPart(key)}`;
         if (['id', 'kind', 'sourceRefs', 'candidateRefs', 'suggestedRef', 'serviceRefs', 'documentRefs',
-          'priceObservationRefs', 'lookupResultRefs', 'evidenceRefs'].includes(key)) continue;
-        flattenFields(child, `${path}/${pointerPart(key)}`, out, draft);
+          'priceObservationRefs', 'lookupResultRefs', 'evidenceRefs'].includes(key)) {
+          if (key === 'suggestedRef' && isFilingTargetSelectionPath(draft, childPath)) flattenFields(child, childPath, out, draft);
+          continue;
+        }
+        flattenFields(child, childPath, out, draft);
       }
     }
     return;
   }
   if (isRecord(value) && value.kind !== 'none') {
     for (const [key, child] of Object.entries(value)) {
-      if (['id', 'kind', 'sourceRefs', 'candidateRefs', 'serviceRefs', 'documentRefs', 'priceObservationRefs', 'lookupResultRefs', 'evidenceRefs'].includes(key)) continue;
-      flattenFields(child, `${path}/${pointerPart(key)}`, out, draft);
+      const childPath = `${path}/${pointerPart(key)}`;
+      if (['id', 'kind', 'sourceRefs', 'candidateRefs', 'serviceRefs', 'documentRefs', 'priceObservationRefs', 'lookupResultRefs', 'evidenceRefs'].includes(key)) {
+        if (key === 'kind' && isFilingDocumentKindPath(childPath)) flattenFields(child, childPath, out, draft);
+        continue;
+      }
+      flattenFields(child, childPath, out, draft);
     }
     return;
   }
-  if (path.split('/').some((segment) => ['id', 'kind', 'sourceRefs', 'candidateRefs'].includes(decodeURIComponent(segment)))) return;
+  const pathSegments = path.split('/').slice(1).map((part) => {
+    try { return decodeURIComponent(part); } catch { return ''; }
+  });
+  if (pathSegments.some((segment) => ['id', 'sourceRefs', 'candidateRefs'].includes(segment))
+      || pathSegments.includes('kind') && !isFilingDocumentKindPath(path)) return;
   const override = draft.fieldOverrides[path];
   const annotation = draft.proposal.annotations.find((entry) => entry.path === path);
   const claim = draft.proposal.sourceClaims.find((entry) => entry.path === path);
@@ -258,7 +297,7 @@ function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot
     flattenFields(request, root, fields, draft);
     requests.push({ id: request.id, kind: request.kind, text: request.requestText,
       fieldPaths: Object.keys(fields).filter((path) => path.startsWith(`${root}/`)),
-      supported: (request.kind === 'create' || request.kind === 'quote' || request.kind === 'amend') && draft.propertyCode === 'HRCEN' });
+      supported: (request.kind === 'create' || request.kind === 'quote' || request.kind === 'amend' || request.kind === 'filing') && draft.propertyCode === 'HRCEN' });
   }
   for (const [index, row] of draft.proposal.content.services.entries()) {
     flattenFields(row, pointer('proposal', 'content', 'services', index), fields, draft);
@@ -366,6 +405,17 @@ function quoteLookupNotice(result: unknown): string | undefined {
   return issues.length ? issues.join(' ') : undefined;
 }
 
+function filingLookupNotice(result: unknown): string | undefined {
+  if (!isRecord(result) || !Array.isArray(result.lookups)) return undefined;
+  const issues = result.lookups.flatMap((value) => {
+    if (!isRecord(value) || value.status === 'candidate' || value.status === 'ready') return [];
+    const status = isString(value.status) ? value.status.replaceAll('_', ' ') : 'unknown outcome';
+    const issue = isString(value.issue) ? value.issue.replaceAll('_', ' ') : null;
+    return [`Filing lookup: ${issue ?? status}.`];
+  });
+  return issues.length ? issues.join(' ') : undefined;
+}
+
 function quoteOperationNotice(result: unknown, success: string[], action: string): string | undefined {
   if (!isRecord(result)) return `${action}: unreadable native quote response.`;
   if (success.includes(String(result.status))) return undefined;
@@ -393,9 +443,25 @@ function serviceOwnerForPath(snapshot: ReservationPaneSnapshot, path: string): s
     target.target.kind === 'allocation' && target.target.requestId === request.id))?.id ?? null;
 }
 
+function filingDocumentOwnerForPath(snapshot: ReservationPaneSnapshot, path: string): string | null {
+  const parts = path.split('/').slice(1).map((part) => {
+    try { return decodeURIComponent(part); } catch { return ''; }
+  });
+  if (parts[0] !== 'proposal' || parts[1] !== 'content' || parts[2] !== 'documents' || parts.length < 5) return null;
+  const document = snapshot.session.draft.proposal.content.documents.find((entry) => entry.id === parts[3]);
+  if (!document?.ownerRequestId) return null;
+  const request = snapshot.session.draft.proposal.content.requests.find((entry) => entry.id === document.ownerRequestId
+    && entry.kind === 'filing');
+  if (request?.kind !== 'filing') return null;
+  const refsPath = pointer('proposal', 'content', 'requests', request.id, 'documentRefs');
+  const refs = snapshot.fields[refsPath]?.value !== undefined ? snapshot.fields[refsPath]?.value : request.documentRefs;
+  if (!Array.isArray(refs) || !refs.includes(document.id)) return null;
+  return request.id;
+}
+
 function requestOwnsPath(snapshot: ReservationPaneSnapshot, path: string): boolean {
   return snapshot.requests.some((request) => path.startsWith(`${pointer('proposal', 'content', 'requests', request.id)}/`))
-    || serviceOwnerForPath(snapshot, path) !== null;
+    || serviceOwnerForPath(snapshot, path) !== null || filingDocumentOwnerForPath(snapshot, path) !== null;
 }
 
 /** Typed adapter to reservationWorkflowV2. All mutations refresh the single canonical server draft. */
@@ -444,7 +510,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       const raw = await api.lookup.mutate(input, mailboxOptions(command.source));
       await refreshAfterStale(input, command.source, raw);
       const result = okResult(raw);
-      const notice = operationNotice(result, ['ok']) ?? quoteLookupNotice(result);
+      const notice = operationNotice(result, ['ok']) ?? quoteLookupNotice(result) ?? filingLookupNotice(result);
       return { ...await load(input, command.source), ...(notice ? { serviceNotice: notice } : {}), ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
     async prepare(command) {
@@ -478,6 +544,11 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       const notice = operationNotice(result, ['succeeded', 'failed']);
       return { ...snapshot, ...(notice ? { serviceNotice: notice } : {}),
         ...(isRecord(result) ? { workflowReply: result } : {}) };
+    },
+    async configureFiling(command) {
+      const input = { ...itemInput(command), requestId: command.requestId, attachmentId: command.attachmentId,
+        confirmation: command.confirmation, kind: command.kind };
+      return refreshAfter(api.configureFiling, input, command.source);
     },
     async lookupServices(command) {
       const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
