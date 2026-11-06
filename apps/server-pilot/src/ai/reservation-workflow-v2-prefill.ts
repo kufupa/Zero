@@ -874,7 +874,7 @@ function bindGuestProfileObservations(input: {
   const newLookupRefs: string[] = [];
   for (const [requestIndex, request] of proposal.content.requests.entries()) {
     if (request.kind !== 'create') continue;
-    const extractedRequest = extractionRequestForProposal(request, requestIndex, input.extraction);
+    const extractedRequest = extractionRequestForProposal(request, proposal.content.requests, input.extraction);
     if (!extractedRequest) continue;
     const extractedGuests = extractedRequest.guests.filter((guest) => guest.role === 'guest');
     const sourceRequestRefs = extractionRefsForRequest(extractedRequest);
