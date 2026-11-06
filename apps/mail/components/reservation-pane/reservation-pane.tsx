@@ -50,7 +50,8 @@ function guestSelectionMatches(snapshot: ReservationPaneSnapshot, path: string, 
   const observation = snapshot.session.draft.observations.find((item) => item.ref === ref && item.kind === 'guest_candidate'
     && item.status === 'complete' && ((Array.isArray(item.criteria.fieldPaths) && item.criteria.fieldPaths.includes(path))
       || item.criteria.fieldPath === path));
-  const candidates = Array.isArray(record(observation?.result)?.candidates) ? record(observation?.result)?.candidates as unknown[] : [];
+  const result = record(observation?.result);
+  const candidates = Array.isArray(result?.candidates) ? result.candidates : [];
   return candidates.some((value) => {
     const candidate = record(value);
     return Boolean(candidate && sameIdentityText(candidate.firstName, guest.firstName)
@@ -689,6 +690,7 @@ function ScopedCodeField(props: EditorProps & { path: string; label: string; inh
           if (!ownsValue) { props.onStage(props.path, undefined, 'none'); props.onBlur(props.path); }
           return;
         }
+        if (value !== 'inherit' && value !== 'unknown') return;
         setOwn(false);
         props.onStage(props.path, undefined, value);
         props.onBlur(props.path);
