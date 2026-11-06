@@ -20,8 +20,9 @@ import { canonicalJson } from './draft-approval.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { isSelectedHmsInboundMessage } from './hms-jobs.js';
 import { bindAttachDocumentForm, paneHmsWriteMode, parseHmsWriteForm, prepareHmsWriteSnapshot,
-  readPaneCloudFilingRecord, readBoundFilingSource, type AttachForm, type CloudFilingRecord } from './pane-hms-write.js';
+  readPaneCloudFilingRecord, type AttachForm, type CloudFilingRecord } from './pane-hms-write.js';
 import { previewFiling } from './pane-filing-preview.js';
+import { readBoundFilingSource, lockBoundFilingSource } from './pane-filing-source.js';
 import { findStay } from './pane-stay-lookup.js';
 import { paneStayCloudTargetLock, paneStayPropertyLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
@@ -264,7 +265,7 @@ function filingObservation(draft: ReservationWorkflowV2Draft, input: { requestId
 async function recordFilingOperation(ctx: ReservationWorkflowV2FilingContext,
   input: ReservationWorkflowV2PrepareInput | ReservationWorkflowV2ExecuteInput,
   observation: ReservationWorkflowV2Observation, status: 'prepared' | 'succeeded' | 'failed' | 'unknown',
-  summary: string | null, operationId = randomUUID()) {
+  summary: string | null, operationId: string = randomUUID()) {
   const base = { workItemId: input.workItemId, source: input.source, expectedRevision: input.expectedRevision,
     expectedSeq: input.expectedSeq };
   const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), { ...base, observation });
@@ -345,7 +346,7 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReservationWorkflow
   input: ReservationWorkflowV2LookupInput): Promise<Outcome> {
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;
-  const requests = loaded.draft.proposal.content.requests.filter((request) => request.kind === 'filing' &&
+  const requests = loaded.draft.proposal.content.requests.filter((request): request is FilingRequest => request.kind === 'filing' &&
     (!input.requestId || request.id === input.requestId));
   if (input.requestId && !requests.length) return { status: 'not_found' };
   if (ctx.property.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'filing_property_unavailable' };
@@ -485,10 +486,10 @@ function getPrepared(draft: ReservationWorkflowV2Draft, requestId: string, docum
   if (!prepared) return null;
   const result = record(prepared.observation.result), target = record(result?.target);
   if (!result || !target || typeof result.semanticDigest !== 'string' || typeof result.documentCode !== 'string' ||
-      typeof result.sha256 !== 'string' || typeof result.sourceSnapshotDigest !== 'string' ||
+      typeof result.sha256 !== 'string' || typeof result.sourceSnapshotDigest !== 'string' || typeof result.filingStateDigest !== 'string' ||
       typeof target.nativeGuestId !== 'string' || typeof target.nativeStayId !== 'string' ||
       typeof target.confirmation !== 'string' || typeof target.arrival !== 'string' || typeof target.departure !== 'string') return null;
-  return { ...prepared, result, target };
+  return { ...prepared, result: { ...result, filingStateDigest: result.filingStateDigest }, target };
 }
 
 function recoveryMatchesDraft(draft: ReservationWorkflowV2Draft, recovery: V2FilingRecovery): boolean {
@@ -547,7 +548,7 @@ async function authorizeCurrentFiling(tx: WorkTransaction, ctx: ReservationWorkf
   await lockCreateActorAccess(tx, { actorUserId: ctx.user.id, transportId: ctx.transport.id });
   await lockCreateActorSession(tx, { actorUserId: ctx.user.id, sessionId: ctx.user.sessionId,
     sessionProfile: ctx.user.sessionProfile });
-  const item = await (await import('./pane-filing-source.js')).lockBoundFilingSource(tx as DB, { transportId: ctx.transport.id,
+  const item = await lockBoundFilingSource(tx, { transportId: ctx.transport.id,
     workItemId: input.workItemId, form });
   if (!item || item.id !== input.workItemId || item.transportId !== ctx.transport.id ||
       item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq ||
@@ -685,7 +686,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
     .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1);
   const form = item && item.status !== 'done' && item.status !== 'dismissed' ? itemAttachForm(item.state as Record<string, unknown>) : null;
   const approvedFormDigest = item && form ? formDigestForStoredForm(item.state as Record<string, unknown>) : null;
-  if (!form || !approvedFormDigest || form.confirmation !== selection.confirmation || form.arrival !== selection.arrival ||
+  if (!form || typeof form.pdfSha256 !== 'string' || typeof form.sourceSnapshotDigest !== 'string' || !approvedFormDigest || form.confirmation !== selection.confirmation || form.arrival !== selection.arrival ||
       form.attachmentId !== selection.attachmentId || form.sourceMessageId !== input.source.messageId ||
       form.sourceThreadId !== input.source.threadId || form.sourceHash !== input.source.sourceHash ||
       form.pdfSha256 !== preview.documentSource.sha256 || form.sourceSnapshotDigest !== preview.documentSource.snapshotDigest ||
@@ -716,6 +717,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
   if (!bytes || !bytes.length || bytes.length > 10 * 1024 * 1024 || sha256(bytes) !== form.pdfSha256 ||
       bytes.subarray(0, 5).toString('ascii') !== '%PDF-') return { status: 'needs_prepare', issue: 'source_pdf_changed' };
 
+  const sourceSnapshotDigest = form.sourceSnapshotDigest, pdfSha256 = form.pdfSha256;
   const operationId = input.idempotencyKey;
   const stage = await mkdtemp(join(tmpdir(), 'reservation-v2-filing-'));
   const sourcePath = join(stage, 'upload.pdf');
@@ -732,7 +734,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
     };
     const runInput: Record<string, unknown> = {
       confirmation: selection.confirmation, arrival: selection.arrival, file: sourcePath, documentName: name,
-      pdfSha256: form.pdfSha256, documentCode: form.documentCode, target: hmsTarget.target,
+      pdfSha256: pdfSha256, documentCode: form.documentCode, target: hmsTarget.target,
       guestName: `${cloud.stay.firstName} ${cloud.stay.lastName}`, allowRealGuest,
       approvedStay: approvedStay(cloud, allowRealGuest), approvedSnapshot: cloud.filingSnapshot,
       cloudTargetKey: hmsDispatchTargetKey(target),
@@ -745,7 +747,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
             livePrepared.result.documentCode !== form.documentCode) return false;
         const liveBytes = await readBoundFilingSource({ db: ctx.db, transportId: ctx.transport.id, workItemId: input.workItemId, form });
         if (!liveBytes || !liveBytes.length || liveBytes.length > 10 * 1024 * 1024 ||
-            sha256(liveBytes) !== form.pdfSha256 || liveBytes.subarray(0, 5).toString('ascii') !== '%PDF-') return false;
+            sha256(liveBytes) !== pdfSha256 || liveBytes.subarray(0, 5).toString('ascii') !== '%PDF-') return false;
         const current = await readPaneCloudFilingRecord({ confirmation: selection.confirmation, arrival: selection.arrival,
           target: hmsTarget.target, allowRealGuest, cloudTargetKey: hmsDispatchTargetKey(target) });
         return Boolean(current && filingStateDigest(current) === prepared.result.filingStateDigest &&
@@ -762,7 +764,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
             livePrepared.result.documentCode !== form.documentCode) return false;
         const liveBytes = await readBoundFilingSource({ db: ctx.db, transportId: ctx.transport.id, workItemId: input.workItemId, form });
         if (!liveBytes || !liveBytes.length || liveBytes.length > 10 * 1024 * 1024 ||
-            sha256(liveBytes) !== form.pdfSha256 || liveBytes.subarray(0, 5).toString('ascii') !== '%PDF-') return false;
+            sha256(liveBytes) !== pdfSha256 || liveBytes.subarray(0, 5).toString('ascii') !== '%PDF-') return false;
         const current = await readPaneCloudFilingRecord({ confirmation: selection.confirmation, arrival: selection.arrival,
           target: hmsTarget.target, allowRealGuest, cloudTargetKey: hmsDispatchTargetKey(target) });
         return Boolean(current && filingStateDigest(current) === prepared.result.filingStateDigest &&
@@ -780,8 +782,8 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
         const recovery: V2FilingRecovery = { version: 1, workItemId: input.workItemId, operationId,
           requestId: input.requestId, documentId: selection.document.id,
           documentSourceRef: selection.document.documentSourceRef, source: input.source,
-          attachmentId: selection.attachmentId, sourceSnapshotDigest: form.sourceSnapshotDigest,
-          pdfSha256: form.pdfSha256, semanticDigest, documentName: name, documentCode: form.documentCode,
+          attachmentId: selection.attachmentId, sourceSnapshotDigest: sourceSnapshotDigest,
+          pdfSha256: pdfSha256, semanticDigest, documentName: name, documentCode: form.documentCode,
           confirmation: selection.confirmation, arrival: selection.arrival, departure: cloud.stay.departure!,
           nativeStayId: cloud.nativeStayId, nativeGuestId: cloud.nativeGuestId,
           firstName: cloud.stay.firstName!, lastName: cloud.stay.lastName!, status: cloud.stay.status!,
@@ -791,12 +793,12 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
         const attempt = filingObservation(loaded.draft!, { requestId: input.requestId, operationId }, selection,
           'partial', { outcome: 'dispatch_claimed', requestDigest, beforeShot: before.beforeShot,
             prepareObservationRef: prepared.observation.ref, target: prepared.target,
-            sourcePdfSha256: form.pdfSha256, actualStoredSha256: null }, ['Fresh Documents readback pending']);
+            sourcePdfSha256: pdfSha256, actualStoredSha256: null }, ['Fresh Documents readback pending']);
         const tryClaim = async () => claimHmsLabtestDispatch(ctx.db, {
           workItemId: input.workItemId, transportId: ctx.transport.id, actorUserId: ctx.user.id,
           grantId: operationId, propertyCode: 'HRCEN', firstName: recovery.firstName, lastName: recovery.lastName,
           nativeGuestId: cloud.nativeGuestId, target, operation: 'attach_document',
-          sourceDigest: form.sourceSnapshotDigest, approvedDigest: approvedDigestForForm(form), requestDigest,
+          sourceDigest: sourceSnapshotDigest, approvedDigest: approvedDigestForForm(form), requestDigest,
           recovery: recovery as unknown as Record<string, unknown>,
         }, async (tx) => authorizeCurrentFiling(tx, ctx, input, selection, prepared, form, approvedDigestForForm(form), attempt), expectedEpoch);
         // An ambiguous claim commit may have stored both the intent and unknown
@@ -805,7 +807,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
         dispatch = handle;
         const claimObservation = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
           'partial', { outcome: 'dispatch_claimed', dispatchHoldId: handle.holdId,
-            requestDigest, sourcePdfSha256: form.pdfSha256, actualStoredSha256: null,
+            requestDigest, sourcePdfSha256: pdfSha256, actualStoredSha256: null,
             prepareObservationRef: prepared.observation.ref }, ['Fresh Documents readback pending']);
         try {
           const claimed = await recordFilingOperation(ctx, input, claimObservation, 'unknown',
@@ -846,7 +848,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
       const uncertain = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
         'partial', { outcome: native.outcome ?? 'unknown', dispatchHoldId: activeDispatch.holdId,
           uploadSent: native.uploadSent === true, listed: native.listed === true, nativeReadback: native.nativeReadback ?? null,
-          sourcePdfSha256: form.pdfSha256, actualStoredSha256: null, beforeShot: shots?.beforeShot ?? null,
+          sourcePdfSha256: pdfSha256, actualStoredSha256: null, beforeShot: shots?.beforeShot ?? null,
           prepareObservationRef: prepared.observation.ref }, ['Upload may have reached HMS; fresh reconciliation is required.']);
       await recordFilingOperation(ctx, input, uncertain, 'unknown', 'PDF upload outcome needs fresh reconciliation', operationId);
       keepCloudEvidence = native.uploadSent === true && !shots;
@@ -857,7 +859,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
     if (!shots?.savedShot) {
       const uncertain = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
         'partial', { outcome: 'confirmed_but_evidence_unsealed', dispatchHoldId: activeDispatch.holdId,
-          nativeReadback: nativeTarget, sourcePdfSha256: form.pdfSha256, actualStoredSha256: null,
+          nativeReadback: nativeTarget, sourcePdfSha256: pdfSha256, actualStoredSha256: null,
           prepareObservationRef: prepared.observation.ref }, ['HMS listing is positive but durable screenshot evidence is unavailable.']);
       await recordFilingOperation(ctx, input, uncertain, 'unknown', 'HMS lists the PDF; durable write proof needs reconciliation', operationId);
       keepCloudEvidence = true;
@@ -865,7 +867,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
     }
     const successObservation = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
       'complete', { outcome: 'confirmed', dispatchHoldId: activeDispatch.holdId, nativeReadback: nativeTarget,
-        readbackDigest: digestJson(nativeTarget), sourcePdfSha256: form.pdfSha256,
+        readbackDigest: digestJson(nativeTarget), sourcePdfSha256: pdfSha256,
         actualStoredSha256: null, storedBytesHashVerified: false,
         storedHashNote: 'HMS Documents currently exposes unique document code/name listing only; stored bytes are not downloadable by this reader.',
         beforeShot: shots.beforeShot, savedShot: shots.savedShot, prepareObservationRef: prepared.observation.ref });
@@ -876,7 +878,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
         const recovery = record(intent.recovery);
         if (intent.workItemId !== input.workItemId || intent.transportId !== ctx.transport.id ||
             intent.actorUserId !== ctx.user.id || intent.grantId !== operationId ||
-            intent.sourceDigest !== form.sourceSnapshotDigest || intent.approvedDigest !== approvedDigestForForm(form) ||
+            intent.sourceDigest !== sourceSnapshotDigest || intent.approvedDigest !== approvedDigestForForm(form) ||
             intent.requestDigest === '' || recovery?.requestId !== input.requestId || recovery?.documentId !== selection.document.id ||
             recovery?.documentCode !== form.documentCode || recovery?.semanticDigest !== semanticDigest) {
           throw new Error('reservation_workflow_v2_filing_resolution_scope_changed');
@@ -887,7 +889,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
     } catch {
       const uncertain = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
         'partial', { outcome: 'durable_resolution_unconfirmed', dispatchHoldId: activeDispatch.holdId,
-          nativeReadback: nativeTarget, sourcePdfSha256: form.pdfSha256, actualStoredSha256: null,
+          nativeReadback: nativeTarget, sourcePdfSha256: pdfSha256, actualStoredSha256: null,
           savedShot: shots.savedShot, prepareObservationRef: prepared.observation.ref }, ['Native result is positive; durable dispatch release is pending reconciliation.']);
       await recordFilingOperation(ctx, input, uncertain, 'unknown', 'PDF appears in HMS; durable receipt needs reconciliation', operationId);
       return { status: 'needs_reconcile', operationId, dispatchHoldId: activeDispatch.holdId,
@@ -897,14 +899,14 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
     return { status: 'succeeded', operationId, requestId: input.requestId, documentId: selection.document.id,
       target: { confirmation: nativeTarget.confirmation, nativeStayId: nativeTarget.nativeStayId },
       documentCode: nativeTarget.documentCode, documentName: nativeTarget.documentName,
-      sourcePdfSha256: form.pdfSha256, actualStoredSha256: null, storedBytesHashVerified: false,
+      sourcePdfSha256: pdfSha256, actualStoredSha256: null, storedBytesHashVerified: false,
       observationRef: successObservation.ref };
   } catch (error) {
     const activeDispatch = dispatch as HmsLabtestWriteHandle | null;
     if (activeDispatch) {
       const uncertain = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
         'partial', { outcome: 'uncertain', dispatchHoldId: activeDispatch.holdId, issue: 'native_dispatch_interrupted',
-          sourcePdfSha256: form.pdfSha256, actualStoredSha256: null,
+          sourcePdfSha256: pdfSha256, actualStoredSha256: null,
           prepareObservationRef: prepared.observation.ref }, ['Upload may have reached HMS; fresh reconciliation is required.']);
       await recordFilingOperation(ctx, input, uncertain, 'unknown', 'PDF upload was interrupted; reconcile before retry', operationId);
       keepCloudEvidence = true;
@@ -993,8 +995,8 @@ export async function reservationWorkflowV2FilingReconcile(ctx: ReservationWorkf
     .where(and(eq(workEvent.workItemId, input.workItemId), eq(workEvent.type, 'write.evidence'),
       eq(workEvent.fieldPath, 'nava.hms.labtest.dispatch.v1'),
       sql`${workEvent.value}->>'kind' = 'intent'`, sql`${workEvent.value}->>'grantId' = ${input.operationId}`)).limit(2);
-  const intents = rows.map((row) => record(row.value)).filter((value) => value?.kind === 'intent' &&
-    value.operation === 'attach_document' && value.grantId === input.operationId);
+  const intents = rows.map((row) => record(row.value)).filter((value): value is Record<string, unknown> => Boolean(value && value.kind === 'intent' &&
+    value.operation === 'attach_document' && value.grantId === input.operationId));
   if (!intents.length) return { status: 'needs_reconcile', operationId: input.operationId,
     issue: 'filing_dispatch_intent_not_yet_observed' };
   const intent = intents.find((value) => record(value.recovery)?.operationId === input.operationId &&
@@ -1021,7 +1023,7 @@ export async function reservationWorkflowV2FilingReconcile(ctx: ReservationWorkf
 }
 
 /** Reconciliation driver hook; never accepts a target or proof from the client. */
-export async function withReservationWorkflowV2AttachRecoveryLock(intent: HmsLabtestIntent, action: () => Promise<unknown>) {
+export async function withReservationWorkflowV2AttachRecoveryLock<T>(intent: HmsLabtestIntent, action: () => Promise<T>): Promise<T> {
   const target = paneStayHmsTargetForTransport(intent.transportId);
   const saved = hmsDispatchTargetSchema.safeParse(intent.target);
   if (!target.ok || target.target.propertyCode !== 'HRCEN' || !saved.success || saved.data.kind !== 'saved' ||
@@ -1043,7 +1045,7 @@ export async function proveReservationWorkflowV2AttachRecovery(db: DB, intent: H
     nativeStayId: z.string(), nativeGuestId: z.string(), firstName: z.string(), lastName: z.string(), status: z.string(),
     cmsSend: z.boolean(), allowRealGuest: z.boolean(), targetObservationRef: z.string(), prepareObservationRef: z.string(),
     targetSnapshotDigest: z.string().regex(/^[a-f0-9]{64}$/), beforeShot: z.object({ runId: z.string().uuid(),
-      sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(), writer: z.unknown() }).strict().safeParse(intent.recovery);
+      sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(), writer: z.record(z.unknown()) }).strict().safeParse(intent.recovery);
   if (!recovery.success || intent.operation !== 'attach_document' || intent.workItemId !== recovery.data.workItemId ||
       intent.grantId !== recovery.data.operationId || intent.propertyCode !== 'HRCEN' ||
       intent.sourceDigest !== recovery.data.sourceSnapshotDigest || !/^[a-f0-9]{64}$/.test(intent.approvedDigest) ||

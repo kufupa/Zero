@@ -136,7 +136,7 @@ function createRequestForField(snapshot: ReservationPaneSnapshot, path: string):
       && entry.kind === 'filing');
     const requestRoot = request ? `/proposal/content/requests/${encoded(request.id)}` : '';
     const refs = request ? valueFor(snapshot, `${requestRoot}/documentRefs`) : null;
-    return Array.isArray(refs) && refs.includes(document.id) ? request.id : null;
+    return request && Array.isArray(refs) && refs.includes(document.id) ? request.id : null;
   }
   if (parts[0] !== 'proposal' || parts[1] !== 'content' || parts[2] !== 'services' || parts.length < 5) return null;
   const rawIndex = parts[3]!;
@@ -530,7 +530,7 @@ function hasCurrentFilingPreparation(snapshot: ReservationPaneSnapshot, request:
     const sourceResult = record(source.result);
     return result?.outcome === 'prepared' && typeof result.semanticDigest === 'string'
       && result.sha256 === sourceResult?.sha256 && result.sourceSnapshotDigest === sourceResult?.sourceSnapshotDigest
-      && preparedTarget?.confirmation === target.stay.confirmation && preparedTarget.arrival === target.stay.arrival;
+      && preparedTarget?.confirmation === target.stay.confirmation && preparedTarget?.arrival === target.stay.arrival;
   });
 }
 
