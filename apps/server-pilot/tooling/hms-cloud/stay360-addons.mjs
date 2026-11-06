@@ -364,9 +364,8 @@ async function ensureUnsavedCreateOpen(page, state, expected, expectedGuest, rea
     return current;
   }
   await dismissNotesOrThrow(page);
-  const card = page.locator('.gs-panel:visible').filter({ has: page.locator('.x-panel-header-text').filter({ hasText: /^Add-Ons$/ }) });
-  const open = card.locator('a.gs-header-btn:visible').filter({ has: page.locator('[data-testid="btn_ADDONS"]') });
-  if (await open.count() !== 1) fail('ADDONS_BUTTON_NOT_UNIQUE', 'needs_input');
+  const open = page.locator('[data-testid="enhancedexperience"]:visible').locator('xpath=ancestor::a[1]');
+  if (await open.count() !== 1 || !await open.isEnabled()) fail('ADDONS_BUTTON_NOT_UNIQUE', 'needs_input');
   await step(page, state, { kind: 'open_unsaved' }, () => open.click());
   await popup(page).waitFor({ state: 'visible', timeout: 20000 });
   return current;
