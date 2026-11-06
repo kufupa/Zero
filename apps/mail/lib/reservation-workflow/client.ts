@@ -139,6 +139,43 @@ function wireValueAtPath(draft: ReservationWorkflowV2Draft, path: string): unkno
   return value;
 }
 
+const reviewedAggregateArrays = new Set(['childAges', 'roomCodes', 'artifacts']);
+const nonReviewMetadata = new Set(['requestText', 'title', 'dateSectionId', 'requestedRooms', 'unassignedGuestNames',
+  'requestedTotals', 'scope', 'profileIntent', 'candidateRefs', 'suggestedRef', 'sourceRefs', 'serviceRefs', 'documentRefs', 'targetRefs',
+  'priceObservationRefs', 'lookupResultRefs', 'evidenceRefs', 'id', 'kind']);
+const nonReviewSubtrees = new Set(['requestedTotals', 'unassignedGuestNames']);
+const partyFieldNames = new Set(['bookingAgency', 'organization', 'arAccount', 'agency', 'company']);
+
+function shouldReviewPath(draft: ReservationWorkflowV2Draft, path: string, value: unknown): boolean {
+  const parts = path.split('/').slice(1).map((part) => {
+    try { return decodeURIComponent(part); } catch { return ''; }
+  });
+  const leaf = parts.at(-1) ?? '';
+  if (nonReviewMetadata.has(leaf) || parts.some((part) => nonReviewSubtrees.has(part))) return false;
+  if (parts.length > 1 && Array.isArray(wireValueAtPath(draft, `/${parts.slice(0, -1).map(encodeURIComponent).join('/')}`))) return false;
+  if (Array.isArray(value)) return reviewedAggregateArrays.has(leaf);
+  if (isRecord(value) && Array.isArray(value.candidateRefs)) return partyFieldNames.has(leaf);
+
+  // Candidate-bearing values are human review units themselves (payer/company
+  // selections), but their display-only source members are not separate inputs.
+  for (let length = parts.length - 1; length >= 0; length -= 1) {
+    const ancestorPath = `/${parts.slice(0, length).map(encodeURIComponent).join('/')}`;
+    const ancestor = wireValueAtPath(draft, ancestorPath);
+    if (!isRecord(ancestor) || !Array.isArray(ancestor.candidateRefs)) continue;
+    const composite = parts[length - 1] ?? '';
+    if (leaf === 'nativeSelectionRef') return true;
+    if (length === parts.length && partyFieldNames.has(composite)) return true;
+    if (composite === 'guest' && ['firstName', 'lastName'].includes(leaf)) return true;
+    return false;
+  }
+  return value === null || typeof value !== 'object';
+}
+
+function requiredForPath(draft: ReservationWorkflowV2Draft, path: string, value: unknown): boolean {
+  if (!shouldReviewPath(draft, path, value)) return false;
+  return draft.fieldReviewRequirements[path]?.required !== false;
+}
+
 function effectiveValue(base: unknown, override: unknown): unknown {
   if (!isRecord(override) || !isString(override.state)) return base;
   if (override.state === 'set') return override.value;
@@ -150,10 +187,9 @@ function flattenFields(value: unknown, path: string, out: ReservationPaneSnapsho
   if (Array.isArray(value)) {
     const override = draft.fieldOverrides[path];
     const annotation = draft.proposal.annotations.find((entry) => entry.path === path);
-    const requirement = draft.fieldReviewRequirements[path];
     const review = draft.staffReviews[path];
     out[path] = { path, value: effectiveValue(value, override), ...(override ? { override } : {}),
-      required: requirement?.required !== false, review: review?.status ?? 'pending',
+      required: requiredForPath(draft, path, value), review: review?.status ?? 'pending',
       provenance: override?.state === 'set' ? 'manual' : annotation?.basis ?? 'unknown',
       evidenceRefs: annotation?.evidenceRefs ?? [] };
     value.forEach((item, index) => flattenFields(item, `${path}/${index}`, out, draft));
@@ -163,11 +199,10 @@ function flattenFields(value: unknown, path: string, out: ReservationPaneSnapsho
     const override = draft.fieldOverrides[path];
     const annotation = draft.proposal.annotations.find((entry) => entry.path === path);
     const claim = draft.proposal.sourceClaims.find((entry) => entry.path === path);
-    const requirement = draft.fieldReviewRequirements[path];
     const review = draft.staffReviews[path];
     out[path] = {
       path, value: effectiveValue(value, override), ...(override ? { override } : {}),
-      required: requirement?.required !== false, review: review?.status ?? 'pending',
+      required: requiredForPath(draft, path, value), review: review?.status ?? 'pending',
       provenance: override?.state === 'set' ? 'manual' : annotation?.basis ?? (claim ? 'source' : 'unknown'),
       evidenceRefs: annotation?.evidenceRefs ?? claim?.sourceRefs ?? [],
       ...(review?.status === 'flagged' && review.note ? { issue: review.note } : {}),
@@ -192,13 +227,12 @@ function flattenFields(value: unknown, path: string, out: ReservationPaneSnapsho
   const override = draft.fieldOverrides[path];
   const annotation = draft.proposal.annotations.find((entry) => entry.path === path);
   const claim = draft.proposal.sourceClaims.find((entry) => entry.path === path);
-  const reviewRequirement = draft.fieldReviewRequirements[path];
   const review = draft.staffReviews[path];
   out[path] = {
     path,
     value: effectiveValue(value, override),
     ...(override ? { override } : {}),
-    required: reviewRequirement?.required !== false,
+    required: requiredForPath(draft, path, value),
     review: review?.status ?? 'pending',
     provenance: override?.state === 'set' ? 'manual' : annotation?.basis ?? (claim ? 'source' : 'unknown'),
     evidenceRefs: annotation?.evidenceRefs ?? claim?.sourceRefs ?? [],
@@ -224,12 +258,11 @@ function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot
   for (const path of new Set([...Object.keys(draft.fieldOverrides), ...Object.keys(draft.fieldReviewRequirements)])) {
     if (fields[path]) continue;
     const override = draft.fieldOverrides[path];
-    const requirement = draft.fieldReviewRequirements[path];
     const review = draft.staffReviews[path];
     const annotation = draft.proposal.annotations.find((entry) => entry.path === path);
     const claim = draft.proposal.sourceClaims.find((entry) => entry.path === path);
     fields[path] = { path, value: effectiveValue(wireValueAtPath(draft, path), override), ...(override ? { override } : {}),
-      required: requirement?.required !== false, review: review?.status ?? 'pending',
+      required: requiredForPath(draft, path, wireValueAtPath(draft, path)), review: review?.status ?? 'pending',
       provenance: override?.state === 'set' ? 'manual' : annotation?.basis ?? (claim ? 'source' : 'unknown'),
       evidenceRefs: annotation?.evidenceRefs ?? claim?.sourceRefs ?? [],
       ...(review?.status === 'flagged' && review.note ? { issue: review.note } : {}) };
