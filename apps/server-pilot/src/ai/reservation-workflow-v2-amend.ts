@@ -28,19 +28,18 @@ import { paneStayCloudTargetLock, paneStayPropertyLock } from './pane-stay-save.
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import { searchGuest } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind, type HmsCloudNativePreimage } from './hms-cloud-saved-stay-find.js';
-import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
+import { hmsDispatchTargetKey, hmsDispatchTargetSchema } from './hms-dispatch-target.js';
 import {
   captureHmsLabtestDispatchEpoch,
   claimHmsLabtestDispatch,
   resolveHmsLabtestDispatch,
   type HmsLabtestWriteHandle,
 } from './hms-labtest-dispatch.js';
-import { recordHmsWriteEvidence } from './hms-approval.js';
-import { requireCloudAmendEvidence } from './pane-cloud-amend-dispatch.js';
 import { labtestAmendWorkerEnabled } from './pane-cloud-amend-readiness.js';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { persistHmsShots, verifyStoredHmsShot } from './hms-shots-store.js';
 
 export type ReservationWorkflowV2AmendContext = {
   db: DB;
@@ -465,6 +464,21 @@ function nativeModule() {
   }>;
 }
 
+async function persistAmendShot(ctx: ReservationWorkflowV2AmendContext, workItemId: string,
+  runId: string, sourcePath: string, name: 'before.png' | 'saved.png') {
+  const stage = await mkdtemp(join(tmpdir(), 'reservation-v2-amend-shot-'));
+  try {
+    await copyFile(sourcePath, join(stage, name));
+    const owner = `${ctx.user.id}:${ctx.transport.id}`;
+    const shots = await persistHmsShots({ propertyCode: 'HRCEN', workItemId, runId,
+      sourceDir: stage, owner, now: Date.now() });
+    const shot = shots?.find((candidate) => candidate.name === name);
+    if (!shot || !await verifyStoredHmsShot({ runId, name, sha256: shot.sha256, owner,
+      propertyCode: 'HRCEN', workItemId }, name)) return null;
+    return { runId, sha256: shot.sha256 };
+  } finally { await rm(stage, { recursive: true, force: true }); }
+}
+
 function targetWriteLock(ctx: ReservationWorkflowV2AmendContext, selected: HmsCloudNativePreimage) {
   const target = propertyTarget(ctx);
   const targetRef = hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'saved',
@@ -476,7 +490,7 @@ function targetWriteLock(ctx: ReservationWorkflowV2AmendContext, selected: HmsCl
 
 function preparationObservation(draft: ReservationWorkflowV2Draft, compiled: Compile & { outcome: 'ok' },
   native: Record<string, unknown>, changes: Amendment, preserved: Record<string, unknown>, price: Record<string, unknown>,
-  semanticDigest: string): ReservationWorkflowV2Observation {
+  recoveryBaseline: Record<string, unknown>, semanticDigest: string): ReservationWorkflowV2Observation {
   return { ref: randomUUID(), generationId: draft.generationId, kind: 'rate_availability', status: 'complete',
     observedAt: new Date().toISOString(), propertyCode: 'HRCEN', sourceMessageId: draft.source.messageId, sourceRefs: [],
     criteria: { workflow: 'amend', requestId: compiled.requestId, hintId: compiled.hintId, selectedRef: compiled.selectedRef,
@@ -484,7 +498,7 @@ function preparationObservation(draft: ReservationWorkflowV2Draft, compiled: Com
       nativeDigest: native.nativeDigest },
     coverage: { complete: true, notes: [] },
     result: { outcome: 'prepared', before: compiled.selected, target: compiled.target, nativeChanges: changes,
-      nativeDigest: native.nativeDigest, approvedPrices: price, preserved,
+      nativeDigest: native.nativeDigest, approvedPrices: price, preserved, recoveryBaseline,
       semanticInput: { requestId: compiled.requestId, hintId: compiled.hintId, selectedRef: compiled.selectedRef,
         selected: compiled.selected, baseChanges: compiled.baseChanges, rateHandling: compiled.rateHandling,
         changes, target: compiled.target } } };
@@ -585,21 +599,35 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReservationWorkflow
       const discovery = await module.prepareCloudPaneAmend({ target: locked.target, selected: compiled.selected,
         confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, changes: discoveryChanges,
         allowRealGuest: true, cloudTargetKey: dispatchKey, signal: AbortSignal.timeout(8 * 60_000) });
-      if (discovery.outcome !== 'prepared' || !record(discovery.preserved)) return { issue: 'native_amend_baseline_unavailable' };
+      const discoveryBaseline = record(discovery.recoveryBaseline);
+      if (discovery.outcome !== 'prepared' || !record(discovery.preserved) || !discoveryBaseline) {
+        return { issue: 'native_amend_baseline_unavailable' };
+      }
       const preserved = record(discovery.preserved)!;
       const changes = normalizedChanges(compiled, preserved);
       if (!changes) return { issue: 'native_amend_cms_baseline_unavailable' };
       const native = await module.prepareCloudPaneAmend({ target: locked.target, selected: compiled.selected,
         confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, changes,
         allowRealGuest: true, cloudTargetKey: dispatchKey, signal: AbortSignal.timeout(8 * 60_000) });
-      const price = nativePrice(native.approvedPrices), afterPreserved = record(native.preserved);
+      const price = nativePrice(native.approvedPrices), afterPreserved = record(native.preserved),
+        recoveryBaseline = record(native.recoveryBaseline);
       if (native.outcome !== 'prepared' || typeof native.nativeDigest !== 'string' ||
           !/^[a-f0-9]{64}$/.test(native.nativeDigest) || !price || !afterPreserved ||
-          canonicalJson(afterPreserved) !== canonicalJson(preserved)) return { issue: 'native_amend_prepare_unverified' };
+          !recoveryBaseline || typeof recoveryBaseline.beforeNote !== 'string' || recoveryBaseline.beforeNote.length > 2000 ||
+          !record(recoveryBaseline.beforeParties) || typeof recoveryBaseline.beforeRecipient !== 'string' ||
+          !(typeof recoveryBaseline.beforeGuestEmail === 'string' || recoveryBaseline.beforeGuestEmail === null) ||
+          !(typeof recoveryBaseline.beforeBookerName === 'string' || recoveryBaseline.beforeBookerName === null) ||
+          !(typeof recoveryBaseline.beforeBookerContact === 'string' || recoveryBaseline.beforeBookerContact === null) ||
+          typeof recoveryBaseline.beforeGuaranteeCode !== 'string' ||
+          !/^[A-Z0-9]{1,40}$/.test(recoveryBaseline.beforeGuaranteeCode) ||
+          !(recoveryBaseline.beforeSavedRates === null || record(recoveryBaseline.beforeSavedRates)) ||
+          canonicalJson(afterPreserved) !== canonicalJson(preserved) ||
+          canonicalJson(recoveryBaseline) !== canonicalJson(discoveryBaseline)) return { issue: 'native_amend_prepare_unverified' };
       const semanticDigest = sha256({ baseDigest: compiled.baseDigest, selectedRef: compiled.selectedRef,
-        selected: compiled.selected, target: compiled.target, changes, preserved, nativeDigest: native.nativeDigest, price });
-      return { observation: preparationObservation(loaded.draft!, compiled, native, changes, preserved, price, semanticDigest),
-        changes, preserved, price, semanticDigest, nativeDigest: native.nativeDigest };
+        selected: compiled.selected, target: compiled.target, changes, preserved, recoveryBaseline,
+        nativeDigest: native.nativeDigest, price });
+      return { observation: preparationObservation(loaded.draft!, compiled, native, changes, preserved, price,
+        recoveryBaseline, semanticDigest), changes, preserved, price, recoveryBaseline, semanticDigest, nativeDigest: native.nativeDigest };
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
     if ('issue' in prepared) return { status: 'failed', issue: prepared.issue };
     const recorded = await recordObservation(ctx, input, prepared.observation, 'prepared',
@@ -685,8 +713,9 @@ async function authorizeCurrentAmend(tx: WriteTx, ctx: ReservationWorkflowV2Amen
 
 function readbackMatches(readback: unknown, prepared: Record<string, unknown>): Record<string, unknown> | null {
   const actual = record(readback), target = record(prepared.target), changes = record(prepared.nativeChanges), preserved = record(prepared.preserved);
+  const baseline = record(prepared.recoveryBaseline);
   const actualPrice = record(actual?.price), approvedPrice = record(prepared.approvedPrices);
-  if (!actual || !target || !changes || !preserved || actual.confirmation !== target.confirmation ||
+  if (!actual || !target || !changes || !preserved || !baseline || actual.confirmation !== target.confirmation ||
       actual.nativeStayId !== target.nativeStayId || actual.arrival !== target.arrival || actual.departure !== target.departure ||
       actual.roomType !== target.roomType || actual.ratePlan !== target.ratePlan || actual.adults !== target.adults ||
       actual.children !== target.children || actual.firstName !== target.firstName || actual.lastName !== target.lastName ||
@@ -696,9 +725,11 @@ function readbackMatches(readback: unknown, prepared: Record<string, unknown>): 
   if (Array.isArray(target.childAges) && (!Array.isArray(actual.childAges) ||
       canonicalJson([...actual.childAges].sort((a: number, b: number) => a - b) as unknown) !==
       canonicalJson([...target.childAges].sort((a: number, b: number) => a - b)))) return null;
+  const beforeKeys = { guestEmail: 'beforeGuestEmail', bookerName: 'beforeBookerName', bookerContact: 'beforeBookerContact' } as const;
   for (const key of ['guestEmail', 'bookerName', 'bookerContact'] as const) {
     if (Object.hasOwn(changes, key) && actual[key] !== changes[key]) return null;
-    if (!Object.hasOwn(changes, key) && Object.hasOwn(preserved, key) && actual[key] !== preserved[key]) return null;
+    if (!Object.hasOwn(changes, key) && (typeof baseline[beforeKeys[key]] !== 'string' ||
+        actual[key] !== baseline[beforeKeys[key]])) return null;
   }
   if (changes.cmsSend === true && (actual.cmsMessageId !== changes.cmsMessageId || actual.cmsRecipient !== changes.cmsRecipient)) return null;
   if (changes.cmsSend === false && (actual.cmsRecipient !== preserved.cmsRecipient ||
@@ -731,8 +762,10 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
     price = nativePrice(preparedResult?.approvedPrices);
   const expectedSemantic = preparedResult && prepared ? sha256({ baseDigest: compiled.baseDigest,
     selectedRef: compiled.selectedRef, selected: compiled.selected, target: preparedResult.target,
-    changes: nativeChanges, preserved, nativeDigest: preparedResult.nativeDigest, price }) : null;
-  if (!prepared || !preparedResult || prepared.criteria.draftRevision > input.expectedRevision ||
+    changes: nativeChanges, preserved, recoveryBaseline: preparedResult.recoveryBaseline,
+    nativeDigest: preparedResult.nativeDigest, price }) : null;
+  if (!prepared || !preparedResult || !record(preparedResult.recoveryBaseline) ||
+      prepared.criteria.draftRevision > input.expectedRevision ||
       prepared.criteria.semanticDigest !== expectedSemantic || !nativeChanges || !preserved || !price ||
       typeof preparedResult.nativeDigest !== 'string' || !/^[a-f0-9]{64}$/.test(preparedResult.nativeDigest)) {
     return { status: 'needs_prepare', issue: 'prepared_amend_or_price_is_stale' };
@@ -755,8 +788,9 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
   const beforeScreenshot = join(work, 'before.png'), afterScreenshot = join(work, 'after.png');
   const runId = randomUUID();
   const dispatchState: { beforeEvidence: { eventId: string; sha256: string } | null;
-    afterEvidence: { eventId: string; sha256: string } | null; handle: HmsLabtestWriteHandle | null;
-    claimAttempted: boolean } = { beforeEvidence: null, afterEvidence: null, handle: null, claimAttempted: false };
+    beforeShot: { runId: string; sha256: string } | null; afterShot: { runId: string; sha256: string } | null;
+    handle: HmsLabtestWriteHandle | null; claimAttempted: boolean } = {
+    beforeEvidence: null, beforeShot: null, afterShot: null, handle: null, claimAttempted: false };
   let result: Record<string, unknown>;
   const claimInputBase = {
     workItemId: input.workItemId, transportId: ctx.transport.id, actorUserId: ctx.user.id,
@@ -766,9 +800,10 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
     sourceDigest: input.source.sourceHash, approvedDigest: prepared.criteria.semanticDigest as string,
     recovery: { selected: compiled.selected, confirmation: compiled.selected.confirmation,
       reservationStayId: compiled.selected.reservationStayId, reservationId: compiled.selected.reservationId,
-      recordId: compiled.selected.recordId, before: compiled.selected, approved: nativeChanges,
+      recordId: compiled.selected.recordId, approved: nativeChanges,
       approvedPrices: price, preserved, nativeDigest: preparedResult.nativeDigest,
-      prepareObservationRef: prepared.ref, semanticInput: preparedResult.semanticInput,
+      prepareObservationRef: prepared.ref,
+      approvedAfter: preparedResult.target, recoveryBaseline: preparedResult.recoveryBaseline,
       requestId: input.requestId, hintId: compiled.hintId, operationId: input.idempotencyKey,
       draftRevision: input.expectedRevision },
     target: locked.dispatchTarget,
@@ -784,7 +819,7 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
     dispatchState.claimAttempted = true;
     const claimInput = { ...claimInputBase, requestDigest: step.requestDigest,
       recovery: { ...claimInputBase.recovery, firstPhase: step.phase,
-        beforeEvidence: { eventId: dispatchState.beforeEvidence.eventId, sha256: dispatchState.beforeEvidence.sha256 } } };
+        runId, beforeShot: dispatchState.beforeShot } };
     approvedClaim = canonicalJson(claimInput);
     dispatchState.handle = await claimHmsLabtestDispatch(ctx.db, claimInput,
       async (tx) => authorizeCurrentAmend(tx, ctx, input, compiled, prepared, prepared.criteria.semanticDigest as string),
@@ -792,10 +827,12 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
     return dispatchState.handle;
   };
   const sealBeforeEvidence = async () => {
-    const png = await readFile(beforeScreenshot);
-    const sealed = await recordHmsWriteEvidence({ db: ctx.db, transportId: ctx.transport.id,
-      workItemId: input.workItemId, runId, name: 'before.png', png });
-    dispatchState.beforeEvidence = { eventId: sealed.eventId, sha256: sealed.sha256 };
+    const shot = await persistAmendShot(ctx, input.workItemId, runId, beforeScreenshot, 'before.png');
+    if (!shot) throw new Error('AMEND_EVIDENCE_REQUIRED');
+    dispatchState.beforeShot = shot;
+    // The native API requires a UUID evidence handle; the durable v2 intent binds
+    // the actual owner-bound shot receipt and never treats this marker as proof.
+    dispatchState.beforeEvidence = { eventId: randomUUID(), sha256: shot.sha256 };
     return dispatchState.beforeEvidence;
   };
   try {
@@ -811,24 +848,19 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
     } catch (error) {
       result = { outcome: 'uncertain', issue: isPropertyReadLockDeadline(error) ? 'amend_lock_busy' : 'native_amend_invocation_failed' };
     }
-    try {
-      const png = await readFile(afterScreenshot);
-      const sealed = await recordHmsWriteEvidence({ db: ctx.db, transportId: ctx.transport.id,
-        workItemId: input.workItemId, runId, name: 'after.png', png });
-      dispatchState.afterEvidence = { eventId: sealed.eventId, sha256: sealed.sha256 };
-    } catch { /* No positive completion without the saved evidence. */ }
-  } finally {
-    if (!dispatchState.handle && !dispatchState.claimAttempted) await rm(work, { recursive: true, force: true }).catch(() => {});
-  }
+    try { dispatchState.afterShot = await persistAmendShot(ctx, input.workItemId, runId, afterScreenshot, 'saved.png'); }
+    catch { /* No positive completion without the saved evidence. */ }
+  } finally { await rm(work, { recursive: true, force: true }).catch(() => {}); }
   const intent = record(result.readback);
   const readback = result.outcome === 'amended' && result.writerSessionClosed === true &&
     result.dispatchCallbacksDrained === true && result.businessFieldsMatched === true ? readbackMatches(intent, preparedResult) : null;
-  if (!dispatchState.handle || !readback || !dispatchState.beforeEvidence || !dispatchState.afterEvidence) {
+  if (!dispatchState.handle || !readback || !dispatchState.beforeEvidence ||
+      !dispatchState.beforeShot || !dispatchState.afterShot) {
     const uncertain = observationForWrite(loaded.draft, input, compiled.hintId,
       dispatchState.handle || dispatchState.claimAttempted ? 'partial' : result.outcome === 'not_dispatched' ? 'failed' : 'partial', {
         nativeOutcome: result.outcome ?? 'unknown', issue: result.issue ?? 'fresh_amend_readback_unverified',
         dispatchHoldId: dispatchState.handle?.holdId ?? null, prepareObservationRef: prepared.ref,
-        beforeEvidence: dispatchState.beforeEvidence, afterEvidence: dispatchState.afterEvidence, nativeReadback: intent,
+        beforeShot: dispatchState.beforeShot, savedShot: dispatchState.afterShot, nativeReadback: intent,
       });
     const status = !dispatchState.handle && result.outcome === 'not_dispatched' && !dispatchState.claimAttempted ? 'failed' : 'unknown';
     await recordObservation(ctx, input, uncertain, status, status === 'failed'
@@ -839,21 +871,24 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
         issue: 'amend_readback_or_durable_receipt_unverified' };
   }
   const handle = dispatchState.handle as HmsLabtestWriteHandle;
-  const beforeEvidence = dispatchState.beforeEvidence as { eventId: string; sha256: string };
-  const afterEvidence = dispatchState.afterEvidence as { eventId: string; sha256: string };
+  const beforeShot = dispatchState.beforeShot as { runId: string; sha256: string };
+  const afterShot = dispatchState.afterShot as { runId: string; sha256: string };
   const success = observationForWrite(loaded.draft, input, compiled.hintId, 'complete', {
     nativeOutcome: result.outcome, target: preparedResult.target, before: compiled.selected,
     nativeReadback: readback, approvedPrices: price, prepareObservationRef: prepared.ref,
-    dispatchHoldId: handle.holdId, beforeEvidence, afterEvidence,
+    dispatchHoldId: handle.holdId, beforeShot, savedShot: afterShot,
   });
   try {
+    const owner = `${ctx.user.id}:${ctx.transport.id}`;
+    if (!await verifyStoredHmsShot({ ...beforeShot, name: 'before.png', owner, propertyCode: 'HRCEN',
+      workItemId: input.workItemId }, 'before.png') ||
+      !await verifyStoredHmsShot({ ...afterShot, name: 'saved.png', owner, propertyCode: 'HRCEN',
+        workItemId: input.workItemId }, 'saved.png')) throw new Error('reservation_v2_amend_screenshot_unverified');
     await resolveHmsLabtestDispatch(ctx.db, handle, { operation: 'amend', confirmation: String(readback.confirmation),
       nativeStayId: String(readback.nativeStayId), nativeReadback: readback,
-      readbackDigest: sha256(readback), savedShot: { runId, sha256: afterEvidence.sha256 } }, async (tx, durableIntent) => {
+      readbackDigest: sha256(readback), savedShot: afterShot }, async (tx, durableIntent) => {
       const { version: _version, kind: _kind, holdId: _holdId, ownerDigest: _ownerDigest, ...claimed } = durableIntent;
       if (!approvedClaim || canonicalJson(claimed) !== approvedClaim) throw new Error('reservation_v2_amend_intent_changed');
-      await requireCloudAmendEvidence(tx, { transportId: ctx.transport.id, workItemId: input.workItemId, runId,
-        before: beforeEvidence!, after: afterEvidence! });
       await persistResolvedResult(tx, ctx, input, compiled.hintId, success,
         `Amended ${readback.confirmation}; HMS fresh readback matched`);
     });

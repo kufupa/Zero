@@ -543,3 +543,13 @@ export async function recoverHmsLabtestAttach(db: DB, holdId: string): Promise<v
     record: driver.recordRecoveredAttach,
   });
 }
+
+/** Positive-only Amend reconciliation. A saved-stay hold is never cleared on a negative or ambiguous read. */
+export async function recoverHmsLabtestAmend(db: DB, holdId: string): Promise<void> {
+  const driver = await import('./pane-cloud-amend-recovery.js');
+  await recoverPositiveDispatch(db, holdId, 'amend', {
+    withLock: driver.withAmendRecoveryLock,
+    prove: (intent) => driver.proveAmendRecovery(db, intent),
+    record: driver.recordRecoveredAmend,
+  });
+}
