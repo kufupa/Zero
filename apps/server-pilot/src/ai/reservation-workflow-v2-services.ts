@@ -34,7 +34,7 @@ type ServiceTarget = ServiceProposal['targets'][number];
 type ServiceTargetRef = Extract<ServiceTarget['target'], { kind: 'allocation' }>;
 type ServiceRow = { service: ServiceProposal; serviceIndex: number; target: ServiceTarget; targetIndex: number;
   targetRef: ServiceTargetRef };
-type ServiceLinkResult = { outcome: 'not_found'; issue: string } |
+type ServiceLinkResult = { outcome: 'not_found' | 'needs_input'; issue: string } |
   { outcome: 'ok'; createRequest: CreateRequest; rows: ServiceRow[] };
 type CompiledServiceItem = { outcome: 'ok'; items: AddOnItem; candidate: Record<string, unknown>; candidateRef: string;
   serviceId: string; targetRef: ServiceTargetRef; serviceIndex: number; targetIndex: number;
@@ -82,7 +82,8 @@ function effectiveServiceField(draft: ReservationWorkflowV2Draft, service: Recor
   const targetValue = record(target.fields)?.[field];
   const targetPath = pointer('proposal', 'content', 'services', serviceIndex, 'targets', targetIndex, 'fields', field);
   const local = effective(draft, targetPath, targetValue);
-  if ('issue' in local || local.override || (local.value !== undefined && local.value !== null) || local.none) return local;
+  if ('issue' in local || local.none || (local.value !== undefined && local.value !== null &&
+      (typeof local.value !== 'string' || local.value.trim() !== ''))) return local;
   const sharedPath = pointer('proposal', 'content', 'services', serviceIndex, 'sharedFields', field);
   return effective(draft, sharedPath, record(service.sharedFields)?.[field]);
 }
@@ -111,23 +112,40 @@ function positiveDecimal(value: unknown): string | null {
 
 function targetRefOf(value: unknown) {
   const target = record(value);
-  return target && target.kind === 'allocation' && typeof target.requestId === 'string' &&
-    typeof target.allocationId === 'string' ? target as { kind: 'allocation'; requestId: string; allocationId: string } : null;
+  const requestId = text(target?.requestId), allocationId = text(target?.allocationId);
+  return target?.kind === 'allocation' && requestId && allocationId
+    ? { kind: 'allocation' as const, requestId, allocationId } : null;
 }
 
 function servicesForAllocation(draft: ReservationWorkflowV2Draft, input: Input): ServiceLinkResult {
   const createRequest = draft.proposal.content.requests.find(request => request.id === input.requestId);
   if (!createRequest || createRequest.kind !== 'create') return { outcome: 'not_found' as const, issue: 'create_request_not_found' };
-  const rows = draft.proposal.content.services.flatMap((service, serviceIndex) => {
-    if (input.serviceId && service.id !== input.serviceId) return [];
-    const linked = service.ownerRequestId === input.requestId || createRequest.serviceRefs.includes(service.id);
-    if (!linked) return [];
-    return service.targets.flatMap((target, targetIndex) => {
+  if (!createRequest.body.allocations.some(allocation => allocation.id === input.allocationId)) {
+    return { outcome: 'not_found' as const, issue: 'create_allocation_not_found' };
+  }
+  const rows: ServiceRow[] = [];
+  const targetKeys = new Set<string>();
+  for (const [serviceIndex, service] of draft.proposal.content.services.entries()) {
+    if (input.serviceId && service.id !== input.serviceId) continue;
+    const matches = service.targets.flatMap((target, targetIndex) => {
       const targetRef = targetRefOf(target.target);
       return targetRef?.requestId === input.requestId && targetRef.allocationId === input.allocationId
-        ? [{ service, serviceIndex, target, targetIndex, targetRef: targetRef as ServiceTargetRef }] : [];
+        ? [{ service, serviceIndex, target, targetIndex, targetRef }] : [];
     });
-  });
+    const linkedHere = service.ownerRequestId === input.requestId || createRequest.serviceRefs.includes(service.id) || matches.length > 0;
+    if (!linkedHere) continue;
+    const referencedElsewhere = draft.proposal.content.requests.some(request => request.id !== input.requestId &&
+      request.serviceRefs.includes(service.id));
+    if ((service.ownerRequestId !== null && service.ownerRequestId !== input.requestId) || referencedElsewhere) {
+      return { outcome: 'needs_input' as const, issue: 'service_request_ownership_conflict' };
+    }
+    for (const row of matches) {
+      const targetKey = `${row.service.id}\u0000${row.targetRef.requestId}\u0000${row.targetRef.allocationId}`;
+      if (targetKeys.has(targetKey)) return { outcome: 'needs_input' as const, issue: 'duplicate_service_allocation_target' };
+      targetKeys.add(targetKey);
+      rows.push(row);
+    }
+  }
   return { outcome: 'ok' as const, createRequest, rows };
 }
 
