@@ -390,6 +390,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   const snapshotRef = useRef(snapshot);
   const pending = useRef(new Map<string, PendingReservationEdit>());
   const queue = useRef<Promise<void>>(Promise.resolve());
+  const busyActionRef = useRef(false);
   const sequence = useRef(0);
   const triedPrepare = useRef(new Set<string>());
   const activeRequestRef = useRef<string | null>(null);
@@ -431,6 +432,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   const enqueue = useCallback((label: string, bound: ReservationSourceContext, action: () => Promise<void>) => {
     const run = queue.current.then(async () => {
       if (sourceRef.current.selectionEpoch !== bound.selectionEpoch || sourceRef.current.messageId !== bound.messageId) return;
+      busyActionRef.current = true;
       dispatch({ type: 'set-busy', action: label });
       try {
         await action();
@@ -443,6 +445,8 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
           if (error instanceof ReservationWorkflowStaleRevisionError) applySnapshot(error.snapshot, bound);
           dispatch({ type: 'action-error', message: error instanceof Error ? error.message : 'Reservation action did not complete.' });
         }
+      } finally {
+        busyActionRef.current = false;
       }
     });
     queue.current = run.then(() => undefined, () => undefined);
@@ -450,6 +454,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   }, [applySnapshot]);
 
   const stage = useCallback((path: string, value: unknown, state: PendingReservationEdit['state'] = 'set') => {
+    if (busyActionRef.current) return;
     const edit = { path, value, state, sequence: ++sequence.current };
     pending.current.set(path, edit);
     dispatch({ type: 'stage-edit', edit });
@@ -483,7 +488,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     return enqueue('Saving reservation edits', bound, () => flushEdits(bound, paths));
   }, [enqueue, flushEdits]);
 
-  const editOnBlur = useCallback((path: string) => { void saveEdits([path]); }, [saveEdits]);
+  const editOnBlur = useCallback((path: string) => { if (!busyActionRef.current) void saveEdits([path]); }, [saveEdits]);
   const editValue = useCallback((path: string): unknown => {
     const pendingEdit = pending.current.get(path);
     return pendingEdit ? pendingEdit.state === 'set' ? pendingEdit.value : null : snapshotRef.current?.fields[path]?.value ?? null;
@@ -507,6 +512,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   }, [applySnapshot, client, enqueue, flushEdits]);
 
   const chooseRequest = useCallback((request: ReservationRequestProjection) => {
+    if (busyActionRef.current) return;
     activeRequestRef.current = request.id;
     activeKindRef.current = request.kind;
     dispatch({ type: 'action-error', message: null });
@@ -568,12 +574,14 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
 
   const runGo = useCallback(() => {
     const bound = sourceRef.current;
+    const selectedRequestId = activeRequestRef.current;
+    if (!selectedRequestId) return;
     void enqueue('Creating reservations in Infor', bound, async () => {
       beginMutation();
       try {
         if (pending.current.size) await flushEdits(bound);
         let current = snapshotRef.current;
-        const request = current?.requests.find((item) => item.id === activeRequestRef.current);
+        const request = current?.requests.find((item) => item.id === selectedRequestId);
         if (!current || !request || request.kind !== 'create') throw new Error('Only connected Create requests can be sent to Infor in this release.');
         const { allocations } = createSections(current, request);
         if (!allocations.length) throw new Error('This saved Create request has no room allocations to submit.');
@@ -676,10 +684,10 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
           {KINDS.map((kind) => {
             const matches = snapshot.requests.filter((request) => request.kind === kind);
             return <button key={kind} type="button" className={activeKind === kind ? styles.activeTab : ''}
-              aria-pressed={activeKind === kind} onClick={() => {
+              aria-pressed={activeKind === kind} disabled={Boolean(ui.busyAction) || busyActionRef.current} onClick={() => {
                 const match = matches.find((request) => request.id === activeRequest?.id) ?? matches[0];
                 if (match) chooseRequest(match);
-                else { activeRequestRef.current = null; activeKindRef.current = kind; dispatch({ type: 'action-error', message: null }); }
+                else if (!busyActionRef.current) { activeRequestRef.current = null; activeKindRef.current = kind; dispatch({ type: 'action-error', message: null }); }
               }}>{KIND_LABEL[kind]}{matches.length > 1 && <small>{matches.length}</small>}</button>;
           })}
         </nav>
@@ -691,7 +699,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
               <span className={activeRequest.supported ? styles.connected : styles.notConnected}>{activeRequest.supported ? 'Connected' : 'Review only'}</span></div>
             {activeRequests.length > 1 && <section className={styles.card}>
               <label htmlFor="reservation-request-picker">Choose a {KIND_LABEL[activeKind].toLowerCase()} request</label>
-              <select id="reservation-request-picker" className={styles.select} value={activeRequest.id} onChange={(event) => {
+              <select id="reservation-request-picker" className={styles.select} value={activeRequest.id} disabled={Boolean(ui.busyAction) || busyActionRef.current} onChange={(event) => {
                 const selected = activeRequests.find((request) => request.id === event.target.value);
                 if (selected) chooseRequest(selected);
               }}>
@@ -702,13 +710,15 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
             </section>}
             {activeRequest.kind === 'create' && displayedResult.some((result) => result.status === 'succeeded') && <div className={styles.notice}>At least one room already has an HMS confirmation. Later edits and undo affect the draft only; they do not change a saved reservation.</div>}
             {activeRequest.kind === 'create'
-                ? <CreateEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur} onDone={markDone} editValue={editValue} hasPendingEdit={hasPendingEdit}
+                ? <fieldset disabled={Boolean(ui.busyAction) || busyActionRef.current} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
+                  <CreateEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur} onDone={markDone} editValue={editValue} hasPendingEdit={hasPendingEdit}
                   busy={Boolean(ui.busyAction) || ui.pendingEdits.length > 0}
                   prepareBlockedReason={hasLegacyCreateReceiptIssue(snapshot) ? 'A legacy Create save cannot be matched safely to this v2 room. Refreshing native price is disabled to avoid creating an unrelated or duplicate reservation.' : undefined}
                   onLookupServices={(allocationId, serviceId) => runServiceAction('lookup', activeRequest.id, allocationId, serviceId)}
                   onPreviewServices={(allocationId, serviceId) => runServiceAction('preview', activeRequest.id, allocationId, serviceId)}
                   onOpenEvidence={onOpenEvidence} onPrepare={() => { void enqueue('Checking Infor now', sourceRef.current, () => prepareAll(false)); }}
                   onLookup={refreshNative} />
+                </fieldset>
               : activeRequest.kind === 'filing'
                 ? <FilingEditor snapshot={snapshot} request={activeRequest} source={source} onOpenAttachment={onOpenAttachment} />
                 : activeRequest.kind === 'quote'
@@ -730,7 +740,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
               ? 'Current Infor unsaved form and price are ready for review.' : snapshot.preparation.message)}
           </div>
           {ui.pendingEdits.length > 0 && <button type="button" className={styles.secondaryButton} disabled={Boolean(ui.busyAction)} onClick={() => { void saveEdits(); }}>Save {ui.pendingEdits.length} edit{ui.pendingEdits.length === 1 ? '' : 's'}</button>}
-          {activeKind === 'create' && activeRequest && <button type="button" className={styles.goButton} disabled={!canGo} onClick={runGo}>Create · {createSections(snapshot, activeRequest).allocations.length} room reservations</button>}
+          {activeKind === 'create' && activeRequest && <button type="button" className={styles.goButton} disabled={!canGo || busyActionRef.current} onClick={runGo}>Create · {createSections(snapshot, activeRequest).allocations.length} room reservations</button>}
         </footer>
       </>}
     </div>
