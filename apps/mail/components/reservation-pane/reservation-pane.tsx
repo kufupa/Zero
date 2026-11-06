@@ -622,8 +622,11 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
           const allocationPath = `${body}/allocations`;
           const requestedRoomsPath = `${sectionRoot}/requestedRooms`;
           const nextRows = [...sections.allocations.map(({ value }) => value), emptyRoomAllocation(String(section.id))];
+          const requestedRooms = fieldOrBase(snapshot, requestedRoomsPath, section.requestedRooms);
+          const nextRequestedRooms = typeof requestedRooms === 'number' && requestedRooms > allocationCount
+            ? requestedRooms : allocationCount + 1;
           props.onStage(allocationPath, nextRows);
-          props.onStage(requestedRoomsPath, allocationCount + 1);
+          props.onStage(requestedRoomsPath, nextRequestedRooms);
           props.onBlur(allocationPath);
           props.onBlur(requestedRoomsPath);
         }}>Add room to these dates</button>
