@@ -120,10 +120,12 @@ async function openGuestStay(page) {
 
 /** No write operations; search result cap and unreadable-row handling remain with the existing parser. */
 export async function searchGuestInCloud(input, { openSession = withCenturionStay360Page,
-  guard = installGuestLookupGuard, navigate = openGuestStay, search = searchGuestOnOpenGuestStay } = {}) {
+  guard = installGuestLookupGuard, navigate = openGuestStay, search = searchGuestOnOpenGuestStay, signal } = {}) {
+  const timeout = AbortSignal.timeout(5 * 60_000);
   return openSession(async (page) => {
     await navigate(page);
     return search({ page, args: { mode: 'search-guest', lastName: input.lastName, arrival: input.arrival,
       departure: input.departure ?? null, debugHtml: false }, dir: input.dir, started: Date.now() });
-  }, { headless: true, blockServiceWorkers: true, prepareContext: guard, signal: AbortSignal.timeout(5 * 60_000) });
+  }, { headless: true, blockServiceWorkers: true, prepareContext: guard,
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
 }

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import type { HmsCloudRateLookup, HmsCloudReservationObservations } from './hms-cloud-saved-stay-find.js';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -605,6 +605,60 @@ export async function searchGuest(
     runId: run.runId ?? null,
     ...(loginCode ? { error: loginCode } : {}),
   };
+}
+
+/** Read Centurion guest searches in at most two isolated, read-only browser sessions at a time. */
+export async function searchGuestCloudBatch(
+  queries: readonly GuestSearchQuery[], target: HmsReadTarget, signal?: AbortSignal,
+): Promise<PaneStayGuestSearchResult[]> {
+  const enabled = paneStayLookupLoaders.enabled ?? (() => paneStayLookupEnabled());
+  if (!enabled()) return queries.map(() => refusedSearch('refused_flag_off'));
+  const targetKeys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
+  if (targetKeys.some((key) => target[key] !== CENTURION_HMS_READ_TARGET[key])) {
+    return queries.map(() => refusedSearch('refused_unknown_transport'));
+  }
+  const results = queries.map((query) => !isGuestSurname(query.lastName) || !isRealIsoDate(query.arrival) ||
+    (query.departure !== undefined && (!isRealIsoDate(query.departure) || query.departure <= query.arrival))
+    ? refusedSearch('refused_input_invalid') : refusedSearch('execution_failure'));
+  const validIndices = queries.flatMap((query, index) =>
+    isGuestSurname(query.lastName) && isRealIsoDate(query.arrival) &&
+    (query.departure === undefined || isRealIsoDate(query.departure) && query.departure > query.arrival) ? [index] : []);
+  if (!validIndices.length) return results;
+  const dir = await mkdtemp(join(tmpdir(), 'pane-guest-batch-'));
+  try {
+    const cloudUrl = new URL('../../tooling/hms-cloud/pane-guest-search.mjs', import.meta.url);
+    const cloud = await import(cloudUrl.href) as {
+      searchGuestInCloud: (query: GuestSearchQuery & { dir: string }, options: Record<string, unknown>) =>
+        Promise<Partial<PaneStayLookupSpawnResult>>;
+    };
+    const timeout = AbortSignal.timeout(90_000);
+    const combinedSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    let next = 0;
+    const worker = async () => {
+      while (next < validIndices.length && !combinedSignal.aborted) {
+        const index = validIndices[next++]!;
+        const query = queries[index]!;
+        const queryDir = await mkdtemp(join(dir, 'query-'));
+        try {
+          const run = await cloud.searchGuestInCloud({ ...query, dir: queryDir }, { signal: combinedSignal });
+          const outcome = toSearchOutcome(run.outcome ?? 'execution_failure');
+          results[index] = { outcome, rows: outcome === 'ok' ? rowsOnRequestedDates(toPanelRows(run.rows), query) : [],
+            screenshots: [], runId: null,
+            ...(typeof run.reason === 'string' && /^[a-z0-9_:-]{1,100}$/i.test(run.reason) ? { error: run.reason } : {}) };
+        } catch (error) {
+          const code = error instanceof Error ? error.message : '';
+          if (/^[a-z0-9_:-]{1,100}$/i.test(code)) results[index] = { ...results[index]!, error: code };
+        }
+      }
+    };
+    // Even a filesystem failure must not delete the shared directory while another session is active.
+    await Promise.allSettled(Array.from({ length: Math.min(2, validIndices.length) }, () => worker()));
+  } catch {
+    // Keep earlier completed searches; remaining ones stay explicitly failed.
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+  return results;
 }
 
 function normalizeSurname(value: string): string {
