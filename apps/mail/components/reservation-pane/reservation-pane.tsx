@@ -306,18 +306,38 @@ function observedNativeCodes(snapshot: ReservationPaneSnapshot, path: string): A
   if (!catalogKey) return [];
   const requestId = path.split('/')[4];
   const choices = new Map<string, { code: string; meaning: string; ref: string }>();
+  const addChoice = (rawCode: unknown, rawMeaning: unknown, ref: string) => {
+    const code = text(rawCode).trim();
+    if (!code || choices.has(code)) return;
+    choices.set(code, { code, meaning: text(rawMeaning).trim() || code, ref });
+  };
   for (const observation of snapshot.session.draft.observations) {
-    if (observation.kind !== 'rate_availability' || observation.status !== 'complete'
-        || observation.criteria.requestId !== requestId || record(observation.coverage)?.complete !== true) continue;
+    if (observation.status !== 'complete' || observation.criteria.requestId !== requestId
+        || record(observation.coverage)?.complete !== true) continue;
+    if (observation.kind === 'stay_candidate' && observation.criteria.workflow === 'amend') {
+      const candidate = record(record(observation.result)?.candidate);
+      if (!candidate) continue;
+      const codeField = catalogKey === 'room' ? 'roomType' : 'ratePlan';
+      addChoice(candidate[codeField], `Observed on saved stay ${text(candidate.confirmation)}`.trim(), observation.ref);
+      continue;
+    }
+    if (observation.kind !== 'rate_availability') continue;
     if (observation.criteria.workflow === 'quote') {
       const options = quoteRateOptions(snapshot, requestId);
       for (const option of options) {
         const code = text(catalogKey === 'room' ? option.roomCode : catalogKey === 'ratePlan' ? option.rateCode : option.board).trim();
         if (!code || choices.has(code)) continue;
         const meaning = text(catalogKey === 'room' ? option.roomLabel : catalogKey === 'ratePlan' ? option.rateLabel : option.boardLabel).trim() || code;
-        choices.set(code, { code, meaning, ref: observation.ref });
+        addChoice(code, meaning, observation.ref);
       }
       continue;
+    }
+    if (observation.criteria.workflow === 'amend') {
+      const target = record(record(observation.result)?.target);
+      if (target) {
+        const codeField = catalogKey === 'room' ? 'roomType' : 'ratePlan';
+        addChoice(target[codeField], `Prepared native value · ${text(target.confirmation)}`.trim(), observation.ref);
+      }
     }
     const groups = record(observation.result)?.groups;
     if (!Array.isArray(groups)) continue;
@@ -330,7 +350,7 @@ function observedNativeCodes(snapshot: ReservationPaneSnapshot, path: string): A
         const code = text(nativeChoice?.code).trim();
         if (!code) continue;
         const meaning = text(nativeChoice?.label).trim() || code;
-        if (!choices.has(code)) choices.set(code, { code, meaning, ref: observation.ref });
+        addChoice(code, meaning, observation.ref);
       }
     }
   }
