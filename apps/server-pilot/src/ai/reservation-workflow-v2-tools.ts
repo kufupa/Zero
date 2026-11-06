@@ -111,7 +111,8 @@ function leaf(draft: ReservationWorkflowV2Draft, path: string, sourceValue: unkn
 
 function effectiveSubtree(draft: ReservationWorkflowV2Draft, source: unknown, path: string): unknown {
   const resolved = leaf(draft, path, source);
-  if ('issue' in resolved || resolved.unset) return null;
+  if ('issue' in resolved) return null;
+  if (resolved.unset) return { kind: 'none' };
   const value = resolved.value;
   if (Array.isArray(value)) return value.map((item, index) => effectiveSubtree(draft, item, `${path}/${index}`));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) =>
@@ -288,6 +289,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
       { path: ptr(...req.slice(1).split('/').map(decodeURIComponent), 'shared', field), value: body.shared[field as keyof typeof body.shared] },
     ];
     for (const choice of choices) {
+      if (draft.fieldOverrides[choice.path]?.state === 'inherit') continue;
       const resolved = leaf(draft, choice.path, choice.value);
       if ('issue' in resolved) return resolved;
       if (resolved.value !== undefined && resolved.value !== null) {
