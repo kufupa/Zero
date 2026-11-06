@@ -6,7 +6,7 @@ import { mailThread, message } from '../db/schema/mail.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { maskCardNumbers } from './card-mask.js';
 import { classifyMailSource } from './mail-source.js';
-import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
+import { groundedSeparateAsk, isSelfSentPreStayInformationMail } from './existing-stay-information.js';
 import type { SyncedQuoteSelection } from './quote-workflow-synced-selection.js';
 import {
   EXTRACTION_MAX_PDF_PAGES,
@@ -39,7 +39,9 @@ import {
   type ReservationWorkflowV2Source,
 } from './reservation-workflow-v2-contract.js';
 import type { ReservationWorkflowV2Context, ReservationWorkflowV2Seed, ReservationWorkflowV2StateResult } from './reservation-workflow-v2-state.js';
-import { ensureReservationWorkflowV2Draft, getReservationWorkflowV2DraftForSource, validateReservationWorkflowV2Source } from './reservation-workflow-v2-state.js';
+import { claimReservationWorkflowV2PrefillRetry, ensureReservationWorkflowV2Draft,
+  getReservationWorkflowV2Draft, getReservationWorkflowV2DraftForSource, replaceReservationWorkflowV2PrefillRetry,
+  validateReservationWorkflowV2Source } from './reservation-workflow-v2-state.js';
 
 const MAX_THREAD_CHARS = 100_000;
 const MAX_TARGET_CHARS = 80_000;
@@ -1208,8 +1210,8 @@ export async function runReservationWorkflowV2Prefill(input: {
   const selfPreStay = sourceBound && isSelfSentPreStayInformationMail({ fromAddress: input.selection.fromAddress,
     mailboxAddress: input.mailboxAddress, subject: input.selection.subject, confirmationNumbers });
   const skippedReason = !sourceBound ? 'invalid_source' as const : input.isSpam ? 'spam' as const :
-    classification?.kind === 'channel' ? 'channel' as const : classification?.kind === 'system' ? 'system' as const :
-      selfPreStay ? 'self_prestay' as const : undefined;
+    !selfPreStay && classification?.kind === 'channel' ? 'channel' as const :
+      !selfPreStay && classification?.kind === 'system' ? 'system' as const : undefined;
   if (skippedReason) {
     const evidence = sourceBound ? sourceEvidence({ source: input.source, selection: input.selection, vision: { currentProposalSources: [] } }) : [];
     const observations = sourceBound ? [seedObservation({ ref: 'obs_source', generationId,
@@ -1219,8 +1221,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     })] : [];
     const reason = skippedReason === 'invalid_source' ? 'Selected mail did not bind to the resolved canonical source.' :
       skippedReason === 'spam' ? 'Source is marked spam; no model or candidate lookup was run.' :
-        skippedReason === 'self_prestay' ? 'Self-sent pre-stay mail with an existing confirmation describes an existing stay, not a Create.' :
-          `Known ${skippedReason} sender/source (${classification?.kind === skippedReason ? classification.source : 'mail source registry'}) is excluded before reservation prefill.`;
+        `Known ${skippedReason} sender/source (${classification?.kind === skippedReason ? classification.source : 'mail source registry'}) is excluded before reservation prefill.`;
     return { generationId, extraction: null, status: 'prefill_failed', proposal: buildFallbackProposal({ extraction: null,
       source: input.source, evidence, reason }), observations, fieldReviewRequirements: {},
       errors: [{ stage: 'extract', code: `guard_${skippedReason}`, message: reason }], skippedReason, sourceBound };
@@ -1250,7 +1251,8 @@ export async function runReservationWorkflowV2Prefill(input: {
   if (!input.adapter) return fallback('Model adapter is unavailable; source text remains editable for staff review.');
   const env = input.env ?? process.env;
   const budget = lunaCallBudget(extractionReasoningEffort(env));
-  const firstPass = await invokeBounded({ adapter: input.adapter, systemPrompt: EXTRACTION_RULES,
+  const selfPreStayRules = selfPreStay ? ' This self-sent pre-stay message describes an existing booking. Extract only genuinely separate current requests, with requestText.raw copied exactly from the current message body; do not treat the existing booking or arrival information as a request.' : '';
+  const firstPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${EXTRACTION_RULES}${selfPreStayRules}`,
     userPrompt: JSON.stringify({ propertyCode: input.propertyCode, source: input.source, evidence }),
     responseSchema: zodToJsonSchema(reservationWorkflowV2ExtractionSchema, { $refStrategy: 'none' }) as Record<string, unknown>,
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
@@ -1274,6 +1276,22 @@ export async function runReservationWorkflowV2Prefill(input: {
   const extraction = { ...parsedExtraction.data, requests: parsedExtraction.data.requests.map((request, index) => ({
     ...request, id: stableId(input.source.messageId, 'extracted_request', String(index), request.kind),
   })) };
+  if (selfPreStay) {
+    // Match the established pre-stay rule: a grounded separate ask is surfaced
+    // for staff review, but this existing-stay email cannot grant a new write.
+    const body = input.selection.currentBodyText ?? input.selection.bodyText;
+    const requests = extraction.requests.flatMap((request) =>
+      groundedSeparateAsk(body, request.requestText.raw) ? [{ ...request, kind: 'other' as const }] : []);
+    if (!requests.length) return { ...base, extraction, status: 'prefill_failed',
+      proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence,
+        reason: 'Self-sent pre-stay mail has no separate current request.' }),
+      errors: [], skippedReason: 'self_prestay' };
+    const separate = { ...extraction, requests };
+    return { ...base, extraction: separate, status: 'partial',
+      proposal: buildFallbackProposal({ extraction: separate, source: input.source, evidence,
+        reason: 'Review the separate request. This pre-stay confirmation refers to an existing booking.' }),
+      errors: [] };
+  }
   base.extraction = extraction;
   const completePlan = buildReservationWorkflowV2CandidateReadPlan({ extraction, propertyCode: input.propertyCode, source: input.source });
   const plan = completePlan.slice(0, MAX_CANDIDATE_READS);
@@ -1341,7 +1359,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     proposal: finalProposal!, fieldReviewRequirements: finalReviewRequirements, errors: readErrors };
 }
 
-/** Route-level ensure: prefill happens before canonical persistence; an existing v2 draft is never replaced. */
+/** Route-level ensure: existing drafts are reused, except for a bounded untouched-fallback retry. */
 export type ReservationWorkflowV2EnsurePrefillResult = ReservationWorkflowV2StateResult | { status: 'skipped'; reason: string };
 export async function ensureReservationWorkflowV2Prefill(input: {
   context: ReservationWorkflowV2Context;
@@ -1359,7 +1377,23 @@ export async function ensureReservationWorkflowV2Prefill(input: {
   const admitted = await validateReservationWorkflowV2Source(input.context, input.source);
   if (admitted.status !== 'ok') return { status: 'skipped', reason: `Canonical source rejected before model/native reads (${admitted.status}).` };
   const existing = await getReservationWorkflowV2DraftForSource(input.context, { source: input.source });
-  if (existing.status === 'ok') return existing;
+  if (existing.status === 'ok') {
+    if (!input.adapter) return existing;
+    const retry = { source: input.source, workItemId: existing.draft.workItemId,
+      revision: existing.revision, seq: existing.seq, draft: existing.draft };
+    if (!await claimReservationWorkflowV2PrefillRetry(input.context, retry)) return existing;
+    try {
+      const refreshed = await runReservationWorkflowV2Prefill({ ...input, transportId: input.context.transportId,
+        db: input.context.db, propertyCode: input.context.propertyCode });
+      if (refreshed.sourceBound && !refreshed.skippedReason && refreshed.extraction) {
+        return await replaceReservationWorkflowV2PrefillRetry(input.context, { ...retry, seed: {
+          generationId: refreshed.generationId, status: refreshed.status, proposal: refreshed.proposal,
+          observations: refreshed.observations, fieldReviewRequirements: refreshed.fieldReviewRequirements, errors: refreshed.errors,
+        } });
+      }
+    } catch { /* Keep the original fallback after a failed retry. */ }
+    return getReservationWorkflowV2Draft(input.context, { workItemId: retry.workItemId, source: input.source });
+  }
   const prefill = await runReservationWorkflowV2Prefill({ ...input, transportId: input.context.transportId,
     db: input.context.db, propertyCode: input.context.propertyCode });
   if (!prefill.sourceBound || prefill.skippedReason) return { status: 'skipped',

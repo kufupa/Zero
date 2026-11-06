@@ -320,7 +320,11 @@ function compileQuote(
     return value;
   };
 
-  if (request.body.provisionalBookingRequested !== false) issues.push(`${path('provisionalBookingRequested')}:separate_create_required`);
+  const provisional = resolvedLeaf(draft, path('provisionalBookingRequested'), request.body.provisionalBookingRequested);
+  if ('issue' in provisional || provisional.value !== false) {
+    issues.push(`${path('provisionalBookingRequested')}:${!('issue' in provisional) && provisional.value === true
+      ? 'separate_create_required' : 'quote_only_choice_required'}`);
+  }
   if (!request.body.groups.length) issues.push(`${path('groups')}:group_required`);
   if (request.body.groups.length > 8) issues.push(`${path('groups')}:native_quote_group_limit`);
   if (request.body.requestedMoney.length) issues.push(`${path('requestedMoney')}:staff_priced_allowance_adapter_required`);
