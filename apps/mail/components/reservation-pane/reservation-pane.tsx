@@ -560,16 +560,36 @@ function latestServiceFreshPrepare(snapshot: ReservationPaneSnapshot, requestId:
 }
 
 function serviceOperationResult(snapshot: ReservationPaneSnapshot, requestId: string, allocationId: string, serviceId: string) {
-  return [...snapshot.operationResults].reverse().find((result) => result.requestId === requestId
+  return [...snapshot.operationResults].reverse().find((result) => (result.status === 'unknown' || result.status === 'succeeded')
+    && result.requestId === requestId
     && result.allocationId === allocationId && result.workflow === 'services'
     && Array.isArray(result.observationRefs) && result.observationRefs.some((ref) => snapshot.session.draft.observations.some((item) =>
       item.ref === ref && item.criteria.workflow === 'services' && item.criteria.serviceId === serviceId
         && item.criteria.requestId === requestId && item.criteria.allocationId === allocationId))) ?? null;
 }
 
-function serviceReviewAcceptedAfter(snapshot: ReservationPaneSnapshot, path: string, observedAt: string): boolean {
+function serviceNeedsInputReview(snapshot: ReservationPaneSnapshot, serviceIndex: number, targetIndex: number, path: string): boolean {
+  const leaf = path.split('/').at(-1) ?? '';
+  if (leaf !== 'folio' && leaf !== 'comment') return true;
+  return hasValue(serviceFieldValue(snapshot, serviceIndex, targetIndex, leaf));
+}
+
+function serviceInputReviewPaths(snapshot: ReservationPaneSnapshot, serviceIndex: number, targetIndex: number,
+  values: unknown): string[] {
+  return Array.isArray(values) ? values.filter((path): path is string => typeof path === 'string'
+    && serviceNeedsInputReview(snapshot, serviceIndex, targetIndex, path)) : [];
+}
+
+function serviceFreshReviewNote(requestId: string, allocationId: string, serviceId: string, prepareRef: string): string {
+  return `services_fresh:${requestId}:${allocationId}:${serviceId}:${prepareRef}`;
+}
+
+function serviceFreshReviewAccepted(snapshot: ReservationPaneSnapshot, path: string, requestId: string, allocationId: string,
+  serviceId: string, prepareRef: string, observedAt: string): boolean {
   const review = snapshot.session.draft.staffReviews[path];
-  return review?.status === 'accepted' && typeof review.at === 'string'
+  return review?.status === 'accepted'
+    && review.note === serviceFreshReviewNote(requestId, allocationId, serviceId, prepareRef)
+    && typeof review.at === 'string'
     && Date.parse(review.at) > Date.parse(observedAt);
 }
 
@@ -1149,18 +1169,20 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
           throw new Error('Re-run the complete unsaved Add-On preview after the last service/Create edit.');
         }
         if (!preview) throw new Error('Re-run the complete unsaved Add-On preview after the last service/Create edit.');
-        const unsavedReviewPaths = Array.isArray(record(preview.result)?.hostValuesRequireReview)
-          ? (record(preview.result)?.hostValuesRequireReview as unknown[]).filter((path): path is string => typeof path === 'string') : [];
+        const unsavedReviewPaths = serviceInputReviewPaths(current, linked.serviceIndex, linked.targetIndex,
+          record(preview.result)?.hostValuesRequireReview);
         if (unsavedReviewPaths.some((path) => current.session.draft.staffReviews[path]?.status !== 'accepted')) {
           throw new Error('Review the service input fields against the unsaved native preview before Go.');
         }
         const fresh = latestServiceFreshPrepare(current, requestId, allocationId, serviceId);
         const freshResult = record(fresh?.result);
-        const freshRef = fresh && fresh.criteria.inputDigest === preview.criteria.inputDigest && fresh.status === 'complete'
+        const freshRef = fresh && fresh.criteria.unsavedPreviewRef === preview.ref
+          && fresh.criteria.inputDigest === preview.criteria.inputDigest && fresh.status === 'complete'
           && freshResult?.matchesApprovedNative === false ? fresh.ref : undefined;
         if (freshRef && fresh) {
           const paths = Array.isArray(fresh.criteria.reviewPaths) ? fresh.criteria.reviewPaths.filter((path): path is string => typeof path === 'string') : [];
-          if (!paths.length || !paths.every((path) => serviceReviewAcceptedAfter(current, path, fresh.observedAt))) {
+          if (!paths.length || !paths.every((path) => serviceFreshReviewAccepted(current, path, requestId, allocationId,
+            serviceId, fresh.ref, fresh.observedAt))) {
             throw new Error('Review every field and native amount in the latest saved-stay prepare before Go.');
           }
         }
@@ -1251,6 +1273,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
             {activeRequest.kind === 'create'
                 ? <fieldset disabled={Boolean(ui.busyAction) || busyActionRef.current} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
                   <CreateEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur} onDone={markDone} editValue={editValue} hasPendingEdit={hasPendingEdit}
+                  onAcceptReview={acceptReview}
                   busy={Boolean(ui.busyAction) || ui.pendingEdits.length > 0}
                   prepareBlockedReason={hasLegacyCreateReceiptIssue(snapshot) ? 'A legacy Create save cannot be matched safely to this v2 room. Refreshing native price is disabled to avoid creating an unrelated or duplicate reservation.' : undefined}
                   onLookupServices={(allocationId, serviceId) => runServiceAction('lookup', activeRequest.id, allocationId, serviceId)}
@@ -1319,6 +1342,7 @@ type EditorProps = {
   onStage: (path: string, value: unknown, state?: PendingReservationEdit['state']) => void;
   onBlur: (path: string) => void;
   onDone?: (path: string, note?: string) => void;
+  onAcceptReview?: (path: string, note?: string) => void;
   editValue: (path: string) => unknown;
   hasPendingEdit?: (path: string) => boolean;
   onOpenEvidence?: (ref: string) => void;
@@ -1549,17 +1573,18 @@ function ServiceEditor(props: EditorProps & {
   const previewCurrent = Boolean(latestPreview?.status === 'complete' && props.previewStamp
     && latestPreview.criteria.inputDigest === props.previewStamp.inputDigest
     && serviceInputSignature(snapshot, props.request, serviceIndex, targetIndex) === props.previewStamp.signature);
-  const unsavedReviewPaths = Array.isArray(previewResult?.hostValuesRequireReview)
-    ? previewResult.hostValuesRequireReview.filter((path): path is string => typeof path === 'string') : [];
+  const unsavedReviewPaths = serviceInputReviewPaths(snapshot, serviceIndex, targetIndex, previewResult?.hostValuesRequireReview);
   const unsavedInputsReviewed = unsavedReviewPaths.every((path) => snapshot.session.draft.staffReviews[path]?.status === 'accepted');
   const freshPrepare = latestServiceFreshPrepare(snapshot, props.requestId, allocationId, service.id);
   const freshResult = record(freshPrepare?.result);
-  const freshCurrent = Boolean(freshPrepare && previewCurrent && freshPrepare.status === 'complete'
+  const freshCurrent = Boolean(freshPrepare && latestPreview && previewCurrent && freshPrepare.status === 'complete'
+    && freshPrepare.criteria.unsavedPreviewRef === latestPreview.ref
     && freshPrepare.criteria.inputDigest === latestPreview?.criteria.inputDigest && freshResult?.matchesApprovedNative === false);
   const freshPaths = freshCurrent && freshPrepare && Array.isArray(freshPrepare.criteria.reviewPaths)
     ? freshPrepare.criteria.reviewPaths.filter((path): path is string => typeof path === 'string') : [];
-  const freshReviewsComplete = freshCurrent && freshPaths.length > 0
-    && freshPaths.every((path) => serviceReviewAcceptedAfter(snapshot, path, freshPrepare!.observedAt));
+  const freshReviewsComplete = Boolean(freshCurrent && freshPrepare && freshPaths.length > 0
+    && freshPaths.every((path) => serviceFreshReviewAccepted(snapshot, path, props.requestId, allocationId,
+      service.id, freshPrepare.ref, freshPrepare.observedAt)));
   const createSaved = snapshot.operationResults.some((result) => result.requestId === props.requestId
     && result.allocationId === allocationId && result.workflow === 'create' && result.status === 'succeeded');
   const createReceipt = [...snapshot.operationResults].reverse().find((result) => result.requestId === props.requestId
@@ -1639,11 +1664,13 @@ function ServiceEditor(props: EditorProps & {
         const fieldName = leaf === 'value' ? 'quantity' : leaf;
         const freshValue = record(freshResult.native)?.[fieldName];
         const approvedValue = record(freshResult.previouslyApprovedNative)?.[fieldName];
-        const reviewed = serviceReviewAcceptedAfter(snapshot, path, freshPrepare.observedAt);
+        const reviewed = serviceFreshReviewAccepted(snapshot, path, props.requestId, allocationId,
+          service.id, freshPrepare.ref, freshPrepare.observedAt);
         return <div className={styles.candidateOption} key={path}>
           <span><b>{humanize(fieldName)}</b><small>Approved preview: {text(approvedValue) || '—'} · Current saved prepare: {text(freshValue) || '—'}</small></span>
           {reviewed ? <span className={styles.accepted}>✓ Reviewed after fresh prepare</span>
-            : <button type="button" className={styles.inlineButton} disabled={props.busy} onClick={() => props.onDone?.(path)}>Review this native value</button>}
+            : <button type="button" className={styles.inlineButton} disabled={props.busy} onClick={() => props.onAcceptReview?.(path,
+              serviceFreshReviewNote(props.requestId, allocationId, service.id, freshPrepare.ref))}>Review this native value</button>}
         </div>;
       })}
       {!freshReviewsComplete && <small className={styles.problem}>Go stays blocked until every field above is reviewed after this exact prepare.</small>}
