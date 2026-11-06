@@ -15,7 +15,7 @@ import type {
 } from './reservation-workflow-v2-contract.js';
 import { findParty } from './pane-party-lookup.js';
 import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
-import { staffQuoteInput } from './staff-quote-workflow.js';
+import { isPublicRateCode, staffQuoteInput } from './staff-quote-workflow.js';
 import { runStaffQuote } from './staff-quote-run.js';
 import { buildStaysProposalPdf } from '../quote-proposal/proposal-pdf.js';
 import {
@@ -23,8 +23,8 @@ import {
   quoteWorkbookForStays,
   type WorkbookStay,
 } from '../quote-proposal/quote-workbook.js';
-import type { AuthorizedProposalFacts, RowPrice } from '../quote-proposal/quote-lines.js';
-import { quoteDigest, type QuoteRevision } from '../quote-proposal/quote-revision.js';
+import { deriveAuthorizedExtraLines, type AuthorizedProposalFacts, type RowPrice } from '../quote-proposal/quote-lines.js';
+import { occupiedDates, quoteDigest, type QuoteRevision } from '../quote-proposal/quote-revision.js';
 
 /** Kept structurally aligned with reservationWorkflowV2ServerContext in the native tools module. */
 export type ReservationWorkflowV2QuoteContext = {
@@ -77,6 +77,13 @@ const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
 });
 const providerCode = z.string().regex(/^[A-Z0-9_-]{1,16}$/);
 const hash = (value: unknown) => quoteDigest(value);
+// Keep the uncertain window beyond the 12-minute quote run so a live generation is not released for retry.
+const QUOTE_OPERATION_STALE_AFTER_MS = 15 * 60_000;
+
+function quoteOperationExpired(result: QuoteOperationResult): boolean {
+  const updatedAt = Date.parse(result.updatedAt);
+  return Number.isFinite(updatedAt) && Date.now() - updatedAt >= QUOTE_OPERATION_STALE_AFTER_MS;
+}
 
 function stateContext(ctx: ReservationWorkflowV2QuoteContext) {
   return {
@@ -212,7 +219,50 @@ function sameName(left: unknown, right: unknown): boolean {
       right.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
 }
 
-function preparedQuoteMatches(input: z.infer<typeof staffQuoteInput>, value: unknown): boolean {
+function pricedDinnerFallbackMatches(
+  input: z.infer<typeof staffQuoteInput>,
+  expected: z.infer<typeof staffQuoteInput>['groups'][number],
+  actual: Record<string, unknown>,
+  revision: Record<string, unknown>,
+  factsValue: unknown,
+  fallbackGroupIdsValue: unknown,
+): boolean {
+  const facts = record(factsValue);
+  const fallbackGroupIds = Array.isArray(fallbackGroupIdsValue) ? fallbackGroupIdsValue : [];
+  if ((input.salesStrategy !== 'BAR' && input.salesStrategy !== 'Government') ||
+      actual.board !== 'breakfast' || typeof actual.rateCode !== 'string' || !isPublicRateCode(actual.rateCode) ||
+      !fallbackGroupIds.includes(expected.id) || !facts || facts.revisionId !== revision.id ||
+      facts.authorizationId !== revision.authorizationId || facts.sourceHash !== input.sourceHash) return false;
+
+  const extras = Array.isArray(facts.extras) ? facts.extras.map(record).filter((item): item is Record<string, unknown> => Boolean(item)) : [];
+  const dinner = extras.find((extra) => extra.service === 'dinner_add_on' &&
+    Array.isArray(extra.groupIds) && extra.groupIds.includes(expected.id) &&
+    Number.isSafeInteger(extra.unitMinor) && Number(extra.unitMinor) > 0);
+  if (!dinner) return false;
+  const dates = Array.isArray(dinner.dates) ? dinner.dates : [];
+  const expectedDates = dinner.chargeUnit === 'per_person'
+    ? [expected.arrivalDate]
+    : dinner.chargeUnit === 'per_person_night' || dinner.chargeUnit === 'per_room_per_night'
+      ? occupiedDates(expected.arrivalDate, expected.departureDate) : [];
+  const correctBasis = dinner.unitKind === 'person_service'
+    ? dinner.chargeUnit === 'per_person' || dinner.chargeUnit === 'per_person_night'
+    : dinner.unitKind === 'item' && dinner.chargeUnit === 'per_room_per_night';
+  if (!correctBasis || !expectedDates.length || dates.length !== expectedDates.length ||
+      dates.some((date, index) => date !== expectedDates[index])) return false;
+  try {
+    return deriveAuthorizedExtraLines(revision as unknown as QuoteRevision,
+      facts as unknown as AuthorizedProposalFacts).some((line) => line.service === 'dinner_add_on' && line.totalMinor > 0);
+  } catch {
+    return false;
+  }
+}
+
+function preparedQuoteMatches(
+  input: z.infer<typeof staffQuoteInput>,
+  value: unknown,
+  factsValue?: unknown,
+  fallbackGroupIdsValue?: unknown,
+): boolean {
   const revision = record(value);
   const groups = Array.isArray(revision?.groups) ? revision.groups.map(record) : [];
   if (!revision || revision.propertyCode === undefined || revision.currency !== 'ZAR' ||
@@ -223,9 +273,11 @@ function preparedQuoteMatches(input: z.infer<typeof staffQuoteInput>, value: unk
     const actual = groups.find((group) => group?.id === expected.id);
     const board = expected.board === 'bb' ? 'breakfast'
       : expected.board === 'dinner_bb' ? 'dinner_bed_breakfast' : 'room_only';
+    const boardMatches = actual?.board === board || Boolean(actual && expected.board === 'dinner_bb' &&
+      pricedDinnerFallbackMatches(input, expected, actual, revision, factsValue, fallbackGroupIdsValue));
     if (!actual || actual.arrivalDate !== expected.arrivalDate || actual.departureDate !== expected.departureDate ||
         actual.quantity !== expected.quantity || actual.adults !== expected.adults ||
-        actual.children !== expected.childrenAges.length || actual.board !== board ||
+        actual.children !== expected.childrenAges.length || !boardMatches ||
         JSON.stringify(actual.childAges) !== JSON.stringify(expected.childrenAges) ||
         (expected.roomCodes?.length && !expected.roomCodes.includes(String(actual.roomCode))) ||
         (expected.rateCode && actual.rateCode !== expected.rateCode)) return false;
@@ -468,7 +520,8 @@ function quoteObservation(
   const revision = record(prepared?.revision);
   const freshUntil = typeof result.freshUntil === 'string' ? Date.parse(result.freshUntil) : Number.NaN;
   const validRevision = revision?.propertyCode === draft.propertyCode &&
-    prepared?.sourceHash === draft.source.sourceHash && preparedQuoteMatches(compiled.input, revision) &&
+    prepared?.sourceHash === draft.source.sourceHash &&
+    preparedQuoteMatches(compiled.input, revision, prepared?.facts, result.dinnerFallbackGroupIds) &&
     Number.isFinite(freshUntil) && freshUntil > Date.now();
   const inputDigest = compiled.inputDigest;
   const runResult = {
@@ -489,6 +542,8 @@ function quoteObservation(
     availabilityBoard: result.availabilityBoard ?? [],
     extrasReviewItems: Array.isArray(result.extrasReviewItems)
       ? result.extrasReviewItems.filter((item): item is string => typeof item === 'string') : [],
+    dinnerFallbackGroupIds: Array.isArray(result.dinnerFallbackGroupIds)
+      ? result.dinnerFallbackGroupIds.filter((id): id is string => typeof id === 'string') : [],
     revision,
     facts: prepared?.facts ?? null,
     rowPrices: prepared?.rowPrices ?? [],
@@ -529,7 +584,7 @@ function matchingPreparedQuote(
       criteria.inputDigest === compiled.inputDigest &&
       criteria.sourceHash === draft.source.sourceHash &&
       Number.isFinite(expires) && expires > now && revision?.propertyCode === draft.propertyCode &&
-      preparedQuoteMatches(compiled.input, revision);
+      preparedQuoteMatches(compiled.input, revision, result?.facts, result?.dinnerFallbackGroupIds);
   });
 }
 
@@ -578,9 +633,11 @@ function operationResults(draft: ReservationWorkflowV2Draft): QuoteOperationResu
     result.workflow === 'quote' && result.allocationId === null);
 }
 
-function operationObservation(draft: ReservationWorkflowV2Draft, operationId: string) {
+function operationObservation(draft: ReservationWorkflowV2Draft, operationId: string, refs: string[] = []) {
+  const linkedRefs = new Set(refs);
   return [...draft.observations].reverse().find((observation) =>
-    observation.kind === 'document' && record(observation.criteria)?.operationId === operationId);
+    observation.kind === 'document' && (linkedRefs.size
+      ? linkedRefs.has(observation.ref) : record(observation.criteria)?.operationId === operationId));
 }
 
 function operationResult(
@@ -840,7 +897,8 @@ async function quoteArtifacts(
   const criteria = record(preparedObservation.criteria);
   if (!revision || revision.propertyCode !== ctx.property.propertyCode ||
       criteria?.workflow !== 'quote' || criteria.inputDigest !== compiled.inputDigest ||
-      criteria.sourceHash !== compiled.input.sourceHash || !preparedQuoteMatches(compiled.input, revision)) {
+      criteria.sourceHash !== compiled.input.sourceHash ||
+      !preparedQuoteMatches(compiled.input, revision, prepared?.facts, prepared?.dinnerFallbackGroupIds)) {
     throw new Error('prepared_quote_revision_invalid');
   }
   const facts = record(prepared?.facts) as unknown as AuthorizedProposalFacts | null;
@@ -914,12 +972,15 @@ export async function reservationWorkflowV2QuoteExecute(
   const prior = operationResults(loaded.draft).find((result) => result.id === input.idempotencyKey);
   if (prior && prior.requestId !== request.id) return { status: 'idempotency_conflict' };
   if (prior?.status === 'succeeded' || prior?.status === 'failed') {
-    const observation = operationObservation(loaded.draft, prior.id);
+    const observation = operationObservation(loaded.draft, prior.id, prior.observationRefs);
     return { status: prior.status, operationId: prior.id, summary: prior.summary,
       observationRef: observation?.ref, artifacts: record(observation?.result)?.artifacts ?? [],
       coverEmail: record(observation?.result)?.coverEmail };
   }
-  if (prior?.status === 'unknown') return { status: 'needs_reconcile', operationId: prior.id };
+  if (prior?.status === 'unknown' &&
+      (operationObservation(loaded.draft, prior.id, prior.observationRefs) || !quoteOperationExpired(prior))) {
+    return { status: 'needs_reconcile', operationId: prior.id };
+  }
   const compiled = compileQuote(loaded.draft, request, true);
   if (compiled.status !== 'ok') return { status: compiled.status, issue: compiled.issue, fields: compiled.fields };
   const preparedObservation = matchingPreparedQuote(loaded.draft, compiled, true);
@@ -1000,30 +1061,53 @@ export async function reservationWorkflowV2QuoteReconcile(
   if (!result) return { status: 'not_found' };
   if (result.status === 'prepared') return { status: 'prepared', operationId: result.id,
     summary: result.summary, observationRefs: result.observationRefs };
-  const observation = operationObservation(loaded.draft, result.id);
+  const observation = operationObservation(loaded.draft, result.id, result.observationRefs);
+  if (result.status === 'unknown' && !observation && quoteOperationExpired(result)) {
+    const failed: QuoteOperationResult = { ...result, status: 'failed', updatedAt: new Date().toISOString(),
+      summary: 'No quote output receipt was saved. No reservation was saved and no email was sent; check the quote before generating outputs again.' };
+    const saved = await persistResult(ctx, input, loaded.draft.generationId, failed);
+    return saved.status === 'ok' ? { status: 'failed', operationId: result.id, summary: failed.summary,
+      artifacts: [], failures: [], emailSent: false, reservationSaved: false, retryAvailable: true } : saved;
+  }
   if (observation && result.status === 'unknown') {
     const payload = record(observation.result) ?? {};
-    const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts : [];
-    const hashesValid = artifacts.length > 0 && artifacts.every((raw) => {
-      const artifact = record(raw);
-      const encoded = typeof artifact?.bytesBase64 === 'string' ? artifact.bytesBase64 : null;
-      if (!encoded || !artifact) return false;
-      const bytes = Buffer.from(encoded, 'base64');
-      return bytes.length > 0 && bytes.toString('base64') === encoded &&
-        Number.isSafeInteger(artifact.sizeBytes) && artifact.sizeBytes === bytes.length &&
-        artifact.sha256 === createHash('sha256').update(bytes).digest('hex');
-    });
-    if (observation.status === 'complete' && hashesValid) {
-      const recovered = operationResult(loaded.draft, result.requestId, result.id, 'succeeded', [observation.ref],
-        `Recovered ${artifacts.length} stored quote artifact(s); no reservation saved or email sent`);
+    const rawArtifacts = Array.isArray(payload.artifacts) ? payload.artifacts : [];
+    const artifacts = rawArtifacts.map(record).filter((artifact): artifact is Record<string, unknown> => Boolean(artifact))
+      .filter((artifact) => {
+        const encoded = typeof artifact.bytesBase64 === 'string' ? artifact.bytesBase64 : null;
+        if (!encoded) return false;
+        const bytes = Buffer.from(encoded, 'base64');
+        return bytes.length > 0 && bytes.toString('base64') === encoded &&
+          Number.isSafeInteger(artifact.sizeBytes) && artifact.sizeBytes === bytes.length &&
+          artifact.sha256 === createHash('sha256').update(bytes).digest('hex');
+      });
+    const artifactsValid = artifacts.length === rawArtifacts.length;
+    if (observation.status === 'complete' && observation.coverage.complete && rawArtifacts.length > 0 && artifactsValid) {
+      const recovered: QuoteOperationResult = { ...operationResult(loaded.draft, result.requestId, result.id, 'succeeded', [observation.ref],
+        `Recovered ${artifacts.length} stored quote artifact(s); no reservation saved or email sent`),
+      draftRevision: result.draftRevision };
       const saved = await persistResult(ctx, input, loaded.draft.generationId, recovered);
       return saved.status === 'ok' ? { status: 'succeeded', operationId: result.id,
         observationRef: observation.ref, artifacts, coverEmail: payload.coverEmail, emailSent: false, reservationSaved: false } : saved;
     }
+    const failures = Array.isArray(payload.failures)
+      ? payload.failures.filter((failure): failure is string => typeof failure === 'string')
+      : [...observation.coverage.notes];
+    if (!artifactsValid) failures.push('quote_artifact_receipt_invalid');
+    if (!failures.length) failures.push('quote_artifact_generation_incomplete');
+    const summary = `Recovered an incomplete quote output receipt with ${artifacts.length} stored artifact(s); no reservation saved or email sent`;
+    const recovered: QuoteOperationResult = { ...operationResult(loaded.draft, result.requestId, result.id, 'failed', [observation.ref], summary),
+      draftRevision: result.draftRevision };
+    const saved = await persistResult(ctx, input, loaded.draft.generationId, recovered);
+    return saved.status === 'ok' ? { status: 'failed', operationId: result.id, summary,
+      observationRef: observation.ref, artifacts, coverEmail: payload.coverEmail, failures,
+      emailSent: false, reservationSaved: false, retryAvailable: true } : saved;
   }
   if (result.status === 'succeeded' || result.status === 'failed') {
+    const payload = record(observation?.result) ?? {};
     return { status: result.status, operationId: result.id, summary: result.summary,
-      observationRef: observation?.ref, artifacts: record(observation?.result)?.artifacts ?? [] };
+      observationRef: observation?.ref, artifacts: payload.artifacts ?? [], coverEmail: payload.coverEmail,
+      failures: payload.failures ?? [], emailSent: false, reservationSaved: false };
   }
   return { status: 'needs_reconcile', operationId: result.id,
     issue: 'quote_artifact_receipt_not_confirmed; do_not_retry_automatically' };
