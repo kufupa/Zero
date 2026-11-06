@@ -39,7 +39,8 @@ const text = (value: unknown): string => {
 const encoded = (value: string | number) => encodeURIComponent(String(value));
 const requestPath = (request: ReservationRequestProjection) => `/proposal/content/requests/${encoded(request.id)}`;
 const hasValue = (value: unknown) => value !== null && value !== undefined
-  && !(record(value)?.kind === 'none') && !(typeof value === 'string' && value.trim() === '');
+  && !(record(value)?.kind === 'none') && !(typeof value === 'string' && value.trim() === '')
+  && !(Array.isArray(value) && value.length === 0);
 const humanize = (value: string) => value.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').replace(/^./, (letter) => letter.toUpperCase());
 const sameIdentityText = (left: unknown, right: unknown) => text(left).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase()
   === text(right).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
@@ -215,13 +216,82 @@ function isInputReady(snapshot: ReservationPaneSnapshot, request: ReservationReq
   });
 }
 
+function effectiveCreatePath(snapshot: ReservationPaneSnapshot, paths: string[]): string | null {
+  for (const path of paths) {
+    const field = snapshot.fields[path];
+    const override = field?.override;
+    if (override) {
+      if (override.state === 'unknown' || override.state === 'none' || override.state === 'clear') return null;
+      if (override.state === 'set') return hasValue(field.value) ? path : null;
+      if (override.state === 'inherit') {
+        const base = draftAtPath(snapshot, path);
+        if (record(base)?.kind === 'none') return null;
+        if (hasValue(base)) return path;
+        continue;
+      }
+    }
+    const base = draftAtPath(snapshot, path);
+    if (record(base)?.kind === 'none') return null;
+    if (hasValue(base)) return path;
+  }
+  return null;
+}
+
+function createReviewPaths(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): string[] {
+  const { body, data, sections, allocations } = createSections(snapshot, request);
+  if (!data) return [];
+  const paths = new Set<string>();
+  const addWhenSet = (path: string) => { if (hasValue(valueFor(snapshot, path))) paths.add(path); };
+  const sharedFields = ['bookingAgency', 'organization', 'arAccount', 'sourceOfBusiness', 'reasonForStay',
+    'billingReference', 'track', 'guestOptIn', 'bookerName', 'bookerContact', 'reservationNote',
+    'cmsSend', 'cmsMessageId', 'cmsRecipient'];
+
+  for (const { value: allocation, index } of allocations) {
+    const allocRoot = `${body}/allocations/${index}`;
+    const dateIndex = sections.findIndex(({ value }) => value.id === allocation.dateSectionId);
+    if (dateIndex < 0) continue;
+    const sectionRoot = `${body}/dateSections/${dateIndex}`;
+    addWhenSet(`${sectionRoot}/arrival`);
+    addWhenSet(`${sectionRoot}/departure`);
+    for (const field of ['roomType', 'ratePlan', 'guaranteeType']) {
+      const path = effectiveCreatePath(snapshot, [`${allocRoot}/overrides/${field}`, `${sectionRoot}/defaults/${field}`, `${body}/shared/${field}`]);
+      if (path) paths.add(path);
+    }
+    for (const field of sharedFields) {
+      const path = effectiveCreatePath(snapshot, [`${allocRoot}/overrides/${field}`, `${sectionRoot}/defaults/${field}`, `${body}/shared/${field}`]);
+      if (!path) continue;
+      paths.add(path);
+      if (['bookingAgency', 'organization', 'arAccount'].includes(field)) addWhenSet(`${path}/nativeSelectionRef`);
+    }
+    for (const field of ['firstName', 'lastName']) addWhenSet(`${allocRoot}/guest/${field}`);
+    addWhenSet(`${allocRoot}/guest/nativeSelectionRef`);
+    for (const field of ['adults', 'childCount']) addWhenSet(`${allocRoot}/occupancy/${field}`);
+    const childCount = valueFor(snapshot, `${allocRoot}/occupancy/childCount`);
+    if (typeof childCount === 'number' && childCount > 0) addWhenSet(`${allocRoot}/occupancy/childAges`);
+  }
+  return [...paths];
+}
+
+function isRenderedCreateReviewPath(request: ReservationRequestProjection, path: string): boolean {
+  const prefix = requestPath(request) + '/body';
+  if (path.startsWith(`${prefix}/shared/`)) return true;
+  const relative = path.slice(`${prefix}/`.length).split('/');
+  if (relative[0] === 'dateSections') {
+    return ['arrival', 'departure'].includes(relative.at(-1) ?? '')
+      || relative[2] === 'defaults' && ['roomType', 'ratePlan', 'guaranteeType'].includes(relative.at(-1) ?? '');
+  }
+  if (relative[0] !== 'allocations') return false;
+  if (relative[2] === 'guest') return ['firstName', 'lastName', 'nativeSelectionRef'].includes(relative.at(-1) ?? '');
+  if (relative[2] === 'occupancy') return ['adults', 'childCount', 'childAges'].includes(relative.at(-1) ?? '');
+  return relative[2] === 'overrides'
+    && ['roomType', 'ratePlan', 'guaranteeType', 'reservationNote'].includes(relative.at(-1) ?? '');
+}
+
 function hasUnreviewedRequiredFields(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
-  return request.fieldPaths.some((path) => {
+  const paths = request.kind === 'create' ? createReviewPaths(snapshot, request) : request.fieldPaths;
+  return paths.some((path) => {
     const field = snapshot.fields[path];
     if (!field?.required || !hasValue(field.value)) return false;
-    if (request.kind === 'create' && path.endsWith('/occupancy/childAges')
-        && Array.isArray(field.value) && field.value.length === 0
-        && valueFor(snapshot, path.replace(/\/childAges$/u, '/childCount')) === 0) return false;
     return field.review !== 'accepted';
   });
 }
@@ -372,8 +442,10 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
       const current = snapshotRef.current;
       if (!current) throw new Error('The source-bound reservation draft is still loading.');
       const field = current.fields[path];
-      if (!field?.required || field.review === 'accepted') return;
-      if (!hasValue(field.value)) throw new Error('Enter or resolve this value before marking it reviewed.');
+      const required = field?.required === true;
+      const review = current.session.draft.staffReviews[path];
+      if (!required || (field?.review ?? review?.status) === 'accepted') return;
+      if (!hasValue(field?.value ?? valueFor(current, path))) throw new Error('Enter or resolve this value before marking it reviewed.');
       const next = await client.review({ source: bound, snapshot: current, fieldPath: path, decision: 'accepted' });
       applySnapshot(next, bound);
     });
@@ -512,7 +584,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   const reviewRequired = Boolean(snapshot && activeRequest && hasUnreviewedRequiredFields(snapshot, activeRequest));
   const hasUncertain = snapshot?.operationResults.some((result) => result.requestId === activeRequest?.id && result.status === 'unknown') ?? false;
   const canGo = Boolean(snapshot && activeRequest?.kind === 'create' && activeRequest.supported
-    && isRequestPrepared(snapshot, activeRequest) && !reviewRequired && !ui.pendingEdits.length
+    && isInputReady(snapshot, activeRequest) && isRequestPrepared(snapshot, activeRequest) && !reviewRequired && !ui.pendingEdits.length
     && !ui.busyAction && !hasUncertain);
   const displayedResult = snapshot?.operationResults.filter((result) => result.requestId === activeRequest?.id
     && result.workflow === 'create') ?? [];
@@ -617,6 +689,7 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
   return <>
     <div className={styles.sectionHeader}><div><h2>Rate and payer</h2><p>Choose native codes and preserve shared values. Nightly price is observed from Infor, never typed here.</p></div></div>
     <div className={styles.card}>
+      <CodeField {...props} path={`${body}/shared/roomType`} label="Shared room category" />
       <CodeField {...props} path={`${body}/shared/ratePlan`} label="Shared rate plan" help="Native code; price and availability come from Infor." />
       {partyFields.map(([key, label]) => <PartyField key={key} {...props} path={`${body}/shared/${key}`} label={label} />)}
       <div className={styles.twoCol}>
@@ -624,7 +697,8 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
         <CodeField {...props} path={`${body}/shared/track`} label="Track" />
       </div>
       <TextField {...props} path={`${body}/shared/reasonForStay`} label="Reason for stay" />
-      <div className={styles.fixedValue}><span>Source of business</span><b>{text(props.editValue(`${body}/shared/sourceOfBusiness`)) || 'Not set by the saved draft'}</b><small>Bound to the selected mailbox; no alternate source is inferred.</small></div>
+      <TextField {...props} path={`${body}/shared/sourceOfBusiness`} label="Source of business code"
+        help="Editable source-bound value. Use the exact supported Infor code; no unobserved catalogue is invented." />
       <TextField {...props} path={`${body}/shared/billingReference`} label="Billing reference" />
     </div>
 
@@ -658,6 +732,7 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
         }}>Add room to these dates</button>
         <CodeField {...props} path={`${sectionRoot}/defaults/roomType`} label="Default room category" />
         <CodeField {...props} path={`${sectionRoot}/defaults/ratePlan`} label="Default rate plan" />
+        <CodeField {...props} path={`${sectionRoot}/defaults/guaranteeType`} label="Default guarantee type" />
       </section>;
     })}
     {sections.allocations.map(({ value: allocation, index }) => {
@@ -688,7 +763,7 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
               ? props.editValue(`${allocationRoot}/guest/lastName`) : guest.lastName,
             email: Object.hasOwn(snapshot.fields, `${allocationRoot}/guest/email`)
               ? props.editValue(`${allocationRoot}/guest/email`) : guest.email }}
-          onStage={props.onStage} onBlur={props.onBlur} />
+          onStage={props.onStage} onBlur={props.onBlur} onDone={props.onDone} />
         <div className={styles.twoCol}>
           <TextField {...props} path={`${allocationRoot}/occupancy/adults`} label="Adults" type="number" min={1} max={20} />
           <TextField {...props} path={`${allocationRoot}/occupancy/childCount`} label="Children" type="number" min={0} max={12} hideState
@@ -719,6 +794,7 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
         </FieldShell>}
         <ScopedCodeField {...props} path={`${allocationRoot}/overrides/roomType`} label="Room category for this room" inherited={text(props.editValue(`${body}/dateSections/${Math.max(0, sections.sections.findIndex((entry) => entry.value.id === allocation.dateSectionId))}/defaults/roomType`)) || 'Date-section default'} />
         <ScopedCodeField {...props} path={`${allocationRoot}/overrides/ratePlan`} label="Rate plan for this room" inherited={text(props.editValue(`${body}/dateSections/${Math.max(0, sections.sections.findIndex((entry) => entry.value.id === allocation.dateSectionId))}/defaults/ratePlan`)) || text(props.editValue(`${body}/shared/ratePlan`)) || 'Shared rate plan'} />
+        <ScopedCodeField {...props} path={`${allocationRoot}/overrides/guaranteeType`} label="Guarantee type for this room" inherited={text(props.editValue(`${body}/dateSections/${Math.max(0, sections.sections.findIndex((entry) => entry.value.id === allocation.dateSectionId))}/defaults/guaranteeType`)) || text(props.editValue(`${body}/shared/guaranteeType`)) || 'Shared guarantee type'} />
         <div className={styles.fixedValue}><span>Charge category</span><b>Infor default</b><small>Per-room charge-category override is not supported by the connected native Create tool.</small></div>
         <TextField {...props} path={`${allocationRoot}/overrides/reservationNote`} label="Reservation note" multiline />
         {Array.isArray(allocation.priceObservationRefs) && allocation.priceObservationRefs.length > 0 && <small className={styles.help}>Native price evidence: {allocation.priceObservationRefs.length} observation reference(s).</small>}
@@ -733,16 +809,24 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
       </section>;
     })}
     {sections.allocations.length === 0 && <div className={styles.notice}>No room allocations yet. Add one to a date section above to build the reservation.</div>}
+    {createReviewPaths(snapshot, request).some((path) => !isRenderedCreateReviewPath(request, path)) && <section className={styles.card}>
+      <div className={styles.cardTitle}><b>Additional inherited Create fields</b><small>Source-bound values outside the shared form</small></div>
+      <p className={styles.help}>These populated room/date values are sent to Infor. Review or edit them before Create.</p>
+      {createReviewPaths(snapshot, request).filter((path) => !isRenderedCreateReviewPath(request, path)
+        && !path.endsWith('/nativeSelectionRef')).map((path) => <SupplementalCreateField key={path} {...props} path={path} />)}
+    </section>}
     <NativePriceSummary snapshot={snapshot} request={request} />
 
     <div className={styles.sectionHeader}><div><h2>Booker and confirmation</h2><p>Booker remains distinct from each reservation guest.</p></div></div>
     <section className={styles.card}>
       <div className={styles.twoCol}><TextField {...props} path={`${body}/shared/bookerName`} label="Booker name" /><TextField {...props} path={`${body}/shared/bookerContact`} label="Booker contact" /></div>
       <BooleanField {...props} path={`${body}/shared/cmsSend`} label="Send an HMS confirmation" />
-      {Boolean(props.editValue(`${body}/shared/cmsSend`)) && <>
+      <BooleanField {...props} path={`${body}/shared/guestOptIn`} label="Guest marketing opt-in" falseOnly />
+      {Boolean(props.editValue(`${body}/shared/cmsSend`)) || hasValue(props.editValue(`${body}/shared/cmsMessageId`))
+        || hasValue(props.editValue(`${body}/shared/cmsRecipient`)) ? <>
         <CodeField {...props} path={`${body}/shared/cmsMessageId`} label="Confirmation message code" />
         <TextField {...props} path={`${body}/shared/cmsRecipient`} label="Confirmation recipient" type="email" />
-      </>}
+      </> : null}
     </section>
 
     {snapshot.session.draft.proposal.content.services.some((service) => service.ownerRequestId === request.id
@@ -750,6 +834,24 @@ function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => voi
       ? <div className={styles.notice}>Service catalogue and amount previews remain unsaved; a Create confirmation does not imply an Add-On was saved.</div> : null}
     <div className={styles.policyLine}>Shared fields apply to each room unless a room-level value is explicitly set.</div>
   </>;
+}
+
+function SupplementalCreateField(props: EditorProps & { path: string }) {
+  const value = valueFor(props.snapshot, props.path);
+  const leaf = props.path.split('/').at(-1) ?? 'field';
+  const scope = props.path.includes('/dateSections/') ? 'Date-section default' : 'Room override';
+  const label = `${humanize(leaf)} · ${scope}`;
+  if (record(value) && Array.isArray(record(value)?.candidateRefs)) {
+    return <PartyField {...props} path={props.path} label={label} />;
+  }
+  if (typeof value === 'boolean' || leaf === 'guestOptIn') {
+    return <BooleanField {...props} path={props.path} label={label} falseOnly={leaf === 'guestOptIn'} />;
+  }
+  if (['roomType', 'ratePlan', 'guaranteeType', 'track', 'cmsMessageId'].includes(leaf)) {
+    return <CodeField {...props} path={props.path} label={label} />;
+  }
+  return <TextField {...props} path={props.path} label={label} type={leaf === 'cmsRecipient' ? 'email' : 'text'}
+    multiline={leaf === 'reservationNote'} />;
 }
 
 type LinkedServiceRow = ReturnType<typeof serviceRowsForAllocation>[number];
@@ -935,7 +1037,7 @@ function PartyField(props: EditorProps & { path: string; label: string }) {
       onChange={(event) => props.onStage(props.path, { ...current, name: event.target.value, suggestedRef: current.suggestedRef ?? null, candidateRefs: current.candidateRefs ?? [] }, event.target.value ? 'set' : 'none')}
       onBlur={() => props.onBlur(props.path)} />
     <FieldValueState {...props} path={props.path} />
-    {selectedMatches && <small className={styles.accepted}>Native candidate selected and reviewed.</small>}
+    {selectedMatches && <small className={styles.accepted}>Native candidate selected.</small>}
     {selectedRef && !selectedMatches && <small className={styles.problem}>Saved native selection no longer matches this party name. Select a matching result again.</small>}
     {!selectedMatches && candidates.map(({ observationRef, candidate }, index) => {
       const exact = sameIdentityText(candidate?.name, current.name) && hasValue(candidate?.nativeId);
@@ -989,7 +1091,7 @@ function FieldValueState(props: EditorProps & { path: string }) {
   </div>;
 }
 
-function BooleanField(props: EditorProps & { path: string; label: string }) {
+function BooleanField(props: EditorProps & { path: string; label: string; falseOnly?: boolean }) {
   const value = props.editValue(props.path);
   return <FieldShell path={props.path} label={props.label} field={props.snapshot.fields[props.path]} onOpenEvidence={props.onOpenEvidence} onDone={props.onDone}>
     <select id={props.path} className={styles.select} value={value == null ? '' : value ? 'true' : 'false'} onChange={(event) => {
@@ -997,14 +1099,18 @@ function BooleanField(props: EditorProps & { path: string; label: string }) {
       props.onStage(props.path, next === 'true' ? true : next === 'false' ? false : undefined,
         next === '' ? 'unknown' : next === 'none' ? 'none' : 'set');
       props.onBlur(props.path);
-    }}><option value="">Unknown</option><option value="none">No value</option><option value="true">Yes</option><option value="false">No</option></select>
+    }}><option value="">Unknown</option><option value="none">No value</option>
+      {props.falseOnly ? value === true && <option value="true" disabled>Yes · unsupported</option> : <option value="true">Yes</option>}
+      <option value="false">No</option></select>
+    {props.falseOnly && <small className={styles.help}>The connected Create tool supports an explicit opt-out only. A requested opt-in stays visible but blocks Create.</small>}
   </FieldShell>;
 }
 
-function GuestProfileStatus({ snapshot, path, expected, onStage, onBlur }: {
+function GuestProfileStatus({ snapshot, path, expected, onStage, onBlur, onDone }: {
   snapshot: ReservationPaneSnapshot; path: string;
   expected: { firstName: unknown; lastName: unknown; email: unknown };
   onStage: EditorProps['onStage']; onBlur: EditorProps['onBlur'];
+  onDone?: EditorProps['onDone'];
 }) {
   const selectedValue = valueFor(snapshot, path);
   const selectedRef = snapshot.fields[path]?.override?.state === 'set' && typeof selectedValue === 'string' ? selectedValue : null;
@@ -1019,6 +1125,8 @@ function GuestProfileStatus({ snapshot, path, expected, onStage, onBlur }: {
   return <div className={selected ? styles.profileReady : styles.profileWarning} data-profile-path={path}>
     <b>{selected ? 'Existing guest profile selected' : selectedRef ? 'Selection no longer matches this guest' : 'Select an existing Infor guest profile'}</b>
     <span>{selectedObservation ? `Native match · ${selectedObservation.status}` : selectedRef ?? 'A typed name alone is not a profile selection.'}</span>
+    {selected && snapshot.fields[path]?.required && snapshot.fields[path]?.review !== 'accepted' && onDone
+      ? <button type="button" className={styles.inlineButton} onClick={() => onDone(path)}>Confirm selected guest</button> : null}
     {!selected && candidates.length > 0 && <div className={styles.candidateList}>
       {candidates.map(({ observationRef, candidate }, index) => {
         const matchesGuest = sameIdentityText(candidate.firstName, expected.firstName) && sameIdentityText(candidate.lastName, expected.lastName)
