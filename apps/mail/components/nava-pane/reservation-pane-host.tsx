@@ -117,11 +117,11 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
       if (currentOwner.current !== owner) return;
       if (currentMessageRef === reference) {
         const headers = [
-          `From: ${email?.senderName || source.sender}`,
-          `Subject: ${email?.subject || source.subject || 'Untitled email'}`,
-          `Received: ${email?.receivedTime || source.receivedAt || source.arrivedAt}`,
+          `From: ${source.sender}`,
+          `Subject: ${source.subject || 'Untitled email'}`,
+          `Received: ${source.receivedAt || source.arrivedAt}`,
         ];
-        const body = email?.bodyText?.trim() || '[No plain-text message body is exposed by the connected Outlook.]';
+        const body = source.sourceText?.trim() || '[This synced email has no readable message text.]';
         setSourceEvidencePreview({ owner, reference, title: 'Selected email evidence', text: `${headers.join('\n')}\n\n${body}` });
         return;
       }
@@ -201,8 +201,9 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
           arrivedAt: result.source.arrivedAt,
           internetMessageId: result.internetMessageId,
           selectionEpoch: selectedEpoch,
-          subject: email.subject,
-          sender: email.senderEmail,
+          subject: result.sourceSubject,
+          sender: result.sourceSender,
+          sourceText: result.sourceText,
           receivedAt: result.source.arrivedAt,
           attachments: result.attachments.filter((item) => !item.isInline).map((item) => ({
             sourceRef: item.id, name: item.filename, mimeType: item.mimeType, size: item.sizeBytes,

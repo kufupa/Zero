@@ -26,6 +26,7 @@ import {
   configureReservationWorkflowV2Filing,
 } from '../../ai/reservation-workflow-v2-state.js';
 import { ensureReservationWorkflowV2Prefill } from '../../ai/reservation-workflow-v2-prefill.js';
+import { preStaySourceText } from '../../ai/existing-stay-information.js';
 import { createAzureExtractionAdapter } from '../../ai/extraction/extract.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../../ai/quote-workflow-synced-selection.js';
 import {
@@ -137,7 +138,7 @@ export const reservationWorkflowV2Router = router({
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
     const rows = await scoped.db.select({
       id: message.id, threadId: message.threadId, internetMessageId: message.messageIdHeader,
-      subject: message.subject, textBody: message.textBody, htmlBody: message.htmlBody,
+      subject: message.subject, fromAddress: message.fromAddress, textBody: message.textBody, htmlBody: message.htmlBody,
       sourceProvenance: message.sourceProvenance, arrivedAt: MESSAGE_ARRIVED_AT,
     }).from(message).innerJoin(mailThread, and(eq(mailThread.id, message.threadId),
       eq(mailThread.transportId, message.transportId)))
@@ -159,6 +160,8 @@ export const reservationWorkflowV2Router = router({
       .from(attachment).where(eq(attachment.messageId, selected.id)).limit(50);
     return { status: 'ok' as const, propertyCode: scoped.propertyCode,
       internetMessageId: selected.internetMessageId,
+      sourceText: preStaySourceText(selected.textBody, selected.htmlBody),
+      sourceSubject: selected.subject ?? '', sourceSender: selected.fromAddress,
       attachments,
       source: { threadId: selected.threadId, messageId: selected.id,
         sourceHash: staffQuoteSourceHash(selected), arrivedAt: selected.arrivedAt.toISOString() } };
