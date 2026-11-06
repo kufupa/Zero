@@ -811,7 +811,7 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
     changes: nativeChanges, preserved, recoveryBaseline: preparedResult.recoveryBaseline,
     nativeDigest: preparedResult.nativeDigest, price }) : null;
   if (!prepared || !preparedResult || !record(preparedResult.recoveryBaseline) ||
-      prepared.criteria.draftRevision > input.expectedRevision ||
+      typeof prepared.criteria.draftRevision !== 'number' || prepared.criteria.draftRevision > input.expectedRevision ||
       prepared.criteria.semanticDigest !== expectedSemantic || !nativeChanges || !preserved || !price ||
       typeof preparedResult.nativeDigest !== 'string' || !/^[a-f0-9]{64}$/.test(preparedResult.nativeDigest)) {
     return { status: 'needs_prepare', issue: 'prepared_amend_or_price_is_stale' };
@@ -904,8 +904,8 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
     if (dispatchState.claimAttempted) return { status: 'needs_reconcile', operationId: input.idempotencyKey,
       issue: 'amend_dispatch_claim_unconfirmed' };
     return result.outcome === 'not_dispatched'
-      ? { status: 'failed', operationId: input.idempotencyKey, issue: result.issue ?? 'amend_not_dispatched' }
-      : { status: 'refused', issue: result.issue ?? 'amend_dispatch_not_authorized' };
+      ? { status: 'failed', operationId: input.idempotencyKey, issue: text(result.issue) ?? 'amend_not_dispatched' }
+      : { status: 'refused', issue: text(result.issue) ?? 'amend_dispatch_not_authorized' };
   }
   if (!readback || !dispatchState.beforeEvidence || !dispatchState.beforeShot || !dispatchState.afterShot) {
     return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: dispatchState.handle.holdId,
@@ -967,11 +967,11 @@ export async function reservationWorkflowV2AmendReconcile(ctx: ReservationWorkfl
     observation.criteria.workflow === 'amend' && observation.criteria.requestId === operation.requestId &&
     observation.criteria.hintId === operation.allocationId && observation.criteria.idempotencyKey === operation.id);
   const attemptResult = record(attempt?.result), prepareObservationRef = text(attemptResult?.prepareObservationRef);
-  const prepared = prepareObservationRef && loaded.draft.observations.find((observation) =>
+  const prepared = prepareObservationRef ? loaded.draft.observations.find((observation) =>
     observation.ref === prepareObservationRef && observation.kind === 'rate_availability' &&
     observation.status === 'complete' && observation.criteria.workflow === 'amend' &&
     observation.criteria.requestId === operation.requestId && observation.criteria.hintId === operation.allocationId &&
-    observation.criteria.semanticDigest === attemptResult?.approvedDigest);
+    observation.criteria.semanticDigest === attemptResult?.approvedDigest) : undefined;
   const preparedResult = record(prepared?.result), before = record(preparedResult?.before);
   const expectedTarget = before ? hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'saved',
     confirmation: before.confirmation, nativeStayId: before.reservationStayId }) : null;
