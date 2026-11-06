@@ -40,11 +40,12 @@ import { copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { persistHmsShots, verifyStoredHmsShot } from './hms-shots-store.js';
+import { lockCreateActorSession } from './pane-create-actor-lock.js';
 
 export type ReservationWorkflowV2AmendContext = {
   db: DB;
   transport: { id: string };
-  user: { id: string };
+  user: { id: string; sessionId?: string; sessionProfile?: 'legacy' | 'remote' };
   property: { propertyCode: string };
 };
 
@@ -709,6 +710,8 @@ async function authorizeCurrentAmend(tx: WriteTx, ctx: ReservationWorkflowV2Amen
         kind: 'saved', confirmation: compiled.selected.confirmation, nativeStayId: compiled.selected.reservationStayId }).success) {
     throw new Error('reservation_workflow_v2_amend_source_changed');
   }
+  await lockCreateActorSession(tx, { actorUserId: ctx.user.id, sessionId: ctx.user.sessionId,
+    sessionProfile: ctx.user.sessionProfile });
 }
 
 function readbackMatches(readback: unknown, prepared: Record<string, unknown>): Record<string, unknown> | null {
@@ -757,6 +760,9 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
   if (prior?.status === 'unknown' || targetResult?.status === 'unknown') return { status: 'needs_reconcile', operationId: targetResult?.id ?? prior!.id };
   const compiled = compileBase(loaded.draft, input.requestId, input.allocationId, 'execute');
   if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [] };
+  if (!ctx.user.sessionId || !ctx.user.sessionProfile) {
+    return { status: 'refused', issue: 'authenticated_staff_session_required' };
+  }
   const prepared = preparedObservation(loaded.draft, compiled), preparedResult = record(prepared?.result);
   const nativeChanges = record(preparedResult?.nativeChanges), preserved = record(preparedResult?.preserved),
     price = nativePrice(preparedResult?.approvedPrices);
