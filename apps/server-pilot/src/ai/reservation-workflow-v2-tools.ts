@@ -37,7 +37,9 @@ import { hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-
 import { persistHmsShots, verifyStoredHmsShot } from './hms-shots-store.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS, isPropertyReadLockDeadline } from '../hms/property-read-lock.js';
-import { paneStayCloudTargetLock, paneStayCreateTarget } from './pane-stay-save.js';
+import { paneStayCloudTargetLock, paneStayCreateTarget, paneStayPropertyLock, paneWriteMode } from './pane-stay-save.js';
+import { findStay } from './pane-stay-lookup.js';
+import { isLabtestGuest } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
 
 type V2StateContext = { db: DB; transportId: string; userId: string; propertyCode: string };
 export type ReservationWorkflowV2ServerContext = {
@@ -205,10 +207,64 @@ type CreateCompile = { outcome: 'ok'; nativeInput: Record<string, unknown>; expe
   semanticDigest: string; preparedBinding: Record<string, unknown> | null } |
   { outcome: 'needs_input' | 'needs_review' | 'unsupported'; issue: string; fields?: string[] };
 
+const existingConfirmationPath = (requestId: string) => ptr('proposal', 'content', 'requests', requestId, 'confirmationReference');
+
+function sourceConfirmationClaim(draft: ReservationWorkflowV2Draft, requestId: string) {
+  const request = draft.proposal.content.requests.find((entry) => entry.id === requestId);
+  const rawReference = record(request)?.confirmationReference;
+  const confirmationReference = typeof rawReference === 'string' && rawReference.trim() ? rawReference : null;
+  const path = existingConfirmationPath(requestId);
+  const claims = draft.proposal.sourceClaims.filter((claim) => claim.path === path);
+  const override = draft.fieldOverrides[path];
+  const required = confirmationReference !== null || claims.length > 0 || override !== undefined;
+  if (!required) return { required: false as const, path };
+  if (claims.length !== 1 || !claims[0] || !confirmationReference || claims[0].raw !== confirmationReference ||
+      !claims[0].sourceRefs.length || claims[0].sourceRefs.some((ref) => !request?.sourceRefs.includes(ref))) {
+    return { required: true as const, path, issue: 'existing_confirmation_requires_lookup' as const };
+  }
+  const claim = claims[0];
+  const observation = [...draft.observations].reverse().find((entry) => entry.kind === 'stay_candidate' &&
+    entry.generationId === draft.generationId && entry.propertyCode === draft.propertyCode &&
+    entry.sourceMessageId === draft.source.messageId &&
+    canonicalJson(entry.criteria.sourceClaimEvidenceRefs) === canonicalJson(claim.sourceRefs) &&
+    entry.sourceRefs.some((ref) => draft.observations.some((source) => source.kind === 'source' && source.ref === ref)) &&
+    entry.criteria.workflow === 'create_existing_reference_check' && entry.criteria.requestId === requestId &&
+    entry.criteria.confirmation === claim.raw && entry.status === 'complete' && entry.coverage.complete === true &&
+    entry.result.confirmation === claim.raw && (entry.result.outcome === 'found' || entry.result.outcome === 'not_found'));
+  if (!observation) return { required: true as const, path, issue: 'existing_confirmation_requires_lookup' as const };
+  if (observation.result.outcome === 'found') return { required: true as const, path, issue: 'existing_confirmation_found' as const };
+  return { required: true as const, path, issue: null };
+}
+
+function createDispatchAdmission(compiled: Extract<CreateCompile, { outcome: 'ok' }>): { allowed: true; allowRealGuest: boolean } |
+  { allowed: false; issue: string } {
+  const mode = paneWriteMode('create');
+  if (mode === 'off') return { allowed: false, issue: 'pane_save_flag_off' };
+  if (process.env.PANE_CLOUD_CREATE_DISPATCH !== 'on') return { allowed: false, issue: 'cloud_create_dispatch_flag_off' };
+  const allowRealGuest = !isLabtestGuest(compiled.expectedGuest);
+  const input = compiled.nativeInput;
+  const stay = record(input.stay), cms = record(input.cms);
+  if (allowRealGuest) {
+    if (mode !== 'on' || process.env.PANE_WRITE_CREATE !== 'on') {
+      return { allowed: false, issue: 'real_guest_create_requires_write_on' };
+    }
+  } else {
+    const arrival = text(stay?.arrival);
+    const departure = text(stay?.departure);
+    if (!arrival || arrival < '2027-01-01' || !departure || !isoDate.safeParse(arrival).success ||
+        !isoDate.safeParse(departure).success || cms?.send === true) {
+      return { allowed: false, issue: 'labtest_create_requires_2027_and_cms_off' };
+    }
+  }
+  return { allowed: true, allowRealGuest };
+}
+
 function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, allocationId: string, propertyCode: string,
   mode: 'prepare' | 'lookup' | 'execute' = 'prepare'): CreateCompile {
   const request = draft.proposal.content.requests.find((entry) => entry.id === requestId);
   if (!request || request.kind !== 'create') return { outcome: 'needs_input', issue: 'create_request_not_found' };
+  const confirmation = sourceConfirmationClaim(draft, requestId);
+  if (confirmation.required && confirmation.issue) return { outcome: 'needs_input', issue: confirmation.issue, fields: [confirmation.path] };
   const req = ptr('proposal', 'content', 'requests', requestId, 'body');
   const body = effectiveSubtree(draft, request.body, req) as typeof request.body | null;
   if (!body || !Array.isArray(body.allocations) || !Array.isArray(body.dateSections) || !body.shared) {
@@ -271,7 +327,9 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   const childAges = allocation.occupancy.childAges;
   for (const [path, value] of [[adultsPath, adults], [childrenPath, childCount], [agesPath, childAges]] as const) {
     if (value == null) issues.push(`${path}:required`);
-    else { const missingReview = reviewed(draft, path, value); if (missingReview) reviewPaths.add(missingReview); }
+    else if (!(path === agesPath && childCount === 0 && Array.isArray(childAges) && childAges.length === 0)) {
+      const missingReview = reviewed(draft, path, value); if (missingReview) reviewPaths.add(missingReview);
+    }
   }
   if (adults !== null && (!Number.isInteger(adults) || adults < 1)) issues.push(`${adultsPath}:invalid`);
   if (childCount !== null && (!Number.isInteger(childCount) || childCount < 0)) issues.push(`${childrenPath}:invalid`);
@@ -666,6 +724,67 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
   const createRequests = requests.filter((request) => request.kind === 'create');
   if (!createRequests.length) return { status: 'unsupported', issue: 'create_lookup_not_applicable' };
   const nativeObservations: ReservationWorkflowV2Observation[] = [];
+  for (const request of createRequests) {
+    const path = existingConfirmationPath(request.id);
+    const claims = loaded.draft.proposal.sourceClaims.filter((claim) => claim.path === path);
+    const sourceValue = record(request)?.confirmationReference;
+    const hasReference = sourceValue !== undefined || claims.length > 0 || loaded.draft.fieldOverrides[path] !== undefined;
+    if (!hasReference) continue;
+    const claim = claims.length === 1 ? claims[0] : undefined;
+    const confirmation = claim?.raw ?? (typeof sourceValue === 'string' ? sourceValue : null);
+    let outcome = 'unavailable', reason: string | null = 'source_confirmation_claim_missing_or_mismatched';
+    let stay: Record<string, unknown> | null = null;
+    const sourceEvidence = claim && loaded.draft.observations.find((entry) => {
+      const evidenceRefs = record(entry.result)?.evidenceRefs;
+      return entry.kind === 'source' && Array.isArray(evidenceRefs) && claim.sourceRefs.every((ref) => evidenceRefs.includes(ref));
+    });
+    const sourceRefs = sourceEvidence ? [sourceEvidence.ref] : [];
+    const claimIsExact = Boolean(claim && confirmation && sourceValue === claim.raw && sourceEvidence &&
+      claim.sourceRefs.length > 0 && claim.sourceRefs.every((ref) => request.sourceRefs.includes(ref)));
+    if (claimIsExact && confirmation) {
+      const targetResult = paneStayCreateTarget({ transportId: ctx.transport.id, propertyCode: ctx.property.propertyCode });
+      if (targetResult.ok) {
+        try {
+          const found = await findStay({ confirmation }, {
+            target: targetResult.target,
+            lock: () => paneStayPropertyLock(targetResult.target),
+            acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+          });
+          outcome = found.outcome;
+          reason = found.reason ?? null;
+          stay = record(found.stay);
+          if (found.outcome === 'found' && stay?.confirmation !== confirmation) {
+            outcome = 'execution_failure';
+            reason = 'native_confirmation_exact_match_unverified';
+          }
+        } catch {
+          outcome = 'execution_failure';
+          reason = 'native_confirmation_lookup_failed';
+        }
+      } else reason = targetResult.reason;
+    }
+    const complete = outcome === 'found' || outcome === 'not_found';
+    nativeObservations.push({ ref: randomUUID(), generationId: loaded.draft.generationId, kind: 'stay_candidate',
+      status: complete ? 'complete' : outcome === 'unavailable' ? 'unavailable' : 'partial',
+      observedAt: new Date().toISOString(), propertyCode: loaded.draft.propertyCode,
+      sourceMessageId: loaded.draft.source.messageId, sourceRefs,
+      criteria: { workflow: 'create_existing_reference_check', requestId: request.id, confirmation,
+        sourceClaimPath: path, sourceClaimEvidenceRefs: claim?.sourceRefs ?? [] },
+      coverage: { complete, notes: complete ? [] : [reason ?? 'native_confirmation_lookup_incomplete'] },
+      result: { outcome, confirmation, reason, stay } });
+  }
+  const persistedConfirmationRefs = new Set<string>();
+  if (nativeObservations.some((entry) => entry.criteria.workflow === 'create_existing_reference_check')) {
+    const fresh = await currentDraft(ctx, input);
+    if (!fresh.draft) return fresh.result;
+    for (const observation of nativeObservations.filter((entry) => entry.criteria.workflow === 'create_existing_reference_check')) {
+      const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), {
+        workItemId: input.workItemId, source: input.source, observation,
+      });
+      if (appended.status !== 'ok') return appended;
+      persistedConfirmationRefs.add(observation.ref);
+    }
+  }
   const partySpecs = [
     { key: 'agency', field: 'bookingAgency', role: 'agency', tool: 'searchPrimaryBookingAgency', idField: 'travelagencyid', nameField: 'travelagencyname' },
     { key: 'organization', field: 'organization', role: 'organization', tool: 'searchOrganization', idField: 'companyid', nameField: 'companyname' },
@@ -752,16 +871,19 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
             if (found.searchId && ['matches', 'no_match'].includes(String(found.outcome))) {
               const suggestedPath = appendPtr(guestPath, 'suggestedRef');
               const selectionPath = appendPtr(guestPath, 'nativeSelectionRef');
-              nativeObservations.push({ ref: randomUUID(), generationId: loaded.draft!.generationId, kind: 'guest_candidate',
-                status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
-                propertyCode: loaded.draft!.propertyCode, sourceMessageId: loaded.draft!.source.messageId, sourceRefs: [],
-                criteria: { workflow: 'create', kind: 'guest_profile', requestId: request.id, allocationId,
-                  fieldPaths: [suggestedPath, selectionPath], query: { field: 'lastName', value: last.value,
-                    firstName: first.value, ...(email.outcome === 'value' ? { email: email.value } : {}) },
-                  coverage, correlation: { verifiedFields } },
-                coverage: { complete: Boolean(complete), notes: complete ? [] : ['native_guest_profile_lookup_incomplete'] },
-                result: { outcome: found.outcome, criteria: record(found.criteria), coverage,
-                  correlation: { verifiedFields }, candidates: projected.rows } });
+              const candidatesForObservation = projected.rows.length ? projected.rows : [null];
+              for (const [candidateIndex, candidate] of candidatesForObservation.entries()) {
+                nativeObservations.push({ ref: randomUUID(), generationId: loaded.draft!.generationId, kind: 'guest_candidate',
+                  status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
+                  propertyCode: loaded.draft!.propertyCode, sourceMessageId: loaded.draft!.source.messageId, sourceRefs: [],
+                  criteria: { workflow: 'create', kind: 'guest_profile', requestId: request.id, allocationId,
+                    fieldPaths: [suggestedPath, selectionPath], query: { field: 'lastName', value: last.value,
+                      firstName: first.value, ...(email.outcome === 'value' ? { email: email.value } : {}) },
+                    candidateIndex, coverage, correlation: { verifiedFields } },
+                  coverage: { complete: Boolean(complete), notes: complete ? [] : ['native_guest_profile_lookup_incomplete'] },
+                  result: { outcome: found.outcome, criteria: record(found.criteria), coverage,
+                    correlation: { verifiedFields }, candidates: candidate ? [candidate] : [] } });
+              }
             }
             Object.assign(guestSearch, { status: complete ? found.outcome : 'partial',
               ...(guestInfo ? { guestCandidates: guestInfo } : {}),
@@ -806,15 +928,18 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
               closeOutcome: closed.outcome };
             partySearches[spec.key] = info;
             if (found.searchId && ['matches', 'no_match'].includes(String(found.outcome))) {
-              nativeObservations.push({ ref: randomUUID(), generationId: loaded.draft!.generationId,
-                kind: 'party_candidate', status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
-                propertyCode: loaded.draft!.propertyCode, sourceMessageId: loaded.draft!.source.messageId, sourceRefs: [],
-                criteria: { workflow: 'create', kind: 'party_name', requestId: request.id, allocationId,
-                  role: spec.role, fieldPaths: [party.selectionPath], query: party.name, coverage,
-                  correlation: { verifiedFields } },
-                coverage: { complete: Boolean(complete), notes: complete ? [] : ['native_party_lookup_incomplete'] },
-                result: { outcome: found.outcome, criteria: record(found.criteria), coverage,
-                  correlation: { verifiedFields }, candidates: projected.rows } });
+              const candidatesForObservation = projected.rows.length ? projected.rows : [null];
+              for (const [candidateIndex, candidate] of candidatesForObservation.entries()) {
+                nativeObservations.push({ ref: randomUUID(), generationId: loaded.draft!.generationId,
+                  kind: 'party_candidate', status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
+                  propertyCode: loaded.draft!.propertyCode, sourceMessageId: loaded.draft!.source.messageId, sourceRefs: [],
+                  criteria: { workflow: 'create', kind: 'party_name', requestId: request.id, allocationId,
+                    role: spec.role, fieldPaths: [party.selectionPath], query: party.name, candidateIndex, coverage,
+                    correlation: { verifiedFields } },
+                  coverage: { complete: Boolean(complete), notes: complete ? [] : ['native_party_lookup_incomplete'] },
+                  result: { outcome: found.outcome, criteria: record(found.criteria), coverage,
+                    correlation: { verifiedFields }, candidates: candidate ? [candidate] : [] } });
+              }
             }
             if (!complete) allocationStatus = 'partial';
             if (closed.outcome !== 'closed_unsaved') {
@@ -858,11 +983,14 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
     return { status: 'failed', issue: 'native_lookup_session_not_clean', requestId: input.requestId ?? null,
       lookups: sessionResult?.lookups ?? [] };
   }
-  const observations = sessionResult.observations.filter((item): item is ReservationWorkflowV2Observation =>
-    Boolean(item && typeof item === 'object' && !Array.isArray(item)));
+  const observations = sessionResult.observations.filter((item): item is ReservationWorkflowV2Observation => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+    return !persistedConfirmationRefs.has((item as ReservationWorkflowV2Observation).ref);
+  });
   const fresh = await currentDraft(ctx, input);
   if (!fresh.draft) return fresh.result;
   for (const observation of nativeObservations) {
+    if (persistedConfirmationRefs.has(observation.ref)) continue;
     const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), { workItemId: input.workItemId,
       source: input.source, observation });
     if (appended.status !== 'ok') return appended;
@@ -1122,11 +1250,16 @@ async function authorizeCurrentCreate(tx: Parameters<Parameters<DB['transaction'
     .where(and(eq(mailboxAccess.userId, ctx.user.id), eq(mailboxAccess.transportId, ctx.transport.id))).limit(1).for('share');
   const current = source && staffQuoteSourceHash(source);
   const compiled = compileCreate(draft, requestId, allocationId, ctx.property.propertyCode, 'execute');
+  const admission = compiled.outcome === 'ok' ? createDispatchAdmission(compiled) : null;
   const prepared = preparedFor(draft, requestId, allocationId, compiled.outcome === 'ok' ? compiled.semanticDigest : undefined);
   const operation = draft.operationResults.find((result) => result.id === input.idempotencyKey && result.status === 'unknown' &&
     result.requestId === requestId && result.allocationId === allocationId && result.workflow === 'create');
+  const competingOperation = draft.operationResults.some((result) => result.id !== input.idempotencyKey &&
+    result.requestId === requestId && result.allocationId === allocationId && result.workflow === 'create' &&
+    (result.status === 'succeeded' || result.status === 'unknown'));
   if (!access || !source || source.sourceProvenance?.attention != null || current !== input.source.sourceHash ||
-      compiled.outcome !== 'ok' || compiled.semanticDigest !== semanticDigest || !prepared || prepared.digest !== expectedDigest || !operation) {
+      compiled.outcome !== 'ok' || !admission?.allowed || competingOperation ||
+      compiled.semanticDigest !== semanticDigest || !prepared || prepared.digest !== expectedDigest || !operation) {
     throw new Error('reservation_workflow_v2_create_source_changed');
   }
 }
@@ -1184,6 +1317,8 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
   }
   const compiled = compileCreate(loaded.draft, input.requestId, input.allocationId, ctx.property.propertyCode, 'execute');
   if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [] };
+  const admission = createDispatchAdmission(compiled);
+  if (!admission.allowed) return { status: 'refused', issue: admission.issue };
   const prepared = preparedFor(loaded.draft, input.requestId, input.allocationId, compiled.semanticDigest);
   if (!prepared || !prepared.prepareShot || prepared.result.draftRevision > input.expectedRevision ||
       !nativeInputMatchesBinding(compiled, prepared.request)) {
@@ -1208,16 +1343,17 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
   let releaseProvedNeverDispatched = false;
   let claimIssue: string | null = null;
   const liveOptions: Record<string, unknown> = {
-    allowRealGuest: true, expectedGuest: compiled.expectedGuest,
+    allowRealGuest: admission.allowRealGuest, expectedGuest: compiled.expectedGuest,
     expectedRequestDigest: prepared.digest, expectedRateAvailability: prepared.price,
     allowCommitOnlyBillingReference: true,
     authorizeCandidate: async () => {
       const current = await currentDraft(ctx, input);
       if (!current.draft) return false;
       const live = compileCreate(current.draft, input.requestId, input.allocationId!, ctx.property.propertyCode, 'execute');
+      const liveAdmission = live.outcome === 'ok' && createDispatchAdmission(live);
       const livePrepared = live.outcome === 'ok' && preparedFor(current.draft, input.requestId,
         input.allocationId!, live.semanticDigest);
-      return live.outcome === 'ok' && live.semanticDigest === compiled.semanticDigest &&
+      return live.outcome === 'ok' && liveAdmission?.allowed === true && live.semanticDigest === compiled.semanticDigest &&
         Boolean(livePrepared && livePrepared.digest === prepared.digest && priceMatches(livePrepared.price, prepared.price));
     },
     dispatchCandidate: async (request: unknown, next: NativeContinuation, evidence: unknown) => {
