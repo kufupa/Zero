@@ -168,7 +168,7 @@ Estimated product changes are roughly 200–500 lines for U2 and 150–400 for U
 - On the final clean head, use `bash /home/orca/bin/remote-typecheck.sh <clean-worktree> --app server-pilot` when applicable to the changed app. Do not run local `tsc` or `tsgo`.
 - Run the real tool with real-email details and stop before Save. Then perform one Proof Labtest Save on deployed main and independently reopen the exact resulting profile. No agent saves a real guest; staff Go is required for any future real-guest write.
 - Serialize writes to the same Labtest profile and retain unresolved holds. Do not use pilot RDS, print credentials, perform numbered probe loops or claim a database-backed check that was skipped.
-- If work becomes a PR, follow current project rules: one connected workflow per PR, final-head Greptile Apex or a permitted fallback, valid P0/P1 fixes, no hook bypass and deployed-main proof. A raw-only tool is not a completed pane-to-route-to-tool workflow.
+- If work becomes a PR, follow current project rules: final-head Greptile Apex or a permitted fallback, valid P0/P1 fixes, no hook bypass and deployed-main proof. A raw-only tool is not a completed pane-to-route-to-tool workflow.
 
 ---
 
