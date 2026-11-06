@@ -101,10 +101,23 @@ function effectiveValueFor(snapshot: ReservationPaneSnapshot, path: string, sour
   else if (override?.state === 'none' || override?.state === 'clear' || override?.state === 'unknown') return null;
   else if (record(raw)?.kind === 'none') return null;
 
-  if (Array.isArray(value)) return value.map((item, index) => effectiveValueFor(snapshot, `${path}/${index}`, item));
+  const prefix = `${path}/`;
+  const childSegments = Object.keys(snapshot.session.draft.fieldOverrides).flatMap((overridePath) => {
+    if (!overridePath.startsWith(prefix)) return [];
+    const segment = overridePath.slice(prefix.length).split('/')[0];
+    try { return [decodeURIComponent(segment)]; } catch { return [segment]; }
+  });
+  if (Array.isArray(value)) {
+    const overrideIndexes = childSegments.map(Number).filter((index) => Number.isInteger(index) && index >= 0 && index < 200);
+    const length = Math.max(value.length, overrideIndexes.length ? Math.max(...overrideIndexes) + 1 : 0);
+    return Array.from({ length }, (_, index) => effectiveValueFor(snapshot, `${path}/${index}`, value[index]));
+  }
   const objectValue = record(value);
-  if (objectValue) return Object.fromEntries(Object.entries(objectValue).map(([key, child]) =>
-    [key, effectiveValueFor(snapshot, `${path}/${encodeURIComponent(key)}`, child)]));
+  if (objectValue) {
+    const keys = new Set([...Object.keys(objectValue), ...childSegments]);
+    return Object.fromEntries([...keys].map((key) => [key,
+      effectiveValueFor(snapshot, `${path}/${encodeURIComponent(key)}`, objectValue[key])]));
+  }
   return value;
 }
 
@@ -287,7 +300,9 @@ function deliverQuoteArtifact(artifact: Record<string, unknown>, open = false) {
 
 function observedNativeCodes(snapshot: ReservationPaneSnapshot, path: string): Array<{ code: string; meaning: string; ref: string }> {
   const leaf = path.split('/').at(-1);
-  const catalogKey = leaf === 'roomType' ? 'room' : leaf === 'ratePlan' ? 'ratePlan' : leaf === 'board' ? 'board' : null;
+  const requestedField = leaf === 'value' ? text(valueFor(snapshot, `${path.replace(/\/value$/u, '')}/field`)) : leaf;
+  const catalogKey = requestedField === 'roomType' ? 'room' : requestedField === 'ratePlan' ? 'ratePlan'
+    : requestedField === 'board' ? 'board' : null;
   if (!catalogKey) return [];
   const requestId = path.split('/')[4];
   const choices = new Map<string, { code: string; meaning: string; ref: string }>();
@@ -1648,7 +1663,7 @@ function FieldShell({ path, label, field, children, onOpenEvidence, onDone }: {
   </div>;
 }
 
-function TextField(props: EditorProps & { path: string; label: string; type?: 'text' | 'email' | 'date' | 'number' | 'tel'; min?: number; max?: number; multiline?: boolean; help?: string; valueOverride?: unknown; fieldOverride?: ReservationFieldProjection; onValue?: (value: unknown) => void; blurPath?: string; blurPaths?: string[]; hideState?: boolean }) {
+function TextField(props: EditorProps & { path: string; label: string; type?: 'text' | 'email' | 'date' | 'number' | 'tel'; min?: number; max?: number; multiline?: boolean; help?: string; valueOverride?: unknown; fieldOverride?: ReservationFieldProjection; onValue?: (value: unknown) => void; blurPath?: string; blurPaths?: string[]; hideState?: boolean; hideClear?: boolean }) {
   const field = props.fieldOverride ?? props.snapshot.fields[props.path];
   const value = props.valueOverride !== undefined ? props.valueOverride : props.editValue(props.path);
   const rawValue = text(value);
@@ -1665,7 +1680,7 @@ function TextField(props: EditorProps & { path: string; label: string; type?: 't
     }} onBlur={commitOnBlur} />;
   return <FieldShell path={props.path} label={props.label} field={field} onOpenEvidence={props.onOpenEvidence} onDone={props.onDone}>
     {props.multiline ? <textarea id={props.path} className={styles.textarea} rows={3} value={text(value)} onChange={(event) => props.onStage(props.path, event.target.value, event.target.value ? 'set' : 'none')} onBlur={commitOnBlur} /> : input}
-    {!props.hideState && <FieldValueState {...props} path={props.blurPath ?? props.path} />}
+    {!props.hideState && <FieldValueState {...props} path={props.blurPath ?? props.path} hideClear={props.hideClear} />}
     {props.help && <small className={styles.help}>{props.help}</small>}
   </FieldShell>;
 }
@@ -1770,7 +1785,7 @@ function ScopedCodeField(props: EditorProps & { path: string; label: string; inh
   </div>;
 }
 
-function FieldValueState(props: EditorProps & { path: string }) {
+function FieldValueState(props: EditorProps & { path: string; hideClear?: boolean }) {
   const current = props.snapshot.fields[props.path]?.override?.state;
   const label = current === 'set' ? 'Own value' : current === 'unknown' ? 'Unknown'
     : current === 'none' || current === 'clear' ? 'No value' : current === 'inherit' ? 'Inherited' : 'Source value';
@@ -1778,7 +1793,7 @@ function FieldValueState(props: EditorProps & { path: string }) {
     <small>{label}</small>
     {current !== 'inherit' && <button type="button" onClick={() => { props.onStage(props.path, undefined, 'inherit'); props.onBlur(props.path); }}>Use source / inherit</button>}
     {current !== 'unknown' && <button type="button" onClick={() => { props.onStage(props.path, undefined, 'unknown'); props.onBlur(props.path); }}>Mark unknown</button>}
-    {current !== 'none' && current !== 'clear' && <button type="button" onClick={() => { props.onStage(props.path, undefined, 'none'); props.onBlur(props.path); }}>Clear value</button>}
+    {!props.hideClear && current !== 'none' && current !== 'clear' && <button type="button" onClick={() => { props.onStage(props.path, undefined, 'none'); props.onBlur(props.path); }}>Clear value</button>}
   </div>;
 }
 
@@ -2020,7 +2035,7 @@ const AMEND_FIELDS = [
   { value: 'cmsMessageId', label: 'Confirmation template ID', type: 'text' },
   { value: 'cmsRecipient', label: 'Confirmation recipient', type: 'email' },
 ] as const;
-const AMEND_CLEAR_FIELDS = ['guestEmail', 'bookerName', 'bookerContact', 'cmsSend', 'cmsMessageId', 'cmsRecipient'];
+const AMEND_CLEAR_FIELDS = ['guestEmail', 'bookerName', 'bookerContact', 'cmsSend'];
 const AMEND_PRICE_FIELDS = new Set(['arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'ratePlan']);
 const AMEND_UNSUPPORTED_FIELDS = new Set(['roomTypeForCharge', 'reservationNote']);
 
@@ -2288,9 +2303,12 @@ function AmendChangeRow(props: EditorProps & { path: string; change: Record<stri
         const parts = raw.split(',').map((item) => item.trim());
         const ages = parts.map(Number);
         props.onStage(valuePath, parts.every((item) => /^\d+$/.test(item)) && ages.every((age) => age <= 17) ? ages : raw);
-      }} /> : <TextField {...props} path={valuePath} label={spec.label} type={spec.type === 'date' ? 'date'
+      }} /> : spec.type === 'code' ? <CodeField {...props} path={valuePath} label={spec.label}
+        help="Choose a code from complete native availability observations or type the requested HMS code." />
+        : <TextField {...props} path={valuePath} label={spec.label} type={spec.type === 'date' ? 'date'
         : spec.type === 'number' ? 'number' : spec.type === 'email' ? 'email' : 'text'} min={spec.type === 'number' ? 0 : undefined}
         max={spec.type === 'number' ? (fieldName === 'adults' ? 16 : 9) : undefined}
+        hideClear={fieldName === 'cmsMessageId' || fieldName === 'cmsRecipient'}
         help={spec.type === 'code' ? 'Use the native HMS code; current price/availability is displayed only after Prepare.' : undefined} /> : null}
     {op === 'set' && fieldName === 'childAges' && Array.isArray(currentValue) && currentValue.length === 0
         && props.snapshot.fields[valuePath]?.review !== 'accepted'
