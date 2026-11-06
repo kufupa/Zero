@@ -676,6 +676,28 @@ function amendSelection(snapshot: ReservationPaneSnapshot, path: string): string
   return typeof suggested === 'string' ? suggested : null;
 }
 
+type CancelFinancialReview = { observationRef: string; approvalDigest: string; reviewFieldPath: string; reviewNote: string };
+
+function cancelFinancialReview(value: unknown): CancelFinancialReview | null {
+  const row = record(value);
+  return row?.required === true && typeof row.observationRef === 'string' && typeof row.approvalDigest === 'string'
+      && typeof row.reviewFieldPath === 'string' && typeof row.reviewNote === 'string'
+    ? { observationRef: row.observationRef, approvalDigest: row.approvalDigest,
+      reviewFieldPath: row.reviewFieldPath, reviewNote: row.reviewNote } : null;
+}
+
+function latestCancelPreview(snapshot: ReservationPaneSnapshot, requestId: string, hintId: string, selectionRef?: string | null) {
+  return [...snapshot.session.draft.observations].reverse().find((item) => item.kind === 'stay_candidate'
+    && item.status === 'complete' && item.criteria.workflow === 'cancel' && item.criteria.stage === 'prepare'
+    && item.criteria.requestId === requestId && item.criteria.hintId === hintId
+    && (!selectionRef || item.criteria.selectionRef === selectionRef)) ?? null;
+}
+
+function cancelSelectedRef(snapshot: ReservationPaneSnapshot, path: string): string | null {
+  const override = snapshot.session.draft.fieldOverrides[path];
+  return override?.state === 'set' && typeof override.value === 'string' ? override.value : null;
+}
+
 function hasLegacyCreateReceiptIssue(snapshot: ReservationPaneSnapshot): boolean {
   return snapshot.issues.some((issue) => issue.kind === 'legacy_create_receipts');
 }
@@ -683,6 +705,7 @@ function hasLegacyCreateReceiptIssue(snapshot: ReservationPaneSnapshot): boolean
 export function ReservationPane({ source, snapshot, loadError, client, onSnapshot, onOpenEvidence, onOpenAttachment }: ReservationPaneProps) {
   const [ui, dispatch] = useReducer(reduceReservationUi, source.selectionEpoch, initialReservationUiState);
   const [amendPreparedRefs, setAmendPreparedRefs] = useState<Record<string, string>>({});
+  const [cancelReviewBindings, setCancelReviewBindings] = useState<Record<string, CancelFinancialReview>>({});
   const [filingPreparedStamps, setFilingPreparedStamps] = useState<Record<string, string>>({});
   const sourceRef = useRef(source);
   const snapshotRef = useRef(snapshot);
@@ -700,6 +723,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     pending.current.clear();
     triedPrepare.current.clear();
     setAmendPreparedRefs({});
+    setCancelReviewBindings({});
     activeRequestRef.current = null;
     activeKindRef.current = 'create';
     setFilingPreparedStamps({});
@@ -761,6 +785,13 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     if (amend) setAmendPreparedRefs((previous) => {
       const next = { ...previous };
       for (const key of Object.keys(next)) if (key.startsWith(`${amend.id}:`)) delete next[key];
+      return next;
+    });
+    const cancel = current?.requests.find((request) => request.kind === 'cancel'
+      && path.startsWith(`${requestPath(request)}/body/`));
+    if (cancel && !path.includes('/previewObservationRefs/')) setCancelReviewBindings((previous) => {
+      const next = { ...previous };
+      for (const key of Object.keys(next)) if (key.startsWith(`${cancel.id}:`)) delete next[key];
       return next;
     });
     const edit = { path, value, state, sequence: ++sequence.current };
@@ -1125,6 +1156,98 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
     });
   }, [amendPreparedRefs, applySnapshot, client, enqueue, flushEdits]);
 
+  const runCancelAction = useCallback((mode: 'lookup' | 'prepare' | 'execute', requestId: string, hintId?: string) => {
+    const bound = sourceRef.current;
+    const targetKey = hintId ? `${requestId}:${hintId}` : null;
+    const label = mode === 'lookup' ? 'Finding exact cancellation target in Infor'
+      : mode === 'prepare' ? 'Refreshing native cancellation policy and fee preview' : 'Cancelling the exact saved stay in Infor';
+    void enqueue(label, bound, async () => {
+      beginMutation();
+      try {
+        if (pending.current.size) await flushEdits(bound);
+        const current = snapshotRef.current;
+        const request = current?.requests.find((item) => item.id === requestId && item.kind === 'cancel');
+        if (!current || !request) throw new Error('The source-bound Cancel request is no longer available.');
+        if (mode === 'lookup') {
+          applySnapshot(await client.lookup({ source: bound, snapshot: current, requestId }), bound);
+          return;
+        }
+        if (!hintId) throw new Error('Cancel requires one exact saved-stay target.');
+        if (mode === 'prepare') {
+          const next = await client.prepare({ source: bound, snapshot: current, requestId, allocationId: hintId });
+          applySnapshot(next, bound);
+          const binding = cancelFinancialReview(next.workflowReply?.financialReview);
+          if ((next.workflowReply?.status === 'prepared' || next.workflowReply?.status === 'needs_review') && binding) {
+            setCancelReviewBindings((previous) => ({ ...previous, [targetKey!]: binding }));
+          } else {
+            setCancelReviewBindings((previous) => { const copy = { ...previous }; delete copy[targetKey!]; return copy; });
+          }
+          return;
+        }
+        const prior = current.operationResults.find((result) => result.requestId === requestId
+          && result.allocationId === hintId && result.workflow === 'cancel'
+          && (result.status === 'succeeded' || result.status === 'unknown'));
+        if (prior?.status === 'unknown') throw new Error('Cancel outcome is uncertain. Reconcile the operation before any retry.');
+        if (prior?.status === 'succeeded') throw new Error('This stay already has a verified cancellation receipt.');
+        const binding = cancelReviewBindings[targetKey!];
+        if (!binding) throw new Error('Refresh the native preview and explicitly review its financial facts before Go.');
+        const review = current.session.draft.staffReviews[binding.reviewFieldPath];
+        if (review?.status !== 'accepted' || review.note !== binding.reviewNote) {
+          throw new Error('The exact native cancellation preview has not been accepted.');
+        }
+        const next = await client.execute({ source: bound, snapshot: current, requestId, allocationId: hintId,
+          idempotencyKey: crypto.randomUUID() });
+        applySnapshot(next, bound);
+        const changedBinding = cancelFinancialReview(next.workflowReply?.financialReview);
+        if (next.workflowReply?.status === 'needs_review' && changedBinding) {
+          setCancelReviewBindings((previous) => ({ ...previous, [targetKey!]: changedBinding }));
+        } else if (next.workflowReply?.status === 'succeeded') {
+          setCancelReviewBindings((previous) => { const copy = { ...previous }; delete copy[targetKey!]; return copy; });
+        } else if (next.workflowReply?.status !== 'needs_reconcile') {
+          setCancelReviewBindings((previous) => { const copy = { ...previous }; delete copy[targetKey!]; return copy; });
+        }
+      } finally {
+        endMutation();
+      }
+    });
+  }, [applySnapshot, cancelReviewBindings, client, enqueue, flushEdits]);
+
+  const acceptCancelPreview = useCallback((requestId: string, hintId: string) => {
+    const bound = sourceRef.current;
+    const targetKey = `${requestId}:${hintId}`;
+    void enqueue('Recording review of this exact cancellation preview', bound, async () => {
+      beginMutation();
+      try {
+        const current = snapshotRef.current;
+        const request = current?.requests.find((item) => item.id === requestId && item.kind === 'cancel');
+        const binding = cancelReviewBindings[targetKey];
+        if (!current || !request || !binding) throw new Error('The source-bound native cancellation preview is unavailable.');
+        const prefix = `${requestPath(request)}/body/previewObservationRefs/`;
+        const index = binding.reviewFieldPath.startsWith(prefix) ? binding.reviewFieldPath.slice(prefix.length) : '';
+        if (!/^(?:0|[1-9]\d*)$/.test(index)) throw new Error('The server returned an invalid cancellation review path.');
+        const item = current.session.draft.observations.find((observation) => observation.ref === binding.observationRef
+          && observation.kind === 'stay_candidate' && observation.status === 'complete'
+          && observation.criteria.workflow === 'cancel' && observation.criteria.stage === 'prepare'
+          && observation.criteria.requestId === requestId && observation.criteria.hintId === hintId);
+        if (!item || record(item.result)?.ready !== true || record(item.result)?.approvalDigest !== binding.approvalDigest) {
+          throw new Error('This preview is no longer the current prepared cancellation; Prepare again.');
+        }
+        let latest = current;
+        const boundRef = valueFor(latest, binding.reviewFieldPath);
+        if (boundRef !== binding.observationRef) {
+          latest = await client.edit({ source: bound, snapshot: latest, requestId,
+            fieldPath: binding.reviewFieldPath, state: 'set', value: binding.observationRef });
+          applySnapshot(latest, bound);
+        }
+        const next = await client.review({ source: bound, snapshot: latest, fieldPath: binding.reviewFieldPath,
+          decision: 'accepted', note: binding.reviewNote });
+        applySnapshot(next, bound);
+      } finally {
+        endMutation();
+      }
+    });
+  }, [applySnapshot, cancelReviewBindings, client, enqueue]);
+
   const runServiceAction = useCallback((mode: 'lookup' | 'preview', requestId: string, allocationId: string, serviceId: string) => {
     const bound = sourceRef.current;
     void enqueue(mode === 'lookup' ? 'Loading native Add-On catalogue' : 'Previewing unsaved Add-On on this room', bound, async () => {
@@ -1248,6 +1371,16 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
                     onPrepare={(hintId) => runAmendAction('prepare', activeRequest.id, hintId)}
                     onExecute={(hintId) => runAmendAction('execute', activeRequest.id, hintId)} />
                 </fieldset>
+              : activeRequest.kind === 'cancel'
+                ? <fieldset disabled={Boolean(ui.busyAction) || busyActionRef.current} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
+                  <CancelEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur}
+                    editValue={editValue} busy={Boolean(ui.busyAction) || ui.pendingEdits.length > 0}
+                    reviewBindings={cancelReviewBindings}
+                    onLookup={() => runCancelAction('lookup', activeRequest.id)}
+                    onPrepare={(hintId) => runCancelAction('prepare', activeRequest.id, hintId)}
+                    onAcceptPreview={(hintId) => acceptCancelPreview(activeRequest.id, hintId)}
+                    onExecute={(hintId) => runCancelAction('execute', activeRequest.id, hintId)} />
+                </fieldset>
               : activeRequest.kind === 'filing'
                 ? <FilingEditor key={`${source.selectionEpoch}:${activeRequest.id}`} snapshot={snapshot} request={activeRequest} source={source} onOpenAttachment={onOpenAttachment}
                     onStage={stage} onBlur={editOnBlur} onDone={markDone} editValue={editValue} onOpenEvidence={onOpenEvidence}
@@ -1261,7 +1394,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
                   : <RequestReview snapshot={snapshot} request={activeRequest} />}
             {displayedResult.map((result, index) => <OperationResult key={String(result.id ?? index)} result={result}
               onReconcile={reconcile} busy={Boolean(ui.busyAction)} />)}
-            {activeRequest.kind !== 'create' && activeRequest.kind !== 'quote' && activeRequest.kind !== 'amend' && activeRequest.kind !== 'filing' && <div className={styles.notice}>This v2 request is visible from saved source facts. Its native operation is not connected in the current UI route, so no Go action is offered.</div>}
+            {activeRequest.kind !== 'create' && activeRequest.kind !== 'quote' && activeRequest.kind !== 'amend' && activeRequest.kind !== 'cancel' && activeRequest.kind !== 'filing' && <div className={styles.notice}>This v2 request is visible from saved source facts. Its native operation is not connected in the current UI route, so no Go action is offered.</div>}
           </> : <>
             <div className={styles.titleRow}><div><small className={styles.eyebrow}>{KIND_LABEL[activeKind]}</small><h1>{activeKind === 'create' ? 'New reservation' : `${KIND_LABEL[activeKind]} request`}</h1></div></div>
             {activeKind === 'create'
@@ -1276,7 +1409,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
                 ? 'Current native quote price and availability are prepared; outputs remain unsent.'
                 : activeRequest?.kind === 'filing' && filingCompleted ? 'Infor confirmed this PDF filing. Review the source-bound receipt below.'
                   : activeRequest?.kind === 'filing' && filingPreparedStamp && filingPreparedStamps[activeRequest.id] === filingPreparedStamp
-                    ? 'Current PDF and existing stay are prepared; no save has been performed.' : activeRequest?.kind === 'amend' ? 'Each saved stay needs an exact native match and current unsaved Prepare before Go.' : snapshot.preparation.message)}
+                    ? 'Current PDF and existing stay are prepared; no save has been performed.' : activeRequest?.kind === 'amend' ? 'Each saved stay needs an exact native match and current unsaved Prepare before Go.' : activeRequest?.kind === 'cancel' ? 'Cancel requires an exact native target and reviewed policy and fees.' : snapshot.preparation.message)}
           </div>
           {ui.pendingEdits.length > 0 && <button type="button" className={styles.secondaryButton} disabled={Boolean(ui.busyAction)} onClick={() => { void saveEdits(); }}>Save {ui.pendingEdits.length} edit{ui.pendingEdits.length === 1 ? '' : 's'}</button>}
           {activeKind === 'create' && activeRequest && <button type="button" className={styles.goButton} disabled={!canGo || busyActionRef.current} onClick={runGo}>Create · {createSections(snapshot, activeRequest).allocations.length} room reservations</button>}
@@ -1796,6 +1929,163 @@ function NativePriceSummary({ snapshot, request }: { snapshot: ReservationPaneSn
       </div>;
     })}
   </div>;
+}
+
+function CancelEditor(props: EditorProps & {
+  busy: boolean; reviewBindings: Record<string, CancelFinancialReview>; onLookup: () => void;
+  onPrepare: (hintId: string) => void; onAcceptPreview: (hintId: string) => void; onExecute: (hintId: string) => void;
+}) {
+  const body = `${requestPath(props.request)}/body`;
+  const scope = record(effectiveValueFor(props.snapshot, `${body}/targets`));
+  const include = Array.isArray(scope?.include) ? scope.include.map((value, index) => ({ value: record(value) ?? {}, index })) : [];
+  const reasonPath = `${body}/reason/text`;
+  const notePath = `${body}/cancellationNote`;
+  const reason = text(props.editValue(reasonPath));
+  const note = text(props.editValue(notePath));
+  const excludes = Array.isArray(scope?.exclude) ? scope.exclude : [];
+  const sourceRequest = props.snapshot.session.draft.proposal.content.requests.find((request) => request.id === props.request.id);
+  const unhandledRefs = Boolean(sourceRequest && (sourceRequest.serviceRefs.length > 0 || sourceRequest.documentRefs.length > 0));
+  const targetMode = text(props.editValue(`${body}/targets/mode`));
+  const hint = include.length === 1 ? include[0] : null;
+  const hintId = hint ? String(hint.value.id ?? '') : '';
+  const hintRoot = hint ? `${body}/targets/include/${hint.index}` : '';
+  const selectionPath = hint ? `${hintRoot}/suggestedRef` : '';
+  const selectedRef = selectionPath ? cancelSelectedRef(props.snapshot, selectionPath) : null;
+  const queryPart = (path: string) => text(props.editValue(path)) || null;
+  const candidates = hint ? props.snapshot.session.draft.observations.flatMap((observation) => {
+    const criteria = observation.criteria, query = record(criteria.query), result = record(observation.result);
+    if (observation.kind !== 'stay_candidate' || observation.status !== 'complete' || criteria.workflow !== 'cancel'
+        || criteria.stage !== 'lookup' || criteria.requestId !== props.request.id || criteria.hintId !== hintId
+        || criteria.fieldPath !== selectionPath || !query
+        || query.confirmation !== queryPart(`${hintRoot}/confirmation`)
+        || query.guestName !== queryPart(`${hintRoot}/guestName`)
+        || query.arrival !== queryPart(`${hintRoot}/bookedArrival`)
+        || query.departure !== queryPart(`${hintRoot}/bookedDeparture`)) return [];
+    const preimage = record(result?.preimage);
+    return preimage ? [{ ref: observation.ref, preimage }] : [];
+  }) : [];
+  const selectedCandidate = candidates.find((candidate) => candidate.ref === selectedRef);
+  const suggestedRef = selectionPath ? draftAtPath(props.snapshot, selectionPath) : null;
+  const binding = hint ? props.reviewBindings[`${props.request.id}:${hintId}`] : null;
+  const preview = hint && selectedRef ? latestCancelPreview(props.snapshot, props.request.id, hintId, selectedRef) : null;
+  const previewResult = record(preview?.result);
+  const previewReady = previewResult?.ready === true;
+  const previewIsCurrent = Boolean(binding && preview?.ref === binding.observationRef && previewReady
+    && previewResult?.approvalDigest === binding.approvalDigest);
+  const acceptedReview = Boolean(binding && props.snapshot.session.draft.staffReviews[binding.reviewFieldPath]?.status === 'accepted'
+    && props.snapshot.session.draft.staffReviews[binding.reviewFieldPath]?.note === binding.reviewNote);
+  const nativeReasons = Array.isArray(previewResult?.reasons) ? previewResult.reasons.flatMap((value) => {
+    const option = record(value);
+    return option && typeof option.value === 'string' && typeof option.display === 'string'
+      ? [{ value: option.value, display: option.display }] : [];
+  }) : [];
+  const reasonMatches = nativeReasons.some((option) => option.display === reason);
+  const prior = hint ? props.snapshot.operationResults.find((result) => result.requestId === props.request.id
+    && result.allocationId === hintId && result.workflow === 'cancel'
+    && (result.status === 'unknown' || result.status === 'succeeded')) : undefined;
+  const scopeReady = targetMode === 'explicit' && include.length === 1 && excludes.length === 0 && Boolean(hintId);
+  const targetReady = Boolean(props.request.supported && scopeReady && selectedCandidate && !unhandledRefs && note.length <= 200);
+  const canPrepare = targetReady && !props.busy;
+  const canReview = targetReady && previewIsCurrent && reasonMatches && !acceptedReview && !props.busy && !prior;
+  const canExecute = targetReady && previewIsCurrent && acceptedReview && reasonMatches && !props.busy && !prior;
+  const preflight = record(previewResult?.preflight);
+  const readOnlyFacts = preflight ? JSON.stringify(preflight, null, 2) : null;
+
+  return <>
+    <div className={styles.notice}>Cancel is one exact saved stay at a time. Lookup and Prepare are read-only; Go rechecks current policy and fees before any native cancellation. An uncertain save must be reconciled, never retried blindly.</div>
+    {!props.request.supported && <div className={styles.alert}>Cancel is not enabled for this property in the connected native route.</div>}
+    {unhandledRefs && <div className={styles.alert}>This request also contains service or document references that the connected Cancel tool cannot process. It will not cancel a broader scope.</div>}
+    <section className={styles.card}>
+      <div className={styles.cardTitle}><b>Exact saved-stay target</b><small>{include.length} included target(s)</small></div>
+      <FieldShell path={`${body}/targets/mode`} label="Scope" field={props.snapshot.fields[`${body}/targets/mode`]}>
+        <select className={styles.select} value={targetMode} onChange={(event) => {
+          props.onStage(`${body}/targets/mode`, event.target.value); props.onBlur(`${body}/targets/mode`);
+        }}><option value="unresolved">Unresolved</option><option value="explicit">One explicit saved stay</option></select>
+      </FieldShell>
+      {hint ? <>
+        <div className={styles.twoCol}>
+          <TextField {...props} path={`${hintRoot}/confirmation`} label="Confirmation" />
+          <TextField {...props} path={`${hintRoot}/guestName`} label="Guest name hint" />
+        </div>
+        <div className={styles.twoCol}>
+          <TextField {...props} path={`${hintRoot}/bookedArrival`} label="Booked arrival hint" type="date" />
+          <TextField {...props} path={`${hintRoot}/bookedDeparture`} label="Booked departure hint" type="date" />
+        </div>
+        <div className={selectedCandidate ? styles.profileReady : styles.profileWarning}>
+          <b>{selectedCandidate ? 'Exact native stay selected' : 'Select a native match from Lookup'}</b>
+          {selectedCandidate && <span>{text(selectedCandidate.preimage.confirmation)} · {text(selectedCandidate.preimage.firstName)} {text(selectedCandidate.preimage.lastName)} · {text(selectedCandidate.preimage.arrival)} → {text(selectedCandidate.preimage.departure)} · {text(selectedCandidate.preimage.roomType)} / {text(selectedCandidate.preimage.ratePlan)}</span>}
+          {typeof suggestedRef === 'string' && !selectedRef && <small>A source/model suggestion is not an approved target. Select a complete native lookup result.</small>}
+          {candidates.length > 0 && <div className={styles.candidateList}>{candidates.map(({ ref, preimage }) => <div className={styles.candidateOption} key={ref}>
+            <span><b>{text(preimage.confirmation)} · {text(preimage.firstName)} {text(preimage.lastName)}</b><small>{text(preimage.arrival)} → {text(preimage.departure)} · stay {text(preimage.nativeStayId)}</small></span>
+            <button type="button" disabled={props.busy} onClick={() => { props.onStage(selectionPath, ref); props.onBlur(selectionPath); }}>
+              {selectedRef === ref ? 'Selected exact stay' : 'Select this stay'}
+            </button>
+          </div>)}</div>}
+          {!candidates.length && <small>Enter the exact confirmation and original dates from the email, then run native Lookup.</small>}
+        </div>
+      </> : <div className={styles.alert}>
+        {include.length === 0
+          ? <>Add one exact saved-stay hint from the message before lookup. The target must be confirmed in Infor; no broad cancellation is allowed. <button type="button" className={styles.inlineButton} disabled={props.busy} onClick={() => {
+            const id = `cancel_target_${crypto.randomUUID().replaceAll('-', '')}`;
+            const includePath = `${body}/targets/include`;
+            props.onStage(includePath, [{ id, candidateRefs: [], suggestedRef: null, sourceRefs: [] }]);
+            props.onStage(`${body}/targets/mode`, 'explicit');
+            props.onBlur(includePath); props.onBlur(`${body}/targets/mode`);
+          }}>Add exact saved-stay hint</button></>
+          : <>This Cancel tool requires exactly one explicit saved-stay hint. Split multiple stays into separate requests before proceeding.</>}
+      </div>}
+      {excludes.length > 0 && <div className={styles.alert}>Excluded targets are unsupported. No cancellation action is offered for this scope.</div>}
+      <button type="button" className={styles.secondaryButton} disabled={!props.request.supported || targetMode !== 'explicit' || include.length !== 1 || excludes.length > 0 || props.busy}
+        onClick={props.onLookup}>Find exact stay and current preflight in Infor</button>
+    </section>
+    <section className={styles.card}>
+      <div className={styles.cardTitle}><b>Cancellation reason and note</b><small>Reason must exactly match a current native option</small></div>
+      <FieldShell path={reasonPath} label="Native cancellation reason" field={props.snapshot.fields[reasonPath]}>
+        <select className={styles.select} value={nativeReasons.some((option) => option.display === reason) ? reason : ''}
+          disabled={nativeReasons.length === 0} onChange={(event) => {
+            const value = event.target.value;
+            props.onStage(reasonPath, value, value ? 'set' : 'none'); props.onBlur(reasonPath);
+          }}><option value="">{nativeReasons.length ? 'Choose one listed Infor reason' : 'Prepare a native preview to load reason options'}</option>
+          {nativeReasons.map((option) => <option value={option.display} key={option.value}>{option.display}</option>)}
+        </select>
+        {nativeReasons.length > 0 && reason && !reasonMatches && <small className={styles.problem}>The source reason does not match a current Infor option. Choose one listed above.</small>}
+      </FieldShell>
+      <FieldShell path={notePath} label="Cancellation note (optional, max 200 characters)" field={props.snapshot.fields[notePath]}>
+        <textarea id={notePath} className={styles.textarea} rows={3} maxLength={200} value={note}
+          onChange={(event) => props.onStage(notePath, event.target.value, event.target.value ? 'set' : 'none')}
+          onBlur={() => props.onBlur(notePath)} />
+        <small className={styles.help}>{note.length}/200 characters. No unsupported note is passed through.</small>
+      </FieldShell>
+    </section>
+    {previewResult && <section className={styles.card}>
+      <div className={styles.cardTitle}><b>{previewIsCurrent ? 'Current native cancellation preview' : 'Previous native preview · refresh before approval'}</b>
+        <small>{text(previewResult.feeState) || 'Fee state unknown'} · {text(preview?.observedAt)}</small></div>
+      {preview && <div className={styles.readValue}>Preview observation {preview.ref} · {text(record(previewResult.target)?.confirmation)} · {
+        text(record(previewResult.target)?.arrival)} → {text(record(previewResult.target)?.departure)}</div>}
+      {previewResult.penaltyText ? <div className={styles.alert}><b>Current native penalty / charge text</b><span>{text(previewResult.penaltyText)}</span></div>
+        : <div className={styles.notice}>No penalty text was returned in this preview; fee state remains explicit below.</div>}
+      {Boolean(previewResult.roomScope) && <div className={styles.notice}>Native room scope: {text(previewResult.roomScope) || JSON.stringify(previewResult.roomScope)}</div>}
+      {Array.isArray(previewResult.policyFacts) && previewResult.policyFacts.length > 0 && <ul className={styles.help}>
+        {previewResult.policyFacts.map((fact, index) => <li key={`${index}-${text(fact)}`}>{text(fact)}</li>)}
+      </ul>}
+      {preflight && <details className={styles.evidence}><summary>Inspect all read-only HMS preflight facts</summary><pre>{readOnlyFacts}</pre></details>}
+      {binding && previewIsCurrent && previewReady && <div className={acceptedReview ? styles.profileReady : styles.profileWarning}>
+        <b>{acceptedReview ? 'Exact preview and fee facts reviewed' : 'Staff review required before Go'}</b>
+        <span>Approval digest {binding.approvalDigest}</span>
+        {!acceptedReview && <button type="button" className={styles.secondaryButton} disabled={!canReview}
+          onClick={() => hint && props.onAcceptPreview(hintId)}>I reviewed the current scope, policy, and fee facts</button>}
+      </div>}
+      {binding && !previewIsCurrent && <div className={styles.problem}>The prepared observation no longer matches the latest preview binding. Refresh and review again.</div>}
+    </section>}
+    {hint && <div className={styles.twoCol}>
+      <button type="button" className={styles.secondaryButton} disabled={!canPrepare} onClick={() => props.onPrepare(hintId)}>
+        {nativeReasons.length ? 'Refresh native preview and policy' : 'Load native preview and cancellation reasons'}
+      </button>
+      <button type="button" className={styles.goButton} disabled={!canExecute} onClick={() => props.onExecute(hintId)}>Go · cancel this exact stay</button>
+    </div>}
+    {prior?.status === 'succeeded' && <div className={styles.notice}>This stay has a verified cancellation receipt. Later edits affect only the source-bound draft.</div>}
+    {prior?.status === 'unknown' && <div className={styles.alert}>Cancel outcome is uncertain. Use the operation’s reconciliation action below before taking any further action.</div>}
+  </>;
 }
 
 const AMEND_FIELDS = [

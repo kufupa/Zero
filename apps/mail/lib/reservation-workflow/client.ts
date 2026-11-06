@@ -297,7 +297,7 @@ function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot
     flattenFields(request, root, fields, draft);
     requests.push({ id: request.id, kind: request.kind, text: request.requestText,
       fieldPaths: Object.keys(fields).filter((path) => path.startsWith(`${root}/`)),
-      supported: (request.kind === 'create' || request.kind === 'quote' || request.kind === 'amend' || request.kind === 'filing') && draft.propertyCode === 'HRCEN' });
+      supported: (request.kind === 'create' || request.kind === 'quote' || request.kind === 'amend' || request.kind === 'cancel' || request.kind === 'filing') && draft.propertyCode === 'HRCEN' });
   }
   for (const [index, row] of draft.proposal.content.services.entries()) {
     flattenFields(row, pointer('proposal', 'content', 'services', index), fields, draft);

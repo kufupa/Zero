@@ -35,7 +35,7 @@ const resolutionSchema = z.object({ version: z.literal(1), kind: z.literal('reso
   nativeReadback: z.record(z.string(), z.unknown()).optional(),
   readbackDigest: digest, savedShot: shot, recovered: z.literal(true).optional() }).strict();
 const noDispatchSchema = z.object({ version: z.literal(1), kind: z.literal('not_dispatched'),
-  holdId: uuid, operation: z.enum(['create', 'attach_document']) }).strict();
+  holdId: uuid, operation: z.enum(['create', 'attach_document', 'cancel']) }).strict();
 const eventSchema = z.discriminatedUnion('kind', [intentSchema, resolutionSchema, noDispatchSchema]);
 type Claim = z.infer<typeof claimSchema>;
 type Intent = z.infer<typeof intentSchema>;
@@ -390,7 +390,7 @@ export async function claimHmsLabtestDispatch(
   return { holdId, ownerToken };
 }
 
-async function finishDispatch(db: DB, holdId: string, evidence: Resolution | { operation: 'create' | 'attach_document'; notDispatched: true },
+async function finishDispatch(db: DB, holdId: string, evidence: Resolution | { operation: 'create' | 'attach_document' | 'cancel'; notDispatched: true },
   authorize: (intent: Intent) => void, record: (tx: CreateFenceTransaction, intent: Intent) => Promise<void>) {
   const normalizedHoldId = holdId.toLowerCase();
   const seeds = (history: History) => {
@@ -461,6 +461,37 @@ export async function resolveNeverDispatchedAttach(db: DB, handle: HmsLabtestWri
       throw new HmsLabtestDispatchError('owner');
     }
   }, record);
+}
+
+/** Only the closed HRCEN cancel runner can release its claim after proving no request continued. */
+export async function resolveNeverDispatchedCancel(db: DB, handle: HmsLabtestWriteHandle, proof: unknown,
+  record: (tx: CreateFenceTransaction, intent: Readonly<Intent>) => Promise<void>): Promise<void> {
+  const { consumeNeverDispatchedCancelProof } = await import('../../tooling/hms-cloud/pane-cancel-session.mjs' as string) as {
+    consumeNeverDispatchedCancelProof(proof: unknown, intent: unknown): boolean;
+  };
+  if (!z.string().uuid().safeParse(handle?.holdId).success || !digest.safeParse(handle?.ownerToken).success ||
+      typeof record !== 'function') throw new HmsLabtestDispatchError('invalid');
+  await finishDispatch(db, handle.holdId, { operation: 'cancel', notDispatched: true }, (intent) => {
+    if (!timingSafeEqual(Buffer.from(intent.ownerDigest, 'hex'), Buffer.from(ownerHash(handle.ownerToken), 'hex')) ||
+        !consumeNeverDispatchedCancelProof(proof, intent)) {
+      throw new HmsLabtestDispatchError('owner');
+    }
+  }, record);
+}
+
+/** Consume a positively closed, no-dispatch result when no claim transaction committed. */
+export async function consumeNeverDispatchedCancelProof(proof: unknown, binding: {
+  runId: string; target: HmsDispatchTarget; cloudTargetKey: string;
+}): Promise<boolean> {
+  const { consumeNeverDispatchedCancelProof: consume } = await import('../../tooling/hms-cloud/pane-cancel-session.mjs' as string) as {
+    consumeNeverDispatchedCancelProof(proof: unknown, intent: unknown): boolean;
+  };
+  const target = hmsDispatchTargetSchema.safeParse(binding.target);
+  if (!target.success || target.data.kind !== 'saved' || !target.data.confirmation || !target.data.nativeStayId ||
+      !z.string().uuid().safeParse(binding.runId).success || typeof binding.cloudTargetKey !== 'string') return false;
+  return consume(proof, { operation: 'cancel', propertyCode: 'HRCEN', target: target.data,
+    recovery: { runId: binding.runId, confirmation: target.data.confirmation,
+      nativeStayId: target.data.nativeStayId, cloudTargetKey: binding.cloudTargetKey } });
 }
 
 /**
