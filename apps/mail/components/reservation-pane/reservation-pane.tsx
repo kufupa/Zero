@@ -51,7 +51,7 @@ function guestSelectionMatches(snapshot: ReservationPaneSnapshot, path: string, 
     && item.status === 'complete' && ((Array.isArray(item.criteria.fieldPaths) && item.criteria.fieldPaths.includes(path))
       || item.criteria.fieldPath === path));
   const result = record(observation?.result);
-  const candidates = Array.isArray(result?.candidates) ? result.candidates : [];
+  const candidates: unknown[] = Array.isArray(result?.candidates) ? result.candidates : [];
   return candidates.some((value) => {
     const candidate = record(value);
     return Boolean(candidate && sameIdentityText(candidate.firstName, guest.firstName)
@@ -108,10 +108,25 @@ function fieldOrBase(snapshot: ReservationPaneSnapshot, path: string, base: unkn
 function createSections(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection) {
   const body = requestPath(request) + '/body';
   const row = record(draftAtPath(snapshot, body));
-  if (!row || !Array.isArray(row.dateSections) || !Array.isArray(row.allocations)) return { body, data: null, sections: [], allocations: [] };
-  const sections = row.dateSections.map((value, index) => ({ value: record(value) ?? {}, index }));
-  const allocations = row.allocations.map((value, index) => ({ value: record(value) ?? {}, index }));
-  return { body, data: row, sections, allocations };
+  const dateSections = valueFor(snapshot, `${body}/dateSections`);
+  const allocationRows = valueFor(snapshot, `${body}/allocations`);
+  if (!row || !Array.isArray(dateSections) || !Array.isArray(allocationRows)) return { body, data: null, sections: [], allocations: [] };
+  const data = { ...row, dateSections, allocations: allocationRows };
+  const sections = dateSections.map((value, index) => ({ value: record(value) ?? {}, index }));
+  const allocations = allocationRows.map((value, index) => ({ value: record(value) ?? {}, index }));
+  return { body, data, sections, allocations };
+}
+
+function emptyRoomAllocation(dateSectionId: string) {
+  return {
+    id: `room_${crypto.randomUUID().replaceAll('-', '')}`,
+    dateSectionId,
+    overrides: {},
+    guest: { firstName: null, lastName: null, email: null, mobile: null,
+      profileIntent: 'existing_or_unknown', candidateRefs: [], suggestedRef: null },
+    occupancy: { adults: null, childCount: null, childAges: null },
+    priceObservationRefs: [],
+  };
 }
 
 function isInputReady(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
@@ -426,6 +441,7 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
             {displayedResult.some((result) => result.status === 'succeeded') && <div className={styles.notice}>At least one room already has an HMS confirmation. Later edits and undo affect the draft only; they do not change a saved reservation.</div>}
             {activeRequest.kind === 'create'
                 ? <CreateEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur} editValue={editValue}
+                  busy={Boolean(ui.busyAction) || ui.pendingEdits.length > 0}
                   onOpenEvidence={onOpenEvidence} onPrepare={() => { void enqueue('Checking Infor now', sourceRef.current, () => prepareAll(false)); }}
                   onLookup={refreshNative} />
               : activeRequest.kind === 'filing'
@@ -459,13 +475,14 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
 type EditorProps = {
   snapshot: ReservationPaneSnapshot;
   request: ReservationRequestProjection;
+  busy?: boolean;
   onStage: (path: string, value: unknown, state?: PendingReservationEdit['state']) => void;
   onBlur: (path: string) => void;
   editValue: (path: string) => unknown;
   onOpenEvidence?: (ref: string) => void;
 };
 
-function CreateEditor(props: EditorProps & { onPrepare: () => void; onLookup: () => void }) {
+function CreateEditor(props: EditorProps & { busy: boolean; onPrepare: () => void; onLookup: () => void }) {
   const { snapshot, request } = props;
   const sections = createSections(snapshot, request);
   const data = sections.data;
@@ -501,8 +518,17 @@ function CreateEditor(props: EditorProps & { onPrepare: () => void; onLookup: ()
           <TextField {...props} path={`${sectionRoot}/departure`} label="Departure" type="date" />
         </div>
         <div className={styles.fixedValue}><span>Requested rooms / existing allocations</span><b>{text(section.requestedRooms) || 'Unresolved'} / {allocationCount}</b>
-          <small>Allocation rows are server-seeded; structural add/remove is not exposed by the current draft API.</small></div>
+          <small>Addition persists as a source-bound edit. Removing/reordering rows awaits server rebasing of index-bound review and evidence paths.</small></div>
         {typeof section.requestedRooms === 'number' && allocationCount !== section.requestedRooms && <small className={styles.problem}>Room count and saved allocation rows differ. Create stays blocked until the server draft is structurally reconciled.</small>}
+        <button type="button" className={styles.secondaryButton} disabled={props.busy || typeof section.id !== 'string'} onClick={() => {
+          const allocationPath = `${body}/allocations`;
+          const requestedRoomsPath = `${sectionRoot}/requestedRooms`;
+          const nextRows = [...sections.allocations.map(({ value }) => value), emptyRoomAllocation(String(section.id))];
+          props.onStage(allocationPath, nextRows);
+          props.onStage(requestedRoomsPath, allocationCount + 1);
+          props.onBlur(allocationPath);
+          props.onBlur(requestedRoomsPath);
+        }}>Add room to these dates</button>
         <CodeField {...props} path={`${sectionRoot}/defaults/roomType`} label="Default room category" />
         <CodeField {...props} path={`${sectionRoot}/defaults/ratePlan`} label="Default rate plan" />
       </section>;
@@ -567,6 +593,7 @@ function CreateEditor(props: EditorProps & { onPrepare: () => void; onLookup: ()
         {Array.isArray(allocation.priceObservationRefs) && allocation.priceObservationRefs.length > 0 && <small className={styles.help}>Native price evidence: {allocation.priceObservationRefs.length} observation reference(s).</small>}
       </section>;
     })}
+    {sections.allocations.length === 0 && <div className={styles.notice}>No room allocations yet. Add one to a date section above to build the reservation.</div>}
     <NativePriceSummary snapshot={snapshot} request={request} />
 
     <div className={styles.sectionHeader}><div><h2>Booker and confirmation</h2><p>Booker remains distinct from each reservation guest.</p></div></div>

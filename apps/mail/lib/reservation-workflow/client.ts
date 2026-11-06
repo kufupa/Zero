@@ -220,7 +220,12 @@ function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot
   const operationResults = Array.isArray(runtimeDraft.operationResults)
     ? runtimeDraft.operationResults.filter(isRecord) : [];
   const createRequests = draft.proposal.content.requests.filter((request) => request.kind === 'create');
-  const allocations = createRequests.flatMap((request) => request.body.allocations.map((allocation) => ({ requestId: request.id, allocationId: allocation.id })));
+  const allocations = createRequests.flatMap((request) => {
+    const path = pointer('proposal', 'content', 'requests', request.id, 'body', 'allocations');
+    const effective = fields[path]?.value;
+    const rows = Array.isArray(effective) ? effective : request.body.allocations;
+    return rows.flatMap((value) => isRecord(value) && isString(value.id) ? [{ requestId: request.id, allocationId: value.id }] : []);
+  });
   const preparationViews = session.preparationViews;
   const currentPrepared = allocations.length > 0 && allocations.every(({ requestId, allocationId }) =>
     preparationViews.some((view) => view.requestId === requestId && view.allocationId === allocationId && view.current));
