@@ -855,7 +855,7 @@ function normalizedIdentity(value: string | null | undefined): string {
     .normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('en-US')
     // Dots and apostrophes inside a name are formatting, but word boundaries must survive:
     // "Anna Lee" is not "Ann Alee". Join separated single-letter initials only.
-    .replace(/[.']/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+    .replace(/[.'\u2018\u2019\u02bc]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
     .replace(/\b(?:[a-z]\s+)+[a-z]\b/g, (initials) => initials.replace(/\s+/g, ''));
 }
 
