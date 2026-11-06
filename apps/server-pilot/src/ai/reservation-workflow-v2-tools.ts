@@ -210,16 +210,13 @@ type CreateCompile = { outcome: 'ok'; nativeInput: Record<string, unknown>; expe
 const existingConfirmationPath = (requestId: string) => ptr('proposal', 'content', 'requests', requestId, 'confirmationReference');
 
 function sourceConfirmationClaim(draft: ReservationWorkflowV2Draft, requestId: string) {
-  const request = draft.proposal.content.requests.find((entry) => entry.id === requestId);
-  const rawReference = record(request)?.confirmationReference;
-  const confirmationReference = typeof rawReference === 'string' && rawReference.trim() ? rawReference : null;
   const path = existingConfirmationPath(requestId);
-  const claims = draft.proposal.sourceClaims.filter((claim) => claim.path === path);
-  const override = draft.fieldOverrides[path];
-  const required = confirmationReference !== null || claims.length > 0 || override !== undefined;
-  if (!required) return { required: false as const, path };
-  if (claims.length !== 1 || !claims[0] || !confirmationReference || claims[0].raw !== confirmationReference ||
-      !claims[0].sourceRefs.length || claims[0].sourceRefs.some((ref) => !request?.sourceRefs.includes(ref))) {
+  const claims = draft.proposal.sourceClaims.filter((claim) => claim.path === path || claim.path.startsWith(`${path}/`));
+  const guarded = draft.proposal.issues.some((issue) =>
+    (issue.path === path || issue.path === `/requests/${requestId}/confirmationReference`) &&
+    (issue.kind === 'existing_confirmation_requires_lookup' || issue.kind === 'existing_confirmation_requires_review'));
+  if (!guarded && claims.length === 0) return { required: false as const, path };
+  if (claims.length !== 1 || !claims[0] || !/^\d{6,10}-\d{1,4}$/.test(claims[0].raw) || !claims[0].sourceRefs.length) {
     return { required: true as const, path, issue: 'existing_confirmation_requires_lookup' as const };
   }
   const claim = claims[0];
@@ -726,12 +723,10 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
   const nativeObservations: ReservationWorkflowV2Observation[] = [];
   for (const request of createRequests) {
     const path = existingConfirmationPath(request.id);
-    const claims = loaded.draft.proposal.sourceClaims.filter((claim) => claim.path === path);
-    const sourceValue = record(request)?.confirmationReference;
-    const hasReference = sourceValue !== undefined || claims.length > 0 || loaded.draft.fieldOverrides[path] !== undefined;
-    if (!hasReference) continue;
+    const claims = loaded.draft.proposal.sourceClaims.filter((claim) => claim.path === path || claim.path.startsWith(`${path}/`));
+    if (!sourceConfirmationClaim(loaded.draft, request.id).required) continue;
     const claim = claims.length === 1 ? claims[0] : undefined;
-    const confirmation = claim?.raw ?? (typeof sourceValue === 'string' ? sourceValue : null);
+    const confirmation = claim?.raw ?? null;
     let outcome = 'unavailable', reason: string | null = 'source_confirmation_claim_missing_or_mismatched';
     let stay: Record<string, unknown> | null = null;
     const sourceEvidence = claim && loaded.draft.observations.find((entry) => {
@@ -739,8 +734,8 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
       return entry.kind === 'source' && Array.isArray(evidenceRefs) && claim.sourceRefs.every((ref) => evidenceRefs.includes(ref));
     });
     const sourceRefs = sourceEvidence ? [sourceEvidence.ref] : [];
-    const claimIsExact = Boolean(claim && confirmation && sourceValue === claim.raw && sourceEvidence &&
-      claim.sourceRefs.length > 0 && claim.sourceRefs.every((ref) => request.sourceRefs.includes(ref)));
+    const claimIsExact = Boolean(claim && confirmation && /^\d{6,10}-\d{1,4}$/.test(confirmation) && sourceEvidence &&
+      claim.sourceRefs.length > 0);
     if (claimIsExact && confirmation) {
       const targetResult = paneStayCreateTarget({ transportId: ctx.transport.id, propertyCode: ctx.property.propertyCode });
       if (targetResult.ok) {
