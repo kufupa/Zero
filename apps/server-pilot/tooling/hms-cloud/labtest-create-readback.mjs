@@ -22,7 +22,9 @@ function validExpected(stay, expected) {
     (expected.cmsSend === undefined || typeof expected.cmsSend === 'boolean') &&
     !(isLabtestGuest(guest) && expected.cmsSend === true) &&
     expected.arrival === stay.arrival && expected.departure === stay.departure && /^\d+$/.test(String(expected.guestId ?? '')) &&
-    ['roomType', 'ratePlan', 'note', 'guarantee'].every((key) => typeof expected[key] === 'string' && expected[key].trim()) &&
+    ['roomType', 'ratePlan', 'guarantee'].every((key) => typeof expected[key] === 'string' && expected[key].trim()) &&
+    (expected.note === undefined || expected.note === null ||
+      (typeof expected.note === 'string' && (expected.note === '' || expected.note.trim()))) &&
     (expected.roomTypeForCharge === undefined || /^[A-Z0-9]{1,12}$/.test(expected.roomTypeForCharge)) &&
     (expected.guaranteeCode === undefined || CREATE_GUARANTEES[expected.guaranteeCode] === expected.guarantee) &&
     Number.isInteger(expected.adults) && expected.adults > 0 && Number.isInteger(expected.children) && expected.children >= 0 &&

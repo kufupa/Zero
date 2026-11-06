@@ -7,7 +7,7 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
 import { message } from '../db/schema/mail.js';
-import { workItem } from '../db/schema/work.js';
+import { workEvent, workItem } from '../db/schema/work.js';
 import { CREATE_GUARANTEES, createGuaranteeCode, isLabtestGuest, sameCreateGuest, validCreateDates } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
 import { isDaVinciMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
 import { acquisitionWithin, isPropertyReadLockDeadline, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
@@ -28,6 +28,8 @@ import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget }
 import { PANE_PREVIEW_TTL_MS, PANE_SAVE_UNCONFIRMED, paneStayCreateTarget, paneStayDigest, paneStayModeRefusal,
   paneStayCloudTargetLock, paneStaySaveLoaders, paneStaySaveMode, registerPaneRun, type PaneStay, type PaneStayResult } from './pane-stay-save.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
+import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Observation } from './reservation-workflow-v2-contract.js';
+import { hasReservationWorkflowV2Draft, reservationWorkflowV2DraftOf } from './reservation-workflow-v2-state.js';
 
 const cloudPreviewSource = z.object({ messageId: z.string().trim().min(1).max(200),
   threadId: z.string().trim().min(1).max(200), sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
@@ -848,7 +850,7 @@ async function recordNeverDispatchedCreate(tx: CreateFenceTransaction, intent: H
 const refs = z.object({ previewShot: grantSchema.shape.previewShot, beforeShot: grantSchema.shape.previewShot }).passthrough();
 
 export type CreateRecoveryProof = { confirmation: string; readbackDigest: string;
-  savedShot: { runId: string; sha256: string }; shots: HmsShotMeta[] };
+  savedShot: { runId: string; sha256: string }; shots: HmsShotMeta[]; nativeReadback: Record<string, unknown> };
 
 /** Serialize recovery with writes for the same Cloud create target. */
 export async function withRecoveryLock<T>(intent: HmsLabtestIntent, action: () => Promise<T>): Promise<T> {
@@ -881,6 +883,7 @@ export async function proveCreateRecovery(intent: HmsLabtestIntent): Promise<Cre
   const observed = await reader.provePositiveCreateRecovery(intent);
   if (observed.outcome !== 'verified' || typeof observed.confirmation !== 'string' ||
       !/^\d{6,10}-\d{1,2}$/.test(observed.confirmation) || !observed.readback ||
+      typeof observed.readback !== 'object' || Array.isArray(observed.readback) ||
       !Buffer.isBuffer(observed.screenshot) || observed.screenshot.length > 20 * 1024 * 1024) {
     throw new Error('cloud_create_recovery_readback_unavailable');
   }
@@ -895,7 +898,8 @@ export async function proveCreateRecovery(intent: HmsLabtestIntent): Promise<Cre
       throw new Error('cloud_create_recovery_evidence_unavailable');
     }
     return { confirmation: observed.confirmation, readbackDigest: hash(observed.readback),
-      savedShot: { runId, sha256: saved.sha256 }, shots };
+      savedShot: { runId, sha256: saved.sha256 }, shots,
+      nativeReadback: observed.readback as Record<string, unknown> };
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
@@ -906,6 +910,45 @@ export async function recordRecoveredCreate(tx: CreateFenceTransaction, intent: 
   const [current] = await tx.select({ state: workItem.state }).from(workItem)
     .where(and(eq(workItem.id, intent.workItemId), eq(workItem.transportId, intent.transportId))).limit(1).for('update');
   if (!current) throw new Error('cloud_create_recovery_scope_changed');
+  if (hasReservationWorkflowV2Draft(current.state)) {
+    const draft = reservationWorkflowV2DraftOf(current.state);
+    const recovery = intent.recovery;
+    const requestId = typeof recovery.requestId === 'string' ? recovery.requestId : '';
+    const allocationId = typeof recovery.allocationId === 'string' ? recovery.allocationId : '';
+    const operationId = typeof recovery.operationId === 'string' ? recovery.operationId : '';
+    const prior = draft?.operationResults.find((result) => result.id === operationId && result.workflow === 'create' &&
+      result.requestId === requestId && result.allocationId === allocationId && result.status === 'unknown');
+    if (!draft || intent.transportId !== draft.transportId || intent.propertyCode !== draft.propertyCode ||
+        intent.sourceDigest !== draft.source.sourceHash || !prior || proof.confirmation.length > 40 ||
+        !proof.nativeReadback || proof.nativeReadback.confirmation !== proof.confirmation) {
+      throw new Error('reservation_workflow_v2_create_recovery_scope_changed');
+    }
+    const observation: ReservationWorkflowV2Observation = {
+      ref: randomUUID(), generationId: draft.generationId, kind: 'stay_candidate', status: 'complete', observedAt: new Date().toISOString(),
+      propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId, sourceRefs: [],
+      criteria: { workflow: 'create', requestId, allocationId, operationId, recovered: true,
+        draftRevision: prior.draftRevision, sourceHash: draft.source.sourceHash },
+      coverage: { complete: true, notes: [] },
+      result: { confirmation: proof.confirmation, nativeReadback: proof.nativeReadback,
+        readbackDigest: proof.readbackDigest, savedShot: proof.savedShot,
+        ratePlanAvailability: recovery.ratePlanAvailability ?? null,
+        arAccountProfileId: recovery.arAccountProfileId ?? null },
+    };
+    const observations = [...draft.observations, observation];
+    const summary = `Recovered confirmed native Create ${proof.confirmation} from fresh HMS readback`;
+    const operationResults = [...draft.operationResults.filter((result) => result.id !== operationId), {
+      ...prior, status: 'succeeded' as const, observationRefs: [observation.ref], updatedAt: new Date().toISOString(), summary,
+    }];
+    const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft, observations, operationResults });
+    const state = { ...current.state, reservationWorkflowV2: nextDraft };
+    await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, intent.workItemId));
+    await tx.insert(workEvent).values({ workItemId: intent.workItemId, actorKind: 'system', type: 'write.evidence',
+      fieldPath: `reservationWorkflowV2:operationResults:${operationId}`,
+      value: { id: operationId, requestId, allocationId, workflow: 'create', status: 'succeeded',
+        observationRefs: [observation.ref], recovered: true },
+      evidence: { sourceHash: draft.source.sourceHash, confirmation: proof.confirmation, readbackDigest: proof.readbackDigest } });
+    return;
+  }
   const stays = current.state.stays;
   if (!stays || typeof stays !== 'object' || Array.isArray(stays)) throw new Error('cloud_create_recovery_scope_changed');
   const stay = (stays as Record<string, unknown>)[intent.stayId] as Record<string, unknown> | undefined;

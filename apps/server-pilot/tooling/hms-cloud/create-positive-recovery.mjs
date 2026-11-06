@@ -16,6 +16,26 @@ const uniqueField = (fields, name) => {
   const found = fields.filter((field) => field.name === name);
   return found.length === 1 ? found[0].value : null;
 };
+const normalizeCurrency = (value) => String(value ?? '').trim().toUpperCase() === 'R' ? 'ZAR' : String(value ?? '').trim().toUpperCase();
+const normalizeAmount = (value) => {
+  const raw = String(value ?? '').trim(), numeric = raw.replace(/[^\d.-]/g, '');
+  return /^-?\d+(?:\.\d+)?$/.test(numeric) ? Number(numeric).toFixed(2) : null;
+};
+function savedPrice(fields) {
+  const averageRate = uniqueField(fields, 'averagerate'), totalRate = uniqueField(fields, 'totalrate');
+  const currencies = ['averageratecurr', 'totalratecurr', 'currency'].map((name) => normalizeCurrency(uniqueField(fields, name)))
+    .filter(Boolean);
+  if (!currencies.length && [averageRate, totalRate].every((value) => /^(?:R|ZAR)\s*\d/i.test(String(value)) || /\bZAR$/i.test(String(value)))) {
+    currencies.push('ZAR');
+  }
+  if (typeof averageRate !== 'string' && typeof averageRate !== 'number' ||
+      typeof totalRate !== 'string' && typeof totalRate !== 'number' || !currencies.length || new Set(currencies).size !== 1) return null;
+  return { averageRate: String(averageRate).trim(), totalRate: String(totalRate).trim(), currency: currencies[0] };
+}
+const samePrice = (actual, expected) => Boolean(actual && expected &&
+  normalizeAmount(actual.averageRate) !== null && normalizeAmount(actual.averageRate) === normalizeAmount(expected.averageRate) &&
+  normalizeAmount(actual.totalRate) !== null && normalizeAmount(actual.totalRate) === normalizeAmount(expected.totalRate) &&
+  normalizeCurrency(actual.currency) === normalizeCurrency(expected.currency));
 const blocked = (issue) => ({ outcome: 'unconfirmed', issue });
 
 /** This reader never writes. Its optional dependencies exist for offline tests only. */
@@ -33,7 +53,8 @@ export async function provePositiveCreateRecovery(intent, { census = censusDefau
           !request.cmsMessageId || request.cmsRecipient !== request.sendHmsConfirmation.recipient)) ||
         typeof request.note !== 'string' ||
         recovery.guaranteeDisplay !== CREATE_GUARANTEES[request.guaranteeType] ||
-        request.parties?.arAccount || request.billingReference !== undefined) return blocked('intent_unverified');
+        (request.parties?.arAccount && !/^\d+$/.test(String(recovery.arAccountProfileId ?? ''))) ||
+        (request.billingReference !== undefined && !request.parties?.arAccount)) return blocked('intent_unverified');
     const preimage = recovery.preimage;
     if (preimage?.arrival !== stay.arrival || preimage?.departure !== stay.departure ||
         !Array.isArray(preimage.sameArrival) || preimage.sameArrival.length > 7 ||
@@ -110,6 +131,7 @@ export async function provePositiveCreateRecovery(intent, { census = censusDefau
       { withSavedSession: captureSession, cloudTargetKey });
     if (!Array.isArray(readback?.fields) || !Array.isArray(readback.mismatches) || readback.mismatches.length ||
         !Buffer.isBuffer(screenshot) || !screenshot.length ||
+        (recovery.ratePlanAvailability !== undefined && !samePrice(savedPrice(readback.fields), recovery.ratePlanAvailability)) ||
         (request.reasonForStay && uniqueField(readback.fields, 'reasonforstay') !== request.reasonForStay.display) ||
         (request.cmsMessageId && uniqueField(readback.fields, 'udfchar09') !== request.cmsMessageId)) {
       return blocked('readback_unverified');
@@ -117,7 +139,9 @@ export async function provePositiveCreateRecovery(intent, { census = censusDefau
     const partyProof = await partyReadback({ confirmation: candidate.confirmation, arrival: stay.arrival,
       guestId: guest.nativeId, firstName: guest.firstName, lastName: guest.lastName, allowRealGuest: true,
       agency: request.parties?.bookingAgency ?? null,
-      organization: request.parties?.organization ?? null, arAccount: null }, { cloudTargetKey });
+      organization: request.parties?.organization ?? null,
+      arAccount: request.parties?.arAccount ? { ...request.parties.arAccount, profileId: recovery.arAccountProfileId } : null,
+      ...(request.billingReference !== undefined ? { billingReference: request.billingReference } : {}) }, { cloudTargetKey });
     if (partyProof?.outcome !== 'verified') return blocked('party_readback_unverified');
     return { outcome: 'verified', confirmation: candidate.confirmation, readback: { ...readback, partyProof }, screenshot };
   } catch { return blocked('readback_unavailable'); }
