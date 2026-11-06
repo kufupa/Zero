@@ -115,8 +115,8 @@ const EVIDENCE_NAMES = ['before.png', 'after.png'] as const;
 /** The caller already holds the property lock, so findStay's own acquisition is passed through. */
 const HELD_LOCK: PaneStayLock = { withLock: (fn) => fn() };
 
-type FilingSnapshot = { cmsSend: boolean };
-type CloudFilingRecord = { stay: PaneStayFields; nativeGuestId: string; nativeStayId: string; filingSnapshot: FilingSnapshot };
+export type FilingSnapshot = { cmsSend: boolean };
+export type CloudFilingRecord = { stay: PaneStayFields; nativeGuestId: string; nativeStayId: string; filingSnapshot: FilingSnapshot };
 type FilingReadOptions = { allowRealGuest: boolean; cloudTargetKey?: string };
 
 async function currentFilingSelection(db: DB, transportId: string, source: HmsSelectedSource): Promise<boolean> {
@@ -174,6 +174,18 @@ async function readCloudFilingRecord(request: { confirmation: string; arrival: s
     return snapshot ? { stay: result.stay, nativeGuestId: native.guestId,
       nativeStayId: native.reservationStayId, filingSnapshot: snapshot } : null;
   } catch { return null; }
+}
+
+/** The v2 Filing adapter shares the same independently-read Cloud stay binding as pane approval. */
+export async function readPaneCloudFilingRecord(input: {
+  confirmation: string;
+  arrival: string;
+  target: HmsReadTarget;
+  allowRealGuest: boolean;
+  cloudTargetKey?: string;
+}): Promise<CloudFilingRecord | null> {
+  return readCloudFilingRecord({ confirmation: input.confirmation, arrival: input.arrival }, input.target,
+    { allowRealGuest: input.allowRealGuest, ...(input.cloudTargetKey ? { cloudTargetKey: input.cloudTargetKey } : {}) });
 }
 
 /**
