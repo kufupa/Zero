@@ -98,6 +98,12 @@ function acceptedWhenRequested(draft: ReservationWorkflowV2Draft, path: string, 
   return value === null || staffAccepted(draft, path);
 }
 
+function effectiveValue(draft: ReservationWorkflowV2Draft, path: string, source: unknown): unknown {
+  const override = draft.fieldOverrides[path];
+  if (!override || override.state === 'inherit') return source;
+  return override.state === 'set' ? override.value : null;
+}
+
 function exactPdfName(value: string): boolean {
   return value.length > 0 && value.length <= 120 && /\.pdf$/i.test(value) && value === value.replace(/\s+/g, ' ').trim() &&
     !/[\\/\p{Cc}]/u.test(value);
@@ -133,18 +139,14 @@ function filingRequestAndDocument(draft: ReservationWorkflowV2Draft, requestId: 
   return { request, requestIndex, document: docs[0]!.document, documentIndex: docs[0]!.documentIndex };
 }
 
-function findTargetHint(draft: ReservationWorkflowV2Draft, request: FilingRequest, document: FilingDocument,
-  requestIndex: number) {
+function findTargetHint(draft: ReservationWorkflowV2Draft, request: FilingRequest, document: FilingDocument) {
   const scope = request.body.targets;
   if (!scope || scope.mode !== 'explicit' || scope.include.length !== 1 || scope.exclude.length) return null;
   const hint = scope.include[0]!;
   if (!document.targetRefs.some((target) => target.kind === 'saved_target' && target.requestId === request.id && target.hintId === hint.id)) return null;
-  const targetHintIndex = scope.include.findIndex((row) => row.id === hint.id);
-  const targetPath = ptr('proposal', 'content', 'requests', requestIndex, 'body', 'targets', 'include', targetHintIndex, 'suggestedRef');
-  const override = draft.fieldOverrides[targetPath];
-  const proposedRef = override
-    ? override.state === 'set' && typeof override.value === 'string' ? override.value : null
-    : hint.suggestedRef;
+  const targetPath = ptr('proposal', 'content', 'requests', request.id, 'body', 'targets', 'include', hint.id, 'suggestedRef');
+  const effectiveRef = effectiveValue(draft, targetPath, hint.suggestedRef);
+  const proposedRef = typeof effectiveRef === 'string' ? effectiveRef : null;
   const candidates = [...new Set([proposedRef, ...hint.candidateRefs].filter((ref): ref is string => typeof ref === 'string'))]
     .map((ref) => draft.observations.find((observation) => observation.ref === ref))
     .filter((observation): observation is ReservationWorkflowV2Observation => Boolean(observation &&
@@ -167,21 +169,31 @@ function findTargetHint(draft: ReservationWorkflowV2Draft, request: FilingReques
   return { targetPath, targetObservation, stay, confirmation, arrival, lastName, firstName, status, departure };
 }
 
+function effectiveFilingDocument(draft: ReservationWorkflowV2Draft, source: FilingDocument): FilingDocument | null {
+  const root = ptr('proposal', 'content', 'documents', source.id);
+  const kind = effectiveValue(draft, `${root}/kind`, source.kind);
+  const handling = effectiveValue(draft, `${root}/handling`, source.handling);
+  if ((kind !== 'voucher' && kind !== 'payment_proof') || handling !== 'filing_requested') return null;
+  return { ...source, kind, handling };
+}
+
 async function selectionFor(ctx: ReservationWorkflowV2FilingContext, draft: ReservationWorkflowV2Draft,
   requestId: string, requireReview: boolean): Promise<FilingSelection | null> {
   const pair = filingRequestAndDocument(draft, requestId);
-  if (!pair || pair.document.handling !== 'filing_requested' || !['voucher', 'payment_proof'].includes(pair.document.kind)) return null;
-  const source = await attachmentForDocument(ctx, draft, pair.document);
+  if (!pair) return null;
+  const root = ptr('proposal', 'content', 'documents', pair.document.id);
+  const document = effectiveFilingDocument(draft, pair.document);
+  if (!document) return null;
+  const source = await attachmentForDocument(ctx, draft, document);
   if (!source) return null;
-  const target = findTargetHint(draft, pair.request, pair.document, pair.requestIndex);
+  const target = findTargetHint(draft, pair.request, document);
   if (!target) return null;
-  if (requireReview && (!staffAccepted(draft, ptr('proposal', 'content', 'documents', pair.documentIndex, 'documentSourceRef')) ||
-      !staffAccepted(draft, ptr('proposal', 'content', 'documents', pair.documentIndex, 'kind')) ||
-      !staffAccepted(draft, ptr('proposal', 'content', 'documents', pair.documentIndex, 'handling')) ||
-      !acceptedWhenRequested(draft, ptr('proposal', 'content', 'documents', pair.documentIndex, 'requestedName'), pair.document.requestedName) ||
-      !acceptedWhenRequested(draft, ptr('proposal', 'content', 'documents', pair.documentIndex, 'requestedDescription'), pair.document.requestedDescription) ||
+  if (requireReview && (!staffAccepted(draft, `${root}/documentSourceRef`) ||
+      !staffAccepted(draft, `${root}/kind`) || !staffAccepted(draft, `${root}/handling`) ||
+      !acceptedWhenRequested(draft, `${root}/requestedName`, document.requestedName) ||
+      !acceptedWhenRequested(draft, `${root}/requestedDescription`, document.requestedDescription) ||
       !staffAccepted(draft, target.targetPath))) return null;
-  return { ...pair, attachmentId: source.attachmentId, targetObservation: target.targetObservation,
+  return { ...pair, document, attachmentId: source.attachmentId, targetObservation: target.targetObservation,
     targetPath: target.targetPath, stay: target.stay,
     confirmation: target.confirmation, arrival: target.arrival, lastName: target.lastName, firstName: target.firstName,
     status: target.status, departure: target.departure };
@@ -297,7 +309,7 @@ async function persistFilingShots(ctx: ReservationWorkflowV2FilingContext, input
   finally { await rm(stage, { recursive: true, force: true }).catch(() => {}); }
 }
 
-async function latestPrepared(draft: ReservationWorkflowV2Draft, requestId: string, documentId: string) {
+function latestPrepared(draft: ReservationWorkflowV2Draft, requestId: string, documentId: string) {
   const result = [...draft.operationResults].reverse().find((entry) => entry.requestId === requestId &&
     entry.allocationId === null && entry.workflow === 'filing' && entry.status === 'prepared' && entry.draftRevision <= draft.revision);
   const observation = result && draft.observations.find((entry) => result.observationRefs.includes(entry.ref) &&
@@ -511,7 +523,7 @@ async function currentV2Source(tx: WorkTransaction, ctx: ReservationWorkflowV2Fi
 
 async function authorizeCurrentFiling(tx: WorkTransaction, ctx: ReservationWorkflowV2FilingContext,
   input: ReservationWorkflowV2ExecuteInput, selection: FilingSelection, prepared: NonNullable<ReturnType<typeof getPrepared>>,
-  form: AttachForm, approvedDigest: string) {
+  form: AttachForm, approvedDigest: string, attempt: ReservationWorkflowV2Observation) {
   await lockCreateActorAccess(tx, { actorUserId: ctx.user.id, transportId: ctx.transport.id });
   await lockCreateActorSession(tx, { actorUserId: ctx.user.id, sessionId: ctx.user.sessionId,
     sessionProfile: ctx.user.sessionProfile });
@@ -522,20 +534,86 @@ async function authorizeCurrentFiling(tx: WorkTransaction, ctx: ReservationWorkf
       ['done', 'dismissed'].includes(item.status)) throw new Error('reservation_workflow_v2_filing_stale');
   const source = await currentV2Source(tx, ctx, input);
   const draft = source && reservationWorkflowV2DraftOf(item.state as Record<string, unknown>);
-  const prior = draft?.operationResults.find((entry) => entry.id === input.idempotencyKey && entry.status === 'unknown' &&
-    entry.workflow === 'filing' && entry.requestId === selection.request.id);
+  const pair = draft && filingRequestAndDocument(draft, selection.request.id);
+  const document = draft && pair && effectiveFilingDocument(draft, pair.document);
+  const target = draft && pair && document && findTargetHint(draft, pair.request, document);
+  const prior = draft?.operationResults.find((entry) => entry.id === input.idempotencyKey ||
+    (entry.workflow === 'filing' && entry.requestId === selection.request.id &&
+      (entry.status === 'unknown' || entry.status === 'succeeded')));
   const currentPrepared = draft && getPrepared(draft, selection.request.id, selection.document.id);
-  if (!source || !draft || !prior || !currentPrepared || currentPrepared.result.semanticDigest !== prepared.result.semanticDigest ||
+  if (!source || !draft || !pair || !document || !target || prior || !currentPrepared ||
+      draft.workItemId !== input.workItemId || draft.transportId !== ctx.transport.id ||
+      draft.propertyCode !== ctx.property.propertyCode || draft.generationId !== attempt.generationId ||
+      draft.revision !== input.expectedRevision || draft.source.threadId !== input.source.threadId ||
+      draft.source.messageId !== input.source.messageId || draft.source.sourceHash !== input.source.sourceHash ||
+      draft.source.arrivedAt !== input.source.arrivedAt || document.id !== selection.document.id ||
+      document.documentSourceRef !== selection.document.documentSourceRef || document.kind !== selection.document.kind ||
+      document.handling !== selection.document.handling || target.targetPath !== selection.targetPath ||
+      target.targetObservation.ref !== selection.targetObservation.ref ||
+      draft.observations.some((entry) => entry.ref === attempt.ref) ||
+      currentPrepared.result.semanticDigest !== prepared.result.semanticDigest ||
       currentPrepared.result.documentCode !== prepared.result.documentCode ||
       currentPrepared.result.sourceSnapshotDigest !== prepared.result.sourceSnapshotDigest ||
-      !staffAccepted(draft, ptr('proposal', 'content', 'documents', selection.documentIndex, 'documentSourceRef')) ||
-      !staffAccepted(draft, ptr('proposal', 'content', 'documents', selection.documentIndex, 'kind')) ||
-      !staffAccepted(draft, ptr('proposal', 'content', 'documents', selection.documentIndex, 'handling')) ||
-      !acceptedWhenRequested(draft, ptr('proposal', 'content', 'documents', selection.documentIndex, 'requestedName'), selection.document.requestedName) ||
-      !acceptedWhenRequested(draft, ptr('proposal', 'content', 'documents', selection.documentIndex, 'requestedDescription'), selection.document.requestedDescription) ||
+      !staffAccepted(draft, ptr('proposal', 'content', 'documents', selection.document.id, 'documentSourceRef')) ||
+      !staffAccepted(draft, ptr('proposal', 'content', 'documents', selection.document.id, 'kind')) ||
+      !staffAccepted(draft, ptr('proposal', 'content', 'documents', selection.document.id, 'handling')) ||
+      !acceptedWhenRequested(draft, ptr('proposal', 'content', 'documents', selection.document.id, 'requestedName'), selection.document.requestedName) ||
+      !acceptedWhenRequested(draft, ptr('proposal', 'content', 'documents', selection.document.id, 'requestedDescription'), selection.document.requestedDescription) ||
       !staffAccepted(draft, selection.targetPath) || formDigestForStoredForm(item.state as Record<string, unknown>) !== approvedDigest) {
     throw new Error('reservation_workflow_v2_filing_approval_changed');
   }
+  // Commit the pending receipt with the dispatch intent, never before it.
+  const result = { id: input.idempotencyKey, generationId: draft.generationId, requestId: selection.request.id,
+    allocationId: null, workflow: 'filing' as const, status: 'unknown' as const, draftRevision: draft.revision,
+    observationRefs: [attempt.ref], updatedAt: new Date().toISOString(), summary: 'HMS upload claimed; outcome pending reconciliation' };
+  const next = reservationWorkflowV2DraftSchema.parse({ ...draft,
+    observations: [...draft.observations, attempt], operationResults: [...draft.operationResults, result] });
+  await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>), reservationWorkflowV2: next },
+    updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
+  await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
+    fieldPath: `reservationWorkflowV2:operationResults:${result.id}`,
+    value: { id: result.id, requestId: result.requestId, allocationId: null, workflow: 'filing', status: result.status,
+      observationRefs: result.observationRefs }, evidence: { sourceHash: input.source.sourceHash, summary: result.summary } });
+}
+
+/** Record a one-use gate proof in the same transaction that releases its claim. */
+async function persistNeverDispatchedFiling(tx: WorkTransaction, ctx: ReservationWorkflowV2FilingContext,
+  input: ReservationWorkflowV2ExecuteInput, intent: Readonly<HmsLabtestIntent>, selection: FilingSelection,
+  generationId: string, form: AttachForm, requestDigest: string) {
+  const [item] = await tx.select({ state: workItem.state }).from(workItem)
+    .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1).for('update');
+  const draft = item && reservationWorkflowV2DraftOf(item.state as Record<string, unknown>);
+  const prior = draft?.operationResults.find((entry) => entry.id === input.idempotencyKey && entry.workflow === 'filing' &&
+    entry.requestId === selection.request.id && entry.status === 'unknown');
+  const recovery = record(intent.recovery), source = record(recovery?.source);
+  if (!item || !draft || !prior || draft.workItemId !== input.workItemId || draft.transportId !== ctx.transport.id ||
+      draft.propertyCode !== ctx.property.propertyCode || draft.generationId !== generationId ||
+      draft.source.threadId !== input.source.threadId || draft.source.messageId !== input.source.messageId ||
+      draft.source.sourceHash !== input.source.sourceHash || draft.source.arrivedAt !== input.source.arrivedAt ||
+      !draft.observations.some((entry) => entry.ref === selection.targetObservation.ref) ||
+      intent.operation !== 'attach_document' || intent.workItemId !== input.workItemId.toLowerCase() ||
+      intent.transportId !== ctx.transport.id || intent.actorUserId !== ctx.user.id || intent.propertyCode !== ctx.property.propertyCode ||
+      intent.grantId !== input.idempotencyKey.toLowerCase() || intent.sourceDigest !== form.sourceSnapshotDigest ||
+      intent.approvedDigest !== approvedDigestForForm(form) || intent.requestDigest !== requestDigest ||
+      recovery?.workItemId !== input.workItemId || recovery.operationId !== input.idempotencyKey ||
+      recovery.requestId !== selection.request.id || recovery.documentId !== selection.document.id ||
+      recovery.documentSourceRef !== selection.document.documentSourceRef ||
+      recovery.targetObservationRef !== selection.targetObservation.ref || source?.threadId !== input.source.threadId ||
+      source?.messageId !== input.source.messageId || source?.sourceHash !== input.source.sourceHash || source?.arrivedAt !== input.source.arrivedAt) {
+    throw new Error('reservation_workflow_v2_filing_never_dispatched_scope_changed');
+  }
+  const observation = filingObservation(draft, { requestId: selection.request.id, operationId: input.idempotencyKey }, selection,
+    'failed', { outcome: 'not_dispatched', dispatchHoldId: intent.holdId }, ['The native gate proved no upload was sent.']);
+  const summary = 'Native gate proved PDF upload was not sent';
+  const result = { ...prior, status: 'failed' as const, observationRefs: [observation.ref], updatedAt: new Date().toISOString(), summary };
+  const next = reservationWorkflowV2DraftSchema.parse({ ...draft, observations: [...draft.observations, observation],
+    operationResults: [...draft.operationResults.filter((entry) => entry.id !== prior.id), result] });
+  await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>), reservationWorkflowV2: next },
+    updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
+  await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
+    fieldPath: `reservationWorkflowV2:operationResults:${result.id}`,
+    value: { id: result.id, requestId: result.requestId, allocationId: null, workflow: 'filing', status: result.status,
+      observationRefs: result.observationRefs }, evidence: { sourceHash: input.source.sourceHash, dispatchHoldId: intent.holdId, summary } });
 }
 
 function formDigestForStoredForm(state: Record<string, unknown>): string {
@@ -553,15 +631,6 @@ function approvedDigestForForm(form: AttachForm): string {
     documentCode: form.documentCode, filingStateDigest: form.filingStateDigest });
 }
 
-async function recordUnknown(ctx: ReservationWorkflowV2FilingContext, input: ReservationWorkflowV2ExecuteInput,
-  draft: ReservationWorkflowV2Draft, selection: FilingSelection, operationId: string, result: Record<string, unknown>,
-  issue: string, summary: string) {
-  const observation = filingObservation(draft, { requestId: selection.request.id, operationId }, selection,
-    'partial', { operationId, issue, ...result }, [issue]);
-  const recorded = await recordFilingOperation(ctx, input, observation, 'unknown', summary, operationId);
-  return { observation, recorded };
-}
-
 /** Staff Go → one exact intercepted Cloud Documents upload → fresh metadata readback and durable target receipt. */
 export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflowV2FilingContext,
   input: ReservationWorkflowV2ExecuteInput): Promise<Outcome> {
@@ -574,6 +643,10 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
     summary: prior.summary, observationRefs: prior.observationRefs };
   if (prior?.status === 'unknown') return { status: 'needs_reconcile', operationId: prior.id };
   if (prior?.status === 'failed') return { status: 'failed', operationId: prior.id, summary: prior.summary };
+  const existing = loaded.draft.operationResults.find((entry) => entry.workflow === 'filing' && entry.requestId === input.requestId &&
+    (entry.status === 'unknown' || entry.status === 'succeeded'));
+  if (existing) return { status: existing.status === 'succeeded' ? 'already_succeeded' : 'needs_reconcile',
+    operationId: existing.id, summary: existing.summary, observationRefs: existing.observationRefs };
   const selection = await selectionFor(ctx, loaded.draft, input.requestId, true);
   if (!selection) return { status: 'needs_input', issue: 'review_one_source_pdf_and_one_saved_stay' };
   const prepared = getPrepared(loaded.draft, input.requestId, selection.document.id);
@@ -624,11 +697,6 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
       bytes.subarray(0, 5).toString('ascii') !== '%PDF-') return { status: 'needs_prepare', issue: 'source_pdf_changed' };
 
   const operationId = input.idempotencyKey;
-  const pending = await recordUnknown(ctx, input, loaded.draft, selection, operationId,
-    { outcome: 'go_accepted', prepareObservationRef: prepared.observation.ref, target: prepared.target,
-      sourcePdfSha256: form.pdfSha256, actualStoredSha256: null }, 'dispatch_pending', 'Go accepted; PDF write is being verified');
-  if (pending.recorded.status !== 'ok') return pending.recorded;
-
   const stage = await mkdtemp(join(tmpdir(), 'reservation-v2-filing-'));
   const sourcePath = join(stage, 'upload.pdf');
   let dispatch: HmsLabtestWriteHandle | null = null;
@@ -700,55 +768,37 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
           cmsSend: cloud.filingSnapshot.cmsSend, allowRealGuest, targetObservationRef: selection.targetObservation.ref,
           prepareObservationRef: prepared.observation.ref, targetSnapshotDigest: prepared.result.filingStateDigest,
           beforeShot: before.beforeShot, writer };
+        const attempt = filingObservation(loaded.draft!, { requestId: input.requestId, operationId }, selection,
+          'partial', { outcome: 'dispatch_claimed', requestDigest, beforeShot: before.beforeShot,
+            prepareObservationRef: prepared.observation.ref, target: prepared.target,
+            sourcePdfSha256: form.pdfSha256, actualStoredSha256: null }, ['Fresh Documents readback pending']);
         const tryClaim = async () => claimHmsLabtestDispatch(ctx.db, {
           workItemId: input.workItemId, transportId: ctx.transport.id, actorUserId: ctx.user.id,
           grantId: operationId, propertyCode: 'HRCEN', firstName: recovery.firstName, lastName: recovery.lastName,
           nativeGuestId: cloud.nativeGuestId, target, operation: 'attach_document',
           sourceDigest: form.sourceSnapshotDigest, approvedDigest: approvedDigestForForm(form), requestDigest,
           recovery: recovery as unknown as Record<string, unknown>,
-        }, async (tx) => authorizeCurrentFiling(tx, ctx, input, selection, prepared, form, approvedDigestForForm(form)), expectedEpoch);
-        let handle: HmsLabtestWriteHandle;
-        try { handle = await tryClaim(); }
-        catch (error) {
-          const issue = error instanceof HmsLabtestDispatchError && error.reason === 'occupied'
-            ? 'filing_target_held_for_reconciliation' : 'filing_claim_failed';
-          await recordUnknown(ctx, input, loaded.draft, selection, operationId,
-            { outcome: 'claim_failed', issue, prepareObservationRef: prepared.observation.ref }, issue,
-            'HMS did not authorize a second upload');
-          throw error;
-        }
+        }, async (tx) => authorizeCurrentFiling(tx, ctx, input, selection, prepared, form, approvedDigestForForm(form), attempt), expectedEpoch);
+        // An ambiguous claim commit may have stored both the intent and unknown
+        // result. Leave them intact rather than writing an unproven failure.
+        const handle = await tryClaim();
         dispatch = handle;
         const claimObservation = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
           'partial', { outcome: 'dispatch_claimed', dispatchHoldId: handle.holdId,
             requestDigest, sourcePdfSha256: form.pdfSha256, actualStoredSha256: null,
             prepareObservationRef: prepared.observation.ref }, ['Fresh Documents readback pending']);
-        const claimed = await recordFilingOperation(ctx, input, claimObservation, 'unknown',
-          'HMS upload is authorized; fresh readback pending', operationId);
-        if (claimed.status !== 'ok') {
-          const proof = continuation.proveNeverDispatched?.();
-          if (proof) {
-            await resolveNeverDispatchedAttach(ctx.db, handle, proof, request, async () => {});
-            provedNoDispatch = true; dispatch = null;
-          }
-          throw new Error('reservation_workflow_v2_filing_receipt_unavailable');
+        try {
+          const claimed = await recordFilingOperation(ctx, input, claimObservation, 'unknown',
+            'HMS upload is authorized; fresh readback pending', operationId);
+          if (claimed.status !== 'ok') throw new Error('reservation_workflow_v2_filing_receipt_unavailable');
+          return await continuation();
         }
-        try { return await continuation(); }
         catch (error) {
           const proof = continuation.proveNeverDispatched?.();
           if (proof) {
-            try {
-              await resolveNeverDispatchedAttach(ctx.db, handle, proof, request, async (tx, intent) => {
-                if (intent.workItemId !== input.workItemId || intent.transportId !== ctx.transport.id ||
-                    intent.actorUserId !== ctx.user.id || intent.grantId !== operationId || intent.requestDigest !== requestDigest) {
-                  throw new Error('reservation_workflow_v2_filing_no_dispatch_scope_changed');
-                }
-              });
-              provedNoDispatch = true; dispatch = null;
-              const failed = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
-                'failed', { outcome: 'not_dispatched', issue: 'native gate proved upload was not sent',
-                  prepareObservationRef: prepared.observation.ref }, ['No upload was sent.']);
-              await recordFilingOperation(ctx, input, failed, 'failed', 'Native gate proved PDF upload was not sent', operationId);
-            } catch { /* A lost claim or resolution acknowledgement stays unknown. */ }
+            await resolveNeverDispatchedAttach(ctx.db, handle, proof, request, async (tx, intent) =>
+              persistNeverDispatchedFiling(tx, ctx, input, intent, selection, loaded.draft!.generationId, form, requestDigest));
+            provedNoDispatch = true; dispatch = null;
           }
           throw error;
         }
@@ -760,16 +810,13 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
     const beforePath = screenshots.find((path) => basename(path) === 'before.png');
     const afterPath = screenshots.find((path) => basename(path) === 'after.png');
     const nativeTarget = targetReadback(native.nativeReadback);
-    const success = Boolean(dispatch && native.outcome === 'confirmed' && native.uploadSent === true && native.listed === true &&
+    const activeDispatch = dispatch as HmsLabtestWriteHandle | null;
+    const success = Boolean(activeDispatch && native.outcome === 'confirmed' && native.uploadSent === true && native.listed === true &&
       native.dispatchCallbacksDrained === true && native.writerSessionClosed === true && native.documentCode === form.documentCode &&
       nativeTarget && nativeTarget.confirmation === selection.confirmation && nativeTarget.nativeStayId === cloud.nativeStayId &&
       nativeTarget.nativeGuestId === cloud.nativeGuestId && nativeTarget.documentCode === form.documentCode &&
       nativeTarget.documentName === name && beforePath && afterPath);
-    if (!dispatch) {
-      const failed = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
-        'failed', { outcome: native.outcome ?? 'not_dispatched', uploadSent: native.uploadSent === true,
-          prepareObservationRef: prepared.observation.ref }, ['No durable dispatch claim was held.']);
-      if (!provedNoDispatch) await recordFilingOperation(ctx, input, failed, 'failed', 'No upload was dispatched', operationId);
+    if (!activeDispatch) {
       return { status: provedNoDispatch ? 'failed' : 'refused', operationId,
         issue: String(native.issue ?? native.outcome ?? 'filing_not_dispatched') };
     }
@@ -777,33 +824,33 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
       const shots = beforePath ? await persistFilingShots(ctx, { workItemId: input.workItemId, runId: operationId,
         beforePath, ...(afterPath ? { afterPath } : {}) }) : null;
       const uncertain = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
-        'partial', { outcome: native.outcome ?? 'unknown', dispatchHoldId: dispatch.holdId,
+        'partial', { outcome: native.outcome ?? 'unknown', dispatchHoldId: activeDispatch.holdId,
           uploadSent: native.uploadSent === true, listed: native.listed === true, nativeReadback: native.nativeReadback ?? null,
           sourcePdfSha256: form.pdfSha256, actualStoredSha256: null, beforeShot: shots?.beforeShot ?? null,
           prepareObservationRef: prepared.observation.ref }, ['Upload may have reached HMS; fresh reconciliation is required.']);
       await recordFilingOperation(ctx, input, uncertain, 'unknown', 'PDF upload outcome needs fresh reconciliation', operationId);
       keepCloudEvidence = native.uploadSent === true && !shots;
-      return { status: 'needs_reconcile', operationId, dispatchHoldId: dispatch.holdId,
+      return { status: 'needs_reconcile', operationId, dispatchHoldId: activeDispatch.holdId,
         issue: 'filing_readback_unverified', nativeOutcome: native.outcome ?? 'unknown' };
     }
     const shots = await persistFilingShots(ctx, { workItemId: input.workItemId, runId: operationId, beforePath, afterPath });
     if (!shots?.savedShot) {
       const uncertain = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
-        'partial', { outcome: 'confirmed_but_evidence_unsealed', dispatchHoldId: dispatch.holdId,
+        'partial', { outcome: 'confirmed_but_evidence_unsealed', dispatchHoldId: activeDispatch.holdId,
           nativeReadback: nativeTarget, sourcePdfSha256: form.pdfSha256, actualStoredSha256: null,
           prepareObservationRef: prepared.observation.ref }, ['HMS listing is positive but durable screenshot evidence is unavailable.']);
       await recordFilingOperation(ctx, input, uncertain, 'unknown', 'HMS lists the PDF; durable write proof needs reconciliation', operationId);
       keepCloudEvidence = true;
-      return { status: 'needs_reconcile', operationId, dispatchHoldId: dispatch.holdId, issue: 'filing_evidence_unavailable' };
+      return { status: 'needs_reconcile', operationId, dispatchHoldId: activeDispatch.holdId, issue: 'filing_evidence_unavailable' };
     }
     const successObservation = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
-      'complete', { outcome: 'confirmed', dispatchHoldId: dispatch.holdId, nativeReadback: nativeTarget,
+      'complete', { outcome: 'confirmed', dispatchHoldId: activeDispatch.holdId, nativeReadback: nativeTarget,
         readbackDigest: digestJson(nativeTarget), sourcePdfSha256: form.pdfSha256,
         actualStoredSha256: null, storedBytesHashVerified: false,
         storedHashNote: 'HMS Documents currently exposes unique document code/name listing only; stored bytes are not downloadable by this reader.',
         beforeShot: shots.beforeShot, savedShot: shots.savedShot, prepareObservationRef: prepared.observation.ref });
     try {
-      await resolveHmsLabtestDispatch(ctx.db, dispatch, { operation: 'attach_document',
+      await resolveHmsLabtestDispatch(ctx.db, activeDispatch, { operation: 'attach_document',
         confirmation: nativeTarget.confirmation, nativeStayId: nativeTarget.nativeStayId,
         nativeReadback: nativeTarget, readbackDigest: digestJson(nativeTarget), savedShot: shots.savedShot }, async (tx, intent) => {
         const recovery = record(intent.recovery);
@@ -819,11 +866,11 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
       });
     } catch {
       const uncertain = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
-        'partial', { outcome: 'durable_resolution_unconfirmed', dispatchHoldId: dispatch.holdId,
+        'partial', { outcome: 'durable_resolution_unconfirmed', dispatchHoldId: activeDispatch.holdId,
           nativeReadback: nativeTarget, sourcePdfSha256: form.pdfSha256, actualStoredSha256: null,
           savedShot: shots.savedShot, prepareObservationRef: prepared.observation.ref }, ['Native result is positive; durable dispatch release is pending reconciliation.']);
       await recordFilingOperation(ctx, input, uncertain, 'unknown', 'PDF appears in HMS; durable receipt needs reconciliation', operationId);
-      return { status: 'needs_reconcile', operationId, dispatchHoldId: dispatch.holdId,
+      return { status: 'needs_reconcile', operationId, dispatchHoldId: activeDispatch.holdId,
         issue: 'durable_filing_resolution_unconfirmed', nativeReadback: nativeTarget };
     }
     dispatch = null;
@@ -833,23 +880,17 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
       sourcePdfSha256: form.pdfSha256, actualStoredSha256: null, storedBytesHashVerified: false,
       observationRef: successObservation.ref };
   } catch (error) {
-    if (dispatch) {
+    const activeDispatch = dispatch as HmsLabtestWriteHandle | null;
+    if (activeDispatch) {
       const uncertain = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
-        'partial', { outcome: 'uncertain', dispatchHoldId: dispatch.holdId, issue: 'native_dispatch_interrupted',
+        'partial', { outcome: 'uncertain', dispatchHoldId: activeDispatch.holdId, issue: 'native_dispatch_interrupted',
           sourcePdfSha256: form.pdfSha256, actualStoredSha256: null,
           prepareObservationRef: prepared.observation.ref }, ['Upload may have reached HMS; fresh reconciliation is required.']);
       await recordFilingOperation(ctx, input, uncertain, 'unknown', 'PDF upload was interrupted; reconcile before retry', operationId);
       keepCloudEvidence = true;
-      return { status: 'needs_reconcile', operationId, dispatchHoldId: dispatch.holdId, issue: 'native_dispatch_interrupted' };
+      return { status: 'needs_reconcile', operationId, dispatchHoldId: activeDispatch.holdId, issue: 'native_dispatch_interrupted' };
     }
-    if (!provedNoDispatch) {
-      const failed = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection, 'failed',
-        { outcome: 'not_dispatched', issue: error instanceof HmsLabtestDispatchError && error.reason === 'occupied'
-          ? 'filing_target_held_for_reconciliation' : 'filing_prepare_or_dispatch_failed',
-          prepareObservationRef: prepared.observation.ref }, ['No confirmed upload dispatch was recorded.']);
-      await recordFilingOperation(ctx, input, failed, 'failed', 'PDF upload did not dispatch', operationId);
-    }
-    return { status: provedNoDispatch ? 'failed' : 'refused', issue: error instanceof HmsLabtestDispatchError
+    return { status: provedNoDispatch ? 'failed' : 'refused', operationId, issue: error instanceof HmsLabtestDispatchError
       ? `filing_dispatch_${error.reason}` : 'filing_execution_failed' };
   } finally {
     await rm(stage, { recursive: true, force: true }).catch(() => {});
