@@ -1253,7 +1253,7 @@ function PartyField(props: EditorProps & { path: string; label: string }) {
   const tail = props.path.split('/').pop();
   const role = tail === 'bookingAgency' || tail === 'agency' ? 'agency' : tail === 'arAccount' ? 'ar_account' : 'organization';
   const candidates = props.snapshot.session.draft.observations.flatMap((observation) => {
-    if (parentEmpty || observation.kind !== 'party_candidate' || observation.status !== 'complete'
+    if (observation.kind !== 'party_candidate' || observation.status !== 'complete'
         || observation.criteria.role !== role
         || observation.criteria.fieldPath !== selectionPath
           && !(Array.isArray(observation.criteria.fieldPaths) && observation.criteria.fieldPaths.includes(selectionPath))) return [];
@@ -1544,7 +1544,7 @@ function QuotePartyField(props: EditorProps & { path: string; role: 'agency' | '
   const selectedRef = !parentEmpty && props.snapshot.fields[selectionPath]?.override?.state === 'set'
     && typeof props.snapshot.fields[selectionPath]?.value === 'string' ? props.snapshot.fields[selectionPath]!.value as string : null;
   const candidates = props.snapshot.session.draft.observations.flatMap((observation) => {
-    if (observation.kind !== 'party_candidate' || observation.status !== 'complete' || record(observation.coverage)?.complete !== true
+    if (parentEmpty || observation.kind !== 'party_candidate' || observation.status !== 'complete' || record(observation.coverage)?.complete !== true
         || observation.criteria.workflow !== 'quote' || observation.criteria.requestId !== props.request.id
         || observation.criteria.role !== props.role || !sameIdentityText(observation.criteria.searchName, name)) return [];
     const candidate = record(observation.result);
