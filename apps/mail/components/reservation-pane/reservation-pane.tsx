@@ -1152,6 +1152,8 @@ function PartyField(props: EditorProps & { path: string; label: string }) {
       onBlur={() => props.onBlur(props.path)} />
     <FieldValueState {...props} path={props.path} />
     {selectedMatches && <small className={styles.accepted}>Native candidate selected.</small>}
+    {selectedMatches && selection?.required && selection.review !== 'accepted' && props.onDone
+      ? <button type="button" className={styles.inlineButton} onClick={() => props.onDone?.(selectionPath)}>Confirm selected party</button> : null}
     {selectedRef && !selectedMatches && <small className={styles.problem}>Saved native selection no longer matches this party name. Select a matching result again.</small>}
     {!selectedMatches && candidates.map(({ observationRef, candidate }, index) => {
       const exact = sameIdentityText(candidate?.name, current.name) && hasValue(candidate?.nativeId);
