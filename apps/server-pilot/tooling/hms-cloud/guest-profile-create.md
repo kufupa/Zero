@@ -48,11 +48,11 @@ if (prepared.outcome === 'ready') {
 
 The codes above are examples, not inferred defaults. List `title`, `phoneType`
 or `emailType`; check coverage and select a current code before Prepare.
-The implementation has staged these fields together on an unsaved HRCEN form;
-an additional unsaved preview used a linked inbound message's name and mobile
-with title from its exact-ID master profile.
-Their persistence remains unverified until a permitted Labtest Save and fresh
-exact-ID readback succeed on deployed main.
+On 2026-11-06, deployed main `23a878d47` saved one Proof Labtest profile and a
+fresh exact-ID readback matched title, additional phone, phone type and email
+type alongside the core fields and consent state. An unsaved preview also used
+a linked inbound message's name and mobile with title from its master profile.
+This proof does not authorize a real-guest Save.
 
 ## Inputs
 

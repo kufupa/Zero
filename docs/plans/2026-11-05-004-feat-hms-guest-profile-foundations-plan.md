@@ -10,6 +10,11 @@ execution: code
 
 # HMS Guest Profile Foundations - Plan
 
+**Status (2026-11-06):** The foundation landed in PR #1060. On deployed main
+`23a878d47`, one Labtest Save and fresh exact-ID readback matched the supported
+extra fields. The findings and gaps below describe the pre-implementation
+baseline; the runner remains Labtest-only.
+
 ## Goal Capsule
 
 Extend the existing HRCEN guest-profile tools with explicitly supplied title and contact details, starting with the native operations rather than a reservation UI rewrite. Preserve the current creator, readback and uncertain-write protections. The owner chose guest-profile foundations first; this does not make them a prerequisite for booking with an existing profile.
