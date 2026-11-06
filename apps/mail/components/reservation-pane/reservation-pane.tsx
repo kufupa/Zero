@@ -217,7 +217,11 @@ function isInputReady(snapshot: ReservationPaneSnapshot, request: ReservationReq
 function hasUnreviewedRequiredFields(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection): boolean {
   return request.fieldPaths.some((path) => {
     const field = snapshot.fields[path];
-    return field?.required && (field.review !== 'accepted' || !hasValue(field.value));
+    if (!field?.required || !hasValue(field.value)) return false;
+    if (request.kind === 'create' && path.endsWith('/occupancy/childAges')
+        && Array.isArray(field.value) && field.value.length === 0
+        && valueFor(snapshot, path.replace(/\/childAges$/u, '/childCount')) === 0) return false;
+    return field.review !== 'accepted';
   });
 }
 
