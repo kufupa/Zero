@@ -453,8 +453,8 @@ async function recordNativeObservation(ctx: ReservationWorkflowV2ServerContext, 
 }
 
 type PartyLookup = { outcome: 'query'; name: string; selectionPath: string } |
-  { outcome: 'not_requested' | 'needs_input'; issue?: string };
-type EffectivePath = { outcome: 'value'; value: unknown; path: string } | { outcome: 'unset' | 'unknown' };
+  { outcome: 'not_requested' } | { outcome: 'needs_input'; issue: string };
+type EffectivePath = { outcome: 'value'; value: unknown; path: string } | { outcome: 'unset' } | { outcome: 'unknown' };
 
 function appendPtr(path: string, ...parts: Array<string | number>): string {
   return ptr(...path.slice(1).split('/').map(decodeURIComponent), ...parts);
@@ -513,9 +513,9 @@ function effectivePartyLookup(draft: ReservationWorkflowV2Draft, requestPath: st
 }
 
 function verifiedNativeFields(result: unknown): string[] {
-  const correlation = record(result)?.correlation;
-  return Array.isArray(correlation?.verifiedFields)
-    ? correlation.verifiedFields.filter((field): field is string => typeof field === 'string') : [];
+  const correlation = record(record(result)?.correlation);
+  const fields = correlation?.verifiedFields;
+  return Array.isArray(fields) ? fields.filter((field: unknown): field is string => typeof field === 'string') : [];
 }
 
 function guestCandidateViews(candidates: unknown, verifiedFields: string[]) {
@@ -568,6 +568,93 @@ function partyCandidateViews(candidates: unknown, role: 'agency' | 'organization
   })) };
 }
 
+type CreateCatalogueKind = 'room_type' | 'rate_plan';
+type CreateCatalogueCandidate = { code: string; label: string; nativeId?: string };
+type CreateCatalogueRead = { kind: CreateCatalogueKind; outcome: string; complete: boolean;
+  candidates: CreateCatalogueCandidate[]; coverage: Record<string, unknown> | null;
+  criteria: Record<string, unknown> | null; verifiedFields: string[]; issue: string | null };
+
+function createCatalogueCandidate(value: unknown, kind: CreateCatalogueKind): CreateCatalogueCandidate | null {
+  const candidate = record(value), response = record(candidate?.responseData), grid = record(candidate?.gridData);
+  const code = text(candidate?.code), label = text(candidate?.name);
+  const codeField = kind === 'room_type' ? 'roomtypecode' : 'rateplancode';
+  const labelField = kind === 'room_type' ? 'roomtypedesc' : 'rateplanname';
+  if (!response || !grid || !code || !label || text(response[codeField]) !== code || text(grid[codeField]) !== code ||
+      text(response[labelField]) !== label || text(grid[labelField]) !== label) return null;
+  if (kind === 'room_type') {
+    const nativeId = text(candidate?.nativeId);
+    if (!nativeId || text(response.roomtypeid) !== nativeId || text(grid.roomtypeid) !== nativeId) return null;
+    return { code, label, nativeId };
+  }
+  return { code, label };
+}
+
+async function readCreateCatalogue(runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  tool: 'searchRoomTypes' | 'searchRatePlans', kind: CreateCatalogueKind): Promise<CreateCatalogueRead> {
+  const first = await runTool({ tool, query: '', offset: 0, limit: 100 });
+  const coverage = record(first.coverage), criteria = record(first.criteria);
+  const matchingLoaded = coverage?.matchingLoaded;
+  const loaded = coverage?.loaded;
+  const expectedScope = kind === 'room_type' ? 'guest_stay_room_catalog' : 'guest_stay_rate_shop_catalog';
+  const allowedOutcome = ['matches', 'no_match', 'incomplete'].includes(String(first.outcome));
+  const criteriaValid = criteria?.propertyCode === 'HRCEN' && criteria.scope === expectedScope && criteria.query === '';
+  if (!allowedOutcome || !criteriaValid || !Number.isInteger(matchingLoaded) || !Number.isInteger(loaded) ||
+      (first.outcome === 'no_match' && matchingLoaded !== 0)) {
+    return { kind, outcome: String(first.outcome ?? 'failed'), complete: false, candidates: [], coverage, criteria,
+      verifiedFields: [], issue: text(first.issue) ?? 'native_catalogue_search_unverified' };
+  }
+  const count = matchingLoaded as number;
+  const candidates: CreateCatalogueCandidate[] = [];
+  const verifiedFields = kind === 'room_type' ? ['roomtypeid', 'roomtypecode', 'roomtypedesc'] : ['rateplancode', 'rateplanname'];
+  let pagesComplete = true, allCorrelated = true;
+  for (let offset = 0; offset < count; offset += 100) {
+    const page = offset === 0 ? first : await runTool({ tool, query: '', offset, limit: 100 });
+    const pageCoverage = record(page.coverage), pageCriteria = record(page.criteria);
+    const pageRows = Array.isArray(page.candidates) ? page.candidates : [];
+    const expectedPageSize = Math.min(100, count - offset);
+    if (!['matches', 'incomplete'].includes(String(page.outcome)) || pageCriteria?.propertyCode !== 'HRCEN' ||
+        pageCriteria.scope !== expectedScope || pageCriteria.query !== '' || pageCoverage?.loaded !== loaded ||
+        pageCoverage?.matchingLoaded !== count || pageCoverage.returned !== expectedPageSize || pageRows.length !== expectedPageSize) {
+      pagesComplete = false;
+      break;
+    }
+    for (const row of pageRows) {
+      const projected = createCatalogueCandidate(row, kind);
+      if (projected) candidates.push(projected);
+      else allCorrelated = false;
+    }
+  }
+  if (count === 0 && first.outcome !== 'no_match') pagesComplete = false;
+  const complete = ['matches', 'no_match'].includes(String(first.outcome)) && coverage?.complete === true &&
+    coverage.possiblyTruncated === false && loaded === count && pagesComplete && allCorrelated && candidates.length === count;
+  return { kind, outcome: String(first.outcome), complete, candidates, coverage, criteria, verifiedFields,
+    issue: complete ? null : text(first.issue) ?? 'native_catalogue_coverage_or_correlation_incomplete' };
+}
+
+function createCatalogueObservation(draft: ReservationWorkflowV2Draft, target: {
+  requestId: string; allocationId: string; allocationIndex: number;
+}, catalogue: CreateCatalogueRead, closeOutcome: unknown): ReservationWorkflowV2Observation {
+  const field = catalogue.kind === 'room_type' ? 'roomType' : 'ratePlan';
+  const fieldPath = ptr('proposal', 'content', 'requests', target.requestId, 'body', 'allocations',
+    target.allocationIndex, 'overrides', field);
+  const complete = catalogue.complete && closeOutcome === 'closed_unsaved';
+  const options = catalogue.candidates.map(candidate => catalogue.kind === 'room_type'
+    ? { room: { code: candidate.code, label: candidate.label } }
+    : { ratePlan: { code: candidate.code, label: candidate.label } });
+  return { ref: randomUUID(), generationId: draft.generationId, kind: 'rate_availability',
+    status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(), propertyCode: draft.propertyCode,
+    sourceMessageId: draft.source.messageId, sourceRefs: [],
+    criteria: { workflow: 'create', kind: 'native_catalogue', catalogueKind: catalogue.kind,
+      requestId: target.requestId, allocationId: target.allocationId, fieldPaths: [fieldPath],
+      nativeCriteria: catalogue.criteria, nativeCoverage: catalogue.coverage,
+      correlation: { method: 'native_response_grid', verifiedFields: catalogue.verifiedFields } },
+    coverage: { complete, notes: complete ? [] : [catalogue.issue ?? 'native_catalogue_picker_close_unverified'] },
+    result: { catalogueKind: catalogue.kind, groups: [{ id: target.allocationId,
+      requestId: target.requestId, allocationId: target.allocationId, options }],
+      candidates: catalogue.candidates, nativeOutcome: catalogue.outcome, nativeCoverage: catalogue.coverage,
+      closeOutcome } };
+}
+
 /** Read current, source-bound v2 observations; callers cannot supply lookup candidates. */
 export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2ServerContext,
   input: ReservationWorkflowV2LookupInput): Promise<Outcome> {
@@ -592,6 +679,7 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
   try {
     sessionResult = record(await bookingTool.withBookingLookupSession(async ({ runTool }) => {
       const perAllocation: Outcome[] = [];
+      const catalogueTargets: Array<{ requestId: string; allocationId: string; allocationIndex: number }> = [];
       for (const request of createRequests) {
         const requestPath = ptr('proposal', 'content', 'requests', request.id, 'body');
         const body = effectiveSubtree(loaded.draft!, request.body, requestPath) as typeof request.body | null;
@@ -610,6 +698,7 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
               issue: 'allocation_date_section_unresolved' });
             continue;
           }
+          catalogueTargets.push({ requestId: request.id, allocationId, allocationIndex });
           const guestPath = appendPtr(requestPath, 'allocations', allocationIndex, 'guest');
           const intent = effectivePathValue(loaded.draft!, request.body, requestPath,
             ['allocations', allocationIndex, 'guest', 'profileIntent']);
@@ -739,7 +828,27 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
             ...(guestSearch.issue ? { issue: guestSearch.issue } : {}) });
         }
       }
-      return { lookups: perAllocation, observations: nativeObservations, sessionSafe: true };
+      const uniqueTargets = [...new Map(catalogueTargets.map(target =>
+        [`${target.requestId}\u0000${target.allocationId}`, target])).values()];
+      const catalogues: Array<Record<string, unknown>> = [];
+      if (uniqueTargets.length) {
+        for (const spec of [
+          { tool: 'searchRoomTypes', kind: 'room_type' },
+          { tool: 'searchRatePlans', kind: 'rate_plan' },
+        ] as const) {
+          const catalogue = await readCreateCatalogue(runTool, spec.tool, spec.kind);
+          const closed = await runTool({ tool: 'closeRoomRatePicker' });
+          if (closed.outcome !== 'closed_unsaved') {
+            return { lookups: perAllocation, observations: nativeObservations, catalogues,
+              sessionSafe: false, issue: 'native_catalogue_picker_close_unverified' };
+          }
+          catalogues.push({ kind: catalogue.kind, outcome: catalogue.outcome, complete: catalogue.complete,
+            candidateCount: catalogue.candidates.length, coverage: catalogue.coverage, issue: catalogue.issue });
+          for (const target of uniqueTargets) nativeObservations.push(
+            createCatalogueObservation(loaded.draft!, target, catalogue, closed.outcome));
+        }
+      }
+      return { lookups: perAllocation, observations: nativeObservations, catalogues, sessionSafe: true };
     }, { memory: null, blockServiceWorkers: true }));
   } catch {
     return { status: 'failed', issue: 'native_create_lookup_failed', requestId: input.requestId ?? null };
@@ -760,7 +869,7 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
   }
   return { status: 'ok', revision: fresh.result.status === 'ok' ? fresh.result.revision : input.expectedRevision,
     seq: fresh.result.status === 'ok' ? fresh.result.seq : input.expectedSeq,
-    requests, lookups: sessionResult.lookups,
+    requests, lookups: sessionResult.lookups, catalogues: sessionResult.catalogues ?? [],
     observations: [...fresh.draft.observations, ...observations], operationResults: fresh.draft.operationResults };
 }
 
