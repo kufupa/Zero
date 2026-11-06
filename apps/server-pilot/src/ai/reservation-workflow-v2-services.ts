@@ -468,5 +468,5 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
 export { reservationWorkflowV2ExecuteServices, reservationWorkflowV2ReconcileServices,
   reservationWorkflowV2ServicesExecuteInputSchema }
   from './reservation-workflow-v2-services-execute.js';
-export type { ReservationWorkflowV2ServicesExecuteInput, ReservationWorkflowV2ServicesResult }
+export type { ReservationWorkflowV2ServicesExecuteInput, ReservationWorkflowV2ServicesResult, ReservationWorkflowV2ServicesStatus }
   from './reservation-workflow-v2-services-execute.js';

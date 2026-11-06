@@ -43,8 +43,12 @@ export const reservationWorkflowV2ServicesExecuteInputSchema = reservationWorkfl
   reviewedPrepareRef: z.string().min(1).max(160).optional(),
 }).strict();
 export type ReservationWorkflowV2ServicesExecuteInput = z.infer<typeof reservationWorkflowV2ServicesExecuteInputSchema>;
+export type ReservationWorkflowV2ServicesStatus =
+  | 'invalid_input' | 'unsupported' | 'refused' | 'not_found' | 'invalid_source' | 'wrong_property' | 'invalid_state'
+  | 'stale_revision' | 'invalid_path' | 'invalid_value' | 'needs_reconcile' | 'failed' | 'needs_input' | 'needs_review'
+  | 'already_succeeded' | 'succeeded' | 'not_reconcilable';
 export type ReservationWorkflowV2ServicesResult = {
-  status: string;
+  status: ReservationWorkflowV2ServicesStatus;
   issue?: string;
   operationId?: string;
   requestId?: string;
