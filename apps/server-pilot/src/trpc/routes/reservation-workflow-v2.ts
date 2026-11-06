@@ -68,15 +68,15 @@ async function withPreparation<T extends { status: string }>(reply: Promise<T>, 
   const result = await reply;
   const draft = 'draft' in result ? result.draft as ReservationWorkflowV2Draft | null : null;
   if (!draft) return { ...result, preparationViews: [] };
-  // This is a read-only projection from the validated source WorkItem. Legacy
-  // stays have no reliable allocation mapping, so never turn them into v2 results.
-  const [item] = await getDb().select({ state: workItem.state }).from(workItem)
-    .where(and(eq(workItem.id, draft.workItemId), eq(workItem.transportId, draft.transportId),
-      eq(workItem.threadId, draft.source.threadId), eq(workItem.sourceMessageId, draft.source.messageId))).limit(1);
-  if (!item) return { status: 'not_found' as const, preparationViews: [] };
-  const legacyCreateReceipts = Object.entries(stayCommitsOf(item.state)).map(([stayId, receipt]) => ({
+  // A source can have several legacy classifications. Show their receipts
+  // without guessing an allocation mapping onto the v2 draft.
+  const items = await getDb().select({ id: workItem.id, state: workItem.state }).from(workItem)
+    .where(and(eq(workItem.transportId, draft.transportId), eq(workItem.threadId, draft.source.threadId),
+      eq(workItem.sourceMessageId, draft.source.messageId)));
+  if (!items.some((item) => item.id === draft.workItemId)) return { status: 'not_found' as const, preparationViews: [] };
+  const legacyCreateReceipts = items.flatMap((item) => Object.entries(stayCommitsOf(item.state)).map(([stayId, receipt]) => ({
     stayId, status: receipt.status, confirmationNumber: receipt.confirmationNumber,
-  }));
+  })));
   const views = reservationWorkflowV2PreparationViews(draft, propertyCode);
   if (!legacyCreateReceipts.length) return { ...result, preparationViews: views, legacyCreateReceipts };
   const receiptSummary = legacyCreateReceipts.slice(0, 3).map((receipt) =>

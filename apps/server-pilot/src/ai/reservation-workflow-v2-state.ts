@@ -25,6 +25,13 @@ export type ReservationWorkflowV2Context = { db: DB; transportId: string; userId
 type Context = ReservationWorkflowV2Context;
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
 
+/** Serialize source seeding and legacy/v2 Create authorization for the same email. */
+export async function lockReservationWorkflowV2Source(tx: Parameters<Parameters<DB['transaction']>[0]>[0],
+  transportId: string, messageId: string): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(
+    ${JSON.stringify(['reservation-v2-source', transportId, messageId])}, 0))`);
+}
+
 export type ReservationWorkflowV2Seed = {
   generationId?: string;
   status: ReservationWorkflowV2Draft['status'];
@@ -157,8 +164,7 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
   const saved = await ctx.db.transaction(async (tx) => {
     // Serialize v2 seeding for the email, even if competing runs infer different
     // legacy WorkItem kinds. Background reads may still add other-kind rows.
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(
-      ${JSON.stringify(['reservation-v2-source', ctx.transportId, input.source.messageId])}, 0))`);
+    await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
     const [mail] = await sourceMail(tx, ctx, input.source).then((row) => row ? [row] : []);
     if (!mail || !(await hasMailboxAccess(tx, ctx))) return { status: 'invalid_source' as const };
     let [item] = await tx.select({ id: workItem.id, transportId: workItem.transportId, threadId: workItem.threadId,
