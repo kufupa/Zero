@@ -918,7 +918,8 @@ function CreateEditor(props: EditorProps & { busy: boolean; prepareBlockedReason
         <div className={styles.fixedValue}><span>Requested rooms / existing allocations</span><b>{text(requestedRooms) || 'Unresolved'} / {allocationCount}</b>
           <small>Addition persists as a source-bound edit. Removing/reordering rows awaits server rebasing of index-bound review and evidence paths.</small></div>
         {typeof requestedRooms === 'number' && allocationCount !== requestedRooms && <small className={styles.problem}>Room count and saved allocation rows differ. Create stays blocked until the server draft is structurally reconciled.</small>}
-        <button type="button" className={styles.secondaryButton} disabled={props.busy || typeof section.id !== 'string'} onClick={() => {
+        <button type="button" className={styles.secondaryButton} disabled={props.busy || sections.allocations.length >= 8 || typeof section.id !== 'string'} onClick={() => {
+          if (sections.allocations.length >= 8) return;
           const allocationPath = `${body}/allocations`;
           const requestedRoomsPath = `${sectionRoot}/requestedRooms`;
           const nextRows = [...sections.allocations.map(({ value }) => value), emptyRoomAllocation(String(section.id))];
