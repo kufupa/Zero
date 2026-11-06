@@ -242,7 +242,8 @@ function editablePath(draft: ReservationWorkflowV2Draft, path: string): boolean 
   if (section !== 'content' || !['requests', 'services', 'documents'].includes(collection!)) return false;
   const rows = collection === 'requests' ? draft.proposal.content.requests :
     collection === 'services' ? draft.proposal.content.services : draft.proposal.content.documents;
-  if (!rows.some((entry) => entry.id === stableId)) return false;
+  const rowIndex = /^(?:0|[1-9]\d*)$/.test(stableId ?? '') ? Number(stableId) : -1;
+  if (!rows.some((entry) => entry.id === stableId) && !(Number.isSafeInteger(rowIndex) && rowIndex >= 0 && rowIndex < rows.length)) return false;
   if (collection === 'requests') return branch === 'body' || (branch === 'requestText' && parts.length === 5);
   return true;
 }
