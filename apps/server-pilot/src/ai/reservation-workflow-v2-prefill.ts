@@ -302,14 +302,18 @@ export function buildReservationWorkflowV2CandidateReadPlan(input: {
     }, party.name.sourceRefs);
     for (const date of request.dates) {
       const sourceRefs = [...(date.arrival?.sourceRefs ?? []), ...(date.departure?.sourceRefs ?? [])];
+      const availabilityRefs = [...new Set([...sourceRefs, ...occupancy.flatMap((row) => row.sourceRefs),
+        ...request.roomTypeHints.flatMap((hint) => hint.sourceRefs), ...(request.roomCount?.sourceRefs ?? [])])];
       if (sourceRefs.length) add('rate_availability', request.id, `${date.arrival?.raw ?? ''}:${date.departure?.raw ?? ''}`, {
-        arrival: date.arrival?.value ?? null, arrivalRaw: date.arrival?.raw ?? null,
-        departure: date.departure?.value ?? null, departureRaw: date.departure?.raw ?? null,
+        dates: [{ arrival: date.arrival?.value ?? null, departure: date.departure?.value ?? null,
+          arrivalRaw: date.arrival?.raw ?? null, departureRaw: date.departure?.raw ?? null,
+          sourceRefs: [...(date.arrival?.sourceRefs ?? []), ...(date.departure?.sourceRefs ?? [])] }],
+        occupancy,
         roomTypes: request.roomTypeHints.map((hint) => ({ value: hint.value, sourceRefs: hint.sourceRefs })),
         rateHints: request.rateHints.map((hint) => ({ value: hint.value, sourceRefs: hint.sourceRefs })),
         boardHints: request.boardHints.map((hint) => ({ value: hint.value, sourceRefs: hint.sourceRefs })),
         roomCount: request.roomCount?.value ?? null,
-      }, sourceRefs);
+      }, availabilityRefs);
     }
     for (const service of request.serviceHints) add('service_preview', request.id, service.raw, {
       requestedServiceText: service.value, raw: service.raw,
@@ -348,30 +352,31 @@ function availabilityInput(candidate: ReservationWorkflowV2CandidateRead) {
   const date = dates.find((row) => isoDay(row.arrival) && isoDay(row.departure));
   const occupancy = Array.isArray(criteria.occupancy) ? criteria.occupancy as Array<Record<string, unknown>> : [];
   const typeHints = Array.isArray(criteria.roomTypes) ? criteria.roomTypes as Array<Record<string, unknown>> : [];
-  const roomCount = Number(criteria.roomCount);
+  const roomCount = criteria.roomCount;
   if (!date || !isoDay(date.arrival) || !isoDay(date.departure) || date.departure <= date.arrival ||
-      !Number.isInteger(roomCount) || roomCount < 1 || roomCount > 99 || !typeHints.length || occupancy.length !== typeHints.length) return null;
+      typeof roomCount !== 'number' || !Number.isInteger(roomCount) || roomCount < 1 || roomCount > 99 ||
+      !typeHints.length || occupancy.length !== typeHints.length) return null;
   const rooms: Array<{ roomType: string; quantity: number; adults: number; childAges: number[] }> = [];
   for (let index = 0; index < typeHints.length; index += 1) {
     const hint = typeHints[index]!;
     const row = occupancy[index]!;
-    const adults = Number(row.adults);
-    const childCount = Number(row.childCount);
-    const childAges = Array.isArray(row.childAges) ? row.childAges : null;
-    if (row.scope !== 'per_room' || !Number.isInteger(adults) || adults < 1 || adults > 9 ||
-        !Number.isInteger(childCount) || childCount < 0 || childCount > 9 || !childAges ||
-        childAges.length !== childCount || childAges.some((age) => !Number.isInteger(age) || Number(age) < 0 || Number(age) > 99)) return null;
+    const adults = row.adults;
+    const childCount = row.childCount;
+    const childAges = Array.isArray(row.childAges) ? row.childAges : childCount === 0 ? [] : null;
+    if (row.scope !== 'per_room' || typeof adults !== 'number' || !Number.isInteger(adults) || adults < 1 || adults > 9 ||
+        typeof childCount !== 'number' || !Number.isInteger(childCount) || childCount < 0 || childCount > 9 || !childAges ||
+        childAges.length !== childCount || childAges.some((age) => typeof age !== 'number' || !Number.isInteger(age) || age < 0 || age > 99)) return null;
     const roomType = typeof hint.value === 'string' ? hint.value.trim().slice(0, 120) : '';
     if (!roomType) return null;
-    rooms.push({ roomType, quantity: roomCount, adults, childAges: childAges.map(Number) });
+    rooms.push({ roomType, quantity: roomCount, adults, childAges: childAges as number[] });
   }
   const parsed = availabilityRequestSchema.safeParse({ kind: 'availability', arrival: date.arrival, departure: date.departure, rooms });
   return parsed.success ? parsed.data : null;
 }
 
 /**
- * Production read seam for the supported existing primitives. Mail, stay, party and rate reads are source/property
- * bounded and do not require a WorkItem. Missing profile/service/document readers fail explicitly instead of guessing.
+ * Production read seam for source/property-bounded primitives that do not require a WorkItem. Missing
+ * service/document readers fail explicitly instead of guessing.
  */
 export function createReservationWorkflowV2CandidateReader(input: {
   db: DB;
@@ -396,6 +401,7 @@ export function createReservationWorkflowV2CandidateReader(input: {
       const session = await import(sessionUrl.href) as { withBookingLookupSession<T>(operation: (context: { page: unknown }) => Promise<T>, options?: Record<string, unknown>): Promise<T> };
       const profile = await import(profileUrl.href) as {
         searchGuestProfiles(page: unknown, input: { field: 'email' | 'lastName'; query: string }): Promise<Record<string, unknown>>;
+        inspectGuestProfileCandidates(page: unknown, input: { searchId: string; offset: number; limit: number }): Promise<Record<string, unknown>>;
         closeGuestProfilePicker(page: unknown): Promise<Record<string, unknown>>;
       };
       const reads = new Map<string, { field: 'email' | 'lastName'; query: string; items: ReservationWorkflowV2CandidateRead[] }>();
@@ -415,8 +421,12 @@ export function createReservationWorkflowV2CandidateReader(input: {
           let search: Record<string, unknown>;
           try { search = await profile.searchGuestProfiles(page, { field: read.field, query: read.query }); }
           catch { search = { outcome: 'execution_failure', issue: 'GUEST_SEARCH_FAILED' }; }
-          const closed = await profile.closeGuestProfilePicker(page).catch(() => ({ outcome: 'close_uncertain' }));
-          const rows = Array.isArray(search.candidates) ? search.candidates.flatMap((candidate) => {
+          const coverage = isRecord(search.coverage) ? search.coverage : {};
+          const criteria = isRecord(search.criteria) ? search.criteria : {};
+          const correlation = isRecord(search.correlation) ? search.correlation : {};
+          const verifiedFields = Array.isArray(correlation.verifiedFields)
+            ? correlation.verifiedFields.filter((field): field is string => typeof field === 'string') : [];
+          const initialRows = Array.isArray(search.candidates) ? search.candidates.flatMap((candidate) => {
             if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return [];
             const row = candidate as Record<string, unknown>;
             if (typeof row.nativeId !== 'string' || !/^\d+$/.test(row.nativeId)) return [];
@@ -424,14 +434,66 @@ export function createReservationWorkflowV2CandidateReader(input: {
               lastName: typeof row.lastName === 'string' ? row.lastName : null,
               email: typeof row.email === 'string' ? row.email : null, phoneNumber: typeof row.phoneNumber === 'string' ? row.phoneNumber : null }];
           }) : [];
-          const coverage = search.coverage && typeof search.coverage === 'object' ? search.coverage as Record<string, unknown> : {};
-          const verified = ['matches', 'no_match'].includes(String(search.outcome)) && coverage.complete === true &&
-            closed.outcome === 'closed_unsaved';
+          const searchId = typeof search.searchId === 'string' ? search.searchId : null;
+          const loaded = typeof coverage.loaded === 'number' && Number.isInteger(coverage.loaded) && coverage.loaded >= 0
+            ? coverage.loaded : null;
+          const maxCandidates = 100;
+          const rows = [...initialRows];
+          let enumerationComplete = Boolean(searchId && loaded !== null && loaded <= maxCandidates &&
+            criteria.field === read.field && criteria.query === read.query &&
+            search.returned === Math.min(25, loaded) && initialRows.length === Math.min(25, loaded));
+          while (enumerationComplete && loaded !== null && rows.length < loaded) {
+            const offset = rows.length;
+            let inspected: Record<string, unknown>;
+            try { inspected = await profile.inspectGuestProfileCandidates(page, { searchId: searchId!, offset, limit: 50 }); }
+            catch { inspected = { outcome: 'execution_failure' }; }
+            const pageRows = Array.isArray(inspected.candidates) ? inspected.candidates.flatMap((candidate) => {
+              if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return [];
+              const row = candidate as Record<string, unknown>;
+              if (typeof row.nativeId !== 'string' || !/^\d+$/.test(row.nativeId)) return [];
+              return [{ nativeId: row.nativeId, firstName: typeof row.firstName === 'string' ? row.firstName : null,
+                lastName: typeof row.lastName === 'string' ? row.lastName : null,
+                email: typeof row.email === 'string' ? row.email : null, phoneNumber: typeof row.phoneNumber === 'string' ? row.phoneNumber : null }];
+            }) : [];
+            const expected = Math.min(50, loaded - offset);
+            const pageCoverage = isRecord(inspected.coverage) ? inspected.coverage : {};
+            const pageCriteria = isRecord(inspected.criteria) ? inspected.criteria : {};
+            if (inspected.outcome !== 'current' || inspected.searchId !== searchId || inspected.offset !== offset ||
+                inspected.returned !== expected || pageRows.length !== expected || inspected.matched !== loaded ||
+                inspected.hasMoreLoaded !== (offset + expected < loaded) || pageCoverage.loaded !== coverage.loaded ||
+                pageCoverage.possiblyTruncated !== coverage.possiblyTruncated || pageCriteria.field !== read.field ||
+                pageCriteria.query !== read.query) {
+              enumerationComplete = false;
+              break;
+            }
+            rows.push(...pageRows);
+          }
+          const nativeIds = rows.map((row) => row.nativeId);
+          const candidatesCorrelated = loaded !== null && rows.length === loaded && new Set(nativeIds).size === rows.length &&
+            rows.every((row) => typeof row.firstName === 'string' && row.firstName.trim() &&
+              typeof row.lastName === 'string' && row.lastName.trim() &&
+              (read.field === 'email'
+                ? typeof row.email === 'string' && row.email.trim().toLocaleLowerCase('en-US') === read.query.toLocaleLowerCase('en-US')
+                : row.lastName.trim().toLocaleLowerCase('en-US') === read.query.toLocaleLowerCase('en-US')));
+          const requiredFields = ['guestid', 'firstname', 'lastname', ...(read.field === 'email' ? ['emailaddress'] : [])];
+          const completeEnumeration = ['matches', 'no_match'].includes(String(search.outcome)) && searchId &&
+            criteria.field === read.field && criteria.query === read.query && loaded !== null &&
+            coverage.possiblyTruncated === false && coverage.truncated === false && coverage.serverMoreRecords === false &&
+            enumerationComplete && candidatesCorrelated &&
+            requiredFields.every((field) => verifiedFields.includes(field)) &&
+            (loaded > 0 ? search.outcome === 'matches' : search.outcome === 'no_match');
+          // The search result is only usable while the live picker remains current. Close only after every
+          // page is correlated, then include that verified cancellation in the read-completeness decision.
+          const closed = await profile.closeGuestProfilePicker(page).catch(() => ({ outcome: 'close_uncertain' }));
+          const verified = Boolean(completeEnumeration && closed.outcome === 'closed_unsaved');
+          const verifiedRows = candidatesCorrelated && verifiedFields.includes('guestid') &&
+            verifiedFields.includes('firstname') && verifiedFields.includes('lastname') ? rows : initialRows;
           const result: ReservationWorkflowV2ReadResult = {
             status: verified ? 'complete' : String(search.outcome) === 'execution_failure' || closed.outcome === 'close_uncertain' ? 'failed' : 'partial',
-            result: { outcome: search.outcome, field: read.field, query: read.query, candidates: rows,
-              coverage, observedAt: search.observedAt ?? null, closeOutcome: closed.outcome },
-            coverage: { complete: verified, notes: verified ? [] : ['Guest-profile match is partial, truncated or picker close was not verified.'] },
+            result: { outcome: search.outcome, field: read.field, query: read.query, searchId,
+              criteria, correlation: { verifiedFields }, candidates: verifiedRows, coverage,
+              enumeratedCount: rows.length, observedAt: search.observedAt ?? null, closeOutcome: closed.outcome },
+            coverage: { complete: verified, notes: verified ? [] : ['Guest-profile enumeration, response/grid correlation, identity fields or unsaved picker close was not fully verified.'] },
           };
           for (const item of read.items) output.set(item.id, result);
         }
@@ -836,6 +898,26 @@ function addCreateExistingReferenceGuard(input: {
   }
 }
 
+function applyDefaultCmsSendPolicy(
+  proposalInput: ReservationWorkflowV2Proposal,
+  propertyCode: string,
+): ReservationWorkflowV2Proposal {
+  const proposal = structuredClone(proposalInput);
+  if (propertyCode !== 'HRCEN') return proposal;
+  for (const request of proposal.content.requests) {
+    if (request.kind !== 'create' || !request.body.allocations.some((allocation) =>
+      Boolean(allocation.guest.firstName?.trim() && allocation.guest.lastName?.trim()))) continue;
+    const cmsSend = request.body.shared.cmsSend;
+    if (cmsSend === false || isRecord(cmsSend) && cmsSend.kind === 'none') continue;
+    if (cmsSend !== null && cmsSend !== undefined) continue;
+    const path = `/proposal/content/requests/${request.id}/body/shared/cmsSend`;
+    request.body.shared.cmsSend = true;
+    proposal.annotations = proposal.annotations.filter((annotation) => annotation.path !== path);
+    proposal.annotations.push({ path, basis: 'policy', evidenceRefs: [] });
+  }
+  return proposal;
+}
+
 function addRequestConfirmationSafety(input: {
   proposal: ReservationWorkflowV2Proposal;
   extraction: ReservationWorkflowV2Extraction;
@@ -863,7 +945,7 @@ function addRequestConfirmationSafety(input: {
   return { proposal };
 }
 
-type BoundGuestObservation = { originalRef: string; observation: ReservationWorkflowV2Observation; candidateCount: number };
+type BoundGuestCandidate = { read: ReservationWorkflowV2Observation; row: Record<string, unknown>; sourceRefs: Set<string> };
 function bindGuestProfileObservations(input: {
   proposal: ReservationWorkflowV2Proposal;
   extraction: ReservationWorkflowV2Extraction;
@@ -882,14 +964,14 @@ function bindGuestProfileObservations(input: {
     for (const [allocationIndex, allocation] of request.body.allocations.entries()) {
       const guest = allocation.guest;
       const originalRefs = [...new Set([...guest.candidateRefs, ...(guest.suggestedRef ? [guest.suggestedRef] : [])])];
-      const originalSuggestedRef = guest.suggestedRef;
       const fullName = [guest.firstName, guest.lastName].filter((part): part is string => typeof part === 'string' && part.trim().length > 0).join(' ');
       const email = typeof guest.email === 'string' ? guest.email.trim().toLocaleLowerCase('en-US') : '';
       const sourceGuests = guest.profileIntent === 'requested_new' ? [] : extractedGuests.filter((sourceGuest) => {
         const sourceName = typeof sourceGuest.name?.value === 'string' ? sourceGuest.name.value : '';
         const sourceEmail = typeof sourceGuest.email?.value === 'string' ? sourceGuest.email.value.trim().toLocaleLowerCase('en-US') : '';
-        return Boolean(email && sourceEmail && email === sourceEmail) ||
-          Boolean(fullName && sourceName && normalizedIdentity(fullName) === normalizedIdentity(sourceName));
+        const nameMatches = Boolean(fullName && sourceName && normalizedIdentity(fullName) === normalizedIdentity(sourceName));
+        const emailMatches = Boolean(email && sourceEmail && email === sourceEmail);
+        return (nameMatches || emailMatches) && (!fullName || nameMatches) && (!email || emailMatches);
       });
       const matchedGuestRefs = new Set(sourceGuests.flatMap((sourceGuest) => [
         ...(sourceGuest.name?.sourceRefs ?? []), ...(sourceGuest.email?.sourceRefs ?? []),
@@ -897,34 +979,56 @@ function bindGuestProfileObservations(input: {
       const reads = input.observations.filter((observation) => observation.kind === 'guest_candidate' &&
         observation.criteria.requestId === extractedRequest.id && observation.criteria.role === 'guest' &&
         observation.sourceRefs.some((ref) => matchedGuestRefs.has(ref)));
-      const bound: BoundGuestObservation[] = [];
+      const eligibleByNativeId = new Map<string, BoundGuestCandidate>();
       if (sourceGuests.length) for (const read of reads) {
-        const fieldPath = `/proposal/content/requests/${request.id}/body/allocations/${allocationIndex}/guest/nativeSelectionRef`;
-        const suggestedFieldPath = `/proposal/content/requests/${request.id}/body/allocations/${allocationIndex}/guest/suggestedRef`;
-        const ref = `obs_${stableId(read.ref, request.id, allocation.id, 'guest-binding')}`;
-        const observation: ReservationWorkflowV2Observation = { ...read, ref, generationId: input.generationId,
-          criteria: { ...read.criteria, workflow: 'create', role: 'guest', requestId: request.id, allocationId: allocation.id,
-            fieldPath, fieldPaths: [fieldPath, suggestedFieldPath] } };
-        added.push(observation);
-        const rows = Array.isArray(read.result.candidates) ? read.result.candidates.filter((row) => isRecord(row) &&
-          typeof row.nativeId === 'string' && /^\d+$/.test(row.nativeId)) : [];
-        bound.push({ originalRef: read.ref, observation, candidateCount: rows.length });
-        newLookupRefs.push(ref);
+        const readName = typeof read.criteria.name === 'string' ? read.criteria.name : '';
+        const readEmail = typeof read.criteria.email === 'string' ? read.criteria.email.trim().toLocaleLowerCase('en-US') : '';
+        const matchingSourceGuests = sourceGuests.filter((sourceGuest) => {
+          const sourceName = typeof sourceGuest.name?.value === 'string' ? sourceGuest.name.value : '';
+          const sourceEmail = typeof sourceGuest.email?.value === 'string' ? sourceGuest.email.value.trim().toLocaleLowerCase('en-US') : '';
+          return Boolean(readEmail && sourceEmail && readEmail === sourceEmail) ||
+            Boolean(readName && sourceName && normalizedIdentity(readName) === normalizedIdentity(sourceName));
+        });
+        if (!matchingSourceGuests.length || read.status !== 'complete' || read.coverage.complete !== true ||
+            !['matches', 'no_match'].includes(String(read.result.outcome))) continue;
+        const verifiedFields = isRecord(read.result.correlation) && Array.isArray(read.result.correlation.verifiedFields)
+          ? read.result.correlation.verifiedFields.filter((field): field is string => typeof field === 'string') : [];
+        if (!['guestid', 'firstname', 'lastname'].every((field) => verifiedFields.includes(field))) continue;
+        const rows = Array.isArray(read.result.candidates) ? read.result.candidates.filter(isRecord) : [];
+        for (const row of rows) {
+          if (typeof row.nativeId !== 'string' || !/^\d+$/.test(row.nativeId) ||
+              typeof row.firstName !== 'string' || typeof row.lastName !== 'string') continue;
+          const exactSourceMatch = matchingSourceGuests.some((sourceGuest) => {
+            const sourceName = typeof sourceGuest.name?.value === 'string' ? sourceGuest.name.value : '';
+            const sourceEmail = typeof sourceGuest.email?.value === 'string' ? sourceGuest.email.value.trim().toLocaleLowerCase('en-US') : '';
+            const nameMatches = Boolean(sourceName && normalizedIdentity(`${row.firstName} ${row.lastName}`) === normalizedIdentity(sourceName));
+            const emailMatches = Boolean(sourceEmail && verifiedFields.includes('emailaddress') && typeof row.email === 'string' &&
+              row.email.trim().toLocaleLowerCase('en-US') === sourceEmail);
+            return sourceEmail ? emailMatches && (!sourceName || nameMatches) : nameMatches;
+          });
+          if (!exactSourceMatch) continue;
+          const current = eligibleByNativeId.get(row.nativeId);
+          if (current) for (const ref of read.sourceRefs) current.sourceRefs.add(ref);
+          else eligibleByNativeId.set(row.nativeId, { read, row, sourceRefs: new Set(read.sourceRefs) });
+        }
       }
-      const boundByOriginal = new Map(bound.map((row) => [row.originalRef, row]));
-      const selectableRefs = bound.filter((row) => row.candidateCount > 0).map((row) => row.observation.ref);
-      const remappedRefs = originalRefs.flatMap((ref) => {
-        const row = boundByOriginal.get(ref);
-        return row?.candidateCount ? [row.observation.ref] : [];
+      const fieldPath = `/proposal/content/requests/${request.id}/body/allocations/${allocationIndex}/guest/nativeSelectionRef`;
+      const suggestedFieldPath = `/proposal/content/requests/${request.id}/body/allocations/${allocationIndex}/guest/suggestedRef`;
+      const bound = [...eligibleByNativeId.values()].slice(0, 100).map(({ read, row, sourceRefs }, candidateIndex) => {
+        const ref = `obs_${stableId(read.ref, request.id, allocation.id, String(row.nativeId), 'guest-binding')}`;
+        const observation: ReservationWorkflowV2Observation = { ...read, ref, generationId: input.generationId,
+          sourceRefs: [...sourceRefs], criteria: { ...read.criteria, workflow: 'create', role: 'guest', requestId: request.id,
+            allocationId: allocation.id, fieldPath, fieldPaths: [fieldPath, suggestedFieldPath], candidateIndex,
+            candidateNativeId: row.nativeId }, result: { ...read.result, candidates: [row] } };
+        added.push(observation);
+        newLookupRefs.push(ref);
+        return observation;
       });
-      const retainedRefs = [...new Set([...selectableRefs, ...remappedRefs])].slice(0, 100);
-      const suggested = originalSuggestedRef ? boundByOriginal.get(originalSuggestedRef) : undefined;
-      const suggestedRefWasCleared = Boolean(originalSuggestedRef && suggested && suggested.candidateCount !== 1);
-      guest.candidateRefs = retainedRefs;
-      // A suggested observation is meaningful only when its host read returned exactly one profile.
-      guest.suggestedRef = suggested?.candidateCount === 1 ? suggested.observation.ref : null;
-      const removedRefs = [...new Set([...originalRefs.filter((ref) => !boundByOriginal.get(ref)?.candidateCount),
-        ...(suggestedRefWasCleared && originalSuggestedRef ? [originalSuggestedRef] : [])])];
+      guest.candidateRefs = bound.map((observation) => observation.ref);
+      // Only a single exact-source-identity match may be suggested; duplicate profiles stay separate staff choices.
+      guest.suggestedRef = bound.length === 1 && eligibleByNativeId.size === 1 ? bound[0]!.ref : null;
+      const boundReadRefs = new Set([...eligibleByNativeId.values()].map((candidate) => candidate.read.ref));
+      const removedRefs = originalRefs.filter((ref) => !boundReadRefs.has(ref));
       if (removedRefs.length) {
         const evidenceRefs = [...new Set([...matchedGuestRefs, ...removedRefs.filter((ref) =>
           input.observations.some((observation) => observation.ref === ref))])].slice(0, 100);
@@ -933,6 +1037,14 @@ function bindGuestProfileObservations(input: {
           explanation: 'Unbound or empty guest-profile references were removed from selectable candidates; only source-identity-matched host reads can populate this field.',
           evidenceRefs });
       }
+      if (bound.length === 0 && sourceGuests.length && reads.length) proposal.issues.push({
+        path: `/requests/${request.id}/allocations/${allocation.id}/guest/candidateRefs`, kind: 'guest_profile_identity_unverified',
+        explanation: 'No complete, correlated native profile matched all available source identity claims; staff must search or select a profile manually.',
+        evidenceRefs: [...new Set([...matchedGuestRefs, ...reads.map((read) => read.ref)])].slice(0, 100) });
+      if (eligibleByNativeId.size > bound.length) proposal.issues.push({
+        path: `/requests/${request.id}/allocations/${allocation.id}/guest/candidateRefs`, kind: 'guest_profile_candidate_cap',
+        explanation: 'The native guest-profile result exceeded the per-allocation candidate cap; omitted candidates remain unavailable for selection.',
+        evidenceRefs: [...new Set([...matchedGuestRefs, ...reads.map((read) => read.ref)])].slice(0, 100) });
       if (!sourceGuests.length && (guest.firstName || guest.lastName || guest.email)) {
         const queryRefs = input.observations.filter((observation) => observation.kind === 'guest_candidate' &&
           observation.criteria.requestId === extractedRequest.id).map((observation) => observation.ref);
@@ -1205,7 +1317,8 @@ export async function runReservationWorkflowV2Prefill(input: {
     extraction, observations, generationId }) : null;
   const finalObservations = guestBinding?.observations ?? observations;
   const referenceSafety = guestBinding ? addRequestConfirmationSafety({ proposal: guestBinding.proposal, extraction }) : null;
-  const finalProposal = referenceSafety?.proposal ?? (finalParsed?.success ? finalParsed.data.proposal : null);
+  const guardedProposal = referenceSafety?.proposal ?? (finalParsed?.success ? finalParsed.data.proposal : null);
+  const finalProposal = guardedProposal ? applyDefaultCmsSendPolicy(guardedProposal, input.propertyCode) : null;
   const finalReviewRequirements = finalParsed?.success ? finalParsed.data.reviewRequirements ?? {} : {};
   const proposalIssue = finalParsed?.success && finalProposal
     ? validateProposal(finalProposal, evidence, finalObservations) : null;
@@ -1220,7 +1333,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     const fallbackProposal = buildFallbackProposal({ extraction, source: input.source, evidence, reason });
     const fallbackSafety = addRequestConfirmationSafety({ proposal: fallbackProposal, extraction });
     return { ...base, status: 'partial', observations: finalObservations,
-      proposal: fallbackSafety.proposal, fieldReviewRequirements: {},
+      proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, input.propertyCode), fieldReviewRequirements: {},
       errors: [...readErrors, { stage: 'synthesis', ...error }] };
   }
   return { ...base, observations: finalObservations,
