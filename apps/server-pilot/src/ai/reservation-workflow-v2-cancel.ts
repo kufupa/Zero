@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, readFile, rm } from 'node:fs/promises';
+import { copyFile, lstat, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { and, eq, isNull } from 'drizzle-orm';
@@ -14,13 +14,13 @@ import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import { acquisitionWithin, isPropertyReadLockDeadline, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
 import { paneStayCloudTargetLock, paneWriteMode } from './pane-stay-save.js';
+import { lockCreateActorSession } from './pane-create-actor-lock.js';
 import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
 import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError,
   resolveHmsLabtestDispatch, type HmsLabtestIntent, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
-import { recordHmsWriteEvidence } from './hms-approval.js';
+import { persistHmsShots, verifyStoredHmsShot } from './hms-shots-store.js';
 import { runCloudCancellation } from './pane-cloud-cancel.js';
 import { projectCloudCancellationPreview } from './hms-cloud-cancellation-preview.js';
-import { proveCancelRecovery, withCancelRecoveryLock } from './pane-cloud-cancel-recovery.js';
 import {
   reservationWorkflowV2DraftSchema,
   type ReservationWorkflowV2Draft,
@@ -43,11 +43,12 @@ import {
 export type ReservationWorkflowV2CancelContext = {
   db: DB;
   transport: { id: string };
-  user: { id: string };
+  user: { id: string; sessionId?: string; sessionProfile?: 'legacy' | 'remote' };
   property: { propertyCode: string };
 };
 
 type StateContext = { db: DB; transportId: string; userId: string; propertyCode: string };
+type CancelActorSession = { sessionId: string; sessionProfile: 'legacy' | 'remote' };
 type CancelOutcome = { status: string; issue?: string; [key: string]: unknown };
 type Tx = Parameters<Parameters<DB['transaction']>[0]>[0];
 type NativeCancelResult = {
@@ -588,7 +589,9 @@ function operationById(draft: ReservationWorkflowV2Draft, operationId: string) {
 }
 
 async function assertCurrentCancel(tx: Tx, ctx: ReservationWorkflowV2CancelContext, input: ReservationWorkflowV2ExecuteInput,
-  compiled: Extract<CancelCompile, { outcome: 'ok' }>, preparedRef: string, approval: string): Promise<void> {
+  compiled: Extract<CancelCompile, { outcome: 'ok' }>, preparedRef: string, approval: string,
+  actorSession: CancelActorSession): Promise<void> {
+  await lockCreateActorSession(tx, { actorUserId: ctx.user.id, ...actorSession });
   const [item] = await tx.select({ state: workItem.state, revision: workItem.revision, revisionSeq: workItem.revisionSeq,
     sourceMessageId: workItem.sourceMessageId, threadId: workItem.threadId })
     .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id)))
@@ -664,17 +667,33 @@ function screenshotPath(result: NativeCancelResult | null, name: 'before.png' | 
   return screenshots.find((path): path is string => typeof path === 'string' && path === join(result!.runDir as string, name)) ?? null;
 }
 
-async function sealCancelScreenshot(ctx: ReservationWorkflowV2CancelContext, workItemId: string,
-  runId: string, path: string | null, sourceDir: string, name: 'before.png' | 'saved.png') {
-  if (!path || dirname(path) !== sourceDir || (name === 'before.png' ? basename(path) !== name : basename(path) !== 'after.png')) {
-    return null;
-  }
-  const [directory, file] = await Promise.all([lstat(sourceDir).catch(() => null), lstat(path).catch(() => null)]);
-  if (!directory?.isDirectory() || directory.uid !== process.getuid?.() || (directory.mode & 0o077) !== 0 ||
-      !file?.isFile() || file.uid !== process.getuid?.()) return null;
-  const sealed = await recordHmsWriteEvidence({ db: ctx.db, transportId: ctx.transport.id, workItemId, runId, name,
-    png: await readFile(path) });
-  return { runId, sha256: sealed.sha256, eventId: sealed.eventId };
+async function storeCancelScreenshot(ctx: ReservationWorkflowV2CancelContext, workItemId: string, runId: string,
+  name: 'before.png' | 'saved.png', source: { path: string; sourceDir: string } | { bytes: Buffer },
+  owner = `${ctx.user.id}:${ctx.transport.id}`) {
+  const stage = await mkdtemp(join(tmpdir(), 'reservation-v2-cancel-shots-'));
+  try {
+    const destination = join(stage, name);
+    if ('path' in source) {
+      const expectedNativeName = name === 'before.png' ? 'before.png' : 'after.png';
+      if (!safeRunDir(source.sourceDir) || dirname(source.path) !== source.sourceDir ||
+          source.path !== join(source.sourceDir, expectedNativeName)) return null;
+      const [directory, file] = await Promise.all([lstat(source.sourceDir).catch(() => null),
+        lstat(source.path).catch(() => null)]);
+      if (!directory?.isDirectory() || directory.uid !== process.getuid?.() || (directory.mode & 0o077) !== 0 ||
+          !file?.isFile() || file.uid !== process.getuid?.()) return null;
+      await copyFile(source.path, destination);
+    } else {
+      if (!Buffer.isBuffer(source.bytes) || !source.bytes.length) return null;
+      await writeFile(destination, source.bytes, { mode: 0o600 });
+    }
+    const shots = await persistHmsShots({ propertyCode: 'HRCEN', workItemId, runId, sourceDir: stage, owner, now: Date.now() });
+    const shot = shots?.find((item) => item.name === name);
+    if (!shot || !await verifyStoredHmsShot({ runId, name, sha256: shot.sha256, owner, propertyCode: 'HRCEN', workItemId }, name)) {
+      return null;
+    }
+    return { runId, sha256: shot.sha256 };
+  } catch { return null; }
+  finally { await rm(stage, { recursive: true, force: true }).catch(() => {}); }
 }
 
 function preparedObservation(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2PrepareInput |
@@ -704,6 +723,10 @@ function reviewRequestFor(previewRefs: string[], reviewPath: string, item: Reser
 export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflowV2CancelContext,
   input: ReservationWorkflowV2ExecuteInput): Promise<CancelOutcome> {
   if (!z.string().uuid().safeParse(input.idempotencyKey).success) return { status: 'invalid_input', issue: 'cancel_idempotency_key_invalid' };
+  const actorSession = z.object({ sessionId: z.string().min(1).max(512).refine((value) => value === value.trim() &&
+    ![...value].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)),
+    sessionProfile: z.enum(['legacy', 'remote']) }).safeParse(ctx.user);
+  if (!actorSession.success) return { status: 'unauthenticated', issue: 'cancel_authenticated_session_required' };
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;
   const prior = operationById(loaded.draft, input.idempotencyKey);
@@ -790,7 +813,7 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
       const runId = randomUUID();
       let handle: HmsLabtestWriteHandle | null = null, native: NativeCancelResult | null = null;
       let claimError: string | null = null;
-      let beforeReceipt: { eventId: string; sha256: string } | null = null;
+      let beforeReceipt: { runId: string; name: 'before.png'; sha256: string } | null = null;
       let nativeRequestDigest: string | null = null, claimRequestDigest: string | null = null, claimDigest: string | null = null;
       let beforeScreenshotPath: string | null = null, acceptedPenaltyText: string | null = null;
       const continuationAllowed = () => paneWriteMode('cancel', 'unpaid') === 'on';
@@ -799,10 +822,10 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
             !safeRunDir(dirname(beforePath)) || beforePath !== join(dirname(beforePath), 'before.png')) {
           throw new Error('cancel_native_dispatch_binding_invalid');
         }
-        const before = await sealCancelScreenshot(ctx, input.workItemId, runId, beforePath,
-          dirname(beforePath), 'before.png');
+        const before = await storeCancelScreenshot(ctx, input.workItemId, runId, 'before.png',
+          { path: beforePath, sourceDir: dirname(beforePath) });
         if (!before) throw new Error('cancel_before_evidence_unavailable');
-        const beforeEvidenceReceipt = { eventId: before.eventId, sha256: before.sha256 };
+        const beforeEvidenceReceipt = { runId, name: 'before.png' as const, sha256: before.sha256 };
         beforeReceipt = beforeEvidenceReceipt;
         beforeScreenshotPath = beforePath;
         const intentDigest = sha256({ semanticDigest: compiled.semanticDigest, approval, idempotencyKey: input.idempotencyKey,
@@ -819,7 +842,7 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
             firstName: fresh.preimage.firstName, lastName: fresh.preimage.lastName,
             nativeGuestId: fresh.preimage.guestId, operation: 'cancel', target: expectedTarget,
             sourceDigest: input.source.sourceHash, approvedDigest: approval, requestDigest, recovery },
-          async (tx) => assertCurrentCancel(tx, ctx, input, compiled, prepared.item.ref, approval), epoch);
+          async (tx) => assertCurrentCancel(tx, ctx, input, compiled, prepared.item.ref, approval, actorSession.data), epoch);
         } catch (error) {
           claimError = error instanceof HmsLabtestDispatchError ? `cancel_dispatch_${error.reason}` : 'cancel_dispatch_claim_failed';
           throw error;
@@ -845,7 +868,8 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
             if (!fresh.penaltyText || dialogText !== fresh.penaltyText || !/^(?:OK|Yes|Accept)$/i.test(button) ||
                 !continuationAllowed()) return false;
             try {
-              await ctx.db.transaction((tx) => assertCurrentCancel(tx, ctx, input, compiled, prepared.item.ref, approval));
+              await ctx.db.transaction((tx) => assertCurrentCancel(tx, ctx, input, compiled, prepared.item.ref,
+                approval, actorSession.data));
               acceptedPenaltyText = dialogText;
               return true;
             } catch { return false; }
@@ -912,7 +936,8 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
       }
       const afterPath = screenshotPath(native, 'after.png');
       const runDir = afterPath ? dirname(afterPath) : null;
-      const savedShot = runDir ? await sealCancelScreenshot(ctx, input.workItemId, runId, afterPath, runDir, 'saved.png') : null;
+      const savedShot = runDir ? await storeCancelScreenshot(ctx, input.workItemId, runId, 'saved.png',
+        { path: afterPath!, sourceDir: runDir }) : null;
       if (!savedShot || !readback.success) {
         const unresolved = observation(loaded.draft, input, compiled.requestId, compiled.hintId, 'execute', 'partial',
           { semanticDigest: compiled.semanticDigest, approvedDigest: approval, dispatchHoldId: handle.holdId },
@@ -989,6 +1014,8 @@ export async function reservationWorkflowV2CancelReconcile(ctx: ReservationWorkf
   const rows = await ctx.db.select({ id: workEvent.id, value: workEvent.value }).from(workEvent)
     .where(and(eq(workEvent.workItemId, input.workItemId), eq(workEvent.type, 'write.evidence'),
       eq(workEvent.fieldPath, CANCEL_DISPATCH_FIELD))).limit(5000);
+  if (rows.length === 5000) return { status: 'needs_reconcile', operationId: input.operationId,
+    issue: 'cancel_dispatch_evidence_scan_truncated' };
   const intents = rows.map((row) => ({ id: row.id, value: record(row.value) })).filter((row) =>
     row.value?.kind === 'intent' && row.value.operation === 'cancel' && row.value.grantId === input.operationId &&
     row.value.workItemId === input.workItemId && row.value.transportId === ctx.transport.id);
@@ -1011,13 +1038,50 @@ export async function reservationWorkflowV2CancelReconcile(ctx: ReservationWorkf
     return { status: 'needs_reconcile', operationId: input.operationId, dispatchHoldId: intent.holdId,
       issue: 'cancel_dispatch_intent_scope_changed' };
   }
+  const recovery = record(intent.recovery), before = record(recovery?.before), target = currentTarget(ctx);
+  const boundTarget = hmsDispatchTargetSchema.safeParse(intent.target);
+  const preimage = cancelPreimageSchema.safeParse(recovery?.preimage);
+  if (!recovery || !before || !target || !boundTarget.success || boundTarget.data.kind !== 'saved' ||
+      !boundTarget.data.nativeStayId || !boundTarget.data.confirmation || !preimage.success ||
+      recovery.runId !== before.runId || before.name !== 'before.png' ||
+      recovery.confirmation !== boundTarget.data.confirmation || recovery.nativeStayId !== boundTarget.data.nativeStayId ||
+      preimage.data.confirmation !== boundTarget.data.confirmation || preimage.data.nativeStayId !== boundTarget.data.nativeStayId ||
+      typeof before.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(before.sha256)) {
+    return { status: 'needs_reconcile', operationId: input.operationId, dispatchHoldId: intent.holdId,
+      issue: 'cancel_recovery_evidence_scope_unverified', holdReleased: false };
+  }
+  const owner = `${intent.actorUserId}:${intent.transportId}`;
+  const targetLock = paneStayCloudTargetLock(target, boundTarget.data, { kind: 'independent_cloud' });
+  if (!targetLock) return { status: 'needs_reconcile', operationId: input.operationId, dispatchHoldId: intent.holdId,
+    issue: 'cancel_target_lock_unavailable', holdReleased: false };
   try {
-    const proof = await withCancelRecoveryLock(intent, () => proveCancelRecovery(ctx.db, intent));
+    const proof = await targetLock.withLock(async () => {
+      if (!await verifyStoredHmsShot({ runId: String(recovery.runId), name: 'before.png', sha256: before.sha256 as string,
+        owner, propertyCode: 'HRCEN', workItemId: input.workItemId }, 'before.png')) throw new Error('cancel_before_shot_unavailable');
+      const native = await import(new URL('../../tooling/hms-cloud/pane-cancel-session.mjs', import.meta.url).href) as {
+        provePositiveCancelRecovery(intent: HmsLabtestIntent): Promise<{ outcome: string; confirmation?: unknown;
+          readback?: unknown; screenshot?: unknown }>;
+      };
+      const observed = await native.provePositiveCancelRecovery(intent);
+      const readback = z.object({ confirmation: z.string(), nativeStayId: z.string().regex(/^\d{1,100}$/),
+        nativeGuestId: z.string().regex(/^\d{1,30}$/), status: z.string().regex(/^cancel(?:l)?ed$/i),
+        reasonCode: z.string(), cancellationNote: z.string() }).passthrough().safeParse(observed.readback);
+      if (observed.outcome !== 'verified' || !readback.success || !Buffer.isBuffer(observed.screenshot) ||
+          observed.confirmation !== boundTarget.data.confirmation || readback.data.confirmation !== boundTarget.data.confirmation ||
+          readback.data.nativeStayId !== boundTarget.data.nativeStayId || readback.data.nativeGuestId !== intent.nativeGuestId ||
+          readback.data.reasonCode !== recovery.reasonCode || readback.data.cancellationNote !== recovery.cancellationNote) {
+        throw new Error('cancel_recovery_readback_unavailable');
+      }
+      const screenshot = await storeCancelScreenshot(ctx, input.workItemId, String(recovery.runId), 'saved.png',
+        { bytes: observed.screenshot }, owner);
+      if (!screenshot) throw new Error('cancel_recovery_screenshot_unavailable');
+      return { readback: readback.data, screenshot };
+    }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
     const positive = observation(initial.draft, input, operation.requestId, operation.allocationId ?? 'cancel',
       'reconcile', 'partial', { operationId: input.operationId, dispatchHoldId: intent.holdId,
-        positiveReadbackDigest: proof.readbackDigest },
-      { outcome: 'cancelled_readback_verified', confirmation: proof.confirmation, nativeStayId: proof.nativeStayId,
-        nativeReadback: proof.nativeReadback, screenshot: proof.screenshot,
+        positiveReadbackDigest: sha256(proof.readback) },
+      { outcome: 'cancelled_readback_verified', confirmation: proof.readback.confirmation,
+        nativeStayId: proof.readback.nativeStayId, nativeReadback: proof.readback, savedShot: proof.screenshot,
         financialState: 'unknown_after_interrupted_cancel', holdReleased: false },
       ['penalty_or_fee_state_cannot_be_recovered_from_status_readback']);
     await recordOperation(ctx, input, operation.requestId, operation.allocationId ?? 'cancel', positive, 'unknown',
