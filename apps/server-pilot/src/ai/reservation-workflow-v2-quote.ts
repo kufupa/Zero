@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
 import { user } from '../db/schema/auth.js';
@@ -62,7 +62,6 @@ type QuoteOperationResult = {
   updatedAt: string;
   summary: string | null;
 };
-type QuoteDraftWithResults = ReservationWorkflowV2Draft & { operationResults?: QuoteOperationResult[] };
 type Outcome = { status: string; issue?: string; [key: string]: unknown };
 type QuoteRunResult = Record<string, unknown>;
 
@@ -173,7 +172,7 @@ function selectedParty(
       observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
       observation.sourceMessageId !== draft.source.messageId || criteria?.workflow !== 'quote' ||
       criteria.requestId !== request.id || criteria.role !== role ||
-      !sameName(criteria.searchName, name) || !cleanText(candidate?.nativeId) || !cleanText(candidate?.name)) {
+      !sameName(criteria.searchName, name) || !candidate || !cleanText(candidate.nativeId) || !cleanText(candidate.name)) {
     return { reviewPaths: [], issue: `${role}_candidate_unverified` };
   }
   const reviewPaths = execute
@@ -538,7 +537,8 @@ async function persistResult(
 }
 
 function operationResults(draft: ReservationWorkflowV2Draft): QuoteOperationResult[] {
-  return ((draft as QuoteDraftWithResults).operationResults ?? []).filter((result) => result.workflow === 'quote');
+  return draft.operationResults.filter((result): result is QuoteOperationResult =>
+    result.workflow === 'quote' && result.allocationId === null);
 }
 
 function operationObservation(draft: ReservationWorkflowV2Draft, operationId: string) {
@@ -637,7 +637,7 @@ async function lookupPartyCandidates(
     });
     if (prior.length) {
       candidates.push(...prior.filter((entry) => entry.status === 'complete').map((entry) => ({
-        ...(record(entry.result) ?? {}), ref: entry.ref,
+        ...entry.result, ref: entry.ref,
       })));
       continue;
     }
