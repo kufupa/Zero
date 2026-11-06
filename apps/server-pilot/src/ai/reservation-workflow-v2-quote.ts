@@ -161,10 +161,10 @@ function selectedParty(
   const selectionPath = ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role, 'nativeSelectionRef');
   const partyLeaf = resolvedLeaf(draft, basePath, raw);
   if ('issue' in partyLeaf) return { reviewPaths: [], issue: `${role}_${partyLeaf.issue}` };
-  const value = record(partyLeaf.value);
+  const value = isNone(partyLeaf.value) ? null : record(partyLeaf.value);
   // Child name edits can create a party even when extraction supplied null or no party object.
   // An explicit parent clear still wins over stale child overrides.
-  const allowChildName = !partyLeaf.overridden && !isNone(raw);
+  const allowChildName = !partyLeaf.overridden;
   const named = !value && !allowChildName
     ? { value: undefined, path: namePath }
     : resolvedLeaf(draft, namePath, value?.name);
