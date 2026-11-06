@@ -37,10 +37,27 @@ const text = (value: unknown): string => {
 };
 const encoded = (value: string | number) => encodeURIComponent(String(value));
 const requestPath = (request: ReservationRequestProjection) => `/proposal/content/requests/${encoded(request.id)}`;
-const bodyPath = (request: ReservationRequestProjection) => `${requestPath(request)}/body`;
 const hasValue = (value: unknown) => value !== null && value !== undefined
   && !(record(value)?.kind === 'none') && !(typeof value === 'string' && value.trim() === '');
 const humanize = (value: string) => value.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').replace(/^./, (letter) => letter.toUpperCase());
+const sameIdentityText = (left: unknown, right: unknown) => text(left).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase()
+  === text(right).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
+
+function guestSelectionMatches(snapshot: ReservationPaneSnapshot, path: string, guest: { firstName: unknown; lastName: unknown; email?: unknown }): boolean {
+  const selection = snapshot.fields[path];
+  const ref = selection?.override?.state === 'set' && typeof selection.value === 'string' ? selection.value : null;
+  if (!ref) return false;
+  const observation = snapshot.session.draft.observations.find((item) => item.ref === ref && item.kind === 'guest_candidate'
+    && item.status === 'complete' && ((Array.isArray(item.criteria.fieldPaths) && item.criteria.fieldPaths.includes(path))
+      || item.criteria.fieldPath === path));
+  const candidates = Array.isArray(record(observation?.result)?.candidates) ? record(observation?.result)?.candidates as unknown[] : [];
+  return candidates.some((value) => {
+    const candidate = record(value);
+    return Boolean(candidate && sameIdentityText(candidate.firstName, guest.firstName)
+      && sameIdentityText(candidate.lastName, guest.lastName)
+      && (!hasValue(guest.email) || sameIdentityText(candidate.email, guest.email)) && hasValue(candidate.nativeId));
+  });
+}
 
 function draftAtPath(snapshot: ReservationPaneSnapshot, path: string): unknown {
   const parts = path.split('/').slice(1).map((part) => {
@@ -122,8 +139,9 @@ function isInputReady(snapshot: ReservationPaneSnapshot, request: ReservationReq
     const ageList = Array.isArray(ages) ? ages : [];
     const ageReady = childCount !== null && ageList.length === childCount
       && Array.from(ageList).every((age) => typeof age === 'number' && age >= 0 && age <= 17);
-    const selection = snapshot.fields[`${allocRoot}/guest/nativeSelectionRef`];
-    const profileSelected = selection?.override?.state === 'set' && typeof selection.value === 'string';
+    const profileSelected = guestSelectionMatches(snapshot, `${allocRoot}/guest/nativeSelectionRef`, {
+      firstName, lastName, email: fieldOrBase(snapshot, `${allocRoot}/guest/email`, guest.email),
+    });
     const required = [
       `${sectionRoot}/arrival`, `${sectionRoot}/departure`, `${allocRoot}/guest/firstName`, `${allocRoot}/guest/lastName`,
       `${allocRoot}/occupancy/adults`, `${allocRoot}/occupancy/childCount`, `${allocRoot}/overrides/roomType`, `${allocRoot}/overrides/ratePlan`,
@@ -138,11 +156,7 @@ function isRequestPrepared(snapshot: ReservationPaneSnapshot, request: Reservati
   const allocations = createSections(snapshot, request).allocations;
   return allocations.length > 0 && allocations.every(({ value }) => {
     const allocationId = String(value.id ?? '');
-    return snapshot.session.draft.observations.some((observation) => observation.kind === 'rate_availability'
-      && observation.status === 'complete' && observation.criteria.requestId === request.id
-      && observation.criteria.allocationId === allocationId && observation.criteria.draftRevision === snapshot.session.revision
-      && Boolean(record(observation.result)?.requestBinding && record(record(observation.result)?.ratePlanAvailability)
-        && record(record(observation.result)?.prepareShot)));
+    return snapshot.preparationViews.some((view) => view.requestId === request.id && view.allocationId === allocationId && view.current);
   });
 }
 
@@ -513,9 +527,12 @@ function CreateEditor(props: EditorProps & { onPrepare: () => void; onLookup: ()
           <TextField {...props} path={`${allocationRoot}/guest/mobile`} label="Guest mobile" type="tel" />
         </div>
         <GuestProfileStatus snapshot={snapshot} path={profileChoicePath} guest={guest}
-          expected={{ firstName: props.editValue(`${allocationRoot}/guest/firstName`) ?? guest.firstName,
-            lastName: props.editValue(`${allocationRoot}/guest/lastName`) ?? guest.lastName,
-            email: props.editValue(`${allocationRoot}/guest/email`) ?? guest.email }}
+          expected={{ firstName: Object.hasOwn(snapshot.fields, `${allocationRoot}/guest/firstName`)
+            ? props.editValue(`${allocationRoot}/guest/firstName`) : guest.firstName,
+            lastName: Object.hasOwn(snapshot.fields, `${allocationRoot}/guest/lastName`)
+              ? props.editValue(`${allocationRoot}/guest/lastName`) : guest.lastName,
+            email: Object.hasOwn(snapshot.fields, `${allocationRoot}/guest/email`)
+              ? props.editValue(`${allocationRoot}/guest/email`) : guest.email }}
           onStage={props.onStage} onBlur={props.onBlur} />
         <div className={styles.twoCol}>
           <TextField {...props} path={`${allocationRoot}/occupancy/adults`} label="Adults" type="number" min={1} max={20} />
@@ -636,36 +653,42 @@ function PartyField(props: EditorProps & { path: string; label: string }) {
     const rows = Array.isArray(results?.candidates) ? results.candidates : [];
     return rows.map((candidate) => ({ observationRef: observation.ref, candidate: record(candidate) })).filter((item) => item.candidate);
   });
-  const same = (left: unknown, right: unknown) => text(left).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase()
-    === text(right).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
+  const selectedCandidate = candidates.find((item) => item.observationRef === selectedRef)?.candidate;
+  const selectedMatches = Boolean(selectedCandidate && sameIdentityText(selectedCandidate.name, current.name) && hasValue(selectedCandidate.nativeId));
   return <FieldShell path={props.path} label={props.label} field={field} onOpenEvidence={props.onOpenEvidence}>
     <input id={props.path} className={styles.input} value={String(current.name ?? '')} placeholder="Enter the requested party name"
       onChange={(event) => props.onStage(props.path, { ...current, name: event.target.value, suggestedRef: current.suggestedRef ?? null, candidateRefs: current.candidateRefs ?? [] }, event.target.value ? 'set' : 'none')}
       onBlur={() => props.onBlur(props.path)} />
     <FieldValueState {...props} path={props.path} />
-    {selectedRef && <small className={styles.accepted}>Native candidate selected and reviewed.</small>}
-    {!selectedRef && candidates.map(({ observationRef, candidate }, index) => {
-      const exact = same(candidate?.name, current.name);
+    {selectedMatches && <small className={styles.accepted}>Native candidate selected and reviewed.</small>}
+    {selectedRef && !selectedMatches && <small className={styles.problem}>Saved native selection no longer matches this party name. Select a matching result again.</small>}
+    {!selectedMatches && candidates.map(({ observationRef, candidate }, index) => {
+      const exact = sameIdentityText(candidate?.name, current.name) && hasValue(candidate?.nativeId);
       return <div className={styles.candidateOption} key={`${observationRef}-${String(candidate?.nativeId ?? index)}`}>
         <span><b>{text(candidate?.name)}</b><small>Infor profile {text(candidate?.nativeId)}</small></span>
         {exact ? <button type="button" onClick={() => { props.onStage(selectionPath, observationRef); props.onBlur(selectionPath); }}>Select</button>
           : <small>Search result does not exactly match the entered party name.</small>}
       </div>;
     })}
-    {!selectedRef && <small className={styles.help}>{candidates.length ? 'Select the exact host-observed match.' : 'Refresh native matches; a typed name alone is not a profile selection.'}</small>}
+    {!selectedMatches && <small className={styles.help}>{candidates.length ? 'Select the exact host-observed match.' : 'Refresh native matches; a typed name alone is not a profile selection.'}</small>}
   </FieldShell>;
 }
 
 function ScopedCodeField(props: EditorProps & { path: string; label: string; inherited: string }) {
   const field = props.snapshot.fields[props.path];
-  const [own, setOwn] = useState(field?.override?.state === 'set');
-  useEffect(() => { setOwn(field?.override?.state === 'set'); }, [field?.override?.updatedAt, field?.override?.state]);
+  const ownsValue = ['set', 'none', 'clear'].includes(field?.override?.state ?? '');
+  const [own, setOwn] = useState(ownsValue);
+  useEffect(() => { setOwn(ownsValue); }, [field?.override?.updatedAt, field?.override?.state]);
   const mode = own ? 'own' : field?.override?.state === 'unknown' ? 'unknown' : 'inherit';
   return <div className={styles.scoped}>
     <FieldShell path={`${props.path}-mode`} label={props.label} field={field} onOpenEvidence={props.onOpenEvidence}>
       <select id={`${props.path}-mode`} className={styles.select} value={mode} onChange={(event) => {
         const value = event.target.value;
-        if (value === 'own') { setOwn(true); return; }
+        if (value === 'own') {
+          setOwn(true);
+          if (!ownsValue) { props.onStage(props.path, undefined, 'none'); props.onBlur(props.path); }
+          return;
+        }
         setOwn(false);
         props.onStage(props.path, undefined, value);
         props.onBlur(props.path);
@@ -707,23 +730,22 @@ function GuestProfileStatus({ snapshot, path, guest, expected, onStage, onBlur }
   onStage: EditorProps['onStage']; onBlur: EditorProps['onBlur'];
 }) {
   const selectedValue = valueFor(snapshot, path);
-  const selected = snapshot.fields[path]?.override?.state === 'set' && typeof selectedValue === 'string' ? selectedValue : null;
-  const observation = selected ? snapshot.session.draft.observations.find((item) => item.ref === selected && item.kind === 'guest_candidate') : null;
+  const selectedRef = snapshot.fields[path]?.override?.state === 'set' && typeof selectedValue === 'string' ? selectedValue : null;
+  const selectedObservation = selectedRef ? snapshot.session.draft.observations.find((item) => item.ref === selectedRef && item.kind === 'guest_candidate') : null;
   const candidates = snapshot.session.draft.observations.filter((item) => item.kind === 'guest_candidate'
     && item.criteria.requestId === path.split('/')[4] && item.status === 'complete'
     && ((Array.isArray(item.criteria.fieldPaths) && item.criteria.fieldPaths.includes(path)) || item.criteria.fieldPath === path)).flatMap((item) => {
       const result = record(item.result);
       return Array.isArray(result?.candidates) ? result.candidates.map((candidate) => ({ observationRef: item.ref, candidate: record(candidate) })) : [];
     }).filter((item): item is { observationRef: string; candidate: Record<string, unknown> } => Boolean(item.candidate));
-  const same = (left: unknown, right: unknown) => text(left).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase()
-    === text(right).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
+  const selected = guestSelectionMatches(snapshot, path, expected) ? selectedRef : null;
   return <div className={selected ? styles.profileReady : styles.profileWarning} data-profile-path={path}>
-    <b>{selected ? 'Existing guest profile selected' : 'Select an existing Infor guest profile'}</b>
-    <span>{observation ? `Native match · ${observation.status}` : selected ?? 'A typed name alone is not a profile selection.'}</span>
+    <b>{selected ? 'Existing guest profile selected' : selectedRef ? 'Selection no longer matches this guest' : 'Select an existing Infor guest profile'}</b>
+    <span>{selectedObservation ? `Native match · ${selectedObservation.status}` : selectedRef ?? 'A typed name alone is not a profile selection.'}</span>
     {!selected && candidates.length > 0 && <div className={styles.candidateList}>
       {candidates.map(({ observationRef, candidate }, index) => {
-        const matchesGuest = same(candidate.firstName, expected.firstName) && same(candidate.lastName, expected.lastName)
-          && (!text(expected.email) || same(candidate.email, expected.email)) && Boolean(text(candidate.nativeId));
+        const matchesGuest = sameIdentityText(candidate.firstName, expected.firstName) && sameIdentityText(candidate.lastName, expected.lastName)
+          && (!hasValue(expected.email) || sameIdentityText(candidate.email, expected.email)) && hasValue(candidate.nativeId);
         return <div className={styles.candidateOption} key={`${observationRef}-${String(candidate.nativeId ?? index)}`}>
           <span><b>{text(candidate.firstName)} {text(candidate.lastName)}</b><small>{text(candidate.email) || `Profile ${text(candidate.nativeId)}`}</small></span>
           {matchesGuest ? <button type="button" onClick={() => { onStage(path, observationRef); onBlur(path); }}>Select</button>
@@ -741,15 +763,14 @@ function NativePriceSummary({ snapshot, request }: { snapshot: ReservationPaneSn
   return <div className={styles.priceList} aria-label="Native Infor price and availability">
     {allocations.map(({ value: allocation }) => {
       const id = String(allocation.id ?? '');
-      const observation = [...snapshot.session.draft.observations].reverse().find((item) => item.kind === 'rate_availability'
-        && item.criteria.requestId === request.id && item.criteria.allocationId === id);
-      const result = observation && record(observation.result);
-      const price = result && record(result.ratePlanAvailability);
+      const view = snapshot.preparationViews.find((item) => item.requestId === request.id && item.allocationId === id);
+      const price = record(view?.price);
+      const hasPrice = Boolean(price && hasValue(price.currency) && hasValue(price.averageRate) && hasValue(price.totalRate));
       return <div className={styles.priceRow} key={id}>
         <span>Room {id || 'reservation'}</span>
-        {price ? <b>{text(price.currency)} {text(price.averageRate)} / night · {text(price.totalRate)} total</b>
-          : <small>{observation ? 'Latest Infor check did not return a usable price.' : 'Waiting for the native availability check.'}</small>}
-        {observation && observation.criteria.draftRevision !== snapshot.session.revision && <small className={styles.problem}>Price is stale after edits.</small>}
+        {hasPrice && price ? <b>{text(price.currency)} {text(price.averageRate)} / night · {text(price.totalRate)} total</b>
+          : <small>{view?.issue ? humanize(view.issue) : 'No native price has been returned for this room.'}</small>}
+        <small>{view?.current ? 'Current HMS price and availability' : 'Not confirmed current; Go stays blocked'}</small>
       </div>;
     })}
   </div>;

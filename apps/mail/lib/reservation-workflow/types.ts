@@ -34,6 +34,15 @@ export type ReservationWorkflowV2Session = {
   revision: number;
   revisionHead: number;
   seq: number;
+  preparationViews: ReservationPreparationView[];
+};
+
+export type ReservationPreparationView = {
+  requestId: string;
+  allocationId: string;
+  current: boolean;
+  issue?: string;
+  price?: { averageRate?: unknown; totalRate?: unknown; currency?: unknown };
 };
 
 export type ReservationFieldProjection = {
@@ -62,6 +71,7 @@ export type ReservationPaneSnapshot = {
   fields: Record<string, ReservationFieldProjection>;
   issues: Array<{ path?: string; kind: string; explanation: string; evidenceRefs: string[] }>;
   operationResults: Array<Record<string, unknown>>;
+  preparationViews: ReservationPreparationView[];
   preparation: {
     state: 'idle' | 'stale' | 'current';
     message: string;

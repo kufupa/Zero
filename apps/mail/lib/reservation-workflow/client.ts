@@ -3,6 +3,7 @@ import type {
   ReservationCommandContext,
   ReservationEditCommand,
   ReservationPaneSnapshot,
+  ReservationPreparationView,
   ReservationRequestProjection,
   ReservationReviewCommand,
   ReservationSourceContext,
@@ -16,15 +17,11 @@ type ItemInput = {
   expectedRevision: number;
   expectedSeq: number;
 };
-type StateResult = { status: string; draft?: unknown; revision?: number; revisionHead?: number; seq?: number };
+type StateResult = { status: string; draft?: unknown; revision?: number; revisionHead?: number; seq?: number; preparationViews?: unknown };
 type QueryProcedure<I> = { query(input: I): Promise<unknown> };
 type MutationProcedure<I> = { mutate(input: I): Promise<unknown> };
 
-/**
- * Structural type for the published router surface. AppRouter can add the
- * namespace in the host commit without making this mail bundle depend on old
- * quote/session DTOs. Inputs stay explicit and compile-checkable here.
- */
+/** Narrow structural type for the published v2 router; no legacy quote/session DTOs cross this boundary. */
 export type ReservationWorkflowV2TrpcClient = {
   reservationWorkflowV2: {
     ensure: MutationProcedure<{ internetMessageId?: string | null; source: ReservationWorkflowV2Source }>;
@@ -33,10 +30,10 @@ export type ReservationWorkflowV2TrpcClient = {
     review: MutationProcedure<ItemInput & { fieldPath: string; decision: 'accepted' | 'flagged'; note?: string | null }>;
     undo: MutationProcedure<ItemInput>;
     redo: MutationProcedure<ItemInput>;
-    lookup?: MutationProcedure<ItemInput & { requestId?: string }>;
-    prepare?: MutationProcedure<ItemInput & { requestId: string; allocationId?: string }>;
-    execute?: MutationProcedure<ItemInput & { requestId: string; allocationId?: string; go: true; idempotencyKey: string }>;
-    reconcile?: MutationProcedure<ItemInput & { operationId: string }>;
+    lookup: MutationProcedure<ItemInput & { requestId?: string }>;
+    prepare: MutationProcedure<ItemInput & { requestId: string; allocationId?: string }>;
+    execute: MutationProcedure<ItemInput & { requestId: string; allocationId?: string; go: true; idempotencyKey: string }>;
+    reconcile: MutationProcedure<ItemInput & { operationId: string }>;
   };
 };
 
@@ -96,7 +93,14 @@ function decodeDraft(result: unknown): ReservationWorkflowV2Session {
   if (revision === null || revisionHead === null || seq === null) {
     throw new Error('The reservation service did not return a revision and sequence for this draft.');
   }
-  return { draft: draft as unknown as ReservationWorkflowV2Draft, revision, revisionHead, seq };
+  const preparationViews: ReservationPreparationView[] = Array.isArray(result.preparationViews)
+    ? result.preparationViews.flatMap((value): ReservationPreparationView[] => {
+      if (!isRecord(value) || !isString(value.requestId) || !isString(value.allocationId) || typeof value.current !== 'boolean') return [];
+      const price = isRecord(value.price) ? value.price : undefined;
+      return [{ requestId: value.requestId, allocationId: value.allocationId, current: value.current,
+        ...(isString(value.issue) ? { issue: value.issue } : {}), ...(price ? { price } : {}) }];
+    }) : [];
+  return { draft: draft as unknown as ReservationWorkflowV2Draft, revision, revisionHead, seq, preparationViews };
 }
 
 function pointerPart(value: string | number): string {
@@ -193,7 +197,7 @@ function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot
     flattenFields(request, root, fields, draft);
     requests.push({ id: request.id, kind: request.kind, text: request.requestText,
       fieldPaths: Object.keys(fields).filter((path) => path.startsWith(`${root}/`)),
-      supported: request.kind === 'create' });
+      supported: request.kind === 'create' && draft.propertyCode === 'HRCEN' });
   }
   for (const row of draft.proposal.content.services) flattenFields(row, pointer('proposal', 'content', 'services', row.id), fields, draft);
   for (const row of draft.proposal.content.documents) flattenFields(row, pointer('proposal', 'content', 'documents', row.id), fields, draft);
@@ -217,11 +221,9 @@ function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot
     ? runtimeDraft.operationResults.filter(isRecord) : [];
   const createRequests = draft.proposal.content.requests.filter((request) => request.kind === 'create');
   const allocations = createRequests.flatMap((request) => request.body.allocations.map((allocation) => ({ requestId: request.id, allocationId: allocation.id })));
+  const preparationViews = session.preparationViews;
   const currentPrepared = allocations.length > 0 && allocations.every(({ requestId, allocationId }) =>
-    draft.observations.some((observation) => observation.kind === 'rate_availability' && observation.status === 'complete'
-      && observation.criteria.requestId === requestId && observation.criteria.allocationId === allocationId
-      && observation.criteria.draftRevision === session.revision && isRecord(observation.result)
-      && isRecord(observation.result.ratePlanAvailability) && isRecord(observation.result.requestBinding) && isRecord(observation.result.prepareShot)));
+    preparationViews.some((view) => view.requestId === requestId && view.allocationId === allocationId && view.current));
   const apiErrors = (runtimeDraft.errors ?? []).map((entry) => ({ kind: entry.code, explanation: entry.message, evidenceRefs: [] }));
   return {
     session,
@@ -230,10 +232,11 @@ function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot
     fields,
     issues: [...draft.proposal.issues.map((issue) => ({ path: issue.path, kind: issue.kind, explanation: issue.explanation, evidenceRefs: issue.evidenceRefs })), ...apiErrors],
     operationResults,
+    preparationViews,
     preparation: {
       state: currentPrepared ? 'current' : allocations.length ? 'stale' : 'idle',
       message: currentPrepared ? 'Native unsaved form, price and availability are current.'
-        : allocations.length ? 'Native price and availability must be checked after the latest edits.' : 'No Create reservation is available to prepare.',
+        : allocations.length ? 'Native price and availability are not confirmed current for every room.' : 'No Create reservation is available to prepare.',
     },
   };
 }
@@ -294,13 +297,11 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     undo(command) { return refreshAfter(api.undo, itemInput(command)); },
     redo(command) { return refreshAfter(api.redo, itemInput(command)); },
     async lookup(command) {
-      if (!api.lookup) throw new Error('Native lookup is not connected to the reservation service yet.');
       const input = { ...itemInput(command), ...(command.requestId ? { requestId: command.requestId } : {}) };
       const result = okResult(await api.lookup.mutate(input));
       return { ...await load(input), ...(operationNotice(result, ['ok']) ? { serviceNotice: operationNotice(result, ['ok']) } : {}) };
     },
     async prepare(command) {
-      if (!api.prepare) throw new Error('Native availability preparation is not connected yet.');
       const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId };
       const result = await api.prepare.mutate(input);
       const snapshot = await load(input);
@@ -308,7 +309,6 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       return notice ? { ...snapshot, serviceNotice: notice } : snapshot;
     },
     async execute(command) {
-      if (!api.execute) throw new Error('Reservation execution is not connected yet.');
       const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
         go: true as const, idempotencyKey: command.idempotencyKey };
       const result = await api.execute.mutate(input);
@@ -317,7 +317,6 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       return notice ? { ...snapshot, serviceNotice: notice } : snapshot;
     },
     async reconcile(command) {
-      if (!api.reconcile) throw new Error('Reservation reconciliation is not connected yet.');
       const input = { ...itemInput(command), operationId: command.operationId };
       const result = await api.reconcile.mutate(input);
       const snapshot = await load(input);
