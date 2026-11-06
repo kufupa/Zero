@@ -81,10 +81,13 @@ function effectiveServiceField(draft: ReservationWorkflowV2Draft, service: Recor
   target: Record<string, unknown>, targetIndex: number, field: string): Effective {
   const targetValue = record(target.fields)?.[field];
   const targetPath = pointer('proposal', 'content', 'services', serviceIndex, 'targets', targetIndex, 'fields', field);
+  const sharedPath = pointer('proposal', 'content', 'services', serviceIndex, 'sharedFields', field);
+  if (draft.fieldOverrides[targetPath]?.state === 'inherit') {
+    return effective(draft, sharedPath, record(service.sharedFields)?.[field]);
+  }
   const local = effective(draft, targetPath, targetValue);
   if ('issue' in local || local.none || (local.value !== undefined && local.value !== null &&
       (typeof local.value !== 'string' || local.value.trim() !== ''))) return local;
-  const sharedPath = pointer('proposal', 'content', 'services', serviceIndex, 'sharedFields', field);
   return effective(draft, sharedPath, record(service.sharedFields)?.[field]);
 }
 

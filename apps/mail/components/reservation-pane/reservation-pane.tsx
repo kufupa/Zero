@@ -533,6 +533,7 @@ function serviceFieldValue(snapshot: ReservationPaneSnapshot, serviceIndex: numb
     if (target.override.state === 'inherit') return valueFor(snapshot, `/proposal/content/services/${serviceIndex}/sharedFields/${field}`);
   }
   const targetValue = Object.hasOwn(snapshot.fields, targetPath) ? target.value : draftAtPath(snapshot, targetPath);
+  if (record(targetValue)?.kind === 'none') return null;
   return hasValue(targetValue) ? targetValue : valueFor(snapshot, `/proposal/content/services/${serviceIndex}/sharedFields/${field}`);
 }
 
@@ -1589,6 +1590,8 @@ function ServiceEditor(props: EditorProps & {
     && result.allocationId === allocationId && result.workflow === 'create' && result.status === 'succeeded');
   const createReceipt = [...snapshot.operationResults].reverse().find((result) => result.requestId === props.requestId
     && result.allocationId === allocationId && result.workflow === 'create' && result.status === 'succeeded');
+  const recoveredCreate = Boolean(createReceipt?.observationRefs.some((ref) => snapshot.session.draft.observations.some((item) =>
+    item.ref === ref && item.criteria.workflow === 'create' && item.criteria.recovered === true)));
   const priorService = serviceOperationResult(snapshot, props.requestId, allocationId, service.id);
   const serviceRefs = Array.isArray(priorService?.observationRefs)
     ? priorService.observationRefs.filter((ref): ref is string => typeof ref === 'string') : [];
@@ -1597,7 +1600,7 @@ function ServiceEditor(props: EditorProps & {
     && observation.criteria.serviceId === service.id && observation.criteria.requestId === props.requestId
     && observation.criteria.allocationId === allocationId);
   const savedReceipt = record(receiptObservation?.result);
-  const canExecute = createReady && createSaved && service.operation === 'add' && Boolean(selected) && previewCurrent
+  const canExecute = createReady && createSaved && !recoveredCreate && service.operation === 'add' && Boolean(selected) && previewCurrent
     && unsavedInputsReviewed && priorService?.status !== 'unknown' && priorService?.status !== 'succeeded'
     && (!freshCurrent || freshReviewsComplete) && !props.busy;
   const fields = [
@@ -1630,7 +1633,9 @@ function ServiceEditor(props: EditorProps & {
         const path = `${targetRoot}/fields/${field}`;
         const sharedPath = `${serviceRoot}/sharedFields/${field}`;
         const targetField = snapshot.fields[path];
-        const displayField = targetField?.override || hasValue(targetField?.value) ? targetField : snapshot.fields[sharedPath];
+        const displayField = targetField?.override?.state === 'inherit' ? snapshot.fields[sharedPath]
+          : targetField?.override || hasValue(targetField?.value) || record(targetField?.value)?.kind === 'none'
+            ? targetField : snapshot.fields[sharedPath];
         return <TextField key={field} {...props} path={path} label={label} type={type}
           valueOverride={serviceFieldValue(snapshot, serviceIndex, targetIndex, field,
             { present: props.hasPendingEdit?.(path) ?? false, value: props.editValue(path) })} fieldOverride={displayField}
@@ -1644,6 +1649,7 @@ function ServiceEditor(props: EditorProps & {
     </div>
     {!createReady && <small className={styles.help}>Complete every Create room and select each existing guest profile before loading or previewing Add-On values.</small>}
     {selected && !createSaved && <div className={styles.notice}>Save this Create room and verify its confirmation before an Add-On can be saved.</div>}
+    {recoveredCreate && <div className={styles.notice}>This reservation was recovered after an interrupted Save. Add the service in Infor for now.</div>}
     {createReceipt && <div className={styles.fixedValue}><span>Saved Create target</span><b>{text(createReceipt.confirmation) || 'Confirmation receipt present'}</b><small>HMS Add-On operations below are bound to this room, not a guest-name search.</small></div>}
     {latestPreview && <div className={latestPreview.status === 'complete' ? styles.result : styles.notice}>
       <b>Native Add-On preview · {latestPreview.status === 'complete' ? 'not saved' : 'needs attention'}</b>
