@@ -81,6 +81,13 @@ export type ReservationPaneSnapshot = {
   loadError?: string;
 };
 
+export class ReservationWorkflowStaleRevisionError extends Error {
+  constructor(readonly snapshot: ReservationPaneSnapshot) {
+    super('The reservation draft changed elsewhere. Latest saved values were loaded; your unsaved edits are preserved for review before saving again.');
+    this.name = 'ReservationWorkflowStaleRevisionError';
+  }
+}
+
 export type ReservationWorkflowKind = ReservationRequestProjection['kind'];
 
 export type ReservationCommandContext = {

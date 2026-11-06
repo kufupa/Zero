@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import styles from './reservation-pane.module.css';
 import { initialReservationUiState, reduceReservationUi, type PendingReservationEdit } from '@/lib/reservation-workflow/reducer';
+import { ReservationWorkflowStaleRevisionError } from '@/lib/reservation-workflow/types';
 import type {
   ReservationFieldProjection,
   ReservationPaneSnapshot,
@@ -315,13 +316,14 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
         }
       } catch (error) {
         if (sourceRef.current.selectionEpoch === bound.selectionEpoch) {
+          if (error instanceof ReservationWorkflowStaleRevisionError) applySnapshot(error.snapshot, bound);
           dispatch({ type: 'action-error', message: error instanceof Error ? error.message : 'Reservation action did not complete.' });
         }
       }
     });
     queue.current = run.then(() => undefined, () => undefined);
     return run;
-  }, []);
+  }, [applySnapshot]);
 
   const stage = useCallback((path: string, value: unknown, state: PendingReservationEdit['state'] = 'set') => {
     const edit = { path, value, state, sequence: ++sequence.current };
@@ -919,7 +921,9 @@ function PartyField(props: EditorProps & { path: string; label: string }) {
   const role = tail === 'bookingAgency' || tail === 'agency' ? 'agency' : tail === 'arAccount' ? 'ar_account' : 'organization';
   const candidates = props.snapshot.session.draft.observations.flatMap((observation) => {
     if (observation.kind !== 'party_candidate' || observation.status !== 'complete'
-        || observation.criteria.role !== role || observation.criteria.fieldPath !== selectionPath) return [];
+        || observation.criteria.role !== role
+        || observation.criteria.fieldPath !== selectionPath
+          && !(Array.isArray(observation.criteria.fieldPaths) && observation.criteria.fieldPaths.includes(selectionPath))) return [];
     const results = record(observation.result);
     const rows = Array.isArray(results?.candidates) ? results.candidates : [];
     return rows.map((candidate) => ({ observationRef: observation.ref, candidate: record(candidate) })).filter((item) => item.candidate);
