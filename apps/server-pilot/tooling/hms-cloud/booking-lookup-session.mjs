@@ -666,7 +666,7 @@ export function bookingSessionPageOptions({ headless = true, blockServiceWorkers
 
 export async function withBookingLookupSession(operation, { memory, memorySources, headless = true, labtestDates,
   blockServiceWorkers = false, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate, verifyLabtestMatches,
-  allowRealGuest = false, expectedGuest, cloudTargetKey } = {}) {
+  allowRealGuest = false, expectedGuest, cloudTargetKey, signal } = {}) {
   if (beforeSaveScreenshot !== undefined && typeof beforeSaveScreenshot !== 'function') throw new Error('SCREENSHOT_CALLBACK_INVALID');
   if ((authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
       (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
@@ -707,7 +707,7 @@ export async function withBookingLookupSession(operation, { memory, memorySource
       if (!currentCreateRateAvailability.has(createAuthority)) usedCreateRateAvailability.delete(createAuthority);
     } },
   });
-  const pageOptions = { ...bookingSessionPageOptions({ headless, blockServiceWorkers, cloudTargetKey }),
+  const pageOptions = { ...bookingSessionPageOptions({ headless, blockServiceWorkers, cloudTargetKey }), signal,
     prepareContext: (context) => installReadOnlyGuard(context, { approvedCreateAvailabilityRequests }) };
   const loaded = memory === undefined
     ? await loadOptionalBookingMemory(memorySources)
