@@ -841,7 +841,7 @@ function addRequestConfirmationSafety(input: {
   extraction: ReservationWorkflowV2Extraction;
 }): { proposal: ReservationWorkflowV2Proposal } {
   const proposal = structuredClone(input.proposal);
-  for (const [requestIndex, request] of proposal.content.requests.entries()) {
+  for (const request of proposal.content.requests) {
     if (request.kind !== 'create' && request.kind !== 'amend' && request.kind !== 'cancel') continue;
     const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction);
     if (extracted) {
@@ -873,7 +873,7 @@ function bindGuestProfileObservations(input: {
   const proposal = structuredClone(preserveConfirmationSourceClaims(input.proposal, input.extraction));
   const added: ReservationWorkflowV2Observation[] = [];
   const newLookupRefs: string[] = [];
-  for (const [requestIndex, request] of proposal.content.requests.entries()) {
+  for (const request of proposal.content.requests) {
     if (request.kind !== 'create') continue;
     const extractedRequest = extractionRequestForProposal(request, proposal.content.requests, input.extraction);
     if (!extractedRequest) continue;
