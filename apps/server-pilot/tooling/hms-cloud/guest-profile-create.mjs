@@ -10,21 +10,41 @@ const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
 const clean = value => typeof value === 'string' ? value.trim() : '';
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const EXTRA_FIELDS = ['titleCode', 'phoneNumber', 'phoneTypeCode', 'emailTypeCode'];
+const OPTION_FIELDS = Object.freeze({ title: 'nametitle', phoneType: 'phonenumbertypecode', emailType: 'emailtypecode' });
 const issue = error => /^[A-Z][A-Z0-9_]{2,100}$/.test(String(error?.message || ''))
   ? error.message : error?.name === 'TimeoutError' ? 'PROFILE_UI_TIMED_OUT' : 'PROFILE_PREPARATION_FAILED';
+
+export function profileInputIssue(input) {
+  const guest = input?.guest;
+  if (guest && typeof guest === 'object' && !Array.isArray(guest)) {
+    if (EXTRA_FIELDS.some(key => Object.hasOwn(guest, key) && (typeof guest[key] !== 'string' || !clean(guest[key])))) {
+      return 'PROFILE_EXTRA_FIELD_INVALID';
+    }
+    if (guest.phoneTypeCode && !clean(guest.phoneNumber)) return 'PROFILE_PHONE_REQUIRED_FOR_TYPE';
+    if (guest.emailTypeCode && !clean(guest.email)) return 'PROFILE_EMAIL_REQUIRED_FOR_TYPE';
+  }
+  return 'GUEST_NAME_AND_MOBILE_REQUIRED';
+}
 
 export function profileBusinessFields(input) {
   const guest = input?.guest;
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
-      Object.keys(input).some(key => !['propertyCode', 'guest', 'confirmDuplicateName', 'expectedPreviewDigest'].includes(key)) ||
+      Object.keys(input).some(key => !['propertyCode', 'guest', 'confirmDuplicateName', 'expectedPreviewDigest', 'expectedReview'].includes(key)) ||
       (input.propertyCode != null && input.propertyCode !== PROPERTY) ||
       (input.confirmDuplicateName != null && typeof input.confirmDuplicateName !== 'boolean') ||
       !guest || typeof guest !== 'object' || Array.isArray(guest) ||
-      Object.keys(guest).some(key => !['firstName', 'lastName', 'mobile', 'email'].includes(key))) return null;
+      Object.keys(guest).some(key => !['firstName', 'lastName', 'mobile', 'email', ...EXTRA_FIELDS].includes(key))) return null;
   if (guest.email != null && typeof guest.email !== 'string') return null;
+  const suppliedExtras = EXTRA_FIELDS.filter(key => Object.hasOwn(guest, key));
+  if ((!suppliedExtras.length && Object.hasOwn(input, 'expectedReview')) || suppliedExtras.some(key =>
+    typeof guest[key] !== 'string' || !clean(guest[key]))) return null;
   const fields = { firstName: clean(guest.firstName), lastName: clean(guest.lastName),
     mobile: clean(guest.mobile), email: guest.email == null ? '' : clean(guest.email) };
+  for (const key of suppliedExtras) fields[key] = clean(guest[key]);
   if (['firstName', 'lastName', 'mobile'].some(key => !fields[key]) ||
+      (fields.phoneTypeCode && !fields.phoneNumber) || (fields.emailTypeCode && !fields.email) ||
       Object.values(fields).some(value => value.length > 200 || [...value].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127))) return null;
   return { ...fields, status: 'ACTIVE', consent: false };
 }
@@ -33,27 +53,60 @@ export function profilePreviewDigest(fields, confirmDuplicateName) {
   return hash({ property: PROPERTY, fields, confirmDuplicateName: confirmDuplicateName === true });
 }
 
+export const hasExtendedProfileFields = fields => EXTRA_FIELDS.some(key => Object.hasOwn(fields ?? {}, key));
+export const profileReviewDigest = review => hash(review);
+
+export function matchesProfileReview(review, fields, confirmDuplicateName) {
+  const effective = review?.effective;
+  if (!hasExtendedProfileFields(fields) || !review || typeof review !== 'object' || Array.isArray(review) ||
+      !same(Object.keys(review).sort(), ['confirmDuplicateName', 'effective', 'fields', 'propertyCode', 'version'].sort()) ||
+      review.version !== 2 || review.propertyCode !== PROPERTY || review.confirmDuplicateName !== (confirmDuplicateName === true) ||
+      !same(review.fields, fields) || !effective || typeof effective !== 'object' || Array.isArray(effective) ||
+      !same(Object.keys(effective).sort(), ['title', 'phoneNumber', 'phoneType', 'emailType'].sort()) ||
+      typeof effective.phoneNumber !== 'string') return false;
+  for (const key of ['title', 'phoneType', 'emailType']) {
+    const choice = effective[key];
+    if (!choice || typeof choice !== 'object' || Array.isArray(choice) ||
+        !same(Object.keys(choice).sort(), ['code', 'label']) || typeof choice.code !== 'string' ||
+        typeof choice.label !== 'string' || Boolean(choice.code) !== Boolean(choice.label)) return false;
+  }
+  return (!fields.titleCode || fields.titleCode === effective.title.code) &&
+    effective.phoneNumber === (fields.phoneNumber || '') &&
+    (!fields.phoneTypeCode || fields.phoneTypeCode === effective.phoneType.code) &&
+    (!fields.emailTypeCode || fields.emailTypeCode === effective.emailType.code);
+}
+
 function unique(params) {
   const keys = [...params.keys()].map(key => key.toLowerCase());
   return new Set(keys).size === keys.length;
 }
 
-function profileSaveMatches(request, fields, confirmed) {
+function profileSaveMatches(request, fields, confirmed, review) {
   try {
     const url = new URL(request.url()), body = new URLSearchParams(request.postData() || '');
     const required = { SYSTEM_FUNCTION_NAME: 'FSGSPF', USER_FUNCTION_NAME: 'FSGSPF', CURRENT_TAB_NAME: 'HDR',
       firstname: fields.firstName, lastname: fields.lastName, mobilenumber: fields.mobile, emailaddress: fields.email,
       profilestatuscode: 'ACTIVE', profileid: '', recordid: '',
       confirmnewguestprofile: confirmed ? 'confirmed' : '', confirminactiveguestprofile: '' };
+    if (hasExtendedProfileFields(fields)) {
+      if (!matchesProfileReview(review, fields, review?.confirmDuplicateName)) return false;
+      Object.assign(required, { nametitle: review.effective.title.code, phonenumber: review.effective.phoneNumber,
+        phonenumbertypecode: review.effective.phoneType.code, emailtypecode: review.effective.emailType.code });
+    }
     const matches = (params, name, expected) => {
       const values = [...params].filter(([key]) => key.toLowerCase() === name.toLowerCase());
       return values.length === 1 && values[0][1] === expected;
+    };
+    const compatible = (params, name, expected) => {
+      const values = [...params].filter(([key]) => key.toLowerCase() === name.toLowerCase());
+      return values.length === 0 || values.length === 1 && values[0][1] === expected;
     };
     return request.method() === 'POST' && url.origin === ORIGIN && !url.username && !url.password && !url.hash &&
       decodeURIComponent(url.pathname) === url.pathname &&
       url.pathname === '/web/base/FSGSPF.HDR' && matches(url.searchParams, 'pageaction', 'SAVE') &&
       /^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '') &&
-      Object.entries(required).every(([key, value]) => matches(body, key, value)) &&
+      Object.entries(required).every(([key, value]) => matches(body, key, value) && compatible(url.searchParams, key, value)) &&
+      compatible(body, 'pageaction', 'SAVE') && compatible(body, 'action', 'SAVE') && compatible(url.searchParams, 'action', 'SAVE') &&
       [1, 2, 3, 4].every(index => {
         const entries = [...body].filter(([key]) => key.toLowerCase() === `guestoptin${index}`);
         return entries.length === 1 && ['', '0', 'false'].includes(entries[0][1].toLowerCase());
@@ -69,26 +122,36 @@ function parseProfileResponse(text) {
   return JSON.parse(json)?.pageData;
 }
 
+async function boundedResponseText(response, timeout = 15000) {
+  let timer;
+  try {
+    return await Promise.race([response.text(), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('PROFILE_RESPONSE_TIMED_OUT')), timeout);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
 async function handleProfileSave(route, state) {
   const write = state.write, request = route.request();
   const confirmed = write.phase === 'confirm';
   let forwarded = false, pending;
   try {
     if (state.blocked || state.dialog || !['initial', 'confirm'].includes(write.phase) || !isGuardedPage(request.frame().page()) ||
-        !profileSaveMatches(request, write.fields, confirmed)) throw new Error('PROFILE_SAVE_REQUEST_MISMATCH');
+        !profileSaveMatches(request, write.fields, confirmed, write.review)) throw new Error('PROFILE_SAVE_REQUEST_MISMATCH');
     const phase = confirmed ? 'confirm_distinct' : 'initial';
     write.lastPhase = phase;
     write.phase = 'authorizing';
     write.callbackDrained = false;
     const context = Object.freeze({ phase, previewDigest: write.previewDigest,
-      confirmDuplicateName: write.confirmDuplicateName, fields: Object.freeze({ ...write.fields }) });
+      confirmDuplicateName: write.confirmDuplicateName, fields: Object.freeze({ ...write.fields }),
+      ...(write.review && { review: structuredClone(write.review) }) });
     if (await write.authorizeCandidate(context) !== true || state.blocked || state.dialog || write.phase !== 'authorizing') {
       throw new Error('PROFILE_SAVE_NOT_AUTHORIZED');
     }
     let used = false;
     const proceed = () => {
       if (used || state.blocked || state.dialog || write.phase !== 'authorizing' || !isGuardedPage(request.frame().page()) ||
-          !profileSaveMatches(request, write.fields, confirmed)) throw new Error('PROFILE_SAVE_AUTHORITY_STALE');
+          !profileSaveMatches(request, write.fields, confirmed, write.review)) throw new Error('PROFILE_SAVE_AUTHORITY_STALE');
       used = true;
       write.phase = 'waiting';
       write.dispatched = true;
@@ -96,7 +159,7 @@ async function handleProfileSave(route, state) {
       forwarded = true;
       pending = (async () => {
         const response = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: 30_000 });
-        const text = await response.text();
+        const text = await boundedResponseText(response);
         let data;
         try { data = parseProfileResponse(text); } catch { /* unknown until readback */ }
         const messages = data?.messages;
@@ -155,6 +218,19 @@ function profileCreateReadMayRequest(request, state = {}) {
         url.searchParams.get('initparams') === 'startUpView=left' && Boolean(url.searchParams.get('requestToken'));
     }
     if (method !== 'POST' || !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '')) return false;
+    if (url.pathname === '/web/base/FSGSPF.HDR.ATTRIBUTEREFRESH') {
+      const blank = ['profileid', 'recordid', 'nametitle', 'lastname', 'firstname', 'phonenumbertypecode',
+        'phonenumber', 'mobilenumber', 'emailtypecode', 'emailaddress', 'newpassword', 'confirmnewpassword',
+        'actions', 'submit', 'confirmnewguestprofile', 'confirminactiveguestprofile'];
+      return !url.search && state.blankRefreshAllowed === true && request.frame() === state.newProfileFrame &&
+        body.get('PKID') === '@[EMPTY]#' && body.get('pagemode') === 'display' &&
+        body.get('ONLY_DATA_REQUIRED') === 'true' && blank.every(key => body.has(key) && body.get(key) === '');
+    }
+    if (['/web/base/FSGSPF.HDR.getPhoneTypeDetails', '/web/base/FSGSPF.HDR.getEmailTypeDetails'].includes(url.pathname)) {
+      const gate = state.profileOptionGate;
+      return !url.search && gate?.path === url.pathname && request.frame() === gate.frame &&
+        Object.entries(gate.expected).every(([key, value]) => body.has(key) && body.get(key) === value);
+    }
     const system = body.get('SYSTEM_FUNCTION_NAME'), user = body.get('USER_FUNCTION_NAME'), tab = body.get('CURRENT_TAB_NAME');
     if (url.pathname === '/web/base/OSRESV.HDR' && !url.search && system === 'OSRESV' && user === 'OSRESV' && tab === 'HDR' &&
         body.get('ONLY_DATA_REQUIRED') === 'true' && body.get('SCROLLROW') === 'YES' &&
@@ -212,6 +288,14 @@ async function withReadSession(operation, state, { openSession = withCenturionSt
           if (request.method() !== 'GET' && !cardInit) state.blocked = true;
           return route.abort('blockedbyclient');
         }
+        if (url.pathname === '/web/base/FSGSPF.HDR.ATTRIBUTEREFRESH') {
+          state.blankRefreshAllowed = false;
+          state.blankRefreshRequest = request;
+        }
+        if (url.pathname === state.profileOptionGate?.path) {
+          state.profileOptionGate.request = request;
+          state.profileOptionGate = null;
+        }
         return fulfillGuestLookupRequest(route);
       });
     } });
@@ -243,16 +327,21 @@ async function openProfileFrame(page) {
   return frame;
 }
 
-async function openNewProfile(page) {
+async function openNewProfile(page, state) {
   const frame = await openProfileFrame(page);
   const button = frame.locator('[data-qtip="New Record (Ctrl+N)"]:visible');
   if (await button.count() !== 1) throw new Error('PROFILE_NEW_CONTROL_UNAVAILABLE');
+  state.newProfileFrame = frame;
+  state.blankRefreshAllowed = true;
   await button.click({ timeout: 10000 });
   await frame.waitForFunction(() => {
     const forms = globalThis.Ext?.ComponentQuery?.query('uxform[tabName=HDR]') || [];
     return forms.length === 1 && forms[0].getScreen?.()?.isNewRecord === true &&
       (forms[0].query?.('[name=profileid]') || []).length === 1;
   }, null, { timeout: 15000 });
+  await frame.waitForFunction(() => !globalThis.Ext?.Ajax?.isLoading?.(), null, { timeout: 10000 });
+  await frame.locator('input[name="lastname"]:visible').first().waitFor({ state: 'visible', timeout: 10000 });
+  if (state.blocked || state.dialog || !isGuardedPage(page)) throw new Error('PROFILE_SESSION_GUARD_TRIPPED');
   return frame;
 }
 
@@ -261,7 +350,8 @@ async function profileForm(frame) {
     const forms = globalThis.Ext?.ComponentQuery?.query('uxform[tabName=HDR]') || [];
     if (forms.length !== 1) return null;
     const form = forms[0], screen = form.getScreen?.(), fields = (form.query?.('[name]') || []).filter(c => c.isFormField);
-    const names = ['profileid', 'profilestatuscode', 'lastname', 'firstname', 'mobilenumber', 'emailaddress',
+    const names = ['profileid', 'profilestatuscode', 'nametitle', 'lastname', 'firstname', 'phonenumbertypecode',
+      'phonenumber', 'mobilenumber', 'emailtypecode', 'emailaddress',
       'guestoptin1', 'guestoptin2', 'guestoptin3', 'guestoptin4'];
     const values = Object.fromEntries(names.map(name => [name, fields.filter(c => c.name === name).map(c => ({
       value: c.getValue?.(), raw: c.getRawValue?.(), submit: c.getSubmitData?.(), valid: c.isValid?.(),
@@ -285,38 +375,174 @@ function validProfileForm(form, fields, initial = false) {
   return initial || form.required.every(field => field.valid === true);
 }
 
+async function profileOptions(frame, name) {
+  const data = await frame.evaluate(fieldName => {
+    const form = globalThis.Ext?.ComponentQuery?.query('uxform[tabName=HDR]')?.[0];
+    const fields = (form?.query?.('[name]') || []).filter(c => c.isFormField && c.name === fieldName);
+    if (fields.length !== 1) return null;
+    const field = fields[0], store = field.getStore?.(), rows = store?.getRange?.();
+    if (!Array.isArray(rows) || !field.valueField || !field.displayField) return null;
+    return { editable: !field.disabled && !field.readOnly, loading: store.isLoading?.() === true || store.loading === true,
+      loaded: store.isLoaded?.() === true || store.loaded === true || store.loadCount > 0 || rows.length > 0,
+      total: store.getTotalCount?.(), options: rows.map(row => ({ code: row.get(field.valueField), label: row.get(field.displayField) })) };
+  }, name);
+  if (!data || !data.editable || data.loading || !data.loaded || data.options.some(option =>
+    typeof option.code !== 'string' || !option.code || typeof option.label !== 'string' || !option.label.trim()) ||
+    new Set(data.options.map(option => option.code)).size !== data.options.length) throw new Error('PROFILE_OPTIONS_UNAVAILABLE');
+  const total = Number.isSafeInteger(data.total) && data.total >= 0 ? data.total : null;
+  return { options: data.options, coverage: { loaded: data.options.length, total,
+    complete: total === null ? null : total === data.options.length } };
+}
+
+/** List current native New Profile choices without saving or selecting one. */
+export async function listGuestProfileCreationOptions(input, options = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input) ||
+      Object.keys(input).some(key => !['propertyCode', 'field'].includes(key)) ||
+      (input.propertyCode != null && input.propertyCode !== PROPERTY) || !Object.hasOwn(OPTION_FIELDS, input.field)) {
+    return { outcome: 'input_gap', issue: 'PROFILE_OPTION_FIELD_REQUIRED' };
+  }
+  const state = { blocked: false, dialog: false };
+  try {
+    return await withReadSession(async page => {
+      const frame = await openNewProfile(page, state);
+      const result = await profileOptions(frame, OPTION_FIELDS[input.field]);
+      return { outcome: 'ok', propertyCode: PROPERTY, field: input.field, ...result, observedAt: new Date().toISOString() };
+    }, state, options);
+  } catch (error) { return { outcome: 'unavailable', issue: issue(error) }; }
+}
+
+function submittedValue(form, name) {
+  const field = form?.values?.[name]?.length === 1 ? form.values[name][0] : null;
+  if (!field || field.disabled || field.readOnly || typeof field.submit?.[name] !== 'string') {
+    throw new Error('PROFILE_FIELD_UNAVAILABLE');
+  }
+  return field.submit[name];
+}
+
+async function selectProfileOption(page, frame, state, name, code) {
+  const catalog = await profileOptions(frame, name);
+  if (catalog.coverage.complete !== true) throw new Error('PROFILE_OPTIONS_INCOMPLETE');
+  const matches = catalog.options.filter(option => option.code === code);
+  if (!matches.length) throw new Error('PROFILE_OPTION_INVALID');
+  if (matches.length !== 1 || catalog.options.filter(option => option.label.trim() === matches[0].label.trim()).length !== 1) {
+    throw new Error('PROFILE_OPTION_AMBIGUOUS');
+  }
+  const input = frame.locator(`input[name="${name}"]:visible`);
+  if (await input.count() !== 1) throw new Error('PROFILE_FIELD_UNAVAILABLE');
+  const trigger = input.locator('xpath=ancestor::table[1]').locator('.x-form-trigger:visible');
+  if (await trigger.count() !== 1) throw new Error('PROFILE_OPTION_UNAVAILABLE');
+  await trigger.click({ timeout: 8000 });
+  const choices = frame.locator('.x-boundlist-item:visible');
+  await choices.first().waitFor({ state: 'visible', timeout: 8000 });
+  const indexes = await choices.evaluateAll((elements, label) =>
+    elements.flatMap((element, index) => element.textContent.trim() === label.trim() ? [index] : []), matches[0].label);
+  if (indexes.length !== 1) throw new Error('PROFILE_OPTION_UNAVAILABLE');
+  let gate, response;
+  if (name === 'phonenumbertypecode' || name === 'emailtypecode') {
+    const form = await profileForm(frame);
+    const expected = { SYSTEM_FUNCTION_NAME: 'FSGSPF', USER_FUNCTION_NAME: 'FSGSPF', CURRENT_TAB_NAME: 'HDR',
+      profileid: '', recordid: '', PKID: '@[EMPTY]#', pagemode: 'display', ONLY_DATA_REQUIRED: 'true',
+      actions: '', submit: '', confirmnewguestprofile: '', confirminactiveguestprofile: '', newpassword: '', confirmnewpassword: '' };
+    for (const field of ['nametitle', 'lastname', 'firstname', 'phonenumbertypecode', 'phonenumber', 'mobilenumber', 'emailtypecode', 'emailaddress']) {
+      expected[field] = field === name ? code : submittedValue(form, field);
+    }
+    const path = name === 'phonenumbertypecode' ? '/web/base/FSGSPF.HDR.getPhoneTypeDetails' : '/web/base/FSGSPF.HDR.getEmailTypeDetails';
+    gate = { frame, path, expected, request: null };
+    state.profileOptionGate = gate;
+    response = page.waitForResponse(value => value.request() === gate.request, { timeout: 10000 });
+    void response.catch(() => {});
+  }
+  try {
+    await choices.nth(indexes[0]).click({ timeout: 8000 });
+    if (response) {
+      const received = await response;
+      let data;
+      try { data = parseProfileResponse(await boundedResponseText(received)); } catch { /* Refuse non-native responses. */ }
+      if (received.status() !== 200 || !data || typeof data !== 'object' || data.success === false) {
+        throw new Error('PROFILE_OPTION_REFRESH_FAILED');
+      }
+    }
+    await frame.waitForFunction(() => !globalThis.Ext?.Ajax?.isLoading?.(), null, { timeout: 10000 });
+    const after = await profileForm(frame);
+    if (state.blocked || state.dialog || !isGuardedPage(page) || submittedValue(after, name) !== code) {
+      throw new Error('PROFILE_OPTION_UNVERIFIED');
+    }
+  } finally { if (state.profileOptionGate === gate) state.profileOptionGate = null; }
+}
+
+async function effectiveProfileExtras(frame, form) {
+  const choice = async name => {
+    const code = submittedValue(form, name), field = form.values[name][0];
+    if (field.valid !== true) throw new Error('PROFILE_OPTION_UNVERIFIED');
+    if (!code) {
+      if (![null, ''].includes(field.value) || field.raw !== '') throw new Error('PROFILE_DEFAULT_UNVERIFIED');
+      return { code: '', label: '' };
+    }
+    const catalog = await profileOptions(frame, name);
+    const matches = catalog.options.filter(option => option.code === code);
+    if (catalog.coverage.complete !== true || matches.length !== 1 || field.value !== code || field.raw !== matches[0].label) {
+      throw new Error('PROFILE_OPTION_UNVERIFIED');
+    }
+    return { code, label: matches[0].label };
+  };
+  const phoneNumber = submittedValue(form, 'phonenumber'), phone = form.values.phonenumber[0];
+  if (phone.valid !== true || phone.value !== phoneNumber || phone.raw !== phoneNumber) throw new Error('PROFILE_FIELD_UNVERIFIED');
+  return { title: await choice('nametitle'), phoneNumber,
+    phoneType: await choice('phonenumbertypecode'), emailType: await choice('emailtypecode') };
+}
+
 // Preparation and creation share staging; only the latter supplies a save operation.
 async function stageProfile(page, state, fields, input) {
   const confirmDuplicateName = input.confirmDuplicateName === true;
-  const previewDigest = profilePreviewDigest(fields, confirmDuplicateName);
-  if (input.expectedPreviewDigest != null && input.expectedPreviewDigest !== previewDigest) {
+  const extended = hasExtendedProfileFields(fields);
+  const legacyDigest = extended ? null : profilePreviewDigest(fields, confirmDuplicateName);
+  if (!extended && input.expectedPreviewDigest != null && input.expectedPreviewDigest !== legacyDigest) {
     return { outcome: 'review_required', issue: 'PROFILE_PREVIEW_CHANGED' };
   }
-  const frame = await openNewProfile(page);
+  const frame = await openNewProfile(page, state);
   const initial = await profileForm(frame);
   if (!validProfileForm(initial, fields, true)) throw new Error('PROFILE_NEW_DEFAULTS_UNVERIFIED');
-  for (const [native, key] of [['lastname', 'lastName'], ['firstname', 'firstName'], ['mobilenumber', 'mobile'], ['emailaddress', 'email']]) {
-    if (!fields[key]) continue;
+  if (extended && fields.titleCode) await selectProfileOption(page, frame, state, 'nametitle', fields.titleCode);
+  const fill = async (native, key) => {
+    if (!fields[key]) return;
     const control = frame.locator(`input[name="${native}"]:visible`);
     if (await control.count() !== 1) throw new Error('PROFILE_FIELD_UNAVAILABLE');
     await control.fill(fields[key]);
     await control.press('Tab');
-  }
+  };
+  await fill('lastname', 'lastName');
+  await fill('firstname', 'firstName');
+  if (extended && fields.phoneTypeCode) await selectProfileOption(page, frame, state, 'phonenumbertypecode', fields.phoneTypeCode);
+  if (extended && fields.phoneNumber) await fill('phonenumber', 'phoneNumber');
+  await fill('mobilenumber', 'mobile');
+  if (extended && fields.emailTypeCode) await selectProfileOption(page, frame, state, 'emailtypecode', fields.emailTypeCode);
+  await fill('emailaddress', 'email');
   const staged = await profileForm(frame);
   if (state.dialog || state.blocked || !isGuardedPage(page) || !validProfileForm(staged, fields)) {
     throw new Error('PROFILE_STAGING_UNVERIFIED');
   }
+  const review = extended ? { version: 2, propertyCode: PROPERTY, fields, confirmDuplicateName,
+    effective: await effectiveProfileExtras(frame, staged) } : null;
+  if (extended && !matchesProfileReview(review, fields, confirmDuplicateName)) throw new Error('PROFILE_STAGING_UNVERIFIED');
+  const previewDigest = extended ? profileReviewDigest(review) : legacyDigest;
+  if (input.expectedPreviewDigest != null && input.expectedPreviewDigest !== previewDigest ||
+      input.expectedReview != null && !same(input.expectedReview, review)) {
+    return { outcome: 'review_required', issue: 'PROFILE_PREVIEW_CHANGED' };
+  }
+  const finalForm = await profileForm(frame);
+  if (!validProfileForm(finalForm, fields) || extended && !same(await effectiveProfileExtras(frame, finalForm), review.effective) ||
+      state.dialog || state.blocked || !isGuardedPage(page)) throw new Error('PROFILE_STAGING_UNVERIFIED');
   const save = frame.locator('[data-qtip*="Save"]:visible');
   if (await save.count() !== 1 || !await save.isEnabled() || await save.evaluate(element =>
     Boolean(element.closest('.x-item-disabled,.x-btn-disabled,[aria-disabled="true"]')) ||
     globalThis.Ext?.getCmp?.(element.id)?.disabled === true)) throw new Error('PROFILE_SAVE_CONTROL_UNAVAILABLE');
-  return { outcome: 'ready', save, fields, previewDigest, confirmDuplicateName,
+  return { outcome: 'ready', frame, save, fields, previewDigest, confirmDuplicateName, ...(review && { review }),
     requiredFields: staged.required.map(field => field.name) };
 }
 
 async function runStaged(input, options, operation) {
   const fields = profileBusinessFields(input);
-  if (!fields) return { outcome: 'needs_input', issue: 'GUEST_NAME_AND_MOBILE_REQUIRED' };
+  if (!fields) return { outcome: 'needs_input', issue: profileInputIssue(input) };
   const state = { blocked: false, dialog: false };
   try {
     const result = await withReadSession(async page => {
@@ -328,8 +554,11 @@ async function runStaged(input, options, operation) {
     }
     return result;
   } catch (error) {
-    return state.write?.dispatched ? failureEvidence(state.write, 'PROFILE_SAVE_UNCERTAIN')
-      : { outcome: 'unavailable', issue: issue(error) };
+    if (state.write?.dispatched) return failureEvidence(state.write, 'PROFILE_SAVE_UNCERTAIN');
+    const problem = issue(error);
+    const outcome = ['PROFILE_OPTION_INVALID', 'PROFILE_OPTION_AMBIGUOUS'].includes(problem) ? 'needs_input'
+      : ['PROFILE_OPTIONS_INCOMPLETE', 'PROFILE_DEFAULT_UNVERIFIED'].includes(problem) ? 'unsupported' : 'unavailable';
+    return { outcome, issue: problem };
   }
 }
 
@@ -370,11 +599,16 @@ async function findDuplicateYes(page, timeout = 15000) {
 }
 
 async function savePreparedProfile(page, state, staged, commit) {
-  const { save, fields, previewDigest, confirmDuplicateName } = staged;
-  const write = { ...commit, fields, previewDigest, confirmDuplicateName, phase: 'initial', lastPhase: null,
+  const { frame, save, fields, previewDigest, confirmDuplicateName, review } = staged;
+  const write = { ...commit, fields, previewDigest, confirmDuplicateName, review, phase: 'initial', lastPhase: null,
     dispatched: false, dispatchedPhases: [], response: null, issue: null, callbackDrained: false, handlers: new Set() };
   state.write = write;
   try {
+    if (frame) {
+      const current = await profileForm(frame);
+      if (!validProfileForm(current, fields) || review && !same(await effectiveProfileExtras(frame, current), review.effective) ||
+          state.dialog || state.blocked || !isGuardedPage(page)) throw new Error('PROFILE_PREVIEW_CHANGED');
+    }
     await save.click({ timeout: 10000 });
     await waitForDispatch(write);
     if (write.phase === 'question' && confirmDuplicateName && !state.dialog && !state.blocked) {
@@ -396,13 +630,14 @@ async function savePreparedProfile(page, state, staged, commit) {
   if (state.dialog || state.blocked || write.issue || !write.callbackDrained || !write.response?.success || !write.response.nativeId) {
     return failureEvidence(write, write.issue || 'PROFILE_SAVE_UNVERIFIED');
   }
-  return { outcome: 'awaiting_readback', ...evidence, businessFields: fields };
+  return { outcome: 'awaiting_readback', ...evidence, businessFields: fields, ...(review && { review }) };
 }
 
 /** Stage a new profile without saving. Use the existing guest lookup separately. */
 export async function prepareGuestProfile(input, options = {}) {
   return runStaged(input, options, async (_page, _state, staged) => ({
     outcome: 'ready', businessFields: staged.fields, previewDigest: staged.previewDigest,
+    ...(staged.review && { review: staged.review }),
     native: { profileId: null, requiredFields: staged.requiredFields, saveAvailable: true },
     saveContract: { status: 'authorized_caller_required' },
   }));
@@ -414,6 +649,12 @@ export async function createGuestProfile(input, { authorizeCandidate, dispatchCa
       typeof authorizeCandidate !== 'function' || typeof dispatchCandidate !== 'function' || typeof recordResponse !== 'function') {
     return { outcome: 'not_dispatched', issue: 'PROFILE_AUTHORIZATION_REQUIRED', attemptId: attemptId ?? null, dispatched: false };
   }
+  const requested = profileBusinessFields(input);
+  if (requested && hasExtendedProfileFields(requested) &&
+      (!matchesProfileReview(input.expectedReview, requested, input.confirmDuplicateName) ||
+       profileReviewDigest(input.expectedReview) !== input.expectedPreviewDigest)) {
+    return { outcome: 'review_required', issue: 'PROFILE_PREVIEW_CHANGED', attemptId: attemptId ?? null, dispatched: false };
+  }
   const result = await runStaged(input, options, (page, state, staged) =>
     savePreparedProfile(page, state, staged, { authorizeCandidate, dispatchCandidate, recordResponse, attemptId }));
   if (result.outcome !== 'awaiting_readback') return result;
@@ -421,7 +662,7 @@ export async function createGuestProfile(input, { authorizeCandidate, dispatchCa
   try { readback = await readGuestProfile({ nativeId: result.nativeId }, options); }
   catch { readback = null; }
   const fields = result.businessFields;
-  if (!matchesProfileReadback(readback, fields, result.nativeId)) {
+  if (!matchesProfileReadback(readback, fields, result.nativeId, result.review)) {
     return { outcome: 'uncertain', issue: 'PROFILE_READBACK_UNVERIFIED', attemptId: result.attemptId,
       phase: result.phase, dispatched: true, dispatchedPhases: result.dispatchedPhases, nativeId: result.nativeId };
   }
@@ -430,11 +671,20 @@ export async function createGuestProfile(input, { authorizeCandidate, dispatchCa
 }
 
 // Unknown consent never counts as off.
-export function matchesProfileReadback(readback, fields, expectedNativeId) {
-  return readback?.outcome === 'read' && readback.firstName === fields.firstName && readback.lastName === fields.lastName &&
+export function matchesProfileReadback(readback, fields, expectedNativeId, review) {
+  const core = readback?.outcome === 'read' && readback.firstName === fields.firstName && readback.lastName === fields.lastName &&
     readback.mobile === fields.mobile && readback.email === fields.email && readback.status === 'ACTIVE' &&
     (expectedNativeId === undefined || readback.nativeId === expectedNativeId) &&
     Array.isArray(readback.consent) && readback.consent.length === 4 && readback.consent.every(value => value === false);
+  if (!core || !hasExtendedProfileFields(fields)) return core;
+  if (!matchesProfileReview(review, fields, review?.confirmDuplicateName) || !Array.isArray(readback.fields)) return false;
+  for (const [name, expected] of [['nametitle', review.effective.title.code], ['phonenumber', review.effective.phoneNumber],
+    ['phonenumbertypecode', review.effective.phoneType.code], ['emailtypecode', review.effective.emailType.code]]) {
+    const matches = readback.fields.filter(field => field.name === name);
+    if (matches.length !== 1 || (expected ? matches[0].state !== 'present' || matches[0].value !== expected
+      : matches[0].state !== 'blank')) return false;
+  }
+  return true;
 }
 
 function profileReadInput(input) {
