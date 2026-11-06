@@ -157,8 +157,8 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
   const saved = await ctx.db.transaction(async (tx) => {
     // Serialize v2 seeding for the email, even if competing runs infer different
     // legacy WorkItem kinds. Background reads may still add other-kind rows.
-    await tx.select({ id: message.id }).from(message).where(and(eq(message.id, input.source.messageId),
-      eq(message.threadId, input.source.threadId), eq(message.transportId, ctx.transportId))).limit(1).for('update');
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(
+      ${JSON.stringify(['reservation-v2-source', ctx.transportId, input.source.messageId])}, 0))`);
     const [mail] = await sourceMail(tx, ctx, input.source).then((row) => row ? [row] : []);
     if (!mail || !(await hasMailboxAccess(tx, ctx))) return { status: 'invalid_source' as const };
     let [item] = await tx.select({ id: workItem.id, transportId: workItem.transportId, threadId: workItem.threadId,
