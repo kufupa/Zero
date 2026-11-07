@@ -678,7 +678,6 @@ type ServicePreviewStamp = { inputDigest: string; signature: string };
 function serviceInputSignature(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection,
   serviceIndex: number, targetIndex: number): string {
   const serviceRoot = `/proposal/content/services/${serviceIndex}`;
-  const targetRoot = `${serviceRoot}/targets/${targetIndex}`;
   const service = snapshot.session.draft.proposal.content.services[serviceIndex];
   const target = service?.targets[targetIndex];
   const createValues = request.fieldPaths.map((path) => [path, valueFor(snapshot, path)]);
@@ -898,8 +897,9 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   }, []);
 
   const flushEdits = useCallback(async (bound: ReservationSourceContext, paths?: string[]) => {
-    const allowed = paths ? new Set(paths) : null;
-    const edits = [...pending.current.values()].filter((edit) => !allowed || allowed.has(edit.path));
+    const edits = paths ? paths.flatMap((path) => {
+      const edit = pending.current.get(path); return edit ? [edit] : [];
+    }) : [...pending.current.values()];
     if (!edits.length) return;
     let current = snapshotRef.current;
     if (!current) throw new Error('The source-bound reservation draft is still loading.');
@@ -1546,6 +1546,11 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
               : activeRequest.kind === 'amend'
                 ? <fieldset disabled={Boolean(ui.busyAction) || busyActionRef.current} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
                   <AmendEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur}
+                    onSelect={(selectionPath, ref, modePath) => {
+                      if (modePath) stage(modePath, 'explicit');
+                      stage(selectionPath, ref);
+                      void saveEdits(modePath ? [modePath, selectionPath] : [selectionPath]);
+                    }}
                     onDone={acceptReview} editValue={editValue} onOpenEvidence={onOpenEvidence}
                     preparedRefs={amendPreparedRefs} busy={Boolean(ui.busyAction) || ui.pendingEdits.length > 0}
                     onLookup={() => runAmendAction('lookup', activeRequest.id)}
@@ -2439,6 +2444,7 @@ function centsLabel(price: Record<string, unknown> | null, key: 'averageCents' |
 
 function AmendEditor(props: EditorProps & {
   preparedRefs: Record<string, string>; busy: boolean; onLookup: () => void;
+  onSelect: (selectionPath: string, ref: string, modePath: string | null) => void;
   onPrepare: (hintId: string) => void; onExecute: (hintId: string) => void;
 }) {
   const { body, scope, rows } = amendTargets(props.snapshot, props.request);
@@ -2476,15 +2482,12 @@ function AmendEditor(props: EditorProps & {
   return <>
     <div className={styles.notice}>Amend applies only to an exact saved stay selected from fresh native lookup. Prepare shows unsaved HMS price/readback; Go saves one stay. No manual nightly price is accepted.</div>
     <section className={styles.card}>
-      <div className={styles.cardTitle}><b>Target scope</b><small>{humanize(text(scope.mode) || 'unresolved')} · {rows.length} stay hint(s)</small></div>
-      <FieldShell path={`${body}/targets/mode`} label="Scope" field={props.snapshot.fields[`${body}/targets/mode`]}>
-        <select className={styles.select} value={text(props.editValue(`${body}/targets/mode`))} onChange={(event) => {
-          props.onStage(`${body}/targets/mode`, event.target.value); props.onBlur(`${body}/targets/mode`);
-        }}><option value="unresolved">Unresolved</option><option value="explicit">Explicit saved stays</option></select>
-      </FieldShell>
-      {excludes.length > 0 && <div className={styles.alert}>This native Amend route cannot apply excluded stays. Clear the unsupported exclusion in the source-bound draft before continuing.</div>}
-      <button type="button" className={styles.secondaryButton} disabled={props.busy} onClick={props.onLookup}>Find exact stays in Infor</button>
-      <button type="button" className={styles.secondaryButton} disabled={props.busy || rows.length >= 100} onClick={addTarget}>Add saved-stay hint</button>
+      <div className={styles.cardTitle}><b>Find saved stays</b><small>{rows.length} stay hint(s)</small></div>
+      {scope.mode === 'unresolved' && <small>Find the stay, then select the matching Infor result before Prepare.</small>}
+      {scope.mode === 'scoped_all' && <div className={styles.alert}>This request covers a group of stays. Nava needs individually identified stays before it can prepare an amendment.</div>}
+      {excludes.length > 0 && <div className={styles.notice}>Excluded stays will not be amended.</div>}
+      <button type="button" className={styles.secondaryButton} disabled={props.busy || scope.mode === 'scoped_all'} onClick={props.onLookup}>Find exact stays in Infor</button>
+      <button type="button" className={styles.secondaryButton} disabled={props.busy || scope.mode === 'scoped_all' || rows.length >= 100} onClick={addTarget}>Add saved-stay hint</button>
     </section>
     {rows.map(({ value: hint, index }) => {
       const hintId = String(hint.id ?? '');
@@ -2530,7 +2533,8 @@ function AmendEditor(props: EditorProps & {
       const changesReady = allChanges.length > 0 && allChanges.every((change) => changeSupported(change) && changeHasUsefulValue(change));
       const prior = props.snapshot.operationResults.find((result) => result.requestId === props.request.id
         && result.allocationId === hintId && result.workflow === 'amend' && (result.status === 'succeeded' || result.status === 'unknown'));
-      const canPrepare = props.request.supported && !props.busy && !targetUnsupported && Boolean(selectedObservation)
+      const canPrepare = props.request.supported && !props.busy && !targetUnsupported && scope.mode === 'explicit'
+        && !excludes.some((excluded) => record(excluded)?.id === hintId) && Boolean(selectedObservation)
         && Boolean(per && rateHandling) && changesReady;
       const canExecute = canPrepare && prepRefCurrent && changePathsReviewed && rateReviewed && !needsReprice
         && selectionReview && prior?.status !== 'unknown' && prior?.status !== 'succeeded';
@@ -2550,7 +2554,9 @@ function AmendEditor(props: EditorProps & {
           {selectedObservation && <span>{text(selectedObservation.candidate.confirmation)} · {text(selectedObservation.candidate.firstName)} {text(selectedObservation.candidate.lastName)} · {text(selectedObservation.candidate.arrival)} → {text(selectedObservation.candidate.departure)} · {text(selectedObservation.candidate.roomType)} / {text(selectedObservation.candidate.ratePlan)}</span>}
           {candidates.length > 0 && <div className={styles.candidateList}>{candidates.map(({ ref, candidate }) => <div className={styles.candidateOption} key={ref}>
             <span><b>{text(candidate.confirmation)} · {text(candidate.firstName)} {text(candidate.lastName)}</b><small>{text(candidate.arrival)} → {text(candidate.departure)} · {text(candidate.roomType)} / {text(candidate.ratePlan)}</small></span>
-            <button type="button" disabled={props.busy} onClick={() => { props.onStage(selectionPath, ref); props.onBlur(selectionPath); }}>{selectedRef === ref ? 'Confirm selected' : 'Select exact stay'}</button>
+            <button type="button" disabled={props.busy || scope.mode === 'scoped_all'} onClick={() => {
+              props.onSelect(selectionPath, ref, scope.mode === 'unresolved' ? `${body}/targets/mode` : null);
+            }}>{selectedRef === ref ? 'Confirm selected' : 'Select exact stay'}</button>
           </div>)}</div>}
           {!candidates.length && <small>Enter exact confirmation and/or original stay hints, then refresh native lookup. A source suggestion alone is not a native match.</small>}
         </div>

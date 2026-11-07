@@ -431,11 +431,34 @@ function quoteLookupNotice(result: unknown): string | undefined {
 
 function filingLookupNotice(result: unknown): string | undefined {
   if (!isRecord(result) || !Array.isArray(result.lookups)) return undefined;
+  if (Array.isArray(result.requests) && result.requests.some((request) => isRecord(request) && request.kind === 'amend')) return undefined;
   const issues = result.lookups.flatMap((value) => {
     if (!isRecord(value) || value.status === 'candidate' || value.status === 'ready') return [];
     const status = isString(value.status) ? value.status.replaceAll('_', ' ') : 'unknown outcome';
     const issue = isString(value.issue) ? value.issue.replaceAll('_', ' ') : null;
     return [`Filing lookup: ${issue ?? status}.`];
+  });
+  return issues.length ? issues.join(' ') : undefined;
+}
+
+function amendLookupNotice(result: unknown): string | undefined {
+  if (!isRecord(result) || !Array.isArray(result.requests) ||
+      !result.requests.some((request) => isRecord(request) && request.kind === 'amend') || !Array.isArray(result.lookups)) return undefined;
+  const issues = result.lookups.flatMap((value) => {
+    if (!isRecord(value) || value.status === 'matches' || value.status === 'excluded') return [];
+    const target = isString(value.hintId) ? `Stay ${value.hintId}` : 'Saved stay';
+    const issue = value.issue;
+    const message = issue === 'amend_target_scope_unresolved' ? 'Identify the individual stay with its confirmation or original booking details.'
+      : issue === 'amend_target_hints_unknown' || issue === 'saved_target_hint_invalid' || issue === 'original_stay_hints_required'
+        ? 'Enter the confirmation, or guest name and original booked dates, then find the stay again.'
+      : issue === 'confirmation_hint_invalid' ? 'Check the confirmation number, then find the stay again.'
+      : issue === 'guest_name_hint_mismatch' || issue === 'booked_arrival_hint_mismatch' || issue === 'booked_departure_hint_mismatch' || issue === 'confirmation_hint_mismatch'
+        ? 'Infor differs from the supplied booking details. Check the guest and original booked dates before selecting a stay.'
+      : issue === 'stay_search_ambiguous' ? 'Several stays match. Add the confirmation or exact original dates.'
+      : issue === 'native_stay_unverified' || issue === 'no_verified_native_stay_matches_original_hints'
+        ? 'No matching Reserved stay was verified. Check the confirmation and original booking details.'
+      : 'Infor could not verify this stay. Check the booking details and try Find exact stays again.';
+    return [`${target}: ${message}`];
   });
   return issues.length ? issues.join(' ') : undefined;
 }
@@ -534,7 +557,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       const raw = await api.lookup.mutate(input, mailboxOptions(command.source));
       await refreshAfterStale(input, command.source, raw);
       const result = okResult(raw);
-      const notice = operationNotice(result, ['ok']) ?? quoteLookupNotice(result) ?? filingLookupNotice(result);
+      const notice = operationNotice(result, ['ok']) ?? quoteLookupNotice(result) ?? amendLookupNotice(result) ?? filingLookupNotice(result);
       return { ...await load(input, command.source), ...(notice ? { serviceNotice: notice } : {}), ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
     async prepare(command) {
