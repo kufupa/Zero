@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { profileCms, profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { and, desc, eq, ilike, isNull, lte, ne, or } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
@@ -60,9 +61,9 @@ const SYNTHESIS_SHAPE_RULES = `Use this schema-valid empty envelope as the exact
 {"proposal":{"schemaVersion":"reservation-prefill.v0.2","content":{"requests":[],"services":[],"documents":[]},"annotations":[],"issues":[],"sourceClaims":[],"lookupResultRefs":[]},"reviewRequirements":{}}
 Each request's sourceRefs, serviceRefs and documentRefs are required arrays, including when empty. Reuse extraction request IDs; host links a request to source facts only by exact ID or a unique one-to-one source/text match, and fails closed when ambiguous. For Amend and Cancel, preserve every source-cited exact confirmation as an include hint with confirmation, sourceRefs, candidateRefs:[], suggestedRef:null and mode:"unresolved" unless an exact admitted host observation supports a target. Do not fabricate a native target. For Create, reservationNote belongs in body.shared.reservationNote, never at body root. Do not emit global review keys such as humanReviewRequired or beforeExecution: reviewRequirements is keyed by field-path strings, and each value is exactly {"required":true,"reasons":["..."],"evidenceRefs":["admitted-ref"]}. Use {} when no additional review requirement is needed. Preserve every source-supported field in the schema; if a field cannot be represented confidently, retain sourceClaims and add a visible issue rather than dropping the request or inventing a value. An exact source confirmation linked to a Create means possible prior booking, not proof of a native stay. Keep it as a sourceClaim only; the host adds the existing_confirmation_requires_lookup issue at /proposal/content/requests/{finalRequestId}/confirmationReference and requires exact native lookup before Execute. Do not transform it into a native ID or claim that a stay exists; never copy it into a native-selection field.`;
 
-// PRODUCT.md Amend confirmation behavior and create-reservation.mjs's HRCEN
-// default template. R07's later outbound is outcome evidence, never T0 input.
-const HRCEN_AMEND_CAPABILITIES = `Trusted HRCEN tool capability context (applies only to Amend): HMS can issue the revised reservation confirmation/proforma when the amendment is saved, through the existing change fields cmsSend, cmsMessageId and cmsRecipient. A customer's request to send revised confirmation/proforma documents is a business delivery intent, not an incoming attachment or filing request. Translate that explicit intent into editable set changes: cmsSend=true, cmsMessageId="03" (the configured HRCEN confirmation template), and cmsRecipient=the source-supported requested recipient or current requester's address. Mark template selection as policy; cite the current request for delivery intent and recipient. If recipient or intent is ambiguous, leave it unresolved for staff review. Do not require customers to name CMS controls, create incoming document entities for generated confirmations, change guest/booker contact records merely to deliver a document, or claim anything was sent before a verified Save. If no delivery is requested, leave CMS unchanged for native preservation. Existing stay room, occupancy and rate codes come from native Lookup unless the customer asks to change them; do not guess missing native codes.`;
+// PRODUCT.md describes the staff-controlled CMS capability; codes/labels come
+// from the existing property profile. Later corpus outcomes never enter T0 input.
+const HRCEN_AMEND_CAPABILITIES = `Trusted HRCEN tool capability context (applies only to Amend): HMS can issue revised reservation documents when the amendment is saved, through the existing change fields cmsSend, cmsMessageId and cmsRecipient. A customer's request to send revised confirmation/proforma documents is a business delivery intent, not an incoming attachment or filing request. Translate that explicit intent into editable set changes: cmsSend=true and cmsRecipient=the source-supported requested recipient or current requester's address. For an explicit proforma request, choose only a configured CMS template whose supplied label supports proforma. A confirmation-only request does not justify switching to the proforma template: preserve the applicable native template, or leave template choice for staff when unknown. Template selection is host policy, not a customer claim: its change.sourceRefs and policy annotation.evidenceRefs must be empty; cite the current request for delivery intent and recipient. If recipient or intent is ambiguous, leave it unresolved for staff review. Do not require customers to name CMS controls, create incoming document entities for generated confirmations, change guest/booker contact records merely to deliver a document, or claim anything was sent before a verified Save. If no delivery is requested, leave CMS unchanged for native preservation. Existing stay room, occupancy and rate codes come from native Lookup unless the customer asks to change them; do not guess missing native codes.`;
 
 const OMIT_UNKNOWN_CLAIM = Symbol('omit-uncited-unknown-claim');
 function omitUncitedUnknownClaims(value: unknown): unknown {
@@ -1400,7 +1401,18 @@ export async function runReservationWorkflowV2Prefill(input: {
       readErrors.push({ stage: 'lookup', code: 'reader_failed', message: `Candidate read ${candidate.id} failed.` });
     }
   }
-  const finalPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${SYNTHESIS_RULES}\n${SYNTHESIS_SHAPE_RULES}${input.propertyCode === 'HRCEN' ? `\n${HRCEN_AMEND_CAPABILITIES}` : ''}`,
+  let cmsCapabilityContext = '';
+  if (input.propertyCode === 'HRCEN') {
+    try {
+      const cms = profileCms(profileFor(input.propertyCode));
+      if (!cms) throw new Error('cms_profile_missing');
+      cmsCapabilityContext = `\n${HRCEN_AMEND_CAPABILITIES}\nConfigured CMS profile: ${JSON.stringify(cms)}`;
+    } catch {
+      readErrors.push({ stage: 'lookup', code: 'cms_profile_unavailable',
+        message: 'Configured CMS choices are unavailable; no template policy was supplied.' });
+    }
+  }
+  const finalPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${SYNTHESIS_RULES}\n${SYNTHESIS_SHAPE_RULES}${cmsCapabilityContext}`,
     userPrompt: JSON.stringify({ propertyCode: input.propertyCode, source: input.source, evidence, extraction, observations }),
     responseSchema: zodToJsonSchema(reservationWorkflowV2ModelOutputSchema, { $refStrategy: 'none' }) as Record<string, unknown>,
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
