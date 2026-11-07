@@ -234,7 +234,7 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
 /** Only an untouched extraction failure is eligible for a bounded retry. */
 function retryablePrefill(draft: ReservationWorkflowV2Draft): boolean {
   return draft.status === 'partial' && draft.errors.some((error) => error.stage === 'extract' &&
-    ['extract_unavailable', 'model_timeout', 'model_error'].includes(error.code)) &&
+    ['extract_unavailable', 'model_timeout', 'model_error', 'invalid_typed_extraction'].includes(error.code)) &&
     draft.proposal.content.requests.length === 1 && draft.proposal.content.requests[0]?.kind === 'other' &&
     !draft.proposal.content.services.length && !draft.proposal.content.documents.length &&
     draft.observations.length === 1 && draft.observations[0]?.kind === 'source' &&
