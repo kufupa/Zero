@@ -897,8 +897,9 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
   }, []);
 
   const flushEdits = useCallback(async (bound: ReservationSourceContext, paths?: string[]) => {
-    const allowed = paths ? new Set(paths) : null;
-    const edits = [...pending.current.values()].filter((edit) => !allowed || allowed.has(edit.path));
+    const edits = paths ? paths.flatMap((path) => {
+      const edit = pending.current.get(path); return edit ? [edit] : [];
+    }) : [...pending.current.values()];
     if (!edits.length) return;
     let current = snapshotRef.current;
     if (!current) throw new Error('The source-bound reservation draft is still loading.');
@@ -1545,6 +1546,11 @@ export function ReservationPane({ source, snapshot, loadError, client, onSnapsho
               : activeRequest.kind === 'amend'
                 ? <fieldset disabled={Boolean(ui.busyAction) || busyActionRef.current} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
                   <AmendEditor snapshot={snapshot} request={activeRequest} onStage={stage} onBlur={editOnBlur}
+                    onSelect={(selectionPath, ref, modePath) => {
+                      if (modePath) stage(modePath, 'explicit');
+                      stage(selectionPath, ref);
+                      void saveEdits(modePath ? [modePath, selectionPath] : [selectionPath]);
+                    }}
                     onDone={acceptReview} editValue={editValue} onOpenEvidence={onOpenEvidence}
                     preparedRefs={amendPreparedRefs} busy={Boolean(ui.busyAction) || ui.pendingEdits.length > 0}
                     onLookup={() => runAmendAction('lookup', activeRequest.id)}
@@ -2438,6 +2444,7 @@ function centsLabel(price: Record<string, unknown> | null, key: 'averageCents' |
 
 function AmendEditor(props: EditorProps & {
   preparedRefs: Record<string, string>; busy: boolean; onLookup: () => void;
+  onSelect: (selectionPath: string, ref: string, modePath: string | null) => void;
   onPrepare: (hintId: string) => void; onExecute: (hintId: string) => void;
 }) {
   const { body, scope, rows } = amendTargets(props.snapshot, props.request);
@@ -2526,7 +2533,8 @@ function AmendEditor(props: EditorProps & {
       const changesReady = allChanges.length > 0 && allChanges.every((change) => changeSupported(change) && changeHasUsefulValue(change));
       const prior = props.snapshot.operationResults.find((result) => result.requestId === props.request.id
         && result.allocationId === hintId && result.workflow === 'amend' && (result.status === 'succeeded' || result.status === 'unknown'));
-      const canPrepare = props.request.supported && !props.busy && !targetUnsupported && Boolean(selectedObservation)
+      const canPrepare = props.request.supported && !props.busy && !targetUnsupported && scope.mode === 'explicit'
+        && !excludes.some((excluded) => record(excluded)?.id === hintId) && Boolean(selectedObservation)
         && Boolean(per && rateHandling) && changesReady;
       const canExecute = canPrepare && prepRefCurrent && changePathsReviewed && rateReviewed && !needsReprice
         && selectionReview && prior?.status !== 'unknown' && prior?.status !== 'succeeded';
@@ -2547,11 +2555,7 @@ function AmendEditor(props: EditorProps & {
           {candidates.length > 0 && <div className={styles.candidateList}>{candidates.map(({ ref, candidate }) => <div className={styles.candidateOption} key={ref}>
             <span><b>{text(candidate.confirmation)} · {text(candidate.firstName)} {text(candidate.lastName)}</b><small>{text(candidate.arrival)} → {text(candidate.departure)} · {text(candidate.roomType)} / {text(candidate.ratePlan)}</small></span>
             <button type="button" disabled={props.busy || scope.mode === 'scoped_all'} onClick={() => {
-              if (scope.mode === 'unresolved') {
-                props.onStage(`${body}/targets/mode`, 'explicit');
-                props.onBlur(`${body}/targets/mode`);
-              }
-              props.onStage(selectionPath, ref); props.onBlur(selectionPath);
+              props.onSelect(selectionPath, ref, scope.mode === 'unresolved' ? `${body}/targets/mode` : null);
             }}>{selectedRef === ref ? 'Confirm selected' : 'Select exact stay'}</button>
           </div>)}</div>}
           {!candidates.length && <small>Enter exact confirmation and/or original stay hints, then refresh native lookup. A source suggestion alone is not a native match.</small>}
