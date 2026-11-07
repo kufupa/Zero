@@ -537,7 +537,8 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       const digest = savedRates ? nativePriceDigest({ version: 1, preimageDigest: bound?.digest, savedRateDigest: savedRates.digest }) : bound?.digest;
       if (!bound?.digest || !preserved || state.native.reservationstayid !== selected.reservationStayId ||
           state.native.reservationid !== selected.reservationId || state.native.recordid !== selected.recordId ||
-          (!prepareOnly && (digest !== input.nativeDigest || !same(preserved, input.preserved)))) {
+          // JSONB can reorder object keys; compare every preserved value canonically.
+          (!prepareOnly && (digest !== input.nativeDigest || nativePriceDigest(preserved) !== nativePriceDigest(input.preserved)))) {
         throw new Error('AMEND_PREIMAGE_CHANGED');
       }
       nativeDigest = digest;
