@@ -678,7 +678,6 @@ type ServicePreviewStamp = { inputDigest: string; signature: string };
 function serviceInputSignature(snapshot: ReservationPaneSnapshot, request: ReservationRequestProjection,
   serviceIndex: number, targetIndex: number): string {
   const serviceRoot = `/proposal/content/services/${serviceIndex}`;
-  const targetRoot = `${serviceRoot}/targets/${targetIndex}`;
   const service = snapshot.session.draft.proposal.content.services[serviceIndex];
   const target = service?.targets[targetIndex];
   const createValues = request.fieldPaths.map((path) => [path, valueFor(snapshot, path)]);
