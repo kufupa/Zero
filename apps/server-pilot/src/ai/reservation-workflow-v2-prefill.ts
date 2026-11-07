@@ -288,7 +288,7 @@ export function buildReservationWorkflowV2CandidateReadPlan(input: {
     for (const hint of targets) {
       const confirmation = typeof hint.value === 'string' && /^\d{6,10}-\d{1,2}$/.test(hint.value.trim()) ? hint.value.trim() : null;
       const guestName = confirmation ? null : hint.value;
-      add('stay_candidate', request.id, hint.raw, { confirmationOrGuestText: hint.value, raw: hint.raw,
+      if (request.kind !== 'amend') add('stay_candidate', request.id, hint.raw, { confirmationOrGuestText: hint.value, raw: hint.raw,
         dates: requestDates, occupancy }, [...hint.sourceRefs, ...requestDates.flatMap((date) => date.sourceRefs)]);
       add('mail_candidate', request.id, hint.raw, { matchKind: confirmation ? 'exact_confirmation' : 'guest_plus_dates',
         confirmation, guestName, dates: request.dates.map((date) => ({
@@ -310,7 +310,7 @@ export function buildReservationWorkflowV2CandidateReadPlan(input: {
       const sourceRefs = [...(date.arrival?.sourceRefs ?? []), ...(date.departure?.sourceRefs ?? [])];
       const availabilityRefs = [...new Set([...sourceRefs, ...occupancy.flatMap((row) => row.sourceRefs),
         ...request.roomTypeHints.flatMap((hint) => hint.sourceRefs), ...(request.roomCount?.sourceRefs ?? [])])];
-      if (sourceRefs.length) add('rate_availability', request.id, `${date.arrival?.raw ?? ''}:${date.departure?.raw ?? ''}`, {
+      if (request.kind !== 'amend' && sourceRefs.length) add('rate_availability', request.id, `${date.arrival?.raw ?? ''}:${date.departure?.raw ?? ''}`, {
         dates: [{ arrival: date.arrival?.value ?? null, departure: date.departure?.value ?? null,
           arrivalRaw: date.arrival?.raw ?? null, departureRaw: date.departure?.raw ?? null,
           sourceRefs: [...(date.arrival?.sourceRefs ?? []), ...(date.departure?.sourceRefs ?? [])] }],

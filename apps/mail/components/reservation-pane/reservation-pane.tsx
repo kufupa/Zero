@@ -2476,15 +2476,12 @@ function AmendEditor(props: EditorProps & {
   return <>
     <div className={styles.notice}>Amend applies only to an exact saved stay selected from fresh native lookup. Prepare shows unsaved HMS price/readback; Go saves one stay. No manual nightly price is accepted.</div>
     <section className={styles.card}>
-      <div className={styles.cardTitle}><b>Target scope</b><small>{humanize(text(scope.mode) || 'unresolved')} · {rows.length} stay hint(s)</small></div>
-      <FieldShell path={`${body}/targets/mode`} label="Scope" field={props.snapshot.fields[`${body}/targets/mode`]}>
-        <select className={styles.select} value={text(props.editValue(`${body}/targets/mode`))} onChange={(event) => {
-          props.onStage(`${body}/targets/mode`, event.target.value); props.onBlur(`${body}/targets/mode`);
-        }}><option value="unresolved">Unresolved</option><option value="explicit">Explicit saved stays</option></select>
-      </FieldShell>
-      {excludes.length > 0 && <div className={styles.alert}>This native Amend route cannot apply excluded stays. Clear the unsupported exclusion in the source-bound draft before continuing.</div>}
-      <button type="button" className={styles.secondaryButton} disabled={props.busy} onClick={props.onLookup}>Find exact stays in Infor</button>
-      <button type="button" className={styles.secondaryButton} disabled={props.busy || rows.length >= 100} onClick={addTarget}>Add saved-stay hint</button>
+      <div className={styles.cardTitle}><b>Find saved stays</b><small>{rows.length} stay hint(s)</small></div>
+      {scope.mode === 'unresolved' && <small>Find the stay, then select the matching Infor result before Prepare.</small>}
+      {scope.mode === 'scoped_all' && <div className={styles.alert}>This request covers a group of stays. Nava needs individually identified stays before it can prepare an amendment.</div>}
+      {excludes.length > 0 && <div className={styles.notice}>Excluded stays will not be amended.</div>}
+      <button type="button" className={styles.secondaryButton} disabled={props.busy || scope.mode === 'scoped_all'} onClick={props.onLookup}>Find exact stays in Infor</button>
+      <button type="button" className={styles.secondaryButton} disabled={props.busy || scope.mode === 'scoped_all' || rows.length >= 100} onClick={addTarget}>Add saved-stay hint</button>
     </section>
     {rows.map(({ value: hint, index }) => {
       const hintId = String(hint.id ?? '');
@@ -2550,7 +2547,13 @@ function AmendEditor(props: EditorProps & {
           {selectedObservation && <span>{text(selectedObservation.candidate.confirmation)} · {text(selectedObservation.candidate.firstName)} {text(selectedObservation.candidate.lastName)} · {text(selectedObservation.candidate.arrival)} → {text(selectedObservation.candidate.departure)} · {text(selectedObservation.candidate.roomType)} / {text(selectedObservation.candidate.ratePlan)}</span>}
           {candidates.length > 0 && <div className={styles.candidateList}>{candidates.map(({ ref, candidate }) => <div className={styles.candidateOption} key={ref}>
             <span><b>{text(candidate.confirmation)} · {text(candidate.firstName)} {text(candidate.lastName)}</b><small>{text(candidate.arrival)} → {text(candidate.departure)} · {text(candidate.roomType)} / {text(candidate.ratePlan)}</small></span>
-            <button type="button" disabled={props.busy} onClick={() => { props.onStage(selectionPath, ref); props.onBlur(selectionPath); }}>{selectedRef === ref ? 'Confirm selected' : 'Select exact stay'}</button>
+            <button type="button" disabled={props.busy || scope.mode === 'scoped_all'} onClick={() => {
+              if (scope.mode === 'unresolved') {
+                props.onStage(`${body}/targets/mode`, 'explicit');
+                props.onBlur(`${body}/targets/mode`);
+              }
+              props.onStage(selectionPath, ref); props.onBlur(selectionPath);
+            }}>{selectedRef === ref ? 'Confirm selected' : 'Select exact stay'}</button>
           </div>)}</div>}
           {!candidates.length && <small>Enter exact confirmation and/or original stay hints, then refresh native lookup. A source suggestion alone is not a native match.</small>}
         </div>

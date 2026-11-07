@@ -553,21 +553,37 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReservationWorkflowV
   for (const request of requests) {
     const bodyPath = ptr('proposal', 'content', 'requests', request.id, 'body');
     const unknownPaths = new Set<string>();
-    const body = record(effectiveTree(loaded.draft, bodyPath, request.body, unknownPaths));
-    if (!body || unknownPaths.size) {
+    const body = record(effectiveLeaf(loaded.draft, bodyPath, request.body));
+    const targetsPath = `${bodyPath}/targets`;
+    const targets = record(effectiveLeaf(loaded.draft, targetsPath, body?.targets));
+    const mode = effectiveTree(loaded.draft, `${targetsPath}/mode`, targets?.mode, unknownPaths);
+    const includePath = `${targetsPath}/include`;
+    const include = effectiveLeaf(loaded.draft, includePath, targets?.include);
+    const exclude = effectiveTree(loaded.draft, `${targetsPath}/exclude`, targets?.exclude, unknownPaths);
+    if (!body || !targets || include === UNKNOWN || unknownPaths.size) {
       lookups.push({ requestId: request.id, status: 'needs_input', issue: 'amend_target_hints_unknown', fields: [...unknownPaths] });
       continue;
     }
-    const scope = targetRows(body);
-    if (!scope.targets || scope.mode !== 'explicit' || !scope.include.length) {
+    if ((mode !== 'explicit' && mode !== 'unresolved') || !Array.isArray(include) || !include.length || !Array.isArray(exclude)) {
       lookups.push({ requestId: request.id, status: 'needs_input', issue: 'amend_target_scope_unresolved' });
       continue;
     }
-    for (const [index, value] of scope.include.entries()) {
-      const hint = record(value), hintId = text(hint?.id);
+    for (const [index, value] of include.entries()) {
+      const hintPath = `${includePath}/${index}`;
+      const rawHint = record(effectiveLeaf(loaded.draft, hintPath, value));
+      const hintUnknownPaths = new Set<string>();
+      // Lookup consumes identity hints only. Candidate refs and change/pricing decisions
+      // belong to later stages and must not prevent read-only native discovery.
+      const hint = rawHint && Object.fromEntries(['id', 'confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].map((key) =>
+        [key, effectiveTree(loaded.draft, `${hintPath}/${key}`, rawHint[key], hintUnknownPaths)]));
+      const hintId = text(hint?.id);
       if (!hint || !hintId) { lookups.push({ requestId: request.id, status: 'needs_input', issue: 'saved_target_hint_invalid' }); continue; }
-      if (scope.exclude.some((excluded) => record(excluded)?.id === hintId)) {
+      if (exclude.some((excluded) => record(excluded)?.id === hintId)) {
         lookups.push({ requestId: request.id, hintId, status: 'excluded' });
+        continue;
+      }
+      if (hintUnknownPaths.size) {
+        lookups.push({ requestId: request.id, hintId, status: 'needs_input', issue: 'amend_target_hints_unknown', fields: [...hintUnknownPaths] });
         continue;
       }
       const selectionPath = ptr('proposal', 'content', 'requests', request.id, 'body', 'targets', 'include', index, 'suggestedRef');
@@ -575,6 +591,7 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReservationWorkflowV
       observations.push(...result.rows.map((row) => row.observation));
       if (result.observation) observations.push(result.observation);
       lookups.push({ requestId: request.id, hintId, status: result.rows.length ? 'matches' : 'partial',
+        ...(result.observation ? { issue: result.observation.result.issue } : {}),
         selectionPath, candidates: result.rows.map(({ observation, native }) => ({ ref: observation.ref,
           confirmation: native.confirmation, guestName: `${native.firstName} ${native.lastName}`,
           bookedArrival: native.arrival, bookedDeparture: native.departure,
