@@ -1315,7 +1315,20 @@ export async function runReservationWorkflowV2Prefill(input: {
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
   if (!firstPass.ok) return fallback(`Typed extraction call failed (${firstPass.reason}); no lookups were run.`,
     { stage: 'extract', code: `model_${firstPass.reason}`, message: `Typed extraction call failed (${firstPass.reason}); no lookups were run.` });
-  const parsedExtraction = reservationWorkflowV2ExtractionSchema.safeParse(omitUncitedUnknownClaims(firstPass.result.output));
+  const firstPassFacts = omitUncitedUnknownClaims(firstPass.result.output);
+  // Request IDs are host metadata, not model claims. Derive them before validating
+  // the facts so an omitted/malformed model ID cannot discard a valid request.
+  const identifiedFacts = firstPassFacts && typeof firstPassFacts === 'object' && !Array.isArray(firstPassFacts) &&
+    Array.isArray((firstPassFacts as Record<string, unknown>).requests) ? {
+      ...firstPassFacts,
+      requests: ((firstPassFacts as Record<string, unknown>).requests as unknown[]).map((value, index) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+        const request = value as Record<string, unknown>;
+        return { ...request, id: stableId(input.source.messageId, 'extracted_request', String(index),
+          typeof request.kind === 'string' ? request.kind : 'invalid') };
+      }),
+    } : firstPassFacts;
+  const parsedExtraction = reservationWorkflowV2ExtractionSchema.safeParse(identifiedFacts);
   if (!parsedExtraction.success) {
     const shape = parsedExtraction.error.issues.slice(0, 10).map((issue) => {
       const path = issue.path.map((part) => typeof part === 'number' ? '[]' : String(part)).join('.').slice(0, 120);
@@ -1330,9 +1343,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     const reason = `Typed extraction cited ${unknownRefs.length} evidence reference(s) outside the admitted source registry; source remains editable.`;
     return fallback(reason, { stage: 'extract', code: 'unknown_evidence_refs', message: reason });
   }
-  const extraction = { ...parsedExtraction.data, requests: parsedExtraction.data.requests.map((request, index) => ({
-    ...request, id: stableId(input.source.messageId, 'extracted_request', String(index), request.kind),
-  })) };
+  const extraction = parsedExtraction.data;
   if (selfPreStay) {
     // Match the established pre-stay rule: a grounded separate ask is surfaced
     // for staff review, but this existing-stay email cannot grant a new write.
