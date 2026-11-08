@@ -10,7 +10,7 @@ export type ReservationWorkflowV2MailQuery = {
   date: { arrivalRaw: string; departureRaw: string } | null;
   searchAnchor: string;
   pattern: string;
-  participants: string[];
+  participants: readonly string[];
   limit: number;
   candidateLimit: number;
   fieldScope: readonly ['subject', 'textBody'];
@@ -31,7 +31,7 @@ type MailCandidateRow = {
 
 export function buildReservationWorkflowV2MailQuery(
   criteria: Record<string, unknown>,
-  context: { transportId: string; source: { threadId: string; arrivedAt: string }; participants?: string[] },
+  context: { transportId: string; source: { threadId: string; arrivedAt: string }; participants?: readonly string[] },
 ): ReservationWorkflowV2MailQuery | null {
   const matchKind = criteria.matchKind;
   const confirmation = typeof criteria.confirmation === 'string' ? criteria.confirmation : null;

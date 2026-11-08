@@ -1251,9 +1251,9 @@ export async function runReservationWorkflowV2Prefill(input: {
     complete: !vision.attachmentReads.some((row) => row.status !== 'read'),
   })];
   const base: Pick<ReservationWorkflowV2PrefillResult,
-    'generationId' | 'extraction' | 'sourceBound' | 'observations' | 'fieldReviewRequirements' | 'errors'> = {
+    'generationId' | 'extraction' | 'sourceBound' | 'observations' | 'fieldReviewRequirements'> & { errors: NonNullable<ReservationWorkflowV2Draft['errors']> } = {
     generationId, extraction: empty, sourceBound: true, observations,
-    fieldReviewRequirements: {} as ReservationWorkflowV2Draft['fieldReviewRequirements'], errors: [] as ReservationWorkflowV2Draft['errors'] };
+    fieldReviewRequirements: {} as ReservationWorkflowV2Draft['fieldReviewRequirements'], errors: [] as NonNullable<ReservationWorkflowV2Draft['errors']> };
   const fallback = (reason: string, error = { stage: 'extract' as const, code: 'extract_unavailable', message: reason }): ReservationWorkflowV2PrefillResult => ({
     ...base, status: 'partial', sourceBound: true,
     proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence, reason }),
