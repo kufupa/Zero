@@ -246,7 +246,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
       <SelectedEmailBlock activeEmail={email} />
       {sourceError ? <p role="status" className="p-3 text-sm text-slate-600">{sourceError}</p> : null}
       {email && !source && !sourceError ? <p role="status" className="p-3 text-sm text-slate-600">Opening selected email…</p> : null}
-      {source ? <ReservationWorkspace key={`${owner}:${source.selectionEpoch}`} source={source} client={client}
+      {source ? <ReservationWorkspace key={`${owner}:${source.selectionEpoch}`} source={source} client={client} bridge={bridge} hostType={preview ? 'webmail' : 'outlook'}
         onOpenEvidence={(reference) => void openEvidence(reference)} onOpenAttachment={(reference) => void openAttachment(reference)} /> : null}
       <Dialog open={currentEvidencePreview !== null} onOpenChange={(open) => { if (!open) setSourceEvidencePreview(null); }}>
         <DialogContent showOverlay className="max-h-[85dvh] max-w-3xl overflow-y-auto">

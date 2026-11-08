@@ -1,4 +1,4 @@
-import type { ReservationWorkflowV2Draft } from '../../ai/reservation-workflow-v2-contract.js';
+import type { ReservationWorkflowV2Draft, ReservationWorkflowV2ItemInput } from '../../ai/reservation-workflow-v2-contract.js';
 import { TRPCError } from '@trpc/server';
 import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
@@ -17,6 +17,8 @@ import {
   reservationWorkflowV2PrepareInputSchema,
   reservationWorkflowV2ExecuteInputSchema,
   reservationWorkflowV2ReconcileInputSchema,
+  reservationWorkflowV2AddActionInputSchema, reservationWorkflowV2ChangeRowsInputSchema,
+  reservationWorkflowV2SelectNativeInputSchema, reservationWorkflowV2ReviewScopeInputSchema,
 } from '../../ai/reservation-workflow-v2-contract.js';
 import {
   getReservationWorkflowV2Draft,
@@ -24,8 +26,12 @@ import {
   reviewReservationWorkflowV2Draft,
   moveReservationWorkflowV2History,
   configureReservationWorkflowV2Filing,
+  initializeReservationWorkflowV2Draft, claimReservationWorkflowV2Prefill, finishReservationWorkflowV2Prefill,
+  markReservationWorkflowV2NativeActivity,
 } from '../../ai/reservation-workflow-v2-state.js';
-import { ensureReservationWorkflowV2Prefill } from '../../ai/reservation-workflow-v2-prefill.js';
+import { classifyReservationWorkflowV2Source, runReservationWorkflowV2Prefill } from '../../ai/reservation-workflow-v2-prefill.js';
+import { addReservationWorkflowV2Action, changeReservationWorkflowV2Rows,
+  selectReservationWorkflowV2Native, reviewReservationWorkflowV2Scope } from '../../ai/reservation-workflow-v2-draft-commands.js';
 import { preStaySourceText } from '../../ai/existing-stay-information.js';
 import { createAzureExtractionAdapter } from '../../ai/extraction/extract.js';
 import type { ModelAdapter } from '../../ai/bedrock/adapter.js';
@@ -40,10 +46,14 @@ import {
 import {
   reservationWorkflowV2ExecuteServices,
   reservationWorkflowV2LookupServices,
+  reservationWorkflowV2LookupSavedServices,
+  reservationWorkflowV2PreviewSavedServices,
   reservationWorkflowV2PreviewServices,
   reservationWorkflowV2ReconcileServices,
   reservationWorkflowV2ServicesExecuteInputSchema,
 } from '../../ai/reservation-workflow-v2-services.js';
+import { reservationWorkflowV2ExecuteSavedServices, reservationWorkflowV2SavedServicesExecuteInputSchema }
+  from '../../ai/reservation-workflow-v2-services-execute.js';
 import { reservationWorkflowV2QuoteLookup, reservationWorkflowV2QuotePrepare,
   reservationWorkflowV2QuoteExecute, reservationWorkflowV2QuoteReconcile } from '../../ai/reservation-workflow-v2-quote.js';
 import { reservationWorkflowV2CancelLookup, reservationWorkflowV2CancelPrepare,
@@ -156,7 +166,10 @@ async function nativeWorkflow(
   }
   const kind = operationId ? current.draft.operationResults.find((row) => row.id === operationId)?.workflow
     : requestId ? current.draft.proposal.content.requests.find((row) => row.id === requestId)?.kind : 'create';
-  return kind ? { kind, result: null } : { kind: null, result: { status: 'not_found' as const } };
+  if (!kind) return { kind: null, result: { status: 'not_found' as const } };
+  const marked = await markReservationWorkflowV2NativeActivity({ db: ctx.db, userId: ctx.user.id,
+    transportId: ctx.transport.id, propertyCode: ctx.property.propertyCode }, input);
+  return marked.status === 'ok' ? { kind, result: null } : { kind: null, result: marked };
 }
 
 const configureFilingInput = reservationWorkflowV2ItemInputSchema.extend({
@@ -166,8 +179,34 @@ const configureFilingInput = reservationWorkflowV2ItemInputSchema.extend({
 }).strict();
 
 const servicesInput = reservationWorkflowV2PrepareInputSchema.extend({
-  allocationId: z.string().min(1).max(80), serviceId: z.string().min(1).max(80).optional(),
-}).strict();
+  allocationId: z.string().min(1).max(80).optional(),
+  targetRef: z.object({ kind: z.literal('saved_target'), requestId: z.string().min(1).max(80),
+    hintId: z.string().min(1).max(80) }).strict().optional(), serviceId: z.string().min(1).max(80).optional(),
+}).strict().refine((value) => Boolean(value.allocationId) !== Boolean(value.targetRef), 'Choose exactly one target.');
+
+async function prefillDraft(scoped: ReturnType<typeof context>, input: ReservationWorkflowV2ItemInput,
+  mailboxAddress: string | null | undefined, allowRetry: boolean) {
+  const claimed = await claimReservationWorkflowV2Prefill(scoped, { ...input, allowRetry });
+  if (!claimed.claim) return claimed.result;
+  try {
+    const selection = await loadSyncedQuoteSelectionFromMailbox({ db: scoped.db, transportId: scoped.transportId,
+      messageId: input.source.messageId, includeThreadState: true, sourceCutoffOnly: true,
+      includeVisionImages: true, trackVisionImages: true });
+    if (!selection) return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: claimed.claim, failed: true });
+    const modelEnv = { ...process.env, EXTRACTION_REASONING_EFFORT: process.env.EXTRACTION_REASONING_EFFORT?.trim() || 'high' };
+    const generated = await runReservationWorkflowV2Prefill({ db: scoped.db, transportId: scoped.transportId,
+      propertyCode: scoped.propertyCode, source: input.source, selection, mailboxAddress, env: modelEnv,
+      adapter: observedPrefillAdapter(createAzureExtractionAdapter(modelEnv), input.source.messageId, modelEnv.EXTRACTION_REASONING_EFFORT) });
+    const failed = !generated.sourceBound || (generated.skippedReason !== undefined && generated.skippedReason !== 'self_prestay') ||
+      (generated.errors ?? []).some((error) => error.stage === 'extract' || error.stage === 'synthesis');
+    return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: claimed.claim, failed,
+      seed: generated.sourceBound && !generated.skippedReason ? { generationId: generated.generationId,
+        status: generated.status, proposal: generated.proposal, observations: generated.observations,
+        fieldReviewRequirements: generated.fieldReviewRequirements, errors: generated.errors } : undefined });
+  } catch {
+    return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: claimed.claim, failed: true });
+  }
+}
 
 /** Source, state and tools share the authenticated mailbox; clients cannot select another hotel. */
 export const reservationWorkflowV2Router = router({
@@ -205,7 +244,7 @@ export const reservationWorkflowV2Router = router({
   }),
   ensure: mailboxProcedure.input(reservationWorkflowV2EnsureInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
-    const [source] = await scoped.db.select({ id: message.id, threadId: message.threadId,
+    const [source] = await scoped.db.select({ id: message.id, threadId: message.threadId, fromAddress: message.fromAddress,
       subject: message.subject, textBody: message.textBody, htmlBody: message.htmlBody,
       sourceProvenance: message.sourceProvenance, arrivedAt: MESSAGE_ARRIVED_AT })
       .from(message).innerJoin(mailThread, and(eq(mailThread.id, message.threadId),
@@ -220,17 +259,18 @@ export const reservationWorkflowV2Router = router({
       threadId: source.threadId, messageId: source.id });
     if (!origin.ok) return { status: 'wrong_property' as const };
     const canonicalSource = { ...input.source, arrivedAt: source.arrivedAt.toISOString() };
-    const selection = await loadSyncedQuoteSelectionFromMailbox({ db: scoped.db, transportId: scoped.transportId,
-      messageId: source.id, includeThreadState: true, sourceCutoffOnly: true,
-      includeVisionImages: true, trackVisionImages: true });
-    if (!selection) return { status: 'invalid_source' as const };
-    // Match the corpus-tested v2 profile while retaining an explicit deployment override.
-    const modelEnv = { ...process.env,
-      EXTRACTION_REASONING_EFFORT: process.env.EXTRACTION_REASONING_EFFORT?.trim() || 'high' };
-    return withPreparation(ensureReservationWorkflowV2Prefill({ context: scoped, source: canonicalSource, selection,
-      mailboxAddress: ctx.transportEmail, env: modelEnv,
-      adapter: observedPrefillAdapter(createAzureExtractionAdapter(modelEnv), source.id,
-        modelEnv.EXTRACTION_REASONING_EFFORT) }), scoped.propertyCode);
+    const admission = classifyReservationWorkflowV2Source({ fromAddress: source.fromAddress, subject: source.subject,
+      bodyText: preStaySourceText(source.textBody, source.htmlBody), mailboxAddress: ctx.transportEmail });
+    if (admission.skippedReason) return { status: 'skipped' as const, reason: `Known ${admission.skippedReason} source is excluded.` };
+    const initialized = await initializeReservationWorkflowV2Draft(scoped, canonicalSource);
+    if (initialized.status !== 'ok' || input.mode === 'initialize')
+      return withPreparation(Promise.resolve(initialized), scoped.propertyCode);
+    return withPreparation(prefillDraft(scoped, { workItemId: initialized.draft.workItemId, source: canonicalSource,
+      expectedRevision: initialized.revision, expectedSeq: initialized.seq }, ctx.transportEmail, false), scoped.propertyCode);
+  }),
+  prefill: mailboxProcedure.input(reservationWorkflowV2ItemInputSchema).mutation(({ input, ctx }) => {
+    const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
+    return withPreparation(prefillDraft(scoped, input, ctx.transportEmail, true), scoped.propertyCode);
   }),
   get: mailboxProcedure.input(reservationWorkflowV2ItemInputSchema).query(({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
@@ -239,6 +279,22 @@ export const reservationWorkflowV2Router = router({
   edit: mailboxProcedure.input(reservationWorkflowV2EditInputSchema).mutation(({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
     return withPreparation(editReservationWorkflowV2Draft(scoped, { ...input, value: input.value }), scoped.propertyCode);
+  }),
+  addAction: mailboxProcedure.input(reservationWorkflowV2AddActionInputSchema).mutation(({ input, ctx }) => {
+    const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
+    return withPreparation(addReservationWorkflowV2Action(scoped, input), scoped.propertyCode);
+  }),
+  changeRows: mailboxProcedure.input(reservationWorkflowV2ChangeRowsInputSchema).mutation(({ input, ctx }) => {
+    const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
+    return withPreparation(changeReservationWorkflowV2Rows(scoped, input), scoped.propertyCode);
+  }),
+  selectNative: mailboxProcedure.input(reservationWorkflowV2SelectNativeInputSchema).mutation(({ input, ctx }) => {
+    const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
+    return withPreparation(selectReservationWorkflowV2Native(scoped, input), scoped.propertyCode);
+  }),
+  reviewScope: mailboxProcedure.input(reservationWorkflowV2ReviewScopeInputSchema).mutation(({ input, ctx }) => {
+    const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
+    return withPreparation(reviewReservationWorkflowV2Scope(scoped, input), scoped.propertyCode);
   }),
   review: mailboxProcedure.input(reservationWorkflowV2ReviewInputSchema).mutation(({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
@@ -291,10 +347,27 @@ export const reservationWorkflowV2Router = router({
     if (workflow.kind === 'amend') return reservationWorkflowV2AmendExecute(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
-  lookupServices: mailboxProcedure.input(servicesInput).mutation(async ({ input, ctx }) =>
-    reservationWorkflowV2LookupServices(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
-  prepareServices: mailboxProcedure.input(servicesInput).mutation(async ({ input, ctx }) =>
-    reservationWorkflowV2PreviewServices(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
+  lookupServices: mailboxProcedure.input(servicesInput).mutation(async ({ input, ctx }) => {
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
+    const marked = await markReservationWorkflowV2NativeActivity({ db: scoped.db, userId: scoped.user.id,
+      transportId: scoped.transport.id, propertyCode: scoped.property.propertyCode }, input);
+    if (marked.status !== 'ok') return marked;
+    if (input.targetRef) return reservationWorkflowV2LookupSavedServices(scoped, { ...input, targetRef: input.targetRef });
+    if (!input.allocationId) return { status: 'unsupported' as const, issue: 'service_target_required' };
+    return reservationWorkflowV2LookupServices(scoped, { ...input, allocationId: input.allocationId });
+  }),
+  prepareServices: mailboxProcedure.input(servicesInput).mutation(async ({ input, ctx }) => {
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
+    const marked = await markReservationWorkflowV2NativeActivity({ db: scoped.db, userId: scoped.user.id,
+      transportId: scoped.transport.id, propertyCode: scoped.property.propertyCode }, input);
+    if (marked.status !== 'ok') return marked;
+    if (input.targetRef) {
+      if (!input.serviceId) return { status: 'needs_input' as const, issue: 'service_required' };
+      return reservationWorkflowV2PreviewSavedServices(scoped, { ...input, targetRef: input.targetRef, serviceId: input.serviceId });
+    }
+    if (!input.allocationId) return { status: 'unsupported' as const, issue: 'service_target_required' };
+    return reservationWorkflowV2PreviewServices(scoped, { ...input, allocationId: input.allocationId });
+  }),
   reconcile: mailboxProcedure.input(reservationWorkflowV2ReconcileInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
     const workflow = await nativeWorkflow(scoped, input, undefined, input.operationId);
@@ -306,8 +379,15 @@ export const reservationWorkflowV2Router = router({
     if (workflow.kind === 'amend') return reservationWorkflowV2AmendReconcile(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
-  executeServices: mailboxProcedure.input(reservationWorkflowV2ServicesExecuteInputSchema).mutation(async ({ input, ctx }) =>
-    reservationWorkflowV2ExecuteServices(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
+  executeServices: mailboxProcedure.input(z.union([reservationWorkflowV2ServicesExecuteInputSchema,
+    reservationWorkflowV2SavedServicesExecuteInputSchema])).mutation(async ({ input, ctx }) => {
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
+    const marked = await markReservationWorkflowV2NativeActivity({ db: scoped.db, userId: scoped.user.id,
+      transportId: scoped.transport.id, propertyCode: scoped.property.propertyCode }, input);
+    if (marked.status !== 'ok') return marked;
+    return 'targetRef' in input ? reservationWorkflowV2ExecuteSavedServices(scoped, input)
+      : reservationWorkflowV2ExecuteServices(scoped, input);
+  }),
   reconcileServices: mailboxProcedure.input(reservationWorkflowV2ReconcileInputSchema).mutation(async ({ input, ctx }) =>
     reservationWorkflowV2ReconcileServices(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
 });

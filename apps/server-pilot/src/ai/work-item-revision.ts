@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { workEvent, workItem } from '../db/schema/work.js';
+import type { ReservationWorkflowV2Draft, ReservationWorkflowV2Proposal } from './reservation-workflow-v2-contract.js';
 
 /** Nested HMS commits. Same key as STAY_COMMITS_KEY in work-items.ts. Undo never touches it. */
 const STAY_COMMITS_KEY = 'stays';
@@ -37,7 +38,8 @@ export function paneStateOf(state: PaneState): PaneState {
     if (key === RESERVATION_V2_KEY) {
       if (value && typeof value === 'object' && !Array.isArray(value)) {
         const draft = value as Record<string, unknown>;
-        pane[key] = { fieldOverrides: draft.fieldOverrides ?? {}, staffReviews: draft.staffReviews ?? {} };
+        pane[key] = { ...(Object.hasOwn(draft, 'proposal') ? { proposal: draft.proposal } : {}),
+          fieldOverrides: draft.fieldOverrides ?? {}, staffReviews: draft.staffReviews ?? {} };
       }
     } else if (isPaneFieldKey(key)) pane[key] = value;
   }
@@ -55,8 +57,9 @@ export function withPaneState(state: PaneState, pane: PaneState): PaneState {
         ? state[key] as Record<string, unknown> : {};
       const restored = value && typeof value === 'object' && !Array.isArray(value)
         ? value as Record<string, unknown> : {};
-      // Undo only human-owned editable/review state. Current observations, proposal and native results survive.
-      next[key] = { ...current, fieldOverrides: restored.fieldOverrides ?? {}, staffReviews: restored.staffReviews ?? {} };
+      // Old snapshots have no proposal. Native observations, receipts, source and generation always survive.
+      next[key] = { ...current, ...(Object.hasOwn(restored, 'proposal') ? { proposal: restored.proposal } : {}),
+        fieldOverrides: restored.fieldOverrides ?? {}, staffReviews: restored.staffReviews ?? {} };
     } else next[key] = value;
   }
   if (Object.hasOwn(state, STAY_COMMITS_KEY)) next[STAY_COMMITS_KEY] = state[STAY_COMMITS_KEY];
@@ -135,6 +138,179 @@ function extractionMatches(stored: string | null, current: string | null): boole
   return stored !== null && stored === current;
 }
 
+export function nativeStructureIsSafe(currentState: PaneState, restoredState: PaneState): boolean {
+  const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+  const current = record(currentState[RESERVATION_V2_KEY]), next = record(restoredState[RESERVATION_V2_KEY]);
+  const oldContent = record(record(current.proposal).content), newContent = record(record(next.proposal).content);
+  const rows = (content: Record<string, unknown>, key: string) => Array.isArray(content[key]) ? content[key] as unknown[] : [];
+  const results = Array.isArray(current.operationResults) ? current.operationResults : [];
+  for (const entry of results) {
+    const result = record(entry);
+    if ((result.status !== 'succeeded' && result.status !== 'unknown') || typeof result.requestId !== 'string') continue;
+    const id = result.requestId;
+    if (result.workflow === 'create' && typeof result.allocationId === 'string') {
+      const target = (content: Record<string, unknown>) => {
+        const request = record(rows(content, 'requests').find((row) => record(row).id === id));
+        const body = record(request.body), allocations = Array.isArray(body.allocations) ? body.allocations : [];
+        const allocation = record(allocations.find((row) => record(row).id === result.allocationId));
+        const sections = Array.isArray(body.dateSections) ? body.dateSections : [];
+        const section = record(sections.find((row) => record(row).id === allocation.dateSectionId));
+        const { requestedRooms: _requestedRooms, unassignedGuestNames: _unassigned, ...businessSection } = section;
+        return { kind: request.kind, shared: body.shared, allocation, section: businessSection };
+      };
+      if (JSON.stringify(target(oldContent)) !== JSON.stringify(target(newContent))) return false;
+      continue;
+    }
+    if (result.workflow === 'services' && Array.isArray(result.observationRefs) && Array.isArray(current.observations)) {
+      const refs = result.observationRefs;
+      const observation = current.observations.map(record).find((row) => refs.includes(row.ref) &&
+        typeof record(row.criteria).serviceId === 'string');
+      const serviceId = record(observation?.criteria).serviceId;
+      if (typeof serviceId === 'string') {
+        const targetRef = record(record(observation?.criteria).targetRef);
+        const hintId = targetRef.kind === 'saved_target' && targetRef.requestId === id && typeof targetRef.hintId === 'string'
+          ? targetRef.hintId : null;
+        const binding = (content: Record<string, unknown>) => ({
+          request: (() => { const request = record(rows(content, 'requests').find((row) => record(row).id === id));
+            const targets = record(record(request.body).targets), include = Array.isArray(targets.include) ? targets.include : [];
+            return { kind: request.kind, targets: hintId ? { mode: targets.mode, exclude: targets.exclude,
+              hint: include.find((row) => record(row).id === hintId) } : record(request.body).targets }; })(),
+          service: rows(content, 'services').find((row) => record(row).id === serviceId),
+        });
+        if (JSON.stringify(binding(oldContent)) !== JSON.stringify(binding(newContent))) return false;
+        const selection = (draft: Record<string, unknown>, content: Record<string, unknown>) => {
+          const fields = record(draft.fieldOverrides), index = rows(content, 'services').findIndex((row) => record(row).id === serviceId);
+          const prefixes = [`/proposal/content/services/${encodeURIComponent(serviceId)}/`, `/proposal/content/services/${index}/`];
+          return Object.fromEntries(Object.entries(fields).filter(([path]) => prefixes.some((prefix) => path.startsWith(prefix) &&
+            (/\/(?:target|savedRowCandidateRef|itemCandidateRef)$/.test(path) || path === `${prefix}targets`)))
+            .sort(([a], [b]) => a.localeCompare(b)));
+        };
+        if (JSON.stringify(selection(current, oldContent)) !== JSON.stringify(selection(next, newContent))) return false;
+        const targetSelection = (draft: Record<string, unknown>, content: Record<string, unknown>) => {
+          const fields = record(draft.fieldOverrides), index = rows(content, 'requests').findIndex((row) => record(row).id === id);
+          const prefixes = [`/proposal/content/requests/${encodeURIComponent(id)}/body/targets`,
+            `/proposal/content/requests/${index}/body/targets`];
+          if (!hintId) return Object.fromEntries(Object.entries(fields).filter(([path]) => prefixes.some((prefix) =>
+            path === prefix || path.startsWith(`${prefix}/`))).sort(([a], [b]) => a.localeCompare(b)));
+          const request = record(rows(content, 'requests')[index]), targets = record(record(request.body).targets);
+          const include = Array.isArray(targets.include) ? targets.include : [];
+          const targetIndex = include.findIndex((row) => record(row).id === hintId);
+          const selected: Record<string, unknown> = {};
+          for (const [path, value] of Object.entries(fields)) for (const prefix of prefixes) {
+            if (path === prefix || path === `${prefix}/mode` || path === `${prefix}/exclude` || path === `${prefix}/include`) {
+              selected[path.slice(prefix.length)] = value;
+            }
+            for (const targetPath of [`${prefix}/include/${targetIndex}`, `${prefix}/include/${encodeURIComponent(hintId)}`]) {
+              if (path === targetPath || path.startsWith(`${targetPath}/`)) selected[`/hint${path.slice(targetPath.length)}`] = value;
+            }
+          }
+          return Object.fromEntries(Object.entries(selected).sort(([a], [b]) => a.localeCompare(b)));
+        };
+        if (JSON.stringify(targetSelection(current, oldContent)) !== JSON.stringify(targetSelection(next, newContent))) return false;
+        continue;
+      }
+    }
+    const references = (row: unknown, property: string) => {
+      const values = record(row)[property];
+      return Array.isArray(values) && values.some((entry) => record(record(entry).target ?? entry).requestId === id);
+    };
+    const bound = (content: Record<string, unknown>) => ({
+      request: rows(content, 'requests').find((row) => record(row).id === id),
+      services: rows(content, 'services').filter((row) => record(row).ownerRequestId === id || references(row, 'targets')),
+      documents: rows(content, 'documents').filter((row) => record(row).ownerRequestId === id || references(row, 'targetRefs')),
+    });
+    if (JSON.stringify(bound(oldContent)) !== JSON.stringify(bound(newContent))) return false;
+    const targetOverrides = (draft: Record<string, unknown>, content: Record<string, unknown>) => {
+      const fields = record(draft.fieldOverrides), requestIndex = rows(content, 'requests').findIndex((row) => record(row).id === id);
+      const requestPrefixes = [`/proposal/content/requests/${encodeURIComponent(id)}/body/targets`,
+        `/proposal/content/requests/${requestIndex}/body/targets`];
+      return Object.fromEntries(Object.entries(fields).filter(([path]) => requestPrefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`)))
+        .sort(([a], [b]) => a.localeCompare(b)));
+    };
+    if (JSON.stringify(targetOverrides(current, oldContent)) !== JSON.stringify(targetOverrides(next, newContent))) return false;
+  }
+  return true;
+}
+
+const obj = (value: unknown): Record<string, any> => value && typeof value === 'object' && !Array.isArray(value)
+  ? value as Record<string, any> : {};
+function rowId(value: unknown): string | null {
+  const row = obj(value), target = obj(row.target ?? row);
+  if (typeof row.id === 'string') return `id:${row.id}`;
+  if (target.kind === 'allocation' && target.requestId && target.allocationId) return `a:${target.requestId}:${target.allocationId}`;
+  if (target.kind === 'quote_group' && target.requestId && target.groupId) return `q:${target.requestId}:${target.groupId}`;
+  if (target.kind === 'saved_target' && target.requestId && target.hintId) return `s:${target.requestId}:${target.hintId}`;
+  return null;
+}
+export function rebaseReservationV2Path(path: string, before: ReservationWorkflowV2Proposal,
+  after: ReservationWorkflowV2Proposal): string | null {
+  if (!path.startsWith('/')) return path;
+  let parts: string[];
+  try { parts = path.slice(1).split('/').map(decodeURIComponent); } catch { return null; }
+  let old: any = before, next: any = after, offset = 0;
+  if (parts[0] === 'proposal') offset++;
+  if (parts[offset] === 'content') offset++;
+  else if (['requests', 'services', 'documents'].includes(parts[offset] ?? '')) { old = before.content; next = after.content; }
+  if (offset && parts[offset - 1] === 'content') { old = before.content; next = after.content; }
+  if (!['requests', 'services', 'documents'].includes(parts[offset] ?? '')) return path;
+  for (let i = offset; i < parts.length; i++) {
+    const key = parts[i]!;
+    if (Array.isArray(old)) {
+      const perTarget = parts[i - 1] === 'perTarget';
+      const identity = (value: unknown) => perTarget && typeof obj(value).hintId === 'string'
+        ? `hint:${obj(value).hintId}` : rowId(value);
+      const index = /^\d+$/.test(key) ? Number(key) : old.findIndex((row) =>
+        obj(row).id === key || (perTarget && obj(row).hintId === key));
+      const row = old[index], stable = identity(row);
+      if (!row || !Array.isArray(next)) return null;
+      const nextIndex = stable ? next.findIndex((entry: unknown) => identity(entry) === stable) : index;
+      if (nextIndex < 0 || nextIndex >= next.length) return null;
+      if (/^\d+$/.test(key)) parts[i] = String(nextIndex);
+      old = row; next = next[nextIndex];
+    } else {
+      old = obj(old)[key]; next = obj(next)[key];
+      if (old === undefined) break;
+    }
+  }
+  return '/' + parts.map(encodeURIComponent).join('/');
+}
+
+/** Keep native evidence, but never leave an index-bound candidate on a different row. */
+export function rebaseReservationV2Observations(draft: ReservationWorkflowV2Draft,
+  before: ReservationWorkflowV2Proposal, after: ReservationWorkflowV2Proposal): ReservationWorkflowV2Draft['observations'] {
+  return draft.observations.map((observation) => {
+    const criteria = { ...observation.criteria }, retired: string[] = [];
+    const request = after.content.requests.find((row) => row.id === criteria.requestId);
+    const deadRequest = typeof criteria.requestId === 'string' && !request;
+    const deadAllocation = typeof criteria.allocationId === 'string' && request?.kind === 'create' &&
+      !request.body.allocations.some((row) => row.id === criteria.allocationId);
+    const deadService = typeof criteria.serviceId === 'string' && !after.content.services.some((row) => row.id === criteria.serviceId);
+    const translate = (path: string) => {
+      const result = deadRequest || deadAllocation || deadService ? null : rebaseReservationV2Path(path, before, after);
+      if (!result) retired.push(path);
+      return result;
+    };
+    for (const key of ['fieldPath', 'selectionPath'] as const) if (typeof criteria[key] === 'string') {
+      const path = translate(criteria[key] as string); if (path) criteria[key] = path; else delete criteria[key];
+    }
+    if (Array.isArray(criteria.fieldPaths)) criteria.fieldPaths = criteria.fieldPaths.flatMap((value) => {
+      if (typeof value !== 'string') return [];
+      const path = translate(value); return path ? [path] : [];
+    });
+    const previouslyRetired = Array.isArray(criteria.retiredFieldPaths) ? criteria.retiredFieldPaths.filter((v): v is string => typeof v === 'string') : [];
+    // Restoring a removed allocation can recover its evidence by its stable allocation ID.
+    if (!deadRequest && !deadAllocation && request?.kind === 'create' && typeof criteria.allocationId === 'string') {
+      const index = request.body.allocations.findIndex((row) => row.id === criteria.allocationId);
+      const revived = previouslyRetired.flatMap((path) => index >= 0 && /\/allocations\/\d+\//.test(path)
+        ? [path.replace(/\/allocations\/\d+\//, `/allocations/${index}/`)] : []);
+      if (revived.length) criteria.fieldPaths = [...new Set([...(Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : []), ...revived])];
+    }
+    if (retired.length || previouslyRetired.length) criteria.retiredFieldPaths = [...new Set([...previouslyRetired, ...retired])];
+    return { ...observation, criteria };
+  });
+}
+
 async function applyHistoryMove(
   db: DB,
   input: {
@@ -184,6 +360,12 @@ async function applyHistoryMove(
     const nextRevision = undo ? revision - 1 : revision + 1;
     const nextSeq = seq + 1;
     const state = withPaneState(item.state, restored);
+    if (!nativeStructureIsSafe(item.state, state)) return { status: 'history_stale' as const, revision, revisionHead, seq };
+    const previousV2 = item.state[RESERVATION_V2_KEY] as ReservationWorkflowV2Draft | undefined;
+    const restoredV2 = state[RESERVATION_V2_KEY] as ReservationWorkflowV2Draft | undefined;
+    if (previousV2?.proposal && restoredV2?.proposal && Array.isArray(previousV2.observations)) {
+      restoredV2.observations = rebaseReservationV2Observations(previousV2, previousV2.proposal, restoredV2.proposal);
+    }
   const v2 = state[RESERVATION_V2_KEY];
   if (v2 && typeof v2 === 'object' && !Array.isArray(v2)) {
     state[RESERVATION_V2_KEY] = { ...(v2 as Record<string, unknown>), revision: nextRevision };

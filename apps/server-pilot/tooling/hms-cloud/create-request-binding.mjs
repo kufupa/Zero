@@ -101,10 +101,11 @@ export function normalizeCloudCreateRequest(input) {
     return fail('CREATE_STAY_INVALID', 'stay');
   }
 
-  const roomIssue = objectKeys(input.room, ['roomType', 'ratePlan'], ['roomType', 'ratePlan'], 'room');
+  const roomIssue = objectKeys(input.room, ['roomType', 'ratePlan', 'roomTypeForCharge'], ['roomType', 'ratePlan'], 'room');
   if (roomIssue) return roomIssue;
   if (typeof input.room.roomType !== 'string' || !/^[A-Z0-9]{1,12}$/.test(input.room.roomType) ||
-      typeof input.room.ratePlan !== 'string' || !/^[A-Z0-9]{1,12}$/.test(input.room.ratePlan)) {
+      typeof input.room.ratePlan !== 'string' || !/^[A-Z0-9]{1,12}$/.test(input.room.ratePlan) ||
+      (input.room.roomTypeForCharge !== undefined && (typeof input.room.roomTypeForCharge !== 'string' || !/^[A-Z0-9]{1,12}$/.test(input.room.roomTypeForCharge)))) {
     return fail('CREATE_ROOM_INVALID', 'room');
   }
   if (typeof input.guaranteeType !== 'string' || !/^[A-Z0-9]{1,12}$/.test(input.guaranteeType)) {
@@ -171,7 +172,8 @@ export function normalizeCloudCreateRequest(input) {
     guest: { nativeId: input.guest.nativeId, firstName: input.guest.firstName, lastName: input.guest.lastName },
     stay: { arrival: input.stay.arrival, departure: input.stay.departure, adults: input.stay.adults,
       childAges: [...input.stay.childAges] },
-    room: { roomType: input.room.roomType, ratePlan: input.room.ratePlan },
+    room: { roomType: input.room.roomType, ratePlan: input.room.ratePlan,
+      ...(input.room.roomTypeForCharge !== undefined ? { roomTypeForCharge: input.room.roomTypeForCharge } : {}) },
     guaranteeType: input.guaranteeType,
     ...(sourceOfBusiness ? { sourceOfBusiness } : {}),
     ...(reasonForStay ? { reasonForStay } : {}),

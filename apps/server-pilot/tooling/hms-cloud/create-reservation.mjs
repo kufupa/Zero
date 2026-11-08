@@ -64,6 +64,9 @@ function validate(input, allowRealGuest = false, allowCommitOnlyBillingReference
     return { outcome: 'refused', issue: REAL_GUEST_CREATE_AUTHORIZATION_HOLD };
   }
   const stay = input.stay || {}, room = input.room || {}, guest = input.guest || {}, missing = [];
+  if (room.roomTypeForCharge !== undefined && (typeof room.roomTypeForCharge !== 'string' || !/^[A-Z0-9]{1,12}$/.test(room.roomTypeForCharge))) {
+    return { outcome: 'needs_input', issue: 'invalid_charge_room_category', missing: ['room.roomTypeForCharge'] };
+  }
   if (stay.childCount != null && Array.isArray(stay.childAges) && stay.childCount !== stay.childAges.length) {
     return { outcome: 'needs_input', issue: 'child_count_conflict', missing: ['stay.childCount'],
       ...(fidelity.unsupported.length ? { unsupportedFields: fidelity.unsupported } : {}) };
@@ -108,7 +111,7 @@ const requestShape = {
   '': ['mode', 'propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sourceOfBusiness', 'reasonForStay', 'parties', 'note', 'booker', 'cms', 'billingReference', 'price', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient'],
   guest: ['profileId', 'search'], 'guest.search': ['lastName', 'firstName', 'email'],
   stay: ['arrival', 'departure', 'adults', 'childAges', 'childCount'],
-  room: ['roomType', 'ratePlan'], parties: ['agencyId', 'agencyName', 'organizationId', 'organizationName', 'arAccountId', 'arAccountName'],
+  room: ['roomType', 'ratePlan', 'roomTypeForCharge'], parties: ['agencyId', 'agencyName', 'organizationId', 'organizationName', 'arAccountId', 'arAccountName'],
   cms: ['send', 'messageId', 'recipient'], booker: ['name', 'contact'],
 };
 const unsupportedPaths = new Set(['price', 'marketSegment', 'confirmationRecipient']);
@@ -354,7 +357,8 @@ function draftRequestBinding(input, state, output, formFields) {
       lastName: formValue(formFields, 'lastname') },
     stay: { arrival: input.stay.arrival, departure: input.stay.departure, adults: Number(state.adult.actual.value),
       childAges: [...state.children.actualChildAges] },
-    room: { roomType: output.applied.roomType, ratePlan: output.applied.ratePlan },
+    room: { roomType: output.applied.roomType, ratePlan: output.applied.ratePlan,
+      ...(input.room.roomTypeForCharge !== undefined ? { roomTypeForCharge: output.applied.roomTypeForCharge } : {}) },
     guaranteeType: String(state.guarantee.actual.value),
     ...(state.source ? { sourceOfBusiness: { nativeCode: state.source.nativeCode, description: state.source.candidate.description } } : {}),
     ...(state.reason ? { reasonForStay: { value: String(state.reason.actual.value), display: state.reason.actual.display } } : {}),
@@ -550,6 +554,16 @@ export async function createReservation(input, { withSession = withBookingLookup
         if (result.actual !== input.cms.recipient) stop('uncertain', 'requested_field_not_staged', { field: 'cms.recipient' });
         state.cmsRecipient = result.actual;
       }
+      if (room.roomTypeForCharge !== undefined) {
+        const found = await call(runTool, 'searchRoomTypesForCharge', { query: room.roomTypeForCharge, limit: 100 }, ['matches', 'no_match', 'incomplete']);
+        const inspected = await call(runTool, 'inspectRoomRateCandidate', { searchId: found.searchId, code: room.roomTypeForCharge }, ['match', 'ambiguous', 'not_in_loaded_results']);
+        if ((inspected.candidates || []).length !== 1 || !found.coverage?.complete) {
+          stop('needs_input', 'charged_room_type_not_unique', { roomCandidates: found.candidates, coverage: found.coverage });
+        }
+        const selected = await call(runTool, 'selectRoomTypeForCharge', { searchId: found.searchId, code: room.roomTypeForCharge });
+        if (selected.selectedField?.value !== room.roomTypeForCharge) stop('uncertain', 'requested_field_not_staged', { field: 'room.roomTypeForCharge' });
+        output.applied.roomTypeForCharge = selected.selectedField.value;
+      }
       // Select rates only after the final guest, track and party context is staged.
       if (state.guest && code(room.ratePlan, 100) && date(stay.arrival) && date(stay.departure) && stay.arrival < stay.departure) {
         const selectRatePlan = () => call(runTool, 'selectGuestStayRatePlan', {
@@ -584,6 +598,9 @@ export async function createReservation(input, { withSession = withBookingLookup
           if (state.rateAvailabilityRequired && !selected.rateAvailability) {
             stop('needs_input', 'rate_availability_unverified', { field: 'room.ratePlan' });
           }
+          if (room.roomTypeForCharge !== undefined && selected.chargeRoomPricing !== 'checked') {
+            stop('needs_input', 'charged_room_price_recheck_required', { field: 'room.roomTypeForCharge' });
+          }
           output.applied.ratePlan = selected.code;
           if (selected.rateAvailability) output.ratePlanAvailability = selected.rateAvailability;
         }
@@ -598,11 +615,11 @@ export async function createReservation(input, { withSession = withBookingLookup
         stop('uncertain', 'guest_name_stage_unverified', { field: 'guest' });
       }
       for (const [key, name] of [['arrival', 'arrivaldate'], ['departure', 'departuredate'], ['adults', 'adults'],
-        ['roomType', 'roomtype'], ['ratePlan', 'rateplan'], ['sourceOfBusiness', 'sourceofbusinessdesc'], ['note', 'reservationnote']]) {
+        ['roomType', 'roomtype'], ['roomTypeForCharge', 'roomtypecharge'], ['ratePlan', 'rateplan'], ['sourceOfBusiness', 'sourceofbusinessdesc'], ['note', 'reservationnote']]) {
         if (Object.hasOwn(output.applied, key)) {
           const actual = formValue(form.fields, name), expected = output.applied[key];
           output.applied[key] = actual;
-          if (['note', 'roomType', 'ratePlan'].includes(key) ? actual !== expected : !same(actual, expected)) stop('uncertain', 'draft_readback_mismatch', { field: key, actual });
+          if (['note', 'roomType', 'roomTypeForCharge', 'ratePlan'].includes(key) ? actual !== expected : !same(actual, expected)) stop('uncertain', 'draft_readback_mismatch', { field: key, actual });
         }
       }
       for (const [name, expected] of [
@@ -706,6 +723,7 @@ export async function createReservation(input, { withSession = withBookingLookup
         state.save = await runTool({ tool: 'saveNewLabtestStay', preimageId: labtestPreimage.preimageId,
           arrival: stay.arrival, departure: stay.departure, guestId: state.guest.selected.nativeId,
           roomType: room.roomType, ratePlan: room.ratePlan, guaranteeType: input.guaranteeType, note,
+          ...(room.roomTypeForCharge !== undefined ? { roomTypeForCharge: room.roomTypeForCharge } : {}),
           ...(state.track ? { track: state.track.display } : {}),
           ...(input.guestoptin4 === false ? { guestOptIn: false } : {}),
           ...(state.booker ? { booker: state.booker } : {}),
@@ -747,6 +765,7 @@ export async function createReservation(input, { withSession = withBookingLookup
   output.outcome = 'uncertain';
   const expected = { arrival: stay.arrival, departure: stay.departure, adults: stay.adults, children: stay.childAges.length,
     childBands: state.children.ageBandCounts, roomType: room.roomType, ratePlan: room.ratePlan, note: output.applied.note,
+    ...(room.roomTypeForCharge !== undefined ? { roomTypeForCharge: room.roomTypeForCharge, checkedPricing: state.save.checkedPricing } : {}),
     guestId: state.guest.selected.nativeId, firstName: state.guest.guest.firstName, lastName: state.guest.guest.lastName,
     ...(allowRealGuest ? { allowRealGuest: true } : {}), source: state.source?.candidate.description,
     organization: state.organization?.displayedOrganization ?? '', guarantee: state.guarantee?.actual.display,

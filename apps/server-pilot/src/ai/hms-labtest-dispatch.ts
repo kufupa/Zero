@@ -162,14 +162,29 @@ function resolutionMatchesIntent(intent: Intent, evidence: { confirmation: strin
     const readback = evidence.nativeReadback, recovery = object(intent.recovery), service = object(recovery.serviceIntent);
     const coverage = object(service.baselineCoverage);
     if (!readback || !evidence.nativeStayId || !/^\d{1,100}$/.test(String(readback.nativeId ?? '')) ||
-        !Array.isArray(service.baselineIds) || service.baselineIds.includes(readback.nativeId) ||
-        coverage.complete !== true || coverage.loaded !== service.baselineIds.length ||
+        !Array.isArray(service.baselineIds) || coverage.complete !== true || coverage.loaded !== service.baselineIds.length ||
         coverage.reportedTotal !== service.baselineIds.length || !Object.keys(object(service.approvedItem)).length ||
         service.operationId !== intent.grantId || service.workItemId !== intent.workItemId ||
         service.transportId !== intent.transportId || service.sourceDigest !== intent.sourceDigest ||
         service.dispatchDigest !== intent.requestDigest ||
-        createHash('sha256').update(canonicalJson(service.approvedItem)).digest('hex') !== intent.approvedDigest ||
-        canonicalJson(readback.item) !== canonicalJson(service.approvedItem)) return false;
+        createHash('sha256').update(canonicalJson(service.approvedItem)).digest('hex') !== intent.approvedDigest) return false;
+    const correction = service.variant === 'saved_target' && (service.operation === 'edit' || service.operation === 'remove');
+    if (!correction) {
+      // Preserve the original Add proof: the resulting row must be new to the complete baseline.
+      if (service.baselineIds.includes(readback.nativeId) || canonicalJson(readback.item) !== canonicalJson(service.approvedItem)) return false;
+    } else {
+      if (service.nativeId !== readback.nativeId || !service.baselineIds.includes(readback.nativeId) ||
+          !Object.keys(object(service.beforeItem)).length) return false;
+      if (service.operation === 'edit') {
+        if (canonicalJson(readback.item) !== canonicalJson(service.approvedItem)) return false;
+      } else {
+        const ids = readback.remainingIds, currentCoverage = object(readback.coverage);
+        if (readback.removed !== true || !Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !/^\d{1,100}$/.test(id)) ||
+            new Set(ids).size !== ids.length || ids.includes(readback.nativeId) || currentCoverage.complete !== true ||
+            currentCoverage.loaded !== ids.length || currentCoverage.reportedTotal !== ids.length ||
+            service.baselineIds.some(id => id !== readback.nativeId && !ids.includes(id))) return false;
+      }
+    }
   } else if (!evidence.savedShot) return false;
   const target = hmsLabtestIntentTarget(intent);
   if (!target) return intent.operation === 'create';
