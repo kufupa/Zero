@@ -37,7 +37,7 @@ export function QuoteOutputPanel({ source, snapshot, requestId, save, latestSnap
     {output.cover && <><p className={styles.small}>To: {output.cover.to}</p><label className={styles.field}>Cover reply<textarea aria-label="Quote cover reply" value={body} onChange={event => setBody(event.target.value)} rows={6} /></label></>}
     <div className={styles.sources}>{output.artifacts.map(artifact => <a key={artifact.sha256} download={artifact.fileName}
       href={`data:${artifact.mimeType};base64,${artifact.bytesBase64}`}>{artifact.fileName}</a>)}</div>
-    <button type="button" disabled={!save || busy || blocked || output.issues.length > 0 || !body.trim()} onClick={() => { void saveReply(); }}>{busy ? 'Saving reply…' : output.failures.length ? 'Save unsent reply with available files' : 'Save unsent reply + PDF + Excel'}</button>
+    <button type="button" disabled={!save || busy || blocked || output.issues.length > 0 || !body.trim()} onClick={() => { void saveReply(); }}>{busy ? 'Saving reply…' : output.failures.length ? 'Save unsent reply with available files' : 'Save unsent reply'}</button>
     {message && <p role="status" className={styles.notice}>{message}</p>}
   </section>;
 }
