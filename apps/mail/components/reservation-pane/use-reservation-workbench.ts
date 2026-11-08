@@ -5,7 +5,32 @@ import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-fligh
 import { ReservationWorkflowStaleRevisionError, type ReservationFieldOverride, type ReservationPaneSnapshot, type ReservationSourceContext, type ReservationWorkflowClient, type ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
 import { effectiveAt, record, requestPath, snapshotMatchesSource, text, type WorkbenchCommands } from '@/lib/reservation-workflow/views';
 
-type Pending = { path: string; value: unknown; state: ReservationFieldOverride['state']; token: number };
+type Pending = { path: string; value: unknown; state: ReservationFieldOverride['state']; token: number;
+  generation: string | null; rows: { path: string; identity: string }[] };
+
+function rowIdentity(value: unknown): string {
+  const row = record(value);
+  if (typeof row.id === 'string') return `id:${row.id}`;
+  if (typeof row.hintId === 'string') return `hint:${row.hintId}`;
+  if (row.target && typeof row.target === 'object') return `target:${JSON.stringify(row.target)}`;
+  return `value:${JSON.stringify(value)}`;
+}
+
+function pendingMatches(snapshot: ReservationPaneSnapshot | null, edit: Pending): boolean {
+  return !!snapshot && snapshot.session.draft.generationId === edit.generation
+    && edit.rows.every(row => rowIdentity(effectiveAt(snapshot, row.path)) === row.identity);
+}
+
+function captureRows(snapshot: ReservationPaneSnapshot | null, path: string): Pending['rows'] {
+  if (!snapshot) return [];
+  const rows: Pending['rows'] = [], parts = path.split('/');
+  for (let index = 1; index < parts.length; index++) {
+    if (!/^\d+$/.test(parts[index]!)) continue;
+    const rowPath = parts.slice(0, index + 1).join('/');
+    rows.push({ path: rowPath, identity: rowIdentity(effectiveAt(snapshot, rowPath)) });
+  }
+  return rows;
+}
 type Buffer = {
   snapshot: ReservationPaneSnapshot | null;
   pending: Map<string, Pending>;
@@ -40,6 +65,7 @@ function displaySnapshot(snapshot: ReservationPaneSnapshot | null, pending: Map<
   if (!snapshot || !pending.size) return snapshot;
   const fieldOverrides = { ...snapshot.session.draft.fieldOverrides };
   for (const edit of pending.values()) {
+    if (!pendingMatches(snapshot, edit)) continue;
     if (edit.state === 'set' && edit.path.endsWith('/occupancy')) {
       for (const path of Object.keys(fieldOverrides)) {
         if (path === `${edit.path}/childCount` || path.startsWith(`${edit.path}/childCount/`) ||
@@ -95,6 +121,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         for (const pending of remaining) {
           if (buffer.pending.get(pending.path)?.token !== pending.token) continue;
           if (!buffer.snapshot) throw new Error('The email draft is still opening.');
+          if (!pendingMatches(buffer.snapshot, pending)) throw new Error('The room or action changed elsewhere. Discard this pending edit and enter it on the current row.');
           const requestId = buffer.snapshot.requests.find(request => pending.path.startsWith(`${requestPath(request.id)}/`))?.id
             ?? buffer.snapshot.requests[0]?.id;
           if (!requestId) throw new Error('Add an action before editing its fields.');
@@ -161,7 +188,9 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   };
   const stageEdit = (path: string, value: unknown, state: ReservationFieldOverride['state'] = 'set') => {
     if (!entry.pendingMutationHeld) { entry.pendingMutationHeld = true; beginMutation(); }
-    entry.pending.set(path, { path, value, state, token: ++entry.token });
+    const previous = entry.pending.get(path);
+    entry.pending.set(path, { path, value, state, token: ++entry.token, generation: previous?.generation ?? entry.snapshot?.session.draft.generationId ?? null,
+      rows: previous?.rows ?? captureRows(entry.snapshot, path) });
     notify(entry);
   };
   const current = displaySnapshot(entry.snapshot ?? safeSnapshot, entry.pending);

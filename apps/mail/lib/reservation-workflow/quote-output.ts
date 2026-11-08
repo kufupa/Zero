@@ -1,4 +1,5 @@
 import type { ReservationPaneSnapshot, ReservationSourceContext } from './types';
+import { requestPath, valueAt } from './views';
 
 export type QuoteOutputArtifact = {
   kind: 'pdf_quote' | 'xlsx_quote'; fileName: string; mimeType: string;
@@ -48,11 +49,16 @@ export function getQuoteOutput(source: ReservationSourceContext, snapshot: Reser
       sha256: item.sha256, bytesBase64: item.bytesBase64 });
   }
   const failures = Array.isArray(result.failures) ? result.failures.filter((item): item is string => typeof item === 'string' && !!item) : [];
+  const requested = valueAt(snapshot, `${requestPath(requestId)}/body/outputIntent/artifacts`);
+  const outputKinds = Array.isArray(requested) ? requested : [];
+  if (!outputKinds.length || outputKinds.some((kind) => !['email_quote', 'pdf_quote', 'xlsx_quote'].includes(kind)) ||
+      new Set(outputKinds).size !== outputKinds.length) issues.push('The requested output types are unclear. Generate the quote again.');
   if (result.sourceHash !== source.sourceHash) issues.push('The generated output no longer matches this email.');
   if (raw.length > 32 || new Set(artifacts.map((item) => item.kind)).size !== artifacts.length) issues.push('The generated attachments are ambiguous.');
+  if (artifacts.some((item) => !outputKinds.includes(item.kind))) issues.push('A generated attachment was not requested. Generate the quote again.');
   if (!artifacts.length) issues.push('No quotation file was generated. Resolve the output failures first.');
-  if (!artifacts.some((item) => item.kind === 'pdf_quote') && !failures.some((failure) => failure.startsWith('pdf_'))) issues.push('The PDF is missing. Generate the quote again.');
-  if (!artifacts.some((item) => item.kind === 'xlsx_quote') && !failures.some((failure) => failure.startsWith('xlsx_'))) issues.push('The Excel file is missing. Generate the quote again.');
+  if (outputKinds.includes('pdf_quote') && !artifacts.some((item) => item.kind === 'pdf_quote') && !failures.some((failure) => failure.startsWith('pdf_'))) issues.push('The PDF is missing. Generate the quote again.');
+  if (outputKinds.includes('xlsx_quote') && !artifacts.some((item) => item.kind === 'xlsx_quote') && !failures.some((failure) => failure.startsWith('xlsx_'))) issues.push('The Excel file is missing. Generate the quote again.');
   const parsedCover = typeof cover.to === 'string' && typeof cover.subject === 'string' && typeof cover.body === 'string'
     ? { to: cover.to, subject: cover.subject, body: cover.body } : null;
   if (!parsedCover) issues.push('The cover reply is missing. Generate the quote again.');
