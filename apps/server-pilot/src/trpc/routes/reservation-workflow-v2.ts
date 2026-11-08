@@ -28,6 +28,7 @@ import {
 import { ensureReservationWorkflowV2Prefill } from '../../ai/reservation-workflow-v2-prefill.js';
 import { preStaySourceText } from '../../ai/existing-stay-information.js';
 import { createAzureExtractionAdapter } from '../../ai/extraction/extract.js';
+import type { ModelAdapter } from '../../ai/bedrock/adapter.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../../ai/quote-workflow-synced-selection.js';
 import {
   reservationWorkflowV2PreparationViews,
@@ -62,6 +63,42 @@ function context(userId: string, transportId: string) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'Reservation tools are not available for this mailbox yet.' });
   }
   return { db: getDb(), userId, transportId, propertyCode: resolved.property.propertyCode };
+}
+
+/** Preserve model failure timing even when a bounded retry keeps its original fallback. */
+function observedPrefillAdapter(adapter: ModelAdapter | null, sourceMessageId: string,
+  reasoningEffort: string): ModelAdapter | null {
+  if (!adapter) return null;
+  let callNumber = 0;
+  return {
+    ...(adapter.reserveCalls ? { reserveCalls: adapter.reserveCalls.bind(adapter) } : {}),
+    async invoke(input) {
+      const call = ++callNumber;
+      const startedAt = Date.now();
+      let reported = false;
+      const report = (outcome: string, usage?: { inputTokens: number; outputTokens: number }) => {
+        if (reported) return;
+        reported = true;
+        console.info('reservation_v2_model_call', JSON.stringify({ sourceMessageId, callNumber: call,
+          reasoningEffort, outcome, elapsedMs: Date.now() - startedAt,
+          ...(usage ? { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens } : {}) }));
+      };
+      const aborted = () => report(input.signal?.reason?.name === 'TimeoutError' ? 'timeout' : 'aborted');
+      input.signal?.addEventListener('abort', aborted, { once: true });
+      if (input.signal?.aborted) aborted();
+      try {
+        const result = await adapter.invoke(input);
+        report('succeeded', result.usage);
+        return result;
+      } catch (error) {
+        if (input.signal?.aborted) aborted();
+        else report('model_error');
+        throw error;
+      } finally {
+        input.signal?.removeEventListener('abort', aborted);
+      }
+    },
+  };
 }
 
 const sourceInput = z.object({
@@ -187,8 +224,13 @@ export const reservationWorkflowV2Router = router({
       messageId: source.id, includeThreadState: true, sourceCutoffOnly: true,
       includeVisionImages: true, trackVisionImages: true });
     if (!selection) return { status: 'invalid_source' as const };
+    // Match the corpus-tested v2 profile while retaining an explicit deployment override.
+    const modelEnv = { ...process.env,
+      EXTRACTION_REASONING_EFFORT: process.env.EXTRACTION_REASONING_EFFORT?.trim() || 'high' };
     return withPreparation(ensureReservationWorkflowV2Prefill({ context: scoped, source: canonicalSource, selection,
-      mailboxAddress: ctx.transportEmail, adapter: createAzureExtractionAdapter() }), scoped.propertyCode);
+      mailboxAddress: ctx.transportEmail, env: modelEnv,
+      adapter: observedPrefillAdapter(createAzureExtractionAdapter(modelEnv), source.id,
+        modelEnv.EXTRACTION_REASONING_EFFORT) }), scoped.propertyCode);
   }),
   get: mailboxProcedure.input(reservationWorkflowV2ItemInputSchema).query(({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
