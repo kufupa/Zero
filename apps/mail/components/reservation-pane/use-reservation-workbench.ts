@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
 import { ReservationWorkflowStaleRevisionError, type ReservationFieldOverride, type ReservationPaneSnapshot, type ReservationSourceContext, type ReservationWorkflowClient, type ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
-import { effectiveAt, record, requestPath, snapshotMatchesSource, text, type WorkbenchCommands } from '@/lib/reservation-workflow/views';
+import { effectiveAt, valueAt, record, requestPath, snapshotMatchesSource, text, type WorkbenchCommands } from '@/lib/reservation-workflow/views';
 
 type Pending = { path: string; value: unknown; state: ReservationFieldOverride['state']; token: number;
   generation: string | null; rows: { path: string; identity: string }[] };
@@ -76,11 +76,25 @@ function displaySnapshot(snapshot: ReservationPaneSnapshot | null, pending: Map<
     // Match the server's atomic identity invalidation while the edit is pending.
     const guest = edit.path.match(/^(.*\/guest)\/(?:firstName|lastName|email)$/);
     const party = edit.path.match(/^(.*\/(?:bookingAgency|organization|arAccount|agency|company))(?:\/name)?$/);
-    const target = edit.path.match(/^(.*\/targets\/include\/\d+)\/(?:confirmation|guestName|bookedArrival|bookedDeparture)$/);
+    const target = edit.path.match(/^(.*\/targets\/include\/[^/]+)\/(?:confirmation|guestName|bookedArrival|bookedDeparture)$/);
     const service = edit.path.match(/^(\/proposal\/content\/services\/[^/]+)\/code$/);
     const selection = guest ? `${guest[1]}/nativeSelectionRef` : party ? `${party[1]}/nativeSelectionRef` :
       target ? `${target[1]}/suggestedRef` : service ? `${service[1]}/itemCandidateRef` : null;
-    if (selection && !pending.has(selection)) fieldOverrides[selection] = { state: 'unknown', updatedAt: new Date().toISOString() };
+    const selections = new Set(selection ? [selection] : []);
+    if (target) {
+      const root = target[1]!.slice(0, target[1]!.lastIndexOf('/'));
+      const rows = valueAt(snapshot, root), key = decodeURIComponent(target[1]!.split('/').at(-1)!);
+      const request = snapshot.requests.find(row => edit.path.startsWith(`${requestPath(row.id)}/`));
+      if (request?.kind === 'filing' && Array.isArray(rows)) {
+        const index = /^\d+$/.test(key) ? Number(key) : rows.findIndex(row => record(row).id === key);
+        const id = record(rows[index]).id;
+        if (typeof id === 'string') {
+          selections.add(`${root}/${index}/suggestedRef`);
+          selections.add(`${root}/${encodeURIComponent(id)}/suggestedRef`);
+        }
+      }
+    }
+    for (const path of selections) if (!pending.has(path)) fieldOverrides[path] = { state: 'unknown', updatedAt: new Date().toISOString() };
   }
   return { ...snapshot, session: { ...snapshot.session, draft: { ...snapshot.session.draft, fieldOverrides } } };
 }

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import type { WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { effectiveAt, record, requestPath, text, valueAt } from '@/lib/reservation-workflow/views';
-import { Section } from '../shared/stay-fields';
+import { Field, Section } from '../shared/stay-fields';
 import { StayFacts } from './amend-editor';
 import styles from './other-editors.module.css';
 
@@ -18,7 +18,13 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
   const refs = Array.isArray(effectiveRefs) ? effectiveRefs : owner?.documentRefs ?? [];
   const docs = draft.proposal.content.documents.filter(row => refs.includes(row.id) && row.ownerRequestId === editor.request.id);
   const doc = docs.length === 1 ? docs[0] : undefined;
-  const hint = include.length === 1 ? include[0] : undefined;
+  const hint = include.length === 1 ? { ...include[0] } : undefined;
+  if (hint) for (const field of ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture']) {
+    const path = `${body}/targets/include/${encodeURIComponent(text(hint.id))}/${field}`;
+    const override = draft.fieldOverrides[path];
+    hint[field] = !override || override.state === 'inherit' ? valueAt(editor.snapshot, `${body}/targets/include/0/${field}`)
+      : override.state === 'set' ? override.value : null;
+  }
   const documentKind = doc ? text(valueAt(editor.snapshot, `/proposal/content/documents/${encodeURIComponent(doc.id)}/kind`)) || doc.kind : '';
   const documentSource = doc ? text(valueAt(editor.snapshot, `/proposal/content/documents/${encodeURIComponent(doc.id)}/documentSourceRef`)) || doc.documentSourceRef : '';
   const [resolvedAttachment, setResolvedAttachment] = useState('');
@@ -99,6 +105,10 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
           </select>
         </label>
       </div>
+      {hint && doc && <div className={styles.grid}>
+        <Field label="Original Arrival Date" path={`${body}/targets/include/${encodeURIComponent(text(hint.id))}/bookedArrival`} type="date" editor={editor} resolvedValue={hint.bookedArrival ?? null} disabled={dirty || editor.view.busy} />
+        <Field label="Original Departure Date" path={`${body}/targets/include/${encodeURIComponent(text(hint.id))}/bookedDeparture`} type="date" editor={editor} resolvedValue={hint.bookedDeparture ?? null} disabled={dirty || editor.view.busy} />
+      </div>}
       {dirty && <div className={styles.warning}>New selection is not saved. Check and Go use the saved selection until you apply this selection.</div>}
       <div className={styles.row}><button type="button" disabled={editor.view.busy || !dirty || !pdf || !validConfirmation || !kind || include.length > 1 || exclude.length > 0 || scope.mode === 'scoped_all'}
         onClick={() => { if (kind) void editor.commands.configureFiling(attachmentId, confirmation.trim(), kind); }}>Apply PDF and destination</button>

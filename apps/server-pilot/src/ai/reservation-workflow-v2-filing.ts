@@ -163,8 +163,26 @@ const filingTargetsSchema = z.object({ mode: z.enum(['explicit', 'scoped_all', '
 
 function filingTargets(draft: ReservationWorkflowV2Draft, request: FilingRequest) {
   const path = ptr('proposal', 'content', 'requests', request.id, 'body', 'targets');
-  const parsed = filingTargetsSchema.safeParse(effectiveValue(draft, path, request.body.targets));
+  const parsed = filingTargetsSchema.safeParse(effectiveFilingTargetValue(draft, path, request.body.targets));
   return parsed.success ? parsed.data : null;
+}
+
+function effectiveFilingTargetValue(draft: ReservationWorkflowV2Draft, path: string, source: unknown): unknown {
+  const resolved = effectiveValue(draft, path, source);
+  if (Array.isArray(resolved)) return resolved.map((value, index) => {
+    const indexed = effectiveFilingTargetValue(draft, `${path}/${index}`, value);
+    const id = text(record(value)?.id);
+    return id ? effectiveFilingTargetValue(draft, `${path}/${encodeURIComponent(id)}`, indexed) : indexed;
+  });
+  if (!record(resolved)) return resolved;
+  const fields = new Set(Object.keys(resolved as Record<string, unknown>));
+  for (const overridePath of Object.keys(draft.fieldOverrides)) {
+    if (!overridePath.startsWith(`${path}/`)) continue;
+    const child = overridePath.slice(path.length + 1).split('/')[0];
+    if (child) fields.add(decodeURIComponent(child));
+  }
+  return Object.fromEntries([...fields].map(key => [key,
+    effectiveFilingTargetValue(draft, `${path}/${encodeURIComponent(key)}`, (resolved as Record<string, unknown>)[key]) ]));
 }
 
 async function attachmentForDocument(ctx: ReservationWorkflowV2FilingContext, draft: ReservationWorkflowV2Draft,

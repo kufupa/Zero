@@ -785,11 +785,30 @@ function updateDraft(current: ReservationWorkflowV2Draft, input: {
     // Retyping a native identity or saved-stay query removes the old selection atomically.
     const guest = input.fieldPath.match(/^(.*\/guest)\/(?:firstName|lastName|email)$/);
     const party = input.fieldPath.match(/^(.*\/(?:bookingAgency|organization|arAccount|agency|company))(?:\/name)?$/);
-    const target = input.fieldPath.match(/^(.*\/targets\/include\/\d+)\/(?:confirmation|guestName|bookedArrival|bookedDeparture)$/);
+    const target = input.fieldPath.match(/^(.*\/targets\/include\/[^/]+)\/(?:confirmation|guestName|bookedArrival|bookedDeparture)$/);
     const service = input.fieldPath.match(/^(\/proposal\/content\/services\/[^/]+)\/code$/);
     const selection = guest ? `${guest[1]}/nativeSelectionRef` : party ? `${party[1]}/nativeSelectionRef` :
       target ? `${target[1]}/suggestedRef` : service ? `${service[1]}/itemCandidateRef` : null;
-    if (selection) fieldOverrides[selection] = { state: 'unknown', updatedAt: input.override.updatedAt };
+    const selections = new Set(selection ? [selection] : []);
+    if (target) {
+      const parts = pathParts(input.fieldPath);
+      const request = current.proposal.content.requests.find(row => row.id === parts?.[3]);
+      if (request?.kind === 'filing' && parts) {
+        const rows = effectiveSavedTargetRows(current, request.id), key = parts[7]!;
+        const index = /^\d+$/.test(key) ? Number(key) : rows.findIndex(row =>
+          row && typeof row === 'object' && (row as { id?: unknown }).id === key);
+        const row = rows[index] as { id?: unknown } | undefined;
+        if (typeof row?.id === 'string') {
+          const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/targets/include`;
+          selections.add(`${root}/${index}/suggestedRef`);
+          selections.add(`${root}/${encodeURIComponent(row.id)}/suggestedRef`);
+        }
+      }
+    }
+    for (const path of selections) {
+      fieldOverrides[path] = { state: 'unknown', updatedAt: input.override.updatedAt };
+      delete staffReviews[path];
+    }
     // A review belongs to the displayed value and scope; replacing a parent also replaces its child values.
     for (const path of Object.keys(staffReviews)) {
       if (path === input.fieldPath || path.startsWith(`${input.fieldPath}/`) || input.fieldPath.startsWith(`${path}/`)) {

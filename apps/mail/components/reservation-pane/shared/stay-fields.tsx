@@ -19,12 +19,12 @@ export function FieldSource({ editor, path, label }: { editor: WorkbenchEditorPr
     title={claim?.raw || 'View source suggestion'} onClick={() => editor.onOpenEvidence?.(reference)}>✦</button>;
 }
 
-export function Field({ label, path, editor, type = 'text', options, disabled, hint, defaultValue, emptyState }: {
+export function Field({ label, path, editor, type = 'text', options, disabled, hint, defaultValue, emptyState, resolvedValue }: {
   label: string; path: string; editor: WorkbenchEditorProps; type?: string;
-  options?: { value: string; label: string }[]; disabled?: boolean; hint?: string; defaultValue?: string; emptyState?: 'inherit';
+  options?: { value: string; label: string }[]; disabled?: boolean; hint?: string; defaultValue?: string; emptyState?: 'inherit'; resolvedValue?: unknown;
 }) {
   const id = useId();
-  const saved = valueAt(editor.snapshot, path);
+  const saved = resolvedValue === undefined ? valueAt(editor.snapshot, path) : resolvedValue;
   const [local, setLocal] = useState(text(saved));
   const [dirty, setDirty] = useState(false);
   const version = useRef(0);
