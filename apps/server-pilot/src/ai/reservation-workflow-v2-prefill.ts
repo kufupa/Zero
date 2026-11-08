@@ -1322,12 +1322,12 @@ export async function runReservationWorkflowV2Prefill(input: {
     if (!requests.length) return { ...base, extraction, status: 'prefill_failed',
       proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence,
         reason: 'Self-sent pre-stay mail has no separate current request.' }),
-      errors: [], skippedReason: 'self_prestay' };
+      errors: base.errors, skippedReason: 'self_prestay' };
     const separate = { ...extraction, requests };
     return { ...base, extraction: separate, status: 'partial',
       proposal: buildFallbackProposal({ extraction: separate, source: input.source, evidence,
         reason: 'Review the separate request. This pre-stay confirmation refers to an existing booking.' }),
-      errors: [] };
+      errors: base.errors };
   }
   base.extraction = extraction;
   const completePlan = buildReservationWorkflowV2CandidateReadPlan({ extraction, propertyCode: input.propertyCode, source: input.source });
