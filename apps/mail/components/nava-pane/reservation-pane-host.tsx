@@ -204,6 +204,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
           subject: result.sourceSubject,
           sender: result.sourceSender,
           sourceText: result.sourceText,
+          selfPreStay: result.selfPreStay,
           receivedAt: result.source.arrivedAt,
           attachments: result.attachments.filter((item) => !item.isInline).map((item) => ({
             sourceRef: item.id, name: item.filename, mimeType: item.mimeType, size: item.sizeBytes,
@@ -246,7 +247,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
       <SelectedEmailBlock activeEmail={email} />
       {sourceError ? <p role="status" className="p-3 text-sm text-slate-600">{sourceError}</p> : null}
       {email && !source && !sourceError ? <p role="status" className="p-3 text-sm text-slate-600">Opening selected email…</p> : null}
-      {source ? <ReservationWorkspace key={`${owner}:${source.selectionEpoch}`} source={source} client={client}
+      {source ? <ReservationWorkspace key={`${owner}:${source.selectionEpoch}`} source={source} client={client} bridge={bridge} hostType={preview ? 'webmail' : 'outlook'}
         onOpenEvidence={(reference) => void openEvidence(reference)} onOpenAttachment={(reference) => void openAttachment(reference)} /> : null}
       <Dialog open={currentEvidencePreview !== null} onOpenChange={(open) => { if (!open) setSourceEvidencePreview(null); }}>
         <DialogContent showOverlay className="max-h-[85dvh] max-w-3xl overflow-y-auto">

@@ -184,7 +184,13 @@ export async function withStay360AddOnSession(operation, options = {}) {
           if (correction) {
             lastSave = await saveStay360AddOnChanges(page, confirmation, request.preparedId, {
               authorize: options.authorizeChanges || (prepared => authorizeLabtest(prepared, withPage)),
-              beforeDispatch: options.beforeChangeDispatch, afterDispatch: options.afterChangeDispatch,
+              beforeDispatch: options.captureWriterIdentity && options.beforeChangeDispatch
+                ? dispatch => {
+                    const writer = centurionWriterIdentity(page);
+                    if (!writer) throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
+                    return options.beforeChangeDispatch(dispatch, writer);
+                  } : options.beforeChangeDispatch,
+              afterDispatch: options.afterChangeDispatch,
               readBaseline: prepared => withPage(async freshPage => {
                 await readConfirmationFromStay360(freshPage, prepared.confirmation, { guestName: prepared.target.guestName, arrivalDate: prepared.target.arrival });
                 const listing = await readStay360AddOns(freshPage, prepared.confirmation);

@@ -1,0 +1,35 @@
+.editor, .stack { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.group, .roomCard { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.group { padding: 12px; border: 1px solid var(--border, #d7dfe8); border-radius: 10px; }
+.roomCard { padding: 12px; border: 1px solid var(--border, #d7dfe8); border-radius: 8px; }
+.groupHeading, .inherited { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.twoCol, .ageGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; min-width: 0; }
+.dateFields { display: grid; grid-template-columns: minmax(0, 1fr) 72px; gap: 8px; min-width: 0; align-items: end; }
+.dateFields > :first-child, .dateFields > :last-child { margin-bottom: 0; }
+.dateFields > :last-child { grid-column: 1 / -1; }
+.plainFieldset { display: flex; flex-direction: column; gap: 12px; border: 0; margin: 0; padding: 0; min-width: 0; }
+.ageGrid { grid-column: 1 / -1; }
+.localField { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 12px; font-weight: 600; }
+.localField input, .localField select { box-sizing: border-box; width: 100%; min-width: 0; min-height: 36px; padding: 7px 8px; color: inherit; background: transparent; border: 1px solid var(--border, #b9c3ce); border-radius: 6px; font: inherit; }
+.localField input:focus-visible, .localField select:focus-visible, .secondaryButton:focus-visible, .linkButton:focus-visible, .details summary:focus-visible { outline: 2px solid #4088df; outline-offset: 2px; }
+.note, .notice { margin: 0; color: var(--muted-foreground, #626f7d); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.notice { padding: 8px; border-radius: 6px; background: var(--muted, #f1f5f9); color: inherit; }
+.price { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 8px; border-radius: 6px; background: var(--muted, #f1f5f9); font-size: 12px; }
+.price small { flex-basis: 100%; }
+.details { min-width: 0; border-top: 1px solid var(--border, #d7dfe8); padding-top: 9px; }
+.details summary { cursor: pointer; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.details[open] > .stack { padding-top: 10px; }
+.scopeField { min-width: 0; }
+.inherited { font-size: 12px; }
+.inherited span { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.inherited small { color: var(--muted-foreground, #626f7d); }
+.inlineButtons { display: flex; flex-wrap: wrap; gap: 8px; }
+.secondaryButton, .linkButton { cursor: pointer; font: inherit; }
+.secondaryButton { min-height: 36px; padding: 6px 10px; color: inherit; background: transparent; border: 1px solid var(--border, #b9c3ce); border-radius: 6px; }
+.linkButton { padding: 4px; color: var(--primary, #2469b3); background: none; border: 0; font-size: 12px; text-align: right; }
+.secondaryButton:disabled, .linkButton:disabled { opacity: .5; cursor: default; }
+.offerList { display: flex; flex-direction: column; gap: 8px; }
+.offer { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 8px; border: 1px solid var(--border, #d7dfe8); border-radius: 6px; font-size: 12px; }
+.offer > div { min-width: 0; overflow-wrap: anywhere; }
+.offer small { display: block; margin-top: 3px; color: var(--muted-foreground, #626f7d); }
+.targetFields { display: flex; flex-wrap: wrap; gap: 8px 12px; min-width: 0; margin: 0; padding: 8px; border: 1px solid var(--border, #d7dfe8); border-radius: 6px; font-size: 12px; }

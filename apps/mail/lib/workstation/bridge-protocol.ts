@@ -131,6 +131,7 @@ export const MoveEmailResultSchema = z.discriminatedUnion('moveStatus', [
 export type MoveEmailResult = z.infer<typeof MoveEmailResultSchema>;
 
 export const BridgeCapabilitiesSchema = z.object({
+  preservesAttachmentFilenames: z.boolean().optional(),
   mailboxSync: z.number().int().optional(),
   readRoots: z.array(z.object({storeId:z.string().min(1).max(2048),rootEntryId:z.string().min(1).max(512),policyVersion:z.literal(1),policyGeneration:z.number().int().positive()}).strict()).max(25).default([]),
   bridgeProtocolVersion: z.number(),

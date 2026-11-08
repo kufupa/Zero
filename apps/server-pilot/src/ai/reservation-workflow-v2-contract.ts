@@ -353,6 +353,10 @@ export const reservationWorkflowV2DraftSchema = z.object({
   fieldOverrides: z.record(reservationWorkflowV2FieldOverrideSchema),
   errors: z.array(z.object({ stage: z.enum(['extract', 'lookup', 'synthesis', 'persist']),
     code: z.string().min(1).max(100), message: z.string().max(1000) }).strict()).max(100),
+  prefill: z.object({ status: z.enum(['idle', 'running', 'complete', 'failed', 'superseded']),
+    attemptId: z.string().uuid().nullable(), attemptCount: z.number().int().min(0).max(2),
+    startedAt: z.string().datetime({ offset: true }).nullable(),
+    finishedAt: z.string().datetime({ offset: true }).nullable() }).strict().optional(),
 }).strict();
 export type ReservationWorkflowV2Draft = z.infer<typeof reservationWorkflowV2DraftSchema>;
 
@@ -368,6 +372,7 @@ export const reservationWorkflowV2EnsureInputSchema = z.object({
   /** Optional display/routing convenience only; canonical messageId on `source` is authoritative. */
   internetMessageId: z.string().min(1).max(998).nullable().optional(),
   source: reservationWorkflowV2SourceSchema,
+  mode: z.enum(['initialize', 'prefill']).optional(),
 }).strict();
 export type ReservationWorkflowV2EnsureInput = z.infer<typeof reservationWorkflowV2EnsureInputSchema>;
 export const reservationWorkflowV2ItemInputSchema = z.object({
@@ -375,6 +380,22 @@ export const reservationWorkflowV2ItemInputSchema = z.object({
   expectedRevision: z.number().int().nonnegative(), expectedSeq: z.number().int().nonnegative(),
 }).strict();
 export type ReservationWorkflowV2ItemInput = z.infer<typeof reservationWorkflowV2ItemInputSchema>;
+export const reservationWorkflowV2AddActionInputSchema = reservationWorkflowV2ItemInputSchema.extend({
+  kind: z.enum(['create', 'quote', 'amend', 'cancel', 'services', 'filing']),
+}).strict();
+export const reservationWorkflowV2ChangeRowsInputSchema = reservationWorkflowV2ItemInputSchema.extend({
+  kind: z.enum(['add_allocation', 'remove_allocation', 'move_allocation', 'add_date_section', 'remove_date_section',
+    'add_quote_group', 'remove_quote_group', 'add_target', 'remove_target', 'add_service', 'remove_service',
+    'add_document', 'remove_document', 'remove_action']),
+  requestId: idSchema, parentId: idSchema.optional(), entityId: idSchema.optional(), childIds: z.array(idSchema).max(200).optional(),
+}).strict();
+export const reservationWorkflowV2SelectNativeInputSchema = reservationWorkflowV2ItemInputSchema.extend({
+  requestId: idSchema, fieldPath: z.string().min(1).max(300), observationRef: refSchema,
+}).strict();
+export const reservationWorkflowV2ReviewScopeInputSchema = reservationWorkflowV2ItemInputSchema.extend({
+  requestId: idSchema, scope: z.enum(['request', 'allocations', 'targets', 'services', 'documents']),
+  ids: z.array(idSchema).max(200),
+}).strict();
 export const reservationWorkflowV2EditInputSchema = reservationWorkflowV2ItemInputSchema.extend({
   fieldPath: z.string().min(1).max(300), value: z.unknown(),
 }).strict();

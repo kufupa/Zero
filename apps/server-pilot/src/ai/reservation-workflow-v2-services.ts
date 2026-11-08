@@ -14,6 +14,11 @@ import {
   recordReservationWorkflowV2Result,
 } from './reservation-workflow-v2-state.js';
 import { canonicalJson } from './draft-approval.js';
+import { findStay } from './pane-stay-lookup.js';
+import { paneStayPropertyLock } from './pane-stay-save.js';
+import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
+import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
+import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
 import {
   compileReservationWorkflowV2Create,
   type ReservationWorkflowV2ServerContext,
@@ -256,7 +261,7 @@ export function reservationWorkflowV2ServiceReviewPaths(plan: Extract<Reservatio
   return [...new Set(Object.entries(plan.fieldPaths).filter(([field]) => Object.hasOwn(plan.items, field)).map(([, path]) => path))];
 }
 
-async function currentDraft(ctx: ReservationWorkflowV2ServerContext, input: Input) {
+async function currentDraft(ctx: ReservationWorkflowV2ServerContext, input: Pick<Input, 'workItemId' | 'source' | 'expectedRevision' | 'expectedSeq'>) {
   const loaded = await getReservationWorkflowV2Draft(stateContext(ctx), input);
   if (loaded.status !== 'ok') return { result: loaded, draft: null } as const;
   if (loaded.revision !== input.expectedRevision || loaded.seq !== input.expectedSeq ||
@@ -422,6 +427,7 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
       addonTool.previewUnsavedStay360AddOns(page, { expectedCreate: compiledCreate.nativeInput,
         expectedGuest: compiledCreate.expectedGuest, readForm, items }));
     const preview = record(addon), nativeItems = Array.isArray(preview?.items) ? preview.items.map(record) : [];
+    const capability = (await import('./reservation-workflow-v2-services-execute.js')).linkedServiceCapability(loaded.draft, input);
     const createBound = native.outcome === 'prepared' && typeof record(native.requestBinding)?.digest === 'string' &&
       record(native.ratePlanAvailability) !== null;
     const results: Result[] = [];
@@ -455,14 +461,14 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
           itemCandidate: plan.candidate, requestedFields: plan.items,
           native: businessItem, issue: nativeItem?.issue ?? preview?.issue ?? native.issue ?? null,
           hostValuesRequireReview: plan.reviewPaths, createRatePlanAvailability: native.ratePlanAvailability,
-          priceWasNativeCalculated: Boolean(actual?.averageDaily && actual?.totalCost), } };
+          priceWasNativeCalculated: Boolean(actual?.averageDaily && actual?.totalCost), capability } };
       const stored = await appendServiceObservation(ctx, input, observation, complete ? 'prepared' : 'failed',
         complete ? `Unsaved native Add-On preview ${String(actual?.name ?? actual?.code)}; not saved` : 'Unsaved Add-On preview needs input; not saved');
       if (stored.status !== 'ok') return { ...stored };
       results.push({ status: complete ? 'prepared' : 'needs_input', serviceId: plan.serviceId,
         observationRef: observation.ref, targetRef: plan.targetRef, item: businessItem,
         issue: text(nativeItem?.issue) ?? text(preview?.issue) ?? native.issue,
-        reviewPaths: plan.reviewPaths, saved: false });
+        reviewPaths: plan.reviewPaths, capability, saved: false });
     }
     results.unshift(...compiled.filter(item => item.plan.outcome === 'unsupported').map(item => ({
       status: 'unsupported', serviceId: item.row.service.id, targetRef: item.row.targetRef,
@@ -482,3 +488,339 @@ export { reservationWorkflowV2ExecuteServices, reservationWorkflowV2ReconcileSer
   from './reservation-workflow-v2-services-execute.js';
 export type { ReservationWorkflowV2ServicesExecuteInput, ReservationWorkflowV2ServicesResult, ReservationWorkflowV2ServicesStatus }
   from './reservation-workflow-v2-services-execute.js';
+
+/** A saved service is bound to a draft hint; the caller never supplies an HMS identity. */
+export type ReservationWorkflowV2SavedServicesInput = Omit<ReservationWorkflowV2ServicesInput, 'allocationId'> & {
+  targetRef: { kind: 'saved_target'; requestId: string; hintId: string };
+};
+
+function savedValue(draft: ReservationWorkflowV2Draft, path: string): unknown {
+  let value: unknown = draft;
+  let prefix = '';
+  for (const part of path.split('/').slice(1).map(decodeURIComponent)) {
+    prefix += `/${encodeURIComponent(part)}`;
+    value = Array.isArray(value) ? (/^\d+$/.test(part) ? value[Number(part)] : value.find(row => record(row)?.id === part)) : record(value)?.[part];
+    const override = draft.fieldOverrides[prefix];
+    if (override?.state === 'set') value = override.value;
+    else if (override && override.state !== 'inherit') value = null;
+  }
+  return value;
+}
+
+function savedTarget(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2SavedServicesInput) {
+  if (input.targetRef.requestId !== input.requestId) return null;
+  const request = draft.proposal.content.requests.find(row => row.id === input.requestId);
+  if (!request || !('targets' in request.body)) return null;
+  const root = pointer('proposal', 'content', 'requests', input.requestId, 'body', 'targets');
+  const include = savedValue(draft, `${root}/include`), exclude = savedValue(draft, `${root}/exclude`);
+  if (savedValue(draft, `${root}/mode`) !== 'explicit' || !Array.isArray(include) || !Array.isArray(exclude) || exclude.length) return null;
+  const index = include.findIndex(row => record(row)?.id === input.targetRef.hintId);
+  if (index < 0) return null;
+  const hintRoot = `${root}/include/${index}`;
+  const hint = Object.fromEntries(['id', 'confirmation', 'guestName', 'bookedArrival', 'bookedDeparture']
+    .map(key => [key, savedValue(draft, `${hintRoot}/${key}`)]));
+  const selectionPath = `${hintRoot}/suggestedRef`;
+  const matches = draft.proposal.content.services.flatMap((service, serviceIndex) => {
+    if (input.serviceId && service.id !== input.serviceId) return [];
+    if (service.ownerRequestId !== null && service.ownerRequestId !== input.requestId) return [];
+    return service.targets.flatMap((target, targetIndex) => canonicalJson(target.target) === canonicalJson(input.targetRef)
+      ? [{ service, serviceIndex, target, targetIndex }] : []);
+  });
+  if (!matches.length || input.serviceId && matches.length !== 1) return null;
+  return { request, hint, selectionPath, matches };
+}
+
+function samePerson(left: unknown, right: unknown) {
+  const normalize = (value: unknown) => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase() : '';
+  return normalize(left) !== '' && normalize(left) === normalize(right);
+}
+
+function savedStayMatches(stay: Record<string, unknown>, hint: Record<string, unknown>, requireConfirmation = true) {
+  const name = text(hint.guestName);
+  // Amend accepts a surname by itself, or the full first and last name.
+  const amendName = !name || (typeof stay.firstName === 'string' && typeof stay.lastName === 'string' &&
+    name.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() ===
+      (name.includes(' ') ? `${stay.firstName} ${stay.lastName}` : stay.lastName)
+        .normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase());
+  return typeof stay.confirmation === 'string' && (hint.confirmation ? stay.confirmation === hint.confirmation : !requireConfirmation) && stay.status === 'Reserved'
+    && typeof stay.firstName === 'string' && typeof stay.lastName === 'string' && typeof stay.arrival === 'string'
+    && typeof stay.departure === 'string' && (requireConfirmation
+      ? !hint.guestName || samePerson(hint.guestName, `${stay.firstName} ${stay.lastName}`) : amendName)
+    && (!hint.bookedArrival || hint.bookedArrival === stay.arrival) && (!hint.bookedDeparture || hint.bookedDeparture === stay.departure);
+}
+
+function selectedSavedStay(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2SavedServicesInput,
+  found: NonNullable<ReturnType<typeof savedTarget>>) {
+  const selected = savedValue(draft, found.selectionPath);
+  const observation = draft.observations.find(row => row.ref === selected && row.kind === 'stay_candidate' && row.status === 'complete'
+    && row.coverage.complete === true && row.generationId === draft.generationId && row.propertyCode === draft.propertyCode
+    && row.sourceMessageId === draft.source.messageId && row.criteria.kind === 'saved_target'
+    && row.criteria.requestId === input.requestId && row.criteria.hintId === input.targetRef.hintId
+    && (found.request.kind === 'amend' ? row.criteria.workflow === 'amend' && row.criteria.selectionPath === found.selectionPath
+      : row.criteria.workflow === 'services' && row.criteria.fieldPath === found.selectionPath));
+  const stay = record(record(observation?.result)?.candidate);
+  const query = record(observation?.criteria.query);
+  if (!observation || !stay || !query || !savedStayMatches(stay, found.hint, found.request.kind !== 'amend') ||
+      ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].some(key => (query[key] ?? null) !== (found.hint[key] || null))) return null;
+  if (found.request.kind !== 'amend') return { observation, stay };
+  if (draft.operationResults.some(row => row.workflow === 'amend' && row.requestId === input.requestId && !row.allocationId &&
+      (row.status === 'succeeded' || row.status === 'unknown'))) return null;
+  const outcomes = draft.operationResults.filter(row => row.workflow === 'amend' && row.requestId === input.requestId &&
+    row.allocationId === input.targetRef.hintId && (row.status === 'succeeded' || row.status === 'unknown'));
+  if (outcomes.some(row => row.status === 'unknown') || outcomes.length > 1) return null;
+  const completed = outcomes[0];
+  if (!completed) return { observation, stay };
+  const receipt = draft.observations.find(row => completed.observationRefs.includes(row.ref) && row.kind === 'stay_candidate' &&
+    row.status === 'complete' && row.coverage.complete && row.generationId === draft.generationId &&
+    row.propertyCode === draft.propertyCode && row.sourceMessageId === draft.source.messageId && row.criteria.workflow === 'amend' &&
+    row.criteria.requestId === input.requestId && row.criteria.hintId === input.targetRef.hintId &&
+    (row.criteria.idempotencyKey === completed.id || row.criteria.operationId === completed.id));
+  const prepared = draft.observations.find(row => row.ref === receipt?.criteria.prepareObservationRef && row.kind === 'rate_availability' &&
+    row.status === 'complete' && row.coverage.complete && row.generationId === draft.generationId && row.propertyCode === draft.propertyCode &&
+    row.sourceMessageId === draft.source.messageId && row.criteria.workflow === 'amend' && row.criteria.requestId === input.requestId &&
+    row.criteria.hintId === input.targetRef.hintId);
+  const before = record(record(receipt?.result)?.before) ?? record(record(prepared?.result)?.before);
+  const after = record(record(receipt?.result)?.nativeReadback);
+  if (!before || !after || !stay.reservationStayId || before.reservationStayId !== stay.reservationStayId ||
+      before.guestId !== stay.guestId || after.nativeStayId !== stay.reservationStayId ||
+      after.confirmation !== stay.confirmation || !text(after.firstName) || !text(after.lastName) ||
+      !validDate(after.arrival) || !validDate(after.departure)) return null;
+  return { observation, stay: { ...stay, ...after, reservationStayId: stay.reservationStayId, guestId: stay.guestId, status: 'Reserved' } };
+}
+
+/** Read-only saved-stay lookup, then catalogue and exact saved-row observations for that selection. */
+export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationWorkflowV2ServerContext,
+  input: ReservationWorkflowV2SavedServicesInput): Promise<Result> {
+  if (ctx.property.propertyCode !== 'HRCEN' || input.targetRef.kind !== 'saved_target') return { status: 'unsupported', issue: 'service_property_not_supported' };
+  const loaded = await currentDraft(ctx, input);
+  if (!loaded.draft) return { ...loaded.result };
+  const draft = loaded.draft, found = savedTarget(draft, input);
+  if (!found) return { status: 'needs_input', issue: 'one_saved_stay_confirmation_required' };
+  const amendSelection = found.request.kind === 'amend' ? selectedSavedStay(draft, input, found) : null;
+  if (found.request.kind === 'amend' && !amendSelection) return { status: 'needs_input', issue: 'select_amend_saved_stay_first' };
+  const confirmation = amendSelection?.stay.confirmation ?? found.hint.confirmation;
+  const arrival = amendSelection?.stay.arrival ?? found.hint.bookedArrival;
+  if (!/^\d+-\d+$/.test(String(confirmation ?? ''))) return { status: 'needs_input', issue: 'one_saved_stay_confirmation_required' };
+  const resolved = paneStayHmsTargetForTransport(ctx.transport.id);
+  if (!resolved.ok || (['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const)
+    .some(key => resolved.target[key] !== CENTURION_HMS_READ_TARGET[key])) return { status: 'unsupported', issue: 'service_property_session_unavailable' };
+  const query = Object.fromEntries(['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].map(key => [key, found.hint[key] || null]));
+  const result = await findStay({ confirmation: String(confirmation),
+    ...(typeof arrival === 'string' && arrival ? { arrival } : {}) }, {
+    target: resolved.target, lock: () => paneStayPropertyLock(resolved.target), acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+  }).catch(() => null);
+  const stay = record(result?.stay), selectedStay = amendSelection?.stay;
+  const sameSelected = Boolean(stay && selectedStay && stay.confirmation === selectedStay.confirmation && stay.status === 'Reserved' &&
+    stay.arrival === selectedStay.arrival && stay.departure === selectedStay.departure &&
+    samePerson(stay.firstName, selectedStay.firstName) && samePerson(stay.lastName, selectedStay.lastName));
+  const complete = Boolean(result?.outcome === 'found' && !result.arrivalMismatch && stay &&
+    (amendSelection ? sameSelected : savedStayMatches(stay, found.hint)));
+  let observation: ReservationWorkflowV2Observation | undefined;
+  if (!amendSelection) {
+    observation = { ref: randomUUID(), generationId: draft.generationId, kind: 'stay_candidate',
+      status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(), propertyCode: draft.propertyCode,
+      sourceMessageId: draft.source.messageId, sourceRefs: [], criteria: { workflow: 'services', kind: 'saved_target',
+        requestId: input.requestId, hintId: input.targetRef.hintId, fieldPath: found.selectionPath, query },
+      coverage: { complete, notes: complete ? [] : ['Exact Reserved stay was not verified.'] },
+      result: { outcome: complete ? 'found' : 'needs_input', candidate: complete ? stay : null } };
+    const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), { workItemId: input.workItemId, source: input.source, observation });
+    if (appended.status !== 'ok') return { ...appended };
+  }
+  if (!complete || !stay) return { status: 'needs_input', issue: 'reserved_stay_not_verified' };
+  const selected = amendSelection ?? selectedSavedStay(draft, input, found);
+  if (!selected || (amendSelection ? !sameSelected : canonicalJson(selected.stay) !== canonicalJson(stay)))
+    return { status: 'needs_input', issue: 'select_exact_saved_stay', observationRef: observation?.ref };
+  try {
+    const addon = await import(new URL('../../tooling/hms-cloud/stay360-addons-session.mjs', import.meta.url).href) as {
+      withStay360AddOnSession: (callback: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<unknown>,
+        options?: Record<string, unknown>) => Promise<unknown>;
+    };
+    const guestName = `${stay.firstName} ${stay.lastName}`;
+    const native = record(await addon.withStay360AddOnSession(async ({ runTool }) => {
+      const read = record(await runTool({ tool: 'read', confirmation: stay.confirmation, guestName, arrivalDate: stay.arrival }));
+      const target = record(read?.target);
+      if (read?.outcome !== 'ok' || read.propertyCode !== 'HRCEN' || !target || target.confirmation !== stay.confirmation ||
+          target.status !== 'Reserved' || target.arrival !== stay.arrival || target.departure !== stay.departure || !samePerson(target.guestName, guestName) ||
+          record(read.coverage)?.complete !== true) return null;
+      if (!Array.isArray(read.items)) return null;
+      const summaries = read.items.map(record).filter((row): row is Record<string, unknown> => Boolean(row));
+      const ids = summaries.map(row => text(row.nativeId)).filter((id): id is string => Boolean(id && /^\d+$/.test(id)));
+      if (ids.length !== summaries.length || new Set(ids).size !== ids.length || record(read.coverage)?.loaded !== ids.length ||
+          record(read.coverage)?.reportedTotal !== ids.length) return null;
+      const detailed = ids.length ? record(await runTool({ tool: 'read', confirmation: stay.confirmation, detailIds: ids })) : read;
+      const details = Array.isArray(detailed?.details) ? detailed.details : [];
+      if (detailed?.outcome !== 'ok' || record(detailed.coverage)?.complete !== true || details.length !== ids.length ||
+          ids.some(id => !details.some(row => record(row)?.nativeId === id))) return null;
+      const needsCatalogue = found.matches.some(row => savedValue(draft, pointer('proposal', 'content', 'services', row.serviceIndex, 'operation')) === 'add');
+      const listing = needsCatalogue ? record(await runTool({ tool: 'list', confirmation: stay.confirmation })) : null;
+      if (needsCatalogue && (listing?.outcome !== 'ok' || record(listing.coverage)?.complete !== true || !Array.isArray(listing.candidates))) return null;
+      return { details, candidates: Array.isArray(listing?.candidates) ? listing.candidates : [] };
+    }, { headless: true, blockServiceWorkers: true }));
+    if (!native) return { status: 'needs_input', issue: 'saved_addon_read_incomplete' };
+    let count = 0;
+    for (const row of found.matches) {
+      const operation = savedValue(draft, pointer('proposal', 'content', 'services', row.serviceIndex, 'operation'));
+      if (operation !== 'add' && operation !== 'edit' && operation !== 'remove') continue;
+      const itemPath = pointer('proposal', 'content', 'services', row.serviceIndex, 'itemCandidateRef');
+      const savedRowPath = pointer('proposal', 'content', 'services', row.serviceIndex, 'targets', row.targetIndex, 'savedRowCandidateRef');
+      const options = operation === 'add' ? native.candidates : native.details;
+      for (const raw of options as unknown[]) {
+        const candidate = record(raw), fields = record(candidate?.fields);
+        if (!candidate || (operation === 'add' ? !text(candidate.code) || !text(candidate.itemId) : !text(candidate.nativeId) || !fields)) continue;
+        const item: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: draft.generationId, kind: 'service_preview',
+          status: 'complete', observedAt: new Date().toISOString(), propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId,
+          sourceRefs: [selected.observation.ref], criteria: { workflow: 'services', kind: operation === 'add' ? 'catalogue_candidate' : 'saved_row_candidate',
+            requestId: input.requestId, serviceId: row.service.id, targetRef: input.targetRef, targetObservationRef: selected.observation.ref,
+            fieldPath: operation === 'add' ? itemPath : savedRowPath }, coverage: { complete: true, notes: [] },
+          result: { candidate } };
+        const saved = await appendReservationWorkflowV2Observation(stateContext(ctx), { workItemId: input.workItemId, source: input.source, observation: item });
+        if (saved.status !== 'ok') return { ...saved };
+        count += 1;
+      }
+    }
+    return { status: 'ok', targetRef: input.targetRef, candidates: count, saved: false };
+  } catch { return { status: 'failed', issue: 'saved_addon_read_failed', saved: false }; }
+}
+
+const savedBusinessKeys = ['code', 'name', 'itemId', 'quantity', 'startDate', 'endDate', 'unitPrice', 'frequency',
+  'pricingControl', 'folio', 'comment', 'currency', 'averageDaily', 'totalCost', 'status'] as const;
+export function savedServiceBusiness(value: unknown): Record<string, unknown> | null {
+  const item = record(value);
+  if (!item || savedBusinessKeys.some(key => !Object.hasOwn(item, key))) return null;
+  return Object.fromEntries(savedBusinessKeys.map(key => [key, item[key]]));
+}
+
+/** Compile the exact saved target and one Add-On without trusting caller-supplied native identifiers. */
+export function reservationWorkflowV2CompileSavedService(draft: ReservationWorkflowV2Draft,
+  input: ReservationWorkflowV2SavedServicesInput) {
+  if (!input.serviceId) return { status: 'needs_input' as const, issue: 'one_service_target_required' };
+  const found = savedTarget(draft, input), selected = found && selectedSavedStay(draft, input, found);
+  if (!found || !selected || found.matches.length !== 1) return { status: 'needs_input' as const, issue: 'select_exact_saved_stay' };
+  const row = found.matches[0]!;
+  const operation = savedValue(draft, pointer('proposal', 'content', 'services', row.serviceIndex, 'operation'));
+  if (operation !== 'add' && operation !== 'edit' && operation !== 'remove') return { status: 'needs_input' as const, issue: 'service_operation_required' };
+  const selectionPath = operation === 'add' ? pointer('proposal', 'content', 'services', row.serviceIndex, 'itemCandidateRef')
+    : pointer('proposal', 'content', 'services', row.serviceIndex, 'targets', row.targetIndex, 'savedRowCandidateRef');
+  const selectedRef = savedValue(draft, selectionPath);
+  const candidateObservation = draft.observations.find(item => item.ref === selectedRef && item.kind === 'service_preview'
+    && item.status === 'complete' && item.coverage.complete === true && item.generationId === draft.generationId
+    && item.propertyCode === draft.propertyCode && item.sourceMessageId === draft.source.messageId
+    && item.criteria.workflow === 'services' && item.criteria.requestId === input.requestId
+    && item.criteria.serviceId === row.service.id && item.criteria.fieldPath === selectionPath
+    && item.criteria.targetObservationRef === selected.observation.ref
+    && canonicalJson(item.criteria.targetRef) === canonicalJson(input.targetRef)
+    && item.criteria.kind === (operation === 'add' ? 'catalogue_candidate' : 'saved_row_candidate'));
+  const candidate = record(record(candidateObservation?.result)?.candidate);
+  const prior = savedServiceBusiness(candidate?.fields), nativeId = text(candidate?.nativeId);
+  if (!candidateObservation || !candidate || (operation === 'add' ? !text(candidate.code) || !text(candidate.itemId)
+    : !nativeId || !/^\d+$/.test(nativeId) || !prior)) return { status: 'needs_input' as const, issue: operation === 'add' ? 'select_native_item' : 'select_exact_saved_addon_row' };
+  const fields: Record<string, string> = {}, paths: Record<string, string> = {}, errors: string[] = [];
+  if (operation !== 'remove') for (const field of ['quantity', 'startDate', 'endDate', 'unitPrice', 'frequency', 'pricingControl', 'folio', 'comment'] as const) {
+    const explicitTarget = pointer('proposal', 'content', 'services', row.serviceIndex, 'targets', row.targetIndex, 'fields', field);
+    const explicitOverride = draft.fieldOverrides[explicitTarget];
+    if (operation === 'edit' && field === 'comment' && explicitOverride?.state === 'set' && explicitOverride.value === '') {
+      fields.comment = ''; paths.comment = explicitTarget; continue;
+    }
+    const resolved = effectiveServiceField(draft, row.service as unknown as Record<string, unknown>, row.serviceIndex,
+      row.target as unknown as Record<string, unknown>, row.targetIndex, field);
+    if ('issue' in resolved) { errors.push(field); continue; }
+    if (resolved.value === null || resolved.value === undefined || resolved.value === '') {
+      const targetPath = pointer('proposal', 'content', 'services', row.serviceIndex, 'targets', row.targetIndex, 'fields', field);
+      const override = draft.fieldOverrides[targetPath];
+      if (operation === 'edit' && field === 'comment' && override?.state === 'set' && override.value === '') {
+        fields.comment = ''; paths.comment = targetPath;
+      }
+      continue;
+    }
+    if (typeof resolved.value !== 'string') { errors.push(field); continue; }
+    if (field === 'quantity' && !positiveDecimal(resolved.value) || field === 'unitPrice' &&
+        (operation === 'add' ? !positiveDecimal(resolved.value) : !/^\d+(?:\.\d+)?$/.test(resolved.value)) ||
+        (field === 'startDate' || field === 'endDate') && !validDate(resolved.value)) { errors.push(field); continue; }
+    fields[field] = resolved.value; paths[field] = resolved.path;
+  }
+  if (operation === 'add' && !fields.quantity && (row.service.quantityRequest.scope === 'per_target' ||
+      row.service.quantityRequest.scope === 'overall' && row.service.targets.length === 1)) {
+    const quantity = savedValue(draft, pointer('proposal', 'content', 'services', row.serviceIndex, 'quantityRequest', 'value'));
+    if (typeof quantity === 'string' && quantity && positiveDecimal(quantity)) {
+      fields.quantity = quantity;
+      paths.quantity = pointer('proposal', 'content', 'services', row.serviceIndex, 'quantityRequest', 'value');
+    }
+  }
+  const targetQuantityPath = pointer('proposal', 'content', 'services', row.serviceIndex, 'targets', row.targetIndex, 'fields', 'quantity');
+  if (operation === 'add' && row.service.targets.length > 1 && row.service.quantityRequest.scope !== 'per_target' &&
+      paths.quantity !== targetQuantityPath) errors.push('quantity_must_be_allocated_to_this_stay');
+  if (operation === 'add' && (!fields.quantity || !fields.startDate || !fields.endDate || !fields.unitPrice)) {
+    errors.push('positive_quantity_dates_and_unit_price_required');
+  }
+  if (operation === 'add' && fields.startDate && fields.endDate && fields.startDate > fields.endDate) errors.push('dates');
+  if (operation === 'edit' && !Object.keys(fields).length) errors.push('edit_fields_required');
+  if (errors.length) return { status: 'needs_input' as const, issue: 'service_fields_incomplete_or_invalid', fields: errors };
+  const requested = operation === 'add' ? { code: candidate.code, ...fields }
+    : operation === 'edit' ? { operation, nativeId, patch: fields } : { operation, nativeId };
+  const reviewPaths = [found.selectionPath, selectionPath, ...Object.values(paths)];
+  const inputDigest = hash({ requestId: input.requestId, targetRef: input.targetRef, serviceId: row.service.id,
+    operation, selectedStayRef: selected.observation.ref, candidateRef: candidateObservation.ref, requested });
+  return { status: 'ok', found, selected, row, operation, candidateObservation, candidate,
+    prior, nativeId, fields, paths, requested, reviewPaths, inputDigest } as const;
+}
+
+/** Unsaved, single-item preparation. A later Save must reprepare and bind its own durable approval. */
+export async function reservationWorkflowV2PreviewSavedServices(ctx: ReservationWorkflowV2ServerContext,
+  input: ReservationWorkflowV2SavedServicesInput): Promise<Result> {
+  if (ctx.property.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'service_property_not_supported' };
+  const loaded = await currentDraft(ctx, input);
+  if (!loaded.draft) return { ...loaded.result };
+  const draft = loaded.draft, plan = reservationWorkflowV2CompileSavedService(draft, input);
+  if (plan.status !== 'ok') return plan;
+  const { selected, row, operation, candidateObservation, candidate, prior, nativeId, fields, requested, reviewPaths, inputDigest } = plan;
+  try {
+    const addon = await import(new URL('../../tooling/hms-cloud/stay360-addons-session.mjs', import.meta.url).href) as {
+      withStay360AddOnSession: (callback: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<unknown>,
+        options?: Record<string, unknown>) => Promise<unknown>;
+    };
+    const stay = selected.stay, guestName = `${stay.firstName} ${stay.lastName}`;
+    const staged = record(await addon.withStay360AddOnSession(async ({ runTool }) => {
+      const read = record(await runTool({ tool: 'read', confirmation: stay.confirmation, guestName, arrivalDate: stay.arrival }));
+      const target = record(read?.target);
+      if (read?.outcome !== 'ok' || read.propertyCode !== 'HRCEN' || record(read.coverage)?.complete !== true ||
+          !target || target.confirmation !== stay.confirmation || target.status !== 'Reserved' || target.arrival !== stay.arrival ||
+          target.departure !== stay.departure || !samePerson(target.guestName, guestName)) return null;
+      const prepared = record(await runTool(operation === 'add'
+        ? { tool: 'prepare', confirmation: stay.confirmation, items: [requested] }
+        : { tool: 'prepareChanges', confirmation: stay.confirmation, changes: [requested] }));
+      if (prepared?.outcome !== 'prepared' || prepared.saved !== false || prepared.propertyCode !== 'HRCEN') return null;
+      if (operation === 'add') {
+        const native = savedServiceBusiness(Array.isArray(prepared.items) ? prepared.items[0] : null);
+        if (!native || native.code !== candidate.code || native.itemId !== candidate.itemId || native.status !== 'VALID' ||
+            positiveDecimal(native.quantity) !== positiveDecimal(fields.quantity) || positiveDecimal(native.unitPrice) !== positiveDecimal(fields.unitPrice) ||
+            native.startDate !== fields.startDate || native.endDate !== fields.endDate || !text(native.currency) || !text(native.totalCost)) return null;
+        return { native };
+      }
+      const change = record(Array.isArray(prepared.changes) ? prepared.changes[0] : null);
+      const before = record(change?.before), after = record(change?.after);
+      if (!change || change.operation !== operation || change.nativeId !== nativeId || before?.nativeId !== nativeId ||
+          canonicalJson(savedServiceBusiness(before.fields)) !== canonicalJson(prior) ||
+          (operation === 'edit' && (after?.nativeId !== nativeId || !savedServiceBusiness(after.fields)))) return null;
+      return { before, after: operation === 'remove' ? null : after };
+    }, { headless: true, blockServiceWorkers: true }));
+    if (!staged) return { status: 'needs_input', issue: 'saved_addon_prepare_unverified', saved: false };
+    const capability = await (await import('./reservation-workflow-v2-services-execute.js')).savedServiceCapability(selected.stay);
+    const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: draft.generationId, kind: 'service_preview',
+      status: 'complete', observedAt: new Date().toISOString(), propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId,
+      sourceRefs: [selected.observation.ref, candidateObservation.ref], criteria: { workflow: 'services', kind: 'saved_addon_preview',
+        requestId: input.requestId, serviceId: row.service.id, targetRef: input.targetRef, targetObservationRef: selected.observation.ref,
+        candidateRef: candidateObservation.ref, inputDigest, reviewPaths }, coverage: { complete: true, notes: [] },
+      result: { operation, targetRef: input.targetRef, saved: false, requested, ...staged,
+        priceWasNativeCalculated: true, financialEffect: operation === 'remove' ? 'unknown' : null, capability } };
+    const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), { workItemId: input.workItemId, source: input.source, observation });
+    if (appended.status !== 'ok') return { ...appended };
+    const recorded = await recordReservationWorkflowV2Result(stateContext(ctx), { workItemId: input.workItemId, source: input.source,
+      result: { id: observation.ref,
+        generationId: draft.generationId, requestId: input.requestId, allocationId: null, workflow: 'services', status: 'prepared',
+        draftRevision: input.expectedRevision, observationRefs: [observation.ref], updatedAt: new Date().toISOString(),
+        summary: 'Infor Add-On checked; not saved' } });
+    if (recorded.status !== 'ok') return { ...recorded };
+    return { status: 'prepared', targetRef: input.targetRef, serviceId: row.service.id, observationRef: observation.ref,
+      reviewPaths, ...staged, capability, saved: false };
+  } catch { return { status: 'failed', issue: 'saved_addon_prepare_failed', saved: false }; }
+}

@@ -1,7 +1,9 @@
 import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Draft, type ReservationWorkflowV2Source } from '../../../server-pilot/src/ai/reservation-workflow-v2-contract.js';
+import type { RowChange } from './views';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import type {
   ReservationCommandContext,
+  ReservationServiceInput,
   ReservationEditCommand,
   ReservationPaneSnapshot,
   ReservationPreparationView,
@@ -27,7 +29,12 @@ type MutationProcedure<I> = { mutate(input: I, options?: MailboxCallOptions): Pr
 /** Narrow structural type for the published v2 router; no legacy quote/session DTOs cross this boundary. */
 export type ReservationWorkflowV2TrpcClient = {
   reservationWorkflowV2: {
-    ensure: MutationProcedure<{ internetMessageId?: string | null; source: ReservationWorkflowV2Source }>;
+    ensure: MutationProcedure<{ internetMessageId?: string | null; source: ReservationWorkflowV2Source; mode?: 'initialize' | 'prefill' }>;
+    prefill: MutationProcedure<ItemInput>;
+    addAction: MutationProcedure<ItemInput & { kind: 'create' | 'quote' | 'amend' | 'cancel' | 'services' | 'filing' }>;
+    changeRows: MutationProcedure<ItemInput & RowChange>;
+    selectNative: MutationProcedure<ItemInput & { requestId: string; fieldPath: string; observationRef: string }>;
+    reviewScope: MutationProcedure<ItemInput & { requestId: string; scope: 'request' | 'allocations' | 'targets' | 'services' | 'documents'; ids: string[] }>;
     get: QueryProcedure<ItemInput>;
     edit: MutationProcedure<ItemInput & { fieldPath: string; value: { state: 'set' | 'none' | 'unknown' | 'inherit' | 'clear'; value?: unknown; updatedAt: string } }>;
     review: MutationProcedure<ItemInput & { fieldPath: string; decision: 'accepted' | 'flagged'; note?: string | null }>;
@@ -39,9 +46,9 @@ export type ReservationWorkflowV2TrpcClient = {
     reconcile: MutationProcedure<ItemInput & { operationId: string }>;
     configureFiling: MutationProcedure<ItemInput & { requestId: string; attachmentId: string; confirmation: string;
       kind: 'voucher' | 'payment_proof' }>;
-    lookupServices: MutationProcedure<ItemInput & { requestId: string; allocationId: string; serviceId?: string }>;
-    prepareServices: MutationProcedure<ItemInput & { requestId: string; allocationId: string; serviceId?: string }>;
-    executeServices: MutationProcedure<ItemInput & { requestId: string; allocationId: string; serviceId: string; go: true;
+    lookupServices: MutationProcedure<ItemInput & ReservationServiceInput & { requestId: string; serviceId?: string }>;
+    prepareServices: MutationProcedure<ItemInput & ReservationServiceInput & { requestId: string; serviceId?: string }>;
+    executeServices: MutationProcedure<ItemInput & ReservationServiceInput & { requestId: string; serviceId: string; go: true;
       idempotencyKey: string; reviewedPrepareRef?: string }>;
     reconcileServices: MutationProcedure<ItemInput & { operationId: string }>;
   };
@@ -303,7 +310,7 @@ function flattenFields(value: unknown, path: string, out: ReservationPaneSnapsho
   };
 }
 
-function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot {
+export function projectReservationSession(session: ReservationWorkflowV2Session): ReservationPaneSnapshot {
   const { draft } = session;
   const fields: ReservationPaneSnapshot['fields'] = {};
   const requests: ReservationRequestProjection[] = [];
@@ -313,7 +320,7 @@ function project(session: ReservationWorkflowV2Session): ReservationPaneSnapshot
     requests.push({ id: request.id, kind: request.kind, text: request.requestText,
       fieldPaths: Object.keys(fields).filter((path) => path.startsWith(`${root}/`)),
       supported: (request.kind === 'create' || request.kind === 'quote' || request.kind === 'amend'
-        || request.kind === 'cancel' || request.kind === 'filing') && draft.propertyCode === 'HRCEN' });
+        || request.kind === 'cancel' || request.kind === 'filing' || request.kind === 'services') && draft.propertyCode === 'HRCEN' });
   }
   for (const [index, row] of draft.proposal.content.services.entries()) {
     flattenFields(row, pointer('proposal', 'content', 'services', index), fields, draft);
@@ -483,7 +490,7 @@ function serviceOwnerForPath(snapshot: ReservationPaneSnapshot, path: string): s
   const service = Number.isInteger(serviceIndex) && serviceIndex >= 0 && String(serviceIndex) === rawIndex
     ? services[serviceIndex] : services.find((row) => row.id === rawIndex);
   if (!service) return null;
-  const requests = snapshot.session.draft.proposal.content.requests.filter((request) => request.kind === 'create');
+  const requests = snapshot.session.draft.proposal.content.requests.filter((request) => ['create', 'amend', 'services'].includes(request.kind));
   const direct = requests.find((request) => request.id === service.ownerRequestId);
   if (direct) return direct.id;
   return requests.find((request) => request.serviceRefs.includes(service.id) || service.targets.some((target) =>
@@ -514,7 +521,7 @@ function requestOwnsPath(snapshot: ReservationPaneSnapshot, path: string): boole
 /** Typed adapter to reservationWorkflowV2. All mutations refresh the single canonical server draft. */
 export function createTrpcReservationWorkflowClient<T extends ReservationWorkflowV2TrpcClient>(trpcClient: T): ReservationWorkflowClient {
   const api = trpcClient.reservationWorkflowV2;
-  const load = async (input: ItemInput, source: ReservationSourceContext) => project(decodeDraft(await api.get.query({
+  const load = async (input: ItemInput, source: ReservationSourceContext) => projectReservationSession(decodeDraft(await api.get.query({
     workItemId: input.workItemId, source: input.source, expectedRevision: input.expectedRevision, expectedSeq: input.expectedSeq,
   }, mailboxOptions(source))));
   const refreshAfterStale = async (input: ItemInput, source: ReservationSourceContext, result: unknown) => {
@@ -527,18 +534,22 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     const raw = await procedure.mutate(input, mailboxOptions(source));
     await refreshAfterStale(input, source, raw);
     const result = okResult(raw);
-    if (result.status === 'ok' && result.draft) return project(decodeDraft(result));
     return load({ workItemId: input.workItemId, source: input.source,
       expectedRevision: typeof result.revision === 'number' ? result.revision : input.expectedRevision,
       expectedSeq: typeof result.seq === 'number' ? result.seq : input.expectedSeq }, source);
   };
   return {
-    async ensure({ source }) {
+    async ensure({ source, mode }) {
       const wire = apiSource(source);
-      return project(decodeDraft(await api.ensure.mutate({
-        ...(source.internetMessageId ? { internetMessageId: source.internetMessageId } : {}), source: wire,
+      return projectReservationSession(decodeDraft(await api.ensure.mutate({
+        ...(source.internetMessageId ? { internetMessageId: source.internetMessageId } : {}), source: wire, ...(mode ? { mode } : {}),
       }, mailboxOptions(source))));
     },
+    prefill(command) { return refreshAfter(api.prefill, itemInput(command), command.source); },
+    addAction(command) { return refreshAfter(api.addAction, { ...itemInput(command), kind: command.kind }, command.source); },
+    changeRows(command) { const { source, snapshot, ...change } = command; return refreshAfter(api.changeRows, { ...itemInput({source, snapshot}), ...change }, source); },
+    selectNative(command) { return refreshAfter(api.selectNative, { ...itemInput(command), requestId: command.requestId, fieldPath: command.fieldPath, observationRef: command.observationRef }, command.source); },
+    reviewScope(command) { return refreshAfter(api.reviewScope, { ...itemInput(command), requestId: command.requestId, scope: command.scope, ids: command.ids }, command.source); },
     get(command) { return load(itemInput(command), command.source); },
     async edit(command: ReservationEditCommand) {
       const input = { ...itemInput(command), fieldPath: command.fieldPath,
@@ -598,7 +609,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       return refreshAfter(api.configureFiling, input, command.source);
     },
     async lookupServices(command) {
-      const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
+      const input = { ...itemInput(command), requestId: command.requestId, ...(command.allocationId ? { allocationId: command.allocationId } : { targetRef: command.targetRef }),
         ...(command.serviceId ? { serviceId: command.serviceId } : {}) };
       const result = await api.lookupServices.mutate(input, mailboxOptions(command.source));
       await refreshAfterStale(input, command.source, result);
@@ -608,7 +619,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
         ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
     async previewServices(command) {
-      const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
+      const input = { ...itemInput(command), requestId: command.requestId, ...(command.allocationId ? { allocationId: command.allocationId } : { targetRef: command.targetRef }),
         ...(command.serviceId ? { serviceId: command.serviceId } : {}) };
       const result = await api.prepareServices.mutate(input, mailboxOptions(command.source));
       await refreshAfterStale(input, command.source, result);
@@ -618,7 +629,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
         ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
     async executeServices(command) {
-      const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
+      const input = { ...itemInput(command), requestId: command.requestId, ...(command.allocationId ? { allocationId: command.allocationId } : { targetRef: command.targetRef }),
         serviceId: command.serviceId, go: true as const, idempotencyKey: command.idempotencyKey,
         ...(command.reviewedPrepareRef ? { reviewedPrepareRef: command.reviewedPrepareRef } : {}) };
       const result = await api.executeServices.mutate(input, mailboxOptions(command.source));

@@ -629,7 +629,7 @@ export async function saveNewLabtestStay(page, {
   }
   const formatted = dates(arrival, departure, allowRealGuest);
   if (!formatted || !/^\d+$/.test(clean(guestId)) || !/^[A-Z0-9]{1,12}$/.test(roomType || '') ||
-      (roomTypeForCharge !== undefined && (allowRealGuest || !/^[A-Z0-9]{1,12}$/.test(roomTypeForCharge))) ||
+      (roomTypeForCharge !== undefined && !/^[A-Z0-9]{1,12}$/.test(roomTypeForCharge)) ||
       !/^[A-Z0-9]{1,12}$/.test(ratePlan || '') || !isSupportedLabtestGuarantee(guaranteeType) || !validCreateNote(note) ||
       !preimageId || (track !== undefined && (typeof track !== 'string' || !track.trim() || track !== track.trim())) ||
       (guestOptIn !== undefined && guestOptIn !== false) || typeof cmsSend !== 'boolean' ||

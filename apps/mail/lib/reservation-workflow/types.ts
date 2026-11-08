@@ -1,3 +1,4 @@
+import type { RowChange } from './views';
 import type {
   ReservationWorkflowV2Draft,
   ReservationWorkflowV2Source,
@@ -19,6 +20,7 @@ export type ReservationSourceContext = {
   sender: string;
   receivedAt?: string;
   sourceText?: string;
+  selfPreStay?: boolean;
   attachments: ReservationAttachmentView[];
 };
 
@@ -92,6 +94,9 @@ export class ReservationWorkflowStaleRevisionError extends Error {
   }
 }
 
+export type ReservationSavedServiceTarget = { kind: 'saved_target'; requestId: string; hintId: string };
+export type ReservationServiceInput = { allocationId?: string; targetRef?: ReservationSavedServiceTarget };
+
 export type ReservationWorkflowKind = ReservationRequestProjection['kind'];
 
 export type ReservationCommandContext = {
@@ -114,7 +119,12 @@ export type ReservationReviewCommand = ReservationCommandContext & {
 
 /** Client boundary is bound to reservationWorkflowV2; no quoteWorkflow DTOs cross it. */
 export interface ReservationWorkflowClient {
-  ensure(input: { source: ReservationSourceContext }): Promise<ReservationPaneSnapshot>;
+  ensure(input: { source: ReservationSourceContext; mode?: 'initialize' | 'prefill' }): Promise<ReservationPaneSnapshot>;
+  prefill(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;
+  addAction(input: ReservationCommandContext & { kind: Exclude<ReservationWorkflowKind, 'other'> }): Promise<ReservationPaneSnapshot>;
+  changeRows(input: ReservationCommandContext & RowChange): Promise<ReservationPaneSnapshot>;
+  selectNative(input: ReservationCommandContext & { requestId: string; fieldPath: string; observationRef: string }): Promise<ReservationPaneSnapshot>;
+  reviewScope(input: ReservationCommandContext & { requestId: string; scope: 'request' | 'allocations' | 'targets' | 'services' | 'documents'; ids: string[] }): Promise<ReservationPaneSnapshot>;
   get(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;
   edit(input: ReservationEditCommand): Promise<ReservationPaneSnapshot>;
   review(input: ReservationReviewCommand): Promise<ReservationPaneSnapshot>;
@@ -126,9 +136,9 @@ export interface ReservationWorkflowClient {
   reconcile(input: ReservationCommandContext & { operationId: string }): Promise<ReservationPaneSnapshot>;
   configureFiling(input: ReservationCommandContext & { requestId: string; attachmentId: string; confirmation: string;
     kind: 'voucher' | 'payment_proof' }): Promise<ReservationPaneSnapshot>;
-  lookupServices(input: ReservationCommandContext & { requestId: string; allocationId: string; serviceId?: string }): Promise<ReservationPaneSnapshot>;
-  previewServices(input: ReservationCommandContext & { requestId: string; allocationId: string; serviceId?: string }): Promise<ReservationPaneSnapshot>;
-  executeServices(input: ReservationCommandContext & { requestId: string; allocationId: string; serviceId: string;
+  lookupServices(input: ReservationCommandContext & ReservationServiceInput & { requestId: string; serviceId?: string }): Promise<ReservationPaneSnapshot>;
+  previewServices(input: ReservationCommandContext & ReservationServiceInput & { requestId: string; serviceId?: string }): Promise<ReservationPaneSnapshot>;
+  executeServices(input: ReservationCommandContext & ReservationServiceInput & { requestId: string; serviceId: string;
     idempotencyKey: string; reviewedPrepareRef?: string }): Promise<ReservationPaneSnapshot>;
   reconcileServices(input: ReservationCommandContext & { operationId: string }): Promise<ReservationPaneSnapshot>;
 }

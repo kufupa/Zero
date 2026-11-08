@@ -111,6 +111,12 @@ export const PANE_WRITE_AMEND_PAID = 'PANE_WRITE_AMEND_PAID';
 export const PANE_WRITE_CANCEL_UNPAID = 'PANE_WRITE_CANCEL_UNPAID';
 export const PANE_WRITE_CANCEL_PAID = 'PANE_WRITE_CANCEL_PAID';
 export const PANE_WRITE_ATTACH = 'PANE_WRITE_ATTACH';
+export const PANE_WRITE_ADDONS = 'PANE_WRITE_ADDONS';
+
+/** Saved-stay Add-Ons use explicit admission; legacy Create flags do not authorize them. */
+export function paneAddOnWriteMode(env: NodeJS.Dict<string> = process.env): PaneSaveMode {
+  return parseLabOn(env[PANE_WRITE_ADDONS]);
+}
 
 export const PANE_WRITE_ENV_NAMES = [
   PANE_WRITE_CREATE,

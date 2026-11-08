@@ -43,8 +43,7 @@ import {
   type ReservationWorkflowV2Source,
 } from './reservation-workflow-v2-contract.js';
 import type { ReservationWorkflowV2Context, ReservationWorkflowV2Seed, ReservationWorkflowV2StateResult } from './reservation-workflow-v2-state.js';
-import { claimReservationWorkflowV2PrefillRetry, ensureReservationWorkflowV2Draft,
-  getReservationWorkflowV2Draft, getReservationWorkflowV2DraftForSource, replaceReservationWorkflowV2PrefillRetry,
+import { claimReservationWorkflowV2Prefill, finishReservationWorkflowV2Prefill, initializeReservationWorkflowV2Draft,
   validateReservationWorkflowV2Source } from './reservation-workflow-v2-state.js';
 
 const MAX_THREAD_CHARS = 100_000;
@@ -340,7 +339,7 @@ export function buildReservationWorkflowV2CandidateReadPlan(input: {
     const occupancy = request.occupancy.map((row) => ({ scope: row.scope, adults: row.adults?.value ?? null,
       childCount: row.childCount?.value ?? null, childAges: row.childAges?.map((age) => age.value) ?? null,
       sourceRefs: [...(row.adults?.sourceRefs ?? []), ...(row.childCount?.sourceRefs ?? []), ...(row.childAges?.flatMap((age) => age.sourceRefs) ?? [])] }));
-    const targets = [...request.confirmationHints, ...request.guests.flatMap((guest) => guest.name ? [guest.name] : [])];
+    const targets = [...request.confirmationHints, ...request.guests.flatMap((guest) => guest.role !== 'booker' && guest.name ? [guest.name] : [])];
     for (const hint of targets) {
       const confirmation = typeof hint.value === 'string' && /^\d{6,10}-\d{1,2}$/.test(hint.value.trim()) ? hint.value.trim() : null;
       const guestName = confirmation ? null : hint.value;
@@ -803,12 +802,18 @@ function buildFallbackProposal(input: {
       outputIntent: { artifacts: [], evidenceRefs: refs }, provisionalBookingRequested: null,
     } };
     if (request.kind === 'create') return { ...base, kind: 'create' as const, body: {
-      shared: {}, dateSections: (request.dates.length ? request.dates : [{}]).map((date, dateIndex) => ({ id: stableId(id, 'section', String(dateIndex)),
+      shared: { ...(typeof request.guests.find((guest) => guest.role === 'booker')?.name?.value === 'string'
+        ? { bookerName: request.guests.find((guest) => guest.role === 'booker')!.name!.value as string } : {}),
+        ...(typeof request.guests.find((guest) => guest.role === 'booker')?.email?.value === 'string'
+          ? { bookerContact: request.guests.find((guest) => guest.role === 'booker')!.email!.value as string }
+          : typeof request.guests.find((guest) => guest.role === 'booker')?.mobile?.value === 'string'
+            ? { bookerContact: request.guests.find((guest) => guest.role === 'booker')!.mobile!.value as string } : {}) },
+      dateSections: (request.dates.length ? request.dates : [{}]).map((date, dateIndex) => ({ id: stableId(id, 'section', String(dateIndex)),
         arrival: typeof date.arrival?.value === 'string' ? date.arrival.value : null,
         departure: typeof date.departure?.value === 'string' ? date.departure.value : null,
         requestedRooms: request.roomCount?.value == null ? null : Number(request.roomCount.value),
         requestedTotals: { adults: null, childCount: null, childAges: null }, defaults: {},
-        unassignedGuestNames: request.guests.flatMap((guest) => typeof guest.name?.value === 'string' ? [guest.name.value] : []),
+        unassignedGuestNames: request.guests.flatMap((guest) => guest.role === 'guest' && typeof guest.name?.value === 'string' ? [guest.name.value] : []),
       })), allocations: [],
     } };
     if (request.kind === 'amend' || request.kind === 'cancel') {
@@ -1005,7 +1010,7 @@ function addRequestConfirmationSafety(input: {
   return { proposal };
 }
 
-type BoundGuestCandidate = { read: ReservationWorkflowV2Observation; row: Record<string, unknown>; sourceRefs: Set<string> };
+type BoundGuestCandidate = { read: ReservationWorkflowV2Observation; row: Record<string, unknown>; sourceRefs: Set<string>; exact: boolean };
 function bindGuestProfileObservations(input: {
   proposal: ReservationWorkflowV2Proposal;
   extraction: ReservationWorkflowV2Extraction;
@@ -1066,10 +1071,9 @@ function bindGuestProfileObservations(input: {
               row.email.trim().toLocaleLowerCase('en-US') === sourceEmail);
             return sourceEmail ? emailMatches && (!sourceName || nameMatches) : nameMatches;
           });
-          if (!exactSourceMatch) continue;
           const current = eligibleByNativeId.get(row.nativeId);
-          if (current) for (const ref of read.sourceRefs) current.sourceRefs.add(ref);
-          else eligibleByNativeId.set(row.nativeId, { read, row, sourceRefs: new Set(read.sourceRefs) });
+          if (current) { for (const ref of read.sourceRefs) current.sourceRefs.add(ref); current.exact ||= exactSourceMatch; }
+          else eligibleByNativeId.set(row.nativeId, { read, row, sourceRefs: new Set(read.sourceRefs), exact: exactSourceMatch });
         }
       }
       const fieldPath = `/proposal/content/requests/${request.id}/body/allocations/${allocationIndex}/guest/nativeSelectionRef`;
@@ -1086,7 +1090,9 @@ function bindGuestProfileObservations(input: {
       });
       guest.candidateRefs = bound.map((observation) => observation.ref);
       // Only a single exact-source-identity match may be suggested; duplicate profiles stay separate staff choices.
-      guest.suggestedRef = bound.length === 1 && eligibleByNativeId.size === 1 ? bound[0]!.ref : null;
+      const exact = [...eligibleByNativeId.values()].filter((entry) => entry.exact);
+      guest.suggestedRef = exact.length === 1 ? bound.find((observation) =>
+        observation.criteria.candidateNativeId === exact[0]!.row.nativeId)?.ref ?? null : null;
       const boundReadRefs = new Set([...eligibleByNativeId.values()].map((candidate) => candidate.read.ref));
       const removedRefs = originalRefs.filter((ref) => !boundReadRefs.has(ref));
       if (removedRefs.length) {
@@ -1116,6 +1122,64 @@ function bindGuestProfileObservations(input: {
     }
   }
   proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, ...newLookupRefs])].slice(0, 1000);
+  return { proposal, observations: [...input.observations, ...added] };
+}
+
+/** Split complete source-grounded party batches into field-owned selectable rows. */
+function bindPartyObservations(input: { proposal: ReservationWorkflowV2Proposal; extraction: ReservationWorkflowV2Extraction;
+  observations: ReservationWorkflowV2Observation[]; generationId: string }) {
+  const proposal = structuredClone(input.proposal), added: ReservationWorkflowV2Observation[] = [];
+  const norm = (value: unknown) => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase() : '';
+  for (const request of proposal.content.requests) {
+    if (request.kind !== 'create' && request.kind !== 'quote') continue;
+    const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction);
+    if (!extracted) continue;
+    const slots: Array<{ party: Record<string, unknown>; role: string; extractedRole: string; path: string; allocationId?: string }> = [];
+    const add = (fields: Record<string, unknown>, key: string, role: string, extractedRole: string, path: string, allocationId?: string) => {
+      const party = fields[key];
+      if (party && typeof party === 'object' && !Array.isArray(party) && norm((party as Record<string, unknown>).name))
+        slots.push({ party: party as Record<string, unknown>, role, extractedRole, path: `${path}/${key}/nativeSelectionRef`, allocationId });
+    };
+    const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
+    if (request.kind === 'quote') {
+      add(request.body.parties, 'company', 'company', 'organization', `${root}/parties`);
+      add(request.body.parties, 'agency', 'agency', 'agency', `${root}/parties`);
+    } else {
+      const fields = (value: Record<string, unknown>, path: string, allocationId?: string) => {
+        if (!allocationId) return;
+        add(value, 'bookingAgency', 'agency', 'agency', path, allocationId);
+        add(value, 'organization', 'organization', 'organization', path, allocationId);
+        add(value, 'arAccount', 'ar_account', 'ar_account', path, allocationId);
+      };
+      fields(request.body.shared, `${root}/shared`, request.body.allocations[0]?.id);
+      request.body.dateSections.forEach((section, index) => fields(section.defaults, `${root}/dateSections/${index}/defaults`,
+        request.body.allocations.find((row) => row.dateSectionId === section.id)?.id));
+      request.body.allocations.forEach((allocation, index) => fields(allocation.overrides, `${root}/allocations/${index}/overrides`, allocation.id));
+    }
+    for (const slot of slots) {
+      const source = extracted.parties.filter((party) => party.role === slot.extractedRole && norm(party.name.value) === norm(slot.party.name));
+      const refs = new Set(source.flatMap((party) => party.name.sourceRefs));
+      const reads = input.observations.filter((row) => row.kind === 'party_candidate' && row.status === 'complete' && row.coverage.complete &&
+        row.criteria.role === slot.extractedRole && norm(row.criteria.name) === norm(slot.party.name) && row.sourceRefs.some((ref) => refs.has(ref)));
+      const seen = new Set<string>(), candidates: ReservationWorkflowV2Observation[] = [];
+      for (const read of reads) for (const raw of Array.isArray(read.result.candidates) ? read.result.candidates : []) {
+        if (!isRecord(raw) || !/^\d{1,30}$/.test(String(raw.nativeId ?? '')) || typeof raw.name !== 'string' || !raw.name.trim()) continue;
+        const nativeId = String(raw.nativeId);
+        if (seen.has(nativeId) || candidates.length >= 100) continue;
+        seen.add(nativeId);
+        const ref = `obs_${stableId(read.ref, request.id, slot.path, nativeId, 'party-binding')}`;
+        const observation: ReservationWorkflowV2Observation = { ...read, ref, generationId: input.generationId,
+          criteria: { ...read.criteria, workflow: request.kind, requestId: request.id, role: slot.role,
+            ...(slot.allocationId ? { allocationId: slot.allocationId } : {}), fieldPath: slot.path, fieldPaths: [slot.path] },
+          result: { ...read.result, ...(request.kind === 'quote' ? { nativeId, name: raw.name } : {}), candidates: [raw] } };
+        candidates.push(observation); added.push(observation);
+      }
+      slot.party.candidateRefs = candidates.map((row) => row.ref);
+      const exact = candidates.filter((row) => norm((row.result.candidates as Array<Record<string, unknown>>)[0]?.name) === norm(slot.party.name));
+      slot.party.suggestedRef = exact.length === 1 ? exact[0]!.ref : null;
+    }
+  }
+  proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, ...added.map((row) => row.ref)])].slice(0, 1000);
   return { proposal, observations: [...input.observations, ...added] };
 }
 
@@ -1244,6 +1308,18 @@ function validateReviewRequirementRefs(
   return null;
 }
 
+/** Shared by manual initialization and the prefill runner, before attachment/model/native work. */
+export function classifyReservationWorkflowV2Source(input: { fromAddress?: string | null; subject?: string | null;
+  bodyText: string; mailboxAddress?: string | null; isSpam?: boolean }) {
+  const classification = classifyMailSource({ fromAddress: input.fromAddress, subject: input.subject, bodyText: input.bodyText });
+  const confirmationNumbers = `${input.subject ?? ''}\n${input.bodyText}`.match(/\b\d{6,10}-\d{1,4}\b/g) ?? [];
+  const selfPreStay = isSelfSentPreStayInformationMail({ fromAddress: input.fromAddress,
+    mailboxAddress: input.mailboxAddress, subject: input.subject, confirmationNumbers });
+  const skippedReason = input.isSpam ? 'spam' as const : !selfPreStay && classification.kind === 'channel' ? 'channel' as const :
+    !selfPreStay && classification.kind === 'system' ? 'system' as const : undefined;
+  return { classification, selfPreStay, skippedReason };
+}
+
 /** One read-only prefill run. The caller injects fixed native/mail readers or deterministic lookup fixtures. */
 export async function runReservationWorkflowV2Prefill(input: {
   db?: DB;
@@ -1264,15 +1340,10 @@ export async function runReservationWorkflowV2Prefill(input: {
 }): Promise<ReservationWorkflowV2PrefillResult> {
   const generationId = randomUUID();
   const sourceBound = input.selection.messageId === input.source.messageId && input.selection.threadId === input.source.threadId;
-  const classification = sourceBound ? classifyMailSource({ fromAddress: input.selection.fromAddress, subject: input.selection.subject,
-    bodyText: input.selection.currentBodyText ?? input.selection.bodyText }) : null;
-  const confirmationNumbers = `${input.selection.subject}\n${input.selection.currentBodyText ?? input.selection.bodyText}`
-    .match(/\b\d{6,10}-\d{1,4}\b/g) ?? [];
-  const selfPreStay = sourceBound && isSelfSentPreStayInformationMail({ fromAddress: input.selection.fromAddress,
-    mailboxAddress: input.mailboxAddress, subject: input.selection.subject, confirmationNumbers });
-  const skippedReason = !sourceBound ? 'invalid_source' as const : input.isSpam ? 'spam' as const :
-    !selfPreStay && classification?.kind === 'channel' ? 'channel' as const :
-      !selfPreStay && classification?.kind === 'system' ? 'system' as const : undefined;
+  const admission = classifyReservationWorkflowV2Source({ fromAddress: input.selection.fromAddress, subject: input.selection.subject,
+    bodyText: input.selection.currentBodyText ?? input.selection.bodyText, mailboxAddress: input.mailboxAddress, isSpam: input.isSpam });
+  const { classification, selfPreStay } = admission;
+  const skippedReason = !sourceBound ? 'invalid_source' as const : admission.skippedReason;
   if (skippedReason) {
     const evidence = sourceBound ? sourceEvidence({ source: input.source, selection: input.selection, vision: { currentProposalSources: [] } }) : [];
     const observations = sourceBound ? [seedObservation({ ref: 'obs_source', generationId,
@@ -1438,8 +1509,9 @@ export async function runReservationWorkflowV2Prefill(input: {
   const finalParsed = finalPass.ok ? reservationWorkflowV2ModelOutputSchema.safeParse(normalizeSynthesisOutput(finalPass.result.output, evidence)) : null;
   const guestBinding = finalParsed?.success ? bindGuestProfileObservations({ proposal: finalParsed.data.proposal,
     extraction, observations, generationId }) : null;
-  const finalObservations = guestBinding?.observations ?? observations;
-  const referenceSafety = guestBinding ? addRequestConfirmationSafety({ proposal: guestBinding.proposal, extraction }) : null;
+  const partyBinding = guestBinding ? bindPartyObservations({ ...guestBinding, extraction, generationId }) : null;
+  const finalObservations = partyBinding?.observations ?? observations;
+  const referenceSafety = partyBinding ? addRequestConfirmationSafety({ proposal: partyBinding.proposal, extraction }) : null;
   const guardedProposal = referenceSafety?.proposal ?? (finalParsed?.success ? finalParsed.data.proposal : null);
   const finalProposal = guardedProposal ? applyDefaultCmsSendPolicy(guardedProposal, input.propertyCode) : null;
   const finalReviewRequirements = finalParsed?.success ? finalParsed.data.reviewRequirements ?? {} : {};
@@ -1481,33 +1553,26 @@ export async function ensureReservationWorkflowV2Prefill(input: {
 }): Promise<ReservationWorkflowV2EnsurePrefillResult> {
   const admitted = await validateReservationWorkflowV2Source(input.context, input.source);
   if (admitted.status !== 'ok') return { status: 'skipped', reason: `Canonical source rejected before model/native reads (${admitted.status}).` };
-  const existing = await getReservationWorkflowV2DraftForSource(input.context, { source: input.source });
-  if (existing.status === 'ok') {
-    if (!input.adapter) return existing;
-    const retry = { source: input.source, workItemId: existing.draft.workItemId,
-      revision: existing.revision, seq: existing.seq, draft: existing.draft };
-    if (!await claimReservationWorkflowV2PrefillRetry(input.context, retry)) return existing;
-    try {
-      const refreshed = await runReservationWorkflowV2Prefill({ ...input, transportId: input.context.transportId,
-        db: input.context.db, propertyCode: input.context.propertyCode });
-      const synthesisTransportFailed = (refreshed.errors ?? []).some((error) => error.stage === 'synthesis' &&
-        ['model_timeout', 'model_error'].includes(error.code));
-      if (refreshed.sourceBound && !refreshed.skippedReason && refreshed.extraction && !synthesisTransportFailed) {
-        return await replaceReservationWorkflowV2PrefillRetry(input.context, { ...retry, seed: {
-          generationId: refreshed.generationId, status: refreshed.status, proposal: refreshed.proposal,
-          observations: refreshed.observations, fieldReviewRequirements: refreshed.fieldReviewRequirements, errors: refreshed.errors,
-        } });
-      }
-    } catch { /* Keep the original fallback after a failed retry. */ }
-    return getReservationWorkflowV2Draft(input.context, { workItemId: retry.workItemId, source: input.source });
+  const admission = classifyReservationWorkflowV2Source({ fromAddress: input.selection.fromAddress,
+    subject: input.selection.subject, bodyText: input.selection.currentBodyText ?? input.selection.bodyText,
+    mailboxAddress: input.mailboxAddress, isSpam: input.isSpam });
+  if (admission.skippedReason) return { status: 'skipped', reason: `Known ${admission.skippedReason} source is excluded.` };
+  const initialized = await initializeReservationWorkflowV2Draft(input.context, input.source);
+  if (initialized.status !== 'ok') return initialized;
+  const item = { workItemId: initialized.draft.workItemId, source: input.source,
+    expectedRevision: initialized.revision, expectedSeq: initialized.seq };
+  const claimed = await claimReservationWorkflowV2Prefill(input.context, { ...item, allowRetry: false });
+  if (!claimed.claim) return claimed.result;
+  try {
+    const generated = await runReservationWorkflowV2Prefill({ ...input, transportId: input.context.transportId,
+      db: input.context.db, propertyCode: input.context.propertyCode });
+    const failed = !generated.sourceBound || Boolean(generated.skippedReason) ||
+      (generated.errors ?? []).some((error) => error.stage === 'extract' || error.stage === 'synthesis');
+    return finishReservationWorkflowV2Prefill(input.context, { ...item, claim: claimed.claim, failed,
+      seed: generated.sourceBound && !generated.skippedReason ? { generationId: generated.generationId,
+        status: generated.status, proposal: generated.proposal, observations: generated.observations,
+        fieldReviewRequirements: generated.fieldReviewRequirements, errors: generated.errors } : undefined });
+  } catch {
+    return finishReservationWorkflowV2Prefill(input.context, { ...item, claim: claimed.claim, failed: true });
   }
-  const prefill = await runReservationWorkflowV2Prefill({ ...input, transportId: input.context.transportId,
-    db: input.context.db, propertyCode: input.context.propertyCode });
-  if (!prefill.sourceBound || prefill.skippedReason) return { status: 'skipped',
-    reason: prefill.errors?.[0]?.message ?? 'Selected source is not admitted for reservation prefill.' };
-  return ensureReservationWorkflowV2Draft(input.context, {
-    source: input.source, extractionId: input.extractionId,
-    seed: { generationId: prefill.generationId, status: prefill.status, proposal: prefill.proposal,
-      observations: prefill.observations, fieldReviewRequirements: prefill.fieldReviewRequirements, errors: prefill.errors },
-  });
 }

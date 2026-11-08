@@ -199,7 +199,7 @@ function selectedParty(
       observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
       observation.sourceMessageId !== draft.source.messageId || criteria?.workflow !== 'quote' ||
       criteria.requestId !== request.id || criteria.role !== role ||
-      !sameName(criteria.searchName, name) || !candidate || !cleanText(candidate.nativeId) || !cleanText(candidate.name)) {
+      !candidate || !cleanText(candidate.nativeId) || !cleanText(candidate.name) || !sameName(candidate.name, name)) {
     return { reviewPaths: [], issue: `${role}_candidate_unverified` };
   }
   const reviewPaths = execute
@@ -270,6 +270,32 @@ function preparedQuoteMatches(
       revision.held !== false || groups.length !== input.groups.length ||
       typeof revision.totalMinor !== 'number' || !Number.isSafeInteger(revision.totalMinor) ||
       revision.totalMinor < 0) return false;
+  if (input.dinnerAllowanceMinor !== undefined) {
+    const facts = record(factsValue);
+    const extras = Array.isArray(facts?.extras) ? facts.extras.map(record) : [];
+    const dinner = extras.find((extra) => extra?.service === 'dinner_add_on');
+    const expectedIds = input.dinnerAllowanceGroupIds ?? input.groups.map((group) => group.id);
+    const actualIds = Array.isArray(dinner?.groupIds) ? dinner.groupIds : [];
+    const unit = input.dinnerAllowanceUnit;
+    const chargeUnit = unit === 'per_person_per_night' ? 'per_person_night' : unit;
+    const applicable = input.groups.filter((group) => expectedIds.includes(group.id));
+    const first = applicable[0];
+    const dates = first ? unit === 'per_person' ? [first.arrivalDate] : occupiedDates(first.arrivalDate, first.departureDate) : [];
+    const rooms = applicable.reduce((total, group) => total + group.quantity, 0);
+    const people = applicable.reduce((total, group) => total + group.quantity * (group.adults + group.childrenAges.length), 0);
+    if (!facts || facts.revisionId !== revision.id || facts.authorizationId !== revision.authorizationId ||
+        facts.sourceHash !== input.sourceHash || !dinner || dinner.unitMinor !== input.dinnerAllowanceMinor ||
+        dinner.chargeUnit !== chargeUnit || !dates.length || JSON.stringify(dinner.dates) !== JSON.stringify(dates) ||
+        actualIds.length !== expectedIds.length || !expectedIds.every((id) => actualIds.includes(id)) ||
+        (unit === 'per_room_per_night'
+          ? dinner.unitKind !== 'item' || dinner.quantity !== rooms || dinner.units !== dates.length
+          : dinner.unitKind !== 'person_service' || !Array.isArray(dinner.persons) || dinner.persons.length !== people ||
+            dinner.units !== people * dates.length)) return false;
+    try {
+      if (!deriveAuthorizedExtraLines(revision as unknown as QuoteRevision,
+        facts as unknown as AuthorizedProposalFacts).some((line) => line.service === 'dinner_add_on' && line.totalMinor > 0)) return false;
+    } catch { return false; }
+  }
   for (const expected of input.groups) {
     const actual = groups.find((group) => group?.id === expected.id);
     const board = expected.board === 'bb' ? 'breakfast'
@@ -324,13 +350,12 @@ function compileQuote(
   if (execute && draft.staffReviews[path('provisionalBookingRequested')]?.status !== 'accepted') {
     reviewPaths.add(path('provisionalBookingRequested'));
   }
-  if ('issue' in provisional || provisional.value !== false) {
+  if (execute && ('issue' in provisional || provisional.value !== false)) {
     issues.push(`${path('provisionalBookingRequested')}:${!('issue' in provisional) && provisional.value === true
       ? 'separate_create_required' : 'quote_only_choice_required'}`);
   }
   if (!request.body.groups.length) issues.push(`${path('groups')}:group_required`);
   if (request.body.groups.length > 8) issues.push(`${path('groups')}:native_quote_group_limit`);
-  if (request.body.requestedMoney.length) issues.push(`${path('requestedMoney')}:staff_priced_allowance_adapter_required`);
 
   const nativeGroups: Array<{
     id: string; arrivalDate: string; departureDate: string; quantity: number; adults: number;
@@ -361,7 +386,10 @@ function compileQuote(
     const board = boardResult && !('issue' in boardResult) ? boardCode(boardResult.value) : null;
     if (!board) issues.push(`${base}/board:native_board_code_required`);
 
-    const occupancy = group.occupancy;
+    // Occupancy may be edited atomically as a parent object to keep child count and age slots in one revision.
+    const occupancyResult = resolvedLeaf(draft, path('groups', groupIndex, 'occupancy'), group.occupancy);
+    const occupancy = !('issue' in occupancyResult) ? record(occupancyResult.value) ?? group.occupancy : group.occupancy;
+    if ('issue' in occupancyResult) issues.push(`${base}/occupancy:${occupancyResult.issue}`);
     const scopePath = path('groups', groupIndex, 'occupancy', 'scope');
     const scopeResult = resolved(scopePath, occupancy.scope);
     const scope = scopeResult && !('issue' in scopeResult) ? scopeResult.value : null;
@@ -409,6 +437,49 @@ function compileQuote(
     issues.push(`${path('groups')}:duplicate_group_id`);
   }
 
+  // A source amount alone never identifies the charge. Staff must classify dinner explicitly, choose
+  // its unit and group scope, and review it before it can enter a generated quote.
+  let dinner: Pick<z.infer<typeof staffQuoteInput>, 'dinnerAllowanceMinor' | 'dinnerAllowanceUnit' | 'dinnerAllowanceGroupIds'> = {};
+  for (const [index, claim] of request.body.requestedMoney.entries()) {
+    const base = path('requestedMoney', index);
+    const read = (key: string, original: unknown) => resolvedLeaf(draft, `${base}/${key}`, original);
+    const kind = read('staffAllowanceType', undefined);
+    const amount = read('amount', claim.amount), currency = read('currency', claim.currency),
+      unit = read('unit', claim.unit), scope = read('scope', claim.scope), targets = read('targetRefs', claim.targetRefs);
+    const values = [kind, amount, currency, unit, scope, targets];
+    const selectedKind = !('issue' in kind) ? kind.value : undefined;
+    const rawAmount = !('issue' in amount) ? amount.value : undefined;
+    const amountText = typeof rawAmount === 'string' ? rawAmount.trim() : '';
+    const match = /^(\d{1,8})(?:\.(\d{1,2}))?$/u.exec(amountText);
+    const amountMinor = match ? Number(match[1]) * 100 + Number((match[2] ?? '').padEnd(2, '0')) : 0;
+    const rawUnit = !('issue' in unit) ? unit.value : undefined;
+    const unitValue = rawUnit === 'per_person_night' ? 'per_person_per_night' : rawUnit;
+    const unitAllowed = unitValue === 'per_person_per_night' || unitValue === 'per_room_per_night' || unitValue === 'per_person';
+    const scopeValue = !('issue' in scope) ? scope.value : undefined;
+    const targetValues = !('issue' in targets) && Array.isArray(targets.value) ? targets.value : [];
+    const allIds = nativeGroups.map((group) => group.id);
+    const groupIds = scopeValue === 'overall' && targetValues.length === 0 ? allIds
+      : scopeValue === 'per_target' && targetValues.length > 0 && targetValues.every((id) => typeof id === 'string' && allIds.includes(id)) &&
+          new Set(targetValues).size === targetValues.length ? targetValues as string[] : [];
+    const supported = selectedKind === 'dinner' && !values.some((item) => 'issue' in item) &&
+      !('issue' in currency) && typeof currency.value === 'string' && currency.value.trim().toUpperCase() === 'ZAR' &&
+      amountMinor > 0 && Number.isSafeInteger(amountMinor) && unitAllowed && groupIds.length > 0 &&
+      dinner.dinnerAllowanceMinor === undefined;
+    if (!supported) {
+      // Background HMS room prices remain useful while the unpriced request stays visible.
+      // Generation is blocked until every request has a supported, explicit handling choice.
+      if (execute) issues.push(`${base}:allowance_requires_supported_staff_choice`);
+      continue;
+    }
+    dinner = { dinnerAllowanceMinor: amountMinor,
+      dinnerAllowanceUnit: unitValue as 'per_person_per_night' | 'per_room_per_night' | 'per_person',
+      dinnerAllowanceGroupIds: groupIds };
+    if (execute) for (const key of ['staffAllowanceType', 'amount', 'currency', 'unit', 'scope', 'targetRefs']) {
+      const fieldPath = `${base}/${key}`;
+      if (!reviewAccepted(draft, fieldPath)) reviewPaths.add(fieldPath);
+    }
+  }
+
   const company = selectedParty(draft, request, 'company', execute);
   const agency = selectedParty(draft, request, 'agency', execute);
   for (const selected of [company, agency]) {
@@ -447,13 +518,13 @@ function compileQuote(
     issues.push(`${outputPath}:unsupported_artifact_kind`);
   }
   if (!outputKinds.length) issues.push(`${path('outputIntent', 'artifacts')}:output_required`);
-  if (outputKinds.includes('email_quote') && !clientEmail) issues.push(`${emailPath}:recipient_required_for_cover`);
+  if (execute && outputKinds.includes('email_quote') && !clientEmail) issues.push(`${emailPath}:recipient_required_for_cover`);
   if (outputKinds.includes('email_quote') && !outputKinds.some((kind) => kind === 'pdf_quote' || kind === 'xlsx_quote')) {
     issues.push(`${outputPath}:email_attachment_required`);
   }
 
   if (issues.length) {
-    const unsupported = issues.some((issue) => /unsupported|separate_create_required|separate_quote_runs_required|staff_priced_allowance_adapter_required/u.test(issue));
+    const unsupported = issues.some((issue) => /unsupported|separate_create_required|separate_quote_runs_required|allowance_requires_supported_staff_choice/u.test(issue));
     return { status: unsupported ? 'unsupported' : reviewPaths.size ? 'needs_review' : 'needs_input',
       issue: unsupported ? 'quote_native_scope_unsupported' : reviewPaths.size ? 'quote_requires_staff_acceptance' : 'quote_inputs_incomplete',
       fields: [...new Set([...issues, ...reviewPaths])] };
@@ -480,6 +551,7 @@ function compileQuote(
     clientTelephone,
     ...(notes ? { notes } : {}),
     ...(Object.keys(parties).length ? { parties } : {}),
+    ...dinner,
   };
   const parsedInput = staffQuoteInput.safeParse(nativeInput);
   if (!parsedInput.success) {
@@ -1003,8 +1075,11 @@ export async function reservationWorkflowV2QuoteExecute(
     ? rawExtrasReviewItems.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())) : [];
   const extrasReviewPath = quoteBodyPath(request.id);
   const extrasReview = loaded.draft.staffReviews[extrasReviewPath];
+  const preparedOperation = [...operationResults(loaded.draft)].reverse().find(entry => entry.requestId === request.id &&
+    entry.status === 'prepared' && entry.observationRefs.includes(preparedObservation.ref));
   const extrasAccepted = extrasReview?.status === 'accepted' &&
-    Date.parse(extrasReview.at ?? '') >= Date.parse(preparedObservation.observedAt);
+    Date.parse(extrasReview.at ?? '') >= Date.parse(preparedObservation.observedAt) &&
+    Boolean(preparedOperation && Date.parse(extrasReview.at ?? '') >= Date.parse(preparedOperation.updatedAt));
   if (extrasReviewItems.length && !extrasAccepted) {
     return { status: 'needs_review', issue: 'quote_extras_require_staff_acceptance',
       fields: [extrasReviewPath], extrasReviewItems, extrasReviewPath };
