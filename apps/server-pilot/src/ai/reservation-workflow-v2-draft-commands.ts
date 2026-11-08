@@ -380,10 +380,10 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
         if (!service || !Array.isArray(serviceRefs) || !serviceRefs.includes(service.id) || service.id !== observation.criteria.serviceId || !target ||
             !['edit', 'remove'].includes(String(valueAt(draft, `/proposal/content/services/${savedServicePath[1]}/operation`))) ||
             JSON.stringify(target.target) !== JSON.stringify(observation.criteria.targetRef) || !candidate.nativeId) return null;
-        const targetRef = rec(observation.criteria.targetRef), scope = rec(valueAt(draft, `${root}/body/targets`));
+        const targetRef = rec(observation.criteria.targetRef), scopeMode = valueAt(draft, `${root}/body/targets/mode`);
         const rows = valueAt(draft, `${root}/body/targets/include`);
         const index = Array.isArray(rows) ? rows.findIndex((row) => rec(row).id === targetRef.hintId) : -1;
-        if (scope.mode !== 'explicit' || index < 0 ||
+        if (scopeMode !== 'explicit' || index < 0 ||
             valueAt(draft, `${root}/body/targets/include/${index}/suggestedRef`) !== observation.criteria.targetObservationRef) return null;
         set(input.fieldPath, observation.ref);
       } else if (servicePath && observation.kind === 'service_preview' && observation.criteria.workflow === 'services' &&
@@ -403,11 +403,11 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
       } else if (observation.kind === 'stay_candidate' && input.fieldPath.endsWith('/suggestedRef')) {
         if (!['amend', 'cancel', 'services', 'filing'].includes(request.kind)) return null;
         const match = input.fieldPath.match(/\/targets\/include\/([^/]+)\/suggestedRef$/);
-        const targets = rec(valueAt(draft, `${root}/body/targets`));
+        const targetMode = valueAt(draft, `${root}/body/targets/mode`);
         const rows = valueAt(draft, `${root}/body/targets/include`);
         const part = match ? decodeURIComponent(match[1]!) : '';
         const row = Array.isArray(rows) ? (/^\d+$/.test(part) ? rows[Number(part)] : rows.find((entry) => rec(entry).id === part)) : undefined;
-        if (!row || rec(row).id !== (filingPath ? observation.criteria.targetHintId : observation.criteria.hintId) || targets.mode !== 'explicit' ||
+        if (!row || rec(row).id !== (filingPath ? observation.criteria.targetHintId : observation.criteria.hintId) || targetMode !== 'explicit' ||
             reservationWorkflowV2SavedTargetLocked(draft, request.id, rec(row).id)) return null;
         const candidate = rec(observation.result.candidate ?? observation.result.preimage ?? observation.result.stay);
         if (!Object.keys(candidate).length) return null;

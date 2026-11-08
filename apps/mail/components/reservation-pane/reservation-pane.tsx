@@ -6,7 +6,7 @@ import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationWork
 import { effectiveAt, record, requestPath, text, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { QuoteOutputPanel, type SaveQuoteOutput } from './quote-output-panel';
 import { useReservationWorkbench } from './use-reservation-workbench';
-import { CreateEditor } from './editors/create-editor';
+import { CreateEditor, resolveCreateCmsRecipientDefault } from './editors/create-editor';
 import { QuoteEditor } from './editors/quote-editor';
 import { AmendEditor } from './editors/amend-editor';
 import { CancelEditor } from './editors/cancel-editor';
@@ -51,6 +51,27 @@ export function ReservationPane(props: ReservationPaneProps) {
   const check = async () => {
     if (!request || createBlocked || workbench.blocked) return;
     try {
+      if (request.kind === 'create' && snapshot) {
+        const root = `${requestPath(request.id)}/body`, shared = `${root}/shared`;
+        const sections = Array.isArray(body.dateSections) ? body.dateSections.map(record) : [];
+        const rooms = Array.isArray(body.allocations) ? body.allocations.map(record) : [];
+        const needsRecipient = rooms.some((room, index) => {
+          const sectionIndex = sections.findIndex(section => section.id === room.dateSectionId);
+          const bases = [`${root}/allocations/${index}/overrides`, `${root}/dateSections/${sectionIndex}/defaults`, shared];
+          const inherited = (key: string) => {
+            for (const base of bases) {
+              const value = effectiveAt(snapshot, `${base}/${key}`);
+              if (value !== undefined && value !== null) return value;
+            }
+            return undefined;
+          };
+          return inherited('cmsSend') === true && !text(inherited('cmsRecipient')).trim();
+        });
+        const recipient = resolveCreateCmsRecipientDefault(snapshot, request.id, source.sender);
+        if (needsRecipient && recipient && !text(effectiveAt(snapshot, `${shared}/cmsRecipient`)).trim()) {
+          await commands.edit(`${shared}/cmsRecipient`, recipient);
+        }
+      }
       await commands.review(request.kind === 'create' ? 'allocations' : request.kind === 'amend' || request.kind === 'cancel' ? 'targets' : 'request', ids);
       if (request.kind === 'create' || request.kind === 'amend' || request.kind === 'cancel') {
         for (const id of ids) {
