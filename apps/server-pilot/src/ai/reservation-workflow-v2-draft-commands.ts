@@ -8,6 +8,7 @@ import { withLockedV2DraftMutation, reservationWorkflowV2SavedTargetLocked,
   type ReservationWorkflowV2Context } from './reservation-workflow-v2-state.js';
 import { nativeStructureIsSafe, rebaseReservationV2Path, rebaseReservationV2Observations } from './work-item-revision.js';
 import { sameGuestName } from './guest-name-match.js';
+import { canonicalJson } from './draft-approval.js';
 
 const ptr = (...parts: (string | number)[]) => '/' + parts.map((part) => encodeURIComponent(String(part))).join('/');
 const rec = (value: unknown): Record<string, any> => value && typeof value === 'object' && !Array.isArray(value)
@@ -379,7 +380,7 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
         const target = service?.targets[Number(savedServicePath[2])], candidate = rec(observation.result.candidate);
         if (!service || !Array.isArray(serviceRefs) || !serviceRefs.includes(service.id) || service.id !== observation.criteria.serviceId || !target ||
             !['edit', 'remove'].includes(String(valueAt(draft, `/proposal/content/services/${savedServicePath[1]}/operation`))) ||
-            JSON.stringify(target.target) !== JSON.stringify(observation.criteria.targetRef) || !candidate.nativeId) return null;
+            canonicalJson(target.target) !== canonicalJson(observation.criteria.targetRef) || !candidate.nativeId) return null;
         const targetRef = rec(observation.criteria.targetRef), scopeMode = valueAt(draft, `${root}/body/targets/mode`);
         const rows = valueAt(draft, `${root}/body/targets/include`);
         const index = Array.isArray(rows) ? rows.findIndex((row) => rec(row).id === targetRef.hintId) : -1;
@@ -396,7 +397,7 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
         if (bound.kind === 'saved_target') {
           const rows = valueAt(draft, `${root}/body/targets/include`);
           const index = Array.isArray(rows) ? rows.findIndex((entry) => rec(entry).id === bound.hintId) : -1;
-          if (!row.targets.some((entry) => JSON.stringify(entry.target) === JSON.stringify(bound)) || index < 0 ||
+          if (!row.targets.some((entry) => canonicalJson(entry.target) === canonicalJson(bound)) || index < 0 ||
               valueAt(draft, `${root}/body/targets/include/${index}/suggestedRef`) !== observation.criteria.targetObservationRef) return null;
         }
         set(`/proposal/content/services/${servicePath[1]}/code`, candidate.code); set(input.fieldPath, observation.ref);
