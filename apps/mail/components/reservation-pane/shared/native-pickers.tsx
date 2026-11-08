@@ -40,10 +40,14 @@ export function NativePicker({ label, path, editor, kind, allowNone = false }: {
   const selectedRef = entity ? selectionOverride && selectionOverride.state !== 'inherit'
     ? valueAt(editor.snapshot, selectionPath)
     : valueAt(editor.snapshot, selectionPath) ?? (party ? record(valueAt(editor.snapshot, path)).suggestedRef : valueAt(editor.snapshot, `${guestPath}/suggestedRef`)) : null;
+  const selectedChoice = choices.find(row => entity ? row.ref === selectedRef : row.value === saved);
+  const display = dirty || open ? query : guestPath
+    ? selectedChoice?.label || [text(valueAt(editor.snapshot, `${guestPath}/firstName`)), saved].filter(Boolean).join(' ')
+    : !entity && selectedChoice && selectedChoice.label !== saved ? `${saved} — ${selectedChoice.label}` : query;
   return <div className={styles.field}><label htmlFor={id}>{label}</label><div className={styles.picker}>
     <div className={styles.pickerInput}><input id={id} role="combobox" aria-expanded={open} aria-controls={`${id}-options`} aria-autocomplete="list"
       aria-activedescendant={open && activeIndex >= 0 && shown[activeIndex] ? `${id}-option-${activeIndex}` : undefined}
-      value={query} placeholder={guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
+      value={display} onFocus={() => setOpen(true)} placeholder={guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
         const value = event.target.value; setQuery(value); setDirty(true); setOpen(true); setActiveIndex(-1);
         editor.commands.stageEdit(editPath, editValue(value));
       }}
@@ -64,5 +68,5 @@ export function NativePicker({ label, path, editor, kind, allowNone = false }: {
       {!choices.length && <small>Find options in Infor to load native choices.</small>}
       <button type="button" onClick={() => { void saveSearch().then(() => editor.commands.lookup()).catch(() => {}); }}>Search Infor</button>
     </div>}
-  </div>{dirty ? <small>Unsaved search</small> : entity && !selectedRef && query ? <small>Select an Infor match</small> : guestPath ? <small>Search by surname; use profile details to change the first name.</small> : null}</div>;
+  </div>{dirty ? <small>Unsaved search</small> : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}</div>;
 }

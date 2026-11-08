@@ -24,7 +24,7 @@ export function StayFacts({ stay }: { stay: Record<string, unknown> }) {
   return <div className={styles.facts}>
     <strong>{text(stay.confirmation)} · {[text(stay.firstName), text(stay.lastName)].filter(Boolean).join(' ')}</strong>
     <span>{text(stay.arrival)} → {text(stay.departure)} · {text(stay.status) || 'Status not returned'}</span>
-    {(stay.roomType || stay.ratePlan) && <span>{text(stay.roomType)} · {text(stay.ratePlan)}</span>}
+    {Boolean(stay.roomType || stay.ratePlan) && <span>{text(stay.roomType)} · {text(stay.ratePlan)}</span>}
   </div>;
 }
 

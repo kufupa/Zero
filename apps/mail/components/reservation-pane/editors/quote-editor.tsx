@@ -81,7 +81,7 @@ function RoomCode({ editor, path, options }: { editor: Editor; path: string; opt
   useEffect(() => setValue(initial), [initial]);
   useEffect(() => () => editor.commands.setUncommitted(path, false), [path]);
   const listId = `rooms-${path.replace(/[^a-z0-9]/giu, '-')}`;
-  const codes = [...new Map(options.map((option) => [text(option.roomCode), text(option.roomLabel)]).filter(([code]) => code)).entries()];
+  const codes = [...new Map(options.map((option): [string, string] => [text(option.roomCode), text(option.roomLabel)]).filter(([code]) => code)).entries()];
   return <label className={styles.localField}>Room categories
     <input value={value} list={listId} placeholder="Any category, or codes separated by commas" onChange={(event) => { setValue(event.target.value); editor.commands.setUncommitted(path, true); }}
       onBlur={() => {

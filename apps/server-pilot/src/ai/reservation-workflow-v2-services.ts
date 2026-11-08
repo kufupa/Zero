@@ -594,7 +594,7 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
     const native = record(await addon.withStay360AddOnSession(async ({ runTool }) => {
       const read = record(await runTool({ tool: 'read', confirmation: stay.confirmation, guestName, arrivalDate: stay.arrival }));
       const target = record(read?.target);
-      if (read?.outcome !== 'ok' || read.propertyCode !== 'HRCEN' || target?.confirmation !== stay.confirmation ||
+      if (read?.outcome !== 'ok' || read.propertyCode !== 'HRCEN' || !target || target.confirmation !== stay.confirmation ||
           target.status !== 'Reserved' || target.arrival !== stay.arrival || target.departure !== stay.departure || !samePerson(target.guestName, guestName) ||
           record(read.coverage)?.complete !== true) return null;
       if (!Array.isArray(read.items)) return null;
@@ -715,8 +715,8 @@ export function reservationWorkflowV2CompileSavedService(draft: ReservationWorkf
   const reviewPaths = [found.selectionPath, selectionPath, ...Object.values(paths)];
   const inputDigest = hash({ requestId: input.requestId, targetRef: input.targetRef, serviceId: row.service.id,
     operation, selectedStayRef: selected.observation.ref, candidateRef: candidateObservation.ref, requested });
-  return { status: 'ok' as const, found, selected, row, operation, candidateObservation, candidate,
-    prior, nativeId, fields, paths, requested, reviewPaths, inputDigest };
+  return { status: 'ok', found, selected, row, operation, candidateObservation, candidate,
+    prior, nativeId, fields, paths, requested, reviewPaths, inputDigest } as const;
 }
 
 /** Unsaved, single-item preparation. A later Save must reprepare and bind its own durable approval. */
@@ -738,7 +738,7 @@ export async function reservationWorkflowV2PreviewSavedServices(ctx: Reservation
       const read = record(await runTool({ tool: 'read', confirmation: stay.confirmation, guestName, arrivalDate: stay.arrival }));
       const target = record(read?.target);
       if (read?.outcome !== 'ok' || read.propertyCode !== 'HRCEN' || record(read.coverage)?.complete !== true ||
-          target?.confirmation !== stay.confirmation || target.status !== 'Reserved' || target.arrival !== stay.arrival ||
+          !target || target.confirmation !== stay.confirmation || target.status !== 'Reserved' || target.arrival !== stay.arrival ||
           target.departure !== stay.departure || !samePerson(target.guestName, guestName)) return null;
       const prepared = record(await runTool(operation === 'add'
         ? { tool: 'prepare', confirmation: stay.confirmation, items: [requested] }

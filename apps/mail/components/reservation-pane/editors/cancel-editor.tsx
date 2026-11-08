@@ -75,7 +75,7 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
         <span>Fee status: {text(result.feeState).replaceAll('_', ' ') || 'Unknown'}</span>
         <span>Penalty: {text(result.penaltyText) || 'Not returned; check the policy and fee before deciding.'}</span>
         {Array.isArray(result.policyFacts) && [...new Set(result.policyFacts.map(text))].map(fact => <span key={fact}>{fact}</span>)}
-        {result.roomScope && <span>Room scope: {typeof result.roomScope === 'string' ? result.roomScope : JSON.stringify(result.roomScope)}</span>}
+        {Boolean(result.roomScope) && <span>Room scope: {typeof result.roomScope === 'string' ? result.roomScope : JSON.stringify(result.roomScope)}</span>}
       </div>
       {canReview && <div className={styles.row}>{accepted ? <span>Current cancellation policy and fee reviewed.</span> : <button type="button" disabled={editor.view.busy}
         onClick={() => void editor.commands.acceptFinancialReview(String(binding.reviewFieldPath), String(binding.reviewNote), String(binding.observationRef))}>I reviewed this scope, policy and fee</button>}</div>}
