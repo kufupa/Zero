@@ -29,3 +29,6 @@
 .notice { background:#faf5e8; border-left:2px solid #dfbc66; padding:7px 9px; font-size:12px; }.empty { padding:25px 0; color:var(--muted); }.empty h2 { color:var(--ink); font-size:17px; }
 :global(.dark) .pane { --surface:#171c25; --muted:#a5adba; --border:#333b48; --ink:#edf0f5; }
 :global(.dark) .pane input,:global(.dark) .pane select,:global(.dark) .pane textarea { border-color:#455062; }
+
+.fieldLabel { display:flex; align-items:center; justify-content:space-between; gap:6px; }
+.pane .fieldSource { color:#7256d8; border:0; padding:0 3px; font-size:14px; }

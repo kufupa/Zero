@@ -324,11 +324,34 @@ function valueAt(draft: ReservationWorkflowV2Draft, path: string): unknown {
   return current;
 }
 
+// Older panes added rooms by overriding the allocation array. Move that exact
+// effective array into the proposal without changing its indexed child paths.
+function materializeCreateAllocations(draft: ReservationWorkflowV2Draft, requestId: string): ReservationWorkflowV2Draft | null {
+  const request = draft.proposal.content.requests.find((row) => row.id === requestId);
+  if (!request || request.kind !== 'create') return draft;
+  const path = `${ptr('proposal', 'content', 'requests', requestId)}/body/allocations`;
+  const override = draft.fieldOverrides[path];
+  if (!override || override.state === 'inherit') return draft;
+  if (override.state !== 'set' || !Array.isArray(override.value)) return null;
+  const proposal = structuredClone(draft.proposal);
+  const target = proposal.content.requests.find((row) => row.id === requestId);
+  if (!target || target.kind !== 'create') return null;
+  target.body.allocations = structuredClone(override.value) as typeof target.body.allocations;
+  const parsed = reservationWorkflowV2ProposalSchema.safeParse(proposal);
+  if (!parsed.success) return null;
+  const fieldOverrides = { ...draft.fieldOverrides };
+  delete fieldOverrides[path];
+  const next = { ...draft, proposal: parsed.data, fieldOverrides };
+  return safeStructure(draft, next) ? next : null;
+}
+
 /** A selectable reference must address one host-admitted row for this exact field and request. */
 export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Context,
   input: z.infer<typeof reservationWorkflowV2SelectNativeInputSchema>) {
   return withLockedV2DraftMutation(ctx, input, { fieldPath: input.fieldPath,
-    value: { requestId: input.requestId, observationRef: input.observationRef }, apply: (draft) => {
+    value: { requestId: input.requestId, observationRef: input.observationRef }, apply: (original) => {
+      const draft = materializeCreateAllocations(original, input.requestId);
+      if (!draft) return null;
       const request = draft.proposal.content.requests.find((row) => row.id === input.requestId);
       const root = ptr('proposal', 'content', 'requests', input.requestId);
       if (!request) return null;
@@ -476,6 +499,47 @@ function reviewedGuestSelection(draft: ReservationWorkflowV2Draft, requestId: st
   return selectionPath;
 }
 
+function reviewedPartySelection(draft: ReservationWorkflowV2Draft, requestId: string, workflow: 'create' | 'quote',
+  partyPath: string, role: string, allocationIds: Set<string>): string | null {
+  const party = valueAt(draft, partyPath);
+  if (!party || typeof party !== 'object' || Array.isArray(party) || rec(party).kind === 'none') return null;
+  const name = valueAt(draft, `${partyPath}/name`), path = `${partyPath}/nativeSelectionRef`;
+  const override = draft.fieldOverrides[path];
+  const selected = override?.state === 'set' ? override.value : override && override.state !== 'inherit' ? null
+    : valueAt(draft, `${partyPath}/suggestedRef`);
+  if (typeof name !== 'string' || !name.trim() || typeof selected !== 'string') return null;
+  const matches = draft.observations.filter((row) => row.ref === selected);
+  if (matches.length !== 1) return null;
+  const observation = matches[0]!;
+  if (observation.kind !== 'party_candidate' || observation.status !== 'complete' || !observation.coverage.complete ||
+      observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
+      observation.sourceMessageId !== draft.source.messageId || observation.criteria.workflow !== workflow ||
+      observation.criteria.requestId !== requestId || observation.criteria.role !== role ||
+      (workflow === 'create' && (typeof observation.criteria.allocationId !== 'string' || !allocationIds.has(observation.criteria.allocationId))) ||
+      (observation.criteria.fieldPath !== path && !(Array.isArray(observation.criteria.fieldPaths) && observation.criteria.fieldPaths.includes(path)))) return null;
+  const result = rec(observation.result);
+  const pending: unknown[] = [result], seen = new Set<object>(), candidates: Record<string, any>[] = [];
+  while (pending.length) {
+    const value = pending.shift();
+    if (!value || typeof value !== 'object' || Array.isArray(value) || seen.has(value)) continue;
+    seen.add(value);
+    const row = rec(value);
+    if (/^\d{1,30}$/.test(String(row.nativeId ?? ''))) candidates.push(row);
+    for (const key of ['candidates', 'matches', 'guestCandidates', 'partyCandidates', 'results', 'result']) {
+      if (Array.isArray(row[key])) pending.push(...row[key]);
+      else if (row[key] && typeof row[key] === 'object') pending.push(row[key]);
+    }
+  }
+  const candidate = workflow === 'quote' ? result : candidates[0];
+  const norm = (value: unknown) => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() : '';
+  if (!candidate || typeof candidate.nativeId !== 'string' || !/^\d{1,30}$/.test(candidate.nativeId) ||
+      !norm(candidate.name) || norm(candidate.name) !== norm(name) ||
+      (workflow === 'create' && candidates.length !== 1) ||
+      (workflow === 'quote' && (!candidates.length || candidates.some((row) =>
+        String(row.nativeId) !== candidate.nativeId || norm(row.name) !== norm(candidate.name))))) return null;
+  return path;
+}
+
 function reviewedFilingSelection(draft: ReservationWorkflowV2Draft, requestId: string, root: string): string | null {
   const request = draft.proposal.content.requests.find((row) => row.id === requestId);
   if (!request || request.kind !== 'filing') return null;
@@ -518,7 +582,9 @@ function reviewedFilingSelection(draft: ReservationWorkflowV2Draft, requestId: s
 export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Context,
   input: z.infer<typeof reservationWorkflowV2ReviewScopeInputSchema>) {
   return withLockedV2DraftMutation(ctx, input, { fieldPath: `/reviewScope/${input.requestId}`, eventType: 'field.accept',
-    value: { requestId: input.requestId, scope: input.scope, ids: input.ids }, apply: (draft) => {
+    value: { requestId: input.requestId, scope: input.scope, ids: input.ids }, apply: (original) => {
+      const draft = materializeCreateAllocations(original, input.requestId);
+      if (!draft) return null;
       const request = draft.proposal.content.requests.find((row) => row.id === input.requestId);
       if (!request || new Set(input.ids).size !== input.ids.length) return null;
       const root = ptr('proposal', 'content', 'requests', request.id), ids = new Set(input.ids);
@@ -534,12 +600,14 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
         }
       } else if (input.scope === 'allocations') {
         if (request.kind !== 'create' || !ids.size || [...ids].some((id) => !request.body.allocations.some((row) => row.id === id))) return null;
+        const sections = valueAt(draft, `${root}/body/dateSections`);
+        if (!Array.isArray(sections)) return null;
         roots.push({ path: `${root}/body/shared`, value: request.body.shared });
         request.body.allocations.forEach((row, index) => {
           if (!ids.has(row.id)) return;
           roots.push({ path: `${root}/body/allocations/${index}`, value: row });
-          const sectionIndex = request.body.dateSections.findIndex((section) => section.id === row.dateSectionId);
-          if (sectionIndex >= 0) roots.push({ path: `${root}/body/dateSections/${sectionIndex}`, value: request.body.dateSections[sectionIndex] });
+          const sectionIndex = sections.findIndex((section) => rec(section).id === row.dateSectionId);
+          if (sectionIndex >= 0) roots.push({ path: `${root}/body/dateSections/${sectionIndex}`, value: sections[sectionIndex] });
         });
       } else if (input.scope === 'targets') {
         if (!('targets' in request.body) || !ids.size) return null;
@@ -583,6 +651,8 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
         const last = decodeURIComponent(path.split('/').at(-1) ?? '');
         if (NON_REVIEW_FIELDS.has(last)) return;
         if (request.kind === 'create' && /\/body\/allocations\/\d+\/guest\/nativeSelectionRef$/.test(path)) return;
+        if ((request.kind === 'create' || request.kind === 'quote') &&
+            /\/(?:bookingAgency|organization|arAccount|company|agency)\/nativeSelectionRef$/.test(path)) return;
         const override = draft.fieldOverrides[path];
         if (override?.state === 'unknown') return;
         if (override?.state === 'none' || override?.state === 'clear') {
@@ -594,7 +664,8 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
         const parent = path.slice(0, path.lastIndexOf('/'));
         const clearValue = last === 'value' && valueAt(draft, `${parent}/op`) === 'clear' &&
           ['guestEmail', 'bookerName', 'bookerContact', 'cmsSend', 'cmsMessageId', 'cmsRecipient'].includes(String(valueAt(draft, `${parent}/field`)));
-        if ((value === null || value === undefined || (value === '' && !(last === 'comment' && override?.state === 'set'))) && !clearValue) return;
+        const reviewedEmpty = request.kind === 'quote' || (last === 'comment' && override?.state === 'set');
+        if ((value === null || value === undefined || (value === '' && !reviewedEmpty)) && !clearValue) return;
         if (!(request.kind === 'quote' && input.scope === 'request' && path === `${root}/body` && !hasPreparedExtras))
           reviews[path] = { status: 'accepted', note: null, at: now };
         if (Array.isArray(value)) value.forEach((row, index) => walk(`${path}/${index}`, row));
@@ -615,6 +686,33 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
         const path = reviewedGuestSelection(draft, request.id, row.id, guestPath);
         if (path) reviews[path] = { status: 'accepted', note: null, at: now };
       });
+      if (request.kind === 'create' && input.scope === 'allocations') {
+        const all = request.body.allocations;
+        const parties: Array<{ path: string; role: string; allocations: Set<string> }> = [];
+        const add = (base: string, allocations: Set<string>) => {
+          for (const [key, role] of [['bookingAgency', 'agency'], ['organization', 'organization'], ['arAccount', 'ar_account']] as const)
+            parties.push({ path: `${base}/${key}`, role, allocations });
+        };
+        add(`${root}/body/shared`, new Set(all.map((row) => row.id)));
+        const sections = valueAt(draft, `${root}/body/dateSections`);
+        if (Array.isArray(sections)) sections.forEach((section, index) => {
+          const sectionId = rec(section).id;
+          if (all.some((row) => ids.has(row.id) && row.dateSectionId === sectionId))
+            add(`${root}/body/dateSections/${index}/defaults`, new Set(all.filter((row) => row.dateSectionId === sectionId).map((row) => row.id)));
+        });
+        all.forEach((row, index) => { if (ids.has(row.id)) add(`${root}/body/allocations/${index}/overrides`, new Set([row.id])); });
+        for (const party of parties) {
+          delete reviews[`${party.path}/nativeSelectionRef`];
+          const path = reviewedPartySelection(draft, request.id, 'create', party.path, party.role, party.allocations);
+          if (path) reviews[path] = { status: 'accepted', note: null, at: now };
+        }
+      }
+      if (request.kind === 'quote' && input.scope === 'request') for (const role of ['company', 'agency'] as const) {
+        const party = `${root}/body/parties/${role}`;
+        delete reviews[`${party}/nativeSelectionRef`];
+        const path = reviewedPartySelection(draft, request.id, 'quote', party, role, new Set());
+        if (path) reviews[path] = { status: 'accepted', note: null, at: now };
+      }
       if (request.kind === 'filing' && input.scope === 'request') {
         const path = reviewedFilingSelection(draft, request.id, root);
         if (path) reviews[path] = { status: 'accepted', note: null, at: now };

@@ -82,6 +82,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex }: {
   const room = allocation ? editor.snapshot.session.draft.proposal.content.requests.find(row => row.id === ref.requestId) : null;
   const roomGuest = room && room.kind === 'create' ? room.body.allocations.find(entry => entry.id === allocation)?.guest : null;
   const roomLabel = roomGuest ? [roomGuest.firstName, roomGuest.lastName].filter(Boolean).join(' ') : '';
+  const linkedAmend = savedTarget && draft.proposal.content.requests.some(row => row.id === savedTarget.requestId && row.kind === 'amend');
   const linkedCreate = ref.kind === 'allocation' && editor.snapshot.operationResults.some(result => result.workflow === 'create'
     && result.requestId === ref.requestId && result.allocationId === ref.allocationId && result.status === 'succeeded');
   const selectedItem = valueAt(editor.snapshot, selectedPath);
@@ -137,11 +138,11 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex }: {
         ? <div className={styles.warning}>Choose individual included stays without exclusions before checking an Add-On.</div> : null}
       {scope.mode === 'scoped_all' && !(Array.isArray(scope.exclude) && scope.exclude.length) && <button type="button" disabled={editor.view.busy}
         onClick={() => void editor.commands.edit(`${targetBody}/targets/mode`, 'explicit').catch(() => {})}>Use the individual included stays</button>}
-      <TargetSearch editor={editor} body={targetBody} hint={hint} index={hintIndex} workflow="services" />
+      {linkedAmend ? <small className={styles.hint}>Uses the stay selected for this amendment.</small> : <TargetSearch editor={editor} body={targetBody} hint={hint} index={hintIndex} workflow="services" />}
       <div className={styles.row}><button type="button" disabled={editor.view.busy} onClick={() => void (async () => {
         if (scope.mode === 'unresolved') await editor.commands.edit(`${targetBody}/targets/mode`, 'explicit');
         await editor.commands.lookupServices(savedTarget, service.id);
-      })().catch(() => {})}>Find stay in Infor</button></div>
+      })().catch(() => {})}>{linkedAmend ? 'Refresh selected stay' : 'Find stay in Infor'}</button></div>
       <small className={styles.hint}>Select the stay, then find its items and select the exact item or saved row.</small>
     </div>}
     {savedTarget && !hint && <div className={styles.warning}>This item is missing its exact stay target. Link it to an included stay.</div>}

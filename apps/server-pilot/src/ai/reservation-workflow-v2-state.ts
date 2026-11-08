@@ -629,6 +629,26 @@ function editablePath(draft: ReservationWorkflowV2Draft, path: string): boolean 
   return true;
 }
 
+/** A Services stay can be reviewed only after the host bound that exact selection. */
+function reviewablePath(draft: ReservationWorkflowV2Draft, path: string): boolean {
+  if (editablePath(draft, path)) return true;
+  const parts = pathParts(path);
+  if (!parts || parts.length !== 9 || parts[2] !== 'requests' || parts[4] !== 'body' || parts[5] !== 'targets' ||
+      parts[6] !== 'include' || parts[8] !== 'suggestedRef' || !/^(?:0|[1-9]\d*)$/.test(parts[7] ?? '')) return false;
+  const request = draft.proposal.content.requests.find((row) => row.id === parts[3]);
+  if (request?.kind !== 'services') return false;
+  const hint = effectiveSavedTargetRows(draft, request.id)[Number(parts[7])];
+  if (!hint || typeof hint !== 'object' || Array.isArray(hint)) return false;
+  const hintRow = hint as { id?: unknown; suggestedRef?: unknown }, override = draft.fieldOverrides[path];
+  const ref = override ? override.state === 'set' ? override.value : override.state === 'inherit' ? hintRow.suggestedRef : null
+    : hintRow.suggestedRef;
+  return typeof hintRow.id === 'string' && typeof ref === 'string' && draft.observations.some((row) => row.ref === ref &&
+    row.kind === 'stay_candidate' && row.status === 'complete' && row.coverage.complete && row.generationId === draft.generationId &&
+    row.propertyCode === draft.propertyCode && row.sourceMessageId === draft.source.messageId && row.criteria.workflow === 'services' &&
+    row.criteria.kind === 'saved_target' && row.criteria.requestId === request.id && row.criteria.hintId === hintRow.id &&
+    row.criteria.fieldPath === path);
+}
+
 function validateOverride(value: unknown): V2Override | null {
   const parsed = reservationWorkflowV2FieldOverrideSchema.safeParse(value);
   return parsed.success ? { ...parsed.data, updatedAt: new Date().toISOString() } : null;
@@ -788,7 +808,7 @@ async function mutateDraft(ctx: Context, input: MutationInput & { fieldPath: str
   value: unknown }): Promise<ReservationWorkflowV2StateResult> {
   return withLockedV2DraftMutation(ctx, input, { fieldPath: input.fieldPath, eventType: input.eventType,
     value: input.value, apply: (draft) => {
-      if (!editablePath(draft, input.fieldPath)) return null;
+      if (!(input.review ? reviewablePath(draft, input.fieldPath) : editablePath(draft, input.fieldPath))) return null;
       if (input.override && (!validStructuredEdit(input.fieldPath, input.override) ||
           !validServiceTargetEdit(draft, input.fieldPath, input.override) || !safeSavedTargetEdit(draft, input.fieldPath) ||
           !validCancelIncludeEdit(draft, input.fieldPath, input.override) || !validCancelPreviewEdit(draft, input.fieldPath, input.override))) return null;
@@ -893,7 +913,7 @@ export async function reviewReservationWorkflowV2Draft(ctx: Context, input: Muta
 }): Promise<ReservationWorkflowV2StateResult> {
   const current = await getReservationWorkflowV2Draft(ctx, input);
   if (current.status !== 'ok') return current;
-  if (!editablePath(current.draft, input.fieldPath)) return { status: 'invalid_path' };
+  if (!reviewablePath(current.draft, input.fieldPath)) return { status: 'invalid_path' };
   const review = { status: input.decision, note: input.note ?? null, at: new Date().toISOString() } as const;
   return mutateDraft(ctx, { ...input, review, eventType: input.decision === 'accepted' ? 'field.accept' : 'field.reject', value: review });
 }

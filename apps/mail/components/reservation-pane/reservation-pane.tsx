@@ -33,7 +33,7 @@ export function ReservationPane(props: ReservationPaneProps) {
   const prefillStale = prefill?.status === 'running' && !!prefill.startedAt &&
     Number.isFinite(Date.parse(prefill.startedAt)) && Date.now() - Date.parse(prefill.startedAt) >= 5 * 60_000;
   const editor: WorkbenchEditorProps | null = snapshot && request ? { source, snapshot, request,
-    view: { busy, error: workbench.error, preview, saving: workbench.saving }, commands } : null;
+    view: { busy, error: workbench.error, preview, saving: workbench.saving }, commands, onOpenEvidence: props.onOpenEvidence } : null;
   const body = snapshot && request ? record(effectiveAt(snapshot, `${requestPath(request.id)}/body`)) : {};
   const ids = request?.kind === 'create' ? (Array.isArray(body.allocations) ? body.allocations.map(row => text(record(row).id)) : [])
     : request?.kind === 'amend' || request?.kind === 'cancel' ? (Array.isArray(record(body.targets).include) ? (record(body.targets).include as unknown[]).map(row => text(record(row).id)) : []) : [];
@@ -86,7 +86,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     </header>
     <nav className={styles.tabs} aria-label="Reservation actions">{snapshot?.requests.filter(row => !source.selfPreStay || row.kind !== 'create').map(row => <button type="button" key={row.id} className={row.id === request?.id ? styles.activeTab : ''} onClick={() => { workbench.setActiveId(row.id); setChecked(null); }}>{labels[row.kind]}</button>)}
       <select aria-label="Add action" value="" disabled={!snapshot || busy} onChange={event => { const kind = event.target.value as Exclude<ReservationWorkflowKind, 'other'>; if (kind && !(source.selfPreStay && kind === 'create')) void workbench.addAction(kind).catch(() => {}); }}><option value="">+ Action</option>{Object.entries(labels).filter(([kind]) => kind !== 'other' && !(source.selfPreStay && kind === 'create')).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</select></nav>
-    <div className={styles.sources}><button type="button" onClick={() => props.onOpenEvidence?.(source.messageId)}>Email</button>{source.attachments.map(file => <button type="button" key={file.sourceRef} onClick={() => props.onOpenAttachment?.(file.sourceRef)}>{file.name}</button>)}</div>
+    <div className={styles.sources}>{source.attachments.map(file => <button type="button" key={file.sourceRef} onClick={() => props.onOpenAttachment?.(file.sourceRef)}>{file.name}</button>)}</div>
     {(props.loadError || workbench.error) && <div className={styles.error} role="alert">{workbench.error || props.loadError}{workbench.conflict && <div><button type="button" onClick={() => { void workbench.applyPending().catch(() => {}); }}>Apply my edits</button><button type="button" onClick={() => { workbench.discardPending(); setFormReset(value => value + 1); }}>Discard pending edits</button></div>}</div>}
     <main className={styles.content}>
       {!snapshot ? <div className={styles.empty}>{props.loadError ? 'This email could not be opened.' : 'Opening your email draft…'}</div>

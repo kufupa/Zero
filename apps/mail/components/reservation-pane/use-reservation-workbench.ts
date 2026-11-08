@@ -125,7 +125,19 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
           const requestId = buffer.snapshot.requests.find(request => pending.path.startsWith(`${requestPath(request.id)}/`))?.id
             ?? buffer.snapshot.requests[0]?.id;
           if (!requestId) throw new Error('Add an action before editing its fields.');
-          const next = await client.edit({ source: bound, snapshot: buffer.snapshot, requestId, fieldPath: pending.path, state: pending.state, value: pending.value });
+          const before = buffer.snapshot;
+          const next = await client.edit({ source: bound, snapshot: before, requestId, fieldPath: pending.path, state: pending.state, value: pending.value });
+          // Acknowledging our own write may change an idless change row. Advance
+          // retained input bindings only when the returned cursor and row values
+          // are exactly the expected result; external edits remain fenced.
+          if (next.session.seq === before.session.seq + 1 && next.session.draft.generationId === before.session.draft.generationId) {
+            const expected = displaySnapshot(before, new Map([[pending.path, pending]]));
+            for (const queued of buffer.pending.values()) {
+              if (!pendingMatches(before, queued)) continue;
+              const rows = captureRows(expected, queued.path);
+              if (rows.every(row => rowIdentity(effectiveAt(next, row.path)) === row.identity)) queued.rows = rows;
+            }
+          }
           apply(next, bound, buffer);
           if (buffer.pending.get(pending.path)?.token === pending.token) buffer.pending.delete(pending.path);
           releasePendingMutation(buffer);

@@ -1151,6 +1151,8 @@ async function readSavedServiceIdentity(stay: Record<string, unknown>): Promise<
     if (!preimage || preimage.source !== 'record_view_ext_model' || preimage.propertyCode !== 'HRCEN' || preimage.status !== 'Reserved'
       || preimage.confirmation !== confirmation || preimage.arrival !== arrival || preimage.departure !== departure
       || !sameName(preimage.firstName, firstName) || !sameName(preimage.lastName, lastName)
+      || (stay.reservationStayId != null && String(stay.reservationStayId) !== String(preimage.reservationStayId))
+      || (stay.guestId != null && String(stay.guestId) !== String(preimage.guestId))
       || !/^\d{1,100}$/.test(String(preimage.reservationStayId ?? '')) || !/^\d{1,30}$/.test(String(preimage.guestId ?? ''))) return null;
     const cmsValue = cms.length === 1 ? cms[0]?.value : null;
     const cmsSend = [false, 'false', 0, '0'].includes(cmsValue as boolean | string | number) ? false
@@ -1280,6 +1282,33 @@ function savedReadback(intent: SavedIntent, save: Record<string, unknown>) {
   return { ...base, removed: true, remainingIds: ids, coverage };
 }
 
+function savedLostResponseChangeIsValid(intent: SavedIntent): boolean {
+  const change = object(intent.change), before = savedServiceBusiness(object(change?.before)?.fields);
+  const after = savedServiceBusiness(object(change?.after)?.fields);
+  return Boolean(change && change.operation === intent.operation && change.nativeId === intent.nativeId && before &&
+    canonicalJson(before) === canonicalJson(intent.beforeItem) && (intent.operation === 'edit'
+      ? after && canonicalJson(after) === canonicalJson(intent.approvedItem) && canonicalJson(after) !== canonicalJson(before)
+      : intent.operation === 'remove' && change.after === null));
+}
+
+function savedLostResponseReadback(intent: SavedIntent, readback: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!savedLostResponseChangeIsValid(intent) || !readback || readback.outcome !== 'ok' ||
+      !nativeTargetMatches(readback.target, intent.target) || !Array.isArray(readback.rows) || !intent.nativeId) return null;
+  const rows = readback.rows.map(object).filter(Boolean);
+  const ids = rows.map(row => text(row?.enhexpsequencekey)).filter((id): id is string => Boolean(id));
+  const coverage = object(readback.coverage), details = Array.isArray(readback.details) ? readback.details.map(object).filter(Boolean) : [];
+  if (ids.length !== readback.rows.length || new Set(ids).size !== ids.length || coverage?.complete !== true ||
+      coverage.loaded !== ids.length || coverage.reportedTotal !== ids.length ||
+      intent.baselineIds.some(id => id !== intent.nativeId && !ids.includes(id))) return null;
+  const base = { confirmation: intent.target.confirmation, nativeStayId: intent.target.nativeStayId,
+    nativeId: intent.nativeId, attribution: 'observed_without_dispatch_receipt' };
+  if (intent.operation === 'remove') return ids.includes(intent.nativeId) ? null : { ...base, removed: true, remainingIds: ids, coverage };
+  const matches = details.filter(row => row?.nativeId === intent.nativeId);
+  const fields = matches.length === 1 ? savedServiceBusiness(matches[0]?.fields) : null;
+  return ids.includes(intent.nativeId) && fields && canonicalJson(fields) === canonicalJson(intent.approvedItem)
+    ? { ...base, item: fields } : null;
+}
+
 async function persistSavedServiceTx(tx: DispatchTx, ctx: ReservationWorkflowV2ServerContext,
   input: ServicesSourceInput, intent: SavedIntent, nativeReadback: Record<string, unknown>, readbackDigest: string) {
   const [item] = await tx.select({ state: workItem.state }).from(workItem)
@@ -1302,7 +1331,10 @@ async function persistSavedServiceTx(tx: DispatchTx, ctx: ReservationWorkflowV2S
       financialEffect: intent.operation === 'remove' ? 'unknown' : null } };
   const result = { id: intent.operationId, generationId: intent.generationId, requestId: intent.requestId, allocationId: null,
     workflow: 'services' as const, status: 'succeeded' as const, draftRevision: intent.draftRevision,
-    observationRefs: [observation.ref], updatedAt: new Date().toISOString(), summary: 'Add-On saved and verified in Infor' };
+    observationRefs: [observation.ref], updatedAt: new Date().toISOString(),
+    summary: nativeReadback.attribution === 'observed_without_dispatch_receipt'
+      ? 'Approved Add-On state observed in Infor; dispatch response was not received'
+      : 'Add-On saved and verified in Infor' };
   const next = reservationWorkflowV2DraftSchema.parse({ ...draft, observations: [...draft.observations, observation],
     operationResults: appendOperationResult(draft, result) });
   await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>), [RESERVATION_WORKFLOW_V2_STATE_KEY]: next },
@@ -1517,8 +1549,29 @@ async function proveSavedServiceRecovery(db: DB, common: HmsLabtestIntent) {
     save = { confirmation: intent.target.confirmation, requestedCount: 1, receipts: [attempt], attempts: [attempt],
       baseline: intent.baselineIds.map(id => ({ enhexpsequencekey: id })), baselineCoverage: intent.baselineCoverage, target: intent.target };
   } else {
-    if (!receipt || receipt.dispatched !== true || receipt.operation !== intent.operation || receipt.nativeId !== intent.nativeId || !intent.change) {
+    if (!intent.change || (receipt && (receipt.dispatched !== true || receipt.operation !== intent.operation || receipt.nativeId !== intent.nativeId))) {
       throw new Error('saved_service_dispatch_receipt_missing');
+    }
+    if (!receipt) {
+      // The dispatch claim and exact before/after were persisted before forwarding.
+      // A stopped writer plus fresh state can resolve the hold without claiming a response was received.
+      if (!savedLostResponseChangeIsValid(intent)) throw new Error('saved_service_recovery_change_invalid');
+      const addon = await import(new URL('../../tooling/hms-cloud/stay360-addons-session.mjs', import.meta.url).href) as {
+        withStay360AddOnSession: (callback: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<unknown>,
+          options?: Record<string, unknown>) => Promise<unknown>;
+      };
+      const readback = object(await addon.withStay360AddOnSession(async ({ runTool }) => {
+        const listing = object(await runTool({ tool: 'read', confirmation: intent.target.confirmation,
+          guestName: intent.target.guestName, arrivalDate: intent.target.arrival }));
+        if (!listing || listing.outcome !== 'ok' || !nativeTargetMatches(listing.target, intent.target)) return null;
+        if (intent.operation === 'remove') return listing;
+        const detailed = object(await runTool({ tool: 'read', confirmation: intent.target.confirmation, detailIds: [intent.nativeId] }));
+        return detailed && detailed.outcome === 'ok' && nativeTargetMatches(detailed.target, intent.target) ? detailed : null;
+      }, { headless: true, blockServiceWorkers: true }));
+      const nativeReadback = savedLostResponseReadback(intent, readback);
+      if (!nativeReadback) throw new Error('saved_service_positive_readback_not_proven');
+      return { confirmation: intent.target.confirmation, nativeStayId: intent.target.nativeStayId, nativeReadback,
+        readbackDigest: hash(nativeReadback), freshReadback: readback };
     }
     save = { kind: 'changes', confirmation: intent.target.confirmation, requestedCount: 1, changes: [intent.change],
       receipts: [receipt], attempts: [receipt], baseline: intent.baselineIds.map(id => ({ enhexpsequencekey: id })),

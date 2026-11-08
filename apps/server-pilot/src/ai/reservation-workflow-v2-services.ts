@@ -535,8 +535,8 @@ function samePerson(left: unknown, right: unknown) {
   return normalize(left) !== '' && normalize(left) === normalize(right);
 }
 
-function savedStayMatches(stay: Record<string, unknown>, hint: Record<string, unknown>) {
-  return typeof stay.confirmation === 'string' && stay.confirmation === hint.confirmation && stay.status === 'Reserved'
+function savedStayMatches(stay: Record<string, unknown>, hint: Record<string, unknown>, requireConfirmation = true) {
+  return typeof stay.confirmation === 'string' && (hint.confirmation ? stay.confirmation === hint.confirmation : !requireConfirmation) && stay.status === 'Reserved'
     && typeof stay.firstName === 'string' && typeof stay.lastName === 'string' && typeof stay.arrival === 'string'
     && typeof stay.departure === 'string' && (!hint.guestName || samePerson(hint.guestName, `${stay.firstName} ${stay.lastName}`))
     && (!hint.bookedArrival || hint.bookedArrival === stay.arrival) && (!hint.bookedDeparture || hint.bookedDeparture === stay.departure);
@@ -547,14 +547,36 @@ function selectedSavedStay(draft: ReservationWorkflowV2Draft, input: Reservation
   const selected = savedValue(draft, found.selectionPath);
   const observation = draft.observations.find(row => row.ref === selected && row.kind === 'stay_candidate' && row.status === 'complete'
     && row.coverage.complete === true && row.generationId === draft.generationId && row.propertyCode === draft.propertyCode
-    && row.sourceMessageId === draft.source.messageId && row.criteria.workflow === 'services' && row.criteria.kind === 'saved_target'
+    && row.sourceMessageId === draft.source.messageId && row.criteria.kind === 'saved_target'
     && row.criteria.requestId === input.requestId && row.criteria.hintId === input.targetRef.hintId
-    && row.criteria.fieldPath === found.selectionPath);
+    && (found.request.kind === 'amend' ? row.criteria.workflow === 'amend' && row.criteria.selectionPath === found.selectionPath
+      : row.criteria.workflow === 'services' && row.criteria.fieldPath === found.selectionPath));
   const stay = record(record(observation?.result)?.candidate);
   const query = record(observation?.criteria.query);
-  if (!observation || !stay || !query || !savedStayMatches(stay, found.hint) ||
+  if (!observation || !stay || !query || !savedStayMatches(stay, found.hint, found.request.kind !== 'amend') ||
       ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].some(key => (query[key] ?? null) !== (found.hint[key] || null))) return null;
-  return { observation, stay };
+  if (found.request.kind !== 'amend') return { observation, stay };
+  const outcomes = draft.operationResults.filter(row => row.workflow === 'amend' && row.requestId === input.requestId &&
+    row.allocationId === input.targetRef.hintId && (row.status === 'succeeded' || row.status === 'unknown'));
+  if (outcomes.some(row => row.status === 'unknown') || outcomes.length > 1) return null;
+  const completed = outcomes[0];
+  if (!completed) return { observation, stay };
+  const receipt = draft.observations.find(row => completed.observationRefs.includes(row.ref) && row.kind === 'stay_candidate' &&
+    row.status === 'complete' && row.coverage.complete && row.generationId === draft.generationId &&
+    row.propertyCode === draft.propertyCode && row.sourceMessageId === draft.source.messageId && row.criteria.workflow === 'amend' &&
+    row.criteria.requestId === input.requestId && row.criteria.hintId === input.targetRef.hintId &&
+    (row.criteria.idempotencyKey === completed.id || row.criteria.operationId === completed.id));
+  const prepared = draft.observations.find(row => row.ref === receipt?.criteria.prepareObservationRef && row.kind === 'rate_availability' &&
+    row.status === 'complete' && row.coverage.complete && row.generationId === draft.generationId && row.propertyCode === draft.propertyCode &&
+    row.sourceMessageId === draft.source.messageId && row.criteria.workflow === 'amend' && row.criteria.requestId === input.requestId &&
+    row.criteria.hintId === input.targetRef.hintId);
+  const before = record(record(receipt?.result)?.before) ?? record(record(prepared?.result)?.before);
+  const after = record(record(receipt?.result)?.nativeReadback);
+  if (!before || !after || !stay.reservationStayId || before.reservationStayId !== stay.reservationStayId ||
+      before.guestId !== stay.guestId || after.nativeStayId !== stay.reservationStayId ||
+      after.confirmation !== stay.confirmation || !text(after.firstName) || !text(after.lastName) ||
+      !validDate(after.arrival) || !validDate(after.departure)) return null;
+  return { observation, stay: { ...stay, ...after, reservationStayId: stay.reservationStayId, guestId: stay.guestId, status: 'Reserved' } };
 }
 
 /** Read-only saved-stay lookup, then catalogue and exact saved-row observations for that selection. */
@@ -564,27 +586,41 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return { ...loaded.result };
   const draft = loaded.draft, found = savedTarget(draft, input);
-  if (!found || !/^\d+-\d+$/.test(String(found.hint.confirmation ?? ''))) return { status: 'needs_input', issue: 'one_saved_stay_confirmation_required' };
+  if (!found) return { status: 'needs_input', issue: 'one_saved_stay_confirmation_required' };
+  const amendSelection = found.request.kind === 'amend' ? selectedSavedStay(draft, input, found) : null;
+  if (found.request.kind === 'amend' && !amendSelection) return { status: 'needs_input', issue: 'select_amend_saved_stay_first' };
+  const confirmation = amendSelection?.stay.confirmation ?? found.hint.confirmation;
+  const arrival = amendSelection?.stay.arrival ?? found.hint.bookedArrival;
+  if (!/^\d+-\d+$/.test(String(confirmation ?? ''))) return { status: 'needs_input', issue: 'one_saved_stay_confirmation_required' };
   const resolved = paneStayHmsTargetForTransport(ctx.transport.id);
   if (!resolved.ok || (['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const)
     .some(key => resolved.target[key] !== CENTURION_HMS_READ_TARGET[key])) return { status: 'unsupported', issue: 'service_property_session_unavailable' };
   const query = Object.fromEntries(['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].map(key => [key, found.hint[key] || null]));
-  const result = await findStay({ confirmation: String(found.hint.confirmation),
-    ...(typeof found.hint.bookedArrival === 'string' && found.hint.bookedArrival ? { arrival: found.hint.bookedArrival } : {}) }, {
+  const result = await findStay({ confirmation: String(confirmation),
+    ...(typeof arrival === 'string' && arrival ? { arrival } : {}) }, {
     target: resolved.target, lock: () => paneStayPropertyLock(resolved.target), acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
   }).catch(() => null);
-  const stay = record(result?.stay), complete = Boolean(result?.outcome === 'found' && !result.arrivalMismatch && stay && savedStayMatches(stay, found.hint));
-  const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: draft.generationId, kind: 'stay_candidate',
-    status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(), propertyCode: draft.propertyCode,
-    sourceMessageId: draft.source.messageId, sourceRefs: [], criteria: { workflow: 'services', kind: 'saved_target',
-      requestId: input.requestId, hintId: input.targetRef.hintId, fieldPath: found.selectionPath, query },
-    coverage: { complete, notes: complete ? [] : ['Exact Reserved stay was not verified.'] },
-    result: { outcome: complete ? 'found' : 'needs_input', candidate: complete ? stay : null } };
-  const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), { workItemId: input.workItemId, source: input.source, observation });
-  if (appended.status !== 'ok') return { ...appended };
+  const stay = record(result?.stay), selectedStay = amendSelection?.stay;
+  const sameSelected = Boolean(stay && selectedStay && stay.confirmation === selectedStay.confirmation && stay.status === 'Reserved' &&
+    stay.arrival === selectedStay.arrival && stay.departure === selectedStay.departure &&
+    samePerson(stay.firstName, selectedStay.firstName) && samePerson(stay.lastName, selectedStay.lastName));
+  const complete = Boolean(result?.outcome === 'found' && !result.arrivalMismatch && stay &&
+    (amendSelection ? sameSelected : savedStayMatches(stay, found.hint)));
+  let observation: ReservationWorkflowV2Observation | undefined;
+  if (!amendSelection) {
+    observation = { ref: randomUUID(), generationId: draft.generationId, kind: 'stay_candidate',
+      status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(), propertyCode: draft.propertyCode,
+      sourceMessageId: draft.source.messageId, sourceRefs: [], criteria: { workflow: 'services', kind: 'saved_target',
+        requestId: input.requestId, hintId: input.targetRef.hintId, fieldPath: found.selectionPath, query },
+      coverage: { complete, notes: complete ? [] : ['Exact Reserved stay was not verified.'] },
+      result: { outcome: complete ? 'found' : 'needs_input', candidate: complete ? stay : null } };
+    const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), { workItemId: input.workItemId, source: input.source, observation });
+    if (appended.status !== 'ok') return { ...appended };
+  }
   if (!complete || !stay) return { status: 'needs_input', issue: 'reserved_stay_not_verified' };
-  const selected = selectedSavedStay(draft, input, found);
-  if (!selected || canonicalJson(selected.stay) !== canonicalJson(stay)) return { status: 'needs_input', issue: 'select_exact_saved_stay', observationRef: observation.ref };
+  const selected = amendSelection ?? selectedSavedStay(draft, input, found);
+  if (!selected || (amendSelection ? !sameSelected : canonicalJson(selected.stay) !== canonicalJson(stay)))
+    return { status: 'needs_input', issue: 'select_exact_saved_stay', observationRef: observation?.ref };
   try {
     const addon = await import(new URL('../../tooling/hms-cloud/stay360-addons-session.mjs', import.meta.url).href) as {
       withStay360AddOnSession: (callback: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<unknown>,

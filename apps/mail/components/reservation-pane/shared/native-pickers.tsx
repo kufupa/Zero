@@ -3,6 +3,7 @@
 import { useEffect, useId, useState } from 'react';
 import { nativeChoices, record, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import styles from '../reservation-pane.module.css';
+import { FieldSource } from './stay-fields';
 
 /** One editable code/identity search with persistent access to native alternatives. */
 export function NativePicker({ label, path, editor, kind, allowNone = false }: {
@@ -44,7 +45,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false }: {
   const display = dirty || open ? query : guestPath
     ? selectedChoice?.label || [text(valueAt(editor.snapshot, `${guestPath}/firstName`)), saved].filter(Boolean).join(' ')
     : !entity && selectedChoice && selectedChoice.label !== saved ? `${saved} — ${selectedChoice.label}` : query;
-  return <div className={styles.field}><label htmlFor={id}>{label}</label><div className={styles.picker}>
+  return <div className={styles.field}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label><FieldSource editor={editor} path={path} label={label} /></div><div className={styles.picker}>
     <div className={styles.pickerInput}><input id={id} role="combobox" aria-expanded={open} aria-controls={`${id}-options`} aria-autocomplete="list"
       aria-activedescendant={open && activeIndex >= 0 && shown[activeIndex] ? `${id}-option-${activeIndex}` : undefined}
       value={display} onFocus={() => setOpen(true)} placeholder={guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {

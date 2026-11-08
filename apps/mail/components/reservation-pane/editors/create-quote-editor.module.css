@@ -4,6 +4,10 @@
 .roomCard { padding: 12px; border: 1px solid var(--border, #d7dfe8); border-radius: 8px; }
 .groupHeading, .inherited { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
 .twoCol, .ageGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; min-width: 0; }
+.dateFields { display: grid; grid-template-columns: minmax(0, 1fr) 72px; gap: 8px; min-width: 0; align-items: end; }
+.dateFields > :first-child, .dateFields > :last-child { margin-bottom: 0; }
+.dateFields > :last-child { grid-column: 1 / -1; }
+.plainFieldset { display: flex; flex-direction: column; gap: 12px; border: 0; margin: 0; padding: 0; min-width: 0; }
 .ageGrid { grid-column: 1 / -1; }
 .localField { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 12px; font-weight: 600; }
 .localField input, .localField select { box-sizing: border-box; width: 100%; min-width: 0; min-height: 36px; padding: 7px 8px; color: inherit; background: transparent; border: 1px solid var(--border, #b9c3ce); border-radius: 6px; font: inherit; }

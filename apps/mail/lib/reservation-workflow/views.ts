@@ -25,6 +25,7 @@ export type WorkbenchEditorProps = {
   request: ReservationRequestProjection;
   view: { busy: boolean; error: string | null; preview: boolean; saving: boolean };
   commands: WorkbenchCommands;
+  onOpenEvidence?: (ref: string) => void;
 };
 export function snapshotMatchesSource(snapshot: ReservationPaneSnapshot | null, source: ReservationSourceContext): snapshot is ReservationPaneSnapshot {
   const draft = snapshot?.session.draft;
