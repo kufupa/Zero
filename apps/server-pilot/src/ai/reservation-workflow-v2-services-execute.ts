@@ -35,6 +35,7 @@ import {
   reservationWorkflowV2CompileSavedService,
   reservationWorkflowV2PreviewSavedServices,
   savedServiceBusiness,
+  nativeServiceGuestNameMatches,
   reservationWorkflowV2CompileServiceItem,
   reservationWorkflowV2ServiceReviewPaths,
   reservationWorkflowV2ServicesForAllocation,
@@ -380,7 +381,7 @@ function nativeTargetMatches(actual: unknown, expected: NativeTarget): boolean {
   const target = object(actual);
   return Boolean(target && target.confirmation === expected.confirmation && target.propertyCode === 'HRCEN' &&
     target.arrival === expected.arrival && target.departure === expected.departure && target.status === 'Reserved' &&
-    sameName(target.guestName, expected.guestName));
+    nativeServiceGuestNameMatches(target.guestName, expected.guestName));
 }
 
 async function assertFreshGuard(tx: DispatchTx, ctx: ReservationWorkflowV2ServerContext, input: ExecuteInput,
