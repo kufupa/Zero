@@ -90,34 +90,58 @@ export function ChildAges({ editor, path }: { editor: Editor; path: string }) {
   const ageValue = valueAt(editor.snapshot, agesPath);
   const [count, setCount] = useState(countValue == null ? '' : String(countValue));
   const [ages, setAges] = useState<Array<number | null>>(Array.isArray(ageValue) ? ageValue as Array<number | null> : []);
+  const ageInput = useRef(ages);
+  const staged = useRef<Record<string, unknown> | null>(null);
   const dirtyCount = useRef(false), dirtyAges = useRef(false);
+  const countVersion = useRef(0), agesVersion = useRef(0);
   useEffect(() => () => { editor.commands.setUncommitted(countPath, false); editor.commands.setUncommitted(agesPath, false); }, [path]);
   useEffect(() => { if (!dirtyCount.current) setCount(countValue == null ? '' : String(countValue)); }, [countValue]);
-  useEffect(() => { if (!dirtyAges.current) setAges(Array.isArray(ageValue) ? ageValue as Array<number | null> : []); }, [JSON.stringify(ageValue)]);
-  const updateCount = async () => {
-    if (!dirtyCount.current) return;
-    const occupancy = record(effectiveAt(editor.snapshot, path));
-    if (count === '') { await editor.commands.edit(path, { ...occupancy, childCount: null, childAges: null }); dirtyCount.current = false; editor.commands.setUncommitted(countPath, false); return; }
-    const next = Number(count);
-    if (!Number.isInteger(next) || next < 0 || next > 12) return;
-    const resized = Array.from({ length: next }, (_, index) => ages[index] ?? null);
-    setAges(resized);
-    await editor.commands.edit(path, { ...occupancy, childCount: next, childAges: resized });
-    dirtyCount.current = false;
-    editor.commands.setUncommitted(countPath, false);
+  useEffect(() => { if (!dirtyAges.current && !dirtyCount.current) {
+    const next = Array.isArray(ageValue) ? ageValue as Array<number | null> : [];
+    ageInput.current = next; setAges(next);
+  } }, [JSON.stringify(ageValue)]);
+  const validAge = (age: number | null) => age != null && Number.isInteger(age) && age >= 0 && age <= 17 ? age : null;
+  const stage = (childCount: number | null, childAges: Array<number | null> | null) => {
+    const next = { ...record(effectiveAt(editor.snapshot, path)), childCount, childAges };
+    staged.current = next;
+    editor.commands.stageEdit(path, next);
+  };
+  const commit = async (kind: 'count' | 'ages') => {
+    const dirty = kind === 'count' ? dirtyCount : dirtyAges;
+    const version = kind === 'count' ? countVersion : agesVersion;
+    if (!dirty.current || !staged.current) return;
+    const pending = staged.current, before = version.current;
+    await editor.commands.edit(path, pending);
+    if (version.current !== before) return;
+    dirty.current = false;
+    if (kind === 'count') {
+      setCount(pending.childCount == null ? '' : String(pending.childCount));
+      editor.commands.setUncommitted(countPath, false);
+    } else editor.commands.setUncommitted(agesPath, false);
+    if (staged.current === pending) {
+      const next = Array.isArray(pending.childAges) ? pending.childAges as Array<number | null> : [];
+      ageInput.current = next; setAges(next);
+    }
   };
   return <>
     <label className={styles.localField}>Children
-      <input type="number" min="0" max="12" value={count} onChange={(event) => { setCount(event.target.value); dirtyCount.current = true; editor.commands.setUncommitted(countPath, true); }} onBlur={() => void updateCount().catch(() => {})} />
+      <input type="number" min="0" max="12" value={count} onChange={(event) => {
+        const value = event.target.value, numeric = value === '' ? null : Number(value);
+        const next = numeric != null && Number.isInteger(numeric) && numeric >= 0 && numeric <= 12 ? numeric : null;
+        const resized = next == null ? null : Array.from({ length: next }, (_, index) => validAge(ageInput.current[index] ?? null));
+        setCount(value); if (resized) ageInput.current = resized; setAges(resized ?? []);
+        dirtyCount.current = true; countVersion.current += 1; editor.commands.setUncommitted(countPath, true);
+        stage(next, resized);
+      }} onBlur={() => void commit('count').catch(() => {})} />
     </label>
-    {Number(count) > 0 && Number(count) <= 12 && <div className={styles.ageGrid}>
+    {Number.isInteger(Number(count)) && Number(count) > 0 && Number(count) <= 12 && <div className={styles.ageGrid}>
       {Array.from({ length: Number(count) }, (_, index) => <label className={styles.localField} key={index}>Child {index + 1} age
         <input type="number" min="0" max="17" value={ages[index] ?? ''} onChange={(event) => {
-          const next = [...ages]; next[index] = event.target.value === '' ? null : Number(event.target.value); setAges(next);
-          dirtyAges.current = true; editor.commands.setUncommitted(agesPath, true);
-        }} onBlur={() => { if (!dirtyAges.current) return; void editor.commands.edit(path, { ...record(effectiveAt(editor.snapshot, path)),
-          childCount: Number(count), childAges: Array.from({ length: Number(count) }, (_, i) => ages[i] ?? null) })
-          .then(() => { dirtyAges.current = false; editor.commands.setUncommitted(agesPath, false); }).catch(() => {}); }} />
+          const next = [...ageInput.current]; next[index] = event.target.value === '' ? null : Number(event.target.value);
+          ageInput.current = next; setAges(next);
+          dirtyAges.current = true; agesVersion.current += 1; editor.commands.setUncommitted(agesPath, true);
+          stage(Number(count), Array.from({ length: Number(count) }, (_, i) => validAge(next[i] ?? null)));
+        }} onBlur={() => void commit('ages').catch(() => {})} />
       </label>)}
     </div>}
   </>;

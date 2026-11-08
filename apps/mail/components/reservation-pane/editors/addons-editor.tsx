@@ -111,8 +111,10 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex }: {
   const reviewed = !savedTarget || Boolean(latest && reviewPaths.length && reviewPaths.every(path => draft.staffReviews[path]?.status === 'accepted'
     || draft.fieldReviewRequirements[path]?.required === false) && draft.staffReviews[selectedPath]?.status === 'accepted'
     && draft.staffReviews[selectedPath]?.note === reviewNote);
-  const serviceResults = editor.snapshot.operationResults.filter(result => result.workflow === 'services' && result.requestId === ref.requestId
-    && (allocation ? result.allocationId === allocation : true));
+  const serviceResults = draft.operationResults.filter(result => result.workflow === 'services' && result.requestId === ref.requestId
+    && (allocation ? result.allocationId === allocation : result.observationRefs.some(refId => draft.observations.some(observation =>
+      observation.ref === refId && record(observation.criteria.targetRef).kind === 'saved_target'
+      && record(observation.criteria.targetRef).requestId === savedTarget?.requestId && record(observation.criteria.targetRef).hintId === savedTarget?.hintId))));
   const uncertain = serviceResults.some(result => result.status === 'unknown');
   const saved = serviceResults.some(result => result.status === 'succeeded' && Array.isArray(result.observationRefs)
     && result.observationRefs.some(refId => draft.observations.some(observation => observation.ref === refId && observation.criteria.serviceId === service.id)));

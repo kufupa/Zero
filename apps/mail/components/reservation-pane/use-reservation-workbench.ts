@@ -11,6 +11,7 @@ type Buffer = {
   pending: Map<string, Pending>;
   conflict: boolean;
   error: string | null;
+  pendingMutationHeld: boolean;
   token: number;
   queue: Promise<void>;
   listeners: Set<() => void>;
@@ -19,6 +20,13 @@ const buffers = new Map<string, Buffer>();
 const sourceKey = (source: ReservationSourceContext) => `${source.mailboxId}:${source.messageId}:${source.sourceHash}`;
 
 function notify(buffer: Buffer) { buffer.listeners.forEach(listener => listener()); }
+
+function releasePendingMutation(buffer: Buffer) {
+  if (buffer.pendingMutationHeld && buffer.pending.size === 0) {
+    buffer.pendingMutationHeld = false;
+    endMutation();
+  }
+}
 
 function enqueue(buffer: Buffer, action: () => Promise<void>): Promise<void> {
   const next = buffer.queue.then(action, action);
@@ -31,6 +39,12 @@ function displaySnapshot(snapshot: ReservationPaneSnapshot | null, pending: Map<
   if (!snapshot || !pending.size) return snapshot;
   const fieldOverrides = { ...snapshot.session.draft.fieldOverrides };
   for (const edit of pending.values()) {
+    if (edit.state === 'set' && edit.path.endsWith('/occupancy')) {
+      for (const path of Object.keys(fieldOverrides)) {
+        if (path === `${edit.path}/childCount` || path.startsWith(`${edit.path}/childCount/`) ||
+            path === `${edit.path}/childAges` || path.startsWith(`${edit.path}/childAges/`)) delete fieldOverrides[path];
+      }
+    }
     fieldOverrides[edit.path] = { state: edit.state, ...(edit.state === 'set' ? { value: edit.value } : {}), updatedAt: new Date().toISOString() };
     // Match the server's atomic identity invalidation while the edit is pending.
     const guest = edit.path.match(/^(.*\/guest)\/(?:firstName|lastName|email)$/);
@@ -51,7 +65,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   const key = sourceKey(source);
   const safeSnapshot = snapshotMatchesSource(snapshot, source) ? snapshot : null;
   if (!buffers.has(key)) buffers.set(key, { snapshot: safeSnapshot, pending: new Map(), conflict: false,
-    error: null, token: 0, queue: Promise.resolve(), listeners: new Set() });
+    error: null, pendingMutationHeld: false, token: 0, queue: Promise.resolve(), listeners: new Set() });
   const entry = buffers.get(key)!;
   if (safeSnapshot && (!entry.snapshot || safeSnapshot.session.seq >= entry.snapshot.session.seq)) entry.snapshot = safeSnapshot;
   const active = useRef({ key, epoch: source.selectionEpoch });
@@ -84,6 +98,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
           const next = await client.edit({ source: bound, snapshot: buffer.snapshot, requestId, fieldPath: pending.path, state: pending.state, value: pending.value });
           apply(next, bound, buffer);
           if (buffer.pending.get(pending.path)?.token === pending.token) buffer.pending.delete(pending.path);
+          releasePendingMutation(buffer);
           notify(buffer);
         }
         // A cleanup only owns the values captured for its source selection.
@@ -140,6 +155,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     return enqueue(buffer, execute);
   };
   const stageEdit = (path: string, value: unknown, state: ReservationFieldOverride['state'] = 'set') => {
+    if (!entry.pendingMutationHeld) { entry.pendingMutationHeld = true; beginMutation(); }
     entry.pending.set(path, { path, value, state, token: ++entry.token });
     notify(entry);
   };
@@ -224,6 +240,6 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     undo: () => run(context => client.undo(context)), redo: () => run(context => client.redo(context)),
     retryPrefill: () => run(context => client.prefill(context)),
     applyPending: () => { entry.conflict = false; entry.error = null; return run(async () => {}); },
-    discardPending: () => { entry.pending.clear(); entry.conflict = false; entry.error = null; setError(null); notify(entry); },
+    discardPending: () => { entry.pending.clear(); releasePendingMutation(entry); entry.conflict = false; entry.error = null; setError(null); notify(entry); },
   };
 }

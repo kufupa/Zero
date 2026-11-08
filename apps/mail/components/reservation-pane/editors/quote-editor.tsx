@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { effectiveAt, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { Count, Field, Section } from '../shared/stay-fields';
 import { NativePicker } from '../shared/native-pickers';
@@ -26,15 +26,21 @@ function SharedDate({ editor, groups, bodyPath, field, label }: {
   const first = groups[0];
   const date = text(first?.[field]);
   const [value, setValue] = useState(date);
+  const dirty = useRef(false), version = useRef(0);
   const editKey = `${bodyPath}/groups/shared/${field}`;
-  useEffect(() => setValue(date), [date]);
+  useEffect(() => { if (!dirty.current) setValue(date); }, [date]);
   useEffect(() => () => editor.commands.setUncommitted(editKey, false), [editKey]);
   return <label className={styles.localField}>{label}
-    <input type="date" value={value} onChange={(event) => { setValue(event.target.value); editor.commands.setUncommitted(editKey, true); }} onBlur={() => {
-      if (groups.every((group) => text(group[field]) === value)) { editor.commands.setUncommitted(editKey, false); return; }
-      void (async () => { for (let index = 0; index < groups.length; index += 1) {
-        await editor.commands.edit(`${bodyPath}/groups/${index}/${field}`, value || null);
-      } editor.commands.setUncommitted(editKey, false); })().catch(() => {});
+    <input type="date" value={value} onChange={(event) => {
+      const next = event.target.value; setValue(next); dirty.current = true; version.current += 1;
+      editor.commands.setUncommitted(editKey, true);
+      groups.forEach((_, index) => editor.commands.stageEdit(`${bodyPath}/groups/${index}/${field}`, next || null));
+    }} onBlur={() => {
+      if (!dirty.current || !groups.length) return;
+      const before = version.current;
+      void editor.commands.edit(`${bodyPath}/groups/0/${field}`, value || null).then(() => {
+        if (version.current === before) { dirty.current = false; editor.commands.setUncommitted(editKey, false); }
+      }).catch(() => {});
     }} />
   </label>;
 }
@@ -78,16 +84,23 @@ function RoomCode({ editor, path, options }: { editor: Editor; path: string; opt
   const saved = valueAt(editor.snapshot, path);
   const initial = Array.isArray(saved) ? saved.map(text).join(', ') : '';
   const [value, setValue] = useState(initial);
-  useEffect(() => setValue(initial), [initial]);
+  const dirty = useRef(false), version = useRef(0);
+  const parse = (input: string) => input.split(',').map((code) => code.trim().toUpperCase()).filter(Boolean);
+  useEffect(() => { if (!dirty.current) setValue(initial); }, [initial]);
   useEffect(() => () => editor.commands.setUncommitted(path, false), [path]);
   const listId = `rooms-${path.replace(/[^a-z0-9]/giu, '-')}`;
   const codes = [...new Map(options.map((option): [string, string] => [text(option.roomCode), text(option.roomLabel)]).filter(([code]) => code)).entries()];
   return <label className={styles.localField}>Room categories
-    <input value={value} list={listId} placeholder="Any category, or codes separated by commas" onChange={(event) => { setValue(event.target.value); editor.commands.setUncommitted(path, true); }}
+    <input value={value} list={listId} placeholder="Any category, or codes separated by commas" onChange={(event) => {
+      const next = event.target.value; setValue(next); dirty.current = true; version.current += 1;
+      editor.commands.setUncommitted(path, true); editor.commands.stageEdit(path, parse(next));
+    }}
       onBlur={() => {
-        const codes = value.split(',').map((code) => code.trim().toUpperCase()).filter(Boolean);
-        if (JSON.stringify(codes) === JSON.stringify(Array.isArray(saved) ? saved : [])) { editor.commands.setUncommitted(path, false); return; }
-        void editor.commands.edit(path, codes).then(() => editor.commands.setUncommitted(path, false)).catch(() => {});
+        if (!dirty.current) return;
+        const before = version.current, next = parse(value);
+        void editor.commands.edit(path, next).then(() => {
+          if (version.current === before) { dirty.current = false; setValue(next.join(', ')); editor.commands.setUncommitted(path, false); }
+        }).catch(() => {});
       }} />
     <datalist id={listId}>{codes.map(([code, label]) => <option key={code} value={code}>{label}</option>)}</datalist>
     <small>Choose a native offer below to select its category and rate.</small>

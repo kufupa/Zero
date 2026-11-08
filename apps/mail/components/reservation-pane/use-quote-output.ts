@@ -16,6 +16,8 @@ type Confirm = () => boolean | Promise<boolean>;
 const MARKER = 'nava_v2_quote_unresolved_reply_v1';
 const RETRY_WINDOW_MS = 15 * 60 * 1000;
 const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
+// Older Outlook bridge fingerprints use a 2 MiB JSON string limit, including base64.
+const MAX_OUTLOOK_ATTACHMENT_BYTES = 1_400_000;
 
 function sourceKey(source: ReservationSourceContext): string {
   return JSON.stringify([source.mailboxId, source.propertyId, source.messageId, source.threadId,
@@ -140,6 +142,8 @@ export function useQuoteOutput({ source, bridge, isCurrentSource }: {
       if (!host || !email || !email.entryId || !email.storeId || !email.folderEntryId ||
           !host.supportsAction('GET_ACTIVE_EMAIL') || !host.supportsAction('CREATE_REPLY_DRAFT') ||
           (output.artifacts.length && !host.supportsAction('ADD_ATTACHMENT_TO_DRAFT'))) throw new Error('Connect Outlook and update the add-in before creating this draft.');
+      if (output.artifacts.length && host.capabilities?.preservesAttachmentFilenames !== true) throw new Error('Update the Outlook add-in to attach correctly named PDF and Excel files. The files remain available to download.');
+      if (output.artifacts.some(item => item.sizeBytes > MAX_OUTLOOK_ATTACHMENT_BYTES)) throw new Error('A quotation file exceeds the Outlook add-in limit. Download and attach it manually; no reply was created.');
       if (source.internetMessageId && email.internetMessageId !== source.internetMessageId) throw new Error('The selected Outlook email changed. Select it again.');
       if (!output.cover?.to.trim() || address(output.cover.to) !== address(email.senderEmail)) throw new Error('Outlook replies to the original sender. Check the quote recipient before creating this draft.');
       const fingerprint = JSON.stringify([key, output.operationId, html, output.artifacts.map((item) => [item.fileName, item.sha256])]);

@@ -744,6 +744,13 @@ function updateDraft(current: ReservationWorkflowV2Draft, input: {
         updatedAt: input.override.updatedAt };
     }
     fieldOverrides[input.fieldPath] = input.override;
+    if (input.override.state === 'set' && input.fieldPath.endsWith('/occupancy')) {
+      // Count and age slots are one edit; older leaf overrides must not undo it.
+      for (const path of Object.keys(fieldOverrides)) {
+        if (path === `${input.fieldPath}/childCount` || path.startsWith(`${input.fieldPath}/childCount/`) ||
+            path === `${input.fieldPath}/childAges` || path.startsWith(`${input.fieldPath}/childAges/`)) delete fieldOverrides[path];
+      }
+    }
     // Retyping a native identity or saved-stay query removes the old selection atomically.
     const guest = input.fieldPath.match(/^(.*\/guest)\/(?:firstName|lastName|email)$/);
     const party = input.fieldPath.match(/^(.*\/(?:bookingAgency|organization|arAccount|agency|company))(?:\/name)?$/);
