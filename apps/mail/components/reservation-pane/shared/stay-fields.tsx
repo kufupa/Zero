@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import styles from '../reservation-pane.module.css';
 
@@ -19,26 +19,30 @@ export function FieldSource({ editor, path, label }: { editor: WorkbenchEditorPr
     title={claim?.raw || 'View source suggestion'} onClick={() => editor.onOpenEvidence?.(reference)}>✦</button>;
 }
 
-export function Field({ label, path, editor, type = 'text', options, disabled, hint }: {
+export function Field({ label, path, editor, type = 'text', options, disabled, hint, defaultValue, emptyState }: {
   label: string; path: string; editor: WorkbenchEditorProps; type?: string;
-  options?: { value: string; label: string }[]; disabled?: boolean; hint?: string;
+  options?: { value: string; label: string }[]; disabled?: boolean; hint?: string; defaultValue?: string; emptyState?: 'inherit';
 }) {
   const id = useId();
   const saved = valueAt(editor.snapshot, path);
   const [local, setLocal] = useState(text(saved));
   const [dirty, setDirty] = useState(false);
+  const version = useRef(0);
   useEffect(() => { if (!dirty) setLocal(text(saved)); }, [saved, dirty]);
   const clearedCreateOptional = (value: unknown) => editor.request.kind === 'create' && value === ''
     && /\/(?:bookerName|bookerContact|billingReference|reservationNote|cmsRecipient)$/.test(path);
-  const stateFor = (value: unknown) => clearedCreateOptional(value) ? 'none' as const : 'set' as const;
+  const parsedValue = (value: string) => type === 'number' ? value === '' ? null : Number(value)
+    : value === '' && defaultValue ? defaultValue : value;
+  const stateFor = (raw: string, value: unknown) => raw === '' && emptyState ? emptyState
+    : clearedCreateOptional(value) ? 'none' as const : 'set' as const;
   const save = async () => {
     if (!dirty) return;
-    const value = type === 'number' ? local === '' ? null : Number(local) : local;
-    try { await editor.commands.edit(path, value, stateFor(value)); setDirty(false); } catch { /* keep unsaved input */ }
+    const value = parsedValue(local), before = version.current;
+    try { await editor.commands.edit(path, value, stateFor(local, value)); if (version.current === before) setDirty(false); } catch { /* keep unsaved input */ }
   };
   const onChange = (value: string) => {
-    setLocal(value); setDirty(true); const parsed = type === 'number' ? value === '' ? null : Number(value) : value;
-    editor.commands.stageEdit(path, parsed, stateFor(parsed));
+    version.current += 1; setLocal(value); setDirty(true); const parsed = parsedValue(value);
+    editor.commands.stageEdit(path, parsed, stateFor(value, parsed));
   };
   return <div className={styles.field}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label><FieldSource editor={editor} path={path} label={label} /></div>
     {type === 'checkbox' ? <input id={id} type="checkbox" checked={saved === true} disabled={disabled || editor.view.busy}
@@ -46,7 +50,7 @@ export function Field({ label, path, editor, type = 'text', options, disabled, h
       : options ? <select id={id} value={local} disabled={disabled} onChange={event => { const value = event.target.value; setLocal(value); void editor.commands.edit(path, value).catch(() => setDirty(true)); }}>
         <option value="">Choose…</option>{local && !options.some(option => option.value === local) && <option value={local}>{local}</option>}{options.filter(option => option.value).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
       : type === 'textarea' ? <textarea id={id} value={local} disabled={disabled} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} />
-      : <input id={id} type={type} value={local} disabled={disabled} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); } }} />}
+      : <input id={id} type={type} value={local} placeholder={defaultValue} disabled={disabled} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); } }} />}
     {dirty && <span className={styles.small}>Unsaved</span>}{hint && <small>{hint}</small>}
   </div>;
 }

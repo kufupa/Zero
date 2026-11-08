@@ -35,11 +35,24 @@ const otherFields: BookingField[] = [
 ];
 const allFields = [...partyFields, ...stayFields, ...roomFields, trackField, ...otherFields];
 
-function BookingControl({ field, path, editor }: { field: BookingField; path: string; editor: Editor }) {
+export function resolveCreateCmsRecipientDefault(snapshot: Editor['snapshot'], requestId: string, sender: string): string {
+  const email = (value: string) => {
+    const candidate = value.trim();
+    return candidate.length <= 255 && /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/.test(candidate) ? candidate : '';
+  };
+  const booker = email(text(valueAt(snapshot, `${requestPath(requestId)}/body/shared/bookerContact`)));
+  const displayAddress = /^[^<>]*<([^<>]+)>\s*$/.exec(sender.trim())?.[1];
+  return booker || email(displayAddress ?? sender);
+}
+
+function BookingControl({ field, path, editor, defaultValue, emptyState }: {
+  field: BookingField; path: string; editor: Editor; defaultValue?: string; emptyState?: 'inherit';
+}) {
   return field.picker || field.party
     ? <><NativePicker label={field.label} path={path} editor={editor} kind={field.picker} allowNone={field.party || field.key === 'roomTypeForCharge'} />
       {field.hint && <p className={styles.note}>{field.hint}</p>}</>
-    : <Field label={field.label} path={path} editor={editor} type={field.type} hint={field.hint} />;
+    : <Field label={field.label} path={path} editor={editor} type={field.type} hint={field.hint}
+      defaultValue={defaultValue} emptyState={emptyState} />;
 }
 
 function hasOwn(editor: Editor, path: string) {
@@ -70,11 +83,14 @@ function ScopedField({ field, path, parentPaths, parentLabel, editor }: {
   field: BookingField; path: string; parentPaths: string[]; parentLabel: string; editor: Editor;
 }) {
   const own = hasOwn(editor, path);
-  const inherited = inheritedValue(editor, parentPaths);
+  const inheritedValueAtParent = inheritedValue(editor, parentPaths);
+  const inherited = field.key === 'cmsRecipient' && !text(inheritedValueAtParent).trim()
+    ? resolveCreateCmsRecipientDefault(editor.snapshot, editor.request.id, editor.source.sender) || inheritedValueAtParent
+    : inheritedValueAtParent;
   const label = text(inherited) || (typeof inherited === 'boolean' ? (inherited ? 'Yes' : 'No') : 'Not set');
   return <div className={styles.scopeField}>
     {own ? <>
-      <BookingControl field={field} path={path} editor={editor} />
+      <BookingControl field={field} path={path} editor={editor} emptyState={field.key === 'cmsRecipient' ? 'inherit' : undefined} />
       <button type="button" className={styles.linkButton} onClick={() => void editor.commands.edit(path, undefined, 'inherit')}>Use {parentLabel} ({label})</button>
     </> : <div className={styles.inherited}>
       <span><b>{field.label}</b><small>{parentLabel}: {label}</small></span>
@@ -237,6 +253,7 @@ export function CreateEditor(editor: Editor) {
   const sections = Array.isArray(body.dateSections) ? body.dateSections.map(record) : [];
   const allocations = Array.isArray(body.allocations) ? body.allocations.map(record) : [];
   const shared = `${bodyPath}/shared`;
+  const defaultRecipient = resolveCreateCmsRecipientDefault(snapshot, request.id, editor.source.sender);
   const hasCompleted = allocations.some((allocation) => Boolean(completedRoom(editor, text(allocation.id))));
   const allCompleted = allocations.length > 0 && allocations.every((allocation) => Boolean(completedRoom(editor, text(allocation.id))));
   return <div className={styles.editor}>
@@ -361,7 +378,9 @@ export function CreateEditor(editor: Editor) {
     <details className={styles.details}>
       <summary>Booker and confirmation · {hasCompleted ? 'remaining rooms' : 'all rooms'}</summary>
       <fieldset disabled={allCompleted} className={styles.plainFieldset}>
-        {otherFields.map((field) => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
+        {otherFields.map((field) => <BookingControl key={field.key} field={field.key === 'cmsRecipient' ? { ...field,
+          hint: defaultRecipient ? `Blank uses ${defaultRecipient}.` : 'Enter an email when CMS Send Mail is enabled.' } : field} path={`${shared}/${field.key}`} editor={editor}
+          defaultValue={field.key === 'cmsRecipient' ? defaultRecipient || undefined : undefined} />)}
         {valueAt(snapshot, `${shared}/guestOptIn`) === true && <p className={styles.notice}>Guest marketing opt-in needs Infor.</p>}
       </fieldset>
     </details>
