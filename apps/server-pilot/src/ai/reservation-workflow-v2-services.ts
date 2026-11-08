@@ -535,6 +535,15 @@ function samePerson(left: unknown, right: unknown) {
   return normalize(left) !== '' && normalize(left) === normalize(right);
 }
 
+/** Stay 360's guestfullname displays Last, First; keep all name parts and their order. */
+export function nativeServiceGuestNameMatches(nativeName: unknown, expectedName: unknown): boolean {
+  if (samePerson(nativeName, expectedName)) return true;
+  if (typeof nativeName !== 'string') return false;
+  const parts = nativeName.split(',');
+  return parts.length === 2 && Boolean(parts[0]?.trim() && parts[1]?.trim()) &&
+    samePerson(`${parts[1]?.trim()} ${parts[0]?.trim()}`, expectedName);
+}
+
 function savedStayMatches(stay: Record<string, unknown>, hint: Record<string, unknown>, requireConfirmation = true) {
   const name = text(hint.guestName);
   // Amend accepts a surname by itself, or the full first and last name.
@@ -640,7 +649,7 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
       const read = record(await runTool({ tool: 'read', confirmation: stay.confirmation, guestName, arrivalDate: stay.arrival }));
       const target = record(read?.target);
       if (read?.outcome !== 'ok' || read.propertyCode !== 'HRCEN' || !target || target.confirmation !== stay.confirmation ||
-          target.status !== 'Reserved' || target.arrival !== stay.arrival || target.departure !== stay.departure || !samePerson(target.guestName, guestName) ||
+          target.status !== 'Reserved' || target.arrival !== stay.arrival || target.departure !== stay.departure || !nativeServiceGuestNameMatches(target.guestName, guestName) ||
           record(read.coverage)?.complete !== true) return null;
       if (!Array.isArray(read.items)) return null;
       const summaries = read.items.map(record).filter((row): row is Record<string, unknown> => Boolean(row));
@@ -784,7 +793,7 @@ export async function reservationWorkflowV2PreviewSavedServices(ctx: Reservation
       const target = record(read?.target);
       if (read?.outcome !== 'ok' || read.propertyCode !== 'HRCEN' || record(read.coverage)?.complete !== true ||
           !target || target.confirmation !== stay.confirmation || target.status !== 'Reserved' || target.arrival !== stay.arrival ||
-          target.departure !== stay.departure || !samePerson(target.guestName, guestName)) return null;
+          target.departure !== stay.departure || !nativeServiceGuestNameMatches(target.guestName, guestName)) return null;
       const prepared = record(await runTool(operation === 'add'
         ? { tool: 'prepare', confirmation: stay.confirmation, items: [requested] }
         : { tool: 'prepareChanges', confirmation: stay.confirmation, changes: [requested] }));
