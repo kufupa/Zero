@@ -339,7 +339,7 @@ export function buildReservationWorkflowV2CandidateReadPlan(input: {
     const occupancy = request.occupancy.map((row) => ({ scope: row.scope, adults: row.adults?.value ?? null,
       childCount: row.childCount?.value ?? null, childAges: row.childAges?.map((age) => age.value) ?? null,
       sourceRefs: [...(row.adults?.sourceRefs ?? []), ...(row.childCount?.sourceRefs ?? []), ...(row.childAges?.flatMap((age) => age.sourceRefs) ?? [])] }));
-    const targets = [...request.confirmationHints, ...request.guests.flatMap((guest) => guest.name ? [guest.name] : [])];
+    const targets = [...request.confirmationHints, ...request.guests.flatMap((guest) => guest.role !== 'booker' && guest.name ? [guest.name] : [])];
     for (const hint of targets) {
       const confirmation = typeof hint.value === 'string' && /^\d{6,10}-\d{1,2}$/.test(hint.value.trim()) ? hint.value.trim() : null;
       const guestName = confirmation ? null : hint.value;
