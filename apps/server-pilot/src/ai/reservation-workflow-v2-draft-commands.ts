@@ -417,7 +417,15 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
           ['bookedArrival', 'bookedArrival'], ['bookedDeparture', 'bookedDeparture']] as const) {
           if (filingPath && field !== 'confirmation' && field !== 'bookedArrival') continue;
           const expected = query[queryField] ?? (field === 'bookedArrival' ? query.arrival : field === 'bookedDeparture' ? query.departure : null) ?? null;
-          if ((valueAt(draft, `${targetPath}/${field}`) || null) !== expected) return null;
+          let value = valueAt(draft, `${targetPath}/${field}`);
+          if (filingPath && Array.isArray(rows)) {
+            const override = draft.fieldOverrides[`${targetPath}/${field}`];
+            if (!override || override.state === 'inherit') {
+              const index = rows.indexOf(row);
+              value = valueAt(draft, `${root}/body/targets/include/${index}/${field}`);
+            }
+          }
+          if ((value || null) !== expected) return null;
         }
         set(input.fieldPath, observation.ref);
       } else if (observation.kind === 'guest_candidate' && request.kind === 'create' && input.fieldPath.endsWith('/guest/nativeSelectionRef')) {
@@ -557,8 +565,14 @@ function reviewedFilingSelection(draft: ReservationWorkflowV2Draft, requestId: s
     include: valueAt(draft, `${root}/body/targets/include`), exclude: valueAt(draft, `${root}/body/targets/exclude`) };
   if (scope.mode !== 'explicit' || !Array.isArray(scope.include) || scope.include.length !== 1 ||
       !Array.isArray(scope.exclude) || scope.exclude.length) return null;
-  const hint = rec(scope.include[0]);
+  const hint = { ...rec(scope.include[0]) };
   if (typeof hint.id !== 'string') return null;
+  for (const field of ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture']) {
+    const path = `${root}/body/targets/include/${encodeURIComponent(hint.id)}/${field}`;
+    const value = effective(path, valueAt(draft, `${root}/body/targets/include/0/${field}`));
+    if (value !== undefined && typeof value !== 'string') return null;
+    hint[field] = value;
+  }
   const refs = effective(`${root}/documentRefs`, request.documentRefs);
   if (!Array.isArray(refs)) return null;
   const documents = draft.proposal.content.documents.filter((row) => row.ownerRequestId === requestId && refs.includes(row.id));
