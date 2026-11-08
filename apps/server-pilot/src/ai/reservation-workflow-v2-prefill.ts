@@ -62,6 +62,8 @@ const SYNTHESIS_SHAPE_RULES = `Use this schema-valid empty envelope as the exact
 {"proposal":{"schemaVersion":"reservation-prefill.v0.2","content":{"requests":[],"services":[],"documents":[]},"annotations":[],"issues":[],"sourceClaims":[],"lookupResultRefs":[]},"reviewRequirements":{}}
 Each request's sourceRefs, serviceRefs and documentRefs are required arrays, including when empty. Reuse extraction request IDs; host links a request to source facts only by exact ID or a unique one-to-one source/text match, and fails closed when ambiguous. For Amend and Cancel, preserve every source-cited exact confirmation as an include hint with confirmation, sourceRefs, candidateRefs:[], suggestedRef:null and mode:"unresolved" unless an exact admitted host observation supports a target. Do not fabricate a native target. For Create, reservationNote belongs in body.shared.reservationNote, never at body root. Do not emit global review keys such as humanReviewRequired or beforeExecution: reviewRequirements is keyed by field-path strings, and each value is exactly {"required":true,"reasons":["..."],"evidenceRefs":["admitted-ref"]}. Use {} when no additional review requirement is needed. Preserve every source-supported field in the schema; if a field cannot be represented confidently, retain sourceClaims and add a visible issue rather than dropping the request or inventing a value. An exact source confirmation linked to a Create means possible prior booking, not proof of a native stay. Keep it as a sourceClaim only; the host adds the existing_confirmation_requires_lookup issue at /proposal/content/requests/{finalRequestId}/confirmationReference and requires exact native lookup before Execute. Do not transform it into a native ID or claim that a stay exists; never copy it into a native-selection field.`;
 
+const CREATE_SYNTHESIS_SHAPE_RULES = `For Create, body contains shared, dateSections and allocations only. Every existing date section has defaults:{} when empty; every allocation has overrides:{} when empty. Quote-only parties, salesStrategy, client, requestedMoney, notes, outputIntent and provisionalBookingRequested do not belong in a Create body. Keep services and documents in content.services and content.documents with their request links. Preserve source-supported unsupported price or other business asks in sourceClaims and visible issues rather than copying Quote fields or dropping their evidence.`;
+
 // PRODUCT.md describes the staff-controlled CMS capability; codes/labels come
 // from the existing property profile. Later corpus outcomes never enter T0 input.
 const HRCEN_AMEND_CAPABILITIES = `Trusted HRCEN tool capability context (applies only to Amend): HMS can issue revised reservation documents when the amendment is saved, through the existing change fields cmsSend, cmsMessageId and cmsRecipient. A customer's request to send revised confirmation/proforma documents is a business delivery intent, not an incoming attachment or filing request. Translate that explicit intent into editable set changes: cmsSend=true and cmsRecipient=the source-supported requested recipient or current requester's address. For an explicit proforma request, choose only a configured CMS template whose supplied label supports proforma. A confirmation-only request does not justify switching to the proforma template: preserve the applicable native template, or leave template choice for staff when unknown. Template selection is host policy, not a customer claim: its change.sourceRefs and policy annotation.evidenceRefs must be empty; cite the current request for delivery intent and recipient. If recipient or intent is ambiguous, leave it unresolved for staff review. Do not require customers to name CMS controls, create incoming document entities for generated confirmations, change guest/booker contact records merely to deliver a document, or claim anything was sent before a verified Save. If no delivery is requested, leave CMS unchanged for native preservation. Existing stay room, occupancy and rate codes come from native Lookup unless the customer asks to change them; do not guess missing native codes. The supported native tool uses per-target rateHandling="reprice" for date, occupancy, room or rate changes: propose that editable method for the ordinary supported path and let native Prepare supply prices. Repricing with the existing rate code is distinct from changing that code or retaining a numeric nightly price. For price-affecting changes, explicit retained-price instructions are unsupported and must remain visible for staff resolution, never silently replaced by repricing; numeric manual-price overrides are unsupported.`;
@@ -94,6 +96,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
+function emptyQuotePlaceholder(key: string, value: unknown): boolean {
+  const nullObject = (keys: string[]) => isRecord(value) && Object.keys(value).length === keys.length &&
+    keys.every((field) => value[field] === null);
+  switch (key) {
+    case 'salesStrategy': case 'notes': case 'provisionalBookingRequested': return value === null;
+    case 'parties': return nullObject(['company', 'agency']);
+    case 'client': return nullObject(['attention', 'email', 'telephone']);
+    case 'requestedMoney': return Array.isArray(value) && value.length === 0;
+    case 'outputIntent': return isRecord(value) && Object.keys(value).length === 2 &&
+      ['artifacts', 'evidenceRefs'].every((field) => Array.isArray(value[field]) && value[field].length === 0);
+    default: return false;
+  }
+}
+
+function referencesCreateField(rows: unknown[], requestId: unknown, requestIndex: number, key: string): boolean {
+  return rows.some((row) => {
+    if (!isRecord(row) || typeof row.path !== 'string' || !row.path.startsWith('/')) return false;
+    const parts = row.path.slice(1).split('/').map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'));
+    if (parts[0] === 'proposal') parts.shift();
+    if (parts[0] === 'content') parts.shift();
+    return parts[0] === 'requests' && (parts[1] === requestId || parts[1] === String(requestIndex)) &&
+      parts[2] === 'body' && parts[3] === key;
+  });
+}
+
 /** Correct only unambiguous container placement; unknown fields and conflicting values remain schema errors. */
 function normalizeSynthesisOutput(value: unknown, evidence: ReservationWorkflowV2Evidence[]): unknown {
   if (!isRecord(value) || !isRecord(value.proposal) || !isRecord(value.proposal.content)) return value;
@@ -121,10 +148,33 @@ function normalizeSynthesisOutput(value: unknown, evidence: ReservationWorkflowV
   const attachmentContextIssues: Array<Record<string, unknown>> = [];
   const requestShapeIssues: Array<Record<string, unknown>> = [];
   if (Array.isArray(content.requests)) {
-    content.requests = content.requests.map((entry) => {
+    content.requests = content.requests.map((entry, requestIndex) => {
       if (!isRecord(entry) || !isRecord(entry.body)) return entry;
       const body = { ...entry.body };
       let normalizedEntry: Record<string, unknown> = entry;
+      if (entry.kind === 'create') {
+        let changed = false;
+        if (Array.isArray(body.dateSections)) {
+          body.dateSections = body.dateSections.map((section) => {
+            if (!isRecord(section) || Object.hasOwn(section, 'defaults')) return section;
+            changed = true;
+            return { ...section, defaults: {} };
+          });
+        }
+        if (Array.isArray(proposal.issues)) {
+          const paths = [proposal.sourceClaims, proposal.annotations].flatMap((rows) => Array.isArray(rows) ? rows : []);
+          for (const key of ['salesStrategy', 'notes', 'provisionalBookingRequested', 'parties', 'client', 'requestedMoney', 'outputIntent']) {
+            if (!Object.hasOwn(body, key) || !emptyQuotePlaceholder(key, body[key]) ||
+                referencesCreateField(paths, entry.id, requestIndex, key)) continue;
+            delete body[key];
+            changed = true;
+            requestShapeIssues.push({ path: `/requests/${String(entry.id ?? 'unknown')}/body/${key}`,
+              kind: 'normalized_field_path', explanation: `Empty Quote-only ${key} placeholder was removed from Create; no business value was discarded.`,
+              evidenceRefs: Array.isArray(entry.sourceRefs) ? entry.sourceRefs : [] });
+          }
+        }
+        if (changed) normalizedEntry = { ...entry, body };
+      }
       if (entry.kind === 'create' && isRecord(body.shared) && Object.hasOwn(body, 'reservationNote') &&
           Array.isArray(proposal.issues)) {
         const note = body.reservationNote;
@@ -1380,7 +1430,8 @@ export async function runReservationWorkflowV2Prefill(input: {
     extraction.requests.map((request) => request.kind), extractGuidance);
   // Selection may report a final-stage failure after lookup errors were assembled.
   for (const error of base.errors) if (!readErrors.includes(error)) readErrors.push(error);
-  const finalPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${SYNTHESIS_RULES}\n${SYNTHESIS_SHAPE_RULES}${cmsCapabilityContext}${guidancePrompt(synthesisGuidance)}`,
+  const createShapeContext = extraction.requests.some((request) => request.kind === 'create') ? `\n${CREATE_SYNTHESIS_SHAPE_RULES}` : '';
+  const finalPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${SYNTHESIS_RULES}\n${SYNTHESIS_SHAPE_RULES}${createShapeContext}${cmsCapabilityContext}${guidancePrompt(synthesisGuidance)}`,
     userPrompt: JSON.stringify({ propertyCode: input.propertyCode, source: input.source, evidence, extraction, observations }),
     responseSchema: zodToJsonSchema(reservationWorkflowV2ModelOutputSchema, { $refStrategy: 'none' }) as Record<string, unknown>,
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
