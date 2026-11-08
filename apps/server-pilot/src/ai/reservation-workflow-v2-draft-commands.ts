@@ -552,7 +552,8 @@ function reviewedFilingSelection(draft: ReservationWorkflowV2Draft, requestId: s
     const override = draft.fieldOverrides[path];
     return !override || override.state === 'inherit' ? source : override.state === 'set' ? override.value : null;
   };
-  const scope = rec(effective(`${root}/body/targets`, request.body.targets));
+  const scope = { mode: valueAt(draft, `${root}/body/targets/mode`),
+    include: valueAt(draft, `${root}/body/targets/include`), exclude: valueAt(draft, `${root}/body/targets/exclude`) };
   if (scope.mode !== 'explicit' || !Array.isArray(scope.include) || scope.include.length !== 1 ||
       !Array.isArray(scope.exclude) || scope.exclude.length) return null;
   const hint = rec(scope.include[0]);
