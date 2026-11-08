@@ -60,7 +60,9 @@ export function ReservationPane(props: ReservationPaneProps) {
           const bases = [`${root}/allocations/${index}/overrides`, `${root}/dateSections/${sectionIndex}/defaults`, shared];
           const inherited = (key: string) => {
             for (const base of bases) {
-              const value = effectiveAt(snapshot, `${base}/${key}`);
+              const path = `${base}/${key}`;
+              if (base !== shared && snapshot.session.draft.fieldOverrides[path]?.state === 'inherit') continue;
+              const value = effectiveAt(snapshot, path);
               if (value !== undefined && value !== null) return value;
             }
             return undefined;
