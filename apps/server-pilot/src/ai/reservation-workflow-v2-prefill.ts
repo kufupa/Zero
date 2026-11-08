@@ -1490,7 +1490,9 @@ export async function ensureReservationWorkflowV2Prefill(input: {
     try {
       const refreshed = await runReservationWorkflowV2Prefill({ ...input, transportId: input.context.transportId,
         db: input.context.db, propertyCode: input.context.propertyCode });
-      if (refreshed.sourceBound && !refreshed.skippedReason && refreshed.extraction) {
+      const synthesisTransportFailed = (refreshed.errors ?? []).some((error) => error.stage === 'synthesis' &&
+        ['model_timeout', 'model_error'].includes(error.code));
+      if (refreshed.sourceBound && !refreshed.skippedReason && refreshed.extraction && !synthesisTransportFailed) {
         return await replaceReservationWorkflowV2PrefillRetry(input.context, { ...retry, seed: {
           generationId: refreshed.generationId, status: refreshed.status, proposal: refreshed.proposal,
           observations: refreshed.observations, fieldReviewRequirements: refreshed.fieldReviewRequirements, errors: refreshed.errors,

@@ -231,14 +231,22 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
   return saved;
 }
 
-/** Only an untouched extraction failure is eligible for a bounded retry. */
+/** Only untouched extraction or zero-allocation Create synthesis fallbacks are eligible for retry. */
 function retryablePrefill(draft: ReservationWorkflowV2Draft): boolean {
-  return draft.status === 'partial' && draft.errors.some((error) => error.stage === 'extract' &&
-    ['extract_unavailable', 'model_timeout', 'model_error', 'invalid_typed_extraction'].includes(error.code)) &&
-    draft.proposal.content.requests.length === 1 && draft.proposal.content.requests[0]?.kind === 'other' &&
-    !draft.proposal.content.services.length && !draft.proposal.content.documents.length &&
-    draft.observations.length === 1 && draft.observations[0]?.kind === 'source' &&
-    !draft.operationResults.length && !Object.keys(draft.fieldOverrides).length && !Object.keys(draft.staffReviews).length;
+  if (draft.status !== 'partial' || draft.operationResults.length || Object.keys(draft.fieldOverrides).length ||
+      Object.keys(draft.staffReviews).length) return false;
+  const hasNoContentEntities = !draft.proposal.content.services.length && !draft.proposal.content.documents.length;
+  if (draft.errors.some((error) => error.stage === 'extract' &&
+      ['extract_unavailable', 'model_timeout', 'model_error', 'invalid_typed_extraction'].includes(error.code))) {
+    return draft.proposal.content.requests.length === 1 && draft.proposal.content.requests[0]?.kind === 'other' &&
+      hasNoContentEntities && draft.observations.length === 1 && draft.observations[0]?.kind === 'source';
+  }
+  const hasCreate = draft.proposal.content.requests.some((request) => request.kind === 'create');
+  return draft.errors.some((error) => error.stage === 'synthesis' && ['model_timeout', 'model_error'].includes(error.code)) &&
+    draft.proposal.issues.some((issue) => issue.path === '/' && issue.kind === 'prefill_partial') && hasCreate &&
+    draft.proposal.content.requests.filter((request) => request.kind === 'create')
+      .every((request) => request.body.allocations.length === 0) && hasNoContentEntities &&
+    !Object.keys(draft.fieldReviewRequirements).length;
 }
 
 type PrefillRetryInput = { source: ReservationWorkflowV2SourceInput; workItemId: string;
