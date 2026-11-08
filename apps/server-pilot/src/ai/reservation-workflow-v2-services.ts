@@ -556,6 +556,8 @@ function selectedSavedStay(draft: ReservationWorkflowV2Draft, input: Reservation
   if (!observation || !stay || !query || !savedStayMatches(stay, found.hint, found.request.kind !== 'amend') ||
       ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].some(key => (query[key] ?? null) !== (found.hint[key] || null))) return null;
   if (found.request.kind !== 'amend') return { observation, stay };
+  if (draft.operationResults.some(row => row.workflow === 'amend' && row.requestId === input.requestId && !row.allocationId &&
+      (row.status === 'succeeded' || row.status === 'unknown'))) return null;
   const outcomes = draft.operationResults.filter(row => row.workflow === 'amend' && row.requestId === input.requestId &&
     row.allocationId === input.targetRef.hintId && (row.status === 'succeeded' || row.status === 'unknown'));
   if (outcomes.some(row => row.status === 'unknown') || outcomes.length > 1) return null;

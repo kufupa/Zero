@@ -449,7 +449,9 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
         const rows = Array.isArray(observation.result.candidates) ? observation.result.candidates : [observation.result];
         if (rows.length !== 1) return null;
         const candidate = rec(rows[0]);
-        if (!/^\d{1,30}$/.test(String(candidate.nativeId ?? '')) || typeof candidate.name !== 'string' || !candidate.name.trim()) return null;
+        const nativeId = String(candidate.nativeId ?? '');
+        if (!(request.kind === 'quote' ? /^[A-Za-z0-9._-]{1,64}$/ : /^\d{1,30}$/).test(nativeId) ||
+            typeof candidate.name !== 'string' || !candidate.name.trim()) return null;
         for (const key of Object.keys(overrides)) if (key.startsWith(`${parent}/`)) delete overrides[key];
         set(parent, { name: candidate.name, candidateRefs: [], suggestedRef: null }); set(input.fieldPath, observation.ref);
       } else return null;
@@ -518,13 +520,16 @@ function reviewedPartySelection(draft: ReservationWorkflowV2Draft, requestId: st
       (workflow === 'create' && (typeof observation.criteria.allocationId !== 'string' || !allocationIds.has(observation.criteria.allocationId))) ||
       (observation.criteria.fieldPath !== path && !(Array.isArray(observation.criteria.fieldPaths) && observation.criteria.fieldPaths.includes(path)))) return null;
   const result = rec(observation.result);
+  const validId = (value: unknown) => typeof value === 'string' &&
+    (workflow === 'quote' ? /^[A-Za-z0-9._-]{1,64}$/ : /^\d{1,30}$/).test(value);
   const pending: unknown[] = [result], seen = new Set<object>(), candidates: Record<string, any>[] = [];
   while (pending.length) {
     const value = pending.shift();
     if (!value || typeof value !== 'object' || Array.isArray(value) || seen.has(value)) continue;
     seen.add(value);
     const row = rec(value);
-    if (/^\d{1,30}$/.test(String(row.nativeId ?? ''))) candidates.push(row);
+    if (Object.hasOwn(row, 'nativeId') && !validId(row.nativeId)) return null;
+    if (validId(row.nativeId)) candidates.push(row);
     for (const key of ['candidates', 'matches', 'guestCandidates', 'partyCandidates', 'results', 'result']) {
       if (Array.isArray(row[key])) pending.push(...row[key]);
       else if (row[key] && typeof row[key] === 'object') pending.push(row[key]);
@@ -532,7 +537,7 @@ function reviewedPartySelection(draft: ReservationWorkflowV2Draft, requestId: st
   }
   const candidate = workflow === 'quote' ? result : candidates[0];
   const norm = (value: unknown) => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() : '';
-  if (!candidate || typeof candidate.nativeId !== 'string' || !/^\d{1,30}$/.test(candidate.nativeId) ||
+  if (!candidate || !validId(candidate.nativeId) ||
       !norm(candidate.name) || norm(candidate.name) !== norm(name) ||
       (workflow === 'create' && candidates.length !== 1) ||
       (workflow === 'quote' && (!candidates.length || candidates.some((row) =>
