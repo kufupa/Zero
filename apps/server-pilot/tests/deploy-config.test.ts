@@ -5916,6 +5916,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         'PANE_WRITE_AMEND_PAID',
         'PANE_WRITE_CANCEL_UNPAID',
         'PANE_WRITE_CANCEL_PAID',
+        'PANE_WRITE_ADDONS',
         'PANE_WRITE_ATTACH',
       ]);
       const pm2 = readFileSync(join(here, '..', 'deploy', 'pm2.config.cjs'), 'utf8');
