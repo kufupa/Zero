@@ -536,9 +536,16 @@ function samePerson(left: unknown, right: unknown) {
 }
 
 function savedStayMatches(stay: Record<string, unknown>, hint: Record<string, unknown>, requireConfirmation = true) {
+  const name = text(hint.guestName);
+  // Amend accepts a surname by itself, or the full first and last name.
+  const amendName = !name || (typeof stay.firstName === 'string' && typeof stay.lastName === 'string' &&
+    name.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() ===
+      (name.includes(' ') ? `${stay.firstName} ${stay.lastName}` : stay.lastName)
+        .normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase());
   return typeof stay.confirmation === 'string' && (hint.confirmation ? stay.confirmation === hint.confirmation : !requireConfirmation) && stay.status === 'Reserved'
     && typeof stay.firstName === 'string' && typeof stay.lastName === 'string' && typeof stay.arrival === 'string'
-    && typeof stay.departure === 'string' && (!hint.guestName || samePerson(hint.guestName, `${stay.firstName} ${stay.lastName}`))
+    && typeof stay.departure === 'string' && (requireConfirmation
+      ? !hint.guestName || samePerson(hint.guestName, `${stay.firstName} ${stay.lastName}`) : amendName)
     && (!hint.bookedArrival || hint.bookedArrival === stay.arrival) && (!hint.bookedDeparture || hint.bookedDeparture === stay.departure);
 }
 

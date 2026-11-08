@@ -1017,7 +1017,7 @@ export async function recordRecoveredService(tx: DispatchTx, common: HmsLabtestI
     nativeStayId: intent.target.nativeStayId, nativeId: proof.nativeReadback.nativeId, requestedFields: scope.requestedFields,
     native: object(proof.nativeReadback)?.item, recovered: true, priceWasNativeCalculated: true, freshReadback: proof.freshReadback };
   scope.observationRef = await persistResolvedServiceTx(tx, scope.ctx, scope.input, intent, result, proof.readbackDigest);
-  scope.nativeId = proof.nativeReadback.nativeId;
+  scope.nativeId = text(proof.nativeReadback.nativeId) ?? undefined;
 }
 
 /** Positive-only recovery for an Add-On Save whose callback/receipt was interrupted. */

@@ -13,7 +13,7 @@ export function FieldSource({ editor, path, label }: { editor: WorkbenchEditorPr
   if (!editor.onOpenEvidence || draft.fieldOverrides[path]?.state && draft.fieldOverrides[path]?.state !== 'inherit') return null;
   const claim = draft.proposal.sourceClaims.find(row => row.path === path);
   const refs = claim?.sourceRefs ?? draft.fieldReviewRequirements[path]?.evidenceRefs;
-  const reference = refs?.find(ref => draft.proposal.evidence.some(row => row.ref === ref));
+  const reference = refs?.find(ref => draft.observations.some(row => row.kind === 'source' && row.sourceRefs.includes(ref)));
   if (!reference) return null;
   return <button type="button" className={styles.fieldSource} aria-label={`View source for ${label}`}
     title={claim?.raw || 'View source suggestion'} onClick={() => editor.onOpenEvidence?.(reference)}>✦</button>;
