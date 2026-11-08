@@ -7,6 +7,7 @@ import { reservationWorkflowV2ProposalSchema, type reservationWorkflowV2AddActio
 import { withLockedV2DraftMutation, reservationWorkflowV2SavedTargetLocked,
   type ReservationWorkflowV2Context } from './reservation-workflow-v2-state.js';
 import { nativeStructureIsSafe, rebaseReservationV2Path, rebaseReservationV2Observations } from './work-item-revision.js';
+import { sameGuestName } from './guest-name-match.js';
 
 const ptr = (...parts: (string | number)[]) => '/' + parts.map((part) => encodeURIComponent(String(part))).join('/');
 const rec = (value: unknown): Record<string, any> => value && typeof value === 'object' && !Array.isArray(value)
@@ -436,6 +437,84 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
 const NON_REVIEW_FIELDS = new Set(['id', 'sourceRefs', 'serviceRefs', 'documentRefs', 'candidateRefs',
   'priceObservationRefs', 'evidenceRefs', 'lookupResultRefs', 'previewObservationRefs']);
 
+function reviewedGuestSelection(draft: ReservationWorkflowV2Draft, requestId: string, allocationId: string, guestPath: string): string | null {
+  const guest = valueAt(draft, guestPath);
+  if (!guest || typeof guest !== 'object' || Array.isArray(guest)) return null;
+  const selectionPath = `${guestPath}/nativeSelectionRef`, override = draft.fieldOverrides[selectionPath];
+  const selected = override?.state === 'set' ? override.value : override && override.state !== 'inherit' ? null
+    : valueAt(draft, `${guestPath}/suggestedRef`);
+  if (typeof selected !== 'string' || valueAt(draft, `${guestPath}/profileIntent`) !== 'existing_or_unknown') return null;
+  const firstName = valueAt(draft, `${guestPath}/firstName`), lastName = valueAt(draft, `${guestPath}/lastName`);
+  const email = valueAt(draft, `${guestPath}/email`);
+  if (typeof firstName !== 'string' || !firstName.trim() || typeof lastName !== 'string' || !lastName.trim()) return null;
+  const matches = draft.observations.filter((row) => row.ref === selected);
+  if (matches.length !== 1) return null;
+  const observation = matches[0]!;
+  if (observation.kind !== 'guest_candidate' || observation.status !== 'complete' || !observation.coverage.complete ||
+      observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
+      observation.sourceMessageId !== draft.source.messageId || observation.criteria.requestId !== requestId ||
+      observation.criteria.allocationId !== allocationId || (observation.criteria.fieldPath !== selectionPath &&
+        !(Array.isArray(observation.criteria.fieldPaths) && observation.criteria.fieldPaths.includes(selectionPath)))) return null;
+  const pending: unknown[] = [observation.result], seen = new Set<object>(), candidates: Record<string, any>[] = [];
+  while (pending.length) {
+    const value = pending.shift();
+    if (!value || typeof value !== 'object' || Array.isArray(value) || seen.has(value)) continue;
+    seen.add(value);
+    const row = rec(value);
+    if (/^\d{1,30}$/.test(String(row.nativeId ?? ''))) candidates.push(row);
+    for (const key of ['candidates', 'matches', 'guestCandidates', 'partyCandidates', 'results', 'result']) {
+      if (Array.isArray(row[key])) pending.push(...row[key]);
+      else if (row[key] && typeof row[key] === 'object') pending.push(row[key]);
+    }
+  }
+  if (candidates.length !== 1) return null;
+  const candidate = candidates[0]!;
+  const normalize = (value: string) => value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
+  if (typeof candidate.nativeId !== 'string' || !sameGuestName(candidate.firstName, firstName) || !sameGuestName(candidate.lastName, lastName) ||
+      !sameGuestName(candidate.name ?? `${candidate.firstName} ${candidate.lastName}`, `${firstName} ${lastName}`) ||
+      (typeof email === 'string' && email.trim() && (typeof candidate.email !== 'string' || normalize(candidate.email) !== normalize(email)))) return null;
+  return selectionPath;
+}
+
+function reviewedFilingSelection(draft: ReservationWorkflowV2Draft, requestId: string, root: string): string | null {
+  const request = draft.proposal.content.requests.find((row) => row.id === requestId);
+  if (!request || request.kind !== 'filing') return null;
+  const effective = (path: string, source: unknown) => {
+    const override = draft.fieldOverrides[path];
+    return !override || override.state === 'inherit' ? source : override.state === 'set' ? override.value : null;
+  };
+  const scope = rec(effective(`${root}/body/targets`, request.body.targets));
+  if (scope.mode !== 'explicit' || !Array.isArray(scope.include) || scope.include.length !== 1 ||
+      !Array.isArray(scope.exclude) || scope.exclude.length) return null;
+  const hint = rec(scope.include[0]);
+  if (typeof hint.id !== 'string') return null;
+  const refs = effective(`${root}/documentRefs`, request.documentRefs);
+  if (!Array.isArray(refs)) return null;
+  const documents = draft.proposal.content.documents.filter((row) => row.ownerRequestId === requestId && refs.includes(row.id));
+  if (documents.length !== 1 || !documents[0]!.targetRefs.some((target) => target.kind === 'saved_target' &&
+      target.requestId === requestId && target.hintId === hint.id)) return null;
+  const path = `${root}/body/targets/include/${encodeURIComponent(hint.id)}/suggestedRef`;
+  const selected = effective(path, hint.suggestedRef), matches = draft.observations.filter((row) => row.ref === selected);
+  if (typeof selected !== 'string' || matches.length !== 1) return null;
+  const observation = matches[0]!, stay = rec(observation.result.stay);
+  const isoDay = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    Number.isFinite(Date.parse(`${value}T00:00:00.000Z`)) && new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value;
+  const arrival = typeof stay.arrival === 'string' ? stay.arrival.trim() : null;
+  const departure = typeof stay.departure === 'string' ? stay.departure.trim() : null;
+  if (observation.kind !== 'stay_candidate' || observation.status !== 'complete' || !observation.coverage.complete ||
+      observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
+      observation.sourceMessageId !== draft.source.messageId || observation.criteria.workflow !== 'filing' ||
+      observation.criteria.requestId !== requestId || observation.criteria.targetHintId !== hint.id || observation.result.outcome !== 'found' ||
+      !['confirmation', 'arrival', 'departure', 'firstName', 'lastName', 'status'].every((key) => {
+        const value = stay[key]; return typeof value === 'string' && value.trim();
+      }) || !isoDay(arrival) || !isoDay(departure) || departure <= arrival ||
+      (hint.confirmation && hint.confirmation !== stay.confirmation.trim()) || (hint.bookedArrival && hint.bookedArrival !== arrival) ||
+      (hint.bookedDeparture && hint.bookedDeparture !== departure)) return null;
+  const name = (value: string) => value.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  if (hint.guestName && (typeof hint.guestName !== 'string' || name(hint.guestName) !== name(`${stay.firstName} ${stay.lastName}`))) return null;
+  return path;
+}
+
 export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Context,
   input: z.infer<typeof reservationWorkflowV2ReviewScopeInputSchema>) {
   return withLockedV2DraftMutation(ctx, input, { fieldPath: `/reviewScope/${input.requestId}`, eventType: 'field.accept',
@@ -447,6 +526,12 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
       if (input.scope === 'request') {
         if (ids.size && (ids.size !== 1 || !ids.has(request.id))) return null;
         roots.push({ path: `${root}/body`, value: request.body });
+        if (request.kind === 'filing') {
+          const refs = valueAt(draft, `${root}/documentRefs`);
+          const documents = Array.isArray(refs) ? draft.proposal.content.documents.filter((row) =>
+            row.ownerRequestId === request.id && refs.includes(row.id)) : [];
+          if (documents.length === 1) roots.push({ path: ptr('proposal', 'content', 'documents', documents[0]!.id), value: documents[0] });
+        }
       } else if (input.scope === 'allocations') {
         if (request.kind !== 'create' || !ids.size || [...ids].some((id) => !request.body.allocations.some((row) => row.id === id))) return null;
         roots.push({ path: `${root}/body/shared`, value: request.body.shared });
@@ -482,7 +567,8 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
         const rows = input.scope === 'services' ? draft.proposal.content.services : draft.proposal.content.documents;
         const refs = valueAt(draft, `${root}/${input.scope === 'services' ? 'serviceRefs' : 'documentRefs'}`);
         if (!Array.isArray(refs) || !ids.size || [...ids].some((id) => !refs.includes(id) || !rows.some((row) => row.id === id))) return null;
-        rows.forEach((row, index) => { if (ids.has(row.id)) roots.push({ path: ptr('proposal', 'content', input.scope, index), value: row }); });
+        rows.forEach((row, index) => { if (ids.has(row.id)) roots.push({ path: ptr('proposal', 'content', input.scope,
+          request.kind === 'filing' && input.scope === 'documents' ? row.id : index), value: row }); });
       }
       const reviews = { ...draft.staffReviews }, now = new Date().toISOString();
       const preparedQuote = request.kind === 'quote' && input.scope === 'request' && [...draft.operationResults].reverse().find((entry) =>
@@ -496,6 +582,7 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
       const walk = (path: string, source: unknown) => {
         const last = decodeURIComponent(path.split('/').at(-1) ?? '');
         if (NON_REVIEW_FIELDS.has(last)) return;
+        if (request.kind === 'create' && /\/body\/allocations\/\d+\/guest\/nativeSelectionRef$/.test(path)) return;
         const override = draft.fieldOverrides[path];
         if (override?.state === 'unknown') return;
         if (override?.state === 'none' || override?.state === 'clear') {
@@ -521,6 +608,17 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
         }
       };
       roots.forEach(({ path }) => walk(path, valueAt(draft, path)));
+      if (request.kind === 'create' && input.scope === 'allocations') request.body.allocations.forEach((row, index) => {
+        if (!ids.has(row.id)) return;
+        const guestPath = `${root}/body/allocations/${index}/guest`;
+        delete reviews[`${guestPath}/nativeSelectionRef`];
+        const path = reviewedGuestSelection(draft, request.id, row.id, guestPath);
+        if (path) reviews[path] = { status: 'accepted', note: null, at: now };
+      });
+      if (request.kind === 'filing' && input.scope === 'request') {
+        const path = reviewedFilingSelection(draft, request.id, root);
+        if (path) reviews[path] = { status: 'accepted', note: null, at: now };
+      }
       return { draft: { ...draft, staffReviews: reviews } };
     } });
 }

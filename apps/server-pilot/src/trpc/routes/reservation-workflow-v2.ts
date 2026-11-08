@@ -125,6 +125,26 @@ async function nativeContext(user: { id: string; sessionId?: string; sessionProf
     property: { propertyCode: scoped.propertyCode } };
 }
 
+/** Reclassify the bound mailbox source before creating a reservation. */
+async function requireCreateSource(scoped: ReturnType<typeof context>, source: ReservationWorkflowV2ItemInput['source'], mailboxAddress: string) {
+  if (!mailboxAddress.trim()) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'The mailbox address is unavailable.' });
+  const [row] = await scoped.db.select({ id: message.id, threadId: message.threadId, fromAddress: message.fromAddress,
+    subject: message.subject, textBody: message.textBody, htmlBody: message.htmlBody,
+    sourceProvenance: message.sourceProvenance, arrivedAt: MESSAGE_ARRIVED_AT })
+    .from(message).innerJoin(mailThread, and(eq(mailThread.id, message.threadId), eq(mailThread.transportId, message.transportId)))
+    .where(and(eq(message.transportId, scoped.transportId), eq(message.id, source.messageId),
+      eq(message.threadId, source.threadId), eq(message.direction, 'inbound'), eq(message.historyOnly, false),
+      eq(mailThread.historyOnly, false), isNull(mailThread.trashedAt), isNull(mailThread.spamAt))).limit(1);
+  if (!row || row.sourceProvenance?.attention != null || !row.arrivedAt ||
+      row.arrivedAt.toISOString() !== source.arrivedAt || staffQuoteSourceHash(row) !== source.sourceHash) {
+    throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This email is no longer available. Reopen it and try again.' });
+  }
+  const classification = classifyReservationWorkflowV2Source({ fromAddress: row.fromAddress, subject: row.subject,
+    bodyText: preStaySourceText(row.textBody, row.htmlBody), mailboxAddress });
+  if (classification.selfPreStay) throw new TRPCError({ code: 'FORBIDDEN',
+    message: 'This pre-stay email describes an existing reservation. Choose another action.' });
+}
+
 async function withPreparation<T extends { status: string }>(reply: Promise<T>, propertyCode: string) {
   const result = await reply;
   const draft = 'draft' in result ? result.draft as ReservationWorkflowV2Draft | null : null;
@@ -238,6 +258,8 @@ export const reservationWorkflowV2Router = router({
       internetMessageId: selected.internetMessageId,
       sourceText: preStaySourceText(selected.textBody, selected.htmlBody),
       sourceSubject: selected.subject ?? '', sourceSender: selected.fromAddress,
+      selfPreStay: classifyReservationWorkflowV2Source({ fromAddress: selected.fromAddress, subject: selected.subject,
+        bodyText: preStaySourceText(selected.textBody, selected.htmlBody), mailboxAddress: ctx.transportEmail }).selfPreStay,
       attachments,
       source: { threadId: selected.threadId, messageId: selected.id,
         sourceHash: staffQuoteSourceHash(selected), arrivedAt: selected.arrivedAt.toISOString() } };
@@ -280,8 +302,9 @@ export const reservationWorkflowV2Router = router({
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
     return withPreparation(editReservationWorkflowV2Draft(scoped, { ...input, value: input.value }), scoped.propertyCode);
   }),
-  addAction: mailboxProcedure.input(reservationWorkflowV2AddActionInputSchema).mutation(({ input, ctx }) => {
+  addAction: mailboxProcedure.input(reservationWorkflowV2AddActionInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
+    if (input.kind === 'create') await requireCreateSource(scoped, input.source, ctx.transportEmail);
     return withPreparation(addReservationWorkflowV2Action(scoped, input), scoped.propertyCode);
   }),
   changeRows: mailboxProcedure.input(reservationWorkflowV2ChangeRowsInputSchema).mutation(({ input, ctx }) => {
@@ -342,7 +365,10 @@ export const reservationWorkflowV2Router = router({
     if (workflow.result) return workflow.result;
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteExecute(scoped, input);
     if (workflow.kind === 'filing') return reservationWorkflowV2FilingExecute(scoped, input);
-    if (workflow.kind === 'create') return reservationWorkflowV2Execute(scoped, input);
+    if (workflow.kind === 'create') {
+      await requireCreateSource(context(ctx.sessionUser.id, ctx.activeTransportId), input.source, ctx.transportEmail);
+      return reservationWorkflowV2Execute(scoped, input);
+    }
     if (workflow.kind === 'cancel') return reservationWorkflowV2CancelExecute(scoped, input);
     if (workflow.kind === 'amend') return reservationWorkflowV2AmendExecute(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };

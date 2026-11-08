@@ -49,7 +49,7 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
       if (!live || activeSource.current !== key) return;
       setSnapshot(current => !current || next.session.seq >= current.session.seq ? next : current);
       if (next.session.draft.prefill?.status === 'running') {
-        if (++refreshCount > 90) { setLoadError('Reading this email is taking longer than expected. Reopen it to check progress; your draft is retained.'); return; }
+        if (++refreshCount > 155) { setLoadError('Prefill has not finished. You can enter the request now, or retry the untouched draft. Your edits are retained.'); return; }
         refreshTimer = setTimeout(() => {
           void client.get({ source, snapshot: next }).then(acceptPrefill).catch(() => {
             if (live && activeSource.current === key) setLoadError('Could not refresh the email prefill. Reopen it to check progress; your draft is retained.');

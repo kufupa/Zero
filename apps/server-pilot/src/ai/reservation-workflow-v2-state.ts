@@ -250,6 +250,12 @@ function prefillSnapshot(draft: ReservationWorkflowV2Draft): string {
   return JSON.stringify(rest);
 }
 
+function abandonedPrefill(startedAt: string | null, now = Date.now()): boolean {
+  if (!startedAt) return false;
+  const started = Date.parse(startedAt);
+  return Number.isFinite(started) && now - started >= 5 * 60_000;
+}
+
 /** Metadata is not a human edit and never advances the pane cursor. */
 export async function claimReservationWorkflowV2Prefill(ctx: Context, input: MutationInput & { allowRetry: boolean }): Promise<
   { result: ReservationWorkflowV2StateResult; claim?: PrefillClaim }
@@ -268,7 +274,8 @@ export async function claimReservationWorkflowV2Prefill(ctx: Context, input: Mut
     const meta = current.draft.prefill ?? (input.allowRetry && retryablePrefill(current.draft)
       ? { status: 'failed' as const, attemptId: null, attemptCount: 1, startedAt: null, finishedAt: null }
       : undefined);
-    if (!meta || meta.status === 'running' || meta.status === 'complete' || meta.status === 'superseded' ||
+    if (!meta || (meta.status === 'running' && !(input.allowRetry && abandonedPrefill(meta.startedAt))) ||
+        meta.status === 'complete' || meta.status === 'superseded' ||
         meta.attemptCount >= 2 || (meta.status === 'failed' && !input.allowRetry) ||
         Object.keys(current.draft.fieldOverrides).length || Object.keys(current.draft.staffReviews).length ||
         current.draft.operationResults.length || await hasPrefillRetryActivity(tx, item.id, current.draft.generationId, item.revisionSeq)) return { result: current };
@@ -680,6 +687,7 @@ function validServiceTargetEdit(draft: ReservationWorkflowV2Draft, path: string,
 export function reservationWorkflowV2SavedTargetLocked(draft: ReservationWorkflowV2Draft, requestId: string, hintId: string): boolean {
   return draft.operationResults.some((result) => {
     if (result.requestId !== requestId || (result.status !== 'succeeded' && result.status !== 'unknown')) return false;
+    if (result.workflow === 'amend') return !result.allocationId || result.allocationId === hintId;
     if (result.workflow !== 'services') return true;
     const refs = new Set(result.observationRefs);
     const bound = draft.observations.find((row) => refs.has(row.ref) && row.criteria.workflow === 'services' &&
@@ -694,6 +702,9 @@ function safeSavedTargetEdit(draft: ReservationWorkflowV2Draft, path: string): b
   if (!parts || parts[2] !== 'requests' || parts[4] !== 'body' || parts[5] !== 'targets') return true;
   const request = draft.proposal.content.requests.find((row, index) => row.id === parts[3] || String(index) === parts[3]);
   if (!request) return false;
+  // Amend has a per-hint semantic guard after the edit, including ancestor edits.
+  if (request.kind === 'amend' && draft.operationResults.some((row) => row.requestId === request.id && row.workflow === 'amend' &&
+      (row.status === 'succeeded' || row.status === 'unknown'))) return true;
   const rows = effectiveSavedTargetRows(draft, request.id);
   const key = parts[6] === 'include' && parts.length >= 9 ? parts[7] : undefined;
   const hint = key === undefined ? undefined : /^\d+$/.test(key) ? rows[Number(key)] : rows.find((row) =>
@@ -785,7 +796,11 @@ async function mutateDraft(ctx: Context, input: MutationInput & { fieldPath: str
         const next = applyServiceTargetEdit(draft, input.fieldPath, input.override);
         return next ? { draft: next } : null;
       }
-      return { draft: updateDraft(draft, input) };
+      const next = updateDraft(draft, input);
+      if (input.override && draft.operationResults.some((row) => row.workflow === 'amend' &&
+          (row.status === 'succeeded' || row.status === 'unknown')) &&
+          !nativeStructureIsSafe({ reservationWorkflowV2: draft }, { reservationWorkflowV2: next })) return null;
+      return { draft: next };
     } });
 }
 

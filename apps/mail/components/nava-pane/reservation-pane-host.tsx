@@ -204,6 +204,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
           subject: result.sourceSubject,
           sender: result.sourceSender,
           sourceText: result.sourceText,
+          selfPreStay: result.selfPreStay,
           receivedAt: result.source.arrivedAt,
           attachments: result.attachments.filter((item) => !item.isInline).map((item) => ({
             sourceRef: item.id, name: item.filename, mimeType: item.mimeType, size: item.sizeBytes,

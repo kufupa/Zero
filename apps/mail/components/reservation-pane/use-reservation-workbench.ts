@@ -12,6 +12,7 @@ type Buffer = {
   conflict: boolean;
   error: string | null;
   pendingMutationHeld: boolean;
+  actionsPending: number;
   token: number;
   queue: Promise<void>;
   listeners: Set<() => void>;
@@ -65,7 +66,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   const key = sourceKey(source);
   const safeSnapshot = snapshotMatchesSource(snapshot, source) ? snapshot : null;
   if (!buffers.has(key)) buffers.set(key, { snapshot: safeSnapshot, pending: new Map(), conflict: false,
-    error: null, pendingMutationHeld: false, token: 0, queue: Promise.resolve(), listeners: new Set() });
+    error: null, pendingMutationHeld: false, actionsPending: 0, token: 0, queue: Promise.resolve(), listeners: new Set() });
   const entry = buffers.get(key)!;
   if (safeSnapshot && (!entry.snapshot || safeSnapshot.session.seq >= entry.snapshot.session.seq)) entry.snapshot = safeSnapshot;
   const active = useRef({ key, epoch: source.selectionEpoch });
@@ -75,6 +76,8 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   const [error, setError] = useState<string | null>(null);
   const [changed, rerender] = useState(0);
   const [uncommitted, setUncommitted] = useState<Set<string>>(new Set());
+  const liveInputs = useRef({ key, uncommitted });
+  liveInputs.current = { key, uncommitted };
   const [activeId, setActiveId] = useState<string | null>(null);
   useEffect(() => { setError(null); setUncommitted(new Set()); setActiveId(null); }, [key]);
 
@@ -152,7 +155,9 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         if (mounted.current && active.current.key === key) { setBusy(false); rerender(value => value + 1); }
       }
     };
-    return enqueue(buffer, execute);
+    buffer.actionsPending++;
+    notify(buffer);
+    return enqueue(buffer, execute).finally(() => { buffer.actionsPending--; notify(buffer); });
   };
   const stageEdit = (path: string, value: unknown, state: ReservationFieldOverride['state'] = 'set') => {
     if (!entry.pendingMutationHeld) { entry.pendingMutationHeld = true; beginMutation(); }
@@ -164,7 +169,12 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   const requireRequest = () => { if (!request) throw new Error('Choose an action first.'); return request.id; };
   const commands: WorkbenchCommands = {
     stageEdit,
-    setUncommitted(id, dirty) { setUncommitted(previous => { if (previous.has(id) === dirty) return previous; const next = new Set(previous); if (dirty) next.add(id); else next.delete(id); return next; }); },
+    setUncommitted(id, dirty) {
+      const previous = liveInputs.current.key === key ? liveInputs.current.uncommitted : new Set<string>();
+      if (previous.has(id) === dirty) return;
+      const next = new Set(previous); if (dirty) next.add(id); else next.delete(id);
+      liveInputs.current = { key, uncommitted: next }; setUncommitted(next);
+    },
     edit(path, value, state = 'set') { stageEdit(path, value, state); return run(async () => {}); },
     changeRows(change) { return run(context => client.changeRows({ ...context, ...change })); },
     selectNative(fieldPath, observationRef) { return run(context => client.selectNative({ ...context, requestId: requireRequest(), fieldPath, observationRef })); },
@@ -234,7 +244,9 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     return () => clearTimeout(timer);
   }, [current, request, busy, changed, uncommitted, key, preview]);
 
-  return { snapshot: current, latestSnapshot: () => entry.snapshot, request, commands, busy, error: error ?? entry.error, saving: entry.pending.size > 0, blocked: uncommitted.size > 0,
+  return { snapshot: current, readyForReply: () => mounted.current && active.current.key === key
+      && active.current.epoch === source.selectionEpoch && entry.pending.size === 0 && !entry.conflict && entry.actionsPending === 0
+      && liveInputs.current.key === key && liveInputs.current.uncommitted.size === 0, latestSnapshot: () => entry.snapshot, request, commands, busy, error: error ?? entry.error, saving: entry.pending.size > 0, blocked: uncommitted.size > 0,
     conflict: entry.conflict, activeId: request?.id ?? null, setActiveId,
     addAction: (kind: Exclude<ReservationWorkflowKind, 'other'>) => run(async context => { const next = await client.addAction({ ...context, kind }); setActiveId(next.requests.at(-1)?.id ?? null); return next; }),
     undo: () => run(context => client.undo(context)), redo: () => run(context => client.redo(context)),

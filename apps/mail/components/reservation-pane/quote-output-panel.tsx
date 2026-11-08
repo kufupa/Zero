@@ -8,9 +8,9 @@ import styles from './reservation-pane.module.css';
 export type SaveQuoteOutput = (input: { snapshot: ReservationPaneSnapshot; requestId: string; html: string;
   isCurrentSnapshot: () => boolean }) => Promise<QuoteOutputResult>;
 
-export function QuoteOutputPanel({ source, snapshot, requestId, save, latestSnapshot }: {
+export function QuoteOutputPanel({ source, snapshot, requestId, save, latestSnapshot, readyForReply, blocked }: {
   source: ReservationSourceContext; snapshot: ReservationPaneSnapshot; requestId: string;
-  save?: SaveQuoteOutput; latestSnapshot(): ReservationPaneSnapshot | null;
+  save?: SaveQuoteOutput; latestSnapshot(): ReservationPaneSnapshot | null; readyForReply(): boolean; blocked: boolean;
 }) {
   const output = getQuoteOutput(source, snapshot, requestId);
   const [body, setBody] = useState(output?.cover?.body ?? '');
@@ -19,12 +19,12 @@ export function QuoteOutputPanel({ source, snapshot, requestId, save, latestSnap
   useEffect(() => { setBody(output?.cover?.body ?? ''); setMessage(null); }, [output?.operationId]);
   if (!output) return null;
   const saveReply = async () => {
-    if (!save || busy) return;
+    if (!save || busy || blocked || !readyForReply()) return;
     setBusy(true); setMessage(null);
     try {
       const result = await save({ snapshot, requestId, html: quoteCoverHtml(body), isCurrentSnapshot: () => {
         const current = latestSnapshot();
-        return current?.sourceMessageId === snapshot.sourceMessageId && current.session.seq === snapshot.session.seq
+        return readyForReply() && current?.sourceMessageId === snapshot.sourceMessageId && current.session.seq === snapshot.session.seq
           && current.session.draft.generationId === snapshot.session.draft.generationId;
       } });
       setMessage(result.message);
@@ -37,7 +37,7 @@ export function QuoteOutputPanel({ source, snapshot, requestId, save, latestSnap
     {output.cover && <><p className={styles.small}>To: {output.cover.to}</p><label className={styles.field}>Cover reply<textarea aria-label="Quote cover reply" value={body} onChange={event => setBody(event.target.value)} rows={6} /></label></>}
     <div className={styles.sources}>{output.artifacts.map(artifact => <a key={artifact.sha256} download={artifact.fileName}
       href={`data:${artifact.mimeType};base64,${artifact.bytesBase64}`}>{artifact.fileName}</a>)}</div>
-    <button type="button" disabled={!save || busy || output.issues.length > 0 || !body.trim()} onClick={() => { void saveReply(); }}>{busy ? 'Saving reply…' : output.failures.length ? 'Save unsent reply with available files' : 'Save unsent reply + PDF + Excel'}</button>
+    <button type="button" disabled={!save || busy || blocked || output.issues.length > 0 || !body.trim()} onClick={() => { void saveReply(); }}>{busy ? 'Saving reply…' : output.failures.length ? 'Save unsent reply with available files' : 'Save unsent reply + PDF + Excel'}</button>
     {message && <p role="status" className={styles.notice}>{message}</p>}
   </section>;
 }

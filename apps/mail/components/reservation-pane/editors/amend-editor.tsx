@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { effectiveAt, record, requestPath, text, valueAt } from '@/lib/reservation-workflow/views';
 import { Field, Count, Section } from '../shared/stay-fields';
@@ -102,12 +102,29 @@ function ChangeList({ editor, path, label }: { editor: Editor; path: string; lab
 
 function AgeInput({ editor, path }: { editor: Editor; path: string }) {
   const current = valueAt(editor.snapshot, path);
-  const [value, setValue] = useState(Array.isArray(current) ? current.join(', ') : text(current));
+  const initial = Array.isArray(current) ? current.join(', ') : text(current);
+  const [value, setValue] = useState(initial);
+  const dirty = useRef(false), version = useRef(0), staged = useRef<unknown>(null);
+  const parse = (input: string) => {
+    const parts = input.trim() ? input.split(',').map(part => part.trim()) : [];
+    const ages = parts.map(Number);
+    return parts.length <= 9 && parts.every((part, index) => /^\d+$/.test(part) && ages[index]! <= 17) ? ages : input;
+  };
+  useEffect(() => { if (!dirty.current) setValue(initial); }, [initial]);
+  useEffect(() => () => { version.current += 1; editor.commands.setUncommitted(path, false); }, [path]);
   return <label className={styles.label}>Child ages (comma separated)
-    <input value={value} disabled={editor.view.busy} onChange={event => setValue(event.target.value)} onBlur={() => {
-      const parts = value.trim() ? value.split(',').map(part => part.trim()) : [];
-      const ages = parts.map(Number);
-      void editor.commands.edit(path, parts.every((part, index) => /^\d+$/.test(part) && ages[index]! <= 17) ? ages : value);
+    <input value={value} disabled={editor.view.busy} onChange={event => {
+      const next = event.target.value;
+      setValue(next); dirty.current = true; version.current += 1; staged.current = parse(next);
+      editor.commands.setUncommitted(path, true); editor.commands.stageEdit(path, staged.current);
+    }} onBlur={() => {
+      if (!dirty.current) return;
+      const before = version.current, pending = staged.current;
+      void editor.commands.edit(path, pending).then(() => {
+        if (version.current !== before) return;
+        dirty.current = false; editor.commands.setUncommitted(path, false);
+        setValue(Array.isArray(pending) ? pending.join(', ') : text(pending));
+      }).catch(() => {});
     }} />
   </label>;
 }

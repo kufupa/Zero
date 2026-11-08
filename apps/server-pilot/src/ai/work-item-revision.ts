@@ -138,6 +138,48 @@ function extractionMatches(stored: string | null, current: string | null): boole
   return stored !== null && stored === current;
 }
 
+// Compare the fields consumed by Amend for a particular saved stay. Resolve
+// overrides before selecting by hint ID, since structural edits can reindex rows.
+function amendTargetBinding(draft: Record<string, unknown>, requestId: string, hintId: string): unknown | null {
+  const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+  const content = object(object(draft.proposal).content);
+  const requests = Array.isArray(content.requests) ? content.requests : [];
+  const request = object(requests.find((row) => object(row).id === requestId));
+  if (request.kind !== 'amend') return null;
+  const fields = object(draft.fieldOverrides);
+  const effective = (path: string, source: unknown): unknown => {
+    const override = object(fields[path]);
+    let value = source;
+    if (override.state === 'set') value = override.value;
+    else if (override.state === 'unknown') return { __amendOverride: 'unknown' };
+    else if (override.state === 'none' || override.state === 'clear') return { __amendOverride: 'none' };
+    if (value && typeof value === 'object' && !Array.isArray(value) && object(value).kind === 'none')
+      return { __amendOverride: 'none' };
+    if (Array.isArray(value)) return value.map((row, index) => effective(`${path}/${index}`, row));
+    if (!value || typeof value !== 'object') return value;
+    const sourceObject = object(value), keys = new Set(Object.keys(sourceObject)), prefix = `${path}/`;
+    for (const overridePath of Object.keys(fields)) {
+      if (!overridePath.startsWith(prefix)) continue;
+      const child = overridePath.slice(prefix.length).split('/')[0];
+      if (child) try { keys.add(decodeURIComponent(child)); } catch { /* Invalid paths cannot be edited. */ }
+    }
+    return Object.fromEntries([...keys].sort().map((key) =>
+      [key, effective(`${path}/${encodeURIComponent(key)}`, sourceObject[key])]));
+  };
+  const path = `/proposal/content/requests/${encodeURIComponent(requestId)}/body`;
+  const rawBody = object(request.body), body = object(effective(path, request.body));
+  const targets = object(body.targets), include = Array.isArray(targets.include) ? targets.include : [];
+  const matches = include.filter((row) => object(row).id === hintId);
+  const perTarget = effective(`${path}/perTarget`, rawBody.perTarget);
+  const perRows = Array.isArray(perTarget) ? perTarget.filter((row) => object(row).hintId === hintId) : [];
+  if (matches.length !== 1 || perRows.length !== 1) return null;
+  const exclude = Array.isArray(targets.exclude) ? targets.exclude : [];
+  return { kind: request.kind, mode: targets.mode, hint: matches[0],
+    excluded: exclude.some((row) => object(row).id === hintId), perTarget: perRows[0],
+    sharedChanges: effective(`${path}/sharedChanges`, rawBody.sharedChanges) };
+}
+
 export function nativeStructureIsSafe(currentState: PaneState, restoredState: PaneState): boolean {
   const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : {};
@@ -161,6 +203,23 @@ export function nativeStructureIsSafe(currentState: PaneState, restoredState: Pa
       };
       if (JSON.stringify(target(oldContent)) !== JSON.stringify(target(newContent))) return false;
       continue;
+    }
+    if (result.workflow === 'amend' && typeof result.allocationId === 'string' && result.allocationId) {
+      const before = amendTargetBinding(current, id, result.allocationId);
+      const after = amendTargetBinding(next, id, result.allocationId);
+      if (!before || !after || JSON.stringify(before) !== JSON.stringify(after)) return false;
+      continue;
+    }
+    if (result.workflow === 'amend') {
+      // A legacy receipt without a hint binding cannot safely be scoped.
+      const bodyOverrides = (draft: Record<string, unknown>, content: Record<string, unknown>) => {
+        const index = rows(content, 'requests').findIndex((row) => record(row).id === id);
+        const prefixes = [`/proposal/content/requests/${encodeURIComponent(id)}/body`,
+          `/proposal/content/requests/${index}/body`];
+        return Object.fromEntries(Object.entries(record(draft.fieldOverrides)).filter(([path]) => prefixes.some((prefix) =>
+          path === prefix || path.startsWith(`${prefix}/`))).sort(([a], [b]) => a.localeCompare(b)));
+      };
+      if (JSON.stringify(bodyOverrides(current, oldContent)) !== JSON.stringify(bodyOverrides(next, newContent))) return false;
     }
     if (result.workflow === 'services' && Array.isArray(result.observationRefs) && Array.isArray(current.observations)) {
       const refs = result.observationRefs;

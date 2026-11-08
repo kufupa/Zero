@@ -28,6 +28,10 @@ export function ReservationPane(props: ReservationPaneProps) {
   const [formReset, setFormReset] = useState(0);
   const { source, preview = false } = props;
   const { snapshot, request, commands, busy } = workbench;
+  const createBlocked = source.selfPreStay && request?.kind === 'create';
+  const prefill = snapshot?.session.draft.prefill;
+  const prefillStale = prefill?.status === 'running' && !!prefill.startedAt &&
+    Number.isFinite(Date.parse(prefill.startedAt)) && Date.now() - Date.parse(prefill.startedAt) >= 5 * 60_000;
   const editor: WorkbenchEditorProps | null = snapshot && request ? { source, snapshot, request,
     view: { busy, error: workbench.error, preview, saving: workbench.saving }, commands } : null;
   const body = snapshot && request ? record(effectiveAt(snapshot, `${requestPath(request.id)}/body`)) : {};
@@ -45,7 +49,7 @@ export function ReservationPane(props: ReservationPaneProps) {
   const extrasNeedReview = Array.isArray(quoteExtras) && quoteExtras.some(item => typeof item === 'string' && item.trim()) &&
     !(quoteReview?.status === 'accepted' && Date.parse(quoteReview.at ?? '') >= Date.parse(quotePrepared?.updatedAt ?? '') && Date.parse(quoteReview.at ?? '') >= Date.parse(quoteObservation?.observedAt ?? ''));
   const check = async () => {
-    if (!request || workbench.blocked) return;
+    if (!request || createBlocked || workbench.blocked) return;
     try {
       await commands.review(request.kind === 'create' ? 'allocations' : request.kind === 'amend' || request.kind === 'cancel' ? 'targets' : 'request', ids);
       if (request.kind === 'create' || request.kind === 'amend' || request.kind === 'cancel') {
@@ -61,7 +65,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     } catch { setChecked(null); }
   };
   const save = async () => {
-    if (!request || preview || workbench.blocked || extrasNeedReview || checked !== digest) return;
+    if (!request || createBlocked || preview || workbench.blocked || extrasNeedReview || checked !== digest) return;
     try {
       if (request.kind === 'create' || request.kind === 'amend' || request.kind === 'cancel') {
         for (const id of ids) {
@@ -80,21 +84,22 @@ export function ReservationPane(props: ReservationPaneProps) {
     <header className={styles.header}><div><strong>Nava</strong><span>{preview ? 'Interactive preview · Save disabled' : workbench.saving ? 'Saving changes…' : busy ? 'Checking Infor…' : 'Saved draft'}</span></div>
       <div className={styles.history}><button type="button" aria-label="Undo draft change" disabled={disabled || !snapshot?.session.revision} onClick={() => { void workbench.undo().catch(() => {}); }}>↶</button><button type="button" aria-label="Redo draft change" disabled={disabled || snapshot?.session.revision === snapshot?.session.revisionHead} onClick={() => { void workbench.redo().catch(() => {}); }}>↷</button></div>
     </header>
-    <nav className={styles.tabs} aria-label="Reservation actions">{snapshot?.requests.map(row => <button type="button" key={row.id} className={row.id === request?.id ? styles.activeTab : ''} onClick={() => { workbench.setActiveId(row.id); setChecked(null); }}>{labels[row.kind]}</button>)}
-      <select aria-label="Add action" value="" disabled={!snapshot || busy} onChange={event => { const kind = event.target.value as Exclude<ReservationWorkflowKind, 'other'>; if (kind) void workbench.addAction(kind).catch(() => {}); }}><option value="">+ Action</option>{Object.entries(labels).filter(([kind]) => kind !== 'other').map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</select></nav>
+    <nav className={styles.tabs} aria-label="Reservation actions">{snapshot?.requests.filter(row => !source.selfPreStay || row.kind !== 'create').map(row => <button type="button" key={row.id} className={row.id === request?.id ? styles.activeTab : ''} onClick={() => { workbench.setActiveId(row.id); setChecked(null); }}>{labels[row.kind]}</button>)}
+      <select aria-label="Add action" value="" disabled={!snapshot || busy} onChange={event => { const kind = event.target.value as Exclude<ReservationWorkflowKind, 'other'>; if (kind && !(source.selfPreStay && kind === 'create')) void workbench.addAction(kind).catch(() => {}); }}><option value="">+ Action</option>{Object.entries(labels).filter(([kind]) => kind !== 'other' && !(source.selfPreStay && kind === 'create')).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</select></nav>
     <div className={styles.sources}><button type="button" onClick={() => props.onOpenEvidence?.(source.messageId)}>Email</button>{source.attachments.map(file => <button type="button" key={file.sourceRef} onClick={() => props.onOpenAttachment?.(file.sourceRef)}>{file.name}</button>)}</div>
     {(props.loadError || workbench.error) && <div className={styles.error} role="alert">{workbench.error || props.loadError}{workbench.conflict && <div><button type="button" onClick={() => { void workbench.applyPending().catch(() => {}); }}>Apply my edits</button><button type="button" onClick={() => { workbench.discardPending(); setFormReset(value => value + 1); }}>Discard pending edits</button></div>}</div>}
     <main className={styles.content}>
       {!snapshot ? <div className={styles.empty}>{props.loadError ? 'This email could not be opened.' : 'Opening your email draft…'}</div>
-        : !request ? <div className={styles.empty}><h2>What does this email need?</h2><p>Add an action to begin. Prefill will appear here when ready; your edits are saved.</p><button type="button" onClick={() => { void workbench.addAction('create').catch(() => {}); }}>New booking</button></div>
+        : !request ? <div className={styles.empty}><h2>What does this email need?</h2><p>Add an action to begin. Prefill will appear here when ready; your edits are saved.</p>{!source.selfPreStay && <button type="button" onClick={() => { void workbench.addAction('create').catch(() => {}); }}>New booking</button>}</div>
+        : createBlocked ? <div className={styles.empty}>This pre-stay email describes an existing reservation. Choose another action.</div>
         : Editor && editor ? <><Editor key={`${request.id}:${formReset}`} {...editor} />{(request.kind === 'create' || request.kind === 'amend') && snapshot.session.draft.proposal.content.services.some(service => service.ownerRequestId === request.id || request && snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id)?.serviceRefs.includes(service.id)) && <AddonsEditor key={`addons:${request.id}:${formReset}`} {...editor} />}</>
         : <div className={styles.empty}>This request needs staff attention in Infor.</div>}
-      {request?.kind === 'quote' && snapshot && <QuoteOutputPanel source={source} snapshot={snapshot} requestId={request.id} save={props.onSaveQuoteOutput} latestSnapshot={workbench.latestSnapshot} />}
-      {snapshot?.session.draft.prefill?.status === 'running' && <p className={styles.small}>Reading the email and checking Infor. You can start editing now.</p>}
-      {snapshot?.session.draft.prefill?.status === 'failed' && <p className={styles.small}>Prefill did not finish. Your form still works. <button type="button" onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button></p>}
+      {request?.kind === 'quote' && snapshot && <QuoteOutputPanel source={source} snapshot={snapshot} requestId={request.id} save={props.onSaveQuoteOutput} latestSnapshot={workbench.latestSnapshot} readyForReply={workbench.readyForReply} blocked={busy || workbench.saving || workbench.blocked || workbench.conflict} />}
+      {prefill?.status === 'running' && !prefillStale && <p className={styles.small}>Reading the email and checking Infor. You can start editing now.</p>}
+      {(prefill?.status === 'failed' || prefillStale) && <p className={styles.small}>Prefill did not finish. Your form still works. <button type="button" onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button></p>}
       {snapshot?.issues.filter(issue => !issue.path || !request || issue.path.startsWith(requestPath(request.id))).map((issue, index) => <p className={styles.notice} key={index}>{issue.explanation}</p>)}
     </main>
-    {request && request.kind !== 'services' && request.kind !== 'other' && <footer className={styles.footer}>
+    {request && !createBlocked && request.kind !== 'services' && request.kind !== 'other' && <footer className={styles.footer}>
       {request.kind === 'create' && snapshot?.preparationViews.filter(view => view.requestId === request.id && view.price && !snapshot.operationResults.some(row => row.requestId === request.id && row.allocationId === view.allocationId && ['succeeded','unknown'].includes(text(row.status)))).map(view => <div key={view.allocationId} className={styles.price}><span>Room {ids.indexOf(view.allocationId) + 1} · {view.current ? 'Infor price' : 'Price needs refresh'}</span><strong>{view.price ? [view.price.currency, view.price.totalRate].filter(value => value != null).join(' ') : '—'}</strong></div>)}
       <div className={styles.actions}><button type="button" disabled={disabled || !ids.length && ['create','amend','cancel'].includes(request.kind)} onClick={() => { void check(); }}>Review & check</button>
         <button type="button" className={styles.primary} disabled={disabled || preview || extrasNeedReview || checked !== digest} onClick={() => { void save(); }}>{request.kind === 'quote' ? 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : 'Save in Infor'}</button></div>

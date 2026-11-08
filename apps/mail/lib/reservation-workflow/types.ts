@@ -20,6 +20,7 @@ export type ReservationSourceContext = {
   sender: string;
   receivedAt?: string;
   sourceText?: string;
+  selfPreStay?: boolean;
   attachments: ReservationAttachmentView[];
 };
 

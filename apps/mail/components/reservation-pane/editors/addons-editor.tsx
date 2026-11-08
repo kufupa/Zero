@@ -108,7 +108,13 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex }: {
   const previous = record(preview.previouslyApprovedNative);
   const reviewNote = savedTarget && latest ? `services_saved:${savedTarget.requestId}:${savedTarget.hintId}:${service.id}:${latest.ref}` : '';
   const reviewPaths = Array.isArray(latest?.criteria.reviewPaths) ? latest.criteria.reviewPaths.filter((path): path is string => typeof path === 'string') : [];
-  const reviewed = !savedTarget || Boolean(latest && reviewPaths.length && reviewPaths.every(path => draft.staffReviews[path]?.status === 'accepted'
+  const freshNote = fresh && latest ? `services_fresh:${latest.criteria.requestId}:${latest.criteria.allocationId}:${latest.criteria.serviceId}:${latest.ref}` : '';
+  const freshReviewed = Boolean(fresh && latest && reviewPaths.length && reviewPaths.every(path => {
+    const review = draft.staffReviews[path];
+    return review?.status === 'accepted' && review.note === freshNote && review.at != null
+      && Date.parse(review.at) > Date.parse(latest.observedAt);
+  }));
+  const reviewed = fresh ? freshReviewed : !savedTarget || Boolean(latest && reviewPaths.length && reviewPaths.every(path => draft.staffReviews[path]?.status === 'accepted'
     || draft.fieldReviewRequirements[path]?.required === false) && draft.staffReviews[selectedPath]?.status === 'accepted'
     && draft.staffReviews[selectedPath]?.note === reviewNote);
   const serviceResults = draft.operationResults.filter(result => result.workflow === 'services' && result.requestId === ref.requestId
@@ -121,7 +127,8 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex }: {
   const connected = Boolean(allocation && operation === 'add' || savedTarget && hint);
   return <div className={styles.card}>
     <h3>{operation === 'add' ? 'Add' : operation === 'edit' ? 'Edit' : 'Remove'} · {service.code || service.requestedText || 'item'}</h3>
-    <div className={styles.hint}>{allocation ? `Create room${roomLabel ? ` · ${roomLabel}` : ''}` : savedTarget ? 'Existing saved stay' : 'Unresolved target'} · one native item</div>
+    <div className={styles.hint}>{allocation ? `Create room${roomLabel ? ` · ${roomLabel}` : ''}` : savedTarget
+      ? `Existing saved stay${text(hint?.confirmation) || text(hint?.guestName) ? ` · ${text(hint?.confirmation) || text(hint?.guestName)}` : ''}` : 'Unresolved target'} · one native item</div>
     {savedTarget && <Field editor={editor} path={`${serviceRoot}/operation`} label="Action" options={[
       { value: 'add', label: 'Add item' }, { value: 'edit', label: 'Edit saved item' }, { value: 'remove', label: 'Remove saved item' },
     ]} />}
@@ -164,18 +171,26 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex }: {
       {Object.keys(after).length > 0 && <NativeItem title="Proposed item" item={record(after.fields).code ? record(after.fields) : after} />}
       {preview.operation === 'remove' && <div className={styles.warning}>Requested removal · financial effect is unknown.</div>}
       {Object.keys(native).length > 0 && <NativeItem title={fresh ? 'Latest saved-stay check' : 'Last Infor check'} item={native} />}
+      {fresh && <small className={styles.hint}>Review the latest saved-stay details before saving.</small>}
       <small className={styles.hint}>Check again after any change. Infor is the source of dates, pricing basis and total.</small>
       <small className={styles.hint}>Save mode: {text(capability.writeMode) || 'Unavailable'}. {capability.canSave === true ? 'This stay is admitted for Save.' : 'Save is unavailable for this stay or mode.'}</small>
     </div>}
     {allocation && connected && !linkedCreate && <div className={styles.hint}>Save and verify this room before adding its service.</div>}
-    {uncertain && <div className={styles.warning}>Save outcome is uncertain. Reconcile before trying again.</div>}
+    {serviceResults.filter(result => result.status === 'unknown').map(result => <div className={styles.warning} key={result.id}>
+      <div>{result.summary || 'Save outcome is uncertain. Check the outcome before trying again.'}</div>
+      <button type="button" disabled={editor.view.busy} onClick={() => void editor.commands.reconcile(result.id).catch(() => {})}>Check outcome</button>
+    </div>)}
     {saved && <div className={styles.hint}>Infor readback confirmed this Add-On.</div>}
     {connected && latest && !saved && <div className={styles.row}>
-      <button type="button" disabled={editor.view.busy} onClick={() => void (async () => {
-        if (!savedTarget) { await editor.commands.review('services', [service.id]); return; }
+      <button type="button" disabled={editor.view.busy || Boolean(fresh && !reviewPaths.length)} onClick={() => void (async () => {
+        if (!savedTarget) {
+          if (fresh) for (const path of reviewPaths) await editor.commands.acceptServiceReview(path, freshNote);
+          else await editor.commands.review('services', [service.id]);
+          return;
+        }
         for (const path of reviewPaths) await editor.commands.acceptServiceReview(path, 'Reviewed the requested Add-On and native result');
         await editor.commands.acceptServiceReview(selectedPath, reviewNote);
-      })().catch(() => {})}>{savedTarget && reviewed ? 'Reviewed' : 'Review this item'}</button>
+      })().catch(() => {})}>{(savedTarget || fresh) && reviewed ? 'Reviewed' : 'Review this item'}</button>
       <button type="button" disabled={editor.view.busy || Boolean(allocation && !linkedCreate) || uncertain || !argument || editor.view.preview || capability.canSave !== true || !reviewed}
         onClick={() => { if (argument) void editor.commands.executeServices(argument, service.id, savedTarget || fresh ? latest.ref : undefined).catch(() => {}); }}>Go · save Add-On</button>
     </div>}
