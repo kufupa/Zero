@@ -66,3 +66,5 @@
 .pane .peekHeading button { padding:0 2px; border:0; background:transparent; font-size:16px; line-height:1; }
 .peekText { display:block; margin:8px 0; font-size:12px; line-height:1.4; white-space:pre-wrap; overflow-wrap:anywhere; }
 .pane .peekOpen { padding:3px 0; border:0; background:transparent; color:#6746ad; font-size:11px; font-weight:650; }
+.sourceFieldset { min-width: 0; border: 0; margin: 0; padding: 0; }
+.changedSourceText { max-height: 180px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; }

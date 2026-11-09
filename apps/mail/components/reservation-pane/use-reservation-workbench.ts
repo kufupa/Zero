@@ -200,7 +200,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       if (captured.length) void enqueue(buffer, () => flushCaptured(bound, buffer, captured)).catch(() => {});
     };
   }, [key, source.selectionEpoch, client]);
-  const run = (action: (context: { source: ReservationSourceContext; snapshot: ReservationPaneSnapshot }) => Promise<ReservationPaneSnapshot | void>, write = false): Promise<void> => {
+  const run = (action: (context: { source: ReservationSourceContext; snapshot: ReservationPaneSnapshot }) => Promise<ReservationPaneSnapshot | void>, write = false, skipFlush = false): Promise<void> => {
     const bound = source;
     const buffer = entry;
     const execute = async () => {
@@ -208,7 +208,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       setBusy(true); setError(null);
       if (write) beginMutation();
       try {
-        await flush(bound, buffer);
+        if (!skipFlush) await flush(bound, buffer);
         if (!buffer.snapshot) throw new Error('The email draft is still opening.');
         if (!mounted.current || active.current.key !== sourceKey(bound) || active.current.epoch !== bound.selectionEpoch) return;
         const next = await action({ source: bound, snapshot: buffer.snapshot });
@@ -359,7 +359,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     reconcile(operationId) { return run(context => {
       const operation = context.snapshot.operationResults.find(row => row.id === operationId);
       return operation?.workflow === 'services' ? client.reconcileServices({ ...context, operationId }) : client.reconcile({ ...context, operationId });
-    }); },
+    }, false, entry.snapshot?.session.sourceChanged === true); },
     acceptServiceReview(fieldPath, note, expected) { return run(context => {
       if (expected && (context.snapshot.session.draft.generationId !== expected.generationId ||
           JSON.stringify({ value: effectiveAt(context.snapshot, expected.path) }) !== JSON.stringify({ value: expected.value }))) {
@@ -381,7 +381,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   };
   const initialLookup = useRef(new Set<string>());
   useEffect(() => {
-    if (!current || current.session.sourceChanged || !request || request.kind !== 'create' || busy || entry.pending.size || entry.conflict || preview) return;
+    if (!current || current.session.sourceChanged || ['queued', 'running'].includes(current.session.draft.prefill?.status ?? '') || !request || request.kind !== 'create' || busy || entry.pending.size || entry.conflict || preview) return;
     const lookupKey = `${key}:${request.id}:${current.session.draft.generationId}`;
     if (initialLookup.current.has(lookupKey)) return;
     const timer = setTimeout(() => { initialLookup.current.add(lookupKey); void commands.lookup().catch(() => {}); }, 700);
@@ -389,7 +389,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   }, [current, request, busy, changed, key, preview]);
   const autoDigest = useRef(new Map<string, string>());
   useEffect(() => {
-    if (!current || current.session.sourceChanged || !request || busy || entry.pending.size || uncommitted.size || entry.conflict || preview) return;
+    if (!current || current.session.sourceChanged || ['queued', 'running'].includes(current.session.draft.prefill?.status ?? '') || !request || busy || entry.pending.size || uncommitted.size || entry.conflict || preview) return;
     const body = record(effectiveAt(current, `${requestPath(request.id)}/body`));
     if (request.kind !== 'create' && request.kind !== 'quote') return;
     const digest = JSON.stringify({ generation: current.session.draft.generationId, body });
@@ -431,7 +431,19 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     addAction: (kind: Exclude<ReservationWorkflowKind, 'other'>) => run(async context => { const next = await client.addAction({ ...context, kind }); setActiveId(next.requests.at(-1)?.id ?? null); return next; }),
     undo: () => run(context => client.undo(context)), redo: () => run(context => client.redo(context)),
     retryPrefill: () => run(context => client.prefill(context)),
-    reconcileSource: () => run(context => client.reconcileSource(context)),
+    reconcileSource: () => run(async context => {
+      const next = await client.reconcileSource(context);
+      if (!next.session.sourceChanged && snapshotMatchesSource(next, context.source) && entry.pending.size) {
+        for (const pending of entry.pending.values()) {
+          if (pendingMatches(context.snapshot, pending) && pending.rows.every(row => rowIdentity(effectiveAt(next, row.path)) === row.identity)) {
+            pending.generation = next.session.draft.generationId;
+          }
+        }
+        entry.conflict = true;
+        entry.error = 'Your pending edits are retained. Apply them after reviewing the updated evidence.';
+      }
+      return next;
+    }, false, true),
     applyPending: () => { entry.conflict = false; entry.error = null; return run(async () => {}); },
     discardPending: () => { entry.pending.clear(); releasePendingMutation(entry); entry.conflict = false; entry.error = null; setError(null); notify(entry); },
   };
