@@ -63,7 +63,7 @@ const SYNTHESIS_SHAPE_RULES = `Use this schema-valid empty envelope as the exact
 {"proposal":{"schemaVersion":"reservation-prefill.v0.2","content":{"requests":[],"services":[],"documents":[]},"annotations":[],"issues":[],"sourceClaims":[],"lookupResultRefs":[]},"reviewRequirements":{}}
 Each request's sourceRefs, serviceRefs and documentRefs are required arrays, including when empty. Reuse extraction request IDs; host links a request to source facts only by exact ID or a unique one-to-one source/text match, and fails closed when ambiguous. For Amend and Cancel, preserve every source-cited exact confirmation as an include hint with confirmation, sourceRefs, candidateRefs:[], suggestedRef:null and mode:"unresolved" unless an exact admitted host observation supports a target. Do not fabricate a native target. For Create, reservationNote belongs in body.shared.reservationNote, never at body root. Do not emit global review keys such as humanReviewRequired or beforeExecution: reviewRequirements is keyed by field-path strings, and each value is exactly {"required":true,"reasons":["..."],"evidenceRefs":["admitted-ref"]}. Use {} when no additional review requirement is needed. Preserve every source-supported field in the schema; if a field cannot be represented confidently, retain sourceClaims and add a visible issue rather than dropping the request or inventing a value. An exact source confirmation linked to a Create means possible prior booking, not proof of a native stay. Keep it as a sourceClaim only; the host adds the existing_confirmation_requires_lookup issue at /proposal/content/requests/{finalRequestId}/confirmationReference and requires exact native lookup before Execute. Do not transform it into a native ID or claim that a stay exists; never copy it into a native-selection field.`;
 
-const CREATE_SYNTHESIS_SHAPE_RULES = `For Create, body contains shared, dateSections and allocations only. Every existing date section has defaults:{} when empty; every allocation has overrides:{} when empty. Quote-only parties, salesStrategy, client, requestedMoney, notes, outputIntent and provisionalBookingRequested do not belong in a Create body. Keep services and documents in content.services and content.documents with their request links. Preserve source-supported unsupported price or other business asks in sourceClaims and visible issues rather than copying Quote fields or dropping their evidence.`;
+const CREATE_SYNTHESIS_SHAPE_RULES = `For Create, body contains shared, dateSections and allocations only. Every existing date section has defaults:{} when empty; every allocation has overrides:{} when empty. Each allocation guest has candidateRefs:[] and suggestedRef:null when no admitted profile observation supports a suggestion; suggestedRef is one exact observation ref string or null, never an object or list. Quote-only parties, salesStrategy, client, requestedMoney, notes, outputIntent and provisionalBookingRequested do not belong in a Create body. Keep services and documents in content.services and content.documents with their request links. Preserve source-supported unsupported price or other business asks in sourceClaims and visible issues rather than copying Quote fields or dropping their evidence.`;
 
 // PRODUCT.md describes the staff-controlled CMS capability; codes/labels come
 // from the existing property profile. Later corpus outcomes never enter T0 input.
@@ -173,6 +173,17 @@ function normalizeSynthesisOutput(value: unknown, evidence: ReservationWorkflowV
       let normalizedEntry: Record<string, unknown> = entry;
       if (entry.kind === 'create') {
         let changed = false;
+        // Guest suggestions are host-bound below, never model authority. A missing or
+        // non-scalar suggestion carries no usable reference and must stay unselected.
+        if (Array.isArray(body.allocations)) {
+          body.allocations = body.allocations.map((allocation) => {
+            if (!isRecord(allocation) || !isRecord(allocation.guest)) return allocation;
+            const guest = allocation.guest;
+            if (guest.suggestedRef === null || typeof guest.suggestedRef === 'string') return allocation;
+            changed = true;
+            return { ...allocation, guest: { ...guest, suggestedRef: null } };
+          });
+        }
         if (Array.isArray(body.dateSections)) {
           body.dateSections = body.dateSections.map((section) => {
             if (!isRecord(section) || Object.hasOwn(section, 'defaults')) return section;
@@ -1570,7 +1581,17 @@ export async function runReservationWorkflowV2Prefill(input: {
   const referenceSafety = partyBinding ? addRequestConfirmationSafety({ proposal: partyBinding.proposal, extraction }) : null;
   const guardedProposal = referenceSafety?.proposal ?? (finalParsed?.success ? finalParsed.data.proposal : null);
   const finalProposal = guardedProposal ? applyDefaultCmsSendPolicy(guardedProposal, input.propertyCode) : null;
-  const finalReviewRequirements = finalParsed?.success ? finalParsed.data.reviewRequirements ?? {} : {};
+  const admittedReviewRefs = new Set([...evidence.map((row) => row.ref), ...finalObservations.map((row) => row.ref)]);
+  let unverifiedReviewEvidence = false;
+  const finalReviewRequirements = Object.fromEntries(Object.entries(finalParsed?.success ? finalParsed.data.reviewRequirements ?? {} : {})
+    .map(([path, requirement]) => {
+      const evidenceRefs = requirement.evidenceRefs.filter((ref) => admittedReviewRefs.has(ref));
+      if (evidenceRefs.length !== requirement.evidenceRefs.length) unverifiedReviewEvidence = true;
+      // Model output may request review, never waive a staff decision.
+      return [path, { ...requirement, required: true, evidenceRefs }];
+    }));
+  if (unverifiedReviewEvidence) readErrors.push({ stage: 'lookup', code: 'review_evidence_unverified',
+    message: 'Some model-cited review evidence was unavailable; staff review remains required.' });
   const proposalIssue = finalParsed?.success && finalProposal
     ? validateProposal(finalProposal, evidence, finalObservations) : null;
   const reviewIssue = finalParsed?.success ? validateReviewRequirementRefs(finalReviewRequirements, evidence, finalObservations) : null;
