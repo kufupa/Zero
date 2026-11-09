@@ -24,6 +24,7 @@ import { hmsReadTargetForProperty } from '../hms/hms-read-target.js';
 import { PANE_PROPERTY_LOCK_WAIT_MS, acquisitionWithin } from '../hms/property-read-lock.js';
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { findParty } from './pane-party-lookup.js';
+import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
 import { findStay, searchGuest, searchGuestCloudBatch, type GuestSearchQuery } from './pane-stay-lookup.js';
 import { normalizeGuestName, sameGuestName } from './guest-name-match.js';
 import { availabilityRequestSchema } from './hms-availability.js';
@@ -679,6 +680,11 @@ export function createReservationWorkflowV2CandidateReader(input: {
       const name = exactSearchTerm(candidate.criteria.name);
       const role = candidate.criteria.role;
       if (!name) return unavailable('Party name is missing or too short.');
+      if (target.propertyCode === 'HRCEN') {
+        if (role !== 'agency' && role !== 'organization' && role !== 'ar_account')
+          return unavailable('Native party role is not supported.');
+        return lookupNativeParty({ role, name, target, signal: input.signal });
+      }
       if (role === 'ar_account') return unavailable('A/R account search is not exposed by the existing party lookup.');
       const kind = role === 'agency' ? 'agency' : 'company';
       const found = await findParty({ name, kind }, { target, exactTerm: true, resultCap: 20 });
