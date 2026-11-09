@@ -93,13 +93,15 @@ export function AddonsEditor(editor: Editor) {
     id: text(room.id), label: [text(record(room.guest).firstName), text(record(room.guest).lastName)].filter(Boolean).join(' ') || `Room ${index + 1}`,
     linkable: owner.body.allocations.some(allocation => allocation.id === room.id),
   })).filter(room => room.id) : [];
-  const addTargets = owner?.kind === 'create' ? rooms
+  const addTargets = owner?.kind === 'create' ? rooms.filter(room => room.linkable)
     : owner && 'targets' in owner.body ? (Array.isArray(record(effectiveAt(snapshot, `${requestPath(request.id)}/body/targets`)).include)
       ? (record(effectiveAt(snapshot, `${requestPath(request.id)}/body/targets`)).include as unknown[]).map((hint, index) => ({
         id: text(record(hint).id), label: text(record(hint).confirmation) || text(record(hint).guestName) || `Stay ${index + 1}` })) : []) : [];
   const services = proposal.services.map((service, index) => ({ service, index })).filter(({ service }) =>
     service.ownerRequestId === request.id || owner?.serviceRefs.includes(service.id)
       || service.targets.some(target => target.target.requestId === request.id));
+  const ownershipConflict = (service: Service) => service.ownerRequestId !== null && service.ownerRequestId !== request.id
+    || proposal.requests.some(row => row.id !== request.id && row.serviceRefs.includes(service.id));
   const guestUnknown = snapshot.session.draft.operationResults.some(row => row.workflow === 'guest_profile' && row.status === 'unknown');
   const targetLocked = (service: Service) => {
     const requests = new Set([service.ownerRequestId, ...proposal.requests.filter(row => row.serviceRefs.includes(service.id)).map(row => row.id)]);
@@ -127,7 +129,7 @@ export function AddonsEditor(editor: Editor) {
           {owner?.kind === 'create' && owner.serviceRefs.includes(service.id)
             && (text(valueAt(snapshot, `/proposal/content/services/${index}/operation`)) || service.operation) === 'add' &&
             <label className={styles.label}>Room for this requested Add-On
-              <select value="" disabled={editor.view.busy || !rooms.some(room => room.linkable) || targetLocked(service)} onChange={event => {
+              <select value="" disabled={editor.view.busy || !rooms.some(room => room.linkable) || targetLocked(service) || ownershipConflict(service)} onChange={event => {
                 const allocationId = event.target.value;
                 if (!rooms.some(room => room.linkable && room.id === allocationId)) return;
                 void editor.commands.edit(`/proposal/content/services/${index}/targets`, [{
@@ -135,7 +137,8 @@ export function AddonsEditor(editor: Editor) {
                   fields: {}, savedRowCandidateRef: null, previewObservationRef: null,
                 }]).catch(() => {});
               }}>
-                <option value="">{targetLocked(service) ? 'Linking unavailable' : rooms.length ? 'Select a room' : 'Add a room first'}</option>
+                <option value="">{targetLocked(service) || ownershipConflict(service) ? 'Linking unavailable'
+                  : rooms.some(room => room.linkable) ? 'Select a room' : rooms.length ? 'No room available to link' : 'Add a room first'}</option>
                 {rooms.map((target, roomIndex) => <option key={target.id} value={target.id} disabled={!target.linkable}>
                   {`Room ${roomIndex + 1}${target.label === `Room ${roomIndex + 1}` ? '' : ` · ${target.label}`}${target.linkable ? '' : ' · unavailable to link'}`}
                 </option>)}
@@ -143,6 +146,7 @@ export function AddonsEditor(editor: Editor) {
               {targetLocked(service) && <small className={styles.hint}>{guestUnknown
                 ? 'Check the unknown guest profile outcome before linking this Add-On.'
                 : 'A related Infor operation is saved or has an unknown outcome. Check any unknown outcome and handle this Add-On separately.'}</small>}
+              {ownershipConflict(service) && <small className={styles.hint}>This Add-On is linked to another request. Handle it separately.</small>}
               {rooms.some(room => !room.linkable) && <small className={styles.hint}>Some rooms in this draft cannot currently be linked here.</small>}
             </label>}
         </>}
