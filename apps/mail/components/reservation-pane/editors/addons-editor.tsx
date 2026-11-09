@@ -86,6 +86,7 @@ function NativeItem({ title, item }: { title: string; item: Record<string, unkno
 
 export function AddonsEditor(editor: Editor) {
   const { snapshot, request } = editor;
+  const sourceChanged = snapshot.session.sourceChanged === true;
   const proposal = snapshot.session.draft.proposal.content;
   const owner = proposal.requests.find(row => row.id === request.id);
   const allocations = owner?.kind === 'create' ? effectiveAt(snapshot, `${requestPath(request.id)}/body/allocations`) : null;
@@ -129,20 +130,21 @@ export function AddonsEditor(editor: Editor) {
           {owner?.kind === 'create' && owner.serviceRefs.includes(service.id)
             && (text(valueAt(snapshot, `/proposal/content/services/${index}/operation`)) || service.operation) === 'add' &&
             <label className={styles.label}>Room for this requested Add-On
-              <select value="" disabled={editor.view.busy || !rooms.some(room => room.linkable) || targetLocked(service) || ownershipConflict(service)} onChange={event => {
+              <select value="" disabled={sourceChanged || editor.view.busy || !rooms.some(room => room.linkable) || targetLocked(service) || ownershipConflict(service)} onChange={event => {
                 const allocationId = event.target.value;
-                if (!rooms.some(room => room.linkable && room.id === allocationId)) return;
+                if (sourceChanged || !rooms.some(room => room.linkable && room.id === allocationId)) return;
                 void editor.commands.edit(`/proposal/content/services/${index}/targets`, [{
                   target: { kind: 'allocation', requestId: request.id, allocationId },
                   fields: {}, savedRowCandidateRef: null, previewObservationRef: null,
                 }]).catch(() => {});
               }}>
-                <option value="">{targetLocked(service) || ownershipConflict(service) ? 'Linking unavailable'
+                <option value="">{sourceChanged ? 'Review updated evidence first' : targetLocked(service) || ownershipConflict(service) ? 'Linking unavailable'
                   : rooms.some(room => room.linkable) ? 'Select a room' : rooms.length ? 'No room available to link' : 'Add a room first'}</option>
                 {rooms.map((target, roomIndex) => <option key={target.id} value={target.id} disabled={!target.linkable}>
                   {`Room ${roomIndex + 1}${target.label === `Room ${roomIndex + 1}` ? '' : ` · ${target.label}`}${target.linkable ? '' : ' · unavailable to link'}`}
                 </option>)}
               </select>
+              {sourceChanged && <small className={styles.hint}>Review the updated email and attachments before linking this Add-On.</small>}
               {targetLocked(service) && <small className={styles.hint}>{guestUnknown
                 ? 'Check the unknown guest profile outcome before linking this Add-On.'
                 : 'A related Infor operation is saved or has an unknown outcome. Check any unknown outcome and handle this Add-On separately.'}</small>}
