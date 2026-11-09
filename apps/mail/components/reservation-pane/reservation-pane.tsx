@@ -156,9 +156,9 @@ export function ReservationPane(props: ReservationPaneProps) {
         : <button type="button" disabled={busy || preview} onClick={() => { void workbench.reconcileSource().then(() => setChecked(null)).catch(() => {}); }}>I reviewed the updated evidence</button>}
     </div>}
     <main className={styles.content}>
-      {prefill?.status === 'queued' && <p className={styles.small} role="status">Waiting to read the email. You can start editing now.</p>}
-      {prefill?.status === 'running' && <p className={styles.small} role="status">{prefill.phase === 'native_checks' ? 'Checking Infor details.' : 'Reading the email.'} You can start editing now.</p>}
-      {prefill?.status === 'failed' && <p className={styles.small}>Prefill did not finish. Your form still works. {(prefill.phase === 'native_checks' || prefill.attemptCount < 2) && <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button>}</p>}
+      {!sourceChanged && prefill?.status === 'queued' && <p className={styles.small} role="status">Waiting to read the email. You can start editing now.</p>}
+      {!sourceChanged && prefill?.status === 'running' && <p className={styles.small} role="status">{prefill.phase === 'native_checks' ? 'Checking Infor details.' : 'Reading the email.'} You can start editing now.</p>}
+      {!sourceChanged && prefill?.status === 'failed' && <p className={styles.small}>Prefill did not finish. Your form still works. {(prefill.phase === 'native_checks' || prefill.attemptCount < 2) && <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button>}</p>}
       {!snapshot ? <div className={styles.empty}>{props.loadError ? 'This email could not be opened.' : 'Opening your email draft…'}</div>
         : !request ? <div className={styles.empty}><h2>What does this email need?</h2><p>Add an action to begin. Prefill will appear here when ready; your edits are saved.</p>{!source.selfPreStay && <button type="button" disabled={sourceChanged} onClick={() => { void workbench.addAction('create').catch(() => {}); }}>New booking</button>}</div>
         : createBlocked ? <div className={styles.empty}>This pre-stay email describes an existing reservation. Choose another action.</div>
