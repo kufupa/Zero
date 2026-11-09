@@ -42,6 +42,7 @@ type Buffer = {
   error: string | null;
   pendingMutationHeld: boolean;
   actionsPending: number;
+  profilePriceChecks: Map<string, string>;
   token: number;
   queue: Promise<void>;
   listeners: Set<() => void>;
@@ -145,7 +146,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   const draftKey = bufferKey(source);
   const safeSnapshot = snapshotMatchesSource(snapshot, source) ? snapshot : null;
   if (!buffers.has(draftKey)) buffers.set(draftKey, { sourceKey: key, snapshot: safeSnapshot, sourceReviewBase: null, pending: new Map(), conflict: false,
-    error: null, pendingMutationHeld: false, actionsPending: 0, token: 0, queue: Promise.resolve(), listeners: new Set() });
+    error: null, pendingMutationHeld: false, actionsPending: 0, profilePriceChecks: new Map(), token: 0, queue: Promise.resolve(), listeners: new Set() });
   const entry = buffers.get(draftKey)!;
   if (entry.sourceKey !== key) {
     entry.sourceKey = key;
@@ -380,6 +381,29 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
             ['authenticated_staff_session_required', 'guest_profile_write_flag_off'].includes(text(response.issue)));
         if (operation?.status === 'succeeded' || operation?.status === 'failed' ||
             (rejectedBeforeClaim && !result.loadError && !operation)) clearGuestAttempt(context.source, requestId, allocationId);
+        if (operation?.status === 'succeeded' && operation.workflow === 'guest_profile' &&
+            operation.requestId === requestId && operation.allocationId === allocationId && !result.loadError && !result.serviceNotice) {
+          // Keep the verified profile even if the following unsaved room-price check fails.
+          apply(result, context.source, entry);
+          if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch ||
+              result.session.sourceChanged || entry.pending.size || liveInputs.current.uncommitted.size) return result;
+          if (result.operationResults.some(row => row.workflow === 'create' && row.requestId === requestId &&
+              row.allocationId === allocationId && (row.status === 'succeeded' || row.status === 'unknown'))) return result;
+          const updatedRooms = record(effectiveAt(result, root)).allocations;
+          const updatedIndex = Array.isArray(updatedRooms) ? updatedRooms.findIndex(room => record(room).id === allocationId) : -1;
+          const selected = updatedIndex < 0 ? null : valueAt(result, `${root}/allocations/${updatedIndex}/guest/nativeSelectionRef`);
+          const verified = result.session.draft.observations.some(row => row.ref === selected && row.kind === 'guest_candidate' &&
+            Array.isArray(operation.observationRefs) && operation.observationRefs.includes(row.ref) &&
+            row.status === 'complete' && row.coverage.complete && row.generationId === result.session.draft.generationId &&
+            row.propertyCode === result.session.draft.propertyCode && row.sourceMessageId === result.session.draft.source.messageId &&
+            row.criteria.workflow === 'guest_profile_create' && row.criteria.requestId === requestId &&
+            row.criteria.allocationId === allocationId && row.criteria.attemptId === idempotencyKey && row.result.outcome === 'created');
+          if (verified) {
+            const digest = JSON.stringify({ generation: result.session.draft.generationId, body: record(effectiveAt(result, root)) });
+            entry.profilePriceChecks.set(JSON.stringify([sourceKey(context.source), requestId, allocationId]), digest);
+            return client.prepare({ source: context.source, snapshot: result, requestId, allocationId });
+          }
+        }
         return result;
       }, true).finally(() => guestCreatesInFlight.delete(inFlightKey));
     },
@@ -451,7 +475,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   }, [current, request, busy, changed, key, preview, arrivalChecksPending]);
   const autoDigest = useRef(new Map<string, string>());
   useEffect(() => {
-    if (!current || current.session.sourceChanged || arrivalChecksPending || !request || busy || entry.pending.size || uncommitted.size || entry.conflict || preview) return;
+    if (!current || current.session.sourceChanged || arrivalChecksPending || !request || busy || entry.actionsPending || entry.pending.size || uncommitted.size || entry.conflict || preview) return;
     const body = record(effectiveAt(current, `${requestPath(request.id)}/body`));
     if (request.kind !== 'create' && request.kind !== 'quote') return;
     const digest = JSON.stringify({ generation: current.session.draft.generationId, body });
@@ -465,6 +489,11 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       } else {
         const allocations = Array.isArray(body.allocations) ? body.allocations.map(record) : [];
         const sections = Array.isArray(body.dateSections) ? body.dateSections.map(record) : [];
+        for (const room of allocations) {
+          const profileKey = JSON.stringify([key, request.id, room.id]);
+          const profileCheck = entry.profilePriceChecks.get(profileKey);
+          if (profileCheck !== undefined && profileCheck !== digest) entry.profilePriceChecks.delete(profileKey);
+        }
         const ready = allocations.filter(room => {
           const section = sections.find(row => row.id === room.dateSectionId);
           const occupancy = record(room.occupancy), guest = record(room.guest);
@@ -478,8 +507,18 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         for (const room of ready) {
           const finished = current.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === room.id
             && (row.status === 'succeeded' || row.status === 'unknown'));
-          if (!finished && !current.preparationViews.some(view => view.requestId === request.id && view.allocationId === room.id && view.current))
-            void commands.prepare(String(room.id)).catch(() => {});
+          const profileKey = JSON.stringify([key, request.id, room.id]);
+          const profileCheck = entry.profilePriceChecks.get(profileKey);
+          if (!finished && profileCheck !== digest && !current.preparationViews.some(view => view.requestId === request.id && view.allocationId === room.id && view.current))
+            void run(async context => {
+              const currentBody = record(effectiveAt(context.snapshot, `${requestPath(request.id)}/body`));
+              const currentDigest = JSON.stringify({ generation: context.snapshot.session.draft.generationId, body: currentBody });
+              if (currentDigest !== digest || entry.profilePriceChecks.get(profileKey) === currentDigest ||
+                  context.snapshot.session.sourceChanged || context.snapshot.operationResults.some(row => row.workflow === 'create' &&
+                    row.requestId === request.id && row.allocationId === room.id && (row.status === 'succeeded' || row.status === 'unknown')) ||
+                  context.snapshot.preparationViews.some(view => view.requestId === request.id && view.allocationId === room.id && view.current)) return;
+              return client.prepare({ ...context, requestId: request.id, allocationId: String(room.id) });
+            }).catch(() => {});
         }
       }
     }, 700);
