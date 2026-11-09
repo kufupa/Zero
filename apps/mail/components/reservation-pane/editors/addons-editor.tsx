@@ -56,7 +56,7 @@ function servicePreviewMatches(editor: Editor, service: Service, root: string, t
     if (field === 'quantity' && operation === 'add' && (value === undefined || value === null || value === '')) {
       const scope = service.quantityRequest.scope;
       if (scope === 'per_target' || scope === 'overall' && service.targets.length === 1)
-        value = savedTarget ? read(`${root}/quantityRequest/value`) : service.quantityRequest.value;
+        value = savedTarget ? read(`${root}/quantityRequest/value`) : service.quantityRequest.value ?? undefined;
     }
     return value;
   };
