@@ -37,7 +37,7 @@ export function ReservationPane(props: ReservationPaneProps) {
   const { snapshot, request, commands, busy } = workbench;
   const createBlocked = source.selfPreStay && request?.kind === 'create';
   const prefill = snapshot?.session.draft.prefill;
-  const prefillStale = prefill?.status === 'running' && !!prefill.startedAt &&
+  const prefillStale = prefill?.status === 'running' && !prefill.jobRunId && prefill.phase !== 'native_checks' && !!prefill.startedAt &&
     Number.isFinite(Date.parse(prefill.startedAt)) && Date.now() - Date.parse(prefill.startedAt) >= 5 * 60_000;
   const editor: WorkbenchEditorProps | null = snapshot && request ? { source, snapshot, request,
     view: { busy, error: workbench.error, preview, saving: workbench.saving }, commands, onOpenEvidence: props.onOpenEvidence } : null;
@@ -166,6 +166,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         : Editor && editor ? <fieldset className={styles.sourceFieldset} disabled={sourceChanged}><Editor key={`${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${request.id}:${formReset}`} {...editor} />{(request.kind === 'create' || request.kind === 'amend') && snapshot.session.draft.proposal.content.services.some(service => service.ownerRequestId === request.id || request && snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id)?.serviceRefs.includes(service.id)) && <AddonsEditor key={`addons:${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${request.id}:${formReset}`} {...editor} />}</fieldset>
         : <div className={styles.empty}>This request needs staff attention in Infor.</div>}
       {request?.kind === 'quote' && snapshot && <QuoteOutputPanel source={source} snapshot={snapshot} requestId={request.id} save={props.onSaveQuoteOutput} latestSnapshot={workbench.latestSnapshot} readyForReply={workbench.readyForReply} blocked={busy || workbench.saving || workbench.blocked || workbench.conflict || sourceChanged || quoteNeedsTextOutput} />}
+      {prefill?.status === 'queued' && <p className={styles.small}>Waiting to read the email and check Infor. You can start editing now.</p>}
       {prefill?.status === 'running' && !prefillStale && <p className={styles.small}>Reading the email and checking Infor. You can start editing now.</p>}
       {(prefill?.status === 'failed' || prefillStale) && <p className={styles.small}>Prefill did not finish. Your form still works. {(prefill?.status !== 'failed' || prefill.phase === 'native_checks' || prefill.attemptCount < 2) && <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button>}</p>}
       {currentIssues.map((issue, index) => <p className={styles.notice} key={index}>{issueText(issue.explanation)}</p>)}
