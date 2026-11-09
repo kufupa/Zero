@@ -265,7 +265,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       const requestId = requireRequest();
       return run(async context => {
         const previousAttempt = readGuestAttempt(context.source, requestId, allocationId);
-        const previousResult = previousAttempt && context.snapshot.operationResults.find(row => row.id === previousAttempt && row.workflow === 'guest_profile');
+        const previousResult = previousAttempt ? context.snapshot.operationResults.find(row => row.id === previousAttempt && row.workflow === 'guest_profile') : undefined;
         if (previousResult?.status === 'succeeded' || previousResult?.status === 'failed') clearGuestAttempt(context.source, requestId, allocationId);
         else if (previousAttempt) throw new Error('Check the previous profile creation outcome before trying again.');
         let current = context.snapshot;
@@ -308,7 +308,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     guestProfilePending(allocationId) {
       if (!request) return null;
       const id = readGuestAttempt(source, request.id, allocationId);
-      const operation = id && current?.operationResults.find(row => row.id === id && row.workflow === 'guest_profile');
+      const operation = id ? current?.operationResults.find(row => row.id === id && row.workflow === 'guest_profile') : undefined;
       if (operation?.status === 'succeeded' || operation?.status === 'failed') return null;
       return id;
     },
