@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, useState } from 'react';
-import { nativeChoices, record, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { nativeChoices, partialNativeLeads, record, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import styles from '../reservation-pane.module.css';
 import { FieldReview, FieldSource } from './stay-fields';
 
@@ -18,7 +18,9 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   // HMS guest search is by surname. Keep first name separate; a name's last
   // token is not necessarily its surname (for example, "van der Merwe").
   const saved = party ? text(valueAt(editor.snapshot, `${path}/name`)) : text(valueAt(editor.snapshot, inputPath));
-  const choices = nativeChoices(editor.snapshot, entity ? selectionPath : path, kind);
+  const choiceKind = kind ?? (party ? 'party_candidate' : undefined);
+  const choices = nativeChoices(editor.snapshot, entity ? selectionPath : path, choiceKind);
+  const leads = entity ? partialNativeLeads(editor.snapshot, selectionPath, choiceKind) : [];
   const [query, setQuery] = useState(saved);
   const [open, setOpen] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -67,6 +69,8 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       {allowNone && <button type="button" role="option" aria-selected={!query} onMouseDown={event => event.preventDefault()} onClick={() => { void editor.commands.edit(party ? path : inputPath, null, 'none').then(() => { setQuery(''); setDirty(false); setOpen(false); }).catch(() => {}); }}>None</button>}
       {shown.map((row, index) => <button id={`${id}-option-${index}`} key={`${row.ref}:${row.value}`} type="button" role="option" aria-selected={entity ? selectedRef === row.ref : saved === row.value}
         onMouseDown={event => event.preventDefault()} onClick={() => { void choose(row.ref, row.value); }}><strong>{row.value}</strong>{row.label !== row.value && <span> — {row.label}</span>}{row.detail && <small>{row.detail}</small>}</button>)}
+      {leads.length > 0 && <div role="note"><small><strong>Unverified Infor leads</strong> · Search Infor to verify before selecting.</small>
+        {leads.map(lead => <small key={lead}>{lead}</small>)}</div>}
       {!choices.length && <small>Find options in Infor to load native choices.</small>}
       <button type="button" onClick={() => { void saveSearch().then(() => editor.commands.lookup()).catch(() => {}); }}>Search Infor</button>
     </div>}

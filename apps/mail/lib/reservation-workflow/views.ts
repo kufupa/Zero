@@ -71,8 +71,12 @@ export type NativeChoice = { ref: string; label: string; value: string; detail?:
 export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, kind?: string): NativeChoice[] {
   const field = path.split('/').at(-1);
   const requestId = path.split('/')[4];
-  const choices = snapshot.session.draft.observations.flatMap(observation => {
-    if (observation.status !== 'complete' || (kind && observation.kind !== kind && observation.criteria.catalogueKind !== kind)) return [];
+  const draft = snapshot.session.draft;
+  const choices = draft.observations.flatMap(observation => {
+    if (observation.status !== 'complete' || record(observation.coverage).complete !== true ||
+        observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
+        observation.sourceMessageId !== draft.source.messageId ||
+        (kind && observation.kind !== kind && observation.criteria.catalogueKind !== kind)) return [];
     const criteria = record(observation.criteria);
     const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
     const catalogue = criteria.kind === 'native_catalogue';
@@ -86,4 +90,54 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
       return { ref: observation.ref, value: code, label: text(row.label ?? row.name) || code, detail: [row.meaning ?? row.description, row.nativeId, row.email].filter(Boolean).join(' · ') }; }).filter(row => row.value);
   });
   return choices.filter((row, index) => choices.findIndex(v => v.ref === row.ref && v.value === row.value) === index);
+}
+
+/** Incomplete native searches are useful leads, never selectable identities. */
+export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: string, kind?: string): string[] {
+  if (kind !== 'guest_candidate' && kind !== 'party_candidate') return [];
+  const draft = snapshot.session.draft;
+  const ownerPath = path.replace(/\/nativeSelectionRef$/, '');
+  const guest = kind === 'guest_candidate';
+  const normal = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  const name = normal(valueAt(snapshot, guest ? `${ownerPath}/lastName` : `${ownerPath}/name`));
+  const first = normal(valueAt(snapshot, `${ownerPath}/firstName`));
+  const email = normal(valueAt(snapshot, `${ownerPath}/email`));
+  if (!name) return [];
+  const parts = path.split('/'), requestId = parts[4];
+  const allocationIndex = parts.indexOf('allocations');
+  const body = requestId ? record(effectiveAt(snapshot, `/proposal/content/requests/${requestId}/body`)) : {};
+  const allocations = Array.isArray(body.allocations) ? body.allocations : [];
+  const allocation = allocationIndex >= 0 ? record(allocations[Number(parts[allocationIndex + 1])]) : {};
+  const issuePath = `/requests/${requestId}/allocations/${text(allocation.id)}/guest/candidateRefs`;
+  const guestRefs = new Set(snapshot.issues.filter(issue => issue.path === issuePath && issue.kind === 'guest_profile_identity_unverified')
+    .flatMap(issue => issue.evidenceRefs));
+  const claimRefs = new Set(draft.proposal.sourceClaims.filter(claim => claim.path === ownerPath || claim.path === `${ownerPath}/name`)
+    .flatMap(claim => claim.sourceRefs));
+  const role = ownerPath.endsWith('/bookingAgency') || ownerPath.endsWith('/agency') ? 'agency'
+    : ownerPath.endsWith('/arAccount') ? 'ar_account' : 'organization';
+  const leads = draft.observations.flatMap(observation => {
+    if (observation.kind !== kind || observation.status !== 'partial' ||
+        observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
+        observation.sourceMessageId !== draft.source.messageId) return [];
+    const criteria = record(observation.criteria), query = record(criteria.query);
+    const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
+    const fieldBound = paths.includes(path);
+    const sourceGuest = guest && guestRefs.has(observation.ref) &&
+      ((!normal(criteria.name) || normal(criteria.name) === [first, name].filter(Boolean).join(' ')) &&
+       (!normal(criteria.email) || normal(criteria.email) === email));
+    const sourceParty = !guest && criteria.role === role && normal(criteria.name) === name &&
+      observation.sourceRefs.some(ref => claimRefs.has(ref));
+    if (!fieldBound && !sourceGuest && !sourceParty) return [];
+    const search = normal(typeof criteria.query === 'string' ? criteria.query : query.value ?? criteria.searchName);
+    if (search && search !== name || normal(query.firstName) && normal(query.firstName) !== first ||
+        normal(query.email) && normal(query.email) !== email) return [];
+    const result = record(observation.result);
+    const rows = Array.isArray(result.candidates) ? result.candidates : [result];
+    return rows.map(raw => {
+      const row = record(raw);
+      const label = text(row.name) || [text(row.firstName), text(row.lastName)].filter(Boolean).join(' ');
+      return [label, text(row.nativeId), text(row.email)].filter(Boolean).join(' · ');
+    }).filter(Boolean);
+  });
+  return [...new Set(leads)];
 }
