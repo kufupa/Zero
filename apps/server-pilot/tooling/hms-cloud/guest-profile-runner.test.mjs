@@ -5,7 +5,7 @@ import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { profileBusinessFields, profilePreviewDigest } from './guest-profile-create.mjs';
+import { profileBusinessFields, profilePreviewDigest, profileReviewDigest } from './guest-profile-create.mjs';
 import { createGuestProfileRunner } from './guest-profile-runner.mjs';
 
 const business = { guest: { firstName: 'Proof', lastName: 'Labtest', mobile: '+27000000999' }, confirmDuplicateName: true };
@@ -93,7 +93,50 @@ test('known returned ID survives uncertainty and reconciles without another Save
   assert.equal(interrupted.saves(), 1);
 });
 
-test('a changed approval, real guest, or caller-provided authority cannot dispatch', async t => {
+test('extended review authorize ignores JSONB key order between claim and live prepare', async t => {
+  const guest = { firstName: 'Proof', lastName: 'Labtest', mobile: '+27000000999',
+    email: 'proof-order@example.invalid', emailTypeCode: 'PRIM' };
+  const orderedFields = profileBusinessFields({ guest, confirmDuplicateName: true });
+  const review = {
+    version: 2, propertyCode: 'HRCEN', fields: orderedFields, confirmDuplicateName: true,
+    effective: { title: { code: '', label: '' }, phoneNumber: '',
+      phoneType: { code: '', label: '' }, emailType: { code: 'PRIM', label: 'Primary' } },
+  };
+  const reordered = JSON.parse(JSON.stringify(review, (key, value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+    return Object.fromEntries(Object.keys(value).reverse().map(name => [name, value[name]]));
+  }));
+  assert.notEqual(JSON.stringify(review), JSON.stringify(reordered));
+  const parent = join(homedir(), '.nava-hms-runtime');
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  const dir = await mkdtemp(join(parent, 'profile-runner-order-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  let authorized = false;
+  const runner = createGuestProfileRunner({
+    runtimeDir: dir,
+    dependencies: {
+      createGuestProfile: async (request, options) => {
+        const liveFields = profileBusinessFields(request);
+        // Live prepare often rebuilds fields/review with different key order than the claim.
+        const context = { phase: 'initial', previewDigest: request.expectedPreviewDigest,
+          confirmDuplicateName: true, fields: liveFields, review };
+        authorized = await options.authorizeCandidate(context) === true;
+        assert.equal(authorized, true);
+        await options.dispatchCandidate(context, async () => {
+          await options.recordResponse(context, { status: 200, success: true, nativeId: '999', question: false });
+        });
+        return { outcome: 'created', attemptId: request.attemptId, phase: 'initial', dispatched: true, nativeId: '999' };
+      },
+    },
+  });
+  const result = await runner.createGuestProfile({
+    propertyCode: 'HRCEN', guest, confirmDuplicateName: true,
+    expectedPreviewDigest: profileReviewDigest(reordered), expectedReview: reordered, attemptId: 'order-attempt',
+  });
+  assert.equal(authorized, true);
+  assert.notEqual(result.issue, 'PROFILE_SAVE_NOT_AUTHORIZED');
+  assert.ok(['created', 'reconciliation_required'].includes(result.outcome), result.issue ?? result.outcome);
+});test('a changed approval, real guest, or caller-provided authority cannot dispatch', async t => {
   const f = await fixture(t, async ({ dispatch }) => { await dispatch(success); return created; });
   await f.runner().createGuestProfile(input);
   const changed = { ...input, guest: { ...business.guest, mobile: '+27000000998' } };

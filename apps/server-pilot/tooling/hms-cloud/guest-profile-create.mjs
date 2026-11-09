@@ -22,6 +22,8 @@ const canon = value => {
 };
 const hash = value => createHash('sha256').update(JSON.stringify(canon(value))).digest('hex');
 const same = (a, b) => JSON.stringify(canon(a)) === JSON.stringify(canon(b));
+/** Shared with the runner so authorize ignores JSONB/transport key order. */
+export const profileValuesEqual = same;
 const EXTRA_FIELDS = ['titleCode', 'phoneNumber', 'phoneTypeCode', 'emailTypeCode'];
 const OPTION_FIELDS = Object.freeze({ title: 'nametitle', phoneType: 'phonenumbertypecode', emailType: 'emailtypecode' });
 const issue = error => /^[A-Z][A-Z0-9_]{2,100}$/.test(String(error?.message || ''))
