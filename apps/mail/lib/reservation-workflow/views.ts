@@ -96,7 +96,7 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
 }
 
 /** Incomplete native searches are useful leads, never selectable identities. */
-export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: string, kind?: string): string[] {
+export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: string, kind?: string): { label: string; detail: string }[] {
   if (kind !== 'guest_candidate' && kind !== 'party_candidate') return [];
   const draft = snapshot.session.draft;
   const ownerPath = path.replace(/\/nativeSelectionRef$/, '');
@@ -137,12 +137,15 @@ export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: stri
     if (search && search !== name || normal(query.firstName) && normal(query.firstName) !== first ||
         normal(query.email) && normal(query.email) !== email) return [];
     const result = record(observation.result);
+    const coverage = record(guest ? result.coverage : result.nativeCoverage ?? result.coverage);
+    const detail = coverage.truncated === true || coverage.serverMoreRecords === true ? 'Search truncated; more matches may exist.'
+      : coverage.possiblyTruncated === true ? 'Search may be incomplete; more matches may exist.' : 'Infor result needs checking.';
     const rows = Array.isArray(result.candidates) ? result.candidates : [result];
     return rows.map(raw => {
       const row = record(raw);
       const label = text(row.name) || [text(row.firstName), text(row.lastName)].filter(Boolean).join(' ');
-      return [label, text(row.nativeId), text(row.email)].filter(Boolean).join(' · ');
-    }).filter(Boolean);
+      return { label: [label, text(row.nativeId), text(row.email)].filter(Boolean).join(' · '), detail };
+    }).filter(row => row.label);
   });
-  return [...new Set(leads)];
+  return leads.filter((row, index) => leads.findIndex(other => other.label === row.label && other.detail === row.detail) === index);
 }

@@ -71,8 +71,8 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       {allowNone && <button type="button" role="option" aria-selected={!query} onMouseDown={event => event.preventDefault()} onClick={() => { void editor.commands.edit(party ? path : inputPath, null, 'none').then(() => { setQuery(''); setDirty(false); setOpen(false); }).catch(() => {}); }}>None</button>}
       {shown.map((row, index) => <button id={`${id}-option-${index}`} key={`${row.ref}:${row.value}`} type="button" role="option" aria-selected={entity ? selectedRef === row.ref : saved === row.value}
         onMouseDown={event => event.preventDefault()} onClick={() => { void choose(row.ref, row.value); }}><strong>{row.value}</strong>{row.label !== row.value && <span> — {row.label}</span>}{row.detail && <small>{row.detail}</small>}</button>)}
-      {leads.length > 0 && <div role="note"><small><strong>Unverified Infor leads</strong> · Search Infor to verify before selecting.</small>
-        {leads.map(lead => <small key={lead}>{lead}</small>)}</div>}
+      {leads.length > 0 && <div role="note"><small><strong>Infor results need checking</strong> · Search again or check the match in Infor. These cannot be selected yet.</small>
+        {leads.map(lead => <small key={`${lead.label}:${lead.detail}`}>{lead.label} · {lead.detail}</small>)}</div>}
       {!choices.length && <small>Find options in Infor to load native choices.</small>}
       <button type="button" onClick={() => { void saveSearch().then(() => editor.commands.lookup()).catch(() => {}); }}>Search Infor</button>
     </div>}
