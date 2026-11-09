@@ -69,6 +69,43 @@ export function effectiveAt(snapshot: ReservationPaneSnapshot, path: string): un
   return raw;
 }
 export type NativeChoice = { ref: string; label: string; value: string; detail?: string };
+function currentVerifiedRow(snapshot: ReservationPaneSnapshot, path: string, observation: ReservationPaneSnapshot['session']['draft']['observations'][number]): boolean {
+  const criteria = record(observation.criteria), result = record(observation.result);
+  if (record(result.rowVerification).status !== 'verified' || criteria.fieldPath !== path ||
+      !Array.isArray(criteria.fieldPaths) || !criteria.fieldPaths.includes(path)) return false;
+  const parts = path.split('/'), requestId = decodeURIComponent(parts[4] ?? '');
+  const request = snapshot.session.draft.proposal.content.requests.find(row => row.id === requestId);
+  if (!request || (request.kind !== 'create' && request.kind !== 'quote') ||
+      criteria.workflow !== request.kind || criteria.requestId !== request.id) return false;
+  const owner = path.replace(/\/nativeSelectionRef$/, ''), guest = observation.kind === 'guest_candidate';
+  const role = guest ? 'guest' : owner.endsWith('/bookingAgency') || owner.endsWith('/agency') ? 'agency'
+    : owner.endsWith('/arAccount') ? 'ar_account' : owner.endsWith('/company') ? 'company' : 'organization';
+  if (!guest && criteria.role !== role || guest && request.kind !== 'create') return false;
+  if (request.kind === 'create') {
+    const body = record(effectiveAt(snapshot, `${requestPath(request.id)}/body`));
+    const allocations = Array.isArray(body.allocations) ? body.allocations.map(record) : [];
+    const allocationIndex = parts.indexOf('allocations'), sectionIndex = parts.indexOf('dateSections');
+    if (allocationIndex >= 0) {
+      if (allocations[Number(parts[allocationIndex + 1])]?.id !== criteria.allocationId) return false;
+    } else if (sectionIndex >= 0) {
+      const sections = Array.isArray(body.dateSections) ? body.dateSections.map(record) : [];
+      const section = sections[Number(parts[sectionIndex + 1])];
+      if (!section || !allocations.some(row => row.id === criteria.allocationId && row.dateSectionId === section.id)) return false;
+    } else if (!allocations.some(row => row.id === criteria.allocationId)) return false;
+  }
+  const selected = snapshot.session.draft.fieldOverrides[path];
+  if (selected?.state === 'set' && selected.value === observation.ref) return true;
+  const normal = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  if (guest) {
+    const query = record(criteria.query);
+    return query.field === 'lastName' && Boolean(normal(query.value)) &&
+      normal(query.value) === normal(valueAt(snapshot, `${owner}/lastName`)) &&
+      normal(query.firstName) === normal(valueAt(snapshot, `${owner}/firstName`)) &&
+      normal(query.email) === normal(valueAt(snapshot, `${owner}/email`));
+  }
+  return typeof criteria.query === 'string' && Boolean(normal(criteria.query)) &&
+    normal(criteria.query) === normal(valueAt(snapshot, `${owner}/name`));
+}
 export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, kind?: string): NativeChoice[] {
   const field = path.split('/').at(-1);
   const requestId = path.split('/')[4];
@@ -82,6 +119,7 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
         observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
         observation.sourceMessageId !== draft.source.messageId ||
         (kind && observation.kind !== kind && observation.criteria.catalogueKind !== kind)) return [];
+    if (criteria.kind === 'verified_native_row' && !currentVerifiedRow(snapshot, path, observation)) return [];
     const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
     const matches = paths.includes(path) || catalogue && criteria.requestId === requestId && paths.some(p => typeof p === 'string' && p.split('/').at(-1) === field);
     if (!matches) return [];
