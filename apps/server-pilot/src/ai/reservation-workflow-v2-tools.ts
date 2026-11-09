@@ -51,6 +51,7 @@ import { lockCreateActorSession } from './pane-create-actor-lock.js';
 import { stayCommitsOf } from './work-items.js';
 import { sameGuestName } from './guest-name-match.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
+import type { ReservationWorkflowV2SystemReadContext } from './reservation-workflow-v2-system-read-context.js';
 
 type V2StateContext = ReservationWorkflowV2Context;
 export type ReservationWorkflowV2ServerContext = {
@@ -63,6 +64,7 @@ export type ReservationWorkflowV2ServerContext = {
   /** Internal reconciliation-only scope; never populated from a pane request. */
   recovery?: ReservationRecoveryScope;
 };
+type ReadContext = ReservationWorkflowV2ServerContext | ReservationWorkflowV2SystemReadContext;
 
 const record = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -88,12 +90,12 @@ type NativeCreate = {
 };
 type NativeContinuation = (() => Promise<unknown>) & { proveNeverDispatched?: () => unknown };
 
-function stateContext(ctx: ReservationWorkflowV2ServerContext): V2StateContext {
-  return { db: ctx.db, transportId: ctx.transport.id, userId: ctx.nativeBatch ? null : ctx.user.id,
+function stateContext(ctx: ReadContext): V2StateContext {
+  return { db: ctx.db, transportId: ctx.transport.id, userId: 'system' in ctx || ctx.nativeBatch ? null : ctx.user.id,
     propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch, recovery: ctx.recovery };
 }
 
-async function currentDraft(ctx: ReservationWorkflowV2ServerContext, input: {
+async function currentDraft(ctx: ReadContext, input: {
   workItemId: string; source: ReservationWorkflowV2PrepareInput['source']; expectedRevision: number; expectedSeq: number;
 }) {
   const result = await getReservationWorkflowV2Draft(stateContext(ctx), input);
@@ -554,7 +556,7 @@ function operationObservation(draft: ReservationWorkflowV2Draft, requestId: stri
   };
 }
 
-async function recordNativeObservation(ctx: ReservationWorkflowV2ServerContext, input: ReservationWorkflowV2PrepareInput,
+async function recordNativeObservation(ctx: ReadContext, input: ReservationWorkflowV2PrepareInput,
   observation: ReservationWorkflowV2Observation, status: 'prepared' | 'failed' | 'unknown', summary: string | null,
   operationId: string = randomUUID()) {
   const base = { workItemId: input.workItemId, source: input.source, expectedRevision: input.expectedRevision,
@@ -790,7 +792,7 @@ function createFieldChoiceObservation(draft: ReservationWorkflowV2Draft, target:
 }
 
 /** Read current, source-bound v2 observations; callers cannot supply lookup candidates. */
-export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2ServerContext,
+export async function reservationWorkflowV2Lookup(ctx: ReadContext,
   input: ReservationWorkflowV2LookupInput): Promise<Outcome> {
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;
@@ -1142,7 +1144,7 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
 }
 
 /** Compile one reviewed room against host-admitted IDs, then ask HMS for live unsaved availability. */
-export async function reservationWorkflowV2Prepare(ctx: ReservationWorkflowV2ServerContext,
+export async function reservationWorkflowV2Prepare(ctx: ReadContext,
   input: ReservationWorkflowV2PrepareInput): Promise<Outcome> {
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;
@@ -1191,12 +1193,13 @@ function nativeRunId(path: unknown, expectedName: string): { runId: string; sour
   return { runId: match[1]!, sourceDir: dir };
 }
 
-async function persistNativeShots(ctx: ReservationWorkflowV2ServerContext, workItemId: string,
+async function persistNativeShots(ctx: ReadContext, workItemId: string,
   runId: string, paths: Partial<Record<'before.png' | 'filled.png' | 'saved.png', unknown>>) {
   const entries = Object.entries(paths).filter((entry): entry is [string, string] => typeof entry[1] === 'string');
   if (!entries.length) return null;
   const stage = await mkdtemp(join(tmpdir(), 'reservation-v2-shots-'));
-  const owner = `${ctx.user.id}:${ctx.transport.id}`;
+  const owner = 'system' in ctx ? `arrival-service:${ctx.nativeBatch.jobFence.runId}:${ctx.transport.id}`
+    : `${ctx.user.id}:${ctx.transport.id}`;
   try {
     for (const [name, source] of entries) {
       const parsed = nativeRunId(source, name);
@@ -1215,7 +1218,7 @@ async function persistNativeShots(ctx: ReservationWorkflowV2ServerContext, workI
   } finally { await rm(stage, { recursive: true, force: true }); }
 }
 
-async function persistPreparedScreenshot(ctx: ReservationWorkflowV2ServerContext, workItemId: string, path: unknown) {
+async function persistPreparedScreenshot(ctx: ReadContext, workItemId: string, path: unknown) {
   const parsed = nativeRunId(path, 'filled.png');
   if (!parsed) return null;
   const persisted = await persistNativeShots(ctx, workItemId, parsed.runId, { 'filled.png': path });
