@@ -15,6 +15,7 @@ import {
 } from './reservation-workflow-v2-state.js';
 import { canonicalJson } from './draft-approval.js';
 import { findStay } from './pane-stay-lookup.js';
+import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
@@ -59,7 +60,8 @@ const inputSchema = z.object({ workItemId: z.string().uuid(), source: sourceInpu
   serviceId: z.string().min(1).max(80).optional() }).strict();
 
 function stateContext(ctx: ReservationWorkflowV2ServerContext) {
-  return { db: ctx.db, transportId: ctx.transport.id, userId: ctx.user.id, propertyCode: ctx.property.propertyCode };
+  return { db: ctx.db, transportId: ctx.transport.id, userId: ctx.nativeBatch ? null : ctx.user.id,
+    propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch };
 }
 
 function pointer(...parts: Array<string | number>): string {
@@ -272,7 +274,7 @@ async function currentDraft(ctx: ReservationWorkflowV2ServerContext, input: Pick
 }
 
 async function createThenAddon(compiled: Extract<ReturnType<typeof compileReservationWorkflowV2Create>, { outcome: 'ok' }>,
-  operation: (page: unknown, readForm: () => Promise<unknown>) => Promise<unknown>) {
+  operation: (page: unknown, readForm: () => Promise<unknown>) => Promise<unknown>, signal?: AbortSignal) {
   const createTool = await import(new URL('../../tooling/hms-cloud/create-reservation.mjs', import.meta.url).href) as {
     createReservation: (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<NativeCreate>;
   };
@@ -286,7 +288,7 @@ async function createThenAddon(compiled: Extract<ReturnType<typeof compileReserv
       await callback(session);
       const readForm = () => session.runTool({ tool: 'readGuestStayForm', propertyCode: 'HRCEN' });
       addon = await operation(session.page, readForm);
-    }, { ...options, memory: null, blockServiceWorkers: true });
+    }, { ...options, memory: null, blockServiceWorkers: true, signal });
   const native = await createTool.createReservation(compiled.nativeInput, { allowRealGuest: true,
     expectedGuest: compiled.expectedGuest, requireExplicitGuestSelection: true, allowCommitOnlyBillingReference: true,
     withSession });
@@ -345,7 +347,7 @@ export async function reservationWorkflowV2LookupServices(ctx: ReservationWorkfl
     };
     const { native, addon } = await createThenAddon(compiled, (page, readForm) =>
       addonTool.listUnsavedStay360AddOnItems(page, { expectedCreate: compiled.nativeInput,
-        expectedGuest: compiled.expectedGuest, readForm }));
+        expectedGuest: compiled.expectedGuest, readForm }), ctx.nativeBatch?.signal);
     const listing = record(addon);
     const candidates = Array.isArray(listing?.candidates) ? listing.candidates.map(record).filter(Boolean) : [];
     const coverage = record(listing?.coverage);
@@ -425,7 +427,7 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
     const items = plans.map(plan => plan.items);
     const { native, addon } = await createThenAddon(compiledCreate, (page, readForm) =>
       addonTool.previewUnsavedStay360AddOns(page, { expectedCreate: compiledCreate.nativeInput,
-        expectedGuest: compiledCreate.expectedGuest, readForm, items }));
+        expectedGuest: compiledCreate.expectedGuest, readForm, items }), ctx.nativeBatch?.signal);
     const preview = record(addon), nativeItems = Array.isArray(preview?.items) ? preview.items.map(record) : [];
     const capability = (await import('./reservation-workflow-v2-services-execute.js')).linkedServiceCapability(loaded.draft, input);
     const createBound = native.outcome === 'prepared' && typeof record(native.requestBinding)?.digest === 'string' &&
@@ -621,10 +623,17 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
   if (!resolved.ok || (['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const)
     .some(key => resolved.target[key] !== CENTURION_HMS_READ_TARGET[key])) return { status: 'unsupported', issue: 'service_property_session_unavailable' };
   const query = Object.fromEntries(['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].map(key => [key, found.hint[key] || null]));
-  const result = await findStay({ confirmation: String(confirmation),
-    ...(typeof arrival === 'string' && arrival ? { arrival } : {}) }, {
-    target: resolved.target, lock: () => paneStayPropertyLock(resolved.target), acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
-  }).catch(() => null);
+  const request = { confirmation: String(confirmation), ...(typeof arrival === 'string' && arrival ? { arrival } : {}) };
+  const result = ctx.nativeBatch
+    ? await (async () => {
+      const lock = paneStayPropertyLock(resolved.target);
+      if (!lock) return null;
+      return lock.withLock(async () => projectCloudStayFind(request,
+        await runCloudStayFind({ request, target: resolved.target, signal: ctx.nativeBatch!.signal })),
+      { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch!.signal });
+    })().catch(() => null)
+    : await findStay(request, { target: resolved.target, lock: () => paneStayPropertyLock(resolved.target),
+      acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS) }).catch(() => null);
   const stay = record(result?.stay), selectedStay = amendSelection?.stay;
   const sameSelected = Boolean(stay && selectedStay && stay.confirmation === selectedStay.confirmation && stay.status === 'Reserved' &&
     stay.arrival === selectedStay.arrival && stay.departure === selectedStay.departure &&
@@ -671,7 +680,7 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
       const listing = needsCatalogue ? record(await runTool({ tool: 'list', confirmation: stay.confirmation })) : null;
       if (needsCatalogue && (listing?.outcome !== 'ok' || record(listing.coverage)?.complete !== true || !Array.isArray(listing.candidates))) return null;
       return { details, candidates: Array.isArray(listing?.candidates) ? listing.candidates : [] };
-    }, { headless: true, blockServiceWorkers: true }));
+    }, { headless: true, blockServiceWorkers: true, signal: ctx.nativeBatch?.signal }));
     if (!native) return { status: 'needs_input', issue: 'saved_addon_read_incomplete' };
     let count = 0;
     for (const row of found.matches) {
@@ -818,7 +827,7 @@ export async function reservationWorkflowV2PreviewSavedServices(ctx: Reservation
           canonicalJson(savedServiceBusiness(before.fields)) !== canonicalJson(prior) ||
           (operation === 'edit' && (after?.nativeId !== nativeId || !savedServiceBusiness(after.fields)))) return null;
       return { before, after: operation === 'remove' ? null : after };
-    }, { headless: true, blockServiceWorkers: true }));
+    }, { headless: true, blockServiceWorkers: true, signal: ctx.nativeBatch?.signal }));
     if (!staged) return { status: 'needs_input', issue: 'saved_addon_prepare_unverified', saved: false };
     const capability = await (await import('./reservation-workflow-v2-services-execute.js')).savedServiceCapability(selected.stay);
     const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: draft.generationId, kind: 'service_preview',

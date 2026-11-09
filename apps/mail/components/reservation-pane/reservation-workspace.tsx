@@ -22,6 +22,7 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
   const [snapshot, setSnapshot] = useState<ReservationPaneSnapshot | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const activeSource = useRef('');
+  const refreshCount = useRef(0);
   const request = useRef<{ key: string; promise: Promise<ReservationPaneSnapshot> } | null>(null);
   const key = `${source.mailboxId}:${source.selectionEpoch}:${source.messageId}:${source.sourceHash}`;
   const [confirmation, setConfirmation] = useState<{ message: string; label: string } | null>(null);
@@ -39,38 +40,38 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
 
   useEffect(() => {
     let live = true;
-    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
-    let refreshCount = 0;
+    refreshCount.current = 0;
     activeSource.current = key;
     setSnapshot(null);
     setLoadError(null);
     if (request.current?.key !== key) request.current = { key, promise: client.ensure({ source, mode: 'initialize' }) };
     const acceptPrefill = (next: ReservationPaneSnapshot) => {
       if (!live || activeSource.current !== key) return;
-      setSnapshot(current => !current || next.session.seq >= current.session.seq ? next : current);
-      if (next.session.draft.prefill?.status === 'running') {
-        if (++refreshCount > 155) { setLoadError('Prefill has not finished. You can enter the request now, or retry the untouched draft. Your edits are retained.'); return; }
-        refreshTimer = setTimeout(() => {
-          void client.get({ source, snapshot: next }).then(acceptPrefill).catch(() => {
-            if (live && activeSource.current === key) setLoadError('Could not refresh the email prefill. Reopen it to check progress; your draft is retained.');
-          });
-        }, 2000);
-      }
+      setSnapshot(current => {
+        if (!current || next.session.seq > current.session.seq) return next;
+        if (next.session.seq < current.session.seq) return current;
+        const rank = { idle: 0, queued: 1, running: 2, failed: 3, complete: 3, superseded: 4 } as const;
+        const oldMeta = current.session.draft.prefill, newMeta = next.session.draft.prefill;
+        if ((newMeta?.attemptCount ?? 0) < (oldMeta?.attemptCount ?? 0) ||
+            ((newMeta?.attemptCount ?? 0) === (oldMeta?.attemptCount ?? 0) &&
+              rank[newMeta?.status ?? 'idle'] < rank[oldMeta?.status ?? 'idle'])) return current;
+        return next;
+      });
     };
     request.current.promise.then((next) => {
       if (!live || activeSource.current !== key) return;
       setSnapshot(next);
-      if (!next.session.draft.prefill || next.session.draft.prefill.status === 'idle') {
+      if (!next.session.sourceChanged && (!next.session.draft.prefill || next.session.draft.prefill.status === 'idle')) {
         void client.prefill({ source, snapshot: next }).then(acceptPrefill).catch((error: unknown) => {
           if (!live || activeSource.current !== key) return;
           setLoadError(error instanceof Error ? error.message : 'Prefill did not finish. Your editable draft is available.');
         });
-      } else if (next.session.draft.prefill.status === 'running') acceptPrefill(next);
+      } else if (next.session.draft.prefill?.status === 'running' || next.session.draft.prefill?.status === 'queued') acceptPrefill(next);
     }).catch((error: unknown) => {
       if (!live || activeSource.current !== key) return;
       setLoadError(error instanceof Error ? error.message : 'The source-bound reservation draft could not be opened.');
     });
-    return () => { live = false; if (refreshTimer) clearTimeout(refreshTimer); };
+    return () => { live = false; };
   }, [client, key, source]);
 
   const acceptSnapshot = useCallback((next: ReservationPaneSnapshot) => {
@@ -78,6 +79,23 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
     setSnapshot(current => !current || next.session.seq >= current.session.seq ? next : current);
     setLoadError(null);
   }, [key, source.messageId]);
+
+  useEffect(() => {
+    if (!snapshot || snapshot.session.sourceChanged || !['running', 'queued'].includes(snapshot.session.draft.prefill?.status ?? '')) {
+      refreshCount.current = 0;
+      return;
+    }
+    let live = true;
+    const timer = setTimeout(() => {
+      if (++refreshCount.current > 900) { setLoadError('Prefill is still processing. Reopen this email to check progress; your draft is retained.'); return; }
+      void client.get({ source, snapshot }).then(next => {
+        if (live && activeSource.current === key) setSnapshot(current => current === snapshot ? next : current);
+      }).catch(() => {
+        if (live && activeSource.current === key) setLoadError('Could not refresh the email prefill. Reopen it to check progress; your draft is retained.');
+      });
+    }, 2000);
+    return () => { live = false; clearTimeout(timer); };
+  }, [client, key, snapshot, source]);
 
   return <><ReservationPane source={source} client={client} snapshot={snapshotMatchesSource(snapshot, source) ? snapshot : null} loadError={loadError} onSnapshot={acceptSnapshot}
     onOpenEvidence={onOpenEvidence} onOpenAttachment={onOpenAttachment} onSaveQuoteOutput={saveQuoteOutput} />

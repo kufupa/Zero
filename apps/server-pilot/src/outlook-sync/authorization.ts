@@ -95,7 +95,7 @@ export async function authorizedSource(
   db: DB,
   deviceId: string,
   scope: Omit<NativeSyncScope, 'claimFence'> & { claimFence?: number },
-  options: { allowPaused?: boolean; allowQuota?: boolean; requireFence?: boolean } = {},
+  options: { allowPaused?: boolean; allowQuota?: boolean; allowDisk?: boolean; requireFence?: boolean } = {},
 ) {
   const [source] = await db
     .select()
@@ -118,7 +118,8 @@ export async function authorizedSource(
     source.authorityExpiresAt <= now ||
     (!options.allowPaused &&
       (source.userPaused ||
-        (source.resourcePauseReason && source.resourcePauseReason !== 'quota'))) ||
+        (source.resourcePauseReason && source.resourcePauseReason !== 'quota' &&
+          !(options.allowDisk && source.resourcePauseReason === 'disk')))) ||
     (options.requireFence &&
       (source.claimFence !== scope.claimFence ||
         !source.claimExpiresAt ||

@@ -29,7 +29,7 @@ import type {
   aiWorkflowRunKindEnum,
   aiWorkflowRunStateEnum,
 } from '../db/schema/mail.js';
-import { and, desc, eq, gte, inArray, like, lte, ne, notExists, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gt, gte, inArray, like, lte, ne, notExists, or, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
@@ -71,6 +71,7 @@ const ACTIVE_HMS_TRANSPORT_GROUPS = [
 );
 /** Staff quote jobs get a 7-minute claim budget for their measured ~5-minute native rate read. */
 const HMS_STAFF_QUOTE_RUN_DEADLINE_MS = 7 * 60_000;
+const RESERVATION_ARRIVAL_RUN_DEADLINE_MS = 16 * 60_000;
 /** An unclaimed staff quote that waited this long is stale and must be queued again explicitly. */
 const HMS_STAFF_QUOTE_QUEUE_TTL_MS = 10 * 60_000;
 export const READ_TOOL_RUN_KIND = 'read_tool' as const;
@@ -652,6 +653,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   const utcHour = now.getUTCHours();
   const inStaffHours = utcHour >= startHour && utcHour < endHour;
   const higherTierRun = alias(aiWorkflowRun, 'higher_tier_hms_run');
+  const busyArrival = alias(aiWorkflowRun, 'busy_arrival_run');
   const sameHmsSlot = or(
     eq(higherTierRun.transportId, aiWorkflowRun.transportId),
     ...ACTIVE_HMS_TRANSPORT_GROUPS.map((transportIds) =>
@@ -707,6 +709,11 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
     hmsWriteClaim ? undefined : ne(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
     ...scope,
     devGate,
+    // A busy arrival must not hide unrelated jobs behind it in the shared lane.
+    or(ne(aiWorkflowRun.runKind, 'reservation_prefill'), notExists(db.select({ id: busyArrival.id })
+      .from(busyArrival).where(and(eq(busyArrival.runKind, 'reservation_prefill'),
+        eq(busyArrival.transportId, aiWorkflowRun.transportId), ne(busyArrival.id, aiWorkflowRun.id),
+        inArray(busyArrival.state, ['claimed', 'running']), gt(busyArrival.updatedAt, staleBefore))))),
     or(
       and(
         inArray(aiWorkflowRun.state, hmsWriteClaim ? ['queued'] : ['queued', 'retry_wait']),
@@ -769,7 +776,8 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         continue;
       }
 
-      if (candidate.deadlineAt && candidate.deadlineAt.getTime() <= now.getTime()) {
+      if (candidate.deadlineAt && candidate.deadlineAt.getTime() <= now.getTime() &&
+          !(candidate.runKind === 'reservation_prefill' && ['claimed', 'running'].includes(candidate.state))) {
         await tx
           .update(aiWorkflowRun)
           .set({
@@ -786,6 +794,45 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
       }
 
       const isReclaim = candidate.state === 'claimed' || candidate.state === 'running';
+      let arrivalStarts: string[] | undefined;
+      if (candidate.runKind === 'reservation_prefill') {
+        // A transactional mailbox lock closes the race between workers claiming different arrivals.
+        const lockRows = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(
+          ${`reservation-arrival:${candidate.transportId}`}, 0)) as locked`);
+        if (!lockRows[0]?.locked) return null;
+        const [active] = await tx.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(and(
+          eq(aiWorkflowRun.runKind, 'reservation_prefill'), eq(aiWorkflowRun.transportId, candidate.transportId),
+          ne(aiWorkflowRun.id, candidate.id), inArray(aiWorkflowRun.state, ['claimed', 'running']),
+          gt(aiWorkflowRun.updatedAt, staleBefore))).limit(1);
+        if (active) return null;
+        const priorReclaims = Number(candidate.metrics?.reclaimCount ?? 0);
+        if (isReclaim && (priorReclaims >= 1 || candidate.attempts >= 1)) {
+          await tx.update(aiWorkflowRun).set({ state: 'dead_letter', failureClass: 'LEASE_LOST',
+            lastError: 'reservation prefill recovery limit reached', claimOwner: null, claimToken: null,
+            finishedAt: now, updatedAt: now }).where(eq(aiWorkflowRun.id, candidate.id));
+          continue;
+        }
+        const windowStart = new Date(now.getTime() - 60 * 60_000);
+        const hourly = await tx.select({ metrics: aiWorkflowRun.metrics, startedAt: aiWorkflowRun.startedAt }).from(aiWorkflowRun).where(and(
+          eq(aiWorkflowRun.runKind, 'reservation_prefill'), eq(aiWorkflowRun.transportId, candidate.transportId),
+          gte(aiWorkflowRun.updatedAt, windowStart)));
+        const recentStarts = (metrics: Record<string, unknown> | null, startedAt: Date | null) => {
+          const recorded = metrics?.arrivalStarts;
+          return Array.isArray(recorded) ? recorded.filter((value): value is string => typeof value === 'string' &&
+            Number.isFinite(Date.parse(value)) && Date.parse(value) >= windowStart.getTime())
+            : startedAt && startedAt >= windowStart ? [startedAt.toISOString()] : [];
+        };
+        // Every execution can spend two model calls. Count retries and lease reclaims too.
+        if (hourly.reduce((total, row) => total + recentStarts(row.metrics, row.startedAt).length, 0) >= 30) {
+          await tx.update(aiWorkflowRun).set({ nextRunAt: new Date(now.getTime() + 5 * 60_000), updatedAt: now,
+            ...(isReclaim ? { state: 'retry_wait' as const, claimOwner: null, claimToken: null, deadlineAt: null } : {}),
+            metrics: { ...candidate.metrics, phase: 'deferred', reason: 'hourly_model_budget',
+              ...(isReclaim && candidate.heartbeatAt ? { interruptedHeartbeatAt: candidate.heartbeatAt.toISOString() } : {}) } })
+            .where(eq(aiWorkflowRun.id, candidate.id));
+          continue;
+        }
+        arrivalStarts = [...recentStarts(candidate.metrics, candidate.startedAt), now.toISOString()];
+      }
       const reclaimCount =
         isReclaim && typeof candidate.metrics === 'object' && candidate.metrics !== null
           ? Number((candidate.metrics as Record<string, unknown>).reclaimCount ?? 0) + 1
@@ -795,7 +842,8 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
 
       // Prepared quotes get the staff budget too: the read takes minutes, and they already yield to staff work.
       const requestDeadlineMs =
-        candidate.runKind === HMS_WRITE_RUN_KIND && candidate.executorLane === 'hms' &&
+        candidate.runKind === 'reservation_prefill' ? RESERVATION_ARRIVAL_RUN_DEADLINE_MS
+          : candidate.runKind === HMS_WRITE_RUN_KIND && candidate.executorLane === 'hms' &&
         candidate.promptVersion === HMS_LABTEST_AMEND_PROMPT_VERSION
           ? Math.max(runDeadlineMs, HMS_LABTEST_AMEND_RUN_DEADLINE_MS)
           : candidate.runKind === HMS_WRITE_RUN_KIND &&
@@ -807,7 +855,9 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         request?.kind === 'staff_quote'
           ? Math.max(runDeadlineMs, HMS_STAFF_QUOTE_RUN_DEADLINE_MS)
           : runDeadlineMs;
-      const deadlineAt = candidate.deadlineAt ?? new Date(now.getTime() + requestDeadlineMs);
+      const deadlineAt = candidate.runKind === 'reservation_prefill' && isReclaim
+        ? new Date(now.getTime() + requestDeadlineMs)
+        : candidate.deadlineAt ?? new Date(now.getTime() + requestDeadlineMs);
       const claimToken = randomUUID();
 
       const [claimed] = await tx
@@ -820,13 +870,16 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
           heartbeatAt: now,
           deadlineAt,
           updatedAt: now,
-          ...(reclaimCount !== undefined
+          ...(reclaimCount !== undefined || arrivalStarts
             ? {
                 metrics: {
                   ...(typeof candidate.metrics === 'object' && candidate.metrics !== null
                     ? (candidate.metrics as Record<string, unknown>)
                     : {}),
-                  reclaimCount,
+                  ...(reclaimCount !== undefined ? { reclaimCount } : {}),
+                  ...(candidate.runKind === 'reservation_prefill' && isReclaim && candidate.heartbeatAt
+                    ? { interruptedHeartbeatAt: candidate.heartbeatAt.toISOString() } : {}),
+                  ...(arrivalStarts ? { arrivalStarts } : {}),
                 },
               }
             : {}),

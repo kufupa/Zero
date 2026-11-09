@@ -7,6 +7,8 @@ import {
   pendingObservations,
   recordLiveHint,
   reportObservationGap,
+  reportOptionalAttachmentGaps,
+  resolveOptionalAttachmentRoles,
   enrichObservation,
   renewFinalizationClaim,
 } from '../outlook-sync/ledger.js';
@@ -54,6 +56,9 @@ const uploadInput = nativeFenced.extend({
     .string()
     .regex(/^[A-Za-z0-9_-]{1,64}$/)
     .optional(),
+  optionalMissing: z.array(z.object({ role: z.string().min(1).max(256), fileName: z.string().max(1024).nullable() }).strict()).max(1000).optional(),
+  resolvedAttachmentRoles: z.array(z.string().max(256)).max(1000).optional(),
+  semanticVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   pending: z.boolean().optional(),
   manifest: syncManifestV1.optional(),
   artifactId: z.string().min(1).max(512).optional(),
@@ -264,6 +269,15 @@ export function createOutlookSyncNativeHandler(
           );
           return Response.json(result, { headers: { 'cache-control': 'no-store' } });
         }
+        if (input.observationId && input.resolvedAttachmentRoles) {
+          result = await resolveOptionalAttachmentRoles(db, verified.deviceId, input, input.observationId,
+            input.resolvedAttachmentRoles, input.semanticVersion);
+          return Response.json(result, { headers: { 'cache-control': 'no-store' } });
+        }
+        if (input.observationId && input.optionalMissing) {
+          result = await reportOptionalAttachmentGaps(db, verified.deviceId, input, input.observationId, input.optionalMissing);
+          return Response.json(result, { headers: { 'cache-control': 'no-store' } });
+        }
         if (input.observationId && input.availability) {
           result = await reportObservationGap(
             db,
@@ -301,6 +315,7 @@ export function createOutlookSyncNativeHandler(
             authorizedSource(tx as DB, verified.deviceId, input, {
               requireFence: true,
               allowQuota: true,
+              allowDisk: true,
             }),
           );
           const a = await ownedArtifact(db, input.sourceId, input.artifactId);
@@ -340,6 +355,7 @@ export function createOutlookSyncNativeHandler(
             authorizedSource(tx as DB, verified.deviceId, input, {
               requireFence: true,
               allowQuota: true,
+              allowDisk: true,
             }),
           );
           result = { version: 1, artifactId: a.id, uploadSession: session, grant };
@@ -350,6 +366,7 @@ export function createOutlookSyncNativeHandler(
           authorizedSource(tx as DB, verified.deviceId, input, {
             requireFence: true,
             allowQuota: true,
+            allowDisk: true,
           }),
         );
         const a = await ownedArtifact(db, input.sourceId, input.artifactId);
@@ -420,6 +437,7 @@ export function createOutlookSyncNativeHandler(
             authorizedSource(tx as DB, verified.deviceId, input, {
               requireFence: true,
               allowQuota: true,
+              allowDisk: true,
             }),
           );
         }

@@ -21,7 +21,7 @@ for key in PANE_WRITE_CREATE PANE_WRITE_AMEND PANE_WRITE_AMEND_UNPAID PANE_WRITE
   case "${!key:-}" in ''|off|lab|on) ;; *) echo "invalid $key" >&2; exit 2 ;; esac
 done
 for key in PANE_HMS_LAB_CREATE_WORKER PANE_HMS_LAB_ATTACH_WORKER PANE_HMS_LAB_AMEND_WORKER \
-  PANE_CLOUD_CREATE_DISPATCH HMS_JOB_QUEUE HMS_AVAILABILITY_PREFETCH; do
+  PANE_CLOUD_CREATE_DISPATCH HMS_JOB_QUEUE HMS_AVAILABILITY_PREFETCH RESERVATION_V2_ARRIVAL_PREFILL PANE_STAY_LOOKUP; do
   case "${!key:-}" in ''|off|on) ;; *) echo "invalid $key" >&2; exit 2 ;; esac
 done
 case "${PANE_BRAIN:-}" in ''|agent|classifier) ;; *) echo 'invalid PANE_BRAIN' >&2; exit 2 ;; esac
@@ -207,6 +207,8 @@ append_env QUOTE_FOLLOWUPS_SINCE "${QUOTE_FOLLOWUPS_SINCE:-}"
 # Prefetch also needs HMS_PREFETCH_ENABLED=1; HMS_LANE_PAUSED=1 stops every hms lane claim.
 append_env HMS_JOB_QUEUE "${HMS_JOB_QUEUE:-}"
 append_env HMS_LANE_PAUSED "${HMS_LANE_PAUSED:-}"
+append_env RESERVATION_V2_ARRIVAL_PREFILL "${RESERVATION_V2_ARRIVAL_PREFILL:-}"
+append_env PANE_STAY_LOOKUP "${PANE_STAY_LOOKUP:-}"
 append_env HMS_QUOTE_PREPARE "${HMS_QUOTE_PREPARE:-}"
 append_env HMS_QUOTE_PREPARE_PER_HOUR "${HMS_QUOTE_PREPARE_PER_HOUR:-}"
 append_env HMS_PREFETCH_ENABLED "${HMS_PREFETCH_ENABLED:-}"

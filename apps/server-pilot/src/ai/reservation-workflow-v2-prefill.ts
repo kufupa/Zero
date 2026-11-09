@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { profileCms, profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { and, desc, eq, ilike, isNull, lte, ne, or } from 'drizzle-orm';
+import { and, desc, eq, ilike, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { mailThread, message } from '../db/schema/mail.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
@@ -25,7 +25,8 @@ import { PANE_PROPERTY_LOCK_WAIT_MS, acquisitionWithin } from '../hms/property-r
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { findParty } from './pane-party-lookup.js';
 import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
-import { findStay, searchGuest, searchGuestCloudBatch, type GuestSearchQuery } from './pane-stay-lookup.js';
+import { findStay, paneStayLookupEnabled, searchGuest, searchGuestCloudBatch, type GuestSearchQuery } from './pane-stay-lookup.js';
+import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { normalizeGuestName, sameGuestName } from './guest-name-match.js';
 import { availabilityRequestSchema } from './hms-availability.js';
 import { probeCloudRateAvailability } from './hms-cloud-availability-reader.js';
@@ -62,7 +63,7 @@ const SYNTHESIS_SHAPE_RULES = `Use this schema-valid empty envelope as the exact
 {"proposal":{"schemaVersion":"reservation-prefill.v0.2","content":{"requests":[],"services":[],"documents":[]},"annotations":[],"issues":[],"sourceClaims":[],"lookupResultRefs":[]},"reviewRequirements":{}}
 Each request's sourceRefs, serviceRefs and documentRefs are required arrays, including when empty. Reuse extraction request IDs; host links a request to source facts only by exact ID or a unique one-to-one source/text match, and fails closed when ambiguous. For Amend and Cancel, preserve every source-cited exact confirmation as an include hint with confirmation, sourceRefs, candidateRefs:[], suggestedRef:null and mode:"unresolved" unless an exact admitted host observation supports a target. Do not fabricate a native target. For Create, reservationNote belongs in body.shared.reservationNote, never at body root. Do not emit global review keys such as humanReviewRequired or beforeExecution: reviewRequirements is keyed by field-path strings, and each value is exactly {"required":true,"reasons":["..."],"evidenceRefs":["admitted-ref"]}. Use {} when no additional review requirement is needed. Preserve every source-supported field in the schema; if a field cannot be represented confidently, retain sourceClaims and add a visible issue rather than dropping the request or inventing a value. An exact source confirmation linked to a Create means possible prior booking, not proof of a native stay. Keep it as a sourceClaim only; the host adds the existing_confirmation_requires_lookup issue at /proposal/content/requests/{finalRequestId}/confirmationReference and requires exact native lookup before Execute. Do not transform it into a native ID or claim that a stay exists; never copy it into a native-selection field.`;
 
-const CREATE_SYNTHESIS_SHAPE_RULES = `For Create, body contains shared, dateSections and allocations only. Every existing date section has defaults:{} when empty; every allocation has overrides:{} when empty. Quote-only parties, salesStrategy, client, requestedMoney, notes, outputIntent and provisionalBookingRequested do not belong in a Create body. Keep services and documents in content.services and content.documents with their request links. Preserve source-supported unsupported price or other business asks in sourceClaims and visible issues rather than copying Quote fields or dropping their evidence.`;
+const CREATE_SYNTHESIS_SHAPE_RULES = `For Create, body contains shared, dateSections and allocations only. Every existing date section has defaults:{} when empty; every allocation has overrides:{} when empty. Each allocation guest has candidateRefs:[] and suggestedRef:null when no admitted profile observation supports a suggestion; suggestedRef is one exact observation ref string or null, never an object or list. Quote-only parties, salesStrategy, client, requestedMoney, notes, outputIntent and provisionalBookingRequested do not belong in a Create body. Keep services and documents in content.services and content.documents with their request links. Preserve source-supported unsupported price or other business asks in sourceClaims and visible issues rather than copying Quote fields or dropping their evidence.`;
 
 // PRODUCT.md describes the staff-controlled CMS capability; codes/labels come
 // from the existing property profile. Later corpus outcomes never enter T0 input.
@@ -90,6 +91,24 @@ function omitUncitedUnknownClaims(value: unknown): unknown {
   };
   const normalized = normalize(value);
   return normalized === OMIT_UNKNOWN_CLAIM ? undefined : normalized;
+}
+
+/** Repair a mistyped citation only when the quoted claim occurs in exactly one admitted source. */
+function repairQuotedEvidenceRefs(value: unknown, evidence: ReservationWorkflowV2Evidence[]): unknown {
+  const known = new Set(evidence.map((item) => item.ref));
+  const visit = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(visit);
+    if (!item || typeof item !== 'object') return item;
+    const row = item as Record<string, unknown>;
+    const out = Object.fromEntries(Object.entries(row).map(([key, child]) => [key, visit(child)]));
+    if (typeof row.raw !== 'string' || row.raw.trim().length < 3 || !Array.isArray(row.sourceRefs) ||
+        !row.sourceRefs.some((ref) => typeof ref === 'string' && !known.has(ref))) return out;
+    const matches = evidence.filter((entry) => entry.text.includes(row.raw as string));
+    if (matches.length !== 1) return out;
+    out.sourceRefs = [...new Set(row.sourceRefs.map((ref) => typeof ref === 'string' && !known.has(ref) ? matches[0]!.ref : ref))];
+    return out;
+  };
+  return visit(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -154,6 +173,17 @@ function normalizeSynthesisOutput(value: unknown, evidence: ReservationWorkflowV
       let normalizedEntry: Record<string, unknown> = entry;
       if (entry.kind === 'create') {
         let changed = false;
+        // Guest suggestions are host-bound below, never model authority. A missing or
+        // non-scalar suggestion carries no usable reference and must stay unselected.
+        if (Array.isArray(body.allocations)) {
+          body.allocations = body.allocations.map((allocation) => {
+            if (!isRecord(allocation) || !isRecord(allocation.guest)) return allocation;
+            const guest = allocation.guest;
+            if (guest.suggestedRef === null || typeof guest.suggestedRef === 'string') return allocation;
+            changed = true;
+            return { ...allocation, guest: { ...guest, suggestedRef: null } };
+          });
+        }
         if (Array.isArray(body.dateSections)) {
           body.dateSections = body.dateSections.map((section) => {
             if (!isRecord(section) || Object.hasOwn(section, 'defaults')) return section;
@@ -641,6 +671,7 @@ export function createReservationWorkflowV2CandidateReader(input: {
   };
   return async (candidate) => {
     if (candidate.propertyCode !== input.propertyCode) return { status: 'failed', result: { reason: 'property_mismatch' }, coverage: { complete: false } };
+    if (candidate.kind === 'stay_candidate' && !paneStayLookupEnabled()) return unavailable('Stay lookup is disabled.');
     const cachedGuestProfiles = candidate.kind === 'guest_candidate' && guestProfileBatch;
     const stayText = typeof candidate.criteria.confirmationOrGuestText === 'string' ? candidate.criteria.confirmationOrGuestText.trim() : '';
     const cachedGuestStays = candidate.kind === 'stay_candidate' && guestStayBatch && !/^\d{6,10}-\d{1,2}$/.test(stayText);
@@ -657,7 +688,8 @@ export function createReservationWorkflowV2CandidateReader(input: {
         .from(message).innerJoin(mailThread, and(eq(mailThread.id, message.threadId), eq(mailThread.transportId, message.transportId)))
         .where(and(eq(message.transportId, input.transportId), ne(message.threadId, input.source.threadId),
           eq(message.historyOnly, false), eq(mailThread.historyOnly, false), isNull(mailThread.trashedAt), isNull(mailThread.spamAt),
-          lte(MESSAGE_ARRIVED_AT, query.cutoff), or(ilike(message.subject, query.pattern), ilike(message.textBody, query.pattern))))
+          lte(MESSAGE_ARRIVED_AT, sql`${query.cutoff.toISOString()}::timestamptz at time zone 'UTC'`),
+          or(ilike(message.subject, query.pattern), ilike(message.textBody, query.pattern))))
         .orderBy(desc(MESSAGE_ARRIVED_AT), desc(message.id)).limit(query.limit);
       return selectReservationWorkflowV2MailCandidates(query, rows);
     }
@@ -697,7 +729,13 @@ export function createReservationWorkflowV2CandidateReader(input: {
       const query = exactSearchTerm(candidate.criteria.confirmationOrGuestText);
       if (!query) return unavailable('Stay lookup term is missing or too short.');
       if (/^\d{6,10}-\d{1,2}$/.test(query)) {
-        const found = await findStay({ confirmation: query }, { lock, target, acquisition });
+        const request = { confirmation: query };
+        const propertyLock = lock();
+        if (!propertyLock) return unavailable('Property read lock is unavailable.');
+        const found = target.propertyCode === 'HRCEN'
+          ? await propertyLock.withLock(async () => projectCloudStayFind(request,
+            await runCloudStayFind({ request, target, signal: input.signal })), { ...acquisition, signal: input.signal })
+          : await findStay(request, { lock, target, acquisition });
         const status = completeNativeRead(found.outcome);
         return { status, result: { outcome: found.outcome, stay: found.stay, commercial: found.commercial ?? null,
           arrivalMismatch: found.arrivalMismatch }, coverage: { complete: status === 'complete', notes: [] } };
@@ -1434,7 +1472,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
   if (!firstPass.ok) return fallback(`Typed extraction call failed (${firstPass.reason}); no lookups were run.`,
     { stage: 'extract', code: `model_${firstPass.reason}`, message: `Typed extraction call failed (${firstPass.reason}); no lookups were run.` });
-  const firstPassFacts = omitUncitedUnknownClaims(firstPass.result.output);
+  const firstPassFacts = repairQuotedEvidenceRefs(omitUncitedUnknownClaims(firstPass.result.output), evidence);
   // Request IDs are host metadata, not model claims. Derive them before validating
   // the facts so an omitted/malformed model ID cannot discard a valid request.
   const identifiedFacts = firstPassFacts && typeof firstPassFacts === 'object' && !Array.isArray(firstPassFacts) &&
@@ -1544,7 +1582,17 @@ export async function runReservationWorkflowV2Prefill(input: {
   const referenceSafety = partyBinding ? addRequestConfirmationSafety({ proposal: partyBinding.proposal, extraction }) : null;
   const guardedProposal = referenceSafety?.proposal ?? (finalParsed?.success ? finalParsed.data.proposal : null);
   const finalProposal = guardedProposal ? applyDefaultCmsSendPolicy(guardedProposal, input.propertyCode) : null;
-  const finalReviewRequirements = finalParsed?.success ? finalParsed.data.reviewRequirements ?? {} : {};
+  const admittedReviewRefs = new Set([...evidence.map((row) => row.ref), ...finalObservations.map((row) => row.ref)]);
+  let unverifiedReviewEvidence = false;
+  const finalReviewRequirements = Object.fromEntries(Object.entries(finalParsed?.success ? finalParsed.data.reviewRequirements ?? {} : {})
+    .map(([path, requirement]) => {
+      const evidenceRefs = requirement.evidenceRefs.filter((ref) => admittedReviewRefs.has(ref));
+      if (evidenceRefs.length !== requirement.evidenceRefs.length) unverifiedReviewEvidence = true;
+      // Model output may request review, never waive a staff decision.
+      return [path, { ...requirement, required: true, evidenceRefs }];
+    }));
+  if (unverifiedReviewEvidence) readErrors.push({ stage: 'lookup', code: 'review_evidence_unverified',
+    message: 'Some model-cited review evidence was unavailable; staff review remains required.' });
   const proposalIssue = finalParsed?.success && finalProposal
     ? validateProposal(finalProposal, evidence, finalObservations) : null;
   const reviewIssue = finalParsed?.success ? validateReviewRequirementRefs(finalReviewRequirements, evidence, finalObservations) : null;

@@ -104,7 +104,7 @@ const object = (value: unknown): Record<string, unknown> | null =>
 const text = (value: unknown): string | null => typeof value === 'string' && value.trim() ? value.trim() : null;
 const hash = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
 const stateContext = (ctx: ReservationWorkflowV2ServerContext) => ({ db: ctx.db, transportId: ctx.transport.id,
-  userId: ctx.user.id, propertyCode: ctx.property.propertyCode });
+  userId: ctx.user.id, propertyCode: ctx.property.propertyCode, recovery: ctx.recovery });
 
 function sameName(left: unknown, right: unknown): boolean {
   const normalize = (value: unknown) => typeof value === 'string'

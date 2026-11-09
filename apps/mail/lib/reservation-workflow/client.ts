@@ -37,6 +37,7 @@ export type ReservationWorkflowV2TrpcClient = {
     selectNative: MutationProcedure<ItemInput & { requestId: string; fieldPath: string; observationRef: string }>;
     reviewScope: MutationProcedure<ItemInput & { requestId: string; scope: 'request' | 'allocations' | 'targets' | 'services' | 'documents'; ids: string[] }>;
     get: QueryProcedure<ItemInput>;
+    reconcileSource: MutationProcedure<ItemInput & { confirmed: true }>;
     edit: MutationProcedure<ItemInput & { fieldPath: string; value: { state: 'set' | 'none' | 'unknown' | 'inherit' | 'clear'; value?: unknown; updatedAt: string } }>;
     review: MutationProcedure<ItemInput & { fieldPath: string; decision: 'accepted' | 'flagged'; note?: string | null }>;
     undo: MutationProcedure<ItemInput>;
@@ -128,7 +129,8 @@ function decodeDraft(result: unknown): ReservationWorkflowV2Session {
       return [{ requestId: value.requestId, allocationId: value.allocationId, current: value.current,
         ...(isString(value.issue) ? { issue: value.issue } : {}), ...(price ? { price } : {}) }];
     }) : [];
-  return { draft: draft as unknown as ReservationWorkflowV2Draft, revision, revisionHead, seq, preparationViews };
+  return { draft: draft as unknown as ReservationWorkflowV2Draft, revision, revisionHead, seq, preparationViews,
+    ...(result.sourceChanged === true ? { sourceChanged: true } : {}) };
 }
 
 function pointerPart(value: string | number): string {
@@ -397,7 +399,8 @@ export function projectReservationSession(session: ReservationWorkflowV2Session)
     sourceMessageId: draft.source.messageId,
     requests,
     fields,
-    issues: [...draft.proposal.issues.map((issue) => ({ path: issue.path, kind: issue.kind, explanation: issue.explanation, evidenceRefs: issue.evidenceRefs })), ...apiErrors],
+    issues: [...draft.proposal.issues.map((issue) => ({ path: issue.path, kind: issue.kind, explanation: issue.explanation, evidenceRefs: issue.evidenceRefs })), ...apiErrors,
+      ...(session.sourceChanged ? [{ kind: 'source_changed', explanation: 'The email or its attachments changed. Your saved work is intact; review the new evidence before native work.', evidenceRefs: [] }] : [])],
     operationResults,
     preparationViews,
     preparation: {
@@ -599,6 +602,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     selectNative(command) { return refreshAfter(api.selectNative, { ...itemInput(command), requestId: command.requestId, fieldPath: command.fieldPath, observationRef: command.observationRef }, command.source); },
     reviewScope(command) { return refreshAfter(api.reviewScope, { ...itemInput(command), requestId: command.requestId, scope: command.scope, ids: command.ids }, command.source); },
     get(command) { return load(itemInput(command), command.source); },
+    reconcileSource(command) { return refreshAfter(api.reconcileSource, { ...itemInput(command), confirmed: true }, command.source); },
     async edit(command: ReservationEditCommand) {
       const input = { ...itemInput(command), fieldPath: command.fieldPath,
         value: { state: command.state, ...(command.state === 'set' ? { value: command.value } : {}), updatedAt: new Date().toISOString() } };

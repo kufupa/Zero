@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { copyFile, mkdtemp, rm } from 'node:fs/promises';
+import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { and, eq, isNull } from 'drizzle-orm';
@@ -22,6 +22,9 @@ import {
   lockReservationWorkflowV2Source,
   recordReservationWorkflowV2Result,
   reservationWorkflowV2DraftOf,
+  type ReservationNativeCheckBatch,
+  type ReservationRecoveryScope,
+  type ReservationWorkflowV2Context,
 } from './reservation-workflow-v2-state.js';
 import { canonicalJson } from './draft-approval.js';
 import {
@@ -37,23 +40,28 @@ import {
   type HmsLabtestWriteHandle,
 } from './hms-labtest-dispatch.js';
 import { hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
-import { persistHmsShots, verifyStoredHmsShot } from './hms-shots-store.js';
+import { persistHmsShots, readStoredHmsShot, verifyStoredHmsShot } from './hms-shots-store.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS, isPropertyReadLockDeadline } from '../hms/property-read-lock.js';
 import { paneStayCloudTargetLock, paneStayCreateTarget, paneStayPropertyLock, paneWriteMode } from './pane-stay-save.js';
-import { findStay } from './pane-stay-lookup.js';
+import { findStay, paneStayLookupEnabled } from './pane-stay-lookup.js';
+import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { createCloudTargetKey, isLabtestGuest } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
 import { lockCreateActorSession } from './pane-create-actor-lock.js';
 import { stayCommitsOf } from './work-items.js';
 import { sameGuestName } from './guest-name-match.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
 
-type V2StateContext = { db: DB; transportId: string; userId: string; propertyCode: string };
+type V2StateContext = ReservationWorkflowV2Context;
 export type ReservationWorkflowV2ServerContext = {
   db: DB;
   transport: { id: string };
   user: { id: string; sessionId?: string; sessionProfile?: 'legacy' | 'remote' };
   property: { propertyCode: string };
+  /** Internal service-only scope; never populated from a pane request. */
+  nativeBatch?: ReservationNativeCheckBatch;
+  /** Internal reconciliation-only scope; never populated from a pane request. */
+  recovery?: ReservationRecoveryScope;
 };
 
 const record = (value: unknown): Record<string, unknown> | null =>
@@ -81,7 +89,8 @@ type NativeCreate = {
 type NativeContinuation = (() => Promise<unknown>) & { proveNeverDispatched?: () => unknown };
 
 function stateContext(ctx: ReservationWorkflowV2ServerContext): V2StateContext {
-  return { db: ctx.db, transportId: ctx.transport.id, userId: ctx.user.id, propertyCode: ctx.property.propertyCode };
+  return { db: ctx.db, transportId: ctx.transport.id, userId: ctx.nativeBatch ? null : ctx.user.id,
+    propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch, recovery: ctx.recovery };
 }
 
 async function currentDraft(ctx: ReservationWorkflowV2ServerContext, input: {
@@ -792,15 +801,21 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
     const sourceRefs = sourceEvidence ? [sourceEvidence.ref] : [];
     const claimIsExact = Boolean(claim && confirmation && /^\d{6,10}-\d{1,4}$/.test(confirmation) && sourceEvidence &&
       claim.sourceRefs.length > 0);
-    if (claimIsExact && confirmation) {
+    if (claimIsExact && confirmation && ctx.nativeBatch && !paneStayLookupEnabled()) {
+      reason = 'stay_lookup_disabled';
+    } else if (claimIsExact && confirmation) {
       const targetResult = paneStayCreateTarget({ transportId: ctx.transport.id, propertyCode: ctx.property.propertyCode });
       if (targetResult.ok) {
         try {
-          const found = await findStay({ confirmation }, {
-            target: targetResult.target,
-            lock: () => paneStayPropertyLock(targetResult.target),
-            acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
-          });
+          const request = { confirmation };
+          const lock = paneStayPropertyLock(targetResult.target);
+          const found = ctx.nativeBatch && lock
+            ? await lock.withLock(async () => projectCloudStayFind(request,
+              await runCloudStayFind({ request, target: targetResult.target, signal: ctx.nativeBatch!.signal })),
+            { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch.signal })
+            : ctx.nativeBatch ? null : await findStay(request, { target: targetResult.target,
+              lock: () => paneStayPropertyLock(targetResult.target), acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS) });
+          if (!found) throw new Error('background_property_lock_unavailable');
           outcome = found.outcome;
           reason = found.reason ?? null;
           stay = record(found.stay);
@@ -1086,7 +1101,7 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
         }
       }
       return { lookups: perAllocation, observations: nativeObservations, catalogues, sessionSafe: true };
-    }, { memory: null, blockServiceWorkers: true }));
+    }, { memory: null, blockServiceWorkers: true, signal: ctx.nativeBatch?.signal }));
   } catch {
     return { status: 'failed', issue: 'native_create_lookup_failed', requestId: input.requestId ?? null };
   }
@@ -1125,9 +1140,15 @@ export async function reservationWorkflowV2Prepare(ctx: ReservationWorkflowV2Ser
     const tool = await import(new URL('../../tooling/hms-cloud/create-reservation.mjs', import.meta.url).href) as {
       createReservation: (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<NativeCreate>;
     };
+    const session = ctx.nativeBatch ? await import(new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url).href) as {
+      withBookingLookupSession: (callback: unknown, options: Record<string, unknown>) => Promise<unknown>;
+    } : null;
     const native = await tool.createReservation(compiled.nativeInput, { allowRealGuest: true, expectedGuest: compiled.expectedGuest,
       cloudTargetKey: createCloudTargetKey(compiled.expectedGuest, record(compiled.nativeInput.stay)?.arrival),
-      requireExplicitGuestSelection: true, capturePrepareScreenshot: true, allowCommitOnlyBillingReference: true });
+      requireExplicitGuestSelection: true, capturePrepareScreenshot: true, allowCommitOnlyBillingReference: true,
+      ...(session ? { withSession: (callback: unknown, options: Record<string, unknown>) =>
+        session.withBookingLookupSession(callback, { ...options, signal: ctx.nativeBatch!.signal }) } : {}) });
+    ctx.nativeBatch?.signal.throwIfAborted();
     const mapped = mapNativeOutcome(native), price = validPrice(native.ratePlanAvailability);
     const prepareShot = await persistPreparedScreenshot(ctx, input.workItemId, native.screenshots?.filled);
     const status = mapped.status === 'prepared' && price && prepareShot ? 'complete' : native.outcome === 'needs_input' ? 'partial' : 'failed';
@@ -1188,6 +1209,31 @@ async function persistPreparedScreenshot(ctx: ReservationWorkflowV2ServerContext
     ? { runId: parsed.runId, sha256: persisted.shots.find((shot) => shot.name === 'filled.png')!.sha256 } : null;
 }
 
+/** Give a staff-authorised dispatch its own verified copy of a background preview. */
+async function staffOwnedPrepareShot(ctx: ReservationWorkflowV2ServerContext, draft: ReservationWorkflowV2Draft,
+  workItemId: string, shot: { runId: string; sha256: string }) {
+  const staffOwner = `${ctx.user.id}:${ctx.transport.id}`;
+  const verify = (owner: string, ref = shot) => verifyStoredHmsShot({ ...ref, name: 'filled.png', owner,
+    propertyCode: ctx.property.propertyCode, workItemId });
+  if (await verify(staffOwner)) return shot;
+  const jobId = draft.prefill?.jobRunId;
+  if (!jobId) return null;
+  const backgroundOwner = `arrival-service:${jobId}:${ctx.transport.id}`;
+  if (!await verify(backgroundOwner)) return null;
+  const bytes = await readStoredHmsShot({ runId: shot.runId, name: 'filled.png', owner: backgroundOwner });
+  if (!bytes) return null;
+  const stage = await mkdtemp(join(tmpdir(), 'reservation-v2-preview-copy-'));
+  try {
+    await writeFile(join(stage, 'filled.png'), bytes, { mode: 0o600 });
+    const runId = randomUUID();
+    const copies = await persistHmsShots({ propertyCode: ctx.property.propertyCode, workItemId, runId,
+      sourceDir: stage, owner: staffOwner, now: Date.now() });
+    const copy = copies?.find((entry) => entry.name === 'filled.png' && entry.sha256 === shot.sha256);
+    const ref = copy && { runId, sha256: copy.sha256 };
+    return ref && await verify(staffOwner, ref) ? ref : null;
+  } finally { await rm(stage, { recursive: true, force: true }); }
+}
+
 async function persistBeforeScreenshot(ctx: ReservationWorkflowV2ServerContext, workItemId: string, path: unknown) {
   const parsed = nativeRunId(path, 'before.png');
   if (!parsed) return null;
@@ -1220,10 +1266,11 @@ async function persistSavedScreenshot(ctx: ReservationWorkflowV2ServerContext, w
 function preparedFor(draft: ReservationWorkflowV2Draft, requestId: string, allocationId: string, semanticDigest?: string) {
   const result = [...draft.operationResults].reverse().find((entry) => entry.requestId === requestId &&
     entry.allocationId === allocationId && entry.workflow === 'create' && entry.status === 'prepared' &&
+    entry.generationId === draft.generationId &&
     entry.draftRevision <= draft.revision);
   if (!result) return null;
   const observation = draft.observations.find((item) => result.observationRefs.includes(item.ref) &&
-    item.kind === 'rate_availability' && item.status === 'complete');
+    item.kind === 'rate_availability' && item.status === 'complete' && item.generationId === draft.generationId);
   const stored = observation && record(observation.result);
   const binding = stored && record(stored.requestBinding);
   const price = stored && validPrice(stored.ratePlanAvailability);
@@ -1673,7 +1720,9 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
         }
       }
       const beforeShot = await persistBeforeScreenshot(ctx, input.workItemId, beforePath);
-      if (!beforeShot || !preimage || !prepared.prepareShot || typeof event?.guaranteeDisplay !== 'string') {
+      const previewShot = prepared.prepareShot && await staffOwnedPrepareShot(ctx, loaded.draft, input.workItemId,
+        { runId: String(prepared.prepareShot.runId), sha256: String(prepared.prepareShot.sha256) });
+      if (!beforeShot || !preimage || !previewShot || typeof event?.guaranteeDisplay !== 'string') {
         throw new Error('reservation_v2_create_recovery_evidence_missing');
       }
       const attempt = nativeObservation(loaded.draft, input, { outcome: 'dispatch_pending' }, 'partial', {
@@ -1692,7 +1741,7 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
           sourceDigest: input.source.sourceHash, approvedDigest: prepared.digest, requestDigest,
           recovery: { request: prepared.request, requestId: input.requestId, allocationId: input.allocationId,
             operationId: input.idempotencyKey, draftRevision: input.expectedRevision,
-            previewShot: prepared.prepareShot, beforeShot, preimage, guaranteeDisplay: event.guaranteeDisplay,
+            previewShot, beforeShot, preimage, guaranteeDisplay: event.guaranteeDisplay,
             ratePlanAvailability: prepared.price, arAccountProfileId: prepared.arAccountProfileId,
             priorRoomConfirmations: priorSiblings.map(({ confirmation, requestDigest }) => ({ confirmation, requestDigest })) },
         }, async (tx) => authorizeCurrentCreate(tx, ctx, input, prepared.digest, compiled.semanticDigest,

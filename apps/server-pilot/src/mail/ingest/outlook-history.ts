@@ -98,6 +98,16 @@ export async function persistOutlookHistory(
           (typeof previousVersion !== 'string' ||
             (/^\d+$/.test(previousVersion) && incomingVersion > BigInt(previousVersion))),
       );
+      // A repaired export for this same Outlook observation enriches its evidence
+      // without replacing a live message's body or another producer's provenance.
+      const sameObservation = candidate.message.sourceProvenance?.sourceId === input.sourceId &&
+        candidate.message.sourceProvenance?.sourceObservationId === input.sourceObservationId;
+      // Versions are comparable only within one Outlook source observation. A slower
+      // old drain must not add old attachments or remove newer missing-evidence flags.
+      if (sameObservation && incomingVersion !== null && typeof previousVersion === 'string' &&
+          /^\d+$/.test(previousVersion) && incomingVersion < BigInt(previousVersion)) {
+        return { messageId, threadId, linked, attention };
+      }
       await tx
         .update(message)
         .set({
@@ -110,11 +120,19 @@ export async function persistOutlookHistory(
             newerOwnedHistory && input.htmlBody !== null
               ? sanitizeHtmlBodyForStorage(input.htmlBody)
               : (candidate.message.htmlBody ?? sanitizeHtmlBodyForStorage(input.htmlBody)),
-          ...(newerOwnedHistory
+          ...(newerOwnedHistory || sameObservation
             ? {
                 sourceProvenance: {
                   ...candidate.message.sourceProvenance,
-                  canonicalContentVersion: input.semanticVersion,
+                  ...(newerOwnedHistory || sameObservation ? { canonicalContentVersion: input.semanticVersion } : {}),
+                  ...(sameObservation ? {
+                    observationId: input.sourceProvenance.observationId,
+                    semanticVersion: input.sourceProvenance.semanticVersion,
+                    artifactOrigin: input.sourceProvenance.artifactOrigin,
+                    optionalMissing: input.sourceProvenance.optionalMissing,
+                    evidence: input.sourceProvenance.evidence,
+                    artifacts: input.sourceProvenance.artifacts,
+                  } : {}),
                 },
               }
             : {}),

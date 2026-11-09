@@ -59,6 +59,7 @@ import {
 import { beginQuoteRun, staffQuoteInFlight } from '../hms/property-queue-state.js';
 import { snapshotRowPrices } from '../trpc/routes/rates.js';
 import { verifyPartyPick } from './pane-party-lookup.js';
+import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
 import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import { HMS_OUTAGE_STAFF_COPY } from '../hms/property-outage.js';
@@ -600,6 +601,8 @@ export type StaffQuoteRunOptions = {
   preparedRunId?: string;
   /** Commit a queued read result under the same claim fence and transaction as the quote artifacts. */
   commitQueuedResult?: (result: Record<string, unknown>, transaction: DB) => Promise<boolean>;
+  /** Arrival checks return observations to their own fenced WorkItem transaction. */
+  persistence?: 'return_only';
 };
 
 function withRunDeadline<T extends ReturnType<typeof prepareStaffQuote>>(
@@ -635,6 +638,11 @@ export async function runStaffQuote(
   db: DB,
   options: StaffQuoteRunOptions = {},
 ) {
+  if (options.persistence === 'return_only' && (identity.user || !options.signal ||
+      !options.preparedRunId || !options.deadlineAt || options.deadlineAt <= Date.now() || options.commitQueuedResult)) {
+    throw new Error('staff_quote_return_only_scope_invalid');
+  }
+  options.signal?.throwIfAborted();
   const [mail] = await db
     .select()
     .from(message)
@@ -695,7 +703,30 @@ export async function runStaffQuote(
   let dinnerFallbackGroupIds: string[] = [];
   if (input.parties) {
     if (quoteRateContextEnabled()) {
-      quoteInput = { ...input, parties: await verifyStaffParties(input.parties, quoteTarget.target) };
+      if (options.persistence === 'return_only') {
+        const verified: StaffQuoteParties = {};
+        for (const role of ['company', 'agency'] as const) {
+          const picked = input.parties[role];
+          if (!picked) continue;
+          const found = await lookupNativeParty({ role: role === 'company' ? 'organization' : 'agency',
+            name: picked.name, target: quoteTarget.target, signal: options.signal });
+          options.signal!.throwIfAborted();
+          const candidates = Array.isArray(found.result.candidates) ? found.result.candidates : [];
+          const nameKey = (value: string) => value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
+          const exact = candidates.filter((value) => value && typeof value === 'object' &&
+            (value as { nativeId?: unknown }).nativeId === picked.nativeId &&
+            typeof (value as { name?: unknown }).name === 'string' &&
+            nameKey((value as { name: string }).name) === nameKey(picked.name));
+          if (found.status !== 'complete' || !found.coverage.complete || found.result.truncated !== false ||
+              found.result.closeOutcome !== 'closed_unsaved' || exact.length !== 1) {
+            refuseQuote('staff_quote_party_unavailable', 'The selected organisation or agency could not be verified.');
+          }
+          if (role === 'company' && picked.kind === 'company') verified.company = picked;
+          else if (role === 'agency' && picked.kind === 'agency') verified.agency = picked;
+          else refuseQuote('staff_quote_party_unavailable', 'The selected organisation or agency could not be verified.');
+        }
+        quoteInput = { ...input, parties: verified };
+      } else quoteInput = { ...input, parties: await verifyStaffParties(input.parties, quoteTarget.target) };
     } else {
       quoteInput = { ...input, parties: undefined };
       notes.push(PARTY_LOOKUP_OFF_NOTE);
@@ -997,8 +1028,12 @@ export async function runStaffQuote(
     const runId = evidence.directory
       ? quoteRunIdFromEvidenceDirectory(config.outputDir, evidence.directory)
       : null;
-    const persistRun = (quoteResult: Record<string, unknown>) =>
-      db.transaction(async (tx) => {
+    const persistRun = (quoteResult: Record<string, unknown>) => {
+      if (options.persistence === 'return_only') {
+        options.signal!.throwIfAborted();
+        return Promise.resolve();
+      }
+      return db.transaction(async (tx) => {
         if (!systemPrepared) {
           await tx
             .update(aiDraftGeneration)
@@ -1100,6 +1135,7 @@ export async function runStaffQuote(
           throw Object.assign(new Error('staff_quote_claim_lost'), { code: 'HMS_JOB_CLAIM_LOST' });
         }
       });
+    };
     const summary = async () => ({
       status: 'ready' as const,
       workflowRunId,
@@ -1173,11 +1209,13 @@ export async function runStaffQuote(
         .finally(() => queued.end());
       registerPendingStaffQuote([workflowRunId, mail.id, ...(runId ? [runId] : [])], pending);
       if (waitForTracePersistence) await pending;
+      options.signal?.throwIfAborted();
       return summary();
     }
     try {
       const result = await summary();
       await persistRun(result);
+      options.signal?.throwIfAborted();
       return result;
     } catch (error) {
       await markGenerationFailed('staff_quote_persist_failed');

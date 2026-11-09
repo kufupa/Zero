@@ -254,7 +254,7 @@ export async function claimSource(db: DB, deviceId: string, raw: z.infer<typeof 
   const input = nativeClaimInput.parse(raw);
   return db.transaction(async (tx) => {
     const t = tx as DB,
-      { source: s, now, staff } = await authorizedSource(t, deviceId, input, { allowQuota: true });
+      { source: s, now, staff } = await authorizedSource(t, deviceId, input, { allowQuota: true, allowDisk: true });
     if (s.claimExpiresAt && s.claimExpiresAt > now && s.claimOwner !== input.workerId)
       throw new SyncClaimBusyError();
     const fence =

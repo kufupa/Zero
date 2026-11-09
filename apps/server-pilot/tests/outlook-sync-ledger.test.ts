@@ -95,7 +95,7 @@ describe('persisted sync foundation', () => {
 
 it('rejects SQL-unsafe observation instants while preserving native precision and valid offsets', async () => {
   const { syncObservationV1 } = await import('../src/outlook-sync/contracts.js');
-  const instant = syncObservationV1.shape.timestamps.shape.receivedAt;
+  const instant = syncObservationV1.innerType().shape.timestamps.shape.receivedAt;
   for (const value of [
     '0000-01-01T12:00:00Z',
     '2026-10-05T12:00:00+99:99',

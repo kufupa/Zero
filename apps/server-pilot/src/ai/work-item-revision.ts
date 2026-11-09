@@ -462,6 +462,9 @@ async function applyHistoryMove(
         if (review) restoredV2.staffReviews[`${afterPath}/nativeSelectionRef`] = review;
       }
     }
+    if (restoredV2?.prefill && ['queued', 'running'].includes(restoredV2.prefill.status)) {
+      restoredV2.prefill = { ...restoredV2.prefill, status: 'superseded', finishedAt: new Date().toISOString() };
+    }
   const v2 = state[RESERVATION_V2_KEY];
   if (v2 && typeof v2 === 'object' && !Array.isArray(v2)) {
     state[RESERVATION_V2_KEY] = { ...(v2 as Record<string, unknown>), revision: nextRevision };

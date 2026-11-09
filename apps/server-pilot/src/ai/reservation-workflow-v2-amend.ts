@@ -21,12 +21,14 @@ import {
   recordReservationWorkflowV2Result,
   reservationWorkflowV2DraftOf,
   RESERVATION_WORKFLOW_V2_STATE_KEY,
+  type ReservationNativeCheckBatch,
+  type ReservationWorkflowV2Context,
 } from './reservation-workflow-v2-state.js';
 import { canonicalJson } from './draft-approval.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { paneStayCloudTargetLock, paneStayPropertyLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
-import { searchGuest } from './pane-stay-lookup.js';
+import { paneStayLookupEnabled, searchGuest } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind, type HmsCloudNativePreimage } from './hms-cloud-saved-stay-find.js';
 import { hmsDispatchTargetKey, hmsDispatchTargetSchema } from './hms-dispatch-target.js';
 import {
@@ -47,6 +49,8 @@ export type ReservationWorkflowV2AmendContext = {
   transport: { id: string };
   user: { id: string; sessionId?: string; sessionProfile?: 'legacy' | 'remote' };
   property: { propertyCode: string };
+  nativeBatch?: ReservationNativeCheckBatch;
+  recovery?: ReservationWorkflowV2Context['recovery'];
 };
 
 type Input = ReservationWorkflowV2LookupInput | ReservationWorkflowV2PrepareInput |
@@ -62,7 +66,7 @@ type Compile = { outcome: 'ok'; requestId: string; hintId: string; selectionPath
   selected: HmsCloudNativePreimage; baseChanges: Record<string, unknown>; rateHandling: 'retain' | 'reprice';
   reviewPaths: string[]; baseDigest: string; target: Record<string, unknown>; requestPath: string } |
   { outcome: 'needs_input' | 'needs_review' | 'unsupported'; issue: string; fields?: string[] };
-type V2StateContext = { db: DB; transportId: string; userId: string; propertyCode: string };
+type V2StateContext = ReservationWorkflowV2Context;
 type WriteTx = Parameters<Parameters<DB['transaction']>[0]>[0];
 
 const NONE = Symbol('none');
@@ -80,7 +84,8 @@ const sameName = (left: unknown, right: unknown) => typeof left === 'string' && 
   right.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
 
 function stateContext(ctx: ReservationWorkflowV2AmendContext): V2StateContext {
-  return { db: ctx.db, transportId: ctx.transport.id, userId: ctx.user.id, propertyCode: ctx.property.propertyCode };
+  return { db: ctx.db, transportId: ctx.transport.id, userId: ctx.nativeBatch ? null : ctx.user.id,
+    propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch, recovery: ctx.recovery };
 }
 
 async function currentDraft(ctx: ReservationWorkflowV2AmendContext, input: Input) {
@@ -211,15 +216,17 @@ function propertyTarget(ctx: ReservationWorkflowV2AmendContext): HmsReadTarget |
 }
 
 async function readCandidate(target: HmsReadTarget, confirmation: string,
-  arrival?: string) {
+  arrival?: string, signal?: AbortSignal) {
+  if (!paneStayLookupEnabled()) return null;
   const lock = paneStayPropertyLock(target);
   if (!lock) return null;
   try {
     return await lock.withLock(async () => {
       const request = { confirmation, ...(arrival ? { arrival } : {}) };
-      const raw = await runCloudStayFind({ request, target, signal: AbortSignal.timeout(5 * 60_000) });
+      const timeout = AbortSignal.timeout(5 * 60_000);
+      const raw = await runCloudStayFind({ request, target, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
       return projectCloudStayFind(request, raw);
-    }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+    }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal });
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return null;
     return null;
@@ -230,7 +237,8 @@ type LookupHintResult = { rows: Array<{ observation: ReservationWorkflowV2Observ
   observation?: ReservationWorkflowV2Observation };
 
 async function lookupHint(draft: ReservationWorkflowV2Draft,
-  target: HmsReadTarget, requestId: string, hintId: string, hint: Record<string, unknown>, selectionPath: string): Promise<LookupHintResult> {
+  target: HmsReadTarget, requestId: string, hintId: string, hint: Record<string, unknown>, selectionPath: string,
+  signal?: AbortSignal): Promise<LookupHintResult> {
   const query: Record<string, unknown> = {
     confirmation: hint.confirmation ?? null, guestName: hint.guestName ?? null,
     bookedArrival: hint.bookedArrival ?? null, bookedDeparture: hint.bookedDeparture ?? null,
@@ -239,7 +247,7 @@ async function lookupHint(draft: ReservationWorkflowV2Draft,
   const confirmation = text(hint.confirmation);
   if (confirmation) {
     if (!/^\d{6,10}-\d{1,2}$/.test(confirmation)) return { rows, observation: failedStayObservation(draft, requestId, hintId, selectionPath, query, 'confirmation_hint_invalid') };
-    const found = await readCandidate(target, confirmation, realDate(hint.bookedArrival) ? hint.bookedArrival : undefined);
+    const found = await readCandidate(target, confirmation, realDate(hint.bookedArrival) ? hint.bookedArrival : undefined, signal);
     const native = record(found)?.nativePreimage;
     const mismatch = validNative(native) ? validateHintAgainstNative(hint, native) : 'native_stay_unverified';
     if (!validNative(native) || mismatch || found?.outcome !== 'found') {
@@ -248,6 +256,8 @@ async function lookupHint(draft: ReservationWorkflowV2Draft,
     return { rows: [{ observation: observationForStay(draft, requestId, hintId, selectionPath, query, native), native }] };
   }
   const name = text(hint.guestName), arrival = hint.bookedArrival, departure = hint.bookedDeparture;
+  if (signal) return { rows, observation: failedStayObservation(draft, requestId, hintId, selectionPath, query,
+    'background_guest_stay_reader_unavailable') };
   if (!name || !realDate(arrival) || (departure !== undefined && (!realDate(departure) || departure <= arrival))) {
     return { rows, observation: failedStayObservation(draft, requestId, hintId, selectionPath, query,
       'original_stay_hints_required') };
@@ -542,7 +552,7 @@ async function recordObservation(ctx: ReservationWorkflowV2AmendContext, input: 
 
 function preparedObservation(draft: ReservationWorkflowV2Draft, compiled: Compile & { outcome: 'ok' }) {
   const rows = draft.observations.filter((observation) => observation.kind === 'rate_availability' &&
-    observation.status === 'complete' && observation.criteria.workflow === 'amend' &&
+    observation.status === 'complete' && observation.generationId === draft.generationId && observation.criteria.workflow === 'amend' &&
     observation.criteria.requestId === compiled.requestId && observation.criteria.hintId === compiled.hintId &&
     observation.criteria.selectedRef === compiled.selectedRef && observation.criteria.baseDigest === compiled.baseDigest);
   return rows.at(-1) ?? null;
@@ -550,6 +560,7 @@ function preparedObservation(draft: ReservationWorkflowV2Draft, compiled: Compil
 
 export async function reservationWorkflowV2AmendLookup(ctx: ReservationWorkflowV2AmendContext,
   input: ReservationWorkflowV2LookupInput): Promise<Outcome> {
+  if (!paneStayLookupEnabled()) return { status: 'needs_input', issue: 'stay_lookup_disabled' };
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;
   if (ctx.property.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'property_not_supported' };
@@ -598,7 +609,7 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReservationWorkflowV
         continue;
       }
       const selectionPath = ptr('proposal', 'content', 'requests', request.id, 'body', 'targets', 'include', index, 'suggestedRef');
-      const result = await lookupHint(loaded.draft, target, request.id, hintId, hint, selectionPath);
+      const result = await lookupHint(loaded.draft, target, request.id, hintId, hint, selectionPath, ctx.nativeBatch?.signal);
       observations.push(...result.rows.map((row) => row.observation));
       if (result.observation) observations.push(result.observation);
       lookups.push({ requestId: request.id, hintId, status: result.rows.length ? 'matches' : 'partial',
@@ -623,6 +634,7 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReservationWorkflowV
 
 export async function reservationWorkflowV2AmendPrepare(ctx: ReservationWorkflowV2AmendContext,
   input: ReservationWorkflowV2PrepareInput): Promise<Outcome> {
+  if (!paneStayLookupEnabled()) return { status: 'needs_input', issue: 'stay_lookup_disabled' };
   if (!input.allocationId) return { status: 'needs_input', issue: 'amend_target_required' };
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;
@@ -640,9 +652,10 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReservationWorkflow
     retainRates: compiled.rateHandling === 'retain' ? 'yes' : 'no', cmsSend: false, cmsMessageId: '', cmsRecipient: '' };
   try {
     const prepared = await locked.lock.withLock(async () => {
+      ctx.nativeBatch?.signal.throwIfAborted();
       const discovery = await module.prepareCloudPaneAmend({ target: locked.target, selected: compiled.selected,
         confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, changes: discoveryChanges,
-        allowRealGuest: true, cloudTargetKey: dispatchKey, signal: AbortSignal.timeout(8 * 60_000) });
+        allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
       const discoveryBaseline = record(discovery.recoveryBaseline);
       if (discovery.outcome !== 'prepared' || !record(discovery.preserved) || !discoveryBaseline) {
         return { issue: 'native_amend_baseline_unavailable' };
@@ -652,7 +665,7 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReservationWorkflow
       if (!changes) return { issue: 'native_amend_cms_baseline_unavailable' };
       const native = await module.prepareCloudPaneAmend({ target: locked.target, selected: compiled.selected,
         confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, changes,
-        allowRealGuest: true, cloudTargetKey: dispatchKey, signal: AbortSignal.timeout(8 * 60_000) });
+        allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
       const price = nativePrice(native.approvedPrices), afterPreserved = record(native.preserved),
         recoveryBaseline = record(native.recoveryBaseline);
       if (native.outcome !== 'prepared' || typeof native.nativeDigest !== 'string' ||
@@ -676,7 +689,7 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReservationWorkflow
         nativeDigest: native.nativeDigest, price });
       return { observation: preparationObservation(loaded.draft!, compiled, native, changes, preserved, price,
         recoveryBaseline, semanticDigest), changes, preserved, price, recoveryBaseline, semanticDigest, nativeDigest: native.nativeDigest };
-    }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+    }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch?.signal });
     if ('issue' in prepared) return { status: 'failed', issue: prepared.issue };
     const recorded = await recordObservation(ctx, input, prepared.observation, 'prepared',
       'HMS amendment staged unsaved; native price and baseline observed', randomUUID(), compiled.hintId);
