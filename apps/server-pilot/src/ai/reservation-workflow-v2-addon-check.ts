@@ -152,8 +152,10 @@ async function previewUnsaved(draft: ReservationWorkflowV2Draft, input: Reservat
   if (invalid.length) return { status: 'needs_input', issue: 'service_preview_fields_unresolved', observations: [] };
   const plans = compiled.flatMap(item => item.plan.outcome === 'ok' ? [item.plan] : []);
   if (!plans.length) return { status: 'unsupported', issue: 'saved_addon_edit_remove_not_connected', observations: [] };
-  if (plans.some(plan => !draft.observations.some(observation => observation.ref === plan.candidateRef &&
-      observation.coverage.complete === true && observation.sourceMessageId === draft.source.messageId))) {
+  if (plans.some(plan => {
+    const matches = draft.observations.filter(observation => observation.ref === plan.candidateRef);
+    return matches.length !== 1 || matches[0]!.coverage.complete !== true || matches[0]!.sourceMessageId !== draft.source.messageId;
+  })) {
     return { status: 'needs_input', issue: 'host_catalogue_candidate_unverified', observations: [] };
   }
   try {
