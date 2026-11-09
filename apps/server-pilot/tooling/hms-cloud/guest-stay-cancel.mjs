@@ -28,7 +28,7 @@ async function depositDisplayMatches(frame, expected) {
   return frame.evaluate((wanted) => {
     const fields = [...document.querySelectorAll('input[name="depositreceived"]')].filter((el) =>
       (el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
-    return wanted === null ? fields.length === 0 : fields.length === 1 && fields[0].value === wanted;
+    return wanted === null ? fields.length === 0 : fields.length === 1 && fields[0].value.trim() === wanted;
   }, expected.depositReceived);
 }
 // These controls can request a separate profile write. An omitted control is not a write.
