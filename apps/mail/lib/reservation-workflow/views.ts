@@ -39,6 +39,10 @@ export function snapshotMatchesSource(snapshot: ReservationPaneSnapshot | null, 
 }
 export const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 export const text = (v: unknown): string => v == null ? '' : typeof v === 'object' ? String(record(v).name ?? record(v).code ?? '') : String(v);
+export function staffEnteredAt(snapshot: ReservationPaneSnapshot, path: string): boolean {
+  return Object.entries(snapshot.session.draft.fieldOverrides).some(([key, value]) =>
+    (path === key || path.startsWith(`${key}/`)) && value.state === 'set');
+}
 export const pointer = (...parts: (string | number)[]) => '/' + parts.map(p => encodeURIComponent(String(p))).join('/');
 export const requestPath = (id: string) => pointer('proposal', 'content', 'requests', id);
 export function valueAt(snapshot: ReservationPaneSnapshot, path: string): unknown {

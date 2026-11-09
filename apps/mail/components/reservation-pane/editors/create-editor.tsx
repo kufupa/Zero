@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, useRef, useState } from 'react';
-import { effectiveAt, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { effectiveAt, record, requestPath, staffEnteredAt, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { Count, Field, FieldReview, Section } from '../shared/stay-fields';
 import { NativePicker } from '../shared/native-pickers';
 import styles from './create-quote-editor.module.css';
@@ -320,8 +320,7 @@ function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor
   const fields = ['firstName', 'lastName', 'mobile', 'email', 'titleCode', 'phoneNumber', 'phoneTypeCode', 'emailTypeCode'];
   const pendingReview = fields.some(field => {
     const path = `${guestPath}/${field}`, value = valueAt(editor.snapshot, path);
-    const override = editor.snapshot.session.draft.fieldOverrides[path];
-    return typeof value === 'string' && Boolean(value.trim()) && override?.state !== 'set' &&
+    return typeof value === 'string' && Boolean(value.trim()) && !staffEnteredAt(editor.snapshot, path) &&
       editor.snapshot.session.draft.fieldReviewRequirements[path]?.required !== false &&
       editor.snapshot.session.draft.staffReviews[path]?.status !== 'accepted';
   });
