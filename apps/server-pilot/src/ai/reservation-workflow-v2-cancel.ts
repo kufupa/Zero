@@ -142,11 +142,12 @@ function leaf(draft: ReservationWorkflowV2Draft, path: string, source: unknown):
   return { value: source, path };
 }
 
-function effectiveSubtree(draft: ReservationWorkflowV2Draft, source: unknown, path: string): unknown {
+function effectiveSubtree(draft: ReservationWorkflowV2Draft, source: unknown, path: string, unknownPaths: Set<string>): unknown {
   const resolved = leaf(draft, path, source);
-  if ('issue' in resolved || resolved.unset) return null;
+  if ('issue' in resolved) { unknownPaths.add(path); return null; }
+  if (resolved.unset) return null;
   const value = resolved.value;
-  if (Array.isArray(value)) return value.map((item, index) => effectiveSubtree(draft, item, `${path}/${index}`));
+  if (Array.isArray(value)) return value.map((item, index) => effectiveSubtree(draft, item, `${path}/${index}`, unknownPaths));
   if (value && typeof value === 'object') {
     const fields = new Set(Object.keys(value));
     const prefix = `${path}/`;
@@ -157,7 +158,7 @@ function effectiveSubtree(draft: ReservationWorkflowV2Draft, source: unknown, pa
       try { fields.add(decodeURIComponent(rest)); } catch { /* Ignore malformed paths; editable paths are validated. */ }
     }
     return Object.fromEntries([...fields].map((key) => [key, effectiveSubtree(draft,
-      (value as Record<string, unknown>)[key], `${path}/${encodeURIComponent(key)}`)]));
+      (value as Record<string, unknown>)[key], `${path}/${encodeURIComponent(key)}`, unknownPaths)]));
   }
   return value;
 }
@@ -185,14 +186,32 @@ function effectiveBody(draft: ReservationWorkflowV2Draft, requestId: string) {
   const request = cancelRequest(draft, requestId);
   if (!request || request.kind !== 'cancel') return null;
   const bodyPath = ptr('proposal', 'content', 'requests', requestId, 'body');
-  const body = effectiveSubtree(draft, request.body, bodyPath);
-  return { request, bodyPath, body: record(body) };
+  const unknownPaths = new Set<string>();
+  const body = effectiveSubtree(draft, request.body, bodyPath, unknownPaths);
+  return { request, bodyPath, body: record(body), unknownPaths };
+}
+
+const identityHintFields = ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'] as const;
+
+function unknownHintPaths(unknownPaths: Set<string>, bodyPath: string, index: number): string[] {
+  const path = `${bodyPath}/targets/include/${index}`;
+  return identityHintFields.map((field) => `${path}/${field}`).filter((fieldPath) => unknownPaths.has(fieldPath));
 }
 
 function targetHintRows(body: Record<string, unknown> | null): CancelHint[] | null {
   const targets = record(body?.targets);
-  return Array.isArray(targets?.include) ? targets.include.map(record).filter((row): row is Record<string, unknown> => Boolean(row))
-    .map((row) => row as unknown as CancelHint) : null;
+  if (!Array.isArray(targets?.include)) return null;
+  const rows = targets.include.map(record);
+  if (rows.some((row) => !row)) return null;
+  return (rows as Record<string, unknown>[]).map((row) => {
+    const hint = { ...row };
+    for (const field of identityHintFields) {
+      const value = hint[field];
+      if (value === null || (typeof value === 'string' && !value.trim())) delete hint[field];
+      else if (typeof value === 'string') hint[field] = value.trim();
+    }
+    return hint as unknown as CancelHint;
+  });
 }
 
 function requestedHint(body: Record<string, unknown>, allocationId?: string): { hint: CancelHint; index: number } | null {
@@ -438,6 +457,11 @@ function compileCancel(draft: ReservationWorkflowV2Draft, requestId: string, hin
   if (!chosen) return { outcome: 'needs_input', issue: rows.length > 1 ? 'cancel_target_hint_required' : 'cancel_target_hint_missing' };
   const { hint, index } = chosen;
   if (rows.length !== 1) return { outcome: 'unsupported', issue: 'cancel_one_target_per_operation' };
+  const unknownHints = unknownHintPaths(loaded.unknownPaths, loaded.bodyPath, index);
+  if (unknownHints.length) return { outcome: 'needs_input', issue: 'cancel_target_hints_unknown', fields: unknownHints, hintId: hint.id };
+  if (!/^\d+-\d+$/.test(hint.confirmation ?? '')) {
+    return { outcome: 'needs_input', issue: 'exact_confirmation_and_valid_dates_required', hintId: hint.id };
+  }
   if (loaded.request.serviceRefs.length || loaded.request.documentRefs.length) {
     return { outcome: 'unsupported', issue: 'cancel_request_contains_unhandled_service_or_document_refs', hintId: hint.id };
   }
@@ -524,11 +548,17 @@ export async function reservationWorkflowV2CancelLookup(ctx: ReservationWorkflow
       continue;
     }
     for (const [index, hint] of rows.entries()) {
+      const fieldPath = lookupHintPath(request.id, index);
+      const unknownHints = unknownHintPaths(effective.unknownPaths, effective.bodyPath, index);
+      if (unknownHints.length) {
+        lookups.push({ status: 'needs_input', requestId: request.id, hintId: hint.id, selectionPath: fieldPath,
+          issue: 'cancel_target_hints_unknown', fields: unknownHints });
+        continue;
+      }
       const confirmation = typeof hint.confirmation === 'string' ? hint.confirmation : '';
       const arrival = typeof hint.bookedArrival === 'string' ? hint.bookedArrival : undefined;
       const valid = /^\d+-\d+$/.test(confirmation) && (!arrival || day.safeParse(arrival).success) &&
         (!hint.bookedDeparture || day.safeParse(hint.bookedDeparture).success);
-      const fieldPath = lookupHintPath(request.id, index);
       if (!valid) {
         lookups.push({ status: 'needs_input', requestId: request.id, hintId: hint.id, selectionPath: fieldPath,
           issue: 'exact_confirmation_and_valid_dates_required' });
