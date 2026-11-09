@@ -148,13 +148,13 @@ export function ReservationPane(props: ReservationPaneProps) {
       <div><button type="button" disabled={sourceChanged || busy || !workbench.applicablePendingCount} onClick={() => { void workbench.applyPending().catch(() => {}); }}>Apply my edits</button><button type="button" onClick={() => { workbench.discardPending(); setFormReset(value => value + 1); }}>Discard pending edits</button></div></>}</div>}
     {sourceChanged && snapshot && <section className={styles.sourceWarning} aria-labelledby="source-change-title">
       <div role="alert"><strong id="source-change-title">Email or attachments changed</strong>
-        <p>Your saved draft is shown below. Infor actions are paused until you review the updated evidence. Previous Infor checks will need to be repeated.</p></div>
+        <p>Your saved draft is shown below. Infor actions are paused. Please review the updated email and any attachments before continuing; previous Infor checks will need to be repeated.</p></div>
       <details><summary>Review updated email</summary><div className={styles.changedSourceText}>{source.sourceText || 'Open this email in Outlook to review it.'}</div></details>
       {source.attachments.map(file => <button type="button" key={file.sourceRef} onClick={() => props.onOpenAttachment?.(file.sourceRef)}>Open {file.name}</button>)}
       {snapshot.operationResults.some(row => row.status === 'unknown')
         ? <><p>Check earlier save outcomes before continuing.</p>{snapshot.operationResults.filter(row => row.status === 'unknown').map(row =>
           <div key={text(row.id)}>{text(row.summary) || text(row.workflow)} <button type="button" disabled={busy} onClick={() => { void commands.reconcile(text(row.id)).catch(() => {}); }}>Check outcome</button></div>)}</>
-        : <button type="button" disabled={busy || preview} onClick={() => { void workbench.reconcileSource().then(() => setChecked(null)).catch(() => {}); }}>I reviewed the updated evidence</button>}
+        : <button type="button" disabled={busy || preview} onClick={() => { void workbench.reconcileSource().then(() => setChecked(null)).catch(() => {}); }}>I reviewed the email and attachments</button>}
     </section>}
     <main className={styles.content}>
       {!sourceChanged && prefill?.status === 'queued' && <p className={styles.small} role="status">Waiting to read the email. You can start editing now.</p>}
