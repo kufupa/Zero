@@ -103,7 +103,15 @@ export async function runReservationArrivalChecks(input: { scoped: ReservationWo
     const deadlineAt = Date.now() + remaining;
     const phaseSignal = AbortSignal.any([input.signal, AbortSignal.timeout(remaining)]);
     const batch = makeBatch(phaseSignal, deadlineAt);
-    const begun = await commitReservationNativeCheck(input.scoped, { ...item, batch, begin: step.key });
+    if (phaseSignal.aborted) { input.signal.throwIfAborted(); break; }
+    let begun;
+    try { begun = await commitReservationNativeCheck(input.scoped, { ...item, batch, begin: step.key }); }
+    catch (error) {
+      input.signal.throwIfAborted();
+      if (phaseSignal.aborted) break;
+      throw error;
+    }
+    if (phaseSignal.aborted) { input.signal.throwIfAborted(); break; }
     if (begun.status !== 'ok') return 'superseded';
     const ctx: ReservationWorkflowV2ServerContext = { db: input.scoped.db, transport: { id: input.scoped.transportId },
       property: { propertyCode: input.scoped.propertyCode }, user: { id: `arrival-service:${input.fence.runId}` }, nativeBatch: batch };
@@ -111,19 +119,38 @@ export async function runReservationArrivalChecks(input: { scoped: ReservationWo
     const dependency = step.key.startsWith('quote:prepare:') || step.key.startsWith('service:prepare:')
       ? step.key.replace(':prepare:', ':lookup:') : null;
     const dependencyResult = dependency ? draft.prefill?.nativeChecks?.find((entry) => entry.key === dependency) : undefined;
-    try { outcome = dependency && dependencyResult?.status !== 'ok'
-      ? { status: 'needs_input', issue: 'prior_native_lookup_incomplete' } : await step.run(ctx, item); }
-    catch { outcome = { status: 'failed', issue: 'native_check_failed' }; }
-    if (input.signal.aborted) input.signal.throwIfAborted();
+    try {
+      phaseSignal.throwIfAborted();
+      outcome = dependency && dependencyResult?.status !== 'ok'
+        ? { status: 'needs_input', issue: 'prior_native_lookup_incomplete' } : await step.run(ctx, item);
+      phaseSignal.throwIfAborted();
+    } catch {
+      input.signal.throwIfAborted();
+      if (phaseSignal.aborted) break;
+      outcome = { status: 'failed', issue: 'native_check_failed' };
+    }
+    input.signal.throwIfAborted();
     if (phaseSignal.aborted) break;
     const check = { key: step.key, ...checkOutcome(outcome, batch) };
-    const saved = await commitReservationNativeCheck(input.scoped, { ...item, batch, check });
-    if (saved.status !== 'ok') return 'superseded';
+    if (phaseSignal.aborted) { input.signal.throwIfAborted(); break; }
+    let saved;
+    try { saved = await commitReservationNativeCheck(input.scoped, { ...item, batch, check }); }
+    catch (error) {
+      input.signal.throwIfAborted();
+      if (phaseSignal.aborted) break;
+      throw error;
+    }
+    if (saved.status !== 'ok') {
+      if (phaseSignal.aborted) { input.signal.throwIfAborted(); break; }
+      return 'superseded';
+    }
     draft = saved.draft;
     completed = new Set(saved.draft.prefill?.nativeChecks?.map((entry) => entry.key) ?? []);
+    if (phaseSignal.aborted) { input.signal.throwIfAborted(); break; }
   }
   const unrun = plan.steps.filter((step) => !completed.has(step.key)).length + plan.omitted;
   const batch = makeBatch(input.signal, input.deadlineAt.getTime());
+  input.signal.throwIfAborted();
   const finish = await commitReservationNativeCheck(input.scoped, { ...item, batch, finish: true,
     ...(unrun ? { check: { key: 'native:unrun', status: 'partial', issue: `${unrun} checks were not run within the native budget.` } } : {}) });
   return finish.status === 'ok' ? 'complete' : 'superseded';

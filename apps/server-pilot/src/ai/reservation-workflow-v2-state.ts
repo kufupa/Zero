@@ -1224,7 +1224,7 @@ export async function commitReservationNativeCheck(ctx: Context, input: {
         current.draft.generationId !== input.batch.generationId || meta?.status !== 'running' ||
         meta.phase !== 'native_checks' || meta.jobRunId !== input.batch.jobFence.runId)
       return { status: 'stale_revision' as const };
-    if ((input.batch.signal.aborted || !input.check) && (input.batch.observations.length || input.batch.results.length))
+    if (input.batch.signal.aborted || (!input.check && (input.batch.observations.length || input.batch.results.length)))
       return { status: 'stale_revision' as const };
     const active = meta.nativeActive;
     if (input.begin && (active || input.check || input.finish || input.recoveryHeartbeat)) return { status: 'invalid_value' as const };
@@ -1265,12 +1265,15 @@ export async function commitReservationNativeCheck(ctx: Context, input: {
         nativeChecks: input.check && !alreadyChecked ? [...checks, input.check] : checks,
         ...(input.finish ? { status: 'complete', phase: 'complete', finishedAt: new Date().toISOString() } : {}) } });
     if (!next.success) return { status: 'invalid_value' as const };
+    input.batch.signal.throwIfAborted();
     if (input.check) await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'system', type: 'hms.lookup.finished',
       value: { check: input.check.key, status: input.check.status, observations: input.batch.observations.map((entry) => entry.ref),
         results: input.batch.results.map((entry) => entry.id) },
       evidence: { sourceHash: input.source.sourceHash, generationId: current.draft.generationId } });
+    input.batch.signal.throwIfAborted();
     await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next.data },
       updatedAt: new Date() }).where(eq(workItem.id, item.id));
+    input.batch.signal.throwIfAborted();
     return { ...current, draft: next.data };
   });
 }
