@@ -211,13 +211,59 @@ function diagnosticMessageText(value, secrets = false) {
   return text.slice(0, 512);
 }
 
-function profileFailureDiagnostics(data, parseStatus, secrets) {
+function profileValidationDetails(root, data, secrets) {
+  const validation = [];
+  const add = (source, value, field = null) => {
+    if (validation.length >= 20) return;
+    const fieldName = field ?? value?.field ?? value?.fieldName;
+    // Credential fields are not business validation, even if the server echoes one.
+    if (typeof fieldName === 'string' && /^(?:password|passwd|passcode|credential|secret|token|jwt|sid|cookie|set[_-]?cookie|authorization|proxy[_-]?authorization|authentication|auth(?:[_-]?(?:token|key))?|jsessionid|(?:session|access|refresh|request|csrf|id)[_-]?(?:token|key|id)|session|csrf[_-]?(?:ticket|tckt)|api[_-]?key|client[_-]?secret|x[_-](?:api[_-]?key|auth(?:entication)?[_-]?(?:token|key)?|access[_-]?token|refresh[_-]?token|csrf[_-]?token|session[_-]?(?:id|token)|id[_-]?token))$/i.test(fieldName.split('.').at(-1))) return;
+    const message = typeof value === 'string' ? value : value && typeof value === 'object' && !Array.isArray(value)
+      ? value.msg ?? value.message ?? value.errorMessage ?? value.validationMessage ?? value.description : null;
+    const entry = { source, code: diagnosticMessageText(value?.code == null ? null : String(value.code), secrets),
+      message: diagnosticMessageText(message, secrets) };
+    if (entry.code || entry.message) validation.push(entry);
+  };
+  for (const [source, object] of [['root', root], ['pageData', data]]) {
+    if (!object || typeof object !== 'object' || Array.isArray(object)) continue;
+    for (const key of ['messages', 'message', 'msg', 'error', 'errors', 'errorMessage', 'validationMessage', 'validationErrors', 'fieldErrors']) {
+      const value = object[key], path = `${source}.${key}`;
+      if (Array.isArray(value)) value.slice(0, 5).forEach(item => add(path, item));
+      else if (value && typeof value === 'object') {
+        add(path, value);
+        if (key === 'fieldErrors' || key === 'validationErrors') {
+          let visited = 0;
+          for (const field in value) {
+            if (!Object.hasOwn(value, field)) continue;
+            if (++visited > 10) break;
+            if (/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(field)) add(path, value[field], field);
+          }
+        }
+      } else add(path, value);
+    }
+  }
+  return { validation };
+}
+
+function profileFailureDiagnostics(data, parseStatus, secrets, root) {
+  const observable = parseStatus !== 'parse_failed';
+  const dataObject = data !== null && typeof data === 'object' && !Array.isArray(data);
+  const present = observable ? root === undefined ? data !== undefined : Object.hasOwn(root, 'pageData') : null;
+  const type = value => value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  const successPresent = observable && dataObject ? Object.hasOwn(data, 'success') : null;
+  const id = observable && dataObject ? String(data?.values?.profileid ?? '').trim() : null;
+  const nativeIdExtractionStatus = id === null ? 'unobservable' : !id ? 'missing_or_empty'
+    : /^\d+$/.test(id) ? 'numeric' : 'non_numeric';
   const messages = data?.messages;
   const items = Array.isArray(messages) ? messages.slice(0, 5) : [];
   return {
     version: 1, parseStatus, redactionContext: secrets === null ? 'unavailable' : 'available',
+    pageData: { present, type: present ? type(data) : null },
+    successField: { present: successPresent, type: successPresent ? type(data.success) : null },
+    nativeIdExtractionStatus,
     nativeSuccess: data?.success === true ? true : data?.success === false ? false : null,
-    messagesStatus: Array.isArray(messages) ? 'array' : messages == null ? 'absent' : 'invalid',
+    messagesStatus: !observable || !dataObject ? 'unobservable'
+      : Array.isArray(messages) ? 'array' : messages == null ? 'absent' : 'invalid',
     messageCount: Array.isArray(messages) ? Math.min(messages.length, 5) : null,
     messagesTruncated: Array.isArray(messages) && messages.length > 5,
     messages: items.map(message => {
@@ -228,6 +274,22 @@ function profileFailureDiagnostics(data, parseStatus, secrets) {
         questionType: diagnosticMessageText(message?.questiontype, secrets), handler: diagnosticMessageText(message?.handler, secrets), msg, text: msg };
     }),
   };
+}
+
+async function recoverProfileFailureDiagnostics(text, secrets) {
+  const unavailable = { method: 'bounded_data_literal', status: 'unavailable' };
+  if (typeof text !== 'string' || text.length > 2_000_000) return unavailable;
+  let timer;
+  try {
+    const module = await Promise.race([import('./cancel-association-scope.mjs'),
+      new Promise(resolve => { timer = setTimeout(() => resolve(null), 1000); })]);
+    const recovered = module?.parseAssociationResponse(text), data = recovered?.pageData;
+    return recovered && typeof recovered === 'object' && !Array.isArray(recovered)
+      ? { method: 'bounded_data_literal', status: 'parsed_for_diagnostics',
+        evidence: { ...profileFailureDiagnostics(data, 'diagnostic_only', secrets, recovered),
+          ...profileValidationDetails(recovered, data, secrets) } } : unavailable;
+  } catch { return unavailable; }
+  finally { clearTimeout(timer); }
 }
 
 async function boundedResponseText(response, timeout = 15000) {
@@ -284,14 +346,21 @@ async function handleProfileSave(route, state) {
         // Persist the response and any native ID before the browser receives it.
         const needsDiagnostics = write.fields.firstName === 'Proof' && write.fields.lastName === 'Labtest' &&
           (!write.response.success || !write.response.nativeId);
+        write.diagnosticFailure = Boolean(needsDiagnostics && confirmed);
         if (needsDiagnostics) write.diagnosticSecrets = await profileDiagnosticSecrets(request);
-        const diagnostics = needsDiagnostics ? profileFailureDiagnostics(data, parseStatus, write.diagnosticSecrets) : null;
+        let diagnostics = null;
+        if (needsDiagnostics) {
+          try { diagnostics = profileFailureDiagnostics(data, parseStatus, write.diagnosticSecrets); }
+          catch { diagnostics = { version: 1, parseStatus, diagnosticCollection: 'unavailable' }; }
+        }
         if (diagnostics && parseStatus === 'parse_failed') {
           write.parseFailed = true;
           const parseFailure = profileParseFailureDiagnostics(text, response, parseError);
           if (parseFailure) diagnostics.parseFailure = parseFailure;
         }
         await write.recordResponse(context, Object.freeze({ ...write.response, ...(diagnostics && { diagnostics }) }));
+        // Retain only in memory, after the original response has been journaled.
+        if (write.diagnosticFailure && typeof write.recordFailureDiagnostics === 'function') write.diagnosticSource = text;
         if (write.phase !== 'closed') write.phase = question ? 'question' : 'finished';
         await route.fulfill({ response });
         return true;
@@ -373,7 +442,7 @@ async function guardedSession(openSession, state, operation, options) {
     // Keep tracking until the owned session finishes closing, including cleanup.
     page.on('dialog', dialog => {
       state.dialog = true;
-      if (state.write?.parseFailed && state.write.lastPhase === 'confirm_distinct') {
+      if (state.write?.diagnosticFailure && state.write.lastPhase === 'confirm_distinct') {
         try { state.write.nativeDialog = { type: diagnosticMessageText(dialog.type(), state.write.diagnosticSecrets),
           message: diagnosticMessageText(dialog.message(), state.write.diagnosticSecrets) }; }
         catch { /* Diagnostic collection must not change the guard. */ }
@@ -790,10 +859,15 @@ async function savePreparedProfile(page, state, staged, commit) {
     }
   } catch (error) { write.issue ??= issue(error); }
   finally { write.phase = 'closed'; }
-  if (write.parseFailed && write.callbackDrained && write.lastPhase === 'confirm_distinct' &&
+  if (write.diagnosticFailure && write.callbackDrained && write.lastPhase === 'confirm_distinct' &&
       typeof commit.recordFailureDiagnostics === 'function') {
-    try { await commit.recordFailureDiagnostics(await visibleProfileFailure(page, write)); }
+    try {
+      const diagnostics = await visibleProfileFailure(page, write);
+      diagnostics.dataLiteralRecovery = await recoverProfileFailureDiagnostics(write.diagnosticSource, write.diagnosticSecrets);
+      await commit.recordFailureDiagnostics(diagnostics);
+    }
     catch { /* Collection and journal diagnostics never alter the held result. */ }
+    finally { write.diagnosticSource = null; }
   }
   const evidence = { attemptId: write.attemptId ?? null, phase: write.lastPhase,
     dispatched: write.dispatched, dispatchedPhases: [...write.dispatchedPhases], nativeId: write.response?.nativeId ?? null };
