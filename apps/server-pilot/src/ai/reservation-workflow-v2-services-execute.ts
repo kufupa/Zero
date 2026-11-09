@@ -1126,7 +1126,8 @@ function savedApproval(draft: ReservationWorkflowV2Draft, input: SavedExecuteInp
   return { status: 'ok', value: { draft, plan, preview, beforeItem, approvedItem } };
 }
 
-async function readSavedServiceIdentity(stay: Record<string, unknown>): Promise<SavedIdentity | null> {
+async function readSavedServiceIdentity(stay: Record<string, unknown>, signal?: AbortSignal): Promise<SavedIdentity | null> {
+  signal?.throwIfAborted();
   const [{ withCenturionStay360Page }, confirmationTool, recordTool] = await Promise.all([
     import(new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url).href) as Promise<{
       withCenturionStay360Page: (callback: (page: unknown) => Promise<unknown>, options?: Record<string, unknown>) => Promise<unknown>;
@@ -1144,8 +1145,12 @@ async function readSavedServiceIdentity(stay: Record<string, unknown>): Promise<
   try {
     const value = object(await withCenturionStay360Page(async page => {
       await confirmationTool.readConfirmationFromStay360(page, confirmation, { guestName: `${firstName} ${lastName}`, arrivalDate: arrival });
-      return recordTool.readRecordViewFromStay360(page, confirmation, { nativePropertyCode: 'HRCEN', nativeIdentityOnly: true });
-    }, { headless: true, blockServiceWorkers: true }));
+      signal?.throwIfAborted();
+      const result = await recordTool.readRecordViewFromStay360(page, confirmation, { nativePropertyCode: 'HRCEN', nativeIdentityOnly: true });
+      signal?.throwIfAborted();
+      return result;
+    }, { headless: true, blockServiceWorkers: true, signal }));
+    signal?.throwIfAborted();
     const preimage = object(value?.nativePreimage), details = object(value?.details);
     const fields = Array.isArray(details?.fields) ? details.fields.map(object).filter(Boolean) : [];
     const cms = fields.filter(row => row?.name === 'udfchkbox04');
@@ -1160,7 +1165,7 @@ async function readSavedServiceIdentity(stay: Record<string, unknown>): Promise<
       : [true, 'true', 1, '1'].includes(cmsValue as boolean | string | number) ? true : null;
     return { confirmation, arrival, departure, firstName, lastName, guestName: `${firstName} ${lastName}`,
       nativeStayId: String(preimage.reservationStayId), nativeGuestId: String(preimage.guestId), cmsSend };
-  } catch { return null; }
+  } catch { signal?.throwIfAborted(); return null; }
 }
 
 function savedAdmission(target: SavedIdentity): boolean {
@@ -1170,13 +1175,15 @@ function savedAdmission(target: SavedIdentity): boolean {
 }
 
 /** An unsaved check may display admission, but dispatch always repeats this native proof. */
-export async function savedServiceCapability(stay: Record<string, unknown>) {
+export async function savedServiceCapability(stay: Record<string, unknown>, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   const writeMode = paneAddOnWriteMode();
   if (writeMode === 'off') return { writeMode, canSave: false, issue: 'saved_addon_write_flag_off' };
   try {
-    const target = await readSavedServiceIdentity(stay);
+    const target = await readSavedServiceIdentity(stay, signal);
+    signal?.throwIfAborted();
     return { writeMode, canSave: Boolean(target && savedAdmission(target)), issue: target && savedAdmission(target) ? null : 'saved_stay_not_admitted' };
-  } catch { return { writeMode, canSave: false, issue: 'saved_stay_identity_unverified' }; }
+  } catch { signal?.throwIfAborted(); return { writeMode, canSave: false, issue: 'saved_stay_identity_unverified' }; }
 }
 
 async function assertSavedGuard(tx: DispatchTx, ctx: ReservationWorkflowV2ServerContext, input: SavedExecuteInput,
