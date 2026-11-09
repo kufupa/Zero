@@ -183,7 +183,7 @@ export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: stri
       : coverage.possiblyTruncated === true ? 'Search may be incomplete; more matches may exist.' : 'Infor result needs checking.';
     const rows = Array.isArray(result.candidates) ? result.candidates : [result];
     const candidate = record(rows[0]);
-    const canVerify = rows.length === 1 && /^\d{1,30}$/.test(text(candidate.nativeId)) &&
+    const canVerify = rows.length === 1 && typeof candidate.nativeId === 'string' && /^\d{1,30}$/.test(candidate.nativeId) &&
       (guest || typeof candidate.name === 'string' && Boolean(candidate.name.trim())) &&
       currentIdentityRow(snapshot, path, observation, false);
     return rows.map(raw => {
