@@ -35,17 +35,20 @@ export function TargetSearch({ editor, body, hint, index, workflow }: {
   const root = `${body}/targets/include/${index}`;
   const path = `${root}/suggestedRef`;
   const selected = valueAt(editor.snapshot, path);
-  const query = (key: string) => text(valueAt(editor.snapshot, `${root}/${key}`)) || null;
+  const normalized = (value: unknown) => text(value).trim() || null;
+  const query = (key: string) => normalized(valueAt(editor.snapshot, `${root}/${key}`));
+  const draft = editor.snapshot.session.draft;
   const candidates = editor.snapshot.session.draft.observations.flatMap(observation => {
     const c = observation.criteria, q = record(c.query), result = record(observation.result);
     if (observation.kind !== 'stay_candidate' || observation.status !== 'complete' || !record(observation.coverage).complete
-      || observation.generationId !== editor.snapshot.session.draft.generationId || c.workflow !== workflow
+      || observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode
+      || observation.sourceMessageId !== draft.source.messageId || c.workflow !== workflow
       || c.requestId !== editor.request.id || c.hintId !== hint.id
       || (workflow === 'amend' ? c.selectionPath !== path : workflow === 'services' ? c.kind !== 'saved_target' || c.fieldPath !== path : c.stage !== 'lookup' || c.fieldPath !== path)) return [];
     const arrival = workflow === 'cancel' ? q.arrival : q.bookedArrival;
     const departure = workflow === 'cancel' ? q.departure : q.bookedDeparture;
-    if ((q.confirmation ?? null) !== query('confirmation') || (q.guestName ?? null) !== query('guestName')
-      || (arrival ?? null) !== query('bookedArrival') || (departure ?? null) !== query('bookedDeparture')) return [];
+    if (normalized(q.confirmation) !== query('confirmation') || normalized(q.guestName) !== query('guestName')
+      || normalized(arrival) !== query('bookedArrival') || normalized(departure) !== query('bookedDeparture')) return [];
     const stay = record(workflow === 'cancel' ? result.preimage : result.candidate);
     return Object.keys(stay).length ? [{ observation, stay }] : [];
   });
