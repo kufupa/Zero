@@ -13,7 +13,9 @@
 .header span { display:block; font-size:11px; color:var(--muted); }
 .history { display:flex; gap:4px; }.history button { font-size:20px; width:32px; height:32px; padding:0; }
 .actionNav { position:relative; }
-.tabs { display:flex; gap:5px; overflow-x:auto; padding:10px 12px 5px; flex-shrink:0; }.tabs button { white-space:nowrap; }.tabs select { width:93px; flex-shrink:0; padding:5px; }
+.actionBar { display:flex; align-items:center; gap:5px; padding:10px 12px 5px; }
+.tabs { display:flex; flex:1; min-width:0; gap:5px; overflow-x:auto; }.tabs button { white-space:nowrap; }
+.pane .actionAdd { flex:none; width:88px; padding:5px; }
 .tabs .activeTab { background:#eee8ff; color:#6546bb; border-color:#cbbcf3; font-weight:600; }
 .tabGroup { display:flex; flex:none; align-items:center; }
 .tabs .tabChevron { min-width:27px; padding:7px 5px; color:#6546bb; border-left:0; border-radius:0 6px 6px 0; }

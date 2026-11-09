@@ -110,13 +110,13 @@ export function ReservationPane(props: ReservationPaneProps) {
     <header className={styles.header}><div><strong>Nava</strong><span>{preview ? 'Interactive preview · Save disabled' : workbench.saving ? 'Saving changes…' : busy ? 'Checking Infor…' : 'Saved draft'}</span></div>
       <div className={styles.history}><button type="button" aria-label="Undo draft change" disabled={disabled || !snapshot?.session.revision} onClick={() => { void workbench.undo().catch(() => {}); }}>↶</button><button type="button" aria-label="Redo draft change" disabled={disabled || snapshot?.session.revision === snapshot?.session.revisionHead} onClick={() => { void workbench.redo().catch(() => {}); }}>↷</button></div>
     </header>
-    <nav className={styles.actionNav} aria-label="Reservation actions"><div className={styles.tabs}>
+    <nav className={styles.actionNav} aria-label="Reservation actions"><div className={styles.actionBar}><div className={styles.tabs}>
       {snapshot?.requests.filter(row => !source.selfPreStay || row.kind !== 'create').map(row => <span className={styles.tabGroup} key={row.id}>
         <button type="button" className={row.id === request?.id ? styles.activeTab : ''} onClick={() => { workbench.setActiveId(row.id); setChecked(null); setActionMenu(null); setConfirmRemove(false); }}>{labels[row.kind]}</button>
         {row.id === request?.id && <button type="button" className={styles.tabChevron} aria-label={`Options for ${labels[row.kind]}`} aria-expanded={actionMenu === row.id}
           onClick={() => { setActionMenu(current => current === row.id ? null : row.id); setConfirmRemove(false); }}>▾</button>}
       </span>)}
-      <select aria-label="Add action" value="" disabled={!snapshot || busy} onChange={event => { const kind = event.target.value as Exclude<ReservationWorkflowKind, 'other'>; if (kind && !(source.selfPreStay && kind === 'create')) { setActionMenu(null); void workbench.addAction(kind).catch(() => {}); } }}><option value="">+ Action</option>{Object.entries(labels).filter(([kind]) => kind !== 'other' && !(source.selfPreStay && kind === 'create')).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</select>
+      </div><select className={styles.actionAdd} aria-label="Add action" value="" disabled={!snapshot || busy} onChange={event => { const kind = event.target.value as Exclude<ReservationWorkflowKind, 'other'>; if (kind && !(source.selfPreStay && kind === 'create')) { setActionMenu(null); void workbench.addAction(kind).catch(() => {}); } }}><option value="">+ Action</option>{Object.entries(labels).filter(([kind]) => kind !== 'other' && !(source.selfPreStay && kind === 'create')).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</select>
     </div>
     {request && actionMenu === request.id && <div className={styles.actionMenu}>
       {actionLocked ? <p>This action has an Infor result and must stay in the draft.</p> : confirmRemove ? <>
