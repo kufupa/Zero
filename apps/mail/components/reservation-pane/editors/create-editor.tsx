@@ -309,13 +309,15 @@ function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor
     Array.isArray(latest.observationRefs) && latest.observationRefs.includes(row.ref) && row.criteria.workflow === 'guest_profile_prepare');
   const previous = record(record(prepared?.result).business).guest;
   const previousGuest = record(previous);
-  const sameGuest = ['firstName', 'lastName', 'mobile', 'email'].every(field => text(guest[field]).trim() === text(previousGuest[field]).trim());
+  const identityPart = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
+  const sameGuest = ['firstName', 'lastName', 'mobile', 'email'].every(field => identityPart(guest[field]) === identityPart(previousGuest[field]));
   const duplicate = latest?.status === 'failed' && text(latest.summary).includes('PROFILE_NAME_ALREADY_EXISTS') && sameGuest;
   const created = operations.find(row => row.status === 'succeeded');
   const createdObservation = created && editor.snapshot.session.draft.observations.find(row =>
     Array.isArray(created.observationRefs) && created.observationRefs.includes(row.ref) && row.criteria.workflow === 'guest_profile_create' && row.status === 'complete');
   const createdRows = record(createdObservation?.result).candidates;
   const nativeId = Array.isArray(createdRows) ? text(record(createdRows[0]).nativeId) : '';
+  const selectedCreated = Boolean(createdObservation && createdObservation.ref === valueAt(editor.snapshot, `${guestPath}/nativeSelectionRef`));
   const locked = editor.view.busy || Boolean(unknown);
   const fields = ['firstName', 'lastName', 'mobile', 'email', 'titleCode', 'phoneNumber', 'phoneTypeCode', 'emailTypeCode'];
   const pendingReview = fields.some(field => {
@@ -331,7 +333,7 @@ function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor
       : <div className={styles.guestProfileRow}><NativePicker label="Guest Profile" path={`${guestPath}/nativeSelectionRef`} editor={editor} kind="guest_candidate" disabled={locked} compact />
         {!created && <button type="button" className={styles.linkButton} disabled={locked} onClick={() => void editor.commands.edit(`${guestPath}/profileIntent`, 'requested_new')}>+ New</button>}</div>}
     {newProfile && <p className={styles.note}>Profile ID · Not created</p>}
-    {created && <p className={styles.note}>Profile ID · {nativeId || 'Verified in Infor'} ✓ Created</p>}
+    {created && <p className={styles.note}>{selectedCreated ? 'Profile ID' : 'Previously created profile'} · {nativeId || 'Verified in Infor'} ✓ Created</p>}
     <GuestDetails editor={editor} allocationPath={allocationPath} allocationId={allocationId} newProfile={newProfile} disabled={locked} />
     {unknown ? <div className={styles.notice}>Profile creation outcome is unknown. Check it before trying again.
       <button type="button" disabled={editor.view.busy} onClick={() => void (localPending

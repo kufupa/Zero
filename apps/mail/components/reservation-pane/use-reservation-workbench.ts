@@ -302,8 +302,18 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         if (!saveGuestAttempt(context.source, requestId, allocationId, idempotencyKey)) {
           throw new Error('This device cannot retain the profile attempt for recovery. Profile creation is unavailable.');
         }
-        const result = await client.createGuestProfile({ source: context.source, snapshot: prepared, requestId, allocationId,
-          confirmDuplicateName, prepareRef: reply.prepareRef, idempotencyKey });
+        let result: ReservationPaneSnapshot;
+        try {
+          result = await client.createGuestProfile({ source: context.source, snapshot: prepared, requestId, allocationId,
+            confirmDuplicateName, prepareRef: reply.prepareRef, idempotencyKey });
+        } catch (error) {
+          // A stale response with a fresh snapshot and no claim proves this attempt was rejected before dispatch.
+          if (error instanceof ReservationWorkflowStaleRevisionError &&
+              !error.snapshot.operationResults.some(row => row.id === idempotencyKey)) {
+            clearGuestAttempt(context.source, requestId, allocationId);
+          }
+          throw error;
+        }
         const operation = result.operationResults.find(row => row.id === idempotencyKey);
         const response = record(result.workflowReply);
         // These replies are returned before the server claims or dispatches this attempt.
