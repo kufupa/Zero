@@ -97,6 +97,11 @@ export function AddonsEditor(editor: Editor) {
   const services = proposal.services.map((service, index) => ({ service, index })).filter(({ service }) =>
     service.ownerRequestId === request.id || owner?.serviceRefs.includes(service.id)
       || service.targets.some(target => target.target.requestId === request.id));
+  const targetLocked = (service: Service) => {
+    const requests = new Set([service.ownerRequestId, ...proposal.requests.filter(row => row.serviceRefs.includes(service.id)).map(row => row.id)]);
+    return snapshot.session.draft.operationResults.some(row => row.workflow !== 'guest_profile' && requests.has(row.requestId)
+      && (row.status === 'succeeded' || row.status === 'unknown'));
+  };
   return <div className={styles.stack}>
     <Section title="Add-Ons">
       <p className={styles.hint}>Each Add-On is checked and saved for one exact room. Infor calculates the total using the unit price, pricing basis and quantity.</p>
@@ -118,7 +123,7 @@ export function AddonsEditor(editor: Editor) {
           {owner?.kind === 'create' && owner.serviceRefs.includes(service.id)
             && (text(valueAt(snapshot, `/proposal/content/services/${index}/operation`)) || service.operation) === 'add' &&
             <label className={styles.label}>Room for this requested Add-On
-              <select value="" disabled={editor.view.busy || !addTargets.length} onChange={event => {
+              <select value="" disabled={editor.view.busy || !addTargets.length || targetLocked(service)} onChange={event => {
                 const allocationId = event.target.value;
                 if (!addTargets.some(target => target.id === allocationId)) return;
                 void editor.commands.edit(`/proposal/content/services/${index}/targets`, [{
@@ -126,11 +131,12 @@ export function AddonsEditor(editor: Editor) {
                   fields: {}, savedRowCandidateRef: null, previewObservationRef: null,
                 }]).catch(() => {});
               }}>
-                <option value="">{addTargets.length ? 'Select a room' : 'Add a room first'}</option>
+                <option value="">{targetLocked(service) ? 'Linking unavailable' : addTargets.length ? 'Select a room' : 'Add a room first'}</option>
                 {addTargets.map((target, roomIndex) => <option key={target.id} value={target.id}>
                   {`Room ${roomIndex + 1}${target.label === `Room ${roomIndex + 1}` ? '' : ` · ${target.label}`}`}
                 </option>)}
               </select>
+              {targetLocked(service) && <small className={styles.hint}>A related Infor operation is saved or has an unknown outcome. Check any unknown outcome and handle this Add-On separately.</small>}
             </label>}
         </>}
         {service.targets.length > 1 && <div className={styles.warning}>This request covers several rooms. Use “Add item” for each room above and enter each quantity. This request stays here for reference.</div>}
