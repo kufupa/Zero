@@ -27,7 +27,7 @@ import {
   reviewReservationWorkflowV2Draft,
   moveReservationWorkflowV2History,
   configureReservationWorkflowV2Filing,
-  initializeReservationWorkflowV2Draft, markReservationWorkflowV2Queued,
+  initializeReservationWorkflowV2Draft, markReservationWorkflowV2Queued, retryReservationWorkflowV2Arrival,
   markReservationWorkflowV2NativeActivity,
   reconcileReservationWorkflowV2Source,
 } from '../../ai/reservation-workflow-v2-state.js';
@@ -278,6 +278,8 @@ export const reservationWorkflowV2Router = router({
     const job = await enqueueReservationArrival(scoped.db, { transportId: scoped.transportId,
       messageId: input.source.messageId, priority: 0 });
     if (!job) return withPreparation(Promise.resolve(current), scoped.propertyCode);
+    if (['dead_letter', 'succeeded', 'retry_wait'].includes(job.state))
+      return withPreparation(retryReservationWorkflowV2Arrival(scoped, { ...input, jobRunId: job.id }), scoped.propertyCode);
     return withPreparation(markReservationWorkflowV2Queued(scoped, { ...input, jobRunId: job.id }), scoped.propertyCode);
   }),
   get: mailboxProcedure.input(reservationWorkflowV2ItemInputSchema).query(({ input, ctx }) => {

@@ -304,6 +304,44 @@ export async function markReservationWorkflowV2Queued(ctx: Context, input: Mutat
     return { ...current, draft };
   });
 }
+
+/** A staff retry may restart one terminal arrival job, but never replace staff work. */
+export async function retryReservationWorkflowV2Arrival(ctx: Context, input: MutationInput & { jobRunId: string }): Promise<ReservationWorkflowV2StateResult> {
+  if (!ctx.userId) return { status: 'not_found' };
+  return ctx.db.transaction(async (tx) => {
+    await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
+    await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
+    const [run] = await tx.select().from(aiWorkflowRun).where(and(eq(aiWorkflowRun.id, input.jobRunId),
+      eq(aiWorkflowRun.runKind, 'reservation_prefill'), eq(aiWorkflowRun.transportId, ctx.transportId),
+      eq(aiWorkflowRun.triggerMessageId, input.source.messageId), eq(aiWorkflowRun.threadId, input.source.threadId)))
+      .limit(1).for('update');
+    const item = await loadItem(tx, ctx, input.workItemId, true);
+    if (!item) return { status: 'not_found' as const };
+    const current = await buildResult(tx, ctx, item, input.source);
+    if (current.status !== 'ok' || item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq) return current;
+    const meta = current.draft.prefill;
+    if (!run || !meta || !['failed', 'running', 'idle', 'queued'].includes(meta.status) ||
+        (meta.jobRunId && meta.jobRunId !== run.id) || run.metrics?.sourceHash !== input.source.sourceHash ||
+        run.metrics?.evidenceHash !== (await reservationArrivalEvidence(tx, input.source.messageId)).hash ||
+        !['dead_letter', 'succeeded', 'retry_wait'].includes(run.state)) return current;
+    const nativeResume = meta.status === 'running' && meta.phase === 'native_checks';
+    if ((!nativeResume && meta.attemptCount >= 2) || (nativeResume && meta.nativeActive && !run.heartbeatAt) ||
+        Object.keys(current.draft.fieldOverrides).length || Object.keys(current.draft.staffReviews).length ||
+        current.draft.operationResults.length || await hasPrefillRetryActivity(tx, item.id, current.draft.generationId, item.revisionSeq)) return current;
+    const terminal = run.state !== 'retry_wait';
+    if (terminal && Number(run.metrics?.staffRetryCount ?? 0) >= 1) return current;
+    const metrics = { ...run.metrics, ...(terminal ? { staffRetryCount: 1 } : {}),
+      ...(nativeResume && run.heartbeatAt ? { interruptedHeartbeatAt: run.heartbeatAt.toISOString() } : {}) };
+    await tx.update(aiWorkflowRun).set({ state: 'queued', nextRunAt: new Date(), deadlineAt: null,
+      claimOwner: null, claimToken: null, finishedAt: null, lastError: null, failureClass: null,
+      metrics, updatedAt: new Date() }).where(eq(aiWorkflowRun.id, run.id));
+    const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, prefill: { ...meta,
+      status: meta.status === 'running' ? 'running' : 'queued', jobRunId: run.id } });
+    await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
+      updatedAt: new Date() }).where(eq(workItem.id, item.id));
+    return { ...current, draft };
+  });
+}
 function prefillSnapshot(draft: ReservationWorkflowV2Draft): string {
   const { prefill: _prefill, ...rest } = draft;
   return JSON.stringify(rest);
