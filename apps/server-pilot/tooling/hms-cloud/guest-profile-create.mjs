@@ -215,8 +215,8 @@ function diagnosticMessageText(value, secrets = false, fieldLabel = false) {
   text = text.replace(/\b(set-cookie|cookie)(\s*[:=]\s*)[^\r\n]*/gi, '$1$2[redacted]')
     .replace(/\b(authorization|proxy[_-]authorization|authentication|auth|password|passwd|passcode|credential|secret|token|jwt|sid|jsessionid|session|(?:session|request|access|refresh|id)(?:[_-]|\s+)?(?:token|id|key)|csrf(?:[_-]|\s+)?(?:tckt|ticket|token)|api(?:[_-]|\s+)?key|client(?:[_-]|\s+)?secret|cookie)(["']?\s*[:=]\s*|\s+is\s+)(?:(?:bearer|basic)\s+)?(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|<[^>\r\n]*(?:>|$)|[^\r\n,;}]+)/gi, '$1$2[redacted]')
     .replace(/\b((?:proxy[_-])?authorization)(\s+(?:bearer|basic)\s+)(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1$2[redacted]')
-    .replace(/\b(bearer)\s+(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1 [redacted]')
-    .replace(/\b((?:session|request|access|refresh|id)(?:[_-]|\s+)?(?:token|id|key)|csrf(?:[_-]|\s+)?(?:tckt|ticket|token)|api(?:[_-]|\s+)?key|client(?:[_-]|\s+)?secret|password|passwd|passcode|secret|token|jwt|sid|jsessionid|session)\s+(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|<[^>\r\n]*(?:>|$)|[^\s,;]+)/gi, '$1 [redacted]');
+    .replace(/\b((?:proxy[_-])?authorization|authentication|auth|bearer|credential)(?:\s+(?:bearer|basic|token))?\s+(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1 [redacted]')
+    .replace(/\b((?:session|request|access|refresh|id)(?:[_-]|\s+)?(?:token|id|key)|csrf(?:[_-]|\s+)?(?:tckt|ticket|token)|api(?:[_-]|\s+)?key|client(?:[_-]|\s+)?secret|password|passwd|passcode|secret|token|jwt|sid|jsessionid|session)\s+(?:(?:bearer|basic)\s+)?(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|<[^>\r\n]*(?:>|$)|[^\s,;]+)/gi, '$1 [redacted]');
   return text.slice(0, 512);
 }
 
