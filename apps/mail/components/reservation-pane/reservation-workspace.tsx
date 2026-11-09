@@ -19,12 +19,14 @@ export type ReservationWorkspaceProps = {
 
 /** New shared Outlook/webmail mount. Host auth, bridge, mailbox and source resolution remain outside. */
 export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAttachment, bridge, hostType = 'webmail' }: ReservationWorkspaceProps) {
-  const [snapshot, setSnapshot] = useState<ReservationPaneSnapshot | null>(null);
+  const [boundSnapshot, setBoundSnapshot] = useState<{ key: string; value: ReservationPaneSnapshot } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const activeSource = useRef('');
   const refreshCount = useRef(0);
-  const request = useRef<{ key: string; promise: Promise<ReservationPaneSnapshot> } | null>(null);
-  const key = `${source.mailboxId}:${source.selectionEpoch}:${source.messageId}:${source.sourceHash}`;
+  const request = useRef<{ key: string; promise: Promise<ReservationPaneSnapshot>; prefill: Promise<ReservationPaneSnapshot> | null } | null>(null);
+  const key = JSON.stringify([source.mailboxId, source.propertyId, source.threadId, source.messageId,
+    source.sourceHash, source.arrivedAt, source.selectionEpoch]);
+  const snapshot = boundSnapshot?.key === key ? boundSnapshot.value : null;
   const [confirmation, setConfirmation] = useState<{ message: string; label: string } | null>(null);
   const confirmResolve = useRef<((accepted: boolean) => void) | null>(null);
   const finishConfirmation = (accepted: boolean) => { confirmResolve.current?.(accepted); confirmResolve.current = null; setConfirmation(null); };
@@ -42,27 +44,38 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
     let live = true;
     refreshCount.current = 0;
     activeSource.current = key;
-    setSnapshot(null);
+    setBoundSnapshot(current => current?.key === key ? current : null);
     setLoadError(null);
-    if (request.current?.key !== key) request.current = { key, promise: client.ensure({ source, mode: 'initialize' }) };
+    if (request.current?.key !== key) request.current = { key, promise: client.ensure({ source, mode: 'initialize' }), prefill: null };
+    const initialRequest = request.current;
     const acceptPrefill = (next: ReservationPaneSnapshot) => {
-      if (!live || activeSource.current !== key) return;
-      setSnapshot(current => {
-        if (!current || next.session.seq > current.session.seq) return next;
-        if (next.session.seq < current.session.seq) return current;
+      if (!live || activeSource.current !== key || !snapshotMatchesSource(next, source)) return;
+      setBoundSnapshot(bound => {
+        const current = bound?.key === key ? bound.value : null;
+        if (!current || next.session.seq > current.session.seq) return { key, value: next };
+        if (next.session.seq < current.session.seq) return bound;
+        if (Boolean(current.session.sourceChanged) !== Boolean(next.session.sourceChanged))
+          return next.session.sourceChanged ? { key, value: next } : bound;
         const rank = { idle: 0, queued: 1, running: 2, failed: 3, complete: 3, superseded: 4 } as const;
         const oldMeta = current.session.draft.prefill, newMeta = next.session.draft.prefill;
         if ((newMeta?.attemptCount ?? 0) < (oldMeta?.attemptCount ?? 0) ||
             ((newMeta?.attemptCount ?? 0) === (oldMeta?.attemptCount ?? 0) &&
-              rank[newMeta?.status ?? 'idle'] < rank[oldMeta?.status ?? 'idle'])) return current;
-        return next;
+              rank[newMeta?.status ?? 'idle'] < rank[oldMeta?.status ?? 'idle'])) return bound;
+        return { key, value: next };
       });
     };
-    request.current.promise.then((next) => {
+    initialRequest.promise.then((next) => {
       if (!live || activeSource.current !== key) return;
-      setSnapshot(next);
+      if (!snapshotMatchesSource(next, source)) {
+        setLoadError('The reservation draft did not match the selected email.');
+        return;
+      }
+      acceptPrefill(next);
       if (!next.session.sourceChanged && (!next.session.draft.prefill || next.session.draft.prefill.status === 'idle')) {
-        void client.prefill({ source, snapshot: next }).then(acceptPrefill).catch((error: unknown) => {
+        const prefill = initialRequest.prefill ?? client.prefill({ source, snapshot: next });
+        initialRequest.prefill = prefill;
+        void prefill.then(acceptPrefill).catch((error: unknown) => {
+          if (initialRequest.prefill === prefill) initialRequest.prefill = null;
           if (!live || activeSource.current !== key) return;
           setLoadError(error instanceof Error ? error.message : 'Prefill did not finish. Your editable draft is available.');
         });
@@ -75,10 +88,15 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
   }, [client, key, source]);
 
   const acceptSnapshot = useCallback((next: ReservationPaneSnapshot) => {
-    if (activeSource.current !== key || next.sourceMessageId !== source.messageId) return;
-    setSnapshot(current => !current || next.session.seq >= current.session.seq ? next : current);
+    if (activeSource.current !== key || !snapshotMatchesSource(next, source)) return;
+    setBoundSnapshot(bound => {
+      const current = bound?.key === key ? bound.value : null;
+      if (current && (next.session.seq < current.session.seq ||
+          (next.session.seq === current.session.seq && current.session.sourceChanged && !next.session.sourceChanged))) return bound;
+      return { key, value: next };
+    });
     setLoadError(null);
-  }, [key, source.messageId]);
+  }, [key, source]);
 
   useEffect(() => {
     if (!snapshot || snapshot.session.sourceChanged || !['running', 'queued'].includes(snapshot.session.draft.prefill?.status ?? '')) {
@@ -89,7 +107,8 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
     const timer = setTimeout(() => {
       if (++refreshCount.current > 900) { setLoadError('Prefill is still processing. Reopen this email to check progress; your draft is retained.'); return; }
       void client.get({ source, snapshot }).then(next => {
-        if (live && activeSource.current === key) setSnapshot(current => current === snapshot ? next : current);
+        if (live && activeSource.current === key && snapshotMatchesSource(next, source))
+          setBoundSnapshot(bound => bound?.key === key && bound.value === snapshot ? { key, value: next } : bound);
       }).catch(() => {
         if (live && activeSource.current === key) setLoadError('Could not refresh the email prefill. Reopen it to check progress; your draft is retained.');
       });
