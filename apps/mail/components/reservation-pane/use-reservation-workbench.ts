@@ -33,6 +33,7 @@ function captureRows(snapshot: ReservationPaneSnapshot | null, path: string): Pe
 }
 type Buffer = {
   snapshot: ReservationPaneSnapshot | null;
+  sourceReviewBase: ReservationPaneSnapshot | null;
   pending: Map<string, Pending>;
   conflict: boolean;
   error: string | null;
@@ -62,6 +63,23 @@ function clearGuestAttempt(source: ReservationSourceContext, requestId: string, 
 }
 
 function notify(buffer: Buffer) { buffer.listeners.forEach(listener => listener()); }
+
+// A source rebind may succeed even if its follow-up read fails. Only carry
+// pending edits forward after an explicit review and matching row identities.
+function retainReviewedSourceEdits(buffer: Buffer, next: ReservationPaneSnapshot, bound: ReservationSourceContext) {
+  const base = buffer.sourceReviewBase;
+  if (!base || next.session.sourceChanged || !snapshotMatchesSource(next, bound)) return;
+  for (const pending of buffer.pending.values()) {
+    if (pendingMatches(base, pending) && pending.rows.every(row => rowIdentity(effectiveAt(next, row.path)) === row.identity)) {
+      pending.generation = next.session.draft.generationId;
+    }
+  }
+  buffer.sourceReviewBase = null;
+  if (buffer.pending.size) {
+    buffer.conflict = true;
+    buffer.error = 'Your pending edits are retained. Apply them after reviewing the updated evidence.';
+  }
+}
 
 function releasePendingMutation(buffer: Buffer) {
   if (buffer.pendingMutationHeld && buffer.pending.size === 0) {
@@ -121,10 +139,13 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
 }) {
   const key = sourceKey(source);
   const safeSnapshot = snapshotMatchesSource(snapshot, source) ? snapshot : null;
-  if (!buffers.has(key)) buffers.set(key, { snapshot: safeSnapshot, pending: new Map(), conflict: false,
+  if (!buffers.has(key)) buffers.set(key, { snapshot: safeSnapshot, sourceReviewBase: null, pending: new Map(), conflict: false,
     error: null, pendingMutationHeld: false, actionsPending: 0, token: 0, queue: Promise.resolve(), listeners: new Set() });
   const entry = buffers.get(key)!;
-  if (safeSnapshot && (!entry.snapshot || safeSnapshot.session.seq >= entry.snapshot.session.seq)) entry.snapshot = safeSnapshot;
+  if (safeSnapshot && (!entry.snapshot || safeSnapshot.session.seq >= entry.snapshot.session.seq)) {
+    retainReviewedSourceEdits(entry, safeSnapshot, source);
+    entry.snapshot = safeSnapshot;
+  }
   const active = useRef({ key, epoch: source.selectionEpoch });
   active.current = { key, epoch: source.selectionEpoch };
   const mounted = useRef(false);
@@ -139,6 +160,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
 
   const apply = useCallback((next: ReservationPaneSnapshot, bound: ReservationSourceContext, buffer: Buffer) => {
     if (!snapshotMatchesSource(next, bound)) return;
+    retainReviewedSourceEdits(buffer, next, bound);
     buffer.snapshot = next;
     notify(buffer);
     if (mounted.current && active.current.key === sourceKey(bound) && active.current.epoch === bound.selectionEpoch) onSnapshot(next);
@@ -382,6 +404,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   const initialLookup = useRef(new Set<string>());
   useEffect(() => {
     if (!current || current.session.sourceChanged || ['queued', 'running'].includes(current.session.draft.prefill?.status ?? '') || !request || request.kind !== 'create' || busy || entry.pending.size || entry.conflict || preview) return;
+    if (current.session.draft.prefill?.nativeChecks?.some(check => check.key === `create:lookup:${request.id}`)) return;
     const lookupKey = `${key}:${request.id}:${current.session.draft.generationId}`;
     if (initialLookup.current.has(lookupKey)) return;
     const timer = setTimeout(() => { initialLookup.current.add(lookupKey); void commands.lookup().catch(() => {}); }, 700);
@@ -432,17 +455,8 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     undo: () => run(context => client.undo(context)), redo: () => run(context => client.redo(context)),
     retryPrefill: () => run(context => client.prefill(context)),
     reconcileSource: () => run(async context => {
-      const next = await client.reconcileSource(context);
-      if (!next.session.sourceChanged && snapshotMatchesSource(next, context.source) && entry.pending.size) {
-        for (const pending of entry.pending.values()) {
-          if (pendingMatches(context.snapshot, pending) && pending.rows.every(row => rowIdentity(effectiveAt(next, row.path)) === row.identity)) {
-            pending.generation = next.session.draft.generationId;
-          }
-        }
-        entry.conflict = true;
-        entry.error = 'Your pending edits are retained. Apply them after reviewing the updated evidence.';
-      }
-      return next;
+      if (entry.pending.size) entry.sourceReviewBase = context.snapshot;
+      return client.reconcileSource(context);
     }, false, true),
     applyPending: () => { entry.conflict = false; entry.error = null; return run(async () => {}); },
     discardPending: () => { entry.pending.clear(); releasePendingMutation(entry); entry.conflict = false; entry.error = null; setError(null); notify(entry); },
