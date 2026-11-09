@@ -55,7 +55,7 @@ export type ReservationWorkflowV2Seed = {
 export type ReservationWorkflowV2SourceInput = ReservationWorkflowV2Source;
 export type ReservationWorkflowV2StateResult =
   | { status: 'ok'; draft: ReservationWorkflowV2Draft; revision: number; revisionHead: number; seq: number; sourceChanged?: boolean }
-  | { status: 'not_found' | 'invalid_source' | 'wrong_property' | 'invalid_state' | 'stale_revision' | 'invalid_path' | 'invalid_value' };
+  | { status: 'not_found' | 'invalid_source' | 'wrong_property' | 'invalid_state' | 'stale_revision' | 'invalid_path' | 'invalid_value'; issue?: string };
 
 export function reservationWorkflowV2DraftOf(state: State): ReservationWorkflowV2Draft | null {
   const parsed = reservationWorkflowV2DraftSchema.safeParse(state[RESERVATION_WORKFLOW_V2_STATE_KEY]);
@@ -533,6 +533,12 @@ export async function reconcileReservationWorkflowV2Source(ctx: Context, input: 
     if (item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq) return { status: 'stale_revision' as const };
     const current = await buildResult(tx, ctx, item, input.source, true);
     if (current.status !== 'ok' || !current.sourceChanged) return current;
+    // Recovery of a dispatched operation is bound to its original source and
+    // generation. Rebinding either while its outcome is unknown would strand
+    // the receipt and could permit an unsafe repeat of the native action.
+    if (current.draft.operationResults.some((row) => row.status === 'unknown')) {
+      return { status: 'invalid_value' as const, issue: 'native_operation_needs_reconciliation_before_source_rebind' };
+    }
     const evidence = await reservationArrivalEvidence(tx, input.source.messageId);
     const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, source: input.source,
       generationId: randomUUID(), revision: item.revision + 1,

@@ -575,10 +575,10 @@ export async function reservationWorkflowV2CancelLookup(ctx: ReservationWorkflow
 function preparedPreview(draft: ReservationWorkflowV2Draft, compiled: Extract<CancelCompile, { outcome: 'ok' }>) {
   const candidates = draft.operationResults.toReversed().flatMap((entry) => {
     if (entry.requestId !== compiled.requestId || entry.allocationId !== compiled.hintId || entry.workflow !== 'cancel' ||
-        entry.status !== 'prepared' || entry.draftRevision > draft.revision) return [];
+        entry.status !== 'prepared' || entry.generationId !== draft.generationId || entry.draftRevision > draft.revision) return [];
     return entry.observationRefs.flatMap((ref) => {
       const item = draft.observations.find((candidate) => candidate.ref === ref && candidate.kind === 'stay_candidate' &&
-        candidate.status === 'complete');
+        candidate.status === 'complete' && candidate.generationId === draft.generationId);
       const criteria = record(item?.criteria), result = record(item?.result);
       return item && criteria?.stage === 'prepare' && criteria.semanticDigest === compiled.semanticDigest &&
         result?.ready === true && typeof result.approvalDigest === 'string' ? [{ item, result, criteria }] : [];

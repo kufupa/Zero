@@ -539,7 +539,7 @@ async function recordObservation(ctx: ReservationWorkflowV2AmendContext, input: 
 
 function preparedObservation(draft: ReservationWorkflowV2Draft, compiled: Compile & { outcome: 'ok' }) {
   const rows = draft.observations.filter((observation) => observation.kind === 'rate_availability' &&
-    observation.status === 'complete' && observation.criteria.workflow === 'amend' &&
+    observation.status === 'complete' && observation.generationId === draft.generationId && observation.criteria.workflow === 'amend' &&
     observation.criteria.requestId === compiled.requestId && observation.criteria.hintId === compiled.hintId &&
     observation.criteria.selectedRef === compiled.selectedRef && observation.criteria.baseDigest === compiled.baseDigest);
   return rows.at(-1) ?? null;

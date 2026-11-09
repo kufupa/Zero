@@ -395,9 +395,10 @@ async function persistFilingShots(ctx: ReservationWorkflowV2FilingContext, input
 
 function latestPrepared(draft: ReservationWorkflowV2Draft, requestId: string, documentId: string) {
   const result = [...draft.operationResults].reverse().find((entry) => entry.requestId === requestId &&
-    entry.allocationId === null && entry.workflow === 'filing' && entry.status === 'prepared' && entry.draftRevision <= draft.revision);
+    entry.allocationId === null && entry.workflow === 'filing' && entry.status === 'prepared' &&
+    entry.generationId === draft.generationId && entry.draftRevision <= draft.revision);
   const observation = result && draft.observations.find((entry) => result.observationRefs.includes(entry.ref) &&
-    entry.kind === 'document' && entry.criteria.workflow === 'filing' && entry.criteria.requestId === requestId &&
+    entry.kind === 'document' && entry.generationId === draft.generationId && entry.criteria.workflow === 'filing' && entry.criteria.requestId === requestId &&
     entry.criteria.documentId === documentId && typeof record(entry.result)?.semanticDigest === 'string');
   return result && observation ? { result, observation } : null;
 }

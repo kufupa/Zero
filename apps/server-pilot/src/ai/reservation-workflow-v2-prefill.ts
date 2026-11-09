@@ -93,6 +93,24 @@ function omitUncitedUnknownClaims(value: unknown): unknown {
   return normalized === OMIT_UNKNOWN_CLAIM ? undefined : normalized;
 }
 
+/** Repair a mistyped citation only when the quoted claim occurs in exactly one admitted source. */
+function repairQuotedEvidenceRefs(value: unknown, evidence: ReservationWorkflowV2Evidence[]): unknown {
+  const known = new Set(evidence.map((item) => item.ref));
+  const visit = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(visit);
+    if (!item || typeof item !== 'object') return item;
+    const row = item as Record<string, unknown>;
+    const out = Object.fromEntries(Object.entries(row).map(([key, child]) => [key, visit(child)]));
+    if (typeof row.raw !== 'string' || row.raw.trim().length < 3 || !Array.isArray(row.sourceRefs) ||
+        !row.sourceRefs.some((ref) => typeof ref === 'string' && !known.has(ref))) return out;
+    const matches = evidence.filter((entry) => entry.text.includes(row.raw as string));
+    if (matches.length !== 1) return out;
+    out.sourceRefs = [...new Set(row.sourceRefs.map((ref) => typeof ref === 'string' && !known.has(ref) ? matches[0]!.ref : ref))];
+    return out;
+  };
+  return visit(value);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -1441,7 +1459,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
   if (!firstPass.ok) return fallback(`Typed extraction call failed (${firstPass.reason}); no lookups were run.`,
     { stage: 'extract', code: `model_${firstPass.reason}`, message: `Typed extraction call failed (${firstPass.reason}); no lookups were run.` });
-  const firstPassFacts = omitUncitedUnknownClaims(firstPass.result.output);
+  const firstPassFacts = repairQuotedEvidenceRefs(omitUncitedUnknownClaims(firstPass.result.output), evidence);
   // Request IDs are host metadata, not model claims. Derive them before validating
   // the facts so an omitted/malformed model ID cannot discard a valid request.
   const identifiedFacts = firstPassFacts && typeof firstPassFacts === 'object' && !Array.isArray(firstPassFacts) &&

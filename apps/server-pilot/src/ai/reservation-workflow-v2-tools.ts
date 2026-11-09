@@ -1254,10 +1254,11 @@ async function persistSavedScreenshot(ctx: ReservationWorkflowV2ServerContext, w
 function preparedFor(draft: ReservationWorkflowV2Draft, requestId: string, allocationId: string, semanticDigest?: string) {
   const result = [...draft.operationResults].reverse().find((entry) => entry.requestId === requestId &&
     entry.allocationId === allocationId && entry.workflow === 'create' && entry.status === 'prepared' &&
+    entry.generationId === draft.generationId &&
     entry.draftRevision <= draft.revision);
   if (!result) return null;
   const observation = draft.observations.find((item) => result.observationRefs.includes(item.ref) &&
-    item.kind === 'rate_availability' && item.status === 'complete');
+    item.kind === 'rate_availability' && item.status === 'complete' && item.generationId === draft.generationId);
   const stored = observation && record(observation.result);
   const binding = stored && record(stored.requestBinding);
   const price = stored && validPrice(stored.ratePlanAvailability);
