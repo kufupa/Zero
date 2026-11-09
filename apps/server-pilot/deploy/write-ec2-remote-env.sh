@@ -74,6 +74,7 @@ REMOTE_COMMON_ALLOWLIST=(
   INBOUND_TRIAGE_CLASSIFIER
   RESERVATION_V2_ARRIVAL_PREFILL
   PANE_STAY_LOOKUP
+  QUOTE_RATE_CONTEXT
   NEEDS_YOU_SINCE
   PANE_WRITE_CREATE
   PANE_HMS_LAB_CREATE_WORKER
@@ -111,6 +112,7 @@ M1_ONLY_OPTIONAL_WRITE_CONTROLS=(
   PANE_WRITE_ADDONS
   RESERVATION_V2_ARRIVAL_PREFILL
   PANE_STAY_LOOKUP
+  QUOTE_RATE_CONTEXT
 )
 M1_ONLY_RUNTIME_DEPENDENCIES=(
   RESERVATIONIST_STAFF_QUOTE_CONFIGURATION
@@ -151,7 +153,7 @@ const common = new Set([
   "HMS_PREFETCH_ENABLED", "HMS_PREFETCH_PER_HOUR", "HMS_GUEST_PREFETCH_PER_HOUR", "HMS_AVAILABILITY_PREFETCH",
   "HMS_AVAILABILITY_PER_HOUR", "HMS_QUOTE_PREPARE", "HMS_QUOTE_PREPARE_PER_HOUR", "PARTY_MATCH_V2", "HMS_STAGEHAND_CDP_URL_DAVINCI",
   "RESERVATIONIST_STAFF_QUOTE_CONFIGURATION", "RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV",
-  "INBOUND_EXTRACTION", "INBOUND_TRIAGE_CLASSIFIER", "RESERVATION_V2_ARRIVAL_PREFILL", "PANE_STAY_LOOKUP", "NEEDS_YOU_SINCE",
+  "INBOUND_EXTRACTION", "INBOUND_TRIAGE_CLASSIFIER", "RESERVATION_V2_ARRIVAL_PREFILL", "PANE_STAY_LOOKUP", "QUOTE_RATE_CONTEXT", "NEEDS_YOU_SINCE",
   "PANE_WRITE_CREATE", "PANE_HMS_LAB_CREATE_WORKER", "PANE_CLOUD_CREATE_DISPATCH", "PANE_WRITE_AMEND", "PANE_HMS_LAB_AMEND_WORKER", "PANE_WRITE_AMEND_UNPAID", "PANE_WRITE_AMEND_PAID",
   "PANE_WRITE_CANCEL_UNPAID", "PANE_WRITE_CANCEL_PAID", "PANE_WRITE_ADDONS", "PANE_WRITE_ATTACH",
   "PANE_HMS_LAB_ATTACH_WORKER",
@@ -185,6 +187,8 @@ try {
     validate(["PANE_HMS_LAB_CREATE_WORKER", "PANE_HMS_LAB_ATTACH_WORKER", "PANE_HMS_LAB_AMEND_WORKER",
       "PANE_CLOUD_CREATE_DISPATCH", "HMS_JOB_QUEUE", "HMS_AVAILABILITY_PREFETCH",
       "RESERVATION_V2_ARRIVAL_PREFILL", "PANE_STAY_LOOKUP"], ["off", "on"]);
+    const quoteRateContext = values.get("QUOTE_RATE_CONTEXT")?.trim().toLowerCase();
+    if (quoteRateContext && !["off", "on"].includes(quoteRateContext)) throw new Error("invalid");
     validate(["HMS_PREFETCH_ENABLED", "HMS_LANE_PAUSED", "PARTY_MATCH_V2"], ["true", "false", "1", "0"]);
     validate(["HMS_QUOTE_PREPARE"], ["true", "false", "1", "0", "on", "off"]);
     for (const key of ["HMS_PREFETCH_PER_HOUR", "HMS_GUEST_PREFETCH_PER_HOUR", "HMS_AVAILABILITY_PER_HOUR", "HMS_QUOTE_PREPARE_PER_HOUR"]) {
@@ -416,6 +420,9 @@ const keys = args.slice(3);
 const controlKeys = new Set(keys.slice(0, controlCount));
 const dependencyKeys = new Set(keys.slice(controlCount));
 const target = new Set(keys);
+const sourceAuthoritativeReadControls = new Set([
+  "RESERVATION_V2_ARRIVAL_PREFILL", "PANE_STAY_LOOKUP", "QUOTE_RATE_CONTEXT",
+]);
 const chunks = (text) => text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
 const body = (line) => line.endsWith("\n") ? line.slice(0, -1) : line;
 const keyOf = (line) => /^([A-Z][A-Z0-9_]*)=/.exec(body(line))?.[1];
@@ -452,7 +459,8 @@ try {
     if (replaced.has(key)) fail(`duplicate installed M1 key: ${key}`);
     replaced.add(key);
     if (!source.has(key)) {
-      merged.push(line);
+      // Missing read flags use the application default in every process.
+      if (!sourceAuthoritativeReadControls.has(key)) merged.push(line);
       continue;
     }
     if (dependencyKeys.has(key)) {
