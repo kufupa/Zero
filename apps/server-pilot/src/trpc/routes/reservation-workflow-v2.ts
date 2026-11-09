@@ -19,6 +19,7 @@ import {
   reservationWorkflowV2ReconcileInputSchema,
   reservationWorkflowV2AddActionInputSchema, reservationWorkflowV2ChangeRowsInputSchema,
   reservationWorkflowV2SelectNativeInputSchema, reservationWorkflowV2ReviewScopeInputSchema,
+  reservationWorkflowV2GuestPrepareInputSchema, reservationWorkflowV2GuestCreateInputSchema,
 } from '../../ai/reservation-workflow-v2-contract.js';
 import {
   getReservationWorkflowV2Draft,
@@ -62,6 +63,8 @@ import { reservationWorkflowV2AmendLookup, reservationWorkflowV2AmendPrepare,
   reservationWorkflowV2AmendExecute, reservationWorkflowV2AmendReconcile } from '../../ai/reservation-workflow-v2-amend.js';
 import { reservationWorkflowV2FilingLookup, reservationWorkflowV2FilingPrepare,
   reservationWorkflowV2FilingExecute, reservationWorkflowV2FilingReconcile } from '../../ai/reservation-workflow-v2-filing.js';
+import { reservationWorkflowV2GuestOptions, reservationWorkflowV2PrepareGuestProfile,
+  reservationWorkflowV2CreateGuestProfile, reservationWorkflowV2ReconcileGuestProfile } from '../../ai/reservation-workflow-v2-guest.js';
 import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
 import { guardCenturionHmsMailboxOrigin } from '../../hms/mailbox-hms-origin-bind.js';
 import { paneSourceSelectionCondition, paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
@@ -348,6 +351,27 @@ export const reservationWorkflowV2Router = router({
     if (workflow.kind === 'amend') return reservationWorkflowV2AmendLookup(scoped, input);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
+  guestProfileOptions: mailboxProcedure.input(reservationWorkflowV2GuestPrepareInputSchema.extend({
+    field: z.enum(['title', 'phoneType', 'emailType']),
+  }).strict()).mutation(async ({ input, ctx }) => {
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
+    const workflow = await nativeWorkflow(scoped, input, input.requestId);
+    if (workflow.result) return workflow.result;
+    if (workflow.kind !== 'create') return { status: 'unsupported' as const, issue: 'create_request_required' };
+    return reservationWorkflowV2GuestOptions(scoped, input);
+  }),
+  prepareGuestProfile: mailboxProcedure.input(reservationWorkflowV2GuestPrepareInputSchema).mutation(async ({ input, ctx }) => {
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
+    const workflow = await nativeWorkflow(scoped, input, input.requestId);
+    if (workflow.result) return workflow.result;
+    if (workflow.kind !== 'create') return { status: 'unsupported' as const, issue: 'create_request_required' };
+    return reservationWorkflowV2PrepareGuestProfile(scoped, input);
+  }),
+  createGuestProfile: mailboxProcedure.input(reservationWorkflowV2GuestCreateInputSchema).mutation(async ({ input, ctx }) => {
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
+    await requireCreateSource(context(ctx.sessionUser.id, ctx.activeTransportId), input.source, ctx.transportEmail);
+    return reservationWorkflowV2CreateGuestProfile(scoped, input);
+  }),
   prepare: mailboxProcedure.input(reservationWorkflowV2PrepareInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
     const workflow = await nativeWorkflow(scoped, input, input.requestId);
@@ -398,6 +422,7 @@ export const reservationWorkflowV2Router = router({
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
     const workflow = await nativeWorkflow(scoped, input, undefined, input.operationId);
     if (workflow.result) return workflow.result;
+    if (workflow.kind === 'guest_profile') return reservationWorkflowV2ReconcileGuestProfile(scoped, input);
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteReconcile(scoped, input);
     if (workflow.kind === 'filing') return reservationWorkflowV2FilingReconcile(scoped, input);
     if (workflow.kind === 'create') return reservationWorkflowV2Reconcile(scoped, input);

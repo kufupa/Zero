@@ -104,6 +104,13 @@ export type ReservationCommandContext = {
   snapshot: ReservationPaneSnapshot;
 };
 
+export type ReservationGuestProfileCommand = ReservationCommandContext & {
+  requestId: string;
+  allocationId: string;
+  confirmDuplicateName?: boolean;
+};
+export type ReservationGuestProfileOptionField = 'title' | 'phoneType' | 'emailType';
+
 export type ReservationEditCommand = ReservationCommandContext & {
   requestId: string;
   fieldPath: string;
@@ -131,6 +138,10 @@ export interface ReservationWorkflowClient {
   undo(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;
   redo(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;
   lookup(input: ReservationCommandContext & { requestId?: string }): Promise<ReservationPaneSnapshot>;
+  guestProfileOptions(input: ReservationCommandContext & { requestId: string; allocationId: string;
+    field: ReservationGuestProfileOptionField }): Promise<ReservationPaneSnapshot>;
+  prepareGuestProfile(input: ReservationGuestProfileCommand): Promise<ReservationPaneSnapshot>;
+  createGuestProfile(input: ReservationGuestProfileCommand & { prepareRef: string; idempotencyKey: string }): Promise<ReservationPaneSnapshot>;
   prepare(input: ReservationCommandContext & { requestId: string; allocationId?: string }): Promise<ReservationPaneSnapshot>;
   execute(input: ReservationCommandContext & { requestId: string; allocationId?: string; idempotencyKey: string }): Promise<ReservationPaneSnapshot>;
   reconcile(input: ReservationCommandContext & { operationId: string }): Promise<ReservationPaneSnapshot>;

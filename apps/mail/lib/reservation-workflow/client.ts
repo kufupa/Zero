@@ -3,6 +3,7 @@ import type { RowChange } from './views';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import type {
   ReservationCommandContext,
+  ReservationGuestProfileOptionField,
   ReservationServiceInput,
   ReservationEditCommand,
   ReservationPaneSnapshot,
@@ -41,6 +42,10 @@ export type ReservationWorkflowV2TrpcClient = {
     undo: MutationProcedure<ItemInput>;
     redo: MutationProcedure<ItemInput>;
     lookup: MutationProcedure<ItemInput & { requestId?: string }>;
+    guestProfileOptions: MutationProcedure<ItemInput & { requestId: string; allocationId: string; field: ReservationGuestProfileOptionField }>;
+    prepareGuestProfile: MutationProcedure<ItemInput & { requestId: string; allocationId: string; confirmDuplicateName?: boolean }>;
+    createGuestProfile: MutationProcedure<ItemInput & { requestId: string; allocationId: string; confirmDuplicateName?: boolean;
+      go: true; prepareRef: string; idempotencyKey: string }>;
     prepare: MutationProcedure<ItemInput & { requestId: string; allocationId?: string }>;
     execute: MutationProcedure<ItemInput & { requestId: string; allocationId?: string; go: true; idempotencyKey: string }>;
     reconcile: MutationProcedure<ItemInput & { operationId: string }>;
@@ -359,7 +364,22 @@ export function projectReservationSession(session: ReservationWorkflowV2Session)
         return [{ ref, confirmation }];
       });
       const receipt = linked.at(-1);
-      return { ...result, ...(receipt ? { confirmation: receipt.confirmation, confirmationObservationRef: receipt.ref } : {}) };
+      const guestReceipt = result.workflow === 'guest_profile' ? refs.flatMap((ref) => {
+        const observation = draft.observations.find((entry) => entry.ref === ref);
+        if (!observation || result.status !== 'succeeded' || observation.kind !== 'guest_candidate'
+            || observation.status !== 'complete' || !observation.coverage.complete
+            || observation.generationId !== result.generationId || observation.propertyCode !== draft.propertyCode
+            || observation.sourceMessageId !== draft.source.messageId || observation.criteria.workflow !== 'guest_profile_create'
+            || observation.criteria.attemptId !== result.id || observation.criteria.requestId !== result.requestId
+            || observation.criteria.allocationId !== result.allocationId) return [];
+        const observed = observation.result;
+        if (observed.outcome !== 'created') return [];
+        const candidate = Array.isArray(observed.candidates) && isRecord(observed.candidates[0]) ? observed.candidates[0] : null;
+        const nativeId = isString(candidate?.nativeId) ? candidate.nativeId : null;
+        return nativeId ? [{ ref, nativeId }] : [];
+      }).at(-1) : undefined;
+      return { ...result, ...(receipt ? { confirmation: receipt.confirmation, confirmationObservationRef: receipt.ref } : {}),
+        ...(guestReceipt ? { nativeId: guestReceipt.nativeId, nativeIdObservationRef: guestReceipt.ref } : {}) };
     }) : [];
   const createRequests = draft.proposal.content.requests.filter((request) => request.kind === 'create');
   const allocations = createRequests.flatMap((request) => {
@@ -545,6 +565,27 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       expectedRevision: typeof result.revision === 'number' ? result.revision : input.expectedRevision,
       expectedSeq: typeof result.seq === 'number' ? result.seq : input.expectedSeq }, source);
   };
+  const guestResult = async (command: ReservationCommandContext, input: ItemInput & { idempotencyKey?: string }, raw: unknown, creating: boolean) => {
+    const result = isRecord(raw) && isString(raw.status) ? raw : {
+      status: creating ? 'needs_reconcile' : 'failed',
+      issue: creating ? 'guest_profile_execution_unknown' : 'guest_profile_prepare_failed',
+      ...(creating && input.idempotencyKey ? { operationId: input.idempotencyKey } : {}),
+    };
+    await refreshAfterStale(input, command.source, result);
+    const uncertain = creating && ['unknown', 'needs_reconcile'].includes(result.status as string);
+    const notice = uncertain
+      ? 'Creation outcome is uncertain. Check the saved profile or contact Nava support before creating another profile.'
+      : serviceOperationNotice(result, creating ? ['succeeded', 'already_succeeded'] : ['prepared']);
+    try {
+      const snapshot = await load(input, command.source);
+      return { ...snapshot, workflowReply: result, ...(notice ? { serviceNotice: `Guest profile: ${notice}` } : {}) };
+    } catch {
+      const refreshNotice = creating
+        ? 'Guest profile result could not be refreshed. Check the saved profile or contact Nava support before creating another profile.'
+        : 'Guest profile preparation could not be refreshed. Reopen the email before continuing.';
+      return { ...command.snapshot, workflowReply: result, serviceNotice: refreshNotice, loadError: refreshNotice };
+    }
+  };
   return {
     async ensure({ source, mode }) {
       const wire = apiSource(source);
@@ -577,6 +618,43 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       const result = okResult(raw);
       const notice = operationNotice(result, ['ok']) ?? quoteLookupNotice(result) ?? amendLookupNotice(result) ?? filingLookupNotice(result);
       return { ...await load(input, command.source), ...(notice ? { serviceNotice: notice } : {}), ...(isRecord(result) ? { workflowReply: result } : {}) };
+    },
+    async guestProfileOptions(command) {
+      const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId, field: command.field };
+      const options = mailboxOptions(command.source);
+      const raw = await api.guestProfileOptions.mutate(input, options).catch((error: unknown) => ({
+        outcome: 'unavailable', issue: error instanceof Error ? error.message : 'guest_profile_options_unavailable',
+      }));
+      const result: RecordValue = isRecord(raw) ? raw : { outcome: 'unavailable', issue: 'guest_profile_options_unavailable' };
+      await refreshAfterStale(input, command.source, result);
+      const status = isString(result.status) ? result.status : isString(result.outcome) ? result.outcome : 'unavailable';
+      const issue = nativeIssueText(result.issue);
+      const notice = status === 'ok' ? undefined : `Guest profile options: ${status.replaceAll('_', ' ')}${issue ? ` — ${issue}` : ''}.`;
+      try {
+        return { ...await load(input, command.source), workflowReply: result, ...(notice ? { serviceNotice: notice } : {}) };
+      } catch {
+        const refreshNotice = 'Guest profile options could not be refreshed. Reopen the email before continuing.';
+        return { ...command.snapshot, workflowReply: result, serviceNotice: refreshNotice, loadError: refreshNotice };
+      }
+    },
+    async prepareGuestProfile(command) {
+      const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
+        ...(typeof command.confirmDuplicateName === 'boolean' ? { confirmDuplicateName: command.confirmDuplicateName } : {}) };
+      const options = mailboxOptions(command.source);
+      const result = await api.prepareGuestProfile.mutate(input, options).catch((error: unknown) => ({
+        status: 'failed', issue: error instanceof Error ? error.message : 'guest_profile_prepare_failed',
+      }));
+      return guestResult(command, input, result, false);
+    },
+    async createGuestProfile(command) {
+      const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
+        ...(typeof command.confirmDuplicateName === 'boolean' ? { confirmDuplicateName: command.confirmDuplicateName } : {}),
+        go: true as const, prepareRef: command.prepareRef, idempotencyKey: command.idempotencyKey };
+      const options = mailboxOptions(command.source);
+      const result = await api.createGuestProfile.mutate(input, options).catch(() => ({
+        status: 'needs_reconcile', issue: 'guest_profile_execution_unknown', operationId: command.idempotencyKey,
+      }));
+      return guestResult(command, input, result, true);
     },
     async prepare(command) {
       const input = { ...itemInput(command), requestId: command.requestId,

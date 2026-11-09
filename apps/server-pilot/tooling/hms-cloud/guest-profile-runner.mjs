@@ -1,4 +1,4 @@
-// Trusted, Labtest-only orchestration for guest-profile operations.
+// Labtest by default; real-guest writes require trusted server callbacks.
 // Attempt files are write-once: an incomplete file is a hold, not permission to retry.
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, realpath } from 'node:fs/promises';
@@ -93,12 +93,13 @@ async function intentChain(dir, key) {
 }
 
 async function readAttempt(dir, attemptKey) {
-  const names = ['claim', 'initial', 'initial-response', 'confirm', 'confirm-response', 'result', 'reconcile-claim', 'reconcile'];
+  const names = ['claim', 'initial', 'initial-never-dispatched', 'initial-response', 'confirm', 'confirm-response', 'result', 'reconcile-claim', 'reconcile'];
   const parts = {};
   for (const name of names) parts[name] = await readRecord(dir, file(attemptKey, name));
   const claim = parts.claim;
   if (!claim || ![1, 2].includes(claim.version) || !validAttempt(claim.attemptId) || hash(claim.attemptId) !== attemptKey ||
-      !claim.fields || claim.fields.firstName !== 'Proof' || claim.fields.lastName !== 'Labtest' ||
+      !claim.fields || !same(profileBusinessFields({ guest: Object.fromEntries(
+        Object.entries(claim.fields).filter(([key]) => !['status', 'consent'].includes(key))) }), claim.fields) ||
       typeof claim.previewDigest !== 'string' ||
       (claim.version === 1 && (hasExtendedProfileFields(claim.fields) || claim.previewDigest !== profilePreviewDigest(claim.fields, claim.confirmDuplicateName))) ||
       (claim.version === 2 && (!matchesProfileReview(claim.review, claim.fields, claim.confirmDuplicateName) ||
@@ -115,6 +116,12 @@ async function readAttempt(dir, attemptKey) {
     if (record && (!parts[phase] || record.phase !== phase || record.attemptKey !== attemptKey ||
         typeof record.success !== 'boolean' || typeof record.question !== 'boolean' ||
         !(record.nativeId === null || /^\d+$/.test(record.nativeId)))) throw new Error('PROFILE_JOURNAL_CORRUPT');
+  }
+  const noDispatch = parts['initial-never-dispatched'];
+  if (noDispatch && (noDispatch.version !== 1 || noDispatch.attemptKey !== attemptKey || noDispatch.phase !== 'initial' ||
+      !parts.initial || parts['initial-response'] || parts.confirm || parts['confirm-response'] ||
+      parts.result && (parts.result.outcome !== 'not_dispatched' || parts.result.dispatched !== false || parts.result.nativeId != null))) {
+    throw new Error('PROFILE_JOURNAL_CORRUPT');
   }
   if (parts.confirm && (!claim.confirmDuplicateName || !parts['initial-response']?.question)) throw new Error('PROFILE_JOURNAL_CORRUPT');
   if (parts['reconcile-claim'] && (parts['reconcile-claim'].version !== 1 ||
@@ -133,12 +140,28 @@ async function readAttempt(dir, attemptKey) {
   return { ...parts, successful };
 }
 
+function noDispatchRecorded(parts) {
+  if (!parts.result || parts.result.callbacksDrained !== true || parts.result.dispatched !== false || parts.result.nativeId != null) return false;
+  return !parts.initial && !parts.confirm || parts.result.outcome === 'not_dispatched' && parts.result.noDispatchProof === true &&
+    Boolean(parts.initial && parts['initial-never-dispatched']) && !parts['initial-response'] && !parts.confirm && !parts['confirm-response'];
+}
+
 function held(attemptId, parts, issue = 'PROFILE_RECONCILIATION_REQUIRED') {
   const response = parts?.['confirm-response'] || parts?.['initial-response'];
   const phase = parts?.confirm ? 'confirm_distinct' : parts?.initial ? 'initial' : null;
   return { outcome: 'reconciliation_required', issue, attemptId, phase,
     dispatched: parts ? Boolean(parts.initial || parts.confirm) : null,
     nativeId: response?.nativeId ?? parts?.result?.nativeId ?? null };
+}
+
+// The native duplicate question is an explicit no-create response. It is safe
+// only before any distinct-confirmation dispatch, with no returned profile ID.
+function duplicateDeclined(parts) {
+  const response = parts['initial-response'], result = parts.result;
+  return parts.claim.confirmDuplicateName === false && Boolean(parts.initial) && !parts.confirm &&
+    !parts['confirm-response'] && response?.status === 200 && response.success === false &&
+    response.question === true && response.nativeId === null && result?.outcome === 'confirmation_required' &&
+    result.issue === 'PROFILE_NAME_ALREADY_EXISTS' && result.dispatched === true && result.nativeId == null;
 }
 
 // A broken record must stay held, but intact response records can still tell an
@@ -166,8 +189,10 @@ async function partialHeld(dir, attemptKey, attemptId, issue) {
 
 /** Configuration is trusted infrastructure; tool input is data, never authority. */
 export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-hms-runtime', 'guest-profile'),
-  dependencies = {}, sessionOptions = {}, verifyNoCreate } = {}) {
+  dependencies = {}, sessionOptions = {}, verifyNoCreate, authorizeStaffWrite, dispatchStaffWrite } = {}) {
   if (verifyNoCreate !== undefined && typeof verifyNoCreate !== 'function') throw new TypeError('PROFILE_VERIFIER_INVALID');
+  if (authorizeStaffWrite !== undefined && typeof authorizeStaffWrite !== 'function') throw new TypeError('PROFILE_AUTHORIZER_INVALID');
+  if (dispatchStaffWrite !== undefined && typeof dispatchStaffWrite !== 'function') throw new TypeError('PROFILE_DISPATCH_AUTHORIZER_INVALID');
   const prepare = dependencies.prepareGuestProfile ?? nativePrepare;
   const create = dependencies.createGuestProfile ?? nativeCreate;
   const read = dependencies.readGuestProfile ?? nativeRead;
@@ -191,7 +216,8 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
       const issue = profileInputIssue(business);
       if (issue !== 'GUEST_NAME_AND_MOBILE_REQUIRED') return { outcome: 'needs_input', issue, attemptId, dispatched: false };
     }
-    if (!fields || fields.firstName !== 'Proof' || fields.lastName !== 'Labtest') {
+    const realGuest = fields && (fields.firstName !== 'Proof' || fields.lastName !== 'Labtest');
+    if (!fields || (realGuest && (!authorizeStaffWrite || !dispatchStaffWrite))) {
       return { outcome: 'not_dispatched', issue: 'PROFILE_LABTEST_ONLY', attemptId, dispatched: false };
     }
     const confirmDuplicateName = business.confirmDuplicateName === true;
@@ -202,7 +228,8 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
     const previewDigest = extended ? profileReviewDigest(business.expectedReview) : profilePreviewDigest(fields, confirmDuplicateName);
     if (business.expectedPreviewDigest !== previewDigest) return { outcome: 'review_required', issue: 'PROFILE_PREVIEW_CHANGED', attemptId, dispatched: false };
     let dir;
-    try { dir = await directory(); } catch { return { outcome: 'not_dispatched', issue: 'PROFILE_JOURNAL_UNAVAILABLE', attemptId, dispatched: false }; }
+    try { dir = await directory(); } catch { return { outcome: 'not_dispatched', issue: 'PROFILE_JOURNAL_UNAVAILABLE',
+      attemptId, dispatched: false, noDispatchBeforeJournal: true }; }
     const attemptKey = hash(attemptId), key = intentKey(fields);
     const claim = { version: extended ? 2 : 1, attemptId, fields, confirmDuplicateName, previewDigest, intentKey: key,
       ...(extended && { review: structuredClone(business.expectedReview) }) };
@@ -237,7 +264,8 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
               !prior.successful && !prior.result.nativeId && !prior['initial-response']?.nativeId && !prior['confirm-response']?.nativeId) {
             const proof = await verifyNoCreate(Object.freeze({ attemptId: retryOfAttemptId,
               fields: Object.freeze({ ...prior.claim.fields }), result: structuredClone(prior.result),
-              nextAttemptId: attemptId, nextPreviewDigest: previewDigest }));
+              nextAttemptId: attemptId, nextPreviewDigest: previewDigest,
+              noDispatchRecorded: noDispatchRecorded(prior), duplicateDeclined: duplicateDeclined(prior) }));
             if (proof?.outcome === 'no_create' && validHash(proof.evidenceDigest) &&
                 (await intentChain(dir, key)).at(-1) === previous) {
               await writeOnce(dir, successorFile(key, previous), { version: 1, intentKey: key,
@@ -255,11 +283,17 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
         return result;
       }
     }
-    const observed = { phase: null, dispatched: false, nativeId: null };
+    const observed = { phase: null, dispatched: false, nativeId: null, noDispatchProof: false };
+    let executionOpen = true, pendingCallbacks = 0;
+    const tracked = async callback => {
+      pendingCallbacks++;
+      try { return await callback(); } finally { pendingCallbacks--; }
+    };
     const authorized = context => context.previewDigest === previewDigest && context.confirmDuplicateName === confirmDuplicateName &&
       same(context.fields, fields) && (!extended || same(context.review, claim.review)) &&
       (context.phase === 'initial' || context.phase === 'confirm_distinct' && confirmDuplicateName);
-    const dispatchCandidate = async (context, proceed) => {
+    const dispatchCandidate = (context, proceed) => tracked(async () => {
+      if (!executionOpen) throw new Error('PROFILE_SAVE_AUTHORITY_STALE');
       if (!authorized(context)) throw new Error('PROFILE_AUTHORIZATION_MISMATCH');
       const phase = context.phase === 'initial' ? 'initial' : 'confirm';
       if (phase === 'confirm') {
@@ -268,29 +302,50 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
       }
       await writeOnce(dir, file(attemptKey, phase), { version: 1, attemptKey, phase });
       observed.phase = context.phase;
-      observed.dispatched = true; // The request may leave as soon as proceed is called.
-      return proceed();
-    };
-    const recordResponse = async (context, response) => {
+      let sealed = false, called = false;
+      const dispatch = () => {
+        if (sealed || !executionOpen || called) throw new Error('PROFILE_SAVE_AUTHORITY_STALE');
+        called = true;
+        observed.dispatched = true; // The request may leave as soon as proceed is called.
+        return proceed();
+      };
+      try {
+        if (!executionOpen) throw new Error('PROFILE_SAVE_AUTHORITY_STALE');
+        return await (dispatchStaffWrite ? dispatchStaffWrite(Object.freeze({ ...context, attemptId }), dispatch) : dispatch());
+      } finally {
+        sealed = true;
+        // The fence finished while the native call still owns the continuation.
+        // Sealing first prevents a late callback from turning this proof into a Save.
+        if (!called && executionOpen && phase === 'initial') {
+          await writeOnce(dir, file(attemptKey, 'initial-never-dispatched'), { version: 1, attemptKey, phase });
+          if (executionOpen) observed.noDispatchProof = true;
+        }
+      }
+    });
+    const recordResponse = (context, response) => tracked(async () => {
       if (!authorized(context)) throw new Error('PROFILE_AUTHORIZATION_MISMATCH');
       const phase = context.phase === 'initial' ? 'initial' : 'confirm';
       observed.nativeId = response.nativeId ?? observed.nativeId;
       await writeOnce(dir, file(attemptKey, `${phase}-response`), { version: 1, attemptKey, phase, ...response });
-    };
+    });
     let result;
     try {
-      result = await create(business, { ...sessionOptions, attemptId, authorizeCandidate: async context => authorized(context),
+      result = await create(business, { ...sessionOptions, attemptId, authorizeCandidate: context => tracked(async () =>
+        executionOpen && authorized(context) && (!authorizeStaffWrite || await authorizeStaffWrite(Object.freeze({ ...context, attemptId })) === true) && executionOpen),
         dispatchCandidate, recordResponse });
     } catch { result = { outcome: 'uncertain', issue: 'PROFILE_EXECUTION_FAILED', attemptId }; }
+    finally { executionOpen = false; }
     result = { ...result, attemptId, phase: result.phase ?? observed.phase,
-      dispatched: result.dispatched ?? observed.dispatched, nativeId: result.nativeId ?? observed.nativeId };
+      dispatched: observed.dispatched || result.dispatched === true ? true : result.dispatched ?? false,
+      nativeId: result.nativeId ?? observed.nativeId, noDispatchProof: observed.noDispatchProof,
+      callbacksDrained: pendingCallbacks === 0 };
     try {
       await writeOnce(dir, file(attemptKey, 'result'), result);
       // Validate before returning or replaying a result, including dependency failures.
       const saved = await readAttempt(dir, attemptKey);
       if (saved.result.outcome === 'uncertain') return { ...held(attemptId, saved), ...saved.result,
         nativeId: saved.result.nativeId ?? saved.successful?.nativeId ?? null };
-      return saved.result;
+      return { ...saved.result, noDispatchRecorded: noDispatchRecorded(saved), duplicateDeclined: duplicateDeclined(saved) };
     } catch {
       let saved;
       try { saved = await readAttempt(dir, attemptKey); } catch { /* An incomplete record remains a hold. */ }
@@ -330,6 +385,33 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
     } catch { return { ...held(attemptId, parts, 'PROFILE_RECONCILIATION_JOURNAL_UNAVAILABLE'), readback }; }
   }
 
+  // Inspection is read-only even when the database claim exists but no runner
+  // journal was established. It never creates an attempt or sends Save.
+  async function inspectGuestProfileAttempt(input) {
+    if (!own(input, ['attemptId', 'propertyCode', 'guest', 'confirmDuplicateName', 'expectedPreviewDigest', 'expectedReview']) ||
+        !validAttempt(input.attemptId)) return { outcome: 'input_gap', issue: 'PROFILE_ATTEMPT_INPUT_INVALID' };
+    const { attemptId, ...business } = input;
+    let dir;
+    const key = hash(input.attemptId);
+    try {
+      dir = await directory();
+      if (!await readRecord(dir, file(key, 'claim'))) return held(input.attemptId, null, 'PROFILE_ATTEMPT_NOT_FOUND');
+      const parts = await readAttempt(dir, key);
+      if (Object.keys(business).length && (!same(profileBusinessFields(business), parts.claim.fields) ||
+          business.expectedPreviewDigest !== parts.claim.previewDigest ||
+          (business.confirmDuplicateName === true) !== parts.claim.confirmDuplicateName ||
+          (hasExtendedProfileFields(parts.claim.fields) && !same(business.expectedReview, parts.claim.review)))) {
+        return { outcome: 'review_required', issue: 'PROFILE_ATTEMPT_CHANGED', attemptId, dispatched: false };
+      }
+      if (parts.reconcile) return parts.reconcile;
+      if (parts.result && parts.result.outcome !== 'uncertain') {
+        return { ...parts.result, noDispatchRecorded: noDispatchRecorded(parts), duplicateDeclined: duplicateDeclined(parts) };
+      }
+      return held(input.attemptId, parts);
+    } catch { return dir ? partialHeld(dir, key, input.attemptId, 'PROFILE_JOURNAL_CORRUPT')
+      : held(input.attemptId, null, 'PROFILE_JOURNAL_UNAVAILABLE'); }
+  }
+
   return Object.freeze({ listGuestProfileCreationOptions: input => listOptions(input, sessionOptions),
-    prepareGuestProfile, createGuestProfile, readGuestProfile });
+    prepareGuestProfile, createGuestProfile, readGuestProfile, inspectGuestProfileAttempt });
 }

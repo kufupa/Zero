@@ -114,7 +114,7 @@ function leaf(draft: ReservationWorkflowV2Draft, path: string, sourceValue: unkn
   return { value: sourceValue, path };
 }
 
-function effectiveSubtree(draft: ReservationWorkflowV2Draft, source: unknown, path: string): unknown {
+export function effectiveSubtree(draft: ReservationWorkflowV2Draft, source: unknown, path: string): unknown {
   const resolved = leaf(draft, path, source);
   if ('issue' in resolved) return null;
   if (resolved.unset) return { kind: 'none' };
@@ -129,7 +129,7 @@ function accepted(draft: ReservationWorkflowV2Draft, path: string): boolean {
   return draft.fieldReviewRequirements[path]?.required === false || draft.staffReviews[path]?.status === 'accepted';
 }
 
-function reviewed(draft: ReservationWorkflowV2Draft, path: string, value: unknown): string | null {
+export function reviewed(draft: ReservationWorkflowV2Draft, path: string, value: unknown): string | null {
   if (value === undefined || value === null || (value && typeof value === 'object' &&
       (value as { kind?: unknown }).kind === 'none')) return null;
   return accepted(draft, path) ? null : path;
@@ -374,7 +374,9 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     if (!value) issues.push(`${path}:required`);
     else { const missingReview = reviewed(draft, path, value); if (missingReview) reviewPaths.add(missingReview); }
   }
-  if (guest.profileIntent !== 'existing_or_unknown') issues.push(`${guestPath}:requested_new_profile_unsupported`);
+  if (mode !== 'lookup' && guest.profileIntent !== 'existing_or_unknown') {
+    issues.push(`${guestPath}:new_profile_creation_required`);
+  }
   const guestRefPath = ptr(...guestPath.slice(1).split('/').map(decodeURIComponent), 'nativeSelectionRef');
   const selectedGuestValue = leaf(draft, guestRefPath, guest.suggestedRef);
   const selectedGuestRef = 'issue' in selectedGuestValue ? selectedGuestValue
