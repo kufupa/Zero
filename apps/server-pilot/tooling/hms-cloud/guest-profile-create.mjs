@@ -199,44 +199,48 @@ async function profileDiagnosticSecrets(request) {
 function diagnosticMessageText(value, secrets = false) {
   if (typeof value !== 'string' || value.length > 8192 || secrets === null) return null;
   let text = secrets ? value.replace(secrets, '[redacted]') : value;
-  text = text.replace(/<[^>]*(?:>|$)/g, '')
-    .replace(/https?:\/\/[^\s<>"']+/gi, value => {
-      try { const url = new URL(value); url.username = ''; url.password = ''; url.search = ''; url.hash = ''; return url.toString(); }
-      catch { return '[redacted URL]'; }
-    })
-    .replace(/\b(?:set-cookie|cookie)\s*[:=]\s*[^\r\n]*/gi, 'cookie=[redacted]')
-    .replace(/\b(authorization|auth|password|passwd|secret|token|jsessionid|session(?:[_-]?id)?|request[_-]?token|access[_-]?token|refresh[_-]?token|csrf(?:[_-]|\s+)?(?:tckt|ticket|token)|api[_-]?key|cookie)(["']?\s*[:=]\s*)(?:(?:bearer|basic)\s+)?(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;}]+)/gi, '$1$2[redacted]')
-    .replace(/\b(bearer|authorization|auth)(?:\s+(?:bearer|basic|token))?\s+(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1 [redacted]')
-    .replace(/\b((?:(?:session|access|refresh|request|csrf)(?:[_-]|\s)?)?token|csrf(?:[_-]|\s+)?(?:tckt|ticket)|password|passwd|secret|jsessionid|session(?:[_-]?id)?)\s+(?:is(?:\s*[:=])?\s+)?(?:(?:bearer|basic)\s+)?(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1 [redacted]');
+  // Journal text, not HTML: angle-bracket field names and comparison values are
+  // native validation evidence. Mask credential values without stripping them.
+  text = text.replace(/https?:\/\/[^\s<>"']+/gi, value => {
+    try { const url = new URL(value); url.username = ''; url.password = ''; url.search = ''; url.hash = ''; return url.toString(); }
+    catch { return '[redacted URL]'; }
+  })
+    .replace(/\b(set-cookie|cookie)(\s*[:=]\s*)[^\r\n]*/gi, '$1$2[redacted]')
+    .replace(/\b(authorization|proxy[_-]authorization|authentication|auth|password|passwd|passcode|credential|secret|token|jwt|sid|jsessionid|session|(?:session|request|access|refresh|id)(?:[_-]|\s+)?(?:token|id|key)|csrf(?:[_-]|\s+)?(?:tckt|ticket|token)|api(?:[_-]|\s+)?key|client(?:[_-]|\s+)?secret|cookie)(["']?\s*[:=]\s*|\s+is\s+)(?:(?:bearer|basic)\s+)?(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|<[^>\r\n]*(?:>|$)|[^\r\n,;}]+)/gi, '$1$2[redacted]')
+    .replace(/\b((?:proxy[_-])?authorization)(\s+(?:bearer|basic)\s+)(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1$2[redacted]')
+    .replace(/\b(bearer)\s+(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1 [redacted]');
   return text.slice(0, 512);
 }
 
 function profileValidationDetails(root, data, secrets) {
   const validation = [];
-  const add = (source, value, field = null) => {
+  const add = (source, value, field = null, nativeMessage = false) => {
     if (validation.length >= 20) return;
     const fieldName = field ?? value?.field ?? value?.fieldName;
-    // Credential fields are not business validation, even if the server echoes one.
-    if (typeof fieldName === 'string' && /^(?:password|passwd|passcode|credential|secret|token|jwt|sid|cookie|set[_-]?cookie|authorization|proxy[_-]?authorization|authentication|auth(?:[_-]?(?:token|key))?|jsessionid|(?:session|access|refresh|request|csrf|id)[_-]?(?:token|key|id)|session|csrf[_-]?(?:ticket|tckt)|api[_-]?key|client[_-]?secret|x[_-](?:api[_-]?key|auth(?:entication)?[_-]?(?:token|key)?|access[_-]?token|refresh[_-]?token|csrf[_-]?token|session[_-]?(?:id|token)|id[_-]?token))$/i.test(fieldName.split('.').at(-1))) return;
+    // Preserve the native credential label, but never its attached values.
+    const credentialField = typeof fieldName === 'string' && /^(?:password|passwd|passcode|credential|secret|token|jwt|sid|cookie|set[_-]?cookie|authorization|proxy[_-]?authorization|authentication|auth(?:[_-]?(?:token|key))?|jsessionid|(?:session|access|refresh|request|csrf|id)[_-]?(?:token|key|id)|session|csrf[_-]?(?:ticket|tckt)|api[_-]?key|client[_-]?secret|x[_-](?:api[_-]?key|auth(?:entication)?[_-]?(?:token|key)?|access[_-]?token|refresh[_-]?token|csrf[_-]?token|session[_-]?(?:id|token)|id[_-]?token))$/i.test(fieldName.split('.').at(-1).trim().replace(/\s+/g, '_'));
     const message = typeof value === 'string' ? value : value && typeof value === 'object' && !Array.isArray(value)
       ? value.msg ?? value.message ?? value.errorMessage ?? value.validationMessage ?? value.description : null;
-    const entry = { source, code: diagnosticMessageText(value?.code == null ? null : String(value.code), secrets),
-      message: diagnosticMessageText(message, secrets) };
-    if (entry.code || entry.message) validation.push(entry);
+    const entry = { source, field: diagnosticMessageText(fieldName, secrets),
+      type: nativeMessage && !credentialField ? diagnosticMessageText(value?.type, secrets) : null,
+      code: credentialField ? null : diagnosticMessageText(value?.code == null ? null : String(value.code), secrets),
+      handler: nativeMessage && !credentialField ? diagnosticMessageText(value?.handler, secrets) : null,
+      message: credentialField ? null : diagnosticMessageText(message, secrets) };
+    if (entry.field || entry.type || entry.code || entry.handler || entry.message) validation.push(entry);
   };
   for (const [source, object] of [['root', root], ['pageData', data]]) {
     if (!object || typeof object !== 'object' || Array.isArray(object)) continue;
     for (const key of ['messages', 'message', 'msg', 'error', 'errors', 'errorMessage', 'validationMessage', 'validationErrors', 'fieldErrors']) {
       const value = object[key], path = `${source}.${key}`;
-      if (Array.isArray(value)) value.slice(0, 5).forEach(item => add(path, item));
+      if (Array.isArray(value)) value.slice(0, 5).forEach(item => add(path, item, null, key === 'messages'));
       else if (value && typeof value === 'object') {
-        add(path, value);
+        add(path, value, null, key === 'messages');
         if (key === 'fieldErrors' || key === 'validationErrors') {
           let visited = 0;
           for (const field in value) {
             if (!Object.hasOwn(value, field)) continue;
             if (++visited > 10) break;
-            if (/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(field)) add(path, value[field], field);
+            add(path, value[field], field);
           }
         }
       } else add(path, value);
