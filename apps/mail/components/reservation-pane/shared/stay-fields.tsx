@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { effectiveAt, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import styles from '../reservation-pane.module.css';
 
@@ -27,6 +27,23 @@ export function FieldSource({ editor, path, label }: { editor: WorkbenchEditorPr
 /** Acknowledgement is stored against the displayed draft field, not local UI state. */
 export function FieldReview({ editor, path, label, onPendingChange }: { editor: WorkbenchEditorProps; path: string; label: string; onPendingChange?: (pending: boolean) => void }) {
   const [peek, setPeek] = useState(false);
+  const peekRef = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    if (!peek) return;
+    const fit = () => {
+      const popup = peekRef.current;
+      if (!popup) return;
+      const pane = popup.closest('[data-reservation-pane]')?.getBoundingClientRect();
+      const left = Math.max(0, pane?.left ?? 0), right = Math.min(window.innerWidth, pane?.right ?? window.innerWidth);
+      popup.style.width = `${Math.max(0, Math.min(292, right - left - 24))}px`;
+      popup.style.transform = '';
+      const bounds = popup.getBoundingClientRect();
+      const shift = bounds.left < left + 12 ? left + 12 - bounds.left : bounds.right > right - 12 ? right - 12 - bounds.right : 0;
+      if (shift) popup.style.transform = `translateX(${shift}px)`;
+    };
+    fit(); window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
+  }, [peek]);
   const draft = editor.snapshot.session.draft;
   const claim = draft.proposal.sourceClaims.find(row => row.path === path);
   const refs = claim?.sourceRefs ?? draft.fieldReviewRequirements[path]?.evidenceRefs;
@@ -56,7 +73,7 @@ export function FieldReview({ editor, path, label, onPendingChange }: { editor: 
         const expected = { path: guardPath, value: effectiveAt(editor.snapshot, guardPath), generationId: draft.generationId };
         void editor.commands.acceptServiceReview(path, 'Reviewed by staff', expected).catch(() => {}).finally(() => onPendingChange?.(false));
       }} />
-    {peek && <span className={styles.sourcePeek} role="dialog" aria-label={`Source for ${label}`}>
+    {peek && <span ref={peekRef} className={styles.sourcePeek} role="dialog" aria-label={`Source for ${label}`}>
       <span className={styles.peekHeading}>From the email <button type="button" aria-label="Close source" onClick={() => setPeek(false)}>×</button></span>
       <span className={styles.peekText}>{excerpt.length > 350 ? `${excerpt.slice(0, 350)}…` : excerpt}</span>
       <button type="button" className={styles.peekOpen} onClick={() => { setPeek(false); editor.onOpenEvidence?.(reference); }}>Open email</button>
