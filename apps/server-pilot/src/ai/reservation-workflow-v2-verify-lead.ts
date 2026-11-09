@@ -15,7 +15,7 @@ const norm = (value: unknown): string => typeof value === 'string'
   ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() : '';
 
 /** Resolve only a single current field-bound lead, never a client-supplied native ID. */
-function currentLead(draft: ReservationWorkflowV2Draft, input: Input) {
+export function currentLead(draft: ReservationWorkflowV2Draft, input: Input) {
   const lead = draft.observations.find((row) => row.ref === input.observationRef);
   const request = draft.proposal.content.requests.find((row) => row.id === input.requestId);
   if (!lead || !request || !['guest_candidate', 'party_candidate'].includes(lead.kind) ||
