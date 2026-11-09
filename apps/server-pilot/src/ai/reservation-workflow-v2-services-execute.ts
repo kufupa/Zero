@@ -685,7 +685,7 @@ function serviceObservationFromRef(ref: string, intent: StoredIntent, input: Res
 async function appendFreshPrepare(ctx: ReservationWorkflowV2ServerContext, input: ReservationWorkflowV2ServicesInput,
   approved: ApprovedService, target: NativeTarget, comparison: { matches: boolean;
     native: Record<string, unknown> | null; approved: Record<string, unknown> | null }, prepareVerified: boolean,
-  preparedItem: unknown): Promise<string | null> {
+  preparedItem: unknown): Promise<{ ref: string; nativeControls?: Record<string, unknown> } | null> {
   const nativeVerified = prepareVerified && Boolean(comparison.native && requestedItemMatches(comparison.native, approved.plan) &&
     text(comparison.native.unitPrice) && text(comparison.native.averageDaily) && text(comparison.native.totalCost) &&
     text(comparison.native.currency));
@@ -693,11 +693,13 @@ async function appendFreshPrepare(ctx: ReservationWorkflowV2ServerContext, input
   const matchesUnsavedPreview = Boolean(comparison.native && unsavedNative &&
     canonicalJson(comparison.native) === canonicalJson(unsavedNative));
   const controls = nativeServiceControls(preparedItem);
+  const nativeControls = nativeVerified ? controls : undefined;
   const reviewPaths = reservationWorkflowV2ServiceReviewPaths(approved.plan);
   const result = { operation: 'add', saved: false, targetRef: approved.plan.targetRef, serviceId: approved.plan.serviceId,
     createConfirmation: approved.create.confirmation, createObservationRef: approved.create.observation.ref,
     itemCandidate: approved.plan.candidate, requestedFields: approved.plan.items,
     native: comparison.native && controls ? { ...comparison.native, controls } : comparison.native,
+    ...(nativeControls ? { nativeControls } : {}),
     previouslyApprovedNative: comparison.approved,
     approvedObservationRef: approved.approvalObservation.ref, matchesApprovedNative: comparison.matches,
     matchesUnsavedPreview, hostValuesRequireReview: reviewPaths,
@@ -715,7 +717,7 @@ async function appendFreshPrepare(ctx: ReservationWorkflowV2ServerContext, input
     coverage: { complete: nativeVerified, notes: nativeVerified ? [] : ['saved_target_prepare_incomplete'] }, result };
   const stored = await appendReservationWorkflowV2Observation(stateContext(ctx), { workItemId: input.workItemId,
     source: input.source, observation });
-  return stored.status === 'ok' ? observation.ref : null;
+  return stored.status === 'ok' ? { ref: observation.ref, ...(nativeControls ? { nativeControls } : {}) } : null;
 }
 
 function decodeIntent(value: unknown): StoredIntent | null {
@@ -831,13 +833,15 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
             typeof prepared.preparedId !== 'string' || !compared.matches) {
           const prepareVerified = prepared?.outcome === 'prepared' && prepared.propertyCode === 'HRCEN' &&
             prepared.saved === false && typeof prepared.preparedId === 'string';
-          const observationRef = await appendFreshPrepare(ctx, input, approved, target, compared, prepareVerified, itemFields);
+          const fresh = await appendFreshPrepare(ctx, input, approved, target, compared, prepareVerified, itemFields);
           const reviewable = prepareVerified && Boolean(compared.native && requestedItemMatches(compared.native, approved.plan) &&
             text(compared.native.unitPrice) && text(compared.native.averageDaily) &&
             text(compared.native.totalCost) && text(compared.native.currency));
           return { status: reviewable ? 'needs_review' : 'needs_input',
             issue: reviewable ? 'saved_addon_prepare_differs_from_approved_item' : 'saved_addon_fresh_prepare_unverified',
-            observationRef, saved: false, native: compared.native, approved: compared.approved };
+            observationRef: fresh?.ref ?? null, saved: false, native: compared.native, approved: compared.approved,
+            ...(fresh ? { serviceId: approved.plan.serviceId, targetRef: approved.plan.targetRef,
+              ...(fresh.nativeControls ? { nativeControls: fresh.nativeControls } : {}) } : {}) };
         }
         const save = await runTool({ tool: 'save', confirmation: target.confirmation, preparedId: prepared.preparedId });
         return { save };

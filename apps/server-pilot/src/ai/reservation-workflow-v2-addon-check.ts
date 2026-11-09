@@ -191,6 +191,8 @@ async function previewUnsaved(draft: ReservationWorkflowV2Draft, input: Reservat
         'unitPrice', 'frequency', 'pricingControl', 'folio', 'comment', 'currency', 'averageDaily', 'totalCost', 'status']
         .filter(key => Object.hasOwn(actual, key)).map(key => [key, actual[key]])) : null;
       const controls = nativeServiceControls(actual);
+      const nativeControls = createBound && preview?.propertyCode === 'HRCEN' && preview.unsaved === true && preview.saved === false &&
+        itemIdMatches && actual?.code === plan.candidate.code ? controls : undefined;
       const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: loaded.draft!.generationId,
         kind: 'service_preview', status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
         propertyCode: loaded.draft!.propertyCode, sourceMessageId: loaded.draft!.source.messageId, sourceRefs: [],
@@ -203,6 +205,7 @@ async function previewUnsaved(draft: ReservationWorkflowV2Draft, input: Reservat
         result: { operation: 'add', saved: false, targetRef: plan.targetRef, serviceId: plan.serviceId,
           itemCandidate: plan.candidate, requestedFields: plan.items,
           native: businessItem && controls ? { ...businessItem, controls } : businessItem,
+          ...(nativeControls ? { nativeControls } : {}),
           issue: nativeItem?.issue ?? preview?.issue ?? native.issue ?? null,
           hostValuesRequireReview: plan.reviewPaths, createRatePlanAvailability: native.ratePlanAvailability,
           priceWasNativeCalculated: Boolean(actual?.averageDaily && actual?.totalCost), capability } };
@@ -368,14 +371,17 @@ async function previewSaved(draft: ReservationWorkflowV2Draft, input: Reservatio
             positiveDecimal(native.quantity) !== positiveDecimal(fields.quantity) || positiveDecimal(native.unitPrice) !== positiveDecimal(fields.unitPrice) ||
             native.startDate !== fields.startDate || native.endDate !== fields.endDate || !text(native.currency) || !text(native.totalCost)) return null;
         const controls = nativeServiceControls(actual);
-        return { native: controls ? { ...native, controls } : native };
+        return { native: controls ? { ...native, controls } : native, ...(controls ? { nativeControls: controls } : {}) };
       }
       const change = record(Array.isArray(prepared.changes) ? prepared.changes[0] : null);
       const before = record(change?.before), after = record(change?.after);
       if (!change || change.operation !== operation || change.nativeId !== nativeId || before?.nativeId !== nativeId ||
           canonicalJson(savedServiceBusiness(before.fields)) !== canonicalJson(prior) ||
           (operation === 'edit' && (after?.nativeId !== nativeId || !savedServiceBusiness(after.fields)))) return null;
-      return { before, after: operation === 'remove' ? null : after };
+      const afterFields = record(after?.fields);
+      const controls = operation === 'edit' && text(afterFields?.code) && text(afterFields?.itemId) &&
+        afterFields?.code === prior?.code && afterFields?.itemId === prior?.itemId ? nativeServiceControls(afterFields) : undefined;
+      return { before, after: operation === 'remove' ? null : after, ...(controls ? { nativeControls: controls } : {}) };
     }, { headless: true, blockServiceWorkers: true, withPage: (callback: (page: unknown) => Promise<unknown>, options: Record<string, unknown>) => browser.withCenturionStay360Page(callback, { ...options, signal }) }));
     signal.throwIfAborted();
     if (!staged) return { status: nativeFailure.outcome === 'execution_failure' ? 'failed' : nativeFailure.outcome === 'unsupported' ? 'unsupported' : 'needs_input',
