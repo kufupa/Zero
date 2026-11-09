@@ -1,3 +1,4 @@
+import type { ReservationWorkflowV2SystemReadContext } from './reservation-workflow-v2-system-read-context.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -23,7 +24,7 @@ import { bindAttachDocumentForm, paneHmsWriteMode, parseHmsWriteForm, prepareHms
   readPaneCloudFilingRecord, type AttachForm, type CloudFilingRecord } from './pane-hms-write.js';
 import { previewFiling } from './pane-filing-preview.js';
 import { readBoundFilingSource, lockBoundFilingSource, type BoundFilingForm } from './pane-filing-source.js';
-import { findStay } from './pane-stay-lookup.js';
+import { findStay, paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { paneStayCloudTargetLock, paneStayPropertyLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
@@ -44,6 +45,7 @@ export type ReservationWorkflowV2FilingContext = {
   nativeBatch?: import('./reservation-workflow-v2-state.js').ReservationNativeCheckBatch;
   recovery?: ReservationWorkflowV2Context['recovery'];
 };
+type ReadContext = ReservationWorkflowV2FilingContext | ReservationWorkflowV2SystemReadContext;
 type Outcome = { status: string; issue?: string; [key: string]: unknown };
 type PreviewResult = Awaited<ReturnType<typeof previewFiling>>;
 type WorkTransaction = Parameters<Parameters<DB['transaction']>[0]>[0];
@@ -84,8 +86,8 @@ const isoDay = (value: unknown): value is string => typeof value === 'string' &&
   Number.isFinite(Date.parse(`${value}T00:00:00.000Z`)) && new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value;
 const sourceEvidenceRef = (messageId: string, role: string, identity: string): string =>
   `src_${sha256(`${messageId}\u001f${role}\u001f${identity}`).slice(0, 12)}`;
-const stateContext = (ctx: ReservationWorkflowV2FilingContext): ReservationWorkflowV2Context => ({ db: ctx.db,
-  transportId: ctx.transport.id, userId: ctx.nativeBatch ? null : ctx.user.id,
+const stateContext = (ctx: ReadContext): ReservationWorkflowV2Context => ({ db: ctx.db,
+  transportId: ctx.transport.id, userId: 'system' in ctx || ctx.nativeBatch ? null : ctx.user.id,
   propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch, recovery: ctx.recovery });
 export type ReservationWorkflowV2FilingRecoveryAccess = {
   scope: NonNullable<ReservationWorkflowV2Context['recovery']>; userId: string;
@@ -130,7 +132,7 @@ async function hasFilingWriterClosedReceipt(db: DB, intent: HmsLabtestIntent, re
     canonicalJson(row.value) === canonicalJson(expected));
 }
 
-async function currentDraft(ctx: ReservationWorkflowV2FilingContext, input: {
+async function currentDraft(ctx: ReadContext, input: {
   workItemId: string; source: ReservationWorkflowV2Source; expectedRevision: number; expectedSeq: number;
 }) {
   const result = await getReservationWorkflowV2Draft(stateContext(ctx), input);
@@ -192,7 +194,7 @@ function effectiveFilingTargetValue(draft: ReservationWorkflowV2Draft, path: str
     effectiveFilingTargetValue(draft, `${path}/${encodeURIComponent(key)}`, (resolved as Record<string, unknown>)[key]) ]));
 }
 
-async function attachmentForDocument(ctx: ReservationWorkflowV2FilingContext, draft: ReservationWorkflowV2Draft,
+async function attachmentForDocument(ctx: ReadContext, draft: ReservationWorkflowV2Draft,
   document: FilingDocument): Promise<{ attachmentId: string; filename: string; mimeType: string } | null> {
   const rows = await ctx.db.select({ id: attachment.id, filename: attachment.filename, mimeType: attachment.mimeType,
     isInline: attachment.isInline }).from(attachment).where(eq(attachment.messageId, draft.source.messageId)).limit(100);
@@ -295,7 +297,7 @@ function selectionDigest(selection: FilingSelection, preview: Extract<PreviewRes
     lastName: selection.lastName, status: selection.status });
 }
 
-async function selectedSource(ctx: ReservationWorkflowV2FilingContext, source: ReservationWorkflowV2Source) {
+async function selectedSource(ctx: ReadContext, source: ReservationWorkflowV2Source) {
   const ok = await isSelectedHmsInboundMessage({ transportId: ctx.transport.id, ...source }, ctx.db).catch(() => false);
   if (!ok) return null;
   const [row] = await ctx.db.select({ id: message.id, threadId: message.threadId,
@@ -413,8 +415,9 @@ function liveTargetForSaved(ctx: ReservationWorkflowV2FilingContext, confirmatio
 }
 
 /** Source- and property-scoped, read-only Filing lookup. It can propose target candidates; it cannot authorize Go. */
-export async function reservationWorkflowV2FilingLookup(ctx: ReservationWorkflowV2FilingContext,
+export async function reservationWorkflowV2FilingLookup(ctx: ReadContext,
   input: ReservationWorkflowV2LookupInput): Promise<Outcome> {
+  if (ctx.nativeBatch && !paneStayLookupEnabled()) return { status: 'needs_input', issue: 'stay_lookup_disabled' };
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;
   const requests = loaded.draft.proposal.content.requests.filter((request): request is FilingRequest => request.kind === 'filing' &&
@@ -470,7 +473,7 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReservationWorkflow
   }
   // Only a single complete host stay observation plus a source PDF can produce the no-Save target preview.
   const refreshed = await currentDraft(ctx, input);
-  if (refreshed.draft && requests.length === 1 && !ctx.nativeBatch) {
+  if (refreshed.draft && requests.length === 1 && !ctx.nativeBatch && !('system' in ctx)) {
     const selection = await selectionFor(ctx, refreshed.draft, requests[0]!.id, false);
     if (selection) {
       const preview = await runPreview(ctx, input, selection);

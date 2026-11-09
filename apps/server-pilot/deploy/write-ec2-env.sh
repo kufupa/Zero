@@ -25,6 +25,11 @@ for key in PANE_HMS_LAB_CREATE_WORKER PANE_HMS_LAB_ATTACH_WORKER PANE_HMS_LAB_AM
   case "${!key:-}" in ''|off|on) ;; *) echo "invalid $key" >&2; exit 2 ;; esac
 done
 case "${PANE_BRAIN:-}" in ''|agent|classifier) ;; *) echo 'invalid PANE_BRAIN' >&2; exit 2 ;; esac
+quote_rate_context="${QUOTE_RATE_CONTEXT:-}"
+quote_rate_context="${quote_rate_context#"${quote_rate_context%%[![:space:]]*}"}"
+quote_rate_context="${quote_rate_context%"${quote_rate_context##*[![:space:]]}"}"
+case "${quote_rate_context,,}" in ''|off|on) ;; *) echo 'invalid QUOTE_RATE_CONTEXT' >&2; exit 2 ;; esac
+unset quote_rate_context
 for key in HMS_PREFETCH_ENABLED HMS_LANE_PAUSED PARTY_MATCH_V2; do
   case "${!key:-}" in ''|true|false|1|0) ;; *) echo "invalid $key" >&2; exit 2 ;; esac
 done
@@ -209,6 +214,7 @@ append_env HMS_JOB_QUEUE "${HMS_JOB_QUEUE:-}"
 append_env HMS_LANE_PAUSED "${HMS_LANE_PAUSED:-}"
 append_env RESERVATION_V2_ARRIVAL_PREFILL "${RESERVATION_V2_ARRIVAL_PREFILL:-}"
 append_env PANE_STAY_LOOKUP "${PANE_STAY_LOOKUP:-}"
+append_env QUOTE_RATE_CONTEXT "${QUOTE_RATE_CONTEXT:-}"
 append_env HMS_QUOTE_PREPARE "${HMS_QUOTE_PREPARE:-}"
 append_env HMS_QUOTE_PREPARE_PER_HOUR "${HMS_QUOTE_PREPARE_PER_HOUR:-}"
 append_env HMS_PREFETCH_ENABLED "${HMS_PREFETCH_ENABLED:-}"

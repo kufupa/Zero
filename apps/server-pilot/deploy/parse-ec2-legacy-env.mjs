@@ -45,6 +45,8 @@ function validateReleaseControl(key, value) {
   for (const [keys, allowed] of groups) {
     if (keys.includes(key) && !allowed.includes(value)) throw new Error('invalid');
   }
+  if (key === 'QUOTE_RATE_CONTEXT' && value.trim() &&
+    !['off', 'on'].includes(value.trim().toLowerCase())) throw new Error('invalid');
   if (['HMS_PREFETCH_PER_HOUR', 'HMS_GUEST_PREFETCH_PER_HOUR', 'HMS_AVAILABILITY_PER_HOUR',
     'HMS_QUOTE_PREPARE_PER_HOUR'].includes(key) && !/^\d{1,15}$/.test(value)) throw new Error('invalid');
   const patterns = {

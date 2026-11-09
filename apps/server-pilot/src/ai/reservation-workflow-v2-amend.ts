@@ -1,3 +1,4 @@
+import type { ReservationWorkflowV2SystemReadContext } from './reservation-workflow-v2-system-read-context.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
@@ -52,6 +53,7 @@ export type ReservationWorkflowV2AmendContext = {
   nativeBatch?: ReservationNativeCheckBatch;
   recovery?: ReservationWorkflowV2Context['recovery'];
 };
+type ReadContext = ReservationWorkflowV2AmendContext | ReservationWorkflowV2SystemReadContext;
 
 type Input = ReservationWorkflowV2LookupInput | ReservationWorkflowV2PrepareInput |
   ReservationWorkflowV2ExecuteInput | ReservationWorkflowV2ReconcileInput;
@@ -83,12 +85,12 @@ const sameName = (left: unknown, right: unknown) => typeof left === 'string' && 
   left.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() ===
   right.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
 
-function stateContext(ctx: ReservationWorkflowV2AmendContext): V2StateContext {
-  return { db: ctx.db, transportId: ctx.transport.id, userId: ctx.nativeBatch ? null : ctx.user.id,
+function stateContext(ctx: ReadContext): V2StateContext {
+  return { db: ctx.db, transportId: ctx.transport.id, userId: 'system' in ctx || ctx.nativeBatch ? null : ctx.user.id,
     propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch, recovery: ctx.recovery };
 }
 
-async function currentDraft(ctx: ReservationWorkflowV2AmendContext, input: Input) {
+async function currentDraft(ctx: ReadContext, input: Input) {
   const result = await getReservationWorkflowV2Draft(stateContext(ctx), input);
   if (result.status !== 'ok') return { result, draft: null } as const;
   if (result.revision !== input.expectedRevision || result.seq !== input.expectedSeq ||
@@ -207,7 +209,7 @@ function failedStayObservation(draft: ReservationWorkflowV2Draft, requestId: str
     coverage: { complete: false, notes: [issue] }, result: { outcome: 'unverified', issue } };
 }
 
-function propertyTarget(ctx: ReservationWorkflowV2AmendContext): HmsReadTarget | null {
+function propertyTarget(ctx: ReadContext): HmsReadTarget | null {
   if (ctx.property.propertyCode !== 'HRCEN') return null;
   const resolved = paneStayHmsTargetForTransport(ctx.transport.id);
   if (!resolved.ok) return null;
@@ -512,7 +514,7 @@ async function persistAmendShot(ctx: ReservationWorkflowV2AmendContext, workItem
   } finally { await rm(stage, { recursive: true, force: true }); }
 }
 
-function targetWriteLock(ctx: ReservationWorkflowV2AmendContext, selected: HmsCloudNativePreimage) {
+function targetWriteLock(ctx: ReadContext, selected: HmsCloudNativePreimage) {
   const target = propertyTarget(ctx);
   const targetRef = hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'saved',
     confirmation: selected.confirmation, nativeStayId: selected.reservationStayId });
@@ -537,7 +539,7 @@ function preparationObservation(draft: ReservationWorkflowV2Draft, compiled: Com
         changes, target: compiled.target } } };
 }
 
-async function recordObservation(ctx: ReservationWorkflowV2AmendContext, input: Input,
+async function recordObservation(ctx: ReadContext, input: Input,
   observation: ReservationWorkflowV2Observation, status: 'prepared' | 'failed' | 'unknown', summary: string,
   operationId = randomUUID(), hintId: string | null = null) {
   const base = { workItemId: input.workItemId, source: input.source };
@@ -558,7 +560,7 @@ function preparedObservation(draft: ReservationWorkflowV2Draft, compiled: Compil
   return rows.at(-1) ?? null;
 }
 
-export async function reservationWorkflowV2AmendLookup(ctx: ReservationWorkflowV2AmendContext,
+export async function reservationWorkflowV2AmendLookup(ctx: ReadContext,
   input: ReservationWorkflowV2LookupInput): Promise<Outcome> {
   if (!paneStayLookupEnabled()) return { status: 'needs_input', issue: 'stay_lookup_disabled' };
   const loaded = await currentDraft(ctx, input);
@@ -632,7 +634,7 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReservationWorkflowV
     operationResults: fresh.draft.operationResults };
 }
 
-export async function reservationWorkflowV2AmendPrepare(ctx: ReservationWorkflowV2AmendContext,
+export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
   input: ReservationWorkflowV2PrepareInput): Promise<Outcome> {
   if (!paneStayLookupEnabled()) return { status: 'needs_input', issue: 'stay_lookup_disabled' };
   if (!input.allocationId) return { status: 'needs_input', issue: 'amend_target_required' };
