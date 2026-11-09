@@ -35,7 +35,7 @@ export function TargetSearch({ editor, body, hint, index, workflow }: {
   const root = `${body}/targets/include/${index}`;
   const path = `${root}/suggestedRef`;
   const selected = valueAt(editor.snapshot, path);
-  const normalized = (value: unknown) => text(value).trim() || null;
+  const normalized = (value: unknown) => (workflow === 'amend' ? text(value).trim() : text(value)) || null;
   const query = (key: string) => normalized(valueAt(editor.snapshot, `${root}/${key}`));
   const draft = editor.snapshot.session.draft;
   const candidates = editor.snapshot.session.draft.observations.flatMap(observation => {

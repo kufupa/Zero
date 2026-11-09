@@ -574,9 +574,10 @@ function selectedSavedStay(draft: ReservationWorkflowV2Draft, input: Reservation
       : row.criteria.workflow === 'services' && row.criteria.fieldPath === found.selectionPath));
   const stay = record(record(observation?.result)?.candidate);
   const query = record(observation?.criteria.query);
-  const normalized = (value: unknown) => found.request.kind === 'amend' && typeof value === 'string' ? value.trim() || null : value ?? null;
+  const normalized = (value: unknown) => typeof value === 'string' ? value.trim() || null : value ?? null;
   if (!observation || !stay || !query || !savedStayMatches(stay, found.hint, found.request.kind !== 'amend') ||
-      ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].some(key => normalized(query[key]) !== normalized(found.hint[key]))) return null;
+      ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].some(key => found.request.kind === 'amend'
+        ? normalized(query[key]) !== normalized(found.hint[key]) : (query[key] ?? null) !== (found.hint[key] || null))) return null;
   if (found.request.kind !== 'amend') return { observation, stay };
   if (draft.operationResults.some(row => row.workflow === 'amend' && row.requestId === input.requestId && !row.allocationId &&
       (row.status === 'succeeded' || row.status === 'unknown'))) return null;

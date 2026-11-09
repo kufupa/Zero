@@ -426,7 +426,7 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
               value = valueAt(draft, `${root}/body/targets/include/${index}/${field}`);
             }
           }
-          if (hint(value) !== hint(expected)) return null;
+          if (request.kind === 'amend' ? hint(value) !== hint(expected) : (value || null) !== expected) return null;
         }
         set(input.fieldPath, observation.ref);
       } else if (observation.kind === 'guest_candidate' && request.kind === 'create' && input.fieldPath.endsWith('/guest/nativeSelectionRef')) {
