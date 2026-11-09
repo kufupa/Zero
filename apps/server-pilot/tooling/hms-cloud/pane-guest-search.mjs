@@ -74,9 +74,11 @@ export function guestLookupMayRequest({ method, url, postData, contentType }) {
 export async function fulfillGuestLookupRequest(route) {
   try {
     const response = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: 30_000 });
-    if (response.status() >= 300 && response.status() < 400) return route.abort();
-    return route.fulfill({ response });
-  } catch { return route.abort(); }
+    if (response.status() >= 300 && response.status() < 400) return await route.abort();
+    return await route.fulfill({ response });
+  } catch {
+    try { return await route.abort(); } catch { return; }
+  }
 }
 
 export async function installGuestLookupGuard(context) {
