@@ -23,7 +23,7 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
   const [loadError, setLoadError] = useState<string | null>(null);
   const activeSource = useRef('');
   const refreshCount = useRef(0);
-  const request = useRef<{ key: string; promise: Promise<ReservationPaneSnapshot>; prefillRequested: boolean } | null>(null);
+  const request = useRef<{ key: string; promise: Promise<ReservationPaneSnapshot>; prefill: Promise<ReservationPaneSnapshot> | null } | null>(null);
   const key = JSON.stringify([source.mailboxId, source.propertyId, source.threadId, source.messageId,
     source.sourceHash, source.arrivedAt, source.selectionEpoch]);
   const snapshot = boundSnapshot?.key === key ? boundSnapshot.value : null;
@@ -46,7 +46,7 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
     activeSource.current = key;
     setBoundSnapshot(current => current?.key === key ? current : null);
     setLoadError(null);
-    if (request.current?.key !== key) request.current = { key, promise: client.ensure({ source, mode: 'initialize' }), prefillRequested: false };
+    if (request.current?.key !== key) request.current = { key, promise: client.ensure({ source, mode: 'initialize' }), prefill: null };
     const initialRequest = request.current;
     const acceptPrefill = (next: ReservationPaneSnapshot) => {
       if (!live || activeSource.current !== key || !snapshotMatchesSource(next, source)) return;
@@ -71,11 +71,11 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
         return;
       }
       acceptPrefill(next);
-      if (!next.session.sourceChanged && (!next.session.draft.prefill || next.session.draft.prefill.status === 'idle') &&
-          !initialRequest.prefillRequested) {
-        initialRequest.prefillRequested = true;
-        void client.prefill({ source, snapshot: next }).then(acceptPrefill).catch((error: unknown) => {
-          initialRequest.prefillRequested = false;
+      if (!next.session.sourceChanged && (!next.session.draft.prefill || next.session.draft.prefill.status === 'idle')) {
+        const prefill = initialRequest.prefill ?? client.prefill({ source, snapshot: next });
+        initialRequest.prefill = prefill;
+        void prefill.then(acceptPrefill).catch((error: unknown) => {
+          if (initialRequest.prefill === prefill) initialRequest.prefill = null;
           if (!live || activeSource.current !== key) return;
           setLoadError(error instanceof Error ? error.message : 'Prefill did not finish. Your editable draft is available.');
         });
