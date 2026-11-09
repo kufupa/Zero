@@ -38,6 +38,9 @@
 .error { background:#fff3f0; color:#9c3526; border:1px solid #f4c5bc; border-radius:6px; padding:9px; margin:8px 16px; }.error button { margin:6px 5px 0 0; }
 .notice { background:#faf5e8; border-left:2px solid #dfbc66; padding:7px 9px; font-size:12px; }.empty { padding:25px 0; color:var(--muted); }.empty h2 { color:var(--ink); font-size:17px; }
 .earlierChecks { margin:10px 0; color:var(--muted); font-size:11px; }.earlierChecks summary { cursor:pointer; }.earlierChecks .notice { color:var(--ink); }
+.prefillChecks { margin:8px 0; padding:7px 9px; border-left:2px solid #dfbc66; background:#faf5e8; color:#573908; font-size:11px; }
+.prefillChecks summary { cursor:pointer; font-weight:600; }.prefillChecks p { margin:6px 0 0; overflow-wrap:anywhere; }
+:global(.dark) .prefillChecks { background:#362b1c; color:#ffedc2; }
 :global(.dark) .pane { --surface:#171c25; --muted:#a5adba; --border:#333b48; --ink:#edf0f5; }
 :global(.dark) .pane input,:global(.dark) .pane select,:global(.dark) .pane textarea { border-color:#455062; }
 

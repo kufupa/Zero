@@ -27,6 +27,47 @@ function issueText(explanation: string) {
   return explanation;
 }
 
+function nativeCheckLabel(key: string, snapshot: ReservationPaneSnapshot) {
+  const [workflow, action, ...parts] = key.split(':');
+  if (workflow === 'native' && action === 'unrun') return 'Checks not run';
+  const requestId = workflow === 'service' ? parts[1] : parts[0];
+  const request = snapshot.requests.find(row => row.id === requestId);
+  if (workflow === 'service') return 'Add-Ons · selection and price';
+  if (!request) return 'Earlier Infor check';
+  const similar = snapshot.requests.filter(row => row.kind === request.kind);
+  const number = similar.length > 1 ? ` ${similar.findIndex(row => row.id === request.id) + 1}` : '';
+  const body = record(effectiveAt(snapshot, `${requestPath(request.id)}/body`));
+  const rows = workflow === 'create' ? body.allocations : workflow === 'amend' ? record(body.targets).include : null;
+  const rowIndex = Array.isArray(rows) ? rows.findIndex(row => text(record(row).id) === parts[1]) : -1;
+  const target = action === 'prepare' && rowIndex >= 0 ? ` · ${workflow === 'create' ? 'Room' : 'Stay'} ${rowIndex + 1}` : '';
+  return `${labels[request.kind]}${number}${target} · Infor ${action === 'lookup' ? 'search' : 'check'}`;
+}
+
+function nativeCheckMessage(key: string, status: string, issue: string | null) {
+  if (key === 'native:unrun') {
+    const count = issue?.match(/^(\d+) checks were not run within the native budget\.$/)?.[1];
+    return count ? `${count} ${count === '1' ? 'check was' : 'checks were'} not run. Check the remaining details in Infor.`
+      : 'Some checks were not run. Check the remaining details in Infor.';
+  }
+  const known: Record<string, string> = {
+    create_allocation_required: 'Add a room before checking.',
+    prior_native_lookup_incomplete: 'Complete the Infor search first.',
+    filing_preview_requires_staff_document_review: 'Review the document and destination before checking.',
+    service_requires_staff_selection_and_price_review: 'Select the service and review its price.',
+    stay_lookup_disabled: 'Infor stay search is unavailable.',
+    native_target_selection_required: 'Select the Infor stay.',
+    amend_target_scope_unresolved: 'Choose which stays to amend.',
+    native_quote_insufficient_inventory: 'Infor found too few rooms for this request.',
+    native_quote_requested_unavailable: 'The requested offer is unavailable.',
+    native_quote_restricted_nights: 'The stay includes closed or restricted nights.',
+  };
+  if (issue && known[issue]) return known[issue];
+  if (status === 'needs_input' || status === 'needs_review') return 'Needs your input.';
+  if (status === 'partial') return 'Incomplete. Review and check again.';
+  if (status === 'failed') return 'Could not finish. Check again.';
+  return 'Needs attention. Review and check again.';
+}
+
 export function ReservationPane(props: ReservationPaneProps) {
   const workbench = useReservationWorkbench(props);
   const [checked, setChecked] = useState<string | null>(null);
@@ -38,6 +79,7 @@ export function ReservationPane(props: ReservationPaneProps) {
   const sourceChanged = snapshot?.session.sourceChanged === true;
   const createBlocked = source.selfPreStay && request?.kind === 'create';
   const prefill = snapshot?.session.draft.prefill;
+  const incompleteChecks = (prefill?.nativeChecks ?? []).filter(check => !['ok', 'prepared', 'priced', 'found', 'matches', 'candidate', 'excluded'].includes(check.status));
   const editor: WorkbenchEditorProps | null = snapshot && request ? { source, snapshot, request,
     view: { busy, error: workbench.error, preview, saving: workbench.saving }, commands, onOpenEvidence: props.onOpenEvidence } : null;
   const body = snapshot && request ? record(effectiveAt(snapshot, `${requestPath(request.id)}/body`)) : {};
@@ -157,9 +199,15 @@ export function ReservationPane(props: ReservationPaneProps) {
         : <button type="button" disabled={busy || preview} onClick={() => { void workbench.reconcileSource().then(() => setChecked(null)).catch(() => {}); }}>I reviewed the email and attachments</button>}
     </section>}
     <main className={styles.content}>
-      {!sourceChanged && prefill?.status === 'queued' && <p className={styles.small} role="status">Waiting to read the email. You can start editing now.</p>}
-      {!sourceChanged && prefill?.status === 'running' && <p className={styles.small} role="status">{prefill.phase === 'native_checks' ? 'Checking Infor details.' : 'Reading the email.'} You can start editing now.</p>}
-      {!sourceChanged && prefill?.status === 'failed' && <p className={styles.small}>Prefill did not finish. Your form still works. {(prefill.phase === 'native_checks' || prefill.attemptCount < 2) && <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button>}</p>}
+      {!sourceChanged && prefill?.status === 'queued' && <p className={styles.small} role="status">{prefill.phase === 'native_checks' ? 'Waiting to resume Infor checks. Editing will stop the automatic checks.' : 'Waiting to read the email. Editing will stop automatic prefill.'}</p>}
+      {!sourceChanged && prefill?.status === 'running' && <p className={styles.small} role="status">{prefill.phase === 'native_checks' ? 'Checking Infor details. Editing will stop the automatic checks.' : prefill.phase === 'generation' || !prefill.phase ? 'Reading the email. Editing will stop automatic prefill.' : 'Finishing email checks.'}</p>}
+      {!sourceChanged && prefill?.status === 'failed' && <p className={styles.small}>{prefill.phase === 'native_checks' ? 'Some Infor checks did not finish.' : 'Prefill did not finish.'} Your form still works. {(prefill.phase === 'native_checks' || prefill.attemptCount < 2) && <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button>}</p>}
+      {!sourceChanged && prefill?.status === 'superseded' && prefill.phase === 'native_checks' && <p className={styles.small} role="status">Background Infor checks stopped when the draft changed. Review and check the remaining details.</p>}
+      {!sourceChanged && prefill?.status === 'superseded' && prefill.phase !== 'native_checks' && prefill.phase !== 'complete' && <p className={styles.small} role="status">Automatic email reading stopped when the draft changed. Continue filling the form.</p>}
+      {!sourceChanged && snapshot && prefill?.status !== 'superseded' && incompleteChecks.length > 0 && <details className={styles.prefillChecks}>
+        <summary>Earlier Infor checks need attention</summary>
+        {incompleteChecks.map(check => <p key={check.key}><strong>{nativeCheckLabel(check.key, snapshot)}</strong> · {nativeCheckMessage(check.key, check.status, check.issue)}</p>)}
+      </details>}
       {!snapshot ? <div className={styles.empty}>{props.loadError ? 'This email could not be opened.' : 'Opening your email draft…'}</div>
         : !request ? <div className={styles.empty}><h2>What does this email need?</h2><p>{sourceChanged ? 'This saved draft has no actions. Review the updated evidence before adding one.' : 'Add an action to begin. Prefill will appear here when ready; your edits are saved.'}</p>{!source.selfPreStay && <button type="button" disabled={sourceChanged} onClick={() => { void workbench.addAction('create').catch(() => {}); }}>New booking</button>}</div>
         : Editor && editor ? <>{createBlocked && !sourceChanged && <p className={styles.notice}>This pre-stay email describes an existing reservation. Choose another action to continue.</p>}<fieldset className={styles.sourceFieldset} disabled={sourceChanged || createBlocked}><Editor key={`${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${request.id}:${formReset}`} {...editor} />{(request.kind === 'create' || request.kind === 'amend') && snapshot.session.draft.proposal.content.services.some(service => service.ownerRequestId === request.id || request && snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id)?.serviceRefs.includes(service.id)) && <AddonsEditor key={`addons:${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${request.id}:${formReset}`} {...editor} />}</fieldset></>
