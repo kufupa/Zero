@@ -11,3 +11,6 @@
 .label input, .label select, .label textarea { box-sizing: border-box; width: 100%; border: 1px solid #b7c2d0; border-radius: 3px; background: var(--surface, white); color: var(--ink, #1c2938); padding: 5px 6px; font: inherit; font-weight: normal; }
 .facts { display: grid; gap: 3px; font-size: 12px; overflow-wrap: anywhere; }
 .fact { display: grid; grid-template-columns: minmax(110px, .7fr) minmax(0, 1.3fr); gap: 8px; }
+.changeHeading { display:flex; align-items:center; justify-content:space-between; gap:8px; min-width:0; }
+.changeHeading select, .changeAdd select { max-width:170px; min-height:28px; padding:4px 6px; border:1px solid #b7c2d0; border-radius:3px; background:var(--surface, white); color:var(--ink, #1c2938); font:inherit; }
+.visuallyHidden { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
