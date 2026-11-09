@@ -35,9 +35,21 @@ export function TargetSearch({ editor, body, hint, index, workflow }: {
   const root = `${body}/targets/include/${index}`;
   const path = `${root}/suggestedRef`;
   const selected = valueAt(editor.snapshot, path);
-  const normalized = (value: unknown) => (workflow === 'amend' ? text(value).trim() : text(value)) || null;
-  const query = (key: string) => normalized(valueAt(editor.snapshot, `${root}/${key}`));
   const draft = editor.snapshot.session.draft;
+  const normalized = (value: unknown) => (workflow === 'services' ? text(value) : text(value).trim()) || null;
+  const query = (key: string) => {
+    const fieldPath = `${root}/${key}`;
+    if (workflow === 'cancel') {
+      let prefix = '';
+      for (const part of fieldPath.split('/').slice(1)) {
+        prefix += `/${part}`;
+        const state = draft.fieldOverrides[prefix]?.state;
+        if (state === 'unknown') return undefined;
+        if (state === 'none' || state === 'clear') break;
+      }
+    }
+    return normalized(valueAt(editor.snapshot, fieldPath));
+  };
   const candidates = editor.snapshot.session.draft.observations.flatMap(observation => {
     const c = observation.criteria, q = record(c.query), result = record(observation.result);
     if (observation.kind !== 'stay_candidate' || observation.status !== 'complete' || !record(observation.coverage).complete
