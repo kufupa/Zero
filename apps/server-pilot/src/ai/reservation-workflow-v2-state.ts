@@ -327,7 +327,8 @@ export async function retryReservationWorkflowV2Arrival(ctx: Context, input: Mut
     const nativeResume = meta.status === 'running' && meta.phase === 'native_checks';
     if ((!nativeResume && meta.attemptCount >= 2) || (nativeResume && meta.nativeActive && !run.heartbeatAt) ||
         Object.keys(current.draft.fieldOverrides).length || Object.keys(current.draft.staffReviews).length ||
-        current.draft.operationResults.length || await hasPrefillRetryActivity(tx, item.id, current.draft.generationId, item.revisionSeq)) return current;
+        (nativeResume ? await hasUnsafeNativeResumeActivity(tx, item.id, current.draft, item.revisionSeq)
+          : current.draft.operationResults.length || await hasPrefillRetryActivity(tx, item.id, current.draft.generationId, item.revisionSeq))) return current;
     const terminal = run.state !== 'retry_wait';
     if (terminal && Number(run.metrics?.staffRetryCount ?? 0) >= 1) return current;
     const metrics = { ...run.metrics, ...(terminal ? { staffRetryCount: 1 } : {}),
@@ -512,6 +513,36 @@ async function hasPrefillRetryActivity(tx: WorkTx, workItemId: string, generatio
   const [activity] = await tx.select({ id: workEvent.id }).from(workEvent).where(and(eq(workEvent.workItemId, workItemId),
     prefillActivityPredicate(), sql`${workEvent.at} >= (select ${workEvent.at} from ${workEvent} where ${workEvent.id} = ${seed.id})`)).limit(1);
   return Boolean(activity);
+}
+
+/** Only fenced arrival checks from this seed may precede a native-phase resume. */
+async function hasUnsafeNativeResumeActivity(tx: WorkTx, workItemId: string,
+  draft: ReservationWorkflowV2Draft, revisionSeq: number): Promise<boolean> {
+  const [seed] = await tx.select({ id: workEvent.id, evidence: workEvent.evidence }).from(workEvent)
+    .where(and(eq(workEvent.workItemId, workItemId), eq(workEvent.type, 'field.seed'),
+      eq(workEvent.fieldPath, RESERVATION_WORKFLOW_V2_STATE_KEY), sql`${workEvent.value}->>'generationId' = ${draft.generationId}`))
+    .orderBy(desc(workEvent.at)).limit(1);
+  const seedEvidence = seed?.evidence && typeof seed.evidence === 'object' && !Array.isArray(seed.evidence)
+    ? seed.evidence as Record<string, unknown> : {};
+  if (!seed || !Number.isSafeInteger(seedEvidence.paneSeq) || revisionSeq !== seedEvidence.paneSeq) return true;
+  const events = await tx.select({ actorKind: workEvent.actorKind, type: workEvent.type,
+    value: workEvent.value, evidence: workEvent.evidence }).from(workEvent)
+    .where(and(eq(workEvent.workItemId, workItemId), prefillActivityPredicate(),
+      sql`${workEvent.at} >= (select ${workEvent.at} from ${workEvent} where ${workEvent.id} = ${seed.id})`));
+  const checks = new Set(draft.prefill?.nativeChecks?.map((check) => check.key) ?? []);
+  const resultIds = new Set<string>();
+  for (const event of events) {
+    const value = event.value && typeof event.value === 'object' && !Array.isArray(event.value)
+      ? event.value as Record<string, unknown> : {};
+    const evidence = event.evidence && typeof event.evidence === 'object' && !Array.isArray(event.evidence)
+      ? event.evidence as Record<string, unknown> : {};
+    if (event.actorKind !== 'system' || event.type !== 'hms.lookup.finished' || typeof value.check !== 'string' ||
+        !checks.has(value.check) || evidence.generationId !== draft.generationId || evidence.sourceHash !== draft.source.sourceHash ||
+        !Array.isArray(value.results) || !value.results.every((id) => typeof id === 'string')) return true;
+    for (const id of value.results) resultIds.add(id);
+  }
+  return draft.operationResults.some((result) => result.status !== 'prepared' || result.generationId !== draft.generationId ||
+    result.draftRevision !== draft.revision || !resultIds.has(result.id));
 }
 
 /** Claim at most two retry attempts per failed generation, with a durable cooldown. */
@@ -1153,7 +1184,7 @@ export async function commitReservationNativeCheck(ctx: Context, input: {
         current.draft.generationId !== input.batch.generationId || meta?.status !== 'running' ||
         meta.phase !== 'native_checks' || meta.jobRunId !== input.batch.jobFence.runId)
       return { status: 'stale_revision' as const };
-    if (input.batch.signal.aborted && (input.batch.observations.length || input.batch.results.length))
+    if ((input.batch.signal.aborted || !input.check) && (input.batch.observations.length || input.batch.results.length))
       return { status: 'stale_revision' as const };
     const active = meta.nativeActive;
     if (input.begin && (active || input.check || input.finish || input.recoveryHeartbeat)) return { status: 'invalid_value' as const };
@@ -1178,7 +1209,7 @@ export async function commitReservationNativeCheck(ctx: Context, input: {
     }
     const results = [...current.draft.operationResults];
     for (const result of input.batch.results) {
-      if (result.generationId !== current.draft.generationId || result.draftRevision !== item.revision ||
+      if (result.status !== 'prepared' || result.generationId !== current.draft.generationId || result.draftRevision !== item.revision ||
           result.observationRefs.some((ref) => !observations.some((entry) => entry.ref === ref)) ||
           results.some((entry) => entry.id === result.id && (entry.status === 'succeeded' ||
             entry.requestId !== result.requestId || entry.allocationId !== result.allocationId || entry.workflow !== result.workflow)))
@@ -1195,7 +1226,8 @@ export async function commitReservationNativeCheck(ctx: Context, input: {
         ...(input.finish ? { status: 'complete', phase: 'complete', finishedAt: new Date().toISOString() } : {}) } });
     if (!next.success) return { status: 'invalid_value' as const };
     if (input.check) await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'system', type: 'hms.lookup.finished',
-      value: { check: input.check.key, status: input.check.status, observations: input.batch.observations.map((entry) => entry.ref) },
+      value: { check: input.check.key, status: input.check.status, observations: input.batch.observations.map((entry) => entry.ref),
+        results: input.batch.results.map((entry) => entry.id) },
       evidence: { sourceHash: input.source.sourceHash, generationId: current.draft.generationId } });
     await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next.data },
       updatedAt: new Date() }).where(eq(workItem.id, item.id));
