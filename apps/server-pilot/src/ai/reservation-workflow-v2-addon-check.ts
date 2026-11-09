@@ -128,7 +128,8 @@ export async function checkAddOns({ propertyCode, target, items, signal }: { pro
     const candidates = items.flatMap(item => rows.filter(row => row.code === item.code && text(row.itemId) && typeof row.name === 'string')
       .map(row => ({ serviceId: item.serviceId, code: row.code, name: row.name, itemId: row.itemId })));
     const complete = listing?.outcome === 'ok' && coverage?.complete === true && Array.isArray(listing.candidates);
-    const unique = complete && items.every(item => candidates.filter(row => row.serviceId === item.serviceId).length === 1);
+    const unique = complete && items.every(item => rows.filter(row => row.code === item.code).length === 1 &&
+      candidates.filter(row => row.serviceId === item.serviceId).length === 1);
     return { complete, unique, coverage: { complete, ...(typeof coverage?.loaded === 'number' ? { loaded: coverage.loaded } : {}),
       ...(typeof coverage?.reportedTotal === 'number' ? { reportedTotal: coverage.reportedTotal } : {}) }, candidates };
   };
