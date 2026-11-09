@@ -86,7 +86,7 @@ export function addReservationWorkflowV2Action(ctx: ReservationWorkflowV2Context
         request = { ...base, kind: 'create', body: { shared: { cmsSend: true }, dateSections: [date], allocations: [allocation(date.id)] } };
       } else if (input.kind === 'quote') request = { ...base, kind: 'quote', body: { groups: [group()], parties: {},
         salesStrategy: null, client: { attention: null, email: null, telephone: null }, requestedMoney: [], notes: null,
-        outputIntent: { artifacts: ['email_quote', 'pdf_quote', 'xlsx_quote'], evidenceRefs: [] }, provisionalBookingRequested: false } };
+        outputIntent: { artifacts: ['email_quote'], evidenceRefs: [] }, provisionalBookingRequested: false } };
       else if (input.kind === 'amend') {
         const targets = scope(); request = { ...base, kind: 'amend', body: { targets, sharedChanges: [],
           perTarget: [{ hintId: targets.include[0]!.id, changes: [], rateHandling: null, currentObservationRefs: [] }] } };
