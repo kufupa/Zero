@@ -74,7 +74,7 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
           if (!live || activeSource.current !== key) return;
           setLoadError(error instanceof Error ? error.message : 'Prefill did not finish. Your editable draft is available.');
         });
-      } else if (next.session.draft.prefill.status === 'running' || next.session.draft.prefill.status === 'queued') acceptPrefill(next);
+      } else if (next.session.draft.prefill?.status === 'running' || next.session.draft.prefill?.status === 'queued') acceptPrefill(next);
     }).catch((error: unknown) => {
       if (!live || activeSource.current !== key) return;
       setLoadError(error instanceof Error ? error.message : 'The source-bound reservation draft could not be opened.');
