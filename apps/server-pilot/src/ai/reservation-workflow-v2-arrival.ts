@@ -14,7 +14,7 @@ export const reservationArrivalEnabled = () => process.env.RESERVATION_V2_ARRIVA
 
 /** Called with the admission transaction, or with an authenticated pane's current source. */
 export async function enqueueReservationArrival(db: DB, input: {
-  transportId: string; messageId: string; priority?: number;
+  transportId: string; messageId: string; priority?: number; requestedByPane?: boolean;
 }) {
   if (!reservationArrivalEnabled()) return null;
   const property = resolvePropertyTransport(input.transportId);
@@ -30,7 +30,8 @@ export async function enqueueReservationArrival(db: DB, input: {
       isNull(mailThread.trashedAt), isNull(mailThread.spamAt))).limit(1);
   if (!row || row.sourceProvenance?.attention != null || !row.arrivedAt) return null;
   const body = preStaySourceText(row.textBody, row.htmlBody);
-  if (!body.trim()) return null;
+  // A staff-selected message may be attachment-only; admission still waits for a body.
+  if (!body.trim() && !input.requestedByPane) return null;
   if (classifyMailSource({ fromAddress: row.fromAddress, subject: row.subject, bodyText: body }).kind !== 'direct') return null;
   // FortiMail's quarantine digest is an internal wrapper, not the quarantined
   // sender's request. Do not spend a model call on its contents.
