@@ -44,6 +44,9 @@
 .compactCreate .localField input, .compactCreate .localField select { min-height: 28px; padding: 4px 6px; border-radius: 3px; }
 .compactCreate .twoCol select { min-height:28px; padding:4px 6px; border-radius:3px; }
 .countHeading { display:flex; align-items:center; justify-content:space-between; gap:4px; }
+.countStepper { display:flex; align-items:center; border:1px solid var(--border, #d3d9e2); border-radius:6px; }
+.countStepper input { min-width:0; text-align:center; border:0; }
+.countStepper button { min-width:28px; }
 .compactCreate .countStepper { display:flex; align-items:center; border:1px solid var(--border, #d3d9e2); border-radius:3px; min-height:28px; }
 .compactCreate .countStepper input { min-width:0; text-align:center; border:0; padding:3px; -moz-appearance:textfield; }
 .compactCreate .countStepper input::-webkit-inner-spin-button, .compactCreate .countStepper input::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }

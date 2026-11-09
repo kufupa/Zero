@@ -12,7 +12,7 @@ export type WorkbenchCommands = {
   review(scope: 'request' | 'allocations' | 'targets' | 'services' | 'documents', ids: string[]): Promise<void>;
   execute(allocationId?: string): Promise<void>;
   reconcile(operationId: string): Promise<void>;
-  acceptServiceReview(fieldPath: string, note: string): Promise<void>;
+  acceptServiceReview(fieldPath: string, note: string, expected?: { path: string; value: unknown; generationId: string }): Promise<void>;
   acceptFinancialReview(fieldPath: string, note: string, observationRef: string): Promise<void>;
   configureFiling(attachmentId: string, confirmation: string, kind: 'voucher' | 'payment_proof'): Promise<void>;
   lookupServices(target: string | ReservationSavedServiceTarget, serviceId?: string): Promise<void>;

@@ -108,6 +108,7 @@ export function ChildAges({ editor, path }: { editor: Editor; path: string }) {
   const ageValue = valueAt(editor.snapshot, agesPath);
   const [count, setCount] = useState(countValue == null ? '' : String(countValue));
   const [ages, setAges] = useState<Array<number | null>>(Array.isArray(ageValue) ? ageValue as Array<number | null> : []);
+  const [reviewing, setReviewing] = useState(false);
   const ageInput = useRef(ages);
   const staged = useRef<Record<string, unknown> | null>(null);
   const dirtyCount = useRef(false), dirtyAges = useRef(false);
@@ -156,16 +157,16 @@ export function ChildAges({ editor, path }: { editor: Editor; path: string }) {
   };
   return <>
     <div className={styles.localField}>
-      <div className={styles.countHeading}><label htmlFor={countId}>Children</label><FieldReview editor={editor} path={countPath} label="Children" /></div>
+      <div className={styles.countHeading}><label htmlFor={countId}>Children</label><FieldReview editor={editor} path={countPath} label="Children" onPendingChange={setReviewing} /></div>
       <div className={styles.countStepper}>
-        <button type="button" aria-label="Decrease Children" disabled={count === '' || Number(count) <= 0 || editor.view.busy} onMouseDown={event => event.preventDefault()} onClick={() => step(-1)}>−</button>
-        <input id={countId} type="number" min="0" max="12" value={count} onChange={event => updateCount(event.target.value)} onBlur={() => void commit('count').catch(() => {})} />
-        <button type="button" aria-label="Increase Children" disabled={Number(count) >= 12 || editor.view.busy} onMouseDown={event => event.preventDefault()} onClick={() => step(1)}>+</button>
+        <button type="button" aria-label="Decrease Children" disabled={reviewing || count === '' || Number(count) <= 0 || editor.view.busy} onMouseDown={event => event.preventDefault()} onClick={() => step(-1)}>−</button>
+        <input id={countId} type="number" min="0" max="12" value={count} disabled={reviewing} onChange={event => updateCount(event.target.value)} onBlur={() => void commit('count').catch(() => {})} />
+        <button type="button" aria-label="Increase Children" disabled={reviewing || Number(count) >= 12 || editor.view.busy} onMouseDown={event => event.preventDefault()} onClick={() => step(1)}>+</button>
       </div>
     </div>
     {Number.isInteger(Number(count)) && Number(count) > 0 && Number(count) <= 12 && <div className={styles.ageGrid}>
       {Array.from({ length: Number(count) }, (_, index) => <label className={styles.localField} key={index}>Child {index + 1} age
-        <input type="number" min="0" max="17" value={ages[index] ?? ''} onChange={(event) => {
+        <input type="number" min="0" max="17" value={ages[index] ?? ''} disabled={reviewing} onChange={(event) => {
           const next = [...ageInput.current]; next[index] = event.target.value === '' ? null : Number(event.target.value);
           ageInput.current = next; setAges(next);
           dirtyAges.current = true; agesVersion.current += 1; editor.commands.setUncommitted(agesPath, true);

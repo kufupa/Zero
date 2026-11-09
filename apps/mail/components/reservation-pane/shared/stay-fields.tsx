@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { effectiveAt, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import styles from '../reservation-pane.module.css';
 
 export function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -20,7 +20,7 @@ export function FieldSource({ editor, path, label }: { editor: WorkbenchEditorPr
 }
 
 /** Acknowledgement is stored against the displayed draft field, not local UI state. */
-export function FieldReview({ editor, path, label }: { editor: WorkbenchEditorProps; path: string; label: string }) {
+export function FieldReview({ editor, path, label, onPendingChange }: { editor: WorkbenchEditorProps; path: string; label: string; onPendingChange?: (pending: boolean) => void }) {
   const [peek, setPeek] = useState(false);
   const draft = editor.snapshot.session.draft;
   const override = draft.fieldOverrides[path];
@@ -45,7 +45,13 @@ export function FieldReview({ editor, path, label }: { editor: WorkbenchEditorPr
       onClick={() => { void showSource(); }}>✦</button>
     <span className={styles.reviewRequired} aria-hidden="true">*</span>
     <input type="checkbox" aria-label={`Confirm ${label}`} checked={accepted} disabled={accepted || editor.view.busy}
-      onChange={event => { if (event.target.checked) void editor.commands.acceptServiceReview(path, 'Reviewed by staff').catch(() => {}); }} />
+      onChange={event => {
+        if (!event.target.checked) return;
+        onPendingChange?.(true);
+        const guardPath = path.endsWith('/nativeSelectionRef') ? path.slice(0, -'/nativeSelectionRef'.length) : path;
+        const expected = { path: guardPath, value: effectiveAt(editor.snapshot, guardPath), generationId: draft.generationId };
+        void editor.commands.acceptServiceReview(path, 'Reviewed by staff', expected).catch(() => {}).finally(() => onPendingChange?.(false));
+      }} />
     {peek && <span className={styles.sourcePeek} role="dialog" aria-label={`Source for ${label}`}>
       <span className={styles.peekHeading}>From the email <button type="button" aria-label="Close source" onClick={() => setPeek(false)}>×</button></span>
       <span className={styles.peekText}>{excerpt.length > 350 ? `${excerpt.slice(0, 350)}…` : excerpt}</span>
@@ -62,6 +68,7 @@ export function Field({ label, path, editor, type = 'text', options, disabled, h
   const saved = resolvedValue === undefined ? valueAt(editor.snapshot, path) : resolvedValue;
   const [local, setLocal] = useState(text(saved));
   const [dirty, setDirty] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
   const version = useRef(0);
   useEffect(() => { if (!dirty) setLocal(text(saved)); }, [saved, dirty]);
   const clearedCreateOptional = (value: unknown) => editor.request.kind === 'create' && value === ''
@@ -79,29 +86,31 @@ export function Field({ label, path, editor, type = 'text', options, disabled, h
     version.current += 1; setLocal(value); setDirty(true); const parsed = parsedValue(value);
     editor.commands.stageEdit(path, parsed, stateFor(value, parsed));
   };
-  return <div className={`${styles.field} ${compact ? styles.compactField : ''}`}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label>{!compact && (review ? <FieldReview editor={editor} path={path} label={label} /> : <FieldSource editor={editor} path={path} label={label} />)}</div>
+  return <div className={`${styles.field} ${compact ? styles.compactField : ''}`}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label>{!compact && (review ? <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} /> : <FieldSource editor={editor} path={path} label={label} />)}</div>
     <div className={styles.controlSlot}>
-    {type === 'checkbox' ? <input id={id} type="checkbox" checked={saved === true} disabled={disabled || editor.view.busy}
+    {type === 'checkbox' ? <input id={id} type="checkbox" checked={saved === true} disabled={disabled || reviewing || editor.view.busy}
       onChange={event => { void editor.commands.edit(path, event.target.checked).catch(() => {}); }} />
-      : options ? <select id={id} value={local} disabled={disabled} onChange={event => { const value = event.target.value; setLocal(value); void editor.commands.edit(path, value).catch(() => setDirty(true)); }}>
+      : options ? <select id={id} value={local} disabled={disabled || reviewing} onChange={event => { const value = event.target.value; setLocal(value); void editor.commands.edit(path, value).catch(() => setDirty(true)); }}>
         <option value="">Choose…</option>{local && !options.some(option => option.value === local) && <option value={local}>{local}</option>}{options.filter(option => option.value).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
-      : type === 'textarea' ? <textarea id={id} value={local} disabled={disabled} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} />
-      : <input id={id} type={type} value={local} placeholder={defaultValue} disabled={disabled} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); } }} />}
+      : type === 'textarea' ? <textarea id={id} value={local} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} />
+      : <input id={id} type={type} value={local} placeholder={defaultValue} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); } }} />}
     {dirty && <span className={styles.small}>Unsaved</span>}{hint && <small>{hint}</small>}</div>
-    {compact && <FieldReview editor={editor} path={path} label={label} />}
+    {compact && <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} />}
   </div>;
 }
 
 export function Count({ label, path, editor, min = 0, max = 12, review = false, asSelect = false }: { label: string; path: string; editor: WorkbenchEditorProps; min?: number; max?: number; review?: boolean; asSelect?: boolean }) {
+  const [reviewing, setReviewing] = useState(false);
   const value = valueAt(editor.snapshot, path);
   const numeric = typeof value === 'number' ? value : null;
   const change = (next: number) => { void editor.commands.edit(path, Math.max(min, Math.min(max, next))).catch(() => {}); };
-  return <div className={styles.field}><div className={styles.fieldLabel}><label>{label}</label>{review && <FieldReview editor={editor} path={path} label={label} />}</div>{asSelect
-    ? <select aria-label={label} value={numeric ?? ''} disabled={editor.view.busy} onChange={event => { if (event.target.value !== '') change(Number(event.target.value)); }}>
-      <option value="">Choose…</option>{Array.from({ length: max - min + 1 }, (_, i) => min + i).map(option => <option key={option} value={option}>{option}</option>)}
+  return <div className={styles.field}><div className={styles.fieldLabel}><label>{label}</label>{review && <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} />}</div>{asSelect
+    ? <select aria-label={label} value={numeric ?? ''} disabled={reviewing || editor.view.busy} onChange={event => { if (event.target.value !== '') change(Number(event.target.value)); }}>
+      <option value="">Choose…</option>{numeric !== null && (numeric < min || numeric > max) && <option value={numeric}>{numeric}</option>}
+      {Array.from({ length: max - min + 1 }, (_, i) => min + i).map(option => <option key={option} value={option}>{option}</option>)}
     </select> : <div className={styles.stepper}>
-    <button type="button" aria-label={`Decrease ${label}`} disabled={numeric === null || numeric <= min || editor.view.busy} onClick={() => change((numeric ?? min) - 1)}>−</button>
-    <input aria-label={label} type="number" min={min} max={max} value={numeric ?? ''} placeholder="?" onChange={event => { const next = Number(event.target.value); if (event.target.value !== '' && Number.isInteger(next)) change(next); }} />
-    <button type="button" aria-label={`Increase ${label}`} disabled={numeric !== null && numeric >= max || editor.view.busy} onClick={() => change((numeric ?? min - 1) + 1)}>+</button>
+    <button type="button" aria-label={`Decrease ${label}`} disabled={reviewing || numeric === null || numeric <= min || editor.view.busy} onClick={() => change((numeric ?? min) - 1)}>−</button>
+    <input aria-label={label} type="number" min={min} max={max} value={numeric ?? ''} placeholder="?" disabled={reviewing} onChange={event => { const next = Number(event.target.value); if (event.target.value !== '' && Number.isInteger(next)) change(next); }} />
+    <button type="button" aria-label={`Increase ${label}`} disabled={reviewing || numeric !== null && numeric >= max || editor.view.busy} onClick={() => change((numeric ?? min - 1) + 1)}>+</button>
   </div>}</div>;
 }

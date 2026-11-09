@@ -12,8 +12,16 @@
 .header strong { font-size:16px; letter-spacing:-.5px; }
 .header span { display:block; font-size:11px; color:var(--muted); }
 .history { display:flex; gap:4px; }.history button { font-size:20px; width:32px; height:32px; padding:0; }
+.actionNav { position:relative; }
 .tabs { display:flex; gap:5px; overflow-x:auto; padding:10px 12px 5px; flex-shrink:0; }.tabs button { white-space:nowrap; }.tabs select { width:93px; flex-shrink:0; padding:5px; }
 .tabs .activeTab { background:#eee8ff; color:#6546bb; border-color:#cbbcf3; font-weight:600; }
+.tabGroup { display:flex; flex:none; align-items:center; }
+.tabs .tabChevron { min-width:27px; padding:7px 5px; color:#6546bb; border-left:0; border-radius:0 6px 6px 0; }
+.tabGroup:has(.tabChevron) .activeTab { border-radius:6px 0 0 6px; }
+.actionMenu { position:absolute; z-index:35; left:12px; top:100%; width:min(270px, calc(100vw - 24px)); padding:8px; border:1px solid var(--border); border-radius:6px; background:var(--surface); box-shadow:0 6px 20px #25203624; font-size:12px; }
+.actionMenu p { margin:2px 2px 8px; line-height:1.4; }
+.actionMenuButtons { display:flex; gap:6px; justify-content:flex-end; }
+.pane .actionMenu > button { width:100%; border:0; text-align:left; }
 .sources { display:flex; gap:6px; padding:5px 16px 9px; overflow-x:auto; }.sources button { border:0; padding:2px 0; color:var(--muted); font-size:12px; white-space:nowrap; }
 .content { padding:0 13px 14px; flex:1; min-width:0; }
 .section { margin:0 0 15px; }.section h3 { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.7px; margin:15px 0 9px; }
