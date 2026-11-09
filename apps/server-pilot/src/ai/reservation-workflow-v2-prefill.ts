@@ -840,16 +840,22 @@ function seedObservation(input: {
 function applyQuoteTextOutputPolicy(proposal: ReservationWorkflowV2Proposal,
   extraction: ReservationWorkflowV2Extraction | null, evidence: ReservationWorkflowV2Evidence[]): ReservationWorkflowV2Proposal {
   const issues = [...proposal.issues];
+  const currentEvidenceRefs = new Set(evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
   const requests = proposal.content.requests.map((request) => {
     if (request.kind !== 'quote') return request;
+    const artifacts = request.body.outputIntent.artifacts;
+    const structuredPdf = artifacts.includes('pdf_quote');
+    const structuredExcel = artifacts.includes('xlsx_quote');
+    // An unlinked document intent must remain visible for explicit staff resolution.
+    if ((structuredPdf || structuredExcel) && !request.body.outputIntent.evidenceRefs.some((ref) => currentEvidenceRefs.has(ref))) return request;
     const extracted = extraction?.requests.find((row) => row.id === request.id);
     const refs = [...new Set([...request.body.outputIntent.evidenceRefs, ...request.sourceRefs,
       ...(extracted?.requestText.sourceRefs ?? [])])].slice(0, 100);
     const texts = [extracted?.requestText.raw ?? request.requestText,
       ...evidence.filter((row) => row.relation !== 'prior_thread' && refs.includes(row.ref)).map((row) => row.text)];
     const documents = [
-      ...(texts.some((text) => /\bpdf\b/i.test(text)) ? ['PDF'] : []),
-      ...(texts.some((text) => /\b(?:excel|xlsx?|spreadsheet)\b/i.test(text)) ? ['Excel'] : []),
+      ...(structuredPdf || texts.some((text) => /\bpdf\b/i.test(text)) ? ['PDF'] : []),
+      ...(structuredExcel || texts.some((text) => /\b(?:excel|xlsx?|spreadsheet)\b/i.test(text)) ? ['Excel'] : []),
     ];
     // If the issue limit is exhausted, keep the original document intent for the pane to resolve.
     if (documents.length && issues.length >= 1000) return request;
