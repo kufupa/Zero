@@ -237,10 +237,10 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
     <h3>{operation === 'add' ? 'Add' : operation === 'edit' ? 'Edit' : 'Remove'} · {service.code || service.requestedText || 'item'}</h3>
     <div className={styles.hint}>{allocation ? `Create room${roomLabel ? ` · ${roomLabel}` : ''}` : savedTarget
       ? `Existing saved stay${text(hint?.confirmation) || text(hint?.guestName) ? ` · ${text(hint?.confirmation) || text(hint?.guestName)}` : ''}` : 'Unresolved target'} · one native item</div>
-    {savedTarget && <Field editor={editor} path={`${serviceRoot}/operation`} label="Action" compact options={[
+    {savedTarget && !multiTarget && <Field editor={editor} path={`${serviceRoot}/operation`} label="Action" compact options={[
       { value: 'add', label: 'Add item' }, { value: 'edit', label: 'Edit saved item' }, { value: 'remove', label: 'Remove saved item' },
     ]} />}
-    {savedTarget && hint && <div className={styles.stack}>
+    {savedTarget && hint && !multiTarget && <div className={styles.stack}>
       {scope.mode === 'scoped_all' || Array.isArray(scope.exclude) && scope.exclude.length > 0
         ? <div className={styles.warning}>Choose individual included stays without exclusions before checking an Add-On.</div> : null}
       {scope.mode === 'scoped_all' && !(Array.isArray(scope.exclude) && scope.exclude.length) && <button type="button" disabled={editor.view.busy}
