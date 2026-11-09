@@ -23,7 +23,7 @@ import { bindAttachDocumentForm, paneHmsWriteMode, parseHmsWriteForm, prepareHms
   readPaneCloudFilingRecord, type AttachForm, type CloudFilingRecord } from './pane-hms-write.js';
 import { previewFiling } from './pane-filing-preview.js';
 import { readBoundFilingSource, lockBoundFilingSource, type BoundFilingForm } from './pane-filing-source.js';
-import { findStay } from './pane-stay-lookup.js';
+import { findStay, paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { paneStayCloudTargetLock, paneStayPropertyLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
@@ -415,6 +415,7 @@ function liveTargetForSaved(ctx: ReservationWorkflowV2FilingContext, confirmatio
 /** Source- and property-scoped, read-only Filing lookup. It can propose target candidates; it cannot authorize Go. */
 export async function reservationWorkflowV2FilingLookup(ctx: ReservationWorkflowV2FilingContext,
   input: ReservationWorkflowV2LookupInput): Promise<Outcome> {
+  if (ctx.nativeBatch && !paneStayLookupEnabled()) return { status: 'needs_input', issue: 'stay_lookup_disabled' };
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;
   const requests = loaded.draft.proposal.content.requests.filter((request): request is FilingRequest => request.kind === 'filing' &&
