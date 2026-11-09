@@ -60,7 +60,7 @@ export async function lookupNativeParty(input: {
       withBookingLookupSession<T>(operation: (context: { runTool: (input: Record<string, unknown>) => Promise<Record<string, unknown>> }) => Promise<T>,
         options?: Record<string, unknown>): Promise<T>;
     };
-    return await session.withBookingLookupSession(async ({ runTool }) => {
+    const result = await session.withBookingLookupSession<ReservationWorkflowV2NativePartyRead>(async ({ runTool }) => {
       signal?.throwIfAborted();
       const spec = specs[role];
       const found = await runTool({ tool: spec.tool, query: name });
@@ -114,6 +114,8 @@ export async function lookupNativeParty(input: {
         nativeCoverage, correlation: { verifiedFields }, closeOutcome },
       coverage: { complete, notes: complete ? [] : [reason] } };
     }, { memory: null, blockServiceWorkers: true, signal });
+    signal?.throwIfAborted();
+    return result;
   } catch (error) {
     signal?.throwIfAborted();
     const details = record(error);
