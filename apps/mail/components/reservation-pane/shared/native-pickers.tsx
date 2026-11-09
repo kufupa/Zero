@@ -51,7 +51,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   return <div className={`${styles.field} ${compact ? styles.compactField : ''}`}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label>{!compact && <FieldSource editor={editor} path={path} label={label} />}</div><div className={`${styles.picker} ${styles.controlSlot}`}>
     <div className={styles.pickerInput}><input id={id} role="combobox" aria-expanded={open} aria-controls={`${id}-options`} aria-autocomplete="list"
       aria-activedescendant={open && activeIndex >= 0 && shown[activeIndex] ? `${id}-option-${activeIndex}` : undefined}
-      value={display} disabled={disabled || reviewing} onFocus={() => setOpen(true)} placeholder={guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
+      value={display} disabled={disabled || reviewing} onFocus={() => setOpen(true)} placeholder={guestPath ? 'Last name' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
         const value = event.target.value; setQuery(value); setDirty(true); setOpen(true); setActiveIndex(-1);
         editor.commands.stageEdit(editPath, editValue(value));
       }}
@@ -66,10 +66,11 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       }} />
       <button type="button" aria-label={`Show ${label} choices`} disabled={disabled || reviewing} onMouseDown={event => event.preventDefault()} onClick={() => setOpen(!open)}>⌄</button></div>
     {open && !disabled && <div id={`${id}-options`} role="listbox" className={styles.options}>
+      {guestPath && <small>Enter the last name here and first name below, then search Infor.</small>}
       {allowNone && <button type="button" role="option" aria-selected={!query} onMouseDown={event => event.preventDefault()} onClick={() => { void editor.commands.edit(party ? path : inputPath, null, 'none').then(() => { setQuery(''); setDirty(false); setOpen(false); }).catch(() => {}); }}>None</button>}
       {shown.map((row, index) => <button id={`${id}-option-${index}`} key={`${row.ref}:${row.value}`} type="button" role="option" aria-selected={entity ? selectedRef === row.ref : saved === row.value}
         onMouseDown={event => event.preventDefault()} onClick={() => { void choose(row.ref, row.value); }}><strong>{row.value}</strong>{row.label !== row.value && <span> — {row.label}</span>}{row.detail && <small>{row.detail}</small>}</button>)}
-      {leads.length > 0 && <div role="note"><small><strong>Unverified Infor leads</strong> · Search Infor to verify before selecting.</small>
+      {leads.length > 0 && <div role="note"><small><strong>Unverified Infor leads</strong> · Search again; if still unverified, check in Infor.</small>
         {leads.map(lead => <small key={lead}>{lead}</small>)}</div>}
       {!choices.length && <small>Find options in Infor to load native choices.</small>}
       <button type="button" onClick={() => { void saveSearch().then(() => editor.commands.lookup()).catch(() => {}); }}>Search Infor</button>
