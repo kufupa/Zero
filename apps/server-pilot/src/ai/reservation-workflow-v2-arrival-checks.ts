@@ -114,7 +114,7 @@ export async function runReservationArrivalChecks(input: { scoped: ReservationWo
     let outcome: Outcome;
     const dependency = step.key.startsWith('quote:prepare:') || step.key.startsWith('service:prepare:')
       ? step.key.replace(':prepare:', ':lookup:') : null;
-    const dependencyResult = dependency && draft.prefill?.nativeChecks?.find((entry) => entry.key === dependency);
+    const dependencyResult = dependency ? draft.prefill?.nativeChecks?.find((entry) => entry.key === dependency) : undefined;
     try { outcome = dependency && dependencyResult?.status !== 'ok'
       ? { status: 'needs_input', issue: 'prior_native_lookup_incomplete' } : await step.run(ctx, item); }
     catch { outcome = { status: 'failed', issue: 'native_check_failed' }; }

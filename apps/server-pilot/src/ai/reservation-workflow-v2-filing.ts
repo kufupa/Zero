@@ -439,14 +439,14 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReservationWorkflow
     // Explicit Lookup refreshes native state; old observations remain for receipt provenance.
     let candidate: ReservationWorkflowV2Observation | undefined;
     if (hint.confirmation) {
-      const request = { confirmation: hint.confirmation, ...(hint.bookedArrival ? { arrival: hint.bookedArrival } : {}) };
+      const stayRequest = { confirmation: hint.confirmation, ...(hint.bookedArrival ? { arrival: hint.bookedArrival } : {}) };
       const found = ctx.nativeBatch ? await (async () => {
         const lock = paneStayPropertyLock(target.target);
         if (!lock) return null;
-        return lock.withLock(async () => projectCloudStayFind(request,
-          await runCloudStayFind({ request, target: target.target, signal: ctx.nativeBatch!.signal })),
+        return lock.withLock(async () => projectCloudStayFind(stayRequest,
+          await runCloudStayFind({ request: stayRequest, target: target.target, signal: ctx.nativeBatch!.signal })),
         { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch!.signal });
-      })().catch(() => null) : await findStay(request, { target: target.target,
+      })().catch(() => null) : await findStay(stayRequest, { target: target.target,
         lock: () => paneStayPropertyLock(target.target), acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS) }).catch(() => null);
       const stay = found?.stay;
       const complete = found?.outcome === 'found' && Boolean(stay?.confirmation && stay.firstName && stay.lastName && stay.status &&

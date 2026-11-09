@@ -721,7 +721,9 @@ export async function runStaffQuote(
               found.result.closeOutcome !== 'closed_unsaved' || exact.length !== 1) {
             refuseQuote('staff_quote_party_unavailable', 'The selected organisation or agency could not be verified.');
           }
-          verified[role] = picked;
+          if (role === 'company' && picked.kind === 'company') verified.company = picked;
+          else if (role === 'agency' && picked.kind === 'agency') verified.agency = picked;
+          else refuseQuote('staff_quote_party_unavailable', 'The selected organisation or agency could not be verified.');
         }
         quoteInput = { ...input, parties: verified };
       } else quoteInput = { ...input, parties: await verifyStaffParties(input.parties, quoteTarget.target) };
