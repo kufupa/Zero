@@ -43,6 +43,7 @@ type Buffer = {
   listeners: Set<() => void>;
 };
 const buffers = new Map<string, Buffer>();
+const guestCreatesInFlight = new Set<string>();
 const sourceKey = (source: ReservationSourceContext) => `${source.mailboxId}:${source.messageId}:${source.sourceHash}`;
 const guestAttemptKey = (source: ReservationSourceContext, requestId: string, allocationId: string) =>
   `nava:guest-profile:${source.messageId}:${source.sourceHash}:${requestId}:${allocationId}`;
@@ -263,6 +264,9 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       if (preview) return Promise.reject(new Error('Preview only. Profile creation is disabled.'));
       if (uncommitted.size) return Promise.reject(new Error('Apply changed fields before creating a profile.'));
       const requestId = requireRequest();
+      const inFlightKey = guestAttemptKey(source, requestId, allocationId);
+      if (guestCreatesInFlight.has(inFlightKey)) return Promise.reject(new Error('Profile creation is already in progress.'));
+      guestCreatesInFlight.add(inFlightKey);
       return run(async context => {
         const previousAttempt = readGuestAttempt(context.source, requestId, allocationId);
         const previousResult = previousAttempt ? context.snapshot.operationResults.find(row => row.id === previousAttempt && row.workflow === 'guest_profile') : undefined;
@@ -303,7 +307,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         const operation = result.operationResults.find(row => row.id === idempotencyKey);
         if (operation?.status === 'succeeded' || operation?.status === 'failed') clearGuestAttempt(context.source, requestId, allocationId);
         return result;
-      }, true);
+      }, true).finally(() => guestCreatesInFlight.delete(inFlightKey));
     },
     guestProfilePending(allocationId) {
       if (!request) return null;
@@ -319,6 +323,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       return run(async context => {
         const latest = await client.get(context);
         apply(latest, context.source, entry);
+        if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return latest;
         const operation = latest.operationResults.find(row => row.id === operationId && row.workflow === 'guest_profile' &&
           row.requestId === requestId && row.allocationId === allocationId);
         if (!operation) throw new Error('Infor has not recorded the profile outcome yet. Check again later or contact support.');
