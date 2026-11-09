@@ -130,8 +130,9 @@ function diagnosticMessageText(value) {
       catch { return '[redacted URL]'; }
     })
     .replace(/\b(?:set-cookie|cookie)\s*[:=]\s*[^\r\n]*/gi, 'cookie=[redacted]')
-    .replace(/\b(authorization|auth|password|passwd|secret|token|session(?:[_-]?id)?|request[_-]?token|access[_-]?token|refresh[_-]?token|api[_-]?key|cookie)(["']?\s*[:=]\s*)(?:(?:bearer|basic)\s+)?(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi, '$1$2[redacted]')
-    .replace(/\b(bearer|token|password|passwd|secret|session[_-]?id)\s+[^\s,;]+/gi, '$1 [redacted]');
+    .replace(/\b(authorization|auth|password|passwd|secret|token|jsessionid|session(?:[_-]?id)?|request[_-]?token|access[_-]?token|refresh[_-]?token|api[_-]?key|cookie)(["']?\s*[:=]\s*)(?:(?:bearer|basic)\s+)?(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi, '$1$2[redacted]')
+    .replace(/\b(bearer|authorization|auth)(?:\s+(?:bearer|basic|token))?\s+(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1 [redacted]')
+    .replace(/\b((?:(?:session|access|refresh|request|csrf)(?:[_-]|\s)?)?token|password|passwd|secret|jsessionid|session(?:[_-]?id)?)\s+(?:is\s+)?(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1 [redacted]');
   return text.slice(0, 512);
 }
 
