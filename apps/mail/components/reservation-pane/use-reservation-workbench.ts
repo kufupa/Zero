@@ -345,12 +345,15 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         if (previousAttempt.status !== 'none') throw new Error(previousAttempt.status === 'unavailable'
           ? 'This device cannot access profile recovery. Contact Nava support.'
           : 'Check the previous profile creation outcome before trying again.');
-        const hasUnresolvedAttempt = (snapshot: ReservationPaneSnapshot) => snapshot.operationResults.some(row =>
-          row.workflow === 'guest_profile' && row.requestId === requestId && row.allocationId === allocationId &&
-          ['unknown', 'failed'].includes(text(row.status)));
-        if (hasUnresolvedAttempt(context.snapshot)) {
-          throw new Error('A previous profile attempt needs confirmation. Contact Nava support before creating another profile.');
-        }
+        const checkPreviousAttempt = (snapshot: ReservationPaneSnapshot) => {
+          const attempt = snapshot.operationResults.find(row =>
+            row.workflow === 'guest_profile' && row.requestId === requestId && row.allocationId === allocationId &&
+            ['succeeded', 'unknown', 'failed'].includes(text(row.status)));
+          if (attempt) throw new Error(guestProfileReceipt(attempt)
+            ? 'A profile has already been created for this room. Review the saved profile.'
+            : 'A previous profile attempt needs confirmation. Contact Nava support before creating another profile.');
+        };
+        checkPreviousAttempt(context.snapshot);
         let current = context.snapshot;
         const root = `${requestPath(requestId)}/body`;
         const body = record(effectiveAt(current, root));
@@ -375,7 +378,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         if (prepared.serviceNotice || prepared.loadError || prepared.session.sourceChanged ||
             prepared.session.draft.workItemId !== scope.workItemId || !snapshotMatchesSource(prepared, context.source) ||
             reply.status !== 'prepared' || typeof reply.prepareRef !== 'string') return prepared;
-        if (hasUnresolvedAttempt(prepared)) throw new Error('A previous profile attempt needs confirmation. Contact Nava support before creating another profile.');
+        checkPreviousAttempt(prepared);
         if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return prepared;
         if ([...entry.pending.keys()].some(path => path === guestPath || path.startsWith(`${guestPath}/`))) {
           throw new Error('Guest details changed. Review them before creating the profile.');
@@ -428,9 +431,37 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         const result = await client.reconcile({ source: context.source, snapshot: latest, operationId });
         const checked = result.operationResults.find(matches);
         const reply = record(result.workflowReply);
+        const beforeReceipt = guestProfileReceipt(operation), afterReceipt = guestProfileReceipt(checked);
+        // Older device holds stored only the operation ID. Recover their original Prepare from the
+        // canonical operation rather than guessing a binding from the current draft.
+        const refs = Array.isArray(operation.observationRefs) ? operation.observationRefs : [];
+        const legacyPrepare = attempt.binding ? undefined : latest.session.draft.observations.find(observation =>
+          refs.includes(observation.ref) && observation.kind === 'guest_candidate' && observation.status === 'complete' &&
+          observation.coverage.complete && observation.generationId === operation.generationId &&
+          observation.propertyCode === latest.session.draft.propertyCode && observation.sourceMessageId === latest.session.draft.source.messageId &&
+          observation.criteria.workflow === 'guest_profile_prepare' && observation.criteria.requestId === requestId &&
+          observation.criteria.allocationId === allocationId);
+        const originalGeneration = attempt.binding?.generationId ?? legacyPrepare?.generationId;
+        const originalPrepare = attempt.binding?.prepareRef ?? legacyPrepare?.ref;
+        // Rebinding reviewed email rotates the generation, making the old Prepare stale even when its
+        // original operation already has a durable verified receipt. Both fresh snapshots must agree.
+        const reboundReceipt = originalGeneration && originalPrepare && checked && !latest.session.sourceChanged && !result.session.sourceChanged &&
+          operation.generationId === originalGeneration && checked.generationId === originalGeneration &&
+          Array.isArray(checked.observationRefs) && checked.observationRefs.includes(originalPrepare) &&
+          latest.session.draft.generationId !== originalGeneration &&
+          latest.session.draft.generationId === result.session.draft.generationId &&
+          reply.status === 'needs_prepare' && reply.issue === 'guest_profile_prepare_stale' &&
+          beforeReceipt && afterReceipt && beforeReceipt.nativeId === afterReceipt.nativeId &&
+          beforeReceipt.observationRef === afterReceipt.observationRef;
         if (!result.loadError && result.session.draft.workItemId === scope.workItemId && snapshotMatchesSource(result, context.source) &&
-            reply.status === 'succeeded' && reply.operationId === operationId && guestProfileReceipt(checked) &&
-            await clearGuestAttempt(scope, operationId)) return result;
+            ((reply.status === 'succeeded' && reply.operationId === operationId && afterReceipt) || reboundReceipt) &&
+            await clearGuestAttempt(scope, operationId)) {
+          if (reboundReceipt) {
+            const { serviceNotice: _notice, workflowReply: _reply, ...fresh } = result;
+            return fresh;
+          }
+          return result;
+        }
         return { ...result, serviceNotice: 'The profile outcome still needs confirmation. Check again later or contact Nava support.' };
       }, false, entry.snapshot?.session.sourceChanged === true);
     },
