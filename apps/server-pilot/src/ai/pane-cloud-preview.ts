@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { DB } from '../db/client.js';
 import { message } from '../db/schema/mail.js';
 import { workEvent, workItem } from '../db/schema/work.js';
+import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { CREATE_GUARANTEES, createGuaranteeCode, isLabtestGuest, sameCreateGuest, validCreateDates } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
 import { isDaVinciMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
 import { acquisitionWithin, isPropertyReadLockDeadline, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
@@ -722,6 +723,7 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
             try {
               // Once v2 owns this email, an old pane cannot start a separate Create.
               // The same transaction lock serializes this check with v2 seeding/Go.
+              await lockCanonicalMailbox(tx as unknown as DB, input.transportId);
               await lockReservationWorkflowV2Source(tx, input.transportId, input.selection.source.messageId);
               const [v2] = await tx.select({ id: workItem.id }).from(workItem).where(and(
                 eq(workItem.transportId, input.transportId), eq(workItem.threadId, input.selection.source.threadId),
