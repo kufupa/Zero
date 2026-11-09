@@ -47,6 +47,7 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
     setBoundSnapshot(current => current?.key === key ? current : null);
     setLoadError(null);
     if (request.current?.key !== key) request.current = { key, promise: client.ensure({ source, mode: 'initialize' }), prefillRequested: false };
+    const initialRequest = request.current;
     const acceptPrefill = (next: ReservationPaneSnapshot) => {
       if (!live || activeSource.current !== key || !snapshotMatchesSource(next, source)) return;
       setBoundSnapshot(bound => {
@@ -63,7 +64,7 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
         return { key, value: next };
       });
     };
-    request.current.promise.then((next) => {
+    initialRequest.promise.then((next) => {
       if (!live || activeSource.current !== key) return;
       if (!snapshotMatchesSource(next, source)) {
         setLoadError('The reservation draft did not match the selected email.');
@@ -71,9 +72,10 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
       }
       acceptPrefill(next);
       if (!next.session.sourceChanged && (!next.session.draft.prefill || next.session.draft.prefill.status === 'idle') &&
-          request.current?.key === key && !request.current.prefillRequested) {
-        request.current.prefillRequested = true;
+          !initialRequest.prefillRequested) {
+        initialRequest.prefillRequested = true;
         void client.prefill({ source, snapshot: next }).then(acceptPrefill).catch((error: unknown) => {
+          initialRequest.prefillRequested = false;
           if (!live || activeSource.current !== key) return;
           setLoadError(error instanceof Error ? error.message : 'Prefill did not finish. Your editable draft is available.');
         });
