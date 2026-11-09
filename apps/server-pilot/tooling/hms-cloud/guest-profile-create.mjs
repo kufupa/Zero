@@ -4,6 +4,7 @@ import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.
 import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-guard.mjs';
 import { prepareGuardedContext, isGuardedPage } from './pre-navigation-context-guard.mjs';
 import { guestLookupMayRequest, fulfillGuestLookupRequest } from './pane-guest-search.mjs';
+import { parseAssociationResponse } from './cancel-association-scope.mjs';
 import { openNewGuestStay } from './lookup.mjs';
 import { collectHmsStorageStateSecretValues } from '../../src/hms/trace-privacy.ts';
 
@@ -117,11 +118,41 @@ function profileSaveMatches(request, fields, confirmed, review) {
   } catch { return false; }
 }
 
-function parseProfileResponse(text) {
-  const json = text.replace(/("(?:\\.|[^"\\])*")|([,{]\s*)([A-Za-z_$][\w$]*)\s*:/g,
-    (match, quoted, prefix, key) => quoted || `${prefix}"${key}":`);
-  return JSON.parse(json)?.pageData;
+function profileLiteralStringsSafe(text) {
+  if (typeof text !== 'string' || text.length > 2_000_000) return false;
+  let quote = '';
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (!quote) {
+      if (char === '"' || char === "'") quote = char;
+    } else if (char === '\\') {
+      // The shared parser must not reinterpret a legacy JavaScript octal escape.
+      if (text[index + 1] === '0' && text[index + 2] >= '0' && text[index + 2] <= '9') return false;
+      if (text[index + 1] === 'u' && !/^[\da-f]{4}$/i.test(text.slice(index + 2, index + 6))) return false;
+      if (text[index + 1] === 'x' && !/^[\da-f]{2}$/i.test(text.slice(index + 2, index + 4))) return false;
+      index++;
+    } else if (char === quote) quote = '';
+    else if (char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) return false;
+  }
+  return quote === '';
 }
+
+function parseProfileEnvelope(text) {
+  // HMS data-only JavaScript literals can contain escapes not valid in JSON.
+  // The bounded parser rejects code and duplicate keys without evaluating them.
+  const parsed = profileLiteralStringsSafe(text) ? parseAssociationResponse(text) : null;
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  // Keep the original parser's useful error position for malformed responses.
+  // Never reparse oversized responses after the bounded parser has refused them.
+  if (typeof text === 'string' && text.length <= 2_000_000) {
+    const json = text.replace(/("(?:\\.|[^"\\])*")|([,{]\s*)([A-Za-z_$][\w$]*)\s*:/g,
+      (match, quoted, prefix, key) => quoted || `${prefix}"${key}":`);
+    JSON.parse(json);
+  }
+  throw new SyntaxError('PROFILE_RESPONSE_UNSAFE');
+}
+
+function parseProfileResponse(text) { return parseProfileEnvelope(text).pageData; }
 
 // The response can be malformed JavaScript or HTML, including session secrets.
 // Never retain arbitrary source fragments or the parser's embedded source preview.
@@ -1005,9 +1036,7 @@ async function readProfileMaster(page, frame, nativeId, state, metadata) {
     return { status: result.status, text: await result.text() };
   }, body);
   if (state.blocked || state.dialog || !isGuardedPage(page) || response.status !== 200) throw new Error('PROFILE_MASTER_READ_UNAVAILABLE');
-  const json = response.text.replace(/("(?:\\.|[^"\\])*")|([,{]\s*)([A-Za-z_$][\w$]*)\s*:/g,
-    (match, quoted, prefix, key) => quoted || `${prefix}"${key}":`);
-  const payload = JSON.parse(json), values = payload?.pageData?.values;
+  const payload = parseProfileEnvelope(response.text), values = payload?.pageData?.values;
   if (payload?.success === false || payload?.pageData?.success === false || !values || typeof values !== 'object' ||
       Array.isArray(values) || String(values.profileid ?? '').trim() !== nativeId) {
     throw new Error('PROFILE_MASTER_READ_UNVERIFIED');
