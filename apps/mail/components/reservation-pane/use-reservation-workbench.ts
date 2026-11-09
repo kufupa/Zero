@@ -98,11 +98,16 @@ function autoCreateReady(snapshot: ReservationPaneSnapshot, requestId: string, a
       if (baseIndex < 2 && override?.state === 'inherit') continue;
       if (override?.state === 'unknown') return false;
       if (override?.state === 'none' || override?.state === 'clear') break;
-      const value = effectiveAt(snapshot, path);
+      // Resolve the parent before child overrides. An empty child-only edit
+      // does not shadow a shared party in the native Create compiler.
+      let value = valueAt(snapshot, path);
+      if (value == null && !override && text(valueAt(snapshot, `${path}/name`)).trim()) {
+        value = { name: valueAt(snapshot, `${path}/name`) };
+      }
       if (value == null) continue;
       const party = record(value);
-      if (party.kind !== 'none' && text(party.name).trim() &&
-          !reviewedIdentity(snapshot, `${path}/nativeSelectionRef`, party.suggestedRef)) return false;
+      if (party.kind !== 'none' && text(valueAt(snapshot, `${path}/name`)).trim() &&
+          !reviewedIdentity(snapshot, `${path}/nativeSelectionRef`, valueAt(snapshot, `${path}/suggestedRef`))) return false;
       break;
     }
   }
@@ -343,7 +348,33 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     },
     edit(path, value, state = 'set') { stageEdit(path, value, state); return run(async () => {}); },
     changeRows(change) { return run(context => client.changeRows({ ...context, ...change })); },
-    selectNative(fieldPath, observationRef) { return run(context => client.selectNative({ ...context, requestId: requireRequest(), fieldPath, observationRef })); },
+    selectNative(fieldPath, observationRef) {
+      const requestId = requireRequest();
+      const createIdentity = request?.kind === 'create' &&
+        /\/body\/(?:allocations\/\d+\/guest|(?:shared|dateSections\/\d+\/defaults|allocations\/\d+\/overrides)\/(?:bookingAgency|organization|arAccount))\/nativeSelectionRef$/.test(fieldPath);
+      return run(async context => {
+        const rows = captureRows(context.snapshot, fieldPath);
+        const stillCurrent = (next: ReservationPaneSnapshot) => mounted.current && active.current.key === sourceKey(context.source) &&
+          active.current.epoch === context.source.selectionEpoch && (!entry.snapshot ||
+            (next.session.seq >= entry.snapshot.session.seq && !(entry.snapshot.session.sourceChanged && !next.session.sourceChanged)));
+        try {
+          const selected = await client.selectNative({ ...context, requestId, fieldPath, observationRef });
+          if (!stillCurrent(selected)) return;
+          const override = selected.session.draft.fieldOverrides[fieldPath];
+          if (!createIdentity || selected.session.sourceChanged || selected.loadError || selected.serviceNotice ||
+              !snapshotMatchesSource(selected, context.source) || selected.session.draft.generationId !== context.snapshot.session.draft.generationId ||
+              override?.state !== 'set' || override.value !== observationRef || valueAt(selected, fieldPath) !== observationRef ||
+              !rows.every(row => rowIdentity(effectiveAt(selected, row.path)) === row.identity)) return selected;
+          apply(selected, context.source, entry);
+          if (entry.pending.size || liveInputs.current.uncommitted.size) return selected;
+          const reviewed = await client.review({ source: context.source, snapshot: selected, fieldPath, decision: 'accepted', note: 'Selected by staff' });
+          if (stillCurrent(reviewed)) return reviewed;
+        } catch (failure) {
+          if (failure instanceof ReservationWorkflowStaleRevisionError && !stillCurrent(failure.snapshot)) return;
+          throw failure;
+        }
+      });
+    },
     ...(verifyNativeLead ? { verifyNativeLead(fieldPath: string, observationRef: string) {
       return run(context => verifyNativeLead.call(client, { ...context, requestId: requireRequest(), fieldPath, observationRef }));
     } } : {}),
@@ -512,8 +543,12 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
           if (!finished && !current.preparationViews.some(view => view.requestId === request.id && view.allocationId === id && view.current))
             void run(context => {
               const prefill = context.snapshot.session.draft.prefill;
+              if (liveInputs.current.uncommitted.size) {
+                if (autoDigest.current.get(actionKey) === digest) autoDigest.current.delete(actionKey);
+                return Promise.resolve();
+              }
               if (context.snapshot.session.sourceChanged || ['queued', 'running'].includes(prefill?.status ?? '') ||
-                  (prefill?.status === 'failed' && prefill.phase === 'native_checks') || liveInputs.current.uncommitted.size ||
+                  (prefill?.status === 'failed' && prefill.phase === 'native_checks') ||
                   !autoCreateReady(context.snapshot, request.id, id) ||
                   context.snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === id &&
                     (row.status === 'succeeded' || row.status === 'unknown')) ||
