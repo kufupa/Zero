@@ -88,18 +88,22 @@ export function AddonsEditor(editor: Editor) {
   const { snapshot, request } = editor;
   const proposal = snapshot.session.draft.proposal.content;
   const owner = proposal.requests.find(row => row.id === request.id);
-  const addTargets = owner?.kind === 'create' ? owner.body.allocations.map((room, index) => ({ id: room.id,
-    label: ['firstName', 'lastName'].map(field => text(valueAt(snapshot, `${requestPath(request.id)}/body/allocations/${index}/guest/${field}`)))
-      .filter(Boolean).join(' ') || `Room ${index + 1}` }))
+  const allocations = owner?.kind === 'create' ? effectiveAt(snapshot, `${requestPath(request.id)}/body/allocations`) : null;
+  const rooms = owner?.kind === 'create' && Array.isArray(allocations) ? allocations.map(record).map((room, index) => ({
+    id: text(room.id), label: [text(record(room.guest).firstName), text(record(room.guest).lastName)].filter(Boolean).join(' ') || `Room ${index + 1}`,
+    linkable: owner.body.allocations.some(allocation => allocation.id === room.id),
+  })).filter(room => room.id) : [];
+  const addTargets = owner?.kind === 'create' ? rooms
     : owner && 'targets' in owner.body ? (Array.isArray(record(effectiveAt(snapshot, `${requestPath(request.id)}/body/targets`)).include)
       ? (record(effectiveAt(snapshot, `${requestPath(request.id)}/body/targets`)).include as unknown[]).map((hint, index) => ({
         id: text(record(hint).id), label: text(record(hint).confirmation) || text(record(hint).guestName) || `Stay ${index + 1}` })) : []) : [];
   const services = proposal.services.map((service, index) => ({ service, index })).filter(({ service }) =>
     service.ownerRequestId === request.id || owner?.serviceRefs.includes(service.id)
       || service.targets.some(target => target.target.requestId === request.id));
+  const guestUnknown = snapshot.session.draft.operationResults.some(row => row.workflow === 'guest_profile' && row.status === 'unknown');
   const targetLocked = (service: Service) => {
     const requests = new Set([service.ownerRequestId, ...proposal.requests.filter(row => row.serviceRefs.includes(service.id)).map(row => row.id)]);
-    return snapshot.session.draft.operationResults.some(row => row.workflow !== 'guest_profile' && requests.has(row.requestId)
+    return guestUnknown || snapshot.session.draft.operationResults.some(row => row.workflow !== 'guest_profile' && requests.has(row.requestId)
       && (row.status === 'succeeded' || row.status === 'unknown'));
   };
   return <div className={styles.stack}>
@@ -123,20 +127,23 @@ export function AddonsEditor(editor: Editor) {
           {owner?.kind === 'create' && owner.serviceRefs.includes(service.id)
             && (text(valueAt(snapshot, `/proposal/content/services/${index}/operation`)) || service.operation) === 'add' &&
             <label className={styles.label}>Room for this requested Add-On
-              <select value="" disabled={editor.view.busy || !addTargets.length || targetLocked(service)} onChange={event => {
+              <select value="" disabled={editor.view.busy || !rooms.some(room => room.linkable) || targetLocked(service)} onChange={event => {
                 const allocationId = event.target.value;
-                if (!addTargets.some(target => target.id === allocationId)) return;
+                if (!rooms.some(room => room.linkable && room.id === allocationId)) return;
                 void editor.commands.edit(`/proposal/content/services/${index}/targets`, [{
                   target: { kind: 'allocation', requestId: request.id, allocationId },
                   fields: {}, savedRowCandidateRef: null, previewObservationRef: null,
                 }]).catch(() => {});
               }}>
-                <option value="">{targetLocked(service) ? 'Linking unavailable' : addTargets.length ? 'Select a room' : 'Add a room first'}</option>
-                {addTargets.map((target, roomIndex) => <option key={target.id} value={target.id}>
-                  {`Room ${roomIndex + 1}${target.label === `Room ${roomIndex + 1}` ? '' : ` · ${target.label}`}`}
+                <option value="">{targetLocked(service) ? 'Linking unavailable' : rooms.length ? 'Select a room' : 'Add a room first'}</option>
+                {rooms.map((target, roomIndex) => <option key={target.id} value={target.id} disabled={!target.linkable}>
+                  {`Room ${roomIndex + 1}${target.label === `Room ${roomIndex + 1}` ? '' : ` · ${target.label}`}${target.linkable ? '' : ' · unavailable to link'}`}
                 </option>)}
               </select>
-              {targetLocked(service) && <small className={styles.hint}>A related Infor operation is saved or has an unknown outcome. Check any unknown outcome and handle this Add-On separately.</small>}
+              {targetLocked(service) && <small className={styles.hint}>{guestUnknown
+                ? 'Check the unknown guest profile outcome before linking this Add-On.'
+                : 'A related Infor operation is saved or has an unknown outcome. Check any unknown outcome and handle this Add-On separately.'}</small>}
+              {rooms.some(room => !room.linkable) && <small className={styles.hint}>Some rooms in this draft cannot currently be linked here.</small>}
             </label>}
         </>}
         {service.targets.length > 1 && <div className={styles.warning}>This request covers several rooms. Use “Add item” for each room above and enter each quantity. This request stays here for reference.</div>}
@@ -167,9 +174,12 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
   const stayPath = `${targetBody}/targets/include/${hintIndex}/suggestedRef`;
   const selectedStay = hintIndex >= 0 ? valueAt(editor.snapshot, stayPath) : null;
   const selectedPath = operation === 'add' ? itemPath : `${targetRoot}/savedRowCandidateRef`;
-  const room = allocation ? editor.snapshot.session.draft.proposal.content.requests.find(row => row.id === ref.requestId) : null;
-  const roomGuest = room && room.kind === 'create' ? room.body.allocations.find(entry => entry.id === allocation)?.guest : null;
-  const roomLabel = roomGuest ? [roomGuest.firstName, roomGuest.lastName].filter(Boolean).join(' ') : '';
+  const rooms = allocation ? effectiveAt(editor.snapshot, `${requestPath(ref.requestId)}/body/allocations`) : null;
+  const roomRows = Array.isArray(rooms) ? rooms.map(record) : [];
+  const roomIndex = roomRows.findIndex(entry => entry.id === allocation);
+  const guest = record(roomRows[roomIndex]?.guest);
+  const roomGuest = [text(guest.firstName), text(guest.lastName)].filter(Boolean).join(' ');
+  const roomLabel = roomIndex >= 0 ? `Room ${roomIndex + 1}${roomGuest ? ` · ${roomGuest}` : ''}` : 'Room no longer available';
   const linkedAmend = savedTarget && draft.proposal.content.requests.some(row => row.id === savedTarget.requestId && row.kind === 'amend');
   const linkedCreate = ref.kind === 'allocation' && editor.snapshot.operationResults.some(result => result.workflow === 'create'
     && result.requestId === ref.requestId && result.allocationId === ref.allocationId && result.status === 'succeeded');
@@ -257,7 +267,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
   const connected = Boolean(allocation && operation === 'add' || savedTarget && hint);
   return <div className={styles.card}>
     <h3>{operation === 'add' ? 'Add' : operation === 'edit' ? 'Edit' : 'Remove'} · {service.code || service.requestedText || 'item'}</h3>
-    <div className={styles.hint}>{allocation ? `Create room${roomLabel ? ` · ${roomLabel}` : ''}` : savedTarget
+    <div className={styles.hint}>{allocation ? `Create · ${roomLabel}` : savedTarget
       ? `Existing saved stay${text(hint?.confirmation) || text(hint?.guestName) ? ` · ${text(hint?.confirmation) || text(hint?.guestName)}` : ''}` : 'Unresolved target'} · one native item</div>
     {savedTarget && <Field editor={editor} path={`${serviceRoot}/operation`} label="Action" compact options={[
       { value: 'add', label: 'Add item' }, { value: 'edit', label: 'Edit saved item' }, { value: 'remove', label: 'Remove saved item' },
