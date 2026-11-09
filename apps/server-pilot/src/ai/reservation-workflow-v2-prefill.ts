@@ -770,7 +770,7 @@ export function createReservationWorkflowV2CandidateReader(input: {
   };
 }
 
-function sourceEvidence(input: {
+export function sourceEvidence(input: {
   source: ReservationWorkflowV2Source;
   selection: SyncedQuoteSelection;
   vision: Pick<Awaited<ReturnType<typeof prepareExtractionVisionImages>>, 'currentProposalSources'>;
