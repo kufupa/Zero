@@ -14,6 +14,7 @@ import {
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const validAttempt = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const publicResult = ({ privateFailureDiagnostics: _private, ...result }) => result;
 const cleanIntent = value => value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
 const intentKey = fields => hash(['HRCEN', ...['firstName', 'lastName', 'mobile', 'email'].map(key => cleanIntent(fields[key]))]);
 const own = (object, keys) => object && typeof object === 'object' && !Array.isArray(object) &&
@@ -241,7 +242,7 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
         const prior = await readAttempt(dir, attemptKey);
         if (!same(prior.claim, claim)) return { outcome: 'review_required', issue: 'PROFILE_ATTEMPT_CHANGED', attemptId, dispatched: false };
         if (prior.reconcile) return prior.reconcile;
-        if (prior.result && prior.result.outcome !== 'uncertain') return prior.result;
+        if (prior.result && prior.result.outcome !== 'uncertain') return publicResult(prior.result);
         return held(attemptId, prior);
       } catch { return partialHeld(dir, attemptKey, attemptId, 'PROFILE_JOURNAL_CORRUPT'); }
     }
@@ -328,11 +329,11 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
       observed.nativeId = response.nativeId ?? observed.nativeId;
       await writeOnce(dir, file(attemptKey, `${phase}-response`), { version: 1, attemptKey, phase, ...response });
     });
-    let result;
+    let result, privateFailureDiagnostics;
     try {
       result = await create(business, { ...sessionOptions, attemptId, authorizeCandidate: context => tracked(async () =>
         executionOpen && authorized(context) && (!authorizeStaffWrite || await authorizeStaffWrite(Object.freeze({ ...context, attemptId })) === true) && executionOpen),
-        dispatchCandidate, recordResponse });
+        dispatchCandidate, recordResponse, recordFailureDiagnostics: diagnostics => { privateFailureDiagnostics = diagnostics; } });
     } catch { result = { outcome: 'uncertain', issue: 'PROFILE_EXECUTION_FAILED', attemptId }; }
     finally { executionOpen = false; }
     result = { ...result, attemptId, phase: result.phase ?? observed.phase,
@@ -340,12 +341,14 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
       nativeId: result.nativeId ?? observed.nativeId, noDispatchProof: observed.noDispatchProof,
       callbacksDrained: pendingCallbacks === 0 };
     try {
-      await writeOnce(dir, file(attemptKey, 'result'), result);
+      await writeOnce(dir, file(attemptKey, 'result'), { ...result,
+        ...(privateFailureDiagnostics && { privateFailureDiagnostics }) });
       // Validate before returning or replaying a result, including dependency failures.
       const saved = await readAttempt(dir, attemptKey);
-      if (saved.result.outcome === 'uncertain') return { ...held(attemptId, saved), ...saved.result,
-        nativeId: saved.result.nativeId ?? saved.successful?.nativeId ?? null };
-      return { ...saved.result, noDispatchRecorded: noDispatchRecorded(saved), duplicateDeclined: duplicateDeclined(saved) };
+      if (saved.result.outcome === 'uncertain') {
+        return { ...held(attemptId, saved), ...publicResult(saved.result), nativeId: saved.result.nativeId ?? saved.successful?.nativeId ?? null };
+      }
+      return { ...publicResult(saved.result), noDispatchRecorded: noDispatchRecorded(saved), duplicateDeclined: duplicateDeclined(saved) };
     } catch {
       let saved;
       try { saved = await readAttempt(dir, attemptKey); } catch { /* An incomplete record remains a hold. */ }
@@ -373,7 +376,7 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
     const readback = await read(business, sessionOptions);
     if (!matchesProfileReadback(readback, parts.claim.fields, parts.successful.nativeId, parts.claim.review)) return { ...held(attemptId, parts), readback };
     if (parts.reconcile) return { ...readback, reconciliation: parts.reconcile };
-    if (parts.result?.outcome === 'created') return { ...readback, reconciliation: parts.result };
+    if (parts.result?.outcome === 'created') return { ...readback, reconciliation: publicResult(parts.result) };
     const result = { outcome: 'created', attemptId, phase: parts.confirm ? 'confirm_distinct' : 'initial',
       dispatched: true, nativeId: parts.successful.nativeId, readback };
     try {
