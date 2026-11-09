@@ -54,6 +54,7 @@
 .compactCreate .details { padding-top: 6px; }
 .compactCreate .details[open] > .stack, .compactCreate .details[open] > .plainFieldset { padding-top: 6px; }
 .compactCreate .linkButton { color: #6746ad; font-weight: 650; background: transparent; border: 0; padding: 3px 0; }
+.guestProfileRow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: start; }
 
 /* Quote keeps native groups distinct without nesting cards inside cards. */
 .compactQuote.editor { gap: 5px; }

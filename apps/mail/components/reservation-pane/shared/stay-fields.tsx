@@ -25,7 +25,7 @@ export function FieldSource({ editor, path, label }: { editor: WorkbenchEditorPr
 }
 
 /** Acknowledgement is stored against the displayed draft field, not local UI state. */
-export function FieldReview({ editor, path, label, onPendingChange }: { editor: WorkbenchEditorProps; path: string; label: string; onPendingChange?: (pending: boolean) => void }) {
+export function FieldReview({ editor, path, label, onPendingChange, requireReview = false, disabled = false }: { editor: WorkbenchEditorProps; path: string; label: string; onPendingChange?: (pending: boolean) => void; requireReview?: boolean; disabled?: boolean }) {
   const [peek, setPeek] = useState(false);
   const peekRef = useRef<HTMLSpanElement>(null);
   useLayoutEffect(() => {
@@ -51,8 +51,10 @@ export function FieldReview({ editor, path, label, onPendingChange }: { editor: 
   const claim = draft.proposal.sourceClaims.find(row => row.path === path);
   const refs = claim?.sourceRefs ?? draft.fieldReviewRequirements[path]?.evidenceRefs;
   const reference = refs?.find(ref => draft.observations.some(row => row.kind === 'source' && row.sourceRefs.includes(ref)));
-  if (!reference || hasStaffOverride(editor, path)) return null;
-  const accepted = draft.staffReviews[path]?.status === 'accepted';
+  const value = effectiveAt(editor.snapshot, path);
+  if (hasStaffOverride(editor, path)) return null;
+  if (!reference && (!requireReview || value == null || value === '' || draft.fieldReviewRequirements[path]?.required === false)) return null;
+  const accepted = draft.staffReviews[path]?.status === 'accepted' || draft.fieldReviewRequirements[path]?.required === false;
   const excerpt = claim?.raw?.trim() ?? '';
   const showSource = async () => {
     try {
@@ -62,13 +64,13 @@ export function FieldReview({ editor, path, label, onPendingChange }: { editor: 
       const body = editor.source.sourceText ?? '';
       if (reference === `src_${hex.slice(0, 12)}` && excerpt && body.includes(excerpt)) { setPeek(true); return; }
     } catch { /* Open the host evidence view instead. */ }
-    editor.onOpenEvidence?.(reference);
+    if (reference) editor.onOpenEvidence?.(reference);
   };
   return <span className={styles.fieldReview}>
-    <button type="button" className={styles.fieldSource} aria-label={`View source for ${label}`} title="View source suggestion"
-      onClick={() => { void showSource(); }}>✦</button>
+    {reference && <button type="button" className={styles.fieldSource} aria-label={`View source for ${label}`} title="View source suggestion"
+      onClick={() => { void showSource(); }}>✦</button>}
     <span className={styles.reviewRequired} aria-hidden="true">*</span>
-    <input type="checkbox" aria-label={`Confirm ${label}`} checked={accepted} disabled={accepted || editor.view.busy}
+    <input type="checkbox" aria-label={`Confirm ${label}`} checked={accepted} disabled={disabled || accepted || editor.view.busy}
       onChange={event => {
         if (!event.target.checked) return;
         onPendingChange?.(true);
@@ -79,14 +81,14 @@ export function FieldReview({ editor, path, label, onPendingChange }: { editor: 
     {peek && <span ref={peekRef} className={styles.sourcePeek} role="dialog" aria-label={`Source for ${label}`}>
       <span className={styles.peekHeading}>From the email <button type="button" aria-label="Close source" onClick={() => setPeek(false)}>×</button></span>
       <span className={styles.peekText}>{excerpt.length > 350 ? `${excerpt.slice(0, 350)}…` : excerpt}</span>
-      <button type="button" className={styles.peekOpen} onClick={() => { setPeek(false); editor.onOpenEvidence?.(reference); }}>Open email</button>
+      <button type="button" className={styles.peekOpen} onClick={() => { setPeek(false); if (reference) editor.onOpenEvidence?.(reference); }}>Open email</button>
     </span>}
   </span>;
 }
 
-export function Field({ label, path, editor, type = 'text', options, disabled, hint, defaultValue, emptyState, resolvedValue, compact = false, review = false }: {
+export function Field({ label, path, editor, type = 'text', options, disabled, hint, defaultValue, emptyState, resolvedValue, compact = false, review = false, requireReview = false }: {
   label: string; path: string; editor: WorkbenchEditorProps; type?: string;
-  options?: { value: string; label: string }[]; disabled?: boolean; hint?: string; defaultValue?: string; emptyState?: 'inherit'; resolvedValue?: unknown; compact?: boolean; review?: boolean;
+  options?: { value: string; label: string }[]; disabled?: boolean; hint?: string; defaultValue?: string; emptyState?: 'inherit'; resolvedValue?: unknown; compact?: boolean; review?: boolean; requireReview?: boolean;
 }) {
   const id = useId();
   const saved = resolvedValue === undefined ? valueAt(editor.snapshot, path) : resolvedValue;
@@ -110,7 +112,7 @@ export function Field({ label, path, editor, type = 'text', options, disabled, h
     version.current += 1; setLocal(value); setDirty(true); const parsed = parsedValue(value);
     editor.commands.stageEdit(path, parsed, stateFor(value, parsed));
   };
-  return <div className={`${styles.field} ${compact ? styles.compactField : ''}`}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label>{!compact && (review ? <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} /> : <FieldSource editor={editor} path={path} label={label} />)}</div>
+  return <div className={`${styles.field} ${compact ? styles.compactField : ''}`}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label>{!compact && (review ? <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} requireReview={requireReview} disabled={disabled} /> : <FieldSource editor={editor} path={path} label={label} />)}</div>
     <div className={styles.controlSlot}>
     {type === 'checkbox' ? <input id={id} type="checkbox" checked={saved === true} disabled={disabled || reviewing || editor.view.busy}
       onChange={event => { void editor.commands.edit(path, event.target.checked).catch(() => {}); }} />
@@ -119,7 +121,7 @@ export function Field({ label, path, editor, type = 'text', options, disabled, h
       : type === 'textarea' ? <textarea id={id} value={local} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} />
       : <input id={id} type={type} value={local} placeholder={defaultValue} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); } }} />}
     {dirty && <span className={styles.small}>Unsaved</span>}{hint && <small>{hint}</small>}</div>
-    {compact && <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} />}
+    {compact && <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} requireReview={requireReview} disabled={disabled} />}
   </div>;
 }
 
