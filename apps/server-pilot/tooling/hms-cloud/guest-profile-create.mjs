@@ -5,6 +5,7 @@ import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-gu
 import { prepareGuardedContext, isGuardedPage } from './pre-navigation-context-guard.mjs';
 import { guestLookupMayRequest, fulfillGuestLookupRequest } from './pane-guest-search.mjs';
 import { openNewGuestStay } from './lookup.mjs';
+import { collectHmsStorageStateSecretValues } from '../../src/hms/trace-privacy.ts';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
@@ -122,81 +123,83 @@ function parseProfileResponse(text) {
   return JSON.parse(json)?.pageData;
 }
 
-// Fixed signals only: neither the response body nor the parser exception is retained.
+// The response can be malformed JavaScript or HTML, including session secrets.
+// Never retain arbitrary source fragments or the parser's embedded source preview.
 function profileParseFailureDiagnostics(text, response, error) {
   try {
     if (typeof text !== 'string') return null;
     const limit = 4 * 1024 * 1024;
-    // UTF-8 has at least one byte per UTF-16 code unit, so a longer string is already over the cap.
     const byteLength = text.length > limit ? limit + 1 : Buffer.byteLength(text, 'utf8');
-    const syntaxError = error instanceof SyntaxError;
-    const sample = text.slice(0, 8192), message = syntaxError && typeof error.message === 'string' ? error.message.slice(0, 1024) : '';
     let contentType = 'unknown';
     try {
       const headers = response.headers?.(), raw = headers?.['content-type'] ?? headers?.['Content-Type'];
-      if (typeof raw === 'string') {
-        const mime = raw.slice(0, 100).split(';', 1)[0].trim().toLowerCase();
-        contentType = ['application/json', 'text/json'].includes(mime) ? 'json'
-          : mime === 'text/html' ? 'html' : ['application/javascript', 'text/javascript'].includes(mime) ? 'javascript'
-            : mime === 'text/plain' ? 'text' : ['application/xml', 'text/xml'].includes(mime) ? 'xml' : 'other';
-      }
-    } catch { /* Missing or unavailable headers are not evidence of a content type. */ }
-    const errorClass = !syntaxError ? 'other' : /^Unexpected end of JSON input|^Unterminated/i.test(message) ? 'unexpected_end'
-      : /^Unexpected token/i.test(message) ? 'unexpected_token'
-        : /^Unexpected non-whitespace character after JSON/i.test(message) ? 'trailing_content'
-          : /^Expected /i.test(message) ? 'invalid_structure' : 'syntax_error';
-    const reason = !syntaxError ? 'other_error' : /^Unexpected end of JSON input/i.test(message) ? 'end_of_input'
-      : /^Unterminated string/i.test(message) ? 'unterminated_string'
-        : /^Bad control character/i.test(message) ? 'invalid_control_character'
-          : /^Bad (?:escaped character|Unicode escape)/i.test(message) ? 'invalid_escape'
-            : /^Expected (?:property name|double-quoted property name)/i.test(message) ? 'expected_property_name'
-              : /^Expected ':' after property name/i.test(message) ? 'expected_colon'
-                : /^Expected ',' or '}' after property value/i.test(message) ? 'expected_object_delimiter'
-                  : /^Expected ',' or '\]' after array element/i.test(message) ? 'expected_array_delimiter'
-                    : /^Unexpected non-whitespace character after JSON/i.test(message) ? 'trailing_content'
-                      : /^Unexpected token/i.test(message) ? 'unexpected_token' : 'other_syntax_error';
-    const token = /^Unexpected token '(.)'/s.exec(message)?.[1];
-    const tokenCategory = token == null ? null : token === "'" ? 'single_quote' : token === '"' ? 'double_quote'
-      : /[<>]/.test(token) ? 'angle_bracket' : /[A-Za-z]/.test(token) ? 'letter' : /[0-9]/.test(token) ? 'digit'
-        : /\s/.test(token) ? 'whitespace' : /[{}]/.test(token) ? 'brace' : /[\[\]]/.test(token) ? 'bracket'
-          : /[,;:]/.test(token) ? 'delimiter' : /[\/\\]/.test(token) ? 'slash' : token === '=' ? 'equals' : 'other';
+      const mime = typeof raw === 'string' ? raw.split(';', 1)[0].trim().toLowerCase() : '';
+      if (['application/json', 'text/json', 'text/html', 'application/javascript', 'text/javascript',
+        'text/plain', 'application/xml', 'text/xml'].includes(mime)) contentType = mime;
+      else if (mime) contentType = 'other';
+    } catch { /* Missing headers are not evidence of a content type. */ }
+    const sample = text.slice(0, 8192);
+    const bodyKind = !sample.trim() ? 'empty'
+      : /<\s*(?:!doctype\s+html|html|head|body|form)(?:\s|>)/i.test(sample) ? 'html'
+        : /^\s*[\[{]/.test(sample) ? 'json_like'
+          : /^\s*(?:var\s|let\s|const\s|function\s|(?:Ext|window|EAM)\.)/i.test(sample) ? 'javascript_like' : 'other';
+    const message = error instanceof SyntaxError && typeof error.message === 'string' ? error.message : '';
     const match = /(?:^| )at position (\d+)(?: \(line (\d+) column (\d+)\))?$/.exec(message);
     const number = value => {
       const parsed = value == null ? null : Number(value);
       return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= limit ? parsed : null;
     };
-    const html = /<\s*(?:!doctype\s+html|html|head|body|form)(?:\s|>)/i.test(sample);
-    const format = !sample.trim() ? 'empty' : html ? 'html' : /^\s*[\[{]/.test(sample) ? 'json_like'
-      : /^\s*(?:var\s|let\s|const\s|function\s|(?:Ext|window|EAM)\.)/i.test(sample) ? 'javascript_like' : 'other';
-    const hasMessages = /(?:["']messages["']|\bmessages)\s*:/i.test(sample);
-    const hasMessage = /(?:["'](?:msg|message)["']|\b(?:msg|message))\s*:/i.test(sample);
-    const hasMessageSignal = hasMessages || hasMessage;
-    const fieldSignals = hasMessageSignal ? [
-      ['email', /\b(?:email(?:address)?|e-mail)\b/i], ['mobile', /\bmobile(?:number)?\b/i],
-      ['phone', /\bphone(?:number)?\b/i], ['first_name', /\b(?:firstname|first\s+name)\b/i],
-      ['last_name', /\b(?:lastname|last\s+name)\b/i], ['title', /\b(?:title|nametitle)\b/i],
-    ].filter(([, pattern]) => pattern.test(sample)).map(([signal]) => signal) : [];
-    const validationSignals = hasMessageSignal ? [
-      ['required', /\b(?:required|mandatory)\b/i], ['invalid', /\b(?:invalid|incorrect)\b/i],
-      ['duplicate', /\b(?:duplicate|already exists)\b/i], ['length', /\b(?:length|too long|too short)\b/i],
-      ['error', /\berror\b/i], ['warning', /\bwarning\b/i], ['question', /\bquestion\b/i],
-    ].filter(([, pattern]) => pattern.test(sample)).map(([signal]) => signal) : [];
-    return { byteCount: Math.min(byteLength, limit), byteCountCapped: byteLength > limit, contentType,
-      errorClass, reason, tokenCategory, positionBasis: 'normalized_json',
-      position: number(match?.[1]), line: number(match?.[2]), column: number(match?.[3]),
-      bodySignals: { format, sampleTruncated: text.length > sample.length,
-        pageData: /(?:["']pageData["']|\bpageData)\s*:/i.test(sample), messages: hasMessages, message: hasMessage,
-        success: /(?:["']success["']|\bsuccess)\s*:/i.test(sample),
-        values: /(?:["']values["']|\bvalues)\s*:/i.test(sample),
-        profileId: /(?:["']profileid["']|\bprofileid)\s*:/i.test(sample),
-        unquotedKnownKey: /[{,]\s*(?:pageData|messages|success|values|profileid)\s*:/i.test(sample),
-        fieldSignals, validationSignals } };
+    // These V8 messages have fixed text and a position, without a source preview.
+    const safeMessage = /^(?:Unexpected end of JSON input|Unexpected non-whitespace character after JSON at position \d+(?: \(line \d+ column \d+\))?|(?:Expected property name or '}'|Expected double-quoted property name|Expected ':' after property name|Expected ',' or '}' after property value|Expected ',' or '\]' after array element|Unterminated string|Bad control character in string literal|Bad escaped character|Bad Unicode escape) in JSON at position \d+(?: \(line \d+ column \d+\))?)$/.test(message);
+    const token = /^Unexpected token '(.)'/s.exec(message)?.[1];
+    const safeToken = token != null && /[{}\[\],:;'\"<>\/\\=]/.test(token) ? token : null;
+    const exception = safeMessage ? message : safeToken ? `Unexpected token '${safeToken}'` : null;
+    const tokenCategory = token == null ? null : token === "'" ? 'single_quote' : token === '"' ? 'double_quote'
+      : /[<>]/.test(token) ? 'angle_bracket' : /[A-Za-z]/.test(token) ? 'letter' : /[0-9]/.test(token) ? 'digit'
+        : /\s/.test(token) ? 'whitespace' : /[{}]/.test(token) ? 'brace' : /[\[\]]/.test(token) ? 'bracket'
+          : /[,;:]/.test(token) ? 'delimiter' : /[\/\\]/.test(token) ? 'slash' : token === '=' ? 'equals' : 'other';
+    return { byteCount: Math.min(byteLength, limit), byteCountCapped: byteLength > limit, contentType, bodyKind,
+      exception,
+      exceptionOmitted: safeMessage ? null : 'parser_message_may_include_source',
+      tokenCategory, positionBasis: 'normalized_json', position: number(match?.[1]),
+      line: number(match?.[2]), column: number(match?.[3]),
+      contextExcerpt: null, contextOmitted: 'malformed_source_may_contain_unlabelled_secrets' };
   } catch { return null; }
 }
 
-function diagnosticMessageText(value, fields) {
-  if (typeof value !== 'string') return null;
-  let text = value.replace(/<[^>]*(?:>|$)/g, '')
+// Keep known session and request secrets in memory only, to mask them even when
+// HMS displays a value without its credential label. Never journal this set.
+async function profileDiagnosticSecrets(request) {
+  let timer;
+  try {
+    const storage = await Promise.race([request.frame().page().context().storageState(),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), 1000); })]);
+    const headers = request.headers();
+    const pairs = [...new URL(request.url()).searchParams, ...new URLSearchParams(request.postData() || ''),
+      ...Object.entries(headers)].map(([name, value]) => ({ name, value }));
+    const cookies = String(headers.cookie || '').split(';').map(part => {
+      const index = part.indexOf('=');
+      return index < 0 ? null : { name: part.slice(0, index).trim(), value: part.slice(index + 1).trim() };
+    }).filter(Boolean);
+    const auth = /^\s*(?:bearer|basic)\s+(.+)$/i.exec(headers.authorization || '')?.[1];
+    if (auth) pairs.push({ name: 'token', value: auth });
+    const secrets = collectHmsStorageStateSecretValues({
+      cookies: [...(storage.cookies || []), ...cookies],
+      origins: [...(storage.origins || []), { localStorage: pairs }],
+    });
+    if (secrets.length > 128 || secrets.some(secret => secret.length > 1024)) return null;
+    const variants = [...new Set(secrets.flatMap(secret => [secret, encodeURIComponent(secret), JSON.stringify(secret).slice(1, -1)]))]
+      .filter(Boolean).sort((a, b) => b.length - a.length);
+    if (variants.reduce((sum, value) => sum + value.length, 0) > 16384) return null;
+    return variants.length ? new RegExp(variants.map(value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g') : false;
+  } catch { return null; }
+  finally { clearTimeout(timer); }
+}
+
+function diagnosticMessageText(value, secrets = false) {
+  if (typeof value !== 'string' || value.length > 8192 || secrets === null) return null;
+  let text = secrets ? value.replace(secrets, '[redacted]') : value;
+  text = text.replace(/<[^>]*(?:>|$)/g, '')
     .replace(/https?:\/\/[^\s<>"']+/gi, value => {
       try { const url = new URL(value); url.username = ''; url.password = ''; url.search = ''; url.hash = ''; return url.toString(); }
       catch { return '[redacted URL]'; }
@@ -204,34 +207,25 @@ function diagnosticMessageText(value, fields) {
     .replace(/\b(?:set-cookie|cookie)\s*[:=]\s*[^\r\n]*/gi, 'cookie=[redacted]')
     .replace(/\b(authorization|auth|password|passwd|secret|token|jsessionid|session(?:[_-]?id)?|request[_-]?token|access[_-]?token|refresh[_-]?token|csrf(?:[_-]|\s+)?(?:tckt|ticket|token)|api[_-]?key|cookie)(["']?\s*[:=]\s*)(?:(?:bearer|basic)\s+)?(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;}]+)/gi, '$1$2[redacted]')
     .replace(/\b(bearer|authorization|auth)(?:\s+(?:bearer|basic|token))?\s+(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1 [redacted]')
-    .replace(/\b((?:(?:session|access|refresh|request|csrf)(?:[_-]|\s)?)?token|csrf(?:[_-]|\s+)?(?:tckt|ticket)|password|passwd|secret|jsessionid|session(?:[_-]?id)?)\s+(?:is(?:\s*[:=])?\s+)?(?:(?:bearer|basic)\s+)?(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1 [redacted]')
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+/gi, '[redacted email]')
-    .replace(/\+?\d[\d .()/-]{5,}\d/g, '[redacted phone]');
-  for (const key of ['firstName', 'lastName', 'mobile', 'email', 'phoneNumber']) {
-    const field = fields[key];
-    if (typeof field === 'string' && field) {
-      const literal = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      text = text.replace(new RegExp(literal, 'gi'), '[redacted]');
-    }
-  }
+    .replace(/\b((?:(?:session|access|refresh|request|csrf)(?:[_-]|\s)?)?token|csrf(?:[_-]|\s+)?(?:tckt|ticket)|password|passwd|secret|jsessionid|session(?:[_-]?id)?)\s+(?:is(?:\s*[:=])?\s+)?(?:(?:bearer|basic)\s+)?(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1 [redacted]');
   return text.slice(0, 512);
 }
 
-function profileFailureDiagnostics(data, parseStatus, fields) {
+function profileFailureDiagnostics(data, parseStatus, secrets) {
   const messages = data?.messages;
   const items = Array.isArray(messages) ? messages.slice(0, 5) : [];
   return {
-    version: 1, parseStatus,
+    version: 1, parseStatus, redactionContext: secrets === null ? 'unavailable' : 'available',
     nativeSuccess: data?.success === true ? true : data?.success === false ? false : null,
     messagesStatus: Array.isArray(messages) ? 'array' : messages == null ? 'absent' : 'invalid',
     messageCount: Array.isArray(messages) ? Math.min(messages.length, 5) : null,
     messagesTruncated: Array.isArray(messages) && messages.length > 5,
     messages: items.map(message => {
-      const msg = diagnosticMessageText(typeof message === 'string' ? message : message?.msg ?? message?.message, fields);
+      const msg = diagnosticMessageText(typeof message === 'string' ? message : message?.msg ?? message?.message, secrets);
       const numericCode = typeof message?.code === 'number' && Number.isFinite(message.code);
-      const code = diagnosticMessageText(numericCode ? String(message.code) : message?.code, fields);
-      return { type: diagnosticMessageText(message?.type, fields), code: numericCode && code === String(message.code) ? message.code : code,
-        questionType: diagnosticMessageText(message?.questiontype, fields), handler: diagnosticMessageText(message?.handler, fields), msg, text: msg };
+      const code = diagnosticMessageText(numericCode ? String(message.code) : message?.code, secrets);
+      return { type: diagnosticMessageText(message?.type, secrets), code: numericCode && code === String(message.code) ? message.code : code,
+        questionType: diagnosticMessageText(message?.questiontype, secrets), handler: diagnosticMessageText(message?.handler, secrets), msg, text: msg };
     }),
   };
 }
@@ -288,9 +282,12 @@ async function handleProfileSave(route, state) {
         write.response = { status: response.status(), success: response.status() === 200 && data?.success === true,
           nativeId: /^\d+$/.test(id) ? id : null, question };
         // Persist the response and any native ID before the browser receives it.
-        const diagnostics = write.fields.firstName === 'Proof' && write.fields.lastName === 'Labtest' &&
-          (!write.response.success || !write.response.nativeId) ? profileFailureDiagnostics(data, parseStatus, write.fields) : null;
+        const needsDiagnostics = write.fields.firstName === 'Proof' && write.fields.lastName === 'Labtest' &&
+          (!write.response.success || !write.response.nativeId);
+        if (needsDiagnostics) write.diagnosticSecrets = await profileDiagnosticSecrets(request);
+        const diagnostics = needsDiagnostics ? profileFailureDiagnostics(data, parseStatus, write.diagnosticSecrets) : null;
         if (diagnostics && parseStatus === 'parse_failed') {
+          write.parseFailed = true;
           const parseFailure = profileParseFailureDiagnostics(text, response, parseError);
           if (parseFailure) diagnostics.parseFailure = parseFailure;
         }
@@ -374,7 +371,14 @@ function profileCreateReadMayRequest(request, state = {}) {
 async function guardedSession(openSession, state, operation, options) {
   const result = await openSession(async page => {
     // Keep tracking until the owned session finishes closing, including cleanup.
-    page.on('dialog', () => { state.dialog = true; });
+    page.on('dialog', dialog => {
+      state.dialog = true;
+      if (state.write?.parseFailed && state.write.lastPhase === 'confirm_distinct') {
+        try { state.write.nativeDialog = { type: diagnosticMessageText(dialog.type(), state.write.diagnosticSecrets),
+          message: diagnosticMessageText(dialog.message(), state.write.diagnosticSecrets) }; }
+        catch { /* Diagnostic collection must not change the guard. */ }
+      }
+    });
     return operation(page);
   }, options);
   if (state.blocked || state.dialog) throw new Error('PROFILE_SESSION_GUARD_TRIPPED');
@@ -721,6 +725,48 @@ async function findDuplicateYes(page, timeout = 15000) {
   throw new Error('PROFILE_DUPLICATE_DIALOG_UNVERIFIED');
 }
 
+// Collect only visible native messages and window titles, after the response was
+// durably recorded and fulfilled. Never collect page HTML, input values or URLs
+// with query strings. This evidence is written only in the private journal.
+async function visibleProfileFailure(page, write) {
+  const location = frame => {
+    try {
+      const url = new URL(frame.url());
+      if (url.origin !== ORIGIN) return null;
+      const path = /^\/(?:web\/base(?:\/(?:loadmain|FSGSPF(?:\.[A-Za-z]+)?))?)?$/.test(url.pathname)
+        ? url.pathname : null;
+      return { origin: url.origin, path };
+    } catch { return null; }
+  };
+  try {
+    const frames = page.frames().slice(0, 8).filter(frame => location(frame));
+    // Give the client a brief chance to render the response, without waiting for a dialog.
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const snapshots = await Promise.all(frames.map(async frame => {
+      let timer;
+      try {
+        const data = await Promise.race([
+          frame.evaluate(() => {
+            const visible = el => Boolean(el.getClientRects().length) && getComputedStyle(el).visibility !== 'hidden';
+            const texts = selector => [...document.querySelectorAll(selector)].filter(visible)
+              .slice(0, 5).map(el => (el.innerText || '').trim()).filter(text => text && text.length <= 8192);
+            return { title: document.title.length <= 8192 ? document.title : '',
+              windows: texts('.x-window:not(.x-menu) .x-window-header-text'),
+              messages: texts('.x-message-box-text, .x-message-box .x-window-body, .x-form-invalid-msg, .x-error-msg, [role="alert"], [role="alertdialog"]') };
+          }),
+          new Promise(resolve => { timer = setTimeout(() => resolve(null), 2000); }),
+        ]);
+        return data ? { ...location(frame), title: diagnosticMessageText(data.title, write.diagnosticSecrets),
+          windows: data.windows.map(text => diagnosticMessageText(text, write.diagnosticSecrets)),
+          messages: data.messages.map(text => diagnosticMessageText(text, write.diagnosticSecrets)) }
+          : { ...location(frame), unavailable: true };
+      } catch { return { ...location(frame), unavailable: true }; }
+      finally { clearTimeout(timer); }
+    }));
+    return { frames: snapshots, nativeDialog: write.nativeDialog ?? null };
+  } catch { return { frames: null, nativeDialog: write.nativeDialog ?? null, unavailable: true }; }
+}
+
 async function savePreparedProfile(page, state, staged, commit) {
   const { frame, save, fields, previewDigest, confirmDuplicateName, review } = staged;
   const write = { ...commit, fields, previewDigest, confirmDuplicateName, review, phase: 'initial', lastPhase: null,
@@ -744,6 +790,11 @@ async function savePreparedProfile(page, state, staged, commit) {
     }
   } catch (error) { write.issue ??= issue(error); }
   finally { write.phase = 'closed'; }
+  if (write.parseFailed && write.callbackDrained && write.lastPhase === 'confirm_distinct' &&
+      typeof commit.recordFailureDiagnostics === 'function') {
+    try { await commit.recordFailureDiagnostics(await visibleProfileFailure(page, write)); }
+    catch { /* Collection and journal diagnostics never alter the held result. */ }
+  }
   const evidence = { attemptId: write.attemptId ?? null, phase: write.lastPhase,
     dispatched: write.dispatched, dispatchedPhases: [...write.dispatchedPhases], nativeId: write.response?.nativeId ?? null };
   if (!write.dispatched) return { outcome: 'not_dispatched', issue: write.issue || 'PROFILE_SAVE_NOT_DISPATCHED', ...evidence };
@@ -767,7 +818,7 @@ export async function prepareGuestProfile(input, options = {}) {
 }
 
 /** Trusted callbacks authorize and durably record both dispatch and response. */
-export async function createGuestProfile(input, { authorizeCandidate, dispatchCandidate, recordResponse, attemptId, ...options } = {}) {
+export async function createGuestProfile(input, { authorizeCandidate, dispatchCandidate, recordResponse, recordFailureDiagnostics, attemptId, ...options } = {}) {
   if (!/^[a-f0-9]{64}$/.test(input?.expectedPreviewDigest || '') ||
       typeof authorizeCandidate !== 'function' || typeof dispatchCandidate !== 'function' || typeof recordResponse !== 'function') {
     return { outcome: 'not_dispatched', issue: 'PROFILE_AUTHORIZATION_REQUIRED', attemptId: attemptId ?? null, dispatched: false };
@@ -779,7 +830,7 @@ export async function createGuestProfile(input, { authorizeCandidate, dispatchCa
     return { outcome: 'review_required', issue: 'PROFILE_PREVIEW_CHANGED', attemptId: attemptId ?? null, dispatched: false };
   }
   const result = await runStaged(input, options, (page, state, staged) =>
-    savePreparedProfile(page, state, staged, { authorizeCandidate, dispatchCandidate, recordResponse, attemptId }));
+    savePreparedProfile(page, state, staged, { authorizeCandidate, dispatchCandidate, recordResponse, recordFailureDiagnostics, attemptId }));
   if (result.outcome !== 'awaiting_readback') return result;
   let readback;
   try { readback = await readGuestProfile({ nativeId: result.nativeId }, options); }

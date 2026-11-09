@@ -142,8 +142,10 @@ async function buildResult(db: WorkTx, ctx: Context, item: ItemRow, source: Rese
         ['unknown', 'succeeded', 'failed'].includes(operation.status)))) return { status: 'invalid_source' };
   const checkedSource = recovery?.currentSource ?? source;
   if (!(await sourceMail(db, ctx, checkedSource))) return { status: 'invalid_source' };
-  const sourceChanged = draft.source.sourceHash !== checkedSource.sourceHash || Boolean(draft.prefill?.evidenceHash &&
-    draft.prefill.evidenceHash !== (await reservationArrivalEvidence(db, source.messageId)).hash);
+  // Drafts without a recorded attachment baseline need an explicit review too:
+  // there is no safe way to tell whether their current attachments were repaired.
+  const sourceChanged = draft.source.sourceHash !== checkedSource.sourceHash ||
+    draft.prefill?.evidenceHash !== (await reservationArrivalEvidence(db, source.messageId)).hash;
   if (sourceChanged && !allowSourceChanged && !recovery) return { status: 'invalid_source' };
   return { status: 'ok', draft: { ...draft, revision: item.revision }, revision: item.revision,
     revisionHead: item.revisionHead, seq: item.revisionSeq, ...(sourceChanged ? { sourceChanged: true } : {}) };
@@ -189,6 +191,9 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
 }): Promise<ReservationWorkflowV2StateResult> {
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
   const saved = await ctx.db.transaction(async (tx) => {
+    // Attachment repair takes this same lock. Capture a coherent source and
+    // attachment baseline before any staff edit can supersede prefill.
+    await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
     // Serialize v2 seeding for the email, even if competing runs infer different
     // legacy WorkItem kinds. Background reads may still add other-kind rows.
     await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
@@ -227,6 +232,7 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
     const existing = reservationWorkflowV2DraftOf(itemRow.state);
     if (existing) return buildResult(tx, ctx, itemRow, input.source, input.allowSourceChanged);
     if (hasReservationWorkflowV2Draft(itemRow.state)) return { status: 'invalid_state' as const };
+    const evidenceHash = (await reservationArrivalEvidence(tx, input.source.messageId)).hash;
     const draft = reservationWorkflowV2DraftSchema.parse({
       contractVersion: RESERVATION_WORKFLOW_V2_VERSION,
       schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
@@ -244,7 +250,8 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
       operationResults: [],
       fieldOverrides: {},
       errors: input.seed.errors ?? [],
-      ...(input.seed.prefill ? { prefill: input.seed.prefill } : {}),
+      prefill: { ...(input.seed.prefill ?? { status: 'complete', attemptId: null, attemptCount: 0,
+        startedAt: null, finishedAt: null }), evidenceHash },
     });
     const state = { ...itemRow.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft };
     // WorkItems can predate V2. Snapshot existing activity under the item lock
@@ -296,7 +303,7 @@ export async function markReservationWorkflowV2Queued(ctx: Context, input: Mutat
     if (current.status !== 'ok' || item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq)
       return current;
     const meta = current.draft.prefill;
-    if (!meta || meta.status !== 'idle') return current;
+    if (!meta || (meta.status !== 'idle' && !(meta.status === 'failed' && !meta.jobRunId))) return current;
     const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft,
       prefill: { ...meta, status: 'queued', jobRunId: input.jobRunId } });
     await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
@@ -402,7 +409,8 @@ export async function claimReservationWorkflowV2Prefill(ctx: Context, input: Mut
     const attemptId = randomUUID();
     const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, prefill: { status: 'running', phase: 'generation', attemptId,
       attemptCount: meta.attemptCount + 1, startedAt: new Date().toISOString(), finishedAt: null,
-      ...(input.jobFence && evidenceHash ? { jobRunId: input.jobFence.runId, evidenceHash } : {}) } });
+      evidenceHash: evidenceHash ?? current.draft.prefill?.evidenceHash,
+      ...(input.jobFence ? { jobRunId: input.jobFence.runId } : {}) } });
     await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
       updatedAt: new Date() }).where(eq(workItem.id, item.id));
     return { result: { ...current, draft }, claim: { attemptId, revision: item.revision, seq: item.revisionSeq,
@@ -630,10 +638,23 @@ export async function reconcileReservationWorkflowV2Source(ctx: Context, input: 
       return { status: 'invalid_value' as const, issue: 'native_operation_needs_reconciliation_before_source_rebind' };
     }
     const evidence = await reservationArrivalEvidence(tx, input.source.messageId);
+    const meta = current.draft.prefill;
+    // A source review can safely restart only an untouched, still-empty prefill.
+    // Keep completed proposals, edits, native work and uncertain outcomes bound
+    // to their original generation instead of silently replacing them.
+    const retryEmpty = Boolean(meta && ['idle', 'queued', 'running', 'failed'].includes(meta.status) &&
+      meta.phase !== 'native_checks' && ['partial', 'prefill_failed'].includes(current.draft.status) &&
+      !current.draft.proposal.content.requests.length && !current.draft.proposal.content.services.length &&
+      !current.draft.proposal.content.documents.length && !current.draft.observations.length &&
+      !current.draft.operationResults.length && !Object.keys(current.draft.fieldOverrides).length &&
+      !Object.keys(current.draft.staffReviews).length &&
+      !(await hasPrefillRetryActivity(tx, item.id, current.draft.generationId, item.revisionSeq)));
     const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, source: input.source,
       generationId: randomUUID(), revision: item.revision + 1,
-      prefill: { ...(current.draft.prefill ?? { attemptId: null, attemptCount: 0, startedAt: null }),
-        status: 'superseded', evidenceHash: evidence.hash, finishedAt: new Date().toISOString() } });
+      prefill: retryEmpty ? { status: 'failed', attemptId: null, attemptCount: 0, startedAt: null,
+        finishedAt: new Date().toISOString(), evidenceHash: evidence.hash }
+        : { ...(meta ?? { attemptId: null, attemptCount: 0, startedAt: null }),
+          status: 'superseded', evidenceHash: evidence.hash, finishedAt: new Date().toISOString() } });
     const nextState = { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft };
     const advanced = advancePaneRevision({ revision: item.revision, revisionHead: item.revisionHead,
       seq: item.revisionSeq, previousState: item.state, nextState, extractionId: item.extractionId });
@@ -641,6 +662,15 @@ export async function reconcileReservationWorkflowV2Source(ctx: Context, input: 
       type: 'field.edit', fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:source`,
       value: { action: 'reconcile_source', previousSourceHash: current.draft.source.sourceHash,
         sourceHash: input.source.sourceHash, evidenceHash: evidence.hash }, evidence: advanced.evidence });
+    if (retryEmpty) {
+      // The explicit source review is the new baseline, not an intervening edit.
+      const prefillActivityCount = await countPrefillRetryActivity(tx, item.id);
+      await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'ai', type: 'field.seed',
+        fieldPath: RESERVATION_WORKFLOW_V2_STATE_KEY, value: { contractVersion: RESERVATION_WORKFLOW_V2_VERSION,
+          status: draft.status, generationId: draft.generationId }, aiSource: RESERVATION_PREFILL_SCHEMA_VERSION,
+        evidence: { sourceMessageId: input.source.messageId, sourceHash: input.source.sourceHash,
+          prefillActivityCount, prefillActivitySeq: item.revisionSeq + 1 } });
+    }
     await tx.update(workItem).set({ state: nextState, revision: advanced.revision, revisionHead: advanced.revisionHead,
       revisionSeq: item.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, item.id));
     return { status: 'ok' as const, draft, revision: advanced.revision, revisionHead: advanced.revisionHead, seq: item.revisionSeq + 1 };
@@ -1194,7 +1224,7 @@ export async function commitReservationNativeCheck(ctx: Context, input: {
         current.draft.generationId !== input.batch.generationId || meta?.status !== 'running' ||
         meta.phase !== 'native_checks' || meta.jobRunId !== input.batch.jobFence.runId)
       return { status: 'stale_revision' as const };
-    if ((input.batch.signal.aborted || !input.check) && (input.batch.observations.length || input.batch.results.length))
+    if (input.batch.signal.aborted || (!input.check && (input.batch.observations.length || input.batch.results.length)))
       return { status: 'stale_revision' as const };
     const active = meta.nativeActive;
     if (input.begin && (active || input.check || input.finish || input.recoveryHeartbeat)) return { status: 'invalid_value' as const };
@@ -1235,12 +1265,15 @@ export async function commitReservationNativeCheck(ctx: Context, input: {
         nativeChecks: input.check && !alreadyChecked ? [...checks, input.check] : checks,
         ...(input.finish ? { status: 'complete', phase: 'complete', finishedAt: new Date().toISOString() } : {}) } });
     if (!next.success) return { status: 'invalid_value' as const };
+    input.batch.signal.throwIfAborted();
     if (input.check) await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'system', type: 'hms.lookup.finished',
       value: { check: input.check.key, status: input.check.status, observations: input.batch.observations.map((entry) => entry.ref),
         results: input.batch.results.map((entry) => entry.id) },
       evidence: { sourceHash: input.source.sourceHash, generationId: current.draft.generationId } });
+    input.batch.signal.throwIfAborted();
     await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next.data },
       updatedAt: new Date() }).where(eq(workItem.id, item.id));
+    input.batch.signal.throwIfAborted();
     return { ...current, draft: next.data };
   });
 }
