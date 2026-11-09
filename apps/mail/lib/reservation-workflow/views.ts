@@ -96,7 +96,7 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
 }
 
 /** Incomplete native searches are useful leads, never selectable identities. */
-export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: string, kind?: string): { label: string; detail: string }[] {
+export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: string, kind?: string): { ref: string; label: string; detail: string }[] {
   if (kind !== 'guest_candidate' && kind !== 'party_candidate') return [];
   const draft = snapshot.session.draft;
   const ownerPath = path.replace(/\/nativeSelectionRef$/, '');
@@ -144,8 +144,8 @@ export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: stri
     return rows.map(raw => {
       const row = record(raw);
       const label = text(row.name) || [text(row.firstName), text(row.lastName)].filter(Boolean).join(' ');
-      return { label: [label, text(row.nativeId), text(row.email)].filter(Boolean).join(' · '), detail };
+      return { ref: observation.ref, label: [label, text(row.nativeId), text(row.email)].filter(Boolean).join(' · '), detail };
     }).filter(row => row.label);
   });
-  return leads.filter((row, index) => leads.findIndex(other => other.label === row.label && other.detail === row.detail) === index);
+  return leads.filter((row, index) => leads.findIndex(other => other.ref === row.ref && other.label === row.label) === index);
 }
