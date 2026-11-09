@@ -147,6 +147,17 @@ function targetRows(body: Record<string, unknown>) {
     mode: targets?.mode, exclude: Array.isArray(targets?.exclude) ? targets.exclude : [] };
 }
 
+/** Empty optional search hints mean no constraint; they are not native field clears. */
+function normalizedTargetHint(hint: Record<string, unknown>): Record<string, unknown> {
+  const result = { ...hint };
+  for (const key of ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture']) {
+    const value = result[key];
+    if (value === NONE || value === null || typeof value === 'string' && !value.trim()) delete result[key];
+    else if (typeof value === 'string') result[key] = value.trim();
+  }
+  return result;
+}
+
 function validNative(value: unknown): value is HmsCloudNativePreimage {
   const native = record(value);
   return Boolean(native && native.source === 'record_view_ext_model' && native.propertyCode === 'HRCEN' &&
@@ -312,7 +323,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
   const hints = scope.include.map(record).filter((hint): hint is Record<string, unknown> => Boolean(hint));
   const hintIndex = hints.findIndex((hint) => hint.id === hintId);
   if (hintIndex < 0) return { outcome: 'needs_input', issue: 'amend_target_not_included' };
-  const hint = hints[hintIndex]!;
+  const hint = normalizedTargetHint(hints[hintIndex]!);
   if (scope.exclude.some((value) => record(value)?.id === hintId)) {
     return { outcome: 'needs_input', issue: 'amend_target_excluded' };
   }
@@ -574,8 +585,8 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReservationWorkflowV
       const hintUnknownPaths = new Set<string>();
       // Lookup consumes identity hints only. Candidate refs and change/pricing decisions
       // belong to later stages and must not prevent read-only native discovery.
-      const hint = rawHint && Object.fromEntries(['id', 'confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].map((key) =>
-        [key, effectiveTree(loaded.draft, `${hintPath}/${key}`, rawHint[key], hintUnknownPaths)]));
+      const hint = rawHint && normalizedTargetHint(Object.fromEntries(['id', 'confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].map((key) =>
+        [key, effectiveTree(loaded.draft, `${hintPath}/${key}`, rawHint[key], hintUnknownPaths)])));
       const hintId = text(hint?.id);
       if (!hint || !hintId) { lookups.push({ requestId: request.id, status: 'needs_input', issue: 'saved_target_hint_invalid' }); continue; }
       if (exclude.some((excluded) => record(excluded)?.id === hintId)) {

@@ -413,6 +413,7 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
         const candidate = rec(observation.result.candidate ?? observation.result.preimage ?? observation.result.stay);
         if (!Object.keys(candidate).length) return null;
         const query = filingPath ? observation.criteria : rec(observation.criteria.query), targetPath = input.fieldPath.slice(0, -'/suggestedRef'.length);
+        const hint = (entry: unknown) => typeof entry === 'string' ? entry.trim() || null : entry ?? null;
         for (const [field, queryField] of [['confirmation', 'confirmation'], ['guestName', 'guestName'],
           ['bookedArrival', 'bookedArrival'], ['bookedDeparture', 'bookedDeparture']] as const) {
           if (filingPath && field !== 'confirmation' && field !== 'bookedArrival') continue;
@@ -425,7 +426,7 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
               value = valueAt(draft, `${root}/body/targets/include/${index}/${field}`);
             }
           }
-          if ((value || null) !== expected) return null;
+          if (request.kind === 'amend' ? hint(value) !== hint(expected) : (value || null) !== expected) return null;
         }
         set(input.fieldPath, observation.ref);
       } else if (observation.kind === 'guest_candidate' && request.kind === 'create' && input.fieldPath.endsWith('/guest/nativeSelectionRef')) {
