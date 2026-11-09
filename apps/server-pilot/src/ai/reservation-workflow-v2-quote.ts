@@ -1,3 +1,4 @@
+import type { ReservationWorkflowV2SystemReadContext } from './reservation-workflow-v2-tools.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
@@ -41,6 +42,7 @@ export type ReservationWorkflowV2QuoteContext = {
   nativeBatch?: ReservationNativeCheckBatch;
   recovery?: ReservationRecoveryScope;
 };
+type ReservationWorkflowV2QuoteReadContext = ReservationWorkflowV2QuoteContext | ReservationWorkflowV2SystemReadContext;
 
 type QuoteBaseInput = {
   workItemId: string;
@@ -93,11 +95,11 @@ function quoteOperationExpired(result: QuoteOperationResult): boolean {
   return Number.isFinite(updatedAt) && Date.now() - updatedAt >= QUOTE_OPERATION_STALE_AFTER_MS;
 }
 
-function stateContext(ctx: ReservationWorkflowV2QuoteContext) {
+function stateContext(ctx: ReservationWorkflowV2QuoteReadContext) {
   return {
     db: ctx.db,
     transportId: ctx.transport.id,
-    userId: ctx.nativeBatch ? null : ctx.user.id,
+    userId: ctx.nativeBatch ? null : ctx.user!.id,
     propertyCode: ctx.property.propertyCode,
     nativeBatch: ctx.nativeBatch,
     recovery: ctx.recovery,
@@ -127,7 +129,7 @@ function quoteRequests(draft: ReservationWorkflowV2Draft, requestId?: string): Q
     request.kind === 'quote' && (!requestId || request.id === requestId));
 }
 
-async function loadCurrent(ctx: ReservationWorkflowV2QuoteContext, input: QuoteBaseInput) {
+async function loadCurrent(ctx: ReservationWorkflowV2QuoteReadContext, input: QuoteBaseInput) {
   const loaded = await getReservationWorkflowV2Draft(stateContext(ctx), {
     workItemId: input.workItemId,
     source: input.source,
@@ -588,7 +590,7 @@ function compileQuote(
   };
 }
 
-async function quoteTarget(ctx: ReservationWorkflowV2QuoteContext, input: QuoteBaseInput) {
+async function quoteTarget(ctx: ReservationWorkflowV2QuoteReadContext, input: QuoteBaseInput) {
   try {
     const result = await resolveHmsQuoteJobTarget({
       transportId: ctx.transport.id,
@@ -686,7 +688,7 @@ function matchingPreparedQuote(
 }
 
 async function persistObservation(
-  ctx: ReservationWorkflowV2QuoteContext,
+  ctx: ReservationWorkflowV2QuoteReadContext,
   input: QuoteBaseInput,
   observation: ReservationWorkflowV2Observation,
   operation?: QuoteOperationResult,
@@ -709,7 +711,7 @@ async function persistObservation(
 }
 
 async function persistResult(
-  ctx: ReservationWorkflowV2QuoteContext,
+  ctx: ReservationWorkflowV2QuoteReadContext,
   input: QuoteBaseInput,
   generationId: string,
   result: QuoteOperationResult,
@@ -788,7 +790,7 @@ export function quoteDiagnosticMatchesParty(
 }
 
 async function priceQuote(
-  ctx: ReservationWorkflowV2QuoteContext,
+  ctx: ReservationWorkflowV2QuoteReadContext,
   input: QuoteBaseInput,
   draft: ReservationWorkflowV2Draft,
   compiled: Extract<CompiledQuote, { status: 'ok' }>,
@@ -861,7 +863,7 @@ async function priceQuote(
 }
 
 async function lookupPartyCandidates(
-  ctx: ReservationWorkflowV2QuoteContext,
+  ctx: ReservationWorkflowV2QuoteReadContext,
   input: QuoteBaseInput,
   draft: ReservationWorkflowV2Draft,
   request: QuoteRequest,
@@ -970,7 +972,7 @@ async function lookupPartyCandidates(
 
 /** Read source-scoped native party choices and, when inputs resolve, current HMS quote availability. */
 export async function reservationWorkflowV2QuoteLookup(
-  ctx: ReservationWorkflowV2QuoteContext,
+  ctx: ReservationWorkflowV2QuoteReadContext,
   input: ReservationWorkflowV2QuoteLookupInput,
 ): Promise<Outcome> {
   const loaded = await loadCurrent(ctx, input);
@@ -1014,7 +1016,7 @@ export async function reservationWorkflowV2QuoteLookup(
 
 /** Prepare reuses a still-current native price; otherwise it repeats the existing read-only quote run. */
 export async function reservationWorkflowV2QuotePrepare(
-  ctx: ReservationWorkflowV2QuoteContext,
+  ctx: ReservationWorkflowV2QuoteReadContext,
   input: ReservationWorkflowV2QuotePrepareInput,
 ): Promise<Outcome> {
   const loaded = await loadCurrent(ctx, input);
