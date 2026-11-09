@@ -424,18 +424,21 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     executeServices(target, serviceId, reviewedPrepareRef) { if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.executeServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId, reviewedPrepareRef, idempotencyKey: crypto.randomUUID() }), true); },
   };
   const initialLookup = useRef(new Set<string>());
+  const prefill = current?.session.draft.prefill;
+  const arrivalChecksPending = ['queued', 'running'].includes(prefill?.status ?? '') ||
+    (prefill?.status === 'failed' && prefill.phase === 'native_checks');
   useEffect(() => {
-    if (!current || current.session.sourceChanged || ['queued', 'running'].includes(current.session.draft.prefill?.status ?? '') || !request || request.kind !== 'create' || busy || entry.pending.size || entry.conflict || preview) return;
+    if (!current || current.session.sourceChanged || arrivalChecksPending || !request || request.kind !== 'create' || busy || entry.pending.size || entry.conflict || preview) return;
     if (current.session.draft.prefill?.status !== 'superseded' &&
         current.session.draft.prefill?.nativeChecks?.some(check => check.key === `create:lookup:${request.id}`)) return;
     const lookupKey = `${key}:${request.id}:${current.session.draft.generationId}`;
     if (initialLookup.current.has(lookupKey)) return;
     const timer = setTimeout(() => { initialLookup.current.add(lookupKey); void commands.lookup().catch(() => {}); }, 700);
     return () => clearTimeout(timer);
-  }, [current, request, busy, changed, key, preview]);
+  }, [current, request, busy, changed, key, preview, arrivalChecksPending]);
   const autoDigest = useRef(new Map<string, string>());
   useEffect(() => {
-    if (!current || current.session.sourceChanged || ['queued', 'running'].includes(current.session.draft.prefill?.status ?? '') || !request || busy || entry.pending.size || uncommitted.size || entry.conflict || preview) return;
+    if (!current || current.session.sourceChanged || arrivalChecksPending || !request || busy || entry.pending.size || uncommitted.size || entry.conflict || preview) return;
     const body = record(effectiveAt(current, `${requestPath(request.id)}/body`));
     if (request.kind !== 'create' && request.kind !== 'quote') return;
     const digest = JSON.stringify({ generation: current.session.draft.generationId, body });
@@ -468,7 +471,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       }
     }, 700);
     return () => clearTimeout(timer);
-  }, [current, request, busy, changed, uncommitted, key, preview]);
+  }, [current, request, busy, changed, uncommitted, key, preview, arrivalChecksPending]);
 
   return { snapshot: current, readyForReply: () => mounted.current && active.current.key === key
       && active.current.epoch === source.selectionEpoch && entry.pending.size === 0 && !entry.conflict && entry.actionsPending === 0
