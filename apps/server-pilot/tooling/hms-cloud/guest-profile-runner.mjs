@@ -9,11 +9,13 @@ import {
   createGuestProfile as nativeCreate, prepareGuestProfile as nativePrepare, readGuestProfile as nativeRead,
   listGuestProfileCreationOptions as nativeListOptions, hasExtendedProfileFields, matchesProfileReadback,
   matchesProfileReview, profileBusinessFields, profileInputIssue, profilePreviewDigest, profileReviewDigest,
+  profileValuesEqual,
 } from './guest-profile-create.mjs';
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const validAttempt = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
-const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// Must match create.mjs: Postgres JSONB and clones reorder keys; authorize must not fail on order alone.
+const same = profileValuesEqual;
 const publicResult = ({ privateFailureDiagnostics: _private, ...result }) => result;
 const cleanIntent = value => value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
 const intentKey = fields => hash(['HRCEN', ...['firstName', 'lastName', 'mobile', 'email'].map(key => cleanIntent(fields[key]))]);
