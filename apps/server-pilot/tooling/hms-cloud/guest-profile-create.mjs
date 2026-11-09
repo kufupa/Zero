@@ -122,21 +122,30 @@ function parseProfileResponse(text) {
   return JSON.parse(json)?.pageData;
 }
 
-function diagnosticMessageText(value) {
+function diagnosticMessageText(value, fields) {
   if (typeof value !== 'string') return null;
-  const text = value.replace(/<[^>]*(?:>|$)/g, '')
+  let text = value.replace(/<[^>]*(?:>|$)/g, '')
     .replace(/https?:\/\/[^\s<>"']+/gi, value => {
       try { const url = new URL(value); url.username = ''; url.password = ''; url.search = ''; url.hash = ''; return url.toString(); }
       catch { return '[redacted URL]'; }
     })
     .replace(/\b(?:set-cookie|cookie)\s*[:=]\s*[^\r\n]*/gi, 'cookie=[redacted]')
-    .replace(/\b(authorization|auth|password|passwd|secret|token|jsessionid|session(?:[_-]?id)?|request[_-]?token|access[_-]?token|refresh[_-]?token|api[_-]?key|cookie)(["']?\s*[:=]\s*)(?:(?:bearer|basic)\s+)?(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi, '$1$2[redacted]')
-    .replace(/\b(bearer|authorization|auth)(?:\s+(?:bearer|basic|token))?\s+(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1 [redacted]')
-    .replace(/\b((?:(?:session|access|refresh|request|csrf)(?:[_-]|\s)?)?token|password|passwd|secret|jsessionid|session(?:[_-]?id)?)\s+(?:is\s+)?(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1 [redacted]');
+    .replace(/\b(authorization|auth|password|passwd|secret|token|jsessionid|session(?:[_-]?id)?|request[_-]?token|access[_-]?token|refresh[_-]?token|csrf(?:[_-]|\s+)?(?:tckt|ticket|token)|api[_-]?key|cookie)(["']?\s*[:=]\s*)(?:(?:bearer|basic)\s+)?(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;}]+)/gi, '$1$2[redacted]')
+    .replace(/\b(bearer|authorization|auth)(?:\s+(?:bearer|basic|token))?\s+(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1 [redacted]')
+    .replace(/\b((?:(?:session|access|refresh|request|csrf)(?:[_-]|\s)?)?token|csrf(?:[_-]|\s+)?(?:tckt|ticket)|password|passwd|secret|jsessionid|session(?:[_-]?id)?)\s+(?:is(?:\s*[:=])?\s+)?(?:(?:bearer|basic)\s+)?(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1 [redacted]')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+/gi, '[redacted email]')
+    .replace(/\+?\d[\d .()/-]{5,}\d/g, '[redacted phone]');
+  for (const key of ['firstName', 'lastName', 'mobile', 'email', 'phoneNumber']) {
+    const field = fields[key];
+    if (typeof field === 'string' && field) {
+      const literal = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      text = text.replace(new RegExp(literal, 'gi'), '[redacted]');
+    }
+  }
   return text.slice(0, 512);
 }
 
-function profileFailureDiagnostics(data, parseStatus) {
+function profileFailureDiagnostics(data, parseStatus, fields) {
   const messages = data?.messages;
   const items = Array.isArray(messages) ? messages.slice(0, 5) : [];
   return {
@@ -146,10 +155,11 @@ function profileFailureDiagnostics(data, parseStatus) {
     messageCount: Array.isArray(messages) ? Math.min(messages.length, 5) : null,
     messagesTruncated: Array.isArray(messages) && messages.length > 5,
     messages: items.map(message => {
-      const msg = diagnosticMessageText(typeof message === 'string' ? message : message?.msg ?? message?.message);
-      return { type: diagnosticMessageText(message?.type), code: typeof message?.code === 'number' && Number.isFinite(message.code)
-        ? message.code : diagnosticMessageText(message?.code), questionType: diagnosticMessageText(message?.questiontype),
-        handler: diagnosticMessageText(message?.handler), msg, text: msg };
+      const msg = diagnosticMessageText(typeof message === 'string' ? message : message?.msg ?? message?.message, fields);
+      const numericCode = typeof message?.code === 'number' && Number.isFinite(message.code);
+      const code = diagnosticMessageText(numericCode ? String(message.code) : message?.code, fields);
+      return { type: diagnosticMessageText(message?.type, fields), code: numericCode && code === String(message.code) ? message.code : code,
+        questionType: diagnosticMessageText(message?.questiontype, fields), handler: diagnosticMessageText(message?.handler, fields), msg, text: msg };
     }),
   };
 }
@@ -207,7 +217,7 @@ async function handleProfileSave(route, state) {
           nativeId: /^\d+$/.test(id) ? id : null, question };
         // Persist the response and any native ID before the browser receives it.
         const diagnostics = write.fields.firstName === 'Proof' && write.fields.lastName === 'Labtest' &&
-          (!write.response.success || !write.response.nativeId) ? profileFailureDiagnostics(data, parseStatus) : null;
+          (!write.response.success || !write.response.nativeId) ? profileFailureDiagnostics(data, parseStatus, write.fields) : null;
         await write.recordResponse(context, Object.freeze({ ...write.response, ...(diagnostics && { diagnostics }) }));
         if (write.phase !== 'closed') write.phase = question ? 'question' : 'finished';
         await route.fulfill({ response });
