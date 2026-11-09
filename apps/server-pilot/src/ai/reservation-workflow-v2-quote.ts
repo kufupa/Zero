@@ -188,7 +188,7 @@ function selectedParty(
   if ('issue' in named) return { reviewPaths: [], issue: `${role}_${named.issue}` };
   const name = cleanText(named.value);
   if (!name) {
-    if (partyLeaf.value === undefined || isNone(partyLeaf.value)) {
+    if (partyLeaf.value === null || partyLeaf.value === undefined || isNone(partyLeaf.value)) {
       const explicitlyUnset = raw !== undefined || partyLeaf.overridden;
       const reviewPaths = execute && explicitlyUnset && !reviewAccepted(draft, basePath) ? [basePath] : [];
       return { reviewPaths };
@@ -330,6 +330,7 @@ type CompiledQuote = {
   reviewPaths: string[];
   sourceRefs: string[];
   outputKinds: Array<'email_quote' | 'pdf_quote' | 'xlsx_quote'>;
+  strategyDefaulted: boolean;
 } | {
   status: 'needs_input' | 'needs_review' | 'unsupported';
   issue: string;
@@ -428,6 +429,7 @@ function compileQuote(
         issues.push(`${base}/roomCodes:native_room_codes_required`);
       } else if (rawRoomCodes.length) roomCodes = rawRoomCodes as string[];
     }
+    if (execute && !roomCodes?.length) issues.push(`${base}/roomCodes:native_room_selection_required`);
     const rateResult = resolved(path('groups', groupIndex, 'ratePlan'), group.ratePlan);
     const rawRate = rateResult && !('issue' in rateResult) ? rateResult.value : null;
     let rateCode: string | undefined;
@@ -501,7 +503,10 @@ function compileQuote(
   const rawStrategy = strategyResult && !('issue' in strategyResult) ? strategyResult.value : null;
   const strategy = typeof rawStrategy === 'string' ? rawStrategy.trim() : '';
   const strategies = new Set(['BAR', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR', 'DOML', 'OTHER', 'Government']);
-  if (!strategies.has(strategy)) issues.push(`${strategyPath}:supported_sales_strategy_required`);
+  // An unchosen sales strategy must not prevent read-only discovery. Use the existing
+  // public-rate search default without changing the draft or approving quote generation.
+  const strategyDefaulted = !execute && !strategy && (rawStrategy === null || rawStrategy === undefined);
+  if (!strategyDefaulted && !strategies.has(strategy)) issues.push(`${strategyPath}:supported_sales_strategy_required`);
 
   const attentionPath = path('client', 'attention');
   const emailPath = path('client', 'email');
@@ -551,7 +556,7 @@ function compileQuote(
     selectionEpoch: draft.revision,
     inputRevision: draft.revision,
     groups: nativeGroups,
-    salesStrategy: strategy === 'GOV' ? 'Government' : strategy,
+    salesStrategy: strategyDefaulted ? 'BAR' : strategy === 'GOV' ? 'Government' : strategy,
     company: company.party?.name ?? '',
     agency: agency.party?.name ?? '',
     attention,
@@ -579,7 +584,7 @@ function compileQuote(
     // Staff acknowledgement advances pane revisions without changing quote scope.
     inputDigest: hash({ sourceHash: draft.source.sourceHash, requestId: request.id,
       input: { ...input, selectionEpoch: 0, inputRevision: 0 } }),
-    reviewPaths: [...reviewPaths], sourceRefs, outputKinds,
+    reviewPaths: [...reviewPaths], sourceRefs, outputKinds, strategyDefaulted,
   };
 }
 
@@ -617,6 +622,8 @@ function quoteObservation(
     revisionRef: result.revisionRef ?? null,
     inputDigest,
     sourceHash: draft.source.sourceHash,
+    searchContext: { salesStrategy: compiled.input.salesStrategy,
+      strategySource: compiled.strategyDefaulted ? 'discovery_default' : 'draft' },
     nativeInputDigest: result.inputDigest ?? null,
     inputOverrides: quoteInputOverrides(draft, compiled.request.id),
     observedAt: new Date().toISOString(),
@@ -808,6 +815,8 @@ async function priceQuote(
     });
     const latest = [...diagnostics].reverse().find((diagnostic) => diagnostic.contextMatchesSelection);
     const failureDetails = {
+      searchContext: { salesStrategy: compiled.input.salesStrategy,
+        strategySource: compiled.strategyDefaulted ? 'discovery_default' : 'draft' },
       failureCode: cause.code,
       failurePhase: cause.phase ?? 'unknown',
       failureKind: cause.code === 'native_quote_no_matching_rate' ? 'requested_mismatch'
