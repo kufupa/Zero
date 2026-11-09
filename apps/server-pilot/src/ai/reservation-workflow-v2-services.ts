@@ -688,13 +688,14 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
       const ids = summaries.map(row => text(row.nativeId)).filter((id): id is string => Boolean(id && /^\d+$/.test(id)));
       if (ids.length !== summaries.length || new Set(ids).size !== ids.length || record(read.coverage)?.loaded !== ids.length ||
           record(read.coverage)?.reportedTotal !== ids.length) return null;
+      // Saved-row details leave the item field read-only; open the catalogue first.
+      const needsCatalogue = found.matches.some(row => savedValue(draft, pointer('proposal', 'content', 'services', row.serviceIndex, 'operation')) === 'add');
+      const listing = needsCatalogue ? record(await runTool({ tool: 'list', confirmation: stay.confirmation })) : null;
+      if (needsCatalogue && (listing?.outcome !== 'ok' || record(listing.coverage)?.complete !== true || !Array.isArray(listing.candidates))) return null;
       const detailed = ids.length ? record(await runTool({ tool: 'read', confirmation: stay.confirmation, detailIds: ids })) : read;
       const details = Array.isArray(detailed?.details) ? detailed.details : [];
       if (detailed?.outcome !== 'ok' || record(detailed.coverage)?.complete !== true || details.length !== ids.length ||
           ids.some(id => !details.some(row => record(row)?.nativeId === id))) return null;
-      const needsCatalogue = found.matches.some(row => savedValue(draft, pointer('proposal', 'content', 'services', row.serviceIndex, 'operation')) === 'add');
-      const listing = needsCatalogue ? record(await runTool({ tool: 'list', confirmation: stay.confirmation })) : null;
-      if (needsCatalogue && (listing?.outcome !== 'ok' || record(listing.coverage)?.complete !== true || !Array.isArray(listing.candidates))) return null;
       return { details, candidates: Array.isArray(listing?.candidates) ? listing.candidates : [] };
     }, { headless: true, blockServiceWorkers: true, signal: ctx.nativeBatch?.signal }));
     if (!native) return { status: 'needs_input', issue: 'saved_addon_read_incomplete' };
