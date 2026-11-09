@@ -417,12 +417,14 @@ export function buildReservationWorkflowV2CandidateReadPlan(input: {
   }
   // Preserve the original order within each priority. When a very large request hits the cap, look
   // up guests, explicit confirmations, and shared pricing/parties before less specific searches.
+  // Service previews currently have no WorkItem-independent reader, so run other reads first.
   const priority = (candidate: ReservationWorkflowV2CandidateRead): number => {
     if (candidate.kind === 'guest_candidate') return 0;
     if (candidate.kind === 'stay_candidate' && typeof candidate.criteria.confirmationOrGuestText === 'string' &&
         /^\d{6,10}-\d{1,2}$/.test(candidate.criteria.confirmationOrGuestText.trim())) return 1;
     if (candidate.kind === 'mail_candidate' && candidate.criteria.matchKind === 'exact_confirmation') return 1;
     if (candidate.kind === 'party_candidate' || candidate.kind === 'rate_availability') return 2;
+    if (candidate.kind === 'service_preview') return 4;
     return 3;
   };
   return plan.map((candidate, index) => ({ candidate, index }))
