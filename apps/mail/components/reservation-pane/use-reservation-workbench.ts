@@ -44,6 +44,21 @@ type Buffer = {
 };
 const buffers = new Map<string, Buffer>();
 const sourceKey = (source: ReservationSourceContext) => `${source.mailboxId}:${source.messageId}:${source.sourceHash}`;
+const guestAttemptKey = (source: ReservationSourceContext, requestId: string, allocationId: string) =>
+  `nava:guest-profile:${source.messageId}:${source.sourceHash}:${requestId}:${allocationId}`;
+function readGuestAttempt(source: ReservationSourceContext, requestId: string, allocationId: string): string | null {
+  try { return window.localStorage.getItem(guestAttemptKey(source, requestId, allocationId)); } catch { return null; }
+}
+function saveGuestAttempt(source: ReservationSourceContext, requestId: string, allocationId: string, operationId: string): boolean {
+  try {
+    const key = guestAttemptKey(source, requestId, allocationId);
+    window.localStorage.setItem(key, operationId);
+    return window.localStorage.getItem(key) === operationId;
+  } catch { return false; }
+}
+function clearGuestAttempt(source: ReservationSourceContext, requestId: string, allocationId: string) {
+  try { window.localStorage.removeItem(guestAttemptKey(source, requestId, allocationId)); } catch { /* A terminal result still remains in the draft. */ }
+}
 
 function notify(buffer: Buffer) { buffer.listeners.forEach(listener => listener()); }
 
@@ -234,6 +249,88 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     changeRows(change) { return run(context => client.changeRows({ ...context, ...change })); },
     selectNative(fieldPath, observationRef) { return run(context => client.selectNative({ ...context, requestId: requireRequest(), fieldPath, observationRef })); },
     lookup() { return run(context => client.lookup({ ...context, requestId: requireRequest() })); },
+    async guestProfileOptions(allocationId, field) {
+      const requestId = requireRequest();
+      let reply: Record<string, unknown> = {};
+      await run(async context => {
+        const next = await client.guestProfileOptions({ ...context, requestId, allocationId, field });
+        reply = record(next.workflowReply);
+        return next;
+      });
+      return reply;
+    },
+    createGuestProfile(allocationId, confirmDuplicateName = false) {
+      if (preview) return Promise.reject(new Error('Preview only. Profile creation is disabled.'));
+      if (uncommitted.size) return Promise.reject(new Error('Apply changed fields before creating a profile.'));
+      const requestId = requireRequest();
+      return run(async context => {
+        const previousAttempt = readGuestAttempt(context.source, requestId, allocationId);
+        const previousResult = previousAttempt && context.snapshot.operationResults.find(row => row.id === previousAttempt && row.workflow === 'guest_profile');
+        if (previousResult?.status === 'succeeded' || previousResult?.status === 'failed') clearGuestAttempt(context.source, requestId, allocationId);
+        else if (previousAttempt) throw new Error('Check the previous profile creation outcome before trying again.');
+        let current = context.snapshot;
+        const root = `${requestPath(requestId)}/body`;
+        const body = record(effectiveAt(current, root));
+        const allocations = Array.isArray(body.allocations) ? body.allocations.map(record) : [];
+        const index = allocations.findIndex(row => row.id === allocationId);
+        if (index < 0) throw new Error('This room changed. Review its guest before creating a profile.');
+        const guestPath = `${root}/allocations/${index}/guest`;
+        if (valueAt(current, `${guestPath}/profileIntent`) !== 'requested_new') throw new Error('Choose New profile first.');
+        // Go accepts staff-entered values only. Source suggestions still need their own acknowledgement.
+        for (const field of ['firstName', 'lastName', 'mobile', 'email', 'titleCode', 'phoneNumber', 'phoneTypeCode', 'emailTypeCode']) {
+          const path = `${guestPath}/${field}`;
+          const override = current.session.draft.fieldOverrides[path];
+          if (override?.state !== 'set' || typeof override.value !== 'string' || !override.value.trim() ||
+              current.session.draft.staffReviews[path]?.status === 'accepted') continue;
+          current = await client.review({ source: context.source, snapshot: current, fieldPath: path, decision: 'accepted', note: 'Entered by staff' });
+          apply(current, context.source, entry);
+          if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return current;
+        }
+        const prepared = await client.prepareGuestProfile({ source: context.source, snapshot: current, requestId, allocationId, confirmDuplicateName });
+        apply(prepared, context.source, entry);
+        const reply = record(prepared.workflowReply);
+        if (prepared.serviceNotice || reply.status !== 'prepared' || typeof reply.prepareRef !== 'string') return prepared;
+        if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return prepared;
+        if ([...entry.pending.keys()].some(path => path === guestPath || path.startsWith(`${guestPath}/`))) {
+          throw new Error('Guest details changed. Review them before creating the profile.');
+        }
+        const idempotencyKey = crypto.randomUUID();
+        if (!saveGuestAttempt(context.source, requestId, allocationId, idempotencyKey)) {
+          throw new Error('This device cannot retain the profile attempt for recovery. Profile creation is unavailable.');
+        }
+        const result = await client.createGuestProfile({ source: context.source, snapshot: prepared, requestId, allocationId,
+          confirmDuplicateName, prepareRef: reply.prepareRef, idempotencyKey });
+        const operation = result.operationResults.find(row => row.id === idempotencyKey);
+        if (operation?.status === 'succeeded' || operation?.status === 'failed') clearGuestAttempt(context.source, requestId, allocationId);
+        return result;
+      }, true);
+    },
+    guestProfilePending(allocationId) {
+      if (!request) return null;
+      const id = readGuestAttempt(source, request.id, allocationId);
+      const operation = id && current?.operationResults.find(row => row.id === id && row.workflow === 'guest_profile');
+      if (operation?.status === 'succeeded' || operation?.status === 'failed') return null;
+      return id;
+    },
+    checkGuestProfile(allocationId) {
+      const requestId = requireRequest();
+      const operationId = readGuestAttempt(source, requestId, allocationId);
+      if (!operationId) return Promise.reject(new Error('No pending profile attempt was found on this device.'));
+      return run(async context => {
+        const latest = await client.get(context);
+        apply(latest, context.source, entry);
+        const operation = latest.operationResults.find(row => row.id === operationId && row.workflow === 'guest_profile' &&
+          row.requestId === requestId && row.allocationId === allocationId);
+        if (!operation) throw new Error('Infor has not recorded the profile outcome yet. Check again later or contact support.');
+        if (operation.status === 'succeeded' || operation.status === 'failed') {
+          clearGuestAttempt(context.source, requestId, allocationId); return latest;
+        }
+        const result = await client.reconcile({ source: context.source, snapshot: latest, operationId });
+        const checked = result.operationResults.find(row => row.id === operationId);
+        if (checked?.status === 'succeeded' || checked?.status === 'failed') clearGuestAttempt(context.source, requestId, allocationId);
+        return result;
+      });
+    },
     prepare(allocationId) { if (uncommitted.size) return Promise.reject(new Error('Apply changed fields before checking Infor.')); return run(context => client.prepare({ ...context, requestId: requireRequest(), allocationId })); },
     review(scope, ids) { return run(context => client.reviewScope({ ...context, requestId: requireRequest(), scope, ids })); },
     execute(allocationId) { if (uncommitted.size) return Promise.reject(new Error('Apply changed fields before saving.')); if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.execute({ ...context, requestId: requireRequest(), allocationId, idempotencyKey: crypto.randomUUID() }), true); },

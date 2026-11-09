@@ -246,17 +246,106 @@ function Nights({ editor, sectionPath }: { editor: Editor; sectionPath: string }
   return <label className={styles.localField}>Nights<input value={Number.isInteger(nights) && nights > 0 ? String(nights) : ''} readOnly /></label>;
 }
 
-function GuestDetails({ editor, allocationPath }: { editor: Editor; allocationPath: string }) {
+function ProfileChoice({ editor, allocationId, guestPath, field, label, optionField, disabled }: {
+  editor: Editor; allocationId: string; guestPath: string; field: string; label: string;
+  optionField: 'title' | 'phoneType' | 'emailType'; disabled: boolean;
+}) {
+  const [options, setOptions] = useState<{ value: string; label: string }[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [message, setMessage] = useState('');
+  return <div>
+    <Field label={label} path={`${guestPath}/${field}`} editor={editor} options={options} disabled={disabled || !loaded} compact requireReview />
+    <button type="button" className={styles.linkButton} disabled={disabled} onClick={() => {
+      setMessage('');
+      void editor.commands.guestProfileOptions(allocationId, optionField).then(reply => {
+        const coverage = record(reply.coverage);
+        if (reply.outcome !== 'ok' || coverage.complete !== true || !Array.isArray(reply.options)) {
+          setMessage('Infor did not return a complete list.'); return;
+        }
+        setOptions(reply.options.map(record).flatMap(row => typeof row.code === 'string' && typeof row.label === 'string'
+          ? [{ value: row.code, label: `${row.code} · ${row.label}` }] : []));
+        setLoaded(true);
+      }).catch(() => setMessage('Could not load Infor choices.'));
+    }}>{loaded ? `Refresh ${label} choices` : `Load ${label} choices`}</button>
+    {message && <p className={styles.notice}>{message}</p>}
+  </div>;
+}
+
+function GuestDetails({ editor, allocationPath, allocationId, newProfile, disabled }: {
+  editor: Editor; allocationPath: string; allocationId: string; newProfile: boolean; disabled: boolean;
+}) {
+  const guestPath = `${allocationPath}/guest`;
+  const showMore = newProfile && ['titleCode', 'phoneTypeCode', 'phoneNumber', 'emailTypeCode']
+    .some(field => Boolean(text(valueAt(editor.snapshot, `${guestPath}/${field}`)).trim()));
   return <div className={styles.stack}>
-    <Field label="Last Name" path={`${allocationPath}/guest/lastName`} editor={editor} compact />
-    <Field label="First Name" path={`${allocationPath}/guest/firstName`} editor={editor} compact />
-    <Field label="E-mail Address" path={`${allocationPath}/guest/email`} editor={editor} type="email" compact />
+    <Field label="Last Name" path={`${guestPath}/lastName`} editor={editor} disabled={disabled} compact requireReview={newProfile} />
+    <Field label="First Name" path={`${guestPath}/firstName`} editor={editor} disabled={disabled} compact requireReview={newProfile} />
+    {newProfile && <Field label="Mobile Number" path={`${guestPath}/mobile`} editor={editor} type="tel" disabled={disabled} compact requireReview hint="Required for a new profile." />}
+    <Field label="E-mail Address" path={`${guestPath}/email`} editor={editor} type="email" disabled={disabled} compact requireReview={newProfile} />
     {editor.snapshot.issues.filter((issue) => issue.kind === 'guest_email_conflict' && issue.path === `${allocationPath}/guest/email`)
       .map((issue, index) => <p className={styles.notice} key={index}>{issue.explanation}</p>)}
-    <details className={styles.details}><summary>More guest details</summary>
-      <Field label="Mobile Number" path={`${allocationPath}/guest/mobile`} editor={editor} type="tel" disabled compact />
-      <p className={styles.note}>Matching details do not change the Infor profile.</p>
+    <details className={styles.details} open={showMore || undefined}><summary>More guest details</summary>
+      {newProfile ? <>
+        <ProfileChoice editor={editor} allocationId={allocationId} guestPath={guestPath} field="titleCode" label="Title" optionField="title" disabled={disabled} />
+        <ProfileChoice editor={editor} allocationId={allocationId} guestPath={guestPath} field="phoneTypeCode" label="Phone Type" optionField="phoneType" disabled={disabled} />
+        <Field label="Phone Number" path={`${guestPath}/phoneNumber`} editor={editor} type="tel" disabled={disabled} compact requireReview />
+        <ProfileChoice editor={editor} allocationId={allocationId} guestPath={guestPath} field="emailTypeCode" label="E-mail Type" optionField="emailType" disabled={disabled} />
+      </> : <><Field label="Mobile Number" path={`${guestPath}/mobile`} editor={editor} type="tel" disabled compact />
+        <p className={styles.note}>Matching details do not change the Infor profile.</p></>}
     </details>
+  </div>;
+}
+
+function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor; allocationPath: string; allocationId: string }) {
+  const guestPath = `${allocationPath}/guest`;
+  const newProfile = valueAt(editor.snapshot, `${guestPath}/profileIntent`) === 'requested_new';
+  const guest = record(effectiveAt(editor.snapshot, guestPath));
+  const operations = editor.snapshot.operationResults.filter(row => row.workflow === 'guest_profile' &&
+    row.requestId === editor.request.id && row.allocationId === allocationId);
+  const latest = operations.at(-1);
+  const localPending = editor.commands.guestProfilePending(allocationId);
+  const unknown = latest?.status === 'unknown' || Boolean(localPending);
+  const prepared = latest && editor.snapshot.session.draft.observations.find(row =>
+    Array.isArray(latest.observationRefs) && latest.observationRefs.includes(row.ref) && row.criteria.workflow === 'guest_profile_prepare');
+  const previous = record(record(prepared?.result).business).guest;
+  const previousGuest = record(previous);
+  const sameGuest = ['firstName', 'lastName', 'mobile', 'email'].every(field => text(guest[field]).trim() === text(previousGuest[field]).trim());
+  const duplicate = latest?.status === 'failed' && text(latest.summary).includes('PROFILE_NAME_ALREADY_EXISTS') && sameGuest;
+  const created = operations.find(row => row.status === 'succeeded');
+  const createdObservation = created && editor.snapshot.session.draft.observations.find(row =>
+    Array.isArray(created.observationRefs) && created.observationRefs.includes(row.ref) && row.criteria.workflow === 'guest_profile_create' && row.status === 'complete');
+  const createdRows = record(createdObservation?.result).candidates;
+  const nativeId = Array.isArray(createdRows) ? text(record(createdRows[0]).nativeId) : '';
+  const locked = editor.view.busy || Boolean(unknown);
+  const fields = ['firstName', 'lastName', 'mobile', 'email', 'titleCode', 'phoneNumber', 'phoneTypeCode', 'emailTypeCode'];
+  const pendingReview = fields.some(field => {
+    const path = `${guestPath}/${field}`, value = valueAt(editor.snapshot, path);
+    const override = editor.snapshot.session.draft.fieldOverrides[path];
+    return typeof value === 'string' && Boolean(value.trim()) && override?.state !== 'set' &&
+      editor.snapshot.session.draft.fieldReviewRequirements[path]?.required !== false &&
+      editor.snapshot.session.draft.staffReviews[path]?.status !== 'accepted';
+  });
+  const required = ['firstName', 'lastName', 'mobile'].every(field => text(guest[field]).trim());
+  return <div className={styles.stack}>
+    {newProfile ? <div className={styles.groupHeading}><strong>New guest profile</strong>
+      <button type="button" className={styles.linkButton} disabled={locked} onClick={() => void editor.commands.edit(`${guestPath}/profileIntent`, 'existing_or_unknown')}>Search instead</button></div>
+      : <div className={styles.guestProfileRow}><NativePicker label="Guest Profile" path={`${guestPath}/nativeSelectionRef`} editor={editor} kind="guest_candidate" disabled={locked} compact />
+        {!created && <button type="button" className={styles.linkButton} disabled={locked} onClick={() => void editor.commands.edit(`${guestPath}/profileIntent`, 'requested_new')}>+ New</button>}</div>}
+    {newProfile && <p className={styles.note}>Profile ID · Not created</p>}
+    {created && <p className={styles.note}>Profile ID · {nativeId || 'Verified in Infor'} ✓ Created</p>}
+    <GuestDetails editor={editor} allocationPath={allocationPath} allocationId={allocationId} newProfile={newProfile} disabled={locked} />
+    {unknown ? <div className={styles.notice}>Profile creation outcome is unknown. Check it before trying again.
+      <button type="button" disabled={editor.view.busy} onClick={() => void (localPending
+        ? editor.commands.checkGuestProfile(allocationId) : editor.commands.reconcile(text(latest?.id))).catch(() => {})}>Check outcome</button></div>
+      : newProfile && <>
+        {duplicate && <p className={styles.notice}>Infor found a profile with this name. Search for the existing guest, or create a different profile.</p>}
+        {pendingReview && <p className={styles.note}>Confirm the marked guest details before creating the profile.</p>}
+        <button type="button" className={styles.secondaryButton} disabled={locked || editor.view.preview || !required || pendingReview}
+          onClick={() => void editor.commands.createGuestProfile(allocationId, Boolean(duplicate)).catch(() => {})}>
+          {duplicate ? 'Create different profile' : 'Create profile & check price'}
+        </button>
+        <p className={styles.note}>The profile remains in Infor even if the reservation is not saved. The room price is checked when the booking details are ready.</p>
+      </>}
   </div>;
 }
 
@@ -346,8 +435,7 @@ export function CreateEditor(editor: Editor) {
                 })().finally(() => commands.setUncommitted(pending, false)).catch(() => {});
               }}><option value="">Choose guest</option>{unassigned.map((name, i) => <option key={`${name}-${i}`} value={i}>{name}</option>)}</select>
             </label>}
-            <NativePicker label="Guest Profile" path={`${allocationPath}/guest/nativeSelectionRef`} editor={editor} kind="guest_candidate" compact />
-            <GuestDetails editor={editor} allocationPath={allocationPath} />
+            <GuestProfile editor={editor} allocationPath={allocationPath} allocationId={allocationId} />
             <Price editor={editor} allocationId={allocationId} />
             {guestOptIn === true && <p className={styles.notice}>Guest marketing opt-in needs Infor.</p>}
             <details open={Boolean(exceptions) || undefined} className={styles.details}>
