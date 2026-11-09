@@ -305,7 +305,14 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         const result = await client.createGuestProfile({ source: context.source, snapshot: prepared, requestId, allocationId,
           confirmDuplicateName, prepareRef: reply.prepareRef, idempotencyKey });
         const operation = result.operationResults.find(row => row.id === idempotencyKey);
-        if (operation?.status === 'succeeded' || operation?.status === 'failed') clearGuestAttempt(context.source, requestId, allocationId);
+        const response = record(result.workflowReply);
+        // These replies are returned before the server claims or dispatches this attempt.
+        // A failed refresh or any uncertain reply must retain the recovery hold.
+        const rejectedBeforeClaim = ['needs_prepare', 'stale_revision', 'wrong_property', 'not_found', 'invalid_source', 'invalid_value']
+          .includes(text(response.status)) || (response.status === 'refused' &&
+            ['authenticated_staff_session_required', 'guest_profile_write_flag_off'].includes(text(response.issue)));
+        if (operation?.status === 'succeeded' || operation?.status === 'failed' ||
+            (rejectedBeforeClaim && !result.loadError && !operation)) clearGuestAttempt(context.source, requestId, allocationId);
         return result;
       }, true).finally(() => guestCreatesInFlight.delete(inFlightKey));
     },
