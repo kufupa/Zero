@@ -653,6 +653,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   const utcHour = now.getUTCHours();
   const inStaffHours = utcHour >= startHour && utcHour < endHour;
   const higherTierRun = alias(aiWorkflowRun, 'higher_tier_hms_run');
+  const busyArrival = alias(aiWorkflowRun, 'busy_arrival_run');
   const sameHmsSlot = or(
     eq(higherTierRun.transportId, aiWorkflowRun.transportId),
     ...ACTIVE_HMS_TRANSPORT_GROUPS.map((transportIds) =>
@@ -708,6 +709,11 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
     hmsWriteClaim ? undefined : ne(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
     ...scope,
     devGate,
+    // A busy arrival must not hide unrelated jobs behind it in the shared lane.
+    or(ne(aiWorkflowRun.runKind, 'reservation_prefill'), notExists(db.select({ id: busyArrival.id })
+      .from(busyArrival).where(and(eq(busyArrival.runKind, 'reservation_prefill'),
+        eq(busyArrival.transportId, aiWorkflowRun.transportId), ne(busyArrival.id, aiWorkflowRun.id),
+        inArray(busyArrival.state, ['claimed', 'running']), gt(busyArrival.updatedAt, staleBefore))))),
     or(
       and(
         inArray(aiWorkflowRun.state, hmsWriteClaim ? ['queued'] : ['queued', 'retry_wait']),
@@ -788,6 +794,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
       }
 
       const isReclaim = candidate.state === 'claimed' || candidate.state === 'running';
+      let arrivalStarts: string[] | undefined;
       if (candidate.runKind === 'reservation_prefill') {
         // A transactional mailbox lock closes the race between workers claiming different arrivals.
         const lockRows = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(
@@ -805,15 +812,25 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
             finishedAt: now, updatedAt: now }).where(eq(aiWorkflowRun.id, candidate.id));
           continue;
         }
-        const [hourly] = await tx.select({ count: sql<number>`count(*)::integer` }).from(aiWorkflowRun).where(and(
+        const windowStart = new Date(now.getTime() - 60 * 60_000);
+        const hourly = await tx.select({ metrics: aiWorkflowRun.metrics, startedAt: aiWorkflowRun.startedAt }).from(aiWorkflowRun).where(and(
           eq(aiWorkflowRun.runKind, 'reservation_prefill'), eq(aiWorkflowRun.transportId, candidate.transportId),
-          gte(aiWorkflowRun.startedAt, new Date(now.getTime() - 60 * 60_000))));
-        if (!isReclaim && Number(hourly?.count ?? 0) >= 30) {
+          gte(aiWorkflowRun.updatedAt, windowStart)));
+        const recentStarts = (metrics: Record<string, unknown> | null, startedAt: Date | null) => {
+          const recorded = metrics?.arrivalStarts;
+          return Array.isArray(recorded) ? recorded.filter((value): value is string => typeof value === 'string' &&
+            Number.isFinite(Date.parse(value)) && Date.parse(value) >= windowStart.getTime())
+            : startedAt && startedAt >= windowStart ? [startedAt.toISOString()] : [];
+        };
+        // Every execution can spend two model calls. Count retries and lease reclaims too.
+        if (hourly.reduce((total, row) => total + recentStarts(row.metrics, row.startedAt).length, 0) >= 30) {
           await tx.update(aiWorkflowRun).set({ nextRunAt: new Date(now.getTime() + 5 * 60_000), updatedAt: now,
+            ...(isReclaim ? { state: 'retry_wait' as const, claimOwner: null, claimToken: null, deadlineAt: null } : {}),
             metrics: { ...candidate.metrics, phase: 'deferred', reason: 'hourly_model_budget' } })
             .where(eq(aiWorkflowRun.id, candidate.id));
           continue;
         }
+        arrivalStarts = [...recentStarts(candidate.metrics, candidate.startedAt), now.toISOString()];
       }
       const reclaimCount =
         isReclaim && typeof candidate.metrics === 'object' && candidate.metrics !== null
@@ -852,13 +869,14 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
           heartbeatAt: now,
           deadlineAt,
           updatedAt: now,
-          ...(reclaimCount !== undefined
+          ...(reclaimCount !== undefined || arrivalStarts
             ? {
                 metrics: {
                   ...(typeof candidate.metrics === 'object' && candidate.metrics !== null
                     ? (candidate.metrics as Record<string, unknown>)
                     : {}),
-                  reclaimCount,
+                  ...(reclaimCount !== undefined ? { reclaimCount } : {}),
+                  ...(arrivalStarts ? { arrivalStarts } : {}),
                 },
               }
             : {}),

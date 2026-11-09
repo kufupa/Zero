@@ -57,7 +57,7 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
               rank[newMeta?.status ?? 'idle'] < rank[oldMeta?.status ?? 'idle'])) return current;
         return next;
       });
-      if (next.session.draft.prefill?.status === 'running' || next.session.draft.prefill?.status === 'queued') {
+      if (!next.session.sourceChanged && (next.session.draft.prefill?.status === 'running' || next.session.draft.prefill?.status === 'queued')) {
         if (++refreshCount > 900) { setLoadError('Prefill is still processing. Reopen this email to check progress; your draft is retained.'); return; }
         refreshTimer = setTimeout(() => {
           void client.get({ source, snapshot: next }).then(acceptPrefill).catch(() => {
@@ -69,7 +69,7 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
     request.current.promise.then((next) => {
       if (!live || activeSource.current !== key) return;
       setSnapshot(next);
-      if (!next.session.draft.prefill || next.session.draft.prefill.status === 'idle') {
+      if (!next.session.sourceChanged && (!next.session.draft.prefill || next.session.draft.prefill.status === 'idle')) {
         void client.prefill({ source, snapshot: next }).then(acceptPrefill).catch((error: unknown) => {
           if (!live || activeSource.current !== key) return;
           setLoadError(error instanceof Error ? error.message : 'Prefill did not finish. Your editable draft is available.');

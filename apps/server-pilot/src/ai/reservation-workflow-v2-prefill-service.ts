@@ -6,6 +6,7 @@ import { guardCenturionHmsMailboxOrigin } from '../hms/mailbox-hms-origin-bind.j
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { reservationArrivalEnabled } from './reservation-workflow-v2-arrival.js';
+import { reservationArrivalEvidence } from './reservation-workflow-v2-evidence.js';
 import { markAiRunDeadLetter, markAiRunRetry, markAiRunSucceeded, type AiRunFence, type AiWorkflowRun } from './run-ledger.js';
 import { initializeReservationWorkflowV2Draft } from './reservation-workflow-v2-state.js';
 import type { ReservationWorkflowV2ItemInput } from './reservation-workflow-v2-contract.js';
@@ -65,6 +66,12 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
     const generated = await runReservationWorkflowV2Prefill({ db: scoped.db, transportId: scoped.transportId,
       propertyCode: scoped.propertyCode, source: input.source, selection, mailboxAddress, env: modelEnv,
       signal, adapter: observedPrefillAdapter(createAzureExtractionAdapter(modelEnv), input.source.messageId, modelEnv.EXTRACTION_REASONING_EFFORT) });
+    const { missing } = await reservationArrivalEvidence(scoped.db, input.source.messageId);
+    if (missing.length) {
+      generated.status = 'partial';
+      generated.errors = [...(generated.errors ?? []).slice(0, 99), { stage: 'lookup', code: 'missing_attachment',
+        message: `Some attachments could not be copied: ${missing.map((entry) => entry.fileName || entry.role).join(', ')}`.slice(0, 1000) }];
+    }
     const failed = !generated.sourceBound || (generated.skippedReason !== undefined && generated.skippedReason !== 'self_prestay') ||
       (generated.errors ?? []).some((error) => error.stage === 'extract' || error.stage === 'synthesis');
     return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: claimed.claim, failed, jobFence,
@@ -98,11 +105,13 @@ export async function executeReservationArrival(input: {
     .where(and(eq(message.id, run.triggerMessageId), eq(message.threadId, run.threadId),
       eq(message.transportId, run.transportId))).limit(1);
   const sourceHash = run.metrics?.sourceHash;
+  const evidenceHash = run.metrics?.evidenceHash;
   const arrivedAt = run.metrics?.arrivedAt;
   const origin = await guardCenturionHmsMailboxOrigin({ transportId: run.transportId,
     threadId: run.threadId, messageId: run.triggerMessageId });
   if (resolved.kind !== 'property' || resolved.property.propertyCode !== 'HRCEN' || !origin.ok || !row ||
-      typeof sourceHash !== 'string' || typeof arrivedAt !== 'string' || !row.arrivedAt ||
+      typeof sourceHash !== 'string' || typeof evidenceHash !== 'string' || typeof arrivedAt !== 'string' || !row.arrivedAt ||
+      (await reservationArrivalEvidence(db, run.triggerMessageId)).hash !== evidenceHash ||
       row.arrivedAt.toISOString() !== arrivedAt || staffQuoteSourceHash(row) !== sourceHash) {
     await markAiRunDeadLetter({ ...fence, expectedStates: ['running'], lastError: 'arrival source binding changed',
       failureClass: 'POLICY_BLOCK' }, db);

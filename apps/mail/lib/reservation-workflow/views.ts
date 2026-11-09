@@ -31,7 +31,8 @@ export function snapshotMatchesSource(snapshot: ReservationPaneSnapshot | null, 
   const draft = snapshot?.session.draft;
   return Boolean(draft && draft.transportId === source.mailboxId && draft.propertyCode === source.propertyId
     && draft.source.messageId === source.messageId && draft.source.threadId === source.threadId
-    && draft.source.sourceHash === source.sourceHash && snapshot?.sourceMessageId === source.messageId);
+    && (draft.source.sourceHash === source.sourceHash || snapshot?.session.sourceChanged === true)
+    && snapshot?.sourceMessageId === source.messageId);
 }
 export const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 export const text = (v: unknown): string => v == null ? '' : typeof v === 'object' ? String(record(v).name ?? record(v).code ?? '') : String(v);

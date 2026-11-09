@@ -14,6 +14,8 @@ export function reusableContent(a: Record<string, unknown>, b: Record<string, un
   const left = a as unknown as SyncObservationV1,
     right = b as unknown as SyncObservationV1;
   if (
+    (left.optionalMissing?.length ?? 0) > 0 ||
+    (right.optionalMissing?.length ?? 0) > 0 ||
     !left.contentIdentity ||
     !right.contentIdentity ||
     stableJson(left.contentIdentity) !== stableJson(right.contentIdentity)

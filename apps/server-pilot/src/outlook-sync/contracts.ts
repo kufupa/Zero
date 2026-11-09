@@ -85,6 +85,8 @@ export const syncObservationV1 = z
       })
       .strict(),
     requiredArtifactRoles: z.array(artifactRole),
+    optionalMissing: z.array(z.object({ role: artifactRole, fileName: z.string().max(1024).nullable() }).strict()).max(100).optional(),
+    optionalRepairAfter: instant.optional(),
     contentIdentity: z
       .object({
         sha256: z.string().regex(/^[0-9a-f]{64}$/),
@@ -102,7 +104,14 @@ export const syncObservationV1 = z
       .strict()
       .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    const missing = value.optionalMissing ?? [];
+    if (new Set(missing.map((item) => item.role)).size !== missing.length ||
+        missing.some((item) => !item.role.startsWith('attachment:') || !value.requiredArtifactRoles.includes(item.role))) {
+      ctx.addIssue({ code: 'custom', message: 'Missing roles must be unique declared attachments' });
+    }
+  });
 export type SyncObservationV1 = z.infer<typeof syncObservationV1>;
 export const syncManifestV1 = z
   .object({

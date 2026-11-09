@@ -7,6 +7,7 @@ import { preStaySourceText } from './existing-stay-information.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { enqueueAiRun, NOT_APPLICABLE_MODEL_ID } from './run-ledger.js';
+import { reservationArrivalEvidence } from './reservation-workflow-v2-evidence.js';
 
 export const RESERVATION_ARRIVAL_VERSION = 'reservation-prefill/1';
 export const reservationArrivalEnabled = () => process.env.RESERVATION_V2_ARRIVAL_PREFILL === 'on';
@@ -35,8 +36,9 @@ export async function enqueueReservationArrival(db: DB, input: {
   if (/@legacyhotels\.(?:co\.za|com)\s*>?$/i.test(row.fromAddress.trim()) &&
       /^(?:re:\s*|fw(?:d)?:\s*)*(?:new\s+|updated\s+)?function\s+sheet\b/i.test(row.subject?.trim() ?? '')) return null;
   const sourceHash = staffQuoteSourceHash(row);
+  const evidence = await reservationArrivalEvidence(db, row.id);
   return enqueueAiRun({ transportId: input.transportId, threadId: row.threadId, triggerMessageId: row.id,
-    runKind: 'reservation_prefill', idempotencyKey: `reservation-prefill:${input.transportId}:${row.id}:${sourceHash}`,
+    runKind: 'reservation_prefill', idempotencyKey: `reservation-prefill:${input.transportId}:${row.id}:${sourceHash}:${evidence.hash}`,
     modelId: NOT_APPLICABLE_MODEL_ID, promptVersion: RESERVATION_ARRIVAL_VERSION,
-    priority: input.priority ?? 0, metrics: { sourceHash, arrivedAt: row.arrivedAt.toISOString(), phase: 'queued' } }, db);
+    priority: input.priority ?? 0, metrics: { sourceHash, evidenceHash: evidence.hash, arrivedAt: row.arrivedAt.toISOString(), phase: 'queued' } }, db);
 }

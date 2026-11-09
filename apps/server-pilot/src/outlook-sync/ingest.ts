@@ -25,7 +25,10 @@ export function requiredArtifacts(
   if (!observation.requiredArtifactRoles.length)
     throw new SyncIngestionGap('MISSING_REQUIRED_ARTIFACT');
   const selected: IngestionArtifact[] = [];
+  const evidence = syncObservationV1.parse(observation.evidence);
+  const missing = new Set((evidence.optionalMissing ?? []).map((item) => item.role));
   for (const role of observation.requiredArtifactRoles) {
+    if (missing.has(role) && role.startsWith('attachment:')) continue;
     const candidates = artifacts
       .filter((a) => a.role === role)
       .sort((a, b) => b.version - a.version);
@@ -76,6 +79,8 @@ export async function buildOutlookHistoryInput(
   const selected = requiredArtifacts(observation, artifacts);
   if (!selected.some((a) => a.role === 'original-msg'))
     throw new SyncIngestionGap('MISSING_ORIGINAL_MSG');
+  if (!selected.some((a) => a.role === 'body-text' || a.role === 'body-html'))
+    throw new SyncIngestionGap('MISSING_BODY_PROJECTION');
   const projections = new Map<string, string>();
   const receipts: { role: string; artifactId: string; receipt: SyncSealedArtifact }[] = [];
   for (const artifact of selected) {
@@ -150,6 +155,7 @@ export async function buildOutlookHistoryInput(
         transportHeaders:
           projections.get('transport-headers') ?? evidence.semantic.transportHeaders,
         artifacts: receipts,
+        optionalMissing: evidence.optionalMissing ?? [],
       },
     },
   };

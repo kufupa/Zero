@@ -7,6 +7,8 @@ import {
   pendingObservations,
   recordLiveHint,
   reportObservationGap,
+  reportOptionalAttachmentGaps,
+  resolveOptionalAttachmentRoles,
   enrichObservation,
   renewFinalizationClaim,
 } from '../outlook-sync/ledger.js';
@@ -54,6 +56,8 @@ const uploadInput = nativeFenced.extend({
     .string()
     .regex(/^[A-Za-z0-9_-]{1,64}$/)
     .optional(),
+  optionalMissing: z.array(z.object({ role: z.string().min(1).max(256), fileName: z.string().max(1024).nullable() }).strict()).max(100).optional(),
+  resolvedAttachmentRoles: z.array(z.string().max(256)).max(1000).optional(),
   pending: z.boolean().optional(),
   manifest: syncManifestV1.optional(),
   artifactId: z.string().min(1).max(512).optional(),
@@ -262,6 +266,14 @@ export function createOutlookSyncNativeHandler(
             input.observationId,
             input.observation,
           );
+          return Response.json(result, { headers: { 'cache-control': 'no-store' } });
+        }
+        if (input.observationId && input.resolvedAttachmentRoles) {
+          result = await resolveOptionalAttachmentRoles(db, verified.deviceId, input, input.observationId, input.resolvedAttachmentRoles);
+          return Response.json(result, { headers: { 'cache-control': 'no-store' } });
+        }
+        if (input.observationId && input.optionalMissing) {
+          result = await reportOptionalAttachmentGaps(db, verified.deviceId, input, input.observationId, input.optionalMissing);
           return Response.json(result, { headers: { 'cache-control': 'no-store' } });
         }
         if (input.observationId && input.availability) {

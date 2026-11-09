@@ -35,6 +35,7 @@ export type ReservationAttachmentView = {
 
 export type ReservationWorkflowV2Session = {
   draft: ReservationWorkflowV2Draft;
+  sourceChanged?: boolean;
   revision: number;
   revisionHead: number;
   seq: number;
@@ -126,6 +127,7 @@ export interface ReservationWorkflowClient {
   selectNative(input: ReservationCommandContext & { requestId: string; fieldPath: string; observationRef: string }): Promise<ReservationPaneSnapshot>;
   reviewScope(input: ReservationCommandContext & { requestId: string; scope: 'request' | 'allocations' | 'targets' | 'services' | 'documents'; ids: string[] }): Promise<ReservationPaneSnapshot>;
   get(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;
+  reconcileSource(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;
   edit(input: ReservationEditCommand): Promise<ReservationPaneSnapshot>;
   review(input: ReservationReviewCommand): Promise<ReservationPaneSnapshot>;
   undo(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;

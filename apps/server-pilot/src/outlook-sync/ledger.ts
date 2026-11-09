@@ -12,6 +12,7 @@ import {
 } from './quota.js';
 import {
   nativeInventoryInput,
+  syncObservationV1,
   syncManifestV1,
   type NativeSyncScope,
   type SyncManifestV1,
@@ -39,6 +40,14 @@ const stableJson = (value: unknown): string =>
         )
       : v,
   );
+const sameDiscoveredRoles = (left: string[], right: string[]) => {
+  if (stableJson(left) === stableJson(right)) return true;
+  const hasPlaceholder = (roles: string[]) => roles.filter((role) => role.startsWith('attachment:')).length === 1 &&
+    roles.includes('attachment:unavailable');
+  return (hasPlaceholder(left) || hasPlaceholder(right)) &&
+    stableJson(left.filter((role) => !role.startsWith('attachment:'))) ===
+      stableJson(right.filter((role) => !role.startsWith('attachment:')));
+};
 
 export async function reuseObservationArtifacts(
   db: DB,
@@ -170,7 +179,8 @@ export async function refreshSourceSummary(db: DB, sourceId: string, affectedIds
         eligible: isExportEligible(source, o),
         retained: o.exportState === 'retained',
         committed: o.ingestionState === 'committed',
-        gap: o.availability !== 'available' || o.ingestionState === 'attention',
+        gap: o.availability !== 'available' || o.ingestionState === 'attention' ||
+          (syncObservationV1.parse(o.evidence).optionalMissing?.length ?? 0) > 0,
       },
       old = o.summaryCache;
     if (!next.eligible && o.exportState !== 'retained')
@@ -449,6 +459,7 @@ export async function recordInventory(
     const historyMove = { discovered: 0, retained: 0, committed: 0, gaps: 0 };
     for (const o of input.observations) {
       if (
+        o.optionalMissing !== undefined || o.optionalRepairAfter !== undefined ||
         o.locator.storeId !== s.storeId ||
         o.locator.rootEntryId !== s.rootEntryId ||
         o.event.isUnsent
@@ -486,8 +497,8 @@ export async function recordInventory(
           >;
           if (
             o.semanticReady &&
-            stableJson([old.semantic, old.requiredArtifactRoles]) !==
-              stableJson([o.semantic, o.requiredArtifactRoles])
+            (stableJson(old.semantic) !== stableJson(o.semantic) ||
+              !sameDiscoveredRoles(old.requiredArtifactRoles, o.requiredArtifactRoles))
           )
             throw new SyncDeniedError();
           await t
@@ -505,7 +516,8 @@ export async function recordInventory(
               eligible: cached.eligible ?? true,
               retained: obs.exportState === 'retained',
               committed: obs.ingestionState === 'committed',
-              gap: obs.availability !== 'available' || obs.ingestionState === 'attention',
+              gap: obs.availability !== 'available' || obs.ingestionState === 'attention' ||
+                (syncObservationV1.parse(obs.evidence).optionalMissing?.length ?? 0) > 0,
             }
           : null;
       const unchanged =
@@ -822,9 +834,11 @@ async function refreshObservation(db: DB, id: string) {
     .select()
     .from(artifactTable)
     .where(eq(artifactTable.observationId, o.artifactOrigin?.observationId ?? id));
+  const missing = new Set((syncObservationV1.parse(o.evidence).optionalMissing ?? []).map((item) => item.role));
   const retained =
     o.requiredArtifactRoles.length > 0 &&
     o.requiredArtifactRoles.every((role) =>
+      (role.startsWith('attachment:') && missing.has(role)) ||
       artifacts.some((a) => a.role === role && a.sealedKey && a.acceptedAt),
     );
   await db
@@ -890,7 +904,7 @@ export async function pendingObservations(db: DB, deviceId: string, scope: Nativ
     const enrichingHistory = remainingMetadata.length > 0;
     // Global metadata ordering is server-owned; native keeps only this bounded page of references.
     const rows = await t.execute(
-      sql`select o.id,o.semantic_version,o.evidence, ((o.evidence->>'semanticReady')='false' and (o.evidence->'event'->>'kind')='inventory' and not exists(select 1 from outlook_sync_scan m join outlook_sync_scan sc on sc.id=m.parent_id where m.observation_id=o.id and m.record_kind='membership' and sc.mode<>'history')) as metadata_only from outlook_sync_observation o where o.source_id=${s.id} and o.export_state not in ('retained','excluded') and ((o.evidence->>'semanticReady')='false' or coalesce(case when o.direction='outbound' then o.evidence->'timestamps'->>'sentAt' when o.direction='inbound' then o.evidence->'timestamps'->>'receivedAt' else coalesce(o.evidence->'timestamps'->>'receivedAt',o.evidence->'timestamps'->>'sentAt') end,'')='' or (case when o.direction='outbound' then o.evidence->'timestamps'->>'sentAt' when o.direction='inbound' then o.evidence->'timestamps'->>'receivedAt' else coalesce(o.evidence->'timestamps'->>'receivedAt',o.evidence->'timestamps'->>'sentAt') end)::timestamptz >= ${s.historyFrom?.toISOString() ?? new Date().toISOString()}::timestamptz) and o.availability in ('available','unknown-date') and (not ${enrichingHistory} or (o.evidence->>'semanticReady')='false' or (o.evidence->'event'->>'kind')<>'inventory' or exists(select 1 from outlook_sync_scan m join outlook_sync_scan sc on sc.id=m.parent_id where m.observation_id=o.id and m.record_kind='membership' and sc.mode<>'history')) and (${ready} or (o.evidence->'event'->>'kind') <> 'inventory' or exists (select 1 from outlook_sync_scan m join outlook_sync_scan sc on sc.id=m.parent_id where m.observation_id=o.id and m.record_kind='membership' and sc.mode<>'history')) order by case when (o.evidence->'event'->>'kind') in ('new-mail','saved-sent') then 0 else 1 end, coalesce(case when o.direction='outbound' then o.evidence->'timestamps'->>'sentAt' else o.evidence->'timestamps'->>'receivedAt' end,o.evidence->'timestamps'->>'createdAt','') desc, o.source_observation_id asc limit 100`,
+      sql`select o.id,o.semantic_version,o.evidence, ((o.evidence->>'semanticReady')='false' and (o.evidence->'event'->>'kind')='inventory' and not exists(select 1 from outlook_sync_scan m join outlook_sync_scan sc on sc.id=m.parent_id where m.observation_id=o.id and m.record_kind='membership' and sc.mode<>'history')) as metadata_only from outlook_sync_observation o where o.source_id=${s.id} and (o.export_state not in ('retained','excluded') or (o.export_state='retained' and jsonb_array_length(coalesce(o.evidence->'optionalMissing','[]'::jsonb)) > 0 and coalesce((o.evidence->>'optionalRepairAfter')::timestamptz, now()) <= now())) and ((o.evidence->>'semanticReady')='false' or coalesce(case when o.direction='outbound' then o.evidence->'timestamps'->>'sentAt' when o.direction='inbound' then o.evidence->'timestamps'->>'receivedAt' else coalesce(o.evidence->'timestamps'->>'receivedAt',o.evidence->'timestamps'->>'sentAt') end,'')='' or (case when o.direction='outbound' then o.evidence->'timestamps'->>'sentAt' when o.direction='inbound' then o.evidence->'timestamps'->>'receivedAt' else coalesce(o.evidence->'timestamps'->>'receivedAt',o.evidence->'timestamps'->>'sentAt') end)::timestamptz >= ${s.historyFrom?.toISOString() ?? new Date().toISOString()}::timestamptz) and o.availability in ('available','unknown-date') and (not ${enrichingHistory} or (o.evidence->>'semanticReady')='false' or (o.evidence->'event'->>'kind')<>'inventory' or exists(select 1 from outlook_sync_scan m join outlook_sync_scan sc on sc.id=m.parent_id where m.observation_id=o.id and m.record_kind='membership' and sc.mode<>'history')) and (${ready} or (o.evidence->'event'->>'kind') <> 'inventory' or exists (select 1 from outlook_sync_scan m join outlook_sync_scan sc on sc.id=m.parent_id where m.observation_id=o.id and m.record_kind='membership' and sc.mode<>'history')) order by case when (o.evidence->'event'->>'kind') in ('new-mail','saved-sent') then 0 else 1 end, coalesce(case when o.direction='outbound' then o.evidence->'timestamps'->>'sentAt' else o.evidence->'timestamps'->>'receivedAt' end,o.evidence->'timestamps'->>'createdAt','') desc, o.source_observation_id asc limit 100`,
     );
     return {
       version: 1 as const,
@@ -928,6 +942,7 @@ export async function recordLiveHint(
     const t = tx as DB,
       { source: s } = await authorizedSource(t, deviceId, scope, { requireFence: true });
     if (
+      o.optionalMissing !== undefined || o.optionalRepairAfter !== undefined ||
       o.locator.storeId !== s.storeId ||
       o.locator.rootEntryId !== s.rootEntryId ||
       o.event.isUnsent ||
@@ -984,16 +999,15 @@ export async function recordLiveHint(
           })
           .where(eq(observationTable.id, obs.id));
       } else {
-        if (
-          stableJson([old.semantic, old.requiredArtifactRoles]) !==
-          stableJson([o.semantic, o.requiredArtifactRoles])
-        )
+        if (stableJson(old.semantic) !== stableJson(o.semantic) ||
+            !sameDiscoveredRoles(old.requiredArtifactRoles, o.requiredArtifactRoles))
           throw new SyncDeniedError();
         if (old.event.kind === 'inventory')
           await t
             .update(observationTable)
             .set({
-              evidence: o,
+              evidence: { ...o, requiredArtifactRoles: old.requiredArtifactRoles,
+                optionalMissing: old.optionalMissing, optionalRepairAfter: old.optionalRepairAfter },
               ingestionState: obs.ingestionState === 'committed' ? 'pending' : obs.ingestionState,
             })
             .where(eq(observationTable.id, obs.id));
@@ -1007,6 +1021,57 @@ export async function recordLiveHint(
     };
   });
 }
+/** The enrolled producer can report only declared optional attachment gaps; core evidence remains mandatory. */
+export async function reportOptionalAttachmentGaps(db: DB, deviceId: string, scope: NativeSyncScope,
+  observationId: string, missing: Array<{ role: string; fileName: string | null }>) {
+  return db.transaction(async (tx) => {
+    const t = tx as DB;
+    await authorizedSource(t, deviceId, scope, { requireFence: true });
+    const [o] = await t.select().from(observationTable).where(and(eq(observationTable.id, observationId),
+      eq(observationTable.sourceId, scope.sourceId))).for('update');
+    if (!o || o.artifactOrigin || !o.requiredArtifactRoles.includes('original-msg') ||
+        !o.requiredArtifactRoles.some((role) => role === 'body-text' || role === 'body-html') ||
+        missing.some((item) => !item.role.startsWith('attachment:') || !o.requiredArtifactRoles.includes(item.role)) ||
+        new Set(missing.map((item) => item.role)).size !== missing.length) throw new SyncDeniedError();
+    const sealed = await t.select({ role: artifactTable.role, acceptedAt: artifactTable.acceptedAt,
+      sealedKey: artifactTable.sealedKey, verifiedReceipt: artifactTable.verifiedReceipt,
+      uploadSession: artifactTable.uploadSession }).from(artifactTable).where(eq(artifactTable.observationId, o.id));
+    const stillMissing = missing.filter((item) => !sealed.some((artifact) => artifact.role === item.role && artifact.acceptedAt &&
+      artifact.sealedKey && artifact.verifiedReceipt && artifact.uploadSession));
+    const previous = syncObservationV1.parse(o.evidence);
+    const changed = stableJson(previous.optionalMissing ?? []) !== stableJson(stillMissing);
+    const evidence = syncObservationV1.parse({ ...previous, optionalMissing: stillMissing,
+      ...(stillMissing.length ? { optionalRepairAfter: new Date(Date.now() + 5 * 60_000).toISOString() } : { optionalRepairAfter: undefined }) });
+    await t.update(observationTable).set({ evidence, ...(changed && o.ingestionState === 'committed'
+      ? { ingestionState: 'pending', drainNextAttemptAt: null } : {}) }).where(eq(observationTable.id, o.id));
+    await refreshObservation(t, o.id);
+    return { accepted: true };
+  });
+}
+
+/** Resolve the placeholder used when Outlook could not enumerate attachments at discovery. */
+export async function resolveOptionalAttachmentRoles(db: DB, deviceId: string, scope: NativeSyncScope,
+  observationId: string, roles: string[]) {
+  return db.transaction(async (tx) => {
+    const t = tx as DB;
+    await authorizedSource(t, deviceId, scope, { requireFence: true });
+    const [o] = await t.select().from(observationTable).where(and(eq(observationTable.id, observationId),
+      eq(observationTable.sourceId, scope.sourceId))).for('update');
+    if (!o || o.artifactOrigin || !o.requiredArtifactRoles.includes('attachment:unavailable') ||
+        o.requiredArtifactRoles.some((role) => role.startsWith('attachment:') && role !== 'attachment:unavailable') ||
+        roles.some((role) => !/^attachment:[1-9][0-9]*$/.test(role)) || new Set(roles).size !== roles.length)
+      throw new SyncDeniedError();
+    const previous = syncObservationV1.parse(o.evidence);
+    const requiredArtifactRoles = [...o.requiredArtifactRoles.filter((role) => role !== 'attachment:unavailable'), ...roles];
+    const evidence = syncObservationV1.parse({ ...previous, requiredArtifactRoles,
+      optionalMissing: [], optionalRepairAfter: undefined });
+    await t.update(observationTable).set({ evidence, requiredArtifactRoles,
+      ingestionState: 'pending', drainNextAttemptAt: null }).where(eq(observationTable.id, o.id));
+    await refreshObservation(t, o.id);
+    return { accepted: true };
+  });
+}
+
 export async function reportObservationGap(
   db: DB,
   deviceId: string,
@@ -1054,6 +1119,7 @@ export async function enrichObservation(
       .for('update');
     if (
       !o ||
+      full.optionalMissing !== undefined || full.optionalRepairAfter !== undefined ||
       !full.semanticReady ||
       full.sourceObservationId !== o.sourceObservationId ||
       full.locator.storeId !== s.storeId ||
@@ -1063,7 +1129,9 @@ export async function enrichObservation(
       throw new SyncDeniedError();
     const prior = syncObservationV1.parse(o.evidence);
     if (prior.semanticReady) {
-      if (stableJson(prior) !== stableJson(full)) throw new SyncDeniedError();
+      const { optionalMissing: _missing, optionalRepairAfter: _repair, ...original } = prior;
+      if (stableJson({ ...original, requiredArtifactRoles: full.requiredArtifactRoles }) !== stableJson(full) ||
+          !sameDiscoveredRoles(prior.requiredArtifactRoles, full.requiredArtifactRoles)) throw new SyncDeniedError();
       return {
         accepted: true,
         observationId: o.id,

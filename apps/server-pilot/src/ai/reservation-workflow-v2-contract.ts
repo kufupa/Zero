@@ -355,6 +355,7 @@ export const reservationWorkflowV2DraftSchema = z.object({
     code: z.string().min(1).max(100), message: z.string().max(1000) }).strict()).max(100),
   prefill: z.object({ status: z.enum(['idle', 'queued', 'running', 'complete', 'failed', 'superseded']),
     jobRunId: z.string().optional(),
+    evidenceHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
     attemptId: z.string().uuid().nullable(), attemptCount: z.number().int().min(0).max(2),
     startedAt: z.string().datetime({ offset: true }).nullable(),
     finishedAt: z.string().datetime({ offset: true }).nullable() }).strict().optional(),

@@ -28,6 +28,7 @@ import {
   configureReservationWorkflowV2Filing,
   initializeReservationWorkflowV2Draft, markReservationWorkflowV2Queued,
   markReservationWorkflowV2NativeActivity,
+  reconcileReservationWorkflowV2Source,
 } from '../../ai/reservation-workflow-v2-state.js';
 import { classifyReservationWorkflowV2Source } from '../../ai/reservation-workflow-v2-prefill.js';
 import { addReservationWorkflowV2Action, changeReservationWorkflowV2Rows,
@@ -131,7 +132,9 @@ async function withPreparation<T extends { status: string }>(reply: Promise<T>, 
   const legacyCreateReceipts = items.flatMap((item) => Object.entries(stayCommitsOf(item.state)).map(([stayId, receipt]) => ({
     stayId, status: receipt.status, confirmationNumber: receipt.confirmationNumber,
   })));
-  const views = reservationWorkflowV2PreparationViews(draft, propertyCode);
+  const views = reservationWorkflowV2PreparationViews(draft, propertyCode).map((view) =>
+    'sourceChanged' in result && result.sourceChanged === true
+      ? { ...view, current: false, issue: 'The email evidence changed; review the saved draft before native work.' } : view);
   if (!legacyCreateReceipts.length) return { ...result, preparationViews: views, legacyCreateReceipts };
   const receiptSummary = legacyCreateReceipts.slice(0, 3).map((receipt) =>
     `${receipt.stayId}: ${receipt.status}${receipt.confirmationNumber ?
@@ -233,8 +236,8 @@ export const reservationWorkflowV2Router = router({
     const admission = classifyReservationWorkflowV2Source({ fromAddress: source.fromAddress, subject: source.subject,
       bodyText: preStaySourceText(source.textBody, source.htmlBody), mailboxAddress: ctx.transportEmail });
     if (admission.skippedReason) return { status: 'skipped' as const, reason: `Known ${admission.skippedReason} source is excluded.` };
-    const initialized = await initializeReservationWorkflowV2Draft(scoped, canonicalSource);
-    if (initialized.status !== 'ok' || input.mode === 'initialize')
+    const initialized = await initializeReservationWorkflowV2Draft(scoped, canonicalSource, { allowSourceChanged: true });
+    if (initialized.status !== 'ok' || initialized.sourceChanged || input.mode === 'initialize')
       return withPreparation(Promise.resolve(initialized), scoped.propertyCode);
     const item = { workItemId: initialized.draft.workItemId, source: canonicalSource,
       expectedRevision: initialized.revision, expectedSeq: initialized.seq };
@@ -257,7 +260,11 @@ export const reservationWorkflowV2Router = router({
   }),
   get: mailboxProcedure.input(reservationWorkflowV2ItemInputSchema).query(({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
-    return withPreparation(getReservationWorkflowV2Draft(scoped, input), scoped.propertyCode);
+    return withPreparation(getReservationWorkflowV2Draft(scoped, input, { allowSourceChanged: true }), scoped.propertyCode);
+  }),
+  reconcileSource: mailboxProcedure.input(reservationWorkflowV2ItemInputSchema.extend({ confirmed: z.literal(true) })).mutation(({ input, ctx }) => {
+    const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
+    return withPreparation(reconcileReservationWorkflowV2Source(scoped, input), scoped.propertyCode);
   }),
   edit: mailboxProcedure.input(reservationWorkflowV2EditInputSchema).mutation(({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);

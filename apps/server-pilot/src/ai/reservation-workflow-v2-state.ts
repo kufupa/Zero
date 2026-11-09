@@ -6,6 +6,8 @@ import { aiWorkflowRun, attachment, mailboxAccess, mailThread, message } from '.
 import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
+import { reservationArrivalEvidence } from './reservation-workflow-v2-evidence.js';
+import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { advancePaneRevision, redoWorkItemRevision, undoWorkItemRevision,
   rebaseReservationV2Path, rebaseReservationV2Observations, nativeStructureIsSafe } from './work-item-revision.js';
 import {
@@ -44,7 +46,7 @@ export type ReservationWorkflowV2Seed = {
 };
 export type ReservationWorkflowV2SourceInput = ReservationWorkflowV2Source;
 export type ReservationWorkflowV2StateResult =
-  | { status: 'ok'; draft: ReservationWorkflowV2Draft; revision: number; revisionHead: number; seq: number }
+  | { status: 'ok'; draft: ReservationWorkflowV2Draft; revision: number; revisionHead: number; seq: number; sourceChanged?: boolean }
   | { status: 'not_found' | 'invalid_source' | 'wrong_property' | 'invalid_state' | 'stale_revision' | 'invalid_path' | 'invalid_value' };
 
 export function reservationWorkflowV2DraftOf(state: State): ReservationWorkflowV2Draft | null {
@@ -108,7 +110,8 @@ async function loadItem(db: WorkTx, ctx: Context, workItemId: string, lock = fal
   return row ? { ...row, state: row.state as State } : null;
 }
 
-async function buildResult(db: WorkTx, ctx: Context, item: ItemRow, source: ReservationWorkflowV2Source): Promise<ReservationWorkflowV2StateResult> {
+async function buildResult(db: WorkTx, ctx: Context, item: ItemRow, source: ReservationWorkflowV2Source,
+  allowSourceChanged = false): Promise<ReservationWorkflowV2StateResult> {
   if (!propertyMatches(ctx) || !item.threadId || item.threadId !== source.threadId || item.sourceMessageId !== source.messageId) {
     return { status: 'invalid_source' };
   }
@@ -118,18 +121,21 @@ async function buildResult(db: WorkTx, ctx: Context, item: ItemRow, source: Rese
   const draft = reservationWorkflowV2DraftOf(item.state);
   if (!draft) return { status: hasReservationWorkflowV2Draft(item.state) ? 'invalid_state' : 'not_found' };
   if (draft.workItemId !== item.id || draft.transportId !== ctx.transportId || draft.propertyCode !== ctx.propertyCode ||
-      draft.source.sourceHash !== source.sourceHash || draft.source.messageId !== source.messageId ||
+      draft.source.messageId !== source.messageId ||
       draft.source.threadId !== source.threadId || draft.source.arrivedAt !== source.arrivedAt) return { status: 'invalid_source' };
+  const sourceChanged = draft.source.sourceHash !== source.sourceHash || Boolean(draft.prefill?.evidenceHash &&
+    draft.prefill.evidenceHash !== (await reservationArrivalEvidence(db, source.messageId)).hash);
+  if (sourceChanged && !allowSourceChanged) return { status: 'invalid_source' };
   return { status: 'ok', draft: { ...draft, revision: item.revision }, revision: item.revision,
-    revisionHead: item.revisionHead, seq: item.revisionSeq };
+    revisionHead: item.revisionHead, seq: item.revisionSeq, ...(sourceChanged ? { sourceChanged: true } : {}) };
 }
 
 export async function getReservationWorkflowV2Draft(ctx: Context, input: {
   workItemId: string; source: ReservationWorkflowV2SourceInput;
-}): Promise<ReservationWorkflowV2StateResult> {
+}, options?: { allowSourceChanged?: boolean }): Promise<ReservationWorkflowV2StateResult> {
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
   const item = await loadItem(ctx.db, ctx, input.workItemId);
-  return item ? buildResult(ctx.db, ctx, item, input.source) : { status: 'not_found' };
+  return item ? buildResult(ctx.db, ctx, item, input.source, options?.allowSourceChanged) : { status: 'not_found' };
 }
 
 /** Source-keyed read lets ensure routes avoid re-running prefill for an already editable WorkItem. */
@@ -160,7 +166,7 @@ function initialKind(seed: ReservationWorkflowV2Seed): (typeof MAIL_KINDS)[numbe
 
 /** Creates/reuses one source WorkItem and seeds its only canonical v2 draft. Existing edits/results are never replaced. */
 export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
-  source: ReservationWorkflowV2SourceInput; extractionId?: string | null; seed: ReservationWorkflowV2Seed;
+  source: ReservationWorkflowV2SourceInput; extractionId?: string | null; seed: ReservationWorkflowV2Seed; allowSourceChanged?: boolean;
 }): Promise<ReservationWorkflowV2StateResult> {
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
   const saved = await ctx.db.transaction(async (tx) => {
@@ -200,7 +206,7 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
     if (!item) return { status: 'not_found' as const };
     const itemRow = { ...item, state: item.state as State };
     const existing = reservationWorkflowV2DraftOf(itemRow.state);
-    if (existing) return buildResult(tx, ctx, itemRow, input.source);
+    if (existing) return buildResult(tx, ctx, itemRow, input.source, input.allowSourceChanged);
     if (hasReservationWorkflowV2Draft(itemRow.state)) return { status: 'invalid_state' as const };
     const draft = reservationWorkflowV2DraftSchema.parse({
       contractVersion: RESERVATION_WORKFLOW_V2_VERSION,
@@ -237,8 +243,9 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
   return saved;
 }
 
-export async function initializeReservationWorkflowV2Draft(ctx: Context, source: ReservationWorkflowV2SourceInput) {
-  return ensureReservationWorkflowV2Draft(ctx, { source, seed: { status: 'partial',
+export async function initializeReservationWorkflowV2Draft(ctx: Context, source: ReservationWorkflowV2SourceInput,
+  options?: { allowSourceChanged?: boolean }) {
+  return ensureReservationWorkflowV2Draft(ctx, { source, allowSourceChanged: options?.allowSourceChanged, seed: { status: 'partial',
     proposal: { schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
       content: { requests: [], services: [], documents: [] }, annotations: [], issues: [], sourceClaims: [], lookupResultRefs: [] },
     observations: [], prefill: { status: 'idle', attemptId: null, attemptCount: 0, startedAt: null, finishedAt: null } } });
@@ -248,12 +255,16 @@ type PrefillClaim = { attemptId: string; revision: number; seq: number; snapshot
 export type ReservationPrefillJobFence = { runId: string; claimOwner: string; claimToken: string };
 
 /** Hold the ledger row while changing the draft: an expired or replaced worker cannot install. */
-async function currentPrefillJob(tx: WorkTx, fence: ReservationPrefillJobFence): Promise<boolean> {
-  const [run] = await tx.select({ deadlineAt: aiWorkflowRun.deadlineAt }).from(aiWorkflowRun)
+async function currentPrefillJob(tx: WorkTx, fence: ReservationPrefillJobFence, messageId: string): Promise<string | null> {
+  const [run] = await tx.select({ deadlineAt: aiWorkflowRun.deadlineAt, triggerMessageId: aiWorkflowRun.triggerMessageId,
+    metrics: aiWorkflowRun.metrics }).from(aiWorkflowRun)
     .where(and(eq(aiWorkflowRun.id, fence.runId), eq(aiWorkflowRun.runKind, 'reservation_prefill'),
       eq(aiWorkflowRun.claimOwner, fence.claimOwner), eq(aiWorkflowRun.claimToken, fence.claimToken),
       eq(aiWorkflowRun.state, 'running'))).limit(1).for('update');
-  return Boolean(run?.deadlineAt && run.deadlineAt.getTime() > Date.now());
+  const expected = run?.metrics?.evidenceHash;
+  if (!run?.deadlineAt || run.deadlineAt.getTime() <= Date.now() || run.triggerMessageId !== messageId ||
+      typeof expected !== 'string' || expected !== (await reservationArrivalEvidence(tx, messageId)).hash) return null;
+  return expected;
 }
 
 /** Queue metadata is not a staff edit and may only annotate the untouched idle draft. */
@@ -291,8 +302,10 @@ export async function claimReservationWorkflowV2Prefill(ctx: Context, input: Mut
 > {
   if (!propertyMatches(ctx)) return { result: { status: 'wrong_property' } };
   return ctx.db.transaction(async (tx) => {
+    if (input.jobFence) await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
     await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
-    if (input.jobFence && !(await currentPrefillJob(tx, input.jobFence))) return { result: { status: 'stale_revision' as const } };
+    const evidenceHash = input.jobFence ? await currentPrefillJob(tx, input.jobFence, input.source.messageId) : null;
+    if (input.jobFence && !evidenceHash) return { result: { status: 'stale_revision' as const } };
     const item = await loadItem(tx, ctx, input.workItemId, true);
     if (!item) return { result: { status: 'not_found' as const } };
     const current = await buildResult(tx, ctx, item, input.source);
@@ -321,7 +334,7 @@ export async function claimReservationWorkflowV2Prefill(ctx: Context, input: Mut
     const attemptId = randomUUID();
     const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, prefill: { status: 'running', attemptId,
       attemptCount: meta.attemptCount + 1, startedAt: new Date().toISOString(), finishedAt: null,
-      ...(input.jobFence ? { jobRunId: input.jobFence.runId } : {}) } });
+      ...(input.jobFence && evidenceHash ? { jobRunId: input.jobFence.runId, evidenceHash } : {}) } });
     await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
       updatedAt: new Date() }).where(eq(workItem.id, item.id));
     return { result: { ...current, draft }, claim: { attemptId, revision: item.revision, seq: item.revisionSeq,
@@ -334,8 +347,9 @@ export async function finishReservationWorkflowV2Prefill(ctx: Context, input: Mu
   claim: PrefillClaim; seed?: ReservationWorkflowV2Seed; failed: boolean; jobFence?: ReservationPrefillJobFence;
 }): Promise<ReservationWorkflowV2StateResult> {
   return ctx.db.transaction(async (tx) => {
+    if (input.jobFence) await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
     await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
-    if (input.jobFence && !(await currentPrefillJob(tx, input.jobFence))) return { status: 'stale_revision' as const };
+    if (input.jobFence && !(await currentPrefillJob(tx, input.jobFence, input.source.messageId))) return { status: 'stale_revision' as const };
     const item = await loadItem(tx, ctx, input.workItemId, true);
     if (!item) return { status: 'not_found' as const };
     const current = await buildResult(tx, ctx, item, input.source);
@@ -497,6 +511,35 @@ export async function replaceReservationWorkflowV2PrefillRetry(ctx: Context,
 export type ReservationWorkflowV2MutationInput = { workItemId: string; source: ReservationWorkflowV2SourceInput; expectedRevision: number; expectedSeq: number };
 type MutationInput = ReservationWorkflowV2MutationInput;
 
+/** Staff explicitly reconciles changed evidence; old observations and receipts remain history, never current checks. */
+export async function reconcileReservationWorkflowV2Source(ctx: Context, input: MutationInput): Promise<ReservationWorkflowV2StateResult> {
+  if (!ctx.userId || !propertyMatches(ctx)) return { status: 'wrong_property' };
+  return ctx.db.transaction(async (tx) => {
+    await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
+    await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
+    const item = await loadItem(tx, ctx, input.workItemId, true);
+    if (!item) return { status: 'not_found' as const };
+    if (item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq) return { status: 'stale_revision' as const };
+    const current = await buildResult(tx, ctx, item, input.source, true);
+    if (current.status !== 'ok' || !current.sourceChanged) return current;
+    const evidence = await reservationArrivalEvidence(tx, input.source.messageId);
+    const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, source: input.source,
+      generationId: randomUUID(), revision: item.revision + 1,
+      prefill: { ...(current.draft.prefill ?? { attemptId: null, attemptCount: 0, startedAt: null }),
+        status: 'superseded', evidenceHash: evidence.hash, finishedAt: new Date().toISOString() } });
+    const nextState = { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft };
+    const advanced = advancePaneRevision({ revision: item.revision, revisionHead: item.revisionHead,
+      seq: item.revisionSeq, previousState: item.state, nextState, extractionId: item.extractionId });
+    await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'user', actorUserId: ctx.userId,
+      type: 'field.edit', fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:source`,
+      value: { action: 'reconcile_source', previousSourceHash: current.draft.source.sourceHash,
+        sourceHash: input.source.sourceHash, evidenceHash: evidence.hash }, evidence: advanced.evidence });
+    await tx.update(workItem).set({ state: nextState, revision: advanced.revision, revisionHead: advanced.revisionHead,
+      revisionSeq: item.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, item.id));
+    return { status: 'ok' as const, draft, revision: advanced.revision, revisionHead: advanced.revisionHead, seq: item.revisionSeq + 1 };
+  });
+}
+
 /** All command builders run under the same source validation, row lock, cursor and history. */
 export async function withLockedV2DraftMutation(ctx: Context, input: MutationInput, command: {
   fieldPath: string; eventType?: 'field.edit' | 'field.accept' | 'field.reject'; value: unknown;
@@ -507,7 +550,7 @@ export async function withLockedV2DraftMutation(ctx: Context, input: MutationInp
     const item = await loadItem(tx, ctx, input.workItemId, true);
     if (!item) return { status: 'not_found' as const };
     if (item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq) return { status: 'stale_revision' as const };
-    const current = await buildResult(tx, ctx, item, input.source);
+    const current = await buildResult(tx, ctx, item, input.source, true);
     if (current.status !== 'ok') return current;
     const changed = command.apply(current.draft);
     if (!changed) return { status: 'invalid_value' as const };
@@ -523,7 +566,8 @@ export async function withLockedV2DraftMutation(ctx: Context, input: MutationInp
     await tx.update(workItem).set({ state: nextState, revision: advanced.revision, revisionHead: advanced.revisionHead,
       revisionSeq: item.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, item.id));
     return { status: 'ok' as const, draft: next, revision: advanced.revision, revisionHead: advanced.revisionHead,
-      seq: item.revisionSeq + 1, ...(changed.createdId ? { createdId: changed.createdId } : {}) };
+      seq: item.revisionSeq + 1, ...(current.sourceChanged ? { sourceChanged: true } : {}),
+      ...(changed.createdId ? { createdId: changed.createdId } : {}) };
   });
 }
 type V2Override = ReservationWorkflowV2Draft['fieldOverrides'][string];
@@ -888,7 +932,7 @@ export async function editReservationWorkflowV2Draft(ctx: Context, input: Mutati
   fieldPath: string; value: unknown;
 }): Promise<ReservationWorkflowV2StateResult> {
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
-  const current = await getReservationWorkflowV2Draft(ctx, input);
+  const current = await getReservationWorkflowV2Draft(ctx, input, { allowSourceChanged: true });
   if (current.status !== 'ok') return current;
   if (!editablePath(current.draft, input.fieldPath)) return { status: 'invalid_path' };
   const override = validateOverride(input.value);
@@ -971,7 +1015,7 @@ export async function configureReservationWorkflowV2Filing(ctx: Context, input: 
 export async function reviewReservationWorkflowV2Draft(ctx: Context, input: MutationInput & {
   fieldPath: string; decision: 'accepted' | 'flagged'; note?: string | null;
 }): Promise<ReservationWorkflowV2StateResult> {
-  const current = await getReservationWorkflowV2Draft(ctx, input);
+  const current = await getReservationWorkflowV2Draft(ctx, input, { allowSourceChanged: true });
   if (current.status !== 'ok') return current;
   if (!reviewablePath(current.draft, input.fieldPath)) return { status: 'invalid_path' };
   const review = { status: input.decision, note: input.note ?? null, at: new Date().toISOString() } as const;
@@ -981,7 +1025,7 @@ export async function reviewReservationWorkflowV2Draft(ctx: Context, input: Muta
 export async function moveReservationWorkflowV2History(ctx: Context, input: MutationInput & {
   direction: 'undo' | 'redo';
 }): Promise<ReservationWorkflowV2StateResult | { status: 'at_boundary' | 'history_stale'; revision: number; revisionHead: number; seq: number }> {
-  const current = await getReservationWorkflowV2Draft(ctx, input);
+  const current = await getReservationWorkflowV2Draft(ctx, input, { allowSourceChanged: true });
   if (current.status !== 'ok') return current;
   const item = await loadItem(ctx.db, ctx, input.workItemId);
   if (!item) return { status: 'not_found' };
@@ -994,7 +1038,7 @@ export async function moveReservationWorkflowV2History(ctx: Context, input: Muta
   if (result.status === 'not_found') return { status: 'not_found' };
   if (result.status === 'stale') return { status: 'stale_revision' };
   if (result.status !== 'applied') return result;
-  return getReservationWorkflowV2Draft(ctx, input);
+  return getReservationWorkflowV2Draft(ctx, input, { allowSourceChanged: true });
 }
 
 /** Server-owned additions never replace staff overrides/reviews and are deliberately outside undo history. */
