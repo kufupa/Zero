@@ -35,7 +35,10 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
   } : {};
   const replyBinding = record(reply.financialReview);
   const binding = replyBinding.observationRef === preview?.ref ? replyBinding : storedBinding;
-  const canReview = binding.required === true && binding.observationRef === preview?.ref && typeof binding.reviewFieldPath === 'string'
+  const previewCurrent = Boolean(preview && !editor.snapshot.session.sourceChanged &&
+    preview.generationId === editor.snapshot.session.draft.generationId && preview.propertyCode === editor.snapshot.session.draft.propertyCode &&
+    preview.sourceMessageId === editor.snapshot.session.draft.source.messageId);
+  const canReview = previewCurrent && binding.required === true && binding.observationRef === preview?.ref && typeof binding.reviewFieldPath === 'string'
     && typeof binding.reviewNote === 'string' && typeof binding.observationRef === 'string';
   const accepted = canReview && editor.snapshot.session.draft.staffReviews[String(binding.reviewFieldPath)]?.status === 'accepted'
     && editor.snapshot.session.draft.staffReviews[String(binding.reviewFieldPath)]?.note === binding.reviewNote;
@@ -77,6 +80,7 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
         {Array.isArray(result.policyFacts) && [...new Set(result.policyFacts.map(text))].map(fact => <span key={fact}>{fact}</span>)}
         {Boolean(result.roomScope) && <span>Room scope: {typeof result.roomScope === 'string' ? result.roomScope : JSON.stringify(result.roomScope)}</span>}
       </div>
+      {!previewCurrent && <p className={styles.warning}>Earlier policy and fee. Check the stay again before deciding.</p>}
       {canReview && <div className={styles.row}>{accepted ? <span>Current cancellation policy and fee reviewed.</span> : <button type="button" disabled={editor.view.busy}
         onClick={() => void editor.commands.acceptFinancialReview(String(binding.reviewFieldPath), String(binding.reviewNote), String(binding.observationRef))}>I reviewed this scope, policy and fee</button>}</div>}
       <small className={styles.hint}>If Infor returns different financial facts at Go, review the new facts and decide again.</small>

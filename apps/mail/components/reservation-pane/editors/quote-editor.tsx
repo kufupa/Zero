@@ -58,7 +58,7 @@ function latestQuote(editor: Editor) {
 }
 function quoteCurrent(editor: Editor, observation: ReturnType<typeof latestQuote>) {
   const draft = editor.snapshot.session.draft;
-  if (!observation || observation.status !== 'complete' || !observation.coverage.complete ||
+  if (editor.snapshot.session.sourceChanged || !observation || observation.status !== 'complete' || !observation.coverage.complete ||
       observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
       observation.sourceMessageId !== draft.source.messageId || observation.criteria.sourceHash !== draft.source.sourceHash) return false;
   const result = record(observation.result);
@@ -94,6 +94,7 @@ function quoteBoardCode(value: unknown) {
   return null;
 }
 function quoteOffersCurrent(editor: Editor, observation: ReturnType<typeof latestQuote>) {
+  if (editor.snapshot.session.sourceChanged) return false;
   if (quoteCurrent(editor, observation)) return true;
   if (!observation || observation.sourceMessageId !== editor.snapshot.session.draft.source.messageId ||
       observation.criteria.sourceHash !== editor.snapshot.session.draft.source.sourceHash) return false;

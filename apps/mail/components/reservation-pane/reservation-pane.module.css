@@ -67,4 +67,9 @@
 .peekText { display:block; margin:8px 0; font-size:12px; line-height:1.4; white-space:pre-wrap; overflow-wrap:anywhere; }
 .pane .peekOpen { padding:3px 0; border:0; background:transparent; color:#6746ad; font-size:11px; font-weight:650; }
 .sourceFieldset { min-width: 0; border: 0; margin: 0; padding: 0; }
+.sourceWarning { margin: 4px 13px 10px; padding: 9px 10px; border: 1px solid #e2bf6a; border-left: 3px solid #b37504; border-radius: 6px; background: #fff8e6; color: #573908; font-size: 12px; }
+.sourceWarning p { margin: 4px 0 8px; }
+.sourceWarning summary { cursor: pointer; font-weight: 600; }
+.sourceWarning button { margin: 6px 5px 0 0; }
+:global(.dark) .sourceWarning { background: #362b1c; border-color: #9c7024; color: #ffedc2; }
 .changedSourceText { max-height: 180px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; }
