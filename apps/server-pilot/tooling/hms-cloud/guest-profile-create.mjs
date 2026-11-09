@@ -200,7 +200,7 @@ function diagnosticCredentialField(field) {
   return typeof field === 'string' && /^(?:password|passwd|passcode|credential|secret|token|jwt|sid|cookie|set[_-]?cookie|authorization|proxy[_-]?authorization|authentication|auth(?:[_-]?(?:token|key))?|jsessionid|(?:session|access|refresh|request|csrf|id)[_-]?(?:token|key|id)|session|csrf[_-]?(?:ticket|tckt)|api[_-]?key|client[_-]?secret|x[_-](?:api[_-]?key|auth(?:entication)?[_-]?(?:token|key)?|access[_-]?token|refresh[_-]?token|csrf[_-]?token|session[_-]?(?:id|token)|id[_-]?token))$/i.test(field.split('.').at(-1).trim().replace(/\s+/g, '_'));
 }
 
-function diagnosticMessageText(value, secrets = false, fieldLabel = false) {
+function diagnosticMessageText(value, secrets = false, fieldLabel = false, fields) {
   if (typeof value !== 'string' || value.length > 8192 || secrets === null) return null;
   let text = secrets ? value.replace(secrets, '[redacted]') : value;
   // Journal text, not HTML: angle-bracket field names and comparison values are
@@ -217,10 +217,22 @@ function diagnosticMessageText(value, secrets = false, fieldLabel = false) {
     .replace(/\b((?:proxy[_-])?authorization)(\s+(?:bearer|basic)\s+)(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1$2[redacted]')
     .replace(/\b((?:proxy[_-])?authorization|authentication|auth|bearer|credential)(?:\s+(?:bearer|basic|token))?\s+(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1 [redacted]')
     .replace(/\b((?:session|request|access|refresh|id)(?:[_-]|\s+)?(?:token|id|key)|csrf(?:[_-]|\s+)?(?:tckt|ticket|token)|api(?:[_-]|\s+)?key|client(?:[_-]|\s+)?secret|password|passwd|passcode|secret|token|jwt|sid|jsessionid|session|cookie)\s+(?:(?:bearer|basic|token)\s+)?(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|<[^>\r\n]*(?:>|$)|[^\s,;]+)/gi, '$1 [redacted]');
+  // Scrub contact/submitted values only in message content. Field labels and
+  // diagnostic codes/handlers stay verbatim apart from credential masking.
+  if (fields !== undefined) {
+    text = text.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+/gi, '[redacted]')
+      .replace(/\+?\d[\d .()/-]{5,}\d/g, '[redacted]');
+    for (const name of ['firstName', 'lastName', 'mobile', 'phoneNumber', 'email']) {
+      const submitted = fields?.[name];
+      if (typeof submitted !== 'string' || !submitted) continue;
+      const literal = submitted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      text = text.replace(new RegExp(literal, 'gi'), '[redacted]');
+    }
+  }
   return text.slice(0, 512);
 }
 
-function profileValidationDetails(root, data, secrets) {
+function profileValidationDetails(root, data, secrets, fields = {}) {
   const validation = [];
   const add = (source, value, field = null, nativeMessage = false) => {
     if (validation.length >= 20) return;
@@ -233,7 +245,7 @@ function profileValidationDetails(root, data, secrets) {
       type: nativeMessage && !credentialField ? diagnosticMessageText(value?.type, secrets) : null,
       code: credentialField ? null : diagnosticMessageText(value?.code == null ? null : String(value.code), secrets),
       handler: nativeMessage && !credentialField ? diagnosticMessageText(value?.handler, secrets) : null,
-      message: credentialField ? null : diagnosticMessageText(message, secrets) };
+      message: credentialField ? null : diagnosticMessageText(message, secrets, false, fields) };
     if (entry.field || entry.type || entry.code || entry.handler || entry.message) validation.push(entry);
   };
   for (const [source, object] of [['root', root], ['pageData', data]]) {
@@ -257,7 +269,7 @@ function profileValidationDetails(root, data, secrets) {
   return { validation };
 }
 
-function profileFailureDiagnostics(data, parseStatus, secrets, root) {
+function profileFailureDiagnostics(data, parseStatus, secrets, root, fields = {}) {
   const observable = parseStatus !== 'parse_failed';
   const dataObject = data !== null && typeof data === 'object' && !Array.isArray(data);
   const present = observable ? root === undefined ? data !== undefined : Object.hasOwn(root, 'pageData') : null;
@@ -281,7 +293,7 @@ function profileFailureDiagnostics(data, parseStatus, secrets, root) {
     messages: items.map(message => {
       const field = message?.field ?? message?.fieldName;
       const credentialField = diagnosticCredentialField(field);
-      const msg = credentialField ? null : diagnosticMessageText(typeof message === 'string' ? message : message?.msg ?? message?.message, secrets);
+      const msg = credentialField ? null : diagnosticMessageText(typeof message === 'string' ? message : message?.msg ?? message?.message, secrets, false, fields);
       const numericCode = typeof message?.code === 'number' && Number.isFinite(message.code);
       const code = credentialField ? null : diagnosticMessageText(numericCode ? String(message.code) : message?.code, secrets);
       return { field: diagnosticMessageText(field, secrets, true),
@@ -293,7 +305,7 @@ function profileFailureDiagnostics(data, parseStatus, secrets, root) {
   };
 }
 
-async function recoverProfileFailureDiagnostics(text, secrets) {
+async function recoverProfileFailureDiagnostics(text, secrets, fields) {
   const unavailable = { method: 'bounded_data_literal', status: 'unavailable' };
   if (typeof text !== 'string' || text.length > 2_000_000) return unavailable;
   let timer;
@@ -303,8 +315,8 @@ async function recoverProfileFailureDiagnostics(text, secrets) {
     const recovered = module?.parseAssociationResponse(text), data = recovered?.pageData;
     return recovered && typeof recovered === 'object' && !Array.isArray(recovered)
       ? { method: 'bounded_data_literal', status: 'parsed_for_diagnostics',
-        evidence: { ...profileFailureDiagnostics(data, 'diagnostic_only', secrets, recovered),
-          ...profileValidationDetails(recovered, data, secrets) } } : unavailable;
+        evidence: { ...profileFailureDiagnostics(data, 'diagnostic_only', secrets, recovered, fields),
+          ...profileValidationDetails(recovered, data, secrets, fields) } } : unavailable;
   } catch { return unavailable; }
   finally { clearTimeout(timer); }
 }
@@ -367,7 +379,7 @@ async function handleProfileSave(route, state) {
         if (needsDiagnostics) write.diagnosticSecrets = await profileDiagnosticSecrets(request);
         let diagnostics = null;
         if (needsDiagnostics) {
-          try { diagnostics = profileFailureDiagnostics(data, parseStatus, write.diagnosticSecrets); }
+          try { diagnostics = profileFailureDiagnostics(data, parseStatus, write.diagnosticSecrets, undefined, write.fields); }
           catch { diagnostics = { version: 1, parseStatus, diagnosticCollection: 'unavailable' }; }
         }
         if (diagnostics && parseStatus === 'parse_failed') {
@@ -461,7 +473,7 @@ async function guardedSession(openSession, state, operation, options) {
       state.dialog = true;
       if (state.write?.diagnosticFailure && state.write.lastPhase === 'confirm_distinct') {
         try { state.write.nativeDialog = { type: diagnosticMessageText(dialog.type(), state.write.diagnosticSecrets),
-          message: diagnosticMessageText(dialog.message(), state.write.diagnosticSecrets) }; }
+          message: diagnosticMessageText(dialog.message(), state.write.diagnosticSecrets, false, state.write.fields) }; }
         catch { /* Diagnostic collection must not change the guard. */ }
       }
     });
@@ -842,9 +854,9 @@ async function visibleProfileFailure(page, write) {
           }),
           new Promise(resolve => { timer = setTimeout(() => resolve(null), 2000); }),
         ]);
-        return data ? { ...location(frame), title: diagnosticMessageText(data.title, write.diagnosticSecrets),
-          windows: data.windows.map(text => diagnosticMessageText(text, write.diagnosticSecrets)),
-          messages: data.messages.map(text => diagnosticMessageText(text, write.diagnosticSecrets)) }
+        return data ? { ...location(frame), title: diagnosticMessageText(data.title, write.diagnosticSecrets, false, write.fields),
+          windows: data.windows.map(text => diagnosticMessageText(text, write.diagnosticSecrets, false, write.fields)),
+          messages: data.messages.map(text => diagnosticMessageText(text, write.diagnosticSecrets, false, write.fields)) }
           : { ...location(frame), unavailable: true };
       } catch { return { ...location(frame), unavailable: true }; }
       finally { clearTimeout(timer); }
@@ -880,7 +892,7 @@ async function savePreparedProfile(page, state, staged, commit) {
       typeof commit.recordFailureDiagnostics === 'function') {
     try {
       const diagnostics = await visibleProfileFailure(page, write);
-      diagnostics.dataLiteralRecovery = await recoverProfileFailureDiagnostics(write.diagnosticSource, write.diagnosticSecrets);
+      diagnostics.dataLiteralRecovery = await recoverProfileFailureDiagnostics(write.diagnosticSource, write.diagnosticSecrets, write.fields);
       await commit.recordFailureDiagnostics(diagnostics);
     }
     catch { /* Collection and journal diagnostics never alter the held result. */ }
