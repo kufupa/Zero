@@ -46,6 +46,7 @@ import { createCloudTargetKey, isLabtestGuest } from '../../tooling/hms-cloud/cl
 import { lockCreateActorSession } from './pane-create-actor-lock.js';
 import { stayCommitsOf } from './work-items.js';
 import { sameGuestName } from './guest-name-match.js';
+import { quoteRateContextEnabled } from './quote-rate-switch.js';
 
 type V2StateContext = { db: DB; transportId: string; userId: string; propertyCode: string };
 export type ReservationWorkflowV2ServerContext = {
@@ -958,6 +959,12 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
             }
             if (party.outcome === 'needs_input') {
               partySearches[spec.key] = { status: 'needs_input', issue: party.issue };
+              if (allocationStatus === 'ok' || allocationStatus === 'matches' || allocationStatus === 'no_match') allocationStatus = 'partial';
+              continue;
+            }
+            if (!quoteRateContextEnabled()) {
+              partySearches[spec.key] = { status: 'partial', outcome: 'refused_flag_off',
+                searchOutcome: 'refused_flag_off', issue: 'refused_flag_off', candidates: [] };
               if (allocationStatus === 'ok' || allocationStatus === 'matches' || allocationStatus === 'no_match') allocationStatus = 'partial';
               continue;
             }
