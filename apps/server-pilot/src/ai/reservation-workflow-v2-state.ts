@@ -378,13 +378,23 @@ export async function claimReservationWorkflowV2Prefill(ctx: Context, input: Mut
     const reclaimed = input.jobFence && meta?.jobRunId === input.jobFence.runId;
     if (!meta || (meta.status === 'running' && !(input.allowRetry && (reclaimed || (!meta.jobRunId && abandonedPrefill(meta.startedAt))))) ||
         meta.status === 'complete' || meta.status === 'superseded' ||
-        meta.attemptCount >= 2 || (meta.status === 'failed' && !input.allowRetry)) return { result: current };
+        (meta.status === 'failed' && !input.allowRetry)) return { result: current };
     const intervened = Object.keys(current.draft.fieldOverrides).length || Object.keys(current.draft.staffReviews).length ||
       current.draft.operationResults.length || await hasPrefillRetryActivity(tx, item.id, current.draft.generationId, item.revisionSeq);
     if (intervened) {
       if (!input.jobFence || !['queued', 'running'].includes(meta.status)) return { result: current };
       const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft,
         prefill: { ...meta, status: 'superseded', finishedAt: new Date().toISOString() } });
+      await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
+        updatedAt: new Date() }).where(eq(workItem.id, item.id));
+      return { result: { ...current, draft } };
+    }
+    if (meta.attemptCount >= 2) {
+      if (!reclaimed || meta.status !== 'running' || meta.phase !== 'generation') return { result: current };
+      const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, status: 'prefill_failed',
+        errors: [{ stage: 'extract', code: 'prefill_unavailable',
+          message: 'Prefill could not finish. You can enter the request manually.' }],
+        prefill: { ...meta, status: 'failed', finishedAt: new Date().toISOString() } });
       await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
         updatedAt: new Date() }).where(eq(workItem.id, item.id));
       return { result: { ...current, draft } };

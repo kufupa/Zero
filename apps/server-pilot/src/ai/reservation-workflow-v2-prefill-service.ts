@@ -147,6 +147,11 @@ export async function executeReservationArrival(input: {
       failureClass: 'BEDROCK_TRANSIENT', resetDeadline: true }, db);
     return retry ? 'retry_wait' : 'dead_letter';
   }
+  if (result.draft.prefill?.status === 'failed') {
+    await markAiRunDeadLetter({ ...fence, expectedStates: ['running'], lastError: 'reservation prefill attempts exhausted',
+      failureClass: 'BEDROCK_TRANSIENT' }, db);
+    return 'dead_letter';
+  }
   if (result.draft.prefill?.status === 'running' && result.draft.prefill.phase === 'native_checks' &&
       result.draft.prefill.jobRunId === run.id) {
     await db.update(aiWorkflowRun).set({ metrics: { ...run.metrics, phase: 'native_checks' }, updatedAt: new Date() }).where(and(
