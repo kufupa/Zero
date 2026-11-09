@@ -35,6 +35,7 @@ import {
   reservationWorkflowV2CompileSavedService,
   reservationWorkflowV2PreviewSavedServices,
   savedServiceBusiness,
+  nativeServiceControls,
   nativeServiceGuestNameMatches,
   reservationWorkflowV2CompileServiceItem,
   reservationWorkflowV2ServiceReviewPaths,
@@ -683,18 +684,21 @@ function serviceObservationFromRef(ref: string, intent: StoredIntent, input: Res
 
 async function appendFreshPrepare(ctx: ReservationWorkflowV2ServerContext, input: ReservationWorkflowV2ServicesInput,
   approved: ApprovedService, target: NativeTarget, comparison: { matches: boolean;
-    native: Record<string, unknown> | null; approved: Record<string, unknown> | null }, prepareVerified: boolean): Promise<string | null> {
+    native: Record<string, unknown> | null; approved: Record<string, unknown> | null }, prepareVerified: boolean,
+  preparedItem: unknown): Promise<string | null> {
   const nativeVerified = prepareVerified && Boolean(comparison.native && requestedItemMatches(comparison.native, approved.plan) &&
     text(comparison.native.unitPrice) && text(comparison.native.averageDaily) && text(comparison.native.totalCost) &&
     text(comparison.native.currency));
   const unsavedNative = normalizedItem(object(approved.preview.result)?.native);
   const matchesUnsavedPreview = Boolean(comparison.native && unsavedNative &&
     canonicalJson(comparison.native) === canonicalJson(unsavedNative));
+  const controls = nativeServiceControls(preparedItem);
   const reviewPaths = reservationWorkflowV2ServiceReviewPaths(approved.plan);
   const result = { operation: 'add', saved: false, targetRef: approved.plan.targetRef, serviceId: approved.plan.serviceId,
     createConfirmation: approved.create.confirmation, createObservationRef: approved.create.observation.ref,
     itemCandidate: approved.plan.candidate, requestedFields: approved.plan.items,
-    native: comparison.native, previouslyApprovedNative: comparison.approved,
+    native: comparison.native && controls ? { ...comparison.native, controls } : comparison.native,
+    previouslyApprovedNative: comparison.approved,
     approvedObservationRef: approved.approvalObservation.ref, matchesApprovedNative: comparison.matches,
     matchesUnsavedPreview, hostValuesRequireReview: reviewPaths,
     target: { propertyCode: 'HRCEN', confirmation: target.confirmation, guestName: target.guestName,
@@ -827,7 +831,7 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
             typeof prepared.preparedId !== 'string' || !compared.matches) {
           const prepareVerified = prepared?.outcome === 'prepared' && prepared.propertyCode === 'HRCEN' &&
             prepared.saved === false && typeof prepared.preparedId === 'string';
-          const observationRef = await appendFreshPrepare(ctx, input, approved, target, compared, prepareVerified);
+          const observationRef = await appendFreshPrepare(ctx, input, approved, target, compared, prepareVerified, itemFields);
           const reviewable = prepareVerified && Boolean(compared.native && requestedItemMatches(compared.native, approved.plan) &&
             text(compared.native.unitPrice) && text(compared.native.averageDaily) &&
             text(compared.native.totalCost) && text(compared.native.currency));
