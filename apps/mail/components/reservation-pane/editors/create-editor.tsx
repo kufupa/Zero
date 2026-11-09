@@ -305,13 +305,8 @@ function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor
   const latest = operations.at(-1);
   const localPending = editor.commands.guestProfilePending(allocationId);
   const unknown = latest?.status === 'unknown' || Boolean(localPending);
-  const prepared = latest && editor.snapshot.session.draft.observations.find(row =>
-    Array.isArray(latest.observationRefs) && latest.observationRefs.includes(row.ref) && row.criteria.workflow === 'guest_profile_prepare');
-  const previous = record(record(prepared?.result).business).guest;
-  const previousGuest = record(previous);
-  const identityPart = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
-  const sameGuest = ['firstName', 'lastName', 'mobile', 'email'].every(field => identityPart(guest[field]) === identityPart(previousGuest[field]));
-  const duplicate = latest?.status === 'failed' && text(latest.summary).includes('PROFILE_NAME_ALREADY_EXISTS') && sameGuest;
+  const previousFailure = operations.some(row => row.status === 'failed');
+  const previousUnknown = operations.some(row => row.status === 'unknown');
   const succeeded = operations.filter(row => row.status === 'succeeded').at(-1);
   const receipt = guestProfileReceipt(succeeded);
   const missingReceipt = Boolean(succeeded && !receipt);
@@ -333,6 +328,7 @@ function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor
     {newProfile && (unknown || !receipt) && <p className={styles.note}>Profile ID · {unknown ? 'Unknown' : missingReceipt ? 'Needs confirmation' : 'Not created'}</p>}
     {receipt && <p className={styles.note}>{selectedCreated ? 'Profile ID' : 'Previously created profile'} · {receipt.nativeId} ✓ Created</p>}
     {missingReceipt && !unknown && <p className={styles.notice}>The profile result needs confirmation. Contact Nava support before creating another profile.</p>}
+    {!unknown && (previousFailure || previousUnknown) && <p className={styles.notice}>A previous profile attempt needs confirmation. Search for an existing guest or contact Nava support before creating another profile.</p>}
     <GuestDetails editor={editor} allocationPath={allocationPath} allocationId={allocationId} newProfile={newProfile} disabled={locked} />
     {unknown ? <div className={styles.notice}>
       {localPending?.status === 'checking' ? 'Checking profile recovery on this device.'
@@ -342,11 +338,10 @@ function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor
       {(!localPending || localPending.status === 'pending') && <button type="button" disabled={editor.view.busy} onClick={() => void (localPending
         ? editor.commands.checkGuestProfile(allocationId) : editor.commands.reconcile(text(latest?.id))).catch(() => {})}>Check outcome</button>}</div>
       : newProfile && !succeeded && <>
-        {duplicate && <p className={styles.notice}>Infor found a profile with this name. Search for the existing guest, or create a different profile.</p>}
         {pendingReview && <p className={styles.note}>Confirm the marked guest details before creating the profile.</p>}
-        <button type="button" className={styles.secondaryButton} disabled={locked || editor.view.preview || !required || pendingReview}
-          onClick={() => void editor.commands.createGuestProfile(allocationId, Boolean(duplicate)).catch(() => {})}>
-          {duplicate ? 'Create different profile' : 'Create profile & check price'}
+        <button type="button" className={styles.secondaryButton} disabled={locked || previousFailure || previousUnknown || editor.view.preview || !required || pendingReview}
+          onClick={() => void editor.commands.createGuestProfile(allocationId).catch(() => {})}>
+          Create profile &amp; check price
         </button>
         <p className={styles.note}>The profile remains in Infor even if the reservation is not saved. The room price is checked when the booking details are ready.</p>
       </>}

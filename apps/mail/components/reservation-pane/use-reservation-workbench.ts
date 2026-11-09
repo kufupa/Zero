@@ -345,6 +345,10 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         if (previousAttempt.status !== 'none') throw new Error(previousAttempt.status === 'unavailable'
           ? 'This device cannot access profile recovery. Contact Nava support.'
           : 'Check the previous profile creation outcome before trying again.');
+        if (context.snapshot.operationResults.some(row => row.workflow === 'guest_profile' && row.requestId === requestId &&
+            row.allocationId === allocationId && ['unknown', 'failed'].includes(text(row.status)))) {
+          throw new Error('A previous profile attempt needs confirmation. Contact Nava support before creating another profile.');
+        }
         let current = context.snapshot;
         const root = `${requestPath(requestId)}/body`;
         const body = record(effectiveAt(current, root));
@@ -417,11 +421,13 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         apply(latest, context.source, entry);
         if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return latest;
         const operation = latest.operationResults.find(matches);
-        if (!operation) throw new Error('Infor has not recorded the profile outcome yet. Check again later or contact support.');
+        if (!operation) throw new Error('The profile attempt is not visible yet. Check again later or contact support.');
         const result = await client.reconcile({ source: context.source, snapshot: latest, operationId });
         const checked = result.operationResults.find(matches);
+        const reply = record(result.workflowReply);
         if (!result.loadError && result.session.draft.workItemId === scope.workItemId && snapshotMatchesSource(result, context.source) &&
-            guestProfileReceipt(checked) && await clearGuestAttempt(scope, operationId)) return result;
+            reply.status === 'succeeded' && reply.operationId === operationId && guestProfileReceipt(checked) &&
+            await clearGuestAttempt(scope, operationId)) return result;
         return { ...result, serviceNotice: 'The profile outcome still needs confirmation. Check again later or contact Nava support.' };
       }, false, entry.snapshot?.session.sourceChanged === true);
     },
