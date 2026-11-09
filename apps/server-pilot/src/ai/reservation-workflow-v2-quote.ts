@@ -8,6 +8,7 @@ import {
   appendReservationWorkflowV2Observation,
   recordReservationWorkflowV2Result,
   type ReservationNativeCheckBatch,
+  type ReservationRecoveryScope,
 } from './reservation-workflow-v2-state.js';
 import type {
   ReservationWorkflowV2Draft,
@@ -38,6 +39,7 @@ export type ReservationWorkflowV2QuoteContext = {
   user: { id: string };
   property: { propertyCode: string };
   nativeBatch?: ReservationNativeCheckBatch;
+  recovery?: ReservationRecoveryScope;
 };
 
 type QuoteBaseInput = {
@@ -98,6 +100,7 @@ function stateContext(ctx: ReservationWorkflowV2QuoteContext) {
     userId: ctx.nativeBatch ? null : ctx.user.id,
     propertyCode: ctx.property.propertyCode,
     nativeBatch: ctx.nativeBatch,
+    recovery: ctx.recovery,
   };
 }
 

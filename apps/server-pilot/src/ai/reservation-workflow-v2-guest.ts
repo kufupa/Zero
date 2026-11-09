@@ -27,7 +27,7 @@ type Runner = { prepareGuestProfile: (input: Record<string, unknown>) => Promise
   readGuestProfile: (input: Record<string, unknown>) => Promise<ReservationWorkflowV2GuestNativeResult>;
   listGuestProfileCreationOptions: (input: Record<string, unknown>) => Promise<ReservationWorkflowV2GuestNativeResult> };
 const stateContext = (ctx: ReservationWorkflowV2ServerContext) => ({ db: ctx.db, transportId: ctx.transport.id,
-  userId: ctx.user.id, propertyCode: ctx.property.propertyCode });
+  userId: ctx.user.id, propertyCode: ctx.property.propertyCode, recovery: ctx.recovery });
 const text = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : null;
 const record = (value: unknown): Record<string, any> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : null;

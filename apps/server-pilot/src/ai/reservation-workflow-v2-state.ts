@@ -31,8 +31,12 @@ export type ReservationNativeCheckBatch = {
   signal: AbortSignal; deadlineAt: number; observations: ReservationWorkflowV2Observation[];
   results: ReservationWorkflowV2Draft['operationResults'];
 };
+/** Internal, authenticated reconciliation of one operation against its original source. */
+export type ReservationRecoveryScope = {
+  workItemId: string; operationId: string; generationId: string; currentSource: ReservationWorkflowV2Source;
+};
 export type ReservationWorkflowV2Context = { db: DB; transportId: string; userId?: string | null; propertyCode: string;
-  nativeBatch?: ReservationNativeCheckBatch };
+  nativeBatch?: ReservationNativeCheckBatch; recovery?: ReservationRecoveryScope };
 type Context = ReservationWorkflowV2Context;
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
 
@@ -124,16 +128,23 @@ async function buildResult(db: WorkTx, ctx: Context, item: ItemRow, source: Rese
     return { status: 'invalid_source' };
   }
   if (!(await hasMailboxAccess(db, ctx))) return { status: 'not_found' };
-  const mail = await sourceMail(db, ctx, source);
-  if (!mail) return { status: 'invalid_source' };
   const draft = reservationWorkflowV2DraftOf(item.state);
   if (!draft) return { status: hasReservationWorkflowV2Draft(item.state) ? 'invalid_state' : 'not_found' };
   if (draft.workItemId !== item.id || draft.transportId !== ctx.transportId || draft.propertyCode !== ctx.propertyCode ||
       draft.source.messageId !== source.messageId ||
       draft.source.threadId !== source.threadId || draft.source.arrivedAt !== source.arrivedAt) return { status: 'invalid_source' };
-  const sourceChanged = draft.source.sourceHash !== source.sourceHash || Boolean(draft.prefill?.evidenceHash &&
+  const recovery = ctx.recovery;
+  if (recovery && (!ctx.userId || ctx.nativeBatch || recovery.workItemId !== item.id ||
+      recovery.generationId !== draft.generationId || draft.source.sourceHash !== source.sourceHash ||
+      recovery.currentSource.messageId !== source.messageId || recovery.currentSource.threadId !== source.threadId ||
+      recovery.currentSource.arrivedAt !== source.arrivedAt || !draft.operationResults.some((operation) =>
+        operation.id === recovery.operationId && operation.generationId === recovery.generationId &&
+        ['unknown', 'succeeded', 'failed'].includes(operation.status)))) return { status: 'invalid_source' };
+  const checkedSource = recovery?.currentSource ?? source;
+  if (!(await sourceMail(db, ctx, checkedSource))) return { status: 'invalid_source' };
+  const sourceChanged = draft.source.sourceHash !== checkedSource.sourceHash || Boolean(draft.prefill?.evidenceHash &&
     draft.prefill.evidenceHash !== (await reservationArrivalEvidence(db, source.messageId)).hash);
-  if (sourceChanged && !allowSourceChanged) return { status: 'invalid_source' };
+  if (sourceChanged && !allowSourceChanged && !recovery) return { status: 'invalid_source' };
   return { status: 'ok', draft: { ...draft, revision: item.revision }, revision: item.revision,
     revisionHead: item.revisionHead, seq: item.revisionSeq, ...(sourceChanged ? { sourceChanged: true } : {}) };
 }
@@ -1232,6 +1243,7 @@ export async function dispatchReservationWorkflowV2GuestProfile<T>(ctx: Context 
   userId: string; sessionId: string; sessionProfile: 'legacy' | 'remote';
 }, input: MutationInput, validate: (draft: ReservationWorkflowV2Draft) => boolean,
 proceed: () => Promise<T>): Promise<T> {
+  if (ctx.recovery) throw new Error('guest_profile_recovery_cannot_dispatch');
   return ctx.db.transaction(async (tx) => {
     await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
     await lockCreateActorAccess(tx, { transportId: ctx.transportId, actorUserId: ctx.userId });
@@ -1260,6 +1272,11 @@ export async function finishReservationWorkflowV2GuestProfile(ctx: Context, inpu
   return ctx.db.transaction(async (tx) => {
     const item = await loadItem(tx, ctx, input.workItemId, true);
     if (!item || !(await hasMailboxAccess(tx, ctx))) return { status: 'not_found' as const };
+    if (ctx.recovery) {
+      if (ctx.recovery.operationId !== input.operationId) return { status: 'invalid_source' as const };
+      const checked = await buildResult(tx, ctx, item, input.source);
+      if (checked.status !== 'ok') return checked;
+    }
     const draft = reservationWorkflowV2DraftOf(item.state);
     if (!draft || draft.transportId !== ctx.transportId || draft.propertyCode !== ctx.propertyCode ||
       draft.source.threadId !== input.source.threadId || draft.source.messageId !== input.source.messageId ||
@@ -1322,6 +1339,11 @@ export async function recordReservationWorkflowV2Result(ctx: Context, input: {
     const item = await loadItem(tx, ctx, input.workItemId, true);
     if (!item) return { status: 'not_found' as const };
     if (!(await hasMailboxAccess(tx, ctx))) return { status: 'not_found' as const };
+    if (ctx.recovery) {
+      if (ctx.recovery.operationId !== input.result.id) return { status: 'invalid_source' as const };
+      const checked = await buildResult(tx, ctx, item, input.source);
+      if (checked.status !== 'ok') return checked;
+    }
     const currentDraft = reservationWorkflowV2DraftOf(item.state);
     if (!currentDraft) return { status: 'not_found' as const };
     if (currentDraft.workItemId !== item.id || currentDraft.transportId !== ctx.transportId ||

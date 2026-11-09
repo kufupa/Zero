@@ -49,6 +49,7 @@ export type ReservationWorkflowV2CancelContext = {
   user: { id: string; sessionId?: string; sessionProfile?: 'legacy' | 'remote' };
   property: { propertyCode: string };
   nativeBatch?: ReservationNativeCheckBatch;
+  recovery?: ReservationWorkflowV2Context['recovery'];
 };
 
 type StateContext = ReservationWorkflowV2Context;
@@ -107,7 +108,7 @@ const reviewNote = (observationRef: string, approvalDigest: string) =>
 
 function stateContext(ctx: ReservationWorkflowV2CancelContext): StateContext {
   return { db: ctx.db, transportId: ctx.transport.id, userId: ctx.nativeBatch ? null : ctx.user.id,
-    propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch };
+    propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch, recovery: ctx.recovery };
 }
 
 function currentTarget(ctx: ReservationWorkflowV2CancelContext): HmsReadTarget | null {

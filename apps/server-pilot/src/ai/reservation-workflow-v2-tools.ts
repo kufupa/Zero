@@ -23,6 +23,7 @@ import {
   recordReservationWorkflowV2Result,
   reservationWorkflowV2DraftOf,
   type ReservationNativeCheckBatch,
+  type ReservationRecoveryScope,
   type ReservationWorkflowV2Context,
 } from './reservation-workflow-v2-state.js';
 import { canonicalJson } from './draft-approval.js';
@@ -58,6 +59,8 @@ export type ReservationWorkflowV2ServerContext = {
   property: { propertyCode: string };
   /** Internal service-only scope; never populated from a pane request. */
   nativeBatch?: ReservationNativeCheckBatch;
+  /** Internal reconciliation-only scope; never populated from a pane request. */
+  recovery?: ReservationRecoveryScope;
 };
 
 const record = (value: unknown): Record<string, unknown> | null =>
@@ -86,7 +89,7 @@ type NativeContinuation = (() => Promise<unknown>) & { proveNeverDispatched?: ()
 
 function stateContext(ctx: ReservationWorkflowV2ServerContext): V2StateContext {
   return { db: ctx.db, transportId: ctx.transport.id, userId: ctx.nativeBatch ? null : ctx.user.id,
-    propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch };
+    propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch, recovery: ctx.recovery };
 }
 
 async function currentDraft(ctx: ReservationWorkflowV2ServerContext, input: {

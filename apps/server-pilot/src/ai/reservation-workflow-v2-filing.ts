@@ -42,6 +42,7 @@ export type ReservationWorkflowV2FilingContext = {
   user: { id: string; sessionId?: string; sessionProfile?: 'legacy' | 'remote' };
   property: { propertyCode: string };
   nativeBatch?: import('./reservation-workflow-v2-state.js').ReservationNativeCheckBatch;
+  recovery?: ReservationWorkflowV2Context['recovery'];
 };
 type Outcome = { status: string; issue?: string; [key: string]: unknown };
 type PreviewResult = Awaited<ReturnType<typeof previewFiling>>;
@@ -85,7 +86,10 @@ const sourceEvidenceRef = (messageId: string, role: string, identity: string): s
   `src_${sha256(`${messageId}\u001f${role}\u001f${identity}`).slice(0, 12)}`;
 const stateContext = (ctx: ReservationWorkflowV2FilingContext): ReservationWorkflowV2Context => ({ db: ctx.db,
   transportId: ctx.transport.id, userId: ctx.nativeBatch ? null : ctx.user.id,
-  propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch });
+  propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch, recovery: ctx.recovery });
+export type ReservationWorkflowV2FilingRecoveryAccess = {
+  scope: NonNullable<ReservationWorkflowV2Context['recovery']>; userId: string;
+};
 
 /** Persist only the host runner's proof that this claimed writer is closed and its callbacks drained. */
 async function recordFilingWriterClosed(ctx: ReservationWorkflowV2FilingContext, input: ReservationWorkflowV2ExecuteInput,
@@ -1088,7 +1092,8 @@ export async function reservationWorkflowV2FilingReconcile(ctx: ReservationWorkf
     const value = record(row.value);
     return value?.kind === 'not_dispatched' && value.holdId === intent.holdId && value.operation === 'attach_document';
   })) return recordNotDispatched(initial.draft.generationId, 'The native gate proved this upload was never sent.');
-  try { await recoverHmsLabtestV2Attach(ctx.db, intent.holdId); }
+  try { await recoverHmsLabtestV2Attach(ctx.db, intent.holdId,
+    ctx.recovery ? { scope: ctx.recovery, userId: ctx.user.id } : undefined); }
   catch { return { status: 'needs_reconcile', operationId: result.id, issue: 'fresh_documents_readback_not_positive' }; }
   const resolved = await currentDraft(ctx, input);
   if (!resolved.draft) return resolved.result;
@@ -1110,7 +1115,8 @@ export async function withReservationWorkflowV2AttachRecoveryLock<T>(intent: Hms
 }
 
 /** Trusted fresh-session proof for a v2 upload intent. */
-export async function proveReservationWorkflowV2AttachRecovery(db: DB, intent: HmsLabtestIntent): Promise<PositiveFilingProof> {
+export async function proveReservationWorkflowV2AttachRecovery(db: DB, intent: HmsLabtestIntent,
+  recoveryScope?: ReservationWorkflowV2FilingRecoveryAccess): Promise<PositiveFilingProof> {
   const recovery = z.object({ version: z.literal(1), workItemId: z.string().uuid(), operationId: z.string().uuid(),
     requestId: z.string(), documentId: z.string(), documentSourceRef: z.string(), source: z.object({
       threadId: z.string(), messageId: z.string(), sourceHash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -1133,8 +1139,11 @@ export async function proveReservationWorkflowV2AttachRecovery(db: DB, intent: H
   const [item] = await db.select({ id: workItem.id, transportId: workItem.transportId, threadId: workItem.threadId,
     sourceMessageId: workItem.sourceMessageId, state: workItem.state }).from(workItem)
     .where(and(eq(workItem.id, recovery.data.workItemId), eq(workItem.transportId, intent.transportId))).limit(1);
+  if (recoveryScope && (recoveryScope.scope.workItemId !== recovery.data.workItemId ||
+      recoveryScope.scope.operationId !== recovery.data.operationId)) throw new Error('filing_recovery_scope_changed');
+  const recoveryUserId = recoveryScope?.userId ?? intent.actorUserId;
   const current = await getReservationWorkflowV2Draft({ db, transportId: intent.transportId,
-    userId: intent.actorUserId, propertyCode: 'HRCEN' }, { workItemId: recovery.data.workItemId,
+    userId: recoveryUserId, propertyCode: 'HRCEN', recovery: recoveryScope?.scope }, { workItemId: recovery.data.workItemId,
     source: recovery.data.source });
   const draft = current.status === 'ok' ? current.draft : null;
   if (!item || !draft || draft.transportId !== intent.transportId || draft.propertyCode !== 'HRCEN' ||
@@ -1143,7 +1152,7 @@ export async function proveReservationWorkflowV2AttachRecovery(db: DB, intent: H
       item.threadId !== recovery.data.source.threadId || item.sourceMessageId !== draft.source.messageId ||
       item.threadId !== draft.source.threadId) throw new Error('filing_recovery_source_changed');
   const [access] = await db.select({ id: mailboxAccess.id }).from(mailboxAccess).where(and(
-    eq(mailboxAccess.userId, intent.actorUserId), eq(mailboxAccess.transportId, intent.transportId))).limit(1);
+    eq(mailboxAccess.userId, recoveryUserId), eq(mailboxAccess.transportId, intent.transportId))).limit(1);
   if (!access) throw new Error('filing_recovery_access_unavailable');
   const attachReader = await import(new URL('../../tooling/hms-cloud/pane-attach-session.mjs', import.meta.url).href) as {
     provePositiveAttachRecovery: (intent: HmsLabtestIntent, options?: { writerQuiesced: (writer: unknown) => boolean }) => Promise<Record<string, unknown>>;
@@ -1177,7 +1186,7 @@ export async function proveReservationWorkflowV2AttachRecovery(db: DB, intent: H
 
 /** Atomic v2 result recording inside the dispatch-resolution transaction. */
 export async function recordReservationWorkflowV2AttachRecovery(tx: WorkTransaction, intent: HmsLabtestIntent,
-  proof: PositiveFilingProof) {
+  proof: PositiveFilingProof, recoveryScope?: ReservationWorkflowV2FilingRecoveryAccess) {
   const recovery = record(intent.recovery) as unknown as V2FilingRecovery | null;
   if (!recovery || recovery.operationId !== intent.grantId || proof.confirmation !== recovery.confirmation ||
       proof.nativeStayId !== recovery.nativeStayId || proof.nativeReadback.documentCode !== recovery.documentCode ||
@@ -1190,10 +1199,17 @@ export async function recordReservationWorkflowV2AttachRecovery(tx: WorkTransact
   const draft = item && reservationWorkflowV2DraftOf(item.state as Record<string, unknown>);
   const prepare = draft?.observations.find((entry) => entry.ref === recovery.prepareObservationRef);
   const prior = draft?.operationResults.find((entry) => entry.id === recovery.operationId);
+  if (recoveryScope && (recoveryScope.scope.workItemId !== recovery.workItemId ||
+      recoveryScope.scope.operationId !== recovery.operationId)) throw new Error('filing_recovery_scope_changed');
   const recoveryContext: ReservationWorkflowV2FilingContext = { db: tx as unknown as DB,
-    transport: { id: intent.transportId }, user: { id: intent.actorUserId }, property: { propertyCode: 'HRCEN' } };
-  const source = await currentV2Source(tx, recoveryContext, { workItemId: recovery.workItemId, source: recovery.source });
-  if (!item || !draft || !prepare || !prior || !source || !recoveryMatchesDraft(draft, recovery) || prior.status !== 'unknown' || prior.workflow !== 'filing' ||
+    transport: { id: intent.transportId }, user: { id: recoveryScope?.userId ?? intent.actorUserId },
+    property: { propertyCode: 'HRCEN' }, recovery: recoveryScope?.scope };
+  const current = item && await getReservationWorkflowV2Draft(stateContext(recoveryContext),
+    { workItemId: recovery.workItemId, source: recovery.source });
+  const source = await currentV2Source(tx, recoveryContext, { workItemId: recovery.workItemId,
+    source: recoveryScope?.scope.currentSource ?? recovery.source });
+  if (!item || !draft || !prepare || !prior || !source || current?.status !== 'ok' ||
+      !recoveryMatchesDraft(draft, recovery) || prior.status !== 'unknown' || prior.workflow !== 'filing' ||
       prior.requestId !== recovery.requestId || item.sourceMessageId !== recovery.source.messageId ||
       item.threadId !== recovery.source.threadId || draft.source.sourceHash !== recovery.source.sourceHash ||
       draft.source.arrivedAt !== recovery.source.arrivedAt ||

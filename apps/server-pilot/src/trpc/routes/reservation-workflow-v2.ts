@@ -171,6 +171,25 @@ async function nativeWorkflow(
   return marked.status === 'ok' ? { kind, result: null } : { kind: null, result: marked };
 }
 
+/** Keep recovery bound to the original operation while authenticating the current email. */
+async function recoveryWorkflow(ctx: Awaited<ReturnType<typeof nativeContext>>,
+  input: z.infer<typeof reservationWorkflowV2ReconcileInputSchema>) {
+  const current = await getReservationWorkflowV2Draft({ db: ctx.db, userId: ctx.user.id,
+    transportId: ctx.transport.id, propertyCode: ctx.property.propertyCode }, input, { allowSourceChanged: true });
+  if (current.status !== 'ok') return { state: 'error' as const, result: current };
+  if (!current.sourceChanged) return { state: 'unchanged' as const };
+  if (current.revision !== input.expectedRevision || current.seq !== input.expectedSeq) {
+    return { state: 'error' as const, result: { status: 'stale_revision' as const } };
+  }
+  const operation = current.draft.operationResults.find((row) => row.id === input.operationId &&
+    row.generationId === current.draft.generationId && ['unknown', 'succeeded', 'failed'].includes(row.status));
+  if (!operation) return { state: 'error' as const, result: { status: 'not_found' as const } };
+  return { state: 'recovery' as const, kind: operation.workflow,
+    scoped: { ...ctx, recovery: { workItemId: input.workItemId, operationId: operation.id,
+      generationId: current.draft.generationId, currentSource: input.source } },
+    input: { ...input, source: current.draft.source } };
+}
+
 const configureFilingInput = reservationWorkflowV2ItemInputSchema.extend({
   requestId: z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/),
   attachmentId: z.string().min(1).max(500), confirmation: z.string().trim().regex(/^\d+-\d+$/).max(200),
@@ -388,14 +407,19 @@ export const reservationWorkflowV2Router = router({
   }),
   reconcile: mailboxProcedure.input(reservationWorkflowV2ReconcileInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
-    const workflow = await nativeWorkflow(scoped, input, undefined, input.operationId);
+    const recovery = await recoveryWorkflow(scoped, input);
+    if (recovery.state === 'error') return recovery.result;
+    const workflow = recovery.state === 'recovery' ? { kind: recovery.kind, result: null }
+      : await nativeWorkflow(scoped, input, undefined, input.operationId);
     if (workflow.result) return workflow.result;
-    if (workflow.kind === 'guest_profile') return reservationWorkflowV2ReconcileGuestProfile(scoped, input);
-    if (workflow.kind === 'quote') return reservationWorkflowV2QuoteReconcile(scoped, input);
-    if (workflow.kind === 'filing') return reservationWorkflowV2FilingReconcile(scoped, input);
-    if (workflow.kind === 'create') return reservationWorkflowV2Reconcile(scoped, input);
-    if (workflow.kind === 'cancel') return reservationWorkflowV2CancelReconcile(scoped, input);
-    if (workflow.kind === 'amend') return reservationWorkflowV2AmendReconcile(scoped, input);
+    const recoveryScoped = recovery.state === 'recovery' ? recovery.scoped : scoped;
+    const recoveryInput = recovery.state === 'recovery' ? recovery.input : input;
+    if (workflow.kind === 'guest_profile') return reservationWorkflowV2ReconcileGuestProfile(recoveryScoped, recoveryInput);
+    if (workflow.kind === 'quote') return reservationWorkflowV2QuoteReconcile(recoveryScoped, recoveryInput);
+    if (workflow.kind === 'filing') return reservationWorkflowV2FilingReconcile(recoveryScoped, recoveryInput);
+    if (workflow.kind === 'create') return reservationWorkflowV2Reconcile(recoveryScoped, recoveryInput);
+    if (workflow.kind === 'cancel') return reservationWorkflowV2CancelReconcile(recoveryScoped, recoveryInput);
+    if (workflow.kind === 'amend') return reservationWorkflowV2AmendReconcile(recoveryScoped, recoveryInput);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
   executeServices: mailboxProcedure.input(z.union([reservationWorkflowV2ServicesExecuteInputSchema,
@@ -407,6 +431,12 @@ export const reservationWorkflowV2Router = router({
     return 'targetRef' in input ? reservationWorkflowV2ExecuteSavedServices(scoped, input)
       : reservationWorkflowV2ExecuteServices(scoped, input);
   }),
-  reconcileServices: mailboxProcedure.input(reservationWorkflowV2ReconcileInputSchema).mutation(async ({ input, ctx }) =>
-    reservationWorkflowV2ReconcileServices(await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source), input)),
+  reconcileServices: mailboxProcedure.input(reservationWorkflowV2ReconcileInputSchema).mutation(async ({ input, ctx }) => {
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
+    const recovery = await recoveryWorkflow(scoped, input);
+    if (recovery.state === 'error') return recovery.result;
+    if (recovery.state === 'recovery') return recovery.kind === 'services'
+      ? reservationWorkflowV2ReconcileServices(recovery.scoped, recovery.input) : { status: 'not_found' as const };
+    return reservationWorkflowV2ReconcileServices(scoped, input);
+  }),
 });

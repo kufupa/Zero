@@ -50,6 +50,7 @@ export type ReservationWorkflowV2AmendContext = {
   user: { id: string; sessionId?: string; sessionProfile?: 'legacy' | 'remote' };
   property: { propertyCode: string };
   nativeBatch?: ReservationNativeCheckBatch;
+  recovery?: ReservationWorkflowV2Context['recovery'];
 };
 
 type Input = ReservationWorkflowV2LookupInput | ReservationWorkflowV2PrepareInput |
@@ -84,7 +85,7 @@ const sameName = (left: unknown, right: unknown) => typeof left === 'string' && 
 
 function stateContext(ctx: ReservationWorkflowV2AmendContext): V2StateContext {
   return { db: ctx.db, transportId: ctx.transport.id, userId: ctx.nativeBatch ? null : ctx.user.id,
-    propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch };
+    propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch, recovery: ctx.recovery };
 }
 
 async function currentDraft(ctx: ReservationWorkflowV2AmendContext, input: Input) {
