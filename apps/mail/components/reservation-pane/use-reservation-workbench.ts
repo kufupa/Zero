@@ -323,7 +323,15 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         const index = allocations.findIndex(row => row.id === allocationId);
         if (index < 0) throw new Error('This room changed. Review its guest before creating a profile.');
         const guestPath = `${root}/allocations/${index}/guest`;
-        if (valueAt(current, `${guestPath}/profileIntent`) !== 'requested_new') throw new Error('Choose New profile first.');
+        const intentPath = `${guestPath}/profileIntent`;
+        if (effectiveAt(current, intentPath) !== 'requested_new') throw new Error('Choose New profile first.');
+        // The explicit Create profile action confirms the canonical intent before native preparation.
+        if (current.session.draft.staffReviews[intentPath]?.status !== 'accepted') {
+          current = await client.review({ source: context.source, snapshot: current, fieldPath: intentPath,
+            decision: 'accepted', note: 'Staff chose to create a new guest profile' });
+          apply(current, context.source, entry);
+          if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return current;
+        }
         // Go accepts staff-entered values only. Source suggestions still need their own acknowledgement.
         for (const field of ['firstName', 'lastName', 'mobile', 'email', 'titleCode', 'phoneNumber', 'phoneTypeCode', 'emailTypeCode']) {
           const path = `${guestPath}/${field}`;
@@ -333,6 +341,11 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
           current = await client.review({ source: context.source, snapshot: current, fieldPath: path, decision: 'accepted', note: 'Entered by staff' });
           apply(current, context.source, entry);
           if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return current;
+        }
+        const currentRooms = record(effectiveAt(current, root)).allocations;
+        if (!Array.isArray(currentRooms) || record(currentRooms[index]).id !== allocationId ||
+            effectiveAt(current, intentPath) !== 'requested_new' || current.session.draft.staffReviews[intentPath]?.status !== 'accepted') {
+          throw new Error('This room or guest choice changed. Review it before creating a profile.');
         }
         const prepared = await client.prepareGuestProfile({ source: context.source, snapshot: current, requestId, allocationId, confirmDuplicateName });
         apply(prepared, context.source, entry);
