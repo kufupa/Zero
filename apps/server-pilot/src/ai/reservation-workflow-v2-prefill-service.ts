@@ -162,7 +162,12 @@ export async function executeReservationArrival(input: {
       deadlineAt: fence.deadlineAt, signal,
       ...(typeof run.metrics?.interruptedHeartbeatAt === 'string' ? { recoveryHeartbeat: run.metrics.interruptedHeartbeatAt } : {}) });
     const fresh = await getReservationWorkflowV2Draft(scoped, checkItem);
-    if (fresh.status === 'ok') result = fresh;
+    if (fresh.status !== 'ok' || (fresh.draft.prefill?.status === 'running' && fresh.draft.prefill.phase === 'native_checks')) {
+      await markAiRunDeadLetter({ ...fence, expectedStates: ['running'], lastError: 'reservation native checks incomplete',
+        failureClass: 'LEASE_LOST' }, db);
+      return 'dead_letter';
+    }
+    result = fresh;
   }
   const done = await markAiRunSucceeded({ ...fence, expectedStates: ['running'],
     metrics: { ...run.metrics, phase: 'complete', prefillStatus: result.draft.prefill?.status,
