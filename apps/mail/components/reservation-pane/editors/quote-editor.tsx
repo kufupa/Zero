@@ -46,11 +46,17 @@ function SharedDate({ editor, groups, bodyPath, field, label }: {
 }
 
 function latestQuote(editor: Editor) {
-  return [...editor.snapshot.session.draft.observations].reverse().find((item) => item.kind === 'rate_availability' &&
+  const draft = editor.snapshot.session.draft;
+  return [...draft.observations].reverse().find((item) => item.kind === 'rate_availability' &&
+    item.generationId === draft.generationId && item.propertyCode === draft.propertyCode &&
+    item.sourceMessageId === draft.source.messageId && item.criteria.sourceHash === draft.source.sourceHash &&
     item.criteria.workflow === 'quote' && item.criteria.requestId === editor.request.id);
 }
 function quoteCurrent(editor: Editor, observation: ReturnType<typeof latestQuote>) {
-  if (!observation || observation.status !== 'complete' || !observation.coverage.complete) return false;
+  const draft = editor.snapshot.session.draft;
+  if (!observation || observation.status !== 'complete' || !observation.coverage.complete ||
+      observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
+      observation.sourceMessageId !== draft.source.messageId || observation.criteria.sourceHash !== draft.source.sourceHash) return false;
   const result = record(observation.result);
   const until = Date.parse(text(result.freshUntil));
   if (!Number.isFinite(until) || until <= Date.now()) return false;
