@@ -638,6 +638,7 @@ export async function prepareArtifacts(
       { source: s } = await authorizedSource(t, deviceId, scope, {
         requireFence: true,
         allowQuota: true,
+        allowDisk: true,
       });
     const [obs] = await t
       .select()
@@ -749,7 +750,7 @@ export async function attachUploadSession(
 ) {
   const outcome = await db.transaction(async (tx) => {
     const t = tx as DB;
-    await authorizedSource(t, deviceId, scope, { requireFence: true, allowQuota: true });
+    await authorizedSource(t, deviceId, scope, { requireFence: true, allowQuota: true, allowDisk: true });
     const a = await ownedArtifact(t, scope.sourceId, artifactId);
     if (
       session.sourceId !== scope.sourceId ||
@@ -787,7 +788,7 @@ export async function acceptArtifact(
 ) {
   return db.transaction(async (tx) => {
     const t = tx as DB;
-    await authorizedSource(t, deviceId, scope, { requireFence: true, allowQuota: true });
+    await authorizedSource(t, deviceId, scope, { requireFence: true, allowQuota: true, allowDisk: true });
     const a = await ownedArtifact(t, scope.sourceId, artifactId);
     if (
       a.expectedBytes !== sealed.bytes ||
@@ -1055,12 +1056,14 @@ export async function reportOptionalAttachmentGaps(db: DB, deviceId: string, sco
 
 /** Resolve the placeholder used when Outlook could not enumerate attachments at discovery. */
 export async function resolveOptionalAttachmentRoles(db: DB, deviceId: string, scope: NativeSyncScope,
-  observationId: string, roles: string[]) {
+  observationId: string, roles: string[], semanticVersion?: number) {
   return db.transaction(async (tx) => {
     const t = tx as DB;
-    await authorizedSource(t, deviceId, scope, { requireFence: true });
+    const { source } = await authorizedSource(t, deviceId, scope, { requireFence: true, allowDisk: true });
     const [o] = await t.select().from(observationTable).where(and(eq(observationTable.id, observationId),
       eq(observationTable.sourceId, scope.sourceId))).for('update');
+    if (!o || (source.resourcePauseReason === 'disk' && semanticVersion === undefined) ||
+        (semanticVersion !== undefined && o.semanticVersion !== semanticVersion)) throw new SyncDeniedError();
     if (o && !o.artifactOrigin && !o.requiredArtifactRoles.includes('attachment:unavailable') &&
         roles.every((role) => /^attachment:[1-9][0-9]*$/.test(role)) && new Set(roles).size === roles.length &&
         stableJson([...roles].sort()) === stableJson(o.requiredArtifactRoles.filter((role) => role.startsWith('attachment:')).sort()))
@@ -1202,6 +1205,7 @@ export async function renewFinalizationClaim(
       } = await authorizedSource(t, deviceId, scope, {
         requireFence: true,
         allowQuota: true,
+        allowDisk: true,
       });
     if (!owner || s.claimOwner !== owner) throw new SyncDeniedError();
     const expiresAt = new Date(
