@@ -53,7 +53,7 @@ function nativeSteps(draft: ReservationWorkflowV2Draft): { steps: Step[]; omitte
     if (target.kind === 'allocation') {
       const allocationId = target.allocationId;
       steps.push({ key: `service:lookup:${serviceId}:${requestId}:${allocationId}`,
-        run: (ctx, item) => reservationArrivalAddOnLookup(ctx, { ...item, requestId, allocationId, serviceId }) });
+        run: async () => ({ status: 'needs_input', issue: 'service_lookup_requires_staff' }) });
     } else if (target.kind === 'saved_target') {
       steps.push({ key: `service:lookup:${serviceId}:${requestId}:${target.hintId}`,
         run: stayLookup((ctx, item) => reservationArrivalAddOnLookup(ctx, { ...item, requestId, targetRef: target, serviceId })) });

@@ -139,6 +139,12 @@ function accepted(draft: ReservationWorkflowV2Draft, path: string): boolean {
   return draft.fieldReviewRequirements[path]?.required === false || draft.staffReviews[path]?.status === 'accepted';
 }
 
+function staffSelectedIdentity(draft: ReservationWorkflowV2Draft, path: string, ref: string): boolean {
+  const override = draft.fieldOverrides[path];
+  if (draft.staffReviews[path]?.status === 'flagged') return false;
+  return (override?.state === 'set' && override.value === ref) || draft.staffReviews[path]?.status === 'accepted';
+}
+
 export function reviewed(draft: ReservationWorkflowV2Draft, path: string, value: unknown): string | null {
   if (value === undefined || value === null || (value && typeof value === 'object' &&
       (value as { kind?: unknown }).kind === 'none')) return null;
@@ -289,7 +295,7 @@ function createDispatchAdmission(compiled: Extract<CreateCompile, { outcome: 'ok
 }
 
 function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, allocationId: string, propertyCode: string,
-  mode: 'prepare' | 'lookup' | 'execute' = 'prepare'): CreateCompile {
+  mode: 'prepare' | 'background_prepare' | 'lookup' | 'execute' = 'prepare'): CreateCompile {
   const request = draft.proposal.content.requests.find((entry) => entry.id === requestId);
   if (!request || request.kind !== 'create') return { outcome: 'needs_input', issue: 'create_request_not_found' };
   const confirmation = sourceConfirmationClaim(draft, requestId);
@@ -401,6 +407,9 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   } else if (mode !== 'lookup') issues.push(`${guestPath}:existing_profile_selection_required`);
   if (!guestCandidate && mode !== 'lookup') issues.push(`${guestPath}:native_profile_unverified`);
   const selectedGuestRefValue = typeof selectedGuestRef === 'string' ? selectedGuestRef : null;
+  if (mode === 'background_prepare' && selectedGuestRefValue && !staffSelectedIdentity(draft, guestRefPath, selectedGuestRefValue)) {
+    issues.push(`${guestRefPath}:staff_selection_required`);
+  }
   if (selectedGuestRefValue && mode === 'execute') {
     const missingReview = reviewed(draft, guestRefPath, selectedGuestRefValue);
     if (missingReview) reviewPaths.add(missingReview);
@@ -420,6 +429,10 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     }
         if (mode === 'execute') { const missingReview = reviewed(draft, resolved.path, raw); if (missingReview) reviewPaths.add(missingReview); }
     const party = resolveParty(draft, resolved.path, raw, role, requestId, allocationId);
+    if (mode === 'background_prepare' && party.selectedRef && party.selectionPath &&
+        !staffSelectedIdentity(draft, party.selectionPath, party.selectedRef)) {
+      issues.push(`${party.selectionPath}:staff_selection_required`);
+    }
     if (mode === 'execute' && party.selectedRef && party.selectionPath) {
       const missingReview = reviewed(draft, party.selectionPath, party.selectedRef);
       if (missingReview) reviewPaths.add(missingReview);
@@ -1134,7 +1147,8 @@ export async function reservationWorkflowV2Prepare(ctx: ReservationWorkflowV2Ser
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;
   if (!input.allocationId) return { status: 'needs_input', issue: 'allocation_required' };
-  const compiled = compileCreate(loaded.draft, input.requestId, input.allocationId, ctx.property.propertyCode);
+  const compiled = compileCreate(loaded.draft, input.requestId, input.allocationId, ctx.property.propertyCode,
+    ctx.nativeBatch ? 'background_prepare' : 'prepare');
   if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [] };
   try {
     const tool = await import(new URL('../../tooling/hms-cloud/create-reservation.mjs', import.meta.url).href) as {
