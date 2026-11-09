@@ -241,7 +241,13 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       const operation = context.snapshot.operationResults.find(row => row.id === operationId);
       return operation?.workflow === 'services' ? client.reconcileServices({ ...context, operationId }) : client.reconcile({ ...context, operationId });
     }); },
-    acceptServiceReview(fieldPath, note) { return run(context => client.review({ ...context, fieldPath, decision: 'accepted', note })); },
+    acceptServiceReview(fieldPath, note, expected) { return run(context => {
+      if (expected && (context.snapshot.session.draft.generationId !== expected.generationId ||
+          JSON.stringify({ value: effectiveAt(context.snapshot, expected.path) }) !== JSON.stringify({ value: expected.value }))) {
+        throw new Error('This value changed while it was being reviewed. Check it again.');
+      }
+      return client.review({ ...context, fieldPath, decision: 'accepted', note });
+    }); },
     acceptFinancialReview(fieldPath, note, observationRef) { return run(async context => {
       const next = await client.edit({ ...context, requestId: requireRequest(), fieldPath, state: 'set', value: observationRef });
       apply(next, context.source, entry);
