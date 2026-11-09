@@ -147,10 +147,11 @@ function RoomCode({ editor, path, options }: { editor: Editor; path: string; opt
 function OfferList({ editor, groupId, groupPath, observation }: { editor: Editor; groupId: string; groupPath: string; observation: ReturnType<typeof latestQuote> }) {
   const result = record(observation?.result);
   const options = Array.isArray(result.rateOptions) ? result.rateOptions.map(record).filter((option) => option.groupId === groupId) : [];
-  if (!options.length) return <p className={styles.note}>Available Infor offers appear after lookup.</p>;
   const current = quoteOffersCurrent(editor, observation);
   return <div className={styles.offerList}>
-    {!current && <p className={styles.notice}>Earlier offers shown. Refresh the price before choosing.</p>}
+    {observation && !current && <p className={styles.notice}>Earlier availability shown. Refresh the price before choosing.</p>}
+    {result.availabilityTruncated === true && <p className={styles.notice}>Infor's availability results were truncated; some offers may be missing.</p>}
+    {!options.length && <p className={styles.note}>{observation ? 'No selectable Infor offers were returned for this group.' : 'Available Infor offers appear after lookup.'}</p>}
     {options.map((option, index) => {
       const room = text(option.roomCode), rate = text(option.rateCode), board = text(option.board);
       const selected = Array.isArray(valueAt(editor.snapshot, `${groupPath}/roomCodes`)) &&
@@ -292,6 +293,12 @@ export function QuoteEditor(editor: Editor) {
   const rows = Array.isArray(body.requestedMoney) ? body.requestedMoney.map(record) : [];
   const observation = latestQuote(editor);
   const result = record(observation?.result);
+  const shortfall = record(result.shortfall);
+  const hasShortfall = result.failureKind === 'proven_shortage' && typeof shortfall.roomCode === 'string' &&
+    typeof shortfall.roomLabel === 'string' && typeof shortfall.date === 'string' &&
+    typeof shortfall.demand === 'number' && Number.isSafeInteger(shortfall.demand) &&
+    typeof shortfall.supply === 'number' && Number.isSafeInteger(shortfall.supply);
+  const offersCurrent = quoteOffersCurrent(editor, observation);
   const mismatch = groups.some((group) => group.arrival !== groups[0]?.arrival || group.departure !== groups[0]?.departure);
   const artifactPath = `${bodyPath}/outputIntent/artifacts`;
   const artifactsValue = valueAt(snapshot, artifactPath);
@@ -304,6 +311,7 @@ export function QuoteEditor(editor: Editor) {
           <SharedDate editor={editor} groups={groups} bodyPath={bodyPath} field="departure" label="Departure" /></div>
         {mismatch && <p className={styles.notice}>This quote contains more than one date pair. Use separate quote actions, or set common dates for all groups.</p>}
       </> : <p className={styles.notice}>Add a room group to start a manual quote.</p>}
+      {hasShortfall && <p className={styles.notice}>{'Earlier pricing shortage; refresh selected criteria'}: {text(shortfall.roomLabel)} ({text(shortfall.roomCode)}) · {text(shortfall.date)} · {String(shortfall.demand)} requested, {String(shortfall.supply)} available.</p>}
       {groups.map((group, index) => {
         const groupPath = `${bodyPath}/groups/${index}`;
         const options = Array.isArray(result.rateOptions) ? result.rateOptions.map(record).filter((option) => option.groupId === group.id) : [];
@@ -331,7 +339,7 @@ export function QuoteEditor(editor: Editor) {
         onClick={() => void commands.changeRows({ kind: 'add_quote_group', requestId: request.id,
           entityId: `group_${crypto.randomUUID().replaceAll('-', '')}` })}>Add room group</button>
         <button type="button" className={styles.secondaryButton} disabled={view.busy} onClick={() => void commands.lookup()}>Refresh Infor offers</button></div>
-      {observation && <div className={styles.price}><strong>{quoteCurrent(editor, observation) ? 'Current Infor quote' : 'Earlier Infor quote'}</strong>
+      {observation && <div className={styles.price}><strong>{quoteCurrent(editor, observation) ? 'Current Infor quote' : offersCurrent ? 'Current Infor availability' : 'Earlier Infor observation'}</strong>
         {money(result.totalMinor, result.currency) && <span>{money(result.totalMinor, result.currency)} total</span>}
         <small>{text(result.arrivalDate)} – {text(result.departureDate)}{observation.observedAt ? ` · observed ${new Date(observation.observedAt).toLocaleString()}` : ''}</small>
         {rows.some((_, i) => text(valueAt(snapshot, `${bodyPath}/requestedMoney/${i}/staffAllowanceType`)) !== 'dinner') &&
