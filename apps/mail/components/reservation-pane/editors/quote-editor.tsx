@@ -311,7 +311,7 @@ export function QuoteEditor(editor: Editor) {
           <SharedDate editor={editor} groups={groups} bodyPath={bodyPath} field="departure" label="Departure" /></div>
         {mismatch && <p className={styles.notice}>This quote contains more than one date pair. Use separate quote actions, or set common dates for all groups.</p>}
       </> : <p className={styles.notice}>Add a room group to start a manual quote.</p>}
-      {hasShortfall && <p className={styles.notice}>{offersCurrent ? 'Infor found too few rooms' : 'Earlier Infor shortage; refresh to confirm'}: {text(shortfall.roomLabel)} ({text(shortfall.roomCode)}) · {text(shortfall.date)} · {String(shortfall.demand)} requested, {String(shortfall.supply)} available.</p>}
+      {hasShortfall && <p className={styles.notice}>{'Earlier pricing shortage; refresh selected criteria'}: {text(shortfall.roomLabel)} ({text(shortfall.roomCode)}) · {text(shortfall.date)} · {String(shortfall.demand)} requested, {String(shortfall.supply)} available.</p>}
       {groups.map((group, index) => {
         const groupPath = `${bodyPath}/groups/${index}`;
         const options = Array.isArray(result.rateOptions) ? result.rateOptions.map(record).filter((option) => option.groupId === group.id) : [];
