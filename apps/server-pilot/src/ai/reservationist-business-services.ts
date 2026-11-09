@@ -13,6 +13,7 @@ import {availabilityBoardOf,type AvailabilityBoardRow,type QuoteEnvelope} from '
 import {profileFor} from '../../tooling/playwright-quote/property-profile.mjs';
 type Context=Parameters<NonNullable<ReservationistExecutionServices['resolveQuoteTask']>>[0];
 export type NativeQuoteRequest=QuoteSourceRecord['request']&{search:{includeRestricted:false;includeAlternatives:boolean;salesStrategy:'Government'|'Preset'|'BAR'|'Promotions'|'Wholesale'|'Negoticated Contracted'|'Airline Crews'|'Domestic Leisure'|'Other'};details:'full';maxOptionsPerGroup:number};
+export type StaffQuoteSummaryDiagnostic={kind:'requested'|'widened';requested:QuoteSourceRecord['request'];source:QuoteSourceRecord;freshUntil:string};
 export type ReservationistPartyRead={ref:string;sha256:string;observedAt:string;kind:'organization'|'bookingAgency';query:string;outcome:'resolved'|'ambiguous'|'no_match';candidates:{nativeId:string;displayName:string;kind:string}[]};
 export type ReservationistBookingPrerequisites=Pick<BookingEvidence,'availability'|'duplicates'|'codes'|'authorizedFields'|'partyFacts'>&{guestFacts?:BookingEvidence['guestFacts'];authorizeSource:(proof:BookingSourceProof,signal:AbortSignal)=>Promise<boolean>};
 // The quote contract is an ESM tool outside src. Async callers load it here; the sync joint search takes the profile flag.
@@ -150,7 +151,7 @@ function selectQuoteOptions(source:QuoteSourceRecord,forFullRead:boolean,verifie
  };
  choose(0,0,new Map(),[]);if(!best)missing('business_selected_joint_inventory_unavailable',['consistent known inventory pools covering all requested rooms and dates']);return best;
 }
-export function createReservationistBusinessServices(options:{authorizationId:string;authorizeContext:(ctx:Context)=>Promise<boolean>;readQuote:(request:QuoteSourceRecord['request'],signal:AbortSignal)=>Promise<QuoteSourceRecord>;readParty?:(kind:'organization'|'bookingAgency',name:string,signal:AbortSignal)=>Promise<ReservationistPartyRead>;resolvePolicy:(propertyCode:string,rateCode:string,board:Board)=>Promise<InclusionPolicy|null>;resolveSelectedPolicy?:(ctx:Context,source:QuoteSourceRecord,selections:readonly {sourceRef:string;groupId:string;optionId:string}[],propertyCode:string,rateCode:string,board:Board)=>Promise<InclusionPolicy|null>;signer:Pick<RevisionProposalHeader,'signerName'|'signerEmail'>;readBookingPrerequisites?:(ctx:Context,revision:QuoteRevision)=>Promise<ReservationistBookingPrerequisites>;readAcceptedQuoteSource?:(ctx:Context)=>Promise<ReservationistAcceptedQuoteSource|null>;maxSourceAgeMs?:number},staffApproval?:{context:Context;request:NativeQuoteRequest;header:RevisionProposalHeader;rates?:'party'|'public';onRateOptions?:(options:RateOption[])=>void;onAvailabilityBoard?:(board:{rows:AvailabilityBoardRow[];truncated:boolean})=>void}):ReservationistExecutionServices{
+export function createReservationistBusinessServices(options:{authorizationId:string;authorizeContext:(ctx:Context)=>Promise<boolean>;readQuote:(request:QuoteSourceRecord['request'],signal:AbortSignal)=>Promise<QuoteSourceRecord>;readParty?:(kind:'organization'|'bookingAgency',name:string,signal:AbortSignal)=>Promise<ReservationistPartyRead>;resolvePolicy:(propertyCode:string,rateCode:string,board:Board)=>Promise<InclusionPolicy|null>;resolveSelectedPolicy?:(ctx:Context,source:QuoteSourceRecord,selections:readonly {sourceRef:string;groupId:string;optionId:string}[],propertyCode:string,rateCode:string,board:Board)=>Promise<InclusionPolicy|null>;signer:Pick<RevisionProposalHeader,'signerName'|'signerEmail'>;readBookingPrerequisites?:(ctx:Context,revision:QuoteRevision)=>Promise<ReservationistBookingPrerequisites>;readAcceptedQuoteSource?:(ctx:Context)=>Promise<ReservationistAcceptedQuoteSource|null>;maxSourceAgeMs?:number},staffApproval?:{context:Context;request:NativeQuoteRequest;header:RevisionProposalHeader;rates?:'party'|'public';onRateOptions?:(options:RateOption[])=>void;onAvailabilityBoard?:(board:{rows:AvailabilityBoardRow[];truncated:boolean})=>void;onSummary?:(diagnostic:StaffQuoteSummaryDiagnostic)=>void;claimDiagnosticWidening?:()=>boolean}):ReservationistExecutionServices{
  if(!options.authorizationId||!options.authorizeContext||!options.readQuote||!options.resolvePolicy)throw new Error('business_services_configuration_invalid');
  // Server-only admission: staff corrections are not relabelled as extracted mail facts.
  const staffDigest=staffApproval?quoteDigest({input:staffApproval.context.input,task:staffApproval.context.task,facts:staffApproval.context.facts,request:staffApproval.request,header:staffApproval.header}):null;
@@ -158,6 +159,7 @@ export function createReservationistBusinessServices(options:{authorizationId:st
   // A staff quote never looks a party up by name. The parties the staff picked in HMS arrive as native ids in the
   // approved request, verified before the lock. A typed company or agency is text for the PDF only.
  const internallyScopedRateExamples=new WeakSet<object>();
+ let diagnosticWideningUsed=false;
  const revisions=new Map<string,Set<string>>(),observations=new Map<string,QuoteSourceRecord>(),claimSources=new Map<string,{contextDigest:string;source:QuoteSourceRecord}>(),maxAge=options.maxSourceAgeMs??15*60000;
  const observationContextDigest=(ctx:Context)=>quoteDigest({requestId:ctx.input.requestId,scope:ctx.input.authorizationScope,propertyCode:ctx.input.propertyCode,trigger:ctx.input.trigger,messages:ctx.input.messages,causalAt:ctx.input.clock.causalAt});
  const claimContextDigest=(ctx:Context)=>{const{sourceAt: _sourceAt,...clock}=ctx.input.clock;return quoteDigest({input:{...ctx.input,clock},task:ctx.task,facts:ctx.facts});};
@@ -179,11 +181,17 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  const normalize=await quoteContract();
  const readBound=async(readRequest:QuoteSourceRecord['request'])=>{
   const normalized=normalize.normalizeQuoteRequest({schemaVersion:2,...readRequest});if(!normalized.ok)throw new Error('business_quote_request_invalid');const expected=structuredClone(normalized.request),before=quoteDigest(readRequest);
-  const source=await options.readQuote(structuredClone(readRequest),ctx.signal),sourceAt=ctx.evaluateSourceAt?.()??ctx.input.clock.sourceAt;await guard(ctx);
+  let source:QuoteSourceRecord,readError:unknown;
+  try{source=await options.readQuote(structuredClone(readRequest),ctx.signal);}catch(error){
+   const captured=error&&typeof error==='object'?(error as {quoteSummarySource?:QuoteSourceRecord}).quoteSummarySource:undefined;
+   if(!captured||captured.ref!==`native-quote:${captured.sha256}`||!/^[a-f0-9]{64}$/.test(captured.sha256))throw error;
+   source=captured;readError=error;
+  }
+  const sourceAt=ctx.evaluateSourceAt?.()??ctx.input.clock.sourceAt;await guard(ctx);
   if(quoteDigest(readRequest)!==before||source.result.propertyCode!==ctx.input.propertyCode||quoteDigest(source.request)!==quoteDigest(expected))throw new Error('business_quote_source_scope_mismatch');
   if(!Number.isFinite(Date.parse(source.observedAt))||Date.parse(source.observedAt)>Date.parse(sourceAt))missing('business_quote_clock_unavailable',['source-evaluation time after the completed current read']);
   if(Date.parse(sourceAt)-Date.parse(source.observedAt)>maxAge)missing('business_quote_source_expired',['fresh current quote observation']);
-  return{source,sourceAt,expected};
+  return{source,sourceAt,expected,readError};
  };
  // Native full detail inspection is bounded to five offers. Search first, then
  // narrow only to codes selected from that actual complete, qualified result.
@@ -191,13 +199,34 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  // room-type filter, and other rooms must not crowd the requested room out of the read. The requested room types stay local.
  const partyRead=Boolean(request.rateContext);
  const searchRequest=partyRead?{...request,rooms:request.rooms.map(room=>{const required={...room.required};delete required.roomCodes;return{...room,required};}),maxOptionsPerGroup:PARTY_SUMMARY_MAX_OPTIONS,details:'summary'}:{...request,details:'summary'};
- const read=await readBound(searchRequest),summary=partyRead?{...read,source:narrowToRequestedRooms(read.source,request.rooms,request.maxOptionsPerGroup)}:read;observations.set(observationContextDigest(ctx),structuredClone(summary.source));
+ const read=await readBound(searchRequest),summary=partyRead?{...read,source:narrowToRequestedRooms(read.source,request.rooms,request.maxOptionsPerGroup)}:read;
+ const reportSummary=(source:QuoteSourceRecord,kind:'requested'|'widened')=>{if(!staffApproval)return;staffApproval.onSummary?.({kind,requested:structuredClone(request),source:structuredClone(source),freshUntil:new Date(Date.parse(source.observedAt)+maxAge).toISOString()});};
+ reportSummary(read.source,'requested');
+ observations.set(observationContextDigest(ctx),structuredClone(summary.source));
+ // One diagnostic read may remove native room/rate filters, keeping dates, occupancy, party, strategy and board intact.
+ // Its rows are never fed to selection or used as quote authority.
+ const widenIfHidden=async(requireAlternative=false)=>{
+  if(!staffApproval)return;
+  const hidden=read.source.result.groups.some(group=>{
+   const room=request.rooms.find(item=>item.id===group.id);
+   if(!room||!(room.required?.roomCodes?.length||room.required?.rateCodes?.length))return false;
+   return !group.options.some(option=>{try{const matches=requestMatches(room,option,request.propertyCode);return(!requireAlternative||!matches)&&(option.matchStatus==='match'||option.matchStatus==='alternative'&&!matches)&&sellable(read.source,room.quantity,option);}catch{return false;}});
+  });
+  if(!hidden)return;
+  await guard(ctx);
+  if(diagnosticWideningUsed||(staffApproval.claimDiagnosticWidening&&!staffApproval.claimDiagnosticWidening()))return;
+  diagnosticWideningUsed=true;
+  const widened={...searchRequest,search:{...searchRequest.search,includeAlternatives:true},rooms:searchRequest.rooms.map(room=>{const required={...room.required};delete required.roomCodes;delete required.rateCodes;return{...room,required};}),maxOptionsPerGroup:PARTY_SUMMARY_MAX_OPTIONS};
+  try{const other=await readBound(widened);reportSummary(other.source,'widened');}catch{ctx.signal.throwIfAborted();}
+ };
+ if(read.readError){if(read.readError instanceof ReservationistTaskEvidenceUnavailable&&['native_quote_no_matching_rate','native_quote_insufficient_inventory','native_quote_restricted_nights'].includes(read.readError.code))await widenIfHidden();throw read.readError;}
  const alternativeRequest=staffApproval?false:requestedQuoteAlternatives(ctx);
  if(alternativeRequest&&request.rooms.length!==1)missing('business_quote_alternatives_scope_unavailable',['independently scoped alternatives for each requested room allocation']);
  // A picked party's contract is confirmed or ruled out only by a read that covered every requested room. A cut list or a missing
  // page may hide a flagged row, so the quote is public and says so.
  if(staffApproval&&partyRead&&summary.source.result.groups.some(group=>!partySearchCovered(group)||group.completeness.requiredFacts!=='complete'))throw new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE);
- const candidates=quoteOptionCandidates(summary.source,request.rooms);
+ let candidates:ReturnType<typeof quoteOptionCandidates>;
+ try{candidates=quoteOptionCandidates(summary.source,request.rooms);}catch(error){if(error instanceof ReservationistTaskEvidenceUnavailable&&error.code==='business_selected_price_unavailable')await widenIfHidden();throw error;}
  // A picked party's contract is never replaced silently by public rates. Staff: a contract on another board alone quotes the requested
  // board at public and the review says so; no contract on any board retries at public rates as before; a requested contract that
  // cannot be priced is a party failure with its own copy. Other paths fail on any unpriced contract, as before public rows were offered.
@@ -217,13 +246,17 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  const candidateGroups=summary.source.result.groups.map(group=>({...group,options:group.options.filter(option=>candidates.find(candidate=>candidate.request.id===group.id)?.totals.some(total=>total.o.id===option.id))}));
  const selectionSets=alternativeRequest?[...byPair.values()].map(v=>[{sourceRef:summary.source.ref,groupId:request.rooms[0]!.id,optionId:v.o.id}]):[selectQuoteOptions(summary.source,false,normalize.profileHolds(summary.source.request.propertyCode,candidateGroups),request.rooms)];
  const results=[];
+ const fullRateOptions:RateOption[]=[];
  for(const chosen of selectionSets){
  const selectedRequest={...request,rooms:request.rooms.map(room=>{const selection=chosen.find(s=>s.groupId===room.id),group=summary.source.result.groups.find(g=>g.id===room.id),option=group?.options.find(o=>o.id===selection?.optionId);if(!option)throw new Error('business_selected_source_missing');return{...room,required:{...room.required,roomCodes:[option.room.code],rateCodes:[option.rate.code],...(alternativeRequest||!room.required?.boardBases?.length?{boardBases:[boardsFor(request.propertyCode)[norm(option.board??'')]!]}:{})}};})};
- const {source,sourceAt,expected}=await readBound(selectedRequest);if(source.result.outcome!=='quote')missing('business_selected_scope_unavailable',['complete narrowed full native quote source']);const selections=selectReservationistQuoteOptions(source,normalize.profileHolds(source.request.propertyCode,source.result.groups));const taskSources=revisions.get(ctx.task.id)??new Set<string>();taskSources.add(source.sha256);revisions.set(ctx.task.id,taskSources);if(!alternativeRequest)claimSources.set(ctx.task.id,{contextDigest:claimContextDigest(ctx),source:structuredClone(source)});
+ let selectedRead:Awaited<ReturnType<typeof readBound>>;
+ try{selectedRead=await readBound(selectedRequest);}catch(error){const code=error&&typeof error==='object'&&'code' in error?error.code:error instanceof Error?error.message:undefined;if(typeof code==='string'&&['EXECUTION_FAILURE','native_quote_read_unavailable','native_quote_capture_unavailable','staff_quote_native_unavailable','staff_quote_native_capture_unavailable','native_quote_no_matching_rate','native_quote_insufficient_inventory','native_quote_restricted_nights','native_quote_business_evidence_unavailable'].includes(code))await widenIfHidden(true);throw error;}
+ const {source,sourceAt,expected}=selectedRead;if(source.result.outcome!=='quote')missing('business_selected_scope_unavailable',['complete narrowed full native quote source']);const selections=selectReservationistQuoteOptions(source,normalize.profileHolds(source.request.propertyCode,source.result.groups));const taskSources=revisions.get(ctx.task.id)??new Set<string>();taskSources.add(source.sha256);revisions.set(ctx.task.id,taskSources);if(!alternativeRequest)claimSources.set(ctx.task.id,{contextDigest:claimContextDigest(ctx),source:structuredClone(source)});
+ if(staffApproval){try{fullRateOptions.push(...buildRateOptions(source,selections,request.rooms).filter(option=>option.selected));}catch{/* quote validity does not depend on optional cards */}}
  results.push({propertyCode:ctx.input.propertyCode,authoredDate:sourceAt.slice(0,10),selections,resolveSource:async(ref:string)=>{await guard(ctx);if(ref!==source.ref)throw new Error('business_quote_source_unknown');return source;},resolvePolicy:async(property:string,rate:string,board:Board)=>{await guard(ctx);const policy=options.resolveSelectedPolicy?await options.resolveSelectedPolicy(ctx,source,selections,property,rate,board):await options.resolvePolicy(property,rate,board);await guard(ctx);if(policy===null)throw new ReservationistTaskEvidenceUnavailable('business_quote_policy_unavailable',['source-backed VAT and tourism levy inclusions'],['tax_inclusion']);return policy;},admission:{authorizationId:options.authorizationId,sourceEvaluationAt:sourceAt,maxSourceAgeMs:maxAge,expectedRequests:{[source.ref]:expected},authorizeSource:async(ref:string,id:string)=>{await guard(ctx);return ref===source.ref&&id===options.authorizationId;}}});
  }
  // ponytail: the option cards are optional. A failure building them must never fail a quote that already priced.
- if(staffApproval){try{staffApproval.onRateOptions?.(buildRateOptions(summary.source,selectionSets[0]!));}catch{/* cards stay empty */}try{staffApproval.onAvailabilityBoard?.(availabilityBoardOf(summary.source.result as QuoteEnvelope));}catch{/* grid stays empty */}}
+ if(staffApproval){try{const cards=buildRateOptions(read.source,[],request.rooms),same=(a:RateOption,b:RateOption)=>a.groupId===b.groupId&&a.roomCode===b.roomCode&&a.rateCode===b.rateCode&&a.board===b.board&&a.contract===b.contract;staffApproval.onRateOptions?.([...cards.map(card=>fullRateOptions.find(full=>same(full,card))??card),...fullRateOptions.filter(full=>!cards.some(card=>same(full,card)))]);}catch{/* cards stay empty */}try{staffApproval.onAvailabilityBoard?.(availabilityBoardOf(read.source.result as QuoteEnvelope,read.source.request));}catch{/* grid stays empty */}}
  return{...results[0]!,...(alternativeRequest?{alternatives:results.slice(1)}:{})};},
  resolveProposalHeader:async(ctx)=>{await guard(ctx);return deriveReservationistProposalHeader(ctx,options.signer);},
  authorizeGuestProposal:async(ctx,revision:QuoteRevision,facts)=>{await guard(ctx);return facts===null&&revision.authorizationId===options.authorizationId&&revision.held===false&&revision.groups.every(g=>revisions.get(ctx.task.id)?.has(g.sourceHash)===true);}

@@ -228,7 +228,7 @@ describe('staff-approved quotation beneath native guards', () => {
     ).toEqual([]);
   });
 
-  it('keeps Government DBB results, but falls back to BAR B&B plus dinner after no-match', () => {
+  it('keeps Government DBB results and requires staff choice after no-match', () => {
     const governmentDinner = input();
     governmentDinner.groups[0]!.board = 'dinner_bb';
     governmentDinner.salesStrategy = 'Government';
@@ -237,13 +237,7 @@ describe('staff-approved quotation beneath native guards', () => {
       'Priced on the Government Dinner B&B rate because the guest asked for dinner. ' +
         'Choose All public rates (BAR) if the guest is not entitled.',
     );
-    const governmentFallback = staffQuoteDinnerNoMatchFallback(governmentDinner);
-    expect(governmentFallback).toMatchObject({
-      groupIds: ['single'],
-      note:
-        'No Government Dinner B&B rate in HMS for these dates — priced on B&B with dinner separately.',
-      input: { salesStrategy: 'BAR', groups: [{ board: 'bb' }] },
-    });
+    expect(staffQuoteDinnerNoMatchFallback(governmentDinner)).toBeNull();
 
     const barDinner = { ...governmentDinner, salesStrategy: 'BAR' as const };
     expect(staffQuoteGovernmentDinnerNote(barDinner)).toBeNull();

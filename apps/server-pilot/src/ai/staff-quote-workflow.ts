@@ -189,20 +189,16 @@ export function staffQuoteDinnerFallback(
   };
 }
 
-/** No-match retry preserves the current BAR path; a missing Government dinner rate retries B&B on BAR. */
+/** No-match retry preserves the current BAR strategy. Government-to-BAR requires a staff choice. */
 export function staffQuoteDinnerNoMatchFallback(
   input: StaffQuoteInput,
 ): { input: StaffQuoteInput; groupIds: string[]; note: string | null } | null {
+  if (input.salesStrategy !== 'BAR') return null;
   const fallback = staffQuoteDinnerFallback(input);
   if (!fallback) return null;
-  const governmentNoMatch = input.salesStrategy === 'Government';
   return {
     ...fallback,
-    input: governmentNoMatch ? { ...fallback.input, salesStrategy: 'BAR' } : fallback.input,
-    note: governmentNoMatch
-      ? 'No Government Dinner B&B rate in HMS for these dates — ' +
-        'priced on B&B with dinner separately.'
-      : null,
+    note: null,
   };
 }
 

@@ -618,7 +618,7 @@ describe('staff_quote HMS job execution', () => {
     });
   });
 
-  it('retries Government no-match on BAR B&B with dinner separately and explains the fallback', async () => {
+  it('requires staff choice after Government no-match instead of retrying BAR', async () => {
     const groups: StaffQuoteInput['groups'] = [
       {
         id: 'single',
@@ -631,7 +631,8 @@ describe('staff_quote HMS job execution', () => {
         roomCodes: ['SKNG'],
       },
     ];
-    const { run, fence, db: quoteDb, inserted } = await provisionalWorkerQuote(Promise.resolve(), undefined, {
+    let quoteFailure: unknown;
+    const { run, fence, db: quoteDb, inserted } = await provisionalWorkerQuote(Promise.resolve(), (error) => { quoteFailure = error; }, {
       groups,
       salesStrategy: 'Government',
     });
@@ -668,25 +669,23 @@ describe('staff_quote HMS job execution', () => {
       );
     });
 
-    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
-
-    expect(workflowMocks.executeStaffQuote).toHaveBeenCalledTimes(2);
-    expect(requests).toEqual([
-      { salesStrategy: 'Government', boardBases: ['dinner_bed_breakfast'] },
-      { salesStrategy: 'BAR', boardBases: ['breakfast'] },
-    ]);
-    const readResult = jobMocks.markSucceeded.mock.calls[0]?.[0].readResult;
-    expect(readResult.extrasReviewItems).toContain(
-      'No Government Dinner B&B rate in HMS for these dates — priced on B&B with dinner separately.',
-    );
-    expect(readResult).toMatchObject({
-      dinnerAddOn: { amountMinor: 35_000, unit: 'per_person_per_night' },
-      dinnerAddOnRequired: false,
-      dinnerFallbackGroupIds: ['single'],
-    });
-    expect(inserted.find(({ table }) => table === aiWorkflowRun)?.values).toMatchObject({
-      metrics: { staffQuoteAttestation: { salesStrategy: 'BAR' } },
-    });
+    const target = await import('../src/hms/hms-quote-target.js');
+    const { CENTURION_HMS_READ_TARGET } = await import('../src/hms/hms-read-target.js');
+    const targetSpy = vi.spyOn(target, 'resolveHmsQuoteJobTarget')
+      .mockResolvedValue({ ok: true, target: CENTURION_HMS_READ_TARGET });
+    try {
+      await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+      expect(workflowMocks.executeStaffQuote).toHaveBeenCalledTimes(1);
+      expect(requests).toEqual([{ salesStrategy: 'Government', boardBases: ['dinner_bed_breakfast'] }]);
+      const readResult = jobMocks.markSucceeded.mock.calls[0]?.[0].readResult;
+      expect(readResult).toMatchObject({ ok: false, code: 'PRECONDITION_FAILED',
+        message: 'HMS has no rate for this meal plan under Government. Try another meal plan or rate type.' });
+      const { staffQuoteCauseSummary } = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>('../src/ai/staff-quote-run.js');
+      expect(staffQuoteCauseSummary(quoteFailure).code).toBe('native_quote_no_matching_rate');
+      expect(inserted.find(({ table }) => table === aiWorkflowRun)).toBeUndefined();
+    } finally {
+      targetSpy.mockRestore();
+    }
   });
 
   it('does not report a separate dinner charge as a B&B fallback for room-only accommodation', async () => {

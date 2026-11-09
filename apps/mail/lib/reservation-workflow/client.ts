@@ -406,6 +406,13 @@ function operationNotice(result: unknown, success: string[]): string | undefined
 
 function nativeIssueText(issue: unknown): string | null {
   if (!isString(issue)) return null;
+  if (issue === 'native_quote_no_matching_rate') {
+    return 'No offer matches the requested room, rate and meal plan. Review available alternatives';
+  }
+  if (issue === 'native_quote_requested_unavailable') return 'The requested offer is unavailable. Review available alternatives';
+  if (issue === 'native_quote_insufficient_inventory') return 'Infor found too few rooms for this request. Review the shortage and alternatives';
+  if (issue === 'native_quote_restricted_nights') return 'The requested stay has closed or restricted nights. Review available alternatives';
+  if (issue === 'native_quote_price_unavailable') return 'Infor could not complete the price check. Review the recorded result or run the check again';
   if (issue === 'amend_automatic_recovery_unavailable_operator_must_verify_writer_closed') {
     return 'The save outcome is uncertain. Contact Nava support before making another change to this stay.';
   }
@@ -429,7 +436,7 @@ function quoteLookupNotice(result: unknown): string | undefined {
   const issues = result.quotes.flatMap((value) => {
     if (!isRecord(value) || value.status === 'priced') return [];
     const status = isString(value.status) ? value.status.replaceAll('_', ' ') : 'unknown outcome';
-    const issue = isString(value.issue) ? value.issue.replaceAll('_', ' ') : null;
+    const issue = nativeIssueText(value.issue);
     const fields = Array.isArray(value.fields) ? value.fields.filter(isString).join(', ') : '';
     return [`Quote check: ${status}${issue ? ` — ${issue}` : ''}${fields ? `; review ${fields}` : ''}.`];
   });

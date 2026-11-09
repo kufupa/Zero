@@ -76,30 +76,30 @@ export function sellable(source:QuoteSourceRecord,quantity:number,option:NativeO
 
 /**
  * Every distinct sellable rate code per room group, from the same summary read the quote priced. Order: the requested
- * board and room first, contract before public, then cheapest. The cheapest is kept per (code, board, contract, matches),
+ * board and room first, contract before public, then cheapest. The cheapest is kept per (room, code, board, contract, matches),
  * so a cheaper room that was not requested can never push out the option that was quoted. `selected` is the option the
  * narrowed full read priced.
  */
-export function buildRateOptions(source:QuoteSourceRecord,selected:readonly {groupId:string;optionId:string}[]):RateOption[]{
+export function buildRateOptions(source:QuoteSourceRecord,selected:readonly {groupId:string;optionId:string}[],requestedRooms:readonly RoomRequest[]=source.request.rooms):RateOption[]{
  const nights=occupiedDates(source.request.arrivalDate,source.request.departureDate).length;
  return source.request.rooms.flatMap(request=>{
   const cheapest=new Map<string,{option:NativeOption;matches:boolean;contract:boolean;board:RateOption['board'];perRoomMinor:number;totalMinor:number}>();
   const selectedId=selected.find(s=>s.groupId===request.id)?.optionId;
   for(const option of source.result.groups.find(g=>g.id===request.id)?.options??[]){
-   const matches=requestMatches(request,option,source.request.propertyCode);
+   const matches=requestMatches(requestedRooms.find(room=>room.id===request.id)??request,option,source.request.propertyCode);
    // A matching row must be quote-ready ('match'); a non-matching row is only ever shown, never quoted, so 'alternative' is fine.
    if(option.matchStatus!=='match'&&!(option.matchStatus==='alternative'&&!matches))continue;
    if(!sellable(source,request.quantity,option))continue;
    const perRoomMinor=option.nightly.reduce((sum,n)=>sum+exactMinor(n.price.amount),0),totalMinor=perRoomMinor*request.quantity;
    if(!(totalMinor>0))continue;
    const mapped=boardsFor(source.request.propertyCode)[norm(option.board??'')];
-   const contract=option.rateScope==='contextual',board=staffBoard[mapped],key=`${option.rate.code.toUpperCase()}|${board}|${contract}|${matches}`,held=cheapest.get(key);
+   const contract=option.rateScope==='contextual',board=staffBoard[mapped],key=JSON.stringify([option.room.code,option.rate.code.toUpperCase(),board,contract,matches]),held=cheapest.get(key);
    const optionSelected=option.id===selectedId,heldSelected=held?.option.id===selectedId;
    if(!held||optionSelected||(!heldSelected&&(totalMinor<held.totalMinor||(totalMinor===held.totalMinor&&option.id<held.option.id))))cheapest.set(key,{option,matches,contract,board,perRoomMinor,totalMinor});
   }
   const ranked=[...cheapest.values()].sort((a,b)=>Number(b.matches)-Number(a.matches)||Number(b.contract)-Number(a.contract)||a.totalMinor-b.totalMinor||a.option.id.localeCompare(b.option.id));
   // onlyContract is counted across every distinct rate code staff can see.
-  const contracts=ranked.filter(r=>r.contract).length;
+  const contracts=new Set(ranked.filter(r=>r.contract).map(r=>r.option.rate.code.toUpperCase())).size;
   return ranked.map(r=>{
    const isSelected=selected.some(s=>s.groupId===request.id&&s.optionId===r.option.id);
    const inventory=r.option.nightly.map(n=>n.inventory),roomsLeft=inventory.length>0&&inventory.every(n=>Number.isFinite(n)&&n>=0)?Math.min(...inventory):undefined;
@@ -118,7 +118,7 @@ export function buildRateOptions(source:QuoteSourceRecord,selected:readonly {gro
 export function otherBoardContractNotes(names:readonly string[],options:readonly RateOption[]):string[]{
  // ponytail: the note names the first other-board contract per group; the cards list every other contract.
  const party=names.join(' and ');
- return [...new Set(options.filter(o=>o.selected&&!o.contract).flatMap(quoted=>{const contract=options.find(o=>o.groupId===quoted.groupId&&o.contract&&!o.matchesRequest);return contract?[`${party}'s contract rate is ${contract.boardLabel} only (${contract.rateCode}). Quoted ${boardName[quoted.board]} at the public rate as asked. Pick the contract option to switch.`]:[];}))];
+ return [...new Set(options.filter(o=>o.selected&&!o.contract).flatMap(quoted=>{const contract=options.find(o=>o.groupId===quoted.groupId&&o.roomCode===quoted.roomCode&&o.board!==quoted.board&&o.contract&&!o.matchesRequest);return contract?[`${party}'s contract rate is ${contract.boardLabel} only (${contract.rateCode}). Quoted ${boardName[quoted.board]} at the public rate as asked. Pick the contract option to switch.`]:[];}))];
 }
 
 /** Canonical pricing digest; object insertion order and display names cannot change pricing identity. */
