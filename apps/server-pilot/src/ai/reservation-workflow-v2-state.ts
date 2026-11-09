@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { MAIL_KINDS, workEvent, workItem } from '../db/schema/work.js';
-import { attachment, mailboxAccess, mailThread, message } from '../db/schema/mail.js';
+import { aiWorkflowRun, attachment, mailboxAccess, mailThread, message } from '../db/schema/mail.js';
 import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
@@ -245,6 +245,35 @@ export async function initializeReservationWorkflowV2Draft(ctx: Context, source:
 }
 
 type PrefillClaim = { attemptId: string; revision: number; seq: number; snapshot: string };
+export type ReservationPrefillJobFence = { runId: string; claimOwner: string; claimToken: string };
+
+/** Hold the ledger row while changing the draft: an expired or replaced worker cannot install. */
+async function currentPrefillJob(tx: WorkTx, fence: ReservationPrefillJobFence): Promise<boolean> {
+  const [run] = await tx.select({ deadlineAt: aiWorkflowRun.deadlineAt }).from(aiWorkflowRun)
+    .where(and(eq(aiWorkflowRun.id, fence.runId), eq(aiWorkflowRun.runKind, 'reservation_prefill'),
+      eq(aiWorkflowRun.claimOwner, fence.claimOwner), eq(aiWorkflowRun.claimToken, fence.claimToken),
+      eq(aiWorkflowRun.state, 'running'))).limit(1).for('update');
+  return Boolean(run?.deadlineAt && run.deadlineAt.getTime() > Date.now());
+}
+
+/** Queue metadata is not a staff edit and may only annotate the untouched idle draft. */
+export async function markReservationWorkflowV2Queued(ctx: Context, input: MutationInput & { jobRunId: string }) {
+  return ctx.db.transaction(async (tx) => {
+    await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
+    const item = await loadItem(tx, ctx, input.workItemId, true);
+    if (!item) return { status: 'not_found' as const };
+    const current = await buildResult(tx, ctx, item, input.source);
+    if (current.status !== 'ok' || item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq)
+      return current;
+    const meta = current.draft.prefill;
+    if (!meta || meta.status !== 'idle') return current;
+    const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft,
+      prefill: { ...meta, status: 'queued', jobRunId: input.jobRunId } });
+    await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
+      updatedAt: new Date() }).where(eq(workItem.id, item.id));
+    return { ...current, draft };
+  });
+}
 function prefillSnapshot(draft: ReservationWorkflowV2Draft): string {
   const { prefill: _prefill, ...rest } = draft;
   return JSON.stringify(rest);
@@ -257,12 +286,13 @@ function abandonedPrefill(startedAt: string | null, now = Date.now()): boolean {
 }
 
 /** Metadata is not a human edit and never advances the pane cursor. */
-export async function claimReservationWorkflowV2Prefill(ctx: Context, input: MutationInput & { allowRetry: boolean }): Promise<
+export async function claimReservationWorkflowV2Prefill(ctx: Context, input: MutationInput & { allowRetry: boolean; jobFence?: ReservationPrefillJobFence }): Promise<
   { result: ReservationWorkflowV2StateResult; claim?: PrefillClaim }
 > {
   if (!propertyMatches(ctx)) return { result: { status: 'wrong_property' } };
   return ctx.db.transaction(async (tx) => {
     await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
+    if (input.jobFence && !(await currentPrefillJob(tx, input.jobFence))) return { result: { status: 'stale_revision' as const } };
     const item = await loadItem(tx, ctx, input.workItemId, true);
     if (!item) return { result: { status: 'not_found' as const } };
     const current = await buildResult(tx, ctx, item, input.source);
@@ -272,16 +302,26 @@ export async function claimReservationWorkflowV2Prefill(ctx: Context, input: Mut
     // Older untouched fallback drafts predate prefill metadata. Give those one
     // guarded retry; successful and staff-edited legacy drafts stay untouched.
     const meta = current.draft.prefill ?? (input.allowRetry && retryablePrefill(current.draft)
-      ? { status: 'failed' as const, attemptId: null, attemptCount: 1, startedAt: null, finishedAt: null }
+      ? { status: 'failed' as const, jobRunId: undefined, attemptId: null, attemptCount: 1, startedAt: null, finishedAt: null }
       : undefined);
-    if (!meta || (meta.status === 'running' && !(input.allowRetry && abandonedPrefill(meta.startedAt))) ||
+    const reclaimed = input.jobFence && meta?.jobRunId === input.jobFence.runId;
+    if (!meta || (meta.status === 'running' && !(input.allowRetry && (reclaimed || (!meta.jobRunId && abandonedPrefill(meta.startedAt))))) ||
         meta.status === 'complete' || meta.status === 'superseded' ||
-        meta.attemptCount >= 2 || (meta.status === 'failed' && !input.allowRetry) ||
-        Object.keys(current.draft.fieldOverrides).length || Object.keys(current.draft.staffReviews).length ||
-        current.draft.operationResults.length || await hasPrefillRetryActivity(tx, item.id, current.draft.generationId, item.revisionSeq)) return { result: current };
+        meta.attemptCount >= 2 || (meta.status === 'failed' && !input.allowRetry)) return { result: current };
+    const intervened = Object.keys(current.draft.fieldOverrides).length || Object.keys(current.draft.staffReviews).length ||
+      current.draft.operationResults.length || await hasPrefillRetryActivity(tx, item.id, current.draft.generationId, item.revisionSeq);
+    if (intervened) {
+      if (!input.jobFence || !['queued', 'running'].includes(meta.status)) return { result: current };
+      const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft,
+        prefill: { ...meta, status: 'superseded', finishedAt: new Date().toISOString() } });
+      await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
+        updatedAt: new Date() }).where(eq(workItem.id, item.id));
+      return { result: { ...current, draft } };
+    }
     const attemptId = randomUUID();
     const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, prefill: { status: 'running', attemptId,
-      attemptCount: meta.attemptCount + 1, startedAt: new Date().toISOString(), finishedAt: null } });
+      attemptCount: meta.attemptCount + 1, startedAt: new Date().toISOString(), finishedAt: null,
+      ...(input.jobFence ? { jobRunId: input.jobFence.runId } : {}) } });
     await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
       updatedAt: new Date() }).where(eq(workItem.id, item.id));
     return { result: { ...current, draft }, claim: { attemptId, revision: item.revision, seq: item.revisionSeq,
@@ -291,10 +331,11 @@ export async function claimReservationWorkflowV2Prefill(ctx: Context, input: Mut
 
 /** Install only the exact claimed, still untouched generation; preserve concurrent staff/native state. */
 export async function finishReservationWorkflowV2Prefill(ctx: Context, input: MutationInput & {
-  claim: PrefillClaim; seed?: ReservationWorkflowV2Seed; failed: boolean;
+  claim: PrefillClaim; seed?: ReservationWorkflowV2Seed; failed: boolean; jobFence?: ReservationPrefillJobFence;
 }): Promise<ReservationWorkflowV2StateResult> {
   return ctx.db.transaction(async (tx) => {
     await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
+    if (input.jobFence && !(await currentPrefillJob(tx, input.jobFence))) return { status: 'stale_revision' as const };
     const item = await loadItem(tx, ctx, input.workItemId, true);
     if (!item) return { status: 'not_found' as const };
     const current = await buildResult(tx, ctx, item, input.source);
@@ -338,7 +379,7 @@ export async function markReservationWorkflowV2NativeActivity(ctx: Context, inpu
     if (item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq) return { status: 'stale_revision' as const };
     const current = await buildResult(tx, ctx, item, input.source);
     if (current.status !== 'ok') return current;
-    if (current.draft.prefill?.status !== 'running') return current;
+    if (!current.draft.prefill || !['queued', 'running'].includes(current.draft.prefill.status)) return current;
     const draft = { ...current.draft, prefill: { ...current.draft.prefill, status: 'superseded' as const,
       finishedAt: new Date().toISOString() } };
     await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },

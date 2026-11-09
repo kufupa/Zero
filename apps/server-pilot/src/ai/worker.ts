@@ -4301,17 +4301,6 @@ export async function executeAiRun(
     return { runId, state: 'dead_letter' };
   }
 
-  // Resolve the purpose-bound extraction edge before any inbound workflow
-  // client is initialized.  Missing config stays unavailable; the worker
-  // persists only the explicit source-observation boundary below.
-  const baselineRoute = resolveMailBaselineExtractionRoute({
-    approvedRoute: options.mailBaselineExtractionRoute
-      ? 'approved-local'
-      : process.env.AI_MODEL_ROUTE,
-    route: options.mailBaselineExtractionRoute?.route,
-    transport: options.mailBaselineExtractionRoute?.transport,
-  });
-
   const runWithFence = { ...run, claimOwner: owner, claimToken, deadlineAt };
 
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
@@ -4321,6 +4310,39 @@ export async function executeAiRun(
     }, AI_LEASE_HEARTBEAT_INTERVAL_MS);
 
     if (signal.aborted) throw new RunDeadlineError();
+
+    if (run.runKind === 'reservation_prefill') {
+      const { executeReservationArrival } = await import('./reservation-workflow-v2-prefill-service.js');
+      const state = await executeReservationArrival({ run: runWithFence, fence, signal, db });
+      return { runId, state };
+    }
+
+    if (run.runKind === 'inbound_extraction' || run.runKind === 'inbound_triage') {
+      const { reservationArrivalEnabled } = await import('./reservation-workflow-v2-arrival.js');
+      const decision = run.metrics?.mailSourceDecision;
+      if (reservationArrivalEnabled() && (run.runKind === 'inbound_extraction' ||
+          (isMailSourceClassification(decision) && decision.kind === 'direct'))) {
+        const [arrival] = await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(and(
+          eq(aiWorkflowRun.transportId, run.transportId), eq(aiWorkflowRun.triggerMessageId, run.triggerMessageId),
+          eq(aiWorkflowRun.runKind, 'reservation_prefill'))).limit(1);
+        if (arrival) {
+          const done = await markAiRunSucceeded({ ...fence, expectedStates: ['running'],
+            metrics: { ...run.metrics, suppressedByReservationPrefill: arrival.id } }, db);
+          return { runId, state: done ? 'succeeded' : 'retry_wait' };
+        }
+      }
+    }
+
+    // Resolve the purpose-bound extraction edge before any inbound workflow
+    // client is initialized.  Missing config stays unavailable; the worker
+    // persists only the explicit source-observation boundary below.
+    const baselineRoute = resolveMailBaselineExtractionRoute({
+      approvedRoute: options.mailBaselineExtractionRoute
+        ? 'approved-local'
+        : process.env.AI_MODEL_ROUTE,
+      route: options.mailBaselineExtractionRoute?.route,
+      transport: options.mailBaselineExtractionRoute?.transport,
+    });
 
     if (isQuotePdfRun(run)) {
       const persisted = quotePdfResultOf(run);
@@ -5560,7 +5582,7 @@ export async function executeAiRun(
     // read that keeps its worker from stopping is not requeued forever.
     const cutAgain = run.failureClass === 'WORKER_SHUTDOWN';
     if (
-      run.runKind === 'inbound_extraction' &&
+      (run.runKind === 'inbound_extraction' || run.runKind === 'reservation_prefill') &&
       shutdownSignal.aborted &&
       signal.reason === shutdownSignal.reason &&
       !(cutAgain && run.attempts >= MAX_WORKER_SHUTDOWN_ATTEMPTS)
@@ -5698,6 +5720,10 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     await executeAiRun(claimed.id, { shutdownSignal });
     return true;
   }
+  if (claimed.runKind === 'reservation_prefill') {
+    await executeAiRun(claimed.id, { shutdownSignal });
+    return true;
+  }
   const queuedMailSourceDecision =
     claimed.metrics && typeof claimed.metrics === 'object'
       ? (claimed.metrics as Record<string, unknown>).mailSourceDecision
@@ -5741,9 +5767,10 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     ? 'inbound_triage'
     : 'inbound_extraction';
   if (executed.state === 'succeeded' && claimed.runKind === inboundTriggerKind) {
-    // Fire-and-forget after the commit, never inside the admission
-    // transaction. Off unless LUNA_ANALYSE_WARMER=on (see quote-workflow-warmer.ts).
-    scheduleInboundTriageAnalyseWarm(claimed);
+    const [completedRun] = await getDb().select({ metrics: aiWorkflowRun.metrics }).from(aiWorkflowRun)
+      .where(eq(aiWorkflowRun.id, claimed.id)).limit(1);
+    // Fire-and-forget after the commit, never inside the admission transaction.
+    if (!completedRun?.metrics?.suppressedByReservationPrefill) scheduleInboundTriageAnalyseWarm(claimed);
   }
   return true;
 }

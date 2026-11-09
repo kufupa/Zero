@@ -13,6 +13,7 @@ import {
   DEFAULT_TRIAGE_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
+import { enqueueReservationArrival } from '../../ai/reservation-workflow-v2-arrival.js';
 import { triageModelLabels } from '../../ai/bedrock/factory.js';
 import { enqueueShadowPrediction } from '../../ai/shadow-evaluation.js';
 import { refreshThreadWork } from '../../ai/work-items.js';
@@ -287,7 +288,13 @@ export async function admitLiveMessage(
       ),
     )
     .limit(1);
-  if (prior) return { admitted: false, receiptId: prior.id };
+  if (prior) {
+    // A later observation can supply the first usable body. Baselines are never replayed.
+    if (prior.effectState !== 'baseline') await enqueueReservationArrival(db, {
+      transportId: input.transportId, messageId: input.canonicalMessageId, priority: 1,
+    });
+    return { admitted: false, receiptId: prior.id };
+  }
   if (
     input.evidence.kind === 'native' &&
     !qualifiesNativeAdmission(input.evidence.cutover, input.evidence.observation)
@@ -526,12 +533,15 @@ export async function admitLiveMessage(
       }
     }
   }
+  const reservationArrival = trigger.direction === 'inbound' && !routeAsAutomatedChannel
+    ? await enqueueReservationArrival(db, { transportId: input.transportId, messageId: trigger.id, priority: 1 })
+    : null;
   // The inbound folder/label classifier is retired by INBOUND_TRIAGE_CLASSIFIER=off. Sent copies keep their baseline run.
   if (
     !isCollector &&
     (trigger.direction === 'outbound' ||
       routeAsAutomatedChannel ||
-      isInboundTriageClassifierEnabled(process.env))
+      (!reservationArrival && isInboundTriageClassifierEnabled(process.env)))
   )
     await enqueueAiRun(
       {
@@ -558,6 +568,7 @@ export async function admitLiveMessage(
     !isCollector &&
     trigger.direction === 'inbound' &&
     !routeAsAutomatedChannel &&
+    !reservationArrival &&
     inboundExtractionEnabled(process.env)
   )
     await enqueueInboundExtraction(
@@ -571,7 +582,7 @@ export async function admitLiveMessage(
       },
       db,
     );
-  if (!isCollector && trigger.direction === 'inbound' && !routeAsAutomatedChannel)
+  if (!isCollector && trigger.direction === 'inbound' && !routeAsAutomatedChannel && !reservationArrival)
     await enqueueShadowPrediction({
       transportId: input.transportId,
       threadId: trigger.threadId,

@@ -47,9 +47,18 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
     if (request.current?.key !== key) request.current = { key, promise: client.ensure({ source, mode: 'initialize' }) };
     const acceptPrefill = (next: ReservationPaneSnapshot) => {
       if (!live || activeSource.current !== key) return;
-      setSnapshot(current => !current || next.session.seq >= current.session.seq ? next : current);
-      if (next.session.draft.prefill?.status === 'running') {
-        if (++refreshCount > 155) { setLoadError('Prefill has not finished. You can enter the request now, or retry the untouched draft. Your edits are retained.'); return; }
+      setSnapshot(current => {
+        if (!current || next.session.seq > current.session.seq) return next;
+        if (next.session.seq < current.session.seq) return current;
+        const rank = { idle: 0, queued: 1, running: 2, failed: 3, complete: 3, superseded: 4 } as const;
+        const oldMeta = current.session.draft.prefill, newMeta = next.session.draft.prefill;
+        if ((newMeta?.attemptCount ?? 0) < (oldMeta?.attemptCount ?? 0) ||
+            ((newMeta?.attemptCount ?? 0) === (oldMeta?.attemptCount ?? 0) &&
+              rank[newMeta?.status ?? 'idle'] < rank[oldMeta?.status ?? 'idle'])) return current;
+        return next;
+      });
+      if (next.session.draft.prefill?.status === 'running' || next.session.draft.prefill?.status === 'queued') {
+        if (++refreshCount > 900) { setLoadError('Prefill is still processing. Reopen this email to check progress; your draft is retained.'); return; }
         refreshTimer = setTimeout(() => {
           void client.get({ source, snapshot: next }).then(acceptPrefill).catch(() => {
             if (live && activeSource.current === key) setLoadError('Could not refresh the email prefill. Reopen it to check progress; your draft is retained.');
@@ -65,7 +74,7 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
           if (!live || activeSource.current !== key) return;
           setLoadError(error instanceof Error ? error.message : 'Prefill did not finish. Your editable draft is available.');
         });
-      } else if (next.session.draft.prefill.status === 'running') acceptPrefill(next);
+      } else if (next.session.draft.prefill.status === 'running' || next.session.draft.prefill.status === 'queued') acceptPrefill(next);
     }).catch((error: unknown) => {
       if (!live || activeSource.current !== key) return;
       setLoadError(error instanceof Error ? error.message : 'The source-bound reservation draft could not be opened.');

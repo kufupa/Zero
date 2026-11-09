@@ -29,7 +29,7 @@ import type {
   aiWorkflowRunKindEnum,
   aiWorkflowRunStateEnum,
 } from '../db/schema/mail.js';
-import { and, desc, eq, gte, inArray, like, lte, ne, notExists, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gt, gte, inArray, like, lte, ne, notExists, or, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
@@ -71,6 +71,7 @@ const ACTIVE_HMS_TRANSPORT_GROUPS = [
 );
 /** Staff quote jobs get a 7-minute claim budget for their measured ~5-minute native rate read. */
 const HMS_STAFF_QUOTE_RUN_DEADLINE_MS = 7 * 60_000;
+const RESERVATION_ARRIVAL_RUN_DEADLINE_MS = 16 * 60_000;
 /** An unclaimed staff quote that waited this long is stale and must be queued again explicitly. */
 const HMS_STAFF_QUOTE_QUEUE_TTL_MS = 10 * 60_000;
 export const READ_TOOL_RUN_KIND = 'read_tool' as const;
@@ -769,7 +770,8 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         continue;
       }
 
-      if (candidate.deadlineAt && candidate.deadlineAt.getTime() <= now.getTime()) {
+      if (candidate.deadlineAt && candidate.deadlineAt.getTime() <= now.getTime() &&
+          !(candidate.runKind === 'reservation_prefill' && ['claimed', 'running'].includes(candidate.state))) {
         await tx
           .update(aiWorkflowRun)
           .set({
@@ -786,6 +788,33 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
       }
 
       const isReclaim = candidate.state === 'claimed' || candidate.state === 'running';
+      if (candidate.runKind === 'reservation_prefill') {
+        // A transactional mailbox lock closes the race between workers claiming different arrivals.
+        const lockRows = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(
+          ${`reservation-arrival:${candidate.transportId}`}, 0)) as locked`);
+        if (!lockRows[0]?.locked) return null;
+        const [active] = await tx.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(and(
+          eq(aiWorkflowRun.runKind, 'reservation_prefill'), eq(aiWorkflowRun.transportId, candidate.transportId),
+          ne(aiWorkflowRun.id, candidate.id), inArray(aiWorkflowRun.state, ['claimed', 'running']),
+          gt(aiWorkflowRun.updatedAt, staleBefore))).limit(1);
+        if (active) return null;
+        const priorReclaims = Number(candidate.metrics?.reclaimCount ?? 0);
+        if (isReclaim && (priorReclaims >= 1 || candidate.attempts >= 1)) {
+          await tx.update(aiWorkflowRun).set({ state: 'dead_letter', failureClass: 'LEASE_LOST',
+            lastError: 'reservation prefill recovery limit reached', claimOwner: null, claimToken: null,
+            finishedAt: now, updatedAt: now }).where(eq(aiWorkflowRun.id, candidate.id));
+          continue;
+        }
+        const [hourly] = await tx.select({ count: sql<number>`count(*)::integer` }).from(aiWorkflowRun).where(and(
+          eq(aiWorkflowRun.runKind, 'reservation_prefill'), eq(aiWorkflowRun.transportId, candidate.transportId),
+          gte(aiWorkflowRun.startedAt, new Date(now.getTime() - 60 * 60_000))));
+        if (!isReclaim && Number(hourly?.count ?? 0) >= 30) {
+          await tx.update(aiWorkflowRun).set({ nextRunAt: new Date(now.getTime() + 5 * 60_000), updatedAt: now,
+            metrics: { ...candidate.metrics, phase: 'deferred', reason: 'hourly_model_budget' } })
+            .where(eq(aiWorkflowRun.id, candidate.id));
+          continue;
+        }
+      }
       const reclaimCount =
         isReclaim && typeof candidate.metrics === 'object' && candidate.metrics !== null
           ? Number((candidate.metrics as Record<string, unknown>).reclaimCount ?? 0) + 1
@@ -795,7 +824,8 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
 
       // Prepared quotes get the staff budget too: the read takes minutes, and they already yield to staff work.
       const requestDeadlineMs =
-        candidate.runKind === HMS_WRITE_RUN_KIND && candidate.executorLane === 'hms' &&
+        candidate.runKind === 'reservation_prefill' ? RESERVATION_ARRIVAL_RUN_DEADLINE_MS
+          : candidate.runKind === HMS_WRITE_RUN_KIND && candidate.executorLane === 'hms' &&
         candidate.promptVersion === HMS_LABTEST_AMEND_PROMPT_VERSION
           ? Math.max(runDeadlineMs, HMS_LABTEST_AMEND_RUN_DEADLINE_MS)
           : candidate.runKind === HMS_WRITE_RUN_KIND &&
@@ -807,7 +837,9 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         request?.kind === 'staff_quote'
           ? Math.max(runDeadlineMs, HMS_STAFF_QUOTE_RUN_DEADLINE_MS)
           : runDeadlineMs;
-      const deadlineAt = candidate.deadlineAt ?? new Date(now.getTime() + requestDeadlineMs);
+      const deadlineAt = candidate.runKind === 'reservation_prefill' && isReclaim
+        ? new Date(now.getTime() + requestDeadlineMs)
+        : candidate.deadlineAt ?? new Date(now.getTime() + requestDeadlineMs);
       const claimToken = randomUUID();
 
       const [claimed] = await tx
