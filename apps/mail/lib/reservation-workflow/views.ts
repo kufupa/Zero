@@ -1,5 +1,7 @@
 import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationRequestProjection, ReservationFieldOverride, ReservationSavedServiceTarget, ReservationGuestProfileOptionField } from './types';
 
+export type GuestProfilePending = { status: 'pending'; operationId: string } | { status: 'checking' | 'unavailable' | 'multiple' };
+
 export type RowChange = { kind: 'move_allocation' | 'add_allocation' | 'remove_allocation' | 'add_date_section' | 'remove_date_section' | 'add_quote_group' | 'remove_quote_group' | 'add_target' | 'remove_target' | 'add_service' | 'remove_service' | 'add_document' | 'remove_document' | 'remove_action'; requestId: string; parentId?: string; entityId?: string; childIds?: string[] };
 export type WorkbenchCommands = {
   stageEdit(path: string, value: unknown, state?: ReservationFieldOverride['state']): void;
@@ -11,8 +13,8 @@ export type WorkbenchCommands = {
   lookup(): Promise<void>;
   guestProfileOptions(allocationId: string, field: ReservationGuestProfileOptionField): Promise<Record<string, unknown>>;
   createGuestProfile(allocationId: string, confirmDuplicateName?: boolean): Promise<void>;
-  guestProfilePending(allocationId: string): string | null;
-  checkGuestProfile(allocationId: string): Promise<void>;
+  guestProfilePending(allocationId: string, requestId?: string): GuestProfilePending | null;
+  checkGuestProfile(allocationId: string, requestId?: string): Promise<void>;
   prepare(allocationId?: string): Promise<void>;
   review(scope: 'request' | 'allocations' | 'targets' | 'services' | 'documents', ids: string[]): Promise<void>;
   execute(allocationId?: string): Promise<void>;

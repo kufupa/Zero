@@ -334,9 +334,13 @@ function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor
     {receipt && <p className={styles.note}>{selectedCreated ? 'Profile ID' : 'Previously created profile'} · {receipt.nativeId} ✓ Created</p>}
     {missingReceipt && !unknown && <p className={styles.notice}>The profile result needs confirmation. Contact Nava support before creating another profile.</p>}
     <GuestDetails editor={editor} allocationPath={allocationPath} allocationId={allocationId} newProfile={newProfile} disabled={locked} />
-    {unknown ? <div className={styles.notice}>Profile creation outcome is unknown. Do not create another profile until it is confirmed. Contact Nava support if it cannot be confirmed.
-      <button type="button" disabled={editor.view.busy} onClick={() => void (localPending
-        ? editor.commands.checkGuestProfile(allocationId) : editor.commands.reconcile(text(latest?.id))).catch(() => {})}>Check outcome</button></div>
+    {unknown ? <div className={styles.notice}>
+      {localPending?.status === 'checking' ? 'Checking profile recovery on this device.'
+        : localPending?.status === 'unavailable' ? 'Profile recovery storage is unavailable. Contact Nava support before creating a profile.'
+        : localPending?.status === 'multiple' ? 'Multiple profile attempts need review. Contact Nava support before creating another profile.'
+        : 'Profile creation outcome is unknown. Do not create another profile until it is confirmed. Contact Nava support if it cannot be confirmed.'}
+      {(!localPending || localPending.status === 'pending') && <button type="button" disabled={editor.view.busy} onClick={() => void (localPending
+        ? editor.commands.checkGuestProfile(allocationId) : editor.commands.reconcile(text(latest?.id))).catch(() => {})}>Check outcome</button>}</div>
       : newProfile && !succeeded && <>
         {duplicate && <p className={styles.notice}>Infor found a profile with this name. Search for the existing guest, or create a different profile.</p>}
         {pendingReview && <p className={styles.note}>Confirm the marked guest details before creating the profile.</p>}
@@ -373,6 +377,7 @@ export function CreateEditor(editor: Editor) {
       const sectionId = text(section.id);
       const rooms = allocations.map((allocation, index) => ({ allocation, index })).filter(({ allocation }) => allocation.dateSectionId === section.id);
       const sectionHasCompleted = rooms.some(({ allocation }) => Boolean(completedRoom(editor, text(allocation.id))));
+      const sectionHasPendingGuest = rooms.some(({ allocation }) => Boolean(commands.guestProfilePending(text(allocation.id))));
       const sectionAllCompleted = rooms.length > 0 && rooms.every(({ allocation }) => Boolean(completedRoom(editor, text(allocation.id))));
       const requested = valueAt(snapshot, `${sectionPath}/requestedRooms`);
       return <section className={styles.group} key={sectionId || sectionIndex}>
@@ -394,7 +399,7 @@ export function CreateEditor(editor: Editor) {
             <ChildAges editor={editor} path={`${bodyPath}/allocations/${index}/occupancy`} />
           </div>
         </div>)}
-        {sections.length > 1 && <button type="button" className={styles.linkButton} disabled={view.busy || sectionHasCompleted || allocations.length - rooms.length < 1}
+        {sections.length > 1 && <button type="button" className={styles.linkButton} disabled={view.busy || sectionHasCompleted || sectionHasPendingGuest || allocations.length - rooms.length < 1}
           onClick={() => void commands.changeRows({ kind: 'remove_date_section', requestId: request.id, entityId: sectionId,
             childIds: rooms.map(({ allocation }) => text(allocation.id)) })}>Remove dates and rooms</button>}
       </section>;
@@ -437,7 +442,7 @@ export function CreateEditor(editor: Editor) {
           const guestOptIn = inheritedValue(editor, [`${overrides}/guestOptIn`, `${dateDefaults}/guestOptIn`, `${shared}/guestOptIn`]);
           return <div className={styles.roomCard} key={allocationId || index}>
             <div className={styles.groupHeading}><strong>Room {index + 1}</strong>
-              <button type="button" className={styles.linkButton} disabled={view.busy || allocations.length <= 1}
+              <button type="button" className={styles.linkButton} disabled={view.busy || allocations.length <= 1 || Boolean(commands.guestProfilePending(allocationId))}
                 onClick={() => void commands.changeRows({ kind: 'remove_allocation', requestId: request.id, entityId: allocationId, parentId: sectionId })}>Remove</button></div>
             {unassigned.length > 0 && <label className={styles.localField}>Assign a guest from the email
               <select value="" onChange={(event) => {
