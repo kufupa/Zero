@@ -73,6 +73,8 @@ function compile(draft: ReservationWorkflowV2Draft, input: PrepareInput) {
   }
   if (businessGuest.phoneTypeCode && !businessGuest.phoneNumber) missing.push(`${path}/phoneNumber`);
   if (businessGuest.emailTypeCode && !businessGuest.email) missing.push(`${path}/email`);
+  // Native Save requires an email type whenever an address is present.
+  if (businessGuest.email && !businessGuest.emailTypeCode) businessGuest.emailTypeCode = 'PRIM';
   if (missing.length) return { issue: 'guest_fields_incomplete', fields: missing } as const;
   if (pending.length) return { issue: 'guest_fields_require_review', fields: pending, needsReview: true } as const;
   const business = { propertyCode: draft.propertyCode, guest: businessGuest,
