@@ -34,10 +34,12 @@ function currentLead(draft: ReservationWorkflowV2Draft, input: Input) {
   const allocations = Array.isArray(body.allocations) ? body.allocations.map(rec) : [];
   if (request.kind === 'create' && lead.kind === 'guest_candidate') {
     const match = tail.match(/^\/allocations\/(\d+)\/guest\/nativeSelectionRef$/);
-    const allocation = match ? allocations[Number(match[1])] : null, guest = rec(allocation?.guest), query = rec(lead.criteria.query);
-    if (!allocation || lead.criteria.allocationId !== allocation.id || guest.profileIntent !== 'existing_or_unknown' ||
-        query.field !== 'lastName' || !norm(query.value) || norm(query.value) !== norm(guest.lastName) ||
-        norm(query.firstName) !== norm(guest.firstName) || norm(query.email) !== norm(guest.email)) return null;
+    const allocation = match ? allocations[Number(match[1])] : null, guestPath = `${root}/allocations/${match?.[1]}/guest`;
+    const guest = rec(effectiveSubtree(draft, allocation?.guest, guestPath)), query = rec(lead.criteria.query);
+    const value = (field: string) => effectiveSubtree(draft, guest[field], `${guestPath}/${field}`);
+    if (!allocation || lead.criteria.allocationId !== allocation.id || value('profileIntent') !== 'existing_or_unknown' ||
+        query.field !== 'lastName' || !norm(query.value) || norm(query.value) !== norm(value('lastName')) ||
+        norm(query.firstName) !== norm(value('firstName')) || norm(query.email) !== norm(value('email'))) return null;
     return { lead, nativeId, kind: 'guest' as const, name: undefined };
   }
   if (lead.kind !== 'party_candidate') return null;
@@ -46,7 +48,7 @@ function currentLead(draft: ReservationWorkflowV2Draft, input: Input) {
     const match = tail.match(/^\/parties\/(company|agency)\/nativeSelectionRef$/);
     role = match?.[1];
     kind = role === 'company' ? 'organization' : role === 'agency' ? 'agency' : undefined;
-    party = rec(rec(body.parties)[role ?? '']);
+    party = rec(effectiveSubtree(draft, rec(body.parties)[role ?? ''], `${root}/parties/${role ?? ''}`));
   } else if (request.kind === 'create') {
     const match = tail.match(/^\/(shared|dateSections\/\d+\/defaults|allocations\/\d+\/overrides)\/(bookingAgency|organization|arAccount)\/nativeSelectionRef$/);
     if (!match) return null;
@@ -67,10 +69,11 @@ function currentLead(draft: ReservationWorkflowV2Draft, input: Input) {
       if (!section || !allocations.some((row) => row.id === lead.criteria.allocationId && row.dateSectionId === section.id)) return null;
       owner = rec(section.defaults);
     }
-    party = rec(owner[match[2]!]);
+    party = rec(effectiveSubtree(draft, owner[match[2]!], `${root}/${match[1]}/${match[2]}`));
   }
   const query = typeof lead.criteria.query === 'string' ? lead.criteria.query : lead.criteria.searchName;
-  if (!role || !kind || lead.criteria.role !== role || !norm(query) || norm(query) !== norm(party.name) ||
+  const partyName = effectiveSubtree(draft, party.name, `${root}${tail.replace(/\/nativeSelectionRef$/, '/name')}`);
+  if (!role || !kind || lead.criteria.role !== role || !norm(query) || norm(query) !== norm(partyName) ||
       typeof candidate.name !== 'string' || !candidate.name.trim()) return null;
   return { lead, nativeId, kind, name: candidate.name.trim() };
 }
