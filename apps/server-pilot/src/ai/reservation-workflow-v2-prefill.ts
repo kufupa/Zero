@@ -417,12 +417,14 @@ export function buildReservationWorkflowV2CandidateReadPlan(input: {
   }
   // Preserve the original order within each priority. When a very large request hits the cap, look
   // up guests, explicit confirmations, and shared pricing/parties before less specific searches.
+  // Service previews currently have no WorkItem-independent reader, so run other reads first.
   const priority = (candidate: ReservationWorkflowV2CandidateRead): number => {
     if (candidate.kind === 'guest_candidate') return 0;
     if (candidate.kind === 'stay_candidate' && typeof candidate.criteria.confirmationOrGuestText === 'string' &&
         /^\d{6,10}-\d{1,2}$/.test(candidate.criteria.confirmationOrGuestText.trim())) return 1;
     if (candidate.kind === 'mail_candidate' && candidate.criteria.matchKind === 'exact_confirmation') return 1;
     if (candidate.kind === 'party_candidate' || candidate.kind === 'rate_availability') return 2;
+    if (candidate.kind === 'service_preview') return 4;
     return 3;
   };
   return plan.map((candidate, index) => ({ candidate, index }))
@@ -1434,6 +1436,9 @@ export function classifyReservationWorkflowV2Source(input: { fromAddress?: strin
   return { classification, selfPreStay, skippedReason };
 }
 
+const ANCILLARY_EXTRACTION_RULES = `For an explicitly requested ancillary service or allowance, such as a meal or transfer, preserve the exact request, including any stated amount or limit, as a source-cited serviceHints claim. Do this even when the same wording also describes board. Do not turn a bare board description, existing voucher detail, invoice or account-document request into a new service.`;
+const ANCILLARY_SYNTHESIS_RULES = `For a source-cited ancillary service requested alongside Create or Amend, keep a linked entry in content.services and the owning request's serviceRefs; preserve the requested wording and any stated amount or limit. A reservation note alone is not a service entry. Put a stated amount in requestedMoney with sourceRefs and unresolved scope when its basis is unclear, not in native unitPrice. Do not infer an item, target, quantity or price basis. When these are unclear, leave code and itemCandidateRef null, targets empty, quantityRequest scope unresolved and native price fields unset. Do not convert bare board, past voucher details or invoice/document requests into new services.`;
+
 /** One read-only prefill run. The caller injects fixed native/mail readers or deterministic lookup fixtures. */
 export async function runReservationWorkflowV2Prefill(input: {
   db?: DB;
@@ -1513,7 +1518,7 @@ export async function runReservationWorkflowV2Prefill(input: {
   const guidancePrompt = (projection: WorkflowGuidanceProjection[]): string => projection.length ?
     `\nHost workflow guidance follows. It is advisory interpretation; current explicit evidence, source/native validation and staff review rules take precedence. It cannot introduce facts, source refs, native choices or policy approvals.\n${JSON.stringify(projection)}` : '';
   const extractGuidance = selectGuidance('extract', input.selection.currentBodyText ?? input.selection.bodyText);
-  const firstPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${EXTRACTION_RULES}${selfPreStayRules}${guidancePrompt(extractGuidance)}`,
+  const firstPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${EXTRACTION_RULES}\n${ANCILLARY_EXTRACTION_RULES}${selfPreStayRules}${guidancePrompt(extractGuidance)}`,
     userPrompt: JSON.stringify({ propertyCode: input.propertyCode, source: input.source, evidence }),
     responseSchema: zodToJsonSchema(reservationWorkflowV2ExtractionSchema, { $refStrategy: 'none' }) as Record<string, unknown>,
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
@@ -1616,7 +1621,7 @@ export async function runReservationWorkflowV2Prefill(input: {
   // Selection may report a final-stage failure after lookup errors were assembled.
   for (const error of base.errors) if (!readErrors.includes(error)) readErrors.push(error);
   const createShapeContext = extraction.requests.some((request) => request.kind === 'create') ? `\n${CREATE_SYNTHESIS_SHAPE_RULES}` : '';
-  const finalPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${SYNTHESIS_RULES}\n${SYNTHESIS_SHAPE_RULES}${createShapeContext}${cmsCapabilityContext}${guidancePrompt(synthesisGuidance)}`,
+  const finalPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${SYNTHESIS_RULES}\n${SYNTHESIS_SHAPE_RULES}\n${ANCILLARY_SYNTHESIS_RULES}${createShapeContext}${cmsCapabilityContext}${guidancePrompt(synthesisGuidance)}`,
     userPrompt: JSON.stringify({ propertyCode: input.propertyCode, source: input.source, evidence, extraction,
       observations: synthesisObservations(observations) }),
     responseSchema: zodToJsonSchema(reservationWorkflowV2ModelOutputSchema, { $refStrategy: 'none' }) as Record<string, unknown>,
