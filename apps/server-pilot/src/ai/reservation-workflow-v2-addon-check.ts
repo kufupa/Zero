@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { canonicalJson } from './draft-approval.js';
 import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Draft, type ReservationWorkflowV2Observation } from './reservation-workflow-v2-contract.js';
-import { compileReservationWorkflowV2Create } from './reservation-workflow-v2-tools.js';
+import { compileReservationWorkflowV2BackgroundCreate } from './reservation-workflow-v2-tools.js';
 import { reservationWorkflowV2ServicesForAllocation, reservationWorkflowV2CompileServiceItem,
   reservationWorkflowV2CompileSavedService, nativeServiceGuestNameMatches, savedServiceBusiness,
   savedTarget, selectedSavedStay, savedStayMatches, savedValue, samePerson, pointer, positiveDecimal,
@@ -15,7 +15,7 @@ import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 export type AddOnObservationInput = { draft: ReservationWorkflowV2Draft; input: ReservationWorkflowV2ServicesInput | ReservationWorkflowV2SavedServicesInput; transportId: string; signal: AbortSignal };
 export type AddOnObservationResult = { status: string; observations: ReservationWorkflowV2Observation[]; issue?: string };
 type NativeCreate = { outcome?: string; issue?: string; requestBinding?: { request?: unknown; digest?: unknown }; ratePlanAvailability?: unknown; commitOnlyFields?: string[] };
-type CompiledCreate = Pick<Extract<ReturnType<typeof compileReservationWorkflowV2Create>, { outcome: 'ok' }>, 'nativeInput' | 'expectedGuest'>;
+type CompiledCreate = Pick<Extract<ReturnType<typeof compileReservationWorkflowV2BackgroundCreate>, { outcome: 'ok' }>, 'nativeInput' | 'expectedGuest'>;
 export type CheckAddOnsTarget =
   | { kind: 'unsaved'; nativeInput: CompiledCreate['nativeInput']; expectedGuest: CompiledCreate['expectedGuest']; nativeBindingDigest: string }
   | { kind: 'saved'; confirmation: string; guestName: string; arrival: string; departure: string };
@@ -223,7 +223,7 @@ async function lookupUnsaved(draft: ReservationWorkflowV2Draft, input: Reservati
   const unsupported = linked.rows.filter(row => row.service.operation !== 'add');
   const addRows = linked.rows.filter(row => row.service.operation === 'add');
   if (!addRows.length) return { status: 'unsupported', issue: 'saved_addon_edit_remove_not_connected', observations: [] };
-  const compiled = compileReservationWorkflowV2Create(loaded.draft, input.requestId, input.allocationId, draft.propertyCode);
+  const compiled = compileReservationWorkflowV2BackgroundCreate(loaded.draft, input.requestId, input.allocationId, draft.propertyCode);
   if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, observations: [] };
   try {
     const addonTool = await import(new URL('../../tooling/hms-cloud/stay360-addons.mjs', import.meta.url).href) as {
@@ -274,7 +274,7 @@ async function previewUnsaved(draft: ReservationWorkflowV2Draft, input: Reservat
   if (linked.outcome !== 'ok') return { status: linked.outcome, issue: linked.issue, observations: [] };
   if (!linked.rows.length) return { status: 'needs_input', issue: input.serviceId ? 'service_target_not_found' : 'no_service_target', observations: [] };
   const unsupported = linked.rows.filter(row => row.service.operation !== 'add');
-  const compiledCreate = compileReservationWorkflowV2Create(loaded.draft, input.requestId, input.allocationId, draft.propertyCode);
+  const compiledCreate = compileReservationWorkflowV2BackgroundCreate(loaded.draft, input.requestId, input.allocationId, draft.propertyCode);
   if (compiledCreate.outcome !== 'ok') return { status: compiledCreate.outcome, issue: compiledCreate.issue, observations: [] };
   const compiled = linked.rows.map(row => ({ row, plan: reservationWorkflowV2CompileServiceItem(loaded.draft!, input, row) }));
   const invalid = compiled.filter(item => item.plan.outcome === 'needs_input');

@@ -524,6 +524,12 @@ export function compileReservationWorkflowV2Create(draft: ReservationWorkflowV2D
   return compileCreate(draft, requestId, allocationId, propertyCode, 'prepare');
 }
 
+/** Background staging must preserve the arrival Create identity-selection gate. */
+export function compileReservationWorkflowV2BackgroundCreate(draft: ReservationWorkflowV2Draft, requestId: string,
+  allocationId: string, propertyCode: string): CreateCompile {
+  return compileCreate(draft, requestId, allocationId, propertyCode, 'background_prepare');
+}
+
 function mapNativeOutcome(native: NativeCreate): Outcome {
   if (native.outcome === 'prepared' && native.requestBinding && native.ratePlanAvailability) {
     return { status: 'prepared', native };
