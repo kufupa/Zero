@@ -41,8 +41,11 @@ export function FieldReview({ editor, path, label, onPendingChange }: { editor: 
       const shift = bounds.left < left + 12 ? left + 12 - bounds.left : bounds.right > right - 12 ? right - 12 - bounds.right : 0;
       if (shift) popup.style.transform = `translateX(${shift}px)`;
     };
+    const pane = peekRef.current?.closest('[data-reservation-pane]');
+    const observer = pane && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(fit) : null;
+    if (pane) observer?.observe(pane);
     fit(); window.addEventListener('resize', fit);
-    return () => window.removeEventListener('resize', fit);
+    return () => { observer?.disconnect(); window.removeEventListener('resize', fit); };
   }, [peek]);
   const draft = editor.snapshot.session.draft;
   const claim = draft.proposal.sourceClaims.find(row => row.path === path);
