@@ -16,13 +16,14 @@ const serviceFields = [
 const nativeFields = [
   ['code', 'Item'], ['name', 'Description'], ['quantity', 'Quantity'], ['startDate', 'Start'], ['endDate', 'End'],
   ['unitPrice', 'Unit price'], ['frequency', 'Frequency'], ['pricingControl', 'Pricing basis'], ['folio', 'Folio'],
-  ['comment', 'Comment'], ['averageDaily', 'Native average'], ['totalCost', 'Native total'],
+  ['comment', 'Comment'], ['averageDaily', 'Native average'],
 ] as const;
 
 function NativeItem({ title, item }: { title: string; item: Record<string, unknown> }) {
   return <div className={styles.card}><strong>{title}</strong><div className={styles.facts}>
+    <div className={styles.fact}><strong>Infor total</strong><strong>{text(item.totalCost) || 'Not returned'}{text(item.totalCost) ? ` ${text(item.currency)}` : ''}</strong></div>
     {nativeFields.map(([key, label]) => <div className={styles.fact} key={key}><span>{label}</span>
-      <span>{text(item[key]) || 'Not returned'}{(key === 'unitPrice' || key === 'averageDaily' || key === 'totalCost') && item[key] ? ` ${text(item.currency)}` : ''}</span></div>)}
+      <span>{text(item[key]) || 'Not returned'}{(key === 'unitPrice' || key === 'averageDaily') && item[key] ? ` ${text(item.currency)}` : ''}</span></div>)}
   </div></div>;
 }
 
@@ -49,11 +50,12 @@ export function AddonsEditor(editor: Editor) {
         Add item for {target.label}
       </button>)}</div>
       {services.map(({ service, index }) => <div className={styles.stack} key={service.id}>
-        <strong>{service.requestedText || service.code || 'Requested Add-On'}</strong>
+        {(service.requestedText || service.code) && <strong>{service.requestedText || service.code}</strong>}
         {service.requestedMoney.map(money => <div className={styles.hint} key={money.id}>Requested: {money.amount || 'amount unknown'} {money.currency || ''} {money.unit || ''} · {money.scope.replaceAll('_', ' ')}</div>)}
         {!service.targets.length && <div className={styles.warning}>Choose the specific room for this Add-On. No room will be charged automatically.</div>}
+        {service.targets.length > 1 && <div className={styles.warning}>This request covers several rooms. Use “Add item” for each room above and enter each quantity. This request stays here for reference.</div>}
         {service.targets.map((target, targetIndex) => <ServiceRow key={`${service.id}:${targetIndex}`} editor={editor}
-          service={service} serviceIndex={index} target={target} targetIndex={targetIndex} />)}
+          service={service} serviceIndex={index} target={target} targetIndex={targetIndex} multiTarget={service.targets.length > 1} />)}
       </div>)}
     </Section>
     <small className={styles.hint}>Restaurant seating or menu arrangements still need staff action. Removing an Add-On does not establish a refund.</small>
@@ -61,8 +63,8 @@ export function AddonsEditor(editor: Editor) {
 }
 
 type Service = Editor['snapshot']['session']['draft']['proposal']['content']['services'][number];
-function ServiceRow({ editor, service, serviceIndex, target, targetIndex }: {
-  editor: Editor; service: Service; serviceIndex: number; target: Service['targets'][number]; targetIndex: number;
+function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiTarget }: {
+  editor: Editor; service: Service; serviceIndex: number; target: Service['targets'][number]; targetIndex: number; multiTarget: boolean;
 }) {
   const draft = editor.snapshot.session.draft;
   const serviceRoot = `/proposal/content/services/${serviceIndex}`, targetRoot = `${serviceRoot}/targets/${targetIndex}`;
@@ -89,6 +91,8 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex }: {
   const catalogue = draft.observations.flatMap(observation => {
     const c = observation.criteria;
     if (observation.kind !== 'service_preview' || observation.status !== 'complete' || record(observation.coverage).complete !== true
+      || observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode
+      || observation.sourceMessageId !== draft.source.messageId
       || c.workflow !== 'services' || c.kind !== (operation === 'add' ? 'catalogue_candidate' : 'saved_row_candidate') || c.requestId !== ref.requestId
       || c.serviceId !== service.id || c.fieldPath !== selectedPath
       || allocation && c.sourceAllocationId !== allocation
@@ -98,10 +102,15 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex }: {
   });
   const latest = [...draft.observations].reverse().find(observation => observation.kind === 'service_preview'
     && observation.status === 'complete' && observation.criteria.workflow === 'services'
-    && observation.generationId === draft.generationId
+    && observation.generationId === draft.generationId && observation.propertyCode === draft.propertyCode
+    && observation.sourceMessageId === draft.source.messageId
     && observation.criteria.requestId === ref.requestId && observation.criteria.serviceId === service.id
     && ['unsaved_addon_preview', 'saved_addon_preview', 'saved_addon_fresh_prepare'].includes(String(observation.criteria.kind))
-    && (allocation ? observation.criteria.allocationId === allocation : JSON.stringify(observation.criteria.targetRef) === JSON.stringify(ref)
+    && (allocation ? observation.criteria.allocationId === allocation
+      && (observation.criteria.kind === 'unsaved_addon_preview' ? observation.criteria.itemCandidateRef === selectedItem
+        : observation.criteria.kind === 'saved_addon_fresh_prepare' && draft.observations.some(parent =>
+          parent.ref === observation.criteria.unsavedPreviewRef && parent.criteria.itemCandidateRef === selectedItem))
+      : JSON.stringify(observation.criteria.targetRef) === JSON.stringify(ref)
       && observation.criteria.targetObservationRef === selectedStay && observation.criteria.candidateRef === selectedItem));
   const preview = record(latest?.result), native = record(preview.native), before = record(preview.before), after = record(preview.after);
   const capability = record(preview.capability);
@@ -130,7 +139,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex }: {
     <h3>{operation === 'add' ? 'Add' : operation === 'edit' ? 'Edit' : 'Remove'} · {service.code || service.requestedText || 'item'}</h3>
     <div className={styles.hint}>{allocation ? `Create room${roomLabel ? ` · ${roomLabel}` : ''}` : savedTarget
       ? `Existing saved stay${text(hint?.confirmation) || text(hint?.guestName) ? ` · ${text(hint?.confirmation) || text(hint?.guestName)}` : ''}` : 'Unresolved target'} · one native item</div>
-    {savedTarget && <Field editor={editor} path={`${serviceRoot}/operation`} label="Action" options={[
+    {savedTarget && <Field editor={editor} path={`${serviceRoot}/operation`} label="Action" compact options={[
       { value: 'add', label: 'Add item' }, { value: 'edit', label: 'Edit saved item' }, { value: 'remove', label: 'Remove saved item' },
     ]} />}
     {savedTarget && hint && <div className={styles.stack}>
@@ -148,17 +157,24 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex }: {
     {savedTarget && !hint && <div className={styles.warning}>This item is missing its exact stay target. Link it to an included stay.</div>}
     {allocation && operation !== 'add' && <div className={styles.warning}>Edit and remove apply to a specific saved stay and saved item.</div>}
     {ref.kind === 'quote_group' && <div className={styles.warning}>A quote group is not a saved room. Choose a room before adding this item.</div>}
-    {connected && <>
+    {connected && !multiTarget && <>
       <div className={styles.row}><button type="button" disabled={editor.view.busy || !argument || Boolean(savedTarget && !selectedStay)} onClick={() => { if (argument) void editor.commands.lookupServices(argument, service.id).catch(() => {}); }}>Find Infor items</button></div>
-      {catalogue.map(({ observation, candidate }) => <div className={styles.row} key={observation.ref}>
-        <span>{text(record(candidate.fields).code || candidate.code)} · {text(record(candidate.fields).name || candidate.name)}
-          {candidate.nativeId ? ` · row ${text(candidate.nativeId)} · ${text(record(candidate.fields).startDate)} → ${text(record(candidate.fields).endDate)} · ${text(record(candidate.fields).totalCost)} ${text(record(candidate.fields).currency)}` : ''}</span>
-        <button type="button" disabled={editor.view.busy} onClick={() => void editor.commands.selectNative(selectedPath, observation.ref).catch(() => {})}>{selectedItem === observation.ref ? 'Selected' : 'Select'}</button>
-      </div>)}
-      {!catalogue.length && <small className={styles.hint}>Find {operation === 'add' ? 'native items' : 'saved rows'} for this stay, then select one.</small>}
+      <label className={styles.label}>{operation === 'add' ? 'Infor item' : 'Saved Add-On'}
+        <select aria-label={operation === 'add' ? 'Infor item' : 'Saved Add-On'} value={text(selectedItem)} disabled={editor.view.busy || !catalogue.length} onChange={event => {
+          const ref = event.target.value;
+          if (ref && catalogue.some(row => row.observation.ref === ref)) void editor.commands.selectNative(selectedPath, ref).catch(() => {});
+        }}>
+          <option value="">{catalogue.length ? 'Select an Infor match' : 'Find items in Infor first'}</option>
+          {Boolean(selectedItem) && !catalogue.some(row => row.observation.ref === selectedItem) && <option value={text(selectedItem)}>Previous selection needs refresh</option>}
+          {catalogue.map(({ observation, candidate }) => <option key={observation.ref} value={observation.ref}>
+            {text(record(candidate.fields).code || candidate.code)} · {text(record(candidate.fields).name || candidate.name)}
+            {candidate.nativeId ? ` · row ${text(candidate.nativeId)} · ${text(record(candidate.fields).startDate)} → ${text(record(candidate.fields).endDate)} · ${text(record(candidate.fields).totalCost)} ${text(record(candidate.fields).currency)}` : ''}
+          </option>)}
+        </select>
+      </label>
       {operation !== 'remove' && <div className={styles.grid}>{serviceFields.map(([field, label, type]) => {
         const shared = valueAt(editor.snapshot, `${serviceRoot}/sharedFields/${field}`);
-        return <Field key={field} editor={editor} path={`${targetRoot}/fields/${field}`} label={label} type={type}
+        return <Field key={field} editor={editor} path={`${targetRoot}/fields/${field}`} label={label} type={type} review
           hint={shared != null && text(shared) ? `Shared value: ${text(shared)}; a room value overrides it.` : operation === 'edit' ? 'Leave unmentioned values unchanged.' : undefined} />;
       })}</div>
       }
@@ -182,7 +198,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex }: {
       <button type="button" disabled={editor.view.busy} onClick={() => void editor.commands.reconcile(result.id).catch(() => {})}>Check outcome</button>
     </div>)}
     {saved && <div className={styles.hint}>Infor readback confirmed this Add-On.</div>}
-    {connected && latest && !saved && <div className={styles.row}>
+    {connected && latest && !saved && !multiTarget && <div className={styles.row}>
       <button type="button" disabled={editor.view.busy || Boolean(fresh && !reviewPaths.length)} onClick={() => void (async () => {
         if (!savedTarget) {
           if (fresh) for (const path of reviewPaths) await editor.commands.acceptServiceReview(path, freshNote);
