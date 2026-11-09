@@ -1,4 +1,4 @@
-import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationRequestProjection, ReservationFieldOverride, ReservationSavedServiceTarget } from './types';
+import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationRequestProjection, ReservationFieldOverride, ReservationSavedServiceTarget, ReservationGuestProfileOptionField } from './types';
 
 export type RowChange = { kind: 'move_allocation' | 'add_allocation' | 'remove_allocation' | 'add_date_section' | 'remove_date_section' | 'add_quote_group' | 'remove_quote_group' | 'add_target' | 'remove_target' | 'add_service' | 'remove_service' | 'add_document' | 'remove_document' | 'remove_action'; requestId: string; parentId?: string; entityId?: string; childIds?: string[] };
 export type WorkbenchCommands = {
@@ -8,6 +8,10 @@ export type WorkbenchCommands = {
   changeRows(change: RowChange): Promise<void>;
   selectNative(path: string, observationRef: string): Promise<void>;
   lookup(): Promise<void>;
+  guestProfileOptions(allocationId: string, field: ReservationGuestProfileOptionField): Promise<Record<string, unknown>>;
+  createGuestProfile(allocationId: string, confirmDuplicateName?: boolean): Promise<void>;
+  guestProfilePending(allocationId: string): string | null;
+  checkGuestProfile(allocationId: string): Promise<void>;
   prepare(allocationId?: string): Promise<void>;
   review(scope: 'request' | 'allocations' | 'targets' | 'services' | 'documents', ids: string[]): Promise<void>;
   execute(allocationId?: string): Promise<void>;
@@ -36,6 +40,10 @@ export function snapshotMatchesSource(snapshot: ReservationPaneSnapshot | null, 
 }
 export const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 export const text = (v: unknown): string => v == null ? '' : typeof v === 'object' ? String(record(v).name ?? record(v).code ?? '') : String(v);
+export function staffEnteredAt(snapshot: ReservationPaneSnapshot, path: string): boolean {
+  return Object.entries(snapshot.session.draft.fieldOverrides).some(([key, value]) =>
+    (path === key || path.startsWith(`${key}/`)) && value.state === 'set');
+}
 export const pointer = (...parts: (string | number)[]) => '/' + parts.map(p => encodeURIComponent(String(p))).join('/');
 export const requestPath = (id: string) => pointer('proposal', 'content', 'requests', id);
 export function valueAt(snapshot: ReservationPaneSnapshot, path: string): unknown {
@@ -64,11 +72,17 @@ export type NativeChoice = { ref: string; label: string; value: string; detail?:
 export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, kind?: string): NativeChoice[] {
   const field = path.split('/').at(-1);
   const requestId = path.split('/')[4];
-  const choices = snapshot.session.draft.observations.flatMap(observation => {
-    if (observation.status !== 'complete' || (kind && observation.kind !== kind && observation.criteria.catalogueKind !== kind)) return [];
+  const draft = snapshot.session.draft;
+  const choices = draft.observations.flatMap(observation => {
     const criteria = record(observation.criteria);
-    const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
     const catalogue = criteria.kind === 'native_catalogue';
+    // Catalogue entries are individually observed even when the full list is incomplete.
+    // Identity matches, however, require a complete search before they can be selected.
+    if (observation.status !== 'complete' || (!catalogue && record(observation.coverage).complete !== true) ||
+        observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
+        observation.sourceMessageId !== draft.source.messageId ||
+        (kind && observation.kind !== kind && observation.criteria.catalogueKind !== kind)) return [];
+    const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
     const matches = paths.includes(path) || catalogue && criteria.requestId === requestId && paths.some(p => typeof p === 'string' && p.split('/').at(-1) === field);
     if (!matches) return [];
     const result = record(observation.result);
@@ -79,4 +93,54 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
       return { ref: observation.ref, value: code, label: text(row.label ?? row.name) || code, detail: [row.meaning ?? row.description, row.nativeId, row.email].filter(Boolean).join(' · ') }; }).filter(row => row.value);
   });
   return choices.filter((row, index) => choices.findIndex(v => v.ref === row.ref && v.value === row.value) === index);
+}
+
+/** Incomplete native searches are useful leads, never selectable identities. */
+export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: string, kind?: string): string[] {
+  if (kind !== 'guest_candidate' && kind !== 'party_candidate') return [];
+  const draft = snapshot.session.draft;
+  const ownerPath = path.replace(/\/nativeSelectionRef$/, '');
+  const guest = kind === 'guest_candidate';
+  const normal = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  const name = normal(valueAt(snapshot, guest ? `${ownerPath}/lastName` : `${ownerPath}/name`));
+  const first = normal(valueAt(snapshot, `${ownerPath}/firstName`));
+  const email = normal(valueAt(snapshot, `${ownerPath}/email`));
+  if (!name) return [];
+  const parts = path.split('/'), requestId = parts[4];
+  const allocationIndex = parts.indexOf('allocations');
+  const body = requestId ? record(effectiveAt(snapshot, `/proposal/content/requests/${requestId}/body`)) : {};
+  const allocations = Array.isArray(body.allocations) ? body.allocations : [];
+  const allocation = allocationIndex >= 0 ? record(allocations[Number(parts[allocationIndex + 1])]) : {};
+  const issuePath = `/requests/${requestId}/allocations/${text(allocation.id)}/guest/candidateRefs`;
+  const guestRefs = new Set(snapshot.issues.filter(issue => issue.path === issuePath && issue.kind === 'guest_profile_identity_unverified')
+    .flatMap(issue => issue.evidenceRefs));
+  const claimRefs = new Set(draft.proposal.sourceClaims.filter(claim => claim.path === ownerPath || claim.path === `${ownerPath}/name`)
+    .flatMap(claim => claim.sourceRefs));
+  const role = ownerPath.endsWith('/bookingAgency') || ownerPath.endsWith('/agency') ? 'agency'
+    : ownerPath.endsWith('/arAccount') ? 'ar_account' : 'organization';
+  const leads = draft.observations.flatMap(observation => {
+    if (observation.kind !== kind || observation.status !== 'partial' ||
+        observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
+        observation.sourceMessageId !== draft.source.messageId) return [];
+    const criteria = record(observation.criteria), query = record(criteria.query);
+    const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
+    const fieldBound = paths.includes(path);
+    const sourceGuest = guest && guestRefs.has(observation.ref) &&
+      ((!normal(criteria.name) || normal(criteria.name) === [first, name].filter(Boolean).join(' ')) &&
+       (!normal(criteria.email) || normal(criteria.email) === email));
+    const sourceParty = !guest && criteria.role === role && normal(criteria.name) === name &&
+      observation.sourceRefs.some(ref => claimRefs.has(ref));
+    if (!fieldBound && !sourceGuest && !sourceParty) return [];
+    const search = normal(typeof criteria.query === 'string' ? criteria.query : query.value ?? criteria.searchName);
+    if (search && search !== name || normal(query.firstName) && normal(query.firstName) !== first ||
+        normal(query.email) && normal(query.email) !== email) return [];
+    const result = record(observation.result);
+    const rows = Array.isArray(result.candidates) ? result.candidates : [result];
+    return rows.map(raw => {
+      const row = record(raw);
+      const label = text(row.name) || [text(row.firstName), text(row.lastName)].filter(Boolean).join(' ');
+      return [label, text(row.nativeId), text(row.email)].filter(Boolean).join(' · ');
+    }).filter(Boolean);
+  });
+  return [...new Set(leads)];
 }

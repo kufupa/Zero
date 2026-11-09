@@ -13,8 +13,8 @@ const fields = [
   ['ratePlan', 'Rate plan', 'code'], ['adults', 'Adults', 'count'], ['childCount', 'Children', 'count'],
   ['childAges', 'Child ages', 'ages'], ['firstName', 'Guest first name', 'text'], ['lastName', 'Guest last name', 'text'],
   ['guestEmail', 'Guest email', 'email'], ['bookerName', 'Booker name', 'text'], ['bookerContact', 'Booker contact', 'text'],
-  ['cmsSend', 'Send confirmation', 'boolean'], ['cmsMessageId', 'Confirmation template', 'text'],
-  ['cmsRecipient', 'Confirmation recipient', 'email'],
+  ['cmsSend', 'CMS Send Mail', 'boolean'], ['cmsMessageId', 'CMS Message Id', 'text'],
+  ['cmsRecipient', 'CMS Booker Email', 'email'],
 ] as const;
 const clearable = new Set(['guestEmail', 'bookerName', 'bookerContact', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
 const priceFields = new Set(['arrival', 'departure', 'roomType', 'ratePlan', 'adults', 'childCount', 'childAges']);

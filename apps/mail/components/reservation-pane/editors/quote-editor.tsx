@@ -127,7 +127,7 @@ function RoomCode({ editor, path, options }: { editor: Editor; path: string; opt
   useEffect(() => () => editor.commands.setUncommitted(path, false), [path]);
   const listId = `rooms-${path.replace(/[^a-z0-9]/giu, '-')}`;
   const codes = [...new Map(options.map((option): [string, string] => [text(option.roomCode), text(option.roomLabel)]).filter(([code]) => code)).entries()];
-  return <label className={styles.localField}>Room categories
+  return <label className={`${styles.localField} ${styles.quoteLine}`}>Room categories
     <input value={value} list={listId} placeholder="Any category, or codes separated by commas" onChange={(event) => {
       const next = event.target.value; setValue(next); dirty.current = true; version.current += 1;
       editor.commands.setUncommitted(path, true); editor.commands.stageEdit(path, parse(next));
@@ -303,8 +303,13 @@ export function QuoteEditor(editor: Editor) {
   const artifactPath = `${bodyPath}/outputIntent/artifacts`;
   const artifactsValue = valueAt(snapshot, artifactPath);
   const artifacts = Array.isArray(artifactsValue) ? artifactsValue.map(text) : [];
+  const sourceRequest = snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id);
+  const sourceOutputs = record(record(sourceRequest?.body).outputIntent).artifacts;
+  const requestedDocuments = [...new Set([...(Array.isArray(sourceOutputs) ? sourceOutputs : []), ...artifacts]
+    .filter((item): item is string => item === 'pdf_quote' || item === 'xlsx_quote'))];
+  const needsTextOutput = artifacts.length !== 1 || artifacts[0] !== 'email_quote';
   const provisional = valueAt(snapshot, `${bodyPath}/provisionalBookingRequested`);
-  return <div className={styles.editor}>
+  return <div className={`${styles.editor} ${styles.compactQuote}`}>
     <Section title="Stay and rooms">
       {groups.length ? <>
         <div className={styles.twoCol}><SharedDate editor={editor} groups={groups} bodyPath={bodyPath} field="arrival" label="Arrival" />
@@ -324,8 +329,8 @@ export function QuoteEditor(editor: Editor) {
           <div className={styles.twoCol}><Count label="Rooms" path={`${groupPath}/quantity`} editor={editor} min={1} max={100} />
             <Field label="Board" path={`${groupPath}/board`} editor={editor} options={boards} /></div>
           <RoomCode editor={editor} path={`${groupPath}/roomCodes`} options={options} />
-          <NativePicker label="Rate plan" path={`${groupPath}/ratePlan`} editor={editor} kind="rate_plan" />
-          <Field label="Occupancy scope" path={`${groupPath}/occupancy/scope`} editor={editor} options={[
+          <NativePicker label="Rate plan" path={`${groupPath}/ratePlan`} editor={editor} kind="rate_plan" compact />
+          <Field label="Occupancy scope" path={`${groupPath}/occupancy/scope`} editor={editor} compact options={[
             { value: 'unresolved', label: 'Needs allocation' }, { value: 'whole_group', label: 'Whole group · needs allocation' },
             { value: 'per_room', label: 'Per room' },
           ]} />
@@ -346,23 +351,25 @@ export function QuoteEditor(editor: Editor) {
           <small>Unresolved requests above are not included in this total.</small>}</div>}
     </Section>
     <Section title="Company and agency">
-      <NativePicker label="Company" path={`${bodyPath}/parties/company`} editor={editor} kind="party_candidate" allowNone />
-      <NativePicker label="Agency" path={`${bodyPath}/parties/agency`} editor={editor} kind="party_candidate" allowNone />
-      <Field label="Sales strategy" path={`${bodyPath}/salesStrategy`} editor={editor} options={strategies} />
+      <NativePicker label="Company" path={`${bodyPath}/parties/company`} editor={editor} kind="party_candidate" allowNone compact />
+      <NativePicker label="Agency" path={`${bodyPath}/parties/agency`} editor={editor} kind="party_candidate" allowNone compact />
+      <Field label="Sales strategy" path={`${bodyPath}/salesStrategy`} editor={editor} compact options={strategies} />
     </Section>
     <MoneyRequests editor={editor} bodyPath={bodyPath} groups={groups} rows={rows} />
     <PreparedReview editor={editor} />
     <Section title="Contact and outputs">
-      <Field label="Attention" path={`${bodyPath}/client/attention`} editor={editor} />
-      <Field label="Email recipient" path={`${bodyPath}/client/email`} editor={editor} type="email" />
-      <Field label="Telephone" path={`${bodyPath}/client/telephone`} editor={editor} type="tel" />
-      <Field label="Quote note" path={`${bodyPath}/notes`} editor={editor} type="textarea" />
-      <fieldset className={styles.targetFields}><legend>Outputs</legend>
-        {([['email_quote', 'Reply'], ['pdf_quote', 'PDF'], ['xlsx_quote', 'Excel']] as const).map(([id, label]) => <label key={id}>
-          <input type="checkbox" checked={artifacts.includes(id)} onChange={(event) => void commands.edit(artifactPath,
-            event.target.checked ? [...artifacts, id] : artifacts.filter((item) => item !== id))} /> {label}
-        </label>)}
-      </fieldset>
+      <Field label="Attention" path={`${bodyPath}/client/attention`} editor={editor} compact />
+      <Field label="Email recipient" path={`${bodyPath}/client/email`} editor={editor} type="email" compact />
+      <Field label="Telephone" path={`${bodyPath}/client/telephone`} editor={editor} type="tel" compact />
+      <Field label="Quote note" path={`${bodyPath}/notes`} editor={editor} type="textarea" compact />
+      <p className={styles.note}>Output · Unsent email reply</p>
+      {requestedDocuments.length > 0 && <p className={styles.notice}>
+        This draft includes {requestedDocuments.map(item => item === 'pdf_quote' ? 'PDF' : 'Excel').join(' and ')}.
+        Handle those documents separately; the pane can prepare the text reply.
+      </p>}
+      {!requestedDocuments.length && <p className={styles.note}>PDF and Excel requests need separate handling.</p>}
+      {needsTextOutput && <button type="button" className={styles.linkButton} disabled={view.busy}
+        onClick={() => void commands.edit(artifactPath, ['email_quote'])}>Continue with text reply</button>}
       <p className={styles.note}>The reply is saved as an unsent draft. A provisional booking needs a separate Create action.</p>
       {provisional !== false && <div className={styles.notice}>This request has not been confirmed as quote-only.
         <button type="button" className={styles.linkButton} onClick={() => void commands.edit(`${bodyPath}/provisionalBookingRequested`, false)}>Continue with quote only</button>

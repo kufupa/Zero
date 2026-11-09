@@ -44,6 +44,9 @@ export function ReservationPane(props: ReservationPaneProps) {
     body: current && request ? Object.fromEntries(Object.entries(record(effectiveAt(current, `${requestPath(request.id)}/body`))).filter(([field]) => request.kind !== 'cancel' || field !== 'previewObservationRefs')) : {},
     overrides: Object.fromEntries(Object.entries(current?.session.draft.fieldOverrides ?? {}).filter(([path]) => request?.kind !== 'cancel' || !path.startsWith(`${requestPath(request.id)}/body/previewObservationRefs`)).map(([path, value]) => [path, {state: value.state, value: value.value}])) });
   const digest = digestFor(snapshot);
+  const quoteOutputs = record(body.outputIntent).artifacts;
+  const quoteNeedsTextOutput = request?.kind === 'quote' &&
+    (!Array.isArray(quoteOutputs) || quoteOutputs.length !== 1 || quoteOutputs[0] !== 'email_quote');
   const quotePrepared = request?.kind === 'quote' && snapshot ? [...snapshot.session.draft.operationResults].reverse().find(row => row.workflow === 'quote' && row.requestId === request.id && row.status === 'prepared') : null;
   const quoteObservation = quotePrepared && snapshot?.session.draft.observations.find(row => quotePrepared.observationRefs.includes(row.ref) && row.kind === 'rate_availability');
   const quoteExtras = record(quoteObservation?.result).extrasReviewItems;
@@ -90,7 +93,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     } catch { setChecked(null); }
   };
   const save = async () => {
-    if (!request || createBlocked || preview || workbench.blocked || extrasNeedReview || checked !== digest) return;
+    if (!request || createBlocked || preview || workbench.blocked || extrasNeedReview || quoteNeedsTextOutput || checked !== digest) return;
     try {
       if (request.kind === 'create' || request.kind === 'amend' || request.kind === 'cancel') {
         for (const id of ids) {
@@ -105,18 +108,19 @@ export function ReservationPane(props: ReservationPaneProps) {
   };
   const Editor = request && request.kind !== 'other' ? editors[request.kind] : null;
   const disabled = busy || !snapshot || workbench.blocked || workbench.conflict;
-  const actionLocked = snapshot?.operationResults.some(row => row.requestId === request?.id && ['succeeded', 'unknown'].includes(text(row.status)));
-  return <div className={styles.pane}>
+  const actionLocked = snapshot?.operationResults.some(row => row.requestId === request?.id && ['succeeded', 'unknown'].includes(text(row.status))) ||
+    (request?.kind === 'create' && ids.some(id => Boolean(commands.guestProfilePending(id))));
+  return <div className={styles.pane} data-reservation-pane>
     <header className={styles.header}><div><strong>Nava</strong><span>{preview ? 'Interactive preview · Save disabled' : workbench.saving ? 'Saving changes…' : busy ? 'Checking Infor…' : 'Saved draft'}</span></div>
       <div className={styles.history}><button type="button" aria-label="Undo draft change" disabled={disabled || !snapshot?.session.revision} onClick={() => { void workbench.undo().catch(() => {}); }}>↶</button><button type="button" aria-label="Redo draft change" disabled={disabled || snapshot?.session.revision === snapshot?.session.revisionHead} onClick={() => { void workbench.redo().catch(() => {}); }}>↷</button></div>
     </header>
-    <nav className={styles.actionNav} aria-label="Reservation actions"><div className={styles.tabs}>
+    <nav className={styles.actionNav} aria-label="Reservation actions"><div className={styles.actionBar}><div className={styles.tabs}>
       {snapshot?.requests.filter(row => !source.selfPreStay || row.kind !== 'create').map(row => <span className={styles.tabGroup} key={row.id}>
         <button type="button" className={row.id === request?.id ? styles.activeTab : ''} onClick={() => { workbench.setActiveId(row.id); setChecked(null); setActionMenu(null); setConfirmRemove(false); }}>{labels[row.kind]}</button>
         {row.id === request?.id && <button type="button" className={styles.tabChevron} aria-label={`Options for ${labels[row.kind]}`} aria-expanded={actionMenu === row.id}
           onClick={() => { setActionMenu(current => current === row.id ? null : row.id); setConfirmRemove(false); }}>▾</button>}
       </span>)}
-      <select aria-label="Add action" value="" disabled={!snapshot || busy} onChange={event => { const kind = event.target.value as Exclude<ReservationWorkflowKind, 'other'>; if (kind && !(source.selfPreStay && kind === 'create')) { setActionMenu(null); void workbench.addAction(kind).catch(() => {}); } }}><option value="">+ Action</option>{Object.entries(labels).filter(([kind]) => kind !== 'other' && !(source.selfPreStay && kind === 'create')).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</select>
+      </div><select className={styles.actionAdd} aria-label="Add action" value="" disabled={!snapshot || busy} onChange={event => { const kind = event.target.value as Exclude<ReservationWorkflowKind, 'other'>; if (kind && !(source.selfPreStay && kind === 'create')) { setActionMenu(null); void workbench.addAction(kind).catch(() => {}); } }}><option value="">+ Action</option>{Object.entries(labels).filter(([kind]) => kind !== 'other' && !(source.selfPreStay && kind === 'create')).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</select>
     </div>
     {request && actionMenu === request.id && <div className={styles.actionMenu}>
       {actionLocked ? <p>This action has an Infor result and must stay in the draft.</p> : confirmRemove ? <>
@@ -140,9 +144,10 @@ export function ReservationPane(props: ReservationPaneProps) {
       {snapshot?.issues.filter(issue => !issue.path || !request || issue.path.startsWith(requestPath(request.id))).map((issue, index) => <p className={styles.notice} key={index}>{issue.explanation}</p>)}
     </main>
     {request && !createBlocked && request.kind !== 'services' && request.kind !== 'other' && <footer className={styles.footer}>
-      {request.kind === 'create' && snapshot?.preparationViews.filter(view => view.requestId === request.id && view.price && !snapshot.operationResults.some(row => row.requestId === request.id && row.allocationId === view.allocationId && ['succeeded','unknown'].includes(text(row.status)))).map(view => <div key={view.allocationId} className={styles.price}><span>Room {ids.indexOf(view.allocationId) + 1} · {view.current ? 'Infor price' : 'Price needs refresh'}</span><strong>{view.price ? [view.price.currency, view.price.totalRate].filter(value => value != null).join(' ') : '—'}</strong></div>)}
+      {request.kind === 'create' && snapshot?.preparationViews.filter(view => view.requestId === request.id && view.price && !snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === view.allocationId && ['succeeded','unknown'].includes(text(row.status)))).map(view => <div key={view.allocationId} className={styles.price}><span>Room {ids.indexOf(view.allocationId) + 1} · {view.current ? 'Infor price' : 'Price needs refresh'}</span><strong>{view.price ? [view.price.currency, view.price.totalRate].filter(value => value != null).join(' ') : '—'}</strong></div>)}
       <div className={styles.actions}><button type="button" disabled={disabled || !ids.length && ['create','amend','cancel'].includes(request.kind)} onClick={() => { void check(); }}>Review & check</button>
-        <button type="button" className={styles.primary} disabled={disabled || preview || extrasNeedReview || checked !== digest} onClick={() => { void save(); }}>{request.kind === 'quote' ? 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : 'Save in Infor'}</button></div>
+        <button type="button" className={styles.primary} disabled={disabled || preview || extrasNeedReview || quoteNeedsTextOutput || checked !== digest} onClick={() => { void save(); }}>{request.kind === 'quote' ? 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : 'Save in Infor'}</button></div>
+      {quoteNeedsTextOutput && <small>Choose the text reply above before generating.</small>}
       {workbench.blocked && <small>Apply the changed selection before checking.</small>}
       {snapshot?.operationResults.filter(row => row.requestId === request.id && row.status !== 'prepared').map(row => <div className={styles.receipt} key={text(row.id)}>{text(row.summary) || labels[request.kind]} · {text(row.status)}{row.confirmation ? ` · ${text(row.confirmation)}` : ''}{row.status === 'unknown' && <button type="button" onClick={() => { void commands.reconcile(text(row.id)).catch(() => {}); }}>Check outcome</button>}</div>)}
     </footer>}

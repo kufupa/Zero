@@ -1,13 +1,13 @@
 'use client';
 
 import { useEffect, useId, useState } from 'react';
-import { nativeChoices, record, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { nativeChoices, partialNativeLeads, record, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import styles from '../reservation-pane.module.css';
 import { FieldReview, FieldSource } from './stay-fields';
 
 /** One editable code/identity search with persistent access to native alternatives. */
-export function NativePicker({ label, path, editor, kind, allowNone = false, compact = false, hint }: {
-  label: string; path: string; editor: WorkbenchEditorProps; kind?: string; allowNone?: boolean; compact?: boolean; hint?: string;
+export function NativePicker({ label, path, editor, kind, allowNone = false, compact = false, hint, disabled = false }: {
+  label: string; path: string; editor: WorkbenchEditorProps; kind?: string; allowNone?: boolean; compact?: boolean; hint?: string; disabled?: boolean;
 }) {
   const id = useId();
   const party = /\/(bookingAgency|organization|arAccount|agency|company)$/.test(path);
@@ -18,7 +18,9 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   // HMS guest search is by surname. Keep first name separate; a name's last
   // token is not necessarily its surname (for example, "van der Merwe").
   const saved = party ? text(valueAt(editor.snapshot, `${path}/name`)) : text(valueAt(editor.snapshot, inputPath));
-  const choices = nativeChoices(editor.snapshot, entity ? selectionPath : path, kind);
+  const choiceKind = kind ?? (party ? 'party_candidate' : undefined);
+  const choices = nativeChoices(editor.snapshot, entity ? selectionPath : path, choiceKind);
+  const leads = entity ? partialNativeLeads(editor.snapshot, selectionPath, choiceKind) : [];
   const [query, setQuery] = useState(saved);
   const [open, setOpen] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -49,7 +51,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   return <div className={`${styles.field} ${compact ? styles.compactField : ''}`}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label>{!compact && <FieldSource editor={editor} path={path} label={label} />}</div><div className={`${styles.picker} ${styles.controlSlot}`}>
     <div className={styles.pickerInput}><input id={id} role="combobox" aria-expanded={open} aria-controls={`${id}-options`} aria-autocomplete="list"
       aria-activedescendant={open && activeIndex >= 0 && shown[activeIndex] ? `${id}-option-${activeIndex}` : undefined}
-      value={display} disabled={reviewing} onFocus={() => setOpen(true)} placeholder={guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
+      value={display} disabled={disabled || reviewing} onFocus={() => setOpen(true)} placeholder={guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
         const value = event.target.value; setQuery(value); setDirty(true); setOpen(true); setActiveIndex(-1);
         editor.commands.stageEdit(editPath, editValue(value));
       }}
@@ -62,11 +64,13 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
         if (event.key === 'Enter') { event.preventDefault(); const row = open && (shown[activeIndex] ?? (visible.length === 1 ? visible[0] : undefined));
           if (row) void choose(row.ref, row.value); else void saveSearch().catch(() => {}); }
       }} />
-      <button type="button" aria-label={`Show ${label} choices`} disabled={reviewing} onMouseDown={event => event.preventDefault()} onClick={() => setOpen(!open)}>⌄</button></div>
-    {open && <div id={`${id}-options`} role="listbox" className={styles.options}>
+      <button type="button" aria-label={`Show ${label} choices`} disabled={disabled || reviewing} onMouseDown={event => event.preventDefault()} onClick={() => setOpen(!open)}>⌄</button></div>
+    {open && !disabled && <div id={`${id}-options`} role="listbox" className={styles.options}>
       {allowNone && <button type="button" role="option" aria-selected={!query} onMouseDown={event => event.preventDefault()} onClick={() => { void editor.commands.edit(party ? path : inputPath, null, 'none').then(() => { setQuery(''); setDirty(false); setOpen(false); }).catch(() => {}); }}>None</button>}
       {shown.map((row, index) => <button id={`${id}-option-${index}`} key={`${row.ref}:${row.value}`} type="button" role="option" aria-selected={entity ? selectedRef === row.ref : saved === row.value}
         onMouseDown={event => event.preventDefault()} onClick={() => { void choose(row.ref, row.value); }}><strong>{row.value}</strong>{row.label !== row.value && <span> — {row.label}</span>}{row.detail && <small>{row.detail}</small>}</button>)}
+      {leads.length > 0 && <div role="note"><small><strong>Unverified Infor leads</strong> · Search Infor to verify before selecting.</small>
+        {leads.map(lead => <small key={lead}>{lead}</small>)}</div>}
       {!choices.length && <small>Find options in Infor to load native choices.</small>}
       <button type="button" onClick={() => { void saveSearch().then(() => editor.commands.lookup()).catch(() => {}); }}>Search Infor</button>
     </div>}

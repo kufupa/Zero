@@ -122,6 +122,52 @@ function parseProfileResponse(text) {
   return JSON.parse(json)?.pageData;
 }
 
+// Keep only a fixed vocabulary of validation words. Arbitrary native text can
+// contain guest details or credentials, even after ordinary PII redaction.
+const DIAGNOSTIC_WORDS = new Set(`a address already an and are as at be been before by can cannot change characters
+  check choose code complete confirm contact continue correct could country create current data date details did do
+  does duplicate email enter entered error exceeds exists failed field fields first for format from guest has have
+  in incorrect information invalid is last length limit mandatory maximum may minimum missing mobile must name new
+  no not number of on only or permission phone please profile property provide record request required retry review
+  same save select selected service should status system than that the this to too type unable unavailable unexpected
+  unique update use valid validation value values was with yes`.split(/\s+/));
+
+function diagnosticMessageText(value, fields) {
+  if (typeof value !== 'string') return null;
+  let text = value.slice(0, 512);
+  // Do not retain a partial email, credential, or guest value at the cut.
+  if (value.length > 512) text = text.slice(0, Math.max(0, text.search(/\s+\S*$/)));
+  for (const field of Object.values(fields)) {
+    if (typeof field === 'string' && field) {
+      const literal = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      text = text.replace(new RegExp(literal, 'gi'), ' [redacted] ');
+    }
+  }
+  text = text.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+/gi, ' [redacted] ')
+    .replace(/\+?\d[\d .()/-]{5,}\d/g, ' [redacted] ')
+    .replace(/\b(?:authorization|bearer|password|token|session(?:id)?|access[_-]?token|refresh[_-]?token)(?:\s*[:=]\s*|\s+)[^\s,;]+/gi, ' [redacted] ');
+  return (text.match(/[a-z]+|\d+/gi) || []).slice(0, 40)
+    .map(word => DIAGNOSTIC_WORDS.has(word.toLowerCase()) ? word.toLowerCase() : '[redacted]').join(' ');
+}
+
+function profileFailureDiagnostics(data, parseStatus, fields) {
+  const messages = data?.messages;
+  const items = Array.isArray(messages) ? messages.slice(0, 5) : [];
+  return {
+    version: 1, parseStatus,
+    nativeSuccess: data?.success === true ? true : data?.success === false ? false : null,
+    messagesStatus: Array.isArray(messages) ? 'array' : messages == null ? 'absent' : 'invalid',
+    messageCount: Array.isArray(messages) ? Math.min(messages.length, 5) : null,
+    messagesTruncated: Array.isArray(messages) && messages.length > 5,
+    messages: items.map(message => ({
+      type: ['error', 'warning', 'question', 'info', 'information', 'success'].includes(message?.type) ? message.type : 'other',
+      questionType: message?.questiontype === 'YesNo' ? 'YesNo' : null,
+      handler: message?.handler === 'confirmNewGuestProfile' ? 'confirmNewGuestProfile' : null,
+      text: diagnosticMessageText(typeof message === 'string' ? message : message?.msg ?? message?.message, fields),
+    })),
+  };
+}
+
 async function boundedResponseText(response, timeout = 15000) {
   let timer;
   try {
@@ -160,8 +206,11 @@ async function handleProfileSave(route, state) {
       pending = (async () => {
         const response = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: 30_000 });
         const text = await boundedResponseText(response);
-        let data;
-        try { data = parseProfileResponse(text); } catch { /* unknown until readback */ }
+        let data, parseStatus = 'parse_failed';
+        try {
+          data = parseProfileResponse(text);
+          parseStatus = data && typeof data === 'object' && !Array.isArray(data) ? 'parsed' : 'missing_page_data';
+        } catch { /* unknown until readback */ }
         const messages = data?.messages;
         const question = !confirmed && response.status() === 200 && data?.success === false &&
           Array.isArray(messages) && messages.length === 1 && messages[0].type === 'question' &&
@@ -171,7 +220,9 @@ async function handleProfileSave(route, state) {
         write.response = { status: response.status(), success: response.status() === 200 && data?.success === true,
           nativeId: /^\d+$/.test(id) ? id : null, question };
         // Persist the response and any native ID before the browser receives it.
-        await write.recordResponse(context, Object.freeze({ ...write.response }));
+        const diagnostics = write.fields.firstName === 'Proof' && write.fields.lastName === 'Labtest' &&
+          (!write.response.success || !write.response.nativeId) ? profileFailureDiagnostics(data, parseStatus, write.fields) : null;
+        await write.recordResponse(context, Object.freeze({ ...write.response, ...(diagnostics && { diagnostics }) }));
         if (write.phase !== 'closed') write.phase = question ? 'question' : 'finished';
         await route.fulfill({ response });
         return true;
