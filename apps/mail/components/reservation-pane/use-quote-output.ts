@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { ReservationPaneSnapshot, ReservationSourceContext } from '@/lib/reservation-workflow/types';
+import { quoteOutputState } from '@/lib/reservation-workflow/views';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import { createOperationId, type MailLocation, type WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
@@ -93,8 +94,10 @@ export function useQuoteOutput({ source, bridge, isCurrentSource }: {
   };
   const getReady = async (requestId: string, html: string, snapshot: ReservationPaneSnapshot, isCurrentSnapshot?: () => boolean) => {
     if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
+    if (!quoteOutputState(snapshot, requestId).textOnly) throw new Error('Choose the text reply and review document requests first.');
     const output = getQuoteOutput(source, snapshot, requestId);
     if (!output || output.issues.length || !output.cover) throw new Error(output?.issues[0] ?? 'Generate the quote and cover reply first.');
+    if (output.artifacts.length) throw new Error('Generate a new text-only quote before saving the reply. Handle documents separately.');
     if (!html.trim()) throw new Error('Review the cover reply before creating a draft.');
     await verifyAttachments(output.artifacts);
     if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');

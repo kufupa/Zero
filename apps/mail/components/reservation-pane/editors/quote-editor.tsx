@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, useRef, useState } from 'react';
-import { effectiveAt, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { effectiveAt, quoteOutputState, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { Count, Field, FieldReview, Section } from '../shared/stay-fields';
 import { NativePicker } from '../shared/native-pickers';
 import { ChildAges } from './create-editor';
@@ -300,6 +300,7 @@ function PreparedReview({ editor }: { editor: Editor }) {
 
 export function QuoteEditor(editor: Editor) {
   const { request, snapshot, commands, view } = editor;
+  const [manualDocumentsAck, setManualDocumentsAck] = useState<string | null>(null);
   const bodyPath = `${requestPath(request.id)}/body`;
   const body = record(effectiveAt(snapshot, bodyPath));
   const groups = Array.isArray(body.groups) ? body.groups.map(record) : [];
@@ -313,7 +314,8 @@ export function QuoteEditor(editor: Editor) {
     typeof shortfall.supply === 'number' && Number.isSafeInteger(shortfall.supply);
   const offersCurrent = quoteOffersCurrent(editor, observation);
   const mismatch = groups.some((group) => group.arrival !== groups[0]?.arrival || group.departure !== groups[0]?.departure);
-  const artifactPath = `${bodyPath}/outputIntent/artifacts`;
+  const outputState = quoteOutputState(snapshot, request.id);
+  const artifactPath = outputState.path;
   const artifactsValue = effectiveAt(snapshot, artifactPath);
   const artifacts = Array.isArray(artifactsValue) ? artifactsValue.map(text) : [];
   const sourceRequest = snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id);
@@ -321,11 +323,23 @@ export function QuoteEditor(editor: Editor) {
   const isDocument = (item: unknown): item is string => item === 'pdf_quote' || item === 'xlsx_quote';
   const sourceDocuments = Array.isArray(sourceOutputs) ? sourceOutputs.filter(isDocument) : [];
   const selectedDocuments = artifacts.filter(isDocument);
-  const requestedDocuments = [...new Set([...sourceDocuments, ...selectedDocuments])];
-  const unpreservedDocuments = selectedDocuments.filter(item => !sourceDocuments.includes(item));
+  const overrideDocuments = outputState.overrides.flatMap(([path, override]) => {
+    if (override.state !== 'set') return [];
+    let value = override.value;
+    if (artifactPath.startsWith(`${path}/`)) {
+      for (const part of artifactPath.slice(path.length + 1).split('/').map(decodeURIComponent)) {
+        value = Array.isArray(value) ? (/^\d+$/.test(part) ? value[Number(part)] : value.find(row => record(row).id === part)) : record(value)[part];
+      }
+    }
+    return (Array.isArray(value) ? value : [value]).filter(isDocument);
+  });
+  const needsTextOutput = !outputState.textOnly;
+  const requestedDocuments = [...new Set([...sourceDocuments, ...selectedDocuments, ...(needsTextOutput ? overrideDocuments : [])])];
+  const earlierDocuments = needsTextOutput ? [] : [...new Set(overrideDocuments.filter(item => !requestedDocuments.includes(item)))];
+  const unpreservedDocuments = needsTextOutput ? requestedDocuments.filter(item => !sourceDocuments.includes(item)) : [];
+  const acknowledgementKey = outputState.fingerprint;
   const documentIssues = snapshot.session.draft.proposal.issues.filter(issue =>
     issue.kind === 'quote_document_manual' && issue.path === artifactPath);
-  const needsTextOutput = artifacts.length !== 1 || artifacts[0] !== 'email_quote';
   const provisional = valueAt(snapshot, `${bodyPath}/provisionalBookingRequested`);
   return <div className={`${styles.editor} ${styles.compactQuote}`}>
     <Section title="Stay and rooms">
@@ -386,12 +400,21 @@ export function QuoteEditor(editor: Editor) {
         This draft includes {requestedDocuments.map(item => item === 'pdf_quote' ? 'PDF' : 'Excel').join(' and ')}.
         Create and attach those documents separately; this pane prepares the text reply.
       </p>}
-      {documentIssues.map((issue, index) => <p className={styles.notice} key={`${issue.path}-${index}`}>{issue.explanation}</p>)}
-      {unpreservedDocuments.length > 0 && <p className={styles.notice}>
-        Document selections added to this draft cannot yet be retained when switching to a text reply. Handle them separately.
+      {earlierDocuments.length > 0 && <p className={styles.notice}>
+        Earlier quote settings include {earlierDocuments.map(item => item === 'pdf_quote' ? 'PDF' : 'Excel').join(' and ')}.
+        Check whether those documents still need separate handling.
       </p>}
-      {needsTextOutput && <button type="button" className={styles.linkButton} disabled={view.busy || unpreservedDocuments.length > 0}
-        onClick={() => void commands.edit(artifactPath, ['email_quote'])}>
+      {documentIssues.map((issue, index) => <p className={styles.notice} key={`${issue.path}-${index}`}>{issue.explanation}</p>)}
+      {unpreservedDocuments.length > 0 && <label className={styles.documentAcknowledgement}>
+        <input type="checkbox" checked={manualDocumentsAck === acknowledgementKey} disabled={view.busy}
+          onChange={event => setManualDocumentsAck(event.target.checked ? acknowledgementKey : null)} />
+        <span>I recorded the {unpreservedDocuments.map(item => item === 'pdf_quote' ? 'PDF' : 'Excel').join(' and ')} request elsewhere for manual handling.
+          It will be removed from this draft when I continue.</span>
+      </label>}
+      {outputState.blockedAncestor && <p className={styles.notice}>Output settings are unavailable. Undo the change if possible, or ask for support.</p>}
+      {needsTextOutput && <button type="button" className={styles.linkButton}
+        disabled={view.busy || outputState.blockedAncestor || unpreservedDocuments.length > 0 && manualDocumentsAck !== acknowledgementKey}
+        onClick={() => { void commands.selectQuoteTextOutput(request.id, acknowledgementKey).catch(() => {}); }}>
         {requestedDocuments.length ? 'Continue with text reply; handle documents separately' : 'Use text reply'}
       </button>}
       <p className={styles.note}>Generate the quote, then save the reply as an unsent draft. A provisional booking needs a separate Create action.</p>

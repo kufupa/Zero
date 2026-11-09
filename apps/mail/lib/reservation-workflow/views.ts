@@ -5,6 +5,7 @@ export type WorkbenchCommands = {
   stageEdit(path: string, value: unknown, state?: ReservationFieldOverride['state']): void;
   setUncommitted(key: string, dirty: boolean): void;
   edit(path: string, value: unknown, state?: ReservationFieldOverride['state']): Promise<void>;
+  selectQuoteTextOutput(requestId: string, expectedFingerprint: string): Promise<void>;
   changeRows(change: RowChange): Promise<void>;
   selectNative(path: string, observationRef: string): Promise<void>;
   verifyNativeLead?(path: string, observationRef: string): Promise<void>;
@@ -74,6 +75,25 @@ export function effectiveAt(snapshot: ReservationPaneSnapshot, path: string): un
   if (Array.isArray(raw)) return raw.map((_, i) => effectiveAt(snapshot, `${path}/${i}`));
   if (raw && typeof raw === 'object' || childKeys.length) return Object.fromEntries([...new Set([...Object.keys(record(raw)), ...childKeys])].map(k => [k, effectiveAt(snapshot, `${path}/${encodeURIComponent(k)}`)]));
   return raw;
+}
+export function quoteOutputState(snapshot: ReservationPaneSnapshot, requestId: string) {
+  const draft = snapshot.session.draft;
+  const path = `${requestPath(requestId)}/body/outputIntent/artifacts`;
+  const request = draft.proposal.content.requests.find(row => row.id === requestId);
+  const overrides = Object.entries(draft.fieldOverrides).filter(([key]) =>
+    key === path || key.startsWith(`${path}/`) || path.startsWith(`${key}/`)).sort(([a], [b]) => a.localeCompare(b));
+  const childPaths = overrides.filter(([key, override]) => key.startsWith(`${path}/`) && override.state !== 'inherit').map(([key]) => key);
+  const ancestors = overrides.filter(([key, override]) => path.startsWith(`${key}/`) && override.state !== 'inherit');
+  const leaf = draft.fieldOverrides[path];
+  const directText = leaf?.state === 'set' && Array.isArray(leaf.value) && leaf.value.length === 1 && leaf.value[0] === 'email_quote';
+  const blockedAncestor = ancestors.some(([, override]) => ['unknown', 'none', 'clear'].includes(override.state));
+  const source = record(record(request?.body).outputIntent).artifacts;
+  const effective = effectiveAt(snapshot, path);
+  const requiresSelection = childPaths.length > 0 || (!directText && ancestors.length > 0);
+  const textOnly = !blockedAncestor && !requiresSelection && Array.isArray(effective) && effective.length === 1 && effective[0] === 'email_quote';
+  return { path, overrides, childPaths, blockedAncestor, requiresSelection, textOnly,
+    fingerprint: JSON.stringify([draft.workItemId, draft.generationId,
+    draft.source.sourceHash, request?.kind, source, effective, overrides]) };
 }
 export type NativeChoice = { ref: string; label: string; value: string; detail?: string };
 function currentIdentityRow(snapshot: ReservationPaneSnapshot, path: string, observation: ReservationPaneSnapshot['session']['draft']['observations'][number], verified: boolean): boolean {

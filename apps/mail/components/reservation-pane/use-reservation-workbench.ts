@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
 import { ReservationWorkflowStaleRevisionError, type ReservationFieldOverride, type ReservationPaneSnapshot, type ReservationSourceContext, type ReservationWorkflowClient, type ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
-import { effectiveAt, valueAt, record, requestPath, snapshotMatchesSource, staffEnteredAt, text, type WorkbenchCommands } from '@/lib/reservation-workflow/views';
+import { effectiveAt, valueAt, record, requestPath, quoteOutputState, snapshotMatchesSource, staffEnteredAt, text, type WorkbenchCommands } from '@/lib/reservation-workflow/views';
 
 type Pending = { path: string; value: unknown; state: ReservationFieldOverride['state']; token: number;
   generation: string | null; rows: { path: string; identity: string }[] };
@@ -295,6 +295,29 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       liveInputs.current = { key, uncommitted: next }; setUncommitted(next);
     },
     edit(path, value, state = 'set') { stageEdit(path, value, state); return run(async () => {}); },
+    selectQuoteTextOutput(requestId, expectedFingerprint) {
+      return run(async ({ source: bound, snapshot: initial }) => {
+        const state = quoteOutputState(initial, requestId);
+        if (initial.session.sourceChanged || initial.requests.find(row => row.id === requestId)?.kind !== 'quote' ||
+            state.blockedAncestor || state.fingerprint !== expectedFingerprint) {
+          throw new Error('The quote output changed. Review the document requests before continuing.');
+        }
+        let current = initial;
+        for (const fieldPath of state.childPaths) {
+          if (!mounted.current || active.current.key !== sourceKey(bound) || active.current.epoch !== bound.selectionEpoch) return;
+          const next = await client.edit({ source: bound, snapshot: current, requestId, fieldPath, state: 'inherit' });
+          apply(next, bound, entry);
+          if (next.session.sourceChanged || next.session.seq !== current.session.seq + 1 ||
+              next.session.draft.generationId !== current.session.draft.generationId) {
+            throw new Error('The quote output changed. Review the document requests before continuing.');
+          }
+          current = next;
+        }
+        if (!mounted.current || active.current.key !== sourceKey(bound) || active.current.epoch !== bound.selectionEpoch) return;
+        return client.edit({ source: bound, snapshot: current, requestId, fieldPath: state.path,
+          state: 'set', value: ['email_quote'] });
+      });
+    },
     changeRows(change) { return run(context => client.changeRows({ ...context, ...change })); },
     selectNative(fieldPath, observationRef) { return run(context => client.selectNative({ ...context, requestId: requireRequest(), fieldPath, observationRef })); },
     ...(verifyNativeLead ? { verifyNativeLead(fieldPath: string, observationRef: string) {

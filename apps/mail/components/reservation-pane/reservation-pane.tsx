@@ -3,7 +3,7 @@
 
 import { useState } from 'react';
 import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationWorkflowClient, ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
-import { effectiveAt, guestProfileReceipt, record, requestPath, text, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { effectiveAt, guestProfileReceipt, quoteOutputState, record, requestPath, text, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { QuoteOutputPanel, type SaveQuoteOutput } from './quote-output-panel';
 import { useReservationWorkbench } from './use-reservation-workbench';
 import { CreateEditor, resolveCreateCmsRecipientDefault } from './editors/create-editor';
@@ -49,9 +49,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     body: current && request ? Object.fromEntries(Object.entries(record(effectiveAt(current, `${requestPath(request.id)}/body`))).filter(([field]) => request.kind !== 'cancel' || field !== 'previewObservationRefs')) : {},
     overrides: Object.fromEntries(Object.entries(current?.session.draft.fieldOverrides ?? {}).filter(([path]) => request?.kind !== 'cancel' || !path.startsWith(`${requestPath(request.id)}/body/previewObservationRefs`)).map(([path, value]) => [path, {state: value.state, value: value.value}])) });
   const digest = digestFor(snapshot);
-  const quoteOutputs = record(body.outputIntent).artifacts;
-  const quoteNeedsTextOutput = request?.kind === 'quote' &&
-    (!Array.isArray(quoteOutputs) || quoteOutputs.length !== 1 || quoteOutputs[0] !== 'email_quote');
+  const quoteNeedsTextOutput = request?.kind === 'quote' && (!snapshot || !quoteOutputState(snapshot, request.id).textOnly);
   const quotePrepared = request?.kind === 'quote' && snapshot ? [...snapshot.session.draft.operationResults].reverse().find(row => row.workflow === 'quote' && row.requestId === request.id && row.status === 'prepared') : null;
   const quoteObservation = quotePrepared && snapshot?.session.draft.observations.find(row => quotePrepared.observationRefs.includes(row.ref) && row.kind === 'rate_availability');
   const quoteExtras = record(quoteObservation?.result).extrasReviewItems;
@@ -167,7 +165,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         : createBlocked ? <div className={styles.empty}>This pre-stay email describes an existing reservation. Choose another action.</div>
         : Editor && editor ? <fieldset className={styles.sourceFieldset} disabled={sourceChanged}><Editor key={`${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${request.id}:${formReset}`} {...editor} />{(request.kind === 'create' || request.kind === 'amend') && snapshot.session.draft.proposal.content.services.some(service => service.ownerRequestId === request.id || request && snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id)?.serviceRefs.includes(service.id)) && <AddonsEditor key={`addons:${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${request.id}:${formReset}`} {...editor} />}</fieldset>
         : <div className={styles.empty}>This request needs staff attention in Infor.</div>}
-      {request?.kind === 'quote' && snapshot && <QuoteOutputPanel source={source} snapshot={snapshot} requestId={request.id} save={props.onSaveQuoteOutput} latestSnapshot={workbench.latestSnapshot} readyForReply={workbench.readyForReply} blocked={busy || workbench.saving || workbench.blocked || workbench.conflict || sourceChanged} />}
+      {request?.kind === 'quote' && snapshot && <QuoteOutputPanel source={source} snapshot={snapshot} requestId={request.id} save={props.onSaveQuoteOutput} latestSnapshot={workbench.latestSnapshot} readyForReply={workbench.readyForReply} blocked={busy || workbench.saving || workbench.blocked || workbench.conflict || sourceChanged || quoteNeedsTextOutput} />}
       {prefill?.status === 'running' && !prefillStale && <p className={styles.small}>Reading the email and checking Infor. You can start editing now.</p>}
       {(prefill?.status === 'failed' || prefillStale) && <p className={styles.small}>Prefill did not finish. Your form still works. {(prefill?.status !== 'failed' || prefill.phase === 'native_checks' || prefill.attemptCount < 2) && <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button>}</p>}
       {currentIssues.map((issue, index) => <p className={styles.notice} key={index}>{issueText(issue.explanation)}</p>)}

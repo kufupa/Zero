@@ -16,7 +16,7 @@ const rec = (value: unknown): Record<string, unknown> => value && typeof value =
 
 /** Only durable host-generated output, attached to this source and generation, is eligible. */
 export function getQuoteOutput(source: ReservationSourceContext, snapshot: ReservationPaneSnapshot | null,
-  requestId: string): QuoteOutput | null {
+  requestId: string, operationId?: string): QuoteOutput | null {
   if (!snapshot) return null;
   const draft = snapshot.session.draft;
   if (!source.mailboxId || !source.threadId || draft.transportId !== source.mailboxId ||
@@ -26,7 +26,7 @@ export function getQuoteOutput(source: ReservationSourceContext, snapshot: Reser
       !draft.proposal.content.requests.some((request) => request.id === requestId && request.kind === 'quote')) return null;
   const operation = [...draft.operationResults].reverse().find((row) => row.requestId === requestId &&
     row.workflow === 'quote' && row.generationId === draft.generationId &&
-    (row.status === 'succeeded' || row.status === 'failed'));
+    (row.status === 'succeeded' || row.status === 'failed') && (!operationId || row.id === operationId));
   if (!operation) return null;
   const observation = [...draft.observations].reverse().find((row) => operation.observationRefs.includes(row.ref) &&
     row.kind === 'document' && row.generationId === draft.generationId && row.propertyCode === draft.propertyCode &&
@@ -34,6 +34,7 @@ export function getQuoteOutput(source: ReservationSourceContext, snapshot: Reser
     row.criteria.requestId === requestId && row.criteria.operationId === operation.id);
   if (!observation) return null;
   const result = rec(observation.result), cover = rec(result.coverEmail);
+  if (operationId && result.sourceHash !== source.sourceHash) return null;
   const raw = Array.isArray(result.artifacts) ? result.artifacts : [];
   const artifacts: QuoteOutputArtifact[] = [];
   const issues: string[] = [];
