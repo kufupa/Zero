@@ -122,6 +122,59 @@ function parseProfileResponse(text) {
   return JSON.parse(json)?.pageData;
 }
 
+// Fixed signals only: neither the response body nor the parser exception is retained.
+function profileParseFailureDiagnostics(text, response, error) {
+  try {
+    if (!(error instanceof SyntaxError) || typeof text !== 'string') return null;
+    const limit = 4 * 1024 * 1024, byteLength = Buffer.byteLength(text, 'utf8');
+    const sample = text.slice(0, 8192), message = typeof error.message === 'string' ? error.message.slice(0, 1024) : '';
+    let contentType = 'unknown';
+    try {
+      const headers = response.headers?.(), raw = headers?.['content-type'] ?? headers?.['Content-Type'];
+      if (typeof raw === 'string') {
+        const mime = raw.slice(0, 100).split(';', 1)[0].trim().toLowerCase();
+        contentType = ['application/json', 'text/json'].includes(mime) ? 'json'
+          : mime === 'text/html' ? 'html' : ['application/javascript', 'text/javascript'].includes(mime) ? 'javascript'
+            : mime === 'text/plain' ? 'text' : ['application/xml', 'text/xml'].includes(mime) ? 'xml' : 'other';
+      }
+    } catch { /* Missing or unavailable headers are not evidence of a content type. */ }
+    const errorClass = /^Unexpected end of JSON input|^Unterminated/i.test(message) ? 'unexpected_end'
+      : /^Unexpected token/i.test(message) ? 'unexpected_token'
+        : /^Unexpected non-whitespace character after JSON/i.test(message) ? 'trailing_content'
+          : /^Expected /i.test(message) ? 'invalid_structure' : 'syntax_error';
+    const match = /(?:^| )at position (\d+)(?: \(line (\d+) column (\d+)\))?$/.exec(message);
+    const number = value => {
+      const parsed = value == null ? null : Number(value);
+      return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= limit ? parsed : null;
+    };
+    const html = /<\s*(?:!doctype\s+html|html|head|body|form)(?:\s|>)/i.test(sample);
+    const format = !sample.trim() ? 'empty' : html ? 'html' : /^\s*[\[{]/.test(sample) ? 'json_like'
+      : /^\s*(?:var\s|let\s|const\s|function\s|(?:Ext|window|EAM)\.)/i.test(sample) ? 'javascript_like' : 'other';
+    const hasMessages = /(?:["']messages["']|\bmessages)\s*:/i.test(sample);
+    const hasMessage = /(?:["'](?:msg|message)["']|\b(?:msg|message))\s*:/i.test(sample);
+    const hasMessageSignal = hasMessages || hasMessage;
+    const fieldSignals = hasMessageSignal ? [
+      ['email', /\b(?:email(?:address)?|e-mail)\b/i], ['mobile', /\bmobile(?:number)?\b/i],
+      ['phone', /\bphone(?:number)?\b/i], ['first_name', /\b(?:firstname|first\s+name)\b/i],
+      ['last_name', /\b(?:lastname|last\s+name)\b/i], ['title', /\b(?:title|nametitle)\b/i],
+    ].filter(([, pattern]) => pattern.test(sample)).map(([signal]) => signal) : [];
+    const validationSignals = hasMessageSignal ? [
+      ['required', /\b(?:required|mandatory)\b/i], ['invalid', /\b(?:invalid|incorrect)\b/i],
+      ['duplicate', /\b(?:duplicate|already exists)\b/i], ['length', /\b(?:length|too long|too short)\b/i],
+      ['error', /\berror\b/i], ['warning', /\bwarning\b/i], ['question', /\bquestion\b/i],
+    ].filter(([, pattern]) => pattern.test(sample)).map(([signal]) => signal) : [];
+    return { byteCount: Math.min(byteLength, limit), byteCountCapped: byteLength > limit, contentType,
+      errorClass, positionBasis: 'normalized_json', position: number(match?.[1]), line: number(match?.[2]), column: number(match?.[3]),
+      bodySignals: { format, sampleTruncated: text.length > sample.length,
+        pageData: /(?:["']pageData["']|\bpageData)\s*:/i.test(sample), messages: hasMessages, message: hasMessage,
+        success: /(?:["']success["']|\bsuccess)\s*:/i.test(sample),
+        values: /(?:["']values["']|\bvalues)\s*:/i.test(sample),
+        profileId: /(?:["']profileid["']|\bprofileid)\s*:/i.test(sample),
+        unquotedKnownKey: /[{,]\s*(?:pageData|messages|success|values|profileid)\s*:/i.test(sample),
+        fieldSignals, validationSignals } };
+  } catch { return null; }
+}
+
 function diagnosticMessageText(value, fields) {
   if (typeof value !== 'string') return null;
   let text = value.replace(/<[^>]*(?:>|$)/g, '')
@@ -202,11 +255,11 @@ async function handleProfileSave(route, state) {
       pending = (async () => {
         const response = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: 30_000 });
         const text = await boundedResponseText(response);
-        let data, parseStatus = 'parse_failed';
+        let data, parseError, parseStatus = 'parse_failed';
         try {
           data = parseProfileResponse(text);
           parseStatus = data && typeof data === 'object' && !Array.isArray(data) ? 'parsed' : 'missing_page_data';
-        } catch { /* unknown until readback */ }
+        } catch (error) { parseError = error; /* unknown until readback */ }
         const messages = data?.messages;
         const question = !confirmed && response.status() === 200 && data?.success === false &&
           Array.isArray(messages) && messages.length === 1 && messages[0].type === 'question' &&
@@ -218,6 +271,10 @@ async function handleProfileSave(route, state) {
         // Persist the response and any native ID before the browser receives it.
         const diagnostics = write.fields.firstName === 'Proof' && write.fields.lastName === 'Labtest' &&
           (!write.response.success || !write.response.nativeId) ? profileFailureDiagnostics(data, parseStatus, write.fields) : null;
+        if (diagnostics && parseStatus === 'parse_failed') {
+          const parseFailure = profileParseFailureDiagnostics(text, response, parseError);
+          if (parseFailure) diagnostics.parseFailure = parseFailure;
+        }
         await write.recordResponse(context, Object.freeze({ ...write.response, ...(diagnostics && { diagnostics }) }));
         if (write.phase !== 'closed') write.phase = question ? 'question' : 'finished';
         await route.fulfill({ response });
