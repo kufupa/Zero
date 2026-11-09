@@ -18,12 +18,15 @@ import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
 import { staffQuoteInput } from './staff-quote-workflow.js';
 import { runStaffQuote, staffQuoteCauseSummary } from './staff-quote-run.js';
 import { buildStaysProposalPdf } from '../quote-proposal/proposal-pdf.js';
+import { quotePropertyIdentity } from '../quote-proposal/filename.js';
 import {
+  quoteDateLabel,
   quoteWorkbookFileName,
   quoteWorkbookForStays,
   type WorkbookStay,
 } from '../quote-proposal/quote-workbook.js';
-import { deriveAuthorizedExtraLines, type AuthorizedProposalFacts, type RowPrice } from '../quote-proposal/quote-lines.js';
+import { deriveAuthorizedExtraLines, deriveQuoteLines, extraDisplayDescription,
+  type AuthorizedProposalFacts, type RowPrice } from '../quote-proposal/quote-lines.js';
 import { occupiedDates, quoteDigest, type QuoteRevision } from '../quote-proposal/quote-revision.js';
 
 /** Kept structurally aligned with reservationWorkflowV2ServerContext in the native tools module. */
@@ -507,21 +510,19 @@ function compileQuote(
   const notes = notesResult && !('issue' in notesResult) ? cleanText(notesResult.value) ?? undefined : undefined;
   if (notes && notes.length > 1000) issues.push(`${notesPath}:native_note_limit`);
   const outputPath = path('outputIntent', 'artifacts');
-  const outputResult = resolved(outputPath, request.body.outputIntent.artifacts);
+  const outputResult = execute ? resolved(outputPath, request.body.outputIntent.artifacts)
+    : resolvedLeaf(draft, outputPath, request.body.outputIntent.artifacts);
   const rawOutputKinds = outputResult && !('issue' in outputResult) ? outputResult.value : null;
   const outputAllowed = new Set(['email_quote', 'pdf_quote', 'xlsx_quote']);
   const outputKinds = Array.isArray(rawOutputKinds)
     ? [...new Set(rawOutputKinds.filter((kind): kind is 'email_quote' | 'pdf_quote' | 'xlsx_quote' =>
       typeof kind === 'string' && outputAllowed.has(kind)))]
     : [];
-  if (Array.isArray(rawOutputKinds) && outputKinds.length !== rawOutputKinds.length) {
+  if (execute && Array.isArray(rawOutputKinds) && outputKinds.length !== rawOutputKinds.length) {
     issues.push(`${outputPath}:unsupported_artifact_kind`);
   }
-  if (!outputKinds.length) issues.push(`${path('outputIntent', 'artifacts')}:output_required`);
+  if (execute && !outputKinds.length) issues.push(`${path('outputIntent', 'artifacts')}:output_required`);
   if (execute && outputKinds.includes('email_quote') && !clientEmail) issues.push(`${emailPath}:recipient_required_for_cover`);
-  if (outputKinds.includes('email_quote') && !outputKinds.some((kind) => kind === 'pdf_quote' || kind === 'xlsx_quote')) {
-    issues.push(`${outputPath}:email_attachment_required`);
-  }
 
   if (issues.length) {
     const unsupported = issues.some((issue) => /unsupported|separate_create_required|separate_quote_runs_required|allowance_requires_supported_staff_choice/u.test(issue));
@@ -1008,11 +1009,56 @@ export async function reservationWorkflowV2QuotePrepare(
   }
 }
 
-function makeCoverEmail(to: string) {
+function makeCoverEmail(
+  compiled: Extract<CompiledQuote, { status: 'ok' }>,
+  revision: QuoteRevision,
+  facts: AuthorizedProposalFacts | null,
+  rowPrices: RowPrice[],
+  preparedTotal: unknown,
+) {
+  const roomLines = deriveQuoteLines(revision, rowPrices);
+  // Validate the full facts together, including duplicate identities and their source binding.
+  const extraLines = facts ? deriveAuthorizedExtraLines(revision, facts) : [];
+  const total = [...roomLines, ...extraLines].reduce((sum, line) => sum + line.totalMinor, 0);
+  if (!Number.isSafeInteger(total) || total !== preparedTotal) throw new Error('quote_email_total_mismatch');
+  const money = (minor: number) => `${revision.currency} ${(minor / 100).toFixed(2)}`;
+  let hotelName: string | null = null;
+  try { hotelName = quotePropertyIdentity(revision.propertyCode).name; } catch { /* Unknown property has no approved display name. */ }
+  const boardLabels = { room_only: 'Room only', breakfast: 'Bed & Breakfast',
+    dinner_bed_breakfast: 'Dinner, bed & breakfast' } as const;
+  const groups = revision.groups;
+  const lines = roomLines.map((line) => {
+    const groupIndex = groups.findIndex((entry) => entry.id === line.groupId);
+    const group = groups[groupIndex];
+    if (!group) throw new Error('quote_email_group_missing');
+    const ages = group.children ? ` (ages ${group.childAges.join(', ')})` : '';
+    return [
+      `Room group ${groupIndex + 1} · ${quoteDateLabel(line.arrivalDate, line.departureDate)}: ${group.roomLabel}`,
+      `${line.quantity} room${line.quantity === 1 ? '' : 's'}, ${group.adults} adult${group.adults === 1 ? '' : 's'} and ${group.children} ${group.children === 1 ? 'child' : 'children'}${ages} per room · ${boardLabels[group.board]}`,
+      `${line.quantity} room${line.quantity === 1 ? '' : 's'} × ${line.nights} night${line.nights === 1 ? '' : 's'} × ${money(line.rateMinor)} per room per night = ${money(line.totalMinor)}`,
+    ].join('\n');
+  });
+  const extras = facts?.extras.flatMap((extra) =>
+    deriveAuthorizedExtraLines(revision, { ...facts, extras: [extra] }).map((line) => {
+      const scope = extra.groupIds?.length
+        ? extra.groupIds.map((id) => `room group ${groups.findIndex((group) => group.id === id) + 1}`).join(', ')
+        : '';
+      return `${extraDisplayDescription(line)}${scope ? ` (${scope})` : ''}${line.dates.length ? ` · ${line.dates.join(', ')}` : ''}\n` +
+        `${line.units} × ${money(line.rateMinor)} = ${money(line.totalMinor)}`;
+    })) ?? [];
   return {
-    to,
+    to: compiled.input.clientEmail,
     subject: 'Your quotation',
-    body: 'Good day,\n\nPlease find our quotation attached. No reservation has been made. Please reply if you would like to proceed.\n\nKind regards,',
+    body: [
+      `Good day${compiled.input.attention ? ` ${compiled.input.attention}` : ''},`,
+      `Please find your quotation${hotelName ? ` for ${hotelName}` : ''} below.`,
+      ...lines,
+      ...extras,
+      `Total: ${money(total)}`,
+      ...(compiled.input.notes ? [compiled.input.notes] : []),
+      'Availability is not held and must be confirmed when booking. This quotation does not create a reservation.',
+      'Kind regards,',
+    ].join('\n\n'),
   };
 }
 
@@ -1076,8 +1122,10 @@ async function quoteArtifacts(
       }
     }
   }
-  const coverEmail = compiled.outputKinds.includes('email_quote') ? makeCoverEmail(compiled.input.clientEmail) : null;
-  return { artifacts, failures, coverEmail, revisionRef: revision.id,
+  const coverEmail = compiled.outputKinds.includes('email_quote')
+    ? makeCoverEmail(compiled, revision, facts, rowPrices, prepared?.totalMinor) : null;
+  return { artifacts, failures, coverEmail, ...(coverEmail ? { coverEmailDigest: hash(coverEmail) } : {}),
+    outputKinds: compiled.outputKinds, revisionRef: revision.id,
     sourceHash: compiled.input.sourceHash, nativeInputDigest: prepared?.nativeInputDigest ?? null,
     preparedObservationRef: preparedObservation.ref, workflowRunId: prepared?.workflowRunId ?? null,
     claims: compiled.input.groups.map((entry) => ({ groupId: entry.id, arrivalDate: entry.arrivalDate,
@@ -1171,7 +1219,9 @@ export async function reservationWorkflowV2QuoteExecute(
   };
   const final = operationResult(loaded.draft, request.id, input.idempotencyKey,
     complete ? 'succeeded' : 'failed', [observation.ref],
-    complete ? `Generated ${generated.artifacts.length} unsent quote artifact(s); no reservation saved or email sent`
+    complete ? generated.artifacts.length
+      ? `Generated ${generated.artifacts.length} unsent quote artifact(s); no reservation saved or email sent`
+      : 'Generated an unsent quote email draft; no reservation saved or email sent'
       : `Generated ${generated.artifacts.length} artifact(s); some requested outputs failed, no reservation saved or email sent`);
   const saved = await persistObservation(ctx, input, observation, final, { allowRevisionAdvance: true });
   return saved.status === 'ok'
@@ -1182,7 +1232,39 @@ export async function reservationWorkflowV2QuoteExecute(
     : saved;
 }
 
-/** Positive-only recovery: durable artifact receipts are replayed; absent receipts never trigger a fresh HMS action. */
+/** Text-only receipts must still bind an intact draft to the prepared quote and its source. */
+function validTextQuoteReceipt(
+  draft: ReservationWorkflowV2Draft,
+  result: QuoteOperationResult,
+  observation: ReservationWorkflowV2Observation,
+  payload: Record<string, unknown>,
+): boolean {
+  const cover = record(payload.coverEmail);
+  const criteria = record(observation.criteria);
+  const ref = cleanText(payload.preparedObservationRef);
+  const prepared = draft.observations.find((entry) => entry.ref === ref);
+  const preparedCriteria = record(prepared?.criteria);
+  const preparedResult = record(prepared?.result);
+  const revision = record(preparedResult?.revision);
+  return Array.isArray(payload.outputKinds) && payload.outputKinds.length === 1 && payload.outputKinds[0] === 'email_quote' &&
+    Array.isArray(payload.artifacts) && payload.artifacts.length === 0 &&
+    Array.isArray(payload.failures) && payload.failures.length === 0 &&
+    Boolean(cover && cleanText(cover.to) && cleanText(cover.subject) && cleanText(cover.body) &&
+      payload.coverEmailDigest === hash(cover)) &&
+    payload.emailSent === false && payload.reservationSaved === false &&
+    payload.sourceHash === draft.source.sourceHash && observation.generationId === draft.generationId &&
+    observation.propertyCode === draft.propertyCode && observation.sourceMessageId === draft.source.messageId &&
+    criteria?.workflow === 'quote' && criteria.requestId === result.requestId && criteria.operationId === result.id &&
+    typeof criteria.inputDigest === 'string' && Boolean(criteria.inputDigest) &&
+    Boolean(prepared && ref && observation.sourceRefs.includes(ref) && prepared.kind === 'rate_availability' &&
+      prepared.status === 'complete' && prepared.coverage.complete && prepared.generationId === draft.generationId &&
+      prepared.propertyCode === draft.propertyCode && prepared.sourceMessageId === draft.source.messageId &&
+      preparedCriteria?.workflow === 'quote' && preparedCriteria.requestId === result.requestId &&
+      preparedCriteria.sourceHash === draft.source.sourceHash && preparedCriteria.inputDigest === criteria.inputDigest &&
+      preparedResult?.sourceHash === draft.source.sourceHash && revision?.id === payload.revisionRef);
+}
+
+/** Positive-only recovery: durable receipts are replayed; absent receipts never trigger a fresh HMS action. */
 export async function reservationWorkflowV2QuoteReconcile(
   ctx: ReservationWorkflowV2QuoteContext,
   input: ReservationWorkflowV2QuoteReconcileInput,
@@ -1214,9 +1296,12 @@ export async function reservationWorkflowV2QuoteReconcile(
           artifact.sha256 === createHash('sha256').update(bytes).digest('hex');
       });
     const artifactsValid = artifacts.length === rawArtifacts.length;
-    if (observation.status === 'complete' && observation.coverage.complete && rawArtifacts.length > 0 && artifactsValid) {
+    const textReceiptValid = rawArtifacts.length === 0 && validTextQuoteReceipt(loaded.draft, result, observation, payload);
+    if (observation.status === 'complete' && observation.coverage.complete && artifactsValid &&
+        (rawArtifacts.length > 0 || textReceiptValid)) {
       const recovered: QuoteOperationResult = { ...operationResult(loaded.draft, result.requestId, result.id, 'succeeded', [observation.ref],
-        `Recovered ${artifacts.length} stored quote artifact(s); no reservation saved or email sent`),
+        textReceiptValid ? 'Recovered the stored unsent quote email draft; no reservation saved or email sent'
+          : `Recovered ${artifacts.length} stored quote artifact(s); no reservation saved or email sent`),
       draftRevision: result.draftRevision };
       const saved = await persistResult(ctx, input, loaded.draft.generationId, recovered);
       return saved.status === 'ok' ? { status: 'succeeded', operationId: result.id,
