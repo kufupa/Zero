@@ -125,9 +125,10 @@ function parseProfileResponse(text) {
 // Fixed signals only: neither the response body nor the parser exception is retained.
 function profileParseFailureDiagnostics(text, response, error) {
   try {
-    if (!(error instanceof SyntaxError) || typeof text !== 'string') return null;
+    if (typeof text !== 'string') return null;
     const limit = 4 * 1024 * 1024, byteLength = Buffer.byteLength(text, 'utf8');
-    const sample = text.slice(0, 8192), message = typeof error.message === 'string' ? error.message.slice(0, 1024) : '';
+    const syntaxError = error instanceof SyntaxError;
+    const sample = text.slice(0, 8192), message = syntaxError && typeof error.message === 'string' ? error.message.slice(0, 1024) : '';
     let contentType = 'unknown';
     try {
       const headers = response.headers?.(), raw = headers?.['content-type'] ?? headers?.['Content-Type'];
@@ -138,10 +139,25 @@ function profileParseFailureDiagnostics(text, response, error) {
             : mime === 'text/plain' ? 'text' : ['application/xml', 'text/xml'].includes(mime) ? 'xml' : 'other';
       }
     } catch { /* Missing or unavailable headers are not evidence of a content type. */ }
-    const errorClass = /^Unexpected end of JSON input|^Unterminated/i.test(message) ? 'unexpected_end'
+    const errorClass = !syntaxError ? 'other' : /^Unexpected end of JSON input|^Unterminated/i.test(message) ? 'unexpected_end'
       : /^Unexpected token/i.test(message) ? 'unexpected_token'
         : /^Unexpected non-whitespace character after JSON/i.test(message) ? 'trailing_content'
           : /^Expected /i.test(message) ? 'invalid_structure' : 'syntax_error';
+    const reason = !syntaxError ? 'other_error' : /^Unexpected end of JSON input/i.test(message) ? 'end_of_input'
+      : /^Unterminated string/i.test(message) ? 'unterminated_string'
+        : /^Bad control character/i.test(message) ? 'invalid_control_character'
+          : /^Bad (?:escaped character|Unicode escape)/i.test(message) ? 'invalid_escape'
+            : /^Expected (?:property name|double-quoted property name)/i.test(message) ? 'expected_property_name'
+              : /^Expected ':' after property name/i.test(message) ? 'expected_colon'
+                : /^Expected ',' or '}' after property value/i.test(message) ? 'expected_object_delimiter'
+                  : /^Expected ',' or '\]' after array element/i.test(message) ? 'expected_array_delimiter'
+                    : /^Unexpected non-whitespace character after JSON/i.test(message) ? 'trailing_content'
+                      : /^Unexpected token/i.test(message) ? 'unexpected_token' : 'other_syntax_error';
+    const token = /^Unexpected token '(.)'/s.exec(message)?.[1];
+    const tokenCategory = token == null ? null : token === "'" ? 'single_quote' : token === '"' ? 'double_quote'
+      : /[<>]/.test(token) ? 'angle_bracket' : /[A-Za-z]/.test(token) ? 'letter' : /[0-9]/.test(token) ? 'digit'
+        : /\s/.test(token) ? 'whitespace' : /[{}]/.test(token) ? 'brace' : /[\[\]]/.test(token) ? 'bracket'
+          : /[,;:]/.test(token) ? 'delimiter' : /[\/\\]/.test(token) ? 'slash' : token === '=' ? 'equals' : 'other';
     const match = /(?:^| )at position (\d+)(?: \(line (\d+) column (\d+)\))?$/.exec(message);
     const number = value => {
       const parsed = value == null ? null : Number(value);
@@ -164,7 +180,8 @@ function profileParseFailureDiagnostics(text, response, error) {
       ['error', /\berror\b/i], ['warning', /\bwarning\b/i], ['question', /\bquestion\b/i],
     ].filter(([, pattern]) => pattern.test(sample)).map(([signal]) => signal) : [];
     return { byteCount: Math.min(byteLength, limit), byteCountCapped: byteLength > limit, contentType,
-      errorClass, positionBasis: 'normalized_json', position: number(match?.[1]), line: number(match?.[2]), column: number(match?.[3]),
+      errorClass, reason, tokenCategory, positionBasis: 'normalized_json',
+      position: number(match?.[1]), line: number(match?.[2]), column: number(match?.[3]),
       bodySignals: { format, sampleTruncated: text.length > sample.length,
         pageData: /(?:["']pageData["']|\bpageData)\s*:/i.test(sample), messages: hasMessages, message: hasMessage,
         success: /(?:["']success["']|\bsuccess)\s*:/i.test(sample),
