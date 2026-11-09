@@ -130,7 +130,8 @@ export async function checkAddOns({ propertyCode, target, items, signal }: { pro
     const complete = listing?.outcome === 'ok' && coverage?.complete === true && Array.isArray(listing.candidates);
     const unique = complete && items.every(item => rows.filter(row => row.code === item.code).length === 1 &&
       candidates.filter(row => row.serviceId === item.serviceId).length === 1);
-    return { complete, unique, coverage: { complete, ...(typeof coverage?.loaded === 'number' ? { loaded: coverage.loaded } : {}),
+    const missing = items.some(item => !rows.some(row => row.code === item.code));
+    return { complete, unique, missing, coverage: { complete, ...(typeof coverage?.loaded === 'number' ? { loaded: coverage.loaded } : {}),
       ...(typeof coverage?.reportedTotal === 'number' ? { reportedTotal: coverage.reportedTotal } : {}) }, candidates };
   };
   try {
@@ -138,20 +139,13 @@ export async function checkAddOns({ propertyCode, target, items, signal }: { pro
     let verifiedTarget: Record<string, unknown> | null = null;
     if (target.kind === 'unsaved') {
       const addonTool = await import(new URL('../../tooling/hms-cloud/stay360-addons.mjs', import.meta.url).href) as {
-        listUnsavedStay360AddOnItems: (page: unknown, options: Record<string, unknown>) => Promise<unknown>;
         previewUnsavedStay360AddOns: (page: unknown, options: Record<string, unknown>) => Promise<unknown>;
       };
-      const { native, addon } = await createThenAddon(target, async (page, readForm) => {
-        const options = { expectedCreate: target.nativeInput, expectedGuest: target.expectedGuest, readForm };
-        const found = record(await addonTool.listUnsavedStay360AddOnItems(page, options));
-        signal.throwIfAborted();
-        const match = matched(found);
-        const preview = match.unique ? record(await addonTool.previewUnsavedStay360AddOns(page, { ...options, items: nativeItems })) : null;
-        signal.throwIfAborted();
-        return { found, preview };
-      }, signal);
-      const binding = record(native.requestBinding), data = record(addon);
-      listing = record(data?.found); prepared = record(data?.preview);
+      const { native, addon } = await createThenAddon(target, (page, readForm) =>
+        addonTool.previewUnsavedStay360AddOns(page, { expectedCreate: target.nativeInput, expectedGuest: target.expectedGuest,
+          readForm, items: nativeItems, includeCatalogue: true }), signal);
+      const binding = record(native.requestBinding);
+      prepared = record(addon); listing = record(prepared?.catalogue);
       if (native.outcome !== 'prepared' || binding?.digest !== target.nativeBindingDigest || !record(binding.request) ||
           !record(native.ratePlanAvailability))
         return result('needs_input', 'addon_create_binding_unverified');
@@ -194,7 +188,8 @@ export async function checkAddOns({ propertyCode, target, items, signal }: { pro
       text(listing?.issue) ?? 'addon_catalogue_unavailable');
     const match = matched(listing);
     const base = { saved: false as const, coverage: match.coverage, candidates: match.candidates, target: verifiedTarget ?? undefined };
-    if (!match.unique) return { ...base, status: 'needs_input', previews: [], issue: match.complete ? 'addon_catalogue_ambiguous' : 'addon_catalogue_incomplete' };
+    if (!match.unique) return { ...base, status: 'needs_input', previews: [],
+      issue: !match.complete ? 'addon_catalogue_incomplete' : match.missing ? 'addon_catalogue_item_missing' : 'addon_catalogue_ambiguous_or_unverified' };
     if (prepared?.outcome !== 'prepared' || prepared.propertyCode !== 'HRCEN' || prepared.saved !== false ||
         !Array.isArray(prepared.items) || prepared.items.length !== items.length ||
         (target.kind === 'unsaved' && prepared.unsaved !== true) || (target.kind === 'saved' && prepared.confirmation !== target.confirmation))

@@ -661,11 +661,25 @@ export async function prepareStay360AddOns(page, confirmation, items) {
  * This never returns a save capability or session/prepared token; each caller must
  * run a fresh saved-target Prepare before any future Add-On Save.
  */
-export async function previewUnsavedStay360AddOns(page, { expectedCreate, expectedGuest, readForm, items } = {}) {
+export async function previewUnsavedStay360AddOns(page, { expectedCreate, expectedGuest, readForm, items, includeCatalogue = false } = {}) {
   try { items = structuredClone(items); } catch { return { outcome: 'needs_input', issue: 'ADDONS_ITEM_INVALID' }; }
   return run(page, async state => {
     validateItems(items);
     const target = await ensureUnsavedCreateOpen(page, state, expectedCreate, expectedGuest, readForm);
+    let listing;
+    if (includeCatalogue) {
+      const found = await catalogue(page, state, 'ITEM');
+      await closePicker(page);
+      listing = { outcome: 'ok', propertyCode: 'HRCEN', unsaved: true, target,
+        candidates: found.candidates.map(({ code, name, itemId }) => ({ code, name, itemId })), coverage: found.coverage };
+      const counts = items.map(item => found.candidates.filter(candidate => candidate.code === item.code).length);
+      if (found.coverage?.complete !== true || counts.some(count => count !== 1)) {
+        const issue = found.coverage?.complete !== true ? 'ADDONS_CATALOGUE_INCOMPLETE'
+          : counts.some(count => count > 1) ? 'ADDONS_ITEM_AMBIGUOUS' : 'ADDONS_ITEM_NOT_LOADED';
+        return { outcome: 'needs_input', issue,
+          propertyCode: 'HRCEN', unsaved: true, saved: false, target, catalogue: listing, items: [] };
+      }
+    }
     const previews = [];
     for (const requested of items) {
       try {
@@ -682,7 +696,7 @@ export async function previewUnsavedStay360AddOns(page, { expectedCreate, expect
     }
     const complete = previews.length === items.length && previews.every(preview => preview.outcome === 'prepared');
     return { outcome: complete ? 'prepared' : 'partial', propertyCode: 'HRCEN', unsaved: true, saved: false,
-      target, items: previews };
+      target, ...(listing ? { catalogue: listing } : {}), items: previews };
   });
 }
 
