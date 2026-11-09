@@ -303,6 +303,11 @@ export function QuoteEditor(editor: Editor) {
   const artifactPath = `${bodyPath}/outputIntent/artifacts`;
   const artifactsValue = valueAt(snapshot, artifactPath);
   const artifacts = Array.isArray(artifactsValue) ? artifactsValue.map(text) : [];
+  const sourceRequest = snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id);
+  const sourceOutputs = record(record(sourceRequest?.body).outputIntent).artifacts;
+  const requestedDocuments = [...new Set([...(Array.isArray(sourceOutputs) ? sourceOutputs : []), ...artifacts]
+    .filter((item): item is string => item === 'pdf_quote' || item === 'xlsx_quote'))];
+  const needsTextOutput = artifacts.length !== 1 || artifacts[0] !== 'email_quote';
   const provisional = valueAt(snapshot, `${bodyPath}/provisionalBookingRequested`);
   return <div className={`${styles.editor} ${styles.compactQuote}`}>
     <Section title="Stay and rooms">
@@ -357,13 +362,13 @@ export function QuoteEditor(editor: Editor) {
       <Field label="Email recipient" path={`${bodyPath}/client/email`} editor={editor} type="email" compact />
       <Field label="Telephone" path={`${bodyPath}/client/telephone`} editor={editor} type="tel" compact />
       <Field label="Quote note" path={`${bodyPath}/notes`} editor={editor} type="textarea" compact />
-      <fieldset className={styles.targetFields}><legend>Outputs</legend>
-        {([['email_quote', 'Reply'], ['pdf_quote', 'PDF'], ['xlsx_quote', 'Excel']] as const).map(([id, label]) => <label key={id}>
-          <input type="checkbox" checked={artifacts.includes(id)} disabled={view.busy || (id !== 'email_quote' && !artifacts.includes(id))} onChange={(event) => void commands.edit(artifactPath,
-            event.target.checked ? [...artifacts, id] : artifacts.filter((item) => item !== id))} /> {label}
-        </label>)}
-      </fieldset>
-      <p className={styles.note}>PDF and Excel are not available here yet. Handle those requests separately; clear them above to generate the reply.</p>
+      <p className={styles.note}>Output · Unsent email reply</p>
+      {requestedDocuments.length > 0 && <p className={styles.notice}>
+        This draft includes {requestedDocuments.map(item => item === 'pdf_quote' ? 'PDF' : 'Excel').join(' and ')}.
+        Handle those documents separately; the pane can prepare the text reply.
+      </p>}
+      {needsTextOutput && <button type="button" className={styles.linkButton} disabled={view.busy}
+        onClick={() => void commands.edit(artifactPath, ['email_quote'])}>Continue with text reply</button>}
       <p className={styles.note}>The reply is saved as an unsent draft. A provisional booking needs a separate Create action.</p>
       {provisional !== false && <div className={styles.notice}>This request has not been confirmed as quote-only.
         <button type="button" className={styles.linkButton} onClick={() => void commands.edit(`${bodyPath}/provisionalBookingRequested`, false)}>Continue with quote only</button>
