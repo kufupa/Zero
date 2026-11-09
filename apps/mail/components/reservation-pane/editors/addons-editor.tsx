@@ -8,6 +8,10 @@ import styles from './other-editors.module.css';
 
 type Editor = WorkbenchEditorProps;
 type SavedTarget = { kind: 'saved_target'; requestId: string; hintId: string };
+function matchesSavedTarget(value: unknown, target: SavedTarget) {
+  const candidate = record(value);
+  return candidate.kind === target.kind && candidate.requestId === target.requestId && candidate.hintId === target.hintId;
+}
 const serviceFields = [
   ['quantity', 'Quantity', 'text'], ['startDate', 'Start date', 'date'], ['endDate', 'End date', 'date'],
   ['unitPrice', 'Unit price', 'text'], ['frequency', 'Frequency', 'text'], ['pricingControl', 'Pricing basis', 'text'],
@@ -165,11 +169,12 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
       || c.workflow !== 'services' || c.kind !== (operation === 'add' ? 'catalogue_candidate' : 'saved_row_candidate') || c.requestId !== ref.requestId
       || c.serviceId !== service.id || c.fieldPath !== selectedPath
       || allocation && c.sourceAllocationId !== allocation
-      || savedTarget && (JSON.stringify(c.targetRef) !== JSON.stringify(savedTarget) || c.targetObservationRef !== selectedStay)) return [];
+      || savedTarget && (!matchesSavedTarget(c.targetRef, savedTarget) || c.targetObservationRef !== selectedStay)) return [];
     const candidate = record(record(observation.result).candidate);
     return Object.keys(candidate).length ? [{ observation, candidate }] : [];
   });
-  const latest = [...draft.observations].reverse().find(observation => observation.kind === 'service_preview'
+  const selectedCandidate = catalogue.find(row => row.observation.ref === selectedItem)?.candidate;
+  const latest = selectedCandidate ? [...draft.observations].reverse().find(observation => observation.kind === 'service_preview'
     && observation.status === 'complete' && observation.coverage.complete && observation.criteria.workflow === 'services'
     && observation.generationId === draft.generationId && observation.propertyCode === draft.propertyCode
     && observation.sourceMessageId === draft.source.messageId
@@ -179,11 +184,13 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
       && (observation.criteria.kind === 'unsaved_addon_preview' ? observation.criteria.itemCandidateRef === selectedItem
         : observation.criteria.kind === 'saved_addon_fresh_prepare' && draft.observations.some(parent =>
           parent.ref === observation.criteria.unsavedPreviewRef && parent.criteria.itemCandidateRef === selectedItem))
-      : JSON.stringify(observation.criteria.targetRef) === JSON.stringify(ref)
-      && observation.criteria.targetObservationRef === selectedStay && observation.criteria.candidateRef === selectedItem));
+      : savedTarget && matchesSavedTarget(observation.criteria.targetRef, savedTarget)
+      && observation.criteria.targetObservationRef === selectedStay && observation.criteria.candidateRef === selectedItem)) : undefined;
   const preview = record(latest?.result), native = record(preview.native), before = record(preview.before), after = record(preview.after);
-  const selectedCandidate = catalogue.find(row => row.observation.ref === selectedItem)?.candidate;
-  const controls = [record(native.controls), record(record(after.fields).controls), record(record(selectedCandidate?.fields).controls)];
+  const controlsFromPreview = latest && (preview.operation == null || preview.operation === operation);
+  const controls = controlsFromPreview
+    ? Object.hasOwn(preview, 'nativeControls') ? [record(preview.nativeControls)] : [record(native.controls), record(record(after.fields).controls)]
+    : [record(record(selectedCandidate?.fields).controls)];
   const unsavedPreview = latest?.criteria.kind === 'saved_addon_fresh_prepare'
     ? draft.observations.find(row => row.ref === latest.criteria.unsavedPreviewRef) : latest;
   const createPrepared = allocation ? [...draft.operationResults].reverse().find(result => result.workflow === 'create'
@@ -230,10 +237,10 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
     <h3>{operation === 'add' ? 'Add' : operation === 'edit' ? 'Edit' : 'Remove'} · {service.code || service.requestedText || 'item'}</h3>
     <div className={styles.hint}>{allocation ? `Create room${roomLabel ? ` · ${roomLabel}` : ''}` : savedTarget
       ? `Existing saved stay${text(hint?.confirmation) || text(hint?.guestName) ? ` · ${text(hint?.confirmation) || text(hint?.guestName)}` : ''}` : 'Unresolved target'} · one native item</div>
-    {savedTarget && <Field editor={editor} path={`${serviceRoot}/operation`} label="Action" compact options={[
+    {savedTarget && !multiTarget && <Field editor={editor} path={`${serviceRoot}/operation`} label="Action" compact options={[
       { value: 'add', label: 'Add item' }, { value: 'edit', label: 'Edit saved item' }, { value: 'remove', label: 'Remove saved item' },
     ]} />}
-    {savedTarget && hint && <div className={styles.stack}>
+    {savedTarget && hint && !multiTarget && <div className={styles.stack}>
       {scope.mode === 'scoped_all' || Array.isArray(scope.exclude) && scope.exclude.length > 0
         ? <div className={styles.warning}>Choose individual included stays without exclusions before checking an Add-On.</div> : null}
       {scope.mode === 'scoped_all' && !(Array.isArray(scope.exclude) && scope.exclude.length) && <button type="button" disabled={editor.view.busy}
@@ -273,7 +280,8 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
         const nativeValue = text(displayControl?.value), nativeDisplay = text(displayControl?.display);
         const nativeHint = nativeValue ? `Infor ${operation === 'edit' ? 'current' : 'last check'}: ${nativeValue}${nativeDisplay && nativeDisplay !== nativeValue ? ` · ${nativeDisplay}` : ''}.` : '';
         const choiceHint = isChoice ? control?.editable === false ? 'This field is not editable in Infor.'
-          : options.length ? 'Infor choices; check again after changes.' : 'Check the Add-On to load Infor choices.' : '';
+          : options.length ? 'Infor choices; check again after changes.' : controlsFromPreview
+            ? 'No Infor choices available from the last completed check.' : 'Check the Add-On to load Infor choices.' : '';
         const priceHint = field === 'unitPrice' ? 'Unit price is supplied; Infor calculates the total from it.' : '';
         const sharedHint = shared != null && text(shared) ? `Shared value: ${text(shared)}; a room value overrides it.` : operation === 'edit' ? 'Leave unmentioned values unchanged.' : '';
         return <Field key={field} editor={editor} path={`${targetRoot}/fields/${field}`} label={label} type={type} review
