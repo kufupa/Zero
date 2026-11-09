@@ -13,14 +13,14 @@ import type { ReservationWorkflowV2Draft, ReservationWorkflowV2Observation,
 
 type PrepareInput = z.infer<typeof reservationWorkflowV2GuestPrepareInputSchema>;
 type CreateInput = z.infer<typeof reservationWorkflowV2GuestCreateInputSchema>;
-type NativeResult = { outcome?: string; issue?: string; nativeId?: string | null; dispatched?: boolean | null;
+export type ReservationWorkflowV2GuestNativeResult = { outcome?: string; issue?: string; nativeId?: string | null; dispatched?: boolean | null;
   previewDigest?: string; review?: unknown; businessFields?: unknown; readback?: Record<string, unknown>;
-  reconciliation?: NativeResult; [key: string]: unknown };
-type Runner = { prepareGuestProfile: (input: Record<string, unknown>) => Promise<NativeResult>;
-  createGuestProfile: (input: Record<string, unknown>) => Promise<NativeResult>;
-  inspectGuestProfileAttempt: (input: Record<string, unknown>) => Promise<NativeResult>;
-  readGuestProfile: (input: Record<string, unknown>) => Promise<NativeResult>;
-  listGuestProfileCreationOptions: (input: Record<string, unknown>) => Promise<NativeResult> };
+  reconciliation?: ReservationWorkflowV2GuestNativeResult; [key: string]: unknown };
+type Runner = { prepareGuestProfile: (input: Record<string, unknown>) => Promise<ReservationWorkflowV2GuestNativeResult>;
+  createGuestProfile: (input: Record<string, unknown>) => Promise<ReservationWorkflowV2GuestNativeResult>;
+  inspectGuestProfileAttempt: (input: Record<string, unknown>) => Promise<ReservationWorkflowV2GuestNativeResult>;
+  readGuestProfile: (input: Record<string, unknown>) => Promise<ReservationWorkflowV2GuestNativeResult>;
+  listGuestProfileCreationOptions: (input: Record<string, unknown>) => Promise<ReservationWorkflowV2GuestNativeResult> };
 const stateContext = (ctx: ReservationWorkflowV2ServerContext) => ({ db: ctx.db, transportId: ctx.transport.id,
   userId: ctx.user.id, propertyCode: ctx.property.propertyCode });
 const text = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -119,7 +119,7 @@ export async function reservationWorkflowV2PrepareGuestProfile(ctx: ReservationW
   const compiled = compile(current.draft, input);
   if ('issue' in compiled) return { status: 'needsReview' in compiled ? 'needs_review' as const : 'needs_input' as const,
     issue: compiled.issue, fields: 'fields' in compiled ? compiled.fields : [] };
-  let native: NativeResult;
+  let native: ReservationWorkflowV2GuestNativeResult;
   try { native = await (await runner()).prepareGuestProfile(compiled.business); }
   catch { return { status: 'failed' as const, issue: 'guest_profile_prepare_failed' }; }
   if (native.outcome !== 'ready' || !native.previewDigest) return { status: 'needs_input' as const,
@@ -178,7 +178,7 @@ export async function reservationWorkflowV2CreateGuestProfile(ctx: ReservationWo
     if (live.status !== 'ok' || live.revision !== input.expectedRevision || live.seq !== input.expectedSeq) return false;
     return validate(live.draft);
   };
-  let native: NativeResult;
+  let native: ReservationWorkflowV2GuestNativeResult;
   try {
     const nativeRunner = await runner({ authorizeStaffWrite: callback,
       dispatchStaffWrite: (_context: unknown, proceed: () => Promise<unknown>) =>
