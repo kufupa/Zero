@@ -32,6 +32,10 @@ export async function enqueueReservationArrival(db: DB, input: {
   const body = preStaySourceText(row.textBody, row.htmlBody);
   if (!body.trim()) return null;
   if (classifyMailSource({ fromAddress: row.fromAddress, subject: row.subject, bodyText: body }).kind !== 'direct') return null;
+  // FortiMail's quarantine digest is an internal wrapper, not the quarantined
+  // sender's request. Do not spend a model call on its contents.
+  if (/@fortimail-[a-z0-9-]+\.[a-z0-9.-]+\s*>?$/i.test(row.fromAddress.trim()) &&
+      /^quarantine\s+summary\b/i.test(row.subject?.trim() ?? '')) return null;
   // A routine internal function sheet is an operations handover, not a client request.
   if (/@legacyhotels\.(?:co\.za|com)\s*>?$/i.test(row.fromAddress.trim()) &&
       /^(?:re:\s*|fw(?:d)?:\s*)*(?:new\s+|updated\s+)?function\s+sheet\b/i.test(row.subject?.trim() ?? '')) return null;

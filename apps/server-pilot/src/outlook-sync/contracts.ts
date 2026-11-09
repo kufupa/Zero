@@ -87,6 +87,7 @@ export const syncObservationV1 = z
     requiredArtifactRoles: z.array(artifactRole),
     optionalMissing: z.array(z.object({ role: artifactRole, fileName: z.string().max(1024).nullable() }).strict()).max(1000).optional(),
     optionalRepairAfter: instant.optional(),
+    optionalRepairStopped: z.boolean().optional(),
     contentIdentity: z
       .object({
         sha256: z.string().regex(/^[0-9a-f]{64}$/),

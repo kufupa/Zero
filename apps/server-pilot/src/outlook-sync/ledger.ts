@@ -459,7 +459,7 @@ export async function recordInventory(
     const historyMove = { discovered: 0, retained: 0, committed: 0, gaps: 0 };
     for (const o of input.observations) {
       if (
-        o.optionalMissing !== undefined || o.optionalRepairAfter !== undefined ||
+        o.optionalMissing !== undefined || o.optionalRepairAfter !== undefined || o.optionalRepairStopped !== undefined ||
         o.locator.storeId !== s.storeId ||
         o.locator.rootEntryId !== s.rootEntryId ||
         o.event.isUnsent
@@ -904,7 +904,7 @@ export async function pendingObservations(db: DB, deviceId: string, scope: Nativ
     const enrichingHistory = remainingMetadata.length > 0;
     // Global metadata ordering is server-owned; native keeps only this bounded page of references.
     const rows = await t.execute(
-      sql`select o.id,o.semantic_version,o.evidence, ((o.evidence->>'semanticReady')='false' and (o.evidence->'event'->>'kind')='inventory' and not exists(select 1 from outlook_sync_scan m join outlook_sync_scan sc on sc.id=m.parent_id where m.observation_id=o.id and m.record_kind='membership' and sc.mode<>'history')) as metadata_only from outlook_sync_observation o where o.source_id=${s.id} and (o.export_state not in ('retained','excluded') or (o.export_state='retained' and jsonb_array_length(coalesce(o.evidence->'optionalMissing','[]'::jsonb)) > 0 and coalesce((o.evidence->>'optionalRepairAfter')::timestamptz, now()) <= now())) and ((o.evidence->>'semanticReady')='false' or coalesce(case when o.direction='outbound' then o.evidence->'timestamps'->>'sentAt' when o.direction='inbound' then o.evidence->'timestamps'->>'receivedAt' else coalesce(o.evidence->'timestamps'->>'receivedAt',o.evidence->'timestamps'->>'sentAt') end,'')='' or (case when o.direction='outbound' then o.evidence->'timestamps'->>'sentAt' when o.direction='inbound' then o.evidence->'timestamps'->>'receivedAt' else coalesce(o.evidence->'timestamps'->>'receivedAt',o.evidence->'timestamps'->>'sentAt') end)::timestamptz >= ${s.historyFrom?.toISOString() ?? new Date().toISOString()}::timestamptz) and o.availability in ('available','unknown-date') and (not ${enrichingHistory} or (o.evidence->>'semanticReady')='false' or (o.evidence->'event'->>'kind')<>'inventory' or exists(select 1 from outlook_sync_scan m join outlook_sync_scan sc on sc.id=m.parent_id where m.observation_id=o.id and m.record_kind='membership' and sc.mode<>'history')) and (${ready} or (o.evidence->'event'->>'kind') <> 'inventory' or exists (select 1 from outlook_sync_scan m join outlook_sync_scan sc on sc.id=m.parent_id where m.observation_id=o.id and m.record_kind='membership' and sc.mode<>'history')) order by case when (o.evidence->'event'->>'kind') in ('new-mail','saved-sent') then 0 else 1 end, coalesce(case when o.direction='outbound' then o.evidence->'timestamps'->>'sentAt' else o.evidence->'timestamps'->>'receivedAt' end,o.evidence->'timestamps'->>'createdAt','') desc, o.source_observation_id asc limit 100`,
+      sql`select o.id,o.semantic_version,o.evidence, ((o.evidence->>'semanticReady')='false' and (o.evidence->'event'->>'kind')='inventory' and not exists(select 1 from outlook_sync_scan m join outlook_sync_scan sc on sc.id=m.parent_id where m.observation_id=o.id and m.record_kind='membership' and sc.mode<>'history')) as metadata_only from outlook_sync_observation o where o.source_id=${s.id} and (o.export_state not in ('retained','excluded') or (o.export_state='retained' and jsonb_array_length(coalesce(o.evidence->'optionalMissing','[]'::jsonb)) > 0 and coalesce((o.evidence->>'optionalRepairStopped')::boolean, false) = false and coalesce((o.evidence->>'optionalRepairAfter')::timestamptz, now()) <= now())) and ((o.evidence->>'semanticReady')='false' or coalesce(case when o.direction='outbound' then o.evidence->'timestamps'->>'sentAt' when o.direction='inbound' then o.evidence->'timestamps'->>'receivedAt' else coalesce(o.evidence->'timestamps'->>'receivedAt',o.evidence->'timestamps'->>'sentAt') end,'')='' or (case when o.direction='outbound' then o.evidence->'timestamps'->>'sentAt' when o.direction='inbound' then o.evidence->'timestamps'->>'receivedAt' else coalesce(o.evidence->'timestamps'->>'receivedAt',o.evidence->'timestamps'->>'sentAt') end)::timestamptz >= ${s.historyFrom?.toISOString() ?? new Date().toISOString()}::timestamptz) and o.availability in ('available','unknown-date') and (not ${enrichingHistory} or (o.evidence->>'semanticReady')='false' or (o.evidence->'event'->>'kind')<>'inventory' or exists(select 1 from outlook_sync_scan m join outlook_sync_scan sc on sc.id=m.parent_id where m.observation_id=o.id and m.record_kind='membership' and sc.mode<>'history')) and (${ready} or (o.evidence->'event'->>'kind') <> 'inventory' or exists (select 1 from outlook_sync_scan m join outlook_sync_scan sc on sc.id=m.parent_id where m.observation_id=o.id and m.record_kind='membership' and sc.mode<>'history')) order by case when (o.evidence->'event'->>'kind') in ('new-mail','saved-sent') then 0 else 1 end, coalesce(case when o.direction='outbound' then o.evidence->'timestamps'->>'sentAt' else o.evidence->'timestamps'->>'receivedAt' end,o.evidence->'timestamps'->>'createdAt','') desc, o.source_observation_id asc limit 100`,
     );
     return {
       version: 1 as const,
@@ -942,7 +942,7 @@ export async function recordLiveHint(
     const t = tx as DB,
       { source: s } = await authorizedSource(t, deviceId, scope, { requireFence: true });
     if (
-      o.optionalMissing !== undefined || o.optionalRepairAfter !== undefined ||
+      o.optionalMissing !== undefined || o.optionalRepairAfter !== undefined || o.optionalRepairStopped !== undefined ||
       o.locator.storeId !== s.storeId ||
       o.locator.rootEntryId !== s.rootEntryId ||
       o.event.isUnsent ||
@@ -1007,7 +1007,8 @@ export async function recordLiveHint(
             .update(observationTable)
             .set({
               evidence: { ...o, requiredArtifactRoles: old.requiredArtifactRoles,
-                optionalMissing: old.optionalMissing, optionalRepairAfter: old.optionalRepairAfter },
+                optionalMissing: old.optionalMissing, optionalRepairAfter: old.optionalRepairAfter,
+                optionalRepairStopped: old.optionalRepairStopped },
               ...(['committed', 'processing'].includes(obs.ingestionState)
                 ? { ingestionState: 'pending' as const, drainOwner: null, drainExpiresAt: null, drainNextAttemptAt: null }
                 : {}),
@@ -1102,8 +1103,12 @@ export async function reportObservationGap(
       // An optional repair can no longer read the original Outlook version.
       // Keep the already committed body and named gaps, but stop retrying this
       // stale version; a fresh observation can independently be ingested.
-      if (!(syncObservationV1.parse(o.evidence).optionalMissing?.length)) throw new SyncDeniedError();
-      await t.update(observationTable).set({ availability, errorCode: gapCode }).where(eq(observationTable.id, o.id));
+      const previous = syncObservationV1.parse(o.evidence);
+      if (!previous.optionalMissing?.length) throw new SyncDeniedError();
+      const evidence = syncObservationV1.parse({ ...previous, optionalRepairStopped: true });
+      await t.update(observationTable).set({ evidence,
+        ...(o.ingestionState === 'processing' ? { ingestionState: 'pending' as const, drainOwner: null,
+          drainExpiresAt: null, drainNextAttemptAt: null } : {}) }).where(eq(observationTable.id, o.id));
       await refreshObservation(t, o.id);
       return { accepted: true };
     }
@@ -1135,7 +1140,7 @@ export async function enrichObservation(
       .for('update');
     if (
       !o ||
-      full.optionalMissing !== undefined || full.optionalRepairAfter !== undefined ||
+      full.optionalMissing !== undefined || full.optionalRepairAfter !== undefined || full.optionalRepairStopped !== undefined ||
       !full.semanticReady ||
       full.sourceObservationId !== o.sourceObservationId ||
       full.locator.storeId !== s.storeId ||
@@ -1145,7 +1150,7 @@ export async function enrichObservation(
       throw new SyncDeniedError();
     const prior = syncObservationV1.parse(o.evidence);
     if (prior.semanticReady) {
-      const { optionalMissing: _missing, optionalRepairAfter: _repair, ...original } = prior;
+      const { optionalMissing: _missing, optionalRepairAfter: _repair, optionalRepairStopped: _stopped, ...original } = prior;
       if (stableJson({ ...original, requiredArtifactRoles: full.requiredArtifactRoles }) !== stableJson(full) ||
           !sameDiscoveredRoles(prior.requiredArtifactRoles, full.requiredArtifactRoles)) throw new SyncDeniedError();
       return {
