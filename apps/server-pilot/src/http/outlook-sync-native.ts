@@ -56,7 +56,7 @@ const uploadInput = nativeFenced.extend({
     .string()
     .regex(/^[A-Za-z0-9_-]{1,64}$/)
     .optional(),
-  optionalMissing: z.array(z.object({ role: z.string().min(1).max(256), fileName: z.string().max(1024).nullable() }).strict()).max(100).optional(),
+  optionalMissing: z.array(z.object({ role: z.string().min(1).max(256), fileName: z.string().max(1024).nullable() }).strict()).max(1000).optional(),
   resolvedAttachmentRoles: z.array(z.string().max(256)).max(1000).optional(),
   pending: z.boolean().optional(),
   manifest: syncManifestV1.optional(),

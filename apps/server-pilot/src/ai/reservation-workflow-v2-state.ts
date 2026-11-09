@@ -24,7 +24,14 @@ import {
 
 export const RESERVATION_WORKFLOW_V2_STATE_KEY = 'reservationWorkflowV2';
 type State = Record<string, unknown>;
-export type ReservationWorkflowV2Context = { db: DB; transportId: string; userId?: string | null; propertyCode: string };
+/** Only the internal arrival worker creates this buffer; nothing reaches the draft until its lease fence commits. */
+export type ReservationNativeCheckBatch = {
+  jobFence: ReservationPrefillJobFence; expectedRevision: number; expectedSeq: number; generationId: string;
+  signal: AbortSignal; deadlineAt: number; observations: ReservationWorkflowV2Observation[];
+  results: ReservationWorkflowV2Draft['operationResults'];
+};
+export type ReservationWorkflowV2Context = { db: DB; transportId: string; userId?: string | null; propertyCode: string;
+  nativeBatch?: ReservationNativeCheckBatch };
 type Context = ReservationWorkflowV2Context;
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
 
@@ -332,7 +339,7 @@ export async function claimReservationWorkflowV2Prefill(ctx: Context, input: Mut
       return { result: { ...current, draft } };
     }
     const attemptId = randomUUID();
-    const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, prefill: { status: 'running', attemptId,
+    const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, prefill: { status: 'running', phase: 'generation', attemptId,
       attemptCount: meta.attemptCount + 1, startedAt: new Date().toISOString(), finishedAt: null,
       ...(input.jobFence && evidenceHash ? { jobRunId: input.jobFence.runId, evidenceHash } : {}) } });
     await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
@@ -359,8 +366,11 @@ export async function finishReservationWorkflowV2Prefill(ctx: Context, input: Mu
     const superseded = item.revision !== input.claim.revision || item.revisionSeq !== input.claim.seq ||
       prefillSnapshot(current.draft) !== input.claim.snapshot ||
       await hasPrefillRetryActivity(tx, item.id, current.draft.generationId, item.revisionSeq);
-    const prefill = { ...meta, status: superseded ? 'superseded' as const : input.failed ? 'failed' as const : 'complete' as const,
-      finishedAt: new Date().toISOString() };
+    const checking = Boolean(input.jobFence && !superseded && !input.failed && input.seed);
+    const prefill = { ...meta, status: superseded ? 'superseded' as const : input.failed ? 'failed' as const : checking ? 'running' as const : 'complete' as const,
+      phase: checking ? 'native_checks' as const : 'complete' as const,
+      ...(checking ? { nativeStartedAt: new Date().toISOString(), nativeSpentMs: 0, nativeActive: null, nativeChecks: [] } : {}),
+      finishedAt: checking ? null : new Date().toISOString() };
     const install = !superseded && input.seed;
     const next = reservationWorkflowV2DraftSchema.parse({ ...current.draft, prefill,
       ...(install ? { generationId: install.generationId ?? randomUUID(), status: install.status,
@@ -554,7 +564,10 @@ export async function withLockedV2DraftMutation(ctx: Context, input: MutationInp
     if (current.status !== 'ok') return current;
     const changed = command.apply(current.draft);
     if (!changed) return { status: 'invalid_value' as const };
-    const parsed = reservationWorkflowV2DraftSchema.safeParse({ ...changed.draft, revision: item.revision + 1 });
+    const prefill = changed.draft.prefill && ['queued', 'running'].includes(changed.draft.prefill.status)
+      ? { ...changed.draft.prefill, status: 'superseded' as const, finishedAt: new Date().toISOString() }
+      : changed.draft.prefill;
+    const parsed = reservationWorkflowV2DraftSchema.safeParse({ ...changed.draft, prefill, revision: item.revision + 1 });
     if (!parsed.success) return { status: 'invalid_value' as const };
     const next = parsed.data;
     const nextState = { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next };
@@ -1042,6 +1055,91 @@ export async function moveReservationWorkflowV2History(ctx: Context, input: Muta
 }
 
 /** Server-owned additions never replace staff overrides/reviews and are deliberately outside undo history. */
+async function bufferedNativeResult(ctx: Context, input: { workItemId: string; source: ReservationWorkflowV2SourceInput }) {
+  const batch = ctx.nativeBatch!;
+  if (batch.signal.aborted) return { status: 'stale_revision' as const };
+  const current = await getReservationWorkflowV2Draft({ ...ctx, nativeBatch: undefined }, input);
+  if (current.status !== 'ok') return current;
+  if (current.revision !== batch.expectedRevision || current.seq !== batch.expectedSeq ||
+      current.draft.generationId !== batch.generationId || current.draft.prefill?.status !== 'running' ||
+      current.draft.prefill.phase !== 'native_checks' || current.draft.prefill.jobRunId !== batch.jobFence.runId)
+    return { status: 'stale_revision' as const };
+  return { ...current, draft: reservationWorkflowV2DraftSchema.parse({ ...current.draft,
+    observations: [...current.draft.observations, ...batch.observations],
+    operationResults: [...current.draft.operationResults.filter((entry) => !batch.results.some((result) => result.id === entry.id)),
+      ...batch.results] }) };
+}
+
+/** Commit one completed native check and its evidence as a single fenced transaction. */
+export async function commitReservationNativeCheck(ctx: Context, input: {
+  workItemId: string; source: ReservationWorkflowV2SourceInput; batch: ReservationNativeCheckBatch;
+  check?: { key: string; status: string; issue: string | null }; begin?: string;
+  recoveryHeartbeat?: string; finish?: boolean;
+}): Promise<ReservationWorkflowV2StateResult> {
+  if (!propertyMatches(ctx)) return { status: 'wrong_property' };
+  return ctx.db.transaction(async (tx) => {
+    await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
+    await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
+    if (!(await currentPrefillJob(tx, input.batch.jobFence, input.source.messageId))) return { status: 'stale_revision' as const };
+    const item = await loadItem(tx, ctx, input.workItemId, true);
+    if (!item) return { status: 'not_found' as const };
+    const current = await buildResult(tx, ctx, item, input.source);
+    if (current.status !== 'ok') return current;
+    const meta = current.draft.prefill;
+    if (item.revision !== input.batch.expectedRevision || item.revisionSeq !== input.batch.expectedSeq ||
+        current.draft.generationId !== input.batch.generationId || meta?.status !== 'running' ||
+        meta.phase !== 'native_checks' || meta.jobRunId !== input.batch.jobFence.runId)
+      return { status: 'stale_revision' as const };
+    if (input.batch.signal.aborted && (input.batch.observations.length || input.batch.results.length))
+      return { status: 'stale_revision' as const };
+    const active = meta.nativeActive;
+    if (input.begin && (active || input.check || input.finish || input.recoveryHeartbeat)) return { status: 'invalid_value' as const };
+    if (input.check && input.check.key !== 'native:unrun' && (!active || active.key !== input.check.key))
+      return { status: 'stale_revision' as const };
+    const activeStart = active ? Date.parse(active.startedAt) : 0;
+    const recoveredAt = input.recoveryHeartbeat ? Date.parse(input.recoveryHeartbeat) : NaN;
+    // A heartbeat is emitted every 20s. Charge the whole interval after the last one on recovery.
+    const elapsed = active && !input.begin ? Math.max(0, (Number.isFinite(recoveredAt) ? recoveredAt + 20_000 : Date.now()) - activeStart) : 0;
+    const nativeSpentMs = Math.min(420_000, (meta.nativeSpentMs ?? 0) + elapsed);
+    const checks = meta.nativeChecks ?? [];
+    const alreadyChecked = Boolean(input.check && checks.some((check) => check.key === input.check!.key));
+    if (alreadyChecked && !input.finish) return current;
+    const observations = [...current.draft.observations];
+    for (const observation of input.batch.observations) {
+      const parsed = reservationWorkflowV2ObservationSchema.safeParse(observation);
+      if (!parsed.success || parsed.data.generationId !== current.draft.generationId ||
+          parsed.data.propertyCode !== ctx.propertyCode || parsed.data.sourceMessageId !== input.source.messageId ||
+          observations.some((entry) => entry.ref === parsed.data.ref) ||
+          parsed.data.sourceRefs.some((ref) => !observations.some((entry) => entry.ref === ref))) return { status: 'invalid_value' as const };
+      observations.push(parsed.data);
+    }
+    const results = [...current.draft.operationResults];
+    for (const result of input.batch.results) {
+      if (result.generationId !== current.draft.generationId || result.draftRevision !== item.revision ||
+          result.observationRefs.some((ref) => !observations.some((entry) => entry.ref === ref)) ||
+          results.some((entry) => entry.id === result.id && (entry.status === 'succeeded' ||
+            entry.requestId !== result.requestId || entry.allocationId !== result.allocationId || entry.workflow !== result.workflow)))
+        return { status: 'invalid_value' as const };
+      const old = results.findIndex((entry) => entry.id === result.id);
+      if (old >= 0) results.splice(old, 1);
+      results.push(result);
+    }
+    const next = reservationWorkflowV2DraftSchema.safeParse({ ...current.draft, observations, operationResults: results,
+      status: current.draft.status === 'ready' && input.check && !['ok', 'prepared', 'priced', 'found', 'matches', 'candidate'].includes(input.check.status)
+        ? 'partial' : current.draft.status,
+      prefill: { ...meta, nativeSpentMs, nativeActive: input.begin ? { key: input.begin, startedAt: new Date().toISOString() } : null,
+        nativeChecks: input.check && !alreadyChecked ? [...checks, input.check] : checks,
+        ...(input.finish ? { status: 'complete', phase: 'complete', finishedAt: new Date().toISOString() } : {}) } });
+    if (!next.success) return { status: 'invalid_value' as const };
+    if (input.check) await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'system', type: 'hms.lookup.finished',
+      value: { check: input.check.key, status: input.check.status, observations: input.batch.observations.map((entry) => entry.ref) },
+      evidence: { sourceHash: input.source.sourceHash, generationId: current.draft.generationId } });
+    await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next.data },
+      updatedAt: new Date() }).where(eq(workItem.id, item.id));
+    return { ...current, draft: next.data };
+  });
+}
+
 export async function appendReservationWorkflowV2Observation(ctx: Context, input: {
   workItemId: string; source: ReservationWorkflowV2SourceInput;
   observation: ReservationWorkflowV2Observation;
@@ -1049,6 +1147,15 @@ export async function appendReservationWorkflowV2Observation(ctx: Context, input
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
   const parsed = reservationWorkflowV2ObservationSchema.safeParse(input.observation);
   if (!parsed.success || parsed.data.propertyCode !== ctx.propertyCode) return { status: 'invalid_value' };
+  if (ctx.nativeBatch) {
+    const current = await bufferedNativeResult(ctx, input);
+    if (current.status !== 'ok') return current;
+    if (parsed.data.generationId !== current.draft.generationId || parsed.data.sourceMessageId !== input.source.messageId ||
+        current.draft.observations.some((entry) => entry.ref === parsed.data.ref) ||
+        parsed.data.sourceRefs.some((ref) => !current.draft.observations.some((entry) => entry.ref === ref))) return { status: 'invalid_value' };
+    ctx.nativeBatch.observations.push(parsed.data);
+    return bufferedNativeResult(ctx, input);
+  }
   return ctx.db.transaction(async (tx) => {
     const item = await loadItem(tx, ctx, input.workItemId, true);
     if (!item) return { status: 'not_found' as const };
@@ -1074,6 +1181,14 @@ export async function recordReservationWorkflowV2Result(ctx: Context, input: {
   result: ReservationWorkflowV2Draft['operationResults'][number];
 }): Promise<ReservationWorkflowV2StateResult> {
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
+  if (ctx.nativeBatch) {
+    const current = await bufferedNativeResult(ctx, input);
+    if (current.status !== 'ok') return current;
+    if (input.result.generationId !== current.draft.generationId || input.result.draftRevision !== current.revision ||
+        input.result.observationRefs.some((ref) => !current.draft.observations.some((entry) => entry.ref === ref))) return { status: 'invalid_value' };
+    ctx.nativeBatch.results.push(input.result);
+    return bufferedNativeResult(ctx, input);
+  }
   return ctx.db.transaction(async (tx) => {
     const item = await loadItem(tx, ctx, input.workItemId, true);
     if (!item) return { status: 'not_found' as const };

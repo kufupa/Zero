@@ -26,6 +26,7 @@ import { paneStayPropertyLock } from './pane-stay-save.js';
 import { findParty } from './pane-party-lookup.js';
 import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
 import { findStay, searchGuest, searchGuestCloudBatch, type GuestSearchQuery } from './pane-stay-lookup.js';
+import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { normalizeGuestName, sameGuestName } from './guest-name-match.js';
 import { availabilityRequestSchema } from './hms-availability.js';
 import { probeCloudRateAvailability } from './hms-cloud-availability-reader.js';
@@ -697,7 +698,13 @@ export function createReservationWorkflowV2CandidateReader(input: {
       const query = exactSearchTerm(candidate.criteria.confirmationOrGuestText);
       if (!query) return unavailable('Stay lookup term is missing or too short.');
       if (/^\d{6,10}-\d{1,2}$/.test(query)) {
-        const found = await findStay({ confirmation: query }, { lock, target, acquisition });
+        const request = { confirmation: query };
+        const propertyLock = lock();
+        if (!propertyLock) return unavailable('Property read lock is unavailable.');
+        const found = target.propertyCode === 'HRCEN'
+          ? await propertyLock.withLock(async () => projectCloudStayFind(request,
+            await runCloudStayFind({ request, target, signal: input.signal })), { ...acquisition, signal: input.signal })
+          : await findStay(request, { lock, target, acquisition });
         const status = completeNativeRead(found.outcome);
         return { status, result: { outcome: found.outcome, stay: found.stay, commercial: found.commercial ?? null,
           arrivalMismatch: found.arrivalMismatch }, coverage: { complete: status === 'complete', notes: [] } };

@@ -826,7 +826,8 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         if (hourly.reduce((total, row) => total + recentStarts(row.metrics, row.startedAt).length, 0) >= 30) {
           await tx.update(aiWorkflowRun).set({ nextRunAt: new Date(now.getTime() + 5 * 60_000), updatedAt: now,
             ...(isReclaim ? { state: 'retry_wait' as const, claimOwner: null, claimToken: null, deadlineAt: null } : {}),
-            metrics: { ...candidate.metrics, phase: 'deferred', reason: 'hourly_model_budget' } })
+            metrics: { ...candidate.metrics, phase: 'deferred', reason: 'hourly_model_budget',
+              ...(isReclaim && candidate.heartbeatAt ? { interruptedHeartbeatAt: candidate.heartbeatAt.toISOString() } : {}) } })
             .where(eq(aiWorkflowRun.id, candidate.id));
           continue;
         }
@@ -876,6 +877,8 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
                     ? (candidate.metrics as Record<string, unknown>)
                     : {}),
                   ...(reclaimCount !== undefined ? { reclaimCount } : {}),
+                  ...(candidate.runKind === 'reservation_prefill' && isReclaim && candidate.heartbeatAt
+                    ? { interruptedHeartbeatAt: candidate.heartbeatAt.toISOString() } : {}),
                   ...(arrivalStarts ? { arrivalStarts } : {}),
                 },
               }

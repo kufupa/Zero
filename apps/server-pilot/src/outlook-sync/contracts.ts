@@ -85,7 +85,7 @@ export const syncObservationV1 = z
       })
       .strict(),
     requiredArtifactRoles: z.array(artifactRole),
-    optionalMissing: z.array(z.object({ role: artifactRole, fileName: z.string().max(1024).nullable() }).strict()).max(100).optional(),
+    optionalMissing: z.array(z.object({ role: artifactRole, fileName: z.string().max(1024).nullable() }).strict()).max(1000).optional(),
     optionalRepairAfter: instant.optional(),
     contentIdentity: z
       .object({

@@ -19,7 +19,7 @@ async function authorizeLabtest(prepared, withPage) {
       identity.reservationStayId === prepared.native.stayId && identity.firstName === 'Proof' && identity.lastName === 'Labtest' &&
       identity.status === 'Reserved' && identity.arrival >= '2027-01-01' && identity.arrival === prepared.target.arrival &&
       identity.departure === prepared.target.departure && cms.length === 1 && cms[0].value === false);
-  }, { headless: true, blockServiceWorkers: true });
+  }, { headless: true, blockServiceWorkers: true, signal: options.signal });
 }
 
 const nativeIdOf = row => String(row.enhexpsequencekey ?? '').trim();

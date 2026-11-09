@@ -24,6 +24,7 @@ import { bindAttachDocumentForm, paneHmsWriteMode, parseHmsWriteForm, prepareHms
 import { previewFiling } from './pane-filing-preview.js';
 import { readBoundFilingSource, lockBoundFilingSource, type BoundFilingForm } from './pane-filing-source.js';
 import { findStay } from './pane-stay-lookup.js';
+import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { paneStayCloudTargetLock, paneStayPropertyLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import { canonicalMessageId } from '../mail/ingest/message-id.js';
@@ -40,6 +41,7 @@ export type ReservationWorkflowV2FilingContext = {
   transport: { id: string };
   user: { id: string; sessionId?: string; sessionProfile?: 'legacy' | 'remote' };
   property: { propertyCode: string };
+  nativeBatch?: import('./reservation-workflow-v2-state.js').ReservationNativeCheckBatch;
 };
 type Outcome = { status: string; issue?: string; [key: string]: unknown };
 type PreviewResult = Awaited<ReturnType<typeof previewFiling>>;
@@ -82,7 +84,8 @@ const isoDay = (value: unknown): value is string => typeof value === 'string' &&
 const sourceEvidenceRef = (messageId: string, role: string, identity: string): string =>
   `src_${sha256(`${messageId}\u001f${role}\u001f${identity}`).slice(0, 12)}`;
 const stateContext = (ctx: ReservationWorkflowV2FilingContext): ReservationWorkflowV2Context => ({ db: ctx.db,
-  transportId: ctx.transport.id, userId: ctx.user.id, propertyCode: ctx.property.propertyCode });
+  transportId: ctx.transport.id, userId: ctx.nativeBatch ? null : ctx.user.id,
+  propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch });
 
 /** Persist only the host runner's proof that this claimed writer is closed and its callbacks drained. */
 async function recordFilingWriterClosed(ctx: ReservationWorkflowV2FilingContext, input: ReservationWorkflowV2ExecuteInput,
@@ -431,10 +434,15 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReservationWorkflow
     // Explicit Lookup refreshes native state; old observations remain for receipt provenance.
     let candidate: ReservationWorkflowV2Observation | undefined;
     if (hint.confirmation) {
-      const found = await findStay({ confirmation: hint.confirmation, ...(hint.bookedArrival ? { arrival: hint.bookedArrival } : {}) }, {
-        target: target.target, lock: () => paneStayPropertyLock(target.target),
-        acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
-      }).catch(() => null);
+      const request = { confirmation: hint.confirmation, ...(hint.bookedArrival ? { arrival: hint.bookedArrival } : {}) };
+      const found = ctx.nativeBatch ? await (async () => {
+        const lock = paneStayPropertyLock(target.target);
+        if (!lock) return null;
+        return lock.withLock(async () => projectCloudStayFind(request,
+          await runCloudStayFind({ request, target: target.target, signal: ctx.nativeBatch!.signal })),
+        { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch!.signal });
+      })().catch(() => null) : await findStay(request, { target: target.target,
+        lock: () => paneStayPropertyLock(target.target), acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS) }).catch(() => null);
       const stay = found?.stay;
       const complete = found?.outcome === 'found' && Boolean(stay?.confirmation && stay.firstName && stay.lastName && stay.status &&
         stay.arrival && stay.departure && !found.arrivalMismatch);
@@ -457,7 +465,7 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReservationWorkflow
   }
   // Only a single complete host stay observation plus a source PDF can produce the no-Save target preview.
   const refreshed = await currentDraft(ctx, input);
-  if (refreshed.draft && requests.length === 1) {
+  if (refreshed.draft && requests.length === 1 && !ctx.nativeBatch) {
     const selection = await selectionFor(ctx, refreshed.draft, requests[0]!.id, false);
     if (selection) {
       const preview = await runPreview(ctx, input, selection);

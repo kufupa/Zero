@@ -242,8 +242,11 @@ async function recordFailure(db: DB, claim: SyncDrainClaim, error: unknown) {
     await t.select().from(sourceTable).where(eq(sourceTable.id, claim.sourceId)).for('update');
     const [row] = await t.select().from(observationTable).where(matches(claim)).for('update');
     if (!row || row.ingestionState !== 'processing') return 'stale' as const;
-    const attention =
-      error instanceof SyncIngestionGap && error.code !== 'MISSING_REQUIRED_ARTIFACT';
+    // Attachment repair can change the evidence while the drain verifies it.
+    // The old snapshot must be discarded, then the new one claimed normally.
+    const retryableGaps = new Set(['MISSING_REQUIRED_ARTIFACT', 'ARTIFACT_CHANGED',
+      'ARTIFACT_ORIGIN_CHANGED', 'OBSERVATION_CHANGED']);
+    const attention = error instanceof SyncIngestionGap && !retryableGaps.has(error.code);
     const now = await databaseNow(t),
       retries = row.retryCount + 1,
       delay = Math.min(60_000, 1000 * 2 ** Math.min(6, retries - 1));

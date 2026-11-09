@@ -38,6 +38,8 @@ import {
   recordReservationWorkflowV2Result,
   reservationWorkflowV2DraftOf,
   RESERVATION_WORKFLOW_V2_STATE_KEY,
+  type ReservationNativeCheckBatch,
+  type ReservationWorkflowV2Context,
 } from './reservation-workflow-v2-state.js';
 
 /** V2 cancellation is source-bound to one authenticated HRCEN mailbox and one explicit saved-stay target. */
@@ -46,9 +48,10 @@ export type ReservationWorkflowV2CancelContext = {
   transport: { id: string };
   user: { id: string; sessionId?: string; sessionProfile?: 'legacy' | 'remote' };
   property: { propertyCode: string };
+  nativeBatch?: ReservationNativeCheckBatch;
 };
 
-type StateContext = { db: DB; transportId: string; userId: string; propertyCode: string };
+type StateContext = ReservationWorkflowV2Context;
 type CancelActorSession = { sessionId: string; sessionProfile: 'legacy' | 'remote' };
 type CancelOutcome = { status: string; issue?: string; [key: string]: unknown };
 type Tx = Parameters<Parameters<DB['transaction']>[0]>[0];
@@ -103,7 +106,8 @@ const reviewNote = (observationRef: string, approvalDigest: string) =>
   `cancel-preview:${observationRef}:${approvalDigest}`;
 
 function stateContext(ctx: ReservationWorkflowV2CancelContext): StateContext {
-  return { db: ctx.db, transportId: ctx.transport.id, userId: ctx.user.id, propertyCode: ctx.property.propertyCode };
+  return { db: ctx.db, transportId: ctx.transport.id, userId: ctx.nativeBatch ? null : ctx.user.id,
+    propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch };
 }
 
 function currentTarget(ctx: ReservationWorkflowV2CancelContext): HmsReadTarget | null {
@@ -250,7 +254,7 @@ export function cancellationFinancialHandling(money: unknown, folio: unknown): {
 }
 
 /** Run only the existing restricted read → prepareCancellation native sequence, then close its browser. */
-async function cancellationPreflight(target: HmsReadTarget, confirmation: string, arrival?: string): Promise<PreflightResult> {
+async function cancellationPreflight(target: HmsReadTarget, confirmation: string, arrival?: string, signal?: AbortSignal): Promise<PreflightResult> {
   try {
     const module = await import(new URL('../../tooling/hms-cloud/cancellation-preflight-session.mjs', import.meta.url).href) as {
       withCancellationPreflightSession: <T>(
@@ -262,7 +266,7 @@ async function cancellationPreflight(target: HmsReadTarget, confirmation: string
       const read = await runTool({ tool: 'read', confirmation, ...(arrival ? { arrivalDate: arrival } : {}), view: 'record' });
       if (record(read)?.outcome !== 'ok') return { outcome: 'read_failed', issue: 'CANCELLATION_PREFLIGHT_READ_FAILED' };
       return runTool({ tool: 'prepareCancellation', requestedScope: 'unspecified' });
-    }, { signal: AbortSignal.timeout(15 * 60_000) }));
+    }, { signal: signal ?? AbortSignal.timeout(15 * 60_000) }));
     const projected = projectCloudCancellationPreview({ confirmation, ...(arrival ? { arrival } : {}) }, raw);
     if (!raw || projected.outcome !== 'prepared_for_human_review' || raw.outcome !== 'prepared_for_human_review') {
       return { outcome: 'failed', issue: projected.reason ?? (typeof raw?.issue === 'string' ? raw.issue : 'CANCELLATION_PREFLIGHT_UNAVAILABLE') };
@@ -529,14 +533,14 @@ export async function reservationWorkflowV2CancelLookup(ctx: ReservationWorkflow
           issue: 'exact_confirmation_and_valid_dates_required' });
         continue;
       }
-      const preflight = await cancellationPreflight(target, confirmation, arrival);
+      const preflight = await cancellationPreflight(target, confirmation, arrival, ctx.nativeBatch?.signal);
       let preimage: CancelPreimage | null = null, reason = preflight.outcome === 'failed' ? preflight.issue : null;
       let preflightFacts: Record<string, unknown> | null = preflight.outcome === 'ok' ? preflight.facts : null;
       if (preflight.outcome === 'ok') {
         const stay = record(preflight.facts.stay);
         const nativeArrival = text(record(stay?.arrivalDate)?.value);
-        if (nativeArrival) preimage = await nativeCancelRead(target, confirmation, nativeArrival);
-        if (!preimage) reason = 'native_cancel_target_unavailable';
+        if (nativeArrival && !ctx.nativeBatch) preimage = await nativeCancelRead(target, confirmation, nativeArrival);
+        if (!preimage) reason = ctx.nativeBatch ? 'background_cancel_target_reader_unavailable' : 'native_cancel_target_unavailable';
         else if (!matchesHint(preimage, hint)) reason = 'cancel_target_hint_mismatch';
         else if (preimage.departure !== text(record(stay?.departureDate)?.value)) reason = 'cancel_preflight_identity_mismatch';
       }

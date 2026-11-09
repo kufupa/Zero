@@ -8,7 +8,7 @@ import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { reservationArrivalEnabled } from './reservation-workflow-v2-arrival.js';
 import { reservationArrivalEvidence } from './reservation-workflow-v2-evidence.js';
 import { markAiRunDeadLetter, markAiRunRetry, markAiRunSucceeded, type AiRunFence, type AiWorkflowRun } from './run-ledger.js';
-import { initializeReservationWorkflowV2Draft } from './reservation-workflow-v2-state.js';
+import { getReservationWorkflowV2Draft, initializeReservationWorkflowV2Draft } from './reservation-workflow-v2-state.js';
 import type { ReservationWorkflowV2ItemInput } from './reservation-workflow-v2-contract.js';
 import type { ReservationPrefillJobFence, ReservationWorkflowV2Context } from './reservation-workflow-v2-state.js';
 import { claimReservationWorkflowV2Prefill, finishReservationWorkflowV2Prefill } from './reservation-workflow-v2-state.js';
@@ -16,6 +16,7 @@ import { runReservationWorkflowV2Prefill } from './reservation-workflow-v2-prefi
 import { createAzureExtractionAdapter } from './extraction/extract.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { loadSyncedQuoteSelectionFromMailbox } from './quote-workflow-synced-selection.js';
+import { runReservationArrivalChecks } from './reservation-workflow-v2-arrival-checks.js';
 
 /** Preserve model failure timing even when a bounded retry keeps its original fallback. */
 function observedPrefillAdapter(adapter: ModelAdapter | null, sourceMessageId: string,
@@ -60,7 +61,7 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
   try {
     const selection = await loadSyncedQuoteSelectionFromMailbox({ db: scoped.db, transportId: scoped.transportId,
       messageId: input.source.messageId, includeThreadState: true, sourceCutoffOnly: true,
-      includeVisionImages: true, trackVisionImages: true });
+      includeVisionImages: true, trackVisionImages: true, signal });
     if (!selection) return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: claimed.claim, failed: true, jobFence });
     const modelEnv = { ...process.env, EXTRACTION_REASONING_EFFORT: process.env.EXTRACTION_REASONING_EFFORT?.trim() || 'high' };
     const generated = await runReservationWorkflowV2Prefill({ db: scoped.db, transportId: scoped.transportId,
@@ -125,14 +126,16 @@ export async function executeReservationArrival(input: {
       failureClass: 'POLICY_BLOCK' }, db);
     return 'dead_letter';
   }
+  const resumingChecks = initialized.draft.prefill?.jobRunId === run.id &&
+    initialized.draft.prefill.status === 'running' && initialized.draft.prefill.phase === 'native_checks';
   await db.update(aiWorkflowRun).set({ workItemId: initialized.draft.workItemId,
-    metrics: { ...run.metrics, phase: 'generation' }, updatedAt: new Date() }).where(and(
+    metrics: { ...run.metrics, phase: resumingChecks ? 'native_checks' : 'generation' }, updatedAt: new Date() }).where(and(
       eq(aiWorkflowRun.id, fence.runId), eq(aiWorkflowRun.claimOwner, fence.claimOwner),
       eq(aiWorkflowRun.claimToken, fence.claimToken), eq(aiWorkflowRun.state, 'running')));
   const item = { workItemId: initialized.draft.workItemId, source,
     expectedRevision: initialized.revision, expectedSeq: initialized.seq };
   const generationSignal = AbortSignal.any([signal, AbortSignal.timeout(9 * 60_000)]);
-  const result = await prefillDraft(scoped, item, row.mailboxAddress, true, fence, generationSignal, signal);
+  let result = resumingChecks ? initialized : await prefillDraft(scoped, item, row.mailboxAddress, true, fence, generationSignal, signal);
   if (result.status !== 'ok') {
     await markAiRunDeadLetter({ ...fence, expectedStates: ['running'], lastError: `draft rejected: ${result.status}`,
       failureClass: 'POLICY_BLOCK' }, db);
@@ -143,6 +146,18 @@ export async function executeReservationArrival(input: {
       nextRunAt: new Date(Date.now() + 5 * 60_000), lastError: 'reservation prefill incomplete',
       failureClass: 'BEDROCK_TRANSIENT', resetDeadline: true }, db);
     return retry ? 'retry_wait' : 'dead_letter';
+  }
+  if (result.draft.prefill?.status === 'running' && result.draft.prefill.phase === 'native_checks' &&
+      result.draft.prefill.jobRunId === run.id) {
+    await db.update(aiWorkflowRun).set({ metrics: { ...run.metrics, phase: 'native_checks' }, updatedAt: new Date() }).where(and(
+      eq(aiWorkflowRun.id, fence.runId), eq(aiWorkflowRun.claimOwner, fence.claimOwner),
+      eq(aiWorkflowRun.claimToken, fence.claimToken), eq(aiWorkflowRun.state, 'running')));
+    const checkItem = { ...item, expectedRevision: result.revision, expectedSeq: result.seq };
+    await runReservationArrivalChecks({ scoped, item: checkItem, draft: result.draft, fence,
+      deadlineAt: fence.deadlineAt, signal,
+      ...(typeof run.metrics?.interruptedHeartbeatAt === 'string' ? { recoveryHeartbeat: run.metrics.interruptedHeartbeatAt } : {}) });
+    const fresh = await getReservationWorkflowV2Draft(scoped, checkItem);
+    if (fresh.status === 'ok') result = fresh;
   }
   const done = await markAiRunSucceeded({ ...fence, expectedStates: ['running'],
     metrics: { ...run.metrics, phase: 'complete', prefillStatus: result.draft.prefill?.status,

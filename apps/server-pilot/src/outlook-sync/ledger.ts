@@ -1008,7 +1008,9 @@ export async function recordLiveHint(
             .set({
               evidence: { ...o, requiredArtifactRoles: old.requiredArtifactRoles,
                 optionalMissing: old.optionalMissing, optionalRepairAfter: old.optionalRepairAfter },
-              ingestionState: obs.ingestionState === 'committed' ? 'pending' : obs.ingestionState,
+              ...(['committed', 'processing'].includes(obs.ingestionState)
+                ? { ingestionState: 'pending' as const, drainOwner: null, drainExpiresAt: null, drainNextAttemptAt: null }
+                : {}),
             })
             .where(eq(observationTable.id, obs.id));
       }
@@ -1042,8 +1044,9 @@ export async function reportOptionalAttachmentGaps(db: DB, deviceId: string, sco
     const changed = stableJson(previous.optionalMissing ?? []) !== stableJson(stillMissing);
     const evidence = syncObservationV1.parse({ ...previous, optionalMissing: stillMissing,
       ...(stillMissing.length ? { optionalRepairAfter: new Date(Date.now() + 5 * 60_000).toISOString() } : { optionalRepairAfter: undefined }) });
-    await t.update(observationTable).set({ evidence, ...(changed && o.ingestionState === 'committed'
-      ? { ingestionState: 'pending', drainNextAttemptAt: null } : {}) }).where(eq(observationTable.id, o.id));
+    await t.update(observationTable).set({ evidence, ...(changed && ['committed', 'processing'].includes(o.ingestionState)
+      ? { ingestionState: 'pending' as const, drainOwner: null, drainExpiresAt: null, drainNextAttemptAt: null } : {}) })
+      .where(eq(observationTable.id, o.id));
     await refreshObservation(t, o.id);
     return { accepted: true };
   });
@@ -1057,6 +1060,10 @@ export async function resolveOptionalAttachmentRoles(db: DB, deviceId: string, s
     await authorizedSource(t, deviceId, scope, { requireFence: true });
     const [o] = await t.select().from(observationTable).where(and(eq(observationTable.id, observationId),
       eq(observationTable.sourceId, scope.sourceId))).for('update');
+    if (o && !o.artifactOrigin && !o.requiredArtifactRoles.includes('attachment:unavailable') &&
+        roles.every((role) => /^attachment:[1-9][0-9]*$/.test(role)) && new Set(roles).size === roles.length &&
+        stableJson([...roles].sort()) === stableJson(o.requiredArtifactRoles.filter((role) => role.startsWith('attachment:')).sort()))
+      return { accepted: true };
     if (!o || o.artifactOrigin || !o.requiredArtifactRoles.includes('attachment:unavailable') ||
         o.requiredArtifactRoles.some((role) => role.startsWith('attachment:') && role !== 'attachment:unavailable') ||
         roles.some((role) => !/^attachment:[1-9][0-9]*$/.test(role)) || new Set(roles).size !== roles.length)
@@ -1066,7 +1073,7 @@ export async function resolveOptionalAttachmentRoles(db: DB, deviceId: string, s
     const evidence = syncObservationV1.parse({ ...previous, requiredArtifactRoles,
       optionalMissing: [], optionalRepairAfter: undefined });
     await t.update(observationTable).set({ evidence, requiredArtifactRoles,
-      ingestionState: 'pending', drainNextAttemptAt: null }).where(eq(observationTable.id, o.id));
+      ingestionState: 'pending', drainOwner: null, drainExpiresAt: null, drainNextAttemptAt: null }).where(eq(observationTable.id, o.id));
     await refreshObservation(t, o.id);
     return { accepted: true };
   });
@@ -1090,7 +1097,16 @@ export async function reportObservationGap(
         and(eq(observationTable.id, observationId), eq(observationTable.sourceId, scope.sourceId)),
       )
       .for('update');
-    if (!o || o.exportState === 'retained') throw new SyncDeniedError();
+    if (!o) throw new SyncDeniedError();
+    if (o.exportState === 'retained') {
+      // An optional repair can no longer read the original Outlook version.
+      // Keep the already committed body and named gaps, but stop retrying this
+      // stale version; a fresh observation can independently be ingested.
+      if (!(syncObservationV1.parse(o.evidence).optionalMissing?.length)) throw new SyncDeniedError();
+      await t.update(observationTable).set({ availability, errorCode: gapCode }).where(eq(observationTable.id, o.id));
+      await refreshObservation(t, o.id);
+      return { accepted: true };
+    }
     await t
       .update(observationTable)
       .set({ availability, errorCode: gapCode, ingestionState: 'attention' })

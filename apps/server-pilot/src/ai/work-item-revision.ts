@@ -425,6 +425,9 @@ async function applyHistoryMove(
     if (previousV2?.proposal && restoredV2?.proposal && Array.isArray(previousV2.observations)) {
       restoredV2.observations = rebaseReservationV2Observations(previousV2, previousV2.proposal, restoredV2.proposal);
     }
+    if (restoredV2?.prefill && ['queued', 'running'].includes(restoredV2.prefill.status)) {
+      restoredV2.prefill = { ...restoredV2.prefill, status: 'superseded', finishedAt: new Date().toISOString() };
+    }
   const v2 = state[RESERVATION_V2_KEY];
   if (v2 && typeof v2 === 'object' && !Array.isArray(v2)) {
     state[RESERVATION_V2_KEY] = { ...(v2 as Record<string, unknown>), revision: nextRevision };

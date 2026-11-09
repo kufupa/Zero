@@ -7,6 +7,7 @@ import {
   getReservationWorkflowV2Draft,
   appendReservationWorkflowV2Observation,
   recordReservationWorkflowV2Result,
+  type ReservationNativeCheckBatch,
 } from './reservation-workflow-v2-state.js';
 import type {
   ReservationWorkflowV2Draft,
@@ -14,6 +15,7 @@ import type {
   ReservationWorkflowV2Source,
 } from './reservation-workflow-v2-contract.js';
 import { findParty } from './pane-party-lookup.js';
+import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
 import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
 import { staffQuoteInput } from './staff-quote-workflow.js';
 import { runStaffQuote, staffQuoteCauseSummary } from './staff-quote-run.js';
@@ -35,6 +37,7 @@ export type ReservationWorkflowV2QuoteContext = {
   transport: { id: string };
   user: { id: string };
   property: { propertyCode: string };
+  nativeBatch?: ReservationNativeCheckBatch;
 };
 
 type QuoteBaseInput = {
@@ -92,8 +95,9 @@ function stateContext(ctx: ReservationWorkflowV2QuoteContext) {
   return {
     db: ctx.db,
     transportId: ctx.transport.id,
-    userId: ctx.user.id,
+    userId: ctx.nativeBatch ? null : ctx.user.id,
     propertyCode: ctx.property.propertyCode,
+    nativeBatch: ctx.nativeBatch,
   };
 }
 
@@ -781,8 +785,11 @@ async function priceQuote(
 ) {
   let quote: QuoteRunResult;
   try {
-    quote = await runStaffQuote(compiled.input, { transportId: ctx.transport.id }, ctx.db) as unknown as QuoteRunResult;
+    quote = await runStaffQuote(compiled.input, { transportId: ctx.transport.id }, ctx.db,
+      ctx.nativeBatch ? { persistence: 'return_only', signal: ctx.nativeBatch.signal,
+        deadlineAt: ctx.nativeBatch.deadlineAt, preparedRunId: ctx.nativeBatch.jobFence.runId, autoStart: true } : {}) as unknown as QuoteRunResult;
   } catch (error) {
+    ctx.nativeBatch?.signal.throwIfAborted();
     const cause = staffQuoteCauseSummary(error);
     const mismatch = cause.code === 'native_quote_no_matching_rate' || cause.code === 'business_selected_price_unavailable';
     const shortage = cause.code === 'native_quote_insufficient_inventory';
@@ -870,6 +877,27 @@ async function lookupPartyCandidates(
       candidates.push(...reusable.map((entry) => ({
         ...entry.result, ref: entry.ref,
       })));
+      continue;
+    }
+    if (ctx.nativeBatch) {
+      const found = await lookupNativeParty({ role: role === 'company' ? 'organization' : 'agency',
+        name, target: target.target, signal: ctx.nativeBatch.signal });
+      const rows = Array.isArray(found.result.candidates) ? found.result.candidates : [];
+      const rowValues = rows.length ? rows : [null];
+      for (const value of rowValues) {
+        const row = record(value);
+        const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: draft.generationId,
+          kind: 'party_candidate', status: found.status, observedAt: new Date().toISOString(), propertyCode: draft.propertyCode,
+          sourceMessageId: draft.source.messageId, sourceRefs: [],
+          criteria: { workflow: 'quote', requestId: request.id, role, searchName: name,
+            fieldPath: ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role, 'nativeSelectionRef') },
+          coverage: found.coverage, result: row ? { ...row, kind: role, outcome: found.result.outcome,
+            searchedFor: name, truncated: found.result.truncated } : { ...found.result, kind: role } };
+        const saved = await persistObservation(ctx, input, observation);
+        if (saved.status !== 'ok') return { status: saved.status, issue: 'party_lookup_result_not_persisted', candidates };
+        if (row) candidates.push({ ...row, ref: observation.ref, kind: role });
+      }
+      if (found.status !== 'complete') return { status: 'failed', issue: 'native_party_search_incomplete', candidates };
       continue;
     }
     let found: Awaited<ReturnType<typeof findParty>>;
