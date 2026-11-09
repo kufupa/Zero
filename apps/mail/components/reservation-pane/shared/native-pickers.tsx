@@ -46,6 +46,9 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const selectedRef = entity ? selectionOverride && selectionOverride.state !== 'inherit'
     ? valueAt(editor.snapshot, selectionPath)
     : valueAt(editor.snapshot, selectionPath) ?? (party ? record(valueAt(editor.snapshot, path)).suggestedRef : valueAt(editor.snapshot, `${guestPath}/suggestedRef`)) : null;
+  const createIdentity = entity && editor.request.kind === 'create';
+  const staffSelected = selectionOverride?.state === 'set' && typeof selectionOverride.value === 'string' &&
+    selectionOverride.value.trim() !== '' && selectionOverride.value === selectedRef;
   const verifiedLeads = new Map(editor.snapshot.session.draft.observations.flatMap(observation => {
     const criteria = record(observation.criteria);
     return criteria.kind === 'verified_native_row' && typeof criteria.leadObservationRef === 'string' &&
@@ -76,7 +79,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       <button type="button" aria-label={`Show ${label} choices`} disabled={disabled || reviewing} onMouseDown={event => event.preventDefault()} onClick={() => setOpen(!open)}>⌄</button></div>
     {open && !disabled && <div id={`${id}-options`} role="listbox" className={styles.options}>
       {allowNone && <button type="button" role="option" aria-selected={!query} onMouseDown={event => event.preventDefault()} onClick={() => { void editor.commands.edit(party ? path : inputPath, null, 'none').then(() => { setQuery(''); setDirty(false); setOpen(false); }).catch(() => {}); }}>None</button>}
-      {shown.map((row, index) => <button id={`${id}-option-${index}`} key={`${row.ref}:${row.value}`} type="button" role="option" aria-selected={entity ? selectedRef === row.ref : saved === row.value}
+      {shown.map((row, index) => <button id={`${id}-option-${index}`} key={`${row.ref}:${row.value}`} type="button" role="option" aria-selected={entity ? selectedRef === row.ref && (!createIdentity || staffSelected) : saved === row.value}
         onMouseDown={event => event.preventDefault()} onClick={() => { void choose(row.ref, row.value); }}><strong>{row.value}</strong>{row.label !== row.value && <span> — {row.label}</span>}{row.detail && <small>{row.detail}</small>}</button>)}
       {selectedVerified && <small role="note">This row was checked; the earlier search may still be incomplete.</small>}
       {leads.length > 0 && <div role="note"><small><strong>Infor matches</strong> · {editor.commands.verifyNativeLead
@@ -92,6 +95,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       {!choices.length && <small>Find options in Infor to load native choices.</small>}
       <button type="button" onClick={() => { void saveSearch().then(() => editor.commands.lookup()).catch(() => {}); }}>Search Infor</button>
     </div>}
-  {dirty ? <small>Unsaved search</small> : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}{hint && <small>{hint}</small>}</div>
+  {dirty ? <small>Unsaved search</small> : createIdentity && !staffSelected && (query || selectedRef)
+    ? <small>Select an Infor match for automatic checks.</small> : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}{hint && <small>{hint}</small>}</div>
     {compact && <FieldReview editor={editor} path={path} label={label} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />}</div>;
 }

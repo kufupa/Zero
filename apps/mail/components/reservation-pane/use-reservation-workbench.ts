@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
 import { ReservationWorkflowStaleRevisionError, type ReservationFieldOverride, type ReservationPaneSnapshot, type ReservationSourceContext, type ReservationWorkflowClient, type ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
-import { effectiveAt, valueAt, record, requestPath, snapshotMatchesSource, staffEnteredAt, text, type WorkbenchCommands } from '@/lib/reservation-workflow/views';
+import { effectiveAt, nativeChoices, valueAt, record, requestPath, snapshotMatchesSource, staffEnteredAt, text, type WorkbenchCommands } from '@/lib/reservation-workflow/views';
 
 type Pending = { path: string; value: unknown; state: ReservationFieldOverride['state']; token: number;
   generation: string | null; rows: { path: string; identity: string }[] };
@@ -68,13 +68,13 @@ function clearGuestAttempt(source: ReservationSourceContext, requestId: string, 
 
 function notify(buffer: Buffer) { buffer.listeners.forEach(listener => listener()); }
 
-// A suggested identity can be displayed before staff have accepted it. A review
-// of the selection path, including a reviewed suggestion, is required here.
-function reviewedIdentity(snapshot: ReservationPaneSnapshot, path: string, suggested: unknown): boolean {
+// Background preparation requires an explicit, still-selectable Infor identity.
+function reviewedIdentity(snapshot: ReservationPaneSnapshot, path: string, kind: 'guest_candidate' | 'party_candidate'): boolean {
   const draft = snapshot.session.draft;
   const override = draft.fieldOverrides[path];
-  const ref = override?.state === 'set' ? override.value : override && override.state !== 'inherit' ? null : suggested;
-  return typeof ref === 'string' && ref.trim().length > 0 && draft.staffReviews[path]?.status === 'accepted';
+  const ref = override?.state === 'set' ? override.value : null;
+  return typeof ref === 'string' && ref.trim().length > 0 && draft.staffReviews[path]?.status === 'accepted' &&
+    nativeChoices(snapshot, path, kind).some(choice => choice.ref === ref);
 }
 
 function autoCreateReady(snapshot: ReservationPaneSnapshot, requestId: string, allocationId: string): boolean {
@@ -89,7 +89,7 @@ function autoCreateReady(snapshot: ReservationPaneSnapshot, requestId: string, a
   const guest = record(room.guest), occupancy = record(room.occupancy);
   const guestPath = `${root}/allocations/${index}/guest/nativeSelectionRef`;
   if (guest.profileIntent !== 'existing_or_unknown' || !text(guest.firstName) || !text(guest.lastName) ||
-      !reviewedIdentity(snapshot, guestPath, guest.suggestedRef)) return false;
+      !reviewedIdentity(snapshot, guestPath, 'guest_candidate')) return false;
 
   const bases = [`${root}/allocations/${index}/overrides`, `${root}/dateSections/${sectionIndex}/defaults`, `${root}/shared`];
   for (const field of ['bookingAgency', 'organization', 'arAccount']) {
@@ -107,7 +107,7 @@ function autoCreateReady(snapshot: ReservationPaneSnapshot, requestId: string, a
       if (value == null) continue;
       const party = record(value);
       if (party.kind !== 'none' && text(valueAt(snapshot, `${path}/name`)).trim() &&
-          !reviewedIdentity(snapshot, `${path}/nativeSelectionRef`, valueAt(snapshot, `${path}/suggestedRef`))) return false;
+          !reviewedIdentity(snapshot, `${path}/nativeSelectionRef`, 'party_candidate')) return false;
       break;
     }
   }
