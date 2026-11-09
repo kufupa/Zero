@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { effectiveAt, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
-import { Count, Field, Section } from '../shared/stay-fields';
+import { Count, Field, FieldReview, Section } from '../shared/stay-fields';
 import { NativePicker } from '../shared/native-pickers';
 import { ChildAges } from './create-editor';
 import styles from './create-quote-editor.module.css';
@@ -25,13 +25,17 @@ function SharedDate({ editor, groups, bodyPath, field, label }: {
 }) {
   const first = groups[0];
   const date = text(first?.[field]);
+  const id = useId();
   const [value, setValue] = useState(date);
+  const [reviewing, setReviewing] = useState(false);
   const dirty = useRef(false), version = useRef(0);
   const editKey = `${bodyPath}/groups/shared/${field}`;
   useEffect(() => { if (!dirty.current) setValue(date); }, [date]);
   useEffect(() => () => editor.commands.setUncommitted(editKey, false), [editKey]);
-  return <label className={styles.localField}>{label}
-    <input type="date" value={value} onChange={(event) => {
+  return <div className={styles.localField}>
+    <div className={styles.countHeading}><label htmlFor={id}>{label}</label>
+      {groups.length === 1 && <FieldReview editor={editor} path={`${bodyPath}/groups/0/${field}`} label={label} onPendingChange={setReviewing} />}</div>
+    <input id={id} type="date" value={value} disabled={editor.view.busy || reviewing} onChange={(event) => {
       const next = event.target.value; setValue(next); dirty.current = true; version.current += 1;
       editor.commands.setUncommitted(editKey, true);
       groups.forEach((_, index) => editor.commands.stageEdit(`${bodyPath}/groups/${index}/${field}`, next || null));
@@ -42,7 +46,7 @@ function SharedDate({ editor, groups, bodyPath, field, label }: {
         if (version.current === before) { dirty.current = false; editor.commands.setUncommitted(editKey, false); }
       }).catch(() => {});
     }} />
-  </label>;
+  </div>;
 }
 
 function latestQuote(editor: Editor) {
@@ -124,17 +128,20 @@ function money(minor: unknown, currency: unknown) {
 }
 
 function RoomCode({ editor, path, options }: { editor: Editor; path: string; options: Record<string, unknown>[] }) {
+  const id = useId();
   const saved = valueAt(editor.snapshot, path);
   const initial = Array.isArray(saved) ? saved.map(text).join(', ') : '';
   const [value, setValue] = useState(initial);
+  const [reviewing, setReviewing] = useState(false);
   const dirty = useRef(false), version = useRef(0);
   const parse = (input: string) => input.split(',').map((code) => code.trim().toUpperCase()).filter(Boolean);
   useEffect(() => { if (!dirty.current) setValue(initial); }, [initial]);
   useEffect(() => () => editor.commands.setUncommitted(path, false), [path]);
   const listId = `rooms-${path.replace(/[^a-z0-9]/giu, '-')}`;
   const codes = [...new Map(options.map((option): [string, string] => [text(option.roomCode), text(option.roomLabel)]).filter(([code]) => code)).entries()];
-  return <label className={`${styles.localField} ${styles.quoteLine}`}>Room categories
-    <input value={value} list={listId} placeholder="Any category, or codes separated by commas" onChange={(event) => {
+  return <div className={`${styles.localField} ${styles.quoteLine}`}>
+    <label htmlFor={id}>Room categories</label>
+    <input id={id} value={value} list={listId} disabled={editor.view.busy || reviewing} placeholder="Any category, or codes separated by commas" onChange={(event) => {
       const next = event.target.value; setValue(next); dirty.current = true; version.current += 1;
       editor.commands.setUncommitted(path, true); editor.commands.stageEdit(path, parse(next));
     }}
@@ -146,8 +153,8 @@ function RoomCode({ editor, path, options }: { editor: Editor; path: string; opt
         }).catch(() => {});
       }} />
     <datalist id={listId}>{codes.map(([code, label]) => <option key={code} value={code}>{label}</option>)}</datalist>
-    <small>Choose a native offer below to select its category and rate.</small>
-  </label>;
+    <span className={styles.quoteReview}><FieldReview editor={editor} path={path} label="Room categories" onPendingChange={setReviewing} /></span>
+  </div>;
 }
 
 function OfferList({ editor, groupId, groupPath, observation }: { editor: Editor; groupId: string; groupPath: string; observation: ReturnType<typeof latestQuote> }) {
@@ -323,6 +330,10 @@ export function QuoteEditor(editor: Editor) {
         {mismatch && <p className={styles.notice}>This quote contains more than one date pair. Use separate quote actions, or set common dates for all groups.</p>}
       </> : <p className={styles.notice}>Add a room group to start a manual quote.</p>}
       {hasShortfall && <p className={styles.notice}>{'Earlier pricing shortage; refresh selected criteria'}: {text(shortfall.roomLabel)} ({text(shortfall.roomCode)}) · {text(shortfall.date)} · {String(shortfall.demand)} requested, {String(shortfall.supply)} available.</p>}
+      <div className={styles.groupHeading}><strong>Room groups</strong>
+        <button type="button" className={styles.linkButton} aria-label="Add room group" disabled={view.busy || groups.length >= 8}
+          onClick={() => void commands.changeRows({ kind: 'add_quote_group', requestId: request.id,
+            entityId: `group_${crypto.randomUUID().replaceAll('-', '')}` })}>+ Group</button></div>
       {groups.map((group, index) => {
         const groupPath = `${bodyPath}/groups/${index}`;
         const options = Array.isArray(result.rateOptions) ? result.rateOptions.map(record).filter((option) => option.groupId === group.id) : [];
@@ -332,24 +343,21 @@ export function QuoteEditor(editor: Editor) {
             <button type="button" className={styles.linkButton} disabled={view.busy || groups.length <= 1} onClick={() => void commands.changeRows({ kind: 'remove_quote_group',
               requestId: request.id, entityId: text(group.id) })}>Remove</button></div>
           {mismatch && <p className={styles.note}>This group: {text(group.arrival) || 'arrival missing'} – {text(group.departure) || 'departure missing'}</p>}
-          <div className={styles.twoCol}><Count label="Rooms" path={`${groupPath}/quantity`} editor={editor} min={1} max={100} />
-            <Field label="Board" path={`${groupPath}/board`} editor={editor} options={boards} /></div>
-          <RoomCode editor={editor} path={`${groupPath}/roomCodes`} options={options} />
-          <NativePicker label="Rate plan" path={`${groupPath}/ratePlan`} editor={editor} kind="rate_plan" compact />
+          <div className={styles.twoCol}><Count label="Rooms" path={`${groupPath}/quantity`} editor={editor} min={1} max={100} review />
+            <Field label="Board" path={`${groupPath}/board`} editor={editor} options={boards} review /></div>
           <Field label="Occupancy scope" path={`${groupPath}/occupancy/scope`} editor={editor} compact options={[
             { value: 'unresolved', label: 'Needs allocation' }, { value: 'whole_group', label: 'Whole group · needs allocation' },
             { value: 'per_room', label: 'Per room' },
           ]} />
           {scope !== 'per_room' && <p className={styles.notice}>Allocate adults and children per room before pricing. Totals are not divided automatically.</p>}
-          <div className={styles.twoCol}><Count label="Adults per room" path={`${groupPath}/occupancy/adults`} editor={editor} min={1} max={6} />
+          <div className={styles.twoCol}><Count label="Adults per room" path={`${groupPath}/occupancy/adults`} editor={editor} min={1} max={6} review />
             <ChildAges editor={editor} path={`${groupPath}/occupancy`} /></div>
+          <RoomCode editor={editor} path={`${groupPath}/roomCodes`} options={options} />
+          <NativePicker label="Rate plan" path={`${groupPath}/ratePlan`} editor={editor} kind="rate_plan" compact />
           <OfferList editor={editor} groupId={text(group.id)} groupPath={groupPath} observation={observation} />
         </div>;
       })}
-      <div className={styles.inlineButtons}><button type="button" className={styles.secondaryButton} disabled={view.busy || groups.length >= 8}
-        onClick={() => void commands.changeRows({ kind: 'add_quote_group', requestId: request.id,
-          entityId: `group_${crypto.randomUUID().replaceAll('-', '')}` })}>Add room group</button>
-        <button type="button" className={styles.secondaryButton} disabled={view.busy} onClick={() => void commands.lookup()}>Refresh Infor offers</button></div>
+      <div className={styles.inlineButtons}><button type="button" className={styles.secondaryButton} disabled={view.busy} onClick={() => void commands.lookup()}>Refresh Infor offers</button></div>
       {observation && <div className={styles.price}><strong>{quoteCurrent(editor, observation) ? 'Current Infor quote' : offersCurrent ? 'Current Infor availability' : 'Earlier Infor observation'}</strong>
         {money(result.totalMinor, result.currency) && <span>{money(result.totalMinor, result.currency)} total</span>}
         <small>{text(result.arrivalDate)} – {text(result.departureDate)}{observation.observedAt ? ` · observed ${new Date(observation.observedAt).toLocaleString()}` : ''}</small>
