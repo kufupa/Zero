@@ -10,7 +10,7 @@ const activeWrites = new Set();
 const issue = error => /^[A-Z][A-Z0-9_]{2,100}$/.test(error.message || '') ? error.message : 'ADDONS_SESSION_FAILED';
 const failure = error => ({ outcome: 'execution_failure', issue: issue(error) });
 
-async function authorizeLabtest(prepared, withPage) {
+async function authorizeLabtest(prepared, withPage, signal) {
   return withPage(async page => {
     await readConfirmationFromStay360(page, prepared.confirmation, { guestName: 'Proof Labtest', arrivalDate: prepared.target.arrival });
     const read = await readRecordViewFromStay360(page, prepared.confirmation, { nativePropertyCode: 'HRCEN', nativeIdentityOnly: true });
@@ -19,7 +19,7 @@ async function authorizeLabtest(prepared, withPage) {
       identity.reservationStayId === prepared.native.stayId && identity.firstName === 'Proof' && identity.lastName === 'Labtest' &&
       identity.status === 'Reserved' && identity.arrival >= '2027-01-01' && identity.arrival === prepared.target.arrival &&
       identity.departure === prepared.target.departure && cms.length === 1 && cms[0].value === false);
-  }, { headless: true, blockServiceWorkers: true, signal: options.signal });
+  }, { headless: true, blockServiceWorkers: true, signal });
 }
 
 const nativeIdOf = row => String(row.enhexpsequencekey ?? '').trim();
@@ -183,7 +183,7 @@ export async function withStay360AddOnSession(operation, options = {}) {
           const correction = request.tool === 'saveChanges';
           if (correction) {
             lastSave = await saveStay360AddOnChanges(page, confirmation, request.preparedId, {
-              authorize: options.authorizeChanges || (prepared => authorizeLabtest(prepared, withPage)),
+              authorize: options.authorizeChanges || (prepared => authorizeLabtest(prepared, withPage, options.signal)),
               beforeDispatch: options.captureWriterIdentity && options.beforeChangeDispatch
                 ? dispatch => {
                     const writer = centurionWriterIdentity(page);
@@ -202,7 +202,7 @@ export async function withStay360AddOnSession(operation, options = {}) {
             });
             if (lastSave.kind === 'changes') closed = true;
           } else lastSave = await saveStay360AddOns(page, confirmation, request.preparedId, {
-            authorize: options.authorize || (prepared => authorizeLabtest(prepared, withPage)),
+            authorize: options.authorize || (prepared => authorizeLabtest(prepared, withPage, options.signal)),
             beforeDispatch: options.captureWriterIdentity && options.beforeDispatch
               ? dispatch => {
                   const writer = centurionWriterIdentity(page);
