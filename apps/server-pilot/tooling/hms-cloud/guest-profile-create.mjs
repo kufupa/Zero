@@ -45,6 +45,9 @@ export function profileBusinessFields(input) {
   const fields = { firstName: clean(guest.firstName), lastName: clean(guest.lastName),
     mobile: clean(guest.mobile), email: guest.email == null ? '' : clean(guest.email) };
   for (const key of suppliedExtras) fields[key] = clean(guest[key]);
+  // HMS rejects an email address without a type ("E-Mail Type required for E-Mail.").
+  // Default Primary when staff/workflow supply an email but omit the type code.
+  if (fields.email && !Object.hasOwn(fields, 'emailTypeCode')) fields.emailTypeCode = 'PRIM';
   if (['firstName', 'lastName', 'mobile'].some(key => !fields[key]) ||
       (fields.phoneTypeCode && !fields.phoneNumber) || (fields.emailTypeCode && !fields.email) ||
       Object.values(fields).some(value => value.length > 200 || [...value].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127))) return null;
@@ -392,8 +395,9 @@ async function handleProfileSave(route, state) {
         write.response = { status: response.status(), success: response.status() === 200 && data?.success === true,
           nativeId: /^\d+$/.test(id) ? id : null, question };
         // Persist the response and any native ID before the browser receives it.
-        const needsDiagnostics = write.fields.firstName === 'Proof' && write.fields.lastName === 'Labtest' &&
-          (!write.response.success || !write.response.nativeId);
+        // Journal bounded parse/message evidence for any failed Save so native
+        // validation (e.g. missing email type) is visible outside Proof Labtest.
+        const needsDiagnostics = (!write.response.success || !write.response.nativeId);
         write.diagnosticFailure = Boolean(needsDiagnostics && confirmed);
         if (needsDiagnostics) write.diagnosticSecrets = await profileDiagnosticSecrets(request);
         let diagnostics = null;

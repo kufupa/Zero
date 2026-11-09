@@ -5,6 +5,20 @@ import { prepareGuardedContext } from './pre-navigation-context-guard.mjs';
 import { matchesProfileReadback, profileBusinessFields, profileCreateTestHooks as hooks } from './guest-profile-create.mjs';
 
 const fields = profileBusinessFields({ guest: { firstName: 'Proof', lastName: 'Labtest', mobile: '+27000000001' } });
+
+test('email without a type defaults to Primary so native Save is not rejected', () => {
+  assert.equal(fields.emailTypeCode, undefined);
+  const withEmail = profileBusinessFields({
+    guest: { firstName: 'Proof', lastName: 'Labtest', mobile: '+27000000001', email: 'proof@example.invalid' },
+  });
+  assert.equal(withEmail?.emailTypeCode, 'PRIM');
+  const explicit = profileBusinessFields({
+    guest: { firstName: 'Proof', lastName: 'Labtest', mobile: '+27000000001', email: 'proof@example.invalid',
+      emailTypeCode: 'HOME' },
+  });
+  assert.equal(explicit?.emailTypeCode, 'HOME');
+});
+
 function request(changes = {}, confirmed = false) {
   const body = new URLSearchParams({ SYSTEM_FUNCTION_NAME: 'FSGSPF', USER_FUNCTION_NAME: 'FSGSPF', CURRENT_TAB_NAME: 'HDR',
     firstname: fields.firstName, lastname: fields.lastName, mobilenumber: fields.mobile, emailaddress: '',
