@@ -332,10 +332,10 @@ function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor
       <button type="button" className={styles.linkButton} disabled={locked} onClick={() => void editor.commands.edit(`${guestPath}/profileIntent`, 'existing_or_unknown')}>Search instead</button></div>
       : <div className={styles.guestProfileRow}><NativePicker label="Guest Profile" path={`${guestPath}/nativeSelectionRef`} editor={editor} kind="guest_candidate" disabled={locked} compact />
         {!created && <button type="button" className={styles.linkButton} disabled={locked} onClick={() => void editor.commands.edit(`${guestPath}/profileIntent`, 'requested_new')}>+ New</button>}</div>}
-    {newProfile && <p className={styles.note}>Profile ID · Not created</p>}
+    {newProfile && <p className={styles.note}>Profile ID · {unknown ? 'Unknown' : 'Not created'}</p>}
     {created && <p className={styles.note}>{selectedCreated ? 'Profile ID' : 'Previously created profile'} · {nativeId || 'Verified in Infor'} ✓ Created</p>}
     <GuestDetails editor={editor} allocationPath={allocationPath} allocationId={allocationId} newProfile={newProfile} disabled={locked} />
-    {unknown ? <div className={styles.notice}>Profile creation outcome is unknown. Check it before trying again.
+    {unknown ? <div className={styles.notice}>Profile creation outcome is unknown. Do not create another profile until it is confirmed. Contact Nava support if it cannot be confirmed.
       <button type="button" disabled={editor.view.busy} onClick={() => void (localPending
         ? editor.commands.checkGuestProfile(allocationId) : editor.commands.reconcile(text(latest?.id))).catch(() => {})}>Check outcome</button></div>
       : newProfile && <>
