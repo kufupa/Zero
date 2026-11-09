@@ -369,23 +369,12 @@ export function CreateEditor(editor: Editor) {
         {partyFields.map(field => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
       </fieldset>
     </Section>
-    <Section title="Shared booking settings">
-      <fieldset disabled={allCompleted} className={styles.plainFieldset}>
-        {sharedBooking.map(field => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
-        <details className={styles.details} open={extraStay.some(field => hasOwn(editor, `${shared}/${field.key}`)) || undefined}>
-          <summary>More stay fields</summary>
-          {extraStay.map(field => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
-        </details>
-      </fieldset>
-      <button type="button" className={styles.linkButton} disabled={view.busy} onClick={() => void commands.lookup()}>Search / refresh Infor</button>
-    </Section>
     {sections.map((section, sectionIndex) => {
       const sectionPath = `${bodyPath}/dateSections/${sectionIndex}`;
       const sectionId = text(section.id);
       const rooms = allocations.map((allocation, index) => ({ allocation, index })).filter(({ allocation }) => allocation.dateSectionId === section.id);
       const sectionHasCompleted = rooms.some(({ allocation }) => Boolean(completedRoom(editor, text(allocation.id))));
       const sectionAllCompleted = rooms.length > 0 && rooms.every(({ allocation }) => Boolean(completedRoom(editor, text(allocation.id))));
-      const unassigned = Array.isArray(section.unassignedGuestNames) ? section.unassignedGuestNames.filter((name): name is string => typeof name === 'string') : [];
       const requested = valueAt(snapshot, `${sectionPath}/requestedRooms`);
       return <section className={styles.group} key={sectionId || sectionIndex}>
         <div className={styles.groupHeading}><strong>{sections.length > 1 ? `Date range ${sectionIndex + 1}` : 'Stay dates'}</strong>
@@ -398,8 +387,42 @@ export function CreateEditor(editor: Editor) {
           <Field label="Departure Date" path={`${sectionPath}/departure`} editor={editor} type="date" disabled={sectionAllCompleted} review />
         </div>
         <p className={styles.note}>{rooms.length} {rooms.length === 1 ? 'room' : 'rooms'} on these dates{requested != null && Number(requested) !== rooms.length ? ` · requested ${text(requested)}` : ''}</p>
-        {unassigned.length > 0 && <p className={styles.notice}>Guests to assign: {unassigned.join(', ')}</p>}
         {record(section.requestedTotals).adults != null && <p className={styles.note}>Requested group: {text(record(section.requestedTotals).adults)} adults{record(section.requestedTotals).childCount != null ? `, ${text(record(section.requestedTotals).childCount)} children` : ''}. Enter occupancy for each room.</p>}
+        {rooms.map(({ allocation, index }) => completedRoom(editor, text(allocation.id)) ? null : <div className={styles.occupancyRow} key={text(allocation.id) || index}>
+          <strong>Room {index + 1} occupancy</strong>
+          <div className={styles.twoCol}>
+            <Count label="Adults" path={`${bodyPath}/allocations/${index}/occupancy/adults`} editor={editor} min={1} max={20} review asSelect />
+            <ChildAges editor={editor} path={`${bodyPath}/allocations/${index}/occupancy`} />
+          </div>
+        </div>)}
+        {sections.length > 1 && <button type="button" className={styles.linkButton} disabled={view.busy || sectionHasCompleted || allocations.length - rooms.length < 1}
+          onClick={() => void commands.changeRows({ kind: 'remove_date_section', requestId: request.id, entityId: sectionId,
+            childIds: rooms.map(({ allocation }) => text(allocation.id)) })}>Remove dates and rooms</button>}
+      </section>;
+    })}
+    {!sections.length && <p className={styles.notice}>Add dates to start a manual reservation.</p>}
+    <button type="button" className={styles.linkButton} disabled={view.busy} onClick={() => void commands.changeRows({ kind: 'add_date_section', requestId: request.id, entityId: `dates_${crypto.randomUUID().replaceAll('-', '')}` })}>+ Another date range</button>
+    <Section title="Stay details">
+      <fieldset disabled={allCompleted} className={styles.plainFieldset}>
+        {extraStay.map(field => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
+      </fieldset>
+    </Section>
+    <Section title="Shared booking settings">
+      <fieldset disabled={allCompleted} className={styles.plainFieldset}>
+        {sharedBooking.map(field => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
+      </fieldset>
+      <button type="button" className={styles.linkButton} disabled={view.busy} onClick={() => void commands.lookup()}>Search / refresh Infor</button>
+    </Section>
+    {sections.map((section, sectionIndex) => {
+      const sectionPath = `${bodyPath}/dateSections/${sectionIndex}`;
+      const sectionId = text(section.id);
+      const rooms = allocations.map((allocation, index) => ({ allocation, index })).filter(({ allocation }) => allocation.dateSectionId === section.id);
+      const sectionHasCompleted = rooms.some(({ allocation }) => Boolean(completedRoom(editor, text(allocation.id))));
+      const sectionAllCompleted = rooms.length > 0 && rooms.every(({ allocation }) => Boolean(completedRoom(editor, text(allocation.id))));
+      const unassigned = Array.isArray(section.unassignedGuestNames) ? section.unassignedGuestNames.filter((name): name is string => typeof name === 'string') : [];
+      return <section className={styles.group} key={sectionId || sectionIndex}>
+        <div className={styles.groupHeading}><strong>{sections.length > 1 ? `Guests · date range ${sectionIndex + 1}` : 'Guests'}</strong></div>
+        {unassigned.length > 0 && <p className={styles.notice}>Guests to assign: {unassigned.join(', ')}</p>}
         <details open={allFields.some(field => hasOwn(editor, `${sectionPath}/defaults/${field.key}`)) || undefined} className={styles.details}>
           <summary>Settings for these rooms{sectionHasCompleted ? ' · remaining rooms' : ''}</summary>
           <fieldset disabled={sectionAllCompleted} className={styles.plainFieldset}>{allFields.map(field => <ScopedField key={field.key} field={field} path={`${sectionPath}/defaults/${field.key}`}
@@ -417,10 +440,6 @@ export function CreateEditor(editor: Editor) {
             <div className={styles.groupHeading}><strong>Room {index + 1}</strong>
               <button type="button" className={styles.linkButton} disabled={view.busy || allocations.length <= 1}
                 onClick={() => void commands.changeRows({ kind: 'remove_allocation', requestId: request.id, entityId: allocationId, parentId: sectionId })}>Remove</button></div>
-            <div className={styles.twoCol}>
-              <Count label="Adults" path={`${allocationPath}/occupancy/adults`} editor={editor} min={1} max={20} review asSelect />
-              <ChildAges editor={editor} path={`${allocationPath}/occupancy`} />
-            </div>
             {unassigned.length > 0 && <label className={styles.localField}>Assign a guest from the email
               <select value="" onChange={(event) => {
                 if (!event.target.value) return;
@@ -457,13 +476,8 @@ export function CreateEditor(editor: Editor) {
             </details>
           </div>;
         })}
-        {sections.length > 1 && <button type="button" className={styles.linkButton} disabled={view.busy || sectionHasCompleted || allocations.length - rooms.length < 1}
-          onClick={() => void commands.changeRows({ kind: 'remove_date_section', requestId: request.id, entityId: sectionId,
-            childIds: rooms.map(({ allocation }) => text(allocation.id)) })}>Remove dates and rooms</button>}
       </section>;
     })}
-    {!sections.length && <p className={styles.notice}>Add dates to start a manual reservation.</p>}
-    <button type="button" className={styles.linkButton} disabled={view.busy} onClick={() => void commands.changeRows({ kind: 'add_date_section', requestId: request.id, entityId: `dates_${crypto.randomUUID().replaceAll('-', '')}` })}>+ Another date range</button>
     <Section title="Booker and confirmation">
       <fieldset disabled={allCompleted} className={styles.plainFieldset}>
         {otherFields.map(field => <BookingControl key={field.key} field={field.key === 'cmsRecipient' ? { ...field,

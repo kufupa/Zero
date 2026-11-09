@@ -39,6 +39,8 @@
 .compactCreate .group { gap: 7px; padding: 0; border: 0; border-radius: 0; }
 .compactCreate .roomCard { gap: 5px; padding: 10px 0 2px; border: 0; border-top: 1px solid var(--border, #d7dfe8); border-radius: 0; }
 .compactCreate .groupHeading { padding-top: 3px; font-size: 12px; }
+.compactCreate .occupancyRow { display: grid; gap: 3px; padding-top: 5px; border-top: 1px solid var(--border, #d7dfe8); }
+.compactCreate .occupancyRow > strong { font-size: 12px; }
 .compactCreate .dateFields { grid-template-columns: minmax(0, 1fr) 54px minmax(0, 1fr); gap: 5px; }
 .compactCreate .dateFields > :last-child { grid-column: auto; }
 .compactCreate .localField input, .compactCreate .localField select { min-height: 28px; padding: 4px 6px; border-radius: 3px; }
