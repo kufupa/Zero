@@ -551,7 +551,7 @@ async function hasUnsafeNativeResumeActivity(tx: WorkTx, workItemId: string,
         !Array.isArray(value.results) || !value.results.every((id) => typeof id === 'string')) return true;
     for (const id of value.results) resultIds.add(id);
   }
-  return draft.operationResults.some((result) => result.status !== 'prepared' || result.generationId !== draft.generationId ||
+  return draft.operationResults.some((result) => !['prepared', 'failed'].includes(result.status) || result.generationId !== draft.generationId ||
     result.draftRevision !== draft.revision || !resultIds.has(result.id));
 }
 
@@ -1219,7 +1219,7 @@ export async function commitReservationNativeCheck(ctx: Context, input: {
     }
     const results = [...current.draft.operationResults];
     for (const result of input.batch.results) {
-      if (result.status !== 'prepared' || result.generationId !== current.draft.generationId || result.draftRevision !== item.revision ||
+      if (!['prepared', 'failed'].includes(result.status) || result.generationId !== current.draft.generationId || result.draftRevision !== item.revision ||
           result.observationRefs.some((ref) => !observations.some((entry) => entry.ref === ref)) ||
           results.some((entry) => entry.id === result.id && (entry.status === 'succeeded' ||
             entry.requestId !== result.requestId || entry.allocationId !== result.allocationId || entry.workflow !== result.workflow)))
