@@ -41,6 +41,12 @@ export function snapshotMatchesSource(snapshot: ReservationPaneSnapshot | null, 
 }
 export const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 export const text = (v: unknown): string => v == null ? '' : typeof v === 'object' ? String(record(v).name ?? record(v).code ?? '') : String(v);
+export function guestProfileReceipt(row: Record<string, unknown> | undefined): { nativeId: string; observationRef: string } | null {
+  if (!row || row.workflow !== 'guest_profile' || row.status !== 'succeeded' ||
+      typeof row.nativeId !== 'string' || !/^\d+$/.test(row.nativeId) ||
+      typeof row.nativeIdObservationRef !== 'string' || !row.nativeIdObservationRef.trim()) return null;
+  return { nativeId: row.nativeId, observationRef: row.nativeIdObservationRef };
+}
 export function staffEnteredAt(snapshot: ReservationPaneSnapshot, path: string): boolean {
   return Object.entries(snapshot.session.draft.fieldOverrides).some(([key, value]) =>
     (path === key || path.startsWith(`${key}/`)) && value.state === 'set');

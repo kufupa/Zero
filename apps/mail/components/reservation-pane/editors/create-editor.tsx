@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, useRef, useState } from 'react';
-import { effectiveAt, record, requestPath, staffEnteredAt, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { effectiveAt, guestProfileReceipt, record, requestPath, staffEnteredAt, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { Count, Field, FieldReview, Section } from '../shared/stay-fields';
 import { NativePicker } from '../shared/native-pickers';
 import styles from './create-quote-editor.module.css';
@@ -312,12 +312,10 @@ function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor
   const identityPart = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
   const sameGuest = ['firstName', 'lastName', 'mobile', 'email'].every(field => identityPart(guest[field]) === identityPart(previousGuest[field]));
   const duplicate = latest?.status === 'failed' && text(latest.summary).includes('PROFILE_NAME_ALREADY_EXISTS') && sameGuest;
-  const created = operations.find(row => row.status === 'succeeded');
-  const createdObservation = created && editor.snapshot.session.draft.observations.find(row =>
-    Array.isArray(created.observationRefs) && created.observationRefs.includes(row.ref) && row.criteria.workflow === 'guest_profile_create' && row.status === 'complete');
-  const createdRows = record(createdObservation?.result).candidates;
-  const nativeId = Array.isArray(createdRows) ? text(record(createdRows[0]).nativeId) : '';
-  const selectedCreated = Boolean(createdObservation && createdObservation.ref === valueAt(editor.snapshot, `${guestPath}/nativeSelectionRef`));
+  const succeeded = operations.filter(row => row.status === 'succeeded').at(-1);
+  const receipt = guestProfileReceipt(succeeded);
+  const missingReceipt = Boolean(succeeded && !receipt);
+  const selectedCreated = receipt && !unknown && receipt.observationRef === valueAt(editor.snapshot, `${guestPath}/nativeSelectionRef`);
   const locked = editor.view.busy || Boolean(unknown);
   const fields = ['firstName', 'lastName', 'mobile', 'email', 'titleCode', 'phoneNumber', 'phoneTypeCode', 'emailTypeCode'];
   const pendingReview = fields.some(field => {
@@ -331,14 +329,15 @@ function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor
     {newProfile ? <div className={styles.groupHeading}><strong>New guest profile</strong>
       <button type="button" className={styles.linkButton} disabled={locked} onClick={() => void editor.commands.edit(`${guestPath}/profileIntent`, 'existing_or_unknown')}>Search instead</button></div>
       : <div className={styles.guestProfileRow}><NativePicker label="Guest Profile" path={`${guestPath}/nativeSelectionRef`} editor={editor} kind="guest_candidate" disabled={locked} compact />
-        {!created && <button type="button" className={styles.linkButton} disabled={locked} onClick={() => void editor.commands.edit(`${guestPath}/profileIntent`, 'requested_new')}>+ New</button>}</div>}
-    {newProfile && <p className={styles.note}>Profile ID · {unknown ? 'Unknown' : 'Not created'}</p>}
-    {created && <p className={styles.note}>{selectedCreated ? 'Profile ID' : 'Previously created profile'} · {nativeId || 'Verified in Infor'} ✓ Created</p>}
+        {!succeeded && <button type="button" className={styles.linkButton} disabled={locked} onClick={() => void editor.commands.edit(`${guestPath}/profileIntent`, 'requested_new')}>+ New</button>}</div>}
+    {newProfile && (unknown || !receipt) && <p className={styles.note}>Profile ID · {unknown ? 'Unknown' : missingReceipt ? 'Needs confirmation' : 'Not created'}</p>}
+    {receipt && <p className={styles.note}>{selectedCreated ? 'Profile ID' : 'Previously created profile'} · {receipt.nativeId} ✓ Created</p>}
+    {missingReceipt && !unknown && <p className={styles.notice}>The profile result needs confirmation. Contact Nava support before creating another profile.</p>}
     <GuestDetails editor={editor} allocationPath={allocationPath} allocationId={allocationId} newProfile={newProfile} disabled={locked} />
     {unknown ? <div className={styles.notice}>Profile creation outcome is unknown. Do not create another profile until it is confirmed. Contact Nava support if it cannot be confirmed.
       <button type="button" disabled={editor.view.busy} onClick={() => void (localPending
         ? editor.commands.checkGuestProfile(allocationId) : editor.commands.reconcile(text(latest?.id))).catch(() => {})}>Check outcome</button></div>
-      : newProfile && <>
+      : newProfile && !succeeded && <>
         {duplicate && <p className={styles.notice}>Infor found a profile with this name. Search for the existing guest, or create a different profile.</p>}
         {pendingReview && <p className={styles.note}>Confirm the marked guest details before creating the profile.</p>}
         <button type="button" className={styles.secondaryButton} disabled={locked || editor.view.preview || !required || pendingReview}
