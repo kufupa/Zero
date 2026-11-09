@@ -89,7 +89,8 @@ export function AddonsEditor(editor: Editor) {
   const proposal = snapshot.session.draft.proposal.content;
   const owner = proposal.requests.find(row => row.id === request.id);
   const addTargets = owner?.kind === 'create' ? owner.body.allocations.map((room, index) => ({ id: room.id,
-    label: [room.guest.firstName, room.guest.lastName].filter(Boolean).join(' ') || `Room ${index + 1}` }))
+    label: ['firstName', 'lastName'].map(field => text(valueAt(snapshot, `${requestPath(request.id)}/body/allocations/${index}/guest/${field}`)))
+      .filter(Boolean).join(' ') || `Room ${index + 1}` }))
     : owner && 'targets' in owner.body ? (Array.isArray(record(effectiveAt(snapshot, `${requestPath(request.id)}/body/targets`)).include)
       ? (record(effectiveAt(snapshot, `${requestPath(request.id)}/body/targets`)).include as unknown[]).map((hint, index) => ({
         id: text(record(hint).id), label: text(record(hint).confirmation) || text(record(hint).guestName) || `Stay ${index + 1}` })) : []) : [];
@@ -109,7 +110,26 @@ export function AddonsEditor(editor: Editor) {
       {services.map(({ service, index }) => <div className={styles.stack} key={service.id}>
         {(service.requestedText || service.code) && <strong>{service.requestedText || service.code}</strong>}
         {service.requestedMoney.map(money => <div className={styles.hint} key={money.id}>Requested: {money.amount || 'amount unknown'} {money.currency || ''} {money.unit || ''} · {money.scope.replaceAll('_', ' ')}</div>)}
-        {!service.targets.length && <div className={styles.warning}>Choose the specific room for this Add-On. No room will be charged automatically.</div>}
+        {!service.targets.length && <>
+          <div className={styles.warning}>Choose the specific room for this Add-On. No room will be charged automatically.</div>
+          {owner?.kind === 'create' && owner.serviceRefs.includes(service.id)
+            && (text(valueAt(snapshot, `/proposal/content/services/${index}/operation`)) || service.operation) === 'add' &&
+            <label className={styles.label}>Room for this requested Add-On
+              <select value="" disabled={editor.view.busy || !addTargets.length} onChange={event => {
+                const allocationId = event.target.value;
+                if (!addTargets.some(target => target.id === allocationId)) return;
+                void editor.commands.edit(`/proposal/content/services/${index}/targets`, [{
+                  target: { kind: 'allocation', requestId: request.id, allocationId },
+                  fields: {}, savedRowCandidateRef: null, previewObservationRef: null,
+                }]).catch(() => {});
+              }}>
+                <option value="">{addTargets.length ? 'Select a room' : 'Add a room first'}</option>
+                {addTargets.map((target, roomIndex) => <option key={target.id} value={target.id}>
+                  {`Room ${roomIndex + 1}${target.label === `Room ${roomIndex + 1}` ? '' : ` · ${target.label}`}`}
+                </option>)}
+              </select>
+            </label>}
+        </>}
         {service.targets.length > 1 && <div className={styles.warning}>This request covers several rooms. Use “Add item” for each room above and enter each quantity. This request stays here for reference.</div>}
         {service.targets.map((target, targetIndex) => <ServiceRow key={`${service.id}:${targetIndex}`} editor={editor}
           service={service} serviceIndex={index} target={target} targetIndex={targetIndex} multiTarget={service.targets.length > 1} />)}
