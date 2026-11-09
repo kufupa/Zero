@@ -69,7 +69,7 @@ export function FieldReview({ editor, path, label, onPendingChange, requireRevie
   return <span className={styles.fieldReview}>
     {reference && <button type="button" className={styles.fieldSource} aria-label={`View source for ${label}`} title="View source suggestion"
       onClick={() => { void showSource(); }}>✦</button>}
-    <span className={styles.reviewRequired} aria-hidden="true">*</span>
+    {!accepted && draft.fieldReviewRequirements[path]?.required === true && <span className={styles.reviewRequired} title="Review required" aria-hidden="true">*</span>}
     <input type="checkbox" aria-label={`Confirm ${label}`} checked={accepted} disabled={disabled || accepted || editor.view.busy}
       onChange={event => {
         if (!event.target.checked) return;

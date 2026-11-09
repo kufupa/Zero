@@ -21,6 +21,11 @@ export type ReservationPaneProps = {
 };
 const labels: Record<ReservationWorkflowKind, string> = { create: 'Create', quote: 'Quote', amend: 'Amend', cancel: 'Cancel', services: 'Add-Ons', filing: 'Filing', other: 'Other' };
 const editors = { create: CreateEditor, quote: QuoteEditor, amend: AmendEditor, cancel: CancelEditor, services: AddonsEditor, filing: FilingEditor };
+function issueText(explanation: string) {
+  if (/^Candidate read v2_[a-z0-9]+ failed\.$/i.test(explanation)) return 'An Infor search during email prefill failed. Search again to verify the details.';
+  if (/^Candidate read v2_[a-z0-9]+ .+; coverage is not complete\.$/i.test(explanation)) return 'An Infor search during email prefill was incomplete. Search again to verify the details.';
+  return explanation;
+}
 
 export function ReservationPane(props: ReservationPaneProps) {
   const workbench = useReservationWorkbench(props);
@@ -110,6 +115,13 @@ export function ReservationPane(props: ReservationPaneProps) {
   const disabled = busy || !snapshot || workbench.blocked || workbench.conflict;
   const actionLocked = snapshot?.operationResults.some(row => row.requestId === request?.id && ['succeeded', 'unknown'].includes(text(row.status))) ||
     (request?.kind === 'create' && ids.some(id => Boolean(commands.guestProfilePending(id))));
+  const scopedIssues = snapshot?.issues.filter(issue => !issue.path || !request || issue.path.startsWith(requestPath(request.id))) ?? [];
+  const allRoomsSaved = request?.kind === 'create' && ids.length > 0 && ids.every(id => snapshot?.operationResults.some(row =>
+    row.workflow === 'create' && row.requestId === request.id && row.allocationId === id && row.status === 'succeeded'));
+  const isEarlierIssue = (issue: typeof scopedIssues[number]) => !issue.path || Boolean(allRoomsSaved &&
+    ['ambiguous_guest_profile', 'rate_availability_unavailable', 'mail_candidate_read_failed'].includes(issue.kind));
+  const earlierIssues = scopedIssues.filter(isEarlierIssue);
+  const currentIssues = scopedIssues.filter(issue => !isEarlierIssue(issue));
   return <div className={styles.pane} data-reservation-pane>
     <header className={styles.header}><div><strong>Nava</strong><span>{preview ? 'Interactive preview · Save disabled' : workbench.saving ? 'Saving changes…' : busy ? 'Checking Infor…' : 'Saved draft'}</span></div>
       <div className={styles.history}><button type="button" aria-label="Undo draft change" disabled={disabled || !snapshot?.session.revision} onClick={() => { void workbench.undo().catch(() => {}); }}>↶</button><button type="button" aria-label="Redo draft change" disabled={disabled || snapshot?.session.revision === snapshot?.session.revisionHead} onClick={() => { void workbench.redo().catch(() => {}); }}>↷</button></div>
@@ -141,7 +153,11 @@ export function ReservationPane(props: ReservationPaneProps) {
       {request?.kind === 'quote' && snapshot && <QuoteOutputPanel source={source} snapshot={snapshot} requestId={request.id} save={props.onSaveQuoteOutput} latestSnapshot={workbench.latestSnapshot} readyForReply={workbench.readyForReply} blocked={busy || workbench.saving || workbench.blocked || workbench.conflict} />}
       {prefill?.status === 'running' && !prefillStale && <p className={styles.small}>Reading the email and checking Infor. You can start editing now.</p>}
       {(prefill?.status === 'failed' || prefillStale) && <p className={styles.small}>Prefill did not finish. Your form still works. <button type="button" onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button></p>}
-      {snapshot?.issues.filter(issue => !issue.path || !request || issue.path.startsWith(requestPath(request.id))).map((issue, index) => <p className={styles.notice} key={index}>{issue.explanation}</p>)}
+      {currentIssues.map((issue, index) => <p className={styles.notice} key={index}>{issueText(issue.explanation)}</p>)}
+      {earlierIssues.length > 0 && <details className={styles.earlierChecks}>
+        <summary>Earlier email checks · {earlierIssues.length} {allRoomsSaved ? 'notices' : 'incomplete'}</summary>
+        {earlierIssues.map((issue, index) => <p className={styles.notice} key={index}>{issueText(issue.explanation)}</p>)}
+      </details>}
     </main>
     {request && !createBlocked && request.kind !== 'services' && request.kind !== 'other' && <footer className={styles.footer}>
       {request.kind === 'create' && snapshot?.preparationViews.filter(view => view.requestId === request.id && view.price && !snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === view.allocationId && ['succeeded','unknown'].includes(text(row.status)))).map(view => <div key={view.allocationId} className={styles.price}><span>Room {ids.indexOf(view.allocationId) + 1} · {view.current ? 'Infor price' : 'Price needs refresh'}</span><strong>{view.price ? [view.price.currency, view.price.totalRate].filter(value => value != null).join(' ') : '—'}</strong></div>)}
