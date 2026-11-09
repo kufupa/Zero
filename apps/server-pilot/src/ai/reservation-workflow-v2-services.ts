@@ -517,8 +517,13 @@ function savedTarget(draft: ReservationWorkflowV2Draft, input: ReservationWorkfl
   const index = include.findIndex(row => record(row)?.id === input.targetRef.hintId);
   if (index < 0) return null;
   const hintRoot = `${root}/include/${index}`;
+  const hintFields = ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'];
+  if (request.kind === 'amend' && hintFields.some(key => draft.fieldOverrides[`${hintRoot}/${key}`]?.state === 'unknown')) return null;
   const hint = Object.fromEntries(['id', 'confirmation', 'guestName', 'bookedArrival', 'bookedDeparture']
-    .map(key => [key, savedValue(draft, `${hintRoot}/${key}`)]));
+    .map(key => {
+      const value = savedValue(draft, `${hintRoot}/${key}`);
+      return [key, request.kind === 'amend' && key !== 'id' && typeof value === 'string' ? value.trim() || null : value];
+    }));
   const selectionPath = `${hintRoot}/suggestedRef`;
   const matches = draft.proposal.content.services.flatMap((service, serviceIndex) => {
     if (input.serviceId && service.id !== input.serviceId) return [];
@@ -569,8 +574,9 @@ function selectedSavedStay(draft: ReservationWorkflowV2Draft, input: Reservation
       : row.criteria.workflow === 'services' && row.criteria.fieldPath === found.selectionPath));
   const stay = record(record(observation?.result)?.candidate);
   const query = record(observation?.criteria.query);
+  const normalized = (value: unknown) => found.request.kind === 'amend' && typeof value === 'string' ? value.trim() || null : value ?? null;
   if (!observation || !stay || !query || !savedStayMatches(stay, found.hint, found.request.kind !== 'amend') ||
-      ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].some(key => (query[key] ?? null) !== (found.hint[key] || null))) return null;
+      ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].some(key => normalized(query[key]) !== normalized(found.hint[key]))) return null;
   if (found.request.kind !== 'amend') return { observation, stay };
   if (draft.operationResults.some(row => row.workflow === 'amend' && row.requestId === input.requestId && !row.allocationId &&
       (row.status === 'succeeded' || row.status === 'unknown'))) return null;
