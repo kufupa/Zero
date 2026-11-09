@@ -122,35 +122,21 @@ function parseProfileResponse(text) {
   return JSON.parse(json)?.pageData;
 }
 
-// Keep only a fixed vocabulary of validation words. Arbitrary native text can
-// contain guest details or credentials, even after ordinary PII redaction.
-const DIAGNOSTIC_WORDS = new Set(`a address already an and are as at be been before by can cannot change characters
-  check choose code complete confirm contact continue correct could country create current data date details did do
-  does duplicate email enter entered error exceeds exists failed field fields first for format from guest has have
-  in incorrect information invalid is last length limit mandatory maximum may minimum missing mobile must name new
-  no not number of on only or permission phone please profile property provide record request required retry review
-  same save select selected service should status system than that the this to too type unable unavailable unexpected
-  unique update use valid validation value values was with yes`.split(/\s+/));
-
-function diagnosticMessageText(value, fields) {
+function diagnosticMessageText(value) {
   if (typeof value !== 'string') return null;
   let text = value.slice(0, 512);
-  // Do not retain a partial email, credential, or guest value at the cut.
+  // Do not retain a partial credential at the cut.
   if (value.length > 512) text = text.slice(0, Math.max(0, text.search(/\s+\S*$/)));
-  for (const field of Object.values(fields)) {
-    if (typeof field === 'string' && field) {
-      const literal = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      text = text.replace(new RegExp(literal, 'gi'), ' [redacted] ');
-    }
-  }
-  text = text.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+/gi, ' [redacted] ')
-    .replace(/\+?\d[\d .()/-]{5,}\d/g, ' [redacted] ')
-    .replace(/\b(?:authorization|bearer|password|token|session(?:id)?|access[_-]?token|refresh[_-]?token)(?:\s*[:=]\s*|\s+)[^\s,;]+/gi, ' [redacted] ');
-  return (text.match(/[a-z]+|\d+/gi) || []).slice(0, 40)
-    .map(word => DIAGNOSTIC_WORDS.has(word.toLowerCase()) ? word.toLowerCase() : '[redacted]').join(' ');
+  return text.replace(/<[^>]*(?:>|$)/g, '')
+    .replace(/https?:\/\/[^\s<>"']+/gi, value => {
+      try { const url = new URL(value); url.username = ''; url.password = ''; url.search = ''; url.hash = ''; return url.toString(); }
+      catch { return '[redacted URL]'; }
+    })
+    .replace(/\b(authorization|auth|password|passwd|secret|token|session(?:[_-]?id)?|request[_-]?token|access[_-]?token|refresh[_-]?token|api[_-]?key|cookie)(["']?\s*[:=]\s*)(?:(?:bearer|basic)\s+)?(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi, '$1$2[redacted]')
+    .replace(/\b(bearer|token|password|passwd|secret|session[_-]?id)\s+[^\s,;]+/gi, '$1 [redacted]');
 }
 
-function profileFailureDiagnostics(data, parseStatus, fields) {
+function profileFailureDiagnostics(data, parseStatus) {
   const messages = data?.messages;
   const items = Array.isArray(messages) ? messages.slice(0, 5) : [];
   return {
@@ -159,12 +145,12 @@ function profileFailureDiagnostics(data, parseStatus, fields) {
     messagesStatus: Array.isArray(messages) ? 'array' : messages == null ? 'absent' : 'invalid',
     messageCount: Array.isArray(messages) ? Math.min(messages.length, 5) : null,
     messagesTruncated: Array.isArray(messages) && messages.length > 5,
-    messages: items.map(message => ({
-      type: ['error', 'warning', 'question', 'info', 'information', 'success'].includes(message?.type) ? message.type : 'other',
-      questionType: message?.questiontype === 'YesNo' ? 'YesNo' : null,
-      handler: message?.handler === 'confirmNewGuestProfile' ? 'confirmNewGuestProfile' : null,
-      text: diagnosticMessageText(typeof message === 'string' ? message : message?.msg ?? message?.message, fields),
-    })),
+    messages: items.map(message => {
+      const msg = diagnosticMessageText(typeof message === 'string' ? message : message?.msg ?? message?.message);
+      return { type: diagnosticMessageText(message?.type), code: typeof message?.code === 'number' && Number.isFinite(message.code)
+        ? message.code : diagnosticMessageText(message?.code), questionType: diagnosticMessageText(message?.questiontype),
+        handler: diagnosticMessageText(message?.handler), msg, text: msg };
+    }),
   };
 }
 
@@ -221,7 +207,7 @@ async function handleProfileSave(route, state) {
           nativeId: /^\d+$/.test(id) ? id : null, question };
         // Persist the response and any native ID before the browser receives it.
         const diagnostics = write.fields.firstName === 'Proof' && write.fields.lastName === 'Labtest' &&
-          (!write.response.success || !write.response.nativeId) ? profileFailureDiagnostics(data, parseStatus, write.fields) : null;
+          (!write.response.success || !write.response.nativeId) ? profileFailureDiagnostics(data, parseStatus) : null;
         await write.recordResponse(context, Object.freeze({ ...write.response, ...(diagnostics && { diagnostics }) }));
         if (write.phase !== 'closed') write.phase = question ? 'question' : 'finished';
         await route.fulfill({ response });
