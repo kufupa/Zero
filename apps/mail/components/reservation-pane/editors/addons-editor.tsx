@@ -296,7 +296,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
       {preview.operation === 'remove' && <div className={styles.warning}>Requested removal · financial effect is unknown.</div>}
       {Object.keys(native).length > 0 && <NativeItem title={!previewCurrent ? 'Earlier Infor check' : fresh ? 'Latest saved-stay check' : 'Last Infor check'} item={native} />}
       {fresh && <small className={styles.hint}>Review the latest saved-stay details before saving.</small>}
-      <small className={styles.hint}>Check again after any change. Infor is the source of dates, pricing basis and total.</small>
+      <small className={styles.hint}>Check again after any change. Infor returns the service dates and calculated total.</small>
       <small className={styles.hint}>Save mode: {text(capability.writeMode) || 'Unavailable'}. {capability.canSave === true ? 'This stay is admitted for Save.' : 'Save is unavailable for this stay or mode.'}</small>
     </div>}
     {allocation && connected && !linkedCreate && <div className={styles.hint}>Save and verify this room before adding its service.</div>}
