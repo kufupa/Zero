@@ -10,6 +10,7 @@ import { reservationWorkflowV2AmendLookup, reservationWorkflowV2AmendPrepare } f
 import { reservationWorkflowV2CancelLookup } from './reservation-workflow-v2-cancel.js';
 import { reservationWorkflowV2FilingLookup } from './reservation-workflow-v2-filing.js';
 import { paneStayLookupEnabled } from './pane-stay-lookup.js';
+import { reservationArrivalAddOnLookup } from './reservation-workflow-v2-arrival-addons.js';
 
 type Outcome = { status: string; issue?: string; [key: string]: unknown };
 type Step = { key: string; run: (ctx: ReservationWorkflowV2ServerContext, item: ReservationWorkflowV2ItemInput) => Promise<Outcome> };
@@ -52,10 +53,10 @@ function nativeSteps(draft: ReservationWorkflowV2Draft): { steps: Step[]; omitte
     if (target.kind === 'allocation') {
       const allocationId = target.allocationId;
       steps.push({ key: `service:lookup:${serviceId}:${requestId}:${allocationId}`,
-        run: async () => ({ status: 'needs_input', issue: 'service_requires_staff_selection_and_price_review' }) });
+        run: (ctx, item) => reservationArrivalAddOnLookup(ctx, { ...item, requestId, allocationId, serviceId }) });
     } else if (target.kind === 'saved_target') {
       steps.push({ key: `service:lookup:${serviceId}:${requestId}:${target.hintId}`,
-        run: async () => ({ status: 'needs_input', issue: 'service_requires_staff_selection_and_price_review' }) });
+        run: stayLookup((ctx, item) => reservationArrivalAddOnLookup(ctx, { ...item, requestId, targetRef: target, serviceId })) });
     }
   }
   return { steps: steps.slice(0, CHECK_LIMIT), omitted: Math.max(0, steps.length - CHECK_LIMIT) };
@@ -116,7 +117,7 @@ export async function runReservationArrivalChecks(input: { scoped: ReservationWo
     const ctx: ReservationWorkflowV2ServerContext = { db: input.scoped.db, transport: { id: input.scoped.transportId },
       property: { propertyCode: input.scoped.propertyCode }, user: { id: `arrival-service:${input.fence.runId}` }, nativeBatch: batch };
     let outcome: Outcome;
-    const dependency = step.key.startsWith('quote:prepare:') || step.key.startsWith('service:prepare:')
+    const dependency = step.key.startsWith('quote:prepare:')
       ? step.key.replace(':prepare:', ':lookup:') : null;
     const dependencyResult = dependency ? draft.prefill?.nativeChecks?.find((entry) => entry.key === dependency) : undefined;
     try {
