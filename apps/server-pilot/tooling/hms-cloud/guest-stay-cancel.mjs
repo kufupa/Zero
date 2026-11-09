@@ -210,7 +210,8 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
         continuationAllowed() !== true) return false;
     await prepareChargeWithAuthority();
     preChargeStarted = true;
-    return true;
+    action.check();
+    return continuationAllowed() === true && Boolean(fence && !fence.isQuarantined());
   };
   const action = actionDeadline(page, timeoutMs, {
     disarm: () => { armed = false; }, recordDialog: (dialog) => { nativeDialog = dialog; },
@@ -630,6 +631,9 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
         throw new Error('CANCEL_CHARGE_CHANGED');
       }
     }
+    if (bindDepositReceived && !await depositDisplayMatches(frame, expected)) throw new Error('CANCEL_DEPOSIT_CHANGED');
+    action.check();
+    if (continuationAllowed() !== true || fence.isQuarantined()) throw new Error('CANCEL_DISPATCH_DISARMED');
     const pending = page.waitForResponse((item) => item.request() === authorizedRequest, { timeout: timeoutMs }).catch(() => null);
     action.check();
     armed = true;
