@@ -194,7 +194,8 @@ export async function runCloudPaneCancel(input, { openSession = withCenturionSta
       const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
       const expected = cancellationNativePreimage(record, { allowRealGuest: input.allowRealGuest });
       if (!expected || expected.confirmation !== input.confirmation || expected.arrival !== input.arrival ||
-          (input.expected && JSON.stringify(cancelBusinessPreimage(expected)) !== JSON.stringify(cancelBusinessPreimage(input.expected)))) {
+          (input.expected && JSON.stringify(cancelBusinessPreimage(expected)) !== JSON.stringify(cancelBusinessPreimage(input.expected))) ||
+          (input.bindDepositReceived === true && input.expected && expected.depositReceived !== input.expected.depositReceived)) {
         return { outcome: 'refused_preimage', requestDispatched: false };
       }
       if (!await scope(page, expected)) return { outcome: 'refused_scope_unverified', requestDispatched: false };
@@ -206,7 +207,7 @@ export async function runCloudPaneCancel(input, { openSession = withCenturionSta
       }
       const opened = await open(page, expected, input.mode === 'commit' ? {
         timeoutMs: remaining, continuationAllowed: input.continuationAllowed, awaitChargeApproval: awaitCharge,
-        prepareChargeWithAuthority: prepareCharge,
+        prepareChargeWithAuthority: prepareCharge, bindDepositReceived: input.bindDepositReceived === true,
       } : {});
       if (input.mode === 'preview' && opened.outcome === 'fee_dialog_pending' && opened.reasons?.length) {
         return { outcome: 'preview_ok', expected, reasons: opened.reasons, penaltyText: opened.penaltyText,
@@ -230,6 +231,7 @@ export async function runCloudPaneCancel(input, { openSession = withCenturionSta
       const saved = await confirm(page, expected, { reasonCode: input.reasonCode, reasonLabel: input.reasonLabel,
         cancellationNote: input.cancellationNote, timeoutMs, beforeDispatch: input.beforeDispatch,
         continuationAllowed: input.continuationAllowed, awaitChargeApproval: awaitCharge,
+        bindDepositReceived: input.bindDepositReceived === true,
         prepareChargeWithAuthority: prepareCharge,
         dispatchChargeWithAuthority: dispatchCharge,
         dispatchWithAuthority: (send, digest, request) => input.dispatchWithAuthority(send, digest, request, join(root, 'before.png')),
