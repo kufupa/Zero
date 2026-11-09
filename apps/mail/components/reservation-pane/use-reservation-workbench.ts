@@ -345,8 +345,10 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         if (previousAttempt.status !== 'none') throw new Error(previousAttempt.status === 'unavailable'
           ? 'This device cannot access profile recovery. Contact Nava support.'
           : 'Check the previous profile creation outcome before trying again.');
-        if (context.snapshot.operationResults.some(row => row.workflow === 'guest_profile' && row.requestId === requestId &&
-            row.allocationId === allocationId && ['unknown', 'failed'].includes(text(row.status)))) {
+        const hasUnresolvedAttempt = (snapshot: ReservationPaneSnapshot) => snapshot.operationResults.some(row =>
+          row.workflow === 'guest_profile' && row.requestId === requestId && row.allocationId === allocationId &&
+          ['unknown', 'failed'].includes(text(row.status)));
+        if (hasUnresolvedAttempt(context.snapshot)) {
           throw new Error('A previous profile attempt needs confirmation. Contact Nava support before creating another profile.');
         }
         let current = context.snapshot;
@@ -373,6 +375,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         if (prepared.serviceNotice || prepared.loadError || prepared.session.sourceChanged ||
             prepared.session.draft.workItemId !== scope.workItemId || !snapshotMatchesSource(prepared, context.source) ||
             reply.status !== 'prepared' || typeof reply.prepareRef !== 'string') return prepared;
+        if (hasUnresolvedAttempt(prepared)) throw new Error('A previous profile attempt needs confirmation. Contact Nava support before creating another profile.');
         if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return prepared;
         if ([...entry.pending.keys()].some(path => path === guestPath || path.startsWith(`${guestPath}/`))) {
           throw new Error('Guest details changed. Review them before creating the profile.');
