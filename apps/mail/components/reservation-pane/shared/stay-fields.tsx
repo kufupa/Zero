@@ -4,13 +4,18 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { effectiveAt, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import styles from '../reservation-pane.module.css';
 
+function hasStaffOverride(editor: WorkbenchEditorProps, path: string) {
+  return Object.entries(editor.snapshot.session.draft.fieldOverrides).some(([key, value]) =>
+    (path === key || path.startsWith(`${key}/`)) && value.state !== 'inherit');
+}
+
 export function Section({ title, children }: { title: string; children: ReactNode }) {
   return <section className={styles.section}><h3>{title}</h3>{children}</section>;
 }
 
 export function FieldSource({ editor, path, label }: { editor: WorkbenchEditorProps; path: string; label: string }) {
   const draft = editor.snapshot.session.draft;
-  if (!editor.onOpenEvidence || draft.fieldOverrides[path]?.state && draft.fieldOverrides[path]?.state !== 'inherit') return null;
+  if (!editor.onOpenEvidence || hasStaffOverride(editor, path)) return null;
   const claim = draft.proposal.sourceClaims.find(row => row.path === path);
   const refs = claim?.sourceRefs ?? draft.fieldReviewRequirements[path]?.evidenceRefs;
   const reference = refs?.find(ref => draft.observations.some(row => row.kind === 'source' && row.sourceRefs.includes(ref)));
@@ -23,11 +28,10 @@ export function FieldSource({ editor, path, label }: { editor: WorkbenchEditorPr
 export function FieldReview({ editor, path, label, onPendingChange }: { editor: WorkbenchEditorProps; path: string; label: string; onPendingChange?: (pending: boolean) => void }) {
   const [peek, setPeek] = useState(false);
   const draft = editor.snapshot.session.draft;
-  const override = draft.fieldOverrides[path];
   const claim = draft.proposal.sourceClaims.find(row => row.path === path);
   const refs = claim?.sourceRefs ?? draft.fieldReviewRequirements[path]?.evidenceRefs;
   const reference = refs?.find(ref => draft.observations.some(row => row.kind === 'source' && row.sourceRefs.includes(ref)));
-  if (!reference || (override && override.state !== 'inherit')) return null;
+  if (!reference || hasStaffOverride(editor, path)) return null;
   const accepted = draft.staffReviews[path]?.status === 'accepted';
   const excerpt = claim?.raw?.trim() ?? '';
   const showSource = async () => {

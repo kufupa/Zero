@@ -127,16 +127,18 @@ export function ChildAges({ editor, path }: { editor: Editor; path: string }) {
   };
   const commit = async (kind: 'count' | 'ages') => {
     const dirty = kind === 'count' ? dirtyCount : dirtyAges;
-    const version = kind === 'count' ? countVersion : agesVersion;
     if (!dirty.current || !staged.current) return;
-    const pending = staged.current, before = version.current;
+    const pending = staged.current, beforeCount = countVersion.current, beforeAges = agesVersion.current;
     await editor.commands.edit(path, pending);
-    if (version.current !== before) return;
-    dirty.current = false;
-    if (kind === 'count') {
+    if (dirtyCount.current && countVersion.current === beforeCount) {
+      dirtyCount.current = false;
       setCount(pending.childCount == null ? '' : String(pending.childCount));
       editor.commands.setUncommitted(countPath, false);
-    } else editor.commands.setUncommitted(agesPath, false);
+    }
+    if (dirtyAges.current && agesVersion.current === beforeAges) {
+      dirtyAges.current = false;
+      editor.commands.setUncommitted(agesPath, false);
+    }
     if (staged.current === pending) {
       const next = Array.isArray(pending.childAges) ? pending.childAges as Array<number | null> : [];
       ageInput.current = next; setAges(next);
