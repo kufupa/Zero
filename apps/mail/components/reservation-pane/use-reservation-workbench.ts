@@ -17,8 +17,10 @@ function rowIdentity(value: unknown): string {
 }
 
 function pendingMatches(snapshot: ReservationPaneSnapshot | null, edit: Pending): boolean {
-  return !!snapshot && snapshot.session.draft.generationId === edit.generation
-    && edit.rows.every(row => rowIdentity(effectiveAt(snapshot, row.path)) === row.identity);
+  if (!snapshot || snapshot.session.draft.generationId !== edit.generation) return false;
+  const owner = edit.path.match(/^\/proposal\/content\/(?:requests|services|documents)\/[^/]+/);
+  if (owner && !valueAt(snapshot, owner[0])) return false;
+  return edit.rows.every(row => rowIdentity(effectiveAt(snapshot, row.path)) === row.identity);
 }
 
 function captureRows(snapshot: ReservationPaneSnapshot | null, path: string): Pending['rows'] {
@@ -32,6 +34,7 @@ function captureRows(snapshot: ReservationPaneSnapshot | null, path: string): Pe
   return rows;
 }
 type Buffer = {
+  sourceKey: string;
   snapshot: ReservationPaneSnapshot | null;
   sourceReviewBase: ReservationPaneSnapshot | null;
   pending: Map<string, Pending>;
@@ -46,6 +49,7 @@ type Buffer = {
 const buffers = new Map<string, Buffer>();
 const guestCreatesInFlight = new Set<string>();
 const sourceKey = (source: ReservationSourceContext) => `${source.mailboxId}:${source.messageId}:${source.sourceHash}`;
+const bufferKey = (source: ReservationSourceContext) => JSON.stringify([source.mailboxId, source.propertyId, source.threadId, source.messageId]);
 const guestAttemptKey = (source: ReservationSourceContext, requestId: string, allocationId: string) =>
   `nava:guest-profile:${source.messageId}:${source.sourceHash}:${requestId}:${allocationId}`;
 function readGuestAttempt(source: ReservationSourceContext, requestId: string, allocationId: string): string | null {
@@ -70,7 +74,7 @@ function retainReviewedSourceEdits(buffer: Buffer, next: ReservationPaneSnapshot
   const base = buffer.sourceReviewBase;
   if (!base || next.session.sourceChanged || !snapshotMatchesSource(next, bound)) return;
   for (const pending of buffer.pending.values()) {
-    if (pendingMatches(base, pending) && pending.rows.every(row => rowIdentity(effectiveAt(next, row.path)) === row.identity)) {
+    if (pendingMatches(base, pending) && pendingMatches(next, { ...pending, generation: next.session.draft.generationId })) {
       pending.generation = next.session.draft.generationId;
     }
   }
@@ -138,10 +142,16 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   onSnapshot(snapshot: ReservationPaneSnapshot): void; preview?: boolean;
 }) {
   const key = sourceKey(source);
+  const draftKey = bufferKey(source);
   const safeSnapshot = snapshotMatchesSource(snapshot, source) ? snapshot : null;
-  if (!buffers.has(key)) buffers.set(key, { snapshot: safeSnapshot, sourceReviewBase: null, pending: new Map(), conflict: false,
+  if (!buffers.has(draftKey)) buffers.set(draftKey, { sourceKey: key, snapshot: safeSnapshot, sourceReviewBase: null, pending: new Map(), conflict: false,
     error: null, pendingMutationHeld: false, actionsPending: 0, token: 0, queue: Promise.resolve(), listeners: new Set() });
-  const entry = buffers.get(key)!;
+  const entry = buffers.get(draftKey)!;
+  if (entry.sourceKey !== key) {
+    entry.sourceKey = key;
+    entry.snapshot = safeSnapshot;
+    entry.sourceReviewBase = null;
+  }
   if (safeSnapshot && (!entry.snapshot || safeSnapshot.session.seq >= entry.snapshot.session.seq)) {
     retainReviewedSourceEdits(entry, safeSnapshot, source);
     entry.snapshot = safeSnapshot;
@@ -159,7 +169,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   useEffect(() => { setError(null); setUncommitted(new Set()); setActiveId(null); }, [key]);
 
   const apply = useCallback((next: ReservationPaneSnapshot, bound: ReservationSourceContext, buffer: Buffer) => {
-    if (!snapshotMatchesSource(next, bound)) return;
+    if (buffer.sourceKey !== sourceKey(bound) || !snapshotMatchesSource(next, bound)) return;
     retainReviewedSourceEdits(buffer, next, bound);
     buffer.snapshot = next;
     notify(buffer);
@@ -172,6 +182,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       while (remaining.length) {
         for (const pending of remaining) {
           if (buffer.pending.get(pending.path)?.token !== pending.token) continue;
+          if (buffer.sourceKey !== sourceKey(bound)) throw new Error('The email changed. Review its updated evidence before applying your edits.');
           if (!buffer.snapshot) throw new Error('The email draft is still opening.');
           if (!pendingMatches(buffer.snapshot, pending)) throw new Error('The room or action changed elsewhere. Discard this pending edit and enter it on the current row.');
           const requestId = buffer.snapshot.requests.find(request => pending.path.startsWith(`${requestPath(request.id)}/`))?.id
@@ -231,7 +242,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       if (write) beginMutation();
       try {
         if (!skipFlush) await flush(bound, buffer);
-        if (!buffer.snapshot) throw new Error('The email draft is still opening.');
+        if (buffer.sourceKey !== sourceKey(bound) || !snapshotMatchesSource(buffer.snapshot, bound)) throw new Error('The email draft is still opening.');
         if (!mounted.current || active.current.key !== sourceKey(bound) || active.current.epoch !== bound.selectionEpoch) return;
         const next = await action({ source: bound, snapshot: buffer.snapshot });
         if (next) { apply(next, bound, buffer); if (next.serviceNotice) throw new Error(next.serviceNotice); }
@@ -258,6 +269,17 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     notify(entry);
   };
   const current = displaySnapshot(entry.snapshot ?? safeSnapshot, entry.pending);
+  const pendingForCurrent = Array.from(entry.pending.values()).filter(edit => pendingMatches(entry.snapshot, edit));
+  const unresolvedPending = Array.from(entry.pending.values()).filter(edit => !pendingMatches(entry.snapshot, edit)).map(edit => {
+    const parts = edit.path.split('/').map(part => { try { return decodeURIComponent(part); } catch { return part; } });
+    const last = parts.at(-1) ?? 'Field';
+    const label = last.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, letter => letter.toUpperCase());
+    const room = parts.indexOf('allocations');
+    const roomLabel = room >= 0 && /^\d+$/.test(parts[room + 1] ?? '') ? ` · previous Room ${Number(parts[room + 1]) + 1}` : '';
+    const value = edit.state === 'set' ? (typeof edit.value === 'string' ? edit.value : JSON.stringify(edit.value) ?? '')
+      : ({ unknown: 'Marked unknown', none: 'None', clear: 'Clear value', inherit: 'Use source' } as Record<string, string>)[edit.state] ?? edit.state;
+    return { path: edit.path, label: `${label}${roomLabel}`, value };
+  });
   const request = current?.requests.find(row => row.id === activeId) ?? current?.requests[0];
   const requireRequest = () => { if (!request) throw new Error('Choose an action first.'); return request.id; };
   const commands: WorkbenchCommands = {
@@ -450,7 +472,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   return { snapshot: current, readyForReply: () => mounted.current && active.current.key === key
       && active.current.epoch === source.selectionEpoch && entry.pending.size === 0 && !entry.conflict && entry.actionsPending === 0
       && liveInputs.current.key === key && liveInputs.current.uncommitted.size === 0, latestSnapshot: () => entry.snapshot, request, commands, busy, error: error ?? entry.error, saving: entry.pending.size > 0, blocked: uncommitted.size > 0,
-    conflict: entry.conflict, activeId: request?.id ?? null, setActiveId,
+    conflict: entry.conflict, unresolvedPending, applicablePendingCount: pendingForCurrent.length, activeId: request?.id ?? null, setActiveId,
     addAction: (kind: Exclude<ReservationWorkflowKind, 'other'>) => run(async context => { const next = await client.addAction({ ...context, kind }); setActiveId(next.requests.at(-1)?.id ?? null); return next; }),
     undo: () => run(context => client.undo(context)), redo: () => run(context => client.redo(context)),
     retryPrefill: () => run(context => client.prefill(context)),
@@ -458,7 +480,18 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       if (entry.pending.size) entry.sourceReviewBase = context.snapshot;
       return client.reconcileSource(context);
     }, false, true),
-    applyPending: () => { entry.conflict = false; entry.error = null; return run(async () => {}); },
+    applyPending: () => {
+      entry.conflict = false; entry.error = null;
+      return run(async context => {
+        const matching = Array.from(entry.pending.values()).filter(edit => pendingMatches(context.snapshot, edit));
+        await flush(context.source, entry, matching);
+        if (entry.pending.size) {
+          entry.conflict = true;
+          entry.error = 'Some pending edits no longer match a room or action. Copy the values below before discarding them.';
+          notify(entry);
+        }
+      }, false, true);
+    },
     discardPending: () => { entry.pending.clear(); releasePendingMutation(entry); entry.conflict = false; entry.error = null; setError(null); notify(entry); },
   };
 }
