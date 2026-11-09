@@ -183,7 +183,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
       && observation.criteria.targetObservationRef === selectedStay && observation.criteria.candidateRef === selectedItem));
   const preview = record(latest?.result), native = record(preview.native), before = record(preview.before), after = record(preview.after);
   const selectedCandidate = catalogue.find(row => row.observation.ref === selectedItem)?.candidate;
-  const controls = [record(native.controls), record(record(after.fields).controls), record(record(selectedCandidate?.fields).controls)];
+  const controls = [record(preview.nativeControls), record(native.controls), record(record(after.fields).controls), record(record(selectedCandidate?.fields).controls)];
   const unsavedPreview = latest?.criteria.kind === 'saved_addon_fresh_prepare'
     ? draft.observations.find(row => row.ref === latest.criteria.unsavedPreviewRef) : latest;
   const createPrepared = allocation ? [...draft.operationResults].reverse().find(result => result.workflow === 'create'
