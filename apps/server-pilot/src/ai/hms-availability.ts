@@ -25,6 +25,7 @@ import { type HmsReadTarget } from '../hms/hms-read-target.js';
 import type { HmsCloudRateLookup } from './hms-cloud-saved-stay-find.js';
 import { canonicalJson } from './draft-approval.js';
 import { matchRoomType } from './room-types.js';
+import { occupiedDates } from '../quote-proposal/quote-revision.js';
 
 const execFileAsync = promisify(execFile);
 const QUOTE_TOOL = fileURLToPath(new URL('../../tooling/playwright-quote/fetch-quote.mjs', import.meta.url));
@@ -493,7 +494,7 @@ function completeness(value: unknown): AvailabilityCompleteness | undefined {
 }
 
 function truncatedOf(flags: AvailabilityCompleteness | undefined): boolean {
-  return flags?.search === 'truncated' || flags?.matchingRowsUnseen === true;
+  return flags?.search === 'truncated' || flags?.matchingRowsUnseen === true || flags?.optionsTruncated === true;
 }
 
 /** Pass through the reader's rateScope. A missing or unknown value stays unknown; BAR codes are not invented here. */
@@ -699,7 +700,7 @@ export function availabilitySnapshotOf(result: QuoteEnvelope, request?: Availabi
           ...(availabilityReason ? { availabilityReason } : {}),
           ...(hasNightlyFacts && roomLabel ? { roomLabel } : {}),
           ...(hasNightlyFacts && rateLabel ? { rateLabel } : {}),
-          ...(hasNightlyFacts && eligibility ? { eligibility } : {}),
+          ...(eligibility ? { eligibility } : {}),
           ...(hasNightlyFacts ? { nightly } : {}),
           ...(rateScope ? { rateScope } : {}),
         };
@@ -735,6 +736,12 @@ export type AvailabilityBoardRow = {
   boardLabel: string;
   nightlyPriceMinor: number | null;
   roomsLeft: number | null;
+  availability?: string;
+  eligibility?: string;
+  nightly?: AvailabilityNightFact[];
+  coverage?: AvailabilityCompleteness;
+  currency?: string | null;
+  nightCoverage?: { expected: number; observed: number; complete: boolean };
   /** Reader fact only. Contract tags must not be invented from a public code. */
   rateScope?: 'public' | 'contextual' | 'unknown';
 };
@@ -747,11 +754,12 @@ function amountMinor(amount: string | null): number | null {
 }
 
 /** Room × rate × board rows from a quote envelope, including unpriced nights as null. */
-export function availabilityBoardOf(result: QuoteEnvelope): {
+export function availabilityBoardOf(result: QuoteEnvelope, stay?: { arrivalDate: string; departureDate: string }): {
   rows: AvailabilityBoardRow[];
   truncated: boolean;
 } {
   const snapshot = availabilitySnapshotOf(result);
+  const expectedDates = stay ? occupiedDates(stay.arrivalDate, stay.departureDate) : null;
   const rows: AvailabilityBoardRow[] = [];
   for (const group of snapshot.groups) {
     const groupId = group.id ?? '';
@@ -766,6 +774,9 @@ export function availabilityBoardOf(result: QuoteEnvelope): {
       const stocks = nights
         .map((night) => night.availableCount)
         .filter((value): value is number => value !== null);
+      const observedDates = new Set(nights.map(night => night.date));
+      const covered = expectedDates === null || nights.length === expectedDates.length && observedDates.size === expectedDates.length && expectedDates.every(date => observedDates.has(date));
+      const currencies = new Set(nights.map(night => night.price.currency).filter((value): value is string => value !== null));
       const boardLabel = option.board ?? '';
       rows.push({
         groupId,
@@ -775,10 +786,16 @@ export function availabilityBoardOf(result: QuoteEnvelope): {
         rateLabel: option.rateLabel ?? rateCode,
         board: boardLabel || rateCode,
         boardLabel,
-        nightlyPriceMinor: priced.length
+        nightlyPriceMinor: covered && priced.length > 0 && priced.length === nights.length && currencies.size === 1
           ? Math.round(priced.reduce((sum, value) => sum + value, 0) / priced.length)
           : null,
-        roomsLeft: stocks.length ? Math.min(...stocks) : null,
+        roomsLeft: covered && stocks.length > 0 && stocks.length === nights.length ? Math.min(...stocks) : null,
+        availability: option.availability,
+        ...(option.eligibility ? { eligibility: option.eligibility } : {}),
+        ...(option.nightly ? { nightly: option.nightly } : {}),
+        ...(group.completeness ? { coverage: group.completeness } : {}),
+        ...(expectedDates ? { nightCoverage: { expected: expectedDates.length, observed: observedDates.size, complete: covered } } : {}),
+        currency: currencies.size === 1 ? [...currencies][0]! : null,
         ...(option.rateScope ? { rateScope: option.rateScope } : {}),
       });
     }

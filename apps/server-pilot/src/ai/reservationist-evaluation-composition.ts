@@ -213,7 +213,7 @@ export function nativeQuoteGapDetail(capture:{allocation?:{status?:unknown;reaso
  return{allocationStatus,allocationReason,sharedInventoryPoolGap:allocationStatus==='unknown'&&rows.length>1&&(capture.allocation?.diagnostic==='room_profile_mismatch'||/shared inventory-pool identity/.test(allocationReason)),rows,evidenceRun:/^[A-Za-z0-9_.:-]{1,120}$/.test(run)?run:null,...(alternatives?.length?{alternatives}: {})};
 }
 type NativeSummaryCapture={schemaVersion:number;outcome:string;propertyCode:string;observedAt:string;requested:QuoteSourceRecord['request'];groups:(Omit<QuoteSourceRecord['result']['groups'][number],'options'>&{outcome:string;issues:unknown[];restrictedNights?:{roomCode:string;roomLabel:string;date:string}[];options:(QuoteSourceRecord['result']['groups'][number]['options'][number]&{issues:unknown[];details?:{status:string}})[]})[];allocation:{status:string;reason?:string};issues:unknown[];searchCompleteness:{status:string};audit:{status:string};evidenceDirectory:string};
-export type ExistingOwnerNativeQuoteOptions={owner:{cdpUrl:string;browserOwnership:'borrowed';propertyCode:string;secretPath:string};outputDir:string;dispatch?:(input:{executable:string;args:string[];env:NodeJS.ProcessEnv;signal:AbortSignal;timeout:number})=>Promise<{stdout:string;traceFinish?:'pending'}>};
+export type ExistingOwnerNativeQuoteOptions={owner:{cdpUrl:string;browserOwnership:'borrowed';propertyCode:string;secretPath:string};outputDir:string;dispatch?:(input:{executable:string;args:string[];env:NodeJS.ProcessEnv;signal:AbortSignal;timeout:number;details:'summary'|'full'})=>Promise<{stdout:string;traceFinish?:'pending'}>};
 const SAFE_EXECUTION_ERROR_NAME=/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/;
 const ATTACH_LOG_KEEP=/timeout|ECONN|EPIPE|ENOTFOUND|ETIMEDOUT|Target\b.*\bclosed|browser has been closed|connectOverCDP|Protocol error|net::ERR_|CDP_/i;
 
@@ -253,18 +253,26 @@ export function createExistingOwnerNativeQuoteReader(options:ExistingOwnerNative
   const normalize=await import(pathToFileURL(contract).href) as {normalizeQuoteRequest:(input:unknown)=>{ok:boolean;request?:unknown};composeAllocation:(groups:unknown[],propertyCode:string)=>{status:string};shortfallsOf:(groups:unknown[],propertyCode:string)=>{roomCode:string;roomLabel:string;date:string;demand:number;supply:number}[];availableRoomAlternatives:(groups:unknown[],request:unknown)=>NativeRoomAlternative[]};
   const wire={schemaVersion:2,...structuredClone(request)},normalized=normalize.normalizeQuoteRequest(wire);if(!normalized.ok)throw new Error('native_quote_request_invalid');const toolHashBefore=createHash('sha256').update(await readFile(script)).update(await readFile(contract)).digest('hex');
   await mkdir(output,{recursive:true,mode:0o700});const requestPath=join(output,`request-${randomUUID()}.json`);await writeFile(requestPath,JSON.stringify(wire),{mode:0o600});
-  const dispatched:{stdout:string;traceFinish?:'pending'}=await dispatch({executable:process.execPath,args:[script,'--request',requestPath,'--output',output],signal,timeout:15*60000,env:{...process.env,HMS_STAGEHAND_CDP_URL:owner.cdpUrl,HMS_STAGEHAND_BROWSER_OWNERSHIP:owner.browserOwnership,HMS_QUOTE_SECRET_PATH:owner.secretPath}});signal.throwIfAborted();const provisional=dispatched.traceFinish==='pending';
+  const dispatched:{stdout:string;traceFinish?:'pending'}=await dispatch({executable:process.execPath,args:[script,'--request',requestPath,'--output',output],signal,timeout:15*60000,details:(normalized.request as {details?:string}).details==='full'?'full':'summary',env:{...process.env,HMS_STAGEHAND_CDP_URL:owner.cdpUrl,HMS_STAGEHAND_BROWSER_OWNERSHIP:owner.browserOwnership,HMS_QUOTE_SECRET_PATH:owner.secretPath}});signal.throwIfAborted();const provisional=dispatched.traceFinish==='pending';
+  if(provisional&&(normalized.request as {details?:string}).details==='summary')throw new Error('native_quote_summary_audit_pending');
   const evidence=/^Evidence: (.+)$/m.exec(dispatched.stdout)?.[1];if(!evidence||!inside(evidence)||!resolve(evidence).startsWith(`${output}/`))throw new Error('native_quote_capture_unavailable');
   const bytes=await readFile(join(evidence,provisional?'result.provisional.json':'result.json'));if(bytes.length>20*1024*1024)throw new Error('native_quote_capture_oversized');const source=JSON.parse(bytes.toString()) as NativeSummaryCapture;
   if(source.outcome==='execution_failure') throwSavedExecutionFailure(source as {phase?:unknown;error?:unknown});
   const summaryPartial=isReservationistAuditedSummaryPartial(source,normalized.request as QuoteSourceRecord['request'],normalize.composeAllocation);
   if(source.schemaVersion!==2||(source.propertyCode!==undefined&&source.propertyCode!==request.propertyCode)||source.requested.propertyCode!==request.propertyCode||(provisional?source.audit?.status!=='pending'||source.outcome!=='quote':source.audit?.status!=='complete')||quoteDigest(source.requested)!==quoteDigest(normalized.request)||source.evidenceDirectory!==evidence||!Number.isFinite(Date.parse(source.observedAt))||Date.parse(source.observedAt)>Date.now()||!Array.isArray(source.groups)||quoteDigest(options.owner)!==ownerHash)throw new Error('native_quote_capture_scope_or_completeness_invalid');
   const toolHash=createHash('sha256').update(await readFile(script)).update(await readFile(contract)).digest('hex');if(toolHash!==toolHashBefore)throw new Error('native_quote_tool_changed');
+  const quoteSource:QuoteSourceRecord={ref:`native-quote:${createHash('sha256').update(bytes).digest('hex')}`,sha256:createHash('sha256').update(bytes).digest('hex'),toolVersion:`fetch-quote-v2:${toolHash}`,observedAt:source.observedAt,request:structuredClone(source.requested),result:{outcome:source.outcome,propertyCode:source.requested.propertyCode,groups:source.groups,searchCompleteness:source.searchCompleteness}};
+  // Carry only validated summary evidence across refusals; this remains diagnostic, never quote admission.
+  const withSummary=(error:Error)=>{if((normalized.request as {details?:string}).details==='summary')Object.defineProperty(error,'quoteSummarySource',{value:quoteSource});return error;};
   // R6: HMS answered every row, and a row or a shared pool cannot hold the rooms asked for. Staff hear which room type and night is short.
   // ponytail: a provisional (async trace) capture is only accepted as a quote above, so R6 shows on a settled capture only.
   if(source.outcome==='unavailable'&&isReservationistAuditedShortSupply(source,normalized.request as QuoteSourceRecord['request'],normalize.composeAllocation)){
    const shortfall=normalize.shortfallsOf(source.groups,request.propertyCode)[0];
-   if(shortfall)throw new ReservationistTaskEvidenceUnavailable('native_quote_insufficient_inventory',['room inventory for the requested stay'],undefined,{shortfall,alternatives:normalize.availableRoomAlternatives(source.groups,normalized.request)});
+   if(shortfall)throw withSummary(new ReservationistTaskEvidenceUnavailable('native_quote_insufficient_inventory',['room inventory for the requested stay'],undefined,{shortfall,alternatives:normalize.availableRoomAlternatives(source.groups,normalized.request)}));
+  }
+  if(summaryPartial){
+   const shortfall=normalize.shortfallsOf(source.groups,request.propertyCode)[0];
+   if(shortfall)throw withSummary(new ReservationistTaskEvidenceUnavailable('native_quote_insufficient_inventory',['room inventory for the requested stay'],undefined,{shortfall,alternatives:normalize.availableRoomAlternatives(source.groups,normalized.request)}));
   }
   // Quote captures may keep unread detail rows (details.status='not_read', time-budget leftover). Those rows stay in evidence and are excluded from pricing; they are not a completeness invalid.
   if(source.outcome!=='quote'&&!summaryPartial){
@@ -276,15 +284,15 @@ export function createExistingOwnerNativeQuoteReader(options:ExistingOwnerNative
    // Deliberate block (handoff-reports/2026-10-06-quote-pilot-landing.md): only the diagnostics say which gap it is.
    if(fullBusinessGap)throw new ReservationistTaskEvidenceUnavailable('native_quote_business_evidence_unavailable',['qualified rate eligibility and proven shared room inventory'],['room_options'],nativeQuoteGapDetail(source,evidence,normalize.availableRoomAlternatives(source.groups,normalized.request)));
    // A clean audited no-match means HMS has no rate for this meal plan; it is not invalid capture evidence.
-   if(isReservationistCleanNoMatch(source,normalized.request as QuoteSourceRecord['request']))throw new ReservationistTaskEvidenceUnavailable('native_quote_no_matching_rate',['a qualified rate for the requested stay'],undefined,{alternatives:normalize.availableRoomAlternatives(source.groups,normalized.request)});
+   if(isReservationistCleanNoMatch(source,normalized.request as QuoteSourceRecord['request']))throw withSummary(new ReservationistTaskEvidenceUnavailable('native_quote_no_matching_rate',['a qualified rate for the requested stay'],undefined,{alternatives:normalize.availableRoomAlternatives(source.groups,normalized.request)}));
    // HMS closed a requested room type to sale on named nights and offered no row for it: staff hear which room types and nights.
-   if(isReservationistAuditedRestrictedNights(source,normalized.request as QuoteSourceRecord['request'],normalize.composeAllocation))throw new ReservationistTaskEvidenceUnavailable('native_quote_restricted_nights',['room availability on the restricted nights'],undefined,{restrictedNights:source.groups.flatMap(group=>group.restrictedNights??[])});
+   if(isReservationistAuditedRestrictedNights(source,normalized.request as QuoteSourceRecord['request'],normalize.composeAllocation))throw withSummary(new ReservationistTaskEvidenceUnavailable('native_quote_restricted_nights',['room availability on the restricted nights'],undefined,{restrictedNights:source.groups.flatMap(group=>group.restrictedNights??[])}));
    if(unverifiedContextualRatesNeedAgency(source,request))throw new Error('native_quote_party_context_required');
    throw new Error('native_quote_capture_scope_or_completeness_invalid');
   }
   // A multi-room quote must be exactly the allocation the contract recomputes from its rows; a tampered pool id fails here.
   if(source.outcome==='quote'&&source.groups.length>1&&(source.allocation?.status!=='verified_at_observation'||quoteDigest(source.allocation)!==quoteDigest(normalize.composeAllocation(source.groups,request.propertyCode))))throw new Error('native_quote_capture_scope_or_completeness_invalid');
-  return{ref:`native-quote:${createHash('sha256').update(bytes).digest('hex')}`,sha256:createHash('sha256').update(bytes).digest('hex'),toolVersion:`fetch-quote-v2:${toolHash}`,observedAt:source.observedAt,request:structuredClone(source.requested) as QuoteSourceRecord['request'],result:{outcome:source.outcome,propertyCode:source.requested.propertyCode,groups:source.groups}};
+  return quoteSource;
  };
 }
 
@@ -305,6 +313,6 @@ export async function loadRecoveryCurrentReadServices(options:{authorization:Loc
  const [wrapperBytes,rawBytes]=await Promise.all([readFile(options.sourcePath),readFile(options.rawCapturePath)]);if(wrapperBytes.length>20*1024*1024||rawBytes.length>20*1024*1024)throw new Error('local_current_capture_oversized');
  const wrapped=JSON.parse(wrapperBytes.toString()),raw=JSON.parse(rawBytes.toString()),source:QuoteSourceRecord=wrapped.source;
  const hash=createHash('sha256').update(rawBytes).digest('hex'),toolHash=createHash('sha256').update(await readFile(join(repo,'apps/server-pilot/tooling/playwright-quote/fetch-quote.mjs'))).update(await readFile(join(repo,'apps/server-pilot/tooling/playwright-quote/quote-contract.mjs'))).digest('hex');
- if(raw.schemaVersion!==2||raw.outcome!=='quote'||raw.audit?.status!=='complete'||source.ref!==`native-quote:${hash}`||source.sha256!==hash||source.toolVersion!==`fetch-quote-v2:${toolHash}`||source.observedAt!==raw.observedAt||quoteDigest(source.request)!==quoteDigest(raw.requested)||quoteDigest(source.result)!==quoteDigest({outcome:raw.outcome,propertyCode:raw.requested.propertyCode,groups:raw.groups}))throw new Error('local_current_original_capture_identity_invalid');
+ if(raw.schemaVersion!==2||raw.outcome!=='quote'||raw.audit?.status!=='complete'||source.ref!==`native-quote:${hash}`||source.sha256!==hash||source.toolVersion!==`fetch-quote-v2:${toolHash}`||source.observedAt!==raw.observedAt||quoteDigest(source.request)!==quoteDigest(raw.requested)||quoteDigest(source.result)!==quoteDigest({outcome:raw.outcome,propertyCode:raw.requested.propertyCode,groups:raw.groups,...(source.result.searchCompleteness===undefined?{}:{searchCompleteness:raw.searchCompleteness})}))throw new Error('local_current_original_capture_identity_invalid');
  return createRecoveryCurrentReadServices({authorization:options.authorization,source,expiresAt:options.expiresAt,maxSourceAgeMs:options.maxSourceAgeMs});
 }

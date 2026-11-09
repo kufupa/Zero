@@ -16,7 +16,7 @@ import type {
 import { findParty } from './pane-party-lookup.js';
 import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
 import { staffQuoteInput } from './staff-quote-workflow.js';
-import { runStaffQuote } from './staff-quote-run.js';
+import { runStaffQuote, staffQuoteCauseSummary } from './staff-quote-run.js';
 import { buildStaysProposalPdf } from '../quote-proposal/proposal-pdf.js';
 import {
   quoteWorkbookFileName,
@@ -620,6 +620,8 @@ function quoteObservation(
     rowRates: result.rowRates ?? [],
     rateOptions: result.rateOptions ?? [],
     availabilityBoard: result.availabilityBoard ?? [],
+    availabilityTruncated: result.availabilityTruncated === true,
+    quoteDiagnostics: result.quoteDiagnostics ?? [],
     extrasReviewItems: Array.isArray(result.extrasReviewItems)
       ? result.extrasReviewItems.filter((item): item is string => typeof item === 'string') : [],
     dinnerFallbackGroupIds: Array.isArray(result.dinnerFallbackGroupIds)
@@ -749,9 +751,25 @@ function pricePayload(observation: ReservationWorkflowV2Observation) {
     rowRates: result.rowRates,
     rateOptions: result.rateOptions,
     availabilityBoard: result.availabilityBoard,
+    availabilityTruncated: result.availabilityTruncated,
     extrasReviewItems,
     ...(extrasReviewItems.length && requestId ? { extrasReviewPath: quoteBodyPath(requestId) } : {}),
   };
+}
+
+/** A diagnostic may supply selectable offers only for the currently selected native parties. */
+export function quoteDiagnosticMatchesParty(
+  parties: z.infer<typeof staffQuoteInput>['parties'],
+  rateContext: Record<string, unknown> | undefined,
+): boolean {
+  const expected = {
+    ...(parties?.company ? { organization: parties.company.nativeId } : {}),
+    ...(parties?.agency ? { agency: parties.agency.nativeId } : {}),
+  };
+  const context = rateContext ?? {};
+  const selected = Object.entries(expected);
+  return Object.keys(context).length === selected.length && selected.every(([kind, id]) =>
+    record(context[kind])?.nativeId === id);
 }
 
 async function priceQuote(
@@ -763,20 +781,51 @@ async function priceQuote(
   let quote: QuoteRunResult;
   try {
     quote = await runStaffQuote(compiled.input, { transportId: ctx.transport.id }, ctx.db) as unknown as QuoteRunResult;
-  } catch {
+  } catch (error) {
+    const cause = staffQuoteCauseSummary(error);
+    const mismatch = cause.code === 'native_quote_no_matching_rate' || cause.code === 'business_selected_price_unavailable';
+    const shortage = cause.code === 'native_quote_insufficient_inventory';
+    const restricted = cause.code === 'native_quote_restricted_nights';
+    const issue = cause.code === 'native_quote_no_matching_rate' ? cause.code
+      : mismatch ? 'native_quote_requested_unavailable'
+        : shortage || restricted ? cause.code : 'native_quote_price_unavailable';
+    const diagnostics = (cause.quoteDiagnostics ?? []).map((diagnostic) => {
+      const contextMatchesSelection = quoteDiagnosticMatchesParty(compiled.input.parties, diagnostic.source.request.rateContext);
+      return { ...diagnostic, contextMatchesSelection, ...(!contextMatchesSelection
+        ? { contextNote: 'This read used a different company or agency context. Change the selected party and search again before choosing its offers.' }
+        : {}) };
+    });
+    const latest = [...diagnostics].reverse().find((diagnostic) => diagnostic.contextMatchesSelection);
+    const failureDetails = {
+      failureCode: cause.code,
+      failurePhase: cause.phase ?? 'unknown',
+      failureKind: cause.code === 'native_quote_no_matching_rate' ? 'requested_mismatch'
+        : mismatch ? 'requested_unqualified' : shortage ? 'proven_shortage'
+        : restricted ? 'restricted' : cause.phase === 'qualification' ? 'qualification_failure' : 'read_failure',
+      quoteDiagnostics: diagnostics,
+      inputOverrides: quoteInputOverrides(draft, compiled.request.id),
+      requestedGroups: compiled.input.groups,
+      freshUntil: latest?.freshUntil ?? null,
+      summaryObservedAt: latest?.source.observedAt ?? null,
+      rateOptions: latest?.rateOptions ?? [],
+      availabilityBoard: latest?.availabilityBoard ?? [],
+      availabilityTruncated: latest?.availabilityTruncated ?? false,
+      ...(cause.shortfall ? { shortfall: cause.shortfall } : {}),
+    };
     const failure: ReservationWorkflowV2Observation = {
       ref: randomUUID(), generationId: draft.generationId, kind: 'rate_availability', status: 'failed',
       observedAt: new Date().toISOString(), propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId,
       sourceRefs: compiled.sourceRefs,
       criteria: { workflow: 'quote', requestId: compiled.request.id, inputDigest: compiled.inputDigest,
         sourceHash: draft.source.sourceHash, operationId: null },
-      coverage: { complete: false, notes: ['native_quote_price_unavailable'] },
-      result: { issue: 'native_quote_price_unavailable', sourceHash: draft.source.sourceHash,
-        inputDigest: compiled.inputDigest, observedAt: new Date().toISOString() },
+      coverage: { complete: false, notes: [issue] },
+      result: { issue, sourceHash: draft.source.sourceHash,
+        inputDigest: compiled.inputDigest, observedAt: new Date().toISOString(), ...failureDetails },
     };
     const saved = await persistObservation(ctx, input, failure);
     return saved.status === 'ok'
-      ? { status: 'failed' as const, issue: 'native_quote_price_unavailable', observationRef: failure.ref }
+      ? { status: mismatch || shortage || restricted ? 'needs_input' as const : 'failed' as const, issue, observationRef: failure.ref,
+        quote: { observationRef: failure.ref, ...failureDetails } }
       : saved;
   }
   const observation = quoteObservation(draft, compiled, quote, null);

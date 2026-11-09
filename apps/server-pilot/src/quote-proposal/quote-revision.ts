@@ -51,10 +51,11 @@ export type QuoteSourceRecord = {
   result: {
     outcome: string;
     propertyCode: string;
+    searchCompleteness?: Record<string, string | number | boolean | null>;
     groups: {
       id: string;
       request: RoomRequest;
-      completeness: { search: string; requiredFacts: string };
+      completeness: { search: string; requiredFacts: string; matchingRowsUnseen?: boolean; optionsTruncated?: boolean; [key: string]: string | number | boolean | null | undefined };
       options: NativeOption[];
     }[];
   };

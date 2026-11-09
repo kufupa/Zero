@@ -422,13 +422,15 @@ function availabilityInput(candidate: ReservationWorkflowV2CandidateRead) {
   const date = dates.find((row) => isoDay(row.arrival) && isoDay(row.departure));
   const occupancy = Array.isArray(criteria.occupancy) ? criteria.occupancy as Array<Record<string, unknown>> : [];
   const typeHints = Array.isArray(criteria.roomTypes) ? criteria.roomTypes as Array<Record<string, unknown>> : [];
+  // This is a label for the existing all-room cloud inquiry, never a selected native room code.
+  const roomHints = typeHints.length ? typeHints : [{ value: 'Any room type' }];
   const roomCount = criteria.roomCount;
   if (!date || !isoDay(date.arrival) || !isoDay(date.departure) || date.departure <= date.arrival ||
       typeof roomCount !== 'number' || !Number.isInteger(roomCount) || roomCount < 1 || roomCount > 99 ||
-      !typeHints.length || occupancy.length !== typeHints.length) return null;
+      occupancy.length !== roomHints.length) return null;
   const rooms: Array<{ roomType: string; quantity: number; adults: number; childAges: number[] }> = [];
-  for (let index = 0; index < typeHints.length; index += 1) {
-    const hint = typeHints[index]!;
+  for (let index = 0; index < roomHints.length; index += 1) {
+    const hint = roomHints[index]!;
     const row = occupancy[index]!;
     const adults = row.adults;
     const childCount = row.childCount;
@@ -442,6 +444,28 @@ function availabilityInput(candidate: ReservationWorkflowV2CandidateRead) {
   }
   const parsed = availabilityRequestSchema.safeParse({ kind: 'availability', arrival: date.arrival, departure: date.departure, rooms });
   return parsed.success ? parsed.data : null;
+}
+
+function synthesisObservations(observations: ReservationWorkflowV2Observation[]): ReservationWorkflowV2Observation[] {
+  return observations.map((observation) => {
+    const groups = observation.kind === 'rate_availability' && Array.isArray(observation.result.groups)
+      ? observation.result.groups : null;
+    if (!groups) return observation;
+    let omitted = 0;
+    const projected = groups.map((value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+      const group = value as Record<string, unknown>;
+      if (!Array.isArray(group.options) || group.options.length <= 30) return group;
+      omitted += group.options.length - 30;
+      return { ...group, options: group.options.slice(0, 30),
+        modelOptionCoverage: { shown: 30, stored: group.options.length, complete: false } };
+    });
+    if (!omitted) return observation;
+    return { ...observation, result: { ...observation.result, groups: projected },
+      coverage: { ...observation.coverage, complete: false,
+        notes: [...(observation.coverage.notes ?? []),
+          `${omitted} further native offers remain in the saved observation; this model view cannot establish their absence.`] } };
+  });
 }
 
 /**
@@ -687,13 +711,12 @@ export function createReservationWorkflowV2CandidateReader(input: {
     }
     if (candidate.kind === 'rate_availability') {
       const request = availabilityInput(candidate);
-      if (!request) return unavailable('Rate/availability read requires source-grounded dates, room count, room types and per-room occupancy.');
+      if (!request) return unavailable('Rate/availability read requires source-grounded dates, room count and per-room occupancy.');
       if (target.propertyCode !== 'HRCEN') return unavailable('Cloud availability reader currently supports HRCEN only.');
       const result = await probeCloudRateAvailability(request, { lock, target, acquisition, signal: input.signal });
       const status = result.outcome === 'read' ? result.searchOutcome === 'partial' || result.searchOutcome === 'unavailable' ? 'partial' : 'complete' :
         result.outcome === 'blocked' || result.outcome === 'execution_failure' ? 'failed' : 'unavailable';
-      return { status, result: { ...result, ...(result.outcome === 'read' ? { groups: result.groups.map((group) => ({ ...group,
-        options: group.options.slice(0, 30) })) } : {}) },
+      return { status, result: { ...result },
         coverage: { complete: status === 'complete', notes: status === 'complete' ? [] : ['Availability coverage/read was partial or unavailable.'] } };
     }
     return unavailable(`No reader is bound for ${candidate.kind}.`);
@@ -1503,7 +1526,8 @@ export async function runReservationWorkflowV2Prefill(input: {
   for (const error of base.errors) if (!readErrors.includes(error)) readErrors.push(error);
   const createShapeContext = extraction.requests.some((request) => request.kind === 'create') ? `\n${CREATE_SYNTHESIS_SHAPE_RULES}` : '';
   const finalPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${SYNTHESIS_RULES}\n${SYNTHESIS_SHAPE_RULES}${createShapeContext}${cmsCapabilityContext}${guidancePrompt(synthesisGuidance)}`,
-    userPrompt: JSON.stringify({ propertyCode: input.propertyCode, source: input.source, evidence, extraction, observations }),
+    userPrompt: JSON.stringify({ propertyCode: input.propertyCode, source: input.source, evidence, extraction,
+      observations: synthesisObservations(observations) }),
     responseSchema: zodToJsonSchema(reservationWorkflowV2ModelOutputSchema, { $refStrategy: 'none' }) as Record<string, unknown>,
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
   const finalParsed = finalPass.ok ? reservationWorkflowV2ModelOutputSchema.safeParse(normalizeSynthesisOutput(finalPass.result.output, evidence)) : null;

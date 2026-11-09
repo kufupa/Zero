@@ -26,8 +26,8 @@ import {
   quoteTraceAsyncEnabled,
   runProvisionalQuoteChild,
 } from './staff-quote-trace-async.js';
-import { basename, isAbsolute, join, relative, resolve } from 'node:path';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { isAbsolute, join, relative, resolve } from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { quoteDigest } from '../quote-proposal/quote-revision.js';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { execFile } from 'node:child_process';
@@ -560,6 +560,11 @@ export function getInstalledStaffQuoteServices(
           traceFinishBefore = outcome.finished;
           options.onEvidenceDirectory?.(outcome.evidenceDirectory);
           options.onTraceFinish?.(outcome.finished);
+          // Diagnostic summaries must be backed by the completed audit, even when full quotes are provisional.
+          if (request.details === 'summary') {
+            await outcome.finished;
+            return { stdout: 'Evidence: ' + outcome.evidenceDirectory + '\n' };
+          }
           return { stdout: 'Evidence: ' + outcome.evidenceDirectory + '\n', traceFinish: 'pending' as const };
         }
         traceFinishBefore = Promise.resolve();

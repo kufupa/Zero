@@ -214,7 +214,7 @@ describe('staffQuoteFailureMessage no-match and native capture copy', () => {
         dinnerRequested: true,
       }),
     ).toBe(
-      'HMS has no rate for this meal plan under Government. Nava retries dinner requests on Bed & Breakfast with a separate dinner add-on. If no B&B rate is available, choose an available room option below or check the Government rate only if the guest is entitled.',
+      'HMS has no rate for this meal plan under Government. Try another meal plan or rate type.',
     );
   });
 

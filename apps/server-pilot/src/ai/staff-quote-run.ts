@@ -47,8 +47,9 @@ import { aiDraftGeneration, aiWorkflowRun, message } from '../db/schema/mail.js'
 import { mailExtraction } from '../db/schema/work.js';
 import { ensureQuoteOutcomeWorkItem, recordPreparedQuoteOutcome } from './quote-outcomes.js';
 import { buildStaffRatePick } from './staff-rate-pick-history.js';
-import { otherBoardContractNotes, type RateOption } from './rate-options.js';
-import type { AvailabilityBoardRow } from './hms-availability.js';
+import { buildRateOptions, otherBoardContractNotes, type RateOption } from './rate-options.js';
+import { availabilityBoardOf, type AvailabilityBoardRow, type QuoteEnvelope } from './hms-availability.js';
+import type { StaffQuoteSummaryDiagnostic } from './reservationist-business-services.js';
 import { quoteWorkItemIdFor, recordRateEvents } from './work-events.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
 import {
@@ -67,6 +68,11 @@ import { TRPCError } from '@trpc/server';
 import { randomUUID } from 'node:crypto';
 
 export { staffQuoteRoomAlternatives, type StaffQuoteRoomAlternative };
+export type StaffQuoteDiagnostic = StaffQuoteSummaryDiagnostic & {
+  rateOptions: RateOption[];
+  availabilityBoard: AvailabilityBoardRow[];
+  availabilityTruncated: boolean;
+};
 
 /** Spawn env for a quote/party child while this process holds the property lock. */
 export function staffQuoteChildEnv(
@@ -159,6 +165,8 @@ export function staffQuoteCauseSummary(error: unknown): {
   phase?: string;
   staffQuoteRefusal?: true;
   alternatives?: StaffQuoteRoomAlternative[];
+  quoteDiagnostics?: StaffQuoteDiagnostic[];
+  shortfall?: { roomCode: string; roomLabel: string; date: string; demand: number; supply: number };
 } {
   if (isPropertyReadLockDeadline(error)) {
     return {
@@ -172,13 +180,23 @@ export function staffQuoteCauseSummary(error: unknown): {
   let leaf: unknown = error;
   let transientCode: string | undefined;
   let alternatives: StaffQuoteRoomAlternative[] = [];
+  let quoteDiagnostics: StaffQuoteDiagnostic[] | undefined;
+  let shortfall: ReturnType<typeof staffQuoteCauseSummary>['shortfall'];
   for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth += 1) {
     if (typeof current !== 'object') break;
     leaf = current;
     const record = current as { name?: unknown; message?: unknown; code?: unknown; cause?: unknown };
     const detail = (current as { detail?: unknown }).detail;
+    if (!quoteDiagnostics && Array.isArray((current as { quoteDiagnostics?: unknown }).quoteDiagnostics)) {
+      quoteDiagnostics = (current as { quoteDiagnostics: StaffQuoteDiagnostic[] }).quoteDiagnostics;
+    }
     if (!alternatives.length && detail && typeof detail === 'object') {
       alternatives = staffQuoteRoomAlternatives((detail as { alternatives?: unknown }).alternatives);
+    }
+    const shortage = (detail as { shortfall?: unknown } | undefined)?.shortfall ?? (current as { shortfall?: unknown }).shortfall;
+    if (!shortfall && shortage && typeof shortage === 'object') {
+      const s = shortage as Record<string, unknown>;
+      if (typeof s.roomCode === 'string' && typeof s.roomLabel === 'string' && typeof s.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s.date) && typeof s.demand === 'number' && Number.isSafeInteger(s.demand) && typeof s.supply === 'number' && Number.isSafeInteger(s.supply)) shortfall = {roomCode:s.roomCode,roomLabel:s.roomLabel,date:s.date,demand:s.demand,supply:s.supply};
     }
     const code = typeof record.code === 'string' ? record.code : undefined;
     const message = typeof record.message === 'string' ? record.message : '';
@@ -209,6 +227,8 @@ export function staffQuoteCauseSummary(error: unknown): {
     message: 'Staff quote execution failed.',
     ...(phase !== 'unknown' ? { phase } : {}),
     ...(alternatives.length ? { staffQuoteRefusal: true, alternatives } : {}),
+    ...(quoteDiagnostics?.length ? { quoteDiagnostics } : {}),
+    ...(shortfall ? { shortfall } : {}),
   };
 }
 
@@ -388,7 +408,7 @@ export function nativeNoMatchingRateMessage(context: {
   dinnerRequested?: boolean;
 }): string {
   const strategy = context.salesStrategy ?? 'the selected rate type';
-  const next = context.dinnerRequested
+  const next = context.dinnerRequested && strategy !== 'Government' && strategy !== 'GOV'
     ? 'Nava retries dinner requests on Bed & Breakfast with a separate dinner add-on. If no B&B rate is available, choose an available room option below or check the Government rate only if the guest is entitled.'
     : 'Try another meal plan or rate type.';
   return `${NATIVE_NO_MATCHING_RATE_PREFIX}${strategy}. ${next}`;
@@ -668,6 +688,8 @@ export async function runStaffQuote(
   let rateOptions: RateOption[] = [];
   let availabilityBoard: AvailabilityBoardRow[] = [];
   let availabilityTruncated = false;
+  const quoteDiagnostics: StaffQuoteDiagnostic[] = [];
+  let diagnosticWideningUsed = false;
   let quoteInput: StaffQuoteInput = input;
   let effectiveQuoteInput: StaffQuoteInput = input;
   let dinnerFallbackGroupIds: string[] = [];
@@ -798,6 +820,18 @@ export async function runStaffQuote(
                   availabilityBoard = board.rows;
                   availabilityTruncated = board.truncated;
                 },
+                onSummary: (diagnostic) => {
+                  let rateOptions: RateOption[] = [];
+                  let board: { rows: AvailabilityBoardRow[]; truncated: boolean } = { rows: [], truncated: false };
+                  try { rateOptions = buildRateOptions(diagnostic.source, [], diagnostic.requested.rooms); } catch { /* raw source remains */ }
+                  try { board = availabilityBoardOf(diagnostic.source.result as QuoteEnvelope, diagnostic.source.request); } catch { /* raw source remains */ }
+                  quoteDiagnostics.push({ ...diagnostic, rateOptions, availabilityBoard: board.rows, availabilityTruncated: board.truncated });
+                },
+                claimDiagnosticWidening: () => {
+                  if (diagnosticWideningUsed) return false;
+                  diagnosticWideningUsed = true;
+                  return true;
+                },
               },
             );
             return executeStaffQuote(
@@ -875,7 +909,7 @@ export async function runStaffQuote(
               ) {
                 throw error;
               }
-              // Keep stay and party context; a Government no-match fallback explicitly switches to BAR.
+              // Keep stay, party and strategy context for the supported dinner representation.
               return retryAllDinnerAsBb();
             }
             const fallbackGroupIds = staffQuoteDinnerGroupIdsToRetryAsBb(quoteInput, rateOptions);
@@ -916,7 +950,7 @@ export async function runStaffQuote(
           .set({ status: 'failed', errorMessage: 'staff_quote_not_qualified' })
           .where(eq(aiDraftGeneration.id, generationId));
       }
-      const cause = staffQuoteCauseSummary(error);
+      const cause = { ...staffQuoteCauseSummary(error), ...(quoteDiagnostics.length ? { quoteDiagnostics } : {}) };
       refuseQuote(
         cause.code,
         staffQuoteFailureMessage(error, {
@@ -1080,6 +1114,7 @@ export async function runStaffQuote(
       rateOptions,
       ...(availabilityBoard.length ? { availabilityBoard } : {}),
       ...(availabilityTruncated ? { availabilityTruncated: true } : {}),
+      ...(quoteDiagnostics.length ? { quoteDiagnostics } : {}),
       selectionEpoch: input.selectionEpoch,
       inputRevision: input.inputRevision,
       inputDigest: prepared.inputDigest,

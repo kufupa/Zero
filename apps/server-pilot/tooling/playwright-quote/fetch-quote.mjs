@@ -264,9 +264,13 @@ export function assertApplied(request, room, criteria, {resolvedContext={},start
 }
 
 async function expandCriteria(page) {
-  if (!await page.locator('input[name="salesstrategy"]').isVisible()) {
-    await page.locator('a.x-btn:visible').filter({ has: page.locator('.chevron use[href="#icon-caret-down"]') }).click();
+  // Search collapses the criteria panel, but salesstrategy remains visible in
+  // its header. Use a field inside the panel as the readiness signal.
+  const roomTypes=page.locator('input[name="roomtypes"]');
+  if (!await roomTypes.isVisible()) {
+    await page.locator('a.x-btn:visible').filter({ has: page.locator('.chevron use[href="#icon-caret-down"]') }).click({timeout:10000});
   }
+  await roomTypes.waitFor({state:'visible',timeout:10000});
 }
 
 const normalizedText=value=>String(value??'').trim().replace(/\s+/g,' ').toLowerCase();
@@ -363,15 +367,52 @@ async function applyCurrency(page,currency) {
 }
 
 export async function resetPublicControls(page) {
-  await dismissEmptyCalendar(page);
-  await expandCriteria(page);
-  for (const field of ['groupname','organization','travelagency','roomtypes','rateplans']) {
-    const input=page.locator(`input[name="${field}"]`);
-    if (await input.inputValue()) {await input.fill('');await input.press('Tab');}
+  const fields=['groupname','organization','travelagency','roomtypes','rateplans'];
+  let step='dismiss_calendar';
+  try {
+    await dismissEmptyCalendar(page);
+    step='expand_criteria';
+    await expandCriteria(page);
+    for (const field of fields) {
+      step=`clear_${field}`;
+      const input=page.locator(`input[name="${field}"]`);
+      // Even an empty display can have a selected native value. Never treat a
+      // hidden field as cleared merely because it cannot be interacted with.
+      if (!await resetFieldIsEmpty(input)) {await input.fill('');await input.press('Tab');}
+    }
+    step='currency';
+    await applyCurrency(page);
+    step='sales_strategy';
+    if (await selectSalesStrategy(page,'BAR')!=='BAR') throw new Error('PUBLIC_RESET_SALES_STRATEGY_MISMATCH');
+    step='restricted_visibility';
+    await setToggle(page,'includemultirateoptions',false);
+    // Later changes may alter earlier fields, so verify the final form state.
+    for (const field of [...fields,'currency']) {
+      step=`verify_${field}`;
+      if (!await resetFieldIsEmpty(page.locator(`input[name="${field}"]`)))
+        throw new Error('PUBLIC_RESET_FIELD_NOT_EMPTY');
+    }
+    for (const field of ['convertcurrency','includemultirateoptions']) {
+      step=`verify_${field}`;
+      const value=await page.locator(`input[name="${field}"]`).evaluate(e=>Ext.getCmp(e.id.replace(/-inputEl$/,'')).getValue());
+      if (value!==false) throw new Error('PUBLIC_RESET_TOGGLE_MISMATCH');
+    }
+    step='verify_sales_strategy';
+    const strategy=await page.locator('input[name="salesstrategy"]').evaluate(e=>Ext.getCmp(e.id.replace(/-inputEl$/,'')).getValue());
+    if (strategy!=='BAR') throw new Error('PUBLIC_RESET_SALES_STRATEGY_MISMATCH');
+  } catch(error) {
+    if (error && typeof error==='object') error.quoteResetStep=step;
+    throw error;
   }
-  await applyCurrency(page);
-  await selectSalesStrategy(page,'BAR');
-  await setToggle(page,'includemultirateoptions',false);
+}
+
+async function resetFieldIsEmpty(input) {
+  return input.evaluate(e=>{
+    const field=Ext.getCmp(e.id.replace(/-inputEl$/,''));
+    if (!field || typeof field.getValue!=='function') throw new Error('PUBLIC_RESET_FIELD_UNREADABLE');
+    const empty=value=>value===null||value===''||(Array.isArray(value)&&value.length===0);
+    return empty(e.value)&&empty(field.getValue());
+  });
 }
 
 export async function readRoomFacts(page,propertyCode) {
@@ -949,7 +990,8 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
       const searchComplete=matchingRowsUnseen?false:parsed.completeness.search==='complete';
       const grouped=groupOutcomeFromOptions(parsed.options,{details:request.details,searchComplete});
       const completeness={...parsed.completeness,returnedOptions:options.length,detailOptions:[...details.keys()].length,
-        search:matchingRowsUnseen?'truncated':parsed.completeness.search,requiredFacts:grouped.requiredFacts==='partial'?'partial':parsed.completeness.requiredFacts,matchingRowsUnseen};
+        search:matchingRowsUnseen?'truncated':parsed.completeness.search,requiredFacts:grouped.requiredFacts==='partial'?'partial':parsed.completeness.requiredFacts,
+        matchingRowsUnseen,optionsTruncated:truncated};
       let outcome=grouped.outcome;
       if(completeness.search!=='complete'||completeness.requiredFacts!=='complete')outcome='partial';
       groups.push({id:room.id,request:room,requestedOccupancy:room,outcome,options,applied:source.windows.map(w=>w.criteria),
@@ -970,7 +1012,7 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
   }
   // A contextual/currency call ends with a source-verified public reset, using a
   // distinct applied signature. No context may silently leak into a later call.
-  let publicReset;
+  let publicReset,publicResetFailure,publicResetEvidenceSaved=false,resetPhase='public_search';
   try {
     if(request.rateContext||request.requestedCurrency) {
       const publicRequest={...request,rateContext:undefined,requestedCurrency:undefined,search:{salesStrategy:'BAR',includeRestricted:false},details:'summary'};
@@ -978,14 +1020,24 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
       publicReset=await searchCalendar(page,publicRequest,publicRoom,undefined,undefined,clock);
       searchCount+=publicReset.searchCount;
       await saveEvidence(directory,'public-reset.json',publicReset.windows.map(projectWindow));
+      publicResetEvidenceSaved=true;
     }
+    resetPhase='controls';
     await clock.time('criteriaReset',()=>resetPublicControls(page));
-  } catch {fatal=true;issues.push(issue('PUBLIC_RESET_FAILED','rateContext','Public reset could not be verified.'));}
+  } catch(error) {
+    fatal=true;
+    // Do not include Playwright messages: they may contain URLs or form data.
+    const code=typeof error?.message==='string'&&/^PUBLIC_RESET_[A-Z_]+$/.test(error.message)?error.message:undefined;
+    publicResetFailure={phase:resetPhase,type:error?.name==='TimeoutError'?'timeout':'error',
+      ...(error?.quoteResetStep?{step:error.quoteResetStep}:{}),...(code?{code}:{})};
+    issues.push(issue('PUBLIC_RESET_FAILED','rateContext','Public reset could not be verified.'));
+  }
   const allocation=composeAllocation(groups,request.propertyCode);
   const aggregate=aggregateOutcome({inputIssues:issues.filter(i=>i.code==='CONTEXT_INPUT_GAP'),fatal,groups,allocation});
   return {schemaVersion:2,...aggregate,observedAt:new Date().toISOString(),sourceScreen:'Hotel Availability',requested:request,
     groups,allocation,issues,searchCompleteness:{status:groups.every(g=>g.completeness.search==='complete')?'complete':'partial',searchCount,distinctSignatures:cache.size},
-    publicReset:publicReset?{status:'verified',evidence:'public-reset.json'}:{status:'controls_reset'},
+    publicReset:publicResetFailure?{status:'failed',...publicResetFailure,...(publicResetEvidenceSaved?{evidence:'public-reset.json'}:{})}
+      :publicReset?{status:'verified',evidence:'public-reset.json'}:{status:'controls_reset'},
     limitations:['Displayed-rate sums are not PMS payable totals.','No hold, booking or price lock.',
       'Joint allocation uses proven property/building/room-type identity only; sequential occupancy searches are not an atomic hold.'],
     screenshots:copiedShots};

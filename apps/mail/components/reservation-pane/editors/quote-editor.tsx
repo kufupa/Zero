@@ -76,6 +76,43 @@ function quoteCurrent(editor: Editor, observation: ReturnType<typeof latestQuote
     return (!roomCodes.length || roomCodes.includes(native.roomCode)) && (!group.ratePlan || group.ratePlan === native.rateCode);
   });
 }
+function quoteBoardCode(value: unknown) {
+  const board = text(value).trim().toLocaleLowerCase().replace(/[\s&-]+/gu, '_');
+  if (['room_only', 'roomonly', 'ro'].includes(board)) return 'room_only';
+  if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast'].includes(board)) return 'bb';
+  if (['dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_and_breakfast'].includes(board)) return 'dinner_bb';
+  return null;
+}
+function quoteOffersCurrent(editor: Editor, observation: ReturnType<typeof latestQuote>) {
+  if (quoteCurrent(editor, observation)) return true;
+  if (!observation || observation.sourceMessageId !== editor.snapshot.session.draft.source.messageId ||
+      observation.criteria.sourceHash !== editor.snapshot.session.draft.source.sourceHash) return false;
+  const result = record(observation.result);
+  if (!Array.isArray(result.quoteDiagnostics) || !result.quoteDiagnostics.length ||
+      result.sourceHash !== editor.snapshot.session.draft.source.sourceHash) return false;
+  const until = Date.parse(text(result.freshUntil));
+  if (!Number.isFinite(until) || until <= Date.now()) return false;
+  const index = editor.snapshot.session.draft.proposal.content.requests.findIndex((request) => request.id === editor.request.id);
+  const prefixes = [requestPath(editor.request.id), `/proposal/content/requests/${index}`];
+  const overrides = Object.fromEntries(Object.entries(editor.snapshot.session.draft.fieldOverrides)
+    .filter(([path]) => prefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`)))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([path, override]) => [path, { state: override.state, ...(override.state === 'set' ? { value: override.value } : {}) }]));
+  if (JSON.stringify(overrides) !== JSON.stringify(result.inputOverrides)) return false;
+  const body = record(effectiveAt(editor.snapshot, `${requestPath(editor.request.id)}/body`));
+  const groups = Array.isArray(body.groups) ? body.groups.map(record) : [];
+  const requested = Array.isArray(result.requestedGroups) ? result.requestedGroups.map(record) : [];
+  if (!groups.length || groups.length !== requested.length) return false;
+  return groups.every((group) => {
+    const native = requested.find((row) => row.id === group.id), occupancy = record(group.occupancy);
+    return native && native.arrivalDate === group.arrival && native.departureDate === group.departure &&
+      native.quantity === group.quantity && native.adults === occupancy.adults && native.board === quoteBoardCode(group.board) &&
+      native.childrenAges instanceof Array && native.childrenAges.length === occupancy.childCount &&
+      JSON.stringify(native.childrenAges) === JSON.stringify(occupancy.childAges ?? []) &&
+      JSON.stringify(native.roomCodes ?? []) === JSON.stringify(group.roomCodes ?? []) &&
+      (native.rateCode ?? '') === (group.ratePlan ?? '');
+  });
+}
 function money(minor: unknown, currency: unknown) {
   return typeof minor === 'number' && Number.isSafeInteger(minor) ? `${text(currency) || 'ZAR'} ${(minor / 100).toFixed(2)}` : '';
 }
@@ -111,7 +148,7 @@ function OfferList({ editor, groupId, groupPath, observation }: { editor: Editor
   const result = record(observation?.result);
   const options = Array.isArray(result.rateOptions) ? result.rateOptions.map(record).filter((option) => option.groupId === groupId) : [];
   if (!options.length) return <p className={styles.note}>Available Infor offers appear after lookup.</p>;
-  const current = quoteCurrent(editor, observation);
+  const current = quoteOffersCurrent(editor, observation);
   return <div className={styles.offerList}>
     {!current && <p className={styles.notice}>Earlier offers shown. Refresh the price before choosing.</p>}
     {options.map((option, index) => {
@@ -122,7 +159,7 @@ function OfferList({ editor, groupId, groupPath, observation }: { editor: Editor
       const nightly = money(option.perNightMinor, option.currency), total = money(option.totalMinor, option.currency);
       return <div className={styles.offer} key={`${room}-${rate}-${board}-${index}`}>
         <div><strong>{room} · {text(option.roomLabel) || room} / {rate} · {text(option.rateLabel) || rate}</strong>
-          <small>{text(option.boardLabel) || board}{nightly ? ` · ${nightly} per night` : ''}{total ? ` · ${total} total` : ''}
+          <small>{text(option.boardLabel) || board}{nightly ? ` · ${nightly} per night` : ''}{total ? ` · ${total} ${option.priced === 'summary' ? 'indicative sum' : 'total'}` : ''}
             {typeof option.roomsLeft === 'number' ? ` · ${option.roomsLeft} rooms left` : ''}{option.priced === 'summary' ? ' · summary only' : ''}</small></div>
         <button type="button" className={styles.secondaryButton} disabled={!current || editor.view.busy || !room || !rate || !board}
           aria-pressed={selected} onClick={() => {
