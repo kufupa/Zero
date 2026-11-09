@@ -110,6 +110,9 @@ export function AddonsEditor(editor: Editor) {
       {services.map(({ service, index }) => <div className={styles.stack} key={service.id}>
         {(service.requestedText || service.code) && <strong>{service.requestedText || service.code}</strong>}
         {service.requestedMoney.map(money => <div className={styles.hint} key={money.id}>Requested: {money.amount || 'amount unknown'} {money.currency || ''} {money.unit || ''} · {money.scope.replaceAll('_', ' ')}</div>)}
+        {service.quantityRequest.scope === 'overall' && service.quantityRequest.value && <small className={styles.hint}>
+          Requested quantity: {service.quantityRequest.value} for the booking. The full quantity may be used for one linked room; enter a room quantity if different.
+        </small>}
         {!service.targets.length && <>
           <div className={styles.warning}>Choose the specific room for this Add-On. No room will be charged automatically.</div>
           {owner?.kind === 'create' && owner.serviceRefs.includes(service.id)
