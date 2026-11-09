@@ -142,8 +142,10 @@ async function buildResult(db: WorkTx, ctx: Context, item: ItemRow, source: Rese
         ['unknown', 'succeeded', 'failed'].includes(operation.status)))) return { status: 'invalid_source' };
   const checkedSource = recovery?.currentSource ?? source;
   if (!(await sourceMail(db, ctx, checkedSource))) return { status: 'invalid_source' };
-  const sourceChanged = draft.source.sourceHash !== checkedSource.sourceHash || Boolean(draft.prefill?.evidenceHash &&
-    draft.prefill.evidenceHash !== (await reservationArrivalEvidence(db, source.messageId)).hash);
+  // Drafts without a recorded attachment baseline need an explicit review too:
+  // there is no safe way to tell whether their current attachments were repaired.
+  const sourceChanged = draft.source.sourceHash !== checkedSource.sourceHash ||
+    draft.prefill?.evidenceHash !== (await reservationArrivalEvidence(db, source.messageId)).hash;
   if (sourceChanged && !allowSourceChanged && !recovery) return { status: 'invalid_source' };
   return { status: 'ok', draft: { ...draft, revision: item.revision }, revision: item.revision,
     revisionHead: item.revisionHead, seq: item.revisionSeq, ...(sourceChanged ? { sourceChanged: true } : {}) };
@@ -189,6 +191,9 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
 }): Promise<ReservationWorkflowV2StateResult> {
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
   const saved = await ctx.db.transaction(async (tx) => {
+    // Attachment repair takes this same lock. Capture a coherent source and
+    // attachment baseline before any staff edit can supersede prefill.
+    await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
     // Serialize v2 seeding for the email, even if competing runs infer different
     // legacy WorkItem kinds. Background reads may still add other-kind rows.
     await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
@@ -227,6 +232,7 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
     const existing = reservationWorkflowV2DraftOf(itemRow.state);
     if (existing) return buildResult(tx, ctx, itemRow, input.source, input.allowSourceChanged);
     if (hasReservationWorkflowV2Draft(itemRow.state)) return { status: 'invalid_state' as const };
+    const evidenceHash = (await reservationArrivalEvidence(tx, input.source.messageId)).hash;
     const draft = reservationWorkflowV2DraftSchema.parse({
       contractVersion: RESERVATION_WORKFLOW_V2_VERSION,
       schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
@@ -244,7 +250,8 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
       operationResults: [],
       fieldOverrides: {},
       errors: input.seed.errors ?? [],
-      ...(input.seed.prefill ? { prefill: input.seed.prefill } : {}),
+      prefill: { ...(input.seed.prefill ?? { status: 'complete', attemptId: null, attemptCount: 0,
+        startedAt: null, finishedAt: null }), evidenceHash },
     });
     const state = { ...itemRow.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft };
     // WorkItems can predate V2. Snapshot existing activity under the item lock
@@ -402,7 +409,8 @@ export async function claimReservationWorkflowV2Prefill(ctx: Context, input: Mut
     const attemptId = randomUUID();
     const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, prefill: { status: 'running', phase: 'generation', attemptId,
       attemptCount: meta.attemptCount + 1, startedAt: new Date().toISOString(), finishedAt: null,
-      ...(input.jobFence && evidenceHash ? { jobRunId: input.jobFence.runId, evidenceHash } : {}) } });
+      evidenceHash: evidenceHash ?? current.draft.prefill?.evidenceHash,
+      ...(input.jobFence ? { jobRunId: input.jobFence.runId } : {}) } });
     await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
       updatedAt: new Date() }).where(eq(workItem.id, item.id));
     return { result: { ...current, draft }, claim: { attemptId, revision: item.revision, seq: item.revisionSeq,
