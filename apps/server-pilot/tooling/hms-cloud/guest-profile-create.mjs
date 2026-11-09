@@ -126,7 +126,9 @@ function parseProfileResponse(text) {
 function profileParseFailureDiagnostics(text, response, error) {
   try {
     if (typeof text !== 'string') return null;
-    const limit = 4 * 1024 * 1024, byteLength = Buffer.byteLength(text, 'utf8');
+    const limit = 4 * 1024 * 1024;
+    // UTF-8 has at least one byte per UTF-16 code unit, so a longer string is already over the cap.
+    const byteLength = text.length > limit ? limit + 1 : Buffer.byteLength(text, 'utf8');
     const syntaxError = error instanceof SyntaxError;
     const sample = text.slice(0, 8192), message = syntaxError && typeof error.message === 'string' ? error.message.slice(0, 1024) : '';
     let contentType = 'unknown';
