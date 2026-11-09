@@ -425,8 +425,16 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
         for (const [field, queryField] of [['confirmation', 'confirmation'], ['guestName', 'guestName'],
           ['bookedArrival', 'bookedArrival'], ['bookedDeparture', 'bookedDeparture']] as const) {
           if (filingPath && field !== 'confirmation' && field !== 'bookedArrival') continue;
+          const hintPath = `${targetPath}/${field}`;
+          if (request.kind === 'amend' || request.kind === 'cancel') {
+            let prefix = '';
+            for (const part of hintPath.split('/').slice(1)) {
+              prefix += `/${part}`;
+              if (draft.fieldOverrides[prefix]?.state === 'unknown') return null;
+            }
+          }
           const expected = query[queryField] ?? (field === 'bookedArrival' ? query.arrival : field === 'bookedDeparture' ? query.departure : null) ?? null;
-          let value = valueAt(draft, `${targetPath}/${field}`);
+          let value = valueAt(draft, hintPath);
           if (filingPath && Array.isArray(rows)) {
             const override = draft.fieldOverrides[`${targetPath}/${field}`];
             if (!override || override.state === 'inherit') {
@@ -434,7 +442,7 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
               value = valueAt(draft, `${root}/body/targets/include/${index}/${field}`);
             }
           }
-          if (request.kind === 'amend' ? hint(value) !== hint(expected) : (value || null) !== expected) return null;
+          if (request.kind === 'amend' || request.kind === 'cancel' ? hint(value) !== hint(expected) : (value || null) !== expected) return null;
         }
         set(input.fieldPath, observation.ref);
       } else if (observation.kind === 'guest_candidate' && request.kind === 'create' && input.fieldPath.endsWith('/guest/nativeSelectionRef')) {
