@@ -53,6 +53,9 @@ const MAX_TARGET_CHARS = 80_000;
 const MAX_ATTACHMENT_CHARS = 20_000;
 // A multi-room request can need one guest, stay, and mail read per room, plus shared reads.
 const MAX_CANDIDATE_READS = 32;
+const MAX_DISPLAY_LEADS = 500;
+// Match the canonical draft observation limit; display-only rows must not crowd out other evidence.
+const MAX_DRAFT_OBSERVATIONS = 5000;
 // Do not start additional reads indefinitely; in-flight non-cancellable legacy reads may finish later.
 const CANDIDATE_READ_START_BUDGET_MS = 90_000;
 const SOURCE_REF_PREFIX = 'src_';
@@ -1087,6 +1090,7 @@ function bindGuestProfileObservations(input: {
   const proposal = structuredClone(preserveConfirmationSourceClaims(input.proposal, input.extraction));
   const added: ReservationWorkflowV2Observation[] = [];
   const newLookupRefs: string[] = [];
+  let totalDisplayLeads = 0;
   for (const request of proposal.content.requests) {
     if (request.kind !== 'create') continue;
     const extractedRequest = extractionRequestForProposal(request, proposal.content.requests, input.extraction);
@@ -1111,7 +1115,10 @@ function bindGuestProfileObservations(input: {
       const reads = input.observations.filter((observation) => observation.kind === 'guest_candidate' &&
         observation.criteria.requestId === extractedRequest.id && observation.criteria.role === 'guest' &&
         observation.sourceRefs.some((ref) => matchedGuestRefs.has(ref)));
+      const fieldPath = `/proposal/content/requests/${request.id}/body/allocations/${allocationIndex}/guest/nativeSelectionRef`;
+      const suggestedFieldPath = `/proposal/content/requests/${request.id}/body/allocations/${allocationIndex}/guest/suggestedRef`;
       const eligibleByNativeId = new Map<string, BoundGuestCandidate>();
+      let displayLeads = 0;
       if (sourceGuests.length) for (const read of reads) {
         const readName = typeof read.criteria.name === 'string' ? read.criteria.name : '';
         const readEmail = typeof read.criteria.email === 'string' ? read.criteria.email.trim().toLocaleLowerCase('en-US') : '';
@@ -1121,7 +1128,25 @@ function bindGuestProfileObservations(input: {
           return Boolean(readEmail && sourceEmail && readEmail === sourceEmail) ||
             Boolean(readName && sourceName && sameGuestName(readName, sourceName));
         });
-        if (!matchingSourceGuests.length || read.status !== 'complete' || read.coverage.complete !== true ||
+        if (!matchingSourceGuests.length) continue;
+        if (read.status === 'partial' && !read.coverage.complete) {
+          const rows = Array.isArray(read.result.candidates) ? read.result.candidates.filter(isRecord) : [];
+          for (const [candidateIndex, row] of rows.entries()) {
+            if (displayLeads >= 100 || totalDisplayLeads >= MAX_DISPLAY_LEADS) break;
+            if (![row.name, row.firstName, row.lastName].some((value) => typeof value === 'string' && value.trim())) continue;
+            added.push({ ...read, ref: `obs_${stableId(read.ref, request.id, allocation.id, String(candidateIndex), 'guest-display-lead')}`,
+              generationId: input.generationId, status: 'partial',
+              coverage: { complete: false, notes: read.coverage.notes.length ? read.coverage.notes : ['native_guest_profile_lookup_incomplete'] },
+              criteria: { ...read.criteria, workflow: 'create', kind: 'source_bound_display_lead', role: 'guest', requestId: request.id,
+                allocationId: allocation.id, fieldPath, fieldPaths: [fieldPath], sourceObservationRef: read.ref, candidateIndex,
+                query: { field: 'lastName', value: guest.lastName, firstName: guest.firstName, ...(email ? { email } : {}) } },
+              result: { ...read.result, candidates: [row] } });
+            displayLeads += 1;
+            totalDisplayLeads += 1;
+          }
+          continue;
+        }
+        if (read.status !== 'complete' || read.coverage.complete !== true ||
             !['matches', 'no_match'].includes(String(read.result.outcome))) continue;
         const verifiedFields = isRecord(read.result.correlation) && Array.isArray(read.result.correlation.verifiedFields)
           ? read.result.correlation.verifiedFields.filter((field): field is string => typeof field === 'string') : [];
@@ -1143,8 +1168,6 @@ function bindGuestProfileObservations(input: {
           else eligibleByNativeId.set(row.nativeId, { read, row, sourceRefs: new Set(read.sourceRefs), exact: exactSourceMatch });
         }
       }
-      const fieldPath = `/proposal/content/requests/${request.id}/body/allocations/${allocationIndex}/guest/nativeSelectionRef`;
-      const suggestedFieldPath = `/proposal/content/requests/${request.id}/body/allocations/${allocationIndex}/guest/suggestedRef`;
       const bound = [...eligibleByNativeId.values()].slice(0, 100).map(({ read, row, sourceRefs }, candidateIndex) => {
         const ref = `obs_${stableId(read.ref, request.id, allocation.id, String(row.nativeId), 'guest-binding')}`;
         const observation: ReservationWorkflowV2Observation = { ...read, ref, generationId: input.generationId,
@@ -1196,6 +1219,7 @@ function bindGuestProfileObservations(input: {
 function bindPartyObservations(input: { proposal: ReservationWorkflowV2Proposal; extraction: ReservationWorkflowV2Extraction;
   observations: ReservationWorkflowV2Observation[]; generationId: string }) {
   const proposal = structuredClone(input.proposal), added: ReservationWorkflowV2Observation[] = [];
+  let totalDisplayLeads = input.observations.filter((row) => row.criteria.kind === 'source_bound_display_lead').length;
   const norm = (value: unknown) => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase() : '';
   for (const request of proposal.content.requests) {
     if (request.kind !== 'create' && request.kind !== 'quote') continue;
@@ -1226,8 +1250,27 @@ function bindPartyObservations(input: { proposal: ReservationWorkflowV2Proposal;
     for (const slot of slots) {
       const source = extracted.parties.filter((party) => party.role === slot.extractedRole && norm(party.name.value) === norm(slot.party.name));
       const refs = new Set(source.flatMap((party) => party.name.sourceRefs));
-      const reads = input.observations.filter((row) => row.kind === 'party_candidate' && row.status === 'complete' && row.coverage.complete &&
+      const sourceReads = input.observations.filter((row) => row.kind === 'party_candidate' &&
         row.criteria.role === slot.extractedRole && norm(row.criteria.name) === norm(slot.party.name) && row.sourceRefs.some((ref) => refs.has(ref)));
+      const reads = sourceReads.filter((row) => row.status === 'complete' && row.coverage.complete);
+      let displayLeads = 0;
+      for (const read of sourceReads) {
+        if (read.status !== 'partial' || read.coverage.complete) continue;
+        const rows = Array.isArray(read.result.candidates) ? read.result.candidates.filter(isRecord) : [];
+        for (const [candidateIndex, row] of rows.entries()) {
+          if (displayLeads >= 100 || totalDisplayLeads >= MAX_DISPLAY_LEADS) break;
+          if (typeof row.name !== 'string' || !row.name.trim()) continue;
+          added.push({ ...read, ref: `obs_${stableId(read.ref, request.id, slot.path, String(candidateIndex), 'party-display-lead')}`,
+            generationId: input.generationId, status: 'partial',
+            coverage: { complete: false, notes: read.coverage.notes.length ? read.coverage.notes : ['native_party_lookup_incomplete'] },
+            criteria: { ...read.criteria, workflow: request.kind, kind: 'source_bound_display_lead', requestId: request.id,
+              role: slot.role, ...(slot.allocationId ? { allocationId: slot.allocationId } : {}), fieldPath: slot.path,
+              fieldPaths: [slot.path], sourceObservationRef: read.ref, candidateIndex, query: slot.party.name },
+            result: { ...read.result, candidates: [row] } });
+          displayLeads += 1;
+          totalDisplayLeads += 1;
+        }
+      }
       const seen = new Set<string>(), candidates: ReservationWorkflowV2Observation[] = [];
       for (const read of reads) for (const raw of Array.isArray(read.result.candidates) ? read.result.candidates : []) {
         if (!isRecord(raw) || !/^\d{1,30}$/.test(String(raw.nativeId ?? '')) || typeof raw.name !== 'string' || !raw.name.trim()) continue;
@@ -1246,8 +1289,12 @@ function bindPartyObservations(input: { proposal: ReservationWorkflowV2Proposal;
       slot.party.suggestedRef = exact.length === 1 ? exact[0]!.ref : null;
     }
   }
-  proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, ...added.map((row) => row.ref)])].slice(0, 1000);
-  return { proposal, observations: [...input.observations, ...added] };
+  proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs,
+    ...added.filter((row) => row.status === 'complete' && row.coverage.complete).map((row) => row.ref)])].slice(0, 1000);
+  const combined = [...input.observations, ...added];
+  let displayCapacity = Math.max(0, MAX_DRAFT_OBSERVATIONS - combined.filter((row) => row.criteria.kind !== 'source_bound_display_lead').length);
+  const observations = combined.filter((row) => row.criteria.kind !== 'source_bound_display_lead' || displayCapacity-- > 0);
+  return { proposal, observations };
 }
 
 function validateProposal(proposal: ReservationWorkflowV2Proposal, evidence: ReservationWorkflowV2Evidence[], observations: ReservationWorkflowV2Observation[]): string | null {
