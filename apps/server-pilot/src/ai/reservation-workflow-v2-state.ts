@@ -303,7 +303,7 @@ export async function markReservationWorkflowV2Queued(ctx: Context, input: Mutat
     if (current.status !== 'ok' || item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq)
       return current;
     const meta = current.draft.prefill;
-    if (!meta || meta.status !== 'idle') return current;
+    if (!meta || (meta.status !== 'idle' && !(meta.status === 'failed' && !meta.jobRunId))) return current;
     const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft,
       prefill: { ...meta, status: 'queued', jobRunId: input.jobRunId } });
     await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
@@ -638,10 +638,23 @@ export async function reconcileReservationWorkflowV2Source(ctx: Context, input: 
       return { status: 'invalid_value' as const, issue: 'native_operation_needs_reconciliation_before_source_rebind' };
     }
     const evidence = await reservationArrivalEvidence(tx, input.source.messageId);
+    const meta = current.draft.prefill;
+    // A source review can safely restart only an untouched, still-empty prefill.
+    // Keep completed proposals, edits, native work and uncertain outcomes bound
+    // to their original generation instead of silently replacing them.
+    const retryEmpty = Boolean(meta && ['idle', 'queued', 'running', 'failed'].includes(meta.status) &&
+      meta.phase !== 'native_checks' && current.draft.status === 'partial' &&
+      !current.draft.proposal.content.requests.length && !current.draft.proposal.content.services.length &&
+      !current.draft.proposal.content.documents.length && !current.draft.observations.length &&
+      !current.draft.operationResults.length && !Object.keys(current.draft.fieldOverrides).length &&
+      !Object.keys(current.draft.staffReviews).length &&
+      !(await hasPrefillRetryActivity(tx, item.id, current.draft.generationId, item.revisionSeq)));
     const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, source: input.source,
       generationId: randomUUID(), revision: item.revision + 1,
-      prefill: { ...(current.draft.prefill ?? { attemptId: null, attemptCount: 0, startedAt: null }),
-        status: 'superseded', evidenceHash: evidence.hash, finishedAt: new Date().toISOString() } });
+      prefill: retryEmpty ? { status: 'failed', attemptId: null, attemptCount: 0, startedAt: null,
+        finishedAt: new Date().toISOString(), evidenceHash: evidence.hash }
+        : { ...(meta ?? { attemptId: null, attemptCount: 0, startedAt: null }),
+          status: 'superseded', evidenceHash: evidence.hash, finishedAt: new Date().toISOString() } });
     const nextState = { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft };
     const advanced = advancePaneRevision({ revision: item.revision, revisionHead: item.revisionHead,
       seq: item.revisionSeq, previousState: item.state, nextState, extractionId: item.extractionId });
@@ -649,6 +662,15 @@ export async function reconcileReservationWorkflowV2Source(ctx: Context, input: 
       type: 'field.edit', fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:source`,
       value: { action: 'reconcile_source', previousSourceHash: current.draft.source.sourceHash,
         sourceHash: input.source.sourceHash, evidenceHash: evidence.hash }, evidence: advanced.evidence });
+    if (retryEmpty) {
+      // The explicit source review is the new baseline, not an intervening edit.
+      const prefillActivityCount = await countPrefillRetryActivity(tx, item.id);
+      await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'ai', type: 'field.seed',
+        fieldPath: RESERVATION_WORKFLOW_V2_STATE_KEY, value: { contractVersion: RESERVATION_WORKFLOW_V2_VERSION,
+          status: draft.status, generationId: draft.generationId }, aiSource: RESERVATION_PREFILL_SCHEMA_VERSION,
+        evidence: { sourceMessageId: input.source.messageId, sourceHash: input.source.sourceHash,
+          prefillActivityCount, prefillActivitySeq: item.revisionSeq + 1 } });
+    }
     await tx.update(workItem).set({ state: nextState, revision: advanced.revision, revisionHead: advanced.revisionHead,
       revisionSeq: item.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, item.id));
     return { status: 'ok' as const, draft, revision: advanced.revision, revisionHead: advanced.revisionHead, seq: item.revisionSeq + 1 };
