@@ -191,6 +191,15 @@ export function nativeStructureIsSafe(currentState: PaneState, restoredState: Pa
     const result = record(entry);
     if ((result.status !== 'succeeded' && result.status !== 'unknown') || typeof result.requestId !== 'string') continue;
     const id = result.requestId;
+    if (result.workflow === 'guest_profile' && typeof result.allocationId === 'string') {
+      const exists = (content: Record<string, unknown>) => {
+        const request = record(rows(content, 'requests').find((row) => record(row).id === id));
+        return request.kind === 'create' && Array.isArray(record(request.body).allocations) &&
+          (record(request.body).allocations as unknown[]).some((row) => record(row).id === result.allocationId);
+      };
+      if (!exists(newContent)) return false;
+      continue;
+    }
     if (result.workflow === 'create' && typeof result.allocationId === 'string') {
       const target = (content: Record<string, unknown>) => {
         const request = record(rows(content, 'requests').find((row) => record(row).id === id));
@@ -395,6 +404,10 @@ async function applyHistoryMove(
       .limit(1)
       .for('update');
     if (!item) return { status: 'not_found' as const };
+    const pendingGuest = (item.state[RESERVATION_V2_KEY] as ReservationWorkflowV2Draft | undefined)?.operationResults;
+    if (pendingGuest?.some((row) => row.workflow === 'guest_profile' && row.status === 'unknown')) {
+      return { status: 'history_stale' as const, revision: item.revision, revisionHead: item.revisionHead, seq: item.revisionSeq };
+    }
     const revision = item.revision;
     const revisionHead = item.revisionHead;
     const seq = item.revisionSeq;
@@ -424,6 +437,30 @@ async function applyHistoryMove(
     const restoredV2 = state[RESERVATION_V2_KEY] as ReservationWorkflowV2Draft | undefined;
     if (previousV2?.proposal && restoredV2?.proposal && Array.isArray(previousV2.observations)) {
       restoredV2.observations = rebaseReservationV2Observations(previousV2, previousV2.proposal, restoredV2.proposal);
+      // The verified profile selection is a native receipt, not an undoable
+      // staff edit. Follow its stable allocation ID if row indexes moved.
+      for (const result of previousV2.operationResults) {
+        if (result.workflow !== 'guest_profile' || result.status !== 'succeeded' || !result.allocationId) continue;
+        const beforeRequest = previousV2.proposal.content.requests.find((row) => row.id === result.requestId);
+        const afterRequest = restoredV2.proposal.content.requests.find((row) => row.id === result.requestId);
+        if (beforeRequest?.kind !== 'create' || afterRequest?.kind !== 'create') continue;
+        const beforeIndex = beforeRequest.body.allocations.findIndex((row) => row.id === result.allocationId);
+        const afterIndex = afterRequest.body.allocations.findIndex((row) => row.id === result.allocationId);
+        if (beforeIndex < 0 || afterIndex < 0) continue;
+        const root = `/proposal/content/requests/${encodeURIComponent(result.requestId)}/body/allocations`;
+        const beforePath = `${root}/${beforeIndex}/guest`, afterPath = `${root}/${afterIndex}/guest`;
+        const selection = previousV2.fieldOverrides[`${beforePath}/nativeSelectionRef`];
+        const selected = previousV2.observations.find((row) => result.observationRefs.includes(row.ref) &&
+          row.ref === selection?.value && row.criteria.workflow === 'guest_profile_create' && row.status === 'complete');
+        if (!selected || selection?.state !== 'set') continue;
+        restoredV2.fieldOverrides[`${afterPath}/nativeSelectionRef`] = selection;
+        const intent = previousV2.fieldOverrides[`${beforePath}/profileIntent`];
+        if (intent?.state === 'set' && intent.value === 'existing_or_unknown') {
+          restoredV2.fieldOverrides[`${afterPath}/profileIntent`] = intent;
+        }
+        const review = previousV2.staffReviews[`${beforePath}/nativeSelectionRef`];
+        if (review) restoredV2.staffReviews[`${afterPath}/nativeSelectionRef`] = review;
+      }
     }
   const v2 = state[RESERVATION_V2_KEY];
   if (v2 && typeof v2 === 'object' && !Array.isArray(v2)) {

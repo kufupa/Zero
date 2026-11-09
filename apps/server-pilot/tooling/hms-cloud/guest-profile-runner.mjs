@@ -1,4 +1,4 @@
-// Trusted, Labtest-only orchestration for guest-profile operations.
+// Labtest by default; real-guest writes require trusted server callbacks.
 // Attempt files are write-once: an incomplete file is a hold, not permission to retry.
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, realpath } from 'node:fs/promises';
@@ -98,7 +98,8 @@ async function readAttempt(dir, attemptKey) {
   for (const name of names) parts[name] = await readRecord(dir, file(attemptKey, name));
   const claim = parts.claim;
   if (!claim || ![1, 2].includes(claim.version) || !validAttempt(claim.attemptId) || hash(claim.attemptId) !== attemptKey ||
-      !claim.fields || claim.fields.firstName !== 'Proof' || claim.fields.lastName !== 'Labtest' ||
+      !claim.fields || !same(profileBusinessFields({ guest: Object.fromEntries(
+        Object.entries(claim.fields).filter(([key]) => !['status', 'consent'].includes(key))) }), claim.fields) ||
       typeof claim.previewDigest !== 'string' ||
       (claim.version === 1 && (hasExtendedProfileFields(claim.fields) || claim.previewDigest !== profilePreviewDigest(claim.fields, claim.confirmDuplicateName))) ||
       (claim.version === 2 && (!matchesProfileReview(claim.review, claim.fields, claim.confirmDuplicateName) ||
@@ -166,8 +167,10 @@ async function partialHeld(dir, attemptKey, attemptId, issue) {
 
 /** Configuration is trusted infrastructure; tool input is data, never authority. */
 export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-hms-runtime', 'guest-profile'),
-  dependencies = {}, sessionOptions = {}, verifyNoCreate } = {}) {
+  dependencies = {}, sessionOptions = {}, verifyNoCreate, authorizeStaffWrite, dispatchStaffWrite } = {}) {
   if (verifyNoCreate !== undefined && typeof verifyNoCreate !== 'function') throw new TypeError('PROFILE_VERIFIER_INVALID');
+  if (authorizeStaffWrite !== undefined && typeof authorizeStaffWrite !== 'function') throw new TypeError('PROFILE_AUTHORIZER_INVALID');
+  if (dispatchStaffWrite !== undefined && typeof dispatchStaffWrite !== 'function') throw new TypeError('PROFILE_DISPATCH_AUTHORIZER_INVALID');
   const prepare = dependencies.prepareGuestProfile ?? nativePrepare;
   const create = dependencies.createGuestProfile ?? nativeCreate;
   const read = dependencies.readGuestProfile ?? nativeRead;
@@ -191,7 +194,8 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
       const issue = profileInputIssue(business);
       if (issue !== 'GUEST_NAME_AND_MOBILE_REQUIRED') return { outcome: 'needs_input', issue, attemptId, dispatched: false };
     }
-    if (!fields || fields.firstName !== 'Proof' || fields.lastName !== 'Labtest') {
+    const realGuest = fields && (fields.firstName !== 'Proof' || fields.lastName !== 'Labtest');
+    if (!fields || (realGuest && (!authorizeStaffWrite || !dispatchStaffWrite))) {
       return { outcome: 'not_dispatched', issue: 'PROFILE_LABTEST_ONLY', attemptId, dispatched: false };
     }
     const confirmDuplicateName = business.confirmDuplicateName === true;
@@ -268,8 +272,11 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
       }
       await writeOnce(dir, file(attemptKey, phase), { version: 1, attemptKey, phase });
       observed.phase = context.phase;
-      observed.dispatched = true; // The request may leave as soon as proceed is called.
-      return proceed();
+      const dispatch = () => {
+        observed.dispatched = true; // The request may leave as soon as proceed is called.
+        return proceed();
+      };
+      return dispatchStaffWrite ? dispatchStaffWrite(Object.freeze({ ...context, attemptId }), dispatch) : dispatch();
     };
     const recordResponse = async (context, response) => {
       if (!authorized(context)) throw new Error('PROFILE_AUTHORIZATION_MISMATCH');
@@ -279,7 +286,8 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
     };
     let result;
     try {
-      result = await create(business, { ...sessionOptions, attemptId, authorizeCandidate: async context => authorized(context),
+      result = await create(business, { ...sessionOptions, attemptId, authorizeCandidate: async context =>
+        authorized(context) && (!authorizeStaffWrite || await authorizeStaffWrite(Object.freeze({ ...context, attemptId })) === true),
         dispatchCandidate, recordResponse });
     } catch { result = { outcome: 'uncertain', issue: 'PROFILE_EXECUTION_FAILED', attemptId }; }
     result = { ...result, attemptId, phase: result.phase ?? observed.phase,
@@ -330,6 +338,31 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
     } catch { return { ...held(attemptId, parts, 'PROFILE_RECONCILIATION_JOURNAL_UNAVAILABLE'), readback }; }
   }
 
+  // Inspection is read-only even when the database claim exists but no runner
+  // journal was established. It never creates an attempt or sends Save.
+  async function inspectGuestProfileAttempt(input) {
+    if (!own(input, ['attemptId', 'propertyCode', 'guest', 'confirmDuplicateName', 'expectedPreviewDigest', 'expectedReview']) ||
+        !validAttempt(input.attemptId)) return { outcome: 'input_gap', issue: 'PROFILE_ATTEMPT_INPUT_INVALID' };
+    const { attemptId, ...business } = input;
+    let dir;
+    const key = hash(input.attemptId);
+    try {
+      dir = await directory();
+      if (!await readRecord(dir, file(key, 'claim'))) return held(input.attemptId, null, 'PROFILE_ATTEMPT_NOT_FOUND');
+      const parts = await readAttempt(dir, key);
+      if (Object.keys(business).length && (!same(profileBusinessFields(business), parts.claim.fields) ||
+          business.expectedPreviewDigest !== parts.claim.previewDigest ||
+          (business.confirmDuplicateName === true) !== parts.claim.confirmDuplicateName ||
+          (hasExtendedProfileFields(parts.claim.fields) && !same(business.expectedReview, parts.claim.review)))) {
+        return { outcome: 'review_required', issue: 'PROFILE_ATTEMPT_CHANGED', attemptId, dispatched: false };
+      }
+      if (parts.reconcile) return parts.reconcile;
+      if (parts.result && parts.result.outcome !== 'uncertain') return parts.result;
+      return held(input.attemptId, parts);
+    } catch { return dir ? partialHeld(dir, key, input.attemptId, 'PROFILE_JOURNAL_CORRUPT')
+      : held(input.attemptId, null, 'PROFILE_JOURNAL_UNAVAILABLE'); }
+  }
+
   return Object.freeze({ listGuestProfileCreationOptions: input => listOptions(input, sessionOptions),
-    prepareGuestProfile, createGuestProfile, readGuestProfile });
+    prepareGuestProfile, createGuestProfile, readGuestProfile, inspectGuestProfileAttempt });
 }

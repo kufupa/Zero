@@ -8,6 +8,7 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
     // whole read/prepare/save response alive, including source and lock waits.
     if (routes.some((route) => [
       'reservationWorkflowV2.ensure', 'reservationWorkflowV2.lookup',
+      'reservationWorkflowV2.guestProfileOptions', 'reservationWorkflowV2.prepareGuestProfile', 'reservationWorkflowV2.createGuestProfile',
       'reservationWorkflowV2.prepare', 'reservationWorkflowV2.execute',
       'reservationWorkflowV2.reconcile', 'reservationWorkflowV2.lookupServices',
       'reservationWorkflowV2.prepareServices', 'reservationWorkflowV2.executeServices',
