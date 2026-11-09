@@ -281,7 +281,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
         const nativeHint = nativeValue ? `Infor ${operation === 'edit' ? 'current' : 'last check'}: ${nativeValue}${nativeDisplay && nativeDisplay !== nativeValue ? ` · ${nativeDisplay}` : ''}.` : '';
         const choiceHint = isChoice ? control?.editable === false ? 'This field is not editable in Infor.'
           : options.length ? 'Infor choices; check again after changes.' : controlsFromPreview
-            ? 'No Infor choices available from the last check.' : 'Check the Add-On to load Infor choices.' : '';
+            ? 'No Infor choices available from the last completed check.' : 'Check the Add-On to load Infor choices.' : '';
         const priceHint = field === 'unitPrice' ? 'Unit price is supplied; Infor calculates the total from it.' : '';
         const sharedHint = shared != null && text(shared) ? `Shared value: ${text(shared)}; a room value overrides it.` : operation === 'edit' ? 'Leave unmentioned values unchanged.' : '';
         return <Field key={field} editor={editor} path={`${targetRoot}/fields/${field}`} label={label} type={type} review
