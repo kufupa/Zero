@@ -213,6 +213,7 @@ export async function reservationWorkflowV2CreateGuestProfile(ctx: ReservationWo
     return validate(live.draft);
   };
   let native: ReservationWorkflowV2GuestNativeResult;
+  let noDispatchBeforeJournal = false;
   try {
     let retryOfAttemptId: string | undefined;
     const nativeRunner = await runner({ authorizeStaffWrite: callback,
@@ -257,8 +258,11 @@ export async function reservationWorkflowV2CreateGuestProfile(ctx: ReservationWo
       : await nativeRunner.createGuestProfile({ ...preview.business, expectedPreviewDigest: preview.previewDigest,
         ...(preview.review ? { expectedReview: preview.review } : {}), attemptId: input.idempotencyKey,
         ...(retryOfAttemptId ? { retryOfAttemptId } : {}) });
+    noDispatchBeforeJournal = !inspectOnly && !claim.alreadyClaimed && native.outcome === 'not_dispatched' &&
+      native.issue === 'PROFILE_JOURNAL_UNAVAILABLE' && native.noDispatchBeforeJournal === true &&
+      native.dispatched === false && native.nativeId == null;
     if (!inspectOnly && !claim.alreadyClaimed && native.dispatched === false && native.noDispatchRecorded !== true &&
-        native.issue !== 'PROFILE_ATTEMPT_CHANGED' && native.issue !== 'PROFILE_INTENT_HELD') {
+        !noDispatchBeforeJournal && native.issue !== 'PROFILE_ATTEMPT_CHANGED' && native.issue !== 'PROFILE_INTENT_HELD') {
       const inspected = await nativeRunner.inspectGuestProfileAttempt({ ...preview.business, expectedPreviewDigest: preview.previewDigest,
         ...(preview.review ? { expectedReview: preview.review } : {}), attemptId: input.idempotencyKey });
       if (inspected.noDispatchRecorded === true) native = { ...native, noDispatchRecorded: true };
@@ -268,9 +272,12 @@ export async function reservationWorkflowV2CreateGuestProfile(ctx: ReservationWo
         nativeId: native.nativeId, attemptId: input.idempotencyKey });
       if (read.reconciliation?.outcome === 'created') native = read.reconciliation;
     }
-  } catch { native = { outcome: 'reconciliation_required', issue: 'guest_profile_execution_unknown', dispatched: null }; }
+  } catch {
+    noDispatchBeforeJournal = false;
+    native = { outcome: 'reconciliation_required', issue: 'guest_profile_execution_unknown', dispatched: null };
+  }
   const successful = native.outcome === 'created' && /^\d{1,30}$/.test(native.nativeId ?? '') && native.readback;
-  const status = successful ? 'succeeded' as const : guestProfileDefinitelyNotDispatched(native) ||
+  const status = successful ? 'succeeded' as const : noDispatchBeforeJournal || guestProfileDefinitelyNotDispatched(native) ||
     (native.outcome === 'confirmation_required' && native.duplicateDeclined === true)
     ? 'failed' as const : 'unknown' as const;
   const request = claim.draft.proposal.content.requests.find((row) => row.id === input.requestId);
