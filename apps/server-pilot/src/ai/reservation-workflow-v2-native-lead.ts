@@ -8,7 +8,7 @@ export type NativeLeadVerification = {
   candidates: Record<string, unknown>[];
   rowVerification: { status: 'verified' | 'unverified'; method: 'response_grid_correlation'; verifiedFields: string[] };
   coverage: { complete: boolean; native: Record<string, unknown> | null; returned: number;
-    inspectedMatched: number | null; closeOutcome: string | null };
+    inspectedMatched: number | null; closeOutcome: string | null; searchScope: { field: string; query: string } | null };
   issue?: string;
 };
 
@@ -26,7 +26,7 @@ const scalar = (value: unknown): string | null => value == null ? null : String(
 function empty(outcome: NativeLeadVerification['outcome'], issue: string): NativeLeadVerification {
   return { outcome, match: null, candidates: [], issue,
     rowVerification: { status: 'unverified', method: 'response_grid_correlation', verifiedFields: [] },
-    coverage: { complete: false, native: null, returned: 0, inspectedMatched: null, closeOutcome: null } };
+    coverage: { complete: false, native: null, returned: 0, inspectedMatched: null, closeOutcome: null, searchScope: null } };
 }
 
 /** Verify a staff-requested native ID without selecting it. Caller owns transport authority and property locking. */
@@ -113,14 +113,19 @@ export async function verifyNativeLead(input: { kind: NativeLeadKind; nativeId: 
       const match = candidates.filter(candidate => candidate.nativeId === nativeId);
       const loaded = searchCoverage?.loaded;
       const loadedValid = typeof loaded === 'number' && Number.isInteger(loaded) && loaded >= 0;
+      const total = searchCoverage?.reportedTotal;
+      const numericTotal = typeof total === 'number' && Number.isFinite(total) ? total
+        : typeof total === 'string' && /^-?\d+(?:\.\d+)?$/.test(total.trim()) ? Number(total) : null;
+      const countsConsistent = numericTotal === null || !loadedValid || numericTotal >= (loaded as number);
       const rowsAccounted = kind === 'guest' ? loadedValid && found.returned === Math.min(25, loaded as number) && rows.length === found.returned
         : loadedValid && rows.length === loaded && rawIdsValid;
-      const complete = Boolean(searchValid && inspectionValid && rowsAccounted && fieldsVerified && closeOutcome === 'closed_unsaved' &&
+      const complete = Boolean(searchValid && inspectionValid && rowsAccounted && countsConsistent && fieldsVerified && closeOutcome === 'closed_unsaved' &&
         searchCoverage?.possiblyTruncated === false && searchCoverage.truncated === false && searchCoverage.serverMoreRecords === false &&
         (loaded === 0 ? found.outcome === 'no_match' : found.outcome === 'matches'));
       const verified = Boolean(searchValid && inspectionValid && fieldsVerified && closeOutcome === 'closed_unsaved' &&
         (kind === 'guest' || rawIdsValid) && targetCount === 1 && match.length === 1);
-      const coverage = { complete, native: searchCoverage, returned: rows.length, inspectedMatched, closeOutcome };
+      const coverage = { complete, native: searchCoverage, returned: rows.length, inspectedMatched, closeOutcome,
+        searchScope: { field: spec.field, query } };
       const rowVerification = { status: verified ? 'verified' as const : 'unverified' as const,
         method: 'response_grid_correlation' as const, verifiedFields };
       if (verified) return { outcome: 'matched', match: match[0]!, candidates, rowVerification, coverage };
