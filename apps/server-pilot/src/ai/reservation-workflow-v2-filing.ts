@@ -442,7 +442,7 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReservationWorkflow
         status: complete ? 'complete' : found?.outcome === 'execution_failure' ? 'failed' : 'partial',
         observedAt: new Date().toISOString(), propertyCode: loaded.draft.propertyCode, sourceMessageId: input.source.messageId,
         sourceRefs: [], criteria: { workflow: 'filing', requestId: request.id, targetHintId: hint.id,
-          confirmation: hint.confirmation, bookedArrival: hint.bookedArrival ?? null },
+          confirmation: hint.confirmation, bookedArrival: hint.bookedArrival || null },
         coverage: { complete, notes: complete ? [] : ['Fresh stay lookup did not verify one exact saved stay.'] },
         result: { outcome: found?.outcome ?? 'execution_failure', stay: complete ? stay : null,
           arrivalMismatch: found?.arrivalMismatch ?? false } };
