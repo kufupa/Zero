@@ -1,3 +1,4 @@
+import type { ReservationWorkflowV2SystemReadContext } from './reservation-workflow-v2-tools.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, lstat, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -51,6 +52,7 @@ export type ReservationWorkflowV2CancelContext = {
   nativeBatch?: ReservationNativeCheckBatch;
   recovery?: ReservationWorkflowV2Context['recovery'];
 };
+type ReservationWorkflowV2CancelReadContext = ReservationWorkflowV2CancelContext | ReservationWorkflowV2SystemReadContext;
 
 type StateContext = ReservationWorkflowV2Context;
 type CancelActorSession = { sessionId: string; sessionProfile: 'legacy' | 'remote' };
@@ -106,19 +108,19 @@ const reasonOptionsSchema = z.array(reasonOptionSchema).min(1).max(100)
 const reviewNote = (observationRef: string, approvalDigest: string) =>
   `cancel-preview:${observationRef}:${approvalDigest}`;
 
-function stateContext(ctx: ReservationWorkflowV2CancelContext): StateContext {
-  return { db: ctx.db, transportId: ctx.transport.id, userId: ctx.nativeBatch ? null : ctx.user.id,
+function stateContext(ctx: ReservationWorkflowV2CancelReadContext): StateContext {
+  return { db: ctx.db, transportId: ctx.transport.id, userId: ctx.nativeBatch ? null : ctx.user!.id,
     propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch, recovery: ctx.recovery };
 }
 
-function currentTarget(ctx: ReservationWorkflowV2CancelContext): HmsReadTarget | null {
+function currentTarget(ctx: ReservationWorkflowV2CancelReadContext): HmsReadTarget | null {
   if (ctx.property.propertyCode !== 'HRCEN') return null;
   const resolved = paneStayHmsTargetForTransport(ctx.transport.id);
   return resolved.ok && resolved.target.propertyCode === 'HRCEN' && resolved.target.browserSlot === 'centurion'
     ? resolved.target : null;
 }
 
-async function currentDraft(ctx: ReservationWorkflowV2CancelContext, input: {
+async function currentDraft(ctx: ReservationWorkflowV2CancelReadContext, input: {
   workItemId: string; source: ReservationWorkflowV2Source; expectedRevision: number; expectedSeq: number;
 }) {
   const result = await getReservationWorkflowV2Draft(stateContext(ctx), input);
@@ -524,7 +526,7 @@ function lookupHintPath(requestId: string, index: number): string {
 }
 
 /** Resolve target hints to fresh native identities; only a staff-set suggestedRef becomes an action binding. */
-export async function reservationWorkflowV2CancelLookup(ctx: ReservationWorkflowV2CancelContext,
+export async function reservationWorkflowV2CancelLookup(ctx: ReservationWorkflowV2CancelReadContext,
   input: ReservationWorkflowV2LookupInput): Promise<CancelOutcome> {
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;

@@ -1,6 +1,6 @@
 import { reservationWorkflowV2ObservationSchema } from './reservation-workflow-v2-contract.js';
 import { getReservationWorkflowV2Draft } from './reservation-workflow-v2-state.js';
-import type { ReservationWorkflowV2ServerContext } from './reservation-workflow-v2-tools.js';
+import type { ReservationWorkflowV2SystemReadContext } from './reservation-workflow-v2-tools.js';
 import { savedTarget,
   type ReservationWorkflowV2ServicesInput, type ReservationWorkflowV2SavedServicesInput } from './reservation-workflow-v2-services.js';
 import { lookupAddOns } from './reservation-workflow-v2-addon-check.js';
@@ -27,7 +27,7 @@ function containsCode(source: string, value: string): boolean {
   return new RegExp(`(^|[^\\p{L}\\p{N}_])${escape(normal(value))}($|[^\\p{L}\\p{N}_])`, 'u').test(source);
 }
 /** Run one actorless native check; the arrival transaction owns all persistence. */
-export async function reservationArrivalAddOnLookup(ctx: ReservationWorkflowV2ServerContext, input: Input):
+export async function reservationArrivalAddOnLookup(ctx: ReservationWorkflowV2SystemReadContext, input: Input):
   Promise<{ status: string; issue?: string }> {
   const batch = ctx.nativeBatch;
   if (!batch || !input.serviceId || ctx.property.propertyCode !== 'HRCEN')

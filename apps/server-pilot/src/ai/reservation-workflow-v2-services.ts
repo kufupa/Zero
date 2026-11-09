@@ -14,7 +14,7 @@ import {
   recordReservationWorkflowV2Result,
 } from './reservation-workflow-v2-state.js';
 import { canonicalJson } from './draft-approval.js';
-import { findStay } from './pane-stay-lookup.js';
+import { findStay, paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
@@ -640,6 +640,7 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
     .some(key => resolved.target[key] !== CENTURION_HMS_READ_TARGET[key])) return { status: 'unsupported', issue: 'service_property_session_unavailable' };
   const query = Object.fromEntries(['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].map(key => [key, found.hint[key] || null]));
   const request = { confirmation: String(confirmation), ...(typeof arrival === 'string' && arrival ? { arrival } : {}) };
+  if (ctx.nativeBatch && !paneStayLookupEnabled()) return { status: 'needs_input', issue: 'stay_lookup_disabled' };
   const result = ctx.nativeBatch
     ? await (async () => {
       const lock = paneStayPropertyLock(resolved.target);
