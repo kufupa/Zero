@@ -73,13 +73,15 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
   const requestId = path.split('/')[4];
   const draft = snapshot.session.draft;
   const choices = draft.observations.flatMap(observation => {
-    if (observation.status !== 'complete' || record(observation.coverage).complete !== true ||
+    const criteria = record(observation.criteria);
+    const catalogue = criteria.kind === 'native_catalogue';
+    // Catalogue entries are individually observed even when the full list is incomplete.
+    // Identity matches, however, require a complete search before they can be selected.
+    if (observation.status !== 'complete' || (!catalogue && record(observation.coverage).complete !== true) ||
         observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
         observation.sourceMessageId !== draft.source.messageId ||
         (kind && observation.kind !== kind && observation.criteria.catalogueKind !== kind)) return [];
-    const criteria = record(observation.criteria);
     const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
-    const catalogue = criteria.kind === 'native_catalogue';
     const matches = paths.includes(path) || catalogue && criteria.requestId === requestId && paths.some(p => typeof p === 'string' && p.split('/').at(-1) === field);
     if (!matches) return [];
     const result = record(observation.result);
