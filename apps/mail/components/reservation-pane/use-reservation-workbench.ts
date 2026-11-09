@@ -68,6 +68,53 @@ function clearGuestAttempt(source: ReservationSourceContext, requestId: string, 
 
 function notify(buffer: Buffer) { buffer.listeners.forEach(listener => listener()); }
 
+// A suggested identity can be displayed before staff have accepted it. A review
+// of the selection path, including a reviewed suggestion, is required here.
+function reviewedIdentity(snapshot: ReservationPaneSnapshot, path: string, suggested: unknown): boolean {
+  const draft = snapshot.session.draft;
+  const override = draft.fieldOverrides[path];
+  const ref = override?.state === 'set' ? override.value : override && override.state !== 'inherit' ? null : suggested;
+  return typeof ref === 'string' && ref.trim().length > 0 && draft.staffReviews[path]?.status === 'accepted';
+}
+
+function autoCreateReady(snapshot: ReservationPaneSnapshot, requestId: string, allocationId: string): boolean {
+  const root = `${requestPath(requestId)}/body`, body = record(effectiveAt(snapshot, root));
+  const allocations = Array.isArray(body.allocations) ? body.allocations.map(record) : [];
+  const sections = Array.isArray(body.dateSections) ? body.dateSections.map(record) : [];
+  const index = allocations.findIndex(room => room.id === allocationId);
+  const room = allocations[index];
+  const sectionIndex = sections.findIndex(section => section.id === room?.dateSectionId);
+  const section = sections[sectionIndex];
+  if (!room || !section) return false;
+  const guest = record(room.guest), occupancy = record(room.occupancy);
+  const guestPath = `${root}/allocations/${index}/guest/nativeSelectionRef`;
+  if (guest.profileIntent !== 'existing_or_unknown' || !text(guest.firstName) || !text(guest.lastName) ||
+      !reviewedIdentity(snapshot, guestPath, guest.suggestedRef)) return false;
+
+  const bases = [`${root}/allocations/${index}/overrides`, `${root}/dateSections/${sectionIndex}/defaults`, `${root}/shared`];
+  for (const field of ['bookingAgency', 'organization', 'arAccount']) {
+    for (const [baseIndex, base] of bases.entries()) {
+      const path = `${base}/${field}`, override = snapshot.session.draft.fieldOverrides[path];
+      if (baseIndex < 2 && override?.state === 'inherit') continue;
+      if (override?.state === 'unknown') return false;
+      if (override?.state === 'none' || override?.state === 'clear') break;
+      const value = effectiveAt(snapshot, path);
+      if (value == null) continue;
+      const party = record(value);
+      if (party.kind !== 'none' && text(party.name).trim() &&
+          !reviewedIdentity(snapshot, `${path}/nativeSelectionRef`, party.suggestedRef)) return false;
+      break;
+    }
+  }
+  const settings = Object.assign({}, ...[body.shared, section.defaults, room.overrides].map(values =>
+    Object.fromEntries(Object.entries(record(values)).filter(([, value]) => value != null))));
+  const ages = occupancy.childAges;
+  return Boolean(text(section.arrival) && text(section.departure) && Number(occupancy.adults) > 0 &&
+    Number.isInteger(occupancy.childCount) && Array.isArray(ages) && ages.length === occupancy.childCount &&
+    ages.every(age => typeof age === 'number') && text(settings.roomType) && text(settings.ratePlan) &&
+    text(settings.guaranteeType) && text(settings.sourceOfBusiness));
+}
+
 // A source rebind may succeed even if its follow-up read fails. Only carry
 // pending edits forward after an explicit review and matching row identities.
 function retainReviewedSourceEdits(buffer: Buffer, next: ReservationPaneSnapshot, bound: ReservationSourceContext) {
@@ -448,7 +495,9 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     if (!current || current.session.sourceChanged || arrivalChecksPending || !request || busy || entry.pending.size || uncommitted.size || entry.conflict || preview) return;
     const body = record(effectiveAt(current, `${requestPath(request.id)}/body`));
     if (request.kind !== 'create' && request.kind !== 'quote') return;
-    const digest = JSON.stringify({ generation: current.session.draft.generationId, body });
+    const allocations = request.kind === 'create' && Array.isArray(body.allocations) ? body.allocations.map(record) : [];
+    const readyIds = allocations.map(room => text(room.id)).filter(id => id && autoCreateReady(current, request.id, id));
+    const digest = JSON.stringify({ generation: current.session.draft.generationId, body, readyIds });
     const actionKey = `${key}:${request.id}`;
     if (autoDigest.current.get(actionKey) === digest) return;
     const timer = setTimeout(() => {
@@ -457,23 +506,20 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         const groups = Array.isArray(body.groups) ? body.groups.map(record) : [];
         if (groups.length && groups.every(group => text(group.arrival) && text(group.departure) && typeof group.quantity === 'number' && record(group.occupancy).scope === 'per_room')) void commands.lookup().catch(() => {});
       } else {
-        const allocations = Array.isArray(body.allocations) ? body.allocations.map(record) : [];
-        const sections = Array.isArray(body.dateSections) ? body.dateSections.map(record) : [];
-        const ready = allocations.filter(room => {
-          const section = sections.find(row => row.id === room.dateSectionId);
-          const occupancy = record(room.occupancy), guest = record(room.guest);
-          const settings = Object.assign({}, ...[body.shared, section?.defaults, room.overrides].map(values => Object.fromEntries(Object.entries(record(values)).filter(([, value]) => value != null))));
-          const ages = occupancy.childAges;
-          return section && text(section.arrival) && text(section.departure) && Number(occupancy.adults) > 0 && Number.isInteger(occupancy.childCount)
-            && Array.isArray(ages) && ages.length === occupancy.childCount && ages.every(age => typeof age === 'number')
-            && text(guest.firstName) && text(guest.lastName) && text(guest.nativeSelectionRef ?? guest.suggestedRef)
-            && text(settings.roomType) && text(settings.ratePlan) && text(settings.guaranteeType) && text(settings.sourceOfBusiness);
-        });
-        for (const room of ready) {
-          const finished = current.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === room.id
+        for (const id of readyIds) {
+          const finished = current.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === id
             && (row.status === 'succeeded' || row.status === 'unknown'));
-          if (!finished && !current.preparationViews.some(view => view.requestId === request.id && view.allocationId === room.id && view.current))
-            void commands.prepare(String(room.id)).catch(() => {});
+          if (!finished && !current.preparationViews.some(view => view.requestId === request.id && view.allocationId === id && view.current))
+            void run(context => {
+              const prefill = context.snapshot.session.draft.prefill;
+              if (context.snapshot.session.sourceChanged || ['queued', 'running'].includes(prefill?.status ?? '') ||
+                  (prefill?.status === 'failed' && prefill.phase === 'native_checks') || liveInputs.current.uncommitted.size ||
+                  !autoCreateReady(context.snapshot, request.id, id) ||
+                  context.snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === id &&
+                    (row.status === 'succeeded' || row.status === 'unknown')) ||
+                  context.snapshot.preparationViews.some(view => view.requestId === request.id && view.allocationId === id && view.current)) return Promise.resolve();
+              return client.prepare({ ...context, requestId: request.id, allocationId: id });
+            }).catch(() => {});
         }
       }
     }, 700);
