@@ -23,6 +23,14 @@ const usedPages = new WeakSet();
 const pendingPages = new WeakMap();
 const zeroPenaltyNotice = 'Cancellation Penalty of 0.00 may be added to account.';
 const issue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'CANCEL_UNVERIFIED';
+// A missing field stays unknown; duplicate fields never establish a match.
+async function depositDisplayMatches(frame, expected) {
+  return frame.evaluate((wanted) => {
+    const fields = [...document.querySelectorAll('input[name="depositreceived"]')].filter((el) =>
+      (el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+    return wanted === null ? fields.length === 0 : fields.length === 1 && fields[0].value === wanted;
+  }, expected.depositReceived);
+}
 // These controls can request a separate profile write. An omitted control is not a write.
 const noProfileWrite = (body, keys) => ['savecctoprofile', 'savesettlementcctoprofile'].every((key) => {
   const names = keys.filter((name) => name.toLowerCase() === key);
@@ -189,7 +197,7 @@ function matchesOpen(request, frame, confirmation) {
 
 /** Opens only the initial cancellation form. It never chooses a reason or confirms cancellation. */
 export async function openLabtestCancellation(page, expected = {}, { timeoutMs = 20_000, awaitChargeApproval,
-  prepareChargeWithAuthority, continuationAllowed = () => true } = {}) {
+  prepareChargeWithAuthority, continuationAllowed = () => true, bindDepositReceived = false } = {}) {
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED' };
   let armed = false, dispatched = false, nativeDialog = null, response = null, authorizedRequest;
   let fence, scope, interactionStarted = false, openedReady = false, baselineVerified = false;
@@ -219,6 +227,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     action.check();
     scope = fence.open();
     const state = await currentCancellationRecord(page, expected), frame = state.frame;
+    if (bindDepositReceived && !await depositDisplayMatches(frame, expected)) throw new Error('CANCEL_DEPOSIT_CHANGED');
     const baseline = await recordSnapshot(frame);
     action.check();
     if (!cleanSnapshot(baseline)) throw new Error('RECORD_HAS_DIRTY_FIELDS');
@@ -413,7 +422,7 @@ async function chargeTargetIsCurrent(frame, expected) {
 /** Confirm one observed reason. A later charge requires a second staff decision on the same dialog. */
 export async function confirmLabtestCancellation(page, expected = {}, { cancellationNote = '', reasonCode,
   reasonLabel, timeoutMs = 20_000, beforeDispatch, dispatchWithAuthority, continuationAllowed = () => true,
-  onDispatched, awaitChargeApproval, prepareChargeWithAuthority, dispatchChargeWithAuthority } = {}) {
+  onDispatched, awaitChargeApproval, prepareChargeWithAuthority, dispatchChargeWithAuthority, bindDepositReceived = false } = {}) {
   const opened = pendingPages.get(page);
   pendingPages.delete(page);
   if (!opened) return { outcome: 'refused', issue: 'CANCEL_REASON_NOT_CURRENT' };
@@ -475,6 +484,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       throw new Error('CANCEL_REASON_STALE');
     }
     const state = await currentCancellationRecord(page, expected), frame = state.frame;
+    if (bindDepositReceived && !await depositDisplayMatches(frame, expected)) throw new Error('CANCEL_DEPOSIT_CHANGED');
     if (frame !== opened.frame || JSON.stringify(state.native) !== JSON.stringify(opened.native) || state.track !== opened.track) {
       throw new Error('LABTEST_RECORD_CHANGED');
     }

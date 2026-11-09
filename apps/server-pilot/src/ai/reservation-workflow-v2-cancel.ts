@@ -232,6 +232,23 @@ async function removeNativeRunDir(path: unknown): Promise<void> {
 type PreflightResult = { outcome: 'ok'; facts: Record<string, unknown>; observedAt: string | null } |
   { outcome: 'failed'; issue: string };
 
+/** A display-only received deposit can establish payment, but a blank or zero
+ * display and a zero balance cannot establish that the reservation is unpaid. */
+export function cancellationFinancialHandling(money: unknown, folio: unknown): {
+  paymentStatus: 'paid' | 'unknown'; authority: 'paid'; evidence: string;
+} {
+  const received = record(record(record(money)?.depositReceived)?.amount);
+  const folioReceived = record(record(folio)?.depositReceived);
+  const display = typeof received?.value === 'string' ? received.value.trim() : '';
+  const amount = /^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/.test(display)
+    ? display.replace(/[,.0]/g, '') : '';
+  const conflictingFolio = ['observed_zero', 'ambiguous', 'conflict'].includes(String(folioReceived?.state));
+  if (received?.state === 'observed' && amount && !conflictingFolio) {
+    return { paymentStatus: 'paid', authority: 'paid', evidence: 'native_deposit_received_display' };
+  }
+  return { paymentStatus: 'unknown', authority: 'paid', evidence: 'payment_not_established_by_native_display' };
+}
+
 /** Run only the existing restricted read → prepareCancellation native sequence, then close its browser. */
 async function cancellationPreflight(target: HmsReadTarget, confirmation: string, arrival?: string): Promise<PreflightResult> {
   try {
@@ -251,9 +268,10 @@ async function cancellationPreflight(target: HmsReadTarget, confirmation: string
       return { outcome: 'failed', issue: projected.reason ?? (typeof raw?.issue === 'string' ? raw.issue : 'CANCELLATION_PREFLIGHT_UNAVAILABLE') };
     }
     const facts = {
-      target: raw.target, stay: { ...(record(raw.stay) ?? {}), arrivalDate: projected.stay.arrivalDate,
+      target: raw.target, stay: { ...record(raw.stay), arrivalDate: projected.stay.arrivalDate,
         departureDate: projected.stay.departureDate }, roomScope: raw.roomScope, money: raw.money, folio: raw.folio,
       policy: raw.policy, fee: raw.fee, action: raw.action,
+      financialHandling: cancellationFinancialHandling(raw.money, raw.folio),
     };
     const stay = record(raw.stay), status = record(stay?.status), actualArrival = projected.stay.arrivalDate,
       actualDeparture = projected.stay.departureDate, roomScope = record(raw.roomScope), fee = record(raw.fee),
@@ -316,6 +334,13 @@ async function freshPreview(target: HmsReadTarget, confirmation: string, hint: C
     if (!matchesHint(expected.data, hint)) {
       return { outcome: 'failed', issue: 'CANCELLATION_TARGET_HINT_MISMATCH', runDir: safeRunDir(native.runDir) ? native.runDir : null };
     }
+    const financialHandling = record(initial.facts.financialHandling);
+    const received = record(record(record(initial.facts.money)?.depositReceived)?.amount);
+    if (financialHandling?.paymentStatus === 'paid' &&
+        (typeof received?.value !== 'string' || received.value.trim() !== expected.data.depositReceived?.trim())) {
+      initial.facts.financialHandling = { paymentStatus: 'unknown', authority: 'paid',
+        evidence: 'native_deposit_display_changed_between_reads' };
+    }
     if (!allowPreviewCharge && penaltyText.data !== null) {
       return { outcome: 'failed', issue: 'CANCELLATION_PENALTY_CHANGED', runDir: safeRunDir(native.runDir) ? native.runDir : null };
     }
@@ -328,7 +353,7 @@ async function freshPreview(target: HmsReadTarget, confirmation: string, hint: C
 
 function stablePreflight(facts: Record<string, unknown>): unknown {
   return { target: facts.target, stay: facts.stay, roomScope: facts.roomScope, money: facts.money, folio: facts.folio,
-    policy: facts.policy, fee: facts.fee, action: facts.action };
+    policy: facts.policy, fee: facts.fee, action: facts.action, financialHandling: facts.financialHandling };
 }
 
 function approvalDigest(compiled: Extract<CancelCompile, { outcome: 'ok' }>, fresh: Extract<FreshPreview, { outcome: 'ok' }>): string {
@@ -611,6 +636,7 @@ export async function reservationWorkflowV2CancelPrepare(ctx: ReservationWorkflo
     observationRef: item.ref, target: expectedTargetIdentity(fresh.preimage), reasons: fresh.reasons,
     selectedReason: matchingReason[0] ?? null, cancellationNote: compiled.cancellationNote,
     preflight: fresh.preflight, policyFacts: fresh.policyFacts, penaltyText: fresh.penaltyText,
+    financialHandling: fresh.preflight.financialHandling,
     feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit', scope: fresh.preflight.roomScope,
     sourceRefs: compiled.sourceRefs, approvalDigest: approval,
     financialReview: { required: true, accepted: binding.accepted, observationRef: item.ref,
@@ -850,10 +876,8 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
   let lockResult: CancelOutcome;
   try {
     lockResult = await targetLock.withLock(async () => {
-      const mode = paneWriteMode('cancel', 'unpaid');
       const labtest = !compiled.preimage.allowRealGuest && compiled.preimage.firstName === 'Proof' &&
         compiled.preimage.lastName === 'Labtest' && compiled.preimage.arrival >= '2027-01-01' && !compiled.preimage.cmsSend;
-      if (mode !== 'on' && !(mode === 'lab' && labtest)) return { status: 'unsupported', issue: 'cancel_real_guest_write_flag_off' };
       const epoch = await captureHmsLabtestDispatchEpoch(ctx.db, expectedTarget, input.workItemId)
         .catch(() => null);
       if (!epoch) return { status: 'needs_reconcile', issue: 'cancel_dispatch_history_unavailable' };
@@ -902,6 +926,15 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
         return recorded.status === 'ok' ? { status: 'needs_input', issue: 'cancel_reason_must_match_native_option',
           observationRef: changed.ref, reasons: fresh.reasons } : recorded;
       }
+      // Both positively paid and unknown require the broader paid authority.
+      // Reuse this same classification when the native request is dispatched.
+      const moneyState = record(fresh.preflight.financialHandling)?.paymentStatus === 'paid' ? 'paid' : 'unknown';
+      const mode = paneWriteMode('cancel', moneyState);
+      if (mode !== 'on' && !(mode === 'lab' && labtest)) {
+        await removeNativeRunDir(fresh.runDir);
+        return { status: 'unsupported', issue: 'cancel_financial_authority_flag_off',
+          financialHandling: fresh.preflight.financialHandling };
+      }
       await removeNativeRunDir(fresh.runDir);
       const runId = randomUUID();
       let handle: HmsLabtestWriteHandle | null = null, native: NativeCancelResult | null = null;
@@ -910,7 +943,7 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
       let nativeRequestDigest: string | null = null, claimRequestDigest: string | null = null, claimDigest: string | null = null;
       let beforeScreenshotPath: string | null = null, acceptedPenaltyText: string | null = null;
       const continuationAllowed = () => {
-        const currentMode = paneWriteMode('cancel', 'unpaid');
+        const currentMode = paneWriteMode('cancel', moneyState);
         return currentMode === 'on' || (currentMode === 'lab' && labtest);
       };
       const acquireClaim = async (requestDigest: string, beforePath: string) => {
@@ -954,7 +987,7 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
       try {
         native = await runCloudCancellation({ mode: 'commit', target, confirmation: compiled.preimage.confirmation,
           arrival: compiled.preimage.arrival, allowRealGuest: true, cloudTargetKey: hmsDispatchTargetKey(expectedTarget),
-          expected: fresh.preimage, runId, reasonCode: matchingReason.value, reasonLabel: matchingReason.display,
+          expected: fresh.preimage, bindDepositReceived: true, runId, reasonCode: matchingReason.value, reasonLabel: matchingReason.display,
           cancellationNote: compiled.cancellationNote, continuationAllowed, commitBudgetMs: 15 * 60_000,
           beforeDispatch: async () => continuationAllowed(),
           awaitChargeApproval: async (dialog: { text: string; button: string }) => {
@@ -1259,6 +1292,8 @@ export async function reservationWorkflowV2CancelReconcile(ctx: ReservationWorkf
       'Cancellation status readback is positive, but interrupted penalty state keeps the durable hold active', input.operationId);
     return { status: 'needs_reconcile', operationId: input.operationId, dispatchHoldId: intent.holdId,
       confirmedCancelled: true, financialState: 'unknown', holdReleased: false,
+      financialReviewRequired: true,
+      nextAction: 'Review the current HMS deposit and cancellation fee activity; do not retry cancellation.',
       ...(exactCancelRequestDigest ? { exactCancelRequestDigest } : {}),
       issue: 'cancel_recovery_penalty_unverified' };
   } catch {
