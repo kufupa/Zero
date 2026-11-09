@@ -8,6 +8,7 @@ import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { reservationArrivalEvidence } from './reservation-workflow-v2-evidence.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
+import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 import { advancePaneRevision, redoWorkItemRevision, undoWorkItemRevision,
   rebaseReservationV2Path, rebaseReservationV2Observations, nativeStructureIsSafe } from './work-item-revision.js';
 import {
@@ -562,6 +563,11 @@ export async function withLockedV2DraftMutation(ctx: Context, input: MutationInp
     if (item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq) return { status: 'stale_revision' as const };
     const current = await buildResult(tx, ctx, item, input.source, true);
     if (current.status !== 'ok') return current;
+    // A profile Save runs outside the database transaction. Keep the reviewed
+    // allocation stable until its journal has a definitive result.
+    if (current.draft.operationResults.some((row) => row.workflow === 'guest_profile' && row.status === 'unknown')) {
+      return { status: 'invalid_value' as const };
+    }
     const changed = command.apply(current.draft);
     if (!changed) return { status: 'invalid_value' as const };
     const prefill = changed.draft.prefill && ['queued', 'running'].includes(changed.draft.prefill.status)
@@ -773,7 +779,8 @@ function validServiceTargetEdit(draft: ReservationWorkflowV2Draft, path: string,
   const service = draft.proposal.content.services.find((row, index) => row.id === parts[3] || String(index) === parts[3]);
   if (!service) return false;
   const relevant = new Set([service.ownerRequestId, ...draft.proposal.content.requests.filter((row) => row.serviceRefs.includes(service.id)).map((row) => row.id)]);
-  if (draft.operationResults.some((row) => (row.status === 'succeeded' || row.status === 'unknown') && relevant.has(row.requestId))) return false;
+  if (draft.operationResults.some((row) => row.workflow !== 'guest_profile' &&
+      (row.status === 'succeeded' || row.status === 'unknown') && relevant.has(row.requestId))) return false;
   const targets = override.value;
   if (new Set(targets.map((row) => JSON.stringify((row as { target?: unknown })?.target))).size !== targets.length) return false;
   for (const item of targets) {
@@ -782,7 +789,8 @@ function validServiceTargetEdit(draft: ReservationWorkflowV2Draft, path: string,
     if (!target || typeof target !== 'object' || Array.isArray(target)) return false;
     const ref = target as Record<string, unknown>;
     const request = draft.proposal.content.requests.find((row) => row.id === ref.requestId && row.serviceRefs.includes(service.id));
-    if (!request || draft.operationResults.some((row) => row.requestId === request.id && (row.status === 'succeeded' || row.status === 'unknown'))) return false;
+    if (!request || draft.operationResults.some((row) => row.workflow !== 'guest_profile' && row.requestId === request.id &&
+        (row.status === 'succeeded' || row.status === 'unknown'))) return false;
     if (ref.kind === 'allocation' && request.kind === 'create' && request.body.allocations.some((row) => row.id === ref.allocationId)) continue;
     if (ref.kind === 'quote_group' && request.kind === 'quote' && request.body.groups.some((row) => row.id === ref.groupId)) continue;
     if (ref.kind === 'saved_target' && 'targets' in request.body) {
@@ -1172,6 +1180,121 @@ export async function appendReservationWorkflowV2Observation(ctx: Context, input
       value: { ref: parsed.data.ref, kind: parsed.data.kind, status: parsed.data.status },
       evidence: { sourceHash: input.source.sourceHash, observedAt: parsed.data.observedAt } });
     await tx.update(workItem).set({ state: nextState, updatedAt: new Date() }).where(eq(workItem.id, item.id));
+    return { status: 'ok' as const, draft: next, revision: item.revision, revisionHead: item.revisionHead, seq: item.revisionSeq };
+  });
+}
+
+/** Claim an allocation before native dispatch. The claim and attempt ID survive a process crash. */
+export async function claimReservationWorkflowV2GuestProfile(ctx: Context, input: MutationInput & {
+  requestId: string; allocationId: string; idempotencyKey: string; prepareRef: string;
+}, validate: (draft: ReservationWorkflowV2Draft) => boolean): Promise<ReservationWorkflowV2StateResult & { alreadyClaimed?: boolean }> {
+  if (!ctx.userId || !propertyMatches(ctx)) return { status: 'wrong_property' };
+  return ctx.db.transaction(async (tx) => {
+    await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
+    const item = await loadItem(tx, ctx, input.workItemId, true);
+    if (!item) return { status: 'not_found' as const };
+    const current = await buildResult(tx, ctx, item, input.source);
+    if (current.status !== 'ok') return current;
+    const prior = current.draft.operationResults.find((row) => row.id === input.idempotencyKey);
+    if (prior) {
+      return prior.workflow === 'guest_profile' && prior.requestId === input.requestId &&
+        prior.allocationId === input.allocationId && prior.observationRefs.includes(input.prepareRef)
+        ? { ...current, alreadyClaimed: true } : { status: 'invalid_value' as const };
+    }
+    if (item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq) return { status: 'stale_revision' as const };
+    if (!validate(current.draft) || current.draft.operationResults.some((row) => row.workflow === 'guest_profile' &&
+      row.requestId === input.requestId && row.allocationId === input.allocationId &&
+      (row.status === 'unknown' || row.status === 'succeeded'))) return { status: 'invalid_value' as const };
+    const result = { id: input.idempotencyKey, generationId: current.draft.generationId, requestId: input.requestId,
+      allocationId: input.allocationId, workflow: 'guest_profile' as const, status: 'unknown' as const,
+      draftRevision: item.revision, observationRefs: [input.prepareRef], updatedAt: new Date().toISOString(),
+      summary: 'Guest profile creation claimed; outcome pending reconciliation' };
+    const next = reservationWorkflowV2DraftSchema.parse({ ...current.draft,
+      operationResults: [...current.draft.operationResults, result] });
+    await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next }, updatedAt: new Date() })
+      .where(eq(workItem.id, item.id));
+    await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'system', type: 'write.evidence',
+      fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:operationResults:${result.id}`,
+      value: { id: result.id, workflow: result.workflow, requestId: result.requestId, allocationId: result.allocationId,
+        status: result.status, observationRefs: result.observationRefs }, evidence: { sourceHash: input.source.sourceHash } });
+    return { ...current, draft: next };
+  });
+}
+
+/** Keep the actual native request inside a live staff, source and allocation fence. */
+export async function dispatchReservationWorkflowV2GuestProfile<T>(ctx: Context & {
+  userId: string; sessionId: string; sessionProfile: 'legacy' | 'remote';
+}, input: MutationInput, validate: (draft: ReservationWorkflowV2Draft) => boolean,
+proceed: () => Promise<T>): Promise<T> {
+  return ctx.db.transaction(async (tx) => {
+    await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
+    await lockCreateActorAccess(tx, { transportId: ctx.transportId, actorUserId: ctx.userId });
+    await lockCreateActorSession(tx, { actorUserId: ctx.userId, sessionId: ctx.sessionId, sessionProfile: ctx.sessionProfile });
+    const [thread] = await tx.select({ id: mailThread.id }).from(mailThread)
+      .where(and(eq(mailThread.id, input.source.threadId), eq(mailThread.transportId, ctx.transportId))).limit(1).for('share');
+    const [source] = await tx.select({ id: message.id }).from(message)
+      .where(and(eq(message.id, input.source.messageId), eq(message.threadId, input.source.threadId),
+        eq(message.transportId, ctx.transportId))).limit(1).for('share');
+    const item = await loadItem(tx, ctx, input.workItemId, true);
+    if (!thread || !source || !item || item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq) {
+      throw new Error('guest_profile_authority_stale');
+    }
+    const current = await buildResult(tx, ctx, item, input.source);
+    if (current.status !== 'ok' || !validate(current.draft)) throw new Error('guest_profile_authority_stale');
+    return proceed();
+  });
+}
+
+/** Persist the ID and its selection together, independently of the editable revision cursor. */
+export async function finishReservationWorkflowV2GuestProfile(ctx: Context, input: {
+  workItemId: string; source: ReservationWorkflowV2SourceInput; operationId: string;
+  status: 'succeeded' | 'failed' | 'unknown'; summary: string; observation?: ReservationWorkflowV2Observation;
+}): Promise<ReservationWorkflowV2StateResult> {
+  if (!ctx.userId || !propertyMatches(ctx)) return { status: 'wrong_property' };
+  return ctx.db.transaction(async (tx) => {
+    const item = await loadItem(tx, ctx, input.workItemId, true);
+    if (!item || !(await hasMailboxAccess(tx, ctx))) return { status: 'not_found' as const };
+    const draft = reservationWorkflowV2DraftOf(item.state);
+    if (!draft || draft.transportId !== ctx.transportId || draft.propertyCode !== ctx.propertyCode ||
+      draft.source.threadId !== input.source.threadId || draft.source.messageId !== input.source.messageId ||
+      draft.source.sourceHash !== input.source.sourceHash || draft.source.arrivedAt !== input.source.arrivedAt) {
+      return { status: 'invalid_source' as const };
+    }
+    const operation = draft.operationResults.find((row) => row.id === input.operationId && row.workflow === 'guest_profile');
+    if (!operation) return { status: 'not_found' as const };
+    if (operation.status === 'succeeded' || (operation.status === 'failed' && input.status === 'unknown')) {
+      return { status: 'ok' as const, draft, revision: item.revision,
+      revisionHead: item.revisionHead, seq: item.revisionSeq };
+    }
+    const observation = input.observation;
+    const request = draft.proposal.content.requests.find((row) => row.id === operation.requestId);
+    const index = request?.kind === 'create' ? request.body.allocations.findIndex((row) => row.id === operation.allocationId) : -1;
+    if (index < 0 || !request || request.kind !== 'create' || (input.status === 'succeeded' && !observation)) {
+      return { status: 'invalid_value' as const };
+    }
+    if (observation && (observation.generationId !== draft.generationId || observation.propertyCode !== ctx.propertyCode ||
+        observation.sourceMessageId !== input.source.messageId || observation.criteria.requestId !== operation.requestId ||
+        observation.criteria.allocationId !== operation.allocationId)) return { status: 'invalid_value' as const };
+    const observations = observation && !draft.observations.some((row) => row.ref === observation.ref)
+      ? [...draft.observations, observation] : draft.observations;
+    const nextResult = { ...operation, status: input.status, updatedAt: new Date().toISOString(), summary: input.summary.slice(0, 2000),
+      observationRefs: [...new Set([...operation.observationRefs, ...(observation ? [observation.ref] : [])])] };
+    const fieldOverrides = { ...draft.fieldOverrides }, staffReviews = { ...draft.staffReviews };
+    if (input.status === 'succeeded' && observation) {
+      const path = `/proposal/content/requests/${encodeURIComponent(operation.requestId)}/body/allocations/${index}/guest`;
+      const at = nextResult.updatedAt;
+      fieldOverrides[`${path}/nativeSelectionRef`] = { state: 'set', value: observation.ref, updatedAt: at };
+      fieldOverrides[`${path}/profileIntent`] = { state: 'set', value: 'existing_or_unknown', updatedAt: at };
+      staffReviews[`${path}/nativeSelectionRef`] = { status: 'accepted', note: 'Created and verified in Infor', at };
+    }
+    const next = reservationWorkflowV2DraftSchema.parse({ ...draft, revision: item.revision, observations, fieldOverrides, staffReviews,
+      operationResults: draft.operationResults.map((row) => row.id === operation.id ? nextResult : row) });
+    await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next }, updatedAt: new Date() })
+      .where(eq(workItem.id, item.id));
+    await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'system', type: 'write.evidence',
+      fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:operationResults:${operation.id}`,
+      value: { id: operation.id, workflow: operation.workflow, status: input.status, observationRefs: nextResult.observationRefs },
+      evidence: { sourceHash: input.source.sourceHash, summary: nextResult.summary } });
     return { status: 'ok' as const, draft: next, revision: item.revision, revisionHead: item.revisionHead, seq: item.revisionSeq };
   });
 }

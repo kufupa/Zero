@@ -3,11 +3,11 @@
 import { useEffect, useId, useState } from 'react';
 import { nativeChoices, record, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import styles from '../reservation-pane.module.css';
-import { FieldSource } from './stay-fields';
+import { FieldReview, FieldSource } from './stay-fields';
 
 /** One editable code/identity search with persistent access to native alternatives. */
-export function NativePicker({ label, path, editor, kind, allowNone = false }: {
-  label: string; path: string; editor: WorkbenchEditorProps; kind?: string; allowNone?: boolean;
+export function NativePicker({ label, path, editor, kind, allowNone = false, compact = false, hint }: {
+  label: string; path: string; editor: WorkbenchEditorProps; kind?: string; allowNone?: boolean; compact?: boolean; hint?: string;
 }) {
   const id = useId();
   const party = /\/(bookingAgency|organization|arAccount|agency|company)$/.test(path);
@@ -22,6 +22,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false }: {
   const [query, setQuery] = useState(saved);
   const [open, setOpen] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   useEffect(() => { if (!dirty) setQuery(saved); }, [saved, dirty]);
   const editValue = (value: string) => party ? { name: value, candidateRefs: [], suggestedRef: null } : value;
@@ -45,10 +46,10 @@ export function NativePicker({ label, path, editor, kind, allowNone = false }: {
   const display = dirty || open ? query : guestPath
     ? selectedChoice?.label || [text(valueAt(editor.snapshot, `${guestPath}/firstName`)), saved].filter(Boolean).join(' ')
     : !entity && selectedChoice && selectedChoice.label !== saved ? `${saved} — ${selectedChoice.label}` : query;
-  return <div className={styles.field}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label><FieldSource editor={editor} path={path} label={label} /></div><div className={styles.picker}>
+  return <div className={`${styles.field} ${compact ? styles.compactField : ''}`}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label>{!compact && <FieldSource editor={editor} path={path} label={label} />}</div><div className={`${styles.picker} ${styles.controlSlot}`}>
     <div className={styles.pickerInput}><input id={id} role="combobox" aria-expanded={open} aria-controls={`${id}-options`} aria-autocomplete="list"
       aria-activedescendant={open && activeIndex >= 0 && shown[activeIndex] ? `${id}-option-${activeIndex}` : undefined}
-      value={display} onFocus={() => setOpen(true)} placeholder={guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
+      value={display} disabled={reviewing} onFocus={() => setOpen(true)} placeholder={guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
         const value = event.target.value; setQuery(value); setDirty(true); setOpen(true); setActiveIndex(-1);
         editor.commands.stageEdit(editPath, editValue(value));
       }}
@@ -61,7 +62,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false }: {
         if (event.key === 'Enter') { event.preventDefault(); const row = open && (shown[activeIndex] ?? (visible.length === 1 ? visible[0] : undefined));
           if (row) void choose(row.ref, row.value); else void saveSearch().catch(() => {}); }
       }} />
-      <button type="button" aria-label={`Show ${label} choices`} onMouseDown={event => event.preventDefault()} onClick={() => setOpen(!open)}>⌄</button></div>
+      <button type="button" aria-label={`Show ${label} choices`} disabled={reviewing} onMouseDown={event => event.preventDefault()} onClick={() => setOpen(!open)}>⌄</button></div>
     {open && <div id={`${id}-options`} role="listbox" className={styles.options}>
       {allowNone && <button type="button" role="option" aria-selected={!query} onMouseDown={event => event.preventDefault()} onClick={() => { void editor.commands.edit(party ? path : inputPath, null, 'none').then(() => { setQuery(''); setDirty(false); setOpen(false); }).catch(() => {}); }}>None</button>}
       {shown.map((row, index) => <button id={`${id}-option-${index}`} key={`${row.ref}:${row.value}`} type="button" role="option" aria-selected={entity ? selectedRef === row.ref : saved === row.value}
@@ -69,5 +70,6 @@ export function NativePicker({ label, path, editor, kind, allowNone = false }: {
       {!choices.length && <small>Find options in Infor to load native choices.</small>}
       <button type="button" onClick={() => { void saveSearch().then(() => editor.commands.lookup()).catch(() => {}); }}>Search Infor</button>
     </div>}
-  </div>{dirty ? <small>Unsaved search</small> : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}</div>;
+  {dirty ? <small>Unsaved search</small> : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}{hint && <small>{hint}</small>}</div>
+    {compact && <FieldReview editor={editor} path={path} label={label} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />}</div>;
 }

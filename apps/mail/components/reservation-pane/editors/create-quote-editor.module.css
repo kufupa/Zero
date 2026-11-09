@@ -33,3 +33,24 @@
 .offer > div { min-width: 0; overflow-wrap: anywhere; }
 .offer small { display: block; margin-top: 3px; color: var(--muted-foreground, #626f7d); }
 .targetFields { display: flex; flex-wrap: wrap; gap: 8px 12px; min-width: 0; margin: 0; padding: 8px; border: 1px solid var(--border, #d7dfe8); border-radius: 6px; font-size: 12px; }
+
+/* Create uses one compact hierarchy: shared settings, dates, then each room. */
+.compactCreate.editor, .compactCreate .stack, .compactCreate .plainFieldset { gap: 4px; }
+.compactCreate .group { gap: 7px; padding: 0; border: 0; border-radius: 0; }
+.compactCreate .roomCard { gap: 5px; padding: 10px 0 2px; border: 0; border-top: 1px solid var(--border, #d7dfe8); border-radius: 0; }
+.compactCreate .groupHeading { padding-top: 3px; font-size: 12px; }
+.compactCreate .dateFields { grid-template-columns: minmax(0, 1fr) 54px minmax(0, 1fr); gap: 5px; }
+.compactCreate .dateFields > :last-child { grid-column: auto; }
+.compactCreate .localField input, .compactCreate .localField select { min-height: 28px; padding: 4px 6px; border-radius: 3px; }
+.compactCreate .twoCol select { min-height:28px; padding:4px 6px; border-radius:3px; }
+.countHeading { display:flex; align-items:center; justify-content:space-between; gap:4px; }
+.countStepper { display:flex; align-items:center; border:1px solid var(--border, #d3d9e2); border-radius:6px; }
+.countStepper input { min-width:0; text-align:center; border:0; }
+.countStepper button { min-width:28px; }
+.compactCreate .countStepper { display:flex; align-items:center; border:1px solid var(--border, #d3d9e2); border-radius:3px; min-height:28px; }
+.compactCreate .countStepper input { min-width:0; text-align:center; border:0; padding:3px; -moz-appearance:textfield; }
+.compactCreate .countStepper input::-webkit-inner-spin-button, .compactCreate .countStepper input::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
+.compactCreate .countStepper button { min-width:28px; padding:3px; border:0; background:transparent; }
+.compactCreate .details { padding-top: 6px; }
+.compactCreate .details[open] > .stack, .compactCreate .details[open] > .plainFieldset { padding-top: 6px; }
+.compactCreate .linkButton { color: #6746ad; font-weight: 650; background: transparent; border: 0; padding: 3px 0; }

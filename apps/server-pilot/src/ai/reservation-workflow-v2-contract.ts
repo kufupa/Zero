@@ -147,6 +147,10 @@ const createBodySchema = z.object({
       lastName: z.string().max(200).nullable(),
       email: z.string().max(320).nullable(),
       mobile: z.string().max(120).nullable(),
+      titleCode: z.string().max(200).nullable().optional(),
+      phoneNumber: z.string().max(200).nullable().optional(),
+      phoneTypeCode: z.string().max(200).nullable().optional(),
+      emailTypeCode: z.string().max(200).nullable().optional(),
       profileIntent: z.enum(['existing_or_unknown', 'requested_new']),
       candidateRefs: z.array(refSchema).max(100),
       suggestedRef: refSchema.nullable(),
@@ -318,7 +322,7 @@ const operationResultSchema = z.object({
   generationId: z.string().uuid(),
   requestId: idSchema,
   allocationId: idSchema.nullable(),
-  workflow: z.enum(['create', 'quote', 'amend', 'cancel', 'services', 'filing']),
+  workflow: z.enum(['create', 'quote', 'amend', 'cancel', 'services', 'filing', 'guest_profile']),
   status: z.enum(['prepared', 'succeeded', 'failed', 'unknown']),
   draftRevision: z.number().int().nonnegative(),
   observationRefs: z.array(refSchema).max(100),
@@ -420,6 +424,12 @@ export const reservationWorkflowV2PrepareInputSchema = reservationWorkflowV2Item
   requestId: idSchema, allocationId: idSchema.optional(),
 }).strict();
 export type ReservationWorkflowV2PrepareInput = z.infer<typeof reservationWorkflowV2PrepareInputSchema>;
+export const reservationWorkflowV2GuestPrepareInputSchema = reservationWorkflowV2PrepareInputSchema.extend({
+  allocationId: idSchema, confirmDuplicateName: z.boolean().optional(),
+}).strict();
+export const reservationWorkflowV2GuestCreateInputSchema = reservationWorkflowV2GuestPrepareInputSchema.extend({
+  go: z.literal(true), idempotencyKey: z.string().uuid(), prepareRef: refSchema,
+}).strict();
 export const reservationWorkflowV2ExecuteInputSchema = reservationWorkflowV2PrepareInputSchema.extend({
   go: z.literal(true), idempotencyKey: z.string().uuid(),
 }).strict();

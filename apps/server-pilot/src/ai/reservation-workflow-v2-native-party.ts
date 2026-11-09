@@ -1,4 +1,5 @@
 import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
+import { quoteRateContextEnabled } from './quote-rate-switch.js';
 
 export type NativePartyRole = 'agency' | 'organization' | 'ar_account';
 
@@ -37,6 +38,10 @@ export async function lookupNativeParty(input: {
   role: NativePartyRole; name: string; target: HmsReadTarget; signal?: AbortSignal;
 }): Promise<ReservationWorkflowV2NativePartyRead> {
   const { role, target, signal } = input;
+  if (!quoteRateContextEnabled()) {
+    return { status: 'failed', result: { outcome: 'refused_flag_off', kind: role, searchedFor: null,
+      candidates: [], truncated: false }, coverage: { complete: false, notes: ['refused_flag_off'] } };
+  }
   const name = typeof input.name === 'string' ? input.name.trim() : '';
   if (!Object.hasOwn(specs, role)) return failure(role, name, 'unavailable', 'native_party_role_unsupported');
   const expected = CENTURION_HMS_READ_TARGET;
