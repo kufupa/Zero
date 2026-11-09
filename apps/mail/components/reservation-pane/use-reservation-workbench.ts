@@ -92,32 +92,49 @@ function autoCreateReady(snapshot: ReservationPaneSnapshot, requestId: string, a
       !reviewedIdentity(snapshot, guestPath, 'guest_candidate')) return false;
 
   const bases = [`${root}/allocations/${index}/overrides`, `${root}/dateSections/${sectionIndex}/defaults`, `${root}/shared`];
-  for (const field of ['bookingAgency', 'organization', 'arAccount']) {
+  for (const base of bases) {
+    const override = snapshot.session.draft.fieldOverrides[base];
+    if (override?.state === 'unknown') return false;
+    // The backend represents explicit none/clear as a non-null sentinel scope.
+    if (override?.state === 'none' || override?.state === 'clear') continue;
+    if (!(override?.state === 'set' ? override.value : valueAt(snapshot, base))) return false;
+  }
+  const scopedValue = (field: string, isParty = false): { path: string; value: unknown; name?: unknown; unknown?: boolean } => {
     for (const [baseIndex, base] of bases.entries()) {
       const path = `${base}/${field}`, override = snapshot.session.draft.fieldOverrides[path];
       if (baseIndex < 2 && override?.state === 'inherit') continue;
-      if (override?.state === 'unknown') return false;
-      if (override?.state === 'none' || override?.state === 'clear') break;
-      // Resolve the parent before child overrides. An empty child-only edit
-      // does not shadow a shared party in the native Create compiler.
-      let value = valueAt(snapshot, path);
-      if (value == null && !override && text(valueAt(snapshot, `${path}/name`)).trim()) {
-        value = { name: valueAt(snapshot, `${path}/name`) };
+      if (override?.state === 'unknown') return { path, value: null, unknown: true };
+      if (override?.state === 'none' || override?.state === 'clear') return { path, value: null };
+      // The backend reapplies this leaf even when a scope ancestor was cleared.
+      let value = override?.state === 'set' ? override.value : valueAt(snapshot, path);
+      let fromChildName = false;
+      if (isParty && value == null && !override) {
+        const childPath = `${path}/name`, childOverride = snapshot.session.draft.fieldOverrides[childPath];
+        const childName = childOverride?.state === 'set' ? childOverride.value : valueAt(snapshot, childPath);
+        if (typeof childName === 'string' && childName.trim()) { value = { name: childName }; fromChildName = true; }
       }
       if (value == null) continue;
       const party = record(value);
-      if (party.kind !== 'none' && text(valueAt(snapshot, `${path}/name`)).trim() &&
-          !reviewedIdentity(snapshot, `${path}/nativeSelectionRef`, 'party_candidate')) return false;
-      break;
+      // The native compiler reapplies a parent set as-is; child edits only project
+      // into existing source properties when the parent itself is not set.
+      const name = override?.state === 'set' || fromChildName ? party.name
+        : Object.hasOwn(party, 'name') ? valueAt(snapshot, `${path}/name`) : undefined;
+      return { path, value, name };
     }
+    return { path: `${bases[0]}/${field}`, value: undefined };
+  };
+  for (const field of ['bookingAgency', 'organization', 'arAccount']) {
+    const party = scopedValue(field, true);
+    if (party.unknown) return false;
+    if (record(party.value).kind !== 'none' && typeof party.name === 'string' && party.name.trim() &&
+        !reviewedIdentity(snapshot, `${party.path}/nativeSelectionRef`, 'party_candidate')) return false;
   }
-  const settings = Object.assign({}, ...[body.shared, section.defaults, room.overrides].map(values =>
-    Object.fromEntries(Object.entries(record(values)).filter(([, value]) => value != null))));
+  const settings = ['roomType', 'ratePlan', 'guaranteeType', 'sourceOfBusiness'].map(field => scopedValue(field));
   const ages = occupancy.childAges;
   return Boolean(text(section.arrival) && text(section.departure) && Number(occupancy.adults) > 0 &&
     Number.isInteger(occupancy.childCount) && Array.isArray(ages) && ages.length === occupancy.childCount &&
-    ages.every(age => typeof age === 'number') && text(settings.roomType) && text(settings.ratePlan) &&
-    text(settings.guaranteeType) && text(settings.sourceOfBusiness));
+    ages.every(age => typeof age === 'number') && settings.every(setting => !setting.unknown &&
+      typeof setting.value === 'string' && setting.value.trim()));
 }
 
 // A source rebind may succeed even if its follow-up read fails. Only carry
@@ -528,7 +545,11 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     if (request.kind !== 'create' && request.kind !== 'quote') return;
     const allocations = request.kind === 'create' && Array.isArray(body.allocations) ? body.allocations.map(record) : [];
     const readyIds = allocations.map(room => text(room.id)).filter(id => id && autoCreateReady(current, request.id, id));
-    const digest = JSON.stringify({ generation: current.session.draft.generationId, body, readyIds });
+    const root = `${requestPath(request.id)}/body`;
+    const scopeOverrides = request.kind === 'create' ? Object.entries(current.session.draft.fieldOverrides)
+      .filter(([path]) => path === root || path.startsWith(`${root}/`))
+      .map(([path, override]) => [path, override.state, override.value]).sort(([left], [right]) => String(left).localeCompare(String(right))) : undefined;
+    const digest = JSON.stringify({ generation: current.session.draft.generationId, body, readyIds, scopeOverrides });
     const actionKey = `${key}:${request.id}`;
     if (autoDigest.current.get(actionKey) === digest) return;
     const timer = setTimeout(() => {
