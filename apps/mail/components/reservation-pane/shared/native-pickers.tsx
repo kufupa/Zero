@@ -20,12 +20,14 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const saved = party ? text(valueAt(editor.snapshot, `${path}/name`)) : text(valueAt(editor.snapshot, inputPath));
   const choiceKind = kind ?? (party ? 'party_candidate' : undefined);
   const choices = nativeChoices(editor.snapshot, entity ? selectionPath : path, choiceKind);
-  const leads = entity ? partialNativeLeads(editor.snapshot, selectionPath, choiceKind) : [];
   const [query, setQuery] = useState(saved);
   const [open, setOpen] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
+  const normalized = (value: string) => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  const leads = entity && (!dirty || normalized(query) === normalized(saved))
+    ? partialNativeLeads(editor.snapshot, selectionPath, choiceKind) : [];
   useEffect(() => { if (!dirty) setQuery(saved); }, [saved, dirty]);
   const editValue = (value: string) => party ? { name: value, candidateRefs: [], suggestedRef: null } : value;
   const editPath = party ? path : inputPath;

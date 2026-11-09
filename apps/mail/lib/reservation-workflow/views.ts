@@ -111,26 +111,28 @@ export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: stri
   const body = requestId ? record(effectiveAt(snapshot, `/proposal/content/requests/${requestId}/body`)) : {};
   const allocations = Array.isArray(body.allocations) ? body.allocations : [];
   const allocation = allocationIndex >= 0 ? record(allocations[Number(parts[allocationIndex + 1])]) : {};
-  const issuePath = `/requests/${requestId}/allocations/${text(allocation.id)}/guest/candidateRefs`;
-  const guestRefs = new Set(snapshot.issues.filter(issue => issue.path === issuePath && issue.kind === 'guest_profile_identity_unverified')
-    .flatMap(issue => issue.evidenceRefs));
-  const claimRefs = new Set(draft.proposal.sourceClaims.filter(claim => claim.path === ownerPath || claim.path === `${ownerPath}/name`)
-    .flatMap(claim => claim.sourceRefs));
-  const role = ownerPath.endsWith('/bookingAgency') || ownerPath.endsWith('/agency') ? 'agency'
-    : ownerPath.endsWith('/arAccount') ? 'ar_account' : 'organization';
+  const sectionIndex = parts.indexOf('dateSections');
+  const sections = Array.isArray(body.dateSections) ? body.dateSections : [];
+  const section = sectionIndex >= 0 ? record(sections[Number(parts[sectionIndex + 1])]) : {};
+  const expectedAllocation = allocationIndex >= 0 ? allocation : sectionIndex >= 0
+    ? record(allocations.find(row => record(row).dateSectionId === section.id)) : record(allocations[0]);
+  const request = draft.proposal.content.requests.find(row => row.id === decodeURIComponent(requestId ?? ''));
+  const role = guest ? 'guest' : ownerPath.endsWith('/bookingAgency') || ownerPath.endsWith('/agency') ? 'agency'
+    : ownerPath.endsWith('/arAccount') ? 'ar_account' : ownerPath.endsWith('/company') ? 'company' : 'organization';
   const leads = draft.observations.flatMap(observation => {
     if (observation.kind !== kind || observation.status !== 'partial' ||
         observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
         observation.sourceMessageId !== draft.source.messageId) return [];
     const criteria = record(observation.criteria), query = record(criteria.query);
     const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
-    const fieldBound = paths.includes(path);
-    const sourceGuest = guest && guestRefs.has(observation.ref) &&
-      ((!normal(criteria.name) || normal(criteria.name) === [first, name].filter(Boolean).join(' ')) &&
-       (!normal(criteria.email) || normal(criteria.email) === email));
-    const sourceParty = !guest && criteria.role === role && normal(criteria.name) === name &&
-      observation.sourceRefs.some(ref => claimRefs.has(ref));
-    if (!fieldBound && !sourceGuest && !sourceParty) return [];
+    if (criteria.kind === 'source_bound_display_lead') {
+      if (observation.coverage.complete !== false || !request || (request.kind !== 'create' && request.kind !== 'quote') ||
+          criteria.workflow !== request.kind || criteria.requestId !== request.id || criteria.role !== role ||
+          criteria.fieldPath !== path || paths.length !== 1 || paths[0] !== path ||
+          request.kind === 'create' && (!expectedAllocation.id || criteria.allocationId !== expectedAllocation.id) ||
+          guest && (query.field !== 'lastName' || normal(query.value) !== name || normal(query.firstName) !== first || normal(query.email) !== email) ||
+          !guest && (typeof criteria.query !== 'string' || normal(criteria.query) !== name)) return [];
+    } else if (!paths.includes(path)) return [];
     const search = normal(typeof criteria.query === 'string' ? criteria.query : query.value ?? criteria.searchName);
     if (search && search !== name || normal(query.firstName) && normal(query.firstName) !== first ||
         normal(query.email) && normal(query.email) !== email) return [];
