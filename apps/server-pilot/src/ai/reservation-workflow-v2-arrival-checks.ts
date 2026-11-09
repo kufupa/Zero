@@ -4,7 +4,7 @@ import {
   type ReservationNativeCheckBatch, type ReservationPrefillJobFence, type ReservationWorkflowV2Context,
 } from './reservation-workflow-v2-state.js';
 import { reservationWorkflowV2Lookup, reservationWorkflowV2Prepare,
-  type ReservationWorkflowV2ServerContext } from './reservation-workflow-v2-tools.js';
+  type ReservationWorkflowV2SystemReadContext } from './reservation-workflow-v2-tools.js';
 import { reservationWorkflowV2QuoteLookup, reservationWorkflowV2QuotePrepare } from './reservation-workflow-v2-quote.js';
 import { reservationWorkflowV2AmendLookup, reservationWorkflowV2AmendPrepare } from './reservation-workflow-v2-amend.js';
 import { reservationWorkflowV2CancelLookup } from './reservation-workflow-v2-cancel.js';
@@ -13,7 +13,7 @@ import { paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { reservationArrivalAddOnLookup } from './reservation-workflow-v2-arrival-addons.js';
 
 type Outcome = { status: string; issue?: string; [key: string]: unknown };
-type Step = { key: string; run: (ctx: ReservationWorkflowV2ServerContext, item: ReservationWorkflowV2ItemInput) => Promise<Outcome> };
+type Step = { key: string; run: (ctx: ReservationWorkflowV2SystemReadContext, item: ReservationWorkflowV2ItemInput) => Promise<Outcome> };
 const CHECK_LIMIT = 100;
 const NATIVE_BUDGET_MS = 7 * 60_000;
 const stayLookup = (run: Step['run']): Step['run'] => (ctx, item) => paneStayLookupEnabled()
@@ -114,8 +114,8 @@ export async function runReservationArrivalChecks(input: { scoped: ReservationWo
     }
     if (phaseSignal.aborted) { input.signal.throwIfAborted(); break; }
     if (begun.status !== 'ok') return 'superseded';
-    const ctx: ReservationWorkflowV2ServerContext = { db: input.scoped.db, transport: { id: input.scoped.transportId },
-      property: { propertyCode: input.scoped.propertyCode }, user: { id: `arrival-service:${input.fence.runId}` }, nativeBatch: batch };
+    const ctx: ReservationWorkflowV2SystemReadContext = { db: input.scoped.db, transport: { id: input.scoped.transportId },
+      property: { propertyCode: input.scoped.propertyCode }, kind: 'arrival-system-read', nativeBatch: batch };
     let outcome: Outcome;
     const dependency = step.key.startsWith('quote:prepare:')
       ? step.key.replace(':prepare:', ':lookup:') : null;
