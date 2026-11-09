@@ -132,6 +132,13 @@ export function ReservationPane(props: ReservationPaneProps) {
     </div>}</nav>
     <div className={styles.sources}>{source.attachments.map(file => <button type="button" key={file.sourceRef} onClick={() => props.onOpenAttachment?.(file.sourceRef)}>{file.name}</button>)}</div>
     {(props.loadError || workbench.error) && <div className={styles.error} role="alert">{workbench.error || props.loadError}{workbench.conflict && <div><button type="button" onClick={() => { void workbench.applyPending().catch(() => {}); }}>Apply my edits</button><button type="button" onClick={() => { workbench.discardPending(); setFormReset(value => value + 1); }}>Discard pending edits</button></div>}</div>}
+    {snapshot?.session.sourceChanged && <div className={styles.notice}>
+      <p>The email or attachments changed. Review the updated evidence; previous Infor checks will need to be repeated.</p>
+      {snapshot.operationResults.some(row => row.status === 'unknown')
+        ? <><p>Check earlier save outcomes before continuing.</p>{snapshot.operationResults.filter(row => row.status === 'unknown').map(row =>
+          <div key={text(row.id)}>{text(row.summary) || text(row.workflow)} <button type="button" disabled={disabled || workbench.saving} onClick={() => { void commands.reconcile(text(row.id)).catch(() => {}); }}>Check outcome</button></div>)}</>
+        : <button type="button" disabled={disabled || workbench.saving || preview} onClick={() => { void workbench.reconcileSource().catch(() => {}); }}>I reviewed the updated evidence</button>}
+    </div>}
     <main className={styles.content}>
       {!snapshot ? <div className={styles.empty}>{props.loadError ? 'This email could not be opened.' : 'Opening your email draft…'}</div>
         : !request ? <div className={styles.empty}><h2>What does this email need?</h2><p>Add an action to begin. Prefill will appear here when ready; your edits are saved.</p>{!source.selfPreStay && <button type="button" onClick={() => { void workbench.addAction('create').catch(() => {}); }}>New booking</button>}</div>
@@ -140,7 +147,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         : <div className={styles.empty}>This request needs staff attention in Infor.</div>}
       {request?.kind === 'quote' && snapshot && <QuoteOutputPanel source={source} snapshot={snapshot} requestId={request.id} save={props.onSaveQuoteOutput} latestSnapshot={workbench.latestSnapshot} readyForReply={workbench.readyForReply} blocked={busy || workbench.saving || workbench.blocked || workbench.conflict} />}
       {prefill?.status === 'running' && !prefillStale && <p className={styles.small}>Reading the email and checking Infor. You can start editing now.</p>}
-      {(prefill?.status === 'failed' || prefillStale) && <p className={styles.small}>Prefill did not finish. Your form still works. <button type="button" onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button></p>}
+      {(prefill?.status === 'failed' || prefillStale) && <p className={styles.small}>Prefill did not finish. Your form still works. {(prefill?.status !== 'failed' || prefill.attemptCount < 2) && <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button>}</p>}
       {snapshot?.issues.filter(issue => !issue.path || !request || issue.path.startsWith(requestPath(request.id))).map((issue, index) => <p className={styles.notice} key={index}>{issue.explanation}</p>)}
     </main>
     {request && !createBlocked && request.kind !== 'services' && request.kind !== 'other' && <footer className={styles.footer}>

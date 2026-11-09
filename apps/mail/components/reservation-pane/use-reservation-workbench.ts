@@ -381,7 +381,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   };
   const initialLookup = useRef(new Set<string>());
   useEffect(() => {
-    if (!current || !request || request.kind !== 'create' || busy || entry.pending.size || entry.conflict || preview) return;
+    if (!current || current.session.sourceChanged || !request || request.kind !== 'create' || busy || entry.pending.size || entry.conflict || preview) return;
     const lookupKey = `${key}:${request.id}:${current.session.draft.generationId}`;
     if (initialLookup.current.has(lookupKey)) return;
     const timer = setTimeout(() => { initialLookup.current.add(lookupKey); void commands.lookup().catch(() => {}); }, 700);
@@ -389,7 +389,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   }, [current, request, busy, changed, key, preview]);
   const autoDigest = useRef(new Map<string, string>());
   useEffect(() => {
-    if (!current || !request || busy || entry.pending.size || uncommitted.size || entry.conflict || preview) return;
+    if (!current || current.session.sourceChanged || !request || busy || entry.pending.size || uncommitted.size || entry.conflict || preview) return;
     const body = record(effectiveAt(current, `${requestPath(request.id)}/body`));
     if (request.kind !== 'create' && request.kind !== 'quote') return;
     const digest = JSON.stringify({ generation: current.session.draft.generationId, body });
@@ -431,6 +431,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     addAction: (kind: Exclude<ReservationWorkflowKind, 'other'>) => run(async context => { const next = await client.addAction({ ...context, kind }); setActiveId(next.requests.at(-1)?.id ?? null); return next; }),
     undo: () => run(context => client.undo(context)), redo: () => run(context => client.redo(context)),
     retryPrefill: () => run(context => client.prefill(context)),
+    reconcileSource: () => run(context => client.reconcileSource(context)),
     applyPending: () => { entry.conflict = false; entry.error = null; return run(async () => {}); },
     discardPending: () => { entry.pending.clear(); releasePendingMutation(entry); entry.conflict = false; entry.error = null; setError(null); notify(entry); },
   };
