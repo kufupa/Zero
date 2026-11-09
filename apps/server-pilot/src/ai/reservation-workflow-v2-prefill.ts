@@ -841,15 +841,18 @@ function buildFallbackProposal(input: {
   evidence: ReservationWorkflowV2Evidence[]; reason: string;
 }): ReservationWorkflowV2Proposal {
   const knownRefs = new Set(input.evidence.map((item) => item.ref));
+  const currentRefs = new Set(input.evidence.filter((item) => item.relation !== 'prior_thread').map((item) => item.ref));
   const currentRef = input.evidence.find((item) => item.relation === 'current_message')?.ref;
   const requests = input.extraction?.requests ?? [];
   const sourceClaims: ReservationWorkflowV2Proposal['sourceClaims'] = [];
   const issue = (path: string, kind: string, explanation: string, evidenceRefs: string[]) => ({ path, kind, explanation, evidenceRefs });
   const projected: ReservationWorkflowV2Proposal['content']['requests'] = requests.map((request, index): ReservationWorkflowV2Proposal['content']['requests'][number] => {
     const id = stableId(input.source.messageId, 'request', String(index), request.kind);
+    const quoteOccupancy = request.kind === 'quote' ? fallbackQuoteOccupancy(request, currentRefs) : null;
     const refs = [...new Set([request.requestText.sourceRefs, ...request.dates.flatMap((date) => [date.arrival?.sourceRefs ?? [], date.departure?.sourceRefs ?? []]),
       request.roomTypeHints.flatMap((x) => x.sourceRefs), request.rateHints.flatMap((x) => x.sourceRefs), request.boardHints.flatMap((x) => x.sourceRefs),
-      request.confirmationHints.flatMap((x) => x.sourceRefs), request.guests.flatMap((guest) => [guest.name?.sourceRefs ?? [], guest.email?.sourceRefs ?? []])]
+      request.confirmationHints.flatMap((x) => x.sourceRefs), request.guests.flatMap((guest) => [guest.name?.sourceRefs ?? [], guest.email?.sourceRefs ?? []]),
+      quoteOccupancy?.sourceRefs ?? []]
       .flat(2).filter((ref) => knownRefs.has(ref)))];
     sourceClaims.push({ path: `/requests/${id}/requestText`, raw: request.requestText.raw, sourceRefs: request.requestText.sourceRefs.filter((ref) => knownRefs.has(ref)) });
     request.confirmationHints.forEach((hint, hintIndex) => {
@@ -865,9 +868,9 @@ function buildFallbackProposal(input: {
         departure: typeof date.departure?.value === 'string' ? date.departure.value : null,
         quantity: request.roomCount?.value === null || request.roomCount?.value === undefined ? null : Number(request.roomCount.value),
         board: request.boardHints[0]?.raw ?? null, roomCodes: [], ratePlan: null,
-        occupancy: { scope: 'unresolved' as const, adults: null, childCount: null, childAges: null }, priceObservationRefs: [],
+        occupancy: quoteOccupancy!.occupancy, priceObservationRefs: [],
       })) : [{ id: stableId(id, 'date', '0'), arrival: null, departure: null, quantity: null, board: null,
-        roomCodes: [], ratePlan: null, occupancy: { scope: 'unresolved' as const, adults: null, childCount: null, childAges: null }, priceObservationRefs: [] }],
+        roomCodes: [], ratePlan: null, occupancy: quoteOccupancy!.occupancy, priceObservationRefs: [] }],
       parties: {}, salesStrategy: null, client: { attention: null, email: null, telephone: null }, requestedMoney: [], notes: null,
       outputIntent: { artifacts: [], evidenceRefs: refs }, provisionalBookingRequested: null,
     } };
@@ -908,6 +911,30 @@ function buildFallbackProposal(input: {
       sourceRefs: [currentRef], serviceRefs: [], documentRefs: [], kind: 'other', body: { requestedText: 'Prefill projection failed; staff review required.', supported: false } }] : [], services: [], documents: [] },
     annotations: [], issues: [issue('/', 'prefill_partial', input.reason, currentRef ? [currentRef] : [])], sourceClaims: [], lookupResultRefs: [] });
   return fallback;
+}
+
+function fallbackQuoteOccupancy(request: ReservationWorkflowV2Extraction['requests'][number], currentRefs: Set<string>) {
+  const empty = { scope: 'unresolved' as const, adults: null, childCount: null, childAges: null };
+  // Multiple dates or occupancy rows cannot be assigned to a single quote group safely.
+  if (request.dates.length > 1 || request.occupancy.length !== 1) return { occupancy: empty, sourceRefs: [] as string[] };
+  const row = request.occupancy[0]!;
+  const citedInteger = (claim: typeof row.adults) => claim && typeof claim.value === 'number' &&
+    Number.isSafeInteger(claim.value) && claim.value >= 0 && claim.sourceRefs.some((ref) => currentRefs.has(ref))
+    ? claim.value : null;
+  const adults = citedInteger(row.adults);
+  const childCount = citedInteger(row.childCount);
+  const ages = row.childAges?.map((claim) => {
+    const age = citedInteger(claim);
+    return age !== null && age <= 99 ? age : null;
+  });
+  // Do not infer a count from ages or fill an omitted age with a number.
+  const childAges = ages?.some((age) => age !== null) &&
+    row.childAges?.every((claim) => claim.sourceRefs.some((ref) => currentRefs.has(ref))) ? ages : null;
+  if (adults === null && childCount === null && childAges === null) return { occupancy: empty, sourceRefs: [] as string[] };
+  const claims = [adults !== null ? row.adults : undefined, childCount !== null ? row.childCount : undefined,
+    ...(childAges ? row.childAges ?? [] : [])];
+  return { occupancy: { scope: row.scope === 'unknown' ? 'unresolved' as const : row.scope, adults, childCount, childAges },
+    sourceRefs: [...new Set(claims.flatMap((claim) => claim?.sourceRefs.filter((ref) => currentRefs.has(ref)) ?? []))] };
 }
 
 function preserveConfirmationSourceClaims(
