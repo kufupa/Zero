@@ -116,7 +116,11 @@ export function ReservationPane(props: ReservationPaneProps) {
   const disabled = busy || !snapshot || workbench.blocked || workbench.conflict || sourceChanged;
   const actionLocked = snapshot?.operationResults.some(row => row.requestId === request?.id && ['succeeded', 'unknown'].includes(text(row.status))) ||
     (request?.kind === 'create' && ids.some(id => Boolean(commands.guestProfilePending(id))));
-  const scopedIssues = snapshot?.issues.filter(issue => issue.kind !== 'source_changed' && (!issue.path || !request || issue.path.startsWith(requestPath(request.id)))) ?? [];
+  const scopedIssues = snapshot?.issues.filter(issue => issue.kind !== 'source_changed' &&
+    !(request?.kind === 'quote' && issue.kind === 'quote_document_manual' &&
+      issue.path === `${requestPath(request.id)}/body/outputIntent/artifacts` &&
+      snapshot.session.draft.proposal.issues.some(row => row.kind === issue.kind && row.path === issue.path && row.explanation === issue.explanation)) &&
+    (!issue.path || !request || issue.path.startsWith(requestPath(request.id)))) ?? [];
   const allRoomsSaved = request?.kind === 'create' && ids.length > 0 && ids.every(id => snapshot?.operationResults.some(row =>
     row.workflow === 'create' && row.requestId === request.id && row.allocationId === id && row.status === 'succeeded'));
   const isEarlierIssue = (issue: typeof scopedIssues[number]) => !issue.path || Boolean(allRoomsSaved &&

@@ -314,12 +314,17 @@ export function QuoteEditor(editor: Editor) {
   const offersCurrent = quoteOffersCurrent(editor, observation);
   const mismatch = groups.some((group) => group.arrival !== groups[0]?.arrival || group.departure !== groups[0]?.departure);
   const artifactPath = `${bodyPath}/outputIntent/artifacts`;
-  const artifactsValue = valueAt(snapshot, artifactPath);
+  const artifactsValue = effectiveAt(snapshot, artifactPath);
   const artifacts = Array.isArray(artifactsValue) ? artifactsValue.map(text) : [];
   const sourceRequest = snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id);
   const sourceOutputs = record(record(sourceRequest?.body).outputIntent).artifacts;
-  const requestedDocuments = [...new Set([...(Array.isArray(sourceOutputs) ? sourceOutputs : []), ...artifacts]
-    .filter((item): item is string => item === 'pdf_quote' || item === 'xlsx_quote'))];
+  const isDocument = (item: unknown): item is string => item === 'pdf_quote' || item === 'xlsx_quote';
+  const sourceDocuments = Array.isArray(sourceOutputs) ? sourceOutputs.filter(isDocument) : [];
+  const selectedDocuments = artifacts.filter(isDocument);
+  const requestedDocuments = [...new Set([...sourceDocuments, ...selectedDocuments])];
+  const unpreservedDocuments = selectedDocuments.filter(item => !sourceDocuments.includes(item));
+  const documentIssues = snapshot.session.draft.proposal.issues.filter(issue =>
+    issue.kind === 'quote_document_manual' && issue.path === artifactPath);
   const needsTextOutput = artifacts.length !== 1 || artifacts[0] !== 'email_quote';
   const provisional = valueAt(snapshot, `${bodyPath}/provisionalBookingRequested`);
   return <div className={`${styles.editor} ${styles.compactQuote}`}>
@@ -376,15 +381,20 @@ export function QuoteEditor(editor: Editor) {
       <Field label="Email recipient" path={`${bodyPath}/client/email`} editor={editor} type="email" compact />
       <Field label="Telephone" path={`${bodyPath}/client/telephone`} editor={editor} type="tel" compact />
       <Field label="Quote note" path={`${bodyPath}/notes`} editor={editor} type="textarea" compact />
-      <p className={styles.note}>Output · Unsent email reply</p>
+      <p className={styles.note}>Output · Unsent email reply, text only</p>
       {requestedDocuments.length > 0 && <p className={styles.notice}>
         This draft includes {requestedDocuments.map(item => item === 'pdf_quote' ? 'PDF' : 'Excel').join(' and ')}.
-        Handle those documents separately; the pane can prepare the text reply.
+        Create and attach those documents separately; this pane prepares the text reply.
       </p>}
-      {!requestedDocuments.length && <p className={styles.note}>PDF and Excel requests need separate handling.</p>}
-      {needsTextOutput && <button type="button" className={styles.linkButton} disabled={view.busy}
-        onClick={() => void commands.edit(artifactPath, ['email_quote'])}>Continue with text reply</button>}
-      <p className={styles.note}>The reply is saved as an unsent draft. A provisional booking needs a separate Create action.</p>
+      {documentIssues.map((issue, index) => <p className={styles.notice} key={`${issue.path}-${index}`}>{issue.explanation}</p>)}
+      {unpreservedDocuments.length > 0 && <p className={styles.notice}>
+        Document selections added to this draft cannot yet be retained when switching to a text reply. Handle them separately.
+      </p>}
+      {needsTextOutput && <button type="button" className={styles.linkButton} disabled={view.busy || unpreservedDocuments.length > 0}
+        onClick={() => void commands.edit(artifactPath, ['email_quote'])}>
+        {requestedDocuments.length ? 'Continue with text reply; handle documents separately' : 'Use text reply'}
+      </button>}
+      <p className={styles.note}>Generate the quote, then save the reply as an unsent draft. A provisional booking needs a separate Create action.</p>
       {provisional !== false && <div className={styles.notice}>This request has not been confirmed as quote-only.
         <button type="button" className={styles.linkButton} onClick={() => void commands.edit(`${bodyPath}/provisionalBookingRequested`, false)}>Continue with quote only</button>
       </div>}
