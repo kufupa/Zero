@@ -16,6 +16,11 @@ type CreateInput = z.infer<typeof reservationWorkflowV2GuestCreateInputSchema>;
 export type ReservationWorkflowV2GuestNativeResult = { outcome?: string; issue?: string; nativeId?: string | null; dispatched?: boolean | null;
   previewDigest?: string; review?: unknown; businessFields?: unknown; readback?: Record<string, unknown>;
   reconciliation?: ReservationWorkflowV2GuestNativeResult; [key: string]: unknown };
+export function guestProfileDefinitelyNotDispatched(native: ReservationWorkflowV2GuestNativeResult): boolean {
+  return ['not_dispatched', 'review_required', 'needs_input', 'unsupported', 'unavailable'].includes(native.outcome ?? '') &&
+    native.dispatched === false && native.noDispatchRecorded === true && !native.nativeId &&
+    native.issue !== 'PROFILE_INTENT_HELD' && native.issue !== 'PROFILE_ATTEMPT_CHANGED';
+}
 type Runner = { prepareGuestProfile: (input: Record<string, unknown>) => Promise<ReservationWorkflowV2GuestNativeResult>;
   createGuestProfile: (input: Record<string, unknown>) => Promise<ReservationWorkflowV2GuestNativeResult>;
   inspectGuestProfileAttempt: (input: Record<string, unknown>) => Promise<ReservationWorkflowV2GuestNativeResult>;
@@ -90,12 +95,40 @@ function prepared(draft: ReservationWorkflowV2Draft, input: CreateInput) {
   return { observation, business, previewDigest: result.previewDigest, review: result.review };
 }
 
+/** Reject deterministic runner preflight failures before creating a durable claim. */
+async function validGuestPreview(preview: NonNullable<ReturnType<typeof prepared>>): Promise<boolean> {
+  const native = await import(new URL('../../tooling/hms-cloud/guest-profile-create.mjs', import.meta.url).href) as {
+    profileBusinessFields: (input: Record<string, unknown>) => Record<string, unknown> | null;
+    hasExtendedProfileFields: (fields: Record<string, unknown>) => boolean;
+    matchesProfileReview: (review: unknown, fields: Record<string, unknown>, confirm: boolean) => boolean;
+    profileReviewDigest: (review: unknown) => string;
+    profilePreviewDigest: (fields: Record<string, unknown>, confirm: boolean) => string;
+  };
+  const business = { ...preview.business, expectedPreviewDigest: preview.previewDigest,
+    ...(preview.review ? { expectedReview: preview.review } : {}) };
+  const fields = native.profileBusinessFields(business);
+  if (!fields) return false;
+  const confirmed = preview.business.confirmDuplicateName === true;
+  const extended = native.hasExtendedProfileFields(fields);
+  if (extended && !native.matchesProfileReview(preview.review, fields, confirmed)) return false;
+  return preview.previewDigest === (extended ? native.profileReviewDigest(preview.review) : native.profilePreviewDigest(fields, confirmed));
+}
+
 function writeAllowed(business: Record<string, any>): boolean {
   const guest = record(business.guest);
   if (!guest || process.env.PANE_CLOUD_CREATE_DISPATCH !== 'on') return false;
   const mode = paneWriteMode('create');
   const lab = guest.firstName === 'Proof' && guest.lastName === 'Labtest';
   return lab ? mode === 'lab' || mode === 'on' : mode === 'on' && process.env.PANE_WRITE_CREATE === 'on';
+}
+
+// Match the runner's intent grouping; optional fields and duplicate decision
+// do not permit bypassing an unresolved core-profile attempt.
+function sameGuestProfileIntent(left: Record<string, any>, right: Record<string, any>): boolean {
+  const first = record(left.guest), second = record(right.guest);
+  if (!first || !second || left.propertyCode !== right.propertyCode) return false;
+  const clean = (value: unknown) => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase() : '';
+  return ['firstName', 'lastName', 'mobile', 'email'].every((key) => clean(first[key]) === clean(second[key]));
 }
 
 export async function reservationWorkflowV2GuestOptions(ctx: ReservationWorkflowV2ServerContext,
@@ -153,6 +186,7 @@ export async function reservationWorkflowV2CreateGuestProfile(ctx: ReservationWo
   if (prior?.workflow === 'guest_profile' && prior.status === 'succeeded') return { status: 'succeeded' as const,
     operationId: prior.id, observationRefs: prior.observationRefs, draft: initial.draft, revision: initial.revision, seq: initial.seq };
   if (prior?.status === 'failed') return { status: 'failed' as const, operationId: prior.id, issue: prior.summary };
+  if (!prior && !await validGuestPreview(preview)) return { status: 'needs_prepare' as const, issue: 'guest_profile_prepare_stale' };
   if (!prior && !writeAllowed(preview.business)) return { status: 'refused' as const, issue: 'guest_profile_write_flag_off' };
   const claim = prior ? { ...initial, alreadyClaimed: true } :
     await claimReservationWorkflowV2GuestProfile(stateContext(ctx), input, (draft) => {
@@ -180,15 +214,55 @@ export async function reservationWorkflowV2CreateGuestProfile(ctx: ReservationWo
   };
   let native: ReservationWorkflowV2GuestNativeResult;
   try {
+    let retryOfAttemptId: string | undefined;
     const nativeRunner = await runner({ authorizeStaffWrite: callback,
       dispatchStaffWrite: (_context: unknown, proceed: () => Promise<unknown>) =>
         dispatchReservationWorkflowV2GuestProfile({ ...stateContext(ctx), userId: ctx.user.id, sessionId, sessionProfile },
-          input, validate, proceed) });
+          input, validate, proceed),
+      verifyNoCreate: async (proof: { attemptId: string; nextAttemptId: string; nextPreviewDigest: string;
+        noDispatchRecorded: boolean; duplicateDeclined: boolean; result: ReservationWorkflowV2GuestNativeResult }) => {
+        const noDispatch = proof.noDispatchRecorded &&
+          guestProfileDefinitelyNotDispatched({ ...proof.result, noDispatchRecorded: true });
+        const duplicateApproved = proof.duplicateDeclined && preview.business.confirmDuplicateName === true &&
+          proof.result.outcome === 'confirmation_required' && proof.result.issue === 'PROFILE_NAME_ALREADY_EXISTS' &&
+          proof.result.dispatched === true && !proof.result.nativeId;
+        if (proof.attemptId !== retryOfAttemptId || proof.nextAttemptId !== input.idempotencyKey ||
+            proof.nextPreviewDigest !== preview.previewDigest || !(noDispatch || duplicateApproved)) return null;
+        return { outcome: 'no_create', evidenceDigest: digest({ attemptId: proof.attemptId,
+          nextAttemptId: proof.nextAttemptId, nextPreviewDigest: proof.nextPreviewDigest,
+          noDispatchRecorded: proof.noDispatchRecorded, duplicateDeclined: proof.duplicateDeclined, result: proof.result }) };
+      } });
+    if (!inspectOnly && !claim.alreadyClaimed) {
+      const previous = [...claim.draft.operationResults].reverse().find((row) => row.workflow === 'guest_profile' &&
+        row.status === 'failed' && row.requestId === input.requestId && row.allocationId === input.allocationId &&
+        row.observationRefs.some((ref) => {
+          const saved = claim.draft.observations.find((item) => item.ref === ref && item.criteria.workflow === 'guest_profile_prepare');
+          const business = record(saved?.result.business);
+          return business && sameGuestProfileIntent(business, preview.business);
+        }));
+      const oldPreview = previous && claim.draft.observations.find((item) => previous.observationRefs.includes(item.ref) &&
+        item.criteria.workflow === 'guest_profile_prepare');
+      const oldBusiness = record(oldPreview?.result.business);
+      if (previous && oldPreview && oldBusiness && typeof oldPreview.result.previewDigest === 'string') {
+        const inspected = await nativeRunner.inspectGuestProfileAttempt({ ...oldBusiness,
+          expectedPreviewDigest: oldPreview.result.previewDigest,
+          ...(oldPreview.result.review ? { expectedReview: oldPreview.result.review } : {}), attemptId: previous.id });
+        if (guestProfileDefinitelyNotDispatched(inspected) || (inspected.duplicateDeclined === true &&
+            preview.business.confirmDuplicateName === true && inspected.outcome === 'confirmation_required')) retryOfAttemptId = previous.id;
+      }
+    }
     native = inspectOnly || claim.alreadyClaimed
       ? await nativeRunner.inspectGuestProfileAttempt({ ...preview.business, expectedPreviewDigest: preview.previewDigest,
         ...(preview.review ? { expectedReview: preview.review } : {}), attemptId: input.idempotencyKey })
       : await nativeRunner.createGuestProfile({ ...preview.business, expectedPreviewDigest: preview.previewDigest,
+        ...(preview.review ? { expectedReview: preview.review } : {}), attemptId: input.idempotencyKey,
+        ...(retryOfAttemptId ? { retryOfAttemptId } : {}) });
+    if (!inspectOnly && !claim.alreadyClaimed && native.dispatched === false && native.noDispatchRecorded !== true &&
+        native.issue !== 'PROFILE_ATTEMPT_CHANGED' && native.issue !== 'PROFILE_INTENT_HELD') {
+      const inspected = await nativeRunner.inspectGuestProfileAttempt({ ...preview.business, expectedPreviewDigest: preview.previewDigest,
         ...(preview.review ? { expectedReview: preview.review } : {}), attemptId: input.idempotencyKey });
+      if (inspected.noDispatchRecorded === true) native = { ...native, noDispatchRecorded: true };
+    }
     if (native.outcome === 'reconciliation_required' && text(native.nativeId)) {
       const read = await nativeRunner.readGuestProfile({ propertyCode: ctx.property.propertyCode,
         nativeId: native.nativeId, attemptId: input.idempotencyKey });
@@ -196,8 +270,8 @@ export async function reservationWorkflowV2CreateGuestProfile(ctx: ReservationWo
     }
   } catch { native = { outcome: 'reconciliation_required', issue: 'guest_profile_execution_unknown', dispatched: null }; }
   const successful = native.outcome === 'created' && /^\d{1,30}$/.test(native.nativeId ?? '') && native.readback;
-  const status = successful ? 'succeeded' as const : (native.outcome === 'not_dispatched' &&
-    native.issue !== 'PROFILE_INTENT_HELD' && native.dispatched === false) || native.outcome === 'confirmation_required'
+  const status = successful ? 'succeeded' as const : guestProfileDefinitelyNotDispatched(native) ||
+    (native.outcome === 'confirmation_required' && native.duplicateDeclined === true)
     ? 'failed' as const : 'unknown' as const;
   const request = claim.draft.proposal.content.requests.find((row) => row.id === input.requestId);
   const index = request?.kind === 'create' ? request.body.allocations.findIndex((row) => row.id === input.allocationId) : -1;

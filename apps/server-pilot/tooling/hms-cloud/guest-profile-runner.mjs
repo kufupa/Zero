@@ -142,6 +142,16 @@ function held(attemptId, parts, issue = 'PROFILE_RECONCILIATION_REQUIRED') {
     nativeId: response?.nativeId ?? parts?.result?.nativeId ?? null };
 }
 
+// The native duplicate question is an explicit no-create response. It is safe
+// only before any distinct-confirmation dispatch, with no returned profile ID.
+function duplicateDeclined(parts) {
+  const response = parts['initial-response'], result = parts.result;
+  return parts.claim.confirmDuplicateName === false && Boolean(parts.initial) && !parts.confirm &&
+    !parts['confirm-response'] && response?.status === 200 && response.success === false &&
+    response.question === true && response.nativeId === null && result?.outcome === 'confirmation_required' &&
+    result.issue === 'PROFILE_NAME_ALREADY_EXISTS' && result.dispatched === true && result.nativeId == null;
+}
+
 // A broken record must stay held, but intact response records can still tell an
 // operator which ID to investigate. They do not authorize reconciliation.
 async function partialHeld(dir, attemptKey, attemptId, issue) {
@@ -241,7 +251,8 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
               !prior.successful && !prior.result.nativeId && !prior['initial-response']?.nativeId && !prior['confirm-response']?.nativeId) {
             const proof = await verifyNoCreate(Object.freeze({ attemptId: retryOfAttemptId,
               fields: Object.freeze({ ...prior.claim.fields }), result: structuredClone(prior.result),
-              nextAttemptId: attemptId, nextPreviewDigest: previewDigest }));
+              nextAttemptId: attemptId, nextPreviewDigest: previewDigest,
+              noDispatchRecorded: !prior.initial && !prior.confirm, duplicateDeclined: duplicateDeclined(prior) }));
             if (proof?.outcome === 'no_create' && validHash(proof.evidenceDigest) &&
                 (await intentChain(dir, key)).at(-1) === previous) {
               await writeOnce(dir, successorFile(key, previous), { version: 1, intentKey: key,
@@ -298,7 +309,7 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
       const saved = await readAttempt(dir, attemptKey);
       if (saved.result.outcome === 'uncertain') return { ...held(attemptId, saved), ...saved.result,
         nativeId: saved.result.nativeId ?? saved.successful?.nativeId ?? null };
-      return saved.result;
+      return { ...saved.result, noDispatchRecorded: !saved.initial && !saved.confirm, duplicateDeclined: duplicateDeclined(saved) };
     } catch {
       let saved;
       try { saved = await readAttempt(dir, attemptKey); } catch { /* An incomplete record remains a hold. */ }
@@ -357,7 +368,9 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
         return { outcome: 'review_required', issue: 'PROFILE_ATTEMPT_CHANGED', attemptId, dispatched: false };
       }
       if (parts.reconcile) return parts.reconcile;
-      if (parts.result && parts.result.outcome !== 'uncertain') return parts.result;
+      if (parts.result && parts.result.outcome !== 'uncertain') {
+        return { ...parts.result, noDispatchRecorded: !parts.initial && !parts.confirm, duplicateDeclined: duplicateDeclined(parts) };
+      }
       return held(input.attemptId, parts);
     } catch { return dir ? partialHeld(dir, key, input.attemptId, 'PROFILE_JOURNAL_CORRUPT')
       : held(input.attemptId, null, 'PROFILE_JOURNAL_UNAVAILABLE'); }
