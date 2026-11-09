@@ -210,7 +210,8 @@ function diagnosticMessageText(value, secrets = false, fieldLabel = false) {
       try { const url = new URL(value); url.username = ''; url.password = ''; url.search = ''; url.hash = ''; return url.toString(); }
       catch { return '[redacted URL]'; }
     });
-  if (fieldLabel && diagnosticCredentialField(value)) return text.slice(0, 512);
+  if (fieldLabel && /^(?:[A-Za-z][A-Za-z0-9_-]*\.)*[A-Za-z][A-Za-z0-9_ -]*$/.test(value.trim()) &&
+      diagnosticCredentialField(value)) return text.slice(0, 512);
   text = text.replace(/\b(set-cookie|cookie)(\s*[:=]\s*)[^\r\n]*/gi, '$1$2[redacted]')
     .replace(/\b(authorization|proxy[_-]authorization|authentication|auth|password|passwd|passcode|credential|secret|token|jwt|sid|jsessionid|session|(?:session|request|access|refresh|id)(?:[_-]|\s+)?(?:token|id|key)|csrf(?:[_-]|\s+)?(?:tckt|ticket|token)|api(?:[_-]|\s+)?key|client(?:[_-]|\s+)?secret|cookie)(["']?\s*[:=]\s*|\s+is\s+)(?:(?:bearer|basic)\s+)?(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|<[^>\r\n]*(?:>|$)|[^\r\n,;}]+)/gi, '$1$2[redacted]')
     .replace(/\b((?:proxy[_-])?authorization)(\s+(?:bearer|basic)\s+)(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1$2[redacted]')
