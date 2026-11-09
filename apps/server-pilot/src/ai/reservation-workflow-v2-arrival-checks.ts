@@ -9,13 +9,14 @@ import { reservationWorkflowV2QuoteLookup, reservationWorkflowV2QuotePrepare } f
 import { reservationWorkflowV2AmendLookup, reservationWorkflowV2AmendPrepare } from './reservation-workflow-v2-amend.js';
 import { reservationWorkflowV2CancelLookup } from './reservation-workflow-v2-cancel.js';
 import { reservationWorkflowV2FilingLookup } from './reservation-workflow-v2-filing.js';
-import { reservationWorkflowV2LookupServices, reservationWorkflowV2PreviewServices,
-  reservationWorkflowV2LookupSavedServices, reservationWorkflowV2PreviewSavedServices } from './reservation-workflow-v2-services.js';
+import { paneStayLookupEnabled } from './pane-stay-lookup.js';
 
 type Outcome = { status: string; issue?: string; [key: string]: unknown };
 type Step = { key: string; run: (ctx: ReservationWorkflowV2ServerContext, item: ReservationWorkflowV2ItemInput) => Promise<Outcome> };
 const CHECK_LIMIT = 100;
 const NATIVE_BUDGET_MS = 7 * 60_000;
+const stayLookup = (run: Step['run']): Step['run'] => (ctx, item) => paneStayLookupEnabled()
+  ? run(ctx, item) : Promise.resolve({ status: 'needs_input', issue: 'stay_lookup_disabled' });
 
 /** Each step performs only reads or an unsaved Prepare. No route, Go, review or Send is invoked. */
 function nativeSteps(draft: ReservationWorkflowV2Draft): { steps: Step[]; omitted: number } {
@@ -35,13 +36,13 @@ function nativeSteps(draft: ReservationWorkflowV2Draft): { steps: Step[]; omitte
       steps.push({ key: `quote:lookup:${requestId}`, run: (ctx, item) => reservationWorkflowV2QuoteLookup(ctx, { ...item, requestId }) });
       steps.push({ key: `quote:prepare:${requestId}`, run: (ctx, item) => reservationWorkflowV2QuotePrepare(ctx, { ...item, requestId }) });
     } else if (request.kind === 'amend') {
-      steps.push({ key: `amend:lookup:${requestId}`, run: (ctx, item) => reservationWorkflowV2AmendLookup(ctx, { ...item, requestId }) });
+      steps.push({ key: `amend:lookup:${requestId}`, run: stayLookup((ctx, item) => reservationWorkflowV2AmendLookup(ctx, { ...item, requestId })) });
       for (const hint of request.body.targets.include) steps.push({ key: `amend:prepare:${requestId}:${hint.id}`,
-        run: (ctx, item) => reservationWorkflowV2AmendPrepare(ctx, { ...item, requestId, allocationId: hint.id }) });
+        run: stayLookup((ctx, item) => reservationWorkflowV2AmendPrepare(ctx, { ...item, requestId, allocationId: hint.id })) });
     } else if (request.kind === 'cancel') {
-      steps.push({ key: `cancel:lookup:${requestId}`, run: (ctx, item) => reservationWorkflowV2CancelLookup(ctx, { ...item, requestId }) });
+      steps.push({ key: `cancel:lookup:${requestId}`, run: stayLookup((ctx, item) => reservationWorkflowV2CancelLookup(ctx, { ...item, requestId })) });
     } else if (request.kind === 'filing') {
-      steps.push({ key: `filing:lookup:${requestId}`, run: (ctx, item) => reservationWorkflowV2FilingLookup(ctx, { ...item, requestId }) });
+      steps.push({ key: `filing:lookup:${requestId}`, run: stayLookup((ctx, item) => reservationWorkflowV2FilingLookup(ctx, { ...item, requestId })) });
       steps.push({ key: `filing:prepare:${requestId}`, run: async () => ({
         status: 'needs_input', issue: 'filing_preview_requires_staff_document_review' }) });
     }
@@ -51,15 +52,10 @@ function nativeSteps(draft: ReservationWorkflowV2Draft): { steps: Step[]; omitte
     if (target.kind === 'allocation') {
       const allocationId = target.allocationId;
       steps.push({ key: `service:lookup:${serviceId}:${requestId}:${allocationId}`,
-        run: (ctx, item) => reservationWorkflowV2LookupServices(ctx, { ...item, requestId, allocationId, serviceId }) });
-      steps.push({ key: `service:prepare:${serviceId}:${requestId}:${allocationId}`,
-        run: (ctx, item) => reservationWorkflowV2PreviewServices(ctx, { ...item, requestId, allocationId, serviceId }) });
+        run: async () => ({ status: 'needs_input', issue: 'service_requires_staff_selection_and_price_review' }) });
     } else if (target.kind === 'saved_target') {
-      const targetRef = target;
       steps.push({ key: `service:lookup:${serviceId}:${requestId}:${target.hintId}`,
-        run: (ctx, item) => reservationWorkflowV2LookupSavedServices(ctx, { ...item, requestId, targetRef, serviceId }) });
-      steps.push({ key: `service:prepare:${serviceId}:${requestId}:${target.hintId}`,
-        run: (ctx, item) => reservationWorkflowV2PreviewSavedServices(ctx, { ...item, requestId, targetRef, serviceId }) });
+        run: async () => ({ status: 'needs_input', issue: 'service_requires_staff_selection_and_price_review' }) });
     }
   }
   return { steps: steps.slice(0, CHECK_LIMIT), omitted: Math.max(0, steps.length - CHECK_LIMIT) };

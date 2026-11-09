@@ -25,7 +25,7 @@ import { PANE_PROPERTY_LOCK_WAIT_MS, acquisitionWithin } from '../hms/property-r
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { findParty } from './pane-party-lookup.js';
 import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
-import { findStay, searchGuest, searchGuestCloudBatch, type GuestSearchQuery } from './pane-stay-lookup.js';
+import { findStay, paneStayLookupEnabled, searchGuest, searchGuestCloudBatch, type GuestSearchQuery } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { normalizeGuestName, sameGuestName } from './guest-name-match.js';
 import { availabilityRequestSchema } from './hms-availability.js';
@@ -671,6 +671,7 @@ export function createReservationWorkflowV2CandidateReader(input: {
   };
   return async (candidate) => {
     if (candidate.propertyCode !== input.propertyCode) return { status: 'failed', result: { reason: 'property_mismatch' }, coverage: { complete: false } };
+    if (candidate.kind === 'stay_candidate' && !paneStayLookupEnabled()) return unavailable('Stay lookup is disabled.');
     const cachedGuestProfiles = candidate.kind === 'guest_candidate' && guestProfileBatch;
     const stayText = typeof candidate.criteria.confirmationOrGuestText === 'string' ? candidate.criteria.confirmationOrGuestText.trim() : '';
     const cachedGuestStays = candidate.kind === 'stay_candidate' && guestStayBatch && !/^\d{6,10}-\d{1,2}$/.test(stayText);

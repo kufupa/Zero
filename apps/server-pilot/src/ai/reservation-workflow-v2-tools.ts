@@ -44,7 +44,7 @@ import { persistHmsShots, readStoredHmsShot, verifyStoredHmsShot } from './hms-s
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS, isPropertyReadLockDeadline } from '../hms/property-read-lock.js';
 import { paneStayCloudTargetLock, paneStayCreateTarget, paneStayPropertyLock, paneWriteMode } from './pane-stay-save.js';
-import { findStay } from './pane-stay-lookup.js';
+import { findStay, paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { createCloudTargetKey, isLabtestGuest } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
 import { lockCreateActorSession } from './pane-create-actor-lock.js';
@@ -801,7 +801,9 @@ export async function reservationWorkflowV2Lookup(ctx: ReservationWorkflowV2Serv
     const sourceRefs = sourceEvidence ? [sourceEvidence.ref] : [];
     const claimIsExact = Boolean(claim && confirmation && /^\d{6,10}-\d{1,4}$/.test(confirmation) && sourceEvidence &&
       claim.sourceRefs.length > 0);
-    if (claimIsExact && confirmation) {
+    if (claimIsExact && confirmation && ctx.nativeBatch && !paneStayLookupEnabled()) {
+      reason = 'stay_lookup_disabled';
+    } else if (claimIsExact && confirmation) {
       const targetResult = paneStayCreateTarget({ transportId: ctx.transport.id, propertyCode: ctx.property.propertyCode });
       if (targetResult.ok) {
         try {

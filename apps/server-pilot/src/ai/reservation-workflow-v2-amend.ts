@@ -28,7 +28,7 @@ import { canonicalJson } from './draft-approval.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { paneStayCloudTargetLock, paneStayPropertyLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
-import { searchGuest } from './pane-stay-lookup.js';
+import { paneStayLookupEnabled, searchGuest } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind, type HmsCloudNativePreimage } from './hms-cloud-saved-stay-find.js';
 import { hmsDispatchTargetKey, hmsDispatchTargetSchema } from './hms-dispatch-target.js';
 import {
@@ -206,6 +206,7 @@ function propertyTarget(ctx: ReservationWorkflowV2AmendContext): HmsReadTarget |
 
 async function readCandidate(target: HmsReadTarget, confirmation: string,
   arrival?: string, signal?: AbortSignal) {
+  if (!paneStayLookupEnabled()) return null;
   const lock = paneStayPropertyLock(target);
   if (!lock) return null;
   try {
@@ -548,6 +549,7 @@ function preparedObservation(draft: ReservationWorkflowV2Draft, compiled: Compil
 
 export async function reservationWorkflowV2AmendLookup(ctx: ReservationWorkflowV2AmendContext,
   input: ReservationWorkflowV2LookupInput): Promise<Outcome> {
+  if (!paneStayLookupEnabled()) return { status: 'needs_input', issue: 'stay_lookup_disabled' };
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;
   if (ctx.property.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'property_not_supported' };
@@ -621,6 +623,7 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReservationWorkflowV
 
 export async function reservationWorkflowV2AmendPrepare(ctx: ReservationWorkflowV2AmendContext,
   input: ReservationWorkflowV2PrepareInput): Promise<Outcome> {
+  if (!paneStayLookupEnabled()) return { status: 'needs_input', issue: 'stay_lookup_disabled' };
   if (!input.allocationId) return { status: 'needs_input', issue: 'amend_target_required' };
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;
