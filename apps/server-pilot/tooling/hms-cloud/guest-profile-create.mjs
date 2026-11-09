@@ -220,10 +220,11 @@ function diagnosticMessageText(value, secrets = false, fieldLabel = false, field
   // Scrub contact/submitted values only in message content. Field labels and
   // diagnostic codes/handlers stay verbatim apart from credential masking.
   if (fields !== undefined) {
-    text = text.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+/gi, '[redacted]');
-    // Native dates/confirmation-shaped tokens are not generic phone evidence.
+    text = text.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+/gi, '[redacted]')
+      .replace(/\+\d[\d .()/-]{5,}\d/g, '[redacted]');
+    // Native date tokens are not generic phone evidence.
     // An explicitly submitted contact matching one is still scrubbed below.
-    text = text.split(/(\b(?:\d{4}-\d{2}-\d{2}|\d{2}[-./]\d{2}[-./]\d{4}|\d{6,10}-\d{1,2})\b)/g)
+    text = text.split(/(\b(?:\d{4}-\d{2}-\d{2}|\d{2}[-./]\d{2}[-./]\d{4})\b)/g)
       .map((part, index) => index % 2 ? part : part.replace(/\+?\d[\d .()/-]{5,}\d/g, '[redacted]')).join('');
     for (const name of ['firstName', 'lastName', 'mobile', 'phoneNumber', 'email']) {
       const submitted = fields?.[name];
