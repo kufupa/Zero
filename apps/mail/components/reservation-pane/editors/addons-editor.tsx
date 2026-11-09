@@ -187,7 +187,8 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
       && observation.criteria.targetObservationRef === selectedStay && observation.criteria.candidateRef === selectedItem));
   const preview = record(latest?.result), native = record(preview.native), before = record(preview.before), after = record(preview.after);
   const selectedCandidate = catalogue.find(row => row.observation.ref === selectedItem)?.candidate;
-  const controls = latest && (preview.operation == null || preview.operation === operation)
+  const controlsFromPreview = latest && (preview.operation == null || preview.operation === operation);
+  const controls = controlsFromPreview
     ? Object.hasOwn(preview, 'nativeControls') ? [record(preview.nativeControls)] : [record(native.controls), record(record(after.fields).controls)]
     : [record(record(selectedCandidate?.fields).controls)];
   const unsavedPreview = latest?.criteria.kind === 'saved_addon_fresh_prepare'
@@ -279,7 +280,8 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
         const nativeValue = text(displayControl?.value), nativeDisplay = text(displayControl?.display);
         const nativeHint = nativeValue ? `Infor ${operation === 'edit' ? 'current' : 'last check'}: ${nativeValue}${nativeDisplay && nativeDisplay !== nativeValue ? ` · ${nativeDisplay}` : ''}.` : '';
         const choiceHint = isChoice ? control?.editable === false ? 'This field is not editable in Infor.'
-          : options.length ? 'Infor choices; check again after changes.' : 'Check the Add-On to load Infor choices.' : '';
+          : options.length ? 'Infor choices; check again after changes.' : controlsFromPreview
+            ? 'No Infor choices available from the last check.' : 'Check the Add-On to load Infor choices.' : '';
         const priceHint = field === 'unitPrice' ? 'Unit price is supplied; Infor calculates the total from it.' : '';
         const sharedHint = shared != null && text(shared) ? `Shared value: ${text(shared)}; a room value overrides it.` : operation === 'edit' ? 'Leave unmentioned values unchanged.' : '';
         return <Field key={field} editor={editor} path={`${targetRoot}/fields/${field}`} label={label} type={type} review
