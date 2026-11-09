@@ -3,7 +3,7 @@
 
 import { useState } from 'react';
 import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationWorkflowClient, ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
-import { effectiveAt, record, requestPath, text, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { effectiveAt, guestProfileReceipt, record, requestPath, text, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { QuoteOutputPanel, type SaveQuoteOutput } from './quote-output-panel';
 import { useReservationWorkbench } from './use-reservation-workbench';
 import { CreateEditor, resolveCreateCmsRecipientDefault } from './editors/create-editor';
@@ -178,7 +178,14 @@ export function ReservationPane(props: ReservationPaneProps) {
         <button type="button" className={styles.primary} disabled={disabled || preview || extrasNeedReview || quoteNeedsTextOutput || checked !== digest} onClick={() => { void save(); }}>{request.kind === 'quote' ? 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : 'Save in Infor'}</button></div>
       {quoteNeedsTextOutput && <small>Choose the text reply above before generating.</small>}
       {workbench.blocked && <small>Apply the changed selection before checking.</small>}
-      {snapshot?.operationResults.filter(row => row.requestId === request.id && row.status !== 'prepared').map(row => <div className={styles.receipt} key={text(row.id)}>{text(row.summary) || labels[request.kind]} · {text(row.status)}{row.confirmation ? ` · ${text(row.confirmation)}` : ''}{row.status === 'unknown' && <button type="button" onClick={() => { void commands.reconcile(text(row.id)).catch(() => {}); }}>Check outcome</button>}</div>)}
+      {snapshot?.operationResults.filter(row => row.requestId === request.id && row.status !== 'prepared').map(row => {
+        const guest = row.workflow === 'guest_profile';
+        const receipt = guestProfileReceipt(row);
+        const missingReceipt = guest && row.status === 'succeeded' && !receipt;
+        const summary = guest && (row.status === 'unknown' || missingReceipt) ? 'Guest profile'
+          : receipt ? `Guest profile ${receipt.nativeId} created` : text(row.summary) || labels[request.kind];
+        return <div className={styles.receipt} key={text(row.id)}>{summary} · {missingReceipt ? 'Needs confirmation' : text(row.status)}{!guest && row.confirmation ? ` · ${text(row.confirmation)}` : ''}{row.status === 'unknown' && <button type="button" onClick={() => { void commands.reconcile(text(row.id)).catch(() => {}); }}>Check outcome</button>}</div>;
+      })}
     </footer>}
   </div>;
 }
