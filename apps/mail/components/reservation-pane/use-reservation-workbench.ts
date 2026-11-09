@@ -282,6 +282,10 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   });
   const request = current?.requests.find(row => row.id === activeId) ?? current?.requests[0];
   const requireRequest = () => { if (!request) throw new Error('Choose an action first.'); return request.id; };
+  // The native verifier is deployed independently; expose its action only when the client supports it.
+  const verifyNativeLead = (client as ReservationWorkflowClient & {
+    verifyNativeLead?: ReservationWorkflowClient['selectNative'];
+  }).verifyNativeLead;
   const commands: WorkbenchCommands = {
     stageEdit,
     setUncommitted(id, dirty) {
@@ -293,6 +297,9 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     edit(path, value, state = 'set') { stageEdit(path, value, state); return run(async () => {}); },
     changeRows(change) { return run(context => client.changeRows({ ...context, ...change })); },
     selectNative(fieldPath, observationRef) { return run(context => client.selectNative({ ...context, requestId: requireRequest(), fieldPath, observationRef })); },
+    ...(verifyNativeLead ? { verifyNativeLead(fieldPath: string, observationRef: string) {
+      return run(context => verifyNativeLead.call(client, { ...context, requestId: requireRequest(), fieldPath, observationRef }));
+    } } : {}),
     lookup() { return run(context => client.lookup({ ...context, requestId: requireRequest() })); },
     async guestProfileOptions(allocationId, field) {
       const requestId = requireRequest();

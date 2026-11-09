@@ -7,6 +7,7 @@ export type WorkbenchCommands = {
   edit(path: string, value: unknown, state?: ReservationFieldOverride['state']): Promise<void>;
   changeRows(change: RowChange): Promise<void>;
   selectNative(path: string, observationRef: string): Promise<void>;
+  verifyNativeLead?(path: string, observationRef: string): Promise<void>;
   lookup(): Promise<void>;
   guestProfileOptions(allocationId: string, field: ReservationGuestProfileOptionField): Promise<Record<string, unknown>>;
   createGuestProfile(allocationId: string, confirmDuplicateName?: boolean): Promise<void>;
@@ -69,10 +70,11 @@ export function effectiveAt(snapshot: ReservationPaneSnapshot, path: string): un
   return raw;
 }
 export type NativeChoice = { ref: string; label: string; value: string; detail?: string };
-function currentVerifiedRow(snapshot: ReservationPaneSnapshot, path: string, observation: ReservationPaneSnapshot['session']['draft']['observations'][number]): boolean {
+function currentIdentityRow(snapshot: ReservationPaneSnapshot, path: string, observation: ReservationPaneSnapshot['session']['draft']['observations'][number], verified: boolean): boolean {
   const criteria = record(observation.criteria), result = record(observation.result);
-  if (record(result.rowVerification).status !== 'verified' || criteria.fieldPath !== path ||
-      !Array.isArray(criteria.fieldPaths) || !criteria.fieldPaths.includes(path)) return false;
+  if (verified && (record(result.rowVerification).status !== 'verified' || criteria.fieldPath !== path ||
+      !Array.isArray(criteria.fieldPaths) || !criteria.fieldPaths.includes(path))) return false;
+  if (criteria.fieldPath !== path && (!Array.isArray(criteria.fieldPaths) || !criteria.fieldPaths.includes(path))) return false;
   const parts = path.split('/'), requestId = decodeURIComponent(parts[4] ?? '');
   const request = snapshot.session.draft.proposal.content.requests.find(row => row.id === requestId);
   if (!request || (request.kind !== 'create' && request.kind !== 'quote') ||
@@ -94,7 +96,8 @@ function currentVerifiedRow(snapshot: ReservationPaneSnapshot, path: string, obs
     } else if (!allocations.some(row => row.id === criteria.allocationId)) return false;
   }
   const selected = snapshot.session.draft.fieldOverrides[path];
-  if (selected?.state === 'set' && selected.value === observation.ref) return true;
+  if (verified && selected?.state === 'set' && selected.value === observation.ref) return true;
+  if (!verified && guest && valueAt(snapshot, `${owner}/profileIntent`) !== 'existing_or_unknown') return false;
   const normal = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
   if (guest) {
     const query = record(criteria.query);
@@ -103,8 +106,8 @@ function currentVerifiedRow(snapshot: ReservationPaneSnapshot, path: string, obs
       normal(query.firstName) === normal(valueAt(snapshot, `${owner}/firstName`)) &&
       normal(query.email) === normal(valueAt(snapshot, `${owner}/email`));
   }
-  return typeof criteria.query === 'string' && Boolean(normal(criteria.query)) &&
-    normal(criteria.query) === normal(valueAt(snapshot, `${owner}/name`));
+  const search = typeof criteria.query === 'string' ? criteria.query : criteria.searchName;
+  return typeof search === 'string' && Boolean(normal(search)) && normal(search) === normal(valueAt(snapshot, `${owner}/name`));
 }
 export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, kind?: string): NativeChoice[] {
   const field = path.split('/').at(-1);
@@ -119,7 +122,7 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
         observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
         observation.sourceMessageId !== draft.source.messageId ||
         (kind && observation.kind !== kind && observation.criteria.catalogueKind !== kind)) return [];
-    if (criteria.kind === 'verified_native_row' && !currentVerifiedRow(snapshot, path, observation)) return [];
+    if (criteria.kind === 'verified_native_row' && !currentIdentityRow(snapshot, path, observation, true)) return [];
     const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
     const matches = paths.includes(path) || catalogue && criteria.requestId === requestId && paths.some(p => typeof p === 'string' && p.split('/').at(-1) === field);
     if (!matches) return [];
@@ -134,7 +137,7 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
 }
 
 /** Incomplete native searches are useful leads, never selectable identities. */
-export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: string, kind?: string): { ref: string; label: string; detail: string }[] {
+export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: string, kind?: string): { ref: string; label: string; detail: string; canVerify: boolean }[] {
   if (kind !== 'guest_candidate' && kind !== 'party_candidate') return [];
   const draft = snapshot.session.draft;
   const ownerPath = path.replace(/\/nativeSelectionRef$/, '');
@@ -179,10 +182,14 @@ export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: stri
     const detail = coverage.truncated === true || coverage.serverMoreRecords === true ? 'Search truncated; more matches may exist.'
       : coverage.possiblyTruncated === true ? 'Search may be incomplete; more matches may exist.' : 'Infor result needs checking.';
     const rows = Array.isArray(result.candidates) ? result.candidates : [result];
+    const candidate = record(rows[0]);
+    const canVerify = rows.length === 1 && /^\d{1,30}$/.test(text(candidate.nativeId)) &&
+      (guest || typeof candidate.name === 'string' && Boolean(candidate.name.trim())) &&
+      currentIdentityRow(snapshot, path, observation, false);
     return rows.map(raw => {
       const row = record(raw);
       const label = text(row.name) || [text(row.firstName), text(row.lastName)].filter(Boolean).join(' ');
-      return { ref: observation.ref, label: [label, text(row.nativeId), text(row.email)].filter(Boolean).join(' · '), detail };
+      return { ref: observation.ref, label: [label, text(row.nativeId), text(row.email)].filter(Boolean).join(' · '), detail, canVerify };
     }).filter(row => row.label);
   });
   return leads.filter((row, index) => leads.findIndex(other => other.ref === row.ref && other.label === row.label) === index);
