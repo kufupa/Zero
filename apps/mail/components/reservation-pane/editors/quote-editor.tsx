@@ -367,6 +367,7 @@ export function QuoteEditor(editor: Editor) {
         This draft includes {requestedDocuments.map(item => item === 'pdf_quote' ? 'PDF' : 'Excel').join(' and ')}.
         Handle those documents separately; the pane can prepare the text reply.
       </p>}
+      {!requestedDocuments.length && <p className={styles.note}>PDF and Excel requests need separate handling.</p>}
       {needsTextOutput && <button type="button" className={styles.linkButton} disabled={view.busy}
         onClick={() => void commands.edit(artifactPath, ['email_quote'])}>Continue with text reply</button>}
       <p className={styles.note}>The reply is saved as an unsent draft. A provisional booking needs a separate Create action.</p>

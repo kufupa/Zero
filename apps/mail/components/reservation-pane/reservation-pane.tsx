@@ -44,6 +44,9 @@ export function ReservationPane(props: ReservationPaneProps) {
     body: current && request ? Object.fromEntries(Object.entries(record(effectiveAt(current, `${requestPath(request.id)}/body`))).filter(([field]) => request.kind !== 'cancel' || field !== 'previewObservationRefs')) : {},
     overrides: Object.fromEntries(Object.entries(current?.session.draft.fieldOverrides ?? {}).filter(([path]) => request?.kind !== 'cancel' || !path.startsWith(`${requestPath(request.id)}/body/previewObservationRefs`)).map(([path, value]) => [path, {state: value.state, value: value.value}])) });
   const digest = digestFor(snapshot);
+  const quoteOutputs = record(body.outputIntent).artifacts;
+  const quoteNeedsTextOutput = request?.kind === 'quote' &&
+    (!Array.isArray(quoteOutputs) || quoteOutputs.length !== 1 || quoteOutputs[0] !== 'email_quote');
   const quotePrepared = request?.kind === 'quote' && snapshot ? [...snapshot.session.draft.operationResults].reverse().find(row => row.workflow === 'quote' && row.requestId === request.id && row.status === 'prepared') : null;
   const quoteObservation = quotePrepared && snapshot?.session.draft.observations.find(row => quotePrepared.observationRefs.includes(row.ref) && row.kind === 'rate_availability');
   const quoteExtras = record(quoteObservation?.result).extrasReviewItems;
@@ -90,7 +93,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     } catch { setChecked(null); }
   };
   const save = async () => {
-    if (!request || createBlocked || preview || workbench.blocked || extrasNeedReview || checked !== digest) return;
+    if (!request || createBlocked || preview || workbench.blocked || extrasNeedReview || quoteNeedsTextOutput || checked !== digest) return;
     try {
       if (request.kind === 'create' || request.kind === 'amend' || request.kind === 'cancel') {
         for (const id of ids) {
@@ -142,7 +145,8 @@ export function ReservationPane(props: ReservationPaneProps) {
     {request && !createBlocked && request.kind !== 'services' && request.kind !== 'other' && <footer className={styles.footer}>
       {request.kind === 'create' && snapshot?.preparationViews.filter(view => view.requestId === request.id && view.price && !snapshot.operationResults.some(row => row.requestId === request.id && row.allocationId === view.allocationId && ['succeeded','unknown'].includes(text(row.status)))).map(view => <div key={view.allocationId} className={styles.price}><span>Room {ids.indexOf(view.allocationId) + 1} · {view.current ? 'Infor price' : 'Price needs refresh'}</span><strong>{view.price ? [view.price.currency, view.price.totalRate].filter(value => value != null).join(' ') : '—'}</strong></div>)}
       <div className={styles.actions}><button type="button" disabled={disabled || !ids.length && ['create','amend','cancel'].includes(request.kind)} onClick={() => { void check(); }}>Review & check</button>
-        <button type="button" className={styles.primary} disabled={disabled || preview || extrasNeedReview || checked !== digest} onClick={() => { void save(); }}>{request.kind === 'quote' ? 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : 'Save in Infor'}</button></div>
+        <button type="button" className={styles.primary} disabled={disabled || preview || extrasNeedReview || quoteNeedsTextOutput || checked !== digest} onClick={() => { void save(); }}>{request.kind === 'quote' ? 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : 'Save in Infor'}</button></div>
+      {quoteNeedsTextOutput && <small>Choose the text reply above before generating.</small>}
       {workbench.blocked && <small>Apply the changed selection before checking.</small>}
       {snapshot?.operationResults.filter(row => row.requestId === request.id && row.status !== 'prepared').map(row => <div className={styles.receipt} key={text(row.id)}>{text(row.summary) || labels[request.kind]} · {text(row.status)}{row.confirmation ? ` · ${text(row.confirmation)}` : ''}{row.status === 'unknown' && <button type="button" onClick={() => { void commands.reconcile(text(row.id)).catch(() => {}); }}>Check outcome</button>}</div>)}
     </footer>}
