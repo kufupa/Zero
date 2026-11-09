@@ -1,6 +1,6 @@
 import { reservationWorkflowV2ObservationSchema } from './reservation-workflow-v2-contract.js';
 import { getReservationWorkflowV2Draft } from './reservation-workflow-v2-state.js';
-import type { ReservationWorkflowV2ServerContext } from './reservation-workflow-v2-tools.js';
+import { compileReservationWorkflowV2Create, type ReservationWorkflowV2ServerContext } from './reservation-workflow-v2-tools.js';
 import { savedTarget,
   type ReservationWorkflowV2ServicesInput, type ReservationWorkflowV2SavedServicesInput } from './reservation-workflow-v2-services.js';
 import { lookupAddOns } from './reservation-workflow-v2-addon-check.js';
@@ -50,6 +50,11 @@ export async function reservationArrivalAddOnLookup(ctx: ReservationWorkflowV2Se
       draft.proposal.content.requests.some(row => row.id !== request.id && row.serviceRefs.includes(service.id)))
     return { status: 'needs_input', issue: 'service_target_ambiguous' };
   if (service.operation !== 'add') return { status: 'needs_input', issue: 'service_add_only' };
+  if ('allocationId' in input) {
+    const compiled = compileReservationWorkflowV2Create(draft, input.requestId, input.allocationId,
+      ctx.property.propertyCode, { requireStaffSelectedIdentities: true });
+    if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue };
+  }
   if (!('allocationId' in input) && !paneStayLookupEnabled()) return { status: 'needs_input', issue: 'stay_lookup_disabled' };
   const selection = await loadSyncedQuoteSelectionFromMailbox({ db: ctx.db, transportId: ctx.transport.id,
     messageId: input.source.messageId, includeThreadState: true, sourceCutoffOnly: true, signal: batch.signal });
