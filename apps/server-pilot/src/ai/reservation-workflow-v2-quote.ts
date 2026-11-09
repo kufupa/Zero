@@ -429,6 +429,7 @@ function compileQuote(
         issues.push(`${base}/roomCodes:native_room_codes_required`);
       } else if (rawRoomCodes.length) roomCodes = rawRoomCodes as string[];
     }
+    if (execute && !roomCodes?.length) issues.push(`${base}/roomCodes:native_room_selection_required`);
     const rateResult = resolved(path('groups', groupIndex, 'ratePlan'), group.ratePlan);
     const rawRate = rateResult && !('issue' in rateResult) ? rateResult.value : null;
     let rateCode: string | undefined;
