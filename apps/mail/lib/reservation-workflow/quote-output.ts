@@ -51,16 +51,21 @@ export function getQuoteOutput(source: ReservationSourceContext, snapshot: Reser
   const failures = Array.isArray(result.failures) ? result.failures.filter((item): item is string => typeof item === 'string' && !!item) : [];
   const requested = valueAt(snapshot, `${requestPath(requestId)}/body/outputIntent/artifacts`);
   const outputKinds = Array.isArray(requested) ? requested : [];
+  const parsedCover = typeof cover.to === 'string' && !!cover.to.trim() &&
+    typeof cover.subject === 'string' && !!cover.subject.trim() && typeof cover.body === 'string' && !!cover.body.trim()
+    ? { to: cover.to, subject: cover.subject, body: cover.body } : null;
+  const textOnly = Array.isArray(result.artifacts) && raw.length === 0 && outputKinds.length === 1 && outputKinds[0] === 'email_quote' &&
+    Array.isArray(result.outputKinds) && result.outputKinds.length === 1 && result.outputKinds[0] === 'email_quote' &&
+    operation.status === 'succeeded' && observation.status === 'complete' && observation.coverage.complete &&
+    failures.length === 0 && parsedCover !== null;
   if (!outputKinds.length || outputKinds.some((kind) => !['email_quote', 'pdf_quote', 'xlsx_quote'].includes(kind)) ||
       new Set(outputKinds).size !== outputKinds.length) issues.push('The requested output types are unclear. Generate the quote again.');
   if (result.sourceHash !== source.sourceHash) issues.push('The generated output no longer matches this email.');
   if (raw.length > 32 || new Set(artifacts.map((item) => item.kind)).size !== artifacts.length) issues.push('The generated attachments are ambiguous.');
   if (artifacts.some((item) => !outputKinds.includes(item.kind))) issues.push('A generated attachment was not requested. Generate the quote again.');
-  if (!artifacts.length) issues.push('No quotation file was generated. Resolve the output failures first.');
+  if (!artifacts.length && !textOnly) issues.push('No quotation file was generated. Resolve the output failures first.');
   if (outputKinds.includes('pdf_quote') && !artifacts.some((item) => item.kind === 'pdf_quote') && !failures.some((failure) => failure.startsWith('pdf_'))) issues.push('The PDF is missing. Generate the quote again.');
   if (outputKinds.includes('xlsx_quote') && !artifacts.some((item) => item.kind === 'xlsx_quote') && !failures.some((failure) => failure.startsWith('xlsx_'))) issues.push('The Excel file is missing. Generate the quote again.');
-  const parsedCover = typeof cover.to === 'string' && typeof cover.subject === 'string' && typeof cover.body === 'string'
-    ? { to: cover.to, subject: cover.subject, body: cover.body } : null;
   if (!parsedCover) issues.push('The cover reply is missing. Generate the quote again.');
   const stale = operation.draftRevision !== snapshot.session.revision;
   if (stale) issues.push('The quote changed after these files were generated. Generate the quote again.');
