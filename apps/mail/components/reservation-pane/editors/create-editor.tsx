@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { effectiveAt, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
-import { Count, Field, Section } from '../shared/stay-fields';
+import { Count, Field, FieldReview, Section } from '../shared/stay-fields';
 import { NativePicker } from '../shared/native-pickers';
 import styles from './create-quote-editor.module.css';
 
@@ -49,10 +49,9 @@ function BookingControl({ field, path, editor, defaultValue, emptyState }: {
   field: BookingField; path: string; editor: Editor; defaultValue?: string; emptyState?: 'inherit';
 }) {
   return field.picker || field.party
-    ? <><NativePicker label={field.label} path={path} editor={editor} kind={field.picker} allowNone={field.party || field.key === 'roomTypeForCharge'} />
-      {field.hint && <p className={styles.note}>{field.hint}</p>}</>
+    ? <NativePicker label={field.label} path={path} editor={editor} kind={field.picker} allowNone={field.party || field.key === 'roomTypeForCharge'} hint={field.hint} compact />
     : <Field label={field.label} path={path} editor={editor} type={field.type} hint={field.hint}
-      defaultValue={defaultValue} emptyState={emptyState} />;
+      defaultValue={defaultValue} emptyState={emptyState} compact />;
 }
 
 function hasOwn(editor: Editor, path: string) {
@@ -103,6 +102,7 @@ function ScopedField({ field, path, parentPaths, parentLabel, editor }: {
 
 /** Save count and age slots together; unknown ages stay blank. */
 export function ChildAges({ editor, path }: { editor: Editor; path: string }) {
+  const countId = useId();
   const countPath = `${path}/childCount`, agesPath = `${path}/childAges`;
   const countValue = valueAt(editor.snapshot, countPath);
   const ageValue = valueAt(editor.snapshot, agesPath);
@@ -141,17 +141,28 @@ export function ChildAges({ editor, path }: { editor: Editor; path: string }) {
       ageInput.current = next; setAges(next);
     }
   };
+  const updateCount = (value: string) => {
+    const numeric = value === '' ? null : Number(value);
+    const next = numeric != null && Number.isInteger(numeric) && numeric >= 0 && numeric <= 12 ? numeric : null;
+    const resized = next == null ? null : Array.from({ length: next }, (_, index) => validAge(ageInput.current[index] ?? null));
+    setCount(value); if (resized) ageInput.current = resized; setAges(resized ?? []);
+    dirtyCount.current = true; countVersion.current += 1; editor.commands.setUncommitted(countPath, true);
+    stage(next, resized);
+  };
+  const step = (amount: number) => {
+    const current = count === '' ? 0 : Number(count);
+    updateCount(String(Math.max(0, Math.min(12, current + amount))));
+    void commit('count').catch(() => {});
+  };
   return <>
-    <label className={styles.localField}>Children
-      <input type="number" min="0" max="12" value={count} onChange={(event) => {
-        const value = event.target.value, numeric = value === '' ? null : Number(value);
-        const next = numeric != null && Number.isInteger(numeric) && numeric >= 0 && numeric <= 12 ? numeric : null;
-        const resized = next == null ? null : Array.from({ length: next }, (_, index) => validAge(ageInput.current[index] ?? null));
-        setCount(value); if (resized) ageInput.current = resized; setAges(resized ?? []);
-        dirtyCount.current = true; countVersion.current += 1; editor.commands.setUncommitted(countPath, true);
-        stage(next, resized);
-      }} onBlur={() => void commit('count').catch(() => {})} />
-    </label>
+    <div className={styles.localField}>
+      <div className={styles.countHeading}><label htmlFor={countId}>Children</label><FieldReview editor={editor} path={countPath} label="Children" /></div>
+      <div className={styles.countStepper}>
+        <button type="button" aria-label="Decrease Children" disabled={count === '' || Number(count) <= 0 || editor.view.busy} onMouseDown={event => event.preventDefault()} onClick={() => step(-1)}>−</button>
+        <input id={countId} type="number" min="0" max="12" value={count} onChange={event => updateCount(event.target.value)} onBlur={() => void commit('count').catch(() => {})} />
+        <button type="button" aria-label="Increase Children" disabled={Number(count) >= 12 || editor.view.busy} onMouseDown={event => event.preventDefault()} onClick={() => step(1)}>+</button>
+      </div>
+    </div>
     {Number.isInteger(Number(count)) && Number(count) > 0 && Number(count) <= 12 && <div className={styles.ageGrid}>
       {Array.from({ length: Number(count) }, (_, index) => <label className={styles.localField} key={index}>Child {index + 1} age
         <input type="number" min="0" max="17" value={ages[index] ?? ''} onChange={(event) => {
@@ -234,15 +245,15 @@ function Nights({ editor, sectionPath }: { editor: Editor; sectionPath: string }
 
 function GuestDetails({ editor, allocationPath }: { editor: Editor; allocationPath: string }) {
   return <div className={styles.stack}>
-    <div className={styles.twoCol}>
-      <Field label="Last Name" path={`${allocationPath}/guest/lastName`} editor={editor} />
-      <Field label="First Name" path={`${allocationPath}/guest/firstName`} editor={editor} />
-    </div>
-    <Field label="Mobile Number" path={`${allocationPath}/guest/mobile`} editor={editor} type="tel" disabled hint="Shown for reference; this does not update the Infor profile." />
-    <Field label="E-mail Address" path={`${allocationPath}/guest/email`} editor={editor} type="email" />
+    <Field label="Last Name" path={`${allocationPath}/guest/lastName`} editor={editor} compact />
+    <Field label="First Name" path={`${allocationPath}/guest/firstName`} editor={editor} compact />
+    <Field label="E-mail Address" path={`${allocationPath}/guest/email`} editor={editor} type="email" compact />
     {editor.snapshot.issues.filter((issue) => issue.kind === 'guest_email_conflict' && issue.path === `${allocationPath}/guest/email`)
       .map((issue, index) => <p className={styles.notice} key={index}>{issue.explanation}</p>)}
-    <p className={styles.note}>Matching details do not change the Infor profile.</p>
+    <details className={styles.details}><summary>More guest details</summary>
+      <Field label="Mobile Number" path={`${allocationPath}/guest/mobile`} editor={editor} type="tel" disabled compact />
+      <p className={styles.note}>Matching details do not change the Infor profile.</p>
+    </details>
   </div>;
 }
 
@@ -256,133 +267,118 @@ export function CreateEditor(editor: Editor) {
   const defaultRecipient = resolveCreateCmsRecipientDefault(snapshot, request.id, editor.source.sender);
   const hasCompleted = allocations.some((allocation) => Boolean(completedRoom(editor, text(allocation.id))));
   const allCompleted = allocations.length > 0 && allocations.every((allocation) => Boolean(completedRoom(editor, text(allocation.id))));
-  return <div className={styles.editor}>
+  const sharedBooking = [stayFields.find(field => field.key === 'guaranteeType')!, ...roomFields];
+  const extraStay = [...stayFields.filter(field => field.key !== 'guaranteeType'), trackField];
+  return <div className={`${styles.editor} ${styles.compactCreate}`}>
     {hasCompleted && <p className={styles.notice}>Saved rooms keep their confirmed details. Changes to shared values and dates apply to remaining rooms only.</p>}
-    <Section title={hasCompleted ? 'Stay · remaining rooms' : 'Stay'}>
+    <Section title="Commercial">
       <fieldset disabled={allCompleted} className={styles.plainFieldset}>
-        {partyFields.map((field) => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
+        {partyFields.map(field => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
       </fieldset>
-      {sections.map((section, sectionIndex) => {
-        const sectionPath = `${bodyPath}/dateSections/${sectionIndex}`;
-        const sectionId = String(section.id ?? '');
-        const rooms = allocations.map((allocation, index) => ({ allocation, index })).filter(({ allocation }) => allocation.dateSectionId === section.id);
-        const sectionHasCompleted = rooms.some(({ allocation }) => Boolean(completedRoom(editor, text(allocation.id))));
-        const sectionAllCompleted = rooms.length > 0 && rooms.every(({ allocation }) => Boolean(completedRoom(editor, text(allocation.id))));
-        const unassigned = Array.isArray(section.unassignedGuestNames) ? section.unassignedGuestNames.filter((name): name is string => typeof name === 'string') : [];
-        const requested = valueAt(snapshot, `${sectionPath}/requestedRooms`);
-        return <div className={styles.group} key={sectionId || sectionIndex}>
-          {sections.length > 1 && <div className={styles.groupHeading}><strong>Stay dates {sectionIndex + 1}</strong>
-            <button type="button" className={styles.linkButton} disabled={view.busy || sectionHasCompleted || allocations.length - rooms.length < 1}
-              onClick={() => void commands.changeRows({ kind: 'remove_date_section', requestId: request.id, entityId: sectionId,
-                childIds: rooms.map(({ allocation }) => text(allocation.id)) })}>Remove dates and rooms</button></div>}
-          <div className={styles.dateFields}>
-            <Field label="Arrival Date" path={`${sectionPath}/arrival`} editor={editor} type="date" disabled={sectionAllCompleted} />
-            <Nights editor={editor} sectionPath={sectionPath} />
-            <Field label="Departure Date" path={`${sectionPath}/departure`} editor={editor} type="date" disabled={sectionAllCompleted} />
-          </div>
-          <p className={styles.note}>Rooms: {rooms.length}{requested != null && Number(requested) !== rooms.length ? ` · requested ${text(requested)}` : ''}</p>
-          {unassigned.length > 0 && <p className={styles.notice}>Guests to assign: {unassigned.join(', ')}</p>}
-          {record(section.requestedTotals).adults != null && <p className={styles.note}>Requested group: {text(record(section.requestedTotals).adults)} adults{record(section.requestedTotals).childCount != null ? `, ${text(record(section.requestedTotals).childCount)} children` : ''}. Enter occupancy for each room.</p>}
-          {rooms.map(({ allocation, index }) => {
-            const allocationPath = `${bodyPath}/allocations/${index}`;
-            const allocationId = String(allocation.id ?? '');
-            const completed = completedRoom(editor, allocationId);
-            if (completed) return <SavedRoom key={allocationId || index} editor={editor} result={completed} index={index} />;
-            return <div className={styles.roomCard} key={allocationId || index}>
-              <div className={styles.groupHeading}><strong>Room {index + 1}</strong>
-                <button type="button" className={styles.linkButton} disabled={view.busy || allocations.length <= 1}
-                  onClick={() => void commands.changeRows({ kind: 'remove_allocation', requestId: request.id, entityId: allocationId, parentId: sectionId })}>Remove</button></div>
-              <div className={styles.twoCol}>
-                <Count label="Adults" path={`${allocationPath}/occupancy/adults`} editor={editor} min={1} max={20} />
-                <ChildAges editor={editor} path={`${allocationPath}/occupancy`} />
-              </div>
-            </div>;
-          })}
-          <button type="button" className={styles.secondaryButton} disabled={view.busy || allocations.length >= 8 || !sectionId}
+    </Section>
+    <Section title="Shared booking settings">
+      <fieldset disabled={allCompleted} className={styles.plainFieldset}>
+        {sharedBooking.map(field => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
+        <details className={styles.details} open={extraStay.some(field => hasOwn(editor, `${shared}/${field.key}`)) || undefined}>
+          <summary>More stay fields</summary>
+          {extraStay.map(field => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
+        </details>
+      </fieldset>
+      <button type="button" className={styles.linkButton} disabled={view.busy} onClick={() => void commands.lookup()}>Search / refresh Infor</button>
+    </Section>
+    {sections.map((section, sectionIndex) => {
+      const sectionPath = `${bodyPath}/dateSections/${sectionIndex}`;
+      const sectionId = text(section.id);
+      const rooms = allocations.map((allocation, index) => ({ allocation, index })).filter(({ allocation }) => allocation.dateSectionId === section.id);
+      const sectionHasCompleted = rooms.some(({ allocation }) => Boolean(completedRoom(editor, text(allocation.id))));
+      const sectionAllCompleted = rooms.length > 0 && rooms.every(({ allocation }) => Boolean(completedRoom(editor, text(allocation.id))));
+      const unassigned = Array.isArray(section.unassignedGuestNames) ? section.unassignedGuestNames.filter((name): name is string => typeof name === 'string') : [];
+      const requested = valueAt(snapshot, `${sectionPath}/requestedRooms`);
+      return <section className={styles.group} key={sectionId || sectionIndex}>
+        <div className={styles.groupHeading}><strong>{sections.length > 1 ? `Date range ${sectionIndex + 1}` : 'Stay dates'}</strong>
+          <button type="button" className={styles.linkButton} disabled={view.busy || allocations.length >= 8 || !sectionId}
             onClick={() => void commands.changeRows({ kind: 'add_allocation', requestId: request.id, parentId: sectionId,
-              entityId: `room_${crypto.randomUUID().replaceAll('-', '')}` })}>Add room</button>
-          <details open={allFields.some((field) => hasOwn(editor, `${sectionPath}/defaults/${field.key}`)) || undefined} className={styles.details}>
-            <summary>Date defaults{sectionHasCompleted ? ' · remaining rooms' : ''} · {ownSummary(editor, `${sectionPath}/defaults`) || 'uses shared values'}</summary>
-            <fieldset disabled={sectionAllCompleted} className={styles.plainFieldset}>{allFields.map((field) => <ScopedField key={field.key} field={field} path={`${sectionPath}/defaults/${field.key}`}
-              parentPaths={[`${shared}/${field.key}`]} parentLabel="shared" editor={editor} />)}</fieldset>
-          </details>
-        </div>;
-      })}
-      {!sections.length && <p className={styles.notice}>Add dates to start a manual reservation.</p>}
-      <div className={styles.inlineButtons}>
-        <button type="button" className={styles.secondaryButton} disabled={view.busy} onClick={() => void commands.changeRows({ kind: 'add_date_section', requestId: request.id, entityId: `dates_${crypto.randomUUID().replaceAll('-', '')}` })}>Add dates</button>
-      </div>
-      <fieldset disabled={allCompleted} className={styles.plainFieldset}>
-        {[...stayFields, ...roomFields, trackField].map((field) => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
-        <p className={styles.note}>Infor prices each room separately when ready.</p>
-      </fieldset>
-      <button type="button" className={styles.secondaryButton} disabled={view.busy} onClick={() => void commands.lookup()}>Search / refresh Infor</button>
-    </Section>
-    <Section title="Guest">
-      <p className={styles.note}>Select an existing Infor profile for each room.</p>
-      {allocations.map((allocation, index) => {
-        const allocationPath = `${bodyPath}/allocations/${index}`;
-        const allocationId = String(allocation.id ?? '');
-        if (completedRoom(editor, allocationId)) return null;
-        const sectionIndex = sections.findIndex((section) => section.id === allocation.dateSectionId);
-        if (sectionIndex < 0) return null;
-        const section = sections[sectionIndex]!, sectionPath = `${bodyPath}/dateSections/${sectionIndex}`;
-        const sectionId = String(section.id ?? ''), overrides = `${allocationPath}/overrides`, dateDefaults = `${sectionPath}/defaults`;
-        const unassigned = Array.isArray(section.unassignedGuestNames) ? section.unassignedGuestNames.filter((name): name is string => typeof name === 'string') : [];
-        const exceptions = ownSummary(editor, overrides), guestOptIn = inheritedValue(editor, [`${overrides}/guestOptIn`, `${dateDefaults}/guestOptIn`, `${shared}/guestOptIn`]);
-        const conflict = snapshot.issues.some((issue) => issue.kind === 'guest_email_conflict' && issue.path === `${allocationPath}/guest/email`);
-        return <div className={styles.roomCard} key={allocationId || index}>
-          {allocations.length > 1 && <strong>Room {index + 1}</strong>}
-          {unassigned.length > 0 && <label className={styles.localField}>Assign a guest from the email
-            <select value="" onChange={(event) => {
-              if (!event.target.value) return;
-              const chosenIndex = Number(event.target.value); if (!Number.isInteger(chosenIndex) || chosenIndex < 0) return;
-              const chosen = unassigned[chosenIndex]; if (!chosen) return;
-              const [first, ...rest] = chosen.trim().split(/\s+/u);
-              const pending = `${allocationPath}/guest/assignment`;
-              commands.setUncommitted(pending, true);
-              void (async () => {
-                await commands.edit(`${allocationPath}/guest/firstName`, first ?? '');
-                await commands.edit(`${allocationPath}/guest/lastName`, rest.join(' '));
-                await commands.edit(`${sectionPath}/unassignedGuestNames`, unassigned.filter((_, i) => i !== chosenIndex));
-              })().finally(() => commands.setUncommitted(pending, false)).catch(() => {});
-            }}><option value="">Choose guest</option>{unassigned.map((name, i) => <option key={`${name}-${i}`} value={i}>{name}</option>)}</select>
-          </label>}
-          <NativePicker label="Profile ID / selection" path={`${allocationPath}/guest/nativeSelectionRef`} editor={editor} kind="guest_candidate" />
-          {allocations.length === 1 ? <GuestDetails editor={editor} allocationPath={allocationPath} />
-            : <details open={conflict || undefined} className={styles.details}>
-              <summary>Guest details{text(record(allocation.guest).email) ? ` · ${text(record(allocation.guest).email)}` : ''}</summary>
-              <GuestDetails editor={editor} allocationPath={allocationPath} />
-            </details>}
-          <Price editor={editor} allocationId={allocationId} />
-          {guestOptIn === true && <p className={styles.notice}>Guest marketing opt-in needs Infor.</p>}
-          <details open={Boolean(exceptions) || undefined} className={styles.details}>
-            <summary>Room exceptions · {exceptions || 'uses date and shared values'}</summary>
-            <div className={styles.stack}>
-              <label className={styles.localField}>Stay dates
-                <select value={sectionId} disabled={view.busy || sections.length < 2} onChange={(event) => {
-                  const nextId = event.target.value;
-                  if (nextId && nextId !== sectionId) void commands.changeRows({ kind: 'move_allocation', requestId: request.id,
-                    entityId: allocationId, parentId: nextId });
-                }}>{sections.map((dates, i) => <option key={text(dates.id) || i} value={text(dates.id)}>
-                  {`Stay ${i + 1} · ${text(dates.arrival) || 'arrival missing'} – ${text(dates.departure) || 'departure missing'}`}
-                </option>)}</select>
-              </label>
-              {allFields.map((field) => <ScopedField key={field.key} field={field} path={`${overrides}/${field.key}`}
-                parentPaths={[`${dateDefaults}/${field.key}`, `${shared}/${field.key}`]} parentLabel="date/shared" editor={editor} />)}
+              entityId: `room_${crypto.randomUUID().replaceAll('-', '')}` })}>+ Room</button></div>
+        <div className={styles.dateFields}>
+          <Field label="Arrival Date" path={`${sectionPath}/arrival`} editor={editor} type="date" disabled={sectionAllCompleted} review />
+          <Nights editor={editor} sectionPath={sectionPath} />
+          <Field label="Departure Date" path={`${sectionPath}/departure`} editor={editor} type="date" disabled={sectionAllCompleted} review />
+        </div>
+        <p className={styles.note}>{rooms.length} {rooms.length === 1 ? 'room' : 'rooms'} on these dates{requested != null && Number(requested) !== rooms.length ? ` · requested ${text(requested)}` : ''}</p>
+        {unassigned.length > 0 && <p className={styles.notice}>Guests to assign: {unassigned.join(', ')}</p>}
+        {record(section.requestedTotals).adults != null && <p className={styles.note}>Requested group: {text(record(section.requestedTotals).adults)} adults{record(section.requestedTotals).childCount != null ? `, ${text(record(section.requestedTotals).childCount)} children` : ''}. Enter occupancy for each room.</p>}
+        <details open={allFields.some(field => hasOwn(editor, `${sectionPath}/defaults/${field.key}`)) || undefined} className={styles.details}>
+          <summary>Settings for these rooms{sectionHasCompleted ? ' · remaining rooms' : ''}</summary>
+          <fieldset disabled={sectionAllCompleted} className={styles.plainFieldset}>{allFields.map(field => <ScopedField key={field.key} field={field} path={`${sectionPath}/defaults/${field.key}`}
+            parentPaths={[`${shared}/${field.key}`]} parentLabel="shared" editor={editor} />)}</fieldset>
+        </details>
+        {rooms.map(({ allocation, index }) => {
+          const allocationPath = `${bodyPath}/allocations/${index}`;
+          const allocationId = text(allocation.id);
+          const completed = completedRoom(editor, allocationId);
+          if (completed) return <SavedRoom key={allocationId || index} editor={editor} result={completed} index={index} />;
+          const overrides = `${allocationPath}/overrides`, dateDefaults = `${sectionPath}/defaults`;
+          const exceptions = ownSummary(editor, overrides);
+          const guestOptIn = inheritedValue(editor, [`${overrides}/guestOptIn`, `${dateDefaults}/guestOptIn`, `${shared}/guestOptIn`]);
+          return <div className={styles.roomCard} key={allocationId || index}>
+            <div className={styles.groupHeading}><strong>Room {index + 1}</strong>
+              <button type="button" className={styles.linkButton} disabled={view.busy || allocations.length <= 1}
+                onClick={() => void commands.changeRows({ kind: 'remove_allocation', requestId: request.id, entityId: allocationId, parentId: sectionId })}>Remove</button></div>
+            <div className={styles.twoCol}>
+              <Count label="Adults" path={`${allocationPath}/occupancy/adults`} editor={editor} min={1} max={20} review asSelect />
+              <ChildAges editor={editor} path={`${allocationPath}/occupancy`} />
             </div>
-          </details>
-        </div>;
-      })}
-    </Section>
-    <details className={styles.details}>
-      <summary>Booker and confirmation · {hasCompleted ? 'remaining rooms' : 'all rooms'}</summary>
+            {unassigned.length > 0 && <label className={styles.localField}>Assign a guest from the email
+              <select value="" onChange={(event) => {
+                if (!event.target.value) return;
+                const chosenIndex = Number(event.target.value); if (!Number.isInteger(chosenIndex) || chosenIndex < 0) return;
+                const chosen = unassigned[chosenIndex]; if (!chosen) return;
+                const [first, ...rest] = chosen.trim().split(/\s+/u);
+                const pending = `${allocationPath}/guest/assignment`;
+                commands.setUncommitted(pending, true);
+                void (async () => {
+                  await commands.edit(`${allocationPath}/guest/firstName`, first ?? '');
+                  await commands.edit(`${allocationPath}/guest/lastName`, rest.join(' '));
+                  await commands.edit(`${sectionPath}/unassignedGuestNames`, unassigned.filter((_, i) => i !== chosenIndex));
+                })().finally(() => commands.setUncommitted(pending, false)).catch(() => {});
+              }}><option value="">Choose guest</option>{unassigned.map((name, i) => <option key={`${name}-${i}`} value={i}>{name}</option>)}</select>
+            </label>}
+            <NativePicker label="Guest Profile" path={`${allocationPath}/guest/nativeSelectionRef`} editor={editor} kind="guest_candidate" compact />
+            <GuestDetails editor={editor} allocationPath={allocationPath} />
+            <Price editor={editor} allocationId={allocationId} />
+            {guestOptIn === true && <p className={styles.notice}>Guest marketing opt-in needs Infor.</p>}
+            <details open={Boolean(exceptions) || undefined} className={styles.details}>
+              <summary>Room exceptions{exceptions ? ` · ${exceptions}` : ''}</summary>
+              <div className={styles.stack}>
+                <label className={styles.localField}>Stay dates
+                  <select value={sectionId} disabled={view.busy || sections.length < 2} onChange={(event) => {
+                    const nextId = event.target.value;
+                    if (nextId && nextId !== sectionId) void commands.changeRows({ kind: 'move_allocation', requestId: request.id,
+                      entityId: allocationId, parentId: nextId });
+                  }}>{sections.map((dates, i) => <option key={text(dates.id) || i} value={text(dates.id)}>
+                    {`Stay ${i + 1} · ${text(dates.arrival) || 'arrival missing'} – ${text(dates.departure) || 'departure missing'}`}
+                  </option>)}</select>
+                </label>
+                {allFields.map(field => <ScopedField key={field.key} field={field} path={`${overrides}/${field.key}`}
+                  parentPaths={[`${dateDefaults}/${field.key}`, `${shared}/${field.key}`]} parentLabel="date/shared" editor={editor} />)}
+              </div>
+            </details>
+          </div>;
+        })}
+        {sections.length > 1 && <button type="button" className={styles.linkButton} disabled={view.busy || sectionHasCompleted || allocations.length - rooms.length < 1}
+          onClick={() => void commands.changeRows({ kind: 'remove_date_section', requestId: request.id, entityId: sectionId,
+            childIds: rooms.map(({ allocation }) => text(allocation.id)) })}>Remove dates and rooms</button>}
+      </section>;
+    })}
+    {!sections.length && <p className={styles.notice}>Add dates to start a manual reservation.</p>}
+    <button type="button" className={styles.linkButton} disabled={view.busy} onClick={() => void commands.changeRows({ kind: 'add_date_section', requestId: request.id, entityId: `dates_${crypto.randomUUID().replaceAll('-', '')}` })}>+ Another date range</button>
+    <Section title="Booker and confirmation">
       <fieldset disabled={allCompleted} className={styles.plainFieldset}>
-        {otherFields.map((field) => <BookingControl key={field.key} field={field.key === 'cmsRecipient' ? { ...field,
+        {otherFields.map(field => <BookingControl key={field.key} field={field.key === 'cmsRecipient' ? { ...field,
           hint: defaultRecipient ? `Blank uses ${defaultRecipient}.` : 'Enter an email when CMS Send Mail is enabled.' } : field} path={`${shared}/${field.key}`} editor={editor}
           defaultValue={field.key === 'cmsRecipient' ? defaultRecipient || undefined : undefined} />)}
         {valueAt(snapshot, `${shared}/guestOptIn`) === true && <p className={styles.notice}>Guest marketing opt-in needs Infor.</p>}
       </fieldset>
-    </details>
+    </Section>
   </div>;
 }

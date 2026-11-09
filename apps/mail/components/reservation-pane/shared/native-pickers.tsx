@@ -3,11 +3,11 @@
 import { useEffect, useId, useState } from 'react';
 import { nativeChoices, record, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import styles from '../reservation-pane.module.css';
-import { FieldSource } from './stay-fields';
+import { FieldReview, FieldSource } from './stay-fields';
 
 /** One editable code/identity search with persistent access to native alternatives. */
-export function NativePicker({ label, path, editor, kind, allowNone = false }: {
-  label: string; path: string; editor: WorkbenchEditorProps; kind?: string; allowNone?: boolean;
+export function NativePicker({ label, path, editor, kind, allowNone = false, compact = false, hint }: {
+  label: string; path: string; editor: WorkbenchEditorProps; kind?: string; allowNone?: boolean; compact?: boolean; hint?: string;
 }) {
   const id = useId();
   const party = /\/(bookingAgency|organization|arAccount|agency|company)$/.test(path);
@@ -45,7 +45,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false }: {
   const display = dirty || open ? query : guestPath
     ? selectedChoice?.label || [text(valueAt(editor.snapshot, `${guestPath}/firstName`)), saved].filter(Boolean).join(' ')
     : !entity && selectedChoice && selectedChoice.label !== saved ? `${saved} — ${selectedChoice.label}` : query;
-  return <div className={styles.field}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label><FieldSource editor={editor} path={path} label={label} /></div><div className={styles.picker}>
+  return <div className={`${styles.field} ${compact ? styles.compactField : ''}`}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label>{!compact && <FieldSource editor={editor} path={path} label={label} />}</div><div className={`${styles.picker} ${styles.controlSlot}`}>
     <div className={styles.pickerInput}><input id={id} role="combobox" aria-expanded={open} aria-controls={`${id}-options`} aria-autocomplete="list"
       aria-activedescendant={open && activeIndex >= 0 && shown[activeIndex] ? `${id}-option-${activeIndex}` : undefined}
       value={display} onFocus={() => setOpen(true)} placeholder={guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
@@ -69,5 +69,6 @@ export function NativePicker({ label, path, editor, kind, allowNone = false }: {
       {!choices.length && <small>Find options in Infor to load native choices.</small>}
       <button type="button" onClick={() => { void saveSearch().then(() => editor.commands.lookup()).catch(() => {}); }}>Search Infor</button>
     </div>}
-  </div>{dirty ? <small>Unsaved search</small> : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}</div>;
+  {dirty ? <small>Unsaved search</small> : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}{hint && <small>{hint}</small>}</div>
+    {compact && <FieldReview editor={editor} path={path} label={label} />}</div>;
 }
