@@ -98,7 +98,7 @@ export function AddonsEditor(editor: Editor) {
       || service.targets.some(target => target.target.requestId === request.id));
   return <div className={styles.stack}>
     <Section title="Add-Ons">
-      <p className={styles.hint}>Each Add-On is checked and saved for one exact room. Infor calculates the total from its pricing basis; the quantity does not multiply occupants again.</p>
+      <p className={styles.hint}>Each Add-On is checked and saved for one exact room. Infor calculates the total using the unit price, pricing basis and quantity.</p>
       {!services.length && <div className={styles.warning}>No Add-On and room target are selected. Add or link the requested item and room before checking.</div>}
       {owner?.kind === 'services' && <div className={styles.row}><button type="button" disabled={editor.view.busy}
         onClick={() => void editor.commands.changeRows({ kind: 'add_target', requestId: request.id }).catch(() => {})}>Add stay</button></div>}
@@ -274,11 +274,12 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
         const nativeHint = nativeValue ? `Infor ${operation === 'edit' ? 'current' : 'last check'}: ${nativeValue}${nativeDisplay && nativeDisplay !== nativeValue ? ` · ${nativeDisplay}` : ''}.` : '';
         const choiceHint = isChoice ? control?.editable === false ? 'This field is not editable in Infor.'
           : options.length ? 'Infor choices; check again after changes.' : 'Check the Add-On to load Infor choices.' : '';
+        const priceHint = field === 'unitPrice' ? 'Unit price is supplied; Infor calculates the total from it.' : '';
         const sharedHint = shared != null && text(shared) ? `Shared value: ${text(shared)}; a room value overrides it.` : operation === 'edit' ? 'Leave unmentioned values unchanged.' : '';
         return <Field key={field} editor={editor} path={`${targetRoot}/fields/${field}`} label={label} type={type} review
           options={options.length ? options : undefined} disabled={editor.view.busy || control?.editable === false}
           unmatchedOptionLabel={options.length ? 'Not returned by Infor' : undefined}
-          hint={[sharedHint, nativeHint, choiceHint].filter(Boolean).join(' ') || undefined} />;
+          hint={[sharedHint, nativeHint, choiceHint, priceHint].filter(Boolean).join(' ') || undefined} />;
       })}</div>
       }
       <div className={styles.hint}>{operation === 'add' ? 'A positive explicit unit price and quantity are required. Unknown or zero price is unpriced. ' : operation === 'remove' ? 'Removing an item does not establish a refund. ' : ''}Infor returns actual service dates and total.</div>
