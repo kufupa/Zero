@@ -461,6 +461,8 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
         'unitPrice', 'frequency', 'pricingControl', 'folio', 'comment', 'currency', 'averageDaily', 'totalCost', 'status']
         .filter(key => Object.hasOwn(actual, key)).map(key => [key, actual[key]])) : null;
       const controls = nativeServiceControls(actual);
+      const nativeControls = createBound && preview?.propertyCode === 'HRCEN' && preview.unsaved === true && preview.saved === false &&
+        itemIdMatches && actual?.code === plan.candidate.code ? controls : undefined;
       const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: loaded.draft!.generationId,
         kind: 'service_preview', status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
         propertyCode: loaded.draft!.propertyCode, sourceMessageId: loaded.draft!.source.messageId, sourceRefs: [],
@@ -473,6 +475,7 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
         result: { operation: 'add', saved: false, targetRef: plan.targetRef, serviceId: plan.serviceId,
           itemCandidate: plan.candidate, requestedFields: plan.items,
           native: businessItem && controls ? { ...businessItem, controls } : businessItem,
+          ...(nativeControls ? { nativeControls } : {}),
           issue: nativeItem?.issue ?? preview?.issue ?? native.issue ?? null,
           hostValuesRequireReview: plan.reviewPaths, createRatePlanAvailability: native.ratePlanAvailability,
           priceWasNativeCalculated: Boolean(actual?.averageDaily && actual?.totalCost), capability } };
@@ -481,6 +484,7 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
       if (stored.status !== 'ok') return { ...stored };
       results.push({ status: complete ? 'prepared' : 'needs_input', serviceId: plan.serviceId,
         observationRef: observation.ref, targetRef: plan.targetRef, item: businessItem,
+        ...(nativeControls ? { nativeControls } : {}),
         issue: text(nativeItem?.issue) ?? text(preview?.issue) ?? native.issue,
         reviewPaths: plan.reviewPaths, capability, saved: false });
     }
@@ -833,14 +837,17 @@ export async function reservationWorkflowV2PreviewSavedServices(ctx: Reservation
             positiveDecimal(native.quantity) !== positiveDecimal(fields.quantity) || positiveDecimal(native.unitPrice) !== positiveDecimal(fields.unitPrice) ||
             native.startDate !== fields.startDate || native.endDate !== fields.endDate || !text(native.currency) || !text(native.totalCost)) return null;
         const controls = nativeServiceControls(actual);
-        return { native: controls ? { ...native, controls } : native };
+        return { native: controls ? { ...native, controls } : native, ...(controls ? { nativeControls: controls } : {}) };
       }
       const change = record(Array.isArray(prepared.changes) ? prepared.changes[0] : null);
       const before = record(change?.before), after = record(change?.after);
       if (!change || change.operation !== operation || change.nativeId !== nativeId || before?.nativeId !== nativeId ||
           canonicalJson(savedServiceBusiness(before.fields)) !== canonicalJson(prior) ||
           (operation === 'edit' && (after?.nativeId !== nativeId || !savedServiceBusiness(after.fields)))) return null;
-      return { before, after: operation === 'remove' ? null : after };
+      const afterFields = record(after?.fields);
+      const controls = operation === 'edit' && text(afterFields?.code) && text(afterFields?.itemId) &&
+        afterFields?.code === prior?.code && afterFields?.itemId === prior?.itemId ? nativeServiceControls(afterFields) : undefined;
+      return { before, after: operation === 'remove' ? null : after, ...(controls ? { nativeControls: controls } : {}) };
     }, { headless: true, blockServiceWorkers: true, signal: ctx.nativeBatch?.signal }));
     if (!staged) return { status: 'needs_input', issue: 'saved_addon_prepare_unverified', saved: false };
     const capability = await (await import('./reservation-workflow-v2-services-execute.js')).savedServiceCapability(selected.stay);
