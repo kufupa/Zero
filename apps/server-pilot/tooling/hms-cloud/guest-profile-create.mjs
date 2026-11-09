@@ -124,16 +124,15 @@ function parseProfileResponse(text) {
 
 function diagnosticMessageText(value) {
   if (typeof value !== 'string') return null;
-  let text = value.slice(0, 512);
-  // Do not retain a partial credential at the cut.
-  if (value.length > 512) text = text.slice(0, Math.max(0, text.search(/\s+\S*$/)));
-  return text.replace(/<[^>]*(?:>|$)/g, '')
+  const text = value.replace(/<[^>]*(?:>|$)/g, '')
     .replace(/https?:\/\/[^\s<>"']+/gi, value => {
       try { const url = new URL(value); url.username = ''; url.password = ''; url.search = ''; url.hash = ''; return url.toString(); }
       catch { return '[redacted URL]'; }
     })
+    .replace(/\b(?:set-cookie|cookie)\s*[:=]\s*[^\r\n]*/gi, 'cookie=[redacted]')
     .replace(/\b(authorization|auth|password|passwd|secret|token|session(?:[_-]?id)?|request[_-]?token|access[_-]?token|refresh[_-]?token|api[_-]?key|cookie)(["']?\s*[:=]\s*)(?:(?:bearer|basic)\s+)?(?:"[^"]*"|'[^']*'|[^\s,;}]+)/gi, '$1$2[redacted]')
     .replace(/\b(bearer|token|password|passwd|secret|session[_-]?id)\s+[^\s,;]+/gi, '$1 [redacted]');
+  return text.slice(0, 512);
 }
 
 function profileFailureDiagnostics(data, parseStatus) {
