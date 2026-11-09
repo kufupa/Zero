@@ -29,6 +29,7 @@ import {
 } from '../outlook-sync/storage.js';
 import {
   authorizedSource,
+  hashSyncSecret,
   SyncDeniedError,
   SyncClaimBusyError,
 } from '../outlook-sync/authorization.js';
@@ -43,6 +44,38 @@ import { z } from 'zod';
 
 // Handler factories are per request in main; coalescing must survive across those factories.
 const finalizations = new WeakMap<DB, Map<string, Promise<unknown>>>();
+const denialLogTimes = new Map<string, number>();
+const denialReasons = new Set([
+  'staff-session', 'read-root', 'source-scope', 'authority-expired', 'source-paused', 'claim-fence',
+  'inventory-bounds', 'inventory-scan-conflict', 'inventory-scan-missing', 'inventory-page-conflict',
+  'inventory-scan-committed', 'inventory-item-scope', 'inventory-item-conflict',
+  'live-item-scope', 'live-item-artifacts', 'live-item-conflict',
+]);
+
+// Keep the public 403 generic. Internal logs contain only fixed classifications and hashed IDs.
+function logSyncDenial(operation: string, raw: unknown, deviceId: string | null, error?: SyncDeniedError) {
+  const body = raw as Record<string, unknown>;
+  const kind = operation === 'inventory' ? (body.eventOnly === true ? 'live' : 'scan')
+    : operation === 'upload' ? (body.reuseObservationId ? 'reuse' : body.observation ? 'enrich'
+      : body.resolvedAttachmentRoles ? 'attachment-roles' : body.optionalMissing ? 'attachment-gaps'
+      : body.availability ? 'gap' : body.pending ? 'pending' : body.artifactId ? 'artifact' : 'manifest')
+    : 'request';
+  const reason = !deviceId ? 'device-verification'
+    : error && denialReasons.has(error.reason) ? error.reason : 'unspecified';
+  const device = deviceId ? hashSyncSecret(deviceId).slice(0, 12) : undefined;
+  const source = deviceId && typeof body.sourceId === 'string'
+    ? hashSyncSecret(body.sourceId).slice(0, 12) : undefined;
+  const site = error?.stack?.split('\n').slice(1)
+    .map((frame) => frame.match(/(?:^|[\\/])([^\\/()\s]+\.(?:js|ts):\d+:\d+)/)?.[1])
+    .find(Boolean);
+  const key = `${operation}:${kind}:${reason}:${device ?? ''}`;
+  const now = Date.now();
+  if (now - (denialLogTimes.get(key) ?? 0) < 60_000) return;
+  if (denialLogTimes.size >= 256 && !denialLogTimes.has(key))
+    denialLogTimes.delete(denialLogTimes.keys().next().value!);
+  denialLogTimes.set(key, now);
+  console.warn('outlook_sync_denied', JSON.stringify({ operation, kind, reason, device, source, site }));
+}
 const eventInput = nativeFenced.extend({
   eventOnly: z.literal(true),
   observations: z.array(syncObservationV1).max(100),
@@ -157,8 +190,10 @@ export function createOutlookSyncNativeHandler(
       },
       key,
     );
-    if (!verified)
+    if (!verified) {
+      logSyncDenial(operation!, raw, null);
       return new Response(null, { status: 403, headers: { 'cache-control': 'no-store' } });
+    }
     try {
       let result: unknown;
       if (operation === 'activate')
@@ -454,8 +489,10 @@ export function createOutlookSyncNativeHandler(
           { code: 'SYNC_QUOTA_EXCEEDED', retryable: true },
           { status: 429, headers: { 'cache-control': 'no-store', 'retry-after': '60' } },
         );
-      if (error instanceof SyncDeniedError)
+      if (error instanceof SyncDeniedError) {
+        logSyncDenial(operation!, raw, verified.deviceId, error);
         return new Response(null, { status: 403, headers: { 'cache-control': 'no-store' } });
+      }
       if (error instanceof z.ZodError) return new Response(null, { status: 400 });
       return Response.json(
         { code: 'SYNC_UNAVAILABLE' },

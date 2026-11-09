@@ -355,7 +355,7 @@ export async function recordInventory(
       (input.scan.mode === 'history' &&
         (from.getTime() !== s.historyFrom.getTime() || to.getTime() !== s.historyTo.getTime()))
     )
-      throw new SyncDeniedError();
+      throw new SyncDeniedError('inventory-bounds');
     let scan: typeof scanTable.$inferSelect | undefined;
     if (input.scan.id) {
       [scan] = await t
@@ -388,8 +388,8 @@ export async function recordInventory(
         scan.from.getTime() !== from.getTime() ||
         scan.to.getTime() !== to.getTime())
     )
-      throw new SyncDeniedError();
-    if (input.scan.id && !scan) throw new SyncDeniedError();
+      throw new SyncDeniedError('inventory-scan-conflict');
+    if (input.scan.id && !scan) throw new SyncDeniedError('inventory-scan-missing');
     if (!scan) {
       const id = randomUUID();
       [scan] = await t
@@ -415,10 +415,10 @@ export async function recordInventory(
       .from(scanTable)
       .where(and(eq(scanTable.sourceId, s.id), eq(scanTable.recordKey, pageKey)));
     if (prior) {
-      if (prior.checkpoint?.payloadHash !== payloadHash) throw new SyncDeniedError();
+      if (prior.checkpoint?.payloadHash !== payloadHash) throw new SyncDeniedError('inventory-page-conflict');
       return inventoryResponse(t, scan.id, input);
     }
-    if (scan.status === 'committed') throw new SyncDeniedError();
+    if (scan.status === 'committed') throw new SyncDeniedError('inventory-scan-committed');
     const partitionKey = `partition:${scan.id}:${hashSyncSecret(input.partitionId)}`;
     const [oldPartition] = await t
       .select()
@@ -464,7 +464,7 @@ export async function recordInventory(
         o.locator.rootEntryId !== s.rootEntryId ||
         o.event.isUnsent
       )
-        throw new SyncDeniedError();
+        throw new SyncDeniedError('inventory-item-scope');
       let [obs] = await t
         .insert(observationTable)
         .values({
@@ -500,7 +500,7 @@ export async function recordInventory(
             (stableJson(old.semantic) !== stableJson(o.semantic) ||
               !sameDiscoveredRoles(old.requiredArtifactRoles, o.requiredArtifactRoles))
           )
-            throw new SyncDeniedError();
+            throw new SyncDeniedError('inventory-item-conflict');
           await t
             .update(observationTable)
             .set({ evidence: { ...old, locator: o.locator } })
@@ -949,7 +949,7 @@ export async function recordLiveHint(
       o.event.isUnsent ||
       !['new-mail', 'saved-sent', 'folder-hint'].includes(o.event.kind)
     )
-      throw new SyncDeniedError();
+      throw new SyncDeniedError('live-item-scope');
     let [obs] = await t
       .insert(observationTable)
       .values({
@@ -986,7 +986,7 @@ export async function recordLiveHint(
           .from(artifactTable)
           .where(eq(artifactTable.observationId, obs.id))
           .limit(1);
-        if (declared.length) throw new SyncDeniedError();
+        if (declared.length) throw new SyncDeniedError('live-item-artifacts');
         await t
           .update(observationTable)
           .set({
@@ -1002,7 +1002,7 @@ export async function recordLiveHint(
       } else {
         if (stableJson(old.semantic) !== stableJson(o.semantic) ||
             !sameDiscoveredRoles(old.requiredArtifactRoles, o.requiredArtifactRoles))
-          throw new SyncDeniedError();
+          throw new SyncDeniedError('live-item-conflict');
         if (old.event.kind === 'inventory')
           await t
             .update(observationTable)
