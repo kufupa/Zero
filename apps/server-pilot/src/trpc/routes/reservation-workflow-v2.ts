@@ -34,6 +34,7 @@ import {
 import { classifyReservationWorkflowV2Source } from '../../ai/reservation-workflow-v2-prefill.js';
 import { addReservationWorkflowV2Action, changeReservationWorkflowV2Rows,
   selectReservationWorkflowV2Native, reviewReservationWorkflowV2Scope } from '../../ai/reservation-workflow-v2-draft-commands.js';
+import { reservationWorkflowV2VerifyLead } from '../../ai/reservation-workflow-v2-verify-lead.js';
 import { preStaySourceText } from '../../ai/existing-stay-information.js';
 import { prefillDraft } from '../../ai/reservation-workflow-v2-prefill-service.js';
 import { enqueueReservationArrival, reservationArrivalEnabled } from '../../ai/reservation-workflow-v2-arrival.js';
@@ -306,6 +307,14 @@ export const reservationWorkflowV2Router = router({
   selectNative: mailboxProcedure.input(reservationWorkflowV2SelectNativeInputSchema).mutation(({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
     return withPreparation(selectReservationWorkflowV2Native(scoped, input), scoped.propertyCode);
+  }),
+  verifyNativeLead: mailboxProcedure.input(reservationWorkflowV2SelectNativeInputSchema).mutation(async ({ input, ctx, signal }) => {
+    const native = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
+    const scoped = { db: native.db, transportId: native.transport.id, userId: native.user.id,
+      propertyCode: native.property.propertyCode };
+    const timeout = AbortSignal.timeout(120_000);
+    return withPreparation(reservationWorkflowV2VerifyLead(scoped, input,
+      signal ? AbortSignal.any([signal, timeout]) : timeout), scoped.propertyCode);
   }),
   reviewScope: mailboxProcedure.input(reservationWorkflowV2ReviewScopeInputSchema).mutation(({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
