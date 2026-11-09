@@ -426,7 +426,8 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   const initialLookup = useRef(new Set<string>());
   useEffect(() => {
     if (!current || current.session.sourceChanged || ['queued', 'running'].includes(current.session.draft.prefill?.status ?? '') || !request || request.kind !== 'create' || busy || entry.pending.size || entry.conflict || preview) return;
-    if (current.session.draft.prefill?.nativeChecks?.some(check => check.key === `create:lookup:${request.id}`)) return;
+    if (current.session.draft.prefill?.status !== 'superseded' &&
+        current.session.draft.prefill?.nativeChecks?.some(check => check.key === `create:lookup:${request.id}`)) return;
     const lookupKey = `${key}:${request.id}:${current.session.draft.generationId}`;
     if (initialLookup.current.has(lookupKey)) return;
     const timer = setTimeout(() => { initialLookup.current.add(lookupKey); void commands.lookup().catch(() => {}); }, 700);
