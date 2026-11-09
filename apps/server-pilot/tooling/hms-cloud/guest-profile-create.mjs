@@ -11,8 +11,17 @@ import { collectHmsStorageStateSecretValues } from '../../src/hms/trace-privacy.
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
 const clean = value => typeof value === 'string' ? value.trim() : '';
-const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// Postgres JSONB and transport clones may reorder object keys. Digests and
+// equality for guest reviews must ignore key order or prepare looks stale on create.
+const canon = value => {
+  if (Array.isArray(value)) return value.map(canon);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort().map(key => [key, canon(value[key])]));
+  }
+  return value;
+};
+const hash = value => createHash('sha256').update(JSON.stringify(canon(value))).digest('hex');
+const same = (a, b) => JSON.stringify(canon(a)) === JSON.stringify(canon(b));
 const EXTRA_FIELDS = ['titleCode', 'phoneNumber', 'phoneTypeCode', 'emailTypeCode'];
 const OPTION_FIELDS = Object.freeze({ title: 'nametitle', phoneType: 'phonenumbertypecode', emailType: 'emailtypecode' });
 const issue = error => /^[A-Z][A-Z0-9_]{2,100}$/.test(String(error?.message || ''))

@@ -19,6 +19,24 @@ test('email without a type defaults to Primary so native Save is not rejected', 
   assert.equal(explicit?.emailTypeCode, 'HOME');
 });
 
+test('guest review digests ignore JSON key order after storage round-trips', async () => {
+  const { profileReviewDigest, matchesProfileReview } = await import('./guest-profile-create.mjs');
+  const fields = profileBusinessFields({
+    guest: { firstName: 'Proof', lastName: 'Labtest', mobile: '+27000000001', email: 'proof@example.invalid' },
+  });
+  const review = {
+    version: 2, propertyCode: 'HRCEN', fields, confirmDuplicateName: true,
+    effective: { title: { code: '', label: '' }, phoneNumber: '',
+      phoneType: { code: '', label: '' }, emailType: { code: 'PRIM', label: 'Primary' } },
+  };
+  const reordered = JSON.parse(JSON.stringify(review, (key, value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+    return Object.fromEntries(Object.keys(value).reverse().map(name => [name, value[name]]));
+  }));
+  assert.equal(profileReviewDigest(review), profileReviewDigest(reordered));
+  assert.equal(matchesProfileReview(reordered, fields, true), true);
+});
+
 function request(changes = {}, confirmed = false) {
   const body = new URLSearchParams({ SYSTEM_FUNCTION_NAME: 'FSGSPF', USER_FUNCTION_NAME: 'FSGSPF', CURRENT_TAB_NAME: 'HDR',
     firstname: fields.firstName, lastname: fields.lastName, mobilenumber: fields.mobile, emailaddress: '',
