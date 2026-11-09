@@ -196,19 +196,22 @@ async function profileDiagnosticSecrets(request) {
   finally { clearTimeout(timer); }
 }
 
-function diagnosticMessageText(value, secrets = false) {
+function diagnosticMessageText(value, secrets = false, fieldLabel = false) {
   if (typeof value !== 'string' || value.length > 8192 || secrets === null) return null;
   let text = secrets ? value.replace(secrets, '[redacted]') : value;
   // Journal text, not HTML: angle-bracket field names and comparison values are
-  // native validation evidence. Mask credential values without stripping them.
-  text = text.replace(/https?:\/\/[^\s<>"']+/gi, value => {
-    try { const url = new URL(value); url.username = ''; url.password = ''; url.search = ''; url.hash = ''; return url.toString(); }
-    catch { return '[redacted URL]'; }
-  })
-    .replace(/\b(set-cookie|cookie)(\s*[:=]\s*)[^\r\n]*/gi, '$1$2[redacted]')
+  // native validation evidence. Attribute-bearing markup can carry hidden values.
+  text = text.replace(/<[A-Za-z][A-Za-z0-9:-]*\s+[^<>]*=\s*[^<>]*(?:>|$)/g, '')
+    .replace(/https?:\/\/[^\s<>"']+/gi, value => {
+      try { const url = new URL(value); url.username = ''; url.password = ''; url.search = ''; url.hash = ''; return url.toString(); }
+      catch { return '[redacted URL]'; }
+    });
+  if (fieldLabel) return text.slice(0, 512);
+  text = text.replace(/\b(set-cookie|cookie)(\s*[:=]\s*)[^\r\n]*/gi, '$1$2[redacted]')
     .replace(/\b(authorization|proxy[_-]authorization|authentication|auth|password|passwd|passcode|credential|secret|token|jwt|sid|jsessionid|session|(?:session|request|access|refresh|id)(?:[_-]|\s+)?(?:token|id|key)|csrf(?:[_-]|\s+)?(?:tckt|ticket|token)|api(?:[_-]|\s+)?key|client(?:[_-]|\s+)?secret|cookie)(["']?\s*[:=]\s*|\s+is\s+)(?:(?:bearer|basic)\s+)?(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|<[^>\r\n]*(?:>|$)|[^\r\n,;}]+)/gi, '$1$2[redacted]')
     .replace(/\b((?:proxy[_-])?authorization)(\s+(?:bearer|basic)\s+)(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1$2[redacted]')
-    .replace(/\b(bearer)\s+(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1 [redacted]');
+    .replace(/\b(bearer)\s+(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1 [redacted]')
+    .replace(/\b((?:session|request|access|refresh|id)(?:[_-]|\s+)?(?:token|id|key)|csrf(?:[_-]|\s+)?(?:tckt|ticket|token)|api(?:[_-]|\s+)?key|client(?:[_-]|\s+)?secret|password|passwd|passcode|secret|token|jwt|sid|jsessionid|session)\s+(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|<[^>\r\n]*(?:>|$)|[^\s,;]+)/gi, '$1 [redacted]');
   return text.slice(0, 512);
 }
 
@@ -221,7 +224,7 @@ function profileValidationDetails(root, data, secrets) {
     const credentialField = typeof fieldName === 'string' && /^(?:password|passwd|passcode|credential|secret|token|jwt|sid|cookie|set[_-]?cookie|authorization|proxy[_-]?authorization|authentication|auth(?:[_-]?(?:token|key))?|jsessionid|(?:session|access|refresh|request|csrf|id)[_-]?(?:token|key|id)|session|csrf[_-]?(?:ticket|tckt)|api[_-]?key|client[_-]?secret|x[_-](?:api[_-]?key|auth(?:entication)?[_-]?(?:token|key)?|access[_-]?token|refresh[_-]?token|csrf[_-]?token|session[_-]?(?:id|token)|id[_-]?token))$/i.test(fieldName.split('.').at(-1).trim().replace(/\s+/g, '_'));
     const message = typeof value === 'string' ? value : value && typeof value === 'object' && !Array.isArray(value)
       ? value.msg ?? value.message ?? value.errorMessage ?? value.validationMessage ?? value.description : null;
-    const entry = { source, field: diagnosticMessageText(fieldName, secrets),
+    const entry = { source, field: diagnosticMessageText(fieldName, secrets, true),
       type: nativeMessage && !credentialField ? diagnosticMessageText(value?.type, secrets) : null,
       code: credentialField ? null : diagnosticMessageText(value?.code == null ? null : String(value.code), secrets),
       handler: nativeMessage && !credentialField ? diagnosticMessageText(value?.handler, secrets) : null,
