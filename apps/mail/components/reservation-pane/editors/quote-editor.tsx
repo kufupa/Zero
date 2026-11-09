@@ -350,7 +350,7 @@ export function QuoteEditor(editor: Editor) {
             { value: 'per_room', label: 'Per room' },
           ]} />
           {scope !== 'per_room' && <p className={styles.notice}>Allocate adults and children per room before pricing. Totals are not divided automatically.</p>}
-          <div className={styles.twoCol}><Count label="Adults per room" path={`${groupPath}/occupancy/adults`} editor={editor} min={1} max={6} review />
+          <div className={styles.twoCol}><Count label={scope === 'per_room' ? 'Adults per room' : scope === 'whole_group' ? 'Adults (whole group)' : 'Adults'} path={`${groupPath}/occupancy/adults`} editor={editor} min={1} max={6} review />
             <ChildAges editor={editor} path={`${groupPath}/occupancy`} /></div>
           <RoomCode editor={editor} path={`${groupPath}/roomCodes`} options={options} />
           <NativePicker label="Rate plan" path={`${groupPath}/ratePlan`} editor={editor} kind="rate_plan" compact />
