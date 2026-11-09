@@ -69,11 +69,11 @@ function clearGuestAttempt(source: ReservationSourceContext, requestId: string, 
 function notify(buffer: Buffer) { buffer.listeners.forEach(listener => listener()); }
 
 // Background preparation requires an explicit, still-selectable Infor identity.
-function reviewedIdentity(snapshot: ReservationPaneSnapshot, path: string, kind: 'guest_candidate' | 'party_candidate'): boolean {
+function selectedIdentity(snapshot: ReservationPaneSnapshot, path: string, kind: 'guest_candidate' | 'party_candidate'): boolean {
   const draft = snapshot.session.draft;
   const override = draft.fieldOverrides[path];
   const ref = override?.state === 'set' ? override.value : null;
-  return typeof ref === 'string' && ref.trim().length > 0 && draft.staffReviews[path]?.status === 'accepted' &&
+  return typeof ref === 'string' && ref.trim().length > 0 &&
     nativeChoices(snapshot, path, kind).some(choice => choice.ref === ref);
 }
 
@@ -89,7 +89,7 @@ function autoCreateReady(snapshot: ReservationPaneSnapshot, requestId: string, a
   const guest = record(room.guest), occupancy = record(room.occupancy);
   const guestPath = `${root}/allocations/${index}/guest/nativeSelectionRef`;
   if (guest.profileIntent !== 'existing_or_unknown' || !text(guest.firstName) || !text(guest.lastName) ||
-      !reviewedIdentity(snapshot, guestPath, 'guest_candidate')) return false;
+      !selectedIdentity(snapshot, guestPath, 'guest_candidate')) return false;
 
   const bases = [`${root}/allocations/${index}/overrides`, `${root}/dateSections/${sectionIndex}/defaults`, `${root}/shared`];
   for (const base of bases) {
@@ -127,7 +127,7 @@ function autoCreateReady(snapshot: ReservationPaneSnapshot, requestId: string, a
     const party = scopedValue(field, true);
     if (party.unknown) return false;
     if (record(party.value).kind !== 'none' && typeof party.name === 'string' && party.name.trim() &&
-        !reviewedIdentity(snapshot, `${party.path}/nativeSelectionRef`, 'party_candidate')) return false;
+        !selectedIdentity(snapshot, `${party.path}/nativeSelectionRef`, 'party_candidate')) return false;
   }
   const settings = ['roomType', 'ratePlan', 'guaranteeType', 'sourceOfBusiness'].map(field => scopedValue(field));
   const ages = occupancy.childAges;

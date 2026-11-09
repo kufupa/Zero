@@ -49,7 +49,6 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const createIdentity = entity && editor.request.kind === 'create';
   const staffSelected = selectionOverride?.state === 'set' && typeof selectionOverride.value === 'string' &&
     selectionOverride.value.trim() !== '' && selectionOverride.value === selectedRef && choices.some(choice => choice.ref === selectedRef);
-  const selectionReviewed = staffSelected && editor.snapshot.session.draft.staffReviews[selectionPath]?.status === 'accepted';
   const verifiedLeads = new Map(editor.snapshot.session.draft.observations.flatMap(observation => {
     const criteria = record(observation.criteria);
     return criteria.kind === 'verified_native_row' && typeof criteria.leadObservationRef === 'string' &&
@@ -97,7 +96,6 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       <button type="button" onClick={() => { void saveSearch().then(() => editor.commands.lookup()).catch(() => {}); }}>Search Infor</button>
     </div>}
   {dirty ? <small>Unsaved search</small> : createIdentity && !staffSelected && (query || selectedRef)
-    ? <small>Select an Infor match before automatic checks.</small> : createIdentity && staffSelected && !selectionReviewed
-      ? <small>Select this match again to confirm it for automatic checks.</small> : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}{hint && <small>{hint}</small>}</div>
+    ? <small>Select an Infor match before automatic checks.</small> : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}{hint && <small>{hint}</small>}</div>
     {compact && <FieldReview editor={editor} path={path} label={label} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />}</div>;
 }
