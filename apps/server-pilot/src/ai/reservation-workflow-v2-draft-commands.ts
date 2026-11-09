@@ -9,6 +9,7 @@ import { withLockedV2DraftMutation, reservationWorkflowV2SavedTargetLocked,
 import { nativeStructureIsSafe, rebaseReservationV2Path, rebaseReservationV2Observations } from './work-item-revision.js';
 import { sameGuestName } from './guest-name-match.js';
 import { canonicalJson } from './draft-approval.js';
+import { currentLead } from './reservation-workflow-v2-verify-lead.js';
 
 const ptr = (...parts: (string | number)[]) => '/' + parts.map((part) => encodeURIComponent(String(part))).join('/');
 const rec = (value: unknown): Record<string, any> => value && typeof value === 'object' && !Array.isArray(value)
@@ -364,6 +365,13 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
       if (!observation || observation.status !== 'complete' || !observation.coverage.complete ||
           observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
           observation.sourceMessageId !== draft.source.messageId || observation.criteria.requestId !== request.id) return null;
+      if (observation.criteria.kind === 'verified_native_row') {
+        const leadRef = observation.criteria.leadObservationRef;
+        const current = typeof leadRef === 'string' ? currentLead(draft, { ...input, observationRef: leadRef }) : null;
+        if (!current || current.nativeId !== rec(observation.result).nativeId || current.lead.kind !== observation.kind ||
+            current.lead.criteria.role !== observation.criteria.role ||
+            canonicalJson(current.lead.criteria.query) !== canonicalJson(observation.criteria.query)) return null;
+      }
       const paths = [observation.criteria.fieldPath, observation.criteria.selectionPath,
         ...(Array.isArray(observation.criteria.fieldPaths) ? observation.criteria.fieldPaths : [])];
       const filingPath = request.kind === 'filing' && observation.kind === 'stay_candidate' &&

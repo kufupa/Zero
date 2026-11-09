@@ -1281,11 +1281,13 @@ export async function commitReservationNativeCheck(ctx: Context, input: {
 export async function appendReservationWorkflowV2Observation(ctx: Context, input: {
   workItemId: string; source: ReservationWorkflowV2SourceInput;
   observation: ReservationWorkflowV2Observation;
+  fence?: { expectedRevision: number; expectedSeq: number; generationId: string; signal: AbortSignal };
 }): Promise<ReservationWorkflowV2StateResult> {
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
   const parsed = reservationWorkflowV2ObservationSchema.safeParse(input.observation);
   if (!parsed.success || parsed.data.propertyCode !== ctx.propertyCode) return { status: 'invalid_value' };
   if (ctx.nativeBatch) {
+    if (input.fence) return { status: 'invalid_value' };
     const current = await bufferedNativeResult(ctx, input);
     if (current.status !== 'ok') return current;
     if (parsed.data.generationId !== current.draft.generationId || parsed.data.sourceMessageId !== input.source.messageId ||
@@ -1294,13 +1296,23 @@ export async function appendReservationWorkflowV2Observation(ctx: Context, input
     ctx.nativeBatch.observations.push(parsed.data);
     return bufferedNativeResult(ctx, input);
   }
-  return ctx.db.transaction(async (tx) => {
+  const cancelled = Symbol('observation_cancelled');
+  try { return await ctx.db.transaction(async (tx) => {
+    if (input.fence) {
+      await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
+      await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
+      if (input.fence.signal.aborted) return { status: 'stale_revision' as const };
+    }
     const item = await loadItem(tx, ctx, input.workItemId, true);
     if (!item) return { status: 'not_found' as const };
     const current = await buildResult(tx, ctx, item, input.source);
     if (current.status !== 'ok') return current;
+    if (input.fence && (input.fence.signal.aborted || item.revision !== input.fence.expectedRevision ||
+        item.revisionSeq !== input.fence.expectedSeq || current.draft.generationId !== input.fence.generationId))
+      return { status: 'stale_revision' as const };
     const existingRefs = new Set(current.draft.observations.map((entry) => entry.ref));
     if (parsed.data.generationId !== current.draft.generationId ||
+        (input.fence && parsed.data.sourceMessageId !== input.source.messageId) ||
         parsed.data.sourceRefs.some((ref) => !existingRefs.has(ref)) || existingRefs.has(parsed.data.ref)) {
       return { status: 'invalid_value' as const };
     }
@@ -1309,9 +1321,14 @@ export async function appendReservationWorkflowV2Observation(ctx: Context, input
     await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'system', type: 'hms.lookup.finished',
       value: { ref: parsed.data.ref, kind: parsed.data.kind, status: parsed.data.status },
       evidence: { sourceHash: input.source.sourceHash, observedAt: parsed.data.observedAt } });
+    if (input.fence?.signal.aborted) throw cancelled;
     await tx.update(workItem).set({ state: nextState, updatedAt: new Date() }).where(eq(workItem.id, item.id));
+    if (input.fence?.signal.aborted) throw cancelled;
     return { status: 'ok' as const, draft: next, revision: item.revision, revisionHead: item.revisionHead, seq: item.revisionSeq };
-  });
+  }); } catch (error) {
+    if (error === cancelled) return { status: 'stale_revision' };
+    throw error;
+  }
 }
 
 /** Claim an allocation before native dispatch. The claim and attempt ID survive a process crash. */

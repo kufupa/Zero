@@ -132,6 +132,7 @@ export interface ReservationWorkflowClient {
   addAction(input: ReservationCommandContext & { kind: Exclude<ReservationWorkflowKind, 'other'> }): Promise<ReservationPaneSnapshot>;
   changeRows(input: ReservationCommandContext & RowChange): Promise<ReservationPaneSnapshot>;
   selectNative(input: ReservationCommandContext & { requestId: string; fieldPath: string; observationRef: string }): Promise<ReservationPaneSnapshot>;
+  verifyNativeLead(input: ReservationCommandContext & { requestId: string; fieldPath: string; observationRef: string }): Promise<ReservationPaneSnapshot>;
   reviewScope(input: ReservationCommandContext & { requestId: string; scope: 'request' | 'allocations' | 'targets' | 'services' | 'documents'; ids: string[] }): Promise<ReservationPaneSnapshot>;
   get(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;
   reconcileSource(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;

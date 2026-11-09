@@ -46,6 +46,13 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const selectedRef = entity ? selectionOverride && selectionOverride.state !== 'inherit'
     ? valueAt(editor.snapshot, selectionPath)
     : valueAt(editor.snapshot, selectionPath) ?? (party ? record(valueAt(editor.snapshot, path)).suggestedRef : valueAt(editor.snapshot, `${guestPath}/suggestedRef`)) : null;
+  const verifiedLeads = new Map(editor.snapshot.session.draft.observations.flatMap(observation => {
+    const criteria = record(observation.criteria);
+    return criteria.kind === 'verified_native_row' && typeof criteria.leadObservationRef === 'string' &&
+      choices.some(choice => choice.ref === observation.ref) ? [[criteria.leadObservationRef, observation.ref] as const] : [];
+  }));
+  const selectedVerified = entity && editor.snapshot.session.draft.observations.find(observation => observation.ref === selectedRef &&
+    record(observation.criteria).kind === 'verified_native_row' && choices.some(choice => choice.ref === observation.ref));
   const selectedChoice = choices.find(row => entity ? row.ref === selectedRef : row.value === saved);
   const display = dirty || open ? query : guestPath
     ? selectedChoice?.label || [text(valueAt(editor.snapshot, `${guestPath}/firstName`)), saved].filter(Boolean).join(' ')
@@ -53,7 +60,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   return <div className={`${styles.field} ${compact ? styles.compactField : ''}`}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label>{!compact && <FieldSource editor={editor} path={path} label={label} />}</div><div className={`${styles.picker} ${styles.controlSlot}`}>
     <div className={styles.pickerInput}><input id={id} role="combobox" aria-expanded={open} aria-controls={`${id}-options`} aria-autocomplete="list"
       aria-activedescendant={open && activeIndex >= 0 && shown[activeIndex] ? `${id}-option-${activeIndex}` : undefined}
-      value={display} disabled={disabled || reviewing} onFocus={() => setOpen(true)} placeholder={guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
+      value={display} disabled={disabled || reviewing} onFocus={() => setOpen(true)} onClick={() => setOpen(true)} placeholder={guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
         const value = event.target.value; setQuery(value); setDirty(true); setOpen(true); setActiveIndex(-1);
         editor.commands.stageEdit(editPath, editValue(value));
       }}
@@ -71,8 +78,17 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       {allowNone && <button type="button" role="option" aria-selected={!query} onMouseDown={event => event.preventDefault()} onClick={() => { void editor.commands.edit(party ? path : inputPath, null, 'none').then(() => { setQuery(''); setDirty(false); setOpen(false); }).catch(() => {}); }}>None</button>}
       {shown.map((row, index) => <button id={`${id}-option-${index}`} key={`${row.ref}:${row.value}`} type="button" role="option" aria-selected={entity ? selectedRef === row.ref : saved === row.value}
         onMouseDown={event => event.preventDefault()} onClick={() => { void choose(row.ref, row.value); }}><strong>{row.value}</strong>{row.label !== row.value && <span> — {row.label}</span>}{row.detail && <small>{row.detail}</small>}</button>)}
-      {leads.length > 0 && <div role="note"><small><strong>Infor results need checking</strong> · Search again or check the match in Infor. These cannot be selected yet.</small>
-        {leads.map(lead => <small key={`${lead.ref}:${lead.label}`}>{lead.label} · {lead.detail}</small>)}</div>}
+      {selectedVerified && <small role="note">This row was checked; the earlier search may still be incomplete.</small>}
+      {leads.length > 0 && <div role="note"><small><strong>Infor matches</strong> · {editor.commands.verifyNativeLead
+        ? 'Verify a match before selecting. Search results may be incomplete.'
+        : 'Search again or check the match in Infor. These cannot be selected yet.'}</small>
+        {leads.map(lead => {
+          const verified = verifiedLeads.get(lead.ref);
+          return <div key={`${lead.ref}:${lead.label}`}><small>{lead.label} · {verified
+            ? `${selectedRef === verified ? 'Selected' : 'Row checked; choose it above'}. Search may still be incomplete.` : lead.detail}</small>
+            {!verified && lead.canVerify && editor.commands.verifyNativeLead && <button type="button" disabled={disabled || reviewing || editor.view.busy}
+              onMouseDown={event => event.preventDefault()} onClick={() => { void editor.commands.verifyNativeLead?.(selectionPath, lead.ref).catch(() => {}); }}>Verify match</button>}</div>;
+        })}</div>}
       {!choices.length && <small>Find options in Infor to load native choices.</small>}
       <button type="button" onClick={() => { void saveSearch().then(() => editor.commands.lookup()).catch(() => {}); }}>Search Infor</button>
     </div>}

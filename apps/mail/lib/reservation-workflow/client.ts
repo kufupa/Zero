@@ -35,6 +35,7 @@ export type ReservationWorkflowV2TrpcClient = {
     addAction: MutationProcedure<ItemInput & { kind: 'create' | 'quote' | 'amend' | 'cancel' | 'services' | 'filing' }>;
     changeRows: MutationProcedure<ItemInput & RowChange>;
     selectNative: MutationProcedure<ItemInput & { requestId: string; fieldPath: string; observationRef: string }>;
+    verifyNativeLead: MutationProcedure<ItemInput & { requestId: string; fieldPath: string; observationRef: string }>;
     reviewScope: MutationProcedure<ItemInput & { requestId: string; scope: 'request' | 'allocations' | 'targets' | 'services' | 'documents'; ids: string[] }>;
     get: QueryProcedure<ItemInput>;
     reconcileSource: MutationProcedure<ItemInput & { confirmed: true }>;
@@ -600,6 +601,21 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     addAction(command) { return refreshAfter(api.addAction, { ...itemInput(command), kind: command.kind }, command.source); },
     changeRows(command) { const { source, snapshot, ...change } = command; return refreshAfter(api.changeRows, { ...itemInput({source, snapshot}), ...change }, source); },
     selectNative(command) { return refreshAfter(api.selectNative, { ...itemInput(command), requestId: command.requestId, fieldPath: command.fieldPath, observationRef: command.observationRef }, command.source); },
+    async verifyNativeLead(command) {
+      const input = { ...itemInput(command), requestId: command.requestId, fieldPath: command.fieldPath, observationRef: command.observationRef };
+      const raw = await api.verifyNativeLead.mutate(input, mailboxOptions(command.source));
+      await refreshAfterStale(input, command.source, raw);
+      if (!isRecord(raw) || !isString(raw.status)) throw errorFor({ status: 'invalid_state' });
+      if (raw.status === 'needs_input' || raw.status === 'unavailable') {
+        const verification = isRecord(raw.verification) ? raw.verification : {};
+        const notice = verification.outcome === 'not_found'
+          ? 'Infor did not find this ID within the searched field. Try another search.'
+          : 'Infor could not verify this lead. Try another search or check Infor.';
+        return { ...await load(input, command.source), workflowReply: raw, serviceNotice: notice };
+      }
+      okResult(raw);
+      return load(input, command.source);
+    },
     reviewScope(command) { return refreshAfter(api.reviewScope, { ...itemInput(command), requestId: command.requestId, scope: command.scope, ids: command.ids }, command.source); },
     get(command) { return load(itemInput(command), command.source); },
     reconcileSource(command) { return refreshAfter(api.reconcileSource, { ...itemInput(command), confirmed: true }, command.source); },
