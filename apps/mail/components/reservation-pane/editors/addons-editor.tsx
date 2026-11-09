@@ -173,7 +173,8 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
     const candidate = record(record(observation.result).candidate);
     return Object.keys(candidate).length ? [{ observation, candidate }] : [];
   });
-  const latest = [...draft.observations].reverse().find(observation => observation.kind === 'service_preview'
+  const selectedCandidate = catalogue.find(row => row.observation.ref === selectedItem)?.candidate;
+  const latest = selectedCandidate ? [...draft.observations].reverse().find(observation => observation.kind === 'service_preview'
     && observation.status === 'complete' && observation.coverage.complete && observation.criteria.workflow === 'services'
     && observation.generationId === draft.generationId && observation.propertyCode === draft.propertyCode
     && observation.sourceMessageId === draft.source.messageId
@@ -184,9 +185,8 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
         : observation.criteria.kind === 'saved_addon_fresh_prepare' && draft.observations.some(parent =>
           parent.ref === observation.criteria.unsavedPreviewRef && parent.criteria.itemCandidateRef === selectedItem))
       : savedTarget && matchesSavedTarget(observation.criteria.targetRef, savedTarget)
-      && observation.criteria.targetObservationRef === selectedStay && observation.criteria.candidateRef === selectedItem));
+      && observation.criteria.targetObservationRef === selectedStay && observation.criteria.candidateRef === selectedItem)) : undefined;
   const preview = record(latest?.result), native = record(preview.native), before = record(preview.before), after = record(preview.after);
-  const selectedCandidate = catalogue.find(row => row.observation.ref === selectedItem)?.candidate;
   const controlsFromPreview = latest && (preview.operation == null || preview.operation === operation);
   const controls = controlsFromPreview
     ? Object.hasOwn(preview, 'nativeControls') ? [record(preview.nativeControls)] : [record(native.controls), record(record(after.fields).controls)]
