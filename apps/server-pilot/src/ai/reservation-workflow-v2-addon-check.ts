@@ -9,6 +9,7 @@ import { reservationWorkflowV2ServicesForAllocation, reservationWorkflowV2Compil
   type ReservationWorkflowV2ServicesInput, type ReservationWorkflowV2SavedServicesInput } from './reservation-workflow-v2-services.js';
 import { runCloudStayFind, projectCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
+import { paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 
 export type AddOnObservationInput = { draft: ReservationWorkflowV2Draft; input: ReservationWorkflowV2ServicesInput | ReservationWorkflowV2SavedServicesInput; transportId: string; signal: AbortSignal };
@@ -213,6 +214,7 @@ async function previewUnsaved(draft: ReservationWorkflowV2Draft, input: Reservat
 
 async function lookupSaved(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2SavedServicesInput, transportId: string, signal: AbortSignal): Promise<AddOnObservationResult> {
   const observations: ReservationWorkflowV2Observation[] = [];
+  if (!paneStayLookupEnabled()) return { status: 'refused_flag_off', issue: 'pane_stay_lookup_flag_off', observations };
   const found = savedTarget(draft, input);
   if (!found) return { status: 'needs_input', issue: 'one_saved_stay_confirmation_required', observations };
   const amendSelection = found.request.kind === 'amend' ? selectedSavedStay(draft, input, found) : null;
@@ -220,6 +222,9 @@ async function lookupSaved(draft: ReservationWorkflowV2Draft, input: Reservation
   const confirmation = amendSelection?.stay.confirmation ?? found.hint.confirmation;
   const arrival = amendSelection?.stay.arrival ?? found.hint.bookedArrival;
   if (!/^\d+-\d+$/.test(String(confirmation ?? ''))) return { status: 'needs_input', issue: 'one_saved_stay_confirmation_required', observations };
+  if (typeof arrival === 'string' && arrival && (!/^\d{4}-\d{2}-\d{2}$/.test(arrival) ||
+      !Number.isFinite(Date.parse(`${arrival}T00:00:00Z`)) || new Date(`${arrival}T00:00:00Z`).toISOString().slice(0, 10) !== arrival))
+    return { status: 'refused_input_invalid', issue: 'service_target_arrival_invalid', observations };
   const resolved = paneStayHmsTargetForTransport(transportId);
   if (!resolved.ok || (['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const)
     .some(key => resolved.target[key] !== CENTURION_HMS_READ_TARGET[key])) return { status: 'unsupported', issue: 'service_property_session_unavailable', observations };
@@ -234,7 +239,9 @@ async function lookupSaved(draft: ReservationWorkflowV2Draft, input: Reservation
   const sameSelected = Boolean(stay && selectedStay && stay.confirmation === selectedStay.confirmation && stay.status === 'Reserved' &&
     stay.arrival === selectedStay.arrival && stay.departure === selectedStay.departure &&
     samePerson(stay.firstName, selectedStay.firstName) && samePerson(stay.lastName, selectedStay.lastName));
-  const complete = Boolean(result?.outcome === 'found' && !result.arrivalMismatch && stay &&
+  const identityUnverified = result?.outcome === 'found' &&
+    (!result.nativePreimage || result.nativePreimage.confirmation !== request.confirmation);
+  const complete = Boolean(result?.outcome === 'found' && !identityUnverified && !result.arrivalMismatch && stay &&
     (amendSelection ? sameSelected : savedStayMatches(stay, found.hint)));
   let observation: ReservationWorkflowV2Observation | undefined;
   if (!amendSelection) {
@@ -246,8 +253,9 @@ async function lookupSaved(draft: ReservationWorkflowV2Draft, input: Reservation
       result: { outcome: complete ? 'found' : 'needs_input', candidate: complete ? stay : null } };
     observations.push(observation);
   }
-  if (!complete || !stay) return { status: !result || result.outcome === 'execution_failure' ? 'failed' : 'needs_input',
-    issue: text(result?.reason)?.slice(0, 500) ?? (!result ? 'saved_stay_lookup_failed' : 'reserved_stay_not_verified'), observations };
+  if (!complete || !stay) return { status: !result || identityUnverified || result.outcome === 'execution_failure' ? 'failed' : 'needs_input',
+    issue: identityUnverified ? 'SAVED_STAY_IDENTITY_UNVERIFIED' :
+      text(result?.reason)?.slice(0, 500) ?? (!result ? 'saved_stay_lookup_failed' : 'reserved_stay_not_verified'), observations };
   const selected = amendSelection ?? selectedSavedStay(draft, input, found);
   if (!selected || (amendSelection ? !sameSelected : canonicalJson(selected.stay) !== canonicalJson(stay)))
     return { status: 'needs_input', issue: 'select_exact_saved_stay', observations };
