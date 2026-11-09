@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { profileCms, profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { and, desc, eq, ilike, isNull, lte, ne, or } from 'drizzle-orm';
+import { and, desc, eq, ilike, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { mailThread, message } from '../db/schema/mail.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
@@ -676,7 +676,8 @@ export function createReservationWorkflowV2CandidateReader(input: {
         .from(message).innerJoin(mailThread, and(eq(mailThread.id, message.threadId), eq(mailThread.transportId, message.transportId)))
         .where(and(eq(message.transportId, input.transportId), ne(message.threadId, input.source.threadId),
           eq(message.historyOnly, false), eq(mailThread.historyOnly, false), isNull(mailThread.trashedAt), isNull(mailThread.spamAt),
-          lte(MESSAGE_ARRIVED_AT, query.cutoff), or(ilike(message.subject, query.pattern), ilike(message.textBody, query.pattern))))
+          lte(MESSAGE_ARRIVED_AT, sql`${query.cutoff.toISOString()}::timestamptz at time zone 'UTC'`),
+          or(ilike(message.subject, query.pattern), ilike(message.textBody, query.pattern))))
         .orderBy(desc(MESSAGE_ARRIVED_AT), desc(message.id)).limit(query.limit);
       return selectReservationWorkflowV2MailCandidates(query, rows);
     }
