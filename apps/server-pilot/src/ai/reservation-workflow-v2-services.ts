@@ -64,7 +64,7 @@ function stateContext(ctx: ReservationWorkflowV2ServerContext) {
     propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch };
 }
 
-function pointer(...parts: Array<string | number>): string {
+export function pointer(...parts: Array<string | number>): string {
   return `/${parts.map(part => encodeURIComponent(String(part))).join('/')}`;
 }
 
@@ -112,7 +112,7 @@ function validDate(value: unknown): value is string {
   return Number.isFinite(date.valueOf()) && date.toISOString().slice(0, 10) === value;
 }
 
-function positiveDecimal(value: unknown): string | null {
+export function positiveDecimal(value: unknown): string | null {
   if (typeof value !== 'string' || !/^\d+(?:\.\d+)?$/.test(value.trim())) return null;
   const [rawWhole, rawFraction = ''] = value.trim().split('.');
   const whole = rawWhole!.replace(/^0+(?=\d)/, '');
@@ -496,7 +496,7 @@ export type ReservationWorkflowV2SavedServicesInput = Omit<ReservationWorkflowV2
   targetRef: { kind: 'saved_target'; requestId: string; hintId: string };
 };
 
-function savedValue(draft: ReservationWorkflowV2Draft, path: string): unknown {
+export function savedValue(draft: ReservationWorkflowV2Draft, path: string): unknown {
   let value: unknown = draft;
   let prefix = '';
   for (const part of path.split('/').slice(1).map(decodeURIComponent)) {
@@ -509,7 +509,7 @@ function savedValue(draft: ReservationWorkflowV2Draft, path: string): unknown {
   return value;
 }
 
-function savedTarget(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2SavedServicesInput) {
+export function savedTarget(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2SavedServicesInput) {
   if (input.targetRef.requestId !== input.requestId) return null;
   const request = draft.proposal.content.requests.find(row => row.id === input.requestId);
   if (!request || !('targets' in request.body)) return null;
@@ -537,7 +537,7 @@ function savedTarget(draft: ReservationWorkflowV2Draft, input: ReservationWorkfl
   return { request, hint, selectionPath, matches };
 }
 
-function samePerson(left: unknown, right: unknown) {
+export function samePerson(left: unknown, right: unknown) {
   const normalize = (value: unknown) => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase() : '';
   return normalize(left) !== '' && normalize(left) === normalize(right);
 }
@@ -551,7 +551,7 @@ export function nativeServiceGuestNameMatches(nativeName: unknown, expectedName:
     samePerson(`${parts[1]?.trim()} ${parts[0]?.trim()}`, expectedName);
 }
 
-function savedStayMatches(stay: Record<string, unknown>, hint: Record<string, unknown>, requireConfirmation = true) {
+export function savedStayMatches(stay: Record<string, unknown>, hint: Record<string, unknown>, requireConfirmation = true) {
   const name = text(hint.guestName);
   // Amend accepts a surname by itself, or the full first and last name.
   const amendName = !name || (typeof stay.firstName === 'string' && typeof stay.lastName === 'string' &&
@@ -565,7 +565,7 @@ function savedStayMatches(stay: Record<string, unknown>, hint: Record<string, un
     && (!hint.bookedArrival || hint.bookedArrival === stay.arrival) && (!hint.bookedDeparture || hint.bookedDeparture === stay.departure);
 }
 
-function selectedSavedStay(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2SavedServicesInput,
+export function selectedSavedStay(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2SavedServicesInput,
   found: NonNullable<ReturnType<typeof savedTarget>>) {
   const selected = savedValue(draft, found.selectionPath);
   const observation = draft.observations.find(row => row.ref === selected && row.kind === 'stay_candidate' && row.status === 'complete'
