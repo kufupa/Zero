@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
 import { ReservationWorkflowStaleRevisionError, type ReservationFieldOverride, type ReservationPaneSnapshot, type ReservationSourceContext, type ReservationWorkflowClient, type ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
-import { effectiveAt, valueAt, record, requestPath, snapshotMatchesSource, staffEnteredAt, text, type WorkbenchCommands } from '@/lib/reservation-workflow/views';
+import { effectiveAt, nativeChoices, valueAt, record, requestPath, snapshotMatchesSource, staffEnteredAt, text, type WorkbenchCommands } from '@/lib/reservation-workflow/views';
 
 type Pending = { path: string; value: unknown; state: ReservationFieldOverride['state']; token: number;
   generation: string | null; rows: { path: string; identity: string }[] };
@@ -67,6 +67,75 @@ function clearGuestAttempt(source: ReservationSourceContext, requestId: string, 
 }
 
 function notify(buffer: Buffer) { buffer.listeners.forEach(listener => listener()); }
+
+// Background preparation requires an explicit, still-selectable Infor identity.
+function selectedIdentity(snapshot: ReservationPaneSnapshot, path: string, kind: 'guest_candidate' | 'party_candidate'): boolean {
+  const draft = snapshot.session.draft;
+  const override = draft.fieldOverrides[path];
+  const ref = override?.state === 'set' ? override.value : null;
+  return typeof ref === 'string' && ref.trim().length > 0 &&
+    nativeChoices(snapshot, path, kind).some(choice => choice.ref === ref);
+}
+
+function autoCreateReady(snapshot: ReservationPaneSnapshot, requestId: string, allocationId: string): boolean {
+  const root = `${requestPath(requestId)}/body`, body = record(effectiveAt(snapshot, root));
+  const allocations = Array.isArray(body.allocations) ? body.allocations.map(record) : [];
+  const sections = Array.isArray(body.dateSections) ? body.dateSections.map(record) : [];
+  const index = allocations.findIndex(room => room.id === allocationId);
+  const room = allocations[index];
+  const sectionIndex = sections.findIndex(section => section.id === room?.dateSectionId);
+  const section = sections[sectionIndex];
+  if (!room || !section) return false;
+  const guest = record(room.guest), occupancy = record(room.occupancy);
+  const guestPath = `${root}/allocations/${index}/guest/nativeSelectionRef`;
+  if (guest.profileIntent !== 'existing_or_unknown' || !text(guest.firstName) || !text(guest.lastName) ||
+      !selectedIdentity(snapshot, guestPath, 'guest_candidate')) return false;
+
+  const bases = [`${root}/allocations/${index}/overrides`, `${root}/dateSections/${sectionIndex}/defaults`, `${root}/shared`];
+  for (const base of bases) {
+    const override = snapshot.session.draft.fieldOverrides[base];
+    if (override?.state === 'unknown') return false;
+    // The backend represents explicit none/clear as a non-null sentinel scope.
+    if (override?.state === 'none' || override?.state === 'clear') continue;
+    if (!(override?.state === 'set' ? override.value : valueAt(snapshot, base))) return false;
+  }
+  const scopedValue = (field: string, isParty = false): { path: string; value: unknown; name?: unknown; unknown?: boolean } => {
+    for (const [baseIndex, base] of bases.entries()) {
+      const path = `${base}/${field}`, override = snapshot.session.draft.fieldOverrides[path];
+      if (baseIndex < 2 && override?.state === 'inherit') continue;
+      if (override?.state === 'unknown') return { path, value: null, unknown: true };
+      if (override?.state === 'none' || override?.state === 'clear') return { path, value: null };
+      // The backend reapplies this leaf even when a scope ancestor was cleared.
+      let value = override?.state === 'set' ? override.value : valueAt(snapshot, path);
+      let fromChildName = false;
+      if (isParty && value == null && !override) {
+        const childPath = `${path}/name`, childOverride = snapshot.session.draft.fieldOverrides[childPath];
+        const childName = childOverride?.state === 'set' ? childOverride.value : valueAt(snapshot, childPath);
+        if (typeof childName === 'string' && childName.trim()) { value = { name: childName }; fromChildName = true; }
+      }
+      if (value == null) continue;
+      const party = record(value);
+      // The native compiler reapplies a parent set as-is; child edits only project
+      // into existing source properties when the parent itself is not set.
+      const name = override?.state === 'set' || fromChildName ? party.name
+        : Object.hasOwn(party, 'name') ? valueAt(snapshot, `${path}/name`) : undefined;
+      return { path, value, name };
+    }
+    return { path: `${bases[0]}/${field}`, value: undefined };
+  };
+  for (const field of ['bookingAgency', 'organization', 'arAccount']) {
+    const party = scopedValue(field, true);
+    if (party.unknown) return false;
+    if (record(party.value).kind !== 'none' && typeof party.name === 'string' && party.name.trim() &&
+        !selectedIdentity(snapshot, `${party.path}/nativeSelectionRef`, 'party_candidate')) return false;
+  }
+  const settings = ['roomType', 'ratePlan', 'guaranteeType', 'sourceOfBusiness'].map(field => scopedValue(field));
+  const ages = occupancy.childAges;
+  return Boolean(text(section.arrival) && text(section.departure) && Number(occupancy.adults) > 0 &&
+    Number.isInteger(occupancy.childCount) && Array.isArray(ages) && ages.length === occupancy.childCount &&
+    ages.every(age => typeof age === 'number') && settings.every(setting => !setting.unknown &&
+      typeof setting.value === 'string' && setting.value.trim()));
+}
 
 // A source rebind may succeed even if its follow-up read fails. Only carry
 // pending edits forward after an explicit review and matching row identities.
@@ -296,7 +365,33 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     },
     edit(path, value, state = 'set') { stageEdit(path, value, state); return run(async () => {}); },
     changeRows(change) { return run(context => client.changeRows({ ...context, ...change })); },
-    selectNative(fieldPath, observationRef) { return run(context => client.selectNative({ ...context, requestId: requireRequest(), fieldPath, observationRef })); },
+    selectNative(fieldPath, observationRef) {
+      const requestId = requireRequest();
+      const createIdentity = request?.kind === 'create' &&
+        /\/body\/(?:allocations\/\d+\/guest|(?:shared|dateSections\/\d+\/defaults|allocations\/\d+\/overrides)\/(?:bookingAgency|organization|arAccount))\/nativeSelectionRef$/.test(fieldPath);
+      return run(async context => {
+        const rows = captureRows(context.snapshot, fieldPath);
+        const stillCurrent = (next: ReservationPaneSnapshot) => mounted.current && active.current.key === sourceKey(context.source) &&
+          active.current.epoch === context.source.selectionEpoch && (!entry.snapshot ||
+            (next.session.seq >= entry.snapshot.session.seq && !(entry.snapshot.session.sourceChanged && !next.session.sourceChanged)));
+        try {
+          const selected = await client.selectNative({ ...context, requestId, fieldPath, observationRef });
+          if (!stillCurrent(selected)) return;
+          const override = selected.session.draft.fieldOverrides[fieldPath];
+          if (!createIdentity || selected.session.sourceChanged || selected.loadError || selected.serviceNotice ||
+              !snapshotMatchesSource(selected, context.source) || selected.session.draft.generationId !== context.snapshot.session.draft.generationId ||
+              override?.state !== 'set' || override.value !== observationRef || valueAt(selected, fieldPath) !== observationRef ||
+              !rows.every(row => rowIdentity(effectiveAt(selected, row.path)) === row.identity)) return selected;
+          apply(selected, context.source, entry);
+          if (entry.pending.size || liveInputs.current.uncommitted.size) return selected;
+          const reviewed = await client.review({ source: context.source, snapshot: selected, fieldPath, decision: 'accepted', note: 'Selected by staff' });
+          if (stillCurrent(reviewed)) return reviewed;
+        } catch (failure) {
+          if (failure instanceof ReservationWorkflowStaleRevisionError && !stillCurrent(failure.snapshot)) return;
+          throw failure;
+        }
+      });
+    },
     ...(verifyNativeLead ? { verifyNativeLead(fieldPath: string, observationRef: string) {
       return run(context => verifyNativeLead.call(client, { ...context, requestId: requireRequest(), fieldPath, observationRef }));
     } } : {}),
@@ -448,7 +543,13 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     if (!current || current.session.sourceChanged || arrivalChecksPending || !request || busy || entry.pending.size || uncommitted.size || entry.conflict || preview) return;
     const body = record(effectiveAt(current, `${requestPath(request.id)}/body`));
     if (request.kind !== 'create' && request.kind !== 'quote') return;
-    const digest = JSON.stringify({ generation: current.session.draft.generationId, body });
+    const allocations = request.kind === 'create' && Array.isArray(body.allocations) ? body.allocations.map(record) : [];
+    const readyIds = allocations.map(room => text(room.id)).filter(id => id && autoCreateReady(current, request.id, id));
+    const root = `${requestPath(request.id)}/body`;
+    const scopeOverrides = request.kind === 'create' ? Object.entries(current.session.draft.fieldOverrides)
+      .filter(([path]) => path === root || path.startsWith(`${root}/`))
+      .map(([path, override]) => [path, override.state, override.value]).sort(([left], [right]) => String(left).localeCompare(String(right))) : undefined;
+    const digest = JSON.stringify({ generation: current.session.draft.generationId, body, readyIds, scopeOverrides });
     const actionKey = `${key}:${request.id}`;
     if (autoDigest.current.get(actionKey) === digest) return;
     const timer = setTimeout(() => {
@@ -457,23 +558,24 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         const groups = Array.isArray(body.groups) ? body.groups.map(record) : [];
         if (groups.length && groups.every(group => text(group.arrival) && text(group.departure) && typeof group.quantity === 'number' && record(group.occupancy).scope === 'per_room')) void commands.lookup().catch(() => {});
       } else {
-        const allocations = Array.isArray(body.allocations) ? body.allocations.map(record) : [];
-        const sections = Array.isArray(body.dateSections) ? body.dateSections.map(record) : [];
-        const ready = allocations.filter(room => {
-          const section = sections.find(row => row.id === room.dateSectionId);
-          const occupancy = record(room.occupancy), guest = record(room.guest);
-          const settings = Object.assign({}, ...[body.shared, section?.defaults, room.overrides].map(values => Object.fromEntries(Object.entries(record(values)).filter(([, value]) => value != null))));
-          const ages = occupancy.childAges;
-          return section && text(section.arrival) && text(section.departure) && Number(occupancy.adults) > 0 && Number.isInteger(occupancy.childCount)
-            && Array.isArray(ages) && ages.length === occupancy.childCount && ages.every(age => typeof age === 'number')
-            && text(guest.firstName) && text(guest.lastName) && text(guest.nativeSelectionRef ?? guest.suggestedRef)
-            && text(settings.roomType) && text(settings.ratePlan) && text(settings.guaranteeType) && text(settings.sourceOfBusiness);
-        });
-        for (const room of ready) {
-          const finished = current.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === room.id
+        for (const id of readyIds) {
+          const finished = current.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === id
             && (row.status === 'succeeded' || row.status === 'unknown'));
-          if (!finished && !current.preparationViews.some(view => view.requestId === request.id && view.allocationId === room.id && view.current))
-            void commands.prepare(String(room.id)).catch(() => {});
+          if (!finished && !current.preparationViews.some(view => view.requestId === request.id && view.allocationId === id && view.current))
+            void run(context => {
+              const prefill = context.snapshot.session.draft.prefill;
+              if (liveInputs.current.uncommitted.size) {
+                if (autoDigest.current.get(actionKey) === digest) autoDigest.current.delete(actionKey);
+                return Promise.resolve();
+              }
+              if (context.snapshot.session.sourceChanged || ['queued', 'running'].includes(prefill?.status ?? '') ||
+                  (prefill?.status === 'failed' && prefill.phase === 'native_checks') ||
+                  !autoCreateReady(context.snapshot, request.id, id) ||
+                  context.snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === id &&
+                    (row.status === 'succeeded' || row.status === 'unknown')) ||
+                  context.snapshot.preparationViews.some(view => view.requestId === request.id && view.allocationId === id && view.current)) return Promise.resolve();
+              return client.prepare({ ...context, requestId: request.id, allocationId: id });
+            }).catch(() => {});
         }
       }
     }, 700);
