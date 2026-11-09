@@ -9,10 +9,10 @@ import styles from './other-editors.module.css';
 
 type Editor = WorkbenchEditorProps;
 const fields = [
-  ['arrival', 'Arrival', 'date'], ['departure', 'Departure', 'date'], ['roomType', 'Room category', 'code'],
-  ['ratePlan', 'Rate plan', 'code'], ['adults', 'Adults', 'count'], ['childCount', 'Children', 'count'],
-  ['childAges', 'Child ages', 'ages'], ['firstName', 'Guest first name', 'text'], ['lastName', 'Guest last name', 'text'],
-  ['guestEmail', 'Guest email', 'email'], ['bookerName', 'Booker name', 'text'], ['bookerContact', 'Booker contact', 'text'],
+  ['arrival', 'Arrival Date', 'date'], ['departure', 'Departure Date', 'date'], ['roomType', 'Room Type', 'code'],
+  ['ratePlan', 'Rate Plan', 'code'], ['adults', 'Adults', 'count'], ['childCount', 'Children', 'count'],
+  ['childAges', 'Child ages', 'ages'], ['firstName', 'First Name', 'text'], ['lastName', 'Last Name', 'text'],
+  ['guestEmail', 'E-mail Address', 'email'], ['bookerName', 'Booker name', 'text'], ['bookerContact', 'Booker contact', 'text'],
   ['cmsSend', 'CMS Send Mail', 'boolean'], ['cmsMessageId', 'CMS Message Id', 'text'],
   ['cmsRecipient', 'CMS Booker Email', 'email'],
 ] as const;
@@ -51,10 +51,10 @@ export function TargetSearch({ editor, body, hint, index, workflow }: {
   });
   return <div className={styles.stack}>
     <div className={styles.grid}>
-      <Field label="Confirmation or supplier reference" path={`${root}/confirmation`} editor={editor} />
-      <Field label="Guest name" path={`${root}/guestName`} editor={editor} />
-      <Field label="Original arrival" path={`${root}/bookedArrival`} type="date" editor={editor} />
-      <Field label="Original departure" path={`${root}/bookedDeparture`} type="date" editor={editor} />
+      <Field label="Confirmation or supplier reference" path={`${root}/confirmation`} editor={editor} review />
+      <Field label="Guest name" path={`${root}/guestName`} editor={editor} review />
+      <Field label="Original arrival" path={`${root}/bookedArrival`} type="date" editor={editor} review />
+      <Field label="Original departure" path={`${root}/bookedDeparture`} type="date" editor={editor} review />
     </div>
     <span className={styles.hint}>{workflow === 'cancel' || workflow === 'services' ? 'Enter the exact Infor confirmation to find this stay.' : 'Search by confirmation, or guest and original arrival.'}</span>
     {candidates.map(({ observation, stay }) => <div className={styles.card} key={observation.ref}>
@@ -72,8 +72,7 @@ export function TargetSearch({ editor, body, hint, index, workflow }: {
 
 function ChangeList({ editor, path, label }: { editor: Editor; path: string; label: string }) {
   const changes = rows(effectiveAt(editor.snapshot, path));
-  const [choice, setChoice] = useState('');
-  const add = () => {
+  const add = (choice: string) => {
     if (!choice) return;
     const spec = fields.find(field => field[0] === choice);
     const value = spec?.[2] === 'count' ? 0 : spec?.[2] === 'ages' ? [] : spec?.[2] === 'boolean' ? false : '';
@@ -81,21 +80,19 @@ function ChangeList({ editor, path, label }: { editor: Editor; path: string; lab
       ? { op: choice, days: 0, sourceRefs: [] } : { op: 'set', field: choice, value, sourceRefs: [] };
     const raw = valueAt(editor.snapshot, path);
     void editor.commands.edit(path, [...(Array.isArray(raw) ? raw : []), change]);
-    setChoice('');
   };
   return <div className={styles.stack}>
-    <strong>{label}</strong>
+    {label && <strong>{label}</strong>}
     {!changes.length && <span className={styles.hint}>No changes: keep current values.</span>}
     {changes.map((change, index) => <ChangeRow key={`${path}/${index}`} editor={editor} path={`${path}/${index}`} change={change} />)}
     <div className={styles.row}>
-      <label className={styles.label}>Add requested change
-        <select value={choice} disabled={editor.view.busy} onChange={event => setChoice(event.target.value)}>
-          <option value="">Choose a field</option>
+      <label className={styles.changeAdd}><span className={styles.visuallyHidden}>Add requested change</span>
+        <select value="" disabled={editor.view.busy} onChange={event => add(event.target.value)}>
+          <option value="">+ Change</option>
           {fields.map(([name, title]) => <option value={name} key={name}>{title}</option>)}
           <option value="shift_dates">Shift both dates</option><option value="shift_departure">Shift departure</option>
         </select>
       </label>
-      <button type="button" disabled={!choice || editor.view.busy} onClick={add}>Add change</button>
     </div>
   </div>;
 }
@@ -135,26 +132,27 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
   const originalOp = text(original.op);
   const op = text(change.op) || originalOp, field = text(change.field), spec = fields.find(item => item[0] === field);
   const known = Boolean(spec || op === 'shift_dates' || op === 'shift_departure');
-  const setOp = (next: string) => void editor.commands.edit(`${path}/op`, next);
+  const setOp = (next: string) => void editor.commands.edit(`${path}/op`, next === 'keep' ? null : next, next === 'keep' ? 'none' : 'set');
   const valuePath = `${path}/value`;
+  const title = op === 'shift_dates' ? 'Shift both dates' : op === 'shift_departure' ? 'Shift departure' : spec?.[1] || field || 'Source request';
   return <div className={styles.card}>
-    <div className={styles.row}><strong>{op === 'shift_dates' ? 'Shift both dates' : op === 'shift_departure' ? 'Shift departure' : spec?.[1] || field || 'Source request'}</strong>
+    <div className={styles.changeHeading}><strong>{title}</strong>
       {!known && <span>Needs Infor</span>}
-      <button type="button" disabled={editor.view.busy} onClick={() => void editor.commands.edit(`${path}/op`, kept ? originalOp : null, kept ? 'set' : 'none')}>{kept ? 'Restore change' : 'Keep current'}</button></div>
-    {kept ? <span className={styles.hint}>Keep current for this change. Original request remains available to restore.</span> : !known ? <div className={styles.warning}>This requested change is not connected to Amend. Complete it in Infor; it blocks this amendment until resolved.</div> :
-      op === 'shift_dates' || op === 'shift_departure' ? <Field label="Days to shift" path={`${path}/days`} type="number" editor={editor} hint="Each stay uses its own original dates." /> : <>
-        <label className={styles.label}>Change
-          <select value={op} disabled={editor.view.busy} onChange={event => setOp(event.target.value)}>
-            <option value="set">Set</option>{clearable.has(field) && <option value="clear">Clear</option>}
-          </select>
-        </label>
+      <select aria-label={`Change ${title}`} value={kept ? 'keep' : op} disabled={editor.view.busy} onChange={event => setOp(event.target.value)}>
+        <option value="keep">Keep current</option>
+        {op === 'shift_dates' || op === 'shift_departure' ? <option value={op}>Apply shift</option> : known ? <>
+          <option value="set">Set</option>{clearable.has(field) && <option value="clear">Clear</option>}
+        </> : <option value={op}>Requested</option>}
+      </select></div>
+    {kept ? <span className={styles.hint}>Original request can be restored here.</span> : !known ? <div className={styles.warning}>This requested change is not connected to Amend. Complete it in Infor; it blocks this amendment until resolved.</div> :
+      op === 'shift_dates' || op === 'shift_departure' ? <Field label="Days to shift" path={`${path}/days`} type="number" editor={editor} compact hint="Each stay uses its own original dates." /> : <>
         {op === 'clear' ? <span className={styles.hint}>Clear this field on the selected stay.</span> : spec?.[2] === 'ages' ? <AgeInput editor={editor} path={valuePath} /> :
           spec?.[2] === 'count' ? <Count label={spec[1]} path={valuePath} editor={editor} min={field === 'adults' ? 1 : 0} max={field === 'adults' ? 16 : 9} /> :
           spec?.[2] === 'boolean' ? <label className={styles.label}>{spec[1]}<select disabled={editor.view.busy}
             value={String(valueAt(editor.snapshot, valuePath))} onChange={event => void editor.commands.edit(valuePath, event.target.value === 'true')}>
             <option value="true">Yes</option><option value="false">No</option></select></label> :
-          spec?.[2] === 'code' ? <NativePicker label={spec[1]} path={valuePath} editor={editor} /> :
-          <Field label={spec?.[1] || 'Value'} path={valuePath} editor={editor} type={spec?.[2] === 'date' ? 'date' : spec?.[2] === 'email' ? 'email' : 'text'} />}
+          spec?.[2] === 'code' ? <NativePicker label={spec[1]} path={valuePath} editor={editor} compact /> :
+          <Field label={spec?.[1] || 'Value'} path={valuePath} editor={editor} compact type={spec?.[2] === 'date' ? 'date' : spec?.[2] === 'email' ? 'email' : 'text'} />}
       </>}
   </div>;
 }
@@ -181,7 +179,7 @@ export function AmendEditor(editor: Editor) {
       <div className={styles.row}><button type="button" disabled={editor.view.busy} onClick={() => void editor.commands.changeRows({ kind: 'add_target', requestId: editor.request.id })}>Add stay</button>
         <button type="button" disabled={editor.view.busy || !targets.length} onClick={() => void editor.commands.lookup()}>Find in Infor</button></div>
     </Section>
-    <Section title="Changes for all included stays"><ChangeList editor={editor} path={sharedPath} label="Shared changes" /></Section>
+    <Section title="Changes for all included stays"><ChangeList editor={editor} path={sharedPath} label="" /></Section>
     {targets.map((hint, i) => {
       const hintId = text(hint.id), perIndex = per.findIndex(row => row.hintId === hintId);
       const root = `${perPath}/${perIndex}`; const changes = perIndex < 0 ? [] : rows(effectiveAt(editor.snapshot, `${root}/changes`));
@@ -197,7 +195,7 @@ export function AmendEditor(editor: Editor) {
             kind: 'add_target', requestId: editor.request.id, entityId: hintId,
           })}>Add changes for this stay</button></div> : <div className={styles.stack}>
           <ChangeList editor={editor} path={`${root}/changes`} label="Only this stay" />
-          <Field label="Rate handling" path={`${root}/rateHandling`} editor={editor} options={[{ value: 'retain', label: 'Keep current rate' }, { value: 'reprice', label: 'Reprice in Infor' }]} />
+          <Field label="Rate handling" path={`${root}/rateHandling`} editor={editor} compact options={[{ value: 'retain', label: 'Keep current rate' }, { value: 'reprice', label: 'Reprice in Infor' }]} />
           {pricing && valueAt(editor.snapshot, `${root}/rateHandling`) !== 'reprice' && <div className={styles.warning}>Date, occupancy, room or rate changes require repricing.</div>}
           {latest && <div className={styles.card}><strong>Last Infor check</strong>
             <span>{text(before.arrival)} → {text(before.departure)} · {text(before.roomType)} / {text(before.ratePlan)}</span>
