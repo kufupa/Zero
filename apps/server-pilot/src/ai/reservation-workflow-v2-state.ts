@@ -643,7 +643,7 @@ export async function reconcileReservationWorkflowV2Source(ctx: Context, input: 
     // Keep completed proposals, edits, native work and uncertain outcomes bound
     // to their original generation instead of silently replacing them.
     const retryEmpty = Boolean(meta && ['idle', 'queued', 'running', 'failed'].includes(meta.status) &&
-      meta.phase !== 'native_checks' && current.draft.status === 'partial' &&
+      meta.phase !== 'native_checks' && ['partial', 'prefill_failed'].includes(current.draft.status) &&
       !current.draft.proposal.content.requests.length && !current.draft.proposal.content.services.length &&
       !current.draft.proposal.content.documents.length && !current.draft.observations.length &&
       !current.draft.operationResults.length && !Object.keys(current.draft.fieldOverrides).length &&
