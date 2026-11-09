@@ -143,8 +143,7 @@ function accepted(draft: ReservationWorkflowV2Draft, path: string): boolean {
 
 function staffSelectedIdentity(draft: ReservationWorkflowV2Draft, path: string, ref: string): boolean {
   const override = draft.fieldOverrides[path];
-  if (draft.staffReviews[path]?.status === 'flagged') return false;
-  return (override?.state === 'set' && override.value === ref) || draft.staffReviews[path]?.status === 'accepted';
+  return override?.state === 'set' && override.value === ref && draft.staffReviews[path]?.status === 'accepted';
 }
 
 export function reviewed(draft: ReservationWorkflowV2Draft, path: string, value: unknown): string | null {
