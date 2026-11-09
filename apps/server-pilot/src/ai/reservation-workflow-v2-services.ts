@@ -159,6 +159,9 @@ export function reservationWorkflowV2ServicesForAllocation(draft: ReservationWor
     if ((service.ownerRequestId !== null && service.ownerRequestId !== input.requestId) || referencedElsewhere) {
       return { outcome: 'needs_input' as const, issue: 'service_request_ownership_conflict' };
     }
+    if (matches.length && service.targets.length !== 1) {
+      return { outcome: 'needs_input' as const, issue: 'one_service_target_required' };
+    }
     for (const row of matches) {
       const targetKey = `${row.service.id}\u0000${row.targetRef.requestId}\u0000${row.targetRef.allocationId}`;
       if (targetKeys.has(targetKey)) return { outcome: 'needs_input' as const, issue: 'duplicate_service_allocation_target' };
@@ -176,9 +179,10 @@ function candidateFor(draft: ReservationWorkflowV2Draft, input: Input, row: Rese
   if ('issue' in candidateRef || typeof candidateRef.value !== 'string') return { issue: 'native_item_selection_required', path };
   const observation = draft.observations.find(item => item.ref === candidateRef.value && item.kind === 'service_preview' &&
     item.status === 'complete' && item.propertyCode === draft.propertyCode && item.generationId === draft.generationId &&
+    item.coverage.complete === true && item.sourceMessageId === draft.source.messageId &&
     item.criteria.workflow === 'services' && item.criteria.kind === 'catalogue_candidate' &&
     item.criteria.serviceId === service.id && item.criteria.requestId === input.requestId &&
-    item.criteria.fieldPath === path);
+    item.criteria.sourceAllocationId === input.allocationId && item.criteria.fieldPath === path);
   const candidate = observation && record(observation.result)?.candidate;
   if (!record(candidate) || !text(record(candidate)?.code) || !text(record(candidate)?.itemId)) {
     return { issue: 'host_catalogue_candidate_unverified', path };
@@ -190,6 +194,13 @@ export function reservationWorkflowV2CompileServiceItem(draft: ReservationWorkfl
   row: ReservationWorkflowV2ServiceRow): ReservationWorkflowV2CompiledServiceItem {
   const service = row.service as unknown as Record<string, unknown>;
   const target = row.target as unknown as Record<string, unknown>;
+  const onlyTarget = row.service.targets.length === 1 ? targetRefOf(row.service.targets[0]?.target) : null;
+  if (!onlyTarget || onlyTarget.requestId !== input.requestId || onlyTarget.allocationId !== input.allocationId ||
+      row.targetIndex !== 0 || canonicalJson(row.target.target) !== canonicalJson(row.service.targets[0]?.target) ||
+      row.targetRef.requestId !== input.requestId || row.targetRef.allocationId !== input.allocationId) {
+    return { outcome: 'needs_input', issue: 'one_service_target_required',
+      fields: [pointer('proposal', 'content', 'services', row.serviceIndex, 'targets')] };
+  }
   if (service.operation !== 'add') return { outcome: 'unsupported', issue: 'saved_addon_edit_remove_not_connected', fields: [] };
   const candidate = candidateFor(draft, input, row);
   if ('issue' in candidate) return { outcome: 'needs_input' as const, issue: candidate.issue ?? 'service_candidate_unavailable', fields: [candidate.path] };
@@ -738,6 +749,7 @@ export function reservationWorkflowV2CompileSavedService(draft: ReservationWorkf
   const found = savedTarget(draft, input), selected = found && selectedSavedStay(draft, input, found);
   if (!found || !selected || found.matches.length !== 1) return { status: 'needs_input' as const, issue: 'select_exact_saved_stay' };
   const row = found.matches[0]!;
+  if (row.service.targets.length !== 1) return { status: 'needs_input' as const, issue: 'one_service_target_required' };
   const operation = savedValue(draft, pointer('proposal', 'content', 'services', row.serviceIndex, 'operation'));
   if (operation !== 'add' && operation !== 'edit' && operation !== 'remove') return { status: 'needs_input' as const, issue: 'service_operation_required' };
   const selectionPath = operation === 'add' ? pointer('proposal', 'content', 'services', row.serviceIndex, 'itemCandidateRef')
