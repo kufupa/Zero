@@ -114,6 +114,14 @@ export function ReservationPane(props: ReservationPaneProps) {
   const Editor = request && request.kind !== 'other' ? editors[request.kind] : null;
   const sourceChanged = snapshot?.session.sourceChanged === true;
   const disabled = busy || !snapshot || workbench.blocked || workbench.conflict || sourceChanged;
+  const pendingGuests = snapshot?.session.draft.proposal.content.requests.flatMap(row => {
+    if (row.kind !== 'create') return [];
+    const currentBody = record(effectiveAt(snapshot, `${requestPath(row.id)}/body`));
+    return (Array.isArray(currentBody.allocations) ? currentBody.allocations.map(record) : []).flatMap((allocation, index) => {
+      const allocationId = text(allocation.id), pending = allocationId && commands.guestProfilePending(allocationId, row.id);
+      return pending ? [{ requestId: row.id, allocationId, room: index + 1, pending }] : [];
+    });
+  }) ?? [];
   const actionLocked = snapshot?.operationResults.some(row => row.requestId === request?.id && ['succeeded', 'unknown'].includes(text(row.status))) ||
     (request?.kind === 'create' && ids.some(id => Boolean(commands.guestProfilePending(id))));
   const scopedIssues = snapshot?.issues.filter(issue => issue.kind !== 'source_changed' && (!issue.path || !request || issue.path.startsWith(requestPath(request.id)))) ?? [];
@@ -125,7 +133,7 @@ export function ReservationPane(props: ReservationPaneProps) {
   const currentIssues = scopedIssues.filter(issue => !isEarlierIssue(issue));
   return <div className={styles.pane} data-reservation-pane>
     <header className={styles.header}><div><strong>Nava</strong><span>{preview ? 'Interactive preview · Save disabled' : workbench.saving ? 'Saving changes…' : busy ? 'Checking Infor…' : 'Saved draft'}</span></div>
-      <div className={styles.history}><button type="button" aria-label="Undo draft change" disabled={disabled || !snapshot?.session.revision} onClick={() => { void workbench.undo().catch(() => {}); }}>↶</button><button type="button" aria-label="Redo draft change" disabled={disabled || snapshot?.session.revision === snapshot?.session.revisionHead} onClick={() => { void workbench.redo().catch(() => {}); }}>↷</button></div>
+      <div className={styles.history}><button type="button" aria-label="Undo draft change" disabled={disabled || pendingGuests.length > 0 || !snapshot?.session.revision} onClick={() => { void workbench.undo().catch(() => {}); }}>↶</button><button type="button" aria-label="Redo draft change" disabled={disabled || pendingGuests.length > 0 || snapshot?.session.revision === snapshot?.session.revisionHead} onClick={() => { void workbench.redo().catch(() => {}); }}>↷</button></div>
     </header>
     <nav className={styles.actionNav} aria-label="Reservation actions"><div className={styles.actionBar}><div className={styles.tabs}>
       {snapshot?.requests.filter(row => !source.selfPreStay || row.kind !== 'create').map(row => <span className={styles.tabGroup} key={row.id}>
@@ -152,9 +160,15 @@ export function ReservationPane(props: ReservationPaneProps) {
       <p>The email or attachments changed. Review the updated evidence; previous Infor checks will need to be repeated.</p>
       <details><summary>Review updated email</summary><div className={styles.changedSourceText}>{source.sourceText || 'Open this email in Outlook to review it.'}</div></details>
       {source.attachments.map(file => <button type="button" key={file.sourceRef} onClick={() => props.onOpenAttachment?.(file.sourceRef)}>Open {file.name}</button>)}
-      {snapshot.operationResults.some(row => row.status === 'unknown')
-        ? <><p>Check earlier save outcomes before continuing.</p>{snapshot.operationResults.filter(row => row.status === 'unknown').map(row =>
-          <div key={text(row.id)}>{row.workflow === 'guest_profile' ? 'Guest profile outcome unknown.' : text(row.summary) || text(row.workflow)} <button type="button" disabled={busy} onClick={() => { void commands.reconcile(text(row.id)).catch(() => {}); }}>Check outcome</button></div>)}</>
+      {(pendingGuests.length > 0 || snapshot.operationResults.some(row => row.status === 'unknown'))
+        ? <><p>Check earlier save outcomes before continuing.</p>
+          {pendingGuests.map(({ requestId, allocationId, room, pending }) => <div key={`${requestId}:${allocationId}`}>
+            {pending.status === 'pending' ? `Room ${room}: guest profile outcome pending.`
+              : pending.status === 'checking' ? 'Checking profile recovery on this device.' : 'Guest profile recovery is unavailable. Contact Nava support.'}
+            {pending.status === 'pending' && <button type="button" disabled={busy} onClick={() => { void commands.checkGuestProfile(allocationId, requestId).catch(() => {}); }}>Check outcome</button>}
+          </div>)}
+          {snapshot.operationResults.filter(row => row.status === 'unknown' && !pendingGuests.some(hold => hold.pending.status === 'pending' && hold.pending.operationId === row.id)).map(row =>
+            <div key={text(row.id)}>{row.workflow === 'guest_profile' ? 'Guest profile outcome unknown.' : text(row.summary) || text(row.workflow)} <button type="button" disabled={busy} onClick={() => { void commands.reconcile(text(row.id)).catch(() => {}); }}>Check outcome</button></div>)}</>
         : <button type="button" disabled={busy || preview} onClick={() => { void workbench.reconcileSource().then(() => setChecked(null)).catch(() => {}); }}>I reviewed the updated evidence</button>}
     </div>}
     <main className={styles.content}>

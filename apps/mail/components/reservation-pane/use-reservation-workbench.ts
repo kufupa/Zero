@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
 import { ReservationWorkflowStaleRevisionError, type ReservationFieldOverride, type ReservationPaneSnapshot, type ReservationSourceContext, type ReservationWorkflowClient, type ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
-import { effectiveAt, valueAt, record, requestPath, snapshotMatchesSource, staffEnteredAt, text, type WorkbenchCommands } from '@/lib/reservation-workflow/views';
+import { effectiveAt, guestProfileReceipt, valueAt, record, requestPath, snapshotMatchesSource, staffEnteredAt, text, type WorkbenchCommands } from '@/lib/reservation-workflow/views';
+import { clearGuestAttempt, guestAttemptScope, readGuestAttempt, saveGuestAttempt } from './guest-profile-attempt';
 
 type Pending = { path: string; value: unknown; state: ReservationFieldOverride['state']; token: number;
   generation: string | null; rows: { path: string; identity: string }[] };
@@ -33,6 +34,19 @@ function captureRows(snapshot: ReservationPaneSnapshot | null, path: string): Pe
   }
   return rows;
 }
+
+function guestHolds(source: ReservationSourceContext, snapshot: ReservationPaneSnapshot, requestId?: string) {
+  return snapshot.session.draft.proposal.content.requests.flatMap(request => {
+    if (request.kind !== 'create' || requestId && request.id !== requestId) return [];
+    const body = record(effectiveAt(snapshot, `${requestPath(request.id)}/body`));
+    return (Array.isArray(body.allocations) ? body.allocations.map(record) : []).flatMap(allocation => {
+      const allocationId = text(allocation.id);
+      if (!allocationId) return [];
+      const pending = readGuestAttempt(guestAttemptScope(source, snapshot, request.id, allocationId));
+      return pending.status === 'none' ? [] : [{ requestId: request.id, allocationId, pending }];
+    });
+  });
+}
 type Buffer = {
   sourceKey: string;
   snapshot: ReservationPaneSnapshot | null;
@@ -50,22 +64,6 @@ const buffers = new Map<string, Buffer>();
 const guestCreatesInFlight = new Set<string>();
 const sourceKey = (source: ReservationSourceContext) => `${source.mailboxId}:${source.messageId}:${source.sourceHash}`;
 const bufferKey = (source: ReservationSourceContext) => JSON.stringify([source.mailboxId, source.propertyId, source.threadId, source.messageId]);
-const guestAttemptKey = (source: ReservationSourceContext, requestId: string, allocationId: string) =>
-  `nava:guest-profile:${source.messageId}:${source.sourceHash}:${requestId}:${allocationId}`;
-function readGuestAttempt(source: ReservationSourceContext, requestId: string, allocationId: string): string | null {
-  try { return window.localStorage.getItem(guestAttemptKey(source, requestId, allocationId)); } catch { return null; }
-}
-function saveGuestAttempt(source: ReservationSourceContext, requestId: string, allocationId: string, operationId: string): boolean {
-  try {
-    const key = guestAttemptKey(source, requestId, allocationId);
-    window.localStorage.setItem(key, operationId);
-    return window.localStorage.getItem(key) === operationId;
-  } catch { return false; }
-}
-function clearGuestAttempt(source: ReservationSourceContext, requestId: string, allocationId: string) {
-  try { window.localStorage.removeItem(guestAttemptKey(source, requestId, allocationId)); } catch { /* A terminal result still remains in the draft. */ }
-}
-
 function notify(buffer: Buffer) { buffer.listeners.forEach(listener => listener()); }
 
 // A source rebind may succeed even if its follow-up read fails. Only carry
@@ -163,6 +161,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   const [error, setError] = useState<string | null>(null);
   const [changed, rerender] = useState(0);
   const [uncommitted, setUncommitted] = useState<Set<string>>(new Set());
+  const [guestStorageReady, setGuestStorageReady] = useState(false);
   const liveInputs = useRef({ key, uncommitted });
   liveInputs.current = { key, uncommitted };
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -233,6 +232,14 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       if (captured.length) void enqueue(buffer, () => flushCaptured(bound, buffer, captured)).catch(() => {});
     };
   }, [key, source.selectionEpoch, client]);
+  useEffect(() => {
+    setGuestStorageReady(true);
+    const listener = (event: StorageEvent) => {
+      if (event.key === null || event.key.startsWith('nava:guest-profile:')) rerender(value => value + 1);
+    };
+    window.addEventListener('storage', listener);
+    return () => window.removeEventListener('storage', listener);
+  }, []);
   const run = (action: (context: { source: ReservationSourceContext; snapshot: ReservationPaneSnapshot }) => Promise<ReservationPaneSnapshot | void>, write = false, skipFlush = false): Promise<void> => {
     const bound = source;
     const buffer = entry;
@@ -295,7 +302,19 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       liveInputs.current = { key, uncommitted: next }; setUncommitted(next);
     },
     edit(path, value, state = 'set') { stageEdit(path, value, state); return run(async () => {}); },
-    changeRows(change) { return run(context => client.changeRows({ ...context, ...change })); },
+    changeRows(change) { return run(context => {
+      if (['remove_allocation', 'remove_date_section', 'remove_action'].includes(change.kind)) {
+        const holds = guestHolds(context.source, context.snapshot, change.requestId);
+        const body = record(effectiveAt(context.snapshot, `${requestPath(change.requestId)}/body`));
+        const sectionRooms = (Array.isArray(body.allocations) ? body.allocations.map(record) : [])
+          .filter(row => row.dateSectionId === change.entityId).map(row => text(row.id));
+        if (holds.some(hold => change.kind === 'remove_action' || change.kind === 'remove_allocation' && hold.allocationId === change.entityId ||
+            change.kind === 'remove_date_section' && sectionRooms.includes(hold.allocationId))) {
+          throw new Error('Check the pending guest profile before removing this room or action.');
+        }
+      }
+      return client.changeRows({ ...context, ...change });
+    }); },
     selectNative(fieldPath, observationRef) { return run(context => client.selectNative({ ...context, requestId: requireRequest(), fieldPath, observationRef })); },
     ...(verifyNativeLead ? { verifyNativeLead(fieldPath: string, observationRef: string) {
       return run(context => verifyNativeLead.call(client, { ...context, requestId: requireRequest(), fieldPath, observationRef }));
@@ -313,16 +332,28 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     },
     createGuestProfile(allocationId, confirmDuplicateName = false) {
       if (preview) return Promise.reject(new Error('Preview only. Profile creation is disabled.'));
+      if (!guestStorageReady) return Promise.reject(new Error('Profile recovery is still opening.'));
       if (uncommitted.size) return Promise.reject(new Error('Apply changed fields before creating a profile.'));
       const requestId = requireRequest();
-      const inFlightKey = guestAttemptKey(source, requestId, allocationId);
+      if (!current) return Promise.reject(new Error('The email draft is still opening.'));
+      const inFlightKey = JSON.stringify([source.mailboxId, current.session.draft.workItemId, requestId, allocationId]);
       if (guestCreatesInFlight.has(inFlightKey)) return Promise.reject(new Error('Profile creation is already in progress.'));
       guestCreatesInFlight.add(inFlightKey);
       return run(async context => {
-        const previousAttempt = readGuestAttempt(context.source, requestId, allocationId);
-        const previousResult = previousAttempt ? context.snapshot.operationResults.find(row => row.id === previousAttempt && row.workflow === 'guest_profile') : undefined;
-        if (previousResult?.status === 'succeeded' || previousResult?.status === 'failed') clearGuestAttempt(context.source, requestId, allocationId);
-        else if (previousAttempt) throw new Error('Check the previous profile creation outcome before trying again.');
+        const scope = guestAttemptScope(context.source, context.snapshot, requestId, allocationId);
+        const previousAttempt = readGuestAttempt(scope);
+        if (previousAttempt.status !== 'none') throw new Error(previousAttempt.status === 'unavailable'
+          ? 'This device cannot access profile recovery. Contact Nava support.'
+          : 'Check the previous profile creation outcome before trying again.');
+        const checkPreviousAttempt = (snapshot: ReservationPaneSnapshot) => {
+          const attempt = snapshot.operationResults.find(row =>
+            row.workflow === 'guest_profile' && row.requestId === requestId && row.allocationId === allocationId &&
+            ['succeeded', 'unknown', 'failed'].includes(text(row.status)));
+          if (attempt) throw new Error(guestProfileReceipt(attempt)
+            ? 'A profile has already been created for this room. Review the saved profile.'
+            : 'A previous profile attempt needs confirmation. Contact Nava support before creating another profile.');
+        };
+        checkPreviousAttempt(context.snapshot);
         let current = context.snapshot;
         const root = `${requestPath(requestId)}/body`;
         const body = record(effectiveAt(current, root));
@@ -344,73 +375,112 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         const prepared = await client.prepareGuestProfile({ source: context.source, snapshot: current, requestId, allocationId, confirmDuplicateName });
         apply(prepared, context.source, entry);
         const reply = record(prepared.workflowReply);
-        if (prepared.serviceNotice || reply.status !== 'prepared' || typeof reply.prepareRef !== 'string') return prepared;
+        if (prepared.serviceNotice || prepared.loadError || prepared.session.sourceChanged ||
+            prepared.session.draft.workItemId !== scope.workItemId || !snapshotMatchesSource(prepared, context.source) ||
+            reply.status !== 'prepared' || typeof reply.prepareRef !== 'string') return prepared;
+        checkPreviousAttempt(prepared);
         if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return prepared;
         if ([...entry.pending.keys()].some(path => path === guestPath || path.startsWith(`${guestPath}/`))) {
           throw new Error('Guest details changed. Review them before creating the profile.');
         }
         const idempotencyKey = crypto.randomUUID();
-        if (!saveGuestAttempt(context.source, requestId, allocationId, idempotencyKey)) {
-          throw new Error('This device cannot retain the profile attempt for recovery. Profile creation is unavailable.');
+        const stillCurrent = () => mounted.current && active.current.key === sourceKey(context.source) &&
+          active.current.epoch === context.source.selectionEpoch && ![...entry.pending.keys()].some(path => path === guestPath || path.startsWith(`${guestPath}/`));
+        await saveGuestAttempt(scope, context.source, prepared, reply.prepareRef, idempotencyKey, stillCurrent);
+        if (!stillCurrent()) {
+          await clearGuestAttempt(scope, idempotencyKey); // Create was not invoked.
+          return prepared;
         }
-        let result: ReservationPaneSnapshot;
-        try {
-          result = await client.createGuestProfile({ source: context.source, snapshot: prepared, requestId, allocationId,
-            confirmDuplicateName, prepareRef: reply.prepareRef, idempotencyKey });
-        } catch (error) {
-          // A stale response with a fresh snapshot and no claim proves this attempt was rejected before dispatch.
-          if (error instanceof ReservationWorkflowStaleRevisionError &&
-              !error.snapshot.operationResults.some(row => row.id === idempotencyKey)) {
-            clearGuestAttempt(context.source, requestId, allocationId);
-          }
-          throw error;
+        const result = await client.createGuestProfile({ source: context.source, snapshot: prepared, requestId, allocationId,
+          confirmDuplicateName, prepareRef: reply.prepareRef, idempotencyKey });
+        const operation = result.operationResults.find(row => row.id === idempotencyKey && row.workflow === 'guest_profile' &&
+          row.requestId === requestId && row.allocationId === allocationId && row.generationId === prepared.session.draft.generationId &&
+          Array.isArray(row.observationRefs) && row.observationRefs.includes(reply.prepareRef));
+        if (!result.loadError && !result.session.sourceChanged && snapshotMatchesSource(result, context.source) &&
+            result.session.draft.workItemId === scope.workItemId && guestProfileReceipt(operation)) {
+          await clearGuestAttempt(scope, idempotencyKey);
         }
-        const operation = result.operationResults.find(row => row.id === idempotencyKey);
-        const response = record(result.workflowReply);
-        // These replies are returned before the server claims or dispatches this attempt.
-        // A failed refresh or any uncertain reply must retain the recovery hold.
-        const rejectedBeforeClaim = ['needs_prepare', 'stale_revision', 'wrong_property', 'not_found', 'invalid_source', 'invalid_value']
-          .includes(text(response.status)) || (response.status === 'refused' &&
-            ['authenticated_staff_session_required', 'guest_profile_write_flag_off'].includes(text(response.issue)));
-        if (operation?.status === 'succeeded' || operation?.status === 'failed' ||
-            (rejectedBeforeClaim && !result.loadError && !operation)) clearGuestAttempt(context.source, requestId, allocationId);
         return result;
       }, true).finally(() => guestCreatesInFlight.delete(inFlightKey));
     },
-    guestProfilePending(allocationId) {
-      if (!request) return null;
-      const id = readGuestAttempt(source, request.id, allocationId);
-      const operation = id ? current?.operationResults.find(row => row.id === id && row.workflow === 'guest_profile') : undefined;
-      if (operation?.status === 'succeeded' || operation?.status === 'failed') return null;
-      return id;
+    guestProfilePending(allocationId, requestId) {
+      if ((!request && !requestId) || !current) return null;
+      if (!guestStorageReady) return { status: 'checking' };
+      const attempt = readGuestAttempt(guestAttemptScope(source, current, requestId ?? request!.id, allocationId));
+      return attempt.status === 'none' ? null : attempt;
     },
-    checkGuestProfile(allocationId) {
-      const requestId = requireRequest();
-      const operationId = readGuestAttempt(source, requestId, allocationId);
-      if (!operationId) return Promise.reject(new Error('No pending profile attempt was found on this device.'));
+    checkGuestProfile(allocationId, requestedId) {
+      const requestId = requestedId ?? requireRequest();
+      if (!current) return Promise.reject(new Error('The email draft is still opening.'));
+      const scope = guestAttemptScope(source, current, requestId, allocationId);
+      const attempt = readGuestAttempt(scope);
+      if (attempt.status !== 'pending') return Promise.reject(new Error('Profile recovery is unavailable. Contact Nava support.'));
+      const operationId = attempt.operationId;
+      const matches = (row: Record<string, unknown>) => row.id === operationId && row.workflow === 'guest_profile' &&
+        row.requestId === requestId && row.allocationId === allocationId && (!attempt.binding ||
+          row.generationId === attempt.binding.generationId && Array.isArray(row.observationRefs) && row.observationRefs.includes(attempt.binding.prepareRef));
       return run(async context => {
         const latest = await client.get(context);
+        if (latest.loadError || latest.session.draft.workItemId !== scope.workItemId || !snapshotMatchesSource(latest, context.source)) {
+          throw new Error('The profile outcome could not be refreshed. Check again later or contact support.');
+        }
         apply(latest, context.source, entry);
         if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return latest;
-        const operation = latest.operationResults.find(row => row.id === operationId && row.workflow === 'guest_profile' &&
-          row.requestId === requestId && row.allocationId === allocationId);
-        if (!operation) throw new Error('Infor has not recorded the profile outcome yet. Check again later or contact support.');
-        if (operation.status === 'succeeded' || operation.status === 'failed') {
-          clearGuestAttempt(context.source, requestId, allocationId); return latest;
-        }
+        const operation = latest.operationResults.find(matches);
+        if (!operation) throw new Error('The profile attempt is not visible yet. Check again later or contact support.');
         const result = await client.reconcile({ source: context.source, snapshot: latest, operationId });
-        const checked = result.operationResults.find(row => row.id === operationId);
-        if (checked?.status === 'succeeded' || checked?.status === 'failed') clearGuestAttempt(context.source, requestId, allocationId);
-        return result;
-      });
+        const checked = result.operationResults.find(matches);
+        const reply = record(result.workflowReply);
+        const beforeReceipt = guestProfileReceipt(operation), afterReceipt = guestProfileReceipt(checked);
+        // Older device holds stored only the operation ID. Recover their original Prepare from the
+        // canonical operation rather than guessing a binding from the current draft.
+        const refs = Array.isArray(operation.observationRefs) ? operation.observationRefs : [];
+        const legacyPrepare = attempt.binding ? undefined : latest.session.draft.observations.find(observation =>
+          refs.includes(observation.ref) && observation.kind === 'guest_candidate' && observation.status === 'complete' &&
+          observation.coverage.complete && observation.generationId === operation.generationId &&
+          observation.propertyCode === latest.session.draft.propertyCode && observation.sourceMessageId === latest.session.draft.source.messageId &&
+          observation.criteria.workflow === 'guest_profile_prepare' && observation.criteria.requestId === requestId &&
+          observation.criteria.allocationId === allocationId);
+        const originalGeneration = attempt.binding?.generationId ?? legacyPrepare?.generationId;
+        const originalPrepare = attempt.binding?.prepareRef ?? legacyPrepare?.ref;
+        // Rebinding reviewed email rotates the generation, making the old Prepare stale even when its
+        // original operation already has a durable verified receipt. Both fresh snapshots must agree.
+        const reboundReceipt = originalGeneration && originalPrepare && checked && !latest.session.sourceChanged && !result.session.sourceChanged &&
+          operation.generationId === originalGeneration && checked.generationId === originalGeneration &&
+          Array.isArray(checked.observationRefs) && checked.observationRefs.includes(originalPrepare) &&
+          latest.session.draft.generationId !== originalGeneration &&
+          latest.session.draft.generationId === result.session.draft.generationId &&
+          reply.status === 'needs_prepare' && reply.issue === 'guest_profile_prepare_stale' &&
+          beforeReceipt && afterReceipt && beforeReceipt.nativeId === afterReceipt.nativeId &&
+          beforeReceipt.observationRef === afterReceipt.observationRef;
+        if (!result.loadError && result.session.draft.workItemId === scope.workItemId && snapshotMatchesSource(result, context.source) &&
+            ((reply.status === 'succeeded' && reply.operationId === operationId && afterReceipt) || reboundReceipt) &&
+            await clearGuestAttempt(scope, operationId)) {
+          if (reboundReceipt) {
+            const { serviceNotice: _notice, workflowReply: _reply, ...fresh } = result;
+            return fresh;
+          }
+          return result;
+        }
+        return { ...result, serviceNotice: 'The profile outcome still needs confirmation. Check again later or contact Nava support.' };
+      }, false, entry.snapshot?.session.sourceChanged === true);
     },
     prepare(allocationId) { if (uncommitted.size) return Promise.reject(new Error('Apply changed fields before checking Infor.')); return run(context => client.prepare({ ...context, requestId: requireRequest(), allocationId })); },
     review(scope, ids) { return run(context => client.reviewScope({ ...context, requestId: requireRequest(), scope, ids })); },
     execute(allocationId) { if (uncommitted.size) return Promise.reject(new Error('Apply changed fields before saving.')); if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.execute({ ...context, requestId: requireRequest(), allocationId, idempotencyKey: crypto.randomUUID() }), true); },
-    reconcile(operationId) { return run(context => {
+    reconcile(operationId) {
+      const operation = current?.operationResults.find(row => row.id === operationId && row.workflow === 'guest_profile');
+      if (operation && typeof operation.requestId === 'string' && typeof operation.allocationId === 'string') {
+        const pending = commands.guestProfilePending(operation.allocationId, operation.requestId);
+        if (pending?.status === 'pending' && pending.operationId === operationId) {
+          return commands.checkGuestProfile(operation.allocationId, operation.requestId);
+        }
+      }
+      return run(context => {
       const operation = context.snapshot.operationResults.find(row => row.id === operationId);
       return operation?.workflow === 'services' ? client.reconcileServices({ ...context, operationId }) : client.reconcile({ ...context, operationId });
-    }, false, entry.snapshot?.session.sourceChanged === true); },
+      }, false, entry.snapshot?.session.sourceChanged === true);
+    },
     acceptServiceReview(fieldPath, note, expected) { return run(context => {
       if (expected && (context.snapshot.session.draft.generationId !== expected.generationId ||
           JSON.stringify({ value: effectiveAt(context.snapshot, expected.path) }) !== JSON.stringify({ value: expected.value }))) {
@@ -485,9 +555,16 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       && liveInputs.current.key === key && liveInputs.current.uncommitted.size === 0, latestSnapshot: () => entry.snapshot, request, commands, busy, error: error ?? entry.error, saving: entry.pending.size > 0, blocked: uncommitted.size > 0,
     conflict: entry.conflict, unresolvedPending, applicablePendingCount: pendingForCurrent.length, activeId: request?.id ?? null, setActiveId,
     addAction: (kind: Exclude<ReservationWorkflowKind, 'other'>) => run(async context => { const next = await client.addAction({ ...context, kind }); setActiveId(next.requests.at(-1)?.id ?? null); return next; }),
-    undo: () => run(context => client.undo(context)), redo: () => run(context => client.redo(context)),
+    undo: () => run(context => {
+      if (guestHolds(context.source, context.snapshot).length) throw new Error('Check pending guest profile outcomes before undoing draft changes.');
+      return client.undo(context);
+    }), redo: () => run(context => {
+      if (guestHolds(context.source, context.snapshot).length) throw new Error('Check pending guest profile outcomes before redoing draft changes.');
+      return client.redo(context);
+    }),
     retryPrefill: () => run(context => client.prefill(context)),
     reconcileSource: () => run(async context => {
+      if (guestHolds(context.source, context.snapshot).length) throw new Error('Check pending guest profile outcomes before reviewing the updated email.');
       if (entry.pending.size) entry.sourceReviewBase = context.snapshot;
       return client.reconcileSource(context);
     }, false, true),
