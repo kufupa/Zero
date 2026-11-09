@@ -52,6 +52,16 @@ const record = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const text = (value: unknown): string | null => typeof value === 'string' && value.trim() ? value.trim() : null;
 const hash = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
+
+/** Preserve the native dropdown controls without adding them to business-value comparisons. */
+export function nativeServiceControls(value: unknown): Record<string, unknown> | undefined {
+  const controls = record(record(value)?.controls);
+  if (!controls) return undefined;
+  const selected = Object.fromEntries(['frequency', 'pricingControl', 'folio']
+    .flatMap(key => record(controls[key]) ? [[key, controls[key]]] : []));
+  return Object.keys(selected).length ? selected : undefined;
+}
+
 const sourceInputSchema = z.object({ threadId: z.string().min(1).max(500), messageId: z.string().min(1).max(500),
   sourceHash: z.string().regex(/^[a-f0-9]{64}$/), arrivedAt: z.string().datetime({ offset: true }) }).strict();
 const inputSchema = z.object({ workItemId: z.string().uuid(), source: sourceInputSchema,
@@ -450,6 +460,7 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
       const businessItem = actual ? Object.fromEntries(['code', 'name', 'itemId', 'quantity', 'startDate', 'endDate',
         'unitPrice', 'frequency', 'pricingControl', 'folio', 'comment', 'currency', 'averageDaily', 'totalCost', 'status']
         .filter(key => Object.hasOwn(actual, key)).map(key => [key, actual[key]])) : null;
+      const controls = nativeServiceControls(actual);
       const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: loaded.draft!.generationId,
         kind: 'service_preview', status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
         propertyCode: loaded.draft!.propertyCode, sourceMessageId: loaded.draft!.source.messageId, sourceRefs: [],
@@ -461,7 +472,8 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
         coverage: { complete, notes: complete ? [] : [String(nativeItem?.issue ?? preview?.issue ?? native.issue ?? 'native_addon_preview_incomplete')] },
         result: { operation: 'add', saved: false, targetRef: plan.targetRef, serviceId: plan.serviceId,
           itemCandidate: plan.candidate, requestedFields: plan.items,
-          native: businessItem, issue: nativeItem?.issue ?? preview?.issue ?? native.issue ?? null,
+          native: businessItem && controls ? { ...businessItem, controls } : businessItem,
+          issue: nativeItem?.issue ?? preview?.issue ?? native.issue ?? null,
           hostValuesRequireReview: plan.reviewPaths, createRatePlanAvailability: native.ratePlanAvailability,
           priceWasNativeCalculated: Boolean(actual?.averageDaily && actual?.totalCost), capability } };
       const stored = await appendServiceObservation(ctx, input, observation, complete ? 'prepared' : 'failed',
@@ -815,11 +827,13 @@ export async function reservationWorkflowV2PreviewSavedServices(ctx: Reservation
         : { tool: 'prepareChanges', confirmation: stay.confirmation, changes: [requested] }));
       if (prepared?.outcome !== 'prepared' || prepared.saved !== false || prepared.propertyCode !== 'HRCEN') return null;
       if (operation === 'add') {
-        const native = savedServiceBusiness(Array.isArray(prepared.items) ? prepared.items[0] : null);
+        const actual = Array.isArray(prepared.items) ? prepared.items[0] : null;
+        const native = savedServiceBusiness(actual);
         if (!native || native.code !== candidate.code || native.itemId !== candidate.itemId || native.status !== 'VALID' ||
             positiveDecimal(native.quantity) !== positiveDecimal(fields.quantity) || positiveDecimal(native.unitPrice) !== positiveDecimal(fields.unitPrice) ||
             native.startDate !== fields.startDate || native.endDate !== fields.endDate || !text(native.currency) || !text(native.totalCost)) return null;
-        return { native };
+        const controls = nativeServiceControls(actual);
+        return { native: controls ? { ...native, controls } : native };
       }
       const change = record(Array.isArray(prepared.changes) ? prepared.changes[0] : null);
       const before = record(change?.before), after = record(change?.after);

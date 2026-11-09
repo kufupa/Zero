@@ -19,6 +19,63 @@ const nativeFields = [
   ['comment', 'Comment'], ['averageDaily', 'Native average'],
 ] as const;
 
+function nativeOptions(control: Record<string, unknown>) {
+  const rows = Array.isArray(control.options) ? control.options.map(record).filter(row => typeof row.code === 'string' && row.code.trim()) : [];
+  return rows.filter(row => rows.filter(other => other.code === row.code).length === 1).map(row => {
+    const code = row.code as string, name = text(row.name).trim();
+    return { value: code, label: name && name !== code ? `${code} · ${name}` : code };
+  });
+}
+
+const unknownServiceValue = Symbol('unknown service value');
+const noneServiceValue = Symbol('no service value');
+function servicePreviewMatches(editor: Editor, service: Service, root: string, targetRoot: string, operation: string, preview: Record<string, unknown>, savedTarget: boolean) {
+  if (preview.operation !== operation) return false;
+  if (operation === 'remove') return true;
+  const request = record(preview.requested);
+  const requested = operation === 'edit' ? record(request.patch) : record(preview.requestedFields ?? preview.requested);
+  if (!Object.keys(requested).length) return false;
+  const draft = editor.snapshot.session.draft;
+  const read = (path: string) => {
+    if (draft.fieldOverrides[path]?.state === 'unknown') return unknownServiceValue;
+    const value = valueAt(editor.snapshot, path);
+    return record(value).kind === 'none' ? noneServiceValue : value ?? undefined;
+  };
+  const current = (field: string) => {
+    const path = `${targetRoot}/fields/${field}`, shared = `${root}/sharedFields/${field}`;
+    const override = draft.fieldOverrides[path];
+    if (operation === 'edit' && field === 'comment' && override?.state === 'set' && override.value === '') return '';
+    if (override?.state === 'unknown') return unknownServiceValue;
+    const local = override?.state === 'none' || override?.state === 'clear' ? noneServiceValue
+      : override?.state === 'inherit' ? undefined : read(path);
+    if (local === unknownServiceValue) return local;
+    let value = local === noneServiceValue ? undefined : local !== undefined && (typeof local !== 'string' || local.trim() !== '') ? local : read(shared);
+    if (value === unknownServiceValue) return value;
+    if (value === noneServiceValue) value = undefined;
+    if (savedTarget && value === '') value = undefined;
+    if (field === 'quantity' && operation === 'add' && (value === undefined || value === null || value === '')) {
+      const scope = service.quantityRequest.scope;
+      if (scope === 'per_target' || scope === 'overall' && service.targets.length === 1)
+        value = savedTarget ? read(`${root}/quantityRequest/value`) : service.quantityRequest.value ?? undefined;
+    }
+    return value;
+  };
+  const comparable = (value: unknown, decimal: boolean) => {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'string') return unknownServiceValue;
+    if (!decimal) return value;
+    const match = value.trim().match(/^(\d+)(?:\.(\d+))?$/);
+    if (!match) return unknownServiceValue;
+    const whole = match[1]!.replace(/^0+(?=\d)/, ''), fraction = (match[2] ?? '').replace(/0+$/, '');
+    return fraction ? `${whole}.${fraction}` : whole;
+  };
+  return serviceFields.every(([field]) => {
+    const decimal = !savedTarget && (field === 'quantity' || field === 'unitPrice');
+    const actual = comparable(current(field), decimal), expected = comparable(requested[field], decimal);
+    return actual !== unknownServiceValue && expected !== unknownServiceValue && actual === expected;
+  });
+}
+
 function NativeItem({ title, item }: { title: string; item: Record<string, unknown> }) {
   return <div className={styles.card}><strong>{title}</strong><div className={styles.facts}>
     <div className={styles.fact}><strong>Infor total</strong><strong>{text(item.totalCost) || 'Not returned'}{text(item.totalCost) ? ` ${text(item.currency)}` : ''}</strong></div>
@@ -41,7 +98,7 @@ export function AddonsEditor(editor: Editor) {
       || service.targets.some(target => target.target.requestId === request.id));
   return <div className={styles.stack}>
     <Section title="Add-Ons">
-      <p className={styles.hint}>Each Add-On is checked and saved for one exact room. Infor calculates the total from its pricing basis; the quantity does not multiply occupants again.</p>
+      <p className={styles.hint}>Each Add-On is checked and saved for one exact room. Infor calculates the total using the unit price, pricing basis and quantity.</p>
       {!services.length && <div className={styles.warning}>No Add-On and room target are selected. Add or link the requested item and room before checking.</div>}
       {owner?.kind === 'services' && <div className={styles.row}><button type="button" disabled={editor.view.busy}
         onClick={() => void editor.commands.changeRows({ kind: 'add_target', requestId: request.id }).catch(() => {})}>Add stay</button></div>}
@@ -88,6 +145,18 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
   const linkedCreate = ref.kind === 'allocation' && editor.snapshot.operationResults.some(result => result.workflow === 'create'
     && result.requestId === ref.requestId && result.allocationId === ref.allocationId && result.status === 'succeeded');
   const selectedItem = valueAt(editor.snapshot, selectedPath);
+  const stayObservation = savedTarget && draft.observations.find(observation => observation.ref === selectedStay
+    && observation.kind === 'stay_candidate' && observation.status === 'complete' && observation.coverage.complete
+    && observation.generationId === draft.generationId && observation.propertyCode === draft.propertyCode
+    && observation.sourceMessageId === draft.source.messageId && observation.criteria.kind === 'saved_target'
+    && observation.criteria.requestId === savedTarget.requestId && observation.criteria.hintId === savedTarget.hintId
+    && (linkedAmend ? observation.criteria.workflow === 'amend' && observation.criteria.selectionPath === stayPath
+      : observation.criteria.workflow === 'services' && observation.criteria.fieldPath === stayPath));
+  const stayQuery = record(stayObservation?.criteria.query);
+  const queryValue = (value: unknown) => linkedAmend && typeof value === 'string' ? value.trim() || null : value || null;
+  const savedTargetCurrent = Boolean(savedTarget && hint && scope.mode === 'explicit' && Array.isArray(scope.exclude) && !scope.exclude.length
+    && stayObservation && ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture']
+      .every(key => queryValue(stayQuery[key]) === queryValue(hint[key])));
   const catalogue = draft.observations.flatMap(observation => {
     const c = observation.criteria;
     if (observation.kind !== 'service_preview' || observation.status !== 'complete' || record(observation.coverage).complete !== true
@@ -101,7 +170,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
     return Object.keys(candidate).length ? [{ observation, candidate }] : [];
   });
   const latest = [...draft.observations].reverse().find(observation => observation.kind === 'service_preview'
-    && observation.status === 'complete' && observation.criteria.workflow === 'services'
+    && observation.status === 'complete' && observation.coverage.complete && observation.criteria.workflow === 'services'
     && observation.generationId === draft.generationId && observation.propertyCode === draft.propertyCode
     && observation.sourceMessageId === draft.source.messageId
     && observation.criteria.requestId === ref.requestId && observation.criteria.serviceId === service.id
@@ -113,6 +182,28 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
       : JSON.stringify(observation.criteria.targetRef) === JSON.stringify(ref)
       && observation.criteria.targetObservationRef === selectedStay && observation.criteria.candidateRef === selectedItem));
   const preview = record(latest?.result), native = record(preview.native), before = record(preview.before), after = record(preview.after);
+  const selectedCandidate = catalogue.find(row => row.observation.ref === selectedItem)?.candidate;
+  const controls = [record(native.controls), record(record(after.fields).controls), record(record(selectedCandidate?.fields).controls)];
+  const unsavedPreview = latest?.criteria.kind === 'saved_addon_fresh_prepare'
+    ? draft.observations.find(row => row.ref === latest.criteria.unsavedPreviewRef) : latest;
+  const createPrepared = allocation ? [...draft.operationResults].reverse().find(result => result.workflow === 'create'
+    && result.requestId === ref.requestId && result.allocationId === allocation && result.status === 'prepared'
+    && result.generationId === draft.generationId) : undefined;
+  const createObservation = createPrepared && draft.observations.find(row => createPrepared.observationRefs.includes(row.ref)
+    && row.kind === 'rate_availability' && row.status === 'complete' && row.generationId === draft.generationId);
+  const createRoot = `${requestPath(ref.requestId)}/body`;
+  const createEditedSinceCheck = unsavedPreview && Object.entries(draft.fieldOverrides).some(([path, override]) =>
+    (path === createRoot || path.startsWith(`${createRoot}/`)) && Date.parse(override.updatedAt) > Date.parse(unsavedPreview.observedAt));
+  const createCurrent = Boolean(allocation && unsavedPreview && createObservation && !createEditedSinceCheck
+    && Date.parse(createObservation.observedAt) <= Date.parse(unsavedPreview.observedAt)
+    && editor.snapshot.preparationViews.some(view => view.requestId === ref.requestId && view.allocationId === allocation && view.current));
+  const amendments = linkedAmend ? draft.operationResults.filter(result => result.workflow === 'amend'
+    && result.requestId === ref.requestId && (!result.allocationId || result.allocationId === savedTarget?.hintId)
+    && (result.status === 'succeeded' || result.status === 'unknown')) : [];
+  const amendmentCurrent = !amendments.some(result => !result.allocationId || result.status === 'unknown')
+    && amendments.length <= 1 && (!amendments[0] || Boolean(latest && Date.parse(amendments[0].updatedAt) <= Date.parse(latest.observedAt)));
+  const previewCurrent = Boolean(latest && (allocation ? createCurrent : savedTargetCurrent && amendmentCurrent)
+    && servicePreviewMatches(editor, service, serviceRoot, targetRoot, operation, preview, Boolean(savedTarget)));
   const capability = record(preview.capability);
   const fresh = latest?.criteria.kind === 'saved_addon_fresh_prepare';
   const previous = record(preview.previouslyApprovedNative);
@@ -174,8 +265,21 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
       </label>
       {operation !== 'remove' && <div className={styles.grid}>{serviceFields.map(([field, label, type]) => {
         const shared = valueAt(editor.snapshot, `${serviceRoot}/sharedFields/${field}`);
+        const isChoice = field === 'frequency' || field === 'pricingControl' || field === 'folio';
+        const control = isChoice ? controls.map(source => record(source[field])).find(source => Object.keys(source).length > 0) : undefined;
+        const options = control ? nativeOptions(control) : [];
+        const savedControl = record(record(record(selectedCandidate?.fields).controls)[field]);
+        const displayControl = operation === 'edit' ? savedControl : control;
+        const nativeValue = text(displayControl?.value), nativeDisplay = text(displayControl?.display);
+        const nativeHint = nativeValue ? `Infor ${operation === 'edit' ? 'current' : 'last check'}: ${nativeValue}${nativeDisplay && nativeDisplay !== nativeValue ? ` · ${nativeDisplay}` : ''}.` : '';
+        const choiceHint = isChoice ? control?.editable === false ? 'This field is not editable in Infor.'
+          : options.length ? 'Infor choices; check again after changes.' : 'Check the Add-On to load Infor choices.' : '';
+        const priceHint = field === 'unitPrice' ? 'Unit price is supplied; Infor calculates the total from it.' : '';
+        const sharedHint = shared != null && text(shared) ? `Shared value: ${text(shared)}; a room value overrides it.` : operation === 'edit' ? 'Leave unmentioned values unchanged.' : '';
         return <Field key={field} editor={editor} path={`${targetRoot}/fields/${field}`} label={label} type={type} review
-          hint={shared != null && text(shared) ? `Shared value: ${text(shared)}; a room value overrides it.` : operation === 'edit' ? 'Leave unmentioned values unchanged.' : undefined} />;
+          options={options.length ? options : undefined} disabled={editor.view.busy || control?.editable === false}
+          unmatchedOptionLabel={options.length ? 'Not returned by Infor' : undefined}
+          hint={[sharedHint, nativeHint, choiceHint, priceHint].filter(Boolean).join(' ') || undefined} />;
       })}</div>
       }
       <div className={styles.hint}>{operation === 'add' ? 'A positive explicit unit price and quantity are required. Unknown or zero price is unpriced. ' : operation === 'remove' ? 'Removing an item does not establish a refund. ' : ''}Infor returns actual service dates and total.</div>
@@ -183,13 +287,16 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
         onClick={() => { if (argument) void editor.commands.previewServices(argument, service.id).catch(() => {}); }}>Check Add-On</button></div>
     </>}
     {latest && <div className={styles.stack}>
+      {!previewCurrent && <div className={styles.warning}>{allocation && !createCurrent
+        ? 'Check the room price in Create, then check this Add-On again before reviewing or saving.'
+        : 'The Add-On or its stay changed. Check again before reviewing or saving.'}</div>}
       {Object.keys(previous).length > 0 && <NativeItem title="Previously reviewed" item={previous} />}
-      {Object.keys(before).length > 0 && <NativeItem title="Current saved item" item={record(before.fields).code ? record(before.fields) : before} />}
-      {Object.keys(after).length > 0 && <NativeItem title="Proposed item" item={record(after.fields).code ? record(after.fields) : after} />}
+      {Object.keys(before).length > 0 && <NativeItem title={previewCurrent ? 'Current saved item' : 'Earlier saved-item check'} item={record(before.fields).code ? record(before.fields) : before} />}
+      {Object.keys(after).length > 0 && <NativeItem title={previewCurrent ? 'Proposed item' : 'Earlier proposed item'} item={record(after.fields).code ? record(after.fields) : after} />}
       {preview.operation === 'remove' && <div className={styles.warning}>Requested removal · financial effect is unknown.</div>}
-      {Object.keys(native).length > 0 && <NativeItem title={fresh ? 'Latest saved-stay check' : 'Last Infor check'} item={native} />}
+      {Object.keys(native).length > 0 && <NativeItem title={!previewCurrent ? 'Earlier Infor check' : fresh ? 'Latest saved-stay check' : 'Last Infor check'} item={native} />}
       {fresh && <small className={styles.hint}>Review the latest saved-stay details before saving.</small>}
-      <small className={styles.hint}>Check again after any change. Infor is the source of dates, pricing basis and total.</small>
+      <small className={styles.hint}>Check again after any change. Infor returns the service dates and calculated total.</small>
       <small className={styles.hint}>Save mode: {text(capability.writeMode) || 'Unavailable'}. {capability.canSave === true ? 'This stay is admitted for Save.' : 'Save is unavailable for this stay or mode.'}</small>
     </div>}
     {allocation && connected && !linkedCreate && <div className={styles.hint}>Save and verify this room before adding its service.</div>}
@@ -199,7 +306,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
     </div>)}
     {saved && <div className={styles.hint}>Infor readback confirmed this Add-On.</div>}
     {connected && latest && !saved && !multiTarget && <div className={styles.row}>
-      <button type="button" disabled={editor.view.busy || Boolean(fresh && !reviewPaths.length)} onClick={() => void (async () => {
+      <button type="button" disabled={editor.view.busy || !previewCurrent || Boolean(fresh && !reviewPaths.length)} onClick={() => void (async () => {
         if (!savedTarget) {
           if (fresh) for (const path of reviewPaths) await editor.commands.acceptServiceReview(path, freshNote);
           else await editor.commands.review('services', [service.id]);
@@ -208,7 +315,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
         for (const path of reviewPaths) await editor.commands.acceptServiceReview(path, 'Reviewed the requested Add-On and native result');
         await editor.commands.acceptServiceReview(selectedPath, reviewNote);
       })().catch(() => {})}>{(savedTarget || fresh) && reviewed ? 'Reviewed' : 'Review this item'}</button>
-      <button type="button" disabled={editor.view.busy || Boolean(allocation && !linkedCreate) || uncertain || !argument || editor.view.preview || capability.canSave !== true || !reviewed}
+      <button type="button" disabled={editor.view.busy || !previewCurrent || Boolean(allocation && !linkedCreate) || uncertain || !argument || editor.view.preview || capability.canSave !== true || !reviewed}
         onClick={() => { if (argument) void editor.commands.executeServices(argument, service.id, savedTarget || fresh ? latest.ref : undefined).catch(() => {}); }}>Go · save Add-On</button>
     </div>}
   </div>;

@@ -86,9 +86,9 @@ export function FieldReview({ editor, path, label, onPendingChange, requireRevie
   </span>;
 }
 
-export function Field({ label, path, editor, type = 'text', options, disabled, hint, defaultValue, emptyState, resolvedValue, compact = false, review = false, requireReview = false }: {
+export function Field({ label, path, editor, type = 'text', options, disabled, hint, defaultValue, emptyState, resolvedValue, compact = false, review = false, requireReview = false, unmatchedOptionLabel }: {
   label: string; path: string; editor: WorkbenchEditorProps; type?: string;
-  options?: { value: string; label: string }[]; disabled?: boolean; hint?: string; defaultValue?: string; emptyState?: 'inherit'; resolvedValue?: unknown; compact?: boolean; review?: boolean; requireReview?: boolean;
+  options?: { value: string; label: string }[]; disabled?: boolean; hint?: string; defaultValue?: string; emptyState?: 'inherit'; resolvedValue?: unknown; compact?: boolean; review?: boolean; requireReview?: boolean; unmatchedOptionLabel?: string;
 }) {
   const id = useId();
   const saved = resolvedValue === undefined ? valueAt(editor.snapshot, path) : resolvedValue;
@@ -117,7 +117,7 @@ export function Field({ label, path, editor, type = 'text', options, disabled, h
     {type === 'checkbox' ? <input id={id} type="checkbox" checked={saved === true} disabled={disabled || reviewing || editor.view.busy}
       onChange={event => { void editor.commands.edit(path, event.target.checked).catch(() => {}); }} />
       : options ? <select id={id} value={local} disabled={disabled || reviewing} onChange={event => { const value = event.target.value; setLocal(value); void editor.commands.edit(path, value).catch(() => setDirty(true)); }}>
-        <option value="">Choose…</option>{local && !options.some(option => option.value === local) && <option value={local}>{local}</option>}{options.filter(option => option.value).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+        <option value="">Choose…</option>{local && !options.some(option => option.value === local) && <option value={local} disabled={Boolean(unmatchedOptionLabel)}>{local}{unmatchedOptionLabel ? ` · ${unmatchedOptionLabel}` : ''}</option>}{options.filter(option => option.value).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
       : type === 'textarea' ? <textarea id={id} value={local} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} />
       : <input id={id} type={type} value={local} placeholder={defaultValue} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); } }} />}
     {dirty && <span className={styles.small}>Unsaved</span>}{hint && <small>{hint}</small>}</div>
