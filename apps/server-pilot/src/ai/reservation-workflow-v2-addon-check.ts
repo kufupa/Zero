@@ -40,6 +40,7 @@ function validate({ draft, input, transportId, signal }: AddOnObservationInput):
   return null;
 }
 
+/** Caller holds the resolved HRCEN property lock for the entire awaited call, including cleanup. */
 export async function lookupAddOns(args: AddOnObservationInput): Promise<AddOnObservationResult> {
   const invalid = validate(args); if (invalid) return invalid;
   const { draft, input, transportId, signal } = args;
@@ -48,6 +49,7 @@ export async function lookupAddOns(args: AddOnObservationInput): Promise<AddOnOb
   return result;
 }
 
+/** Caller holds the resolved HRCEN property lock for the entire awaited call, including cleanup. */
 export async function previewAddOns(args: AddOnObservationInput): Promise<AddOnObservationResult> {
   const invalid = validate(args); if (invalid) return invalid;
   const { draft, input, signal } = args;
