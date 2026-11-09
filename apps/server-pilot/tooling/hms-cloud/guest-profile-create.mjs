@@ -196,6 +196,10 @@ async function profileDiagnosticSecrets(request) {
   finally { clearTimeout(timer); }
 }
 
+function diagnosticCredentialField(field) {
+  return typeof field === 'string' && /^(?:password|passwd|passcode|credential|secret|token|jwt|sid|cookie|set[_-]?cookie|authorization|proxy[_-]?authorization|authentication|auth(?:[_-]?(?:token|key))?|jsessionid|(?:session|access|refresh|request|csrf|id)[_-]?(?:token|key|id)|session|csrf[_-]?(?:ticket|tckt)|api[_-]?key|client[_-]?secret|x[_-](?:api[_-]?key|auth(?:entication)?[_-]?(?:token|key)?|access[_-]?token|refresh[_-]?token|csrf[_-]?token|session[_-]?(?:id|token)|id[_-]?token))$/i.test(field.split('.').at(-1).trim().replace(/\s+/g, '_'));
+}
+
 function diagnosticMessageText(value, secrets = false, fieldLabel = false) {
   if (typeof value !== 'string' || value.length > 8192 || secrets === null) return null;
   let text = secrets ? value.replace(secrets, '[redacted]') : value;
@@ -206,7 +210,7 @@ function diagnosticMessageText(value, secrets = false, fieldLabel = false) {
       try { const url = new URL(value); url.username = ''; url.password = ''; url.search = ''; url.hash = ''; return url.toString(); }
       catch { return '[redacted URL]'; }
     });
-  if (fieldLabel) return text.slice(0, 512);
+  if (fieldLabel && diagnosticCredentialField(value)) return text.slice(0, 512);
   text = text.replace(/\b(set-cookie|cookie)(\s*[:=]\s*)[^\r\n]*/gi, '$1$2[redacted]')
     .replace(/\b(authorization|proxy[_-]authorization|authentication|auth|password|passwd|passcode|credential|secret|token|jwt|sid|jsessionid|session|(?:session|request|access|refresh|id)(?:[_-]|\s+)?(?:token|id|key)|csrf(?:[_-]|\s+)?(?:tckt|ticket|token)|api(?:[_-]|\s+)?key|client(?:[_-]|\s+)?secret|cookie)(["']?\s*[:=]\s*|\s+is\s+)(?:(?:bearer|basic)\s+)?(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|<[^>\r\n]*(?:>|$)|[^\r\n,;}]+)/gi, '$1$2[redacted]')
     .replace(/\b((?:proxy[_-])?authorization)(\s+(?:bearer|basic)\s+)(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;]+)/gi, '$1$2[redacted]')
@@ -221,7 +225,7 @@ function profileValidationDetails(root, data, secrets) {
     if (validation.length >= 20) return;
     const fieldName = field ?? value?.field ?? value?.fieldName;
     // Preserve the native credential label, but never its attached values.
-    const credentialField = typeof fieldName === 'string' && /^(?:password|passwd|passcode|credential|secret|token|jwt|sid|cookie|set[_-]?cookie|authorization|proxy[_-]?authorization|authentication|auth(?:[_-]?(?:token|key))?|jsessionid|(?:session|access|refresh|request|csrf|id)[_-]?(?:token|key|id)|session|csrf[_-]?(?:ticket|tckt)|api[_-]?key|client[_-]?secret|x[_-](?:api[_-]?key|auth(?:entication)?[_-]?(?:token|key)?|access[_-]?token|refresh[_-]?token|csrf[_-]?token|session[_-]?(?:id|token)|id[_-]?token))$/i.test(fieldName.split('.').at(-1).trim().replace(/\s+/g, '_'));
+    const credentialField = diagnosticCredentialField(fieldName);
     const message = typeof value === 'string' ? value : value && typeof value === 'object' && !Array.isArray(value)
       ? value.msg ?? value.message ?? value.errorMessage ?? value.validationMessage ?? value.description : null;
     const entry = { source, field: diagnosticMessageText(fieldName, secrets, true),
@@ -274,11 +278,16 @@ function profileFailureDiagnostics(data, parseStatus, secrets, root) {
     messageCount: Array.isArray(messages) ? Math.min(messages.length, 5) : null,
     messagesTruncated: Array.isArray(messages) && messages.length > 5,
     messages: items.map(message => {
-      const msg = diagnosticMessageText(typeof message === 'string' ? message : message?.msg ?? message?.message, secrets);
+      const field = message?.field ?? message?.fieldName;
+      const credentialField = diagnosticCredentialField(field);
+      const msg = credentialField ? null : diagnosticMessageText(typeof message === 'string' ? message : message?.msg ?? message?.message, secrets);
       const numericCode = typeof message?.code === 'number' && Number.isFinite(message.code);
-      const code = diagnosticMessageText(numericCode ? String(message.code) : message?.code, secrets);
-      return { type: diagnosticMessageText(message?.type, secrets), code: numericCode && code === String(message.code) ? message.code : code,
-        questionType: diagnosticMessageText(message?.questiontype, secrets), handler: diagnosticMessageText(message?.handler, secrets), msg, text: msg };
+      const code = credentialField ? null : diagnosticMessageText(numericCode ? String(message.code) : message?.code, secrets);
+      return { field: diagnosticMessageText(field, secrets, true),
+        type: credentialField ? null : diagnosticMessageText(message?.type, secrets),
+        code: numericCode && code === String(message.code) ? message.code : code,
+        questionType: credentialField ? null : diagnosticMessageText(message?.questiontype, secrets),
+        handler: credentialField ? null : diagnosticMessageText(message?.handler, secrets), msg, text: msg };
     }),
   };
 }
