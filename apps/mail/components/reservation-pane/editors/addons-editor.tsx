@@ -8,6 +8,10 @@ import styles from './other-editors.module.css';
 
 type Editor = WorkbenchEditorProps;
 type SavedTarget = { kind: 'saved_target'; requestId: string; hintId: string };
+function matchesSavedTarget(value: unknown, target: SavedTarget) {
+  const candidate = record(value);
+  return candidate.kind === target.kind && candidate.requestId === target.requestId && candidate.hintId === target.hintId;
+}
 const serviceFields = [
   ['quantity', 'Quantity', 'text'], ['startDate', 'Start date', 'date'], ['endDate', 'End date', 'date'],
   ['unitPrice', 'Unit price', 'text'], ['frequency', 'Frequency', 'text'], ['pricingControl', 'Pricing basis', 'text'],
@@ -165,7 +169,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
       || c.workflow !== 'services' || c.kind !== (operation === 'add' ? 'catalogue_candidate' : 'saved_row_candidate') || c.requestId !== ref.requestId
       || c.serviceId !== service.id || c.fieldPath !== selectedPath
       || allocation && c.sourceAllocationId !== allocation
-      || savedTarget && (JSON.stringify(c.targetRef) !== JSON.stringify(savedTarget) || c.targetObservationRef !== selectedStay)) return [];
+      || savedTarget && (!matchesSavedTarget(c.targetRef, savedTarget) || c.targetObservationRef !== selectedStay)) return [];
     const candidate = record(record(observation.result).candidate);
     return Object.keys(candidate).length ? [{ observation, candidate }] : [];
   });
@@ -179,7 +183,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
       && (observation.criteria.kind === 'unsaved_addon_preview' ? observation.criteria.itemCandidateRef === selectedItem
         : observation.criteria.kind === 'saved_addon_fresh_prepare' && draft.observations.some(parent =>
           parent.ref === observation.criteria.unsavedPreviewRef && parent.criteria.itemCandidateRef === selectedItem))
-      : JSON.stringify(observation.criteria.targetRef) === JSON.stringify(ref)
+      : savedTarget && matchesSavedTarget(observation.criteria.targetRef, savedTarget)
       && observation.criteria.targetObservationRef === selectedStay && observation.criteria.candidateRef === selectedItem));
   const preview = record(latest?.result), native = record(preview.native), before = record(preview.before), after = record(preview.after);
   const selectedCandidate = catalogue.find(row => row.observation.ref === selectedItem)?.candidate;
