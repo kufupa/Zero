@@ -9,6 +9,7 @@ import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { reservationArrivalEvidence } from './reservation-workflow-v2-evidence.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
+import { recoverReservationWorkflowV2Contacts } from './reservation-workflow-v2-contact-recovery.js';
 import { advancePaneRevision, redoWorkItemRevision, undoWorkItemRevision,
   rebaseReservationV2Path, rebaseReservationV2Observations, nativeStructureIsSafe } from './work-item-revision.js';
 import {
@@ -233,7 +234,22 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
     if (!item) return { status: 'not_found' as const };
     const itemRow = { ...item, state: item.state as State };
     const existing = reservationWorkflowV2DraftOf(itemRow.state);
-    if (existing) return buildResult(tx, ctx, itemRow, input.source, input.allowSourceChanged);
+    if (existing) {
+      const current = await buildResult(tx, ctx, itemRow, input.source, input.allowSourceChanged);
+      if (current.status !== 'ok' || current.sourceChanged) return current;
+      const recovered = recoverReservationWorkflowV2Contacts(current.draft);
+      if (!recovered) return current;
+      const draft = { ...recovered.draft, revision: itemRow.revision + 1 };
+      const state = { ...itemRow.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft };
+      const advanced = advancePaneRevision({ revision: itemRow.revision, revisionHead: itemRow.revisionHead,
+        seq: itemRow.revisionSeq, previousState: itemRow.state, nextState: state, extractionId: itemRow.extractionId });
+      await tx.insert(workEvent).values({ workItemId: itemRow.id, actorKind: 'ai', type: 'field.seed',
+        fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:booker_contacts`, value: { paths: recovered.paths },
+        aiSource: RESERVATION_PREFILL_SCHEMA_VERSION, evidence: advanced.evidence });
+      await tx.update(workItem).set({ state, revision: advanced.revision, revisionHead: advanced.revisionHead,
+        revisionSeq: itemRow.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, itemRow.id));
+      return { status: 'ok' as const, draft, revision: advanced.revision, revisionHead: advanced.revisionHead, seq: itemRow.revisionSeq + 1 };
+    }
     if (hasReservationWorkflowV2Draft(itemRow.state)) return { status: 'invalid_state' as const };
     const evidenceHash = (await reservationArrivalEvidence(tx, input.source.messageId)).hash;
     const generationId = input.seed.generationId ?? randomUUID();
