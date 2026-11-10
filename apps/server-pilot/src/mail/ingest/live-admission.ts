@@ -21,7 +21,7 @@ import {
   enqueueInboundExtraction,
   inboundExtractionEnabled,
 } from '../../ai/extraction/inbound-run.js';
-import { isAiWriteGateEnabled, isInboundTriageClassifierEnabled } from '../../env.js';
+import { isAiWriteGateEnabled, isInboundTriageClassifierEnabled, isLegacyInboundTriagePipelineEnabled } from '../../env.js';
 import { classifyMailSource, type MailSourceClassification } from '../../ai/mail-source.js';
 import { isSelfSentPreStaySubject } from '../../ai/existing-stay-information.js';
 import { THREAD_CONTEXT_MAX_BYTES } from '../../ai/thread-context.js';
@@ -536,12 +536,13 @@ export async function admitLiveMessage(
   const reservationArrival = trigger.direction === 'inbound' && !routeAsAutomatedChannel
     ? await enqueueReservationArrival(db, { transportId: input.transportId, messageId: trigger.id, priority: 1 })
     : null;
-  // The inbound folder/label classifier is retired by INBOUND_TRIAGE_CLASSIFIER=off. Sent copies keep their baseline run.
+  // Sent copies still update reply analytics without running the triage classifier.
   if (
     !isCollector &&
     (trigger.direction === 'outbound' ||
-      routeAsAutomatedChannel ||
-      (!reservationArrival && isInboundTriageClassifierEnabled(process.env)))
+      (isLegacyInboundTriagePipelineEnabled(process.env) &&
+        (routeAsAutomatedChannel ||
+          (!reservationArrival && isInboundTriageClassifierEnabled(process.env)))))
   )
     await enqueueAiRun(
       {

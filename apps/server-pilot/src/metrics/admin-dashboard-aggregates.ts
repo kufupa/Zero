@@ -73,6 +73,43 @@ export type AdminDashboardFolderRow = {
   classification: 'primary' | 'ambiguous' | 'legacy' | 'unclassified';
 };
 
+const V2_WORKFLOW_LABELS = {
+  quote: 'Quote',
+  create: 'Create reservation',
+  amend: 'Amend',
+  cancel: 'Cancel',
+  filing: 'Filing',
+  services: 'Services / add-ons',
+  other: 'Other',
+} as const;
+
+export type AdminDashboardV2WorkflowSummary = {
+  classificationAsOf: string;
+  totalEmails: number;
+  unclassifiedEmails: number;
+  rows: Array<{ kind: keyof typeof V2_WORKFLOW_LABELS; label: string; count: number }>;
+};
+
+/** Count each kind at most once per email; one email can contain several kinds. */
+export function summarizeV2Workflows(input: {
+  classificationAsOf: string;
+  messageIds: readonly string[];
+  kindsByMessage: ReadonlyMap<string, readonly string[]>;
+}): AdminDashboardV2WorkflowSummary {
+  const rows = Object.entries(V2_WORKFLOW_LABELS).map(([kind, label]) => ({
+    kind: kind as keyof typeof V2_WORKFLOW_LABELS, label, count: 0,
+  }));
+  const byKind = new Map(rows.map((row) => [row.kind as string, row]));
+  const ids = [...new Set(input.messageIds)];
+  let unclassifiedEmails = 0;
+  for (const id of ids) {
+    const kinds = new Set((input.kindsByMessage.get(id) ?? []).filter((kind) => byKind.has(kind)));
+    if (!kinds.size) unclassifiedEmails++;
+    for (const kind of kinds) byKind.get(kind)!.count++;
+  }
+  return { classificationAsOf: input.classificationAsOf, totalEmails: ids.length, unclassifiedEmails, rows };
+}
+
 export type AdminDashboardDomainRow = {
   domain: string;
   count: number;
@@ -252,6 +289,7 @@ export type AdminDashboardAggregateResult = {
   activity: AdminDashboardActivity;
   conversations: AdminDashboardConversations;
   folders: AdminDashboardFolders;
+  v2Workflows?: AdminDashboardV2WorkflowSummary | null;
   correspondents: AdminDashboardCorrespondents;
   service: AdminDashboardService;
   dataHealth: import('./mail-data-health.js').MailDataHealth | null;

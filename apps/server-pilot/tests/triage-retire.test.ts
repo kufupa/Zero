@@ -37,7 +37,7 @@ import { ensureWorkItemForMessage } from '../src/ai/work-items.js';
 import { upsertSenderPreference } from '../src/mail/sender-preference.js';
 import { isInboundTriageClassifierEnabled } from '../src/env.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 import { executeAiRun, MAX_WORKER_SHUTDOWN_ATTEMPTS, runAiWorkerDrain } from '../src/ai/worker.js';
 import { callerFor } from './helpers/trpc-caller.js';
@@ -207,6 +207,7 @@ async function categoryIdsOf(db: DB, threadId: string): Promise<string[]> {
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', () => {
+  beforeEach(() => vi.stubEnv('LEGACY_INBOUND_TRIAGE_PIPELINE', 'on'));
   it('the classifier retires only on exactly off with extraction exactly on; off alone keeps it and warns once', () => {
     const extraction = { INBOUND_EXTRACTION: 'on' };
     expect(isInboundTriageClassifierEnabled({})).toBe(true);
@@ -439,6 +440,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
   it('with the flag off, a sent copy still gets its external-sent-baseline run and baseline row', () =>
     withWorkerDb(async (db) => {
       retire();
+      vi.stubEnv('LEGACY_INBOUND_TRIAGE_PIPELINE', 'off');
       const { messageId, threadId } = await persistOutlookHistory(
         db,
         history('u5-sent', {

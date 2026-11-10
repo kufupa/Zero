@@ -90,6 +90,13 @@ export type AdminDashboardFolderRow = {
   classification: 'primary' | 'ambiguous' | 'legacy' | 'unclassified';
 };
 
+export type AdminDashboardV2WorkflowSummary = {
+  classificationAsOf: string;
+  totalEmails: number;
+  unclassifiedEmails: number;
+  rows: Array<{ kind: string; label: string; count: number }>;
+};
+
 export type AdminDashboardDomainRow = {
   domain: string;
   count: number;
@@ -313,6 +320,7 @@ export type AdminDashboardMetrics = {
   activity?: AdminDashboardActivity;
   conversations?: AdminDashboardConversations;
   folders?: AdminDashboardFolders;
+  v2Workflows?: AdminDashboardV2WorkflowSummary | null;
   correspondents?: AdminDashboardCorrespondents;
   service?: AdminDashboardService;
   dataHealth?: AdminDashboardPayload['dataHealth'];
@@ -363,7 +371,7 @@ export type AdminDashboardExport = {
   };
   metrics: Pick<
     AdminDashboardMetrics,
-    'traffic' | 'activity' | 'service' | 'folders' | 'correspondents' | 'dataHealth'
+    'traffic' | 'activity' | 'service' | 'folders' | 'v2Workflows' | 'correspondents' | 'dataHealth'
   >;
 };
 

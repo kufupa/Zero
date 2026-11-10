@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import {
@@ -74,6 +74,8 @@ function withFakeS3(): FakeS3Storage {
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
+  beforeEach(() => vi.stubEnv('LEGACY_INBOUND_TRIAGE_PIPELINE', 'off'));
+  afterEach(() => vi.unstubAllEnvs());
   it('stores hotel-From copy as outbound with zero triage runs', async () => {
     await withSeededTestDb(async (db) => {
       const storage = withFakeS3();
@@ -102,7 +104,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
     });
   });
 
-  it('enqueues inbound_triage with promptVersion triage-v6 for guest From', async () => {
+  it('does not enqueue legacy inbound triage for guest From', async () => {
     await withSeededTestDb(async (db) => {
       const storage = withFakeS3();
       const raw = readFixture('centurion-stamped.eml');
@@ -119,16 +121,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
         { db, storage },
       );
 
-      const [run] = await db
+      const runs = await db
         .select()
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.triggerMessageId, messageId));
-      expect(run.runKind).toBe('inbound_triage');
-      expect(run.promptVersion).toBe('triage-v6');
+      expect(runs.filter((run) => run.runKind === 'inbound_triage')).toHaveLength(0);
     });
   });
 
-  it('creates one queued inbound triage run when a message is stored', async () => {
+  it('stores a message without queuing inbound triage', async () => {
     await withSeededTestDb(async (db) => {
       const storage = withFakeS3();
       const raw = readFixture('centurion-stamped.eml');
@@ -150,9 +151,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
         .select()
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.triggerMessageId, messageId));
-      expect(runs).toHaveLength(1);
-      expect(runs[0]?.runKind).toBe('inbound_triage');
-      expect(runs[0]?.state).toBe('queued');
+      expect(runs.filter((run) => run.runKind === 'inbound_triage')).toHaveLength(0);
     });
   });
 
@@ -188,14 +187,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
           .select()
           .from(aiWorkflowRun)
           .where(eq(aiWorkflowRun.triggerMessageId, messageId));
-        expect(runs.map((run) => run.runKind)).toEqual(['inbound_triage']);
-        expect(runs[0]?.metrics).toMatchObject({
-          mailSourceDecision: {
-            kind: 'channel',
-            source: 'Expedia Partner Central',
-            reason: 'sender_domain:m.expediapartnercentral.com',
-          },
-        });
+        expect(runs).toHaveLength(0);
         expect(await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId))).toHaveLength(0);
       });
     } finally {
@@ -240,7 +232,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
         .select()
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.triggerMessageId, firstId));
-      expect(runs).toHaveLength(1);
+      expect(runs.filter((run) => run.runKind === 'inbound_triage')).toHaveLength(0);
     });
   });
 

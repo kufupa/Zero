@@ -2,7 +2,9 @@ import {
   parseExecutiveDashboardQuery,
   resolveExecutiveDashboardQuery,
   loadAdminDashboardMetrics,
+  v2DashboardKinds,
 } from '../src/trpc/routes/admin-dashboard.js';
+import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import {
   assertAdminDashboardGrant,
   resolveAdminDashboardGrant,
@@ -127,6 +129,22 @@ describe('executive dashboard query and grants', () => {
       observationCutoff: CUTOFF,
       sourceVintage: CUTOFF,
     });
+    const mail = { messageId: 'message-1', threadId: 'thread-1', transportId: 'transport-centurion',
+      subject: 'Request', textBody: 'Please help', htmlBody: null };
+    const state = { contractVersion: 2, schemaVersion: 'reservation-prefill.v0.2',
+      workItemId: '00000000-0000-4000-8000-000000000001', generationId: '00000000-0000-4000-8000-000000000002',
+      transportId: mail.transportId, propertyCode: 'HRCEN', revision: 1, status: 'ready',
+      source: { threadId: mail.threadId, messageId: mail.messageId, arrivedAt: CUTOFF,
+        sourceHash: staffQuoteSourceHash({ id: mail.messageId, subject: mail.subject, textBody: mail.textBody, htmlBody: null }) },
+      proposal: { schemaVersion: 'reservation-prefill.v0.2', content: { requests: [{ id: 'one', kind: 'other',
+        requestText: 'Please help', sourceRefs: [], serviceRefs: [], documentRefs: [],
+        body: { requestedText: 'Please help', supported: false } }], services: [], documents: [] },
+        annotations: [], issues: [], sourceClaims: [], lookupResultRefs: [] },
+      observations: [], fieldReviewRequirements: {}, staffReviews: {}, operationResults: [], fieldOverrides: {}, errors: [] };
+    expect(v2DashboardKinds({ ...mail, state })).toEqual(['other']);
+    expect(v2DashboardKinds({ ...mail, textBody: 'changed', state })).toBeNull();
+    expect(v2DashboardKinds({ ...mail, state: { ...state, status: 'prefill_failed' } })).toBeNull();
+    expect(v2DashboardKinds({ ...mail, state: { ...state, transportId: 'other' } })).toBeNull();
   });
 });
 

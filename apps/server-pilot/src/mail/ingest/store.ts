@@ -76,7 +76,7 @@ import { enqueueInboundExtraction } from '../../ai/extraction/inbound-run.js';
 import { classifyMailSource } from '../../ai/mail-source.js';
 import { type ParsedInboundMessage, parseRawMessage, generateMessageId } from './parse-message.js';
 import { enqueueShadowPrediction, rematchShadowPredictions } from '../../ai/shadow-evaluation.js';
-import { ingestRequireOwnerHeader, isInboundTriageClassifierEnabled } from '../../env.js';
+import { ingestRequireOwnerHeader, isInboundTriageClassifierEnabled, isLegacyInboundTriagePipelineEnabled } from '../../env.js';
 import { rawMimeKey, getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { parsePersistedDeliveryOutcome } from '../send/outbound-queue.js';
 import { buildReferenceChain, canonicalMessageId } from './message-id.js';
@@ -969,11 +969,11 @@ export async function persistInboundMessage(
           threadId,
         });
       }
-      // INBOUND_TRIAGE_CLASSIFIER=off retires the inbound classifier run. Sent copies keep their baseline run.
+      // Sent copies still update reply analytics without running the triage classifier.
       if (
         isHotelSent ||
-        routeAsAutomatedChannel ||
-        isInboundTriageClassifierEnabled(process.env)
+        (isLegacyInboundTriagePipelineEnabled(process.env) &&
+          (routeAsAutomatedChannel || isInboundTriageClassifierEnabled(process.env)))
       ) {
         await enqueueAiRun(
           {

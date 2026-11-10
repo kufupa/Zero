@@ -1,5 +1,6 @@
 import {
   aggregateAdminDashboardMetrics,
+  summarizeV2Workflows,
   type AdminDashboardMessageRow,
   type AdminDashboardThreadRow,
 } from '../src/metrics/admin-dashboard-aggregates.js';
@@ -34,6 +35,15 @@ function thread(
 describe('aggregateAdminDashboardMetrics', () => {
   it('keeps the strict executive payload truthful across cohorts, clocks, duplicates, and sends', () => {
     const cutoff = new Date('2026-08-08T00:00:00.000Z');
+    const workflows = summarizeV2Workflows({
+      classificationAsOf: cutoff.toISOString(),
+      messageIds: ['one', 'two', 'three', 'one'],
+      kindsByMessage: new Map([['one', ['create', 'filing', 'filing']], ['two', ['cancel']], ['three', ['not-a-kind']]]),
+    });
+    expect(workflows.totalEmails).toBe(3);
+    expect(workflows.unclassifiedEmails).toBe(1);
+    expect(workflows.rows.filter((row) => row.count).map(({ kind, count }) => [kind, count]))
+      .toEqual([['create', 1], ['cancel', 1], ['filing', 1]]);
     const result = aggregateAdminDashboardMetrics({
       cohortId: 'centurion',
       observationCutoff: cutoff,
