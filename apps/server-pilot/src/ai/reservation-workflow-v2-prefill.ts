@@ -1251,6 +1251,14 @@ function projectBookerContacts(input: { proposal: ReservationWorkflowV2Proposal;
       return;
     }
     projectLimitedText({ proposal, target, field, claim: claims[0], currentRefs, max, path: `${root}/${field}` });
+    const claim = claims[0]!;
+    if (target[field] !== claim.value) return;
+    const path = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/${request.kind === 'create' ? 'shared' : 'client'}/${field}`;
+    const sourceRefs = claim.sourceRefs.filter(ref => currentRefs.has(ref));
+    proposal.annotations = proposal.annotations.filter(annotation => annotation.path !== path);
+    proposal.annotations.push({ path, basis: 'source', evidenceRefs: sourceRefs });
+    if (!proposal.sourceClaims.some(existing => existing.path === path && existing.raw === claim.raw))
+      proposal.sourceClaims.push({ path, raw: claim.raw, sourceRefs });
   };
   if (request.kind === 'quote') {
     project('attention', name, 300);
