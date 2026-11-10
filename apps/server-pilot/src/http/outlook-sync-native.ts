@@ -74,7 +74,7 @@ function logSyncDenial(operation: string, raw: unknown, deviceId: string | null,
   if (denialLogTimes.size >= 256 && !denialLogTimes.has(key))
     denialLogTimes.delete(denialLogTimes.keys().next().value!);
   denialLogTimes.set(key, now);
-  console.warn('outlook_sync_denied', JSON.stringify({ operation, kind, reason, device, source, site }));
+  console.warn('outlook_sync_denied', JSON.stringify({ at: new Date(now).toISOString(), operation, kind, reason, device, source, site }));
 }
 const eventInput = nativeFenced.extend({
   eventOnly: z.literal(true),
