@@ -1,3 +1,5 @@
+import { decodeHTML } from 'entities';
+
 /**
  * Parser for inbound Outlook / Exchange reaction notification fallback emails.
  *
@@ -40,19 +42,13 @@ const TRAILING_EMOJI_REGEX = new RegExp(
  * Strip HTML tags and entities for plaintext regex inspection.
  */
 export function htmlToPlainText(html: string): string {
-  return html
+  return decodeHTML(html
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/p>/gi, '\n\n')
     .replace(/<\/div>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replaceAll('&nbsp;', ' ')
-    .replaceAll('&amp;', '&')
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-    .replaceAll('&quot;', '"')
-    .replaceAll('&#39;', "'")
+    .replace(/<[^>]+>/g, ''))
     .trim();
 }
 
