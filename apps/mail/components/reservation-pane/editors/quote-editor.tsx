@@ -33,7 +33,7 @@ function SharedDate({ editor, groups, bodyPath, field, label }: {
   const editKey = `${bodyPath}/groups/shared/${field}`;
   useEffect(() => { if (!dirty.current) setValue(date); }, [date]);
   useEffect(() => () => editor.commands.setUncommitted(editKey, false), [editKey]);
-  return <div className={styles.localField}>
+  return <div data-field-path={`${bodyPath}/groups/0/${field}`} className={styles.localField}>
     <div className={styles.countHeading}><label htmlFor={id}>{label}</label>
       {groups.length === 1 && <FieldReview editor={editor} path={`${bodyPath}/groups/0/${field}`} label={label} onPendingChange={setReviewing} />}</div>
     <input id={id} type="date" value={value} disabled={editor.view.busy || reviewing} onChange={(event) => {
@@ -479,7 +479,7 @@ export function QuoteEditor(editor: Editor) {
       <Field label="Telephone" path={`${bodyPath}/client/telephone`} editor={editor} type="tel" compact />
       <Field label="Quote note" path={`${bodyPath}/notes`} editor={editor} type="textarea" compact />
       <p className={styles.note}>Choose outputs from the same current Infor-priced facts. Saving the cover email creates an unsent draft; quote files stay available to download.</p>
-      <fieldset className={styles.targetFields}><legend>Quote outputs</legend>
+      <fieldset data-field-path={artifactPath} className={styles.targetFields}><legend>Quote outputs</legend>
         {outputOptions.map((option) => <label key={option.kind}>
           <input type="checkbox" checked={artifacts.includes(option.kind)} disabled={view.busy}
             onChange={(event) => void commands.edit(artifactPath, event.target.checked
@@ -490,7 +490,7 @@ export function QuoteEditor(editor: Editor) {
       {!allOutputsSelected && <button type="button" className={styles.linkButton} disabled={view.busy}
         onClick={() => void commands.edit(artifactPath, outputOptions.map((option) => option.kind))}>Select full quote package</button>}
       <p className={styles.note}>A provisional booking needs a separate Create action.</p>
-      {provisional !== false && <div className={styles.notice}>This request has not been confirmed as quote-only.
+      {provisional !== false && <div data-field-path={`${bodyPath}/provisionalBookingRequested`} className={styles.notice}>This request has not been confirmed as quote-only.
         <button type="button" className={styles.linkButton} onClick={() => void commands.edit(`${bodyPath}/provisionalBookingRequested`, false)}>Continue with quote only</button>
       </div>}
     </Section>

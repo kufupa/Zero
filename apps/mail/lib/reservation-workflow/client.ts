@@ -439,6 +439,7 @@ export function inputFieldLabel(value: string): string {
     requestedTotals: 'requested occupancy totals', nativeSelectionRef: 'confirmed Infor selection',
     staffAllowanceType: 'extra charge handling', cmsRecipient: 'confirmation recipient',
     cmsMessageId: 'confirmation message', targets: 'exact stays',
+    artifacts: 'quote outputs', provisionalBookingRequested: 'quote-only choice',
   };
   const suffix = value.split(':').slice(1).join(':');
   if (labels[key]) return labels[key]!;
