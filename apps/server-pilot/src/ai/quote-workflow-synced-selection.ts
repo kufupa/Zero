@@ -10,7 +10,7 @@ import {
   type SandboxRunner,
 } from '../mail/artifacts/read-artifact.js';
 import { getS3Storage } from '../storage/s3.js';
-import { paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
+import { paneSourceContentHash, paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
 import { canonicalMessageId } from '../mail/ingest/message-id.js';
 import { confirmationBase } from '../hms/confirmation-match.js';
 import { AMBIGUOUS_NUMBER_GROUPS, maskCardNumbers } from './card-mask.js';
@@ -718,6 +718,7 @@ export function orderThreadContext(
 export async function loadSyncedQuoteSelectionFromMailbox(input: {
   transportId: string;
   userId?: string;
+  contentHash?: string;
   internetMessageId?: string;
   selection?: PaneSourceSelection;
   /** The stored row's id. When set it is used instead of the header, which can be missing or shared by two rows. */
@@ -767,12 +768,13 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
           : eq(message.messageIdHeader, internetMessageId ?? ''),
         input.selection ? eq(message.messageIdHeader, internetMessageId ?? '') : undefined,
         paneSourceSelectionCondition(input.selection, input.userId
-          ? { userId: input.userId, internetMessageId: internetMessageId ?? undefined } : undefined),
+          ? { userId: input.userId, internetMessageId: internetMessageId ?? undefined, contentHash: input.contentHash } : undefined),
       ),
     )
     .limit(2);
   const row = selected[0];
   if (!row || selected.length !== 1) return null;
+  if (input.selection?.kind === 'outlook' && input.contentHash && paneSourceContentHash(row) !== input.contentHash) return null;
 
   const threadRows = await db
     .select({

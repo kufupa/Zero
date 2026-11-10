@@ -4,6 +4,19 @@ import { message } from '../db/schema/mail.js';
 import { outlookSyncObservation, outlookSyncSource } from '../db/schema/outlook-sync.js';
 import { outlookDevice, outlookDeviceReadRoot } from '../db/schema/outlook-device.js';
 import { canonicalMessageId } from './ingest/message-id.js';
+import { createHash } from 'node:crypto';
+import { canonicalEvidenceBody } from './ingest/canonical-identity.js';
+
+export const paneSourceContentHashSchema = z.string().regex(/^[0-9a-f]{64}$/);
+/** Same whitespace treatment as canonical ingestion; corroborate the selected body without sending it again. */
+export function paneSourceContentHash(source: {
+  subject: string | null; fromAddress: string; textBody: string | null; htmlBody: string | null;
+}): string {
+  const sender = (/<([^<>]+)>/.exec(source.fromAddress)?.[1] ?? source.fromAddress).trim().toLowerCase();
+  return createHash('sha256').update(JSON.stringify([
+    (source.subject ?? '').replace(/\s+/g, ' ').trim(), sender, canonicalEvidenceBody(source),
+  ])).digest('hex');
+}
 
 /** Web uses stored IDs; Outlook uses its native locator or an approved mailbox copy. */
 export const paneSourceSelectionSchema = z.discriminatedUnion('kind', [
@@ -23,7 +36,7 @@ export type PaneSourceSelection = z.infer<typeof paneSourceSelectionSchema>;
 
 /** Additional scope for a query already restricted to the mailbox and canonical RFC Message-ID. */
 export function paneSourceSelectionCondition(selection?: PaneSourceSelection,
-  mailboxCopy?: { userId: string; internetMessageId?: string }): SQL | undefined {
+  mailboxCopy?: { userId: string; internetMessageId?: string; contentHash?: string }): SQL | undefined {
   if (!selection) return undefined;
   if (selection.kind === 'web') {
     return and(eq(message.id, selection.messageId), eq(message.threadId, selection.threadId));
@@ -44,7 +57,7 @@ export function paneSourceSelectionCondition(selection?: PaneSourceSelection,
       and ${locator} and ${outlookSyncObservation.direction} = ${message.direction}::text
   )`;
   const header = canonicalMessageId(mailboxCopy?.internetMessageId);
-  if (!mailboxCopy?.userId || !header) return committed;
+  if (!mailboxCopy?.userId || !header || !mailboxCopy.contentHash) return committed;
   // POP3/BCC admission and prefill can finish before native sync. Reading that
   // stored copy needs an approved store and an exact, unique mailbox Message-ID,
   // not a second upload. Callers reject multiple rows; subject/date are never keys.

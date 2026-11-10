@@ -39,6 +39,16 @@ async function sourceEvidenceRef(messageId: string, role: string, identity: stri
   return `src_${hex.slice(0, 12)}`;
 }
 
+async function selectedContentHash(email: { subject: string; senderEmail: string; bodyText: string; bodyHtml: string }) {
+  // Match canonical ingestion's whitespace normalization, keeping body text out of the request URL.
+  const body = (email.bodyText || email.bodyHtml.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
+  if (!body) return undefined;
+  const sender = (/<([^<>]+)>/.exec(email.senderEmail)?.[1] ?? email.senderEmail).trim().toLowerCase();
+  const value = JSON.stringify([email.subject.replace(/\s+/g, ' ').trim(), sender, body]);
+  const hash = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 /** Installed bridge/auth/sync remain shared; the old quote workflow is never mounted here. */
 export function ReservationPaneHost({ bridge, preview = false, webSelectedThreadId }: Props) {
   const { data: session, isLoading: sessionLoading } = useSession();
@@ -77,6 +87,9 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [sourceRetryable, setSourceRetryable] = useState(false);
   const [sourceRetry, setSourceRetry] = useState(0);
+  const sourceLoad = useRef({ owner, retry: sourceRetry, startedAt: null as number | null });
+  if (sourceLoad.current.owner !== owner || sourceLoad.current.retry !== sourceRetry)
+    sourceLoad.current = { owner, retry: sourceRetry, startedAt: null };
   const client = useMemo(() => createTrpcReservationWorkflowClient(trpcClient), []);
   const [pendingBuild, setPendingBuild] = useState<PaneVersion | null>(null);
   const [loadedBuild] = useState(() => loadedPaneBuild());
@@ -179,25 +192,33 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
     setSourceRetryable(false);
     if (!owner || !selection || !email || !connection?.id || bridge.requiresRelogin ||
       (!preview && (bridge.updateRequired || bridge.authorizationUnavailable || bridge.selectionOutsideMailbox))) return;
+    const startedAt = sourceLoad.current.startedAt ?? Date.now();
+    sourceLoad.current.startedAt = startedAt;
     const selectedEpoch = epoch.current.value;
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
     const resolve = async () => {
       try {
+        const contentHash = preview ? undefined : await selectedContentHash(email);
+        if (!alive || currentOwner.current !== owner || epoch.current.value !== selectedEpoch) return;
         const result = await trpcClient.reservationWorkflowV2.resolveSource.query({ selection,
+          ...(contentHash ? { contentHash } : {}),
           ...(email.internetMessageId ? { internetMessageId: email.internetMessageId } : {}) });
         if (!alive || currentOwner.current !== owner || epoch.current.value !== selectedEpoch) return;
         if (result.status !== 'ok') {
+          const elapsedMs = Date.now() - startedAt;
           setSourceRetryable(result.status === 'source_unavailable');
           setSourceError(result.status === 'wrong_property'
             ? result.message : result.reason === 'ambiguous'
               ? 'Nava found more than one matching email. Reopen the selected email after copying finishes.'
+              : result.reason === 'content_mismatch'
+                ? 'The selected email differs from Nava’s copy. Retry after Outlook finishes copying it.'
               : result.reason === 'attention'
                 ? 'This email copy needs checking before Nava can open it. Retry after copying finishes.'
-                : attempts >= 11
+                : elapsedMs >= 110_000
                   ? 'Nava could not open this email copy yet. Retry opening it, or reconnect Outlook if copying has stopped.'
-                  : attempts >= 3
+                  : elapsedMs >= 30_000
                   ? 'This email is taking longer to open. Nava will keep checking; you can retry now.'
                   : 'Waiting for this email to become available in Nava.');
           if (result.status === 'source_unavailable' && result.reason !== 'ambiguous' && ++attempts < 12)

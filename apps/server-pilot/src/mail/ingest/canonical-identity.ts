@@ -24,7 +24,7 @@ export const corroboratedMessageId = (raw: string | null): string | null => {
 };
 const address = (v: string) => (/<([^<>]+)>/.exec(v)?.[1] ?? v).trim().toLowerCase();
 const participants = (v: string[]) => [...new Set(v.map(address))].sort().join('\n');
-const body = (v: CanonicalEvidence) =>
+export const canonicalEvidenceBody = (v: Pick<CanonicalEvidence, 'textBody' | 'htmlBody'>) =>
   (v.textBody || v.htmlBody?.replace(/<[^>]*>/g, ' ') || '').replace(/\s+/g, ' ').trim();
 type AttachmentIdentity = {
   s3Key: string;
@@ -79,8 +79,8 @@ export function compatibleCanonicalEvidence(a: CanonicalEvidence, b: CanonicalEv
     !Number.isFinite(a.authoredAt.getTime()) ||
     !Number.isFinite(b.authoredAt.getTime()) ||
     Math.abs(a.authoredAt.getTime() - b.authoredAt.getTime()) > 120_000 ||
-    !body(a) ||
-    body(a) !== body(b)
+    !canonicalEvidenceBody(a) ||
+    canonicalEvidenceBody(a) !== canonicalEvidenceBody(b)
   )
     return false;
   // Retain richer attachment variants. Conflicting known checksums cannot corroborate a reused ID.
