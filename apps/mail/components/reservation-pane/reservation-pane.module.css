@@ -34,7 +34,7 @@
 .section { margin:0 0 15px; }.section h3 { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.7px; margin:15px 0 9px; }
 .field { min-width:0; margin-bottom:9px; }.field label { display:block; font-size:12px; font-weight:500; margin-bottom:4px; }.field small,.small { color:var(--muted); display:block; font-size:11px; margin-top:3px; }
 .picker { position:relative; }.pickerInput { display:flex; border:1px solid #d3d9e2; border-radius:6px; }.pickerInput input { border:0; border-radius:6px 0 0 6px; }.pickerInput button { border:0; width:29px; padding:0; }
-.options { position:absolute; top:calc(100% + 3px); z-index:30; left:0; right:0; max-height:240px; overflow-y:auto; border:1px solid var(--border); border-radius:8px; background:var(--surface); box-shadow:0 6px 22px #17212f22; padding:4px; }
+.options { scrollbar-width:auto; scrollbar-color:#8b80a5 #f2f0f6; position:absolute; top:calc(100% + 3px); z-index:30; left:0; right:0; max-height:240px; overflow-y:auto; border:1px solid var(--border); border-radius:8px; background:var(--surface); box-shadow:0 6px 22px #17212f22; padding:4px; }
 .options button { width:100%; display:block; border:0; text-align:left; padding:8px; }.options small { display:block; padding:4px 8px; font-size:11px; }
 .stepper { display:flex; border:1px solid #d3d9e2; border-radius:6px; }.stepper input { text-align:center; border:0; padding:5px; }.stepper button { border:0; min-width:28px; padding:5px; }
 .footer { flex-shrink:0; background:var(--surface); border-top:1px solid var(--border); padding:10px 16px; z-index:10; box-shadow:0 -4px 14px #17212f06; }
@@ -77,3 +77,7 @@
 .priceBlock { min-width:0; border-top:1px solid var(--border); padding:8px 0; }
 .priceBlock strong { text-align:right; overflow-wrap:anywhere; }
 .priceBlock button { margin-top:6px; }
+
+.options::-webkit-scrollbar { display:block; width:12px; }
+.options::-webkit-scrollbar-thumb { background:#8b80a5; border:2px solid #f2f0f6; border-radius:6px; }
+.options::-webkit-scrollbar-track { background:#f2f0f6; }

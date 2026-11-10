@@ -41,6 +41,7 @@ import { enqueueReservationArrival, reservationArrivalEnabled } from '../../ai/r
 import {
   reservationWorkflowV2PreparationViews,
   reservationWorkflowV2Lookup,
+  reservationWorkflowV2NativeChoices,
   reservationWorkflowV2Prepare,
   reservationWorkflowV2Execute,
   reservationWorkflowV2Reconcile,
@@ -363,6 +364,7 @@ export const reservationWorkflowV2Router = router({
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source);
     const workflow = await nativeWorkflow(scoped, input, input.requestId);
     if (workflow.result) return workflow.result;
+    if (input.nativeFieldPath) return reservationWorkflowV2NativeChoices(scoped, input);
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteLookup(scoped, input);
     if (workflow.kind === 'filing') return reservationWorkflowV2FilingLookup(scoped, input);
     if (workflow.kind === 'create') return reservationWorkflowV2Lookup(scoped, input);

@@ -43,7 +43,7 @@ export type ReservationWorkflowV2TrpcClient = {
     review: MutationProcedure<ItemInput & { fieldPath: string; decision: 'accepted' | 'flagged'; note?: string | null }>;
     undo: MutationProcedure<ItemInput>;
     redo: MutationProcedure<ItemInput>;
-    lookup: MutationProcedure<ItemInput & { requestId?: string }>;
+    lookup: MutationProcedure<ItemInput & { requestId?: string; nativeFieldPath?: string }>;
     guestProfileOptions: MutationProcedure<ItemInput & { requestId: string; allocationId: string; field: ReservationGuestProfileOptionField }>;
     prepareGuestProfile: MutationProcedure<ItemInput & { requestId: string; allocationId: string; confirmDuplicateName?: boolean }>;
     createGuestProfile: MutationProcedure<ItemInput & { requestId: string; allocationId: string; confirmDuplicateName?: boolean;
@@ -685,7 +685,8 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     undo(command) { return refreshAfter(api.undo, itemInput(command), command.source); },
     redo(command) { return refreshAfter(api.redo, itemInput(command), command.source); },
     async lookup(command) {
-      const input = { ...itemInput(command), ...(command.requestId ? { requestId: command.requestId } : {}) };
+      const input = { ...itemInput(command), ...(command.requestId ? { requestId: command.requestId } : {}),
+        ...(command.nativeFieldPath ? { nativeFieldPath: command.nativeFieldPath } : {}) };
       const raw = await api.lookup.mutate(input, mailboxOptions(command.source));
       await refreshAfterStale(input, command.source, raw);
       const result = okResult(raw);
