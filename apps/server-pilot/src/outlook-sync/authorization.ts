@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 
 export const hashSyncSecret = (value: string) => createHash('sha256').update(value).digest('hex');
 export class SyncDeniedError extends Error {
-  constructor() {
+  constructor(readonly reason = 'unspecified') {
     super('Outlook sync denied');
   }
 }
@@ -51,7 +51,7 @@ export async function requireStaffSession(db: DB, sessionId: string, userId: str
     )
     .for('share')
     .limit(1);
-  if (!staff) throw new SyncDeniedError();
+  if (!staff) throw new SyncDeniedError('staff-session');
   return {
     sessionId,
     userId,
@@ -87,7 +87,7 @@ export async function requireRoot(
       r.rootEntryId === source.rootEntryId &&
       (generation === undefined || r.policyGeneration === generation),
   );
-  if (!root) throw new SyncDeniedError();
+  if (!root) throw new SyncDeniedError('read-root');
   return root;
 }
 /** Call only inside a short transaction. Source lock serializes Pause, takeover and grant finalization. */
@@ -110,22 +110,19 @@ export async function authorizedSource(
     source.rootEntryId !== scope.rootEntryId ||
     source.handleHash !== hashSyncSecret(scope.sourceHandle)
   )
-    throw new SyncDeniedError();
+    throw new SyncDeniedError('source-scope');
   const now = await databaseNow(db);
   const staff = await requireStaffSession(db, source.sessionId, source.userId);
   await requireRoot(db, source, source.policyGeneration);
-  if (
-    source.authorityExpiresAt <= now ||
-    (!options.allowPaused &&
+  if (source.authorityExpiresAt <= now) throw new SyncDeniedError('authority-expired');
+  if (!options.allowPaused &&
       (source.userPaused ||
         (source.resourcePauseReason && source.resourcePauseReason !== 'quota' &&
-          !(options.allowDisk && source.resourcePauseReason === 'disk')))) ||
-    (options.requireFence &&
-      (source.claimFence !== scope.claimFence ||
-        !source.claimExpiresAt ||
-        source.claimExpiresAt <= now))
-  )
-    throw new SyncDeniedError();
+          !(options.allowDisk && source.resourcePauseReason === 'disk'))))
+    throw new SyncDeniedError('source-paused');
+  if (options.requireFence &&
+      (source.claimFence !== scope.claimFence || !source.claimExpiresAt || source.claimExpiresAt <= now))
+    throw new SyncDeniedError('claim-fence');
   if (source.resourcePauseReason === 'quota' && !options.allowPaused && !options.allowQuota)
     throw new SyncQuotaError();
   return { source, staff, now };
