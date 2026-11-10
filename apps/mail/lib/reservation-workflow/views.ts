@@ -162,8 +162,12 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
       return { ref: observation.ref, value: code, label: text(row.label ?? row.name) || code, detail: [row.meaning ?? row.description, row.nativeId, row.email].filter(Boolean).join(' · ') }; }).filter(row => row.value);
   });
   const identities = kind === 'guest_candidate' || kind === 'party_candidate';
-  return choices.filter((row, index) => !choices.slice(index + 1).some(other =>
-    other.value === row.value && (!identities || other.ref === row.ref)));
+  const latest = new Map<string, NativeChoice>();
+  for (const row of choices) {
+    const key = identities ? JSON.stringify([row.ref, row.value]) : row.value;
+    latest.delete(key); latest.set(key, row);
+  }
+  return [...latest.values()];
 }
 
 /** Incomplete native searches are useful leads, never selectable identities. */

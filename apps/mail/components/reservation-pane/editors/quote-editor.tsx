@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { effectiveAt, nativeChoices, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { Count, Field, FieldReview, Section } from '../shared/stay-fields';
 import { NativePicker, usePickerPosition } from '../shared/native-pickers';
@@ -167,6 +167,7 @@ function RoomCode({ editor, path, options }: { editor: Editor; path: string; opt
   const position = usePickerPosition(open, picker);
   const [reviewing, setReviewing] = useState(false), [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null), [search, setSearch] = useState('');
+  const [activeIndex, setActiveIndex] = useState(-1);
   const dirty = useRef(false), version = useRef(0), loadingRef = useRef(false);
   const parse = (input: string) => [...new Set(input.split(',').map(code => code.trim().toUpperCase()).filter(Boolean))];
   useEffect(() => { if (!dirty.current) setValue(initial); }, [initial]);
@@ -186,7 +187,7 @@ function RoomCode({ editor, path, options }: { editor: Editor; path: string; opt
     catch (failure) { setError(failure instanceof Error ? failure.message : 'Infor room categories could not load.'); }
     finally { loadingRef.current = false; setLoading(false); }
   };
-  const openChoices = () => { setOpen(true); setSearch(''); if (!codes.length && !error) void load(); };
+  const openChoices = () => { setOpen(true); setSearch(''); setActiveIndex(-1); if (!codes.length && !error) void load(); };
   const change = (next: string) => {
     setValue(next); dirty.current = true; version.current += 1;
     editor.commands.setUncommitted(path, true); editor.commands.stageEdit(path, parse(next));
@@ -203,21 +204,46 @@ function RoomCode({ editor, path, options }: { editor: Editor; path: string; opt
     try { await editor.commands.edit(path, next); if (version.current === before) { dirty.current = false; editor.commands.setUncommitted(path, false); } }
     catch { /* controller retains the failure and pending edit */ }
   };
+  const shown = codes.filter(([code, label]) => `${code} ${label}`.toLowerCase().includes(search.toLowerCase()));
+  const activeId = open && activeIndex >= 0 && shown[activeIndex] ? `${id}-room-${activeIndex}` : undefined;
+  const keyboard = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Escape') { setOpen(false); setActiveIndex(-1); }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault(); if (!open) openChoices();
+      const count = open ? shown.length : codes.length;
+      setActiveIndex(index => !count ? -1 : event.key === 'ArrowDown' ? Math.min(index + 1, count - 1)
+        : index < 0 ? count - 1 : Math.max(0, index - 1));
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const row = open && shown[activeIndex];
+      if (row && !editor.view.busy && !reviewing) void choose(row[0]);
+      else if (!row) void commit().catch(() => {});
+    }
+  };
+  useEffect(() => {
+    if (!activeId) return;
+    const option = document.getElementById(activeId), menu = option?.closest('[role=listbox]');
+    if (!(menu instanceof HTMLElement) || !option) return;
+    const bounds = option.getBoundingClientRect(), viewport = menu.getBoundingClientRect();
+    if (bounds.bottom > viewport.bottom) menu.scrollTop += bounds.bottom - viewport.bottom;
+    else if (bounds.top < viewport.top) menu.scrollTop += bounds.top - viewport.top;
+  }, [activeId]);
   return <div data-field-path={path} className={`${styles.localField} ${styles.quoteLine}`}>
     <label htmlFor={id}>Room categories</label>
     <div ref={picker} className={pickerStyles.picker}>
-      <div className={pickerStyles.pickerInput}><input id={id} value={value} role="combobox" aria-expanded={open} aria-controls={`${id}-rooms`}
+      <div className={pickerStyles.pickerInput}><input id={id} value={value} role="combobox" aria-expanded={open} aria-controls={`${id}-rooms`} aria-activedescendant={activeId}
         disabled={reviewing || editor.view.busy && !loading} placeholder="Any category, or codes separated by commas" onFocus={openChoices} onClick={openChoices}
-        onChange={event => change(event.target.value)} onBlur={() => { void commit().catch(() => {}); }}
-        onKeyDown={event => { if (event.key === 'Escape') setOpen(false); if (event.key === 'ArrowDown') { event.preventDefault(); openChoices(); } }} />
+        onChange={event => { change(event.target.value); setActiveIndex(-1); }} onBlur={() => { void commit().catch(() => {}); }}
+        onKeyDown={keyboard} />
         <button type="button" aria-label="Show room categories" disabled={reviewing || loading} onMouseDown={event => event.preventDefault()}
           onClick={() => open ? setOpen(false) : openChoices()}>⌄</button></div>
       {open && <div id={`${id}-rooms`} role="listbox" aria-multiselectable="true" className={pickerStyles.options} style={position}>
-        <input aria-label="Search room categories" value={search} placeholder="Search code or meaning" onChange={event => setSearch(event.target.value)} onKeyDown={event => { if (event.key === 'Escape') setOpen(false); }} />
+        <input aria-label="Search room categories" aria-activedescendant={activeId} value={search} placeholder="Search code or meaning" onChange={event => { setSearch(event.target.value); setActiveIndex(-1); }} onKeyDown={keyboard} />
         {loading && <small role="status">Loading room categories from Infor…</small>}
         {error && <small role="alert">{error}</small>}
-        {codes.filter(([code, label]) => `${code} ${label}`.toLowerCase().includes(search.toLowerCase())).map(([code, label]) =>
-          <button key={code} type="button" role="option" aria-selected={parse(value).includes(code)} disabled={editor.view.busy || reviewing}
+        {shown.map(([code, label], index) =>
+          <button id={`${id}-room-${index}`} key={code} type="button" role="option" aria-selected={parse(value).includes(code)} style={activeIndex === index ? { background: '#f4f2ff' } : undefined} disabled={editor.view.busy || reviewing}
             onMouseDown={event => event.preventDefault()} onClick={() => { void choose(code); }}><span aria-hidden="true">{parse(value).includes(code) ? '✓ ' : ''}</span><strong>{code}</strong>{label && label !== code ? ` — ${label}` : ''}</button>)}
         {!codes.length && !loading && !error && <small>No Infor room categories returned.</small>}
         <small>Choose one or more categories. Blank searches every category. Review & check verifies prices and availability.</small>
