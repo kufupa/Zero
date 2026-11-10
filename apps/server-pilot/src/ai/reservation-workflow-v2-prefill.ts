@@ -1544,8 +1544,8 @@ function currentBoundNativeStay(input: {
     const result = observation.result;
     if (result.outcome === 'found' && isRecord(result.stay)) return true;
     if (result.outcome !== 'ok' || !Array.isArray(result.rows)) return false;
-    const expectedSurname = normalizedFact(query.split(/\s+/).at(-1));
-    return result.rows.some((row) => isRecord(row) && normalizedFact(row.lastName) === expectedSurname &&
+    return result.rows.some((row) => isRecord(row) && typeof row.firstName === 'string' && typeof row.lastName === 'string' &&
+      sameGuestName(`${row.firstName} ${row.lastName}`, query) &&
       typeof row.arrival === 'string' && matchedDates.some((date) => row.arrival === date.arrival &&
         (row.departure === null || row.departure === date.departure)) &&
       !(typeof row.status === 'string' && /^cancel{1,2}ed$/i.test(row.status.trim())));
