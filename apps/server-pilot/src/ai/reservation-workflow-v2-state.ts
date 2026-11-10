@@ -1136,10 +1136,21 @@ function validServiceTargetEdit(draft: ReservationWorkflowV2Draft, path: string,
   return reservationWorkflowV2DraftSchema.shape.proposal.safeParse(proposal).success;
 }
 
+/** A failed unsaved check can be corrected; a write outcome still fixes its scope. */
+export function reservationWorkflowV2SavedTargetOperationLocks(draft: ReservationWorkflowV2Draft,
+  result: ReservationWorkflowV2Draft['operationResults'][number]): boolean {
+  if (result.status === 'succeeded' || result.status === 'unknown') return true;
+  if (result.status !== 'failed') return false;
+  return !result.observationRefs.length || !result.observationRefs.every(ref => {
+    const observation = draft.observations.find(row => row.ref === ref);
+    return observation?.criteria.workflow === result.workflow && observation.criteria.stage === 'prepare';
+  });
+}
+
 /** An unrelated Add-On receipt must not freeze every saved stay in the request. */
 export function reservationWorkflowV2SavedTargetLocked(draft: ReservationWorkflowV2Draft, requestId: string, hintId: string): boolean {
   return draft.operationResults.some((result) => {
-    if (result.requestId !== requestId || (result.status !== 'succeeded' && result.status !== 'unknown')) return false;
+    if (result.requestId !== requestId || !reservationWorkflowV2SavedTargetOperationLocks(draft, result)) return false;
     if (result.workflow === 'amend') return !result.allocationId || result.allocationId === hintId;
     if (result.workflow !== 'services') return true;
     const refs = new Set(result.observationRefs);
@@ -1156,7 +1167,7 @@ function safeSavedTargetEdit(draft: ReservationWorkflowV2Draft, path: string): b
   const request = draft.proposal.content.requests.find((row, index) => row.id === parts[3] || String(index) === parts[3]);
   if (!request) return false;
   if (['mode', 'include', 'exclude'].includes(parts[6] ?? '') && draft.operationResults.some((row) =>
-      row.requestId === request.id && ['succeeded', 'failed', 'unknown'].includes(row.status))) return false;
+      row.requestId === request.id && reservationWorkflowV2SavedTargetOperationLocks(draft, row))) return false;
   // Amend has a per-hint semantic guard after the edit, including ancestor edits.
   if (request.kind === 'amend' && parts[6] !== 'exclude' &&
       draft.operationResults.some((row) => row.requestId === request.id && row.workflow === 'amend' &&

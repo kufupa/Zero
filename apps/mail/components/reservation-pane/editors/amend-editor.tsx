@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
-import { effectiveAt, record, requestPath, text, valueAt } from '@/lib/reservation-workflow/views';
+import { effectiveAt, record, requestPath, savedTargetOperationLocks, text, valueAt } from '@/lib/reservation-workflow/views';
 import { Field, Count, Section } from '../shared/stay-fields';
 import { NativePicker } from '../shared/native-pickers';
 import styles from './other-editors.module.css';
@@ -48,8 +48,8 @@ function definitelyDistinct(left: Record<string, unknown>, right: Record<string,
 }
 
 function lockedScope(editor: Editor) {
-  return editor.snapshot.session.draft.operationResults.some(result => result.requestId === editor.request.id &&
-    (result.status === 'succeeded' || result.status === 'failed' || result.status === 'unknown'));
+  const draft = editor.snapshot.session.draft;
+  return draft.operationResults.some(result => result.requestId === editor.request.id && savedTargetOperationLocks(draft, result));
 }
 
 async function correctAmendScope(editor: Editor, body: string,

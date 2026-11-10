@@ -1485,7 +1485,7 @@ function extractionPriceRequest(draft: ReservationWorkflowV2Draft, requestId: st
 }
 
 function priceSection(body: CreateRequestBody, extracted: NonNullable<ReturnType<typeof extractionPriceRequest>>,
-  price: ExtractedPriceRequest): { sectionId: string } | { issue: string } {
+  price: ExtractedPriceRequest): { sectionId: string } | { issue: string; blocksGo?: boolean } {
   if (price.scope === 'unknown') return { issue: 'The source did not distinguish per-room from whole-group pricing.' };
   const dateIndex = price.dateIndex ?? (extracted.dates.length === 1 ? 0 : undefined);
   if (dateIndex === undefined || dateIndex >= extracted.dates.length) {
@@ -1495,8 +1495,8 @@ function priceSection(body: CreateRequestBody, extracted: NonNullable<ReturnType
   const arrival = text(dates?.arrival?.value), departure = text(dates?.departure?.value);
   if (!arrival || !departure) return { issue: 'The source price date range is incomplete.' };
   const sections = body.dateSections.filter((section) => section.arrival === arrival && section.departure === departure);
-  if (sections.length !== 1) return { issue: sections.length ? 'The source date range maps to multiple booking sections.' :
-    'The source price dates no longer match one booking date section; refresh or resolve the source dates.' };
+  if (sections.length !== 1) return { blocksGo: sections.length === 0, issue: sections.length ? 'The source date range maps to multiple booking sections.' :
+    'The voucher price belongs to the original source dates. Correct the booking dates or review an updated voucher before saving.' };
   return { sectionId: sections[0]!.id };
 }
 
@@ -1560,7 +1560,7 @@ function reservationWorkflowV2CreatePriceComparison(draft: ReservationWorkflowV2
     return unknownPriceComparison({ price, reason: 'Source amount and currency claims conflict; the price was not compared.' });
   }
   const section = priceSection(body, extracted, price);
-  if ('issue' in section) return unknownPriceComparison({ price, reason: section.issue });
+  if ('issue' in section) return unknownPriceComparison({ price, reason: section.issue, blocksGo: section.blocksGo });
   const allocation = body.allocations.find((entry) => entry.id === allocationId);
   if (!allocation) return unknownPriceComparison({ price, reason: 'The target room allocation is unavailable.' });
   if (allocation.dateSectionId !== section.sectionId) return { status: 'not_applicable', blocksGo: false,
