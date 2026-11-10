@@ -236,7 +236,8 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
     const existing = reservationWorkflowV2DraftOf(itemRow.state);
     if (existing) {
       const current = await buildResult(tx, ctx, itemRow, input.source, input.allowSourceChanged);
-      if (current.status !== 'ok' || current.sourceChanged) return current;
+      // Reopening must preserve the staff member's pending Redo history.
+      if (current.status !== 'ok' || current.sourceChanged || itemRow.revision < itemRow.revisionHead) return current;
       const recovered = recoverReservationWorkflowV2Contacts(current.draft);
       if (!recovered) return current;
       const draft = { ...recovered.draft, revision: itemRow.revision + 1 };
