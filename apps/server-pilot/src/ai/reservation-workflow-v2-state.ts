@@ -1096,6 +1096,143 @@ function updateDraft(current: ReservationWorkflowV2Draft, input: {
   return reservationWorkflowV2DraftSchema.parse({ ...current, revision: current.revision + 1, proposal, fieldOverrides, staffReviews });
 }
 
+function effectiveDraftPath(draft: ReservationWorkflowV2Draft, stablePath: string, indexPath = stablePath): unknown {
+  const stable = stablePath.split('/').slice(1), indexed = indexPath.split('/').slice(1);
+  if (stable.length !== indexed.length) return undefined;
+  let value: unknown = draft, stablePrefix = '', indexPrefix = '';
+  for (let position = 0; position < stable.length; position++) {
+    const key = decodeURIComponent(stable[position]!);
+    value = Array.isArray(value) ? (/^\d+$/.test(key) ? value[Number(key)] : value.find(row =>
+      row && typeof row === 'object' && (row as { id?: unknown }).id === key))
+      : value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined;
+    stablePrefix += `/${stable[position]}`;
+    indexPrefix += `/${indexed[position]}`;
+    const override = draft.fieldOverrides[stablePrefix] ?? draft.fieldOverrides[indexPrefix];
+    if (override?.state === 'set') value = override.value;
+    else if (override && override.state !== 'inherit') value = null;
+  }
+  return value;
+}
+
+function rebaseDraftAfterRequestRemoval(draft: ReservationWorkflowV2Draft, requestId: string): ReservationWorkflowV2Draft | null {
+  const before = draft.proposal, after = structuredClone(before);
+  after.content.requests = after.content.requests.filter(row => row.id !== requestId);
+  const remap = <T>(values: Record<string, T>) => Object.fromEntries(Object.entries(values).flatMap(([path, value]) => {
+    const next = rebaseReservationV2Path(path, before, after);
+    return next ? [[next, value]] : [];
+  }));
+  const remapRows = <T extends { path: string }>(values: T[]) => values.flatMap(row => {
+    const path = rebaseReservationV2Path(row.path, before, after);
+    return path ? [{ ...row, path }] : [];
+  });
+  const next = { ...draft, proposal: { ...after, annotations: remapRows(after.annotations),
+    sourceClaims: remapRows(after.sourceClaims), issues: remapRows(after.issues) },
+    fieldOverrides: remap(draft.fieldOverrides), staffReviews: remap(draft.staffReviews),
+    fieldReviewRequirements: remap(draft.fieldReviewRequirements),
+    observations: rebaseReservationV2Observations(draft, before, after) };
+  return reservationWorkflowV2DraftSchema.safeParse(next).success ? next : null;
+}
+
+/** Keep an automatically separated Other task aligned with its quote claim after staff edits. */
+function updateSeparatedQuoteMoney(current: ReservationWorkflowV2Draft, next: ReservationWorkflowV2Draft,
+  fieldPath: string, override?: V2Override): ReservationWorkflowV2Draft | null {
+  if (!override) return next;
+  const parts = pathParts(fieldPath);
+  if (!parts || parts[0] !== 'proposal' || parts[1] !== 'content' || parts[2] !== 'requests') return next;
+  const requestIndex = /^\d+$/.test(parts[3] ?? '') ? Number(parts[3]) : -1;
+  const request = current.proposal.content.requests.find(row => row.id === parts[3]) ??
+    (requestIndex >= 0 ? current.proposal.content.requests[requestIndex] : undefined);
+  if (request?.kind !== 'quote') return next;
+  const indexedRequest = current.proposal.content.requests.indexOf(request);
+  let claimIndexes: number[] = [];
+  let changedHandling = false;
+  if (parts.length === 5 && parts[4] === 'requestText') {
+    claimIndexes = request.body.requestedMoney.map((_, index) => index);
+  } else if (parts.length === 6 && parts[4] === 'body' && parts[5] === 'requestedMoney') {
+    if (request.body.requestedMoney.some(claim => current.proposal.content.requests.some(row => row.kind === 'other' &&
+        row.body.separatedFrom?.requestId === request.id && row.body.separatedFrom.moneyId === claim.id))) return null;
+    return next;
+  } else if (parts[4] === 'body' && parts[5] === 'requestedMoney') {
+    const claimIndex = /^\d+$/.test(parts[6] ?? '') ? Number(parts[6])
+      : request.body.requestedMoney.findIndex(row => row.id === parts[6]);
+    const field = parts[7];
+    if (claimIndex < 0 || claimIndex >= request.body.requestedMoney.length ||
+        (field && !['amount', 'currency', 'unit', 'scope', 'targetRefs', 'staffAllowanceType'].includes(field))) return next;
+    claimIndexes = [claimIndex];
+    changedHandling = field === 'staffAllowanceType';
+  } else return next;
+
+  const stableRoot = `/proposal/content/requests/${encodeURIComponent(request.id)}`;
+  const indexedRoot = `/proposal/content/requests/${indexedRequest}`;
+  const requestText = effectiveDraftPath(next, `${stableRoot}/requestText`, `${indexedRoot}/requestText`);
+  const requestSummary = typeof requestText === 'string' ? requestText : request.requestText;
+  let result = next;
+  for (const claimIndex of claimIndexes) {
+    const claim = request.body.requestedMoney[claimIndex]!;
+    const moneyStable = `${stableRoot}/body/requestedMoney/${claimIndex}`;
+    const moneyIndexed = `${indexedRoot}/body/requestedMoney/${claimIndex}`;
+    const link = current.proposal.content.requests.filter((row): row is Extract<typeof row, { kind: 'other' }> => row.kind === 'other' &&
+      row.body.separatedFrom?.requestId === request.id && row.body.separatedFrom.moneyId === claim.id);
+    if (!link.length) continue;
+    const kind = effectiveDraftPath(result, `${moneyStable}/staffAllowanceType`, `${moneyIndexed}/staffAllowanceType`);
+    if (kind === 'dinner') {
+      for (const other of link) {
+        const root = `/proposal/content/requests/${encodeURIComponent(other.id)}`;
+        const index = result.proposal.content.requests.findIndex(row => row.id === other.id);
+        const indexed = `/proposal/content/requests/${index}`;
+        const hasHistory = result.operationResults.some(row => row.requestId === other.id);
+        const hasChildren = other.serviceRefs.length || other.documentRefs.length ||
+          result.proposal.content.services.some(row => row.ownerRequestId === other.id) ||
+          result.proposal.content.documents.some(row => row.ownerRequestId === other.id);
+        const hasStaffText = [root, indexed].some(prefix => Object.keys(result.fieldOverrides)
+          .some(path => path === prefix || path.startsWith(`${prefix}/`)) ||
+          Object.keys(result.staffReviews).some(path => path === prefix || path.startsWith(`${prefix}/`)));
+        if (hasHistory || hasChildren || hasStaffText) return null;
+        const removed = rebaseDraftAfterRequestRemoval(result, other.id);
+        if (!removed) return null;
+        result = removed;
+      }
+      continue;
+    }
+    if (changedHandling) continue;
+    for (const other of link) {
+      if (result.operationResults.some(row => row.requestId === other.id && row.status !== 'failed')) return null;
+      const otherIndex = result.proposal.content.requests.findIndex(row => row.id === other.id);
+      const otherRoot = `/proposal/content/requests/${encodeURIComponent(other.id)}`;
+      const otherIndexed = `/proposal/content/requests/${otherIndex}`;
+      const textPath = `${otherRoot}/body/requestedText`, indexedTextPath = `${otherIndexed}/body/requestedText`;
+      const priorText = effectiveDraftPath(current, textPath, indexedTextPath);
+      const textParents = [otherRoot, otherIndexed, `${otherRoot}/body`, `${otherIndexed}/body`];
+      if (Object.keys(current.fieldOverrides).some(path => textParents.includes(path))) return null;
+      const hasTextOverride = [textPath, indexedTextPath].some(path => Object.hasOwn(current.fieldOverrides, path));
+      if ((typeof priorText === 'string' && priorText !== other.body.requestedText) ||
+          hasTextOverride && typeof priorText !== 'string') return null;
+      const readMoney = (key: string, fallback: unknown) => {
+        const value = effectiveDraftPath(result, `${moneyStable}/${key}`, `${moneyIndexed}/${key}`);
+        return value === undefined ? fallback : value;
+      };
+      const currency = readMoney('currency', claim.currency), amount = readMoney('amount', claim.amount),
+        unit = readMoney('unit', claim.unit);
+      const detail = [currency, amount, unit]
+        .filter(value => value != null && typeof value !== 'object').map(value => String(value).trim()).join(' ');
+      const generated = `Handle separately from the room quote: ${detail}. ${requestSummary}`.slice(0, 2000);
+      const proposal = structuredClone(result.proposal);
+      const target = proposal.content.requests.find(row => row.id === other.id);
+      if (!target || target.kind !== 'other') return null;
+      target.body.requestedText = generated;
+      const fieldOverrides = { ...result.fieldOverrides };
+      for (const path of [textPath, indexedTextPath]) if (fieldOverrides[path]?.state === 'set') {
+        fieldOverrides[path] = { ...fieldOverrides[path]!, value: generated, updatedAt: new Date().toISOString() };
+      }
+      const staffReviews = { ...result.staffReviews };
+      for (const path of Object.keys(staffReviews)) if (path === textPath || path === indexedTextPath ||
+          textPath.startsWith(`${path}/`) || indexedTextPath.startsWith(`${path}/`)) delete staffReviews[path];
+      result = { ...result, proposal, fieldOverrides, staffReviews };
+    }
+  }
+  return result;
+}
+
 async function mutateDraft(ctx: Context, input: MutationInput & { fieldPath: string; override?: V2Override;
   review?: ReservationWorkflowV2Draft['staffReviews'][string]; eventType: 'field.edit' | 'field.accept' | 'field.reject';
   value: unknown }): Promise<ReservationWorkflowV2StateResult> {
@@ -1109,7 +1246,9 @@ async function mutateDraft(ctx: Context, input: MutationInput & { fieldPath: str
         const next = applyServiceTargetEdit(draft, input.fieldPath, input.override);
         return next ? { draft: next } : null;
       }
-      const next = updateDraft(draft, input);
+      const edited = updateDraft(draft, input);
+      const next = updateSeparatedQuoteMoney(draft, edited, input.fieldPath, input.override);
+      if (!next) return null;
       if (input.override && draft.operationResults.some((row) => row.workflow === 'amend' &&
           (row.status === 'succeeded' || row.status === 'unknown')) &&
           !nativeStructureIsSafe({ reservationWorkflowV2: draft }, { reservationWorkflowV2: next })) return null;

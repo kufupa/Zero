@@ -266,7 +266,8 @@ const requestSchema = z.discriminatedUnion('kind', [
     serviceRefs: z.array(refSchema).max(100), documentRefs: z.array(refSchema).max(100), kind: z.literal('filing'), body: filingBodySchema }).strict(),
   z.object({ id: idSchema, requestText: z.string().max(2000), sourceRefs: z.array(refSchema).max(100),
     serviceRefs: z.array(refSchema).max(100), documentRefs: z.array(refSchema).max(100), kind: z.literal('other'),
-    body: z.object({ requestedText: z.string().max(2000), supported: z.literal(false) }).strict() }).strict(),
+    body: z.object({ requestedText: z.string().max(2000), supported: z.literal(false),
+      separatedFrom: z.object({ requestId: idSchema, moneyId: idSchema }).strict().optional() }).strict() }).strict(),
 ]);
 
 export const reservationWorkflowV2ProposalSchema = z.object({
@@ -400,7 +401,7 @@ export const reservationWorkflowV2AddActionInputSchema = reservationWorkflowV2It
 export const reservationWorkflowV2ChangeRowsInputSchema = reservationWorkflowV2ItemInputSchema.extend({
   kind: z.enum(['add_allocation', 'remove_allocation', 'move_allocation', 'add_date_section', 'remove_date_section',
     'add_quote_group', 'remove_quote_group', 'add_target', 'remove_target', 'add_service', 'remove_service',
-    'add_document', 'remove_document', 'remove_action']),
+    'add_document', 'remove_document', 'remove_action', 'separate_quote_money', 'split_quote_dates']),
   requestId: idSchema, parentId: idSchema.optional(), entityId: idSchema.optional(), childIds: z.array(idSchema).max(200).optional(),
 }).strict();
 export const reservationWorkflowV2SelectNativeInputSchema = reservationWorkflowV2ItemInputSchema.extend({

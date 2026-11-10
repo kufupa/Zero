@@ -420,12 +420,38 @@ function okResult(result: unknown): RecordValue {
   return result;
 }
 
+/** Translate compiler pointers into the business fields staff can correct. */
+function inputFieldLabel(value: string): string {
+  const key = value.split(':')[0]!.split('/').at(-1) ?? value;
+  const labels: Record<string, string> = {
+    scope: 'occupancy per room', known_child_count: 'number of children and their ages',
+    childCount: 'number of children', childAges: 'children’s ages', adults: 'adults per room',
+    agency_selection_required: 'select the Infor agency', company_selection_required: 'select the Infor company',
+    arrival: 'arrival date', departure: 'departure date', quantity: 'quantity', roomCodes: 'room type',
+    roomType: 'room type', ratePlan: 'rate plan', board: 'meal plan', guaranteeType: 'guarantee',
+    sourceOfBusiness: 'source of business', firstName: 'guest first name', lastName: 'guest last name',
+    guestOptIn: 'guest opt-in', unitPrice: 'unit price', currency: 'currency', requestedRooms: 'number of rooms',
+    requestedTotals: 'requested occupancy totals', nativeSelectionRef: 'confirmed Infor selection',
+    staffAllowanceType: 'extra charge handling', cmsRecipient: 'confirmation recipient',
+    cmsMessageId: 'confirmation message', targets: 'exact stays',
+  };
+  const suffix = value.split(':').slice(1).join(':');
+  if (labels[key]) return labels[key]!;
+  if (suffix && labels[suffix]) return labels[suffix]!;
+  const plain = key.replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll('_', ' ');
+  return /^\d+$/.test(plain) ? 'requested details' : plain;
+}
+function inputFieldLabels(values: unknown): string {
+  return Array.isArray(values) ? [...new Set(values.filter(isString).map(inputFieldLabel))].join(', ') : '';
+}
+
 function operationNotice(result: unknown, success: string[]): string | undefined {
   if (!isRecord(result)) return 'The reservation service returned an unreadable native-tool result.';
   if (success.includes(String(result.status))) return undefined;
   const status = isString(result.status) ? result.status.replaceAll('_', ' ') : 'unknown outcome';
   const issue = nativeIssueText(result.issue);
-  return issue ? `Infor check: ${status} — ${issue}.` : `Infor check: ${status}.`;
+  const fields = inputFieldLabels(result.fields);
+  return `${issue ? `Infor check: ${status} — ${issue}.` : `Infor check: ${status}.`}${fields ? ` Review: ${fields}.` : ''}`;
 }
 
 function nativeIssueText(issue: unknown): string | null {
@@ -452,7 +478,7 @@ function serviceOperationNotice(result: unknown, success: string[]): string | un
     const row = isRecord(value) ? value : null;
     if (Array.isArray(row?.fields)) for (const field of row.fields) if (isString(field)) fields.add(field);
   }
-  return fields.size ? `${notice} Review: ${[...fields].join(', ')}.` : notice;
+  return fields.size ? `${notice} Review: ${inputFieldLabels([...fields])}.` : notice;
 }
 
 function quoteLookupNotice(result: unknown): string | undefined {
@@ -461,7 +487,7 @@ function quoteLookupNotice(result: unknown): string | undefined {
     if (!isRecord(value) || value.status === 'priced') return [];
     const status = isString(value.status) ? value.status.replaceAll('_', ' ') : 'unknown outcome';
     const issue = nativeIssueText(value.issue);
-    const fields = Array.isArray(value.fields) ? value.fields.filter(isString).join(', ') : '';
+    const fields = inputFieldLabels(value.fields);
     return [`Quote check: ${status}${issue ? ` — ${issue}` : ''}${fields ? `; review ${fields}` : ''}.`];
   });
   return issues.length ? issues.join(' ') : undefined;

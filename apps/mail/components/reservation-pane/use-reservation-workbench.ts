@@ -455,7 +455,17 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       autoDigest.current.set(actionKey, digest);
       if (request.kind === 'quote') {
         const groups = Array.isArray(body.groups) ? body.groups.map(record) : [];
-        if (groups.length && groups.every(group => text(group.arrival) && text(group.departure) && typeof group.quantity === 'number' && record(group.occupancy).scope === 'per_room')) void commands.lookup().catch(() => {});
+        if (groups.length && groups.every(group => {
+          const occupancy = record(group.occupancy), ages = occupancy.childAges;
+          return /^\d{4}-\d{2}-\d{2}$/.test(text(group.arrival)) && text(group.departure) > text(group.arrival)
+            && Number.isInteger(group.quantity) && Number(group.quantity) > 0 && occupancy.scope === 'per_room'
+            && Number.isInteger(occupancy.adults) && Number(occupancy.adults) >= 1 && Number(occupancy.adults) <= 6
+            && Number.isInteger(occupancy.childCount) && Number(occupancy.childCount) >= 0 && Number(occupancy.childCount) <= 6
+            && (Number(occupancy.childCount) === 0
+              ? ages === null || (Array.isArray(ages) && ages.length === 0)
+              : Array.isArray(ages) && ages.length === occupancy.childCount &&
+                ages.every(age => Number.isInteger(age) && Number(age) >= 0 && Number(age) <= 17));
+        })) void commands.lookup().catch(() => {});
       } else {
         const allocations = Array.isArray(body.allocations) ? body.allocations.map(record) : [];
         const sections = Array.isArray(body.dateSections) ? body.dateSections.map(record) : [];
@@ -466,7 +476,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
           const ages = occupancy.childAges;
           return section && text(section.arrival) && text(section.departure) && Number(occupancy.adults) > 0 && Number.isInteger(occupancy.childCount)
             && Array.isArray(ages) && ages.length === occupancy.childCount && ages.every(age => typeof age === 'number')
-            && text(guest.firstName) && text(guest.lastName) && text(guest.nativeSelectionRef ?? guest.suggestedRef)
+            && text(guest.firstName) && text(guest.lastName) && text(guest.nativeSelectionRef)
             && text(settings.roomType) && text(settings.ratePlan) && text(settings.guaranteeType) && text(settings.sourceOfBusiness);
         });
         for (const room of ready) {

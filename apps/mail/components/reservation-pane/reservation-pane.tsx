@@ -38,8 +38,8 @@ export function ReservationPane(props: ReservationPaneProps) {
   const { snapshot, request, commands, busy } = workbench;
   const createBlocked = source.selfPreStay && request?.kind === 'create';
   const prefill = snapshot?.session.draft.prefill;
-  const prefillStale = prefill?.status === 'running' && !!prefill.startedAt &&
-    Number.isFinite(Date.parse(prefill.startedAt)) && Date.now() - Date.parse(prefill.startedAt) >= 5 * 60_000;
+  const directPrefillAbandoned = prefill?.status === 'running' && !prefill.jobRunId && prefill.startedAt
+    && Date.now() - Date.parse(prefill.startedAt) >= 12 * 60_000;
   const editor: WorkbenchEditorProps | null = snapshot && request ? { source, snapshot, request,
     view: { busy, error: workbench.error, preview, saving: workbench.saving }, commands, onOpenEvidence: props.onOpenEvidence } : null;
   const body = snapshot && request ? record(effectiveAt(snapshot, `${requestPath(request.id)}/body`)) : {};
@@ -48,11 +48,8 @@ export function ReservationPane(props: ReservationPaneProps) {
   const digestFor = (current: ReservationPaneSnapshot | null) => JSON.stringify({
     generation: current?.session.draft.generationId, request: request?.id,
     body: current && request ? Object.fromEntries(Object.entries(record(effectiveAt(current, `${requestPath(request.id)}/body`))).filter(([field]) => request.kind !== 'cancel' || field !== 'previewObservationRefs')) : {},
-    overrides: Object.fromEntries(Object.entries(current?.session.draft.fieldOverrides ?? {}).filter(([path]) => request?.kind !== 'cancel' || !path.startsWith(`${requestPath(request.id)}/body/previewObservationRefs`)).map(([path, value]) => [path, {state: value.state, value: value.value}])) });
+    overrides: Object.fromEntries(Object.entries(current?.session.draft.fieldOverrides ?? {}).filter(([path]) => request && (path === requestPath(request.id) || path.startsWith(`${requestPath(request.id)}/`)) && (request.kind !== 'cancel' || !path.startsWith(`${requestPath(request.id)}/body/previewObservationRefs`))).map(([path, value]) => [path, {state: value.state, value: value.value}])) });
   const digest = digestFor(snapshot);
-  const quoteOutputs = record(body.outputIntent).artifacts;
-  const quoteNeedsTextOutput = request?.kind === 'quote' &&
-    (!Array.isArray(quoteOutputs) || quoteOutputs.length !== 1 || quoteOutputs[0] !== 'email_quote');
   const quotePrepared = request?.kind === 'quote' && snapshot ? [...snapshot.session.draft.operationResults].reverse().find(row => row.workflow === 'quote' && row.requestId === request.id && row.status === 'prepared') : null;
   const quoteObservation = quotePrepared && snapshot?.session.draft.observations.find(row => quotePrepared.observationRefs.includes(row.ref) && row.kind === 'rate_availability');
   const quoteExtras = record(quoteObservation?.result).extrasReviewItems;
@@ -99,7 +96,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     } catch { setChecked(null); }
   };
   const save = async () => {
-    if (!request || createBlocked || preview || workbench.blocked || extrasNeedReview || quoteNeedsTextOutput || checked !== digest) return;
+    if (!request || createBlocked || preview || workbench.blocked || extrasNeedReview || checked !== digest) return;
     try {
       if (request.kind === 'create' || request.kind === 'amend' || request.kind === 'cancel') {
         for (const id of ids) {
@@ -164,14 +161,15 @@ export function ReservationPane(props: ReservationPaneProps) {
         : createBlocked ? <div className={styles.empty}>This pre-stay email describes an existing reservation. Choose another action.</div>
         : Editor && editor ? <fieldset className={styles.sourceFieldset} disabled={sourceChanged}><Editor key={`${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${request.id}:${formReset}`} {...editor} />{(request.kind === 'create' || request.kind === 'amend') && snapshot.session.draft.proposal.content.services.some(service => service.ownerRequestId === request.id || request && snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id)?.serviceRefs.includes(service.id)) && <AddonsEditor key={`addons:${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${request.id}:${formReset}`} {...editor} />}</fieldset>
         : <div className={styles.empty}><h2>What does this email need?</h2>
-          <p>No supported task was identified. If this email needs work, choose an action to open its fields.</p>
+          <p>{text(body.requestedText) || 'No supported task was identified. If this email needs work, choose an action to open its fields.'}</p>{Boolean(body.separatedFrom) && <p>This request is retained for staff to handle separately. It is excluded from the room quote.</p>}
           <div className={styles.otherActions} aria-label="Choose an email action">
             {actionKinds.filter(kind => !(source.selfPreStay && kind === 'create')).map(kind => <button type="button" key={kind}
               disabled={disabled} onClick={() => { void workbench.addAction(kind).catch(() => {}); }}>{labels[kind]}</button>)}
           </div></div>}
       {request?.kind === 'quote' && snapshot && <QuoteOutputPanel source={source} snapshot={snapshot} requestId={request.id} save={props.onSaveQuoteOutput} latestSnapshot={workbench.latestSnapshot} readyForReply={workbench.readyForReply} blocked={busy || workbench.saving || workbench.blocked || workbench.conflict || sourceChanged} />}
-      {prefill?.status === 'running' && !prefillStale && <p className={styles.small}>Reading the email and checking Infor. You can start editing now.</p>}
-      {(prefill?.status === 'failed' || prefillStale) && <p className={styles.small}>Prefill did not finish. Your form still works. {(prefill?.status !== 'failed' || prefill.phase === 'native_checks' || prefill.attemptCount < 2) && <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button>}</p>}
+      {['queued', 'running'].includes(prefill?.status ?? '') && <p className={styles.small}>{prefill?.status === 'queued' ? 'Prefill is queued.' : prefill?.phase === 'native_checks' ? 'Checking the extracted details in Infor.' : 'Reading the email and attachments.'} You can start editing now.</p>}
+      {directPrefillAbandoned && prefill.attemptCount < 2 && <p className={styles.small}>Prefill appears interrupted. Your edits are kept. <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button></p>}
+      {prefill?.status === 'failed' && <p className={styles.small}>Prefill did not finish. Your form still works. {(prefill.phase === 'native_checks' || prefill.attemptCount < 2) && <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button>}</p>}
       {currentIssues.map((issue, index) => <p className={styles.notice} key={index}>{issueText(issue.explanation)}</p>)}
       {earlierIssues.length > 0 && <details className={styles.earlierChecks}>
         <summary>Earlier email checks · {earlierIssues.length} {allRoomsSaved ? 'notices' : 'incomplete'}</summary>
@@ -181,8 +179,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     {request && !createBlocked && request.kind !== 'services' && request.kind !== 'other' && <footer className={styles.footer}>
       {request.kind === 'create' && snapshot?.preparationViews.filter(view => view.requestId === request.id && view.price && !snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === view.allocationId && ['succeeded','unknown'].includes(text(row.status)))).map(view => <div key={view.allocationId} className={styles.price}><span>Room {ids.indexOf(view.allocationId) + 1} · {view.current ? 'Infor price' : 'Price needs refresh'}</span><strong>{view.price ? [view.price.currency, view.price.totalRate].filter(value => value != null).join(' ') : '—'}</strong></div>)}
       <div className={styles.actions}><button type="button" disabled={disabled || !ids.length && ['create','amend','cancel'].includes(request.kind)} onClick={() => { void check(); }}>Review & check</button>
-        <button type="button" className={styles.primary} disabled={disabled || preview || extrasNeedReview || quoteNeedsTextOutput || checked !== digest} onClick={() => { void save(); }}>{request.kind === 'quote' ? 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : 'Save in Infor'}</button></div>
-      {quoteNeedsTextOutput && <small>Choose the text reply above before generating.</small>}
+        <button type="button" className={styles.primary} disabled={disabled || preview || extrasNeedReview || checked !== digest} onClick={() => { void save(); }}>{request.kind === 'quote' ? record(quoteObservation?.result).failureKind === 'proven_shortage' ? 'Generate unsent decline' : 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : 'Save in Infor'}</button></div>
       {workbench.blocked && <small>Apply the changed selection before checking.</small>}
       {snapshot?.operationResults.filter(row => row.requestId === request.id && row.status !== 'prepared').map(row => {
         const guest = row.workflow === 'guest_profile';

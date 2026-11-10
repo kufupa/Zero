@@ -1,6 +1,6 @@
 import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationRequestProjection, ReservationFieldOverride, ReservationSavedServiceTarget, ReservationGuestProfileOptionField } from './types';
 
-export type RowChange = { kind: 'move_allocation' | 'add_allocation' | 'remove_allocation' | 'add_date_section' | 'remove_date_section' | 'add_quote_group' | 'remove_quote_group' | 'add_target' | 'remove_target' | 'add_service' | 'remove_service' | 'add_document' | 'remove_document' | 'remove_action'; requestId: string; parentId?: string; entityId?: string; childIds?: string[] };
+export type RowChange = { kind: 'move_allocation' | 'add_allocation' | 'remove_allocation' | 'add_date_section' | 'remove_date_section' | 'add_quote_group' | 'remove_quote_group' | 'add_target' | 'remove_target' | 'add_service' | 'remove_service' | 'add_document' | 'remove_document' | 'remove_action' | 'separate_quote_money' | 'split_quote_dates'; requestId: string; parentId?: string; entityId?: string; childIds?: string[] };
 export type WorkbenchCommands = {
   stageEdit(path: string, value: unknown, state?: ReservationFieldOverride['state']): void;
   setUncommitted(key: string, dirty: boolean): void;
