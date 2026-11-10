@@ -241,7 +241,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
             const nextRoot = ptr('proposal', 'content', 'requests', requestId);
             const groupIds = new Set(rows.map(row => row.id));
             const remap = (path: string): string | null => {
-              if (!path.startsWith(`${root}/`)) return null;
+              if (!path.startsWith(`${root}/`) || path.startsWith(`${root}/body/requestedMoney/`)) return null;
               const match = /\/groups\/(\d+)(?:\/|$)/.exec(path);
               if (!match) return path.replace(root, nextRoot);
               const groupId = groups[Number(match[1])]?.id;
