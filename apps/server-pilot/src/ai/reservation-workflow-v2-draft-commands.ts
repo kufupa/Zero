@@ -20,6 +20,8 @@ const id = () => randomUUID();
 type FilingRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'filing' }>;
 type FilingTargetHint = NonNullable<FilingRequest['body']['targets']>['include'][number];
 type CancelRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'cancel' }>;
+type QuoteRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'quote' }>;
+type QuoteDocument = ReservationWorkflowV2Proposal['content']['documents'][number];
 const occupancy = () => ({ adults: null, childCount: null, childAges: null });
 const hint = () => ({ id: id(), candidateRefs: [], suggestedRef: null, sourceRefs: [] });
 const scope = () => ({ mode: 'explicit' as const, include: [hint()], exclude: [], sourceRefs: [] });
@@ -36,6 +38,56 @@ const service = (requestId: string) => ({ id: id(), ownerRequestId: requestId, o
 const document = (requestId: string) => ({ id: id(), ownerRequestId: requestId, documentSourceRef: `manual_${id()}`,
   kind: 'unclassified' as const, handling: 'filing_requested' as const, targetRefs: [], requestedName: null,
   requestedDescription: null, uploadArtifactRef: null, sourceRefs: [] });
+
+/** Only exact, current-source context PDFs may be copied across split Quote actions. */
+function quoteSplitContextDocuments(draft: ReservationWorkflowV2Draft, proposal: ReservationWorkflowV2Proposal,
+  request: QuoteRequest): QuoteDocument[] | null {
+  const requestRoot = ptr('proposal', 'content', 'requests', request.id);
+  const effectiveRefs = valueAt(draft, `${requestRoot}/documentRefs`);
+  if (!Array.isArray(effectiveRefs) || effectiveRefs.length !== request.documentRefs.length ||
+      effectiveRefs.some((ref, index) => ref !== request.documentRefs[index]) ||
+      new Set(request.documentRefs).size !== request.documentRefs.length) return null;
+
+  const currentRefs = new Set(request.sourceRefs);
+  const documents: QuoteDocument[] = [];
+  const documentSources = new Set<string>();
+  for (const documentId of request.documentRefs) {
+    const matches = proposal.content.documents.filter((row) => row.id === documentId);
+    if (matches.length !== 1) return null;
+    const stored = matches[0]!;
+    const effective = effectiveTree(draft, ptr('proposal', 'content', 'documents', stored.id), stored) as QuoteDocument;
+    if (stored.ownerRequestId !== request.id || effective.id !== stored.id || effective.ownerRequestId !== request.id ||
+        stored.handling !== 'context' || effective.handling !== 'context' || !Array.isArray(stored.targetRefs) ||
+        !Array.isArray(effective.targetRefs) || stored.targetRefs.length || effective.targetRefs.length ||
+        stored.uploadArtifactRef !== null || effective.uploadArtifactRef !== null ||
+        effective.documentSourceRef !== stored.documentSourceRef ||
+        JSON.stringify(effective.sourceRefs) !== JSON.stringify(stored.sourceRefs) ||
+        !stored.sourceRefs.includes(stored.documentSourceRef) ||
+        stored.sourceRefs.some((ref) => !currentRefs.has(ref)) || !currentRefs.has(stored.documentSourceRef) ||
+        documentSources.has(stored.documentSourceRef)) return null;
+    documentSources.add(stored.documentSourceRef);
+    documents.push(effective);
+  }
+  return documents;
+}
+
+function duplicateQuoteDocumentState(draft: ReservationWorkflowV2Draft,
+  copies: Array<{ fromId: string; toId: string }>): void {
+  for (const { fromId, toId } of copies) {
+    const from = ptr('proposal', 'content', 'documents', fromId), to = ptr('proposal', 'content', 'documents', toId);
+    for (const key of ['annotations', 'issues', 'sourceClaims'] as const) {
+      const rows = draft.proposal[key] as Array<{ path: string }>;
+      const additional = rows.flatMap((row) => row.path === from || row.path.startsWith(`${from}/`)
+        ? [{ ...row, path: `${to}${row.path.slice(from.length)}` }] : []);
+      rows.push(...additional as typeof rows);
+    }
+    for (const key of ['fieldOverrides', 'staffReviews', 'fieldReviewRequirements'] as const) {
+      const values = draft[key] as Record<string, unknown>;
+      for (const [path, value] of Object.entries(values)) if (path === from || path.startsWith(`${from}/`))
+        values[`${to}${path.slice(from.length)}`] = structuredClone(value);
+    }
+  }
+}
 
 function rebase(draft: ReservationWorkflowV2Draft, before: ReservationWorkflowV2Proposal,
   after: ReservationWorkflowV2Proposal, changedRoots: string[]): ReservationWorkflowV2Draft {
@@ -128,6 +180,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
       if (!request) return null;
       const root = ptr('proposal', 'content', 'requests', request.id);
       const changedRoots: string[] = [];
+      const copiedQuoteDocumentIds: Array<{ fromId: string; toId: string }> = [];
       const targets = request.kind === 'amend' || request.kind === 'cancel' || request.kind === 'services' || request.kind === 'filing'
         ? request.body.targets : null;
       // Older Cancel/Filing editors can have an entire saved target array in an override.
@@ -250,8 +303,10 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           changedRoots.push(`${root}/body/dateSections`, `${root}/body/allocations`); break;
         }
         case 'split_quote_dates': {
-          if (request.kind !== 'quote' || request.serviceRefs.length || request.documentRefs.length ||
+          if (request.kind !== 'quote' || request.serviceRefs.length ||
               draft.operationResults.some(row => row.requestId === request.id && ['succeeded', 'unknown'].includes(row.status))) return null;
+          const contextDocuments = quoteSplitContextDocuments(draft, proposal, request);
+          if (!contextDocuments) return null;
           if (request.body.requestedMoney.some((claim, index) => valueAt(draft, `${root}/body/requestedMoney/${index}/staffAllowanceType`) !== 'unsupported' || !proposal.content.requests.some(row => row.kind === 'other' &&
               row.body.separatedFrom?.requestId === request.id && row.body.separatedFrom.moneyId === claim.id))) return null;
           const groups = request.body.groups.map((row, index) => effectiveTree(draft, `${root}/body/groups/${index}`, row) as typeof row);
@@ -262,6 +317,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
             buckets.set(key, [...(buckets.get(key) ?? []), row]);
           }
           if (buckets.size < 2 || proposal.content.requests.length + buckets.size - 1 > 200) return null;
+          if (proposal.content.documents.length + contextDocuments.length * (buckets.size - 1) > 200) return null;
           const effectiveBody = effectiveTree(draft, `${root}/body`, request.body) as typeof request.body;
           // Native party selections are staff-only evidence, not proposal fields.
           // Keep the original request's selection in its override; the split
@@ -282,8 +338,15 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
                 party.suggestedRef = null;
               }
             }
-            proposal.content.requests.push({ ...structuredClone(request), id: requestId,
-              body: { ...splitBody, groups: rows, requestedMoney: [] } });
+            const splitRequest = { ...structuredClone(request), id: requestId, documentRefs: [] as string[],
+              body: { ...splitBody, groups: rows, requestedMoney: [] } };
+            for (const sourceDocument of contextDocuments) {
+              const documentId = id();
+              proposal.content.documents.push({ ...structuredClone(sourceDocument), id: documentId, ownerRequestId: requestId });
+              splitRequest.documentRefs.push(documentId);
+              copiedQuoteDocumentIds.push({ fromId: sourceDocument.id, toId: documentId });
+            }
+            proposal.content.requests.push(splitRequest);
             const nextRoot = ptr('proposal', 'content', 'requests', requestId);
             const groupIds = new Set(rows.map(row => row.id));
             const remap = (path: string): string | null => {
@@ -416,6 +479,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
       }
       if (!reservationWorkflowV2ProposalSchema.safeParse(proposal).success) return null;
       const next = rebase(draft, before, proposal, changedRoots);
+      duplicateQuoteDocumentState(next, copiedQuoteDocumentIds);
       if (request.kind === 'create' && ['add_allocation', 'remove_allocation', 'move_allocation', 'add_date_section', 'remove_date_section'].includes(input.kind)) {
         request.body.dateSections.forEach((date, index) => {
           if (!changedDateIds.has(date.id)) return;

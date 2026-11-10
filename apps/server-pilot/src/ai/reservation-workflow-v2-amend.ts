@@ -1088,8 +1088,9 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
     catch { /* No positive completion without the saved evidence. */ }
   } finally { await rm(work, { recursive: true, force: true }).catch(() => {}); }
   const intent = record(result.readback);
-  const readback = result.outcome === 'amended' && result.writerSessionClosed === true &&
-    result.dispatchCallbacksDrained === true && result.businessFieldsMatched === true ? readbackMatches(intent, preparedResult) : null;
+  const nativeChecksPassed = result.outcome === 'amended' && result.writerSessionClosed === true &&
+    result.dispatchCallbacksDrained === true && result.businessFieldsMatched === true;
+  const readback = nativeChecksPassed ? readbackMatches(intent, preparedResult) : null;
   if (!dispatchState.handle) {
     if (dispatchState.claimAttempted) return { status: 'needs_reconcile', operationId: input.idempotencyKey,
       issue: 'amend_dispatch_claim_unconfirmed' };
@@ -1098,8 +1099,18 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
       : { status: 'refused', issue: text(result.issue) ?? 'amend_dispatch_not_authorized' };
   }
   if (!readback || !dispatchState.beforeEvidence || !dispatchState.beforeShot || !dispatchState.afterShot) {
+    const reasonCodes: string[] = [];
+    if (result.outcome !== 'amended') reasonCodes.push('native_outcome_not_amended');
+    if (result.writerSessionClosed !== true) reasonCodes.push('writer_session_not_closed');
+    if (result.dispatchCallbacksDrained !== true) reasonCodes.push('dispatch_callbacks_not_drained');
+    if (result.businessFieldsMatched !== true) reasonCodes.push('native_business_fields_not_matched');
+    if (nativeChecksPassed && !readback) reasonCodes.push('approved_readback_mismatch');
+    if (!dispatchState.beforeEvidence) reasonCodes.push('before_evidence_missing');
+    if (!dispatchState.beforeShot) reasonCodes.push('before_screenshot_receipt_missing');
+    if (!dispatchState.afterShot) reasonCodes.push('after_screenshot_receipt_missing');
     return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: dispatchState.handle.holdId,
-      issue: 'amend_readback_or_durable_receipt_unverified' };
+      issue: 'amend_readback_or_durable_receipt_unverified', reasonCodes,
+      nativeIssue: typeof result.issue === 'string' && /^[A-Z][A-Z0-9_]{2,80}$/.test(result.issue) ? result.issue : undefined };
   }
   const handle = dispatchState.handle as HmsLabtestWriteHandle;
   const beforeShot = dispatchState.beforeShot as { runId: string; sha256: string };

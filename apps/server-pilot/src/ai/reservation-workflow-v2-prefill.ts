@@ -57,6 +57,9 @@ const MAX_CANDIDATE_READS = 32;
 const MAX_DISPLAY_LEADS = 500;
 // Match the canonical draft observation limit; display-only rows must not crowd out other evidence.
 const MAX_DRAFT_OBSERVATIONS = 5000;
+const MAX_PROPOSAL_SOURCE_CLAIMS = 1000;
+const MAX_PROPOSAL_ISSUES = 1000;
+const CONFIRMATION_CLAIM_CAPACITY_ISSUE = 'confirmation_claim_capacity_exceeded';
 // Do not start additional reads indefinitely; in-flight non-cancellable legacy reads may finish later.
 const CANDIDATE_READ_START_BUDGET_MS = 90_000;
 const SOURCE_REF_PREFIX = 'src_';
@@ -1007,6 +1010,14 @@ function currentClaim<T extends { sourceRefs: string[] }>(claim: T | undefined, 
   return claim?.sourceRefs.some((ref) => currentRefs.has(ref)) ? claim : undefined;
 }
 
+function priorOnlySourceRefs(claims: Array<{ sourceRefs: string[] } | undefined>,
+  currentRefs: Set<string>, knownRefs: Set<string>): string[] {
+  const cited = claims.filter((claim): claim is { sourceRefs: string[] } =>
+    Boolean(claim?.sourceRefs.some((ref) => knownRefs.has(ref))));
+  if (!cited.length || cited.some((claim) => claim.sourceRefs.some((ref) => currentRefs.has(ref)))) return [];
+  return [...new Set(cited.flatMap((claim) => claim.sourceRefs.filter((ref) => knownRefs.has(ref))))];
+}
+
 function safeCurrentText(claim: { value: unknown; sourceRefs: string[] } | undefined,
   currentRefs: Set<string>, max: number): string | null | undefined {
   const source = currentClaim(claim, currentRefs);
@@ -1124,7 +1135,7 @@ function appendExtractionSourceClaims(proposal: ReservationWorkflowV2Proposal,
   extraction: ReservationWorkflowV2Extraction, knownRefs: Set<string>): void {
   const keys = new Set(proposal.sourceClaims.map((claim) => `${claim.path}\u001f${claim.raw}\u001f${[...claim.sourceRefs].sort().join('\u001e')}`));
   const add = (path: string, claim: { raw: string; sourceRefs: string[] } | undefined) => {
-    if (!claim || proposal.sourceClaims.length >= 1000) return;
+    if (!claim || proposal.sourceClaims.length >= MAX_PROPOSAL_SOURCE_CLAIMS) return;
     const sourceRefs = [...new Set(claim.sourceRefs.filter((ref) => knownRefs.has(ref)))].slice(0, 100);
     if (!sourceRefs.length) return;
     const key = `${path}\u001f${claim.raw}\u001f${[...sourceRefs].sort().join('\u001e')}`;
@@ -1169,8 +1180,106 @@ function appendExtractionSourceClaims(proposal: ReservationWorkflowV2Proposal,
   }
 }
 
+/** Keep per-Create native confirmation guards ahead of bounded, noncritical source claims. */
+function compactProposalSourceClaims(proposal: ReservationWorkflowV2Proposal, currentRefs: Set<string>): void {
+  const createIds = new Set(proposal.content.requests.filter((request) => request.kind === 'create').map((request) => request.id));
+  const confirmationsByRequest = new Map<string, { values: Set<string>; sourceRefs: Set<string> }>();
+  const otherClaims: ReservationWorkflowV2Proposal['sourceClaims'] = [];
+  for (const claim of proposal.sourceClaims) {
+    const match = /^\/proposal\/content\/requests\/([^/]+)\/confirmationReference(?:\/.*)?$/.exec(claim.path);
+    const values = [...new Set(claim.raw.match(/\b\d{6,10}-\d{1,4}\b/g) ?? [])];
+    const sourceRefs = claim.sourceRefs.filter((ref) => currentRefs.has(ref));
+    if (!match || !createIds.has(match[1]!) || !values.length || !sourceRefs.length) {
+      otherClaims.push(claim);
+      continue;
+    }
+    const group = confirmationsByRequest.get(match[1]!) ?? { values: new Set<string>(), sourceRefs: new Set<string>() };
+    values.forEach((value) => group.values.add(value));
+    sourceRefs.forEach((ref) => group.sourceRefs.add(ref));
+    confirmationsByRequest.set(match[1]!, group);
+  }
+  const overflowedRequests = new Set<string>();
+  const confirmationClaims = [...confirmationsByRequest].map(([requestId, group]) => {
+    let raw = '';
+    for (const value of group.values) {
+      const next = raw ? `${raw}; ${value}` : value;
+      if (next.length > 2000) { overflowedRequests.add(requestId); break; }
+      raw = next;
+    }
+    return { path: `/proposal/content/requests/${requestId}/confirmationReference`, raw,
+      sourceRefs: [...group.sourceRefs].slice(0, 100) };
+  });
+  proposal.sourceClaims = [...confirmationClaims,
+    ...otherClaims.slice(0, Math.max(0, MAX_PROPOSAL_SOURCE_CLAIMS - confirmationClaims.length))];
+
+  for (const requestId of overflowedRequests) {
+    const path = `/proposal/content/requests/${requestId}/confirmationReference`;
+    if (proposal.issues.some((issue) => issue.path === path && issue.kind === CONFIRMATION_CLAIM_CAPACITY_ISSUE)) continue;
+    proposal.issues.push({ path, kind: CONFIRMATION_CLAIM_CAPACITY_ISSUE,
+      explanation: 'This Create has more source confirmation claims than can be safely retained together. Resolve the source with staff before proceeding.',
+      evidenceRefs: [...(confirmationsByRequest.get(requestId)?.sourceRefs ?? [])].slice(0, 100) });
+  }
+
+  const capacityIssues = [...new Map(proposal.issues.filter((issue) => issue.kind === CONFIRMATION_CLAIM_CAPACITY_ISSUE &&
+    /^\/proposal\/content\/requests\/[^/]+\/confirmationReference$/.test(issue.path) &&
+    createIds.has(issue.path.split('/')[4]!)).map((issue) => [issue.path, issue])).values()];
+  if (!capacityIssues.length) return;
+  const safetyIssues = proposal.issues.filter((issue) => issue.kind !== CONFIRMATION_CLAIM_CAPACITY_ISSUE &&
+    (issue.kind.startsWith('existing_confirmation_') || issue.kind === 'confirmation_request_link_ambiguous'));
+  const uniqueSafetyIssues = [...new Map(safetyIssues.map((issue) => [`${issue.path}\u001f${issue.kind}`, issue])).values()];
+  const reservedIssues = [...capacityIssues, ...uniqueSafetyIssues].slice(0, MAX_PROPOSAL_ISSUES);
+  const reservedKeys = new Set(reservedIssues.map((issue) => `${issue.path}\u001f${issue.kind}`));
+  const otherIssues = proposal.issues.filter((issue) => !reservedKeys.has(`${issue.path}\u001f${issue.kind}`));
+  proposal.issues = [...reservedIssues, ...otherIssues.slice(0, Math.max(0, MAX_PROPOSAL_ISSUES - reservedIssues.length))];
+}
+
+function carryConfirmationClaimCapacityIssues(input: {
+  source: ReservationWorkflowV2Proposal;
+  target: ReservationWorkflowV2Proposal;
+  sourceRequestToExtractionId: ReadonlyMap<string, string>;
+  targetRequestToExtractionId: ReadonlyMap<string, string>;
+  currentRefs: ReadonlySet<string>;
+}): void {
+  const sourcePath = /^\/proposal\/content\/requests\/([^/]+)\/confirmationReference$/;
+  const targetIdsByExtractionId = new Map<string, string[]>();
+  for (const [requestId, extractionId] of input.targetRequestToExtractionId) {
+    const request = input.target.content.requests.find((candidate) => candidate.id === requestId && candidate.kind === 'create');
+    if (request) targetIdsByExtractionId.set(extractionId,
+      [...(targetIdsByExtractionId.get(extractionId) ?? []), requestId]);
+  }
+  for (const issue of input.source.issues) {
+    if (issue.kind !== CONFIRMATION_CLAIM_CAPACITY_ISSUE) continue;
+    const match = sourcePath.exec(issue.path);
+    const extractionId = match ? input.sourceRequestToExtractionId.get(match[1]!) : undefined;
+    if (!extractionId) continue;
+    for (const requestId of targetIdsByExtractionId.get(extractionId) ?? []) {
+      const path = `/proposal/content/requests/${requestId}/confirmationReference`;
+      if (input.target.issues.some((existing) => existing.path === path && existing.kind === CONFIRMATION_CLAIM_CAPACITY_ISSUE)) continue;
+      input.target.issues.push({ path, kind: CONFIRMATION_CLAIM_CAPACITY_ISSUE,
+        explanation: 'This Create has more source confirmation claims than can be safely retained together. Resolve the source with staff before proceeding.',
+        evidenceRefs: [...new Set(issue.evidenceRefs.filter((ref) => input.currentRefs.has(ref)))].slice(0, 100) });
+    }
+  }
+}
+
 function normalizedFact(value: unknown): string {
   return typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US') : '';
+}
+
+function boardMeaning(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim().toLocaleLowerCase('en-US').replace(/[\s&-]+/gu, '_');
+  const compact = normalized.replace(/_/g, '');
+  if (['room_only', 'roomonly', 'ro'].includes(normalized)) return 'room_only';
+  if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast'].includes(normalized) || compact === 'bedandbreakfast') return 'bb';
+  if (['dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_and_breakfast'].includes(normalized)) return 'dinner_bb';
+  return normalizedFact(value);
+}
+
+function boardValue(value: unknown): string | null {
+  const meaning = boardMeaning(value);
+  return ['room_only', 'bb', 'dinner_bb'].includes(meaning) ? meaning :
+    typeof value === 'string' ? value.trim() : null;
 }
 
 function projectPartyFact(target: Record<string, unknown>, field: string,
@@ -1282,6 +1391,53 @@ type DateProjectionTarget = { arrival: string | null; departure: string | null }
 
 function datePairKey(arrival: unknown, departure: unknown): string | null {
   return isoDay(arrival) && isoDay(departure) ? `${arrival}\u001f${departure}` : null;
+}
+
+function singleCurrentDatePair(dates: ProjectableDateClaim[], currentRefs: Set<string>): string | null {
+  const pairs = new Set<string>();
+  let partial = false;
+  for (const date of dates) {
+    const arrival = currentClaim(date.arrival, currentRefs), departure = currentClaim(date.departure, currentRefs);
+    if (!arrival && !departure) continue;
+    const key = datePairKey(citedText(arrival), citedText(departure));
+    if (!key) partial = true;
+    else pairs.add(key);
+  }
+  return !partial && pairs.size === 1 ? [...pairs][0]! : null;
+}
+
+function exactSourceCode(claim: { raw: string; value: unknown }, kind: 'room' | 'rate'): string | null {
+  if (typeof claim.value !== 'string') return null;
+  const code = claim.value.trim();
+  if (!/^[A-Z][A-Z0-9_-]{0,15}$/.test(code)) return null;
+  const raw = claim.raw.trim();
+  const explicitlyLabeled = kind === 'room'
+    ? /\broom\s*(?:type\s*)?code\b/i.test(raw)
+    : /\brate\s*(?:plan\s*)?(?:code|plan)\b/i.test(raw);
+  if (!explicitlyLabeled) return null;
+  const tokens = raw.toUpperCase().split(/[^A-Z0-9_-]+/).filter(Boolean);
+  return tokens.includes(code) ? code : null;
+}
+
+function currentSourceCodes(claims: Array<{ raw: string; value: unknown; sourceRefs: string[] }>,
+  currentRefs: Set<string>, kind: 'room' | 'rate'): { codes: string[]; sourceRefs: string[] } {
+  const byCode = new Map<string, Set<string>>();
+  for (const claim of claims) {
+    const current = currentClaim(claim, currentRefs);
+    if (!current) continue;
+    const code = exactSourceCode(current, kind);
+    if (!code) continue;
+    const refs = byCode.get(code) ?? new Set<string>();
+    current.sourceRefs.filter((ref) => currentRefs.has(ref)).forEach((ref) => refs.add(ref));
+    byCode.set(code, refs);
+  }
+  return { codes: [...byCode.keys()], sourceRefs: [...new Set([...byCode.values()].flatMap((refs) => [...refs]))] };
+}
+
+function quoteGroupsShareRoomScope(groups: Array<{ roomCodes: string[] }>): boolean {
+  if (groups.length < 2) return true;
+  const scopes = groups.map((group) => [...new Set(group.roomCodes)].sort().join('\u001f'));
+  return Boolean(scopes[0]) && scopes.every((scope) => scope === scopes[0]);
 }
 
 /** Exact date identity first; a single wholly empty slot may be filled by the only remaining source date. */
@@ -2094,6 +2250,9 @@ function projectCurrentExtraction(input: {
 }): { proposal: ReservationWorkflowV2Proposal; addedRequests: number; addedIssues: number;
   extractionIdByProposalRequestId: Map<string, string> } {
   const proposal = structuredClone(input.proposal);
+  // Synthesis issues are untrusted; only this host compactor may assert that its
+  // per-request confirmation claim exceeded the durable source-claim budget.
+  proposal.issues = proposal.issues.filter((issue) => issue.kind !== CONFIRMATION_CLAIM_CAPACITY_ISSUE);
   const knownRefs = new Set(input.evidence.map((row) => row.ref));
   const currentRefs = new Set(input.evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
   const pdfs = currentPdfEvidence(input);
@@ -2415,6 +2574,82 @@ function projectCurrentExtraction(input: {
     if (request.kind === 'filing') projectSingleSourceFilingHint({ proposal, request, extracted,
       extraction: currentExtraction, currentRefs, evidence: input.evidence });
 
+    // Synthesis can echo an otherwise current request's old room facts from a prior
+    // thread. Request-level sourceRefs are not field provenance, so clear only fields
+    // whose typed extraction claims have no current-source citation.
+    const sourceExtracted = input.extraction.requests.find((candidate) =>
+      candidate.id === extracted.id && candidate.kind === extracted.kind) ?? extracted;
+    const priorRoomCountRefs = priorOnlySourceRefs([sourceExtracted.roomCount], currentRefs, knownRefs);
+    const priorBoardRefs = priorOnlySourceRefs(sourceExtracted.boardHints, currentRefs, knownRefs);
+    const priorRoomCodeRefs = priorOnlySourceRefs(sourceExtracted.roomTypeHints, currentRefs, knownRefs);
+    const isPriceRateHint = (claim: { raw: string; value: unknown }) => typeof claim.value === 'string' &&
+      /[€£$]|\b(?:USD|GBP|EUR|AUD|CAD)\b|\b(?:per|nightly?|total|person|room)\b|^\s*(?:R|ZAR)\s*\d+(?:\.\d{1,2})?\s*$|^\s*\d+(?:\.\d{1,2})?\s*$/i.test(claim.raw);
+    const priorRatePlanRefs = priorOnlySourceRefs(sourceExtracted.rateHints.filter((claim) => !isPriceRateHint(claim)), currentRefs, knownRefs);
+    const priorAdultRefs = priorOnlySourceRefs(sourceExtracted.occupancy.map((row) => row.adults), currentRefs, knownRefs);
+    const priorChildCountRefs = priorOnlySourceRefs(sourceExtracted.occupancy.map((row) => row.childCount), currentRefs, knownRefs);
+    const priorChildAgeRefs = priorOnlySourceRefs(sourceExtracted.occupancy.flatMap((row) => row.childAges ?? []), currentRefs, knownRefs);
+    const priorOccupancyRefs = [...new Set([...priorAdultRefs, ...priorChildCountRefs, ...priorChildAgeRefs])];
+    const currentOccupancyRefs = [...new Set(sourceExtracted.occupancy.flatMap((row) =>
+      [row.adults, row.childCount, ...(row.childAges ?? [])].flatMap((claim) =>
+        claim?.sourceRefs.filter((ref) => currentRefs.has(ref)) ?? [])))];
+    const clearedPriorRefs: string[] = [];
+    if (request.kind === 'quote') {
+      if (priorRoomCountRefs.length) {
+        request.body.groups.forEach((group) => { group.quantity = null; });
+        clearedPriorRefs.push(...priorRoomCountRefs);
+      }
+      if (priorBoardRefs.length) {
+        request.body.groups.forEach((group) => { group.board = null; });
+        clearedPriorRefs.push(...priorBoardRefs);
+      }
+      if (priorRoomCodeRefs.length) {
+        request.body.groups.forEach((group) => { group.roomCodes = []; });
+        clearedPriorRefs.push(...priorRoomCodeRefs);
+      }
+      if (priorRatePlanRefs.length) {
+        request.body.groups.forEach((group) => { group.ratePlan = null; });
+        clearedPriorRefs.push(...priorRatePlanRefs);
+      }
+      if (priorOccupancyRefs.length) {
+        request.body.groups.forEach((group) => {
+          if (!currentOccupancyRefs.length || priorAdultRefs.length) group.occupancy.adults = null;
+          if (!currentOccupancyRefs.length || priorChildCountRefs.length) group.occupancy.childCount = null;
+          if (!currentOccupancyRefs.length || priorChildAgeRefs.length) group.occupancy.childAges = null;
+          group.occupancy.scope = 'unresolved';
+        });
+        clearedPriorRefs.push(...priorOccupancyRefs);
+      }
+    } else if (request.kind === 'create') {
+      if (priorRoomCountRefs.length) {
+        request.body.dateSections.forEach((section) => { section.requestedRooms = null; });
+        clearedPriorRefs.push(...priorRoomCountRefs);
+      }
+      if (priorRoomCodeRefs.length || priorRatePlanRefs.length) {
+        const bookingFields = [request.body.shared, ...request.body.dateSections.map((section) => section.defaults),
+          ...request.body.allocations.map((allocation) => allocation.overrides)];
+        bookingFields.forEach((fields) => {
+          if (priorRoomCodeRefs.length) fields.roomType = null;
+          if (priorRatePlanRefs.length) fields.ratePlan = null;
+        });
+        clearedPriorRefs.push(...priorRoomCodeRefs, ...priorRatePlanRefs);
+      }
+      if (priorOccupancyRefs.length) {
+        const clearPriorComponents = (occupancy: { adults: number | null; childCount: number | null;
+          childAges: Array<number | null> | null }) => {
+          if (!currentOccupancyRefs.length || priorAdultRefs.length) occupancy.adults = null;
+          if (!currentOccupancyRefs.length || priorChildCountRefs.length) occupancy.childCount = null;
+          if (!currentOccupancyRefs.length || priorChildAgeRefs.length) occupancy.childAges = null;
+        };
+        request.body.dateSections.forEach((section) => clearPriorComponents(section.requestedTotals));
+        request.body.allocations.forEach((allocation) => clearPriorComponents(allocation.occupancy));
+        clearedPriorRefs.push(...priorOccupancyRefs);
+      }
+    }
+    if (clearedPriorRefs.length) addProjectionIssue(proposal, `/requests/${request.id}/body`,
+      'prior_booking_facts_not_current',
+      'Some booking details were supported only by earlier mail, not this request. They were cleared; confirm them from the current request before continuing.',
+      [...new Set(clearedPriorRefs)]);
+
     const projectedDates = extracted.dates;
     if (request.kind === 'quote') {
       const dateLinks = matchQuoteDateProjectionTargets({ targets: request.body.groups, dates: projectedDates, currentRefs });
@@ -2443,15 +2678,143 @@ function projectCurrentExtraction(input: {
         `/requests/${request.id}/body/groups`, 'synthesized_date_without_source',
         'A synthesized date group had no unique current source date; its dates were cleared while source claims and group associations were retained for staff review.',
         request.sourceRefs.filter((ref) => knownRefs.has(ref)));
-      if (request.body.groups.length === 1) {
-        const group = request.body.groups[0]!;
-        const roomCount = currentClaim(extracted.roomCount, currentRefs);
-        if (roomCount) group.quantity = citedInteger(roomCount) ?? null;
-        const board = currentClaim(extracted.boardHints[0], currentRefs);
-        projectLimitedText({ proposal, target: group as unknown as Record<string, unknown>, field: 'board', claim: board, currentRefs, max: 120,
-          path: `/requests/${request.id}/body/groups/0/board` });
+      const currentDatePair = singleCurrentDatePair(projectedDates, currentRefs);
+      const linkedQuoteGroups = [...new Set([...dateLinks.targetsByDate.values()].flat())];
+      const currentRoomHints = extracted.roomTypeHints.filter((hint) => currentClaim(hint, currentRefs));
+      const roomCodes = currentSourceCodes(extracted.roomTypeHints, currentRefs, 'room');
+      const roomCount = currentClaim(extracted.roomCount, currentRefs);
+      if (roomCount) {
+        const count = citedInteger(roomCount);
+        if (request.body.groups.length === 1 && currentDatePair && linkedQuoteGroups.includes(0) &&
+            typeof count === 'number' && count >= 1 && count <= 100) {
+          request.body.groups[0]!.quantity = count;
+        } else {
+          // The extraction schema carries one request-wide count, while Quote compiles
+          // each group additively. Copying this count into mixed groups inflates demand.
+          for (const group of request.body.groups) group.quantity = null;
+          const validCount = typeof count === 'number' && count >= 1 && count <= 100;
+          addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, validCount
+            ? 'quote_group_quantity_scope_ambiguous' : 'quote_room_count_invalid',
+            validCount
+              ? 'The source gives one room count for the whole request, but this Quote has multiple or unscoped groups. The count was kept in source claims and not repeated across groups; allocate rooms per group with staff.'
+              : 'The cited room count is not a valid quantity for a Quote group. It remains in source claims for staff review.',
+            roomCount.sourceRefs.filter((ref) => currentRefs.has(ref)));
+        }
+      }
+
+      const currentBoards = extracted.boardHints.flatMap((hint) => {
+        const claim = currentClaim(hint, currentRefs);
+        return claim && typeof claim.value === 'string' && claim.value.trim() ? [claim] : [];
+      });
+      const boardsByValue = new Map(currentBoards.map((claim) => [boardMeaning(claim.value), claim]));
+      if (currentBoards.length && linkedQuoteGroups.length) {
+        if (boardsByValue.size === 1) {
+          const board = [...boardsByValue.values()][0]!;
+          for (const groupIndex of linkedQuoteGroups) projectLimitedText({ proposal,
+            target: request.body.groups[groupIndex] as unknown as Record<string, unknown>, field: 'board',
+            claim: { ...board, value: boardValue(board.value) },
+            currentRefs, max: 120, path: `/requests/${request.id}/body/groups/${groupIndex}/board` });
+        } else {
+          for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.board = null;
+          addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
+            'The current source contains conflicting board choices without a reliable group mapping. Group boards were cleared for staff selection; the source claims remain available.',
+            [...new Set(currentBoards.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
+        }
+      } else if (currentBoards.length) {
+        for (const group of request.body.groups) group.board = null;
+        addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
+          'A current board choice could not be mapped to a source-linked date group. Group boards were cleared; the source claim remains available for staff review.',
+          [...new Set(currentBoards.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
+      }
+
+      const occupancySourceRefs = [...new Set(extracted.occupancy.flatMap((row) =>
+        [row.adults, row.childCount, ...(row.childAges ?? [])].flatMap((claim) =>
+          currentClaim(claim, currentRefs)?.sourceRefs.filter((ref) => currentRefs.has(ref)) ?? [])))];
+      if (occupancySourceRefs.length) {
         const occupancy = fallbackQuoteOccupancy(extracted, currentRefs);
-        if (occupancy.sourceRefs.length) group.occupancy = occupancy.occupancy;
+        const sameRoomScope = request.body.groups.length === 1 || roomCodes.codes.length === 1 &&
+          quoteGroupsShareRoomScope(request.body.groups);
+        const oneDateScope = Boolean(currentDatePair) && linkedQuoteGroups.length === request.body.groups.length;
+        const canProject = request.body.groups.length > 0 && extracted.occupancy.length === 1 &&
+          occupancy.sourceRefs.length > 0 && oneDateScope &&
+          sameRoomScope && (request.body.groups.length === 1 || occupancy.occupancy.scope === 'per_room');
+        if (canProject) {
+          for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.occupancy = occupancy.occupancy;
+        } else {
+          for (const group of request.body.groups)
+            group.occupancy = { scope: 'unresolved', adults: null, childCount: null, childAges: null };
+          addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_occupancy_scope_ambiguous',
+            'The source occupancy could not be mapped safely to every room group. Group occupancy remains unresolved; in particular, missing child count or ages were not treated as zero.',
+            occupancySourceRefs);
+        }
+      }
+
+      if (roomCodes.codes.length && currentDatePair && linkedQuoteGroups.length === request.body.groups.length) {
+        if (roomCodes.codes.length === 1) {
+          const code = roomCodes.codes[0]!;
+          const sameScope = quoteGroupsShareRoomScope(request.body.groups);
+          const matchingGroups = linkedQuoteGroups.filter((index) => request.body.groups[index]!.roomCodes.includes(code));
+          const targets = request.body.groups.length === 1 || sameScope ? linkedQuoteGroups :
+            matchingGroups.length === 1 ? matchingGroups : [];
+          if (targets.length) for (const groupIndex of targets) request.body.groups[groupIndex]!.roomCodes = [code];
+          else {
+            for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.roomCodes = [];
+            addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_room_code_scope_ambiguous',
+              'The source names a room code, but it cannot be assigned uniquely across the mixed room groups. Room choices were cleared for staff resolution; source claims remain available.',
+              roomCodes.sourceRefs);
+          }
+        } else {
+          for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.roomCodes = [];
+          addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_room_code_scope_ambiguous',
+            'Multiple current room codes cannot be assigned safely to the synthesized groups. Room choices were cleared for staff resolution; source claims remain available.',
+            roomCodes.sourceRefs);
+        }
+      } else if (currentRoomHints.length) {
+        for (const group of request.body.groups) group.roomCodes = [];
+        addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_room_code_not_projected',
+          roomCodes.codes.length
+            ? 'The exact source room code has no unambiguous date/group scope. Select the room code in the native-backed Quote editor.'
+            : 'Room preference text is not an exact native code; no code was inferred from its name. Select the room code in the native-backed Quote editor.',
+          roomCodes.sourceRefs.length ? roomCodes.sourceRefs :
+            [...new Set(currentRoomHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
+      }
+
+      const currentRateHints = extracted.rateHints.filter((hint) => currentClaim(hint, currentRefs));
+      const rateCodes = currentSourceCodes(extracted.rateHints, currentRefs, 'rate');
+      if (rateCodes.codes.length && currentDatePair && linkedQuoteGroups.length === request.body.groups.length) {
+        if (rateCodes.codes.length === 1) {
+          const code = rateCodes.codes[0]!;
+          const existing = new Set(request.body.groups.map((group) => group.ratePlan));
+          if (request.body.groups.length === 1 || existing.size === 1) {
+            for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.ratePlan = code;
+          } else {
+            const matchingGroups = linkedQuoteGroups.filter((index) => request.body.groups[index]!.ratePlan === code);
+            if (matchingGroups.length === 1) request.body.groups[matchingGroups[0]!]!.ratePlan = code;
+            else {
+              for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.ratePlan = null;
+              addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_rate_code_scope_ambiguous',
+                'The source rate-plan code cannot be assigned uniquely across groups with different rate plans. Rate choices were cleared for staff resolution; source claims remain available.',
+                rateCodes.sourceRefs);
+            }
+          }
+        } else {
+          for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.ratePlan = null;
+          addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_rate_code_scope_ambiguous',
+            'Multiple current rate-plan codes cannot be assigned safely to the synthesized groups. Rate choices were cleared for staff resolution; source claims remain available.',
+            rateCodes.sourceRefs);
+        }
+      } else if (rateCodes.codes.length) {
+        for (const group of request.body.groups) group.ratePlan = null;
+        addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_rate_code_scope_ambiguous',
+          'The exact source rate-plan code has no unambiguous date/group scope. Rate choices were cleared for staff resolution; source claims remain available.',
+          rateCodes.sourceRefs);
+      } else if (currentRateHints.length && currentRateHints.some((claim) =>
+        typeof claim.value === 'string' && !matchesTypedRequestedPrice(extracted, claim, currentRefs) &&
+        !/[€£$]|\b(?:USD|GBP|EUR|AUD|CAD)\b|\b(?:per|nightly?|total|person|room)\b|^\s*(?:R|ZAR)\s*\d+(?:\.\d{1,2})?\s*$|^\s*\d+(?:\.\d{1,2})?\s*$/i.test(claim.raw))) {
+        for (const group of request.body.groups) group.ratePlan = null;
+        addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_rate_code_not_projected',
+          'The source rate hint is not an exact native rate-plan code; no rate code was inferred from its name. Select a native rate code in the Quote editor.',
+          [...new Set(currentRateHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
       }
       const quoteParties = request.body.parties as unknown as Record<string, unknown>;
       projectPartyRole({ proposal, parties: extracted.parties, role: 'agency', currentRefs,
@@ -2581,6 +2944,11 @@ function projectCurrentExtraction(input: {
         projectPartyRole({ proposal, parties: extracted.parties, role, currentRefs,
           slots: targets.map((target, index) => ({ target, field, path: `/requests/${request.id}/body/party/${role}/${index}` })) });
       }
+      const occupancyEmpty = { adults: null, childCount: null, childAges: null };
+      request.body.dateSections.forEach((section) => { section.requestedTotals = { ...occupancyEmpty }; });
+      const synthesizedAllocationOccupancy = request.body.allocations.some((allocation) =>
+        allocation.occupancy.adults !== null || allocation.occupancy.childCount !== null || allocation.occupancy.childAges !== null);
+      request.body.allocations.forEach((allocation) => { allocation.occupancy = { ...occupancyEmpty }; });
       if (request.body.dateSections.length === 1) {
         const section = request.body.dateSections[0]!;
         const roomCount = currentClaim(extracted.roomCount, currentRefs);
@@ -2609,10 +2977,72 @@ function projectCurrentExtraction(input: {
               section.unassignedGuestNames.length < 200) section.unassignedGuestNames.push(name.value);
         }
       }
+      if (request.body.allocations.length) {
+        const currentDatePair = singleCurrentDatePair(projectedDates, currentRefs);
+        const section = request.body.dateSections.length === 1 ? request.body.dateSections[0] : undefined;
+        const sourceOccupancyRow = extracted.occupancy.length === 1 ? extracted.occupancy[0] : undefined;
+        const quantity = citedInteger(currentClaim(extracted.roomCount, currentRefs));
+        const occupancy = fallbackQuoteOccupancy(extracted, currentRefs);
+        const allocationScopeSupported = sourceOccupancyRow?.scope === 'per_room' ||
+          quantity === 1 && sourceOccupancyRow?.scope === 'whole_group';
+        const exactPerRoomScope = Boolean(section && currentDatePair && allocationScopeSupported &&
+          occupancy.sourceRefs.length &&
+          typeof quantity === 'number' && quantity >= 1 && quantity === request.body.allocations.length &&
+          request.body.allocations.every((allocation) => allocation.dateSectionId === section.id) &&
+          dateLinks.unlinkedDates.length === 0 && [...dateLinks.targetsByDate.values()].includes(0) &&
+          datePairKey(section.arrival, section.departure) === currentDatePair);
+        if (exactPerRoomScope) request.body.allocations.forEach((allocation) => {
+          allocation.occupancy = { adults: occupancy.occupancy.adults, childCount: occupancy.occupancy.childCount,
+            childAges: occupancy.occupancy.childAges };
+        });
+        else if (currentOccupancyRefs.length || synthesizedAllocationOccupancy) {
+          addProjectionIssue(proposal, `/requests/${request.id}/body/allocations`, 'create_occupancy_scope_ambiguous',
+            'Occupancy was not assigned to Create allocations because current per-room facts did not map exactly to every room and date. Unmapped synthesized occupancy was cleared; confirm each allocation with staff.',
+            currentOccupancyRefs.length ? currentOccupancyRefs : request.sourceRefs.filter((ref) => currentRefs.has(ref)));
+        }
+      }
+      const currentDatePair = singleCurrentDatePair(projectedDates, currentRefs);
+      const oneSectionHasSourceDate = request.body.dateSections.length === 1 && currentDatePair !== null &&
+        dateLinks.unlinkedDates.length === 0 && [...dateLinks.targetsByDate.values()].includes(0) &&
+        datePairKey(request.body.dateSections[0]!.arrival, request.body.dateSections[0]!.departure) === currentDatePair;
+      const currentRoomHints = extracted.roomTypeHints.filter((hint) => currentClaim(hint, currentRefs));
+      const roomCodes = currentSourceCodes(extracted.roomTypeHints, currentRefs, 'room');
+      if (currentRoomHints.length) {
+        if (roomCodes.codes.length === 1 && oneSectionHasSourceDate) request.body.shared.roomType = roomCodes.codes[0]!;
+        else {
+          request.body.shared.roomType = null;
+          addProjectionIssue(proposal, `/requests/${request.id}/body/shared/roomType`, 'create_room_code_scope_ambiguous',
+            roomCodes.codes.length
+              ? 'The source room code cannot be mapped to one current Create date section. No shared room code was selected; staff must resolve the source scope.'
+              : 'The source room preference is not an exact explicit native room code. It remains available in source claims for staff selection.',
+            [...new Set(currentRoomHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
+        }
+      }
+      const currentRateHints = extracted.rateHints.filter((hint) => currentClaim(hint, currentRefs));
+      const rateCodes = currentSourceCodes(extracted.rateHints, currentRefs, 'rate');
+      const nonPriceRateHintRefs = [...new Set(currentRateHints.filter((claim) =>
+        typeof claim.value === 'string' && !matchesTypedRequestedPrice(extracted, claim, currentRefs) &&
+        !/[€£$]|\b(?:USD|GBP|EUR|AUD|CAD)\b|\b(?:per|nightly?|total|person|room)\b|^\s*(?:R|ZAR)\s*\d+(?:\.\d{1,2})?\s*$|^\s*\d+(?:\.\d{1,2})?\s*$/i.test(claim.raw))
+        .flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))];
+      if (rateCodes.codes.length) {
+        if (rateCodes.codes.length === 1 && oneSectionHasSourceDate) request.body.shared.ratePlan = rateCodes.codes[0]!;
+        else {
+          request.body.shared.ratePlan = null;
+          addProjectionIssue(proposal, `/requests/${request.id}/body/shared/ratePlan`, 'create_rate_code_scope_ambiguous',
+            'The source rate-plan code cannot be mapped to one current Create date section. No shared rate code was selected; staff must resolve the source scope.',
+            rateCodes.sourceRefs);
+        }
+      } else if (nonPriceRateHintRefs.length) {
+        request.body.shared.ratePlan = null;
+        addProjectionIssue(proposal, `/requests/${request.id}/body/shared/ratePlan`, 'create_rate_code_not_projected',
+          'The source rate hint is not an exact native rate-plan code; no rate code was inferred from its name. Select the native rate code with staff.',
+          nonPriceRateHintRefs);
+      }
     }
   }
   addedRequests += projectAgencyVoucherFilings({ proposal, extraction: currentExtraction, source: input.source,
     evidence: input.evidence, currentRefs, pdfs, sourceMessageId: input.source.messageId, observations: input.observations });
+  compactProposalSourceClaims(proposal, currentRefs);
   const parsedProjection = reservationWorkflowV2ProposalSchema.safeParse(proposal);
   if (parsedProjection.success) return { proposal: parsedProjection.data, addedRequests,
     addedIssues: Math.max(0, proposal.issues.length - existingIssueCount), extractionIdByProposalRequestId };
@@ -2620,6 +3050,10 @@ function projectCurrentExtraction(input: {
   const fallbackProposal = buildFallbackProposal({ extraction: currentExtraction, source: input.source,
     evidence: input.evidence, reason: 'Projected source facts did not fit the editable workflow schema; raw claims remain available for staff review.' });
   appendExtractionSourceClaims(fallbackProposal, input.extraction, knownRefs);
+  carryConfirmationClaimCapacityIssues({ source: proposal, target: fallbackProposal,
+    sourceRequestToExtractionId: extractionIdByProposalRequestId,
+    targetRequestToExtractionId: new Map<string, string>(fallbackProposal.content.requests
+      .filter((request) => request.kind === 'create').map((request) => [request.id, request.id])), currentRefs });
   addProjectionIssue(fallbackProposal, '/', 'source_projection_schema_rejected',
     `Projected values were not admitted (${summarizeSchemaIssues(parsedProjection.error)}); the typed current request remains editable and raw source claims are retained.`,
     currentExtraction.requests.flatMap((request) => request.requestText.sourceRefs.filter((ref) => currentRefs.has(ref))));
@@ -2833,6 +3267,7 @@ function addRequestConfirmationSafety(input: {
       explanation: 'An exact source confirmation could not be linked to one extracted request. No native target was inferred; staff must resolve the correspondence before execution.',
       evidenceRefs: [...new Set(relevantHints.flatMap((hint) => hint.sourceRefs))].slice(0, 100) });
   }
+  compactProposalSourceClaims(proposal, input.currentRefs);
   return { proposal };
 }
 
@@ -3468,11 +3903,17 @@ export async function runReservationWorkflowV2Prefill(input: {
     if (safeClaims && extractionProjection) {
       const nativeConfirmation = /\b\d{6,10}-\d{1,2}\b/;
       const canonicalPath = /^\/proposal\/content\/requests\/([^/]+)\/confirmationReference(?:\/.*)?$/;
+      carryConfirmationClaimCapacityIssues({ source: safeClaims, target: fallbackProposal,
+        sourceRequestToExtractionId: extractionProjection.extractionIdByProposalRequestId,
+        targetRequestToExtractionId: fallbackProjection.extractionIdByProposalRequestId, currentRefs });
       for (const request of safeClaims.content.requests) {
         if (request.kind !== 'create') continue;
         const guardedPath = `/proposal/content/requests/${request.id}/confirmationReference`;
-        if (!safeClaims.issues.some((issue) => issue.path === guardedPath &&
-          (issue.kind === 'existing_confirmation_requires_lookup' || issue.kind === 'existing_confirmation_requires_review'))) continue;
+        const hasNativeLookupGuard = safeClaims.issues.some((issue) => issue.path === guardedPath &&
+          (issue.kind === 'existing_confirmation_requires_lookup' || issue.kind === 'existing_confirmation_requires_review'));
+        const exceedsClaimCapacity = safeClaims.issues.some((issue) => issue.path === guardedPath &&
+          issue.kind === CONFIRMATION_CLAIM_CAPACITY_ISSUE);
+        if (!hasNativeLookupGuard && !exceedsClaimCapacity) continue;
         const extractedId = extractionProjection.extractionIdByProposalRequestId.get(request.id);
         if (!extractedId) continue;
         const targets = fallbackProposal.content.requests.filter((candidate) => candidate.kind === 'create' &&

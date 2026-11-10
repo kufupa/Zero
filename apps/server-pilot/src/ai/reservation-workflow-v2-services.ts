@@ -186,7 +186,7 @@ function candidateFor(draft: ReservationWorkflowV2Draft, input: Input, row: Rese
     item.status === 'complete' && item.propertyCode === draft.propertyCode && item.generationId === draft.generationId &&
     item.criteria.workflow === 'services' && item.criteria.kind === 'catalogue_candidate' &&
     item.criteria.serviceId === service.id && item.criteria.requestId === input.requestId &&
-    item.criteria.fieldPath === path);
+    item.criteria.sourceAllocationId === input.allocationId && item.criteria.fieldPath === path);
   const candidate = observation && record(observation.result)?.candidate;
   if (!record(candidate) || !text(record(candidate)?.code) || !text(record(candidate)?.itemId)) {
     return { issue: 'host_catalogue_candidate_unverified', path };
