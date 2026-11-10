@@ -21,7 +21,7 @@ import { canonicalJson } from './draft-approval.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { isSelectedHmsInboundMessage } from './hms-jobs.js';
 import { bindAttachDocumentForm, paneHmsWriteMode, parseHmsWriteForm, prepareHmsWriteSnapshot,
-  readPaneCloudFilingRecord, type AttachForm, type CloudFilingRecord } from './pane-hms-write.js';
+  nativeFilingDocumentName, readPaneCloudFilingRecord, type AttachForm, type CloudFilingRecord } from './pane-hms-write.js';
 import { previewFiling } from './pane-filing-preview.js';
 import { readBoundFilingSource, lockBoundFilingSource, type BoundFilingForm } from './pane-filing-source.js';
 import { findStay, paneStayLookupEnabled } from './pane-stay-lookup.js';
@@ -71,7 +71,8 @@ type TargetReadback = {
 type V2FilingRecovery = {
   version: 1; workItemId: string; operationId: string; requestId: string; documentId: string;
   documentSourceRef: string; source: ReservationWorkflowV2Source; attachmentId: string;
-  sourceSnapshotDigest: string; pdfSha256: string; semanticDigest: string; documentName: string; documentCode: string;
+  sourceSnapshotDigest: string; pdfSha256: string; semanticDigest: string; documentName: string;
+  sourceDocumentName?: string; documentCode: string;
   confirmation: string; arrival: string; departure: string; nativeStayId: string; nativeGuestId: string;
   firstName: string; lastName: string; status: string; cmsSend: boolean; allowRealGuest: boolean;
   targetObservationRef: string; prepareObservationRef: string; targetSnapshotDigest: string;
@@ -449,11 +450,11 @@ async function selectionFor(ctx: ReservationWorkflowV2FilingContext, draft: Rese
     status: target.status, departure: target.departure };
 }
 
-function selectionDigest(selection: FilingSelection, preview: Extract<PreviewResult, { status: 'ready' }>, documentName: string): string {
+function selectionDigest(selection: FilingSelection, preview: Extract<PreviewResult, { status: 'ready' }>): string {
   return digestJson({ version: 1, requestId: selection.request.id, documentId: selection.document.id,
     documentSourceRef: selection.document.documentSourceRef, documentKind: selection.document.kind,
     handling: selection.document.handling, requestedName: selection.document.requestedName,
-    requestedDescription: selection.document.requestedDescription, documentName,
+    requestedDescription: selection.document.requestedDescription, documentName: preview.documentName,
     sourcePdfSha256: preview.documentSource.sha256, sourceSnapshotDigest: preview.documentSource.snapshotDigest,
     targetObservationRef: selection.targetObservation.ref, confirmation: selection.confirmation,
     arrival: selection.arrival, departure: selection.departure, firstName: selection.firstName,
@@ -745,9 +746,10 @@ export async function reservationWorkflowV2FilingPrepare(ctx: ReservationWorkflo
     target: target.target, allowRealGuest });
   if (!cloud || cloud.nativeGuestId === '' || cloud.nativeStayId === '' ||
       bound.form.filingStateDigest !== filingStateDigest(cloud)) return { status: 'failed', issue: 'filing_target_unavailable' };
-  const semanticDigest = selectionDigest(selection, preview, preview.documentName);
+  const semanticDigest = selectionDigest(selection, preview);
   const observation = filingObservation(loaded.draft, { requestId: input.requestId }, selection, 'complete', {
-    outcome: 'prepared', documentId: selection.document.id, documentName: preview.documentName,
+    outcome: 'prepared', documentId: selection.document.id, documentName: bound.form.documentName,
+    sourceDocumentName: preview.documentName,
     mimeType: 'application/pdf', sha256: preview.documentSource.sha256,
     sourceSnapshotDigest: preview.documentSource.snapshotDigest, semanticDigest,
     target: { confirmation: cloud.stay.confirmation, arrival: cloud.stay.arrival, departure: cloud.stay.departure,
@@ -759,7 +761,8 @@ export async function reservationWorkflowV2FilingPrepare(ctx: ReservationWorkflo
   const saved = await recordFilingOperation(ctx, input, observation, 'prepared', 'PDF and saved stay prepared in HMS; nothing saved');
   if (saved.status !== 'ok') return saved;
   return { status: 'prepared', requestId: input.requestId, documentId: selection.document.id,
-    observationRef: observation.ref, documentName: preview.documentName, sha256: preview.documentSource.sha256,
+    observationRef: observation.ref, documentName: preview.documentName, sourceDocumentName: preview.documentName,
+    nativeDocumentName: bound.form.documentName, sha256: preview.documentSource.sha256,
     documentCode: bound.form.documentCode, target: observation.result.target, hmsReadAt: snapshot.readAt };
 }
 
@@ -800,7 +803,9 @@ function recoveryMatchesDraft(draft: ReservationWorkflowV2Draft, recovery: V2Fil
     prepare.sourceRefs.includes(recovery.targetObservationRef) &&
     preparedResult?.semanticDigest === recovery.semanticDigest && preparedResult.sha256 === recovery.pdfSha256 &&
     preparedResult.sourceSnapshotDigest === recovery.sourceSnapshotDigest &&
-    preparedResult.documentName === recovery.documentName && preparedResult.documentCode === recovery.documentCode &&
+    preparedResult.documentName === recovery.documentName &&
+    (preparedResult.sourceDocumentName ?? preparedResult.documentName) ===
+      (recovery.sourceDocumentName ?? recovery.documentName) && preparedResult.documentCode === recovery.documentCode &&
     preparedResult.filingStateDigest === recovery.targetSnapshotDigest &&
     preparedTarget?.confirmation === recovery.confirmation && preparedTarget.arrival === recovery.arrival &&
     preparedTarget.departure === recovery.departure && preparedTarget.nativeStayId === recovery.nativeStayId &&
@@ -922,14 +927,15 @@ async function persistNeverDispatchedFiling(tx: WorkTransaction, ctx: Reservatio
 
 function formDigestForStoredForm(state: Record<string, unknown>): string {
   const values = ['action', 'confirmation', 'arrival', 'lastName', 'attachmentId', 'documentName', 'pdfSha256',
-    'sourceMessageId', 'sourceInternetMessageId', 'sourceSnapshotDigest', 'sourceThreadId', 'sourceHash',
+    'sourceDocumentName', 'sourceMessageId', 'sourceInternetMessageId', 'sourceSnapshotDigest', 'sourceThreadId', 'sourceHash',
     'documentCode', 'filingStateDigest'];
   return digestJson(Object.fromEntries(values.map((key) => [key, state[key]])));
 }
 
 function approvedDigestForForm(form: AttachForm): string {
   return digestJson({ action: form.action, confirmation: form.confirmation, arrival: form.arrival, lastName: form.lastName,
-    attachmentId: form.attachmentId, documentName: form.documentName, pdfSha256: form.pdfSha256,
+    attachmentId: form.attachmentId, documentName: form.documentName, sourceDocumentName: form.sourceDocumentName,
+    pdfSha256: form.pdfSha256,
     sourceMessageId: form.sourceMessageId, sourceInternetMessageId: form.sourceInternetMessageId,
     sourceSnapshotDigest: form.sourceSnapshotDigest, sourceThreadId: form.sourceThreadId, sourceHash: form.sourceHash,
     documentCode: form.documentCode, filingStateDigest: form.filingStateDigest });
@@ -957,12 +963,13 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
   if (!prepared) return { status: 'needs_prepare', issue: 'fresh_filing_prepare_required' };
   const preview = await runPreview(ctx, input, selection);
   if (preview.status !== 'ready') return { status: 'needs_prepare', issue: preview.reason };
-  const name = preview.documentName;
-  const semanticDigest = selectionDigest(selection, preview, name);
+  const sourceDocumentName = preview.documentName;
+  const name = nativeFilingDocumentName(sourceDocumentName, selection.confirmation, preview.documentSource.sha256);
+  const semanticDigest = selectionDigest(selection, preview);
   if (semanticDigest !== prepared.result.semanticDigest || preview.documentSource.sha256 !== prepared.result.sha256 ||
       preview.documentSource.snapshotDigest !== prepared.result.sourceSnapshotDigest ||
-      selection.document.requestedName !== null && selection.document.requestedName !== name ||
-      selection.document.requestedDescription !== null && selection.document.requestedDescription !== name) {
+      selection.document.requestedName !== null && selection.document.requestedName !== sourceDocumentName ||
+      selection.document.requestedDescription !== null && selection.document.requestedDescription !== sourceDocumentName) {
     return { status: 'needs_prepare', issue: 'filing_source_or_target_changed' };
   }
   const [item] = await ctx.db.select({ state: workItem.state, status: workItem.status }).from(workItem)
@@ -973,7 +980,8 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
       form.attachmentId !== selection.attachmentId || form.sourceMessageId !== input.source.messageId ||
       form.sourceThreadId !== input.source.threadId || form.sourceHash !== input.source.sourceHash ||
       form.pdfSha256 !== preview.documentSource.sha256 || form.sourceSnapshotDigest !== preview.documentSource.snapshotDigest ||
-      form.documentName !== name || form.documentCode !== prepared.result.documentCode) {
+      form.documentName !== name || (form.sourceDocumentName ?? form.documentName) !== sourceDocumentName ||
+      form.documentCode !== prepared.result.documentCode) {
     return { status: 'needs_prepare', issue: 'filing_binding_changed' };
   }
   const writeMode = paneHmsWriteMode();
@@ -1067,7 +1075,8 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
           requestId: input.requestId, documentId: selection.document.id,
           documentSourceRef: selection.document.documentSourceRef, source: input.source,
           attachmentId: selection.attachmentId, sourceSnapshotDigest: sourceSnapshotDigest,
-          pdfSha256: pdfSha256, semanticDigest, documentName: name, documentCode: form.documentCode,
+          pdfSha256: pdfSha256, semanticDigest, documentName: name, sourceDocumentName,
+          documentCode: form.documentCode,
           confirmation: selection.confirmation, arrival: selection.arrival, departure: cloud.stay.departure!,
           nativeStayId: cloud.nativeStayId, nativeGuestId: cloud.nativeGuestId,
           firstName: cloud.stay.firstName!, lastName: cloud.stay.lastName!, status: cloud.stay.status!,
@@ -1161,6 +1170,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
     }
     const successObservation = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
       'complete', { outcome: 'confirmed', dispatchHoldId: activeDispatch.holdId, nativeReadback: nativeTarget,
+        sourceDocumentName, nativeDocumentName: nativeTarget.documentName,
         readbackDigest: digestJson(nativeTarget), sourcePdfSha256: pdfSha256,
         actualStoredSha256: null, storedBytesHashVerified: false,
         storedHashNote: 'HMS Documents currently exposes unique document code/name listing only; stored bytes are not downloadable by this reader.',
@@ -1178,7 +1188,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
           throw new Error('reservation_workflow_v2_filing_resolution_scope_changed');
         }
         await recordFilingOperationInTransaction(tx, ctx, intent, successObservation,
-          `Filed ${name}; fresh Documents listing and stay identity verified`);
+          `Filed ${sourceDocumentName}; fresh Documents listing and stay identity verified`);
       });
     } catch {
       const uncertain = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
@@ -1192,7 +1202,8 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
     dispatch = null;
     return { status: 'succeeded', operationId, requestId: input.requestId, documentId: selection.document.id,
       target: { confirmation: nativeTarget.confirmation, nativeStayId: nativeTarget.nativeStayId },
-      documentCode: nativeTarget.documentCode, documentName: nativeTarget.documentName,
+      documentCode: nativeTarget.documentCode, documentName: sourceDocumentName,
+      sourceDocumentName, nativeDocumentName: nativeTarget.documentName,
       sourcePdfSha256: pdfSha256, actualStoredSha256: null, storedBytesHashVerified: false,
       observationRef: successObservation.ref };
   } catch (error) {
@@ -1337,7 +1348,8 @@ export async function proveReservationWorkflowV2AttachRecovery(db: DB, intent: H
       arrivedAt: z.string().datetime({ offset: true }), }).strict(), attachmentId: z.string(),
     sourceSnapshotDigest: z.string().regex(/^[a-f0-9]{64}$/), pdfSha256: z.string().regex(/^[a-f0-9]{64}$/),
     semanticDigest: z.string().regex(/^[a-f0-9]{64}$/),
-    documentName: z.string(), documentCode: z.string(), confirmation: z.string(), arrival: z.string(), departure: z.string(),
+    documentName: z.string(), sourceDocumentName: z.string().max(120).refine(exactPdfName).optional(), documentCode: z.string(),
+    confirmation: z.string(), arrival: z.string(), departure: z.string(),
     nativeStayId: z.string(), nativeGuestId: z.string(), firstName: z.string(), lastName: z.string(), status: z.string(),
     cmsSend: z.boolean(), allowRealGuest: z.boolean(), targetObservationRef: z.string(), prepareObservationRef: z.string(),
     targetSnapshotDigest: z.string().regex(/^[a-f0-9]{64}$/), beforeShot: z.object({ runId: z.string().uuid(),
@@ -1440,11 +1452,12 @@ export async function recordReservationWorkflowV2AttachRecovery(tx: WorkTransact
       documentCode: recovery.documentCode, documentName: recovery.documentName,
       sourcePdfSha256: recovery.pdfSha256, actualStoredSha256: null, storedBytesHashVerified: false,
       nativeReadback: proof.nativeReadback, readbackDigest: proof.readbackDigest, savedShot: proof.savedShot,
+      sourceDocumentName: recovery.sourceDocumentName ?? recovery.documentName,
       prepareObservationRef: recovery.prepareObservationRef } };
   const result = { id: recovery.operationId, generationId: draft.generationId, requestId: recovery.requestId,
     allocationId: null, workflow: 'filing' as const, status: 'succeeded' as const, draftRevision: prior.draftRevision,
     observationRefs: [observation.ref], updatedAt: new Date().toISOString(),
-    summary: `Filed ${recovery.documentName}; independent fresh Documents listing verified` };
+    summary: `Filed ${recovery.sourceDocumentName ?? recovery.documentName}; independent fresh Documents listing verified` };
   const next = reservationWorkflowV2DraftSchema.parse({ ...draft, observations: [...draft.observations, observation],
     operationResults: [...draft.operationResults.filter((entry) => entry.id !== result.id), result] });
   await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>), reservationWorkflowV2: next },
