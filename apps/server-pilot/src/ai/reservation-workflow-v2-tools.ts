@@ -1421,6 +1421,11 @@ type ParsedMoney = { minor: bigint; currency: string | null };
 
 function effectivePriceScope(price: ExtractedPriceRequest): 'per_room' | 'whole_group' | 'unknown' {
   const totalRaw = price.total?.raw ?? '';
+  // A total explicitly qualified per room is not a booking-level total, even
+  // when the same wording also says "total for the stay". Keep this check on
+  // the total claim itself; a separate per-room nightly claim must not widen or
+  // narrow the total's scope.
+  if (/\b(?:per[- ]room|each room)\b/i.test(totalRaw)) return 'per_room';
   // Scope is singular in the extraction contract; only explicit total wording can widen it.
   const describesWholeGroup = [
     /\b(?:whole|entire|overall)\s+(?:booking|reservation|stay|group)\b/i,
