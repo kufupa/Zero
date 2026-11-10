@@ -362,6 +362,41 @@ type UnavailableInventoryProof = {
   roomLabel: string;
   freshUntil: string;
 };
+const UNAVAILABLE_PREPARED_SUMMARY = 'Complete current Infor evidence supports an unsent requested-room decline; no price or reservation was created';
+
+function currentQuoteAvailabilityObservation(
+  draft: ReservationWorkflowV2Draft,
+  requestId: string,
+  inputDigest: string,
+): ReservationWorkflowV2Observation | null {
+  return [...draft.observations].reverse().find((item) => {
+    const criteria = record(item.criteria);
+    return item.kind === 'rate_availability' && item.generationId === draft.generationId &&
+      item.propertyCode === draft.propertyCode && item.sourceMessageId === draft.source.messageId &&
+      criteria?.workflow === 'quote' && criteria.requestId === requestId &&
+      criteria.sourceHash === draft.source.sourceHash && criteria.inputDigest === inputDigest;
+  }) ?? null;
+}
+
+function unavailableInventoryMarker(
+  compiled: Extract<CompiledQuote, { status: 'ok' }>,
+  proof: UnavailableInventoryProof,
+): Record<string, unknown> {
+  const { group } = proof;
+  return {
+    kind: 'requested_room_unavailable',
+    availabilityObservationRef: proof.observation.ref,
+    groupId: group.id,
+    roomCode: proof.roomCode,
+    roomLabel: proof.roomLabel,
+    rateCode: group.rateCode,
+    board: group.board,
+    arrivalDate: group.arrivalDate,
+    departureDate: group.departureDate,
+    quantity: group.quantity,
+    freshUntil: proof.freshUntil,
+  };
+}
 
 /** A decline is safe only for one explicitly selected room/rate with complete, current nightly zero-stock facts. */
 function unavailableInventoryProof(
@@ -373,15 +408,8 @@ function unavailableInventoryProof(
   const roomCode = group?.roomCodes?.length === 1 ? group.roomCodes[0] : undefined;
   if (!group || !roomCode || !group.rateCode) return null;
 
-  const observation = [...draft.observations].reverse().find((item) => {
-    const criteria = record(item.criteria);
-    return item.kind === 'rate_availability' && item.status === 'failed' &&
-      item.generationId === draft.generationId && item.propertyCode === draft.propertyCode &&
-      item.sourceMessageId === draft.source.messageId && criteria?.workflow === 'quote' &&
-      criteria.requestId === compiled.request.id && criteria.sourceHash === draft.source.sourceHash &&
-      criteria.inputDigest === compiled.inputDigest;
-  });
-  if (!observation) return null;
+  const observation = currentQuoteAvailabilityObservation(draft, compiled.request.id, compiled.inputDigest);
+  if (!observation || observation.status !== 'failed') return null;
   const result = record(observation.result), shortfall = record(result?.shortfall);
   if (result?.failureCode !== 'native_quote_insufficient_inventory' || result.failureKind !== 'proven_shortage' ||
       result.sourceHash !== draft.source.sourceHash || result.inputDigest !== compiled.inputDigest ||
@@ -768,20 +796,17 @@ function matchingPreparedQuote(
     result.workflow === 'quote' && result.requestId === compiled.request.id && result.status === 'prepared'
     && result.generationId === draft.generationId) : null;
   const preparedRefs = new Set(preparedOperation?.observationRefs ?? []);
-  return [...draft.observations].reverse().find((observation) => {
-    if (preparedOnly && !preparedRefs.has(observation.ref)) return false;
-    if (observation.kind !== 'rate_availability' || observation.status !== 'complete' || !observation.coverage.complete ||
-        observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
-        observation.sourceMessageId !== draft.source.messageId) return false;
-    const criteria = record(observation.criteria), result = record(observation.result);
-    const revision = record(result?.revision);
-    const expires = typeof result?.freshUntil === 'string' ? Date.parse(result.freshUntil) : Number.NaN;
-    return criteria?.workflow === 'quote' && criteria.requestId === compiled.request.id &&
-      criteria.inputDigest === compiled.inputDigest &&
-      criteria.sourceHash === draft.source.sourceHash &&
-      Number.isFinite(expires) && expires > now && revision?.propertyCode === draft.propertyCode &&
-      preparedQuoteMatches(compiled.input, revision, result?.facts, result?.dinnerFallbackGroupIds);
-  });
+  const observation = currentQuoteAvailabilityObservation(draft, compiled.request.id, compiled.inputDigest);
+  if (!observation || observation.status !== 'complete' || !observation.coverage.complete ||
+      (preparedOnly && !preparedRefs.has(observation.ref))) return null;
+  const criteria = record(observation.criteria), result = record(observation.result);
+  const revision = record(result?.revision);
+  const expires = typeof result?.freshUntil === 'string' ? Date.parse(result.freshUntil) : Number.NaN;
+  return criteria?.workflow === 'quote' && criteria.requestId === compiled.request.id &&
+    criteria.inputDigest === compiled.inputDigest && criteria.sourceHash === draft.source.sourceHash &&
+    Number.isFinite(expires) && expires > now && revision?.propertyCode === draft.propertyCode &&
+    preparedQuoteMatches(compiled.input, revision, result?.facts, result?.dinnerFallbackGroupIds)
+    ? observation : null;
 }
 
 async function persistObservation(
@@ -846,6 +871,36 @@ function operationResult(
 ): QuoteOperationResult {
   return { id, generationId: draft.generationId, requestId, allocationId: null, workflow: 'quote', status,
     draftRevision: draft.revision, observationRefs: refs, updatedAt: new Date().toISOString(), summary };
+}
+
+function preparedUnavailableOperation(
+  draft: ReservationWorkflowV2Draft,
+  requestId: string,
+  observationRef: string,
+): QuoteOperationResult | null {
+  return [...operationResults(draft)].reverse().find((result) => result.requestId === requestId &&
+    result.generationId === draft.generationId && result.draftRevision === draft.revision && result.status === 'prepared' &&
+    result.summary === UNAVAILABLE_PREPARED_SUMMARY && result.observationRefs.includes(observationRef)) ?? null;
+}
+
+async function prepareUnavailableInventory(
+  ctx: ReadContext,
+  input: QuoteBaseInput,
+  draft: ReservationWorkflowV2Draft,
+  compiled: Extract<CompiledQuote, { status: 'ok' }>,
+  proof: UnavailableInventoryProof,
+) {
+  const operation = operationResult(draft, compiled.request.id, randomUUID(), 'prepared', [proof.observation.ref],
+    UNAVAILABLE_PREPARED_SUMMARY);
+  const saved = await persistResult(ctx, input, draft.generationId, operation);
+  return saved.status === 'ok' ? {
+    status: 'prepared' as const,
+    requestId: compiled.request.id,
+    operationId: operation.id,
+    observationRef: proof.observation.ref,
+    summary: operation.summary,
+    unavailableInventory: unavailableInventoryMarker(compiled, proof),
+  } : saved;
 }
 
 function pricePayload(observation: ReservationWorkflowV2Observation) {
@@ -1133,9 +1188,32 @@ export async function reservationWorkflowV2QuotePrepare(
     return saved.status === 'ok' ? { status: 'prepared', requestId: request.id, operationId: result.id,
       quote: pricePayload(refreshed), observationRef: refreshed.ref } : saved;
   }
+  const existingUnavailable = unavailableInventoryProof(loaded.draft, compiled);
+  if (existingUnavailable) {
+    return prepareUnavailableInventory(ctx, input, loaded.draft, compiled, existingUnavailable);
+  }
   try {
     const priced = await priceQuote(ctx, input, loaded.draft, compiled);
-    if (priced.status !== 'priced') return priced;
+    if (priced.status !== 'priced') {
+      if (priced.status !== 'needs_input') return priced;
+      // priceQuote persists proven native shortage as a failed availability observation. Reload it
+      // before preparing a decline, then bind the operation to the exact current inputs and ref.
+      const current = await getReservationWorkflowV2Draft(stateContext(ctx), {
+        workItemId: input.workItemId, source: input.source,
+      });
+      if (current.status !== 'ok') return current;
+      if (current.draft.generationId !== loaded.draft.generationId) return { status: 'stale_revision' };
+      const currentRequest = quoteRequests(current.draft, input.requestId)[0];
+      if (!currentRequest) return { status: 'not_found' };
+      const currentCompiled = compileQuote(current.draft, currentRequest, false);
+      if (currentCompiled.status !== 'ok') return { status: currentCompiled.status,
+        issue: currentCompiled.issue, fields: currentCompiled.fields };
+      if (currentCompiled.inputDigest !== compiled.inputDigest) return { status: 'stale_revision' };
+      const unavailable = unavailableInventoryProof(current.draft, currentCompiled);
+      if (!unavailable) return priced;
+      const currentInput = { ...input, expectedRevision: current.revision, expectedSeq: current.seq };
+      return prepareUnavailableInventory(ctx, currentInput, current.draft, currentCompiled, unavailable);
+    }
     const observation = priced.observation;
     if (!observation) return { status: 'failed', issue: 'quote_price_observation_missing' };
     const result = operationResult(loaded.draft, request.id, randomUUID(), 'prepared', [observation.ref],
@@ -1307,19 +1385,7 @@ function unavailableQuoteReply(
     claims: [{ groupId: group.id, arrivalDate: group.arrivalDate, departureDate: group.departureDate,
       quantity: group.quantity, board: group.board, adultsPerRoom: group.adults,
       childAgesPerRoom: group.childrenAges }],
-    unavailableInventory: {
-      kind: 'requested_room_unavailable',
-      availabilityObservationRef: proof.observation.ref,
-      groupId: group.id,
-      roomCode: proof.roomCode,
-      roomLabel: proof.roomLabel,
-      rateCode: group.rateCode,
-      board: group.board,
-      arrivalDate: group.arrivalDate,
-      departureDate: group.departureDate,
-      quantity: group.quantity,
-      freshUntil: proof.freshUntil,
-    },
+    unavailableInventory: unavailableInventoryMarker(compiled, proof),
     companyShownInCover: false as const,
   };
 }
@@ -1353,6 +1419,9 @@ export async function reservationWorkflowV2QuoteExecute(
   const preparedObservation = matchingPreparedQuote(loaded.draft, compiled, true);
   const unavailable = preparedObservation ? null : unavailableInventoryProof(loaded.draft, compiled);
   if (!preparedObservation && !unavailable) return { status: 'needs_prepare', issue: 'current_native_quote_prepare_required' };
+  if (unavailable && !preparedUnavailableOperation(loaded.draft, request.id, unavailable.observation.ref)) {
+    return { status: 'needs_prepare', issue: 'current_native_unavailable_decline_prepare_required' };
+  }
   if (unavailable && !compiled.outputKinds.includes('email_quote')) {
     return { status: 'needs_input', issue: 'cover_email_required_for_unavailable_reply',
       fields: [ptr('proposal', 'content', 'requests', request.id, 'body', 'outputIntent', 'artifacts')] };
@@ -1445,6 +1514,7 @@ function validUnavailableInventoryReceipt(
   if (compiled.status !== 'ok' || !compiled.outputKinds.includes('email_quote')) return false;
   const proof = unavailableInventoryProof(draft, compiled);
   if (!proof) return false;
+  if (!preparedUnavailableOperation(draft, result.requestId, proof.observation.ref)) return false;
   const expected = unavailableQuoteReply(compiled, proof);
   const saved = record(payload.unavailableInventory);
   const actualKinds = Array.isArray(payload.requestedOutputKinds) ? payload.requestedOutputKinds : [];

@@ -1,5 +1,5 @@
 import type { ReservationPaneSnapshot, ReservationSourceContext } from './types';
-import { requestPath, valueAt } from './views';
+import { effectiveAt, requestPath, valueAt } from './views';
 
 export type QuoteOutputArtifact = {
   kind: 'pdf_quote' | 'xlsx_quote'; fileName: string; mimeType: string;
@@ -30,15 +30,19 @@ function stayNights(arrival: unknown, departure: unknown): string[] {
   return Array.from({ length: count }, (_, index) => new Date(start + index * 86_400_000).toISOString().slice(0, 10));
 }
 
-function hasCurrentUnavailableInventoryProof(draft: ReservationPaneSnapshot['session']['draft'], source: ReservationSourceContext,
+function hasCurrentUnavailableInventoryProof(snapshot: ReservationPaneSnapshot, source: ReservationSourceContext,
   requestId: string, document: ReservationWorkflowV2DraftObservation): boolean {
+  const draft = snapshot.session.draft;
   const payload = rec(document.result), marker = rec(payload.unavailableInventory);
+  const documentCriteria = rec(document.criteria);
   const availabilityRef = typeof marker.availabilityObservationRef === 'string' ? marker.availabilityObservationRef : '';
   if (marker.kind !== 'requested_room_unavailable' || !availabilityRef || !document.sourceRefs.includes(availabilityRef) ||
       document.status !== 'complete' || !document.coverage.complete || payload.companyShownInCover !== false ||
-      payload.sourceHash !== source.sourceHash) return false;
+      payload.sourceHash !== source.sourceHash || typeof documentCriteria.inputDigest !== 'string' || !documentCriteria.inputDigest) return false;
   const request = draft.proposal.content.requests.find((item) => item.id === requestId && item.kind === 'quote');
-  const group = request?.kind === 'quote' && request.body.groups.length === 1 ? request.body.groups[0] : null;
+  const effectiveBody = rec(effectiveAt(snapshot, `${requestPath(requestId)}/body`));
+  const effectiveGroups = Array.isArray(effectiveBody.groups) ? effectiveBody.groups.map(rec) : [];
+  const group = request?.kind === 'quote' && effectiveGroups.length === 1 ? effectiveGroups[0]! : null;
   const roomCodes = Array.isArray(group?.roomCodes) ? group.roomCodes : [];
   const nights = stayNights(group?.arrival, group?.departure);
   if (!group || roomCodes.length !== 1 || !group.ratePlan || !nights.length ||
@@ -47,17 +51,24 @@ function hasCurrentUnavailableInventoryProof(draft: ReservationPaneSnapshot['ses
       marker.departureDate !== group.departure || marker.quantity !== group.quantity) return false;
   const availability = draft.observations.find((item) => item.ref === availabilityRef);
   const native = rec(availability?.result), criteria = rec(availability?.criteria), shortfall = rec(native.shortfall);
-  const documentCriteria = rec(document.criteria);
   const expires = Date.parse(typeof marker.freshUntil === 'string' ? marker.freshUntil : '');
   if (!availability || availability.kind !== 'rate_availability' || availability.status !== 'failed' ||
       availability.generationId !== draft.generationId || availability.propertyCode !== draft.propertyCode ||
       availability.sourceMessageId !== source.messageId || criteria.workflow !== 'quote' || criteria.requestId !== requestId ||
       criteria.sourceHash !== source.sourceHash || criteria.inputDigest !== documentCriteria.inputDigest ||
       native.failureCode !== 'native_quote_insufficient_inventory' || native.failureKind !== 'proven_shortage' ||
-      native.sourceHash !== source.sourceHash || native.availabilityTruncated !== false ||
+      native.sourceHash !== source.sourceHash || native.inputDigest !== documentCriteria.inputDigest || native.availabilityTruncated !== false ||
       native.freshUntil !== marker.freshUntil || !Number.isFinite(expires) || expires <= Date.now() ||
       shortfall.roomCode !== marker.roomCode || shortfall.roomLabel !== marker.roomLabel ||
       shortfall.demand !== marker.quantity || shortfall.supply !== 0 || !nights.includes(String(shortfall.date))) return false;
+  const latestAvailability = [...draft.observations].reverse().find((item) => {
+    const currentCriteria = rec(item.criteria);
+    return item.kind === 'rate_availability' && item.generationId === draft.generationId &&
+      item.propertyCode === draft.propertyCode && item.sourceMessageId === source.messageId &&
+      currentCriteria.workflow === 'quote' && currentCriteria.requestId === requestId &&
+      currentCriteria.sourceHash === source.sourceHash && currentCriteria.inputDigest === documentCriteria.inputDigest;
+  });
+  if (latestAvailability?.ref !== availabilityRef) return false;
   const diagnostics: Array<Record<string, unknown>> = Array.isArray(native.quoteDiagnostics)
     ? native.quoteDiagnostics.map(rec).filter((item) => Object.keys(item).length > 0) : [];
   const diagnostic = [...diagnostics].reverse().find((item) => item.kind === 'requested' && item.contextMatchesSelection === true);
@@ -128,9 +139,10 @@ export function getQuoteOutput(source: ReservationSourceContext, snapshot: Reser
   const parsedCover = typeof cover.to === 'string' && !!cover.to.trim() &&
     typeof cover.subject === 'string' && !!cover.subject.trim() && typeof cover.body === 'string' && !!cover.body.trim()
     ? { to: cover.to, subject: cover.subject, body: cover.body } : null;
+  const stale = operation.draftRevision !== snapshot.session.revision;
   const inventoryDecline = result.unavailableInventory !== undefined &&
-    operation.status === 'succeeded' && sameOutputChoice &&
-    hasCurrentUnavailableInventoryProof(draft, source, requestId, observation);
+    operation.status === 'succeeded' && !stale && sameOutputChoice &&
+    hasCurrentUnavailableInventoryProof(snapshot, source, requestId, observation);
   if (result.unavailableInventory !== undefined && !inventoryDecline)
     issues.push('The unavailability reply no longer matches a complete current Infor result. Refresh the search before using it.');
   const textOnly = Array.isArray(result.artifacts) && raw.length === 0 && outputKinds.length === 1 && outputKinds[0] === 'email_quote' &&
@@ -148,7 +160,6 @@ export function getQuoteOutput(source: ReservationSourceContext, snapshot: Reser
   if (!inventoryDecline && outputKinds.includes('pdf_quote') && !artifacts.some((item) => item.kind === 'pdf_quote') && !failures.some((failure) => failure.startsWith('pdf_'))) issues.push('The PDF is missing. Generate the quote again.');
   if (!inventoryDecline && outputKinds.includes('xlsx_quote') && !artifacts.some((item) => item.kind === 'xlsx_quote') && !failures.some((failure) => failure.startsWith('xlsx_'))) issues.push('The Excel file is missing. Generate the quote again.');
   if (outputKinds.includes('email_quote') && !parsedCover) issues.push('The cover reply is missing. Generate the quote again.');
-  const stale = operation.draftRevision !== snapshot.session.revision;
   if (stale) issues.push('The quote changed after these files were generated. Generate the quote again.');
   return { requestId, operationId: operation.id, observationRef: observation.ref, cover: parsedCover,
     artifacts, failures, issues, stale, inventoryDecline };
