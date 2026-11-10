@@ -445,7 +445,7 @@ function unavailableInventoryProof(
     ? result.quoteDiagnostics.map(record).filter((item): item is Record<string, unknown> => item !== null) : [];
   const diagnostic = [...diagnostics].reverse().find((item) => item.kind === 'requested' && item.contextMatchesSelection === true);
   const diagnosticExpiry = Date.parse(String(diagnostic?.freshUntil ?? ''));
-  if (!diagnostic || diagnostic.availabilityTruncated !== false || diagnostic.freshUntil !== freshUntil ||
+  if (!diagnostic || diagnostic.availabilityTruncated !== false ||
       !Number.isFinite(diagnosticExpiry) || diagnosticExpiry <= Date.now()) return null;
   const board: Record<string, unknown>[] = Array.isArray(diagnostic.availabilityBoard)
     ? diagnostic.availabilityBoard.map(record).filter((row): row is Record<string, unknown> => row !== null) : [];
@@ -466,7 +466,7 @@ function unavailableInventoryProof(
         const fact = byDate.get(date);
         return !fact || fact.availableCount !== 0 || fact.requestedCount !== group.quantity || fact.stockStatus !== 'sold';
       })) return null;
-  return { observation, group, roomCode, roomLabel: shortfall.roomLabel, freshUntil };
+  return { observation, group, roomCode, roomLabel: shortfall.roomLabel, freshUntil: String(diagnostic.freshUntil) };
 }
 
 function compileQuote(

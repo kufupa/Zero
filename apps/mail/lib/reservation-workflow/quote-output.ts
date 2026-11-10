@@ -68,13 +68,14 @@ function hasCurrentUnavailableInventoryProof(snapshot: ReservationPaneSnapshot, 
   const availability = draft.observations.find((item) => item.ref === availabilityRef);
   const native = rec(availability?.result), criteria = rec(availability?.criteria), shortfall = rec(native.shortfall);
   const expires = Date.parse(typeof marker.freshUntil === 'string' ? marker.freshUntil : '');
+  const nativeExpires = Date.parse(typeof native.freshUntil === 'string' ? native.freshUntil : '');
   if (!availability || availability.kind !== 'rate_availability' || availability.status !== 'failed' ||
       availability.generationId !== draft.generationId || availability.propertyCode !== draft.propertyCode ||
       availability.sourceMessageId !== source.messageId || criteria.workflow !== 'quote' || criteria.requestId !== requestId ||
       criteria.sourceHash !== source.sourceHash || criteria.inputDigest !== documentCriteria.inputDigest ||
       native.failureCode !== 'native_quote_insufficient_inventory' || native.failureKind !== 'proven_shortage' ||
       native.sourceHash !== source.sourceHash || native.inputDigest !== documentCriteria.inputDigest || native.availabilityTruncated !== false ||
-      native.freshUntil !== marker.freshUntil || !Number.isFinite(expires) || expires <= Date.now() ||
+      !Number.isFinite(nativeExpires) || nativeExpires <= Date.now() || !Number.isFinite(expires) || expires <= Date.now() ||
       shortfall.roomCode !== marker.roomCode || shortfall.roomLabel !== marker.roomLabel ||
       shortfall.demand !== marker.quantity || shortfall.supply !== 0 || !nights.includes(String(shortfall.date))) return false;
   const latestAvailability = [...draft.observations].reverse().find((item) => {
