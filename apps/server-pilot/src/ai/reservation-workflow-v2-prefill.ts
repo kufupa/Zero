@@ -1231,14 +1231,18 @@ function projectBookerContacts(input: { proposal: ReservationWorkflowV2Proposal;
   const { proposal, request, extracted, currentRefs } = input;
   if (request.kind !== 'create' && request.kind !== 'quote') return;
   type Claim = NonNullable<typeof extracted.guests[number]['name']>;
-  const facts = (field: 'name' | 'email' | 'mobile') => extracted.guests.filter((guest) => guest.role === 'booker')
-    .flatMap((guest) => {
+  const hasText = (claim: Claim) => typeof claim.value === 'string' && Boolean(claim.value.trim());
+  const facts = (field: 'name' | 'email' | 'mobile') => {
+    const claims = extracted.guests.filter((guest) => guest.role === 'booker').flatMap((guest) => {
       const claim = currentClaim(guest[field], currentRefs);
-      return claim && typeof claim.value === 'string' && claim.value.trim() ? [claim] : [];
+      return claim ? [claim] : [];
     });
+    const known = claims.filter(hasText);
+    return known.length ? known : claims;
+  };
   const name = facts('name'), email = facts('email'), mobile = facts('mobile');
   const target: Record<string, unknown> = request.kind === 'create' ? request.body.shared : request.body.client;
-  const root = `/requests/${request.id}/body/${request.kind === 'create' ? 'shared' : 'client'}`;
+  const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/${request.kind === 'create' ? 'shared' : 'client'}`;
   const distinct = (claims: Claim[]) => new Set(claims.map((claim) => normalizedFact(claim.value))).size;
   const ambiguousBooker = distinct(name) > 1;
   const project = (field: string, claims: Claim[], max: number) => {
@@ -1253,7 +1257,7 @@ function projectBookerContacts(input: { proposal: ReservationWorkflowV2Proposal;
     projectLimitedText({ proposal, target, field, claim: claims[0], currentRefs, max, path: `${root}/${field}` });
     const claim = claims[0]!;
     if (target[field] !== claim.value) return;
-    const path = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/${request.kind === 'create' ? 'shared' : 'client'}/${field}`;
+    const path = `${root}/${field}`;
     const sourceRefs = claim.sourceRefs.filter(ref => currentRefs.has(ref));
     proposal.annotations = proposal.annotations.filter(annotation => annotation.path !== path);
     proposal.annotations.push({ path, basis: 'source', evidenceRefs: sourceRefs });
@@ -1266,7 +1270,8 @@ function projectBookerContacts(input: { proposal: ReservationWorkflowV2Proposal;
     project('telephone', mobile, 120);
   } else {
     project('bookerName', name, 300);
-    project('bookerContact', mobile.length ? mobile : email, 500);
+    const contact = mobile.some(hasText) ? mobile : email.some(hasText) ? email : mobile.length ? mobile : email;
+    project('bookerContact', contact, 500);
     if (target.cmsRecipient === undefined || target.cmsRecipient === null || target.cmsRecipient === '')
       project('cmsRecipient', email, 255);
   }
