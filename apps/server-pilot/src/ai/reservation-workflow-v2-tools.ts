@@ -1580,6 +1580,9 @@ function reservationWorkflowV2CreatePriceComparison(draft: ReservationWorkflowV2
   }
   const rooms = allocations.map((room) => {
     const compiled = compileCreate(draft, requestId, room.id, propertyCode, 'prepare');
+    const saved = savedCreateNativePrice(draft, requestId, room.id, compiled);
+    if (saved.completed) return { allocationId: room.id, current: Boolean(saved.price),
+      ...(saved.price ? { price: saved.price } : {}) };
     const prepared = compiled.outcome === 'ok' ? preparedFor(draft, requestId, room.id, compiled.semanticDigest) : null;
     return { allocationId: room.id, current: Boolean(prepared), ...(prepared ? { price: prepared.price } : {}) };
   });
@@ -1843,10 +1846,18 @@ async function authorizeCurrentCreate(tx: Parameters<Parameters<DB['transaction'
     evidence: { sourceHash: input.source.sourceHash, seq: input.expectedSeq, summary: result.summary } });
 }
 
-function nativeInputMatchesBinding(compiled: Extract<CreateCompile, { outcome: 'ok' }>, request: unknown): boolean {
+function nativeInputMatchesBinding(compiled: Extract<CreateCompile, { outcome: 'ok' }>, request: unknown,
+  options: { ignoreBookerContact?: boolean } = {}): boolean {
   const bound = record(request);
   if (!bound || !stayExpected(compiled, bound)) return false;
   const input = compiled.nativeInput, parties = record(input.parties), boundParties = record(bound.parties);
+  if (options.ignoreBookerContact &&
+      ((input.sourceOfBusiness === undefined && bound.sourceOfBusiness != null) ||
+       (input.reasonForStay === undefined && bound.reasonForStay != null) ||
+       (input.billingReference === undefined && bound.billingReference != null) ||
+       (input.track === undefined && bound.track != null) ||
+       (input.guestoptin4 === undefined && bound.guestOptIn != null) ||
+       (input.cms === undefined && (bound.cmsMessageId != null || bound.cmsRecipient != null)))) return false;
   for (const [key, id, name] of [
     ['agency', 'agencyId', 'agencyName'], ['organization', 'organizationId', 'organizationName'],
     ['arAccount', 'arAccountId', 'arAccountName'],
@@ -1866,10 +1877,116 @@ function nativeInputMatchesBinding(compiled: Extract<CreateCompile, { outcome: '
     (input.billingReference === undefined || bound.billingReference === input.billingReference) &&
     (input.track === undefined || input.track === record(bound.track)?.lookupCode || input.track === record(bound.track)?.display) &&
     (input.guestoptin4 !== false || bound.guestOptIn === false) &&
-    (input.booker === undefined || canonicalJson(bound.booker) === canonicalJson(input.booker)) &&
+    (options.ignoreBookerContact
+      ? canonicalJson(withoutBookerContact(bound.booker)) === canonicalJson(withoutBookerContact(input.booker))
+      : input.booker === undefined || canonicalJson(bound.booker) === canonicalJson(input.booker)) &&
     (input.cms === undefined || (record(bound.sendHmsConfirmation)?.kind === (record(input.cms)?.send === true ? 'send' : 'never') &&
       (record(input.cms)?.send !== true || (bound.cmsMessageId === record(input.cms)?.messageId &&
         bound.cmsRecipient === record(input.cms)?.recipient))));
+}
+
+function withoutBookerContact(value: unknown): Record<string, unknown> | undefined {
+  const booker = record(value);
+  if (!booker) return undefined;
+  const { contact: _contact, ...identity } = booker;
+  return Object.keys(identity).length ? identity : undefined;
+}
+
+function validSavedPriceShot(value: unknown): boolean {
+  const shot = record(value);
+  return Boolean(shot && typeof shot.runId === 'string' && typeof shot.sha256 === 'string' && /^[a-f0-9]{64}$/.test(shot.sha256));
+}
+
+/** A completed room may use only the price from its exact verified Save/readback receipt. */
+function savedCreateNativePrice(draft: ReservationWorkflowV2Draft, requestId: string, allocationId: string,
+  compiled: CreateCompile): { completed: boolean; price: ReturnType<typeof nativeReadbackPrice> } {
+  const operations = draft.operationResults.filter((entry) => entry.workflow === 'create' && entry.requestId === requestId &&
+    entry.allocationId === allocationId && (entry.status === 'succeeded' || entry.status === 'unknown'));
+  if (!operations.length) return { completed: false, price: null };
+  const successes = operations.filter((entry) => entry.status === 'succeeded');
+  if (compiled.outcome !== 'ok' || operations.some((entry) => entry.status === 'unknown' ||
+      entry.generationId !== draft.generationId) || successes.length !== 1) return { completed: true, price: null };
+  const operation = successes[0]!;
+  if (operation.observationRefs.length !== 1) return { completed: true, price: null };
+  const observations = draft.observations.filter((entry) => operation.observationRefs.includes(entry.ref));
+  if (observations.length !== 1) return { completed: true, price: null };
+  const observation = observations[0]!, result = record(observation.result);
+  const confirmation = result?.confirmation;
+  if (observation.kind !== 'stay_candidate' || observation.status !== 'complete' || !observation.coverage.complete ||
+      observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
+      observation.sourceMessageId !== draft.source.messageId || observation.criteria.workflow !== 'create' ||
+      observation.criteria.requestId !== requestId || observation.criteria.allocationId !== allocationId ||
+      observation.criteria.draftRevision !== operation.draftRevision || typeof confirmation !== 'string' ||
+      !/^\d{6,10}-\d{1,2}$/.test(confirmation)) return { completed: true, price: null };
+
+  const readback = record(result.nativeReadback);
+  const price = nativeReadbackPrice(readback?.fields);
+  const expectedPrice = validPrice(result.ratePlanAvailability);
+  if (!readback || !Array.isArray(readback.mismatches) || readback.mismatches.length !== 0 || !price ||
+      !expectedPrice || !priceMatches(price, expectedPrice) || !validSavedPriceShot(result.savedShot)) {
+    return { completed: true, price: null };
+  }
+
+  let prepareObservationRef: string | null = null;
+  let recoveredRequestBinding: Record<string, unknown> | null = null;
+  if (observation.criteria.recovered === true) {
+    if (observation.criteria.operationId !== operation.id || observation.criteria.sourceHash !== draft.source.sourceHash ||
+        readback.confirmation !== confirmation || result.readbackDigest !== sha256(readback)) {
+      return { completed: true, price: null };
+    }
+    const attempts = draft.observations.filter((entry) => {
+      const attempt = record(entry.result);
+      return entry.kind === 'stay_candidate' && entry.status === 'partial' && entry.generationId === draft.generationId &&
+        entry.propertyCode === draft.propertyCode && entry.sourceMessageId === draft.source.messageId &&
+        entry.criteria.workflow === 'create' && entry.criteria.requestId === requestId &&
+        entry.criteria.allocationId === allocationId && entry.criteria.draftRevision === operation.draftRevision &&
+        entry.criteria.idempotencyKey === operation.id && attempt?.requestBinding && attempt.prepareObservationRef &&
+        attempt.approvedDigest && attempt.expectedRateAvailability;
+    });
+    const refs = [...new Set(attempts.map((entry) => text(record(entry.result)?.prepareObservationRef)).filter(Boolean))];
+    const holdIds = [...new Set(attempts.map((entry) => text(record(entry.result)?.dispatchHoldId)).filter(Boolean))];
+    const binding = record(record(attempts[0]?.result)?.requestBinding);
+    if (!attempts.length || refs.length !== 1 || holdIds.length !== 1 || !binding ||
+        attempts.some((entry) => {
+          const attempt = record(entry.result), candidate = record(attempt?.requestBinding);
+          return !candidate || attempt?.approvedDigest !== binding.digest ||
+            attempt?.prepareObservationRef !== refs[0] || canonicalJson(candidate) !== canonicalJson(binding) ||
+            !priceMatches(attempt?.expectedRateAvailability, expectedPrice);
+        })) return { completed: true, price: null };
+    prepareObservationRef = refs[0]!;
+    recoveredRequestBinding = binding;
+  } else {
+    const savedPrice = validPrice(result.savedPrice);
+    if (observation.criteria.idempotencyKey !== operation.id || result.priceMatched !== true ||
+        typeof result.prepareObservationRef !== 'string' || typeof result.requestDigest !== 'string' ||
+        !text(result.dispatchHoldId) || !savedPrice || !priceMatches(savedPrice, price)) {
+      return { completed: true, price: null };
+    }
+    prepareObservationRef = result.prepareObservationRef;
+  }
+
+  const prepared = draft.observations.filter((entry) => entry.ref === prepareObservationRef);
+  if (prepared.length !== 1) return { completed: true, price: null };
+  const preparedObservation = prepared[0]!, preparedResult = record(preparedObservation.result);
+  const binding = record(preparedResult?.requestBinding), boundRequest = record(binding?.request);
+  const preparedPrice = validPrice(preparedResult?.ratePlanAvailability);
+  if (preparedObservation.kind !== 'rate_availability' || preparedObservation.status !== 'complete' ||
+      !preparedObservation.coverage.complete || preparedObservation.generationId !== draft.generationId ||
+      preparedObservation.propertyCode !== draft.propertyCode || preparedObservation.sourceMessageId !== draft.source.messageId ||
+      preparedObservation.criteria.workflow !== 'create' || preparedObservation.criteria.requestId !== requestId ||
+      preparedObservation.criteria.allocationId !== allocationId ||
+      typeof preparedObservation.criteria.draftRevision !== 'number' ||
+      preparedObservation.criteria.draftRevision > operation.draftRevision || !binding || !boundRequest ||
+      typeof binding.digest !== 'string' || !/^[a-f0-9]{64}$/.test(binding.digest) ||
+      (recoveredRequestBinding !== null && canonicalJson(recoveredRequestBinding) !== canonicalJson(binding)) ||
+      preparedObservation.criteria.requestDigest !== binding.digest || !preparedPrice || !priceMatches(price, preparedPrice) ||
+      !nativeInputMatchesBinding(compiled, boundRequest, { ignoreBookerContact: true })) {
+    return { completed: true, price: null };
+  }
+  if (observation.criteria.recovered !== true && result.requestDigest !== binding.digest) {
+    return { completed: true, price: null };
+  }
+  return { completed: true, price };
 }
 
 function resultForId(draft: ReservationWorkflowV2Draft, id: string) {
