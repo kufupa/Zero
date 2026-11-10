@@ -934,13 +934,13 @@ function validCancelIncludeEdit(draft: ReservationWorkflowV2Draft, path: string,
     !current.some((row) => sameSavedTargetHint(row, added)) && current.every((row) => savedTargetsDefinitelyDistinct(row, added));
   if (!current.length) {
     if (next.length !== 1) return false;
-    const row = next[0];
+    const row = next[0] as Record<string, unknown> | undefined;
+    const candidateRefs = row?.candidateRefs, sourceRefs = row?.sourceRefs;
     return Boolean(row && typeof row === 'object' && !Array.isArray(row) &&
       Object.keys(row).length === 4 && typeof (row as Record<string, unknown>).id === 'string' &&
       /^[A-Za-z0-9_-]{1,80}$/.test((row as Record<string, string>).id!) &&
-      Array.isArray((row as Record<string, unknown>).candidateRefs) && (row as Record<string, unknown>).candidateRefs.length === 0 &&
-      (row as Record<string, unknown>).suggestedRef === null && Array.isArray((row as Record<string, unknown>).sourceRefs) &&
-      (row as Record<string, unknown>).sourceRefs.length === 0);
+      Array.isArray(candidateRefs) && candidateRefs.length === 0 &&
+      row.suggestedRef === null && Array.isArray(sourceRefs) && sourceRefs.length === 0);
   }
   const removed = targetRowsWithOneRemoved(current, next);
   return Boolean(removed && next.length > 0 && excluded.some((row) => sameSavedTargetHint(row, removed.row) ||
@@ -1248,7 +1248,9 @@ function applySavedTargetScopeEdit(draft: ReservationWorkflowV2Draft, path: stri
   const targetRoot = `/proposal/content/requests/${encodeURIComponent(requestId)}/body/targets`;
   const targetOverride = draft.fieldOverrides[targetRoot];
   if (targetOverride && targetOverride.state !== 'set' && targetOverride.state !== 'inherit') return null;
-  const targets = record(targetOverride?.state === 'set' ? targetOverride.value : request.body.targets);
+  const targetValue = targetOverride?.state === 'set' ? targetOverride.value : request.body.targets;
+  if (!targetValue || typeof targetValue !== 'object' || Array.isArray(targetValue)) return null;
+  const targets = targetValue as Record<string, unknown>;
   if (!Array.isArray(targets.include) || !Array.isArray(targets.exclude)) return null;
   const before = structuredClone(draft.proposal);
   const beforeRequest = before.content.requests.find((row) => row.id === requestId);
@@ -1256,7 +1258,7 @@ function applySavedTargetScopeEdit(draft: ReservationWorkflowV2Draft, path: stri
   beforeRequest.body.targets = { ...targets,
     include: effectiveSavedTargetRows(draft, requestId, 'include'),
     exclude: effectiveSavedTargetRows(draft, requestId, 'exclude') } as typeof beforeRequest.body.targets;
-  if (!materializableSavedTargetRows(beforeRequest.body.targets.include) ||
+  if (!beforeRequest.body.targets || !materializableSavedTargetRows(beforeRequest.body.targets.include) ||
       !materializableSavedTargetRows(beforeRequest.body.targets.exclude)) return null;
   const after = structuredClone(before);
   const afterRequest = after.content.requests.find((row) => row.id === requestId);
