@@ -909,7 +909,7 @@ function buildFallbackProposal(input: {
     const bookerName = safeCurrentText(booker?.name, currentRefs, 300);
     const bookerEmail = safeCurrentText(booker?.email, currentRefs, 500);
     const bookerMobile = safeCurrentText(booker?.mobile, currentRefs, 500);
-    const bookerContact = bookerEmail !== undefined ? bookerEmail : bookerMobile;
+    const bookerContact = bookerMobile || bookerEmail;
     const board = safeCurrentText(request.boardHints[0], currentRefs, 120);
     if (request.kind === 'quote') return { ...base, kind: 'quote' as const, body: {
       groups: request.dates.length ? request.dates.map((date, dateIndex) => ({ id: stableId(id, 'date', String(dateIndex)),
@@ -1222,6 +1222,46 @@ function projectLimitedText(input: { proposal: ReservationWorkflowV2Proposal; ta
     return;
   }
   input.target[input.field] = typeof claim.value === 'string' ? claim.value : null;
+}
+
+/** Keep source-attributed booker contact separate from the guest and CMS delivery address. */
+function projectBookerContacts(input: { proposal: ReservationWorkflowV2Proposal;
+  request: ReservationWorkflowV2Proposal['content']['requests'][number];
+  extracted: ReservationWorkflowV2Extraction['requests'][number]; currentRefs: Set<string> }): void {
+  const { proposal, request, extracted, currentRefs } = input;
+  if (request.kind !== 'create' && request.kind !== 'quote') return;
+  type Claim = NonNullable<typeof extracted.guests[number]['name']>;
+  const facts = (field: 'name' | 'email' | 'mobile') => extracted.guests.filter((guest) => guest.role === 'booker')
+    .flatMap((guest) => {
+      const claim = currentClaim(guest[field], currentRefs);
+      return claim && typeof claim.value === 'string' && claim.value.trim() ? [claim] : [];
+    });
+  const name = facts('name'), email = facts('email'), mobile = facts('mobile');
+  const target: Record<string, unknown> = request.kind === 'create' ? request.body.shared : request.body.client;
+  const root = `/requests/${request.id}/body/${request.kind === 'create' ? 'shared' : 'client'}`;
+  const distinct = (claims: Claim[]) => new Set(claims.map((claim) => normalizedFact(claim.value))).size;
+  const ambiguousBooker = distinct(name) > 1;
+  const project = (field: string, claims: Claim[], max: number) => {
+    if (!claims.length) return;
+    if (ambiguousBooker || distinct(claims) > 1) {
+      target[field] = null;
+      addProjectionIssue(proposal, `${root}/${field}`, 'booker_contact_ambiguous',
+        'The current request cites conflicting booker contacts; select the correct contact before continuing.',
+        [...name, ...claims].flatMap((claim) => claim.sourceRefs));
+      return;
+    }
+    projectLimitedText({ proposal, target, field, claim: claims[0], currentRefs, max, path: `${root}/${field}` });
+  };
+  if (request.kind === 'quote') {
+    project('attention', name, 300);
+    project('email', email, 320);
+    project('telephone', mobile, 120);
+  } else {
+    project('bookerName', name, 300);
+    project('bookerContact', mobile.length ? mobile : email, 500);
+    if (target.cmsRecipient === undefined || target.cmsRecipient === null || target.cmsRecipient === '')
+      project('cmsRecipient', email, 255);
+  }
 }
 
 type ProjectableDateClaim = ReservationWorkflowV2Extraction['requests'][number]['dates'][number];
@@ -2178,6 +2218,7 @@ function projectCurrentExtraction(input: {
     const allRefs = [...extractionRefsForRequest(extracted)].filter((ref) => knownRefs.has(ref));
     request.sourceRefs = [...new Set([...request.sourceRefs, ...allRefs])].slice(0, 100);
     request.requestText = extracted.requestText.raw.slice(0, 2000);
+    projectBookerContacts({ proposal, request, extracted, currentRefs });
     if (request.kind === 'create' && extracted.requestedPrice) {
       const priceRefs = [extracted.requestedPrice.nightlyRate, extracted.requestedPrice.total, extracted.requestedPrice.currency]
         .flatMap((claim) => currentClaim(claim, currentRefs)?.sourceRefs ?? []);
@@ -2371,16 +2412,6 @@ function projectCurrentExtraction(input: {
         `/requests/${request.id}/body/dateSections`, 'synthesized_date_without_source',
         'A synthesized date section had no unique current source date; its dates were cleared while allocation associations were retained for staff review.',
         request.sourceRefs.filter((ref) => knownRefs.has(ref)));
-      for (const guest of extracted.guests.filter((row) => row.role === 'booker')) {
-        const name = currentClaim(guest.name, currentRefs);
-        const email = currentClaim(guest.email, currentRefs);
-        const mobile = currentClaim(guest.mobile, currentRefs);
-        projectLimitedText({ proposal, target: request.body.shared as unknown as Record<string, unknown>, field: 'bookerName', claim: name, currentRefs, max: 300,
-          path: `/requests/${request.id}/body/shared/bookerName` });
-        const contact = email ?? mobile;
-        projectLimitedText({ proposal, target: request.body.shared as unknown as Record<string, unknown>, field: 'bookerContact', claim: contact, currentRefs, max: 500,
-          path: `/requests/${request.id}/body/shared/bookerContact` });
-      }
       const bookingFields = [request.body.shared as Record<string, unknown>,
         ...request.body.dateSections.map((row) => row.defaults as Record<string, unknown>),
         ...request.body.allocations.map((row) => row.overrides as Record<string, unknown>)];
