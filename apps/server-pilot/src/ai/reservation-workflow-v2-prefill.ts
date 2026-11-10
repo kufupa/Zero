@@ -1570,8 +1570,19 @@ function isPaymentProofOnlyCreate(extracted: ReservationWorkflowV2Extraction['re
   const requestMessageText = evidence.filter((row) => requestMessageRefs.has(row.ref)).map((row) => row.text).join('\n');
   const paymentProof = /\b(?:proof of payment|payment proof|remittance (?:advice|receipt)|payment receipt|deposit receipt)\b/i.test(currentText) ||
     /\bPOP\b/.test(currentText);
-  const newBookingIntent = /\b(?:book|reserve)\b(?:\s+\w+){0,3}\s+(?:room|stay|booking|reservation)\b|\b(?:create|make|place|arrange)\b(?:\s+(?:a|an|the|new))?\s+(?:booking|reservation|room|stay)\b|\bnew\s+(?:booking|reservation|room)\b/i
+  const hasCurrentDateRange = extracted.dates.some((date) => {
+    const arrival = currentClaim(date.arrival, currentRefs), departure = currentClaim(date.departure, currentRefs);
+    return Boolean(arrival && departure && isoDay(arrival.value) && isoDay(departure.value) &&
+      arrival.sourceRefs.some((ref) => requestMessageRefs.has(ref)) &&
+      departure.sourceRefs.some((ref) => requestMessageRefs.has(ref)));
+  });
+  const bookingAction = /\b(?:book|reserve)\b|\b(?:create|make|place|arrange)\b(?:\s+(?:a|an|the|new))?\s+(?:booking|reservation|room|stay)\b/i
     .test(requestMessageText);
+  const negatedBookingAction = /\b(?:do\s+not|don['’]t|never|cannot|can['’]t|must\s+not|should\s+not)\b(?:\s+\w+){0,5}\s+\b(?:book|reserve|create|make|place|arrange)\b/i
+    .test(requestMessageText);
+  // A dated, affirmative booking verb in the current message is positive intent.
+  // A historical “thank you for booking” or a POP-only message is not.
+  const newBookingIntent = bookingAction && !negatedBookingAction && hasCurrentDateRange;
   return paymentProof && !newBookingIntent;
 }
 
