@@ -17,6 +17,8 @@ import { readVoucherDiscoverySource, resolveOutlookVoucherSnapshot } from './vou
 export type BoundFilingForm = {
   action: 'attach_document'; confirmation: string; arrival: string; lastName: string;
   sourceMessageId: string; sourceInternetMessageId: string; attachmentId: string; documentName: string;
+  /** Original mail attachment name; documentName is the actual name uploaded to HMS. */
+  sourceDocumentName?: string;
   pdfSha256: string; sourceSnapshotDigest: string; sourceThreadId?: string; sourceHash?: string;
   documentCode?: string; filingStateDigest?: string;
 };
@@ -48,8 +50,9 @@ function matchesForm(item: Item | undefined, form: BoundFilingForm): item is Ite
 /** Read and revalidate the exact selected PDF before staging the one native upload. */
 export async function readBoundFilingSource(input: Scope & { db: DB; fence?: AiRunFence }): Promise<Buffer | null> {
   const { db, form } = input;
+  const sourceDocumentName = form.sourceDocumentName ?? form.documentName;
   const source = { transportId: input.transportId, messageId: form.sourceMessageId, attachmentId: form.attachmentId,
-    filename: form.documentName, sha256: form.pdfSha256, snapshotDigest: form.sourceSnapshotDigest };
+    filename: sourceDocumentName, sha256: form.pdfSha256, snapshotDigest: form.sourceSnapshotDigest };
   const checkAuthority = async () => {
     const [item] = await db.select().from(workItem).where(and(eq(workItem.id, input.workItemId),
       eq(workItem.transportId, input.transportId))).limit(1);
@@ -63,6 +66,7 @@ export async function readBoundFilingSource(input: Scope & { db: DB; fence?: AiR
 /** Lock and recheck the source snapshot in the final durable dispatch-claim transaction. */
 export async function lockBoundFilingSource(tx: WorkTransaction, input: Scope & { allowUnbound?: boolean }): Promise<Item | null> {
   const { transportId, workItemId, form } = input;
+  const sourceDocumentName = form.sourceDocumentName ?? form.documentName;
   await lockCanonicalMailbox(tx as unknown as DB, transportId);
   const [reference] = await tx.select({ threadId: message.threadId }).from(message).where(and(
     eq(message.id, form.sourceMessageId), eq(message.transportId, transportId))).limit(1);
@@ -106,12 +110,12 @@ export async function lockBoundFilingSource(tx: WorkTransaction, input: Scope & 
     if (!owner) return null;
     const snapshot = await resolveOutlookVoucherSnapshot({ transportId, messageId: form.sourceMessageId,
       attachmentId: form.attachmentId }, { db: tx as unknown as DB, storage: { bucket } });
-    return snapshot && snapshot.source.filename === form.documentName && snapshot.source.sha256 === form.pdfSha256 &&
+    return snapshot && snapshot.source.filename === sourceDocumentName && snapshot.source.sha256 === form.pdfSha256 &&
       snapshot.source.snapshotDigest === form.sourceSnapshotDigest ? item : null;
   }
   const candidate = await panePop3AttachmentCandidate({ db: tx as unknown as DB, bucket,
     transportId, messageId: form.sourceMessageId, attachmentId: form.attachmentId });
-  if (!candidate || candidate.filename !== form.documentName || (candidate.sha256 && candidate.sha256 !== form.pdfSha256)) return null;
+  if (!candidate || candidate.filename !== sourceDocumentName || (candidate.sha256 && candidate.sha256 !== form.pdfSha256)) return null;
   const digest = createHash('sha256').update(`${candidate.fingerprint}:${form.pdfSha256}`).digest('hex');
   return digest === form.sourceSnapshotDigest ? item : null;
 }

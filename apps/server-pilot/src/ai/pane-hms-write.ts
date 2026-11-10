@@ -218,6 +218,7 @@ const attachFormSchema = z.object({
   lastName: z.string().trim().min(1).max(200),
   attachmentId: z.string().min(1).max(200),
   documentName: z.string().max(120).refine(isPdfDocumentName),
+  sourceDocumentName: z.string().max(120).refine(isPdfDocumentName).optional(),
   /** Digest of the PDF staff approved. A later change of the stored bytes is refused before upload. */
   pdfSha256: z.string().regex(PDF_SHA256).optional(),
   sourceMessageId: z.string().min(1).max(512).optional(),
@@ -363,6 +364,19 @@ function attachDocumentName(filename: string): string | null {
   return isPdfDocumentName(base) ? base : null;
 }
 
+/** Stable, non-overwriting HMS filename bound to the exact stay and PDF bytes. */
+export function nativeFilingDocumentName(sourceDocumentName: string, confirmation: string, pdfSha256: string): string {
+  if (!isPdfDocumentName(sourceDocumentName) || !CONFIRMATION.test(confirmation) || !PDF_SHA256.test(pdfSha256)) {
+    throw new Error('filing_native_document_name_input_invalid');
+  }
+  const sourceStem = sourceDocumentName.replace(/\.pdf$/i, '');
+  const safeStem = sourceStem.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/[-_]{2,}/g, '-').replace(/^[-_]+|[-_]+$/g, '') || 'voucher';
+  const suffix = `-${confirmation}-${pdfSha256.slice(0, 24)}.pdf`;
+  const stemLength = Math.min(40, 80 - suffix.length);
+  if (stemLength < 1) throw new Error('filing_native_document_name_too_long');
+  return `${safeStem.slice(0, stemLength).replace(/[-_]+$/g, '') || 'v'}${suffix}`;
+}
+
 export type BindAttachDocumentResult =
   | { status: 'bound'; form: AttachForm; formDigest?: string }
   | { status: 'refused'; reason: string };
@@ -396,6 +410,7 @@ export async function bindAttachDocumentForm(input: {
     'lastName',
     'attachmentId',
     'documentName',
+    'sourceDocumentName',
     'pdfSha256',
     'sourceMessageId',
     'sourceInternetMessageId',
@@ -456,10 +471,12 @@ export async function bindAttachDocumentForm(input: {
     if (source.source.filename !== source.source.filename.replace(/\s+/g, ' ').trim()) {
       return { status: 'refused', reason: 'form_invalid' };
     }
+    const nativeDocumentName = nativeFilingDocumentName(source.source.filename, input.confirmation, source.source.sha256);
     const form: BoundFilingForm & { sourceThreadId: string; sourceHash: string } = {
       action: 'attach_document', confirmation: input.confirmation, arrival: input.arrival,
       lastName: squash(input.lastName), sourceMessageId: input.sourceMessageId, sourceInternetMessageId: selected,
-      attachmentId: input.attachmentId, documentName: source.source.filename, pdfSha256: source.source.sha256,
+      attachmentId: input.attachmentId, sourceDocumentName: source.source.filename,
+      documentName: nativeDocumentName, pdfSha256: source.source.sha256,
       sourceSnapshotDigest: source.source.snapshotDigest, sourceThreadId: selectedSource.threadId, sourceHash: selectedSource.sourceHash };
     if (!attachFormSchema.safeParse(form).success || formRefusal(form, { allowRealGuest: true }) || pdfRefusal(source.bytes)) {
       return { status: 'refused', reason: 'form_invalid' };
