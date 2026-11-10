@@ -1088,7 +1088,7 @@ function fallbackQuoteOccupancy(request: ReservationWorkflowV2Extraction['reques
   const ageClaims = row.childAges?.every((claim) => currentClaim(claim, currentRefs)) ? row.childAges : undefined;
   const adults = citedInteger(adultsClaim);
   const childCount = citedInteger(childCountClaim);
-  const childAges = ageClaims?.length ? ageClaims.map((claim) => citedInteger(claim) ?? null) : null;
+  const childAges = ageClaims?.length ? ageClaims.map((claim) => citedInteger(claim) ?? null) : childCount === 0 ? [] : null;
   if (!adultsClaim && !childCountClaim && !ageClaims?.length) return { occupancy: empty, sourceRefs: [] as string[] };
   const claims = [adultsClaim, childCountClaim, ...(ageClaims ?? [])];
   const oneRoom = citedInteger(currentClaim(request.roomCount, currentRefs)) === 1;
