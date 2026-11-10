@@ -166,6 +166,8 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   const liveInputs = useRef({ key, uncommitted });
   liveInputs.current = { key, uncommitted };
   const [activeId, setActiveId] = useState<string | null>(null);
+  const activeAction = useRef(activeId);
+  activeAction.current = activeId;
   useEffect(() => { setError(null); setUncommitted(new Set()); setActiveId(null); }, [key]);
 
   const apply = useCallback((next: ReservationPaneSnapshot, bound: ReservationSourceContext, buffer: Buffer) => {
@@ -295,12 +297,17 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       liveInputs.current = { key, uncommitted: next }; setUncommitted(next);
     },
     edit(path, value, state = 'set') { stageEdit(path, value, state); return run(async () => {}); },
-    changeRows(change) { return run(async context => {
+    changeRows(change) {
+      const selectedAction = activeAction.current;
+      return run(async context => {
       const next = await client.changeRows({ ...context, ...change });
       const createdId = record(next.workflowReply).createdId;
-      if (typeof createdId === 'string' && next.requests.some(row => row.id === createdId)) setActiveId(createdId);
+      if (mounted.current && active.current.key === key && active.current.epoch === source.selectionEpoch &&
+          activeAction.current === selectedAction && typeof createdId === 'string' &&
+          next.requests.some(row => row.id === createdId)) setActiveId(createdId);
       return next;
-    }); },
+      });
+    },
     selectNative(fieldPath, observationRef) { return run(context => client.selectNative({ ...context, requestId: requireRequest(), fieldPath, observationRef })); },
     ...(verifyNativeLead ? { verifyNativeLead(fieldPath: string, observationRef: string) {
       return run(context => verifyNativeLead.call(client, { ...context, requestId: requireRequest(), fieldPath, observationRef }));
