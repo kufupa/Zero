@@ -11,6 +11,7 @@ import {
 } from '../mail/artifacts/read-artifact.js';
 import { getS3Storage } from '../storage/s3.js';
 import { paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
+import { canonicalMessageId } from '../mail/ingest/message-id.js';
 import { confirmationBase } from '../hms/confirmation-match.js';
 import { AMBIGUOUS_NUMBER_GROUPS, maskCardNumbers } from './card-mask.js';
 import { convertDocxWithGotenberg } from '../quote-proposal/gotenberg.js';
@@ -716,6 +717,7 @@ export function orderThreadContext(
  */
 export async function loadSyncedQuoteSelectionFromMailbox(input: {
   transportId: string;
+  userId?: string;
   internetMessageId?: string;
   selection?: PaneSourceSelection;
   /** The stored row's id. When set it is used instead of the header, which can be missing or shared by two rows. */
@@ -732,7 +734,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
   /** A caller holding canonical source locks uses the same transaction for every source read. */
   db?: DB;
 }): Promise<SyncedQuoteSelection | null> {
-  const internetMessageId = input.internetMessageId?.trim();
+  const internetMessageId = canonicalMessageId(input.internetMessageId);
   if ((!internetMessageId && !input.messageId) || (input.selection && !internetMessageId)) return null;
   let db;
   try {
@@ -764,7 +766,8 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
           ? eq(message.id, input.messageId)
           : eq(message.messageIdHeader, internetMessageId ?? ''),
         input.selection ? eq(message.messageIdHeader, internetMessageId ?? '') : undefined,
-        paneSourceSelectionCondition(input.selection),
+        paneSourceSelectionCondition(input.selection, input.userId
+          ? { userId: input.userId, internetMessageId: internetMessageId ?? undefined } : undefined),
       ),
     )
     .limit(2);

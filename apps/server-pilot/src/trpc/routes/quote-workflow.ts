@@ -148,6 +148,7 @@ const paneCloudBatchInput = z.discriminatedUnion('kind', [
 
 export type LoadSyncedSelection = (input: {
   transportId: string;
+  userId?: string;
   internetMessageId?: string;
   selection?: PaneSourceSelection;
   entryId?: string;
@@ -548,6 +549,7 @@ export const quoteWorkflowRouter = router({
         quoteWorkflowLoaders.loadSyncedSelection ?? loadSyncedQuoteSelectionFromMailbox;
       const synced = await loader({
         transportId: ctx.activeTransportId,
+        userId: ctx.sessionUser.id,
         internetMessageId,
         ...(input.selection ? { selection: input.selection } : {}),
         entryId: input.entryId,

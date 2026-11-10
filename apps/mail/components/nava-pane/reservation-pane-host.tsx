@@ -75,6 +75,8 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
   const source = resolved?.owner === owner ? resolved.source : null;
   const [sourceEvidencePreview, setSourceEvidencePreview] = useState<SourceEvidencePreview | null>(null);
   const [sourceError, setSourceError] = useState<string | null>(null);
+  const [sourceRetryable, setSourceRetryable] = useState(false);
+  const [sourceRetry, setSourceRetry] = useState(0);
   const client = useMemo(() => createTrpcReservationWorkflowClient(trpcClient), []);
   const [pendingBuild, setPendingBuild] = useState<PaneVersion | null>(null);
   const [loadedBuild] = useState(() => loadedPaneBuild());
@@ -174,6 +176,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
     if (resolved?.owner === owner && owner !== null) return;
     setResolved(null);
     setSourceError(null);
+    setSourceRetryable(false);
     if (!owner || !selection || !email || !connection?.id || bridge.requiresRelogin ||
       (!preview && (bridge.updateRequired || bridge.authorizationUnavailable || bridge.selectionOutsideMailbox))) return;
     const selectedEpoch = epoch.current.value;
@@ -186,9 +189,19 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
           ...(email.internetMessageId ? { internetMessageId: email.internetMessageId } : {}) });
         if (!alive || currentOwner.current !== owner || epoch.current.value !== selectedEpoch) return;
         if (result.status !== 'ok') {
+          setSourceRetryable(result.status === 'source_unavailable');
           setSourceError(result.status === 'wrong_property'
-            ? result.message : 'Waiting for this email to become available in Nava.');
-          if (result.status === 'source_unavailable' && ++attempts < 12) timer = setTimeout(() => void resolve(), 10_000);
+            ? result.message : result.reason === 'ambiguous'
+              ? 'Nava found more than one matching email. Reopen the selected email after copying finishes.'
+              : result.reason === 'attention'
+                ? 'This email copy needs checking before Nava can open it. Retry after copying finishes.'
+                : attempts >= 11
+                  ? 'Nava could not open this email copy yet. Retry opening it, or reconnect Outlook if copying has stopped.'
+                  : attempts >= 3
+                  ? 'This email is taking longer to open. Nava will keep checking; you can retry now.'
+                  : 'Waiting for this email to become available in Nava.');
+          if (result.status === 'source_unavailable' && result.reason !== 'ambiguous' && ++attempts < 12)
+            timer = setTimeout(() => void resolve(), 10_000);
           return;
         }
         setSourceError(null);
@@ -216,13 +229,16 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
           })),
         } });
       } catch {
-        if (alive && currentOwner.current === owner) setSourceError('Nava could not open this email. Check your connection.');
+        if (alive && currentOwner.current === owner) {
+          setSourceError('Nava could not open this email. Check your connection and retry.');
+          setSourceRetryable(true);
+        }
       }
     };
     void resolve();
     return () => { alive = false; if (timer) clearTimeout(timer); };
   }, [owner, selection, connection?.id, resolved?.owner, bridge.requiresRelogin, bridge.updateRequired,
-    bridge.authorizationUnavailable, bridge.selectionOutsideMailbox, preview, sync.status?.committed]);
+    bridge.authorizationUnavailable, bridge.selectionOutsideMailbox, preview, sync.status?.committed, sourceRetry]);
 
   if (sessionLoading || connectionLoading) return <p className="p-4 text-sm text-slate-600">Loading Nava…</p>;
   if (!session?.user || bridge.requiresRelogin) return <OutlookPaneSignIn />;
@@ -245,7 +261,10 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
       {!preview && bridge.authorizationUnavailable ? <button type="button" className="m-3 rounded border p-2 text-sm"
         onClick={bridge.refreshAuthorization}>Reconnect Outlook</button> : null}
       <SelectedEmailBlock activeEmail={email} />
-      {sourceError ? <p role="status" className="p-3 text-sm text-slate-600">{sourceError}</p> : null}
+      {sourceError ? <div className="p-3 text-sm text-slate-600"><p role="status">{sourceError}</p>
+        {sourceRetryable && <button type="button" className="mt-2 rounded border border-slate-300 px-3 py-2"
+          onClick={() => setSourceRetry(value => value + 1)}>Retry opening email</button>}
+      </div> : null}
       {email && !source && !sourceError ? <p role="status" className="p-3 text-sm text-slate-600">Opening selected email…</p> : null}
       {source ? <ReservationWorkspace key={`${owner}:${source.selectionEpoch}`} source={source} client={client} bridge={bridge} hostType={preview ? 'webmail' : 'outlook'}
         onOpenEvidence={(reference) => void openEvidence(reference)} onOpenAttachment={(reference) => void openAttachment(reference)} /> : null}

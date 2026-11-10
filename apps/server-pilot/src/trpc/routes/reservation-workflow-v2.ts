@@ -1,6 +1,6 @@
 import type { ReservationWorkflowV2Draft, ReservationWorkflowV2ItemInput } from '../../ai/reservation-workflow-v2-contract.js';
 import { TRPCError } from '@trpc/server';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb } from '../../db/client.js';
 import { aiWorkflowRun, attachment, mailThread, message } from '../../db/schema/mail.js';
@@ -69,6 +69,8 @@ import { reservationWorkflowV2GuestOptions, reservationWorkflowV2PrepareGuestPro
 import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
 import { guardCenturionHmsMailboxOrigin } from '../../hms/mailbox-hms-origin-bind.js';
 import { paneSourceSelectionCondition, paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
+import { canonicalMessageId } from '../../mail/ingest/message-id.js';
+import { logPaneSourceResolution } from '../../mail/pane-source-diagnostics.js';
 import { mailboxProcedure, router } from '../trpc.js';
 
 function context(userId: string, transportId: string) {
@@ -207,25 +209,37 @@ const servicesInput = reservationWorkflowV2PrepareInputSchema.extend({
 export const reservationWorkflowV2Router = router({
   resolveSource: mailboxProcedure.input(sourceInput).query(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
+    const internetMessageId = canonicalMessageId(input.internetMessageId);
+    const diagnostic = { userId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId,
+      transportId: scoped.transportId, selection: input.selection, internetMessageId: input.internetMessageId };
     const rows = await scoped.db.select({
       id: message.id, threadId: message.threadId, internetMessageId: message.messageIdHeader,
       subject: message.subject, fromAddress: message.fromAddress, textBody: message.textBody, htmlBody: message.htmlBody,
       sourceProvenance: message.sourceProvenance, arrivedAt: MESSAGE_ARRIVED_AT,
+      nativeLinked: sql<boolean>`${paneSourceSelectionCondition(input.selection)}`,
     }).from(message).innerJoin(mailThread, and(eq(mailThread.id, message.threadId),
       eq(mailThread.transportId, message.transportId)))
       .where(and(eq(message.transportId, scoped.transportId), eq(message.direction, 'inbound'),
         eq(message.historyOnly, false), eq(mailThread.historyOnly, false),
         isNull(mailThread.trashedAt), isNull(mailThread.spamAt),
-        paneSourceSelectionCondition(input.selection),
-        input.internetMessageId ? eq(message.messageIdHeader, input.internetMessageId.trim()) : undefined))
+        paneSourceSelectionCondition(input.selection, { userId: scoped.userId, internetMessageId: input.internetMessageId }),
+        input.internetMessageId !== undefined ? eq(message.messageIdHeader, internetMessageId ?? '') : undefined))
       .limit(2);
     const selected = rows.length === 1 ? rows[0] : null;
     if (!selected || selected.sourceProvenance?.attention != null || !selected.arrivedAt) {
-      return { status: 'source_unavailable' as const };
+      const reason = rows.length > 1 ? 'ambiguous' as const : !selected ? 'not_found' as const
+        : selected.sourceProvenance?.attention != null ? 'attention' as const : 'missing_arrival' as const;
+      logPaneSourceResolution({ ...diagnostic, matches: rows.length, result: reason });
+      return { status: 'source_unavailable' as const, reason };
     }
     const origin = await guardCenturionHmsMailboxOrigin({ transportId: scoped.transportId,
       threadId: selected.threadId, messageId: selected.id });
-    if (!origin.ok) return { status: 'wrong_property' as const, message: origin.message };
+    if (!origin.ok) {
+      logPaneSourceResolution({ ...diagnostic, matches: 1, result: 'wrong_property' });
+      return { status: 'wrong_property' as const, message: origin.message };
+    }
+    logPaneSourceResolution({ ...diagnostic, matches: 1, result: 'ready',
+      matchedBy: input.selection.kind === 'web' ? 'web' : selected.nativeLinked ? 'native' : 'mailbox-copy' });
     const attachments = await scoped.db.select({ id: attachment.id, filename: attachment.filename,
       mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, isInline: attachment.isInline })
       .from(attachment).where(eq(attachment.messageId, selected.id)).limit(50);
