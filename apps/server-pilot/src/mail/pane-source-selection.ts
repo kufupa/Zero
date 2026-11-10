@@ -34,7 +34,6 @@ export function paneSourceSelectionCondition(selection?: PaneSourceSelection,
       ${outlookSyncSource.transportId} = ${message.transportId}
       and ${outlookSyncSource.storeId} = ${selection.storeId}
       and ${outlookSyncObservation.ingestionState} = 'committed'
-      and ${outlookSyncObservation.direction} = ${message.direction}::text
       and ${outlookSyncObservation.evidence} #>> '{locator,storeId}' = ${selection.storeId}
       and ${outlookSyncObservation.evidence} #>> '{locator,entryId}' = ${selection.entryId}
       ${selection.folderEntryId !== undefined ? sql`and ${outlookSyncObservation.evidence} #>> '{locator,folderEntryId}' = ${selection.folderEntryId}` : sql``}`;
@@ -42,7 +41,7 @@ export function paneSourceSelectionCondition(selection?: PaneSourceSelection,
     select 1 from ${outlookSyncObservation}
     inner join ${outlookSyncSource} on ${outlookSyncSource.id} = ${outlookSyncObservation.sourceId}
     where ${outlookSyncObservation.canonicalMessageId} = ${message.id}
-      and ${locator}
+      and ${locator} and ${outlookSyncObservation.direction} = ${message.direction}::text
   )`;
   const header = canonicalMessageId(mailboxCopy?.internetMessageId);
   if (!mailboxCopy?.userId || !header) return committed;
