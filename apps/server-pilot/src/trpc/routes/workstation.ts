@@ -1,5 +1,5 @@
 import { outlookSyncRouter } from './outlook-sync.js';
-import { paneSourceContentHash, paneSourceContentHashSchema, paneSourceSelectionCondition, paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
+import { paneSourceMatchesContentHash, paneSourceContentHashSchema, paneSourceSelectionCondition, paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
 import {
   approvedStaySpan,
   combinedStayCurrencyProblem,
@@ -895,7 +895,7 @@ export const workstationRouter = router({
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Selected message identity is ambiguous' });
       const [mail] = matches;
       if (!mail) return { status: 'message_not_synced' as const };
-      if (input.selection?.kind === 'outlook' && input.contentHash && paneSourceContentHash(mail) !== input.contentHash)
+      if (input.selection?.kind === 'outlook' && input.contentHash && !paneSourceMatchesContentHash(mail, input.contentHash))
         return { status: 'message_not_synced' as const };
       return {
         status: 'ready' as const,

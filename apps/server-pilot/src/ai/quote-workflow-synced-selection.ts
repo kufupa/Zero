@@ -10,7 +10,7 @@ import {
   type SandboxRunner,
 } from '../mail/artifacts/read-artifact.js';
 import { getS3Storage } from '../storage/s3.js';
-import { paneSourceContentHash, paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
+import { paneSourceMatchesContentHash, paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
 import { canonicalMessageId } from '../mail/ingest/message-id.js';
 import { confirmationBase } from '../hms/confirmation-match.js';
 import { AMBIGUOUS_NUMBER_GROUPS, maskCardNumbers } from './card-mask.js';
@@ -774,7 +774,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     .limit(2);
   const row = selected[0];
   if (!row || selected.length !== 1) return null;
-  if (input.selection?.kind === 'outlook' && input.contentHash && paneSourceContentHash(row) !== input.contentHash) return null;
+  if (input.selection?.kind === 'outlook' && input.contentHash && !paneSourceMatchesContentHash(row, input.contentHash)) return null;
 
   const threadRows = await db
     .select({

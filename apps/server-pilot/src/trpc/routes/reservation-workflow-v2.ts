@@ -68,7 +68,7 @@ import { reservationWorkflowV2GuestOptions, reservationWorkflowV2PrepareGuestPro
   reservationWorkflowV2CreateGuestProfile, reservationWorkflowV2ReconcileGuestProfile } from '../../ai/reservation-workflow-v2-guest.js';
 import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
 import { guardCenturionHmsMailboxOrigin } from '../../hms/mailbox-hms-origin-bind.js';
-import { paneSourceContentHash, paneSourceContentHashSchema, paneSourceSelectionCondition, paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
+import { paneSourceMatchesContentHash, paneSourceContentHashSchema, paneSourceSelectionCondition, paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
 import { canonicalMessageId } from '../../mail/ingest/message-id.js';
 import { logPaneSourceResolution } from '../../mail/pane-source-diagnostics.js';
 import { mailboxProcedure, router } from '../trpc.js';
@@ -227,7 +227,7 @@ export const reservationWorkflowV2Router = router({
         input.internetMessageId !== undefined ? eq(message.messageIdHeader, internetMessageId ?? '') : undefined))
       .limit(2);
     const selected = rows.length === 1 ? rows[0] : null;
-    if (selected && input.selection.kind === 'outlook' && input.contentHash && paneSourceContentHash(selected) !== input.contentHash) {
+    if (selected && input.selection.kind === 'outlook' && input.contentHash && !paneSourceMatchesContentHash(selected, input.contentHash)) {
       logPaneSourceResolution({ ...diagnostic, matches: 1, result: 'content_mismatch' });
       return { status: 'source_unavailable' as const, reason: 'content_mismatch' as const };
     }

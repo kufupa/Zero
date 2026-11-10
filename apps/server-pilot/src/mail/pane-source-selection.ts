@@ -6,6 +6,7 @@ import { outlookDevice, outlookDeviceReadRoot } from '../db/schema/outlook-devic
 import { canonicalMessageId } from './ingest/message-id.js';
 import { createHash } from 'node:crypto';
 import { canonicalEvidenceBody } from './ingest/canonical-identity.js';
+import { htmlToPlainText } from './inbound-reaction-parser.js';
 
 export const paneSourceContentHashSchema = z.string().regex(/^[0-9a-f]{64}$/);
 /** Same whitespace treatment as canonical ingestion; corroborate the selected body without sending it again. */
@@ -16,6 +17,11 @@ export function paneSourceContentHash(source: {
   return createHash('sha256').update(JSON.stringify([
     (source.subject ?? '').replace(/\s+/g, ' ').trim(), sender, canonicalEvidenceBody(source),
   ])).digest('hex');
+}
+/** Outlook and MIME may project different plain text from the same HTML. Compare either stored representation. */
+export function paneSourceMatchesContentHash(source: Parameters<typeof paneSourceContentHash>[0], expected: string): boolean {
+  return paneSourceContentHash(source) === expected || Boolean(source.htmlBody &&
+    paneSourceContentHash({ ...source, textBody: htmlToPlainText(source.htmlBody) }) === expected);
 }
 
 /** Web uses stored IDs; Outlook uses its native locator or an approved mailbox copy. */

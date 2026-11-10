@@ -19,6 +19,7 @@ import {
   reloadAtEmailSwitch, reloadPane, type PaneVersion,
 } from '@/lib/workstation/pane-release-watch';
 import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
+import { htmlToPlainText } from '../../../server-pilot/src/mail/inbound-reaction-parser';
 
 type Props = {
   bridge: PaneBridge;
@@ -41,7 +42,7 @@ async function sourceEvidenceRef(messageId: string, role: string, identity: stri
 
 async function selectedContentHash(email: { subject: string; senderEmail: string; bodyText: string; bodyHtml: string; transportHeaders?: string }) {
   // Match canonical ingestion's whitespace normalization, keeping body text out of the request URL.
-  const body = (email.bodyText || email.bodyHtml.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
+  const body = ((email.bodyHtml && htmlToPlainText(email.bodyHtml)) || email.bodyText).replace(/\s+/g, ' ').trim();
   if (!body) return undefined;
   // The bridge exposes Exchange DNs; native sync resolves SMTP. Transport From corroborates the same sender.
   const fromHeader = email.transportHeaders?.replace(/\r?\n[ \t]+/g, ' ')
@@ -81,7 +82,8 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
   }, [email?.entryId, email?.storeId, email?.folderEntryId, preview, webSelectedThreadId]);
   const owner = session?.user?.id && connection?.id && selection
     ? JSON.stringify([session.user.id, session.session?.id, connection.id, selection,
-      email?.internetMessageId, email?.subject, email?.bodyText, email?.bodyHtml]) : null;
+      email?.internetMessageId, email?.subject, email?.senderEmail, email?.transportHeaders,
+      email?.bodyText, email?.bodyHtml]) : null;
   const epoch = useRef({ owner, value: 0 });
   if (epoch.current.owner !== owner) epoch.current = { owner, value: epoch.current.value + 1 };
   const currentOwner = useRef(owner);
