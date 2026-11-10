@@ -58,6 +58,8 @@ const MAX_DISPLAY_LEADS = 500;
 // Match the canonical draft observation limit; display-only rows must not crowd out other evidence.
 const MAX_DRAFT_OBSERVATIONS = 5000;
 const MAX_PROPOSAL_SOURCE_CLAIMS = 1000;
+const MAX_PROPOSAL_ISSUES = 1000;
+const CONFIRMATION_CLAIM_CAPACITY_ISSUE = 'confirmation_claim_capacity_exceeded';
 // Do not start additional reads indefinitely; in-flight non-cancellable legacy reads may finish later.
 const CANDIDATE_READ_START_BUDGET_MS = 90_000;
 const SOURCE_REF_PREFIX = 'src_';
@@ -1188,11 +1190,12 @@ function compactProposalSourceClaims(proposal: ReservationWorkflowV2Proposal, cu
     sourceRefs.forEach((ref) => group.sourceRefs.add(ref));
     confirmationsByRequest.set(match[1]!, group);
   }
+  const overflowedRequests = new Set<string>();
   const confirmationClaims = [...confirmationsByRequest].map(([requestId, group]) => {
     let raw = '';
     for (const value of group.values) {
       const next = raw ? `${raw}; ${value}` : value;
-      if (next.length > 2000) break;
+      if (next.length > 2000) { overflowedRequests.add(requestId); break; }
       raw = next;
     }
     return { path: `/proposal/content/requests/${requestId}/confirmationReference`, raw,
@@ -1200,6 +1203,55 @@ function compactProposalSourceClaims(proposal: ReservationWorkflowV2Proposal, cu
   });
   proposal.sourceClaims = [...confirmationClaims,
     ...otherClaims.slice(0, Math.max(0, MAX_PROPOSAL_SOURCE_CLAIMS - confirmationClaims.length))];
+
+  for (const requestId of overflowedRequests) {
+    const path = `/proposal/content/requests/${requestId}/confirmationReference`;
+    if (proposal.issues.some((issue) => issue.path === path && issue.kind === CONFIRMATION_CLAIM_CAPACITY_ISSUE)) continue;
+    proposal.issues.push({ path, kind: CONFIRMATION_CLAIM_CAPACITY_ISSUE,
+      explanation: 'This Create has more source confirmation claims than can be safely retained together. Resolve the source with staff before proceeding.',
+      evidenceRefs: [...(confirmationsByRequest.get(requestId)?.sourceRefs ?? [])].slice(0, 100) });
+  }
+
+  const capacityIssues = [...new Map(proposal.issues.filter((issue) => issue.kind === CONFIRMATION_CLAIM_CAPACITY_ISSUE &&
+    /^\/proposal\/content\/requests\/[^/]+\/confirmationReference$/.test(issue.path) &&
+    createIds.has(issue.path.split('/')[4]!)).map((issue) => [issue.path, issue])).values()];
+  if (!capacityIssues.length) return;
+  const safetyIssues = proposal.issues.filter((issue) => issue.kind !== CONFIRMATION_CLAIM_CAPACITY_ISSUE &&
+    (issue.kind.startsWith('existing_confirmation_') || issue.kind === 'confirmation_request_link_ambiguous'));
+  const uniqueSafetyIssues = [...new Map(safetyIssues.map((issue) => [`${issue.path}\u001f${issue.kind}`, issue])).values()];
+  const reservedIssues = [...capacityIssues, ...uniqueSafetyIssues].slice(0, MAX_PROPOSAL_ISSUES);
+  const reservedKeys = new Set(reservedIssues.map((issue) => `${issue.path}\u001f${issue.kind}`));
+  const otherIssues = proposal.issues.filter((issue) => !reservedKeys.has(`${issue.path}\u001f${issue.kind}`));
+  proposal.issues = [...reservedIssues, ...otherIssues.slice(0, Math.max(0, MAX_PROPOSAL_ISSUES - reservedIssues.length))];
+}
+
+function carryConfirmationClaimCapacityIssues(input: {
+  source: ReservationWorkflowV2Proposal;
+  target: ReservationWorkflowV2Proposal;
+  sourceRequestToExtractionId: ReadonlyMap<string, string>;
+  targetRequestToExtractionId: ReadonlyMap<string, string>;
+  currentRefs: ReadonlySet<string>;
+}): void {
+  const sourcePath = /^\/proposal\/content\/requests\/([^/]+)\/confirmationReference$/;
+  const targetIdsByExtractionId = new Map<string, string[]>();
+  for (const [requestId, extractionId] of input.targetRequestToExtractionId) {
+    const request = input.target.content.requests.find((candidate) => candidate.id === requestId && candidate.kind === 'create');
+    if (request) targetIdsByExtractionId.set(extractionId,
+      [...(targetIdsByExtractionId.get(extractionId) ?? []), requestId]);
+  }
+  for (const issue of input.source.issues) {
+    if (issue.kind !== CONFIRMATION_CLAIM_CAPACITY_ISSUE) continue;
+    const match = sourcePath.exec(issue.path);
+    const extractionId = match ? input.sourceRequestToExtractionId.get(match[1]!) : undefined;
+    if (!extractionId) continue;
+    for (const requestId of targetIdsByExtractionId.get(extractionId) ?? []) {
+      const path = `/proposal/content/requests/${requestId}/confirmationReference`;
+      if (input.target.issues.some((existing) => existing.path === path && existing.kind === CONFIRMATION_CLAIM_CAPACITY_ISSUE)) continue;
+      input.target.issues.push({ path, kind: CONFIRMATION_CLAIM_CAPACITY_ISSUE,
+        explanation: 'This Create has more source confirmation claims than can be safely retained together. Resolve the source with staff before proceeding.',
+        evidenceRefs: [...new Set(issue.evidenceRefs.filter((ref) => input.currentRefs.has(ref)))].slice(0, 100) });
+    }
+  }
 }
 
 function normalizedFact(value: unknown): string {
@@ -2074,6 +2126,9 @@ function projectCurrentExtraction(input: {
 }): { proposal: ReservationWorkflowV2Proposal; addedRequests: number; addedIssues: number;
   extractionIdByProposalRequestId: Map<string, string> } {
   const proposal = structuredClone(input.proposal);
+  // Synthesis issues are untrusted; only this host compactor may assert that its
+  // per-request confirmation claim exceeded the durable source-claim budget.
+  proposal.issues = proposal.issues.filter((issue) => issue.kind !== CONFIRMATION_CLAIM_CAPACITY_ISSUE);
   const knownRefs = new Set(input.evidence.map((row) => row.ref));
   const currentRefs = new Set(input.evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
   const pdfs = currentPdfEvidence(input);
@@ -2610,6 +2665,10 @@ function projectCurrentExtraction(input: {
   const fallbackProposal = buildFallbackProposal({ extraction: currentExtraction, source: input.source,
     evidence: input.evidence, reason: 'Projected source facts did not fit the editable workflow schema; raw claims remain available for staff review.' });
   appendExtractionSourceClaims(fallbackProposal, input.extraction, knownRefs);
+  carryConfirmationClaimCapacityIssues({ source: proposal, target: fallbackProposal,
+    sourceRequestToExtractionId: extractionIdByProposalRequestId,
+    targetRequestToExtractionId: new Map<string, string>(fallbackProposal.content.requests
+      .filter((request) => request.kind === 'create').map((request) => [request.id, request.id])), currentRefs });
   addProjectionIssue(fallbackProposal, '/', 'source_projection_schema_rejected',
     `Projected values were not admitted (${summarizeSchemaIssues(parsedProjection.error)}); the typed current request remains editable and raw source claims are retained.`,
     currentExtraction.requests.flatMap((request) => request.requestText.sourceRefs.filter((ref) => currentRefs.has(ref))));
@@ -3459,11 +3518,17 @@ export async function runReservationWorkflowV2Prefill(input: {
     if (safeClaims && extractionProjection) {
       const nativeConfirmation = /\b\d{6,10}-\d{1,2}\b/;
       const canonicalPath = /^\/proposal\/content\/requests\/([^/]+)\/confirmationReference(?:\/.*)?$/;
+      carryConfirmationClaimCapacityIssues({ source: safeClaims, target: fallbackProposal,
+        sourceRequestToExtractionId: extractionProjection.extractionIdByProposalRequestId,
+        targetRequestToExtractionId: fallbackProjection.extractionIdByProposalRequestId, currentRefs });
       for (const request of safeClaims.content.requests) {
         if (request.kind !== 'create') continue;
         const guardedPath = `/proposal/content/requests/${request.id}/confirmationReference`;
-        if (!safeClaims.issues.some((issue) => issue.path === guardedPath &&
-          (issue.kind === 'existing_confirmation_requires_lookup' || issue.kind === 'existing_confirmation_requires_review'))) continue;
+        const hasNativeLookupGuard = safeClaims.issues.some((issue) => issue.path === guardedPath &&
+          (issue.kind === 'existing_confirmation_requires_lookup' || issue.kind === 'existing_confirmation_requires_review'));
+        const exceedsClaimCapacity = safeClaims.issues.some((issue) => issue.path === guardedPath &&
+          issue.kind === CONFIRMATION_CLAIM_CAPACITY_ISSUE);
+        if (!hasNativeLookupGuard && !exceedsClaimCapacity) continue;
         const extractedId = extractionProjection.extractionIdByProposalRequestId.get(request.id);
         if (!extractedId) continue;
         const targets = fallbackProposal.content.requests.filter((candidate) => candidate.kind === 'create' &&

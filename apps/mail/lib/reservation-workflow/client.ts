@@ -472,6 +472,7 @@ function nativeIssueText(issue: unknown): string | null {
   };
   if (dependencyMessages[issue]) return dependencyMessages[issue]!;
   if (issue.startsWith('create_dependency_')) return 'The linked Create result needs verification. Check Create before filing';
+  if (issue === 'confirmation_claim_capacity_exceeded') return 'This request has too many confirmation references to check safely. Review the original email and PDF, and split it into explicit booking actions before proceeding';
   if (issue === 'create_requested_totals_conflict') return 'The rooms or occupants do not match the requested totals. Review each room and the group totals';
   if (issue === 'native_quote_no_matching_rate') {
     return 'No offer matches the requested room, rate and meal plan. Review available alternatives';
@@ -483,7 +484,7 @@ function nativeIssueText(issue: unknown): string | null {
   if (issue === 'amend_automatic_recovery_unavailable_operator_must_verify_writer_closed') {
     return 'The save outcome is uncertain. Contact Nava support before making another change to this stay.';
   }
-  return issue.replaceAll('_', ' ');
+  return 'Infor could not complete this action. Review the highlighted inputs and recorded result; contact Nava support if it remains blocked';
 }
 
 function serviceOperationNotice(result: unknown, success: string[]): string | undefined {

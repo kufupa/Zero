@@ -309,6 +309,11 @@ function exactSourceConfirmationClaim(draft: ReservationWorkflowV2Draft, path: s
 function sourceConfirmationClaim(draft: ReservationWorkflowV2Draft, requestId: string) {
   const path = existingConfirmationPath(requestId);
   const claims = draft.proposal.sourceClaims.filter((claim) => claim.path === path || claim.path.startsWith(`${path}/`));
+  const capacityExceeded = draft.proposal.issues.some((issue) => issue.path === path &&
+    issue.kind === 'confirmation_claim_capacity_exceeded');
+  if (capacityExceeded) {
+    return { required: true as const, path, issue: 'confirmation_claim_capacity_exceeded' as const };
+  }
   const guarded = draft.proposal.issues.some((issue) =>
     (issue.path === path || issue.path === `/requests/${requestId}/confirmationReference`) &&
     (issue.kind === 'existing_confirmation_requires_lookup' || issue.kind === 'existing_confirmation_requires_review'));
