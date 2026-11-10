@@ -127,6 +127,37 @@ function money(minor: unknown, currency: unknown) {
   return typeof minor === 'number' && Number.isSafeInteger(minor) ? `${text(currency) || 'ZAR'} ${(minor / 100).toFixed(2)}` : '';
 }
 
+function availabilityMessage(result: Record<string, unknown>): string | null {
+  const shortfall = record(result.shortfall);
+  if (result.failureKind === 'proven_shortage' && typeof shortfall.roomLabel === 'string' &&
+      typeof shortfall.date === 'string' && typeof shortfall.demand === 'number' && Number.isSafeInteger(shortfall.demand) &&
+      typeof shortfall.supply === 'number' && Number.isSafeInteger(shortfall.supply)) {
+    const demand = shortfall.demand, supply = shortfall.supply;
+    return `Infor confirmed ${supply} of ${demand} requested ${shortfall.roomLabel} rooms available on ${shortfall.date}. This is only the selected room/date, not a hotel-wide sold-out result.`;
+  }
+  if (result.failureKind === 'requested_mismatch' || result.failureKind === 'requested_unqualified')
+    return 'Infor did not confirm a matching rate for the selected room and board. Availability is not confirmed; choose an available offer or refresh the search.';
+  if (result.failureKind === 'restricted')
+    return 'Infor marked part of this stay restricted. This is not a sold-out result; review the affected dates or choose another offer.';
+  if (result.failureKind === 'qualification_failure')
+    return 'Infor could not verify that this request qualifies for the selected rate. Availability is not confirmed; check the agency/rate selection and retry.';
+  if (result.failureKind === 'read_failure')
+    return result.availabilityTruncated === true
+      ? 'Infor availability could not be fully read. No unavailable-room or sold-out conclusion was made; refresh the search.'
+      : 'Infor availability could not be confirmed. No unavailable-room or sold-out conclusion was made; refresh the search.';
+  return null;
+}
+
+function hasSavedSeparateOther(editor: Editor, requestId: string, moneyId: string): boolean {
+  if (!moneyId) return false;
+  const requests = editor.snapshot.session.draft.proposal.content.requests as unknown as Array<Record<string, unknown>>;
+  return requests.some((request) => {
+    if (request.kind !== 'other') return false;
+    const separatedFrom = record(record(request.body).separatedFrom);
+    return separatedFrom?.requestId === requestId && separatedFrom.moneyId === moneyId;
+  });
+}
+
 function RoomCode({ editor, path, options }: { editor: Editor; path: string; options: Record<string, unknown>[] }) {
   const id = useId();
   const saved = valueAt(editor.snapshot, path);
@@ -193,11 +224,13 @@ function OfferList({ editor, groupId, groupPath, observation }: { editor: Editor
 function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bodyPath: string; groups: Record<string, unknown>[]; rows: Record<string, unknown>[] }) {
   if (!rows.length) return null;
   return <Section title="Requested prices and allowances">
-    <p className={styles.note}>Amounts are customer requests. Choose how to handle each allowance; they do not override an Infor room rate.</p>
+    <p className={styles.note}>Customer amounts are separate from Infor room rates. They never replace a native rate.</p>
     {rows.map((row, index) => {
       const path = `${bodyPath}/requestedMoney/${index}`;
       const kindPath = `${path}/staffAllowanceType`;
       const kind = text(valueAt(editor.snapshot, kindPath));
+      const moneyId = text(row.id);
+      const separateOtherSaved = hasSavedSeparateOther(editor, editor.request.id, moneyId);
       const scope = text(valueAt(editor.snapshot, `${path}/scope`));
       const targets = valueAt(editor.snapshot, `${path}/targetRefs`);
       const selected = Array.isArray(targets) ? targets.map(text) : [];
@@ -209,10 +242,19 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
           { value: 'per_room_per_night', label: 'Per room per night' },
           { value: 'per_person', label: 'Per person' },
         ]} />
-        <Field label="Handle as" path={kindPath} editor={editor} options={[
-          { value: 'dinner', label: 'Dinner allowance' },
-          { value: 'unsupported', label: 'Other request · handle separately' },
-        ]} />
+        <label className={styles.localField}>Handle as
+          <select value={kind || 'unresolved'} disabled={editor.view.busy} onChange={(event) => {
+            const next = event.target.value;
+            if (next === 'unsupported') {
+              if (kind === 'unsupported' && separateOtherSaved) return;
+              void editor.commands.changeRows({ kind: 'separate_quote_money', requestId: editor.request.id, entityId: String(index) } as never);
+            } else if (next === 'dinner') void editor.commands.edit(kindPath, 'dinner');
+          }}>
+            <option value="unresolved">Choose how to handle</option>
+            <option value="dinner">Dinner allowance</option>
+            <option value="unsupported">Other request · handle separately</option>
+          </select>
+        </label>
         <label className={styles.localField}>Scope
           <select value={scope || 'unresolved'} disabled={editor.view.busy} onChange={(event) => {
             const nextScope = event.target.value;
@@ -230,7 +272,11 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
               event.target.checked ? [...selected, id] : selected.filter((value) => value !== id))} /> Group {groupIndex + 1}
           </label>; })}
         </fieldset>}
-        {kind !== 'dinner' && <p className={styles.notice}>This request needs a supported allowance choice or separate handling before quote generation.</p>}
+        {kind === 'unsupported' && separateOtherSaved
+          ? <p className={styles.note}>Saved as a separate Other request. This supported room quote can continue independently.</p>
+          : kind === 'unsupported'
+            ? <p className={styles.notice}>The separate follow-up is not saved yet. Save it as an Other request before generating this quote.</p>
+            : kind !== 'dinner' && <p className={styles.notice}>Choose dinner allowance or save this follow-up as a separate Other request before generating the room quote.</p>}
       </div>;
     })}
   </Section>;
@@ -306,30 +352,38 @@ export function QuoteEditor(editor: Editor) {
   const rows = Array.isArray(body.requestedMoney) ? body.requestedMoney.map(record) : [];
   const observation = latestQuote(editor);
   const result = record(observation?.result);
-  const shortfall = record(result.shortfall);
-  const hasShortfall = result.failureKind === 'proven_shortage' && typeof shortfall.roomCode === 'string' &&
-    typeof shortfall.roomLabel === 'string' && typeof shortfall.date === 'string' &&
-    typeof shortfall.demand === 'number' && Number.isSafeInteger(shortfall.demand) &&
-    typeof shortfall.supply === 'number' && Number.isSafeInteger(shortfall.supply);
   const offersCurrent = quoteOffersCurrent(editor, observation);
+  const availabilityNotice = availabilityMessage(result);
   const mismatch = groups.some((group) => group.arrival !== groups[0]?.arrival || group.departure !== groups[0]?.departure);
   const artifactPath = `${bodyPath}/outputIntent/artifacts`;
   const artifactsValue = valueAt(snapshot, artifactPath);
   const artifacts = Array.isArray(artifactsValue) ? artifactsValue.map(text) : [];
-  const sourceRequest = snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id);
-  const sourceOutputs = record(record(sourceRequest?.body).outputIntent).artifacts;
-  const requestedDocuments = [...new Set([...(Array.isArray(sourceOutputs) ? sourceOutputs : []), ...artifacts]
-    .filter((item): item is string => item === 'pdf_quote' || item === 'xlsx_quote'))];
-  const needsTextOutput = artifacts.length !== 1 || artifacts[0] !== 'email_quote';
+  const moneySeparated = rows.every((row, index) => text(valueAt(snapshot,
+    `${bodyPath}/requestedMoney/${index}/staffAllowanceType`)) === 'unsupported' &&
+    hasSavedSeparateOther(editor, request.id, text(row.id)));
+  const linkedAncillary = request.serviceRefs.length > 0 || request.documentRefs.length > 0;
+  const splitDatesReady = (!rows.length || moneySeparated) && !linkedAncillary;
+  const outputOptions = [
+    { kind: 'email_quote', label: 'Cover email' },
+    { kind: 'pdf_quote', label: 'PDF quote' },
+    { kind: 'xlsx_quote', label: 'Excel quote' },
+  ] as const;
+  const allOutputsSelected = outputOptions.every((option) => artifacts.includes(option.kind));
   const provisional = valueAt(snapshot, `${bodyPath}/provisionalBookingRequested`);
   return <div className={`${styles.editor} ${styles.compactQuote}`}>
     <Section title="Stay and rooms">
       {groups.length ? <>
         <div className={styles.twoCol}><SharedDate editor={editor} groups={groups} bodyPath={bodyPath} field="arrival" label="Arrival" />
           <SharedDate editor={editor} groups={groups} bodyPath={bodyPath} field="departure" label="Departure" /></div>
-        {mismatch && <p className={styles.notice}>This quote contains more than one date pair. Use separate quote actions, or set common dates for all groups.</p>}
+        {mismatch && <p className={styles.notice}>This quote contains more than one date pair. Split it into separate quote actions; dates are never combined into one price.</p>}
+        {mismatch && rows.length > 0 && !moneySeparated && <p className={styles.notice}>Handle shared extras separately before splitting date ranges. Save each follow-up as an Other request first.</p>}
+        {mismatch && linkedAncillary && <p className={styles.notice}>Handle linked services and documents separately before splitting date ranges.</p>}
+        {mismatch && <button type="button" className={styles.linkButton} disabled={view.busy || !splitDatesReady}
+          onClick={() => void commands.changeRows({ kind: 'split_quote_dates', requestId: request.id } as never)}>
+          Split into separate quote actions
+        </button>}
       </> : <p className={styles.notice}>Add a room group to start a manual quote.</p>}
-      {hasShortfall && <p className={styles.notice}>{'Earlier pricing shortage; refresh selected criteria'}: {text(shortfall.roomLabel)} ({text(shortfall.roomCode)}) · {text(shortfall.date)} · {String(shortfall.demand)} requested, {String(shortfall.supply)} available.</p>}
+      {availabilityNotice && <p className={styles.notice}>{offersCurrent ? availabilityNotice : `Earlier Infor result: ${availabilityNotice} Refresh before relying on it.`}</p>}
       <div className={styles.groupHeading}><strong>Room groups</strong>
         <button type="button" className={styles.linkButton} aria-label="Add room group" disabled={view.busy || groups.length >= 8}
           onClick={() => void commands.changeRows({ kind: 'add_quote_group', requestId: request.id,
@@ -351,7 +405,7 @@ export function QuoteEditor(editor: Editor) {
           ]} />
           {scope !== 'per_room' && <p className={styles.notice}>Allocate adults and children per room before pricing. Totals are not divided automatically.</p>}
           <div className={styles.twoCol}><Count label="Adults per room" path={`${groupPath}/occupancy/adults`} editor={editor} min={1} max={6} review />
-            <ChildAges editor={editor} path={`${groupPath}/occupancy`} /></div>
+            <ChildAges editor={editor} path={`${groupPath}/occupancy`} max={6} /></div>
           <RoomCode editor={editor} path={`${groupPath}/roomCodes`} options={options} />
           <NativePicker label="Rate plan" path={`${groupPath}/ratePlan`} editor={editor} kind="rate_plan" compact />
           <OfferList editor={editor} groupId={text(group.id)} groupPath={groupPath} observation={observation} />
@@ -376,15 +430,18 @@ export function QuoteEditor(editor: Editor) {
       <Field label="Email recipient" path={`${bodyPath}/client/email`} editor={editor} type="email" compact />
       <Field label="Telephone" path={`${bodyPath}/client/telephone`} editor={editor} type="tel" compact />
       <Field label="Quote note" path={`${bodyPath}/notes`} editor={editor} type="textarea" compact />
-      <p className={styles.note}>Output · Unsent email reply</p>
-      {requestedDocuments.length > 0 && <p className={styles.notice}>
-        This draft includes {requestedDocuments.map(item => item === 'pdf_quote' ? 'PDF' : 'Excel').join(' and ')}.
-        Handle those documents separately; the pane can prepare the text reply.
-      </p>}
-      {!requestedDocuments.length && <p className={styles.note}>PDF and Excel requests need separate handling.</p>}
-      {needsTextOutput && <button type="button" className={styles.linkButton} disabled={view.busy}
-        onClick={() => void commands.edit(artifactPath, ['email_quote'])}>Continue with text reply</button>}
-      <p className={styles.note}>The reply is saved as an unsent draft. A provisional booking needs a separate Create action.</p>
+      <p className={styles.note}>Choose outputs from the same current Infor-priced facts. Saving the cover email creates an unsent draft; quote files stay available to download.</p>
+      <fieldset className={styles.targetFields}><legend>Quote outputs</legend>
+        {outputOptions.map((option) => <label key={option.kind}>
+          <input type="checkbox" checked={artifacts.includes(option.kind)} disabled={view.busy}
+            onChange={(event) => void commands.edit(artifactPath, event.target.checked
+              ? [...artifacts, option.kind] : artifacts.filter((kind) => kind !== option.kind))} /> {option.label}
+        </label>)}
+      </fieldset>
+      {!artifacts.length && <p className={styles.notice}>Select at least one output before generating the quote.</p>}
+      {!allOutputsSelected && <button type="button" className={styles.linkButton} disabled={view.busy}
+        onClick={() => void commands.edit(artifactPath, outputOptions.map((option) => option.kind))}>Select full quote package</button>}
+      <p className={styles.note}>A provisional booking needs a separate Create action.</p>
       {provisional !== false && <div className={styles.notice}>This request has not been confirmed as quote-only.
         <button type="button" className={styles.linkButton} onClick={() => void commands.edit(`${bodyPath}/provisionalBookingRequested`, false)}>Continue with quote only</button>
       </div>}

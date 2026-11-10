@@ -8,11 +8,82 @@ export type QuoteOutputArtifact = {
 export type QuoteOutput = {
   requestId: string; operationId: string; observationRef: string;
   cover: { to: string; subject: string; body: string } | null;
-  artifacts: QuoteOutputArtifact[]; failures: string[]; issues: string[]; stale: boolean;
+  artifacts: QuoteOutputArtifact[]; failures: string[]; issues: string[]; stale: boolean; inventoryDecline: boolean;
 };
 export type QuoteOutputResult = { status: 'saved' | 'created' | 'cancelled' | 'error' | 'unknown'; message: string };
 const rec = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : {};
+
+function boardCode(value: unknown): string | null {
+  const board = typeof value === 'string' ? value.trim().toLowerCase().replace(/[\s&-]+/gu, '_') : '';
+  if (['room_only', 'roomonly', 'ro'].includes(board)) return 'room_only';
+  if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast'].includes(board)) return 'bb';
+  if (['dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_and_breakfast'].includes(board)) return 'dinner_bb';
+  return null;
+}
+
+function stayNights(arrival: unknown, departure: unknown): string[] {
+  if (typeof arrival !== 'string' || typeof departure !== 'string') return [];
+  const start = Date.parse(`${arrival}T00:00:00.000Z`), end = Date.parse(`${departure}T00:00:00.000Z`);
+  const count = (end - start) / 86_400_000;
+  if (!Number.isInteger(count) || count < 1 || count > 30) return [];
+  return Array.from({ length: count }, (_, index) => new Date(start + index * 86_400_000).toISOString().slice(0, 10));
+}
+
+function hasCurrentUnavailableInventoryProof(draft: ReservationPaneSnapshot['session']['draft'], source: ReservationSourceContext,
+  requestId: string, document: ReservationWorkflowV2DraftObservation): boolean {
+  const payload = rec(document.result), marker = rec(payload.unavailableInventory);
+  const availabilityRef = typeof marker.availabilityObservationRef === 'string' ? marker.availabilityObservationRef : '';
+  if (marker.kind !== 'requested_room_unavailable' || !availabilityRef || !document.sourceRefs.includes(availabilityRef) ||
+      document.status !== 'complete' || !document.coverage.complete || payload.companyShownInCover !== false ||
+      payload.sourceHash !== source.sourceHash) return false;
+  const request = draft.proposal.content.requests.find((item) => item.id === requestId && item.kind === 'quote');
+  const group = request?.kind === 'quote' && request.body.groups.length === 1 ? request.body.groups[0] : null;
+  const roomCodes = Array.isArray(group?.roomCodes) ? group.roomCodes : [];
+  const nights = stayNights(group?.arrival, group?.departure);
+  if (!group || roomCodes.length !== 1 || !group.ratePlan || !nights.length ||
+      marker.groupId !== group.id || marker.roomCode !== roomCodes[0] || marker.rateCode !== group.ratePlan ||
+      marker.board !== boardCode(group.board) || marker.arrivalDate !== group.arrival ||
+      marker.departureDate !== group.departure || marker.quantity !== group.quantity) return false;
+  const availability = draft.observations.find((item) => item.ref === availabilityRef);
+  const native = rec(availability?.result), criteria = rec(availability?.criteria), shortfall = rec(native.shortfall);
+  const documentCriteria = rec(document.criteria);
+  const expires = Date.parse(typeof marker.freshUntil === 'string' ? marker.freshUntil : '');
+  if (!availability || availability.kind !== 'rate_availability' || availability.status !== 'failed' ||
+      availability.generationId !== draft.generationId || availability.propertyCode !== draft.propertyCode ||
+      availability.sourceMessageId !== source.messageId || criteria.workflow !== 'quote' || criteria.requestId !== requestId ||
+      criteria.sourceHash !== source.sourceHash || criteria.inputDigest !== documentCriteria.inputDigest ||
+      native.failureCode !== 'native_quote_insufficient_inventory' || native.failureKind !== 'proven_shortage' ||
+      native.sourceHash !== source.sourceHash || native.availabilityTruncated !== false ||
+      native.freshUntil !== marker.freshUntil || !Number.isFinite(expires) || expires <= Date.now() ||
+      shortfall.roomCode !== marker.roomCode || shortfall.roomLabel !== marker.roomLabel ||
+      shortfall.demand !== marker.quantity || shortfall.supply !== 0 || !nights.includes(String(shortfall.date))) return false;
+  const diagnostics: Array<Record<string, unknown>> = Array.isArray(native.quoteDiagnostics)
+    ? native.quoteDiagnostics.map(rec).filter((item) => Object.keys(item).length > 0) : [];
+  const diagnostic = [...diagnostics].reverse().find((item) => item.kind === 'requested' && item.contextMatchesSelection === true);
+  const diagnosticExpiry = Date.parse(typeof diagnostic?.freshUntil === 'string' ? diagnostic.freshUntil : '');
+  if (!diagnostic || diagnostic.availabilityTruncated !== false || diagnostic.freshUntil !== marker.freshUntil ||
+      !Number.isFinite(diagnosticExpiry) || diagnosticExpiry <= Date.now()) return false;
+  const board: Array<Record<string, unknown>> = Array.isArray(diagnostic.availabilityBoard)
+    ? diagnostic.availabilityBoard.map(rec).filter((item) => Object.keys(item).length > 0) : [];
+  const rows = board.filter((item) => item.groupId === group.id && item.roomCode === marker.roomCode &&
+    item.rateCode === marker.rateCode && boardCode(item.boardLabel ?? item.board) === marker.board);
+  if (rows.length !== 1) return false;
+  const row = rows[0]!, coverage = rec(row.coverage), nightCoverage = rec(row.nightCoverage);
+  const facts: Array<Record<string, unknown>> = Array.isArray(row.nightly)
+    ? row.nightly.map(rec).filter((item) => Object.keys(item).length > 0) : [];
+  const byDate = new Map(facts.map((fact) => [fact.date, fact]));
+  return row.availability === 'unavailable' && row.roomsLeft === 0 &&
+    coverage.search === 'complete' && coverage.requiredFacts === 'complete' &&
+    coverage.matchingRowsUnseen !== true && coverage.optionsTruncated !== true &&
+    nightCoverage.complete === true && nightCoverage.expected === nights.length && nightCoverage.observed === nights.length &&
+    facts.length === nights.length && byDate.size === nights.length && nights.every((date) => {
+      const fact = byDate.get(date);
+      return fact?.availableCount === 0 && fact.requestedCount === group.quantity && fact.stockStatus === 'sold';
+    });
+}
+
+type ReservationWorkflowV2DraftObservation = ReservationPaneSnapshot['session']['draft']['observations'][number];
 
 /** Only durable host-generated output, attached to this source and generation, is eligible. */
 export function getQuoteOutput(source: ReservationSourceContext, snapshot: ReservationPaneSnapshot | null,
@@ -51,9 +122,17 @@ export function getQuoteOutput(source: ReservationSourceContext, snapshot: Reser
   const failures = Array.isArray(result.failures) ? result.failures.filter((item): item is string => typeof item === 'string' && !!item) : [];
   const requested = valueAt(snapshot, `${requestPath(requestId)}/body/outputIntent/artifacts`);
   const outputKinds = Array.isArray(requested) ? requested : [];
+  const requestedOutputKinds = Array.isArray(result.requestedOutputKinds) ? result.requestedOutputKinds : [];
+  const sameOutputChoice = requestedOutputKinds.length === outputKinds.length &&
+    outputKinds.every((kind, index) => requestedOutputKinds[index] === kind);
   const parsedCover = typeof cover.to === 'string' && !!cover.to.trim() &&
     typeof cover.subject === 'string' && !!cover.subject.trim() && typeof cover.body === 'string' && !!cover.body.trim()
     ? { to: cover.to, subject: cover.subject, body: cover.body } : null;
+  const inventoryDecline = result.unavailableInventory !== undefined &&
+    operation.status === 'succeeded' && sameOutputChoice &&
+    hasCurrentUnavailableInventoryProof(draft, source, requestId, observation);
+  if (result.unavailableInventory !== undefined && !inventoryDecline)
+    issues.push('The unavailability reply no longer matches a complete current Infor result. Refresh the search before using it.');
   const textOnly = Array.isArray(result.artifacts) && raw.length === 0 && outputKinds.length === 1 && outputKinds[0] === 'email_quote' &&
     Array.isArray(result.outputKinds) && result.outputKinds.length === 1 && result.outputKinds[0] === 'email_quote' &&
     operation.status === 'succeeded' && observation.status === 'complete' && observation.coverage.complete &&
@@ -63,14 +142,16 @@ export function getQuoteOutput(source: ReservationSourceContext, snapshot: Reser
   if (result.sourceHash !== source.sourceHash) issues.push('The generated output no longer matches this email.');
   if (raw.length > 32 || new Set(artifacts.map((item) => item.kind)).size !== artifacts.length) issues.push('The generated attachments are ambiguous.');
   if (artifacts.some((item) => !outputKinds.includes(item.kind))) issues.push('A generated attachment was not requested. Generate the quote again.');
-  if (!artifacts.length && !textOnly) issues.push('No quotation file was generated. Resolve the output failures first.');
-  if (outputKinds.includes('pdf_quote') && !artifacts.some((item) => item.kind === 'pdf_quote') && !failures.some((failure) => failure.startsWith('pdf_'))) issues.push('The PDF is missing. Generate the quote again.');
-  if (outputKinds.includes('xlsx_quote') && !artifacts.some((item) => item.kind === 'xlsx_quote') && !failures.some((failure) => failure.startsWith('xlsx_'))) issues.push('The Excel file is missing. Generate the quote again.');
-  if (!parsedCover) issues.push('The cover reply is missing. Generate the quote again.');
+  // An independently generated cover is still useful when one or both document builders fail. Keep
+  // that unsent draft actionable and let staff decide whether to continue without those files.
+  if (!artifacts.length && !textOnly && failures.length === 0 && !inventoryDecline) issues.push('No quotation file was generated. Generate the quote again.');
+  if (!inventoryDecline && outputKinds.includes('pdf_quote') && !artifacts.some((item) => item.kind === 'pdf_quote') && !failures.some((failure) => failure.startsWith('pdf_'))) issues.push('The PDF is missing. Generate the quote again.');
+  if (!inventoryDecline && outputKinds.includes('xlsx_quote') && !artifacts.some((item) => item.kind === 'xlsx_quote') && !failures.some((failure) => failure.startsWith('xlsx_'))) issues.push('The Excel file is missing. Generate the quote again.');
+  if (outputKinds.includes('email_quote') && !parsedCover) issues.push('The cover reply is missing. Generate the quote again.');
   const stale = operation.draftRevision !== snapshot.session.revision;
   if (stale) issues.push('The quote changed after these files were generated. Generate the quote again.');
   return { requestId, operationId: operation.id, observationRef: observation.ref, cover: parsedCover,
-    artifacts, failures, issues, stale };
+    artifacts, failures, issues, stale, inventoryDecline };
 }
 
 export function quoteCoverHtml(body: string): string {

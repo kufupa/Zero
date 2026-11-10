@@ -74,6 +74,22 @@ type QuoteOperationResult = {
 };
 type Outcome = { status: string; issue?: string; [key: string]: unknown };
 type QuoteRunResult = Record<string, unknown>;
+type QuoteArtifactGeneration = {
+  artifacts: Array<Record<string, unknown>>;
+  failures: string[];
+  coverEmail: { to: string; subject: string; body: string } | null;
+  coverEmailDigest?: string;
+  outputKinds: Array<'email_quote' | 'pdf_quote' | 'xlsx_quote'>;
+  requestedOutputKinds?: Array<'email_quote' | 'pdf_quote' | 'xlsx_quote'>;
+  revisionRef: string | null;
+  sourceHash: string;
+  nativeInputDigest: string | null;
+  preparedObservationRef: string;
+  workflowRunId: string | null;
+  claims: Array<Record<string, unknown>>;
+  unavailableInventory?: Record<string, unknown>;
+  companyShownInCover: false;
+};
 
 const record = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -339,6 +355,74 @@ type CompiledQuote = {
   fields: string[];
 };
 
+type UnavailableInventoryProof = {
+  observation: ReservationWorkflowV2Observation;
+  group: Extract<CompiledQuote, { status: 'ok' }>['input']['groups'][number];
+  roomCode: string;
+  roomLabel: string;
+  freshUntil: string;
+};
+
+/** A decline is safe only for one explicitly selected room/rate with complete, current nightly zero-stock facts. */
+function unavailableInventoryProof(
+  draft: ReservationWorkflowV2Draft,
+  compiled: Extract<CompiledQuote, { status: 'ok' }>,
+): UnavailableInventoryProof | null {
+  if (compiled.input.groups.length !== 1) return null;
+  const group = compiled.input.groups[0];
+  const roomCode = group?.roomCodes?.length === 1 ? group.roomCodes[0] : undefined;
+  if (!group || !roomCode || !group.rateCode) return null;
+
+  const observation = [...draft.observations].reverse().find((item) => {
+    const criteria = record(item.criteria);
+    return item.kind === 'rate_availability' && item.status === 'failed' &&
+      item.generationId === draft.generationId && item.propertyCode === draft.propertyCode &&
+      item.sourceMessageId === draft.source.messageId && criteria?.workflow === 'quote' &&
+      criteria.requestId === compiled.request.id && criteria.sourceHash === draft.source.sourceHash &&
+      criteria.inputDigest === compiled.inputDigest;
+  });
+  if (!observation) return null;
+  const result = record(observation.result), shortfall = record(result?.shortfall);
+  if (result?.failureCode !== 'native_quote_insufficient_inventory' || result.failureKind !== 'proven_shortage' ||
+      result.sourceHash !== draft.source.sourceHash || result.inputDigest !== compiled.inputDigest ||
+      result.availabilityTruncated !== false || !shortfall || shortfall.roomCode !== roomCode ||
+      shortfall.demand !== group.quantity || shortfall.supply !== 0 || typeof shortfall.date !== 'string' ||
+      typeof shortfall.roomLabel !== 'string') return null;
+
+  const freshUntil = typeof result.freshUntil === 'string' ? result.freshUntil : '';
+  const expires = Date.parse(freshUntil);
+  if (!Number.isFinite(expires) || expires <= Date.now()) return null;
+  const nights = occupiedDates(group.arrivalDate, group.departureDate);
+  if (!nights.length || !nights.includes(shortfall.date)) return null;
+
+  const diagnostics: Record<string, unknown>[] = Array.isArray(result.quoteDiagnostics)
+    ? result.quoteDiagnostics.map(record).filter((item): item is Record<string, unknown> => item !== null) : [];
+  const diagnostic = [...diagnostics].reverse().find((item) => item.kind === 'requested' && item.contextMatchesSelection === true);
+  const diagnosticExpiry = Date.parse(String(diagnostic?.freshUntil ?? ''));
+  if (!diagnostic || diagnostic.availabilityTruncated !== false || diagnostic.freshUntil !== freshUntil ||
+      !Number.isFinite(diagnosticExpiry) || diagnosticExpiry <= Date.now()) return null;
+  const board: Record<string, unknown>[] = Array.isArray(diagnostic.availabilityBoard)
+    ? diagnostic.availabilityBoard.map(record).filter((row): row is Record<string, unknown> => row !== null) : [];
+  const expectedBoard = board.filter((row) => row?.groupId === group.id && row.roomCode === roomCode &&
+    row.rateCode === group.rateCode && boardCode(row.boardLabel ?? row.board) === group.board);
+  if (expectedBoard.length !== 1) return null;
+  const row = expectedBoard[0]!;
+  const coverage = record(row.coverage), nightCoverage = record(row.nightCoverage);
+  const facts: Record<string, unknown>[] = Array.isArray(row.nightly)
+    ? row.nightly.map(record).filter((fact): fact is Record<string, unknown> => fact !== null) : [];
+  const byDate = new Map(facts.map((fact) => [fact.date, fact]));
+  if (row.availability !== 'unavailable' || row.roomsLeft !== 0 ||
+      coverage?.search !== 'complete' || coverage.requiredFacts !== 'complete' ||
+      coverage.matchingRowsUnseen === true || coverage.optionsTruncated === true ||
+      nightCoverage?.complete !== true || nightCoverage.expected !== nights.length ||
+      nightCoverage.observed !== nights.length || facts.length !== nights.length || byDate.size !== nights.length ||
+      nights.some((date) => {
+        const fact = byDate.get(date);
+        return !fact || fact.availableCount !== 0 || fact.requestedCount !== group.quantity || fact.stockStatus !== 'sold';
+      })) return null;
+  return { observation, group, roomCode, roomLabel: shortfall.roomLabel, freshUntil };
+}
+
 function compileQuote(
   draft: ReservationWorkflowV2Draft,
   request: QuoteRequest,
@@ -415,12 +499,14 @@ function compileQuote(
     const agesResult = resolved(path('groups', groupIndex, 'occupancy', 'childAges'), occupancy.childAges);
     const ages = agesResult && !('issue' in agesResult) ? agesResult.value : null;
     let childrenAges: number[] | null = null;
+    const exceedsChildLimit = Number.isInteger(count) && Number(count) > 6;
     if (count === 0 && (ages === null || (Array.isArray(ages) && ages.length === 0))) childrenAges = [];
-    else if (Number.isInteger(count) && Number(count) > 0 && Array.isArray(ages) && ages.length === Number(count) &&
+    else if (Number.isInteger(count) && Number(count) > 0 && Number(count) <= 6 && Array.isArray(ages) && ages.length === Number(count) &&
         ages.every((age) => Number.isInteger(age) && Number(age) >= 0 && Number(age) <= 17)) {
       childrenAges = ages as number[];
     }
-    if (childrenAges === null) issues.push(`${base}/occupancy:known_child_count_and_ages_required`);
+    if (exceedsChildLimit) issues.push(`${base}/occupancy/childCount:native_quote_max_six_children_per_room`);
+    else if (childrenAges === null) issues.push(`${base}/occupancy:known_child_count_and_ages_required`);
 
     const roomCodesResult = resolved(path('groups', groupIndex, 'roomCodes'), group.roomCodes);
     const rawRoomCodes = roomCodesResult && !('issue' in roomCodesResult) ? roomCodesResult.value : null;
@@ -479,18 +565,29 @@ function compileQuote(
       !('issue' in currency) && typeof currency.value === 'string' && currency.value.trim().toUpperCase() === 'ZAR' &&
       amountMinor > 0 && Number.isSafeInteger(amountMinor) && unitAllowed && groupIds.length > 0 &&
       dinner.dinnerAllowanceMinor === undefined;
-    if (!supported) {
+    const separatedOther = draft.proposal.content.requests.some((candidate) => {
+      if (candidate.kind !== 'other') return false;
+      const otherBody = record(candidate.body);
+      const separatedFrom = record(otherBody?.separatedFrom);
+      return separatedFrom?.requestId === request.id && separatedFrom.moneyId === claim.id;
+    });
+    const explicitlySeparated = selectedKind === 'unsupported' && separatedOther;
+    if (!supported && !explicitlySeparated) {
       // Background HMS room prices remain useful while the unpriced request stays visible.
-      // Generation is blocked until every request has a supported, explicit handling choice.
+      // Generation stays blocked until staff choose dinner or save a linked Other task.
       if (execute) issues.push(`${base}:allowance_requires_supported_staff_choice`);
       continue;
     }
-    dinner = { dinnerAllowanceMinor: amountMinor,
-      dinnerAllowanceUnit: unitValue as 'per_person_per_night' | 'per_room_per_night' | 'per_person',
-      dinnerAllowanceGroupIds: groupIds };
-    if (execute) for (const key of ['staffAllowanceType', 'amount', 'currency', 'unit', 'scope', 'targetRefs']) {
-      const fieldPath = `${base}/${key}`;
-      if (!reviewAccepted(draft, fieldPath)) reviewPaths.add(fieldPath);
+    if (supported) {
+      dinner = { dinnerAllowanceMinor: amountMinor,
+        dinnerAllowanceUnit: unitValue as 'per_person_per_night' | 'per_room_per_night' | 'per_person',
+        dinnerAllowanceGroupIds: groupIds };
+      if (execute) for (const key of ['staffAllowanceType', 'amount', 'currency', 'unit', 'scope', 'targetRefs']) {
+        const fieldPath = `${base}/${key}`;
+        if (!reviewAccepted(draft, fieldPath)) reviewPaths.add(fieldPath);
+      }
+    } else if (execute && explicitlySeparated && !reviewAccepted(draft, `${base}/staffAllowanceType`)) {
+      reviewPaths.add(`${base}/staffAllowanceType`);
     }
   }
 
@@ -1108,7 +1205,7 @@ async function quoteArtifacts(
   ctx: ReservationWorkflowV2QuoteContext,
   compiled: Extract<CompiledQuote, { status: 'ok' }>,
   preparedObservation: ReservationWorkflowV2Observation,
-) {
+): Promise<QuoteArtifactGeneration> {
   const prepared = record(preparedObservation.result);
   const revision = record(prepared?.revision) as unknown as QuoteRevision | null;
   const criteria = record(preparedObservation.criteria);
@@ -1121,23 +1218,28 @@ async function quoteArtifacts(
   const facts = record(prepared?.facts) as unknown as AuthorizedProposalFacts | null;
   const rowPrices = Array.isArray(prepared?.rowPrices) ? prepared!.rowPrices as RowPrice[] : [];
   const stays: WorkbookStay[] = [{ revision, ...(facts ? { facts } : {}), ...(rowPrices.length ? { rowPrices } : {}) }];
-  const [actor] = await ctx.db.select({ name: user.name, email: user.email }).from(user)
-    .where(eq(user.id, ctx.user.id)).limit(1);
-  if (!actor) throw new Error('quote_actor_unavailable');
+  let actor: { name: string | null; email: string | null } | undefined;
+  if (compiled.outputKinds.includes('xlsx_quote') || compiled.outputKinds.includes('pdf_quote')) {
+    try {
+      [actor] = await ctx.db.select({ name: user.name, email: user.email }).from(user)
+        .where(eq(user.id, ctx.user.id)).limit(1);
+    } catch { /* Email cover and independently available outputs should survive signer lookup failure. */ }
+  }
   const header = {
     attention: compiled.input.attention,
     // HMS party still scopes the native rate; the client company is deliberately omitted from quote covers.
     company: '',
     clientEmail: compiled.input.clientEmail,
     clientTelephone: compiled.input.clientTelephone,
-    signerName: actor.name,
-    signerEmail: actor.email,
+    signerName: actor?.name ?? '',
+    signerEmail: actor?.email ?? '',
   };
   const artifacts: Array<Record<string, unknown>> = [];
   const failures: string[] = [];
   const group = compiled.input.groups[0]!;
   if (compiled.outputKinds.includes('xlsx_quote')) {
-    try {
+    if (!actor) failures.push('xlsx_signer_unavailable');
+    else try {
       const workbook = quoteWorkbookForStays({ stays, header, note: compiled.input.notes });
       const bytes = Buffer.from(workbook.bytes);
       artifacts.push({ kind: 'xlsx_quote', fileName: quoteWorkbookFileName(compiled.input.agency || compiled.input.company,
@@ -1150,7 +1252,8 @@ async function quoteArtifacts(
   }
   if (compiled.outputKinds.includes('pdf_quote')) {
     const gotenbergUrl = process.env.GOTENBERG_URL?.trim();
-    if (!gotenbergUrl) failures.push('pdf_converter_unavailable');
+    if (!actor) failures.push('pdf_signer_unavailable');
+    else if (!gotenbergUrl) failures.push('pdf_converter_unavailable');
     else {
       try {
         const pdf = await buildStaysProposalPdf(stays, { ...header, agency: compiled.input.agency, notes: compiled.input.notes },
@@ -1164,8 +1267,11 @@ async function quoteArtifacts(
       }
     }
   }
-  const coverEmail = compiled.outputKinds.includes('email_quote')
-    ? makeCoverEmail(compiled, revision, facts, rowPrices, prepared?.totalMinor) : null;
+  let coverEmail: QuoteArtifactGeneration['coverEmail'] = null;
+  if (compiled.outputKinds.includes('email_quote')) {
+    try { coverEmail = makeCoverEmail(compiled, revision, facts, rowPrices, prepared?.totalMinor); }
+    catch { failures.push('email_generation_failed'); }
+  }
   return { artifacts, failures, coverEmail, ...(coverEmail ? { coverEmailDigest: hash(coverEmail) } : {}),
     outputKinds: compiled.outputKinds, revisionRef: revision.id,
     sourceHash: compiled.input.sourceHash, nativeInputDigest: prepared?.nativeInputDigest ?? null,
@@ -1174,6 +1280,48 @@ async function quoteArtifacts(
       departureDate: entry.departureDate, quantity: entry.quantity, board: entry.board, adultsPerRoom: entry.adults,
       childAgesPerRoom: entry.childrenAges })),
     companyShownInCover: false as const };
+}
+
+function unavailableQuoteReply(
+  compiled: Extract<CompiledQuote, { status: 'ok' }>,
+  proof: UnavailableInventoryProof,
+): QuoteArtifactGeneration {
+  const { group } = proof;
+  const coverEmail = {
+    to: compiled.input.clientEmail,
+    subject: 'Availability for your requested stay',
+    body: `Unfortunately, we cannot accommodate the requested ${group.quantity} ${proof.roomLabel} room${group.quantity === 1 ? '' : 's'} for ${quoteDateLabel(group.arrivalDate, group.departureDate)} at the selected rate.`,
+  };
+  return {
+    artifacts: [] as Array<Record<string, unknown>>,
+    failures: [] as string[],
+    coverEmail,
+    coverEmailDigest: hash(coverEmail),
+    outputKinds: ['email_quote' as const],
+    requestedOutputKinds: compiled.outputKinds,
+    revisionRef: null,
+    sourceHash: compiled.input.sourceHash,
+    nativeInputDigest: null,
+    preparedObservationRef: proof.observation.ref,
+    workflowRunId: null,
+    claims: [{ groupId: group.id, arrivalDate: group.arrivalDate, departureDate: group.departureDate,
+      quantity: group.quantity, board: group.board, adultsPerRoom: group.adults,
+      childAgesPerRoom: group.childrenAges }],
+    unavailableInventory: {
+      kind: 'requested_room_unavailable',
+      availabilityObservationRef: proof.observation.ref,
+      groupId: group.id,
+      roomCode: proof.roomCode,
+      roomLabel: proof.roomLabel,
+      rateCode: group.rateCode,
+      board: group.board,
+      arrivalDate: group.arrivalDate,
+      departureDate: group.departureDate,
+      quantity: group.quantity,
+      freshUntil: proof.freshUntil,
+    },
+    companyShownInCover: false as const,
+  };
 }
 
 /** Go creates only unsent quote artifacts, persisting their bytes and provenance on the WorkItem outside Undo. */
@@ -1203,39 +1351,48 @@ export async function reservationWorkflowV2QuoteExecute(
   const compiled = compileQuote(loaded.draft, request, true);
   if (compiled.status !== 'ok') return { status: compiled.status, issue: compiled.issue, fields: compiled.fields };
   const preparedObservation = matchingPreparedQuote(loaded.draft, compiled, true);
-  if (!preparedObservation) return { status: 'needs_prepare', issue: 'current_native_quote_prepare_required' };
-  const quoteResult = record(preparedObservation.result);
-  const prepared = record(quoteResult?.revision);
-  if (!prepared || quoteResult?.sourceHash && quoteResult.sourceHash !== input.source.sourceHash) {
-    return { status: 'needs_prepare', issue: 'prepared_quote_source_changed' };
+  const unavailable = preparedObservation ? null : unavailableInventoryProof(loaded.draft, compiled);
+  if (!preparedObservation && !unavailable) return { status: 'needs_prepare', issue: 'current_native_quote_prepare_required' };
+  if (unavailable && !compiled.outputKinds.includes('email_quote')) {
+    return { status: 'needs_input', issue: 'cover_email_required_for_unavailable_reply',
+      fields: [ptr('proposal', 'content', 'requests', request.id, 'body', 'outputIntent', 'artifacts')] };
   }
-  const rawExtrasReviewItems = quoteResult?.extrasReviewItems;
-  const extrasReviewItems = Array.isArray(rawExtrasReviewItems)
-    ? rawExtrasReviewItems.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())) : [];
-  const extrasReviewPath = quoteBodyPath(request.id);
-  const extrasReview = loaded.draft.staffReviews[extrasReviewPath];
-  const preparedOperation = [...operationResults(loaded.draft)].reverse().find(entry => entry.requestId === request.id &&
-    entry.status === 'prepared' && entry.observationRefs.includes(preparedObservation.ref));
-  const extrasAccepted = extrasReview?.status === 'accepted' &&
-    Date.parse(extrasReview.at ?? '') >= Date.parse(preparedObservation.observedAt) &&
-    Boolean(preparedOperation && Date.parse(extrasReview.at ?? '') >= Date.parse(preparedOperation.updatedAt));
-  if (extrasReviewItems.length && !extrasAccepted) {
-    return { status: 'needs_review', issue: 'quote_extras_require_staff_acceptance',
-      fields: [extrasReviewPath], extrasReviewItems, extrasReviewPath };
+  if (preparedObservation) {
+    const quoteResult = record(preparedObservation.result);
+    const prepared = record(quoteResult?.revision);
+    if (!prepared || quoteResult?.sourceHash && quoteResult.sourceHash !== input.source.sourceHash) {
+      return { status: 'needs_prepare', issue: 'prepared_quote_source_changed' };
+    }
+    const rawExtrasReviewItems = quoteResult?.extrasReviewItems;
+    const extrasReviewItems = Array.isArray(rawExtrasReviewItems)
+      ? rawExtrasReviewItems.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())) : [];
+    const extrasReviewPath = quoteBodyPath(request.id);
+    const extrasReview = loaded.draft.staffReviews[extrasReviewPath];
+    const preparedOperation = [...operationResults(loaded.draft)].reverse().find(entry => entry.requestId === request.id &&
+      entry.status === 'prepared' && entry.observationRefs.includes(preparedObservation.ref));
+    const extrasAccepted = extrasReview?.status === 'accepted' &&
+      Date.parse(extrasReview.at ?? '') >= Date.parse(preparedObservation.observedAt) &&
+      Boolean(preparedOperation && Date.parse(extrasReview.at ?? '') >= Date.parse(preparedOperation.updatedAt));
+    if (extrasReviewItems.length && !extrasAccepted) {
+      return { status: 'needs_review', issue: 'quote_extras_require_staff_acceptance',
+        fields: [extrasReviewPath], extrasReviewItems, extrasReviewPath };
+    }
   }
   const result = operationResult(loaded.draft, request.id, input.idempotencyKey, 'unknown', [],
     'Quote output generation started; no reservation save or email send is performed');
   const marked = await persistResult(ctx, input, loaded.draft.generationId, result);
   if (marked.status !== 'ok') return marked;
 
-  let generated: Awaited<ReturnType<typeof quoteArtifacts>>;
+  let generated: QuoteArtifactGeneration;
   try {
-    generated = await quoteArtifacts(ctx, compiled, preparedObservation);
+    generated = unavailable
+      ? unavailableQuoteReply(compiled, unavailable)
+      : await quoteArtifacts(ctx, compiled, preparedObservation!);
   } catch {
     const failureObservation: ReservationWorkflowV2Observation = {
       ref: randomUUID(), generationId: loaded.draft.generationId, kind: 'document', status: 'failed',
       observedAt: new Date().toISOString(), propertyCode: loaded.draft.propertyCode,
-      sourceMessageId: loaded.draft.source.messageId, sourceRefs: [preparedObservation.ref],
+      sourceMessageId: loaded.draft.source.messageId, sourceRefs: [preparedObservation?.ref ?? unavailable!.observation.ref],
       criteria: { workflow: 'quote', requestId: request.id, inputDigest: compiled.inputDigest,
         operationId: input.idempotencyKey },
       coverage: { complete: false, notes: ['quote_artifact_generation_failed'] },
@@ -1253,7 +1410,7 @@ export async function reservationWorkflowV2QuoteExecute(
     status: complete ? 'complete' : generated.artifacts.length ? 'partial' : 'failed',
     observedAt: new Date().toISOString(), propertyCode: loaded.draft.propertyCode,
     sourceMessageId: loaded.draft.source.messageId,
-    sourceRefs: [...new Set([preparedObservation.ref, ...compiled.sourceRefs])],
+    sourceRefs: [...new Set([preparedObservation?.ref ?? unavailable!.observation.ref, ...compiled.sourceRefs])],
     criteria: { workflow: 'quote', requestId: request.id, inputDigest: compiled.inputDigest,
       operationId: input.idempotencyKey, actorUserId: ctx.user.id },
     coverage: { complete, notes: generated.failures },
@@ -1261,7 +1418,8 @@ export async function reservationWorkflowV2QuoteExecute(
   };
   const final = operationResult(loaded.draft, request.id, input.idempotencyKey,
     complete ? 'succeeded' : 'failed', [observation.ref],
-    complete ? generated.artifacts.length
+    complete && generated.unavailableInventory ? 'Generated an unsent decline reply from complete current Infor evidence; no reservation saved or email sent'
+      : complete ? generated.artifacts.length
       ? `Generated ${generated.artifacts.length} unsent quote artifact(s); no reservation saved or email sent`
       : 'Generated an unsent quote email draft; no reservation saved or email sent'
       : `Generated ${generated.artifacts.length} artifact(s); some requested outputs failed, no reservation saved or email sent`);
@@ -1270,11 +1428,38 @@ export async function reservationWorkflowV2QuoteExecute(
     ? { status: complete ? 'succeeded' : generated.artifacts.length ? 'partial' : 'failed',
         operationId: input.idempotencyKey, observationRef: observation.ref, summary: final.summary,
         artifacts: generated.artifacts, coverEmail: generated.coverEmail, failures: generated.failures,
+        unavailableInventory: generated.unavailableInventory,
         emailSent: false, reservationSaved: false }
     : saved;
 }
 
-/** Text-only receipts must still bind an intact draft to the prepared quote and its source. */
+function validUnavailableInventoryReceipt(
+  draft: ReservationWorkflowV2Draft,
+  result: QuoteOperationResult,
+  observation: ReservationWorkflowV2Observation,
+  payload: Record<string, unknown>,
+): boolean {
+  const request = quoteRequests(draft, result.requestId)[0];
+  if (!request) return false;
+  const compiled = compileQuote(draft, request, true);
+  if (compiled.status !== 'ok' || !compiled.outputKinds.includes('email_quote')) return false;
+  const proof = unavailableInventoryProof(draft, compiled);
+  if (!proof) return false;
+  const expected = unavailableQuoteReply(compiled, proof);
+  const saved = record(payload.unavailableInventory);
+  const actualKinds = Array.isArray(payload.requestedOutputKinds) ? payload.requestedOutputKinds : [];
+  const criteria = record(observation.criteria);
+  return criteria?.workflow === 'quote' && criteria.requestId === result.requestId &&
+    criteria.operationId === result.id && criteria.inputDigest === compiled.inputDigest &&
+    payload.revisionRef === null && payload.preparedObservationRef === proof.observation.ref &&
+    payload.companyShownInCover === false && actualKinds.length === compiled.outputKinds.length &&
+    compiled.outputKinds.every((kind, index) => actualKinds[index] === kind) &&
+    Boolean(saved && hash(saved) === hash(expected.unavailableInventory)) &&
+    hash(expected.coverEmail) === payload.coverEmailDigest &&
+    observation.sourceRefs.includes(proof.observation.ref);
+}
+
+/** Text-only receipts must still bind an intact draft to its prepared quote or verified unavailability proof. */
 function validTextQuoteReceipt(
   draft: ReservationWorkflowV2Draft,
   result: QuoteOperationResult,
@@ -1288,7 +1473,7 @@ function validTextQuoteReceipt(
   const preparedCriteria = record(prepared?.criteria);
   const preparedResult = record(prepared?.result);
   const revision = record(preparedResult?.revision);
-  return Array.isArray(payload.outputKinds) && payload.outputKinds.length === 1 && payload.outputKinds[0] === 'email_quote' &&
+  const boundCover = Array.isArray(payload.outputKinds) && payload.outputKinds.length === 1 && payload.outputKinds[0] === 'email_quote' &&
     Array.isArray(payload.artifacts) && payload.artifacts.length === 0 &&
     Array.isArray(payload.failures) && payload.failures.length === 0 &&
     Boolean(cover && cleanText(cover.to) && cleanText(cover.subject) && cleanText(cover.body) &&
@@ -1297,8 +1482,12 @@ function validTextQuoteReceipt(
     payload.sourceHash === draft.source.sourceHash && observation.generationId === draft.generationId &&
     observation.propertyCode === draft.propertyCode && observation.sourceMessageId === draft.source.messageId &&
     criteria?.workflow === 'quote' && criteria.requestId === result.requestId && criteria.operationId === result.id &&
-    typeof criteria.inputDigest === 'string' && Boolean(criteria.inputDigest) &&
-    Boolean(prepared && ref && observation.sourceRefs.includes(ref) && prepared.kind === 'rate_availability' &&
+    typeof criteria.inputDigest === 'string' && Boolean(criteria.inputDigest);
+  if (!boundCover) return false;
+  if (payload.unavailableInventory !== undefined) {
+    return validUnavailableInventoryReceipt(draft, result, observation, payload);
+  }
+  return Boolean(prepared && ref && observation.sourceRefs.includes(ref) && prepared.kind === 'rate_availability' &&
       prepared.status === 'complete' && prepared.coverage.complete && prepared.generationId === draft.generationId &&
       prepared.propertyCode === draft.propertyCode && prepared.sourceMessageId === draft.source.messageId &&
       preparedCriteria?.workflow === 'quote' && preparedCriteria.requestId === result.requestId &&
