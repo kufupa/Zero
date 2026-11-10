@@ -1401,6 +1401,12 @@ function projectCurrentExtraction(input: {
   const existingIssueCount = proposal.issues.length;
   const currentExtraction = currentRequestExtraction(input.extraction, currentRefs);
   const originalRequests = [...proposal.content.requests];
+  const originalIdByRequest = new Map(originalRequests.map((request) => [request, request.id]));
+  const originalRequestIdCounts = new Map<string, number>();
+  for (const request of originalRequests)
+    originalRequestIdCounts.set(request.id, (originalRequestIdCounts.get(request.id) ?? 0) + 1);
+  const ambiguousRequestIds = new Set([...originalRequestIdCounts]
+    .filter(([, count]) => count > 1).map(([id]) => id));
   const linkedByRequest = new Map<ReservationWorkflowV2Proposal['content']['requests'][number],
     ReservationWorkflowV2Extraction['requests'][number]>();
   const linkedExtractionRequests = new Set<ReservationWorkflowV2Extraction['requests'][number]>();
@@ -1412,12 +1418,58 @@ function projectCurrentExtraction(input: {
   }
   const prunedRequests = originalRequests.filter((request) => !linkedByRequest.has(request));
   proposal.content.requests = originalRequests.filter((request) => linkedByRequest.has(request));
-  const reservedRequestIds = new Set(proposal.content.requests.map((request) => request.id));
+  // A synthesized ID is only unique within one request object if synthesis actually
+  // made it unique. Remap every retained member of an original ID collision before
+  // creating the ID -> extraction map; no dependent row may inherit an arbitrary owner.
+  const reservedRequestIds = new Set(originalRequests.map((request) => request.id));
+  const assignedRequestIds = new Set<string>();
+  for (const request of proposal.content.requests) {
+    const originalId = originalIdByRequest.get(request)!;
+    if (!ambiguousRequestIds.has(originalId)) {
+      assignedRequestIds.add(originalId);
+      continue;
+    }
+    const extracted = linkedByRequest.get(request)!;
+    let salt = 0;
+    let remappedId: string;
+    do { remappedId = stableId(input.source.messageId, 'synth_request_id_collision', originalId, extracted.id, String(salt++)); }
+    while (reservedRequestIds.has(remappedId) || assignedRequestIds.has(remappedId));
+    request.id = remappedId;
+    reservedRequestIds.add(remappedId);
+    assignedRequestIds.add(remappedId);
+    const evidenceRefs = [...extractionRefsForRequest(extracted)].filter((ref) => currentRefs.has(ref) && knownRefs.has(ref));
+    addProjectionIssue(proposal, `/requests/${remappedId}`, 'synthesized_request_id_collision',
+      'Two synthesized requests reused the same ID. Each source-linked request was retained with a unique ID; ambiguous owner and target links to the old ID were detached for staff review.',
+      evidenceRefs);
+  }
   const extractionIdByProposalRequestId = new Map([...linkedByRequest].map(([request, extracted]) => [request.id, extracted.id]));
-  const prunedOwnerIds = new Set(prunedRequests.map((request) => request.id));
+  const prunedOwnerIds = new Set(prunedRequests.map((request) => request.id)
+    .filter((id) => !ambiguousRequestIds.has(id)));
+  for (const service of proposal.content.services) {
+    if (service.ownerRequestId === null || !ambiguousRequestIds.has(service.ownerRequestId)) continue;
+    service.ownerRequestId = null;
+    addProjectionIssue(proposal, `/services/${service.id}/ownerRequestId`, 'ambiguous_request_owner_removed',
+      'The service source was retained, but its owner pointed to a duplicate request ID and could not be assigned safely.',
+      service.sourceRefs.filter((ref) => currentRefs.has(ref) && knownRefs.has(ref)));
+  }
   proposal.content.services = proposal.content.services.filter((service) =>
     service.ownerRequestId === null || !prunedOwnerIds.has(service.ownerRequestId));
   proposal.content.documents = proposal.content.documents.filter((document) => {
+    if (document.ownerRequestId !== null && ambiguousRequestIds.has(document.ownerRequestId)) {
+      const currentSourceRefs = [...new Set([document.documentSourceRef, ...document.sourceRefs])]
+        .filter((ref) => currentRefs.has(ref) && knownRefs.has(ref));
+      if (!currentSourceRefs.length) {
+        addProjectionIssue(proposal, `/documents/${document.id}/ownerRequestId`, 'ambiguous_request_owner_removed',
+          'The document was supported only by a duplicate request ID and was not assigned to either request.',
+          document.sourceRefs.filter((ref) => knownRefs.has(ref)));
+        return false;
+      }
+      document.ownerRequestId = null;
+      addProjectionIssue(proposal, `/documents/${document.id}/ownerRequestId`, 'ambiguous_request_owner_removed',
+        'The current source document was retained, but its owner pointed to a duplicate request ID and could not be assigned safely.',
+        currentSourceRefs);
+      return true;
+    }
     if (document.ownerRequestId === null || !prunedOwnerIds.has(document.ownerRequestId)) return true;
     const currentSourceRefs = [...new Set([document.documentSourceRef, ...document.sourceRefs])]
       .filter((ref) => currentRefs.has(ref));
@@ -1458,7 +1510,7 @@ function projectCurrentExtraction(input: {
         currentEvidenceRefs);
       continue;
     }
-    const possibleLinks = originalRequests.filter((request) => request.id === extracted.id ||
+    const possibleLinks = originalRequests.filter((request) => originalIdByRequest.get(request) === extracted.id ||
       request.requestText.trim() === extracted.requestText.raw.trim() ||
       [...extractionRefsForRequest(extracted)].some((ref) => request.sourceRefs.includes(ref)));
     const wrongKind = possibleLinks.some((request) => request.kind !== extracted.kind);
@@ -1494,11 +1546,20 @@ function projectCurrentExtraction(input: {
     return false;
   });
   for (const service of proposal.content.services) {
-    const validTargets = service.targets.filter(({ target }) => reservationTargetExists(target, retainedRequestsById));
+    const ambiguousTargets = service.targets.filter(({ target }) => ambiguousRequestIds.has(target.requestId));
+    const validTargets = service.targets.filter(({ target }) => !ambiguousRequestIds.has(target.requestId) &&
+      reservationTargetExists(target, retainedRequestsById));
     if (validTargets.length === service.targets.length) continue;
     const removedTargets = service.targets.filter((target) => !validTargets.includes(target));
     service.targets = validTargets;
-    const removedRequestIds = new Set(removedTargets.map(({ target }) => target.requestId));
+    if (ambiguousTargets.length) addProjectionIssue(proposal, `/services/${service.id}/targets`, 'ambiguous_request_target_removed',
+      'A service target named a duplicate request ID, so its request/allocation association was detached rather than assigned to either request.',
+      [...service.sourceRefs, ...ambiguousTargets.flatMap(({ target }) =>
+        prunedRequests.filter((request) => originalIdByRequest.get(request) === target.requestId).flatMap((request) => request.sourceRefs))]
+        .filter((ref) => currentRefs.has(ref) && knownRefs.has(ref)));
+    const staleTargets = removedTargets.filter(({ target }) => !ambiguousRequestIds.has(target.requestId));
+    if (!staleTargets.length) continue;
+    const removedRequestIds = new Set(staleTargets.map(({ target }) => target.requestId));
     const evidenceRefs = [...new Set([...service.sourceRefs,
       ...prunedRequests.filter((request) => removedRequestIds.has(request.id)).flatMap((request) => request.sourceRefs)])]
       .filter((ref) => currentRefs.has(ref)).slice(0, 100);
@@ -1507,11 +1568,21 @@ function projectCurrentExtraction(input: {
       evidenceRefs);
   }
   for (const document of proposal.content.documents) {
-    const validTargets = document.targetRefs.filter((target) => reservationTargetExists(target, retainedRequestsById));
+    const ambiguousTargets = document.targetRefs.filter((target) => ambiguousRequestIds.has(target.requestId));
+    const validTargets = document.targetRefs.filter((target) => !ambiguousRequestIds.has(target.requestId) &&
+      reservationTargetExists(target, retainedRequestsById));
     if (validTargets.length === document.targetRefs.length) continue;
     const removedTargets = document.targetRefs.filter((target) => !validTargets.includes(target));
     document.targetRefs = validTargets;
-    const removedRequestIds = new Set(removedTargets.map((target) => target.requestId));
+    if (ambiguousTargets.length) addProjectionIssue(proposal, `/documents/${document.id}/targetRefs`, 'ambiguous_request_target_removed',
+      'A document target named a duplicate request ID, so its request/allocation association was detached rather than assigned to either request.',
+      [document.documentSourceRef, ...document.sourceRefs,
+        ...ambiguousTargets.flatMap((target) => prunedRequests.filter((request) =>
+          originalIdByRequest.get(request) === target.requestId).flatMap((request) => request.sourceRefs))]
+        .filter((ref) => currentRefs.has(ref) && knownRefs.has(ref)));
+    const staleTargets = removedTargets.filter((target) => !ambiguousRequestIds.has(target.requestId));
+    if (!staleTargets.length) continue;
+    const removedRequestIds = new Set(staleTargets.map((target) => target.requestId));
     const evidenceRefs = [...new Set([document.documentSourceRef, ...document.sourceRefs,
       ...prunedRequests.filter((request) => removedRequestIds.has(request.id)).flatMap((request) => request.sourceRefs)])]
       .filter((ref) => currentRefs.has(ref)).slice(0, 100);
