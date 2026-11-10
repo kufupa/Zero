@@ -57,12 +57,23 @@ export function ReservationPane(props: ReservationPaneProps) {
   const focusField = (field: string) => {
     const pane = paneRef.current;
     if (!pane || !request) return;
-    const path = field.split(':')[0]!;
+    let path = field.split(':')[0]!;
+    const invalidDateRange = field.endsWith(':date_range_invalid');
+    if (invalidDateRange && request.kind === 'create' && path === 'stay') {
+      const failed = workbench.latestSnapshot()?.preparationViews.find(view => view.requestId === request.id && view.fields?.includes(field));
+      const allocation = Array.isArray(body.allocations) ? body.allocations.map(record).find(row => row.id === failed?.allocationId) : undefined;
+      const sections = Array.isArray(body.dateSections) ? body.dateSections.map(record) : [];
+      const index = Math.max(0, sections.findIndex(section => section.id === allocation?.dateSectionId));
+      path = `${requestPath(request.id)}/body/dateSections/${index}/arrival`;
+    } else if (invalidDateRange && request.kind === 'quote') {
+      path = path === 'stay' ? `${requestPath(request.id)}/body/groups/0/arrival` : `${path}/arrival`;
+    }
     const candidates = Array.from(pane.querySelectorAll<HTMLElement>('[data-field-path]'));
     const target = candidates.find(node => node.dataset.fieldPath === path)
       ?? candidates.find(node => path.startsWith(`${node.dataset.fieldPath}/`))
       ?? candidates.find(node => node.dataset.fieldPath?.startsWith(`${path}/`))
-      ?? candidates.find(node => !path.startsWith('/') && node.dataset.fieldPath?.endsWith(`/${path}`));
+      ?? candidates.find(node => !path.startsWith('/') && node.dataset.fieldPath?.endsWith(`/${path}`))
+      ?? (invalidDateRange && request.kind === 'quote' ? candidates.find(node => node.dataset.fieldPath === `${requestPath(request.id)}/body/groups/0/arrival`) : undefined);
     const fallback = path.endsWith('/allocations') ? pane.querySelector<HTMLElement>('button[aria-label^="Add room"]') : null;
     const destination = target ?? fallback;
     if (!destination) return;
