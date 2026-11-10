@@ -619,7 +619,8 @@ export function separateFilingTargetDraft(draft: ReservationWorkflowV2Draft, req
   return { draft: { ...next, staffReviews, fieldReviewRequirements }, createdId: newRequestId };
 }
 
-type CreatedAddonProof = { requestId: string; allocationId: string; operationId: string; observationRef: string; confirmation: string };
+type CreatedAddonProof = { requestId: string; allocationId: string; operationId: string; observationRef: string;
+  confirmation: string; arrival: string; departure: string };
 
 /** Make a saved Add-On action only from one verified Create receipt and one exact allocation row. */
 export function linkCreatedAddonTargetDraft(draft: ReservationWorkflowV2Draft, requestId: string, allocationId: string,
@@ -652,9 +653,15 @@ export function linkCreatedAddonTargetDraft(draft: ReservationWorkflowV2Draft, r
     draft.observations.some(observation => observation.ref === ref && observation.criteria.serviceId === serviceId)))) return null;
 
   const sourceQuantity = rec(effectiveService.quantityRequest);
-  const exactQuantity = rec(effectiveTarget.fields).quantity;
   if (effectiveService.targets.length > 1 && sourceQuantity.scope === 'overall' &&
-      (typeof exactQuantity !== 'string' || !/^(?=.*[1-9])\d+(?:\.\d+)?$/.test(exactQuantity.trim()))) return null;
+      effectiveService.targets.some((target) => {
+        const quantity = rec(target.fields).quantity;
+        return typeof quantity !== 'string' || !/^(?=.*[1-9])\d+(?:\.\d+)?$/.test(quantity.trim());
+      })) return null;
+  const rescopeOverallQuantity = effectiveService.targets.length > 1 && sourceQuantity.scope === 'overall';
+  const quantityRequest = rescopeOverallQuantity
+    ? { ...effectiveService.quantityRequest, scope: 'unresolved' as const }
+    : effectiveService.quantityRequest;
   const hasOverallPrice = effectiveService.requestedMoney.some(row => row.scope === 'overall');
   const exactPrice = rec(effectiveTarget.fields).unitPrice;
   if (effectiveService.targets.length > 1 && hasOverallPrice &&
@@ -677,19 +684,23 @@ export function linkCreatedAddonTargetDraft(draft: ReservationWorkflowV2Draft, r
   if (proposal.content.requests.length >= 200 || proposal.content.services.length >= 200) return null;
   const sourceRefs = [...new Set([...effectiveService.sourceRefs, proof.observationRef])];
   if (sourceRefs.length > 100) return null;
-  const hint = { id: newHintId, confirmation: proof.confirmation, candidateRefs: [], suggestedRef: null,
+  const hint = { id: newHintId, confirmation: proof.confirmation, bookedArrival: proof.arrival,
+    bookedDeparture: proof.departure, candidateRefs: [], suggestedRef: null,
     sourceRefs: [proof.observationRef] };
   const serviceTarget = { target: { kind: 'saved_target' as const, requestId: newRequestId, hintId: newHintId },
     fields: effectiveTarget.fields, savedRowCandidateRef: null, previewObservationRef: null };
   const linkedService = { ...effectiveService, id: newServiceId, ownerRequestId: newRequestId, itemCandidateRef: null,
-    targets: [serviceTarget] };
+    quantityRequest: structuredClone(quantityRequest), targets: [serviceTarget] };
   const linkedRequest = { id: newRequestId, kind: 'services' as const,
     requestText: effectiveService.requestedText || createRequest.requestText, sourceRefs,
     serviceRefs: [newServiceId], documentRefs: [],
     body: { targets: { mode: 'explicit' as const, include: [hint], exclude: [], sourceRefs: [proof.observationRef] } } };
   const before = structuredClone(proposal);
   const remainingTargets = effectiveService.targets.filter((_, index) => index !== targetIndex);
-  if (remainingTargets.length) sourceService.targets = structuredClone(remainingTargets);
+  if (remainingTargets.length) {
+    sourceService.targets = structuredClone(remainingTargets);
+    if (rescopeOverallQuantity) sourceService.quantityRequest = structuredClone(quantityRequest);
+  }
   else {
     proposal.content.services.splice(serviceIndex, 1);
     createRequest.serviceRefs = createRequest.serviceRefs.filter(ref => ref !== serviceId);
@@ -698,7 +709,9 @@ export function linkCreatedAddonTargetDraft(draft: ReservationWorkflowV2Draft, r
   proposal.content.services.push(linkedService);
   // Keep the proven Create Add-On route available until staff explicitly link it. Once linked,
   // transfer only this allocation so the same native charge cannot be saved through both rows.
-  const next = rebase(draft, before, proposal, remainingTargets.length ? [`${serviceRoot}/targets`] : []);
+  const changedRoots = remainingTargets.length ? [`${serviceRoot}/targets`,
+    ...(rescopeOverallQuantity ? [`${serviceRoot}/quantityRequest/scope`] : [])] : [];
+  const next = rebase(draft, before, proposal, changedRoots);
   return { draft: next, createdId: newRequestId };
 }
 
