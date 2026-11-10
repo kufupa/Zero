@@ -1,5 +1,6 @@
 import {
   parseAiTriageModelProfile,
+  isLegacyInboundTriagePipelineEnabled,
   parseEnv,
   parseHmsControlConfig,
   requireHmsEvidenceHmacChildKey,
@@ -214,6 +215,9 @@ describe('env', () => {
 
   it('defaults durable workflow triage off', () => {
     expect(parseEnv(baseEnv()).WORKFLOW_TRIAGE_V6).toBe(false);
+    expect(isLegacyInboundTriagePipelineEnabled({})).toBe(false);
+    expect(isLegacyInboundTriagePipelineEnabled({ LEGACY_INBOUND_TRIAGE_PIPELINE: 'off' })).toBe(false);
+    expect(isLegacyInboundTriagePipelineEnabled({ LEGACY_INBOUND_TRIAGE_PIPELINE: 'on' })).toBe(true);
   });
 
   it('keeps PARTY_MATCH_V2 off by default and parses its explicit boolean gate', () => {

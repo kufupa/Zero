@@ -22,6 +22,7 @@ export type AdminDashboardExport = {
     activity: AdminDashboardAggregateResult['activity'];
     service: AdminDashboardAggregateResult['service'];
     folders: AdminDashboardAggregateResult['folders'];
+    v2Workflows?: AdminDashboardAggregateResult['v2Workflows'];
     correspondents: AdminDashboardAggregateResult['correspondents'];
     dataHealth: AdminDashboardAggregateResult['dataHealth'];
   };
@@ -82,6 +83,7 @@ export function serializeAdminDashboardExport(
       activity: payload.activity,
       service: payload.service,
       folders: payload.folders,
+      v2Workflows: payload.v2Workflows,
       correspondents: payload.correspondents,
       dataHealth: payload.dataHealth,
     },

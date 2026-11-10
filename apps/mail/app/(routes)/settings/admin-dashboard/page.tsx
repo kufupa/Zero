@@ -3,7 +3,6 @@ import type {
   AdminDashboardConversations,
   AdminDashboardDataHealth,
   AdminDashboardDomainRow,
-  AdminDashboardFolderRow,
   AdminDashboardMetrics,
   AdminDashboardShadowScorecard,
   AdminDashboardCountDenominatorStatus,
@@ -17,7 +16,6 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  Cell,
   Legend,
   Line,
   LineChart,
@@ -45,20 +43,6 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 
 type Metric<T> = MetricResult<T> | null | undefined;
-
-const FOLDER_COLORS: Record<string, string> = {
-  bookings: '#2563eb',
-  'groups-events': '#7c3aed',
-  'manage-stay': '#0f766e',
-  'confirm-reconcile': '#0891b2',
-  'money-billing': '#16a34a',
-  'documents-delivery': '#4f46e5',
-  'exceptions-recovery': '#dc2626',
-  'guest-experience': '#c026d3',
-  'internal-partner': '#9333ea',
-  'automated-channel': '#475569',
-  'unknown-review': '#a16207',
-};
 
 const CHART_COLORS = {
   inbound: '#2563eb',
@@ -673,43 +657,32 @@ function ActivitySection({ activity }: { activity: AdminDashboardActivity | unde
   );
 }
 
-function FolderSection({ metrics }: { metrics: AdminDashboardMetrics }) {
-  const folderMetric = metrics.folders?.mix;
-  const folders: AdminDashboardFolderRow[] = metricIsAvailable(folderMetric)
-    ? folderMetric.value
-    : [];
-  const rows: Array<Array<string | number>> = folders.map((folder) => [
-    folder.label,
-    folder.count,
-    folder.urgentCount,
-    folder.classification,
-  ]);
-
+function WorkflowSection({ metrics }: { metrics: AdminDashboardMetrics }) {
+  const workflows = metrics.v2Workflows;
   return (
-    <section aria-labelledby="folders-heading" className="grid gap-4">
+    <section aria-labelledby="workflows-heading" className="grid gap-4">
       <div>
-        <h2 id="folders-heading" className="text-lg font-semibold">
-          Business breakdown
+        <h2 id="workflows-heading" className="text-lg font-semibold">
+          Reservation actions
         </h2>
         <p className="text-muted-foreground text-sm">
-          Unique active conversations grouped by the currently observed primary folder. Urgent is an
-          overlay.
+          Latest saved V2 drafts for inbound emails in the selected window. An email can contain more than one action.
         </p>
       </div>
       <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(14rem,1fr)]">
         <ChartFrame
-          title="Business work by folder"
-          description="Current eleven-folder workflow taxonomy; ambiguous and legacy labels remain explicit."
+          title="Emails by reservation action"
+          description="Each email is counted once per action kind in its latest saved V2 draft."
         >
-          {metricIsAvailable(folderMetric) ? (
+          {workflows ? (
             <>
               <div
-                className="h-[28rem] min-w-0"
-                aria-label="Business work by folder horizontal bar chart"
+                className="h-[20rem] min-w-0"
+                aria-label="Emails by reservation action horizontal bar chart"
               >
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart
-                    data={folders}
+                    data={workflows.rows}
                     layout="vertical"
                     margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
                   >
@@ -719,53 +692,40 @@ function FolderSection({ metrics }: { metrics: AdminDashboardMetrics }) {
                     <Tooltip />
                     <Bar
                       dataKey="count"
-                      name="Conversations"
+                      name="Emails"
                       fill={CHART_COLORS.count}
                       radius={[0, 4, 4, 0]}
-                    >
-                      {folders.map((folder) => (
-                        <Cell
-                          key={folder.folder}
-                          fill={FOLDER_COLORS[folder.folder] ?? CHART_COLORS.count}
-                        />
-                      ))}
-                    </Bar>
+                    />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
               <DataTable
-                caption="Business work by folder"
-                headers={['Folder', 'Conversations', 'Urgent overlay', 'Classification']}
-                rows={rows}
+                caption="Emails by reservation action"
+                headers={['Action', 'Emails']}
+                rows={workflows.rows.map((row) => [row.label, row.count])}
               />
               <p className="text-muted-foreground mt-2 text-xs">
-                classificationAsOf: {displayDate(folderMetric.classificationAsOf)}. Excluded from
-                this chart: {exclusionText(metrics.folders?.exclusions)}.
+                Saved drafts observed at {displayDate(workflows.classificationAsOf)}. Changes to attachments or
+                earlier messages may require review in the pane.
               </p>
             </>
           ) : (
-            <ChartUnavailable metric={folderMetric} label="Folder classification" />
+            <p className="text-muted-foreground text-sm">
+              Current V2 classification is unavailable for this snapshot.
+            </p>
           )}
         </ChartFrame>
         <div className="grid content-start gap-4">
-          <MetricCard
-            label="Urgent conversations"
-            metric={metrics.folders?.urgent}
-            formatter={formatNumber}
-            description="Overlay on the exclusive folder mix."
-          />
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Classification exclusions</CardTitle>
+              <CardTitle className="text-sm">Not classified in V2</CardTitle>
               <CardDescription>
-                Mutable spam/trash membership is only applied from a matching retained snapshot.
+                Includes pending, skipped, failed, or unavailable drafts.
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <p className="text-sm">{exclusionText(metrics.folders?.exclusions)}</p>
-              <p className="text-muted-foreground mt-2 text-xs">
-                No historical folder state is fabricated when the snapshot is unavailable.
-              </p>
+              <p className="text-2xl font-semibold">{workflows ? formatNumber(workflows.unclassifiedEmails) : '—'}</p>
+              {workflows ? <p className="text-muted-foreground mt-2 text-xs">Of {formatNumber(workflows.totalEmails)} inbound emails.</p> : null}
             </CardContent>
           </Card>
         </div>
@@ -1382,7 +1342,7 @@ function HostedAdminDashboardView({
         <SnapshotNote metrics={metrics} />
         <TrafficSection metrics={metrics} />
         <ActivitySection activity={metrics.activity} />
-        <FolderSection metrics={metrics} />
+        <WorkflowSection metrics={metrics} />
         <CorrespondentSection metrics={metrics} />
         <ServiceSection metrics={metrics} />
         <ShadowScorecardSection scorecard={metrics.shadowScorecard} />

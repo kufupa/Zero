@@ -5824,6 +5824,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       };
       const flags = [
         ['HMS_PREFETCH_ENABLED', '1', 'prefetch'], ['HMS_JOB_QUEUE', 'on', 'queue'],
+        ['LEGACY_INBOUND_TRIAGE_PIPELINE', 'on', 'triage'],
         ['HMS_AVAILABILITY_PREFETCH', 'on', 'availability'], ['HMS_QUOTE_PREPARE', 'true', 'quote'],
         ['PARTY_MATCH_V2', 'true', 'party'], ['PANE_WRITE_CREATE', 'on', 'create'],
         ['PANE_HMS_LAB_CREATE_WORKER', 'on', 'create'], ['PANE_CLOUD_CREATE_DISPATCH', 'on', 'create'],
@@ -5875,6 +5876,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       expect(keys).toContain('QUOTE_WORKFLOW_LLM');
       expect(keys).toContain('INBOUND_EXTRACTION');
       expect(keys).toContain('INBOUND_TRIAGE_CLASSIFIER');
+      expect(keys).toContain('LEGACY_INBOUND_TRIAGE_PIPELINE');
       expect(keys).toContain('PANE_CLOUD_CREATE_DISPATCH');
       expect(keys).toContain('PLAYWRIGHT_BROWSERS_PATH');
       const durable = readFileSync(join(here, '..', 'deploy', 'write-ec2-env.sh'), 'utf8');

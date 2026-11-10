@@ -10,7 +10,7 @@ import { workItem } from '../src/db/schema/work.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 import type { DB } from '../src/db/client.js';
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // Each integration case creates/migrates a fresh database and compiles the worker.
 import { eq } from 'drizzle-orm';
 
@@ -49,7 +49,7 @@ async function recordDeterministicChannelRoute(
       state: 'succeeded',
       finishedAt,
       metrics: {
-        ...(run.metrics ?? {}),
+        ...run.metrics,
         deterministicMailSourceRoute: true,
         applyMode: 'full',
       },
@@ -94,6 +94,8 @@ describe('live-admission Azure Luna labels', () => {
 });
 
 describe('first live admission and immutable inputs on PostgreSQL', () => {
+  beforeEach(() => vi.stubEnv('LEGACY_INBOUND_TRIAGE_PIPELINE', 'on'));
+  afterEach(() => vi.unstubAllEnvs());
   it(
     'queues triage only for channel mail when the regular classifier is retired',
     async () => {

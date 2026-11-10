@@ -557,6 +557,7 @@ describe('ai worker contract', () => {
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () => {
   beforeEach(async () => {
+    vi.stubEnv('LEGACY_INBOUND_TRIAGE_PIPELINE', 'on');
     // These committed compatibility fixtures intentionally use triage-v5;
     // current v6 is the default and v5 must remain explicit for the fixture.
     process.env.AI_TRIAGE_PROMPT_VERSION = 'triage-v5';
@@ -568,6 +569,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       sql.raw(`TRUNCATE ${WORKER_DB_TABLES.join(', ')} RESTART IDENTITY CASCADE`),
     );
   });
+  afterEach(() => vi.unstubAllEnvs());
 
   async function seedInbound() {
     const db = getDb();
@@ -1554,7 +1556,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
     expect(transportCalls).toBe(0);
   });
 
-  it('claims queued run and marks it succeeded', async () => {
+  it('runs triage when restored and retires queued triage when disconnected', async () => {
     const { transportId, threadId, messageId } = await seedInbound();
     const run = await enqueueAiRun({
       transportId,
@@ -1593,6 +1595,23 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
     const usage = (row?.metrics as { usage?: { totalTokens?: number } } | null)?.usage;
     expect(usage?.totalTokens).toBeGreaterThan(0);
     expect(JSON.stringify(row?.metrics)).not.toMatch(/Need a room tonight/);
+
+    vi.stubEnv('LEGACY_INBOUND_TRIAGE_PIPELINE', 'off');
+    const next = await seedInbound();
+    const retiredRun = await enqueueAiRun({
+      transportId: next.transportId,
+      threadId: next.threadId,
+      triggerMessageId: next.messageId,
+      runKind: 'inbound_triage',
+      idempotencyKey: `worker-retired:${next.messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'triage-v5',
+    });
+    await claimForExecute(retiredRun.id);
+    expect((await executeAiRun(retiredRun.id)).state).toBe('succeeded');
+    const [retired] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, retiredRun.id));
+    expect(retired?.mastraTraceId).toBeNull();
+    expect(retired?.metrics).toMatchObject({ triagePipelineDisconnected: true });
   });
 
   it('retry does not duplicate candidate draft', async () => {

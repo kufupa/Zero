@@ -98,6 +98,14 @@ const metrics: AdminDashboardMetrics = {
     weekdayArrivals: metric({ Monday: 2, Wednesday: 4 }, 'arrivals by weekday', 6),
     hourArrivals: metric({ '09': 3, '14': 3 }, 'arrivals by hour', 6),
   },
+  v2Workflows: {
+    classificationAsOf: '2026-09-07T12:00:00.000Z', totalEmails: 6, unclassifiedEmails: 2,
+    rows: [
+      { kind: 'create', label: 'Create reservation', count: 2 },
+      { kind: 'cancel', label: 'Cancel', count: 1 },
+      { kind: 'filing', label: 'Filing', count: 1 },
+    ],
+  },
   folders: {
     mix: metric(
       [
@@ -306,10 +314,11 @@ describe('AdminDashboardPage executive business overview', () => {
     expect(markup).toContain('Outgoing messages');
     expect(markup).toContain('6');
     expect(markup).toContain('4');
-    expect(markup).toContain('Business work by folder');
-    expect(markup).toContain('Bookings');
-    expect(markup).toContain('Groups &amp; Events');
-    expect(markup).toContain('Unknown / Needs Review');
+    expect(markup).toContain('Emails by reservation action');
+    expect(markup).toContain('Create reservation');
+    expect(markup).toContain('Cancel');
+    expect(markup).toContain('Filing');
+    expect(markup).toContain('Not classified in V2');
     expect(markup).toContain('External correspondents');
     expect(markup).toContain('public-email');
     expect(markup).toContain('Answered');
@@ -330,7 +339,7 @@ describe('AdminDashboardPage executive business overview', () => {
     const markup = renderToStaticMarkup(createElement(AdminDashboardPage));
     const pixelTargetCount = (markup.match(/min-h-\[44px\]/g) ?? []).length;
 
-    expect(pixelTargetCount, 'dashboard interactive targets').toBe(34);
+    expect(pixelTargetCount, 'dashboard interactive targets').toBe(33);
     expect(markup).not.toContain('min-h-11');
   });
 

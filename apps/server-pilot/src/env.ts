@@ -237,6 +237,11 @@ export function isHitlLedgerEnabled(input: EnvInput = process.env): boolean {
 
 let warnedClassifierOffWithoutExtraction = false;
 
+/** The old mailbox triage pipeline is disconnected unless explicitly restored. */
+export function isLegacyInboundTriagePipelineEnabled(input: EnvInput = process.env): boolean {
+  return input.LEGACY_INBOUND_TRIAGE_PIPELINE === 'on';
+}
+
 /**
  * Old inbound folder/label classifier. Default ON. It retires only when INBOUND_TRIAGE_CLASSIFIER is exactly `off` AND
  * INBOUND_EXTRACTION is exactly `on`, because extraction then carries spam, the mail baseline, the pane warmer, the

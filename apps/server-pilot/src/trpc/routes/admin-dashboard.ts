@@ -1,8 +1,10 @@
 import {
   aggregateAdminDashboardMetrics,
+  summarizeV2Workflows,
   type AdminDashboardClassificationSnapshot,
   type AdminDashboardAggregateResult,
   type ExecutiveDashboardQuery,
+  type AdminDashboardV2WorkflowSummary,
 } from '../../metrics/admin-dashboard-aggregates.js';
 import {
   assertAdminDashboardGrant,
@@ -23,13 +25,16 @@ import {
   message,
   outboundSendQueue,
 } from '../../db/schema/mail.js';
+import { workItem } from '../../db/schema/work.js';
+import { reservationWorkflowV2DraftSchema } from '../../ai/reservation-workflow-v2-contract.js';
+import { staffQuoteSourceHash } from '../../ai/staff-quote-workflow.js';
 import {
   parseMailboxMeasurementConfig,
   type MailboxMeasurementConfig,
 } from '../../metrics/mail-measurement-config.js';
 import { loadShadowScorecard, SHADOW_EVALUATION_MODE } from '../../ai/shadow-evaluation.js';
 import { serializeAdminDashboardExport } from '../../metrics/admin-dashboard-export.js';
-import { and, asc, eq, gte, inArray, isNull, lt, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { privateProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
 import { z } from 'zod';
@@ -392,6 +397,58 @@ async function loadCurrentClassificationSnapshot(
   };
 }
 
+/** Only attribute a saved draft to the same message and unchanged message text. */
+export function v2DashboardKinds(row: {
+  messageId: string; threadId: string; transportId: string; subject: string | null;
+  textBody: string | null; htmlBody: string | null; state: unknown;
+}): string[] | null {
+  const parsed = reservationWorkflowV2DraftSchema.safeParse(row.state);
+  if (!parsed.success) return null;
+  const draft = parsed.data;
+  if (draft.transportId !== row.transportId || draft.source.messageId !== row.messageId ||
+      draft.source.threadId !== row.threadId || draft.status === 'prefill_failed' ||
+      draft.prefill?.status === 'failed' ||
+      draft.source.sourceHash !== staffQuoteSourceHash({ id: row.messageId, subject: row.subject,
+        textBody: row.textBody, htmlBody: row.htmlBody })) return null;
+  return draft.proposal.content.requests.map((request) => request.kind);
+}
+
+/** Current V2 drafts are mutable, so never pretend they are a historical snapshot. */
+async function loadCurrentV2Workflows(
+  db: ReturnType<typeof getDb>,
+  query: ExecutiveDashboardQuery,
+  messages: readonly QueryMessageRow[],
+  transportIds: readonly string[],
+  currentSnapshotAvailable: boolean,
+): Promise<AdminDashboardV2WorkflowSummary | null> {
+  if (!currentSnapshotAvailable) return null;
+  const start = new Date(query.windowStart).getTime();
+  const end = new Date(query.windowEnd).getTime();
+  const incoming = messages.filter((row) => row.direction === 'inbound' && row.receivedAt &&
+    row.receivedAt.getTime() >= start && row.receivedAt.getTime() < end);
+  const messageIds = incoming.map((row) => row.id);
+  const kindsByMessage = new Map<string, string[]>();
+  if (messageIds.length && transportIds.length) {
+    const drafts = await db.select({
+      messageId: message.id, threadId: message.threadId, transportId: message.transportId,
+      subject: message.subject, textBody: message.textBody, htmlBody: message.htmlBody,
+      state: sql<unknown>`${workItem.state}->'reservationWorkflowV2'`,
+    }).from(workItem).innerJoin(message, and(eq(message.id, workItem.sourceMessageId),
+      eq(message.transportId, workItem.transportId), eq(message.threadId, workItem.threadId)))
+      .where(and(inArray(message.id, messageIds), inArray(message.transportId, [...transportIds]),
+        sql`${workItem.state} ? 'reservationWorkflowV2'`))
+      .orderBy(desc(workItem.updatedAt), desc(workItem.id));
+    const seen = new Set<string>();
+    for (const row of drafts) {
+      if (seen.has(row.messageId)) continue;
+      seen.add(row.messageId);
+      const kinds = v2DashboardKinds(row);
+      if (kinds) kindsByMessage.set(row.messageId, kinds);
+    }
+  }
+  return summarizeV2Workflows({ classificationAsOf: query.observationCutoff, messageIds, kindsByMessage });
+}
+
 export async function loadAdminDashboardMetrics(
   queryOrNow?: ExecutiveDashboardQuery | Date,
 ): Promise<AdminDashboardAggregateResult> {
@@ -419,6 +476,7 @@ export async function loadAdminDashboardMetrics(
     loaded.threads,
     selectedTransportIds,
   );
+  const v2Workflows = await loadCurrentV2Workflows(db, query, loaded.messages, selectedTransportIds, classificationSnapshot !== null);
   const measurementConfig: MailboxMeasurementConfig | null = parseMailboxMeasurementConfig(
     process.env.MAIL_MEASUREMENT_CONFIG_JSON,
   );
@@ -478,7 +536,7 @@ export async function loadAdminDashboardMetrics(
     observationCutoff: new Date(query.observationCutoff),
     db,
   });
-  return { ...aggregate, shadowScorecard };
+  return { ...aggregate, v2Workflows, shadowScorecard };
 }
 
 export const adminDashboardRouter = tRouter({

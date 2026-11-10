@@ -214,7 +214,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         const storage = withFakeS3();
         const raw = readFixture('missing-owner.eml');
         const prevGate = process.env.AI_WRITE_GATE_ENABLED;
+        const prevLegacyTriage = process.env.LEGACY_INBOUND_TRIAGE_PIPELINE;
         process.env.AI_WRITE_GATE_ENABLED = 'true';
+        process.env.LEGACY_INBOUND_TRIAGE_PIPELINE = 'on';
         try {
           const { result, stored, thread, triageRuns } = await withSeededTestDb(
             async (db) => {
@@ -274,6 +276,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         } finally {
           if (prevGate === undefined) delete process.env.AI_WRITE_GATE_ENABLED;
           else process.env.AI_WRITE_GATE_ENABLED = prevGate;
+          if (prevLegacyTriage === undefined) delete process.env.LEGACY_INBOUND_TRIAGE_PIPELINE;
+          else process.env.LEGACY_INBOUND_TRIAGE_PIPELINE = prevLegacyTriage;
         }
       },
       30000,

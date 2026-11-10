@@ -64,6 +64,7 @@ import {
 } from '../hms/context-read-reference.js';
 import {
   isInboundTriageClassifierEnabled,
+  isLegacyInboundTriagePipelineEnabled,
   parseEnv,
   requireHmsEvidenceHmacChildKey,
   requireHmsReadRuntimeConfig,
@@ -4273,22 +4274,6 @@ export async function executeAiRun(
     return { runId: run.id, state: 'dead_letter' };
   }
 
-  if (
-    run.runKind === 'inbound_triage' &&
-    run.promptVersion !== TRIAGE_PROMPT_VERSION &&
-    !isSupportedInboundTriagePromptVersion(run.promptVersion)
-  ) {
-    const deployed = resolveDeployedTriagePromptVersion();
-    await markAiRunDeadLetter({
-      runId: run.id,
-      claimOwner: owner,
-      claimToken,
-      expectedStates: ['running'],
-      lastError: `unsupported prompt version: ${run.promptVersion} (deployed ${deployed})`,
-    });
-    return { runId: run.id, state: 'dead_letter' };
-  }
-
   if (run.runKind === 'shadow_prediction' && !resolveShadowAdmissionPolicy()) {
     await markAiRunDeadLetter({
       runId,
@@ -4310,6 +4295,39 @@ export async function executeAiRun(
     }, AI_LEASE_HEARTBEAT_INTERVAL_MS);
 
     if (signal.aborted) throw new RunDeadlineError();
+
+    // Finish queued inbound jobs without calling the retired classifier. The
+    // separate Sent-copy analytics path shares this run kind but never triages.
+    if (run.runKind === 'inbound_triage' && !isLegacyInboundTriagePipelineEnabled(process.env)) {
+      const [trigger] = run.idempotencyKey === `external-sent-baseline:${run.triggerMessageId}`
+        ? await db.select({ direction: message.direction }).from(message)
+            .where(and(eq(message.id, run.triggerMessageId), eq(message.transportId, run.transportId))).limit(1)
+        : [];
+      if (trigger?.direction !== 'outbound') {
+        const retired = await markAiRunSucceeded({
+          ...fence,
+          expectedStates: ['running'],
+          metrics: { triagePipelineDisconnected: true },
+        }, db);
+        return { runId: run.id, state: retired ? 'succeeded' : 'retry_wait' };
+      }
+    }
+
+    if (
+      run.runKind === 'inbound_triage' &&
+      run.promptVersion !== TRIAGE_PROMPT_VERSION &&
+      !isSupportedInboundTriagePromptVersion(run.promptVersion)
+    ) {
+      const deployed = resolveDeployedTriagePromptVersion();
+      await markAiRunDeadLetter({
+        runId: run.id,
+        claimOwner: owner,
+        claimToken,
+        expectedStates: ['running'],
+        lastError: `unsupported prompt version: ${run.promptVersion} (deployed ${deployed})`,
+      });
+      return { runId: run.id, state: 'dead_letter' };
+    }
 
     if (run.runKind === 'reservation_prefill') {
       const { executeReservationArrival } = await import('./reservation-workflow-v2-prefill-service.js');
@@ -5721,6 +5739,11 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     return true;
   }
   if (claimed.runKind === 'reservation_prefill') {
+    await executeAiRun(claimed.id, { shutdownSignal });
+    return true;
+  }
+  if (claimed.runKind === 'inbound_triage' && !isLegacyInboundTriagePipelineEnabled(process.env) &&
+      claimed.idempotencyKey !== `external-sent-baseline:${claimed.triggerMessageId}`) {
     await executeAiRun(claimed.id, { shutdownSignal });
     return true;
   }

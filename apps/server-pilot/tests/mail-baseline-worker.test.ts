@@ -81,6 +81,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'mail baseline committed inbound producer',
   () => {
     it('persists one worker generation and serves the bounded reduced projection', async () => {
+      vi.stubEnv('LEGACY_INBOUND_TRIAGE_PIPELINE', 'on');
       await withWorkerDb(async (db) => {
         const transportId = `u2-worker-transport-${randomUUID()}`;
         const threadId = `u2-worker-thread-${randomUUID()}`;
@@ -292,6 +293,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'mail baseline external Sent ingest producer',
   () => {
     it('commits an external Sent copy into one idempotent baseline generation without a Nava outbox row', async () => {
+      vi.stubEnv('LEGACY_INBOUND_TRIAGE_PIPELINE', 'off');
       await withWorkerDb(async (db) => {
         const transportId = `u2-external-sent-transport-${randomUUID()}`;
         const ingestMailboxId = `u2-external-sent-mailbox-${randomUUID()}`;
