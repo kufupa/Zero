@@ -652,9 +652,11 @@ export function linkCreatedAddonTargetDraft(draft: ReservationWorkflowV2Draft, r
     draft.observations.some(observation => observation.ref === ref && observation.criteria.serviceId === serviceId)))) return null;
 
   const sourceQuantity = rec(effectiveService.quantityRequest);
-  const exactQuantity = rec(effectiveTarget.fields).quantity;
   if (effectiveService.targets.length > 1 && sourceQuantity.scope === 'overall' &&
-      (typeof exactQuantity !== 'string' || !/^(?=.*[1-9])\d+(?:\.\d+)?$/.test(exactQuantity.trim()))) return null;
+      effectiveService.targets.some((target) => {
+        const quantity = rec(target.fields).quantity;
+        return typeof quantity !== 'string' || !/^(?=.*[1-9])\d+(?:\.\d+)?$/.test(quantity.trim());
+      })) return null;
   const hasOverallPrice = effectiveService.requestedMoney.some(row => row.scope === 'overall');
   const exactPrice = rec(effectiveTarget.fields).unitPrice;
   if (effectiveService.targets.length > 1 && hasOverallPrice &&

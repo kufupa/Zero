@@ -1833,7 +1833,7 @@ function projectAgencyVoucherFilings(input: {
       }
       const allocations = projectSourceCreateAllocations({ request, extracted, currentRefs: input.currentRefs });
       const automaticVoucher = vouchers.length === 1 ? vouchers[0] : undefined;
-      const bound = existingFiling.kind === 'filing' && automaticVoucher && allocations.allocations.length === 1 &&
+      const bound = existingFiling.kind === 'filing' && automaticVoucher && !allocations.failure && allocations.allocations.length === 1 &&
         bindExistingVoucherFiling({ proposal: input.proposal, create: request, filing: existingFiling,
           voucher: automaticVoucher, allocationId: allocations.allocations[0]!.id, sourceRefs: refs });
       addProjectionIssue(input.proposal, { path: `/requests/${existingFiling.id}/body/targets`,
