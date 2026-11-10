@@ -1410,7 +1410,6 @@ function exactSourceCode(claim: { raw: string; value: unknown }, kind: 'room' | 
   if (typeof claim.value !== 'string') return null;
   const code = claim.value.trim();
   if (!/^[A-Z][A-Z0-9_-]{0,15}$/.test(code)) return null;
-  if (/^(?:R|ZAR|USD|GBP|EUR|AUD|CAD)\s*\d+(?:[.,]\d{1,2})?$/i.test(code)) return null;
   const raw = claim.raw.trim();
   const explicitlyLabeled = kind === 'room'
     ? /\broom\s*(?:type\s*)?code\b/i.test(raw)
@@ -2586,8 +2585,13 @@ function projectCurrentExtraction(input: {
     const isPriceRateHint = (claim: { raw: string; value: unknown }) => typeof claim.value === 'string' &&
       /[€£$]|\b(?:USD|GBP|EUR|AUD|CAD)\b|\b(?:per|nightly?|total|person|room)\b|^\s*(?:R|ZAR)\s*\d+(?:\.\d{1,2})?\s*$|^\s*\d+(?:\.\d{1,2})?\s*$/i.test(claim.raw);
     const priorRatePlanRefs = priorOnlySourceRefs(sourceExtracted.rateHints.filter((claim) => !isPriceRateHint(claim)), currentRefs, knownRefs);
-    const priorOccupancyRefs = priorOnlySourceRefs(sourceExtracted.occupancy.flatMap((row) =>
-      [row.adults, row.childCount, ...(row.childAges ?? [])]), currentRefs, knownRefs);
+    const priorAdultRefs = priorOnlySourceRefs(sourceExtracted.occupancy.map((row) => row.adults), currentRefs, knownRefs);
+    const priorChildCountRefs = priorOnlySourceRefs(sourceExtracted.occupancy.map((row) => row.childCount), currentRefs, knownRefs);
+    const priorChildAgeRefs = priorOnlySourceRefs(sourceExtracted.occupancy.flatMap((row) => row.childAges ?? []), currentRefs, knownRefs);
+    const priorOccupancyRefs = [...new Set([...priorAdultRefs, ...priorChildCountRefs, ...priorChildAgeRefs])];
+    const currentOccupancyRefs = [...new Set(sourceExtracted.occupancy.flatMap((row) =>
+      [row.adults, row.childCount, ...(row.childAges ?? [])].flatMap((claim) =>
+        claim?.sourceRefs.filter((ref) => currentRefs.has(ref)) ?? [])))];
     const clearedPriorRefs: string[] = [];
     if (request.kind === 'quote') {
       if (priorRoomCountRefs.length) {
@@ -2607,9 +2611,12 @@ function projectCurrentExtraction(input: {
         clearedPriorRefs.push(...priorRatePlanRefs);
       }
       if (priorOccupancyRefs.length) {
-        request.body.groups.forEach((group) => { group.occupancy = {
-          scope: 'unresolved', adults: null, childCount: null, childAges: null,
-        }; });
+        request.body.groups.forEach((group) => {
+          if (!currentOccupancyRefs.length || priorAdultRefs.length) group.occupancy.adults = null;
+          if (!currentOccupancyRefs.length || priorChildCountRefs.length) group.occupancy.childCount = null;
+          if (!currentOccupancyRefs.length || priorChildAgeRefs.length) group.occupancy.childAges = null;
+          group.occupancy.scope = 'unresolved';
+        });
         clearedPriorRefs.push(...priorOccupancyRefs);
       }
     } else if (request.kind === 'create') {
@@ -2627,12 +2634,14 @@ function projectCurrentExtraction(input: {
         clearedPriorRefs.push(...priorRoomCodeRefs, ...priorRatePlanRefs);
       }
       if (priorOccupancyRefs.length) {
-        request.body.dateSections.forEach((section) => { section.requestedTotals = {
-          adults: null, childCount: null, childAges: null,
-        }; });
-        request.body.allocations.forEach((allocation) => { allocation.occupancy = {
-          adults: null, childCount: null, childAges: null,
-        }; });
+        const clearPriorComponents = (occupancy: { adults: number | null; childCount: number | null;
+          childAges: Array<number | null> | null }) => {
+          if (!currentOccupancyRefs.length || priorAdultRefs.length) occupancy.adults = null;
+          if (!currentOccupancyRefs.length || priorChildCountRefs.length) occupancy.childCount = null;
+          if (!currentOccupancyRefs.length || priorChildAgeRefs.length) occupancy.childAges = null;
+        };
+        request.body.dateSections.forEach((section) => clearPriorComponents(section.requestedTotals));
+        request.body.allocations.forEach((allocation) => clearPriorComponents(allocation.occupancy));
         clearedPriorRefs.push(...priorOccupancyRefs);
       }
     }
@@ -2936,6 +2945,11 @@ function projectCurrentExtraction(input: {
         projectPartyRole({ proposal, parties: extracted.parties, role, currentRefs,
           slots: targets.map((target, index) => ({ target, field, path: `/requests/${request.id}/body/party/${role}/${index}` })) });
       }
+      const occupancyEmpty = { adults: null, childCount: null, childAges: null };
+      request.body.dateSections.forEach((section) => { section.requestedTotals = { ...occupancyEmpty }; });
+      const synthesizedAllocationOccupancy = request.body.allocations.some((allocation) =>
+        allocation.occupancy.adults !== null || allocation.occupancy.childCount !== null || allocation.occupancy.childAges !== null);
+      request.body.allocations.forEach((allocation) => { allocation.occupancy = { ...occupancyEmpty }; });
       if (request.body.dateSections.length === 1) {
         const section = request.body.dateSections[0]!;
         const roomCount = currentClaim(extracted.roomCount, currentRefs);
@@ -2962,6 +2976,30 @@ function projectCurrentExtraction(input: {
           }
           if (!section.unassignedGuestNames.some((value) => normalizedFact(value) === normalizedFact(name.value)) &&
               section.unassignedGuestNames.length < 200) section.unassignedGuestNames.push(name.value);
+        }
+      }
+      if (request.body.allocations.length) {
+        const currentDatePair = singleCurrentDatePair(projectedDates, currentRefs);
+        const section = request.body.dateSections.length === 1 ? request.body.dateSections[0] : undefined;
+        const sourceOccupancyRow = extracted.occupancy.length === 1 ? extracted.occupancy[0] : undefined;
+        const quantity = citedInteger(currentClaim(extracted.roomCount, currentRefs));
+        const occupancy = fallbackQuoteOccupancy(extracted, currentRefs);
+        const allocationScopeSupported = sourceOccupancyRow?.scope === 'per_room' ||
+          quantity === 1 && sourceOccupancyRow?.scope === 'whole_group';
+        const exactPerRoomScope = Boolean(section && currentDatePair && allocationScopeSupported &&
+          occupancy.sourceRefs.length &&
+          quantity !== null && quantity >= 1 && quantity === request.body.allocations.length &&
+          request.body.allocations.every((allocation) => allocation.dateSectionId === section.id) &&
+          dateLinks.unlinkedDates.length === 0 && [...dateLinks.targetsByDate.values()].includes(0) &&
+          datePairKey(section.arrival, section.departure) === currentDatePair);
+        if (exactPerRoomScope) request.body.allocations.forEach((allocation) => {
+          allocation.occupancy = { adults: occupancy.occupancy.adults, childCount: occupancy.occupancy.childCount,
+            childAges: occupancy.occupancy.childAges };
+        });
+        else if (currentOccupancyRefs.length || synthesizedAllocationOccupancy) {
+          addProjectionIssue(proposal, `/requests/${request.id}/body/allocations`, 'create_occupancy_scope_ambiguous',
+            'Occupancy was not assigned to Create allocations because current per-room facts did not map exactly to every room and date. Unmapped synthesized occupancy was cleared; confirm each allocation with staff.',
+            currentOccupancyRefs.length ? currentOccupancyRefs : request.sourceRefs.filter((ref) => currentRefs.has(ref)));
         }
       }
       const currentDatePair = singleCurrentDatePair(projectedDates, currentRefs);
