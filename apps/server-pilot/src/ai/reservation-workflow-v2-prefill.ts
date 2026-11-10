@@ -1316,6 +1316,52 @@ function datePairKey(arrival: unknown, departure: unknown): string | null {
   return isoDay(arrival) && isoDay(departure) ? `${arrival}\u001f${departure}` : null;
 }
 
+function singleCurrentDatePair(dates: ProjectableDateClaim[], currentRefs: Set<string>): string | null {
+  const pairs = new Set<string>();
+  let partial = false;
+  for (const date of dates) {
+    const arrival = currentClaim(date.arrival, currentRefs), departure = currentClaim(date.departure, currentRefs);
+    if (!arrival && !departure) continue;
+    const key = datePairKey(citedText(arrival), citedText(departure));
+    if (!key) partial = true;
+    else pairs.add(key);
+  }
+  return !partial && pairs.size === 1 ? [...pairs][0]! : null;
+}
+
+function exactSourceCode(claim: { raw: string; value: unknown }): string | null {
+  if (typeof claim.value !== 'string') return null;
+  const code = claim.value.trim();
+  if (!/^[A-Z][A-Z0-9_-]{0,15}$/.test(code)) return null;
+  if (/^(?:R|ZAR|USD|GBP|EUR|AUD|CAD)\s*\d+(?:[.,]\d{1,2})?$/i.test(code)) return null;
+  const raw = claim.raw.trim();
+  if (raw.toUpperCase() === code) return code;
+  const tokens = raw.toUpperCase().split(/[^A-Z0-9_-]+/).filter(Boolean);
+  const explicitlyLabeled = /\b(?:room\s*(?:type\s*)?code|rate\s*(?:plan\s*)?(?:code|plan))\b/i.test(raw);
+  return explicitlyLabeled && tokens.includes(code) ? code : null;
+}
+
+function currentSourceCodes(claims: Array<{ raw: string; value: unknown; sourceRefs: string[] }>,
+  currentRefs: Set<string>): { codes: string[]; sourceRefs: string[] } {
+  const byCode = new Map<string, Set<string>>();
+  for (const claim of claims) {
+    const current = currentClaim(claim, currentRefs);
+    if (!current) continue;
+    const code = exactSourceCode(current);
+    if (!code) continue;
+    const refs = byCode.get(code) ?? new Set<string>();
+    current.sourceRefs.filter((ref) => currentRefs.has(ref)).forEach((ref) => refs.add(ref));
+    byCode.set(code, refs);
+  }
+  return { codes: [...byCode.keys()], sourceRefs: [...new Set([...byCode.values()].flatMap((refs) => [...refs]))] };
+}
+
+function quoteGroupsShareRoomScope(groups: Array<{ roomCodes: string[] }>): boolean {
+  if (groups.length < 2) return true;
+  const scopes = groups.map((group) => [...new Set(group.roomCodes)].sort().join('\u001f'));
+  return Boolean(scopes[0]) && scopes.every((scope) => scope === scopes[0]);
+}
+
 /** Exact date identity first; a single wholly empty slot may be filled by the only remaining source date. */
 function matchDateProjectionTargets(input: { targets: DateProjectionTarget[]; dates: ProjectableDateClaim[];
   currentRefs: Set<string> }): { targetsByDate: Map<number, number>; unlinkedDates: number[]; unlinkedTargets: number[] } {
@@ -2477,15 +2523,143 @@ function projectCurrentExtraction(input: {
         `/requests/${request.id}/body/groups`, 'synthesized_date_without_source',
         'A synthesized date group had no unique current source date; its dates were cleared while source claims and group associations were retained for staff review.',
         request.sourceRefs.filter((ref) => knownRefs.has(ref)));
-      if (request.body.groups.length === 1) {
-        const group = request.body.groups[0]!;
-        const roomCount = currentClaim(extracted.roomCount, currentRefs);
-        if (roomCount) group.quantity = citedInteger(roomCount) ?? null;
-        const board = currentClaim(extracted.boardHints[0], currentRefs);
-        projectLimitedText({ proposal, target: group as unknown as Record<string, unknown>, field: 'board', claim: board, currentRefs, max: 120,
-          path: `/requests/${request.id}/body/groups/0/board` });
+      const currentDatePair = singleCurrentDatePair(projectedDates, currentRefs);
+      const linkedQuoteGroups = [...new Set([...dateLinks.targetsByDate.values()].flat())];
+      const currentRoomHints = extracted.roomTypeHints.filter((hint) => currentClaim(hint, currentRefs));
+      const roomCodes = currentSourceCodes(extracted.roomTypeHints, currentRefs);
+      const roomCount = currentClaim(extracted.roomCount, currentRefs);
+      if (roomCount) {
+        const count = citedInteger(roomCount);
+        if (request.body.groups.length === 1 && currentDatePair && linkedQuoteGroups.includes(0) &&
+            typeof count === 'number' && count >= 1 && count <= 100) {
+          request.body.groups[0]!.quantity = count;
+        } else {
+          // The extraction schema carries one request-wide count, while Quote compiles
+          // each group additively. Copying this count into mixed groups inflates demand.
+          for (const group of request.body.groups) group.quantity = null;
+          const validCount = typeof count === 'number' && count >= 1 && count <= 100;
+          addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, validCount
+            ? 'quote_group_quantity_scope_ambiguous' : 'quote_room_count_invalid',
+            validCount
+              ? 'The source gives one room count for the whole request, but this Quote has multiple or unscoped groups. The count was kept in source claims and not repeated across groups; allocate rooms per group with staff.'
+              : 'The cited room count is not a valid quantity for a Quote group. It remains in source claims for staff review.',
+            roomCount.sourceRefs.filter((ref) => currentRefs.has(ref)));
+        }
+      }
+
+      const currentBoards = extracted.boardHints.flatMap((hint) => {
+        const claim = currentClaim(hint, currentRefs);
+        return claim && typeof claim.value === 'string' && claim.value.trim() ? [claim] : [];
+      });
+      const boardsByValue = new Map(currentBoards.map((claim) => [normalizedFact(claim.value), claim]));
+      if (currentBoards.length && linkedQuoteGroups.length) {
+        if (boardsByValue.size === 1) {
+          const board = [...boardsByValue.values()][0]!;
+          for (const groupIndex of linkedQuoteGroups) projectLimitedText({ proposal,
+            target: request.body.groups[groupIndex] as unknown as Record<string, unknown>, field: 'board', claim: board,
+            currentRefs, max: 120, path: `/requests/${request.id}/body/groups/${groupIndex}/board` });
+        } else {
+          for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.board = null;
+          addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
+            'The current source contains conflicting board choices without a reliable group mapping. Group boards were cleared for staff selection; the source claims remain available.',
+            [...new Set(currentBoards.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
+        }
+      } else if (currentBoards.length) {
+        for (const group of request.body.groups) group.board = null;
+        addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
+          'A current board choice could not be mapped to a source-linked date group. Group boards were cleared; the source claim remains available for staff review.',
+          [...new Set(currentBoards.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
+      }
+
+      const occupancySourceRefs = [...new Set(extracted.occupancy.flatMap((row) =>
+        [row.adults, row.childCount, ...(row.childAges ?? [])].flatMap((claim) =>
+          currentClaim(claim, currentRefs)?.sourceRefs.filter((ref) => currentRefs.has(ref)) ?? [])))];
+      if (occupancySourceRefs.length) {
         const occupancy = fallbackQuoteOccupancy(extracted, currentRefs);
-        if (occupancy.sourceRefs.length) group.occupancy = occupancy.occupancy;
+        const sameRoomScope = request.body.groups.length === 1 || roomCodes.codes.length === 1 &&
+          quoteGroupsShareRoomScope(request.body.groups) && request.body.groups.every((group) =>
+            group.roomCodes.length === 1 && group.roomCodes[0] === roomCodes.codes[0]);
+        const oneDateScope = Boolean(currentDatePair) && linkedQuoteGroups.length === request.body.groups.length;
+        const canProject = request.body.groups.length > 0 && extracted.occupancy.length === 1 &&
+          occupancy.sourceRefs.length > 0 && oneDateScope &&
+          sameRoomScope && (request.body.groups.length === 1 || occupancy.occupancy.scope === 'per_room');
+        if (canProject) {
+          for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.occupancy = occupancy.occupancy;
+        } else {
+          for (const group of request.body.groups)
+            group.occupancy = { scope: 'unresolved', adults: null, childCount: null, childAges: null };
+          addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_occupancy_scope_ambiguous',
+            'The source occupancy could not be mapped safely to every room group. Group occupancy remains unresolved; in particular, missing child count or ages were not treated as zero.',
+            occupancySourceRefs);
+        }
+      }
+
+      if (roomCodes.codes.length && currentDatePair && linkedQuoteGroups.length === request.body.groups.length) {
+        if (roomCodes.codes.length === 1) {
+          const code = roomCodes.codes[0]!;
+          const sameScope = quoteGroupsShareRoomScope(request.body.groups);
+          const matchingGroups = linkedQuoteGroups.filter((index) => request.body.groups[index]!.roomCodes.includes(code));
+          const targets = request.body.groups.length === 1 || sameScope ? linkedQuoteGroups :
+            matchingGroups.length === 1 ? matchingGroups : [];
+          if (targets.length) for (const groupIndex of targets) request.body.groups[groupIndex]!.roomCodes = [code];
+          else {
+            for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.roomCodes = [];
+            addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_room_code_scope_ambiguous',
+              'The source names a room code, but it cannot be assigned uniquely across the mixed room groups. Room choices were cleared for staff resolution; source claims remain available.',
+              roomCodes.sourceRefs);
+          }
+        } else {
+          for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.roomCodes = [];
+          addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_room_code_scope_ambiguous',
+            'Multiple current room codes cannot be assigned safely to the synthesized groups. Room choices were cleared for staff resolution; source claims remain available.',
+            roomCodes.sourceRefs);
+        }
+      } else if (currentRoomHints.length) {
+        for (const group of request.body.groups) group.roomCodes = [];
+        addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_room_code_not_projected',
+          roomCodes.codes.length
+            ? 'The exact source room code has no unambiguous date/group scope. Select the room code in the native-backed Quote editor.'
+            : 'Room preference text is not an exact native code; no code was inferred from its name. Select the room code in the native-backed Quote editor.',
+          roomCodes.sourceRefs.length ? roomCodes.sourceRefs :
+            [...new Set(currentRoomHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
+      }
+
+      const currentRateHints = extracted.rateHints.filter((hint) => currentClaim(hint, currentRefs));
+      const rateCodes = currentSourceCodes(extracted.rateHints, currentRefs);
+      if (rateCodes.codes.length && currentDatePair && linkedQuoteGroups.length === request.body.groups.length) {
+        if (rateCodes.codes.length === 1) {
+          const code = rateCodes.codes[0]!;
+          const existing = new Set(request.body.groups.map((group) => group.ratePlan));
+          if (request.body.groups.length === 1 || existing.size === 1) {
+            for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.ratePlan = code;
+          } else {
+            const matchingGroups = linkedQuoteGroups.filter((index) => request.body.groups[index]!.ratePlan === code);
+            if (matchingGroups.length === 1) request.body.groups[matchingGroups[0]!]!.ratePlan = code;
+            else {
+              for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.ratePlan = null;
+              addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_rate_code_scope_ambiguous',
+                'The source rate-plan code cannot be assigned uniquely across groups with different rate plans. Rate choices were cleared for staff resolution; source claims remain available.',
+                rateCodes.sourceRefs);
+            }
+          }
+        } else {
+          for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.ratePlan = null;
+          addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_rate_code_scope_ambiguous',
+            'Multiple current rate-plan codes cannot be assigned safely to the synthesized groups. Rate choices were cleared for staff resolution; source claims remain available.',
+            rateCodes.sourceRefs);
+        }
+      } else if (rateCodes.codes.length) {
+        for (const group of request.body.groups) group.ratePlan = null;
+        addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_rate_code_scope_ambiguous',
+          'The exact source rate-plan code has no unambiguous date/group scope. Rate choices were cleared for staff resolution; source claims remain available.',
+          rateCodes.sourceRefs);
+      } else if (currentRateHints.length && currentRateHints.some((claim) =>
+        typeof claim.value === 'string' && !matchesTypedRequestedPrice(extracted, claim, currentRefs) &&
+        !/[€£$]|\b(?:USD|GBP|EUR|AUD|CAD)\b|\b(?:per|nightly?|total|person|room)\b|^\s*(?:R|ZAR)\s*\d+(?:\.\d{1,2})?\s*$|^\s*\d+(?:\.\d{1,2})?\s*$/i.test(claim.raw))) {
+        for (const group of request.body.groups) group.ratePlan = null;
+        addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_rate_code_not_projected',
+          'The source rate hint is not an exact native rate-plan code; no rate code was inferred from its name. Select a native rate code in the Quote editor.',
+          [...new Set(currentRateHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
       }
       const quoteParties = request.body.parties as unknown as Record<string, unknown>;
       projectPartyRole({ proposal, parties: extracted.parties, role: 'agency', currentRefs,
@@ -2652,6 +2826,43 @@ function projectCurrentExtraction(input: {
           if (!section.unassignedGuestNames.some((value) => normalizedFact(value) === normalizedFact(name.value)) &&
               section.unassignedGuestNames.length < 200) section.unassignedGuestNames.push(name.value);
         }
+      }
+      const currentDatePair = singleCurrentDatePair(projectedDates, currentRefs);
+      const oneSectionHasSourceDate = request.body.dateSections.length === 1 && currentDatePair !== null &&
+        dateLinks.unlinkedDates.length === 0 && [...dateLinks.targetsByDate.values()].includes(0) &&
+        datePairKey(request.body.dateSections[0]!.arrival, request.body.dateSections[0]!.departure) === currentDatePair;
+      const currentRoomHints = extracted.roomTypeHints.filter((hint) => currentClaim(hint, currentRefs));
+      const roomCodes = currentSourceCodes(extracted.roomTypeHints, currentRefs);
+      if (currentRoomHints.length) {
+        if (roomCodes.codes.length === 1 && oneSectionHasSourceDate) request.body.shared.roomType = roomCodes.codes[0]!;
+        else {
+          request.body.shared.roomType = null;
+          addProjectionIssue(proposal, `/requests/${request.id}/body/shared/roomType`, 'create_room_code_scope_ambiguous',
+            roomCodes.codes.length
+              ? 'The source room code cannot be mapped to one current Create date section. No shared room code was selected; staff must resolve the source scope.'
+              : 'The source room preference is not an exact explicit native room code. It remains available in source claims for staff selection.',
+            [...new Set(currentRoomHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
+        }
+      }
+      const currentRateHints = extracted.rateHints.filter((hint) => currentClaim(hint, currentRefs));
+      const rateCodes = currentSourceCodes(extracted.rateHints, currentRefs);
+      const nonPriceRateHintRefs = [...new Set(currentRateHints.filter((claim) =>
+        typeof claim.value === 'string' && !matchesTypedRequestedPrice(extracted, claim, currentRefs) &&
+        !/[€£$]|\b(?:USD|GBP|EUR|AUD|CAD)\b|\b(?:per|nightly?|total|person|room)\b|^\s*(?:R|ZAR)\s*\d+(?:\.\d{1,2})?\s*$|^\s*\d+(?:\.\d{1,2})?\s*$/i.test(claim.raw))
+        .flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))];
+      if (rateCodes.codes.length) {
+        if (rateCodes.codes.length === 1 && oneSectionHasSourceDate) request.body.shared.ratePlan = rateCodes.codes[0]!;
+        else {
+          request.body.shared.ratePlan = null;
+          addProjectionIssue(proposal, `/requests/${request.id}/body/shared/ratePlan`, 'create_rate_code_scope_ambiguous',
+            'The source rate-plan code cannot be mapped to one current Create date section. No shared rate code was selected; staff must resolve the source scope.',
+            rateCodes.sourceRefs);
+        }
+      } else if (nonPriceRateHintRefs.length) {
+        request.body.shared.ratePlan = null;
+        addProjectionIssue(proposal, `/requests/${request.id}/body/shared/ratePlan`, 'create_rate_code_not_projected',
+          'The source rate hint is not an exact native rate-plan code; no rate code was inferred from its name. Select the native rate code with staff.',
+          nonPriceRateHintRefs);
       }
     }
   }
