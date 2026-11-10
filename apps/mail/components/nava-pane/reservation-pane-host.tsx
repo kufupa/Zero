@@ -39,11 +39,16 @@ async function sourceEvidenceRef(messageId: string, role: string, identity: stri
   return `src_${hex.slice(0, 12)}`;
 }
 
-async function selectedContentHash(email: { subject: string; senderEmail: string; bodyText: string; bodyHtml: string }) {
+async function selectedContentHash(email: { subject: string; senderEmail: string; bodyText: string; bodyHtml: string; transportHeaders?: string }) {
   // Match canonical ingestion's whitespace normalization, keeping body text out of the request URL.
   const body = (email.bodyText || email.bodyHtml.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
   if (!body) return undefined;
-  const sender = (/<([^<>]+)>/.exec(email.senderEmail)?.[1] ?? email.senderEmail).trim().toLowerCase();
+  // The bridge exposes Exchange DNs; native sync resolves SMTP. Transport From corroborates the same sender.
+  const fromHeader = email.transportHeaders?.replace(/\r?\n[ \t]+/g, ' ')
+    .split(/\r?\n/).find((line) => /^From:/i.test(line))?.slice(5).trim() ?? '';
+  const senderValue = email.senderEmail.includes('@') ? email.senderEmail : fromHeader;
+  const sender = (/<([^<>]+)>/.exec(senderValue)?.[1] ?? senderValue).trim().toLowerCase();
+  if (!/^[^\s<>@]+@[^\s<>@]+$/.test(sender)) return undefined;
   const value = JSON.stringify([email.subject.replace(/\s+/g, ' ').trim(), sender, body]);
   const hash = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
