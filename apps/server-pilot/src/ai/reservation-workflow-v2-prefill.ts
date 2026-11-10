@@ -1218,6 +1218,102 @@ function matchDateProjectionTargets(input: { targets: DateProjectionTarget[]; da
     unlinkedTargets: input.targets.flatMap((_, index) => linkedTargets.has(index) ? [] : [index]) };
 }
 
+/** Quote alternatives can share one stay range; Create allocations remain one-to-one. */
+function matchQuoteDateProjectionTargets(input: { targets: DateProjectionTarget[]; dates: ProjectableDateClaim[];
+  currentRefs: Set<string> }): { targetsByDate: Map<number, number[]>; unlinkedDates: number[]; unlinkedTargets: number[] } {
+  const keys = input.dates.map((date) => datePairKey(citedText(currentClaim(date.arrival, input.currentRefs)),
+    citedText(currentClaim(date.departure, input.currentRefs))));
+  const targetKeys = input.targets.map((target) => datePairKey(target.arrival, target.departure));
+  const sourceIndexesByKey = new Map<string, number[]>();
+  for (const [index, key] of keys.entries()) if (key)
+    sourceIndexesByKey.set(key, [...(sourceIndexesByKey.get(key) ?? []), index]);
+
+  const targetsByDate = new Map<number, number[]>(), linkedTargets = new Set<number>(), linkedDates = new Set<number>();
+  const sourceKeys = [...sourceIndexesByKey.keys()];
+  const hasPartialCurrentDate = input.dates.some((date) =>
+    (currentClaim(date.arrival, input.currentRefs) || currentClaim(date.departure, input.currentRefs)) &&
+      !datePairKey(citedText(currentClaim(date.arrival, input.currentRefs)), citedText(currentClaim(date.departure, input.currentRefs))));
+  if (sourceKeys.length === 1 && !hasPartialCurrentDate) {
+    // One complete current stay range with no other current date fragment applies to
+    // each Quote room/rate alternative, even if synthesis left group dates stale.
+    const key = sourceKeys[0]!;
+    const [sourceIndex] = sourceIndexesByKey.get(key)!;
+    const allTargets = input.targets.map((_, index) => index);
+    if (allTargets.length) {
+      targetsByDate.set(sourceIndex!, allTargets);
+      for (const index of sourceIndexesByKey.get(key)!) linkedDates.add(index);
+      for (const index of allTargets) linkedTargets.add(index);
+    }
+  } else {
+    // With several requested stays, exact date identity may fan out to duplicate Quote
+    // groups, but a source date is never assigned to a merely empty/unrelated group.
+    for (const [key, sourceIndexes] of sourceIndexesByKey) {
+      const matchingTargets = targetKeys.flatMap((targetKey, index) => targetKey === key ? [index] : []);
+      if (!matchingTargets.length) continue;
+      targetsByDate.set(sourceIndexes[0]!, matchingTargets);
+      for (const index of sourceIndexes) linkedDates.add(index);
+      for (const index of matchingTargets) linkedTargets.add(index);
+    }
+  }
+  const unlinkedDates = input.dates.flatMap((date, index) =>
+    currentClaim(date.arrival, input.currentRefs) || currentClaim(date.departure, input.currentRefs)
+      ? linkedDates.has(index) ? [] : [index] : []);
+  return { targetsByDate, unlinkedDates,
+    unlinkedTargets: input.targets.flatMap((_, index) => linkedTargets.has(index) ? [] : [index]) };
+}
+
+function sameSourceRefSet(left: string[], right: string[]): boolean {
+  const leftSet = new Set(left), rightSet = new Set(right);
+  return leftSet.size > 0 && leftSet.size === rightSet.size && [...leftSet].every((ref) => rightSet.has(ref));
+}
+
+function normalizedMoneyAmount(value: unknown): string | null {
+  if (typeof value !== 'string' || !/^\d{1,8}(?:\.\d{1,2})?$/.test(value.trim())) return null;
+  const amount = Number(value.trim());
+  return Number.isFinite(amount) ? amount.toFixed(2).replace(/\.0+$|(?<=\.[0-9])0$/, '') : null;
+}
+
+type SourceMoneyMeaning = { currency: string | null; basis: string | null; category: string | null };
+function sourceMoneyMeaning(raw: string, unit?: unknown): SourceMoneyMeaning {
+  const currencies = new Set([...raw.matchAll(/\b(?:USD|GBP|EUR|AUD|CAD)\b/gi)].map((match) => match[0]!.toUpperCase()));
+  if (raw.includes('£')) currencies.add('GBP');
+  if (raw.includes('€')) currencies.add('EUR');
+  if (raw.includes('$')) currencies.add('DOLLAR'); // '$' alone does not identify USD vs CAD/AUD.
+  const currency = currencies.size === 1 ? [...currencies][0]! : null;
+  const normalizedUnit = typeof unit === 'string' ? unit.trim().toLocaleLowerCase('en-US').replace(/[_\s-]+/g, ' ') : '';
+  const bases = new Set<string>();
+  if (/\bper\s+person\s+(?:per\s+)?night\b/i.test(raw)) bases.add('per_person_per_night');
+  else if (/\bper\s+room\s+(?:per\s+)?night\b/i.test(raw)) bases.add('per_room_per_night');
+  else if (/\b(?:per\s+night|nightly)\b/i.test(raw)) bases.add('per_night');
+  if (/\bper\s+person\b/i.test(raw) && !/\bper\s+person\s+(?:per\s+)?night\b/i.test(raw)) bases.add('per_person');
+  if (/\bper\s+room\b/i.test(raw) && !/\bper\s+room\s+(?:per\s+)?night\b/i.test(raw)) bases.add('per_room');
+  if (/\b(?:total|overall|entire stay|for the stay)\b/i.test(raw)) bases.add('total');
+  const unitBases: Record<string, string> = {
+    'per person per night': 'per_person_per_night', 'per room per night': 'per_room_per_night',
+    'per person': 'per_person', 'per room': 'per_room', 'per night': 'per_night', nightly: 'per_night', total: 'total',
+  };
+  if (!bases.size && unitBases[normalizedUnit]) bases.add(unitBases[normalizedUnit]!);
+  return { currency, basis: bases.size === 1 ? [...bases][0]! : null,
+    category: /\b(?:dinner|meal)\b/i.test(raw) ? 'dinner' :
+      /\b(?:room|accommodation|nightly)\b/i.test(raw) ? 'room_rate' : null };
+}
+
+function moneyMeaningMatches(left: SourceMoneyMeaning, right: SourceMoneyMeaning): boolean {
+  return left.currency === right.currency && left.basis !== null && left.basis === right.basis &&
+    left.category === right.category;
+}
+
+function moneyMeaningsConflict(left: SourceMoneyMeaning, right: SourceMoneyMeaning): boolean {
+  return left.currency !== null && right.currency !== null && left.currency !== right.currency ||
+    left.basis !== null && right.basis !== null && left.basis !== right.basis ||
+    left.category !== null && right.category !== null && left.category !== right.category;
+}
+
+function sourceClaimsForRequestedMoney(proposal: ReservationWorkflowV2Proposal, requestId: string, index: number) {
+  const targetPath = `/requests/${requestId}/body/requestedMoney/${index}`;
+  return proposal.sourceClaims.filter((claim) => claim.path === targetPath || claim.path === `${targetPath}/amount`);
+}
+
 function dateSourceRefs(date: ProjectableDateClaim): string[] {
   return [...new Set([...(date.arrival?.sourceRefs ?? []), ...(date.departure?.sourceRefs ?? [])])];
 }
@@ -1347,6 +1443,42 @@ function projectCurrentExtraction(input: {
     linkedExtractionRequests.add(extracted);
   }
 
+  const retainedRequestsById = new Map(proposal.content.requests.map((request) => [request.id, request]));
+  proposal.content.services = proposal.content.services.filter((service) => {
+    if (service.sourceRefs.some((ref) => currentRefs.has(ref))) return true;
+    addProjectionIssue(proposal, `/services/${service.id}`, 'prior_thread_service_pruned',
+      'A service item was supported only by prior-thread evidence and was removed; prior mail remains context and cannot create a current service action.',
+      service.sourceRefs.filter((ref) => knownRefs.has(ref)));
+    return false;
+  });
+  for (const service of proposal.content.services) {
+    const validTargets = service.targets.filter(({ target }) => {
+      const request = retainedRequestsById.get(target.requestId);
+      if (!request) return false;
+      if (target.kind === 'allocation') return request.kind === 'create' &&
+        request.body.allocations.some((allocation) => allocation.id === target.allocationId);
+      if (target.kind === 'quote_group') return request.kind === 'quote' &&
+        request.body.groups.some((group) => group.id === target.groupId);
+      const body = 'targets' in request.body ? request.body.targets : null;
+      if (!body || !isRecord(body)) return false;
+      const hints = [...(Array.isArray(body.include) ? body.include : []), ...(Array.isArray(body.exclude) ? body.exclude : [])];
+      return hints.some((hint) => isRecord(hint) && hint.id === target.hintId);
+    });
+    if (validTargets.length === service.targets.length) continue;
+    const removedTargets = service.targets.filter((target) => !validTargets.includes(target));
+    service.targets = validTargets;
+    const removedRequestIds = new Set(removedTargets.map(({ target }) => target.requestId));
+    const evidenceRefs = [...new Set([...service.sourceRefs,
+      ...prunedRequests.filter((request) => removedRequestIds.has(request.id)).flatMap((request) => request.sourceRefs)])]
+      .filter((ref) => currentRefs.has(ref)).slice(0, 100);
+    addProjectionIssue(proposal, `/services/${service.id}/targets`, 'stale_service_target_removed',
+      'A synthesized service target referred to a request, allocation or saved hint that is no longer present. The source-linked service ask was retained without that target for staff resolution.',
+      evidenceRefs);
+  }
+  const finalServiceIds = new Set(proposal.content.services.map((service) => service.id));
+  for (const request of proposal.content.requests)
+    request.serviceRefs = request.serviceRefs.filter((ref) => finalServiceIds.has(ref));
+
   const evidenceByRef = new Map(input.evidence.map((row) => [row.ref, row]));
   for (const request of proposal.content.requests) {
     const extracted = linkedByRequest.get(request) ?? currentExtraction.requests.find((candidate) => candidate.id === request.id && candidate.kind === request.kind);
@@ -1385,13 +1517,16 @@ function projectCurrentExtraction(input: {
 
     const projectedDates = extracted.dates;
     if (request.kind === 'quote') {
-      const dateLinks = matchDateProjectionTargets({ targets: request.body.groups, dates: projectedDates, currentRefs });
-      for (const [dateIndex, groupIndex] of dateLinks.targetsByDate) {
-        const date = projectedDates[dateIndex]!, group = request.body.groups[groupIndex]!;
-        projectLimitedText({ proposal, target: group as unknown as Record<string, unknown>, field: 'arrival', claim: date.arrival, currentRefs, max: 40,
-          path: `/requests/${request.id}/body/groups/${groupIndex}/arrival` });
-        projectLimitedText({ proposal, target: group as unknown as Record<string, unknown>, field: 'departure', claim: date.departure, currentRefs, max: 40,
-          path: `/requests/${request.id}/body/groups/${groupIndex}/departure` });
+      const dateLinks = matchQuoteDateProjectionTargets({ targets: request.body.groups, dates: projectedDates, currentRefs });
+      for (const [dateIndex, groupIndexes] of dateLinks.targetsByDate) {
+        const date = projectedDates[dateIndex]!;
+        for (const groupIndex of groupIndexes) {
+          const group = request.body.groups[groupIndex]!;
+          projectLimitedText({ proposal, target: group as unknown as Record<string, unknown>, field: 'arrival', claim: date.arrival, currentRefs, max: 40,
+            path: `/requests/${request.id}/body/groups/${groupIndex}/arrival` });
+          projectLimitedText({ proposal, target: group as unknown as Record<string, unknown>, field: 'departure', claim: date.departure, currentRefs, max: 40,
+            path: `/requests/${request.id}/body/groups/${groupIndex}/departure` });
+        }
       }
       const unlinkedPopulatedGroups = dateLinks.unlinkedTargets.filter((index) => {
         const group = request.body.groups[index]!;
@@ -1435,6 +1570,57 @@ function projectCurrentExtraction(input: {
           JSON.stringify(prior.value) === JSON.stringify(sourceRate.value) && prior.sourceRefs.length === sourceRate.sourceRefs.length &&
           prior.sourceRefs.every((ref) => sourceRate.sourceRefs.includes(ref)));
         if (duplicateClaim) continue;
+        const amountKey = normalizedMoneyAmount(amount);
+        const sourceMeaning = sourceMoneyMeaning(sourceRate.raw);
+        const exactExisting = request.body.requestedMoney.flatMap((money, moneyIndex) => {
+          const claims = sourceClaimsForRequestedMoney(proposal, request.id, moneyIndex)
+            .filter((claim) => claim.raw === sourceRate.raw && sameSourceRefSet(claim.sourceRefs, sourceRefs));
+          return claims.length ? [{ money, moneyIndex, claimCount: claims.length }] : [];
+        });
+        if (exactExisting.length) {
+          const exact = exactExisting.length === 1 && exactExisting[0]!.claimCount === 1 ? exactExisting[0] : null;
+          if (exact && normalizedMoneyAmount(exact.money.amount) === amountKey && sameSourceRefSet(exact.money.sourceRefs, sourceRefs)) continue;
+          addProjectionIssue(proposal, `/requests/${request.id}/body/requestedMoney`, 'source_money_match_ambiguous',
+            'A source amount already points to a synthesized money item, but its value or ownership is inconsistent; no duplicate was added and the raw claim remains available for staff review.', sourceRefs);
+          continue;
+        }
+        const sameAmountOwned = request.body.requestedMoney.flatMap((money, moneyIndex) =>
+          normalizedMoneyAmount(money.amount) === amountKey && sameSourceRefSet(money.sourceRefs, sourceRefs)
+            ? [{ money, moneyIndex, claims: sourceClaimsForRequestedMoney(proposal, request.id, moneyIndex) }] : []);
+        if (sameAmountOwned.length) {
+          const competingRates = extracted.rateHints.filter((candidate) => {
+            const current = currentClaim(candidate, currentRefs);
+            if (!current || !sameSourceRefSet(current.sourceRefs, sourceRefs)) return false;
+            const candidateAmount = typeof current.value === 'number' && Number.isFinite(current.value) && current.value >= 0
+              ? String(current.value) : typeof current.value === 'string' && /^\d{1,8}(?:\.\d{1,2})?$/.test(current.value.trim())
+                ? current.value.trim() : null;
+            return normalizedMoneyAmount(candidateAmount) === amountKey;
+          });
+          const meaningForMoney = (row: typeof sameAmountOwned[number]): SourceMoneyMeaning => {
+            const claimMeaning = row.claims.length === 1 ? sourceMoneyMeaning(row.claims[0]!.raw) : null;
+            const unitMeaning = sourceMoneyMeaning('', row.money.unit);
+            const currency = typeof row.money.currency === 'string' && row.money.currency.trim()
+              ? row.money.currency.trim().toUpperCase() : claimMeaning?.currency ?? null;
+            return { currency, basis: claimMeaning?.basis ?? unitMeaning.basis, category: claimMeaning?.category ?? null };
+          };
+          const semanticTargets = sameAmountOwned.filter((row) => moneyMeaningMatches(sourceMeaning, meaningForMoney(row)));
+          const relevantCompetingRates = competingRates.filter((candidate) => {
+            const current = currentClaim(candidate, currentRefs)!;
+            const meaning = sourceMoneyMeaning(current.raw);
+            return !moneyMeaningsConflict(sourceMeaning, meaning);
+          });
+          if (semanticTargets.length === 1 && relevantCompetingRates.length === 1) continue;
+          const allDistinct = sameAmountOwned.every((row) => moneyMeaningsConflict(sourceMeaning, meaningForMoney(row))) &&
+            competingRates.filter((candidate) => candidate !== rate).every((candidate) => {
+              const current = currentClaim(candidate, currentRefs)!;
+              return moneyMeaningsConflict(sourceMeaning, sourceMoneyMeaning(current.raw));
+            });
+          if (!allDistinct) {
+            addProjectionIssue(proposal, `/requests/${request.id}/body/requestedMoney`, 'source_money_match_ambiguous',
+              'A current amount may already be represented, but its exact source claim or nightly/total/allowance basis is unclear; no duplicate was added and the raw claim remains available for staff review.', sourceRefs);
+            continue;
+          }
+        }
         if (request.body.requestedMoney.length >= 100) {
           addProjectionIssue(proposal, `/requests/${request.id}/body/requestedMoney`, 'source_money_not_projected',
             'A source rate claim could not be added because requested money is at capacity; its separate raw claim remains available for staff review.', sourceRefs);
@@ -2231,7 +2417,11 @@ export async function runReservationWorkflowV2Prefill(input: {
     responseSchema: zodToJsonSchema(reservationWorkflowV2ModelOutputSchema, { $refStrategy: 'none' }) as Record<string, unknown>,
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
   const finalParsed = finalPass.ok ? reservationWorkflowV2ModelOutputSchema.safeParse(normalizeSynthesisOutput(finalPass.result.output, evidence)) : null;
-  const rawProposalIssue = finalParsed?.success ? validateProposal(finalParsed.data.proposal, evidence, observations) : null;
+  const rawProposalForValidation = finalParsed?.success ? structuredClone(finalParsed.data.proposal) : null;
+  // Service targets are repaired by the host projection below. Validate every other
+  // synthesized reference now, then strictly validate the repaired proposal afterward.
+  for (const service of rawProposalForValidation?.content.services ?? []) service.targets = [];
+  const rawProposalIssue = rawProposalForValidation ? validateProposal(rawProposalForValidation, evidence, observations) : null;
   const extractionProjection = finalParsed?.success ? projectCurrentExtraction({ proposal: finalParsed.data.proposal,
     extraction, source: input.source, evidence, attachmentIdentityByRef }) : null;
   const guestBinding = finalParsed?.success && extractionProjection ? bindGuestProfileObservations({ proposal: extractionProjection.proposal,
