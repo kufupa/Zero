@@ -2988,7 +2988,7 @@ function projectCurrentExtraction(input: {
           quantity === 1 && sourceOccupancyRow?.scope === 'whole_group';
         const exactPerRoomScope = Boolean(section && currentDatePair && allocationScopeSupported &&
           occupancy.sourceRefs.length &&
-          quantity !== null && quantity >= 1 && quantity === request.body.allocations.length &&
+          typeof quantity === 'number' && quantity >= 1 && quantity === request.body.allocations.length &&
           request.body.allocations.every((allocation) => allocation.dateSectionId === section.id) &&
           dateLinks.unlinkedDates.length === 0 && [...dateLinks.targetsByDate.values()].includes(0) &&
           datePairKey(section.arrival, section.departure) === currentDatePair);
