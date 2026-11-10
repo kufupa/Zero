@@ -344,7 +344,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
         const nativeHint = nativeValue ? `Infor ${operation === 'edit' ? 'current' : 'last check'}: ${nativeValue}${nativeDisplay && nativeDisplay !== nativeValue ? ` · ${nativeDisplay}` : ''}.` : '';
         const choiceHint = isChoice ? control?.editable === false ? 'This field is not editable in Infor.'
           : options.length ? 'Infor choices; check again after changes.' : 'Check the Add-On to load Infor choices.' : '';
-        const priceHint = field === 'unitPrice' ? 'Unit price is supplied; Infor calculates the total from it.' : '';
+        const priceHint = field === 'unitPrice' ? 'Enter source price or an explicit staff price; zero is allowed. Infor calculates the total.' : '';
         const sharedHint = shared != null && text(shared) ? `Shared value: ${text(shared)}; a room value overrides it.` : operation === 'edit' ? 'Leave unmentioned values unchanged.' : '';
         return <Field key={field} editor={editor} path={`${targetRoot}/fields/${field}`} label={label} type={type} review
           options={options.length ? options : undefined} disabled={editor.view.busy || control?.editable === false}
@@ -352,7 +352,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
           hint={[sharedHint, nativeHint, choiceHint, priceHint].filter(Boolean).join(' ') || undefined} />;
       })}</div>
       }
-      <div className={styles.hint}>{operation === 'add' ? 'A positive explicit unit price and quantity are required. Unknown or zero price is unpriced. ' : operation === 'remove' ? 'Removing an item does not establish a refund. ' : ''}Infor returns actual service dates and total.</div>
+      <div className={styles.hint}>{operation === 'add' ? 'A nonnegative explicit unit price and positive quantity are required. ' : operation === 'remove' ? 'Removing an item does not establish a refund. ' : ''}Infor returns actual service dates and total.</div>
       <div className={styles.row}><button type="button" disabled={editor.view.busy || !argument || !catalogue.some(row => row.observation.ref === selectedItem)}
         onClick={() => { if (argument) void editor.commands.previewServices(argument, service.id).catch(() => {}); }}>Check Add-On</button></div>
     </>}

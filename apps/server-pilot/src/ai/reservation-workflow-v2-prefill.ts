@@ -1661,6 +1661,7 @@ function bindExistingVoucherFiling(input: {
   filing: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'filing' }>;
   voucher: CurrentPdfEvidence;
   allocationId: string;
+  allocationIds: string[];
   sourceRefs: string[];
 }): boolean {
   const { proposal, create, filing, voucher } = input;
@@ -1668,6 +1669,9 @@ function bindExistingVoucherFiling(input: {
   const noDestination = scope === null || scope.mode === 'unresolved' &&
     scope.include.length === 0 && scope.exclude.length === 0;
   if (!noDestination || filing.body.allocationTarget) return false;
+  const expectedAllocationIds = new Set(input.allocationIds);
+  if (!expectedAllocationIds.size || expectedAllocationIds.size !== input.allocationIds.length ||
+      !expectedAllocationIds.has(input.allocationId)) return false;
   if (filing.documentRefs.length > 1) return false;
 
   const sourceDocuments = proposal.content.documents.filter((document) => document.documentSourceRef === voucher.documentRef);
@@ -1680,7 +1684,14 @@ function bindExistingVoucherFiling(input: {
   if (duplicateDocuments.some((row) => row.ownerRequestId !== create.id || row.targetRefs.length > 0 ||
       proposal.content.requests.some((request) => request.id !== create.id && request.id !== filing.id &&
         request.documentRefs.includes(row.id)))) return false;
-  if (document.targetRefs.length || document.ownerRequestId !== null &&
+  const existingAllocationTargets = document.targetRefs;
+  const targetsMatchSourceCreateGroup = existingAllocationTargets.length === 0 ||
+    existingAllocationTargets.length === expectedAllocationIds.size &&
+    existingAllocationTargets.every((target) => target.kind === 'allocation' && target.requestId === create.id &&
+      expectedAllocationIds.has(target.allocationId)) &&
+    new Set(existingAllocationTargets.flatMap((target) => target.kind === 'allocation' ? [target.allocationId] : [])).size ===
+      expectedAllocationIds.size;
+  if (!targetsMatchSourceCreateGroup || document.ownerRequestId !== null &&
       document.ownerRequestId !== create.id && document.ownerRequestId !== filing.id) return false;
   if (proposal.content.requests.some((request) => request.id !== create.id && request.id !== filing.id &&
       request.documentRefs.includes(document.id))) return false;
@@ -1703,6 +1714,40 @@ function bindExistingVoucherFiling(input: {
   document.targetRefs = [{ kind: 'saved_target', requestId: filing.id, hintId },
     { kind: 'allocation', requestId: create.id, allocationId: input.allocationId }];
   return true;
+}
+
+function voucherFilingTaskIds(sourceMessageId: string, createId: string, allocationId: string,
+  voucher?: CurrentPdfEvidence): { filingId: string; documentId: string | null } {
+  const filingId = stableId(sourceMessageId, 'create_voucher_filing', createId, allocationId,
+    voucher?.documentRef ?? 'select_pdf');
+  return { filingId, documentId: voucher ? stableId(filingId, 'voucher_document', voucher.documentRef) : null };
+}
+
+function appendVoucherFilingTask(input: {
+  proposal: ReservationWorkflowV2Proposal;
+  sourceMessageId: string;
+  create: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'create' }>;
+  allocation: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'create' }>['body']['allocations'][number];
+  voucher?: CurrentPdfEvidence;
+  sourceRefs: string[];
+}): void {
+  const { filingId, documentId } = voucherFilingTaskIds(input.sourceMessageId, input.create.id,
+    input.allocation.id, input.voucher);
+  const sourceRefs = [...new Set([...input.sourceRefs, ...(input.voucher?.sourceRefs ?? [])])].slice(0, 100);
+  const hintId = stableId(filingId, 'allocation_hint', input.create.id, input.allocation.id);
+  const targets = { mode: 'explicit' as const,
+    include: [{ id: hintId, candidateRefs: [], suggestedRef: null, sourceRefs }], exclude: [], sourceRefs };
+  input.proposal.content.requests.push({ id: filingId,
+    requestText: input.voucher
+      ? 'File the source-cited agency booking voucher to this Create allocation after the booking succeeds.'
+      : 'Choose the correct current PDF for Filing to this Create allocation after the booking succeeds.',
+    sourceRefs, serviceRefs: [], documentRefs: documentId ? [documentId] : [], kind: 'filing',
+    body: { targets, allocationTarget: { requestId: input.create.id, allocationId: input.allocation.id } } });
+  if (input.voucher && documentId) input.proposal.content.documents.push({ id: documentId, ownerRequestId: filingId,
+    documentSourceRef: input.voucher.documentRef, kind: 'voucher', handling: 'filing_requested',
+    targetRefs: [{ kind: 'saved_target', requestId: filingId, hintId },
+      { kind: 'allocation', requestId: input.create.id, allocationId: input.allocation.id }],
+    requestedName: null, requestedDescription: null, uploadArtifactRef: null, sourceRefs });
 }
 
 function holdCreateForExistingVoucherStay(input: {
@@ -1813,8 +1858,9 @@ function projectAgencyVoucherFilings(input: {
     const voucherRefSet = new Set(vouchers.map((voucher) => voucher.documentRef));
     const linkedDocuments = new Set(input.proposal.content.documents.filter((document) => voucherRefSet.has(document.documentSourceRef))
       .map((document) => document.id));
-    const existingFiling = input.proposal.content.requests.find((other) => other.kind === 'filing' &&
+    const existingFilings = input.proposal.content.requests.filter((other) => other.kind === 'filing' &&
       (other.sourceRefs.some((ref) => voucherRefSet.has(ref)) || other.documentRefs.some((ref) => linkedDocuments.has(ref))));
+    const existingFiling = existingFilings.length === 1 ? existingFilings[0] : undefined;
     const additionalNewRoom = explicitAdditionalNewRoom(extracted, input.currentRefs);
     const nativeStayMatch = !additionalNewRoom && hasCurrentBoundNativeStay(extracted, input.currentRefs,
       input.sourceMessageId, input.observations);
@@ -1838,14 +1884,34 @@ function projectAgencyVoucherFilings(input: {
       }
       const allocations = projectSourceCreateAllocations({ request, extracted, currentRefs: input.currentRefs });
       const automaticVoucher = vouchers.length === 1 ? vouchers[0] : undefined;
-      const bound = existingFiling.kind === 'filing' && automaticVoucher && !allocations.failure && allocations.allocations.length === 1 &&
+      const followOnAllocations = automaticVoucher && !allocations.failure && allocations.allocations.length > 1
+        ? allocations.allocations.slice(1) : [];
+      const followOnIds = followOnAllocations.map((allocation) => voucherFilingTaskIds(input.source.messageId,
+        request.id, allocation.id, automaticVoucher));
+      const followOnSafe = input.proposal.content.requests.length + followOnIds.length <= 200 &&
+        input.proposal.content.documents.length + followOnIds.length <= 200 &&
+        new Set(followOnIds.map((identity) => identity.filingId)).size === followOnIds.length &&
+        new Set(followOnIds.flatMap((identity) => identity.documentId ? [identity.documentId] : [])).size === followOnIds.length &&
+        followOnIds.every((identity) => !input.proposal.content.requests.some((row) => row.id === identity.filingId) &&
+          !input.proposal.content.documents.some((row) => row.id === identity.documentId));
+      const canBindAll = allocations.allocations.length > 0 &&
+        (allocations.allocations.length === 1 || followOnSafe);
+      const bound = existingFiling.kind === 'filing' && automaticVoucher && !allocations.failure && canBindAll &&
         bindExistingVoucherFiling({ proposal: input.proposal, create: request, filing: existingFiling,
-          voucher: automaticVoucher, allocationId: allocations.allocations[0]!.id, sourceRefs: refs });
+          voucher: automaticVoucher, allocationId: allocations.allocations[0]!.id,
+          allocationIds: allocations.allocations.map((allocation) => allocation.id), sourceRefs: refs });
+      if (bound && allocations.allocations.length > 1 && automaticVoucher) {
+        for (const allocation of followOnAllocations) appendVoucherFilingTask({ proposal: input.proposal,
+          sourceMessageId: input.source.messageId, create: request, allocation, voucher: automaticVoucher, sourceRefs: refs });
+        added += followOnAllocations.length;
+      }
       addProjectionIssue(input.proposal, { path: `/requests/${existingFiling.id}/body/targets`,
         kind: bound ? 'voucher_filing_request_bound' : 'voucher_filing_request_retained',
         explanation: bound
-          ? 'The existing same-voucher Filing request is linked to the exact single Create allocation; no duplicate Filing request was added.'
-          : 'A source Filing request already references this voucher. Its existing destination was preserved; resolve any missing or multi-room allocation target manually.',
+          ? allocations.allocations.length === 1
+            ? 'The existing same-voucher Filing request is linked to the exact Create allocation; no duplicate Filing request was added.'
+            : 'The existing same-voucher Filing request is linked to the first exact Create allocation; separate Filing tasks for remaining allocations cite the same original PDF.'
+          : 'A source Filing request already references this voucher. Its existing destination was preserved; resolve any missing or unsafe allocation target manually.',
         evidenceRefs: [...refs, ...existingFiling.sourceRefs.filter((ref) => input.currentRefs.has(ref))] });
       continue;
     }
@@ -1855,6 +1921,12 @@ function projectAgencyVoucherFilings(input: {
       addProjectionIssue(input.proposal, { path: `/requests/${request.id}/confirmationReference`, kind: 'voucher_existing_booking_guard',
         explanation: 'A canonical current HMS confirmation or a complete source-bound native stay read indicates an existing booking. The voucher is retained as source evidence, but no duplicate Create-to-Filing task was generated.',
         evidenceRefs: refs });
+      continue;
+    }
+    if (existingFilings.length > 1) {
+      addProjectionIssue(input.proposal, { path: `/requests/${request.id}/documents`, kind: 'voucher_filing_request_retained',
+        explanation: 'Several existing Filing requests reference this voucher. Their destinations were preserved; staff must resolve which task belongs to each Create allocation.',
+        evidenceRefs: [...refs, ...existingFilings.flatMap((filing) => filing.sourceRefs.filter((ref) => input.currentRefs.has(ref)))] });
       continue;
     }
     const allocations = projectSourceCreateAllocations({ request, extracted, currentRefs: input.currentRefs });
@@ -1874,13 +1946,14 @@ function projectAgencyVoucherFilings(input: {
         evidenceRefs: refs });
       continue;
     }
-    const generatedIds = allocations.allocations.map((allocation) => stableId(input.source.messageId,
-      'create_voucher_filing', request.id, allocation.id, automaticVoucher?.documentRef ?? 'select_pdf'));
-    const generatedDocumentIds = automaticVoucher ? allocations.allocations.map((allocation) => stableId(
-      stableId(input.source.messageId, 'create_voucher_filing', request.id, allocation.id, automaticVoucher.documentRef),
-      'voucher_document', automaticVoucher.documentRef)) : [];
+    const generatedIdentities = allocations.allocations.map((allocation) => voucherFilingTaskIds(input.source.messageId,
+      request.id, allocation.id, automaticVoucher));
+    const generatedIds = generatedIdentities.map((identity) => identity.filingId);
+    const generatedDocumentIds = generatedIdentities.flatMap((identity) => identity.documentId ? [identity.documentId] : []);
     if (generatedIds.some((id) => input.proposal.content.requests.some((row) => row.id === id)) ||
-        generatedDocumentIds.some((id) => input.proposal.content.documents.some((row) => row.id === id))) {
+        new Set(generatedIds).size !== generatedIds.length ||
+        generatedDocumentIds.some((id) => input.proposal.content.documents.some((row) => row.id === id)) ||
+        new Set(generatedDocumentIds).size !== generatedDocumentIds.length) {
       addProjectionIssue(input.proposal, { path: `/requests/${request.id}/documents`, kind: 'voucher_filing_id_collision',
         explanation: 'A generated Filing identity conflicts with existing proposal data; no dependent task was added.', evidenceRefs: refs });
       continue;
@@ -1903,28 +1976,8 @@ function projectAgencyVoucherFilings(input: {
 
     for (const allocation of allocations.allocations) {
       const sourceRefs = [...new Set([...refs, ...(automaticVoucher?.sourceRefs ?? [])])].filter((ref) => input.currentRefs.has(ref)).slice(0, 100);
-      const filingId = stableId(input.source.messageId, 'create_voucher_filing', request.id, allocation.id,
-        automaticVoucher?.documentRef ?? 'select_pdf');
-      if (input.proposal.content.requests.some((row) => row.id === filingId)) {
-        addProjectionIssue(input.proposal, { path: `/requests/${request.id}/documents`, kind: 'voucher_filing_id_collision',
-          explanation: 'A generated Filing identity conflicts with another request; no task was duplicated.', evidenceRefs: sourceRefs });
-        continue;
-      }
-      const hintId = stableId(filingId, 'allocation_hint', request.id, allocation.id);
-      const targets = { mode: 'explicit' as const,
-        include: [{ id: hintId, candidateRefs: [], suggestedRef: null, sourceRefs }], exclude: [], sourceRefs };
-      const documentId = automaticVoucher ? stableId(filingId, 'voucher_document', automaticVoucher.documentRef) : null;
-      input.proposal.content.requests.push({ id: filingId,
-        requestText: automaticVoucher
-          ? 'File the source-cited agency booking voucher to this Create allocation after the booking succeeds.'
-          : 'Choose the correct current PDF for Filing to this Create allocation after the booking succeeds.',
-        sourceRefs, serviceRefs: [], documentRefs: documentId ? [documentId] : [], kind: 'filing',
-        body: { targets, allocationTarget: { requestId: request.id, allocationId: allocation.id } } });
-      if (automaticVoucher && documentId) input.proposal.content.documents.push({ id: documentId, ownerRequestId: filingId,
-        documentSourceRef: automaticVoucher.documentRef, kind: 'voucher', handling: 'filing_requested',
-        targetRefs: [{ kind: 'saved_target', requestId: filingId, hintId },
-          { kind: 'allocation', requestId: request.id, allocationId: allocation.id }],
-        requestedName: null, requestedDescription: null, uploadArtifactRef: null, sourceRefs });
+      appendVoucherFilingTask({ proposal: input.proposal, sourceMessageId: input.source.messageId,
+        create: request, allocation, voucher: automaticVoucher, sourceRefs });
       added += 1;
     }
     addProjectionIssue(input.proposal, { path: `/requests/${request.id}/filing`, kind: 'create_voucher_filing_dependency',
@@ -1934,6 +1987,47 @@ function projectAgencyVoucherFilings(input: {
       evidenceRefs: refs });
   }
   return added;
+}
+
+function projectSingleSourceFilingHint(input: {
+  proposal: ReservationWorkflowV2Proposal;
+  request: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'filing' }>;
+  extracted: ReservationWorkflowV2Extraction['requests'][number];
+  extraction: ReservationWorkflowV2Extraction;
+  currentRefs: Set<string>;
+  evidence: ReservationWorkflowV2Evidence[];
+}): void {
+  const scope = input.request.body.targets;
+  if (input.request.body.allocationTarget || !(scope === null || scope.mode === 'unresolved' &&
+      scope.include.length === 0 && scope.exclude.length === 0)) return;
+  const currentFilings = input.extraction.requests.filter((candidate) => candidate.kind === 'filing' &&
+    currentClaim(candidate.requestText, input.currentRefs));
+  if (currentFilings.length !== 1 || currentFilings[0]!.id !== input.extracted.id || input.request.documentRefs.length !== 1) return;
+
+  const confirmationHints = exactConfirmationHints(input.extracted, input.currentRefs);
+  const confirmations = new Set(confirmationHints.map((hint) => hint.value));
+  if (confirmations.size !== 1 || !confirmationHints.length) return;
+  if (input.extracted.dates.length !== 1) return;
+  const date = input.extracted.dates[0]!;
+  const arrival = currentClaim(date.arrival, input.currentRefs), departure = currentClaim(date.departure, input.currentRefs);
+  if (typeof arrival?.value !== 'string' || !isoDay(arrival.value) || typeof departure?.value !== 'string' ||
+      !isoDay(departure.value) || departure.value <= arrival.value) return;
+
+  const documentId = input.request.documentRefs[0];
+  const entity = documentId ? input.proposal.content.documents.find((row) => row.id === documentId &&
+    row.ownerRequestId === input.request.id && row.targetRefs.length === 0) : undefined;
+  if (!entity || !input.evidence.some((row) => row.ref === entity.documentSourceRef && row.relation === 'attachment' &&
+      input.currentRefs.has(row.ref))) return;
+
+  const sourceRefs = [...new Set([...confirmationHints.flatMap((hint) => hint.sourceRefs), ...dateSourceRefs(date)])]
+    .filter((ref) => input.currentRefs.has(ref)).slice(0, 100);
+  if (!sourceRefs.length) return;
+  const confirmation = confirmations.values().next().value as string;
+  const hintId = stableId(input.request.id, 'source_filing_hint', confirmation, arrival.value, departure.value);
+  input.request.body.targets = { mode: 'explicit', include: [{ id: hintId, confirmation,
+    bookedArrival: arrival.value, bookedDeparture: departure.value, candidateRefs: [], suggestedRef: null, sourceRefs }],
+  exclude: [], sourceRefs };
+  entity.targetRefs = [{ kind: 'saved_target', requestId: input.request.id, hintId }];
 }
 
 function projectCurrentExtraction(input: {
@@ -2005,6 +2099,46 @@ function projectCurrentExtraction(input: {
       evidenceRefs);
   }
   const extractionIdByProposalRequestId = new Map([...linkedByRequest].map(([request, extracted]) => [request.id, extracted.id]));
+  // Canonical confirmation claims are keyed by the synthesized request ID. When
+  // synthesis reuses an ID, keep an exact current-source confirmation attached
+  // to the retained request that its cited evidence identifies. If evidence does
+  // not choose one owner, carry it to every possible retained request so each
+  // Create receives the native lookup guard; never let the stale ID turn it into
+  // unguarded context or assign a native booking identity.
+  const remappedConfirmationClaims: ReservationWorkflowV2Proposal['sourceClaims'] = [];
+  for (const claim of proposal.sourceClaims) {
+    const match = /^\/proposal\/content\/requests\/([^/]+)\/confirmationReference(\/.*)?$/.exec(claim.path);
+    if (!match || !ambiguousRequestIds.has(match[1]!) || !/\b\d{6,10}-\d{1,2}\b/.test(claim.raw)) {
+      remappedConfirmationClaims.push(claim);
+      continue;
+    }
+    const currentClaimRefs = claim.sourceRefs.filter((ref) => currentRefs.has(ref));
+    if (!currentClaimRefs.length) {
+      remappedConfirmationClaims.push(claim);
+      continue;
+    }
+    const candidates = proposal.content.requests.filter((request) => originalIdByRequest.get(request) === match[1]);
+    if (!candidates.length) {
+      remappedConfirmationClaims.push(claim);
+      continue;
+    }
+    const claimPhysicalRefs = new Set(currentClaimRefs.flatMap((ref) => {
+      const identity = input.attachmentIdentityByRef.get(ref);
+      return identity ? [identity] : [];
+    }));
+    const sourceLinked = candidates.filter((request) => {
+      const extracted = linkedByRequest.get(request);
+      const refs = new Set([...request.sourceRefs, ...(extracted ? extractionRefsForRequest(extracted) : [])]);
+      return currentClaimRefs.some((ref) => refs.has(ref)) || [...refs].some((ref) => {
+        const identity = input.attachmentIdentityByRef.get(ref);
+        return identity !== undefined && claimPhysicalRefs.has(identity);
+      });
+    });
+    const owners = sourceLinked.length ? sourceLinked : candidates;
+    for (const request of owners) remappedConfirmationClaims.push({ ...claim,
+      path: `/proposal/content/requests/${request.id}/confirmationReference${match[2] ?? ''}` });
+  }
+  proposal.sourceClaims = remappedConfirmationClaims;
   const prunedOwnerIds = new Set(prunedRequests.map((request) => request.id)
     .filter((id) => !ambiguousRequestIds.has(id)));
   for (const service of proposal.content.services) {
@@ -2195,16 +2329,22 @@ function projectCurrentExtraction(input: {
       const source = evidenceByRef.get(sourceRef);
       if (!source || source.relation !== 'attachment' || !currentRefs.has(sourceRef)) return null;
       const physicalIdentity = input.attachmentIdentityByRef.get(sourceRef) ?? sourceRef;
+      const typedKinds = extracted.documentHints.filter((hint) => hint.documentRef === sourceRef && currentRefs.has(hint.documentRef) &&
+        hint.sourceRefs.length > 0 && hint.sourceRefs.every((ref) => currentRefs.has(ref) &&
+          input.attachmentIdentityByRef.get(ref) === physicalIdentity)).map((hint) => hint.kind);
+      const uniqueTypedKinds = new Set(typedKinds);
+      const documentKind = uniqueTypedKinds.size === 1 ? typedKinds[0] : undefined;
       let document = proposal.content.documents.find((row) => row.ownerRequestId === request.id &&
         (input.attachmentIdentityByRef.get(row.documentSourceRef) ?? row.documentSourceRef) === physicalIdentity);
       if (document) {
         document.sourceRefs = [...new Set([...document.sourceRefs, sourceRef])].slice(0, 100);
+        if (documentKind) document.kind = documentKind;
         if (request.kind === 'filing') document.handling = 'filing_requested';
         return document.id;
       }
       if (proposal.content.documents.length >= 200) return null;
       const id = stableId(input.source.messageId, 'document', sourceRef);
-      document = { id, ownerRequestId: request.id, documentSourceRef: sourceRef, kind: 'unclassified',
+      document = { id, ownerRequestId: request.id, documentSourceRef: sourceRef, kind: documentKind ?? 'unclassified',
         handling: request.kind === 'filing' ? 'filing_requested' : 'context', targetRefs: [], requestedName: null,
         requestedDescription: null, uploadArtifactRef: null, sourceRefs: [sourceRef] };
       proposal.content.documents.push(document);
@@ -2218,6 +2358,8 @@ function projectCurrentExtraction(input: {
       if (documentId && !request.documentRefs.includes(documentId) && request.documentRefs.length < 100)
         request.documentRefs.push(documentId);
     }
+    if (request.kind === 'filing') projectSingleSourceFilingHint({ proposal, request, extracted,
+      extraction: currentExtraction, currentRefs, evidence: input.evidence });
 
     const projectedDates = extracted.dates;
     if (request.kind === 'quote') {
@@ -2571,6 +2713,26 @@ function addRequestConfirmationSafety(input: {
   evidence: ReservationWorkflowV2Evidence[];
 }): { proposal: ReservationWorkflowV2Proposal } {
   const proposal = structuredClone(input.proposal);
+  const modelNativeConfirmationHints = new Map<string, ExactConfirmationHint[]>();
+  // Synthesis sometimes promotes a supplier/travel-agent reference into the
+  // canonical HMS confirmation path. Keep that verbatim source text available
+  // for staff, but reserve the canonical path for claims that cite a supported
+  // native confirmation. Host-validated hints below restore the lookup guard.
+  proposal.sourceClaims = proposal.sourceClaims.map((claim, claimIndex) => {
+    const match = /^\/proposal\/content\/requests\/([^/]+)\/confirmationReference(?:\/.*)?$/.exec(claim.path);
+    if (!match) return claim;
+    const nativeCreate = proposal.content.requests.some((request) => request.id === match[1] && request.kind === 'create');
+    const currentRefs = claim.sourceRefs.filter((ref) => input.currentRefs.has(ref));
+    const native = claim.raw.match(/\b\d{6,10}-\d{1,2}\b/g) ?? [];
+    if (nativeCreate && native.length && currentRefs.length) {
+      const hints = modelNativeConfirmationHints.get(match[1]!) ?? [];
+      native.forEach((value, index) => hints.push({ value, sourceRefs: currentRefs, index: claimIndex + index }));
+      modelNativeConfirmationHints.set(match[1]!, hints);
+      return claim;
+    }
+    return { ...claim, path: `/requests/${match[1]}/confirmationHints/model_${claimIndex}` };
+  });
+  proposal.issues = proposal.issues.filter((issue) => !issue.kind.startsWith('existing_confirmation_'));
   for (const [requestIndex, request] of proposal.content.requests.entries()) {
     if (request.kind !== 'create' && request.kind !== 'amend' && request.kind !== 'cancel') continue;
     const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction,
@@ -2580,11 +2742,31 @@ function addRequestConfirmationSafety(input: {
       const hints = exactConfirmationHints(extracted, allowedRefs);
       if (request.kind === 'create') {
         const ask = currentClaim(extracted.requestText, input.currentRefs)?.raw ?? '';
-        const allHints = [...hints, ...currentCanonicalEvidenceHints(extracted, input.currentRefs, input.evidence)
-          .filter((hint) => !hints.some((existing) => existing.value === hint.value &&
-            existing.sourceRefs.some((ref) => hint.sourceRefs.includes(ref))))];
-        const relevantHints = explicitAdditionalNewRoom(extracted, input.currentRefs)
-          ? allHints.filter((hint) => ask.includes(hint.value)) : allHints;
+        const evidenceHints = currentCanonicalEvidenceHints(extracted, input.currentRefs, input.evidence);
+        const canonicalHints = (modelNativeConfirmationHints.get(request.id) ?? []).filter((hint) =>
+          !hints.some((existing) => existing.value === hint.value &&
+            existing.sourceRefs.some((ref) => hint.sourceRefs.includes(ref))) &&
+          !evidenceHints.some((existing) => existing.value === hint.value &&
+            existing.sourceRefs.some((ref) => hint.sourceRefs.includes(ref))));
+        const allHints = [...hints, ...evidenceHints.filter((hint) => !hints.some((existing) => existing.value === hint.value &&
+          existing.sourceRefs.some((ref) => hint.sourceRefs.includes(ref)))), ...canonicalHints];
+        const additionalNewRoom = explicitAdditionalNewRoom(extracted, input.currentRefs);
+        const relevantHints = additionalNewRoom ? allHints.filter((hint) => ask.includes(hint.value)) : allHints;
+        if (additionalNewRoom) {
+          // The additional-room exception is about a *different* booking. A
+          // model claim excluded from that request's lookup hints must not remain
+          // canonical, since runtime safety also inspects canonical claims.
+          const excludedValues = new Set((modelNativeConfirmationHints.get(request.id) ?? [])
+            .filter((hint) => !ask.includes(hint.value)).map((hint) => hint.value));
+          if (excludedValues.size) {
+            const canonicalPath = `/proposal/content/requests/${request.id}/confirmationReference`;
+            proposal.sourceClaims = proposal.sourceClaims.map((claim, claimIndex) => {
+              if (claim.path !== canonicalPath && !claim.path.startsWith(`${canonicalPath}/`)) return claim;
+              if (!(claim.raw.match(/\b\d{6,10}-\d{1,2}\b/g) ?? []).some((value) => excludedValues.has(value))) return claim;
+              return { ...claim, path: `/requests/${request.id}/confirmationHints/model_${claimIndex}` };
+            });
+          }
+        }
         addCreateExistingReferenceGuard({ proposal, requestIndex, hints: relevantHints });
         continue;
       }
@@ -2597,11 +2779,15 @@ function addRequestConfirmationSafety(input: {
     const citedHints = input.extraction.requests.filter((candidate) => candidate.kind === request.kind)
       .flatMap((candidate) => exactConfirmationHints(candidate, allowedRefs))
       .filter((hint) => hint.sourceRefs.some((ref) => request.sourceRefs.includes(ref)));
-    if (!citedHints.length) continue;
-    if (request.kind === 'create') addCreateExistingReferenceGuard({ proposal, requestIndex, hints: citedHints });
+    const modelHints = (modelNativeConfirmationHints.get(request.id) ?? [])
+      .filter((hint) => hint.sourceRefs.some((ref) => request.sourceRefs.includes(ref)));
+    const relevantHints = [...citedHints, ...modelHints.filter((hint) => !citedHints.some((existing) =>
+      existing.value === hint.value && existing.sourceRefs.some((ref) => hint.sourceRefs.includes(ref))))];
+    if (!relevantHints.length) continue;
+    if (request.kind === 'create') addCreateExistingReferenceGuard({ proposal, requestIndex, hints: relevantHints });
     proposal.issues.push({ path: `/requests/${request.id}/confirmationReference`, kind: 'confirmation_request_link_ambiguous',
       explanation: 'An exact source confirmation could not be linked to one extracted request. No native target was inferred; staff must resolve the correspondence before execution.',
-      evidenceRefs: [...new Set(citedHints.flatMap((hint) => hint.sourceRefs))].slice(0, 100) });
+      evidenceRefs: [...new Set(relevantHints.flatMap((hint) => hint.sourceRefs))].slice(0, 100) });
   }
   return { proposal };
 }
@@ -3233,6 +3419,35 @@ export async function runReservationWorkflowV2Prefill(input: {
     const reason = error.message;
     const fallbackProjection = projectCurrentExtraction({ proposal: buildFallbackProposal({ extraction, source: input.source, evidence, reason }),
       extraction, source: input.source, selection: input.selection, evidence, attachmentIdentityByRef, observations });
+    const fallbackProposal = fallbackProjection.proposal;
+    const safeClaims = referenceSafety?.proposal;
+    if (safeClaims && extractionProjection) {
+      const nativeConfirmation = /\b\d{6,10}-\d{1,2}\b/;
+      const canonicalPath = /^\/proposal\/content\/requests\/([^/]+)\/confirmationReference(?:\/.*)?$/;
+      for (const request of safeClaims.content.requests) {
+        if (request.kind !== 'create') continue;
+        const guardedPath = `/proposal/content/requests/${request.id}/confirmationReference`;
+        if (!safeClaims.issues.some((issue) => issue.path === guardedPath &&
+          (issue.kind === 'existing_confirmation_requires_lookup' || issue.kind === 'existing_confirmation_requires_review'))) continue;
+        const extractedId = extractionProjection.extractionIdByProposalRequestId.get(request.id);
+        if (!extractedId) continue;
+        const targets = fallbackProposal.content.requests.filter((candidate) => candidate.kind === 'create' &&
+          fallbackProjection.extractionIdByProposalRequestId.get(candidate.id) === extractedId);
+        if (!targets.length) continue;
+        for (const claim of safeClaims.sourceClaims) {
+          const match = canonicalPath.exec(claim.path);
+          if (match?.[1] !== request.id || !nativeConfirmation.test(claim.raw)) continue;
+          const sourceRefs = [...new Set(claim.sourceRefs.filter((ref) => currentRefs.has(ref)))];
+          if (!sourceRefs.length) continue;
+          for (const target of targets) {
+            const path = `/proposal/content/requests/${target.id}/confirmationReference`;
+            if (fallbackProposal.sourceClaims.some((existing) => existing.path === path && existing.raw === claim.raw &&
+              existing.sourceRefs.length === sourceRefs.length && sourceRefs.every((ref) => existing.sourceRefs.includes(ref)))) continue;
+            fallbackProposal.sourceClaims.push({ path, raw: claim.raw, sourceRefs });
+          }
+        }
+      }
+    }
     const fallbackSafety = addRequestConfirmationSafety({ proposal: fallbackProjection.proposal, extraction: currentActions,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
       currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence });
