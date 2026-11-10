@@ -1143,7 +1143,8 @@ export function reservationWorkflowV2SavedTargetOperationLocks(draft: Reservatio
   if (result.status !== 'failed') return false;
   return !result.observationRefs.length || !result.observationRefs.every(ref => {
     const observation = draft.observations.find(row => row.ref === ref);
-    return observation?.criteria.workflow === result.workflow && observation.criteria.stage === 'prepare';
+    return observation?.criteria.workflow === result.workflow && observation.criteria.requestId === result.requestId &&
+      observation.criteria.stage === 'prepare';
   });
 }
 

@@ -48,8 +48,7 @@ function definitelyDistinct(left: Record<string, unknown>, right: Record<string,
 }
 
 function lockedScope(editor: Editor) {
-  const draft = editor.snapshot.session.draft;
-  return draft.operationResults.some(result => result.requestId === editor.request.id && savedTargetOperationLocks(draft, result));
+  return savedTargetOperationLocks(editor.snapshot, editor.request.id);
 }
 
 async function correctAmendScope(editor: Editor, body: string,
