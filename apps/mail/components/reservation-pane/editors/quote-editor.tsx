@@ -361,7 +361,8 @@ export function QuoteEditor(editor: Editor) {
   const moneySeparated = rows.every((row, index) => text(valueAt(snapshot,
     `${bodyPath}/requestedMoney/${index}/staffAllowanceType`)) === 'unsupported' &&
     hasSavedSeparateOther(editor, request.id, text(row.id)));
-  const linkedAncillary = request.serviceRefs.length > 0 || request.documentRefs.length > 0;
+  const storedRequest = snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id);
+  const linkedAncillary = Boolean(storedRequest?.serviceRefs.length || storedRequest?.documentRefs.length);
   const splitDatesReady = (!rows.length || moneySeparated) && !linkedAncillary;
   const outputOptions = [
     { kind: 'email_quote', label: 'Cover email' },
