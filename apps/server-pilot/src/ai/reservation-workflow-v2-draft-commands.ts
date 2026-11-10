@@ -61,7 +61,11 @@ function rebase(draft: ReservationWorkflowV2Draft, before: ReservationWorkflowV2
     return result;
   };
   const paths = <T extends { path: string }>(rows: T[]) => rows.flatMap((row) => {
-    const path = rebaseReservationV2Path(row.path, pathBefore, pathAfter); return path ? [{ ...row, path }] : [];
+    const path = rebaseReservationV2Path(row.path, pathBefore, pathAfter);
+    const newRequest = /^\/proposal\/content\/requests\/([^/]+)/.exec(row.path)?.[1];
+    const introduced = newRequest && !pathBefore.content.requests.some(request => request.id === decodeURIComponent(newRequest)) &&
+      pathAfter.content.requests.some(request => request.id === decodeURIComponent(newRequest));
+    return path ? [{ ...row, path }] : introduced ? [row] : [];
   });
   const observations = rebaseReservationV2Observations(draft, pathBefore, pathAfter);
   return { ...draft, proposal: { ...after, annotations: paths(after.annotations), issues: paths(after.issues),
@@ -214,6 +218,68 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           children.forEach((child) => removeLinked('allocation', child));
           changedRoots.push(`${root}/body/dateSections`, `${root}/body/allocations`); break;
         }
+        case 'split_quote_dates': {
+          if (request.kind !== 'quote' || request.serviceRefs.length || request.documentRefs.length ||
+              draft.operationResults.some(row => row.requestId === request.id && ['succeeded', 'unknown'].includes(row.status))) return null;
+          if (request.body.requestedMoney.some((claim, index) => valueAt(draft, `${root}/body/requestedMoney/${index}/staffAllowanceType`) !== 'unsupported' || !proposal.content.requests.some(row => row.kind === 'other' &&
+              row.body.separatedFrom?.requestId === request.id && row.body.separatedFrom.moneyId === claim.id))) return null;
+          const groups = request.body.groups.map((row, index) => effectiveTree(draft, `${root}/body/groups/${index}`, row) as typeof row);
+          const buckets = new Map<string, typeof groups>();
+          for (const row of groups) {
+            if (!row.arrival || !row.departure) return null;
+            const key = `${row.arrival}:${row.departure}`;
+            buckets.set(key, [...(buckets.get(key) ?? []), row]);
+          }
+          if (buckets.size < 2 || proposal.content.requests.length + buckets.size - 1 > 200) return null;
+          const effectiveBody = effectiveTree(draft, `${root}/body`, request.body) as typeof request.body;
+          const dateGroups = [...buckets.values()];
+          request.body = { ...effectiveBody, groups: dateGroups[0]! };
+          dateGroups.slice(1).forEach(rows => {
+            const requestId = id(); createdId ??= requestId;
+            proposal.content.requests.push({ ...structuredClone(request), id: requestId,
+              body: { ...structuredClone(effectiveBody), groups: rows, requestedMoney: [] } });
+            const nextRoot = ptr('proposal', 'content', 'requests', requestId);
+            const groupIds = new Set(rows.map(row => row.id));
+            const remap = (path: string): string | null => {
+              if (!path.startsWith(`${root}/`)) return null;
+              const match = /\/groups\/(\d+)(?:\/|$)/.exec(path);
+              if (!match) return path.replace(root, nextRoot);
+              const groupId = groups[Number(match[1])]?.id;
+              if (!groupId || !groupIds.has(groupId)) return null;
+              return path.replace(root, nextRoot).replace(`/groups/${match[1]}`, `/groups/${rows.findIndex(row => row.id === groupId)}`);
+            };
+            for (const key of ['annotations', 'sourceClaims', 'issues'] as const) {
+              const additional = before[key].flatMap(row => { const path = remap(row.path); return path ? [{ ...row, path }] : []; });
+              (proposal[key] as Array<{ path: string }>).push(...additional);
+            }
+          });
+          // The materialized bodies now own the staff values; old checks and reviews are invalidated.
+          changedRoots.push(`${root}/body/groups`);
+          for (const path of Object.keys(draft.fieldOverrides)) if (path.startsWith(`${root}/body/`) && !path.endsWith('/staffAllowanceType')) delete draft.fieldOverrides[path];
+          break;
+        }
+        case 'separate_quote_money': {
+          if (request.kind !== 'quote' || !input.entityId || !/^\d{1,3}$/.test(input.entityId)) return null;
+          const index = Number(input.entityId), claim = request.body.requestedMoney[index];
+          if (!claim) return null;
+          const base = `${root}/body/requestedMoney/${index}`;
+          const amount = valueAt(draft, `${base}/amount`), currency = valueAt(draft, `${base}/currency`),
+            unit = valueAt(draft, `${base}/unit`);
+          const existing = proposal.content.requests.find(row => row.kind === 'other' &&
+            row.body.separatedFrom?.requestId === request.id && row.body.separatedFrom.moneyId === claim.id);
+          if (!existing) {
+            if (proposal.content.requests.length >= 200) return null;
+            createdId = id();
+            proposal.content.requests.push({ id: createdId, kind: 'other', requestText: request.requestText,
+              sourceRefs: [...new Set([...request.sourceRefs, ...claim.sourceRefs])], serviceRefs: [], documentRefs: [],
+              body: { supported: false, separatedFrom: { requestId: request.id, moneyId: claim.id },
+                requestedText: `Handle separately from the room quote: ${[currency, amount, unit].filter(v => v != null && typeof v !== 'object').join(' ')}. ${request.requestText}`.slice(0, 2000) } });
+          } else createdId = existing.id;
+          const path = `${base}/staffAllowanceType`;
+          draft.fieldOverrides[path] = { state: 'set', value: 'unsupported', updatedAt: new Date().toISOString() };
+          draft.staffReviews[path] = { status: 'accepted', at: new Date().toISOString(), note: 'Staff retained this request as a separate task.' };
+          break;
+        }
         case 'add_quote_group': {
           if (request.kind !== 'quote' || request.body.groups.length >= 100) return null;
           const row = group();
@@ -324,6 +390,15 @@ function valueAt(draft: ReservationWorkflowV2Draft, path: string): unknown {
     else if (override && override.state !== 'inherit') current = null;
   }
   return current;
+}
+
+/** Materialize effective field values before moving rows between action tabs. */
+function effectiveTree(draft: ReservationWorkflowV2Draft, path: string, original: unknown): unknown {
+  const current = valueAt(draft, path);
+  const value = current === undefined ? original : current;
+  if (Array.isArray(value)) return value.map((row, index) => effectiveTree(draft, `${path}/${index}`, row));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, effectiveTree(draft, `${path}/${encodeURIComponent(key)}`, item)]));
 }
 
 // Older panes added rooms by overriding the allocation array. Move that exact

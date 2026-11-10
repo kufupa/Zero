@@ -7,7 +7,7 @@ import { NativePicker } from '../shared/native-pickers';
 import styles from './create-quote-editor.module.css';
 
 type Editor = WorkbenchEditorProps;
-type BookingField = { key: string; label: string; picker?: string; party?: boolean; type?: string; hint?: string };
+type BookingField = { key: string; label: string; picker?: string; party?: boolean; type?: string; hint?: string; maxLength?: number };
 const roomFields: BookingField[] = [
   { key: 'roomType', label: 'Room Type', picker: 'room_type' },
   { key: 'roomTypeForCharge', label: 'Room Type for Charge', picker: 'room_type_for_charge', hint: 'Blank uses the Infor default. Infor checks the price for the selected category.' },
@@ -17,7 +17,7 @@ const partyFields: BookingField[] = [
   { key: 'bookingAgency', label: 'Primary Booking Agency', party: true },
   { key: 'organization', label: 'Organization', party: true },
   { key: 'arAccount', label: 'A/R Account', party: true },
-  { key: 'billingReference', label: 'Billing Reference', hint: 'Applied when the reservation is saved.' },
+  { key: 'billingReference', label: 'Billing Reference', maxLength: 4000, hint: 'Applied when the reservation is saved.' },
 ];
 const stayFields: BookingField[] = [
   { key: 'reasonForStay', label: 'Reason for Stay', picker: 'reason_for_stay' },
@@ -26,12 +26,12 @@ const stayFields: BookingField[] = [
 ];
 const trackField: BookingField = { key: 'track', label: 'Track / Sub Segment', picker: 'track' };
 const otherFields: BookingField[] = [
-  { key: 'bookerName', label: 'Booker name' },
-  { key: 'bookerContact', label: 'Booker contact' },
-  { key: 'reservationNote', label: 'Reservation note', type: 'textarea' },
+  { key: 'bookerName', label: 'Booker name', maxLength: 50 },
+  { key: 'bookerContact', label: 'Booker contact', maxLength: 80 },
+  { key: 'reservationNote', label: 'Reservation note', maxLength: 2000, type: 'textarea' },
   { key: 'cmsSend', label: 'CMS Send Mail', type: 'checkbox' },
   { key: 'cmsMessageId', label: 'CMS Message Id', picker: 'cms_message' },
-  { key: 'cmsRecipient', label: 'CMS Booker Email', type: 'email' },
+  { key: 'cmsRecipient', label: 'CMS Booker Email', maxLength: 255, type: 'email' },
 ];
 const allFields = [...partyFields, ...stayFields, ...roomFields, trackField, ...otherFields];
 
@@ -50,7 +50,7 @@ function BookingControl({ field, path, editor, defaultValue, emptyState }: {
 }) {
   return field.picker || field.party
     ? <NativePicker label={field.label} path={path} editor={editor} kind={field.picker} allowNone={field.party || field.key === 'roomTypeForCharge'} hint={field.hint} compact />
-    : <Field label={field.label} path={path} editor={editor} type={field.type} hint={field.hint}
+    : <Field label={field.label} path={path} editor={editor} type={field.type} hint={field.hint} maxLength={field.maxLength}
       defaultValue={defaultValue} emptyState={emptyState} compact />;
 }
 
@@ -101,7 +101,7 @@ function ScopedField({ field, path, parentPaths, parentLabel, editor }: {
 }
 
 /** Save count and age slots together; unknown ages stay blank. */
-export function ChildAges({ editor, path }: { editor: Editor; path: string }) {
+export function ChildAges({ editor, path, max = 12 }: { editor: Editor; path: string; max?: number }) {
   const countId = useId();
   const countPath = `${path}/childCount`, agesPath = `${path}/childAges`;
   const countValue = valueAt(editor.snapshot, countPath);
@@ -146,7 +146,7 @@ export function ChildAges({ editor, path }: { editor: Editor; path: string }) {
   };
   const updateCount = (value: string) => {
     const numeric = value === '' ? null : Number(value);
-    const next = numeric != null && Number.isInteger(numeric) && numeric >= 0 && numeric <= 12 ? numeric : null;
+    const next = numeric != null && Number.isInteger(numeric) && numeric >= 0 && numeric <= max ? numeric : null;
     const resized = next == null ? null : Array.from({ length: next }, (_, index) => validAge(ageInput.current[index] ?? null));
     setCount(value); if (resized) ageInput.current = resized; setAges(resized ?? []);
     dirtyCount.current = true; countVersion.current += 1; editor.commands.setUncommitted(countPath, true);
@@ -154,7 +154,7 @@ export function ChildAges({ editor, path }: { editor: Editor; path: string }) {
   };
   const step = (amount: number) => {
     const current = count === '' ? 0 : Number(count);
-    updateCount(String(Math.max(0, Math.min(12, current + amount))));
+    updateCount(String(Math.max(0, Math.min(max, current + amount))));
     void commit('count').catch(() => {});
   };
   return <>
@@ -162,11 +162,11 @@ export function ChildAges({ editor, path }: { editor: Editor; path: string }) {
       <div className={styles.countHeading}><label htmlFor={countId}>Children</label><FieldReview editor={editor} path={countPath} label="Children" onPendingChange={setReviewing} /></div>
       <div className={styles.countStepper}>
         <button type="button" aria-label="Decrease Children" disabled={reviewing || count === '' || Number(count) <= 0 || editor.view.busy} onMouseDown={event => event.preventDefault()} onClick={() => step(-1)}>−</button>
-        <input id={countId} type="number" min="0" max="12" value={count} disabled={reviewing} onChange={event => updateCount(event.target.value)} onBlur={() => void commit('count').catch(() => {})} />
-        <button type="button" aria-label="Increase Children" disabled={reviewing || Number(count) >= 12 || editor.view.busy} onMouseDown={event => event.preventDefault()} onClick={() => step(1)}>+</button>
+        <input id={countId} type="number" min="0" max={max} value={count} disabled={reviewing} onChange={event => updateCount(event.target.value)} onBlur={() => void commit('count').catch(() => {})} />
+        <button type="button" aria-label="Increase Children" disabled={reviewing || Number(count) >= max || editor.view.busy} onMouseDown={event => event.preventDefault()} onClick={() => step(1)}>+</button>
       </div>
     </div>
-    {Number.isInteger(Number(count)) && Number(count) > 0 && Number(count) <= 12 && <div className={styles.ageGrid}>
+    {Number.isInteger(Number(count)) && Number(count) > 0 && Number(count) <= max && <div className={styles.ageGrid}>
       {Array.from({ length: Number(count) }, (_, index) => <label className={styles.localField} key={index}>Child {index + 1} age
         <input type="number" min="0" max="17" value={ages[index] ?? ''} disabled={reviewing} onChange={(event) => {
           const next = [...ageInput.current]; next[index] = event.target.value === '' ? null : Number(event.target.value);
@@ -456,7 +456,8 @@ export function CreateEditor(editor: Editor) {
             </label>}
             <GuestProfile editor={editor} allocationPath={allocationPath} allocationId={allocationId} />
             <Price editor={editor} allocationId={allocationId} />
-            {guestOptIn === true && <p className={styles.notice}>Guest marketing opt-in needs Infor.</p>}
+            {guestOptIn === true && <p className={styles.notice}>Complete the requested marketing opt-in in Infor, then untick this control to continue this booking.</p>}
+            <Field label="Guest marketing opt-in" type="checkbox" path={`${overrides}/guestOptIn`} resolvedValue={guestOptIn ?? false} editor={editor} />
             <details open={Boolean(exceptions) || undefined} className={styles.details}>
               <summary>Room exceptions{exceptions ? ` · ${exceptions}` : ''}</summary>
               <div className={styles.stack}>
