@@ -1085,7 +1085,7 @@ function fallbackQuoteOccupancy(request: ReservationWorkflowV2Extraction['reques
   const row = request.occupancy[0]!;
   const adultsClaim = currentClaim(row.adults, currentRefs);
   const childCountClaim = currentClaim(row.childCount, currentRefs);
-  const ageClaims = row.childAges?.every((claim) => currentClaim(claim, currentRefs)) ? row.childAges : undefined;
+  const ageClaims = row.childAges?.filter((claim) => currentClaim(claim, currentRefs));
   const adults = citedInteger(adultsClaim);
   const childCount = citedInteger(childCountClaim);
   const childAges = ageClaims?.length ? ageClaims.map((claim) => citedInteger(claim) ?? null) : childCount === 0 ? [] : null;
@@ -1843,8 +1843,7 @@ function projectSourceCreateAllocations(input: {
   if (!occupancy) return { allocations: input.request.body.allocations };
   const adults = currentClaim(occupancy.adults, input.currentRefs);
   const childCount = currentClaim(occupancy.childCount, input.currentRefs);
-  const ageClaims = occupancy.childAges?.length && occupancy.childAges.every((claim) => currentClaim(claim, input.currentRefs))
-    ? occupancy.childAges : undefined;
+  const ageClaims = occupancy.childAges?.filter((claim) => currentClaim(claim, input.currentRefs));
   const hasCurrentOccupancy = Boolean(adults || childCount || ageClaims?.length);
   if (!hasCurrentOccupancy) return { allocations: input.request.body.allocations };
   input.request.body.allocations = input.request.body.allocations.map((allocation) => {
