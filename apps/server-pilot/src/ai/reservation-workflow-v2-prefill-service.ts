@@ -11,7 +11,8 @@ import { markAiRunDeadLetter, markAiRunRetry, markAiRunSucceeded, type AiRunFenc
 import { getReservationWorkflowV2Draft, initializeReservationWorkflowV2Draft } from './reservation-workflow-v2-state.js';
 import type { ReservationWorkflowV2ItemInput } from './reservation-workflow-v2-contract.js';
 import type { ReservationPrefillJobFence, ReservationWorkflowV2Context } from './reservation-workflow-v2-state.js';
-import { claimReservationWorkflowV2Prefill, finishReservationWorkflowV2Prefill } from './reservation-workflow-v2-state.js';
+import { checkpointReservationWorkflowV2Extraction, claimReservationWorkflowV2Prefill,
+  finishReservationWorkflowV2Prefill } from './reservation-workflow-v2-state.js';
 import { runReservationWorkflowV2Prefill } from './reservation-workflow-v2-prefill.js';
 import { createAzureExtractionAdapter } from './extraction/extract.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
@@ -58,6 +59,7 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
   mailboxAddress: string | null | undefined, allowRetry: boolean, jobFence?: ReservationPrefillJobFence, signal?: AbortSignal, parentSignal?: AbortSignal) {
   const claimed = await claimReservationWorkflowV2Prefill(scoped, { ...input, allowRetry, jobFence });
   if (!claimed.claim) return claimed.result;
+  let activeClaim = claimed.claim;
   try {
     const selection = await loadSyncedQuoteSelectionFromMailbox({ db: scoped.db, transportId: scoped.transportId,
       messageId: input.source.messageId, includeThreadState: true, sourceCutoffOnly: true,
@@ -66,7 +68,14 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
     const modelEnv = { ...process.env, EXTRACTION_REASONING_EFFORT: process.env.EXTRACTION_REASONING_EFFORT?.trim() || 'high' };
     const generated = await runReservationWorkflowV2Prefill({ db: scoped.db, transportId: scoped.transportId,
       propertyCode: scoped.propertyCode, source: input.source, selection, mailboxAddress, env: modelEnv,
-      signal, adapter: observedPrefillAdapter(createAzureExtractionAdapter(modelEnv), input.source.messageId, modelEnv.EXTRACTION_REASONING_EFFORT) });
+      signal, adapter: observedPrefillAdapter(createAzureExtractionAdapter(modelEnv), input.source.messageId, modelEnv.EXTRACTION_REASONING_EFFORT),
+      onValidatedExtraction: async (generationId, extraction) => {
+        const checkpoint = await checkpointReservationWorkflowV2Extraction(scoped, { ...input, claim: activeClaim,
+          generationId, extraction, jobFence });
+        if (!checkpoint.claim) return false;
+        activeClaim = checkpoint.claim;
+        return true;
+      } });
     const { missing } = await reservationArrivalEvidence(scoped.db, input.source.messageId);
     if (missing.length) {
       generated.status = 'partial';
@@ -74,14 +83,15 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
         message: `Some attachments could not be copied: ${missing.map((entry) => entry.fileName || entry.role).join(', ')}`.slice(0, 1000) }];
     }
     const failed = !generated.sourceBound || (generated.skippedReason !== undefined && generated.skippedReason !== 'self_prestay') ||
-      (generated.errors ?? []).some((error) => error.stage === 'extract' || error.stage === 'synthesis');
-    return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: claimed.claim, failed, jobFence,
+      (generated.errors ?? []).some((error) => error.stage === 'extract');
+    return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: activeClaim, failed, jobFence,
       seed: generated.sourceBound && !generated.skippedReason ? { generationId: generated.generationId,
-        status: generated.status, proposal: generated.proposal, observations: generated.observations,
+        status: generated.status, ...(generated.extraction ? { extraction: generated.extraction } : {}),
+        proposal: generated.proposal, observations: generated.observations,
         fieldReviewRequirements: generated.fieldReviewRequirements, errors: generated.errors } : undefined });
   } catch (error) {
     if (signal?.aborted && (!jobFence || parentSignal?.aborted)) throw error;
-    return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: claimed.claim, failed: true, jobFence });
+    return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: activeClaim, failed: true, jobFence });
   }
 }
 
@@ -141,7 +151,10 @@ export async function executeReservationArrival(input: {
       failureClass: 'POLICY_BLOCK' }, db);
     return 'dead_letter';
   }
-  if (result.draft.prefill?.status === 'failed' && run.attempts < 1 && result.draft.prefill.attemptCount < 2) {
+  const transientExtractionFailure = result.draft.errors.some((error) => error.stage === 'extract' &&
+    ['model_timeout', 'model_error'].includes(error.code));
+  if (result.draft.prefill?.status === 'failed' && transientExtractionFailure &&
+      run.attempts < 1 && result.draft.prefill.attemptCount < 2) {
     const retry = await markAiRunRetry({ ...fence, expectedStates: ['running'], attempts: run.attempts + 1,
       nextRunAt: new Date(Date.now() + 5 * 60_000), lastError: 'reservation prefill incomplete',
       failureClass: 'BEDROCK_TRANSIENT', resetDeadline: true }, db);
@@ -149,7 +162,7 @@ export async function executeReservationArrival(input: {
   }
   if (result.draft.prefill?.status === 'failed') {
     await markAiRunDeadLetter({ ...fence, expectedStates: ['running'], lastError: 'reservation prefill attempts exhausted',
-      failureClass: 'BEDROCK_TRANSIENT' }, db);
+      failureClass: transientExtractionFailure ? 'BEDROCK_TRANSIENT' : 'POLICY_BLOCK' }, db);
     return 'dead_letter';
   }
   if (result.draft.prefill?.status === 'running' && result.draft.prefill.phase === 'native_checks' &&
