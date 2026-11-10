@@ -38,6 +38,7 @@ export function ReservationPane(props: ReservationPaneProps) {
   const [attention, setAttention] = useState<{ digest: string; message: string; fields: string[] } | null>(null);
   const paneRef = useRef<HTMLDivElement>(null);
   const submitting = useRef(false);
+  const activeTarget = useRef<string | null>(null);
   const { source, preview = false } = props;
   const { snapshot, request, commands, busy } = workbench;
   const createBlocked = source.selfPreStay && request?.kind === 'create';
@@ -67,6 +68,22 @@ export function ReservationPane(props: ReservationPaneProps) {
       path = `${requestPath(request.id)}/body/dateSections/${index}/arrival`;
     } else if (invalidDateRange && request.kind === 'quote') {
       path = path === 'stay' ? `${requestPath(request.id)}/body/groups/0/arrival` : `${path}/arrival`;
+    }
+    if (request.kind === 'amend' && (path === 'arrival' || path === 'departure')) {
+      const root = `${requestPath(request.id)}/body`;
+      const latest = workbench.latestSnapshot();
+      if (!latest) return;
+      const currentBody = record(effectiveAt(latest, root));
+      const per = Array.isArray(currentBody.perTarget) ? currentBody.perTarget.map(record) : [];
+      const index = per.findIndex(row => row.hintId === activeTarget.current);
+      const changeRows = (value: unknown, base: string) => Array.isArray(value)
+        ? value.map((row, i) => ({ change: record(row), path: `${base}/${i}` })) : [];
+      const changes = [...changeRows(currentBody.sharedChanges, `${root}/sharedChanges`),
+        ...changeRows(per[index]?.changes, `${root}/perTarget/${index}/changes`)].reverse();
+      const changed = changes.find(row => row.change.op === 'set' && row.change.field === path)
+        ?? changes.find(row => row.change.op === 'set' && ['arrival', 'departure'].includes(text(row.change.field)))
+        ?? changes.find(row => row.change.op === 'shift_dates' || row.change.op === 'shift_departure');
+      if (changed) path = `${changed.path}/${changed.change.op === 'set' ? 'value' : 'days'}`;
     }
     const candidates = Array.from(pane.querySelectorAll<HTMLElement>('[data-field-path]'));
     const target = candidates.find(node => node.dataset.fieldPath === path)
@@ -143,6 +160,7 @@ export function ReservationPane(props: ReservationPaneProps) {
           if (prior?.status === 'succeeded') continue;
           if (prior?.status === 'unknown') throw new Error('Check the previous save outcome before checking this stay again.');
           if (request.kind === 'create' && workbench.latestSnapshot()?.preparationViews.some(view => view.requestId === request.id && view.allocationId === id && view.current)) continue;
+          activeTarget.current = id;
           await commands.prepare(id);
         }
       } else await commands.prepare();
@@ -161,6 +179,7 @@ export function ReservationPane(props: ReservationPaneProps) {
           const result = [...(workbench.latestSnapshot()?.operationResults ?? [])].reverse().find(row => row.workflow === request.kind && row.requestId === request.id && row.allocationId === id && ['succeeded', 'unknown'].includes(String(row.status)));
           if (result?.status === 'succeeded') continue;
           if (result?.status === 'unknown') throw new Error('Check the previous save outcome before continuing.');
+          activeTarget.current = id;
           await commands.execute(id);
         }
       } else await commands.execute();
