@@ -349,7 +349,7 @@ export type ReservationWorkflowV2ReadResult = {
   result: Record<string, unknown>;
   coverage?: { complete: boolean; notes?: string[] };
 };
-export type ReservationWorkflowV2PrefillResult = ReservationWorkflowV2Seed & {
+export type ReservationWorkflowV2PrefillResult = Omit<ReservationWorkflowV2Seed, 'extraction'> & {
   generationId: string;
   extraction: ReservationWorkflowV2Extraction | null;
   skippedReason?: 'channel' | 'system' | 'self_prestay' | 'spam' | 'invalid_source';
@@ -892,7 +892,7 @@ function buildFallbackProposal(input: {
         requestedRooms: citedInteger(currentClaim(request.roomCount, currentRefs)) ?? null,
         requestedTotals: { adults: null, childCount: null, childAges: null }, defaults: {},
         unassignedGuestNames: request.guests.flatMap((guest) => guest.role === 'guest' && currentClaim(guest.name, currentRefs) &&
-          typeof guest.name.value === 'string' ? [guest.name.value] : []),
+          typeof guest.name?.value === 'string' ? [guest.name.value] : []),
       })), allocations: [],
     } };
     if (request.kind === 'amend' || request.kind === 'cancel') {
