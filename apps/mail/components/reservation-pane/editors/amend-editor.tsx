@@ -51,6 +51,29 @@ function lockedScope(editor: Editor) {
   return savedTargetOperationLocks(editor.snapshot, editor.request.id);
 }
 
+function lockedTarget(editor: Editor, hintId: string) {
+  if (!hintId) return true;
+  const draft = editor.snapshot.session.draft;
+  return draft.operationResults.some(result => {
+    if (result.requestId !== editor.request.id) return false;
+    const locked = result.status === 'succeeded' || result.status === 'unknown' || result.status === 'failed' &&
+      (!result.observationRefs.length || !result.observationRefs.every(ref => {
+        const observation = draft.observations.find(row => row.ref === ref);
+        return observation?.criteria.workflow === result.workflow && observation.criteria.requestId === result.requestId &&
+          observation.criteria.stage === 'prepare';
+      }));
+    if (!locked) return false;
+    if (result.workflow === 'amend') return !result.allocationId || result.allocationId === hintId;
+    if (result.workflow !== 'services') return true;
+    const refs = new Set(result.observationRefs);
+    const bound = draft.observations.find(row => refs.has(row.ref) && row.criteria.workflow === 'services' &&
+      row.criteria.requestId === editor.request.id && row.criteria.targetRef && typeof row.criteria.targetRef === 'object');
+    const target = record(bound?.criteria.targetRef);
+    return target.kind !== 'saved_target' || target.requestId !== editor.request.id ||
+      typeof target.hintId !== 'string' || target.hintId === hintId;
+  });
+}
+
 async function correctAmendScope(editor: Editor, body: string,
   include: Record<string, unknown>[], exclude: Record<string, unknown>[], hint: Record<string, unknown>,
   from: 'include' | 'exclude') {
@@ -106,8 +129,10 @@ export function TargetSearch({ editor, body, hint, index, workflow, locked = fal
       normalized(q.arrival) === query('bookedArrival') && normalized(q.departure) === query('bookedDeparture') &&
       Object.keys(record(result.currentStay)).length > 0;
   }) : undefined;
-  const currentStay = record(record(currentLookup?.result).currentStay);
-  const currentGuestName = text(currentStay.guestName) || [text(currentStay.firstName), text(currentStay.lastName)].filter(Boolean).join(' ');
+  const currentStayRecord = record(record(currentLookup?.result).currentStay);
+  const currentStay = Object.keys(currentStayRecord).length ? currentStayRecord : null;
+  const currentGuestName = currentStay ? text(currentStay.guestName) ||
+    [text(currentStay.firstName), text(currentStay.lastName)].filter(Boolean).join(' ') : '';
   const currentMismatchFields = currentStay ? [
     query('guestName') && !sameName(query('guestName'), currentGuestName) && !sameName(query('guestName'), currentStay.lastName) ? 'guestName' : null,
     query('bookedArrival') && query('bookedArrival') !== normalized(currentStay.arrival) ? 'bookedArrival' : null,
@@ -155,7 +180,7 @@ export function TargetSearch({ editor, body, hint, index, workflow, locked = fal
     </div>
     <span className={styles.hint}>{workflow === 'cancel' || workflow === 'services' || workflow === 'filing'
       ? 'Enter the exact Infor confirmation to find this stay.' : 'Search by confirmation, or guest and original arrival.'}</span>
-    {currentStay && <div className={styles.card}>
+    {workflow === 'cancel' && currentStay && <div className={styles.card}>
       <strong>Current Infor record · {text(currentStay.confirmation)}</strong>
       <span>{currentGuestName || 'Guest not returned'} · {text(currentStay.arrival) || 'arrival not returned'} → {text(currentStay.departure) || 'departure not returned'}</span>
       <span>Status: {text(currentStay.status) || 'not returned'}</span>
@@ -289,7 +314,7 @@ export function AmendEditor(editor: Editor) {
   return <div className={styles.stack}>
     <Section title="Find saved stays">
       <p className={styles.hint}>Select exact Infor stays. Unmentioned fields stay unchanged. Each stay is checked and saved separately.</p>
-      {scopeLocked && <div className={styles.warning}>This Amend has a recorded success, failure, or uncertain result. Reconcile it before changing target scope or identity.</div>}
+      {scopeLocked && <div className={styles.warning}>This Amend has a recorded success, failure, or uncertain result. Written or uncertain stays remain locked; untouched stays can still be corrected and checked. Reconcile before changing target scope.</div>}
       {scope.mode !== 'explicit' && targets.length > 0 && <div className={styles.row}>
         <div className={styles.warning}>This request covers a group. Switch to its listed stays and handle each exact stay separately.</div>
         <button type="button" disabled={editor.view.busy || scopeLocked} onClick={() => void editor.commands.edit(`${body}/targets/mode`, 'explicit')}>Use listed stays individually</button>
@@ -300,10 +325,10 @@ export function AmendEditor(editor: Editor) {
         return <div className={styles.card} key={text(hint.id) || i}>
         <strong>Excluded · unchanged</strong>
         <div className={styles.grid}>
-          <Field editor={editor} path={`${body}/targets/exclude/${i}/confirmation`} label="Confirmation or supplier reference" disabled={scopeLocked} />
-          <Field editor={editor} path={`${body}/targets/exclude/${i}/guestName`} label="Guest name" disabled={scopeLocked} />
-          <Field editor={editor} path={`${body}/targets/exclude/${i}/bookedArrival`} label="Original arrival" type="date" disabled={scopeLocked} />
-          <Field editor={editor} path={`${body}/targets/exclude/${i}/bookedDeparture`} label="Original departure" type="date" disabled={scopeLocked} />
+          <Field editor={editor} path={`${body}/targets/exclude/${i}/confirmation`} label="Confirmation or supplier reference" disabled={lockedTarget(editor, text(hint.id))} />
+          <Field editor={editor} path={`${body}/targets/exclude/${i}/guestName`} label="Guest name" disabled={lockedTarget(editor, text(hint.id))} />
+          <Field editor={editor} path={`${body}/targets/exclude/${i}/bookedArrival`} label="Original arrival" type="date" disabled={lockedTarget(editor, text(hint.id))} />
+          <Field editor={editor} path={`${body}/targets/exclude/${i}/bookedDeparture`} label="Original departure" type="date" disabled={lockedTarget(editor, text(hint.id))} />
         </div>
         <small className={styles.hint}>Correct missing or ambiguous identity facts above, then Find in Infor. This stay remains excluded until you explicitly include it.</small>
         <button type="button" disabled={editor.view.busy || scopeLocked || scope.mode !== 'explicit' || !safelyDistinct}
@@ -314,7 +339,7 @@ export function AmendEditor(editor: Editor) {
         </div>;
       })}
       {targets.map((hint, i) => <div className={styles.card} key={text(hint.id) || i}>
-        <strong>Stay {i + 1}</strong><TargetSearch editor={editor} body={body} hint={hint} index={i} workflow="amend" locked={scopeLocked} />
+        <strong>Stay {i + 1}</strong><TargetSearch editor={editor} body={body} hint={hint} index={i} workflow="amend" locked={lockedTarget(editor, text(hint.id))} />
         {targets.length > 1 && <button type="button" disabled={editor.view.busy || scopeLocked || scope.mode !== 'explicit'}
           onClick={() => void correctAmendScope(editor, body, targets, exclusions, hint, 'include').catch(() => {})}>
           Exclude this exact stay; preserve its change details

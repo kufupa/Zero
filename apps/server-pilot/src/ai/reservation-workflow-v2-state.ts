@@ -1167,18 +1167,19 @@ function safeSavedTargetEdit(draft: ReservationWorkflowV2Draft, path: string): b
   if (!parts || parts[2] !== 'requests' || parts[4] !== 'body' || parts[5] !== 'targets') return true;
   const request = draft.proposal.content.requests.find((row, index) => row.id === parts[3] || String(index) === parts[3]);
   if (!request) return false;
-  if (['mode', 'include', 'exclude'].includes(parts[6] ?? '') && draft.operationResults.some((row) =>
-      row.requestId === request.id && reservationWorkflowV2SavedTargetOperationLocks(draft, row))) return false;
-  // Amend has a per-hint semantic guard after the edit, including ancestor edits.
-  if (request.kind === 'amend' && parts[6] !== 'exclude' &&
-      draft.operationResults.some((row) => row.requestId === request.id && row.workflow === 'amend' &&
-        (row.status === 'succeeded' || row.status === 'unknown'))) return true;
   const collection = parts[6] === 'exclude' ? 'exclude' : 'include';
   const rows = effectiveSavedTargetRows(draft, request.id, collection);
   const key = ['include', 'exclude'].includes(parts[6] ?? '') && parts.length >= 9 ? parts[7] : undefined;
   const hint = key === undefined ? undefined : /^\d+$/.test(key) ? rows[Number(key)] : rows.find((row) =>
     row && typeof row === 'object' && (row as { id?: unknown }).id === key);
   const hintId = hint && typeof hint === 'object' ? (hint as { id?: unknown }).id : undefined;
+  // Amend corrections are guarded per exact stay. A completed write for A must
+  // not block a fresh identity or selection edit for untouched stay B.
+  if (request.kind === 'amend' && ['include', 'exclude'].includes(parts[6] ?? '') && parts.length >= 9) {
+    return typeof hintId === 'string' && !reservationWorkflowV2SavedTargetLocked(draft, request.id, hintId);
+  }
+  if (['mode', 'include', 'exclude'].includes(parts[6] ?? '') && draft.operationResults.some((row) =>
+      row.requestId === request.id && reservationWorkflowV2SavedTargetOperationLocks(draft, row))) return false;
   if (typeof hintId === 'string') return !reservationWorkflowV2SavedTargetLocked(draft, request.id, hintId);
   return !draft.operationResults.some((row) => row.requestId === request.id && (row.status === 'succeeded' || row.status === 'unknown'));
 }
@@ -1307,11 +1308,12 @@ function applySavedTargetScopeEdit(draft: ReservationWorkflowV2Draft, path: stri
     });
     return { ...observation, criteria };
   });
-  const rebasedObservations = rebaseReservationV2Observations({ ...draft, observations }, before, after);
+  // Observation paths were translated above by stable hint ID. Re-running the
+  // generic index rebase would apply array movement a second time.
   const next: ReservationWorkflowV2Draft = { ...draft, proposal: { ...after, annotations: remapRows(after.annotations),
     issues: remapRows(after.issues), sourceClaims: remapRows(after.sourceClaims) },
     fieldOverrides: remap(draft.fieldOverrides), staffReviews: remap(draft.staffReviews),
-    fieldReviewRequirements: remap(draft.fieldReviewRequirements), observations: rebasedObservations };
+    fieldReviewRequirements: remap(draft.fieldReviewRequirements), observations };
   return nativeStructureIsSafe({ reservationWorkflowV2: draft }, { reservationWorkflowV2: next }) ? next : null;
 }
 
