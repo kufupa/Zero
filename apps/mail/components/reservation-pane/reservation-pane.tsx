@@ -23,6 +23,8 @@ export type ReservationPaneProps = {
 const labels: Record<ReservationWorkflowKind, string> = { create: 'Create', quote: 'Quote', amend: 'Amend', cancel: 'Cancel', services: 'Add-Ons', filing: 'Filing', other: 'Other' };
 const editors = { create: CreateEditor, quote: QuoteEditor, amend: AmendEditor, cancel: CancelEditor, services: AddonsEditor, filing: FilingEditor };
 const actionKinds = Object.keys(editors) as Array<Exclude<ReservationWorkflowKind, 'other'>>;
+const createScopedFields = new Set(['roomType', 'roomTypeForCharge', 'ratePlan', 'guaranteeType', 'bookingAgency', 'organization', 'arAccount',
+  'sourceOfBusiness', 'reasonForStay', 'billingReference', 'track', 'guestOptIn', 'bookerName', 'bookerContact', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
 function issueText(explanation: string) {
   if (/^Candidate read v2_[a-z0-9]+ failed\.$/i.test(explanation)) return 'An Infor search during email prefill failed. Search again to verify the details.';
   if (/^Candidate read v2_[a-z0-9]+ .+; coverage is not complete\.$/i.test(explanation)) return 'An Infor search during email prefill was incomplete. Search again to verify the details.';
@@ -68,6 +70,27 @@ export function ReservationPane(props: ReservationPaneProps) {
       path = `${requestPath(request.id)}/body/dateSections/${index}/arrival`;
     } else if (invalidDateRange && request.kind === 'quote') {
       path = path === 'stay' ? `${requestPath(request.id)}/body/groups/0/arrival` : `${path}/arrival`;
+    }
+    if (request.kind === 'create' && createScopedFields.has(path)) {
+      const latest = workbench.latestSnapshot();
+      if (!latest) return;
+      const root = `${requestPath(request.id)}/body`;
+      const currentBody = record(effectiveAt(latest, root));
+      const failed = [...latest.preparationViews].reverse().find(view => view.requestId === request.id && view.fields?.includes(field)
+        && (!activeTarget.current || view.allocationId === activeTarget.current));
+      const allocations = Array.isArray(currentBody.allocations) ? currentBody.allocations.map(record) : [];
+      const index = allocations.findIndex(row => row.id === (failed?.allocationId ?? activeTarget.current));
+      const sections = Array.isArray(currentBody.dateSections) ? currentBody.dateSections.map(record) : [];
+      const sectionIndex = sections.findIndex(row => row.id === allocations[index]?.dateSectionId);
+      if (index >= 0 && sectionIndex >= 0) {
+        const choices = [`${root}/allocations/${index}/overrides/${path}`, `${root}/dateSections/${sectionIndex}/defaults/${path}`, `${root}/shared/${path}`];
+        path = choices.find((choice, i) => {
+          const state = latest.session.draft.fieldOverrides[choice]?.state;
+          if (i < choices.length - 1 && state === 'inherit') return false;
+          const value = effectiveAt(latest, choice);
+          return state === 'none' || state === 'clear' || state === 'unknown' || value !== undefined && value !== null;
+        }) ?? choices[0]!;
+      }
     }
     if (request.kind === 'amend' && (path === 'arrival' || path === 'departure')) {
       const root = `${requestPath(request.id)}/body`;

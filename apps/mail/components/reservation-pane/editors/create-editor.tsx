@@ -87,7 +87,7 @@ function ScopedField({ field, path, parentPaths, parentLabel, editor }: {
     ? resolveCreateCmsRecipientDefault(editor.snapshot, editor.request.id, editor.source.sender) || inheritedValueAtParent
     : inheritedValueAtParent;
   const label = text(inherited) || (typeof inherited === 'boolean' ? (inherited ? 'Yes' : 'No') : 'Not set');
-  return <div className={styles.scopeField}>
+  return <div className={styles.scopeField} data-field-path={own ? undefined : path}>
     {own ? <>
       <BookingControl field={field} path={path} editor={editor} emptyState={field.key === 'cmsRecipient' ? 'inherit' : undefined} />
       <button type="button" className={styles.linkButton} onClick={() => void editor.commands.edit(path, undefined, 'inherit')}>Use {parentLabel} ({label})</button>
