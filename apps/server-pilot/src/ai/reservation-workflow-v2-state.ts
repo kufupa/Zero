@@ -1250,6 +1250,13 @@ function rebaseSavedTargetScopePath(path: string, before: ReservationWorkflowV2P
   return rebaseReservationV2Path(`/${parts.map(encodeURIComponent).join('/')}`, before, after);
 }
 
+/** Excluded hints identify scope only; a native selection there cannot authorize a write. */
+function isExcludedSavedTargetSelectionPath(path: string): boolean {
+  const parts = pathParts(path);
+  return Boolean(parts && parts.length === 9 && parts[2] === 'requests' && parts[4] === 'body' &&
+    parts[5] === 'targets' && parts[6] === 'exclude' && parts[8] === 'suggestedRef');
+}
+
 /** Materialize exact scope moves and rebase child evidence by stable hint ID. */
 function applySavedTargetScopeEdit(draft: ReservationWorkflowV2Draft, path: string, override: V2Override): ReservationWorkflowV2Draft | null {
   const parts = pathParts(path);
@@ -1280,12 +1287,12 @@ function applySavedTargetScopeEdit(draft: ReservationWorkflowV2Draft, path: stri
     [parts[6]!]: structuredClone(override.value) } as typeof afterRequest.body.targets;
 
   const targetCollectionPaths = new Set([targetRoot, `${targetRoot}/include`, `${targetRoot}/exclude`]);
-  const remap = <T>(values: Record<string, T>) => {
+  const remap = <T>(values: Record<string, T>, dropExcludedSelections = false) => {
     const result: Record<string, T> = {};
     for (const [key, value] of Object.entries(values)) {
       if (targetCollectionPaths.has(key)) continue;
       const nextPath = rebaseSavedTargetScopePath(key, before, after);
-      if (nextPath) result[nextPath] = value;
+      if (nextPath && !(dropExcludedSelections && isExcludedSavedTargetSelectionPath(nextPath))) result[nextPath] = value;
     }
     return result;
   };
@@ -1312,7 +1319,7 @@ function applySavedTargetScopeEdit(draft: ReservationWorkflowV2Draft, path: stri
   // generic index rebase would apply array movement a second time.
   const next: ReservationWorkflowV2Draft = { ...draft, proposal: { ...after, annotations: remapRows(after.annotations),
     issues: remapRows(after.issues), sourceClaims: remapRows(after.sourceClaims) },
-    fieldOverrides: remap(draft.fieldOverrides), staffReviews: remap(draft.staffReviews),
+    fieldOverrides: remap(draft.fieldOverrides, true), staffReviews: remap(draft.staffReviews),
     fieldReviewRequirements: remap(draft.fieldReviewRequirements), observations };
   return nativeStructureIsSafe({ reservationWorkflowV2: draft }, { reservationWorkflowV2: next }) ? next : null;
 }
