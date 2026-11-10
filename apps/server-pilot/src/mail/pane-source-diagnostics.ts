@@ -9,7 +9,7 @@ const label = (value: string) => createHash('sha256').update(value).digest('hex'
 export function logPaneSourceResolution(input: {
   userId: string; sessionId?: string; transportId: string; selection: PaneSourceSelection;
   internetMessageId?: string; matches: number;
-  result: 'ready' | 'not_found' | 'ambiguous' | 'attention' | 'missing_arrival' | 'wrong_property';
+  result: 'ready' | 'not_found' | 'ambiguous' | 'attention' | 'missing_arrival' | 'wrong_property' | 'content_mismatch';
   matchedBy?: 'web' | 'native' | 'mailbox-copy';
 }) {
   const header = canonicalMessageId(input.internetMessageId);

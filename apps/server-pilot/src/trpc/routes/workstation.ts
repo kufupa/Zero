@@ -1,5 +1,5 @@
 import { outlookSyncRouter } from './outlook-sync.js';
-import { paneSourceSelectionCondition, paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
+import { paneSourceMatchesContentHash, paneSourceContentHashSchema, paneSourceSelectionCondition, paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
 import {
   approvedStaySpan,
   combinedStayCurrencyProblem,
@@ -878,7 +878,7 @@ export const workstationRouter = router({
       return readQuoteRunScreenshot({ outputDir, runId: input.runId, name: input.name });
     }),
   staffQuoteSource: mailboxProcedure
-    .input(z.object({ internetMessageId: z.string().min(1).max(1024), selection: paneSourceSelectionSchema.optional() }).strict())
+    .input(z.object({ internetMessageId: z.string().min(1).max(1024), selection: paneSourceSelectionSchema.optional(), contentHash: paneSourceContentHashSchema.optional() }).strict())
     .query(async ({ input, ctx }) => {
       const matches = await getDb()
         .select()
@@ -887,7 +887,7 @@ export const workstationRouter = router({
           and(
             eq(message.transportId, ctx.activeTransportId),
             eq(message.messageIdHeader, canonicalInternetMessageId(input.internetMessageId) ?? ''),
-            paneSourceSelectionCondition(input.selection, { userId: ctx.sessionUser.id, internetMessageId: input.internetMessageId }),
+            paneSourceSelectionCondition(input.selection, { userId: ctx.sessionUser.id, internetMessageId: input.internetMessageId, contentHash: input.contentHash }),
           ),
         )
         .limit(2);
@@ -895,6 +895,8 @@ export const workstationRouter = router({
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Selected message identity is ambiguous' });
       const [mail] = matches;
       if (!mail) return { status: 'message_not_synced' as const };
+      if (input.selection?.kind === 'outlook' && input.contentHash && !paneSourceMatchesContentHash(mail, input.contentHash))
+        return { status: 'message_not_synced' as const };
       return {
         status: 'ready' as const,
         messageId: mail.id,

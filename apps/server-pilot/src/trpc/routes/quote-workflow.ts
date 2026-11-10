@@ -4,7 +4,7 @@ import {
   isHmsConfirmation,
   type SyncedQuoteSelection,
 } from '../../ai/quote-workflow-synced-selection.js';
-import { paneSourceSelectionSchema, type PaneSourceSelection } from '../../mail/pane-source-selection.js';
+import { paneSourceContentHashSchema, paneSourceSelectionSchema, type PaneSourceSelection } from '../../mail/pane-source-selection.js';
 import {
   quoteWorkflowLlmEnabled,
   QUOTE_WORKFLOW_PROMPT_VERSION,
@@ -149,6 +149,7 @@ const paneCloudBatchInput = z.discriminatedUnion('kind', [
 export type LoadSyncedSelection = (input: {
   transportId: string;
   userId?: string;
+  contentHash?: string;
   internetMessageId?: string;
   selection?: PaneSourceSelection;
   entryId?: string;
@@ -259,6 +260,7 @@ function rateRefusal(requestId: string, status: 'blocked' | 'failed' | 'stale', 
  */
 export const analyseSelectionInput = z.object({
   internetMessageId: z.string().optional(),
+  contentHash: paneSourceContentHashSchema.optional(),
   storeId: z.string().optional(),
   entryId: z.string().optional(),
   folderEntryId: z.string().optional(),
@@ -550,6 +552,7 @@ export const quoteWorkflowRouter = router({
       const synced = await loader({
         transportId: ctx.activeTransportId,
         userId: ctx.sessionUser.id,
+        contentHash: input.contentHash,
         internetMessageId,
         ...(input.selection ? { selection: input.selection } : {}),
         entryId: input.entryId,
@@ -579,12 +582,15 @@ export const quoteWorkflowRouter = router({
       // The "Tell Nava" text is kept masked on the mail's work item (v5 B2). Best effort and not awaited: a slow database
       // never holds the answer, and a note that fails to save is logged, not thrown.
       const note = input.staffNote?.trim();
-      if (note && internetMessageId && (!input.selection || synced.messageId)) {
+      const messageId = synced.messageId;
+      const threadId = synced.threadId;
+      if (note && internetMessageId && (!input.selection || messageId)) {
         const transportId = ctx.activeTransportId;
         const userId = ctx.sessionUser.id;
         void (async () => {
           const workItemId = await workItemIdForMail(getDb(), { transportId, internetMessageId,
-            selection: input.selection, expectedMessageId: synced.messageId });
+            selection: messageId && threadId ? { kind: 'web', messageId, threadId } : input.selection,
+            expectedMessageId: messageId });
           if (workItemId) await recordStaffNote(getDb(), { workItemId, userId, note });
         })().catch((error: unknown) => {
           console.warn('staff_note_not_kept', error instanceof Error ? error.message : 'unknown');

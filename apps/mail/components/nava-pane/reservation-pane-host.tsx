@@ -19,6 +19,7 @@ import {
   reloadAtEmailSwitch, reloadPane, type PaneVersion,
 } from '@/lib/workstation/pane-release-watch';
 import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
+import { htmlToPlainText } from '../../../server-pilot/src/mail/inbound-reaction-parser';
 
 type Props = {
   bridge: PaneBridge;
@@ -37,6 +38,21 @@ async function sourceEvidenceRef(messageId: string, role: string, identity: stri
   const digest = await globalThis.crypto.subtle.digest('SHA-256', input);
   const hex = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
   return `src_${hex.slice(0, 12)}`;
+}
+
+async function selectedContentHash(email: { subject: string; senderEmail: string; bodyText: string; bodyHtml: string; transportHeaders?: string }) {
+  // Match canonical ingestion's whitespace normalization, keeping body text out of the request URL.
+  const body = ((email.bodyHtml && htmlToPlainText(email.bodyHtml)) || email.bodyText).replace(/\s+/g, ' ').trim();
+  // The bridge exposes Exchange DNs; native sync resolves SMTP. Transport From corroborates the same sender.
+  const headers = email.transportHeaders?.replace(/\r?\n[ \t]+/g, ' ').split(/\r?\n/) ?? [];
+  const senderHeader = (headers.find((line) => /^Sender:/i.test(line)) ?? headers.find((line) => /^From:/i.test(line)))
+    ?.replace(/^[^:]+:\s*/, '').trim() ?? '';
+  const senderValue = email.senderEmail.includes('@') ? email.senderEmail : senderHeader;
+  const sender = (/<([^<>]+)>/.exec(senderValue)?.[1] ?? senderValue).trim().toLowerCase();
+  if (!/^[^\s<>@]+@[^\s<>@]+$/.test(sender)) return undefined;
+  const value = JSON.stringify([email.subject.replace(/\s+/g, ' ').trim(), sender, body]);
+  const hash = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 /** Installed bridge/auth/sync remain shared; the old quote workflow is never mounted here. */
@@ -66,7 +82,8 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
   }, [email?.entryId, email?.storeId, email?.folderEntryId, preview, webSelectedThreadId]);
   const owner = session?.user?.id && connection?.id && selection
     ? JSON.stringify([session.user.id, session.session?.id, connection.id, selection,
-      email?.internetMessageId, email?.subject, email?.bodyText, email?.bodyHtml]) : null;
+      email?.internetMessageId, email?.subject, email?.senderEmail, email?.transportHeaders,
+      email?.bodyText, email?.bodyHtml]) : null;
   const epoch = useRef({ owner, value: 0 });
   if (epoch.current.owner !== owner) epoch.current = { owner, value: epoch.current.value + 1 };
   const currentOwner = useRef(owner);
@@ -77,6 +94,9 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [sourceRetryable, setSourceRetryable] = useState(false);
   const [sourceRetry, setSourceRetry] = useState(0);
+  const sourceLoad = useRef({ owner, retry: sourceRetry, startedAt: null as number | null });
+  if (sourceLoad.current.owner !== owner || sourceLoad.current.retry !== sourceRetry)
+    sourceLoad.current = { owner, retry: sourceRetry, startedAt: null };
   const client = useMemo(() => createTrpcReservationWorkflowClient(trpcClient), []);
   const [pendingBuild, setPendingBuild] = useState<PaneVersion | null>(null);
   const [loadedBuild] = useState(() => loadedPaneBuild());
@@ -179,27 +199,38 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
     setSourceRetryable(false);
     if (!owner || !selection || !email || !connection?.id || bridge.requiresRelogin ||
       (!preview && (bridge.updateRequired || bridge.authorizationUnavailable || bridge.selectionOutsideMailbox))) return;
+    const startedAt = sourceLoad.current.startedAt ?? Date.now();
+    sourceLoad.current.startedAt = startedAt;
     const selectedEpoch = epoch.current.value;
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempts = 0;
     const resolve = async () => {
       try {
+        const contentHash = preview ? undefined : await selectedContentHash(email);
+        if (!alive || currentOwner.current !== owner || epoch.current.value !== selectedEpoch) return;
         const result = await trpcClient.reservationWorkflowV2.resolveSource.query({ selection,
+          ...(contentHash ? { contentHash } : {}),
           ...(email.internetMessageId ? { internetMessageId: email.internetMessageId } : {}) });
         if (!alive || currentOwner.current !== owner || epoch.current.value !== selectedEpoch) return;
         if (result.status !== 'ok') {
+          const elapsedMs = Date.now() - startedAt;
           setSourceRetryable(result.status === 'source_unavailable');
-          setSourceError(result.status === 'wrong_property'
+          const message = result.status === 'wrong_property'
             ? result.message : result.reason === 'ambiguous'
               ? 'Nava found more than one matching email. Reopen the selected email after copying finishes.'
+              : result.reason === 'content_mismatch'
+                ? 'The selected email differs from Nava’s copy. Retry after Outlook finishes copying it.'
               : result.reason === 'attention'
                 ? 'This email copy needs checking before Nava can open it. Retry after copying finishes.'
-                : attempts >= 11
+                : elapsedMs >= 110_000
                   ? 'Nava could not open this email copy yet. Retry opening it, or reconnect Outlook if copying has stopped.'
-                  : attempts >= 3
+                  : elapsedMs >= 30_000
                   ? 'This email is taking longer to open. Nava will keep checking; you can retry now.'
-                  : 'Waiting for this email to become available in Nava.');
+                  : 'Waiting for this email to become available in Nava.';
+          setSourceError(result.status === 'source_unavailable' && elapsedMs >= 30_000 &&
+            ['ambiguous', 'attention', 'content_mismatch'].includes(result.reason)
+            ? `This email is taking longer to open. ${message}` : message);
           if (result.status === 'source_unavailable' && result.reason !== 'ambiguous' && ++attempts < 12)
             timer = setTimeout(() => void resolve(), 10_000);
           return;
