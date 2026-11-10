@@ -426,7 +426,7 @@ function okResult(result: unknown): RecordValue {
 }
 
 /** Translate compiler pointers into the business fields staff can correct. */
-function inputFieldLabel(value: string): string {
+export function inputFieldLabel(value: string): string {
   const key = value.split(':')[0]!.split('/').at(-1) ?? value;
   const labels: Record<string, string> = {
     scope: 'occupancy per room', known_child_count: 'number of children and their ages',
