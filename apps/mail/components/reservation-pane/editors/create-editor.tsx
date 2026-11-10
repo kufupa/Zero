@@ -158,7 +158,7 @@ export function ChildAges({ editor, path, max = 12 }: { editor: Editor; path: st
     void commit('count').catch(() => {});
   };
   return <>
-    <div className={styles.localField}>
+    <div className={styles.localField} data-field-path={countPath}>
       <div className={styles.countHeading}><label htmlFor={countId}>Children</label><FieldReview editor={editor} path={countPath} label="Children" onPendingChange={setReviewing} /></div>
       <div className={styles.countStepper}>
         <button type="button" aria-label="Decrease Children" disabled={reviewing || count === '' || Number(count) <= 0 || editor.view.busy} onMouseDown={event => event.preventDefault()} onClick={() => step(-1)}>−</button>
@@ -166,7 +166,7 @@ export function ChildAges({ editor, path, max = 12 }: { editor: Editor; path: st
         <button type="button" aria-label="Increase Children" disabled={reviewing || Number(count) >= max || editor.view.busy} onMouseDown={event => event.preventDefault()} onClick={() => step(1)}>+</button>
       </div>
     </div>
-    {Number.isInteger(Number(count)) && Number(count) > 0 && Number(count) <= max && <div className={styles.ageGrid}>
+    {Number.isInteger(Number(count)) && Number(count) > 0 && Number(count) <= max && <div className={styles.ageGrid} data-field-path={agesPath}>
       {Array.from({ length: Number(count) }, (_, index) => <label className={styles.localField} key={index}>Child {index + 1} age
         <input type="number" min="0" max="17" value={ages[index] ?? ''} disabled={reviewing} onChange={(event) => {
           const next = [...ageInput.current]; next[index] = event.target.value === '' ? null : Number(event.target.value);
@@ -312,7 +312,7 @@ function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor
   const identityPart = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
   const sameGuest = ['firstName', 'lastName', 'mobile', 'email'].every(field => identityPart(guest[field]) === identityPart(previousGuest[field]));
   const duplicate = latest?.status === 'failed' && text(latest.summary).includes('PROFILE_NAME_ALREADY_EXISTS') && sameGuest;
-  const succeeded = operations.filter(row => row.status === 'succeeded').at(-1);
+  const succeeded = [...operations].reverse().find(row => row.status === 'succeeded');
   const receipt = guestProfileReceipt(succeeded);
   const missingReceipt = Boolean(succeeded && !receipt);
   const selectedCreated = receipt && !unknown && receipt.observationRef === valueAt(editor.snapshot, `${guestPath}/nativeSelectionRef`);
@@ -377,7 +377,7 @@ export function CreateEditor(editor: Editor) {
       const requested = valueAt(snapshot, `${sectionPath}/requestedRooms`);
       return <section className={styles.group} key={sectionId || sectionIndex}>
         <div className={styles.groupHeading}><strong>{sections.length > 1 ? `Date range ${sectionIndex + 1}` : 'Stay dates'}</strong>
-          <button type="button" className={styles.linkButton} disabled={view.busy || allocations.length >= 8 || !sectionId}
+          <button type="button" className={styles.linkButton} aria-label={`Add room to date range ${sectionIndex + 1}`} disabled={view.busy || allocations.length >= 8 || !sectionId}
             onClick={() => void commands.changeRows({ kind: 'add_allocation', requestId: request.id, parentId: sectionId,
               entityId: `room_${crypto.randomUUID().replaceAll('-', '')}` })}>+ Room</button></div>
         <div className={styles.dateFields}>
@@ -400,7 +400,7 @@ export function CreateEditor(editor: Editor) {
             <ChildAges editor={editor} path={`${bodyPath}/allocations/${index}/occupancy`} />
           </div>
         </div>)}
-        {sections.length > 1 && <button type="button" className={styles.linkButton} disabled={view.busy || sectionHasCompleted || allocations.length - rooms.length < 1}
+        {sections.length > 1 && <button type="button" className={styles.linkButton} disabled={view.busy || sectionHasCompleted}
           onClick={() => void commands.changeRows({ kind: 'remove_date_section', requestId: request.id, entityId: sectionId,
             childIds: rooms.map(({ allocation }) => text(allocation.id)) })}>Remove dates and rooms</button>}
       </section>;

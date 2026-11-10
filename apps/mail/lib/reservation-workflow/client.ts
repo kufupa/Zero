@@ -43,7 +43,7 @@ export type ReservationWorkflowV2TrpcClient = {
     review: MutationProcedure<ItemInput & { fieldPath: string; decision: 'accepted' | 'flagged'; note?: string | null }>;
     undo: MutationProcedure<ItemInput>;
     redo: MutationProcedure<ItemInput>;
-    lookup: MutationProcedure<ItemInput & { requestId?: string }>;
+    lookup: MutationProcedure<ItemInput & { requestId?: string; nativeFieldPath?: string }>;
     guestProfileOptions: MutationProcedure<ItemInput & { requestId: string; allocationId: string; field: ReservationGuestProfileOptionField }>;
     prepareGuestProfile: MutationProcedure<ItemInput & { requestId: string; allocationId: string; confirmDuplicateName?: boolean }>;
     createGuestProfile: MutationProcedure<ItemInput & { requestId: string; allocationId: string; confirmDuplicateName?: boolean;
@@ -426,7 +426,7 @@ function okResult(result: unknown): RecordValue {
 }
 
 /** Translate compiler pointers into the business fields staff can correct. */
-function inputFieldLabel(value: string): string {
+export function inputFieldLabel(value: string): string {
   const key = value.split(':')[0]!.split('/').at(-1) ?? value;
   const labels: Record<string, string> = {
     scope: 'occupancy per room', known_child_count: 'number of children and their ages',
@@ -439,6 +439,7 @@ function inputFieldLabel(value: string): string {
     requestedTotals: 'requested occupancy totals', nativeSelectionRef: 'confirmed Infor selection',
     staffAllowanceType: 'extra charge handling', cmsRecipient: 'confirmation recipient',
     cmsMessageId: 'confirmation message', targets: 'exact stays',
+    artifacts: 'quote outputs', provisionalBookingRequested: 'quote-only choice',
   };
   const suffix = value.split(':').slice(1).join(':');
   if (labels[key]) return labels[key]!;
@@ -685,7 +686,8 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     undo(command) { return refreshAfter(api.undo, itemInput(command), command.source); },
     redo(command) { return refreshAfter(api.redo, itemInput(command), command.source); },
     async lookup(command) {
-      const input = { ...itemInput(command), ...(command.requestId ? { requestId: command.requestId } : {}) };
+      const input = { ...itemInput(command), ...(command.requestId ? { requestId: command.requestId } : {}),
+        ...(command.nativeFieldPath ? { nativeFieldPath: command.nativeFieldPath } : {}) };
       const raw = await api.lookup.mutate(input, mailboxOptions(command.source));
       await refreshAfterStale(input, command.source, raw);
       const result = okResult(raw);

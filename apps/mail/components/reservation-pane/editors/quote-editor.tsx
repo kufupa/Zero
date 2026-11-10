@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useId, useRef, useState } from 'react';
-import { effectiveAt, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { effectiveAt, nativeChoices, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { Count, Field, FieldReview, Section } from '../shared/stay-fields';
-import { NativePicker } from '../shared/native-pickers';
+import { NativePicker, usePickerPosition } from '../shared/native-pickers';
 import { ChildAges } from './create-editor';
 import styles from './create-quote-editor.module.css';
+import pickerStyles from '../reservation-pane.module.css';
 
 type Editor = WorkbenchEditorProps;
 const boards = [
@@ -32,7 +33,7 @@ function SharedDate({ editor, groups, bodyPath, field, label }: {
   const editKey = `${bodyPath}/groups/shared/${field}`;
   useEffect(() => { if (!dirty.current) setValue(date); }, [date]);
   useEffect(() => () => editor.commands.setUncommitted(editKey, false), [editKey]);
-  return <div className={styles.localField}>
+  return <div data-field-path={`${bodyPath}/groups/0/${field}`} className={styles.localField}>
     <div className={styles.countHeading}><label htmlFor={id}>{label}</label>
       {groups.length === 1 && <FieldReview editor={editor} path={`${bodyPath}/groups/0/${field}`} label={label} onPendingChange={setReviewing} />}</div>
     <input id={id} type="date" value={value} disabled={editor.view.busy || reviewing} onChange={(event) => {
@@ -159,32 +160,97 @@ function hasSavedSeparateOther(editor: Editor, requestId: string, moneyId: strin
 }
 
 function RoomCode({ editor, path, options }: { editor: Editor; path: string; options: Record<string, unknown>[] }) {
-  const id = useId();
+  const id = useId(), picker = useRef<HTMLDivElement>(null);
   const saved = valueAt(editor.snapshot, path);
   const initial = Array.isArray(saved) ? saved.map(text).join(', ') : '';
-  const [value, setValue] = useState(initial);
-  const [reviewing, setReviewing] = useState(false);
-  const dirty = useRef(false), version = useRef(0);
-  const parse = (input: string) => input.split(',').map((code) => code.trim().toUpperCase()).filter(Boolean);
+  const [value, setValue] = useState(initial), [open, setOpen] = useState(false);
+  const position = usePickerPosition(open, picker);
+  const [reviewing, setReviewing] = useState(false), [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null), [search, setSearch] = useState('');
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const dirty = useRef(false), version = useRef(0), loadingRef = useRef(false);
+  const parse = (input: string) => [...new Set(input.split(',').map(code => code.trim().toUpperCase()).filter(Boolean))];
   useEffect(() => { if (!dirty.current) setValue(initial); }, [initial]);
   useEffect(() => () => editor.commands.setUncommitted(path, false), [path]);
-  const listId = `rooms-${path.replace(/[^a-z0-9]/giu, '-')}`;
-  const codes = [...new Map(options.map((option): [string, string] => [text(option.roomCode), text(option.roomLabel)]).filter(([code]) => code)).entries()];
-  return <div className={`${styles.localField} ${styles.quoteLine}`}>
+  useEffect(() => {
+    if (!open) return;
+    const dismiss = (event: Event) => { if (!picker.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener('pointerdown', dismiss, true); document.addEventListener('focusin', dismiss, true);
+    return () => { document.removeEventListener('pointerdown', dismiss, true); document.removeEventListener('focusin', dismiss, true); };
+  }, [open]);
+  const codes = [...new Map([...nativeChoices(editor.snapshot, path, 'room_type').map(row => [row.value, row.label] as const),
+    ...options.map(option => [text(option.roomCode), text(option.roomLabel)] as const)].filter(([code]) => code)).entries()];
+  const load = async () => {
+    if (loadingRef.current) return;
+    loadingRef.current = true; setLoading(true); setError(null);
+    try { await commit(); if (editor.commands.lookupChoices) await editor.commands.lookupChoices(path); else await editor.commands.lookup(); }
+    catch (failure) { setError(failure instanceof Error ? failure.message : 'Infor room categories could not load.'); }
+    finally { loadingRef.current = false; setLoading(false); }
+  };
+  const openChoices = () => { setOpen(true); setSearch(''); setActiveIndex(-1); if (!codes.length && !error) void load(); };
+  const change = (next: string) => {
+    setValue(next); dirty.current = true; version.current += 1;
+    editor.commands.setUncommitted(path, true); editor.commands.stageEdit(path, parse(next));
+  };
+  const commit = async () => {
+    if (!dirty.current) return;
+    const before = version.current, next = parse(value);
+    await editor.commands.edit(path, next);
+    if (version.current === before) { dirty.current = false; setValue(next.join(', ')); editor.commands.setUncommitted(path, false); }
+  };
+  const choose = async (code: string) => {
+    const selected = parse(value), next = selected.includes(code) ? selected.filter(item => item !== code) : [...selected, code];
+    change(next.join(', ')); const before = version.current;
+    try { await editor.commands.edit(path, next); if (version.current === before) { dirty.current = false; editor.commands.setUncommitted(path, false); } }
+    catch { /* controller retains the failure and pending edit */ }
+  };
+  const shown = codes.filter(([code, label]) => `${code} ${label}`.toLowerCase().includes(search.toLowerCase()));
+  const activeId = open && activeIndex >= 0 && shown[activeIndex] ? `${id}-room-${activeIndex}` : undefined;
+  const keyboard = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Escape') { setOpen(false); setActiveIndex(-1); }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault(); if (!open) openChoices();
+      const count = open ? shown.length : codes.length;
+      setActiveIndex(index => !count ? -1 : event.key === 'ArrowDown' ? Math.min(index + 1, count - 1)
+        : index < 0 ? count - 1 : Math.max(0, index - 1));
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const row = open && shown[activeIndex];
+      if (row && !editor.view.busy && !reviewing) void choose(row[0]);
+      else if (!row) void commit().catch(() => {});
+    }
+  };
+  useEffect(() => {
+    if (!activeId) return;
+    const option = document.getElementById(activeId), menu = option?.closest('[role=listbox]');
+    if (!(menu instanceof HTMLElement) || !option) return;
+    const bounds = option.getBoundingClientRect(), viewport = menu.getBoundingClientRect();
+    if (bounds.bottom > viewport.bottom) menu.scrollTop += bounds.bottom - viewport.bottom;
+    else if (bounds.top < viewport.top) menu.scrollTop += bounds.top - viewport.top;
+  }, [activeId]);
+  return <div data-field-path={path} className={`${styles.localField} ${styles.quoteLine}`}>
     <label htmlFor={id}>Room categories</label>
-    <input id={id} value={value} list={listId} disabled={editor.view.busy || reviewing} placeholder="Any category, or codes separated by commas" onChange={(event) => {
-      const next = event.target.value; setValue(next); dirty.current = true; version.current += 1;
-      editor.commands.setUncommitted(path, true); editor.commands.stageEdit(path, parse(next));
-    }}
-      onBlur={() => {
-        if (!dirty.current) return;
-        const before = version.current, next = parse(value);
-        void editor.commands.edit(path, next).then(() => {
-          if (version.current === before) { dirty.current = false; setValue(next.join(', ')); editor.commands.setUncommitted(path, false); }
-        }).catch(() => {});
-      }} />
-    <datalist id={listId}>{codes.map(([code, label]) => <option key={code} value={code}>{label}</option>)}</datalist>
-    <span className={styles.quoteReview}><FieldReview editor={editor} path={path} label="Room categories" onPendingChange={setReviewing} /></span>
+    <div ref={picker} className={pickerStyles.picker}>
+      <div className={pickerStyles.pickerInput}><input id={id} value={value} role="combobox" aria-expanded={open} aria-controls={`${id}-rooms`} aria-activedescendant={activeId}
+        disabled={reviewing || editor.view.busy && !loading} placeholder="Any category, or codes separated by commas" onFocus={openChoices} onClick={openChoices}
+        onChange={event => { change(event.target.value); setActiveIndex(-1); }} onBlur={() => { void commit().catch(() => {}); }}
+        onKeyDown={keyboard} />
+        <button type="button" aria-label="Show room categories" disabled={reviewing || loading} onMouseDown={event => event.preventDefault()}
+          onClick={() => open ? setOpen(false) : openChoices()}>⌄</button></div>
+      {open && <div id={`${id}-rooms`} role="listbox" aria-multiselectable="true" className={pickerStyles.options} style={position}>
+        <input aria-label="Search room categories" aria-activedescendant={activeId} value={search} placeholder="Search code or meaning" onChange={event => { setSearch(event.target.value); setActiveIndex(-1); }} onKeyDown={keyboard} />
+        {loading && <small role="status">Loading room categories from Infor…</small>}
+        {error && <small role="alert">{error}</small>}
+        {shown.map(([code, label], index) =>
+          <button id={`${id}-room-${index}`} key={code} type="button" role="option" aria-selected={parse(value).includes(code)} style={activeIndex === index ? { background: '#f4f2ff' } : undefined} disabled={editor.view.busy || reviewing}
+            onMouseDown={event => event.preventDefault()} onClick={() => { void choose(code); }}><span aria-hidden="true">{parse(value).includes(code) ? '✓ ' : ''}</span><strong>{code}</strong>{label && label !== code ? ` — ${label}` : ''}</button>)}
+        {!codes.length && !loading && !error && <small>No Infor room categories returned.</small>}
+        <small>Choose one or more categories. Blank searches every category. Review & check verifies prices and availability.</small>
+        <button type="button" disabled={loading} onMouseDown={event => event.preventDefault()} onClick={() => { void load(); }}>{error ? 'Retry Infor' : 'Refresh Infor choices'}</button>
+      </div>}
+    </div>
+    <span className={styles.quoteReview}><FieldReview editor={editor} path={path} label="Room categories" onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} /></span>
   </div>;
 }
 
@@ -439,7 +505,7 @@ export function QuoteEditor(editor: Editor) {
       <Field label="Telephone" path={`${bodyPath}/client/telephone`} editor={editor} type="tel" compact />
       <Field label="Quote note" path={`${bodyPath}/notes`} editor={editor} type="textarea" compact />
       <p className={styles.note}>Choose outputs from the same current Infor-priced facts. Saving the cover email creates an unsent draft; quote files stay available to download.</p>
-      <fieldset className={styles.targetFields}><legend>Quote outputs</legend>
+      <fieldset data-field-path={artifactPath} className={styles.targetFields}><legend>Quote outputs</legend>
         {outputOptions.map((option) => <label key={option.kind}>
           <input type="checkbox" checked={artifacts.includes(option.kind)} disabled={view.busy}
             onChange={(event) => void commands.edit(artifactPath, event.target.checked
@@ -450,7 +516,7 @@ export function QuoteEditor(editor: Editor) {
       {!allOutputsSelected && <button type="button" className={styles.linkButton} disabled={view.busy}
         onClick={() => void commands.edit(artifactPath, outputOptions.map((option) => option.kind))}>Select full quote package</button>}
       <p className={styles.note}>A provisional booking needs a separate Create action.</p>
-      {provisional !== false && <div className={styles.notice}>This request has not been confirmed as quote-only.
+      {provisional !== false && <div data-field-path={`${bodyPath}/provisionalBookingRequested`} className={styles.notice}>This request has not been confirmed as quote-only.
         <button type="button" className={styles.linkButton} onClick={() => void commands.edit(`${bodyPath}/provisionalBookingRequested`, false)}>Continue with quote only</button>
       </div>}
     </Section>

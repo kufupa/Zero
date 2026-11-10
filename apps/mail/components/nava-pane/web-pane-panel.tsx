@@ -76,7 +76,7 @@ export function WebPanePanel({
     <div
       data-preview-status="ready"
       data-preview-thread={threadId}
-      className="h-full overflow-y-auto"
+      className="h-full min-h-0 overflow-hidden"
     >
       <ReservationPaneHost
         bridge={bridge}

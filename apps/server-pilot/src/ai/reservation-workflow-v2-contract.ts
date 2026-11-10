@@ -452,7 +452,7 @@ export const reservationWorkflowV2ReviewInputSchema = reservationWorkflowV2ItemI
 }).strict();
 export type ReservationWorkflowV2ReviewInput = z.infer<typeof reservationWorkflowV2ReviewInputSchema>;
 export const reservationWorkflowV2LookupInputSchema = reservationWorkflowV2ItemInputSchema.extend({
-  requestId: idSchema.optional(),
+  requestId: idSchema.optional(), nativeFieldPath: z.string().min(1).max(300).optional(),
 }).strict();
 export type ReservationWorkflowV2LookupInput = z.infer<typeof reservationWorkflowV2LookupInputSchema>;
 export const reservationWorkflowV2PrepareInputSchema = reservationWorkflowV2ItemInputSchema.extend({
