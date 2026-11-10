@@ -90,24 +90,34 @@ export type AdminDashboardV2WorkflowSummary = {
   rows: Array<{ kind: keyof typeof V2_WORKFLOW_LABELS; label: string; count: number }>;
 };
 
-/** Count each kind at most once per email; one email can contain several kinds. */
+/** Count each kind once per canonical executive email; one email can contain several kinds. */
 export function summarizeV2Workflows(input: {
   classificationAsOf: string;
-  messageIds: readonly string[];
+  messages: readonly Pick<AdminDashboardMessageRow,
+    'id' | 'transportId' | 'canonicalId' | 'sourceMessageId'>[];
   kindsByMessage: ReadonlyMap<string, readonly string[]>;
 }): AdminDashboardV2WorkflowSummary {
   const rows = Object.entries(V2_WORKFLOW_LABELS).map(([kind, label]) => ({
     kind: kind as keyof typeof V2_WORKFLOW_LABELS, label, count: 0,
   }));
   const byKind = new Map(rows.map((row) => [row.kind as string, row]));
-  const ids = [...new Set(input.messageIds)];
-  let unclassifiedEmails = 0;
-  for (const id of ids) {
-    const kinds = new Set((input.kindsByMessage.get(id) ?? []).filter((kind) => byKind.has(kind)));
-    if (!kinds.size) unclassifiedEmails++;
-    for (const kind of kinds) byKind.get(kind)!.count++;
+  const groups = new Map<string, Set<string>>();
+  for (const message of input.messages) {
+    const identity = executiveMessageIdentity(message);
+    const group = groups.get(identity) ?? new Set<string>();
+    if (input.kindsByMessage.has(message.id)) {
+      for (const kind of input.kindsByMessage.get(message.id) ?? []) {
+        if (byKind.has(kind)) group.add(kind);
+      }
+    }
+    groups.set(identity, group);
   }
-  return { classificationAsOf: input.classificationAsOf, totalEmails: ids.length, unclassifiedEmails, rows };
+  let unclassifiedEmails = 0;
+  for (const group of groups.values()) {
+    if (!group.size) unclassifiedEmails++;
+    for (const kind of group) byKind.get(kind)!.count++;
+  }
+  return { classificationAsOf: input.classificationAsOf, totalEmails: groups.size, unclassifiedEmails, rows };
 }
 
 export type AdminDashboardDomainRow = {
@@ -998,7 +1008,9 @@ function normalizeExecutiveIdentity(value: string): string {
   return normalized;
 }
 
-function executiveMessageIdentity(message: AdminDashboardMessageRow): string {
+function executiveMessageIdentity(
+  message: Pick<AdminDashboardMessageRow, 'id' | 'transportId' | 'canonicalId' | 'sourceMessageId'>,
+): string {
   const scope = normalizeExecutiveIdentity(message.transportId);
   const canonical = message.canonicalId ? normalizeExecutiveIdentity(message.canonicalId) : null;
   if (canonical) return `${scope}:canonical:${canonical}`;

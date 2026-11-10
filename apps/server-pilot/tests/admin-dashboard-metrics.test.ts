@@ -37,13 +37,28 @@ describe('aggregateAdminDashboardMetrics', () => {
     const cutoff = new Date('2026-08-08T00:00:00.000Z');
     const workflows = summarizeV2Workflows({
       classificationAsOf: cutoff.toISOString(),
-      messageIds: ['one', 'two', 'three', 'one'],
-      kindsByMessage: new Map([['one', ['create', 'filing', 'filing']], ['two', ['cancel']], ['three', ['not-a-kind']]]),
+      messages: [
+        { id: 'one', transportId: 'transport-a', canonicalId: '"<Mail@Example.com>"' },
+        { id: 'one-copy', transportId: 'transport-a', canonicalId: 'mail@example.com' },
+        { id: 'other-transport', transportId: 'transport-b', canonicalId: 'mail@example.com' },
+        { id: 'two', transportId: 'transport-a', sourceMessageId: '"<Source@Example.com>"' },
+        { id: 'two-copy', transportId: 'transport-a', sourceMessageId: 'source@example.com' },
+        { id: 'three', transportId: 'transport-a', canonicalId: 'unknown@example.com' },
+        { id: 'three-copy', transportId: 'transport-a', canonicalId: 'unknown@example.com' },
+        { id: 'empty-valid', transportId: 'transport-a' },
+      ],
+      kindsByMessage: new Map([
+        ['one', ['create', 'filing', 'filing']],
+        ['one-copy', ['cancel', 'filing']],
+        ['other-transport', ['amend']],
+        ['two', ['cancel']],
+        ['empty-valid', []],
+      ]),
     });
-    expect(workflows.totalEmails).toBe(3);
-    expect(workflows.unclassifiedEmails).toBe(1);
+    expect(workflows.totalEmails).toBe(5);
+    expect(workflows.unclassifiedEmails).toBe(2);
     expect(workflows.rows.filter((row) => row.count).map(({ kind, count }) => [kind, count]))
-      .toEqual([['create', 1], ['cancel', 1], ['filing', 1]]);
+      .toEqual([['create', 1], ['amend', 1], ['cancel', 2], ['filing', 1]]);
     const result = aggregateAdminDashboardMetrics({
       cohortId: 'centurion',
       observationCutoff: cutoff,
