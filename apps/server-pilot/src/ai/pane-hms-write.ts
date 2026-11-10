@@ -36,6 +36,7 @@ import {
   formDigest,
   hmsStateDigest,
   HmsApprovalError,
+  nativeFilingDocumentName,
   type HmsSelectedSource,
   type HmsPreSaveOutcome,
   recordHmsWriteEvidence,
@@ -230,11 +231,22 @@ const attachFormSchema = z.object({
   filingStateDigest: z.string().regex(PDF_SHA256).optional(),
 });
 
-const boundFilingFormSchema = attachFormSchema.extend({
+export const boundFilingFormSchema = attachFormSchema.extend({
   pdfSha256: z.string().regex(PDF_SHA256), sourceMessageId: z.string().min(1).max(512),
   sourceInternetMessageId: z.string().min(1).max(998), sourceSnapshotDigest: z.string().regex(PDF_SHA256),
   sourceThreadId: z.string().min(1).max(512), sourceHash: z.string().regex(PDF_SHA256),
   documentCode: z.string().regex(FILING_DOCUMENT_CODE), filingStateDigest: z.string().regex(PDF_SHA256),
+  sourceDocumentName: z.string().max(120).refine(isPdfDocumentName),
+}).superRefine((form, context) => {
+  let expected: string;
+  try { expected = nativeFilingDocumentName(form.sourceDocumentName, form.confirmation, form.pdfSha256); }
+  catch {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['documentName'], message: 'native filing name is invalid' });
+    return;
+  }
+  if (form.documentName !== expected) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['documentName'], message: 'native filing name does not match the source PDF' });
+  }
 });
 
 const cancelFormSchema = z.object({
@@ -364,18 +376,7 @@ function attachDocumentName(filename: string): string | null {
   return isPdfDocumentName(base) ? base : null;
 }
 
-/** Stable, non-overwriting HMS filename bound to the exact stay and PDF bytes. */
-export function nativeFilingDocumentName(sourceDocumentName: string, confirmation: string, pdfSha256: string): string {
-  if (!isPdfDocumentName(sourceDocumentName) || !CONFIRMATION.test(confirmation) || !PDF_SHA256.test(pdfSha256)) {
-    throw new Error('filing_native_document_name_input_invalid');
-  }
-  const sourceStem = sourceDocumentName.replace(/\.pdf$/i, '');
-  const safeStem = sourceStem.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/[-_]{2,}/g, '-').replace(/^[-_]+|[-_]+$/g, '') || 'voucher';
-  const suffix = `-${confirmation}-${pdfSha256.slice(0, 24)}.pdf`;
-  const stemLength = Math.min(40, 80 - suffix.length);
-  if (stemLength < 1) throw new Error('filing_native_document_name_too_long');
-  return `${safeStem.slice(0, stemLength).replace(/[-_]+$/g, '') || 'v'}${suffix}`;
-}
+export { nativeFilingDocumentName };
 
 export type BindAttachDocumentResult =
   | { status: 'bound'; form: AttachForm; formDigest?: string }
