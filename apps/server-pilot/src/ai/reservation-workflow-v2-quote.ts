@@ -1195,6 +1195,10 @@ export async function reservationWorkflowV2QuotePrepare(
   if (!request) return { status: 'not_found' };
   const compiled = compileQuote(loaded.draft, request, false);
   if (compiled.status !== 'ok') return { status: compiled.status, issue: compiled.issue, fields: compiled.fields };
+  if (!('system' in ctx) && !ctx.nativeBatch && compiled.strategyDefaulted) {
+    return { status: 'needs_input', issue: 'quote_inputs_incomplete',
+      fields: [`${quoteBodyPath(request.id)}/salesStrategy:supported_sales_strategy_required`] };
+  }
   const existing = matchingPreparedQuote(loaded.draft, compiled);
   if (existing) {
     // Preserve the native capture time/expiry while binding reused pricing to current inputs.
