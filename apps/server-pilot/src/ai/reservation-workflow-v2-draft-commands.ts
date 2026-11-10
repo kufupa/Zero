@@ -243,8 +243,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           const date = request.body.dateSections.find((entry) => entry.id === input.entityId);
           if (!date) return null;
           const children = request.body.allocations.filter((row) => row.dateSectionId === date.id).map((row) => row.id);
-          if (!input.childIds || children.length !== input.childIds.length || children.some((child) => !input.childIds!.includes(child)) ||
-              request.body.allocations.length - children.length < 1) return null;
+          if (!input.childIds || children.length !== input.childIds.length || children.some((child) => !input.childIds!.includes(child))) return null;
           request.body.dateSections = request.body.dateSections.filter((row) => row.id !== date.id);
           request.body.allocations = request.body.allocations.filter((row) => !children.includes(row.id));
           children.forEach((child) => removeLinked('allocation', child));
