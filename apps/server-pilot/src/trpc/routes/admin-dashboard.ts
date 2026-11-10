@@ -426,7 +426,7 @@ async function loadCurrentV2Workflows(
   const end = new Date(query.windowEnd).getTime();
   const incoming = messages.filter((row) => row.direction === 'inbound' && row.receivedAt &&
     row.receivedAt.getTime() >= start && row.receivedAt.getTime() < end);
-  const messageIds = incoming.map((row) => row.id);
+  const messageIds = [...new Set(incoming.map((row) => row.id))];
   const kindsByMessage = new Map<string, string[]>();
   if (messageIds.length && transportIds.length) {
     const drafts = await db.select({
@@ -446,7 +446,11 @@ async function loadCurrentV2Workflows(
       if (kinds) kindsByMessage.set(row.messageId, kinds);
     }
   }
-  return summarizeV2Workflows({ classificationAsOf: query.observationCutoff, messageIds, kindsByMessage });
+  return summarizeV2Workflows({
+    classificationAsOf: query.observationCutoff,
+    messages: incoming,
+    kindsByMessage,
+  });
 }
 
 export async function loadAdminDashboardMetrics(
