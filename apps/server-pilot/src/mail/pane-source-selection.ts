@@ -48,7 +48,11 @@ export function paneSourceSelectionCondition(selection?: PaneSourceSelection,
   // POP3/BCC admission and prefill can finish before native sync. Reading that
   // stored copy needs an approved store and an exact, unique mailbox Message-ID,
   // not a second upload. Callers reject multiple rows; subject/date are never keys.
-  return or(committed, and(eq(message.messageIdHeader, header), sql`exists (
+  return or(committed, and(eq(message.messageIdHeader, header), sql`not exists (
+    select 1 from ${message} as mailbox_copy
+    where mailbox_copy.transport_id = ${message.transportId}
+      and mailbox_copy.message_id_header = ${header} and mailbox_copy.id <> ${message.id}
+  )`, sql`exists (
     select 1 from ${outlookDeviceReadRoot}
     inner join ${outlookDevice} on ${outlookDevice.deviceId} = ${outlookDeviceReadRoot.deviceId}
     where ${outlookDeviceReadRoot.userId} = ${mailboxCopy.userId}
