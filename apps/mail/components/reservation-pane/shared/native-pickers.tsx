@@ -42,6 +42,8 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   // token is not necessarily its surname (for example, "van der Merwe").
   const saved = party ? text(valueAt(editor.snapshot, `${path}/name`)) : text(valueAt(editor.snapshot, inputPath));
   const choiceKind = kind ?? (party ? 'party_candidate' : undefined);
+  const catalogueField = ['create', 'quote'].includes(editor.request.kind) &&
+    ['room_type', 'room_type_for_charge', 'rate_plan', 'reason_for_stay', 'guarantee', 'cms_message', 'source_of_business'].includes(choiceKind ?? '');
   const observedChoices = nativeChoices(editor.snapshot, entity ? selectionPath : path, choiceKind);
   const choices = choiceKind === 'reason_for_stay' ? observedChoices
     .filter(row => /^(business|leisure(?: guest)?)$/i.test(row.label))
@@ -60,7 +62,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     loadingRef.current = true; setLoading(true); setLookupError(null);
     try {
       await saveSearch();
-      if (!entity && editor.commands.lookupChoices) await editor.commands.lookupChoices(path);
+      if (catalogueField && editor.commands.lookupChoices) await editor.commands.lookupChoices(path);
       else await editor.commands.lookup();
     } catch (error) { setLookupError(error instanceof Error ? error.message : 'Infor choices could not load. Try again.'); }
     finally { loadingRef.current = false; setLoading(false); }
