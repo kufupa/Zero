@@ -74,6 +74,7 @@ export type VoucherAttachBindInput = {
 type VoucherAttachBindReply =
   | { status: 'bound'; formDigest?: string; form?: {
       confirmation?: string; arrival?: string; lastName?: string; attachmentId?: string; documentName?: string;
+      sourceDocumentName?: string;
       pdfSha256?: string; sourceSnapshotDigest?: string; sourceMessageId?: string; sourceThreadId?: string; sourceHash?: string;
     } }
   | { status: 'refused'; reason: string; retryable?: boolean };
@@ -788,7 +789,7 @@ function VoucherFindCardBody({
         form.sourceSnapshotDigest === preview?.documentSource?.snapshotDigest &&
         form.confirmation === selectedMatch.confirmation && form.arrival === arrivalForMatch &&
         normalizedSurname(form.lastName ?? '') === normalizedSurname(selectedMatch.lastName) &&
-        form.attachmentId === file.id && form.documentName === file.filename &&
+        form.attachmentId === file.id && (form.sourceDocumentName ?? form.documentName) === file.filename &&
         form.sourceMessageId === reply.messageId && form.sourceThreadId === selectedSource.threadId &&
         form.sourceHash === selectedSource.sourceHash);
       // A refused snapshot may already have stored the form; do not pretend it was unbound.

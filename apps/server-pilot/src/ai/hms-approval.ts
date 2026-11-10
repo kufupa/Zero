@@ -186,6 +186,22 @@ function formOf(state: Record<string, unknown>): Record<string, unknown> {
   return form;
 }
 
+/** Stable HMS upload name for one original attachment, stay confirmation, and PDF digest. */
+export function nativeFilingDocumentName(sourceDocumentName: string, confirmation: string, pdfSha256: string): string {
+  if (typeof sourceDocumentName !== 'string' || sourceDocumentName.length === 0 || sourceDocumentName.length > 120 ||
+      /[\\/]/.test(sourceDocumentName) || !/\.pdf$/i.test(sourceDocumentName) ||
+      ![...sourceDocumentName].every((char) => char.charCodeAt(0) >= 0x20) ||
+      !/^\d+-\d+$/.test(confirmation) || !/^[a-f0-9]{64}$/.test(pdfSha256)) {
+    throw new Error('filing_native_document_name_input_invalid');
+  }
+  const sourceStem = sourceDocumentName.replace(/\.pdf$/i, '');
+  const safeStem = sourceStem.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/[-_]{2,}/g, '-').replace(/^[-_]+|[-_]+$/g, '') || 'voucher';
+  const suffix = `-${confirmation}-${pdfSha256.slice(0, 24)}.pdf`;
+  const stemLength = Math.min(40, 80 - suffix.length);
+  if (stemLength < 1) throw new Error('filing_native_document_name_too_long');
+  return `${safeStem.slice(0, stemLength).replace(/[-_]+$/g, '') || 'v'}${suffix}`;
+}
+
 /** Bind the selected POP3 PDF and stay; only server on-mode admits real guests. */
 function isBoundLabtestAttachment(state: Record<string, unknown>, sourceMessageId: string | null,
   env: NodeJS.Dict<string> = process.env): boolean {
@@ -193,6 +209,13 @@ function isBoundLabtestAttachment(state: Record<string, unknown>, sourceMessageI
   const date = new Date(`${arrival}T00:00:00Z`);
   const allowRealGuest = env.PANE_WRITE_ATTACH === 'on';
   const selected = typeof state.sourceInternetMessageId === 'string' ? canonicalMessageId(state.sourceInternetMessageId) : null;
+  let expectedDocumentName: string | null = null;
+  try {
+    if (typeof state.sourceDocumentName === 'string' && typeof state.confirmation === 'string' &&
+        typeof state.pdfSha256 === 'string') {
+      expectedDocumentName = nativeFilingDocumentName(state.sourceDocumentName, state.confirmation, state.pdfSha256);
+    }
+  } catch { /* Historical/unbound names are not admitted for a live Labtest write. */ }
   return state.action === 'attach_document' && !!sourceMessageId && state.sourceMessageId === sourceMessageId &&
     !!selected && selected === state.sourceInternetMessageId && typeof state.lastName === 'string' &&
     !!state.lastName.trim() && state.lastName.length <= 200 && !/[\p{Cc}]/u.test(state.lastName) &&
@@ -201,7 +224,7 @@ function isBoundLabtestAttachment(state: Record<string, unknown>, sourceMessageI
     date.toISOString().slice(0, 10) === arrival && (allowRealGuest || arrival >= '2027-01-01') &&
     typeof state.confirmation === 'string' && /^\d+-\d+$/.test(state.confirmation) &&
     typeof state.attachmentId === 'string' && state.attachmentId.length > 0 &&
-    typeof state.documentName === 'string' && /\.pdf$/i.test(state.documentName) &&
+    typeof state.documentName === 'string' && state.documentName === expectedDocumentName &&
     typeof state.pdfSha256 === 'string' && /^[a-f0-9]{64}$/.test(state.pdfSha256) &&
     typeof state.sourceSnapshotDigest === 'string' && /^[a-f0-9]{64}$/.test(state.sourceSnapshotDigest) &&
     typeof state.sourceThreadId === 'string' && state.sourceThreadId.length > 0 &&
