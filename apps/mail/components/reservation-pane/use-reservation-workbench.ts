@@ -461,7 +461,10 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
             && Number.isInteger(group.quantity) && Number(group.quantity) > 0 && occupancy.scope === 'per_room'
             && Number.isInteger(occupancy.adults) && Number(occupancy.adults) >= 1 && Number(occupancy.adults) <= 6
             && Number.isInteger(occupancy.childCount) && Number(occupancy.childCount) >= 0 && Number(occupancy.childCount) <= 6
-            && Array.isArray(ages) && ages.length === occupancy.childCount && ages.every(age => Number.isInteger(age) && Number(age) >= 0 && Number(age) <= 17);
+            && (Number(occupancy.childCount) === 0
+              ? ages === null || (Array.isArray(ages) && ages.length === 0)
+              : Array.isArray(ages) && ages.length === occupancy.childCount &&
+                ages.every(age => Number.isInteger(age) && Number(age) >= 0 && Number(age) <= 17));
         })) void commands.lookup().catch(() => {});
       } else {
         const allocations = Array.isArray(body.allocations) ? body.allocations.map(record) : [];

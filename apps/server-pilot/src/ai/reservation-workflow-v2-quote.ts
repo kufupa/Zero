@@ -411,6 +411,13 @@ function unavailableInventoryProof(
   const observation = currentQuoteAvailabilityObservation(draft, compiled.request.id, compiled.inputDigest);
   if (!observation || observation.status !== 'failed') return null;
   const result = record(observation.result), shortfall = record(result?.shortfall);
+  // Bind the shortage to the complete current request, not just its normalized
+  // quote digest. Undo can restore the same values/revision while old receipts
+  // still contain an earlier recipient, occupancy, party, or override set.
+  if (!result?.inputOverrides || typeof result.inputOverrides !== 'object' || Array.isArray(result.inputOverrides) ||
+      !Array.isArray(result.requestedGroups) ||
+      hash(result.inputOverrides) !== hash(quoteInputOverrides(draft, compiled.request.id)) ||
+      hash(result.requestedGroups) !== hash(compiled.input.groups)) return null;
   if (result?.failureCode !== 'native_quote_insufficient_inventory' || result.failureKind !== 'proven_shortage' ||
       result.sourceHash !== draft.source.sourceHash || result.inputDigest !== compiled.inputDigest ||
       result.availabilityTruncated !== false || !shortfall || shortfall.roomCode !== roomCode ||

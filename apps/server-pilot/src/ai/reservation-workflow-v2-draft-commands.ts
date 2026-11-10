@@ -232,12 +232,24 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           }
           if (buckets.size < 2 || proposal.content.requests.length + buckets.size - 1 > 200) return null;
           const effectiveBody = effectiveTree(draft, `${root}/body`, request.body) as typeof request.body;
+          // Native party selections are staff-only evidence, not proposal fields.
+          // Keep the original request's selection in its override; the split
+          // requests get a fresh lookup rather than reusing a request-bound ref.
+          for (const role of ['company', 'agency'] as const) {
+            const party = effectiveBody.parties[role] as (typeof effectiveBody.parties)[typeof role] & Record<string, unknown>;
+            if (party && typeof party === 'object') delete party.nativeSelectionRef;
+          }
           const dateGroups = [...buckets.values()];
           request.body = { ...effectiveBody, groups: dateGroups[0]! };
           dateGroups.slice(1).forEach(rows => {
             const requestId = id(); createdId ??= requestId;
+            const splitBody = structuredClone(effectiveBody);
+            for (const role of ['company', 'agency'] as const) {
+              const party = splitBody.parties[role];
+              if (party) { party.candidateRefs = []; party.suggestedRef = null; }
+            }
             proposal.content.requests.push({ ...structuredClone(request), id: requestId,
-              body: { ...structuredClone(effectiveBody), groups: rows, requestedMoney: [] } });
+              body: { ...splitBody, groups: rows, requestedMoney: [] } });
             const nextRoot = ptr('proposal', 'content', 'requests', requestId);
             const groupIds = new Set(rows.map(row => row.id));
             const remap = (path: string): string | null => {
@@ -255,7 +267,10 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           });
           // The materialized bodies now own the staff values; old checks and reviews are invalidated.
           changedRoots.push(`${root}/body/groups`);
-          for (const path of Object.keys(draft.fieldOverrides)) if (path.startsWith(`${root}/body/`) && !path.endsWith('/staffAllowanceType')) delete draft.fieldOverrides[path];
+          for (const path of Object.keys(draft.fieldOverrides)) if (path.startsWith(`${root}/body/`) &&
+              !path.endsWith('/staffAllowanceType') && !/^\/proposal\/content\/requests\/[^/]+\/body\/parties\/(?:company|agency)\/nativeSelectionRef$/.test(path)) {
+            delete draft.fieldOverrides[path];
+          }
           break;
         }
         case 'separate_quote_money': {
