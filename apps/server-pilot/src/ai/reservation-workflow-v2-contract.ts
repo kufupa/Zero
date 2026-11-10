@@ -78,6 +78,9 @@ const prefillRequestFactsSchema = z.object({
   requestText: extractedClaimSchema,
   dates: z.array(z.object({ arrival: extractedClaimSchema.optional(), departure: extractedClaimSchema.optional() }).strict()).max(100).default([]),
   roomCount: extractedClaimSchema.optional(),
+  requestedPrice: z.object({ nightlyRate: extractedClaimSchema.optional(), total: extractedClaimSchema.optional(),
+    currency: extractedClaimSchema.optional(), scope: z.enum(['per_room', 'whole_group', 'unknown']),
+    dateIndex: z.number().int().nonnegative().optional() }).strict().optional(),
   occupancy: z.array(z.object({ scope: z.enum(['per_room', 'whole_group', 'unknown']),
     adults: extractedClaimSchema.optional(), childCount: extractedClaimSchema.optional(),
     childAges: z.array(extractedClaimSchema).max(12).optional() }).strict()).max(100).default([]),
@@ -89,6 +92,9 @@ const prefillRequestFactsSchema = z.object({
   boardHints: z.array(extractedClaimSchema).max(100).default([]),
   serviceHints: z.array(extractedClaimSchema).max(200).default([]),
   documentRefs: z.array(refSchema).max(200).default([]),
+  documentHints: z.array(z.object({ documentRef: refSchema,
+    kind: z.enum(['voucher', 'payment_proof', 'other', 'unclassified']),
+    sourceRefs: z.array(refSchema).min(1).max(20) }).strict()).max(200).default([]),
 }).strict();
 
 /** Typed first pass. Host derives lookups from these cited facts; the model does not author arbitrary queries. */
@@ -222,7 +228,8 @@ const serviceFieldsSchema = z.object({
   comment: value(z.string().max(2000)).optional(),
 }).strict();
 const serviceBodySchema = z.object({ targets: savedScopeSchema }).strict();
-const filingBodySchema = z.object({ targets: z.union([savedScopeSchema, z.null()]) }).strict();
+const filingBodySchema = z.object({ targets: z.union([savedScopeSchema, z.null()]),
+  allocationTarget: z.object({ requestId: idSchema, allocationId: idSchema }).strict().optional() }).strict();
 const serviceRequestSchema = z.object({
   id: idSchema,
   ownerRequestId: idSchema.nullable(),
@@ -401,9 +408,34 @@ export const reservationWorkflowV2AddActionInputSchema = reservationWorkflowV2It
 export const reservationWorkflowV2ChangeRowsInputSchema = reservationWorkflowV2ItemInputSchema.extend({
   kind: z.enum(['add_allocation', 'remove_allocation', 'move_allocation', 'add_date_section', 'remove_date_section',
     'add_quote_group', 'remove_quote_group', 'add_target', 'remove_target', 'add_service', 'remove_service',
-    'add_document', 'remove_document', 'remove_action', 'separate_quote_money', 'split_quote_dates']),
+    'add_document', 'remove_document', 'remove_action', 'separate_quote_money', 'split_quote_dates',
+    'separate_filing_target', 'separate_cancel_target', 'link_created_addon_target']),
   requestId: idSchema, parentId: idSchema.optional(), entityId: idSchema.optional(), childIds: z.array(idSchema).max(200).optional(),
-}).strict();
+  targetHintId: idSchema.optional(), documentId: idSchema.optional(),
+  targetDisposition: z.enum(['included', 'excluded']).optional(), allocationId: idSchema.optional(), serviceId: idSchema.optional(),
+}).strict().superRefine((input, ctx) => {
+  const special = ['targetHintId', 'documentId', 'targetDisposition', 'allocationId', 'serviceId'] as const;
+  const present = (key: typeof special[number]) => input[key] !== undefined;
+  const invalidGeneric = input.parentId !== undefined || input.entityId !== undefined || input.childIds !== undefined;
+  if (input.kind === 'separate_filing_target') {
+    if (!present('targetHintId') || !present('documentId') || !present('targetDisposition') ||
+        present('allocationId') || present('serviceId') || invalidGeneric) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Filing split requires one exact document, target and disposition.' });
+    }
+  } else if (input.kind === 'separate_cancel_target') {
+    if (!input.entityId || present('targetHintId') || present('documentId') || present('targetDisposition') ||
+        present('allocationId') || present('serviceId') || input.parentId !== undefined || input.childIds !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Cancel split requires one exact included stay.' });
+    }
+  } else if (input.kind === 'link_created_addon_target') {
+    if (!present('allocationId') || !present('serviceId') || present('targetHintId') || present('documentId') ||
+        present('targetDisposition') || invalidGeneric) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Create Add-On link requires one exact allocation and service.' });
+    }
+  } else if (special.some(present)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Target-link fields are valid only for their matching command.' });
+  }
+});
 export const reservationWorkflowV2SelectNativeInputSchema = reservationWorkflowV2ItemInputSchema.extend({
   requestId: idSchema, fieldPath: z.string().min(1).max(300), observationRef: refSchema,
 }).strict();

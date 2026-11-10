@@ -51,7 +51,7 @@ export type ReservationWorkflowV2TrpcClient = {
     prepare: MutationProcedure<ItemInput & { requestId: string; allocationId?: string }>;
     execute: MutationProcedure<ItemInput & { requestId: string; allocationId?: string; go: true; idempotencyKey: string }>;
     reconcile: MutationProcedure<ItemInput & { operationId: string }>;
-    configureFiling: MutationProcedure<ItemInput & { requestId: string; attachmentId: string; confirmation: string;
+    configureFiling: MutationProcedure<ItemInput & { requestId: string; attachmentId: string; confirmation?: string; allocationTarget?: { requestId: string; allocationId: string };
       kind: 'voucher' | 'payment_proof' }>;
     lookupServices: MutationProcedure<ItemInput & ReservationServiceInput & { requestId: string; serviceId?: string }>;
     prepareServices: MutationProcedure<ItemInput & ReservationServiceInput & { requestId: string; serviceId?: string }>;
@@ -128,7 +128,12 @@ function decodeDraft(result: unknown): ReservationWorkflowV2Session {
       if (!isRecord(value) || !isString(value.requestId) || !isString(value.allocationId) || typeof value.current !== 'boolean') return [];
       const price = isRecord(value.price) ? value.price : undefined;
       return [{ requestId: value.requestId, allocationId: value.allocationId, current: value.current,
-        ...(isString(value.issue) ? { issue: value.issue } : {}), ...(price ? { price } : {}) }];
+        ...(isString(value.issue) ? { issue: value.issue } : {}),
+        fields: Array.isArray(value.fields) ? value.fields.filter(isString) : [],
+        details: Array.isArray(value.details) ? value.details.flatMap(item => isRecord(item) && isString(item.path) && isString(item.code) ? [{ path: item.path, code: item.code, ...(typeof item.expected === 'number' ? { expected: item.expected } : {}), ...(typeof item.actual === 'number' ? { actual: item.actual } : {}) }] : []) : [],
+        ...(price ? { price } : {}),
+        ...(isRecord(value.priceComparison) ? { priceComparison: value.priceComparison } : {}),
+        ...(isString(value.observedAt) ? { observedAt: value.observedAt } : {}) }];
     }) : [];
   return { draft: draft as unknown as ReservationWorkflowV2Draft, revision, revisionHead, seq, preparationViews,
     ...(result.sourceChanged === true ? { sourceChanged: true } : {}) };
@@ -451,11 +456,23 @@ function operationNotice(result: unknown, success: string[]): string | undefined
   const status = isString(result.status) ? result.status.replaceAll('_', ' ') : 'unknown outcome';
   const issue = nativeIssueText(result.issue);
   const fields = inputFieldLabels(result.fields);
-  return `${issue ? `Infor check: ${status} — ${issue}.` : `Infor check: ${status}.`}${fields ? ` Review: ${fields}.` : ''}`;
+  const totals = Array.isArray(result.details) ? result.details.flatMap(item => isRecord(item) && typeof item.expected === 'number' ? [`${inputFieldLabel(String(item.path))}: requested ${item.expected}${typeof item.actual === 'number' ? `, allocated ${item.actual}` : ', complete the room allocations'}`] : []).join('; ') : '';
+  return `${issue ? `Infor check: ${status} — ${issue}.` : `Infor check: ${status}.`}${fields ? ` Review: ${fields}.` : ''}${totals ? ` ${totals}.` : ''}`;
 }
 
 function nativeIssueText(issue: unknown): string | null {
   if (!isString(issue)) return null;
+  const dependencyMessages: Record<string, string> = {
+    create_dependency_waiting: 'Save the linked room in Create first; Filing will then find its exact confirmation',
+    create_dependency_dispatch_receipt_missing: 'The Create confirmation could not be verified. Check the Create result before filing',
+    create_dependency_save_proof_invalid: 'The saved Create result needs verification. Check its uncertain result before filing',
+    create_dependency_target_invalid: 'Select the intended Create room again',
+    create_dependency_failed: 'The linked room was not created. Resolve Create first',
+    create_dependency_uncertain: 'Check the uncertain Create result before filing; do not create it again',
+  };
+  if (dependencyMessages[issue]) return dependencyMessages[issue]!;
+  if (issue.startsWith('create_dependency_')) return 'The linked Create result needs verification. Check Create before filing';
+  if (issue === 'create_requested_totals_conflict') return 'The rooms or occupants do not match the requested totals. Review each room and the group totals';
   if (issue === 'native_quote_no_matching_rate') {
     return 'No offer matches the requested room, rate and meal plan. Review available alternatives';
   }
@@ -499,7 +516,7 @@ function filingLookupNotice(result: unknown): string | undefined {
   const issues = result.lookups.flatMap((value) => {
     if (!isRecord(value) || value.status === 'candidate' || value.status === 'ready') return [];
     const status = isString(value.status) ? value.status.replaceAll('_', ' ') : 'unknown outcome';
-    const issue = isString(value.issue) ? value.issue.replaceAll('_', ' ') : null;
+    const issue = nativeIssueText(value.issue);
     return [`Filing lookup: ${issue ?? status}.`];
   });
   return issues.length ? issues.join(' ') : undefined;
@@ -625,7 +642,17 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     },
     prefill(command) { return refreshAfter(api.prefill, itemInput(command), command.source); },
     addAction(command) { return refreshAfter(api.addAction, { ...itemInput(command), kind: command.kind }, command.source); },
-    changeRows(command) { const { source, snapshot, ...change } = command; return refreshAfter(api.changeRows, { ...itemInput({source, snapshot}), ...change }, source); },
+    async changeRows(command) {
+      const { source, snapshot, ...change } = command;
+      const input = { ...itemInput({ source, snapshot }), ...change };
+      const raw = await api.changeRows.mutate(input, mailboxOptions(source));
+      await refreshAfterStale(input, source, raw);
+      const result = okResult(raw);
+      const next = await load({ workItemId: input.workItemId, source: input.source,
+        expectedRevision: typeof result.revision === 'number' ? result.revision : input.expectedRevision,
+        expectedSeq: typeof result.seq === 'number' ? result.seq : input.expectedSeq }, source);
+      return typeof result.createdId === 'string' ? { ...next, workflowReply: { createdId: result.createdId } } : next;
+    },
     selectNative(command) { return refreshAfter(api.selectNative, { ...itemInput(command), requestId: command.requestId, fieldPath: command.fieldPath, observationRef: command.observationRef }, command.source); },
     async verifyNativeLead(command) {
       const input = { ...itemInput(command), requestId: command.requestId, fieldPath: command.fieldPath, observationRef: command.observationRef };
@@ -736,7 +763,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     },
     async configureFiling(command) {
       const input = { ...itemInput(command), requestId: command.requestId, attachmentId: command.attachmentId,
-        confirmation: command.confirmation, kind: command.kind };
+        ...(command.confirmation ? { confirmation: command.confirmation } : { allocationTarget: command.allocationTarget }), kind: command.kind };
       return refreshAfter(api.configureFiling, input, command.source);
     },
     async lookupServices(command) {

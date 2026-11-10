@@ -166,6 +166,8 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   const liveInputs = useRef({ key, uncommitted });
   liveInputs.current = { key, uncommitted };
   const [activeId, setActiveId] = useState<string | null>(null);
+  const activeAction = useRef(activeId);
+  activeAction.current = activeId;
   useEffect(() => { setError(null); setUncommitted(new Set()); setActiveId(null); }, [key]);
 
   const apply = useCallback((next: ReservationPaneSnapshot, bound: ReservationSourceContext, buffer: Buffer) => {
@@ -295,7 +297,17 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       liveInputs.current = { key, uncommitted: next }; setUncommitted(next);
     },
     edit(path, value, state = 'set') { stageEdit(path, value, state); return run(async () => {}); },
-    changeRows(change) { return run(context => client.changeRows({ ...context, ...change })); },
+    changeRows(change) {
+      const selectedAction = activeAction.current;
+      return run(async context => {
+      const next = await client.changeRows({ ...context, ...change });
+      const createdId = record(next.workflowReply).createdId;
+      if (mounted.current && active.current.key === key && active.current.epoch === source.selectionEpoch &&
+          activeAction.current === selectedAction && typeof createdId === 'string' &&
+          next.requests.some(row => row.id === createdId)) setActiveId(createdId);
+      return next;
+      });
+    },
     selectNative(fieldPath, observationRef) { return run(context => client.selectNative({ ...context, requestId: requireRequest(), fieldPath, observationRef })); },
     ...(verifyNativeLead ? { verifyNativeLead(fieldPath: string, observationRef: string) {
       return run(context => verifyNativeLead.call(client, { ...context, requestId: requireRequest(), fieldPath, observationRef }));
@@ -425,7 +437,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       const reviewed = await client.review({ source: context.source, snapshot: next, fieldPath, decision: 'accepted', note });
       return { ...reviewed, workflowReply: context.snapshot.workflowReply };
     }); },
-    configureFiling(attachmentId, confirmation, kind) { return run(context => client.configureFiling({ ...context, requestId: requireRequest(), attachmentId, confirmation, kind })); },
+    configureFiling(attachmentId, target, kind) { return run(context => client.configureFiling({ ...context, requestId: requireRequest(), attachmentId, ...(typeof target === 'string' ? { confirmation: target } : target), kind })); },
     lookupServices(target, serviceId) { return run(context => client.lookupServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
     previewServices(target, serviceId) { return run(context => client.previewServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
     executeServices(target, serviceId, reviewedPrepareRef) { if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.executeServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId, reviewedPrepareRef, idempotencyKey: crypto.randomUUID() }), true); },
@@ -443,6 +455,29 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     const timer = setTimeout(() => { initialLookup.current.add(lookupKey); void commands.lookup().catch(() => {}); }, 700);
     return () => clearTimeout(timer);
   }, [current, request, busy, changed, key, preview, arrivalChecksPending]);
+  // A created room unlocks its dependent PDF lookup without asking staff to copy the confirmation.
+  const warmedFilings = useRef(new Set<string>());
+  useEffect(() => {
+    if (!current || current.session.sourceChanged || arrivalChecksPending || busy || entry.pending.size ||
+        entry.actionsPending || uncommitted.size || entry.conflict || preview) return;
+    const draft = current.session.draft;
+    for (const filing of draft.proposal.content.requests.filter(row => row.kind === 'filing')) {
+      const refs = effectiveAt(current, `${requestPath(filing.id)}/documentRefs`);
+      const documents = draft.proposal.content.documents.filter(doc => doc.ownerRequestId === filing.id && Array.isArray(refs) && refs.includes(doc.id));
+      if (documents.length !== 1 || current.operationResults.some(row => row.workflow === 'filing' && row.requestId === filing.id && ['succeeded', 'unknown'].includes(String(row.status)))) continue;
+      const targets = documents[0]!.targetRefs.filter(row => row.kind === 'allocation');
+      if (targets.length !== 1) continue;
+      const target = targets[0]!;
+      if (target.kind !== 'allocation') continue;
+      const receipt = [...draft.operationResults].reverse().find(row => row.workflow === 'create' && row.requestId === target.requestId && row.allocationId === target.allocationId && row.generationId === draft.generationId && ['succeeded', 'failed', 'unknown'].includes(row.status));
+      if (receipt?.status !== 'succeeded') continue;
+      const warmKey = `${key}:${filing.id}:${receipt.id}:${receipt.updatedAt}`;
+      if (warmedFilings.current.has(warmKey)) continue;
+      warmedFilings.current.add(warmKey);
+      void run(context => client.lookup({ ...context, requestId: filing.id })).catch(() => {});
+      break;
+    }
+  }, [current, busy, changed, key, preview, arrivalChecksPending, uncommitted]);
   const autoDigest = useRef(new Map<string, string>());
   useEffect(() => {
     if (!current || current.session.sourceChanged || arrivalChecksPending || !request || busy || entry.pending.size || uncommitted.size || entry.conflict || preview) return;

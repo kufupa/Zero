@@ -352,6 +352,10 @@ export function QuoteEditor(editor: Editor) {
   const rows = Array.isArray(body.requestedMoney) ? body.requestedMoney.map(record) : [];
   const observation = latestQuote(editor);
   const result = record(observation?.result);
+  const searchContext = record(result.searchContext);
+  const strategyUsedDiscoveryBar = observation?.status === 'complete' &&
+    searchContext.strategySource === 'discovery_default' && searchContext.salesStrategy === 'BAR';
+  const selectedStrategy = text(valueAt(snapshot, `${bodyPath}/salesStrategy`)).trim();
   const offersCurrent = quoteOffersCurrent(editor, observation);
   const availabilityNotice = availabilityMessage(result);
   const mismatch = groups.some((group) => group.arrival !== groups[0]?.arrival || group.departure !== groups[0]?.departure);
@@ -423,6 +427,9 @@ export function QuoteEditor(editor: Editor) {
       <NativePicker label="Company" path={`${bodyPath}/parties/company`} editor={editor} kind="party_candidate" allowNone compact />
       <NativePicker label="Agency" path={`${bodyPath}/parties/agency`} editor={editor} kind="party_candidate" allowNone compact />
       <Field label="Sales strategy" path={`${bodyPath}/salesStrategy`} editor={editor} compact options={strategies} />
+      {strategyUsedDiscoveryBar && selectedStrategy !== 'BAR' && <p className={styles.notice}>
+        This source price used BAR as a discovery default; no sales strategy was selected. Choose the intended strategy above before Review/Check. If it is not BAR, check and prepare the price again.
+      </p>}
     </Section>
     <MoneyRequests editor={editor} bodyPath={bodyPath} groups={groups} rows={rows} />
     <PreparedReview editor={editor} />

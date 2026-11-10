@@ -50,6 +50,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     body: current && request ? Object.fromEntries(Object.entries(record(effectiveAt(current, `${requestPath(request.id)}/body`))).filter(([field]) => request.kind !== 'cancel' || field !== 'previewObservationRefs')) : {},
     overrides: Object.fromEntries(Object.entries(current?.session.draft.fieldOverrides ?? {}).filter(([path]) => request && (path === requestPath(request.id) || path.startsWith(`${requestPath(request.id)}/`)) && (request.kind !== 'cancel' || !path.startsWith(`${requestPath(request.id)}/body/previewObservationRefs`))).map(([path, value]) => [path, {state: value.state, value: value.value}])) });
   const digest = digestFor(snapshot);
+  const createPriceBlocked = request?.kind === 'create' && snapshot?.preparationViews.some(view => view.requestId === request.id && record(record(view).priceComparison).blocksGo === true && !snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === view.allocationId && row.status === 'succeeded'));
   const quotePrepared = request?.kind === 'quote' && snapshot ? [...snapshot.session.draft.operationResults].reverse().find(row => row.workflow === 'quote' && row.requestId === request.id && row.status === 'prepared') : null;
   const quoteObservation = quotePrepared && snapshot?.session.draft.observations.find(row => quotePrepared.observationRefs.includes(row.ref) && row.kind === 'rate_availability');
   const quoteExtras = record(quoteObservation?.result).extrasReviewItems;
@@ -96,7 +97,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     } catch { setChecked(null); }
   };
   const save = async () => {
-    if (!request || createBlocked || preview || workbench.blocked || extrasNeedReview || checked !== digest) return;
+    if (!request || createBlocked || preview || workbench.blocked || extrasNeedReview || createPriceBlocked || checked !== digest) return;
     try {
       if (request.kind === 'create' || request.kind === 'amend' || request.kind === 'cancel') {
         for (const id of ids) {
@@ -177,9 +178,20 @@ export function ReservationPane(props: ReservationPaneProps) {
       </details>}
     </main>
     {request && !createBlocked && request.kind !== 'services' && request.kind !== 'other' && <footer className={styles.footer}>
-      {request.kind === 'create' && snapshot?.preparationViews.filter(view => view.requestId === request.id && view.price && !snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === view.allocationId && ['succeeded','unknown'].includes(text(row.status)))).map(view => <div key={view.allocationId} className={styles.price}><span>Room {ids.indexOf(view.allocationId) + 1} · {view.current ? 'Infor price' : 'Price needs refresh'}</span><strong>{view.price ? [view.price.currency, view.price.totalRate].filter(value => value != null).join(' ') : '—'}</strong></div>)}
+      {request.kind === 'create' && snapshot?.preparationViews.filter(view => view.requestId === request.id && !snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === view.allocationId && ['succeeded','unknown'].includes(text(row.status)))).map(view => {
+        const comparison = record(record(view).priceComparison), requested = record(comparison.requested);
+        const hasSourcePrice = !['', 'not_requested', 'not_applicable'].includes(text(comparison.status));
+        const observedAt = text(record(view).observedAt);
+        return <div key={view.allocationId} className={styles.priceBlock}>
+          <div className={styles.price}><span>Room {ids.indexOf(view.allocationId) + 1} · Infor total</span><strong>{view.price ? [view.price.currency, view.price.totalRate].filter(value => value != null).join(' ') : 'Check price in Infor'}</strong></div>
+          {view.price && <small className={styles.small}>{text(view.price.currency)} {text(view.price.averageRate)} per night{observedAt ? ` · Read ${new Date(observedAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : ''}</small>}
+          {hasSourcePrice && <><div className={styles.price}><span>Voucher / customer price</span><strong>{[requested.currency, requested.nightlyRate != null ? `${text(requested.nightlyRate)} per night` : '', requested.total != null ? `total ${text(requested.total)}` : ''].filter(Boolean).join(' ') || 'Amount or currency unresolved'}</strong></div>
+            <p className={comparison.blocksGo === true ? styles.notice : styles.small}>{text(comparison.explanation)}</p></>}
+          <button type="button" disabled={disabled || preview} onClick={() => { setChecked(null); void commands.prepare(view.allocationId).catch(() => {}); }}>Refresh Infor price</button>
+        </div>;
+      })}
       <div className={styles.actions}><button type="button" disabled={disabled || !ids.length && ['create','amend','cancel'].includes(request.kind)} onClick={() => { void check(); }}>Review & check</button>
-        <button type="button" className={styles.primary} disabled={disabled || preview || extrasNeedReview || checked !== digest} onClick={() => { void save(); }}>{request.kind === 'quote' ? record(quoteObservation?.result).failureKind === 'proven_shortage' ? 'Generate unsent decline' : 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : 'Save in Infor'}</button></div>
+        <button type="button" className={styles.primary} disabled={disabled || preview || extrasNeedReview || createPriceBlocked || checked !== digest} onClick={() => { void save(); }}>{request.kind === 'quote' ? record(quoteObservation?.result).failureKind === 'proven_shortage' ? 'Generate unsent decline' : 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : 'Save in Infor'}</button></div>
       {workbench.blocked && <small>Apply the changed selection before checking.</small>}
       {snapshot?.operationResults.filter(row => row.requestId === request.id && row.status !== 'prepared').map(row => {
         const guest = row.workflow === 'guest_profile';

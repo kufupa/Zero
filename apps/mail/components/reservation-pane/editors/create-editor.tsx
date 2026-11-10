@@ -387,6 +387,12 @@ export function CreateEditor(editor: Editor) {
         </div>
         <p className={styles.note}>{rooms.length} {rooms.length === 1 ? 'room' : 'rooms'} on these dates{requested != null && Number(requested) !== rooms.length ? ` · requested ${text(requested)}` : ''}</p>
         {record(section.requestedTotals).adults != null && <p className={styles.note}>Requested group: {text(record(section.requestedTotals).adults)} adults{record(section.requestedTotals).childCount != null ? `, ${text(record(section.requestedTotals).childCount)} children` : ''}. Enter occupancy for each room.</p>}
+        <details className={styles.details}><summary>Requested room and group totals</summary><fieldset disabled={sectionHasCompleted} className={styles.plainFieldset}>
+          <Field label="Requested rooms" type="number" path={`${sectionPath}/requestedRooms`} editor={editor} review />
+          <Field label="Requested group adults" type="number" path={`${sectionPath}/requestedTotals/adults`} editor={editor} review />
+          <Field label="Requested group children" type="number" path={`${sectionPath}/requestedTotals/childCount`} editor={editor} review />
+          <small>Blank means unknown. Enter each room’s occupancy below; these totals must agree before saving.</small>
+        </fieldset></details>
         {rooms.map(({ allocation, index }) => completedRoom(editor, text(allocation.id)) ? null : <div className={styles.occupancyRow} key={text(allocation.id) || index}>
           <strong>Room {index + 1} occupancy</strong>
           <div className={styles.twoCol}>
