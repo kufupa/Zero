@@ -2733,8 +2733,7 @@ function projectCurrentExtraction(input: {
       if (occupancySourceRefs.length) {
         const occupancy = fallbackQuoteOccupancy(extracted, currentRefs);
         const sameRoomScope = request.body.groups.length === 1 || roomCodes.codes.length === 1 &&
-          quoteGroupsShareRoomScope(request.body.groups) && request.body.groups.every((group) =>
-            group.roomCodes.length === 1 && group.roomCodes[0] === roomCodes.codes[0]);
+          quoteGroupsShareRoomScope(request.body.groups);
         const oneDateScope = Boolean(currentDatePair) && linkedQuoteGroups.length === request.body.groups.length;
         const canProject = request.body.groups.length > 0 && extracted.occupancy.length === 1 &&
           occupancy.sourceRefs.length > 0 && oneDateScope &&
