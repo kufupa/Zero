@@ -458,6 +458,7 @@ export async function checkpointReservationWorkflowV2Extraction(ctx: Context, in
 /** Install only the exact claimed, still untouched generation; preserve concurrent staff/native state. */
 export async function finishReservationWorkflowV2Prefill(ctx: Context, input: MutationInput & {
   claim: PrefillClaim; seed?: ReservationWorkflowV2Seed; failed: boolean; jobFence?: ReservationPrefillJobFence;
+  failure?: ReservationWorkflowV2Draft['errors'][number];
 }): Promise<ReservationWorkflowV2StateResult> {
   return ctx.db.transaction(async (tx) => {
     if (input.jobFence) await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
@@ -486,7 +487,7 @@ export async function finishReservationWorkflowV2Prefill(ctx: Context, input: Mu
         ...(install.extraction ? { extraction: install.extraction, extractionGenerationId: install.generationId } : {}),
         proposal: install.proposal, observations: install.observations,
         fieldReviewRequirements: install.fieldReviewRequirements ?? {}, errors: install.errors ?? [], revision: item.revision + 1 }
-        : !superseded && input.failed ? { status: 'prefill_failed', errors: [{ stage: 'extract', code: 'prefill_unavailable',
+        : !superseded && input.failed ? { status: 'prefill_failed', errors: [input.failure ?? { stage: 'extract', code: 'prefill_unavailable',
           message: 'Prefill could not finish. You can enter the request manually or retry.' }] } : {}) });
     const nextState = { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next };
     if (!install) {

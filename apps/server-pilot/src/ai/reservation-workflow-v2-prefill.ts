@@ -1067,10 +1067,11 @@ function extractionRequestForProposal(
   request: ReservationWorkflowV2Proposal['content']['requests'][number],
   proposalRequests: ReservationWorkflowV2Proposal['content']['requests'],
   extraction: ReservationWorkflowV2Extraction,
+  extractionIdByProposalRequestId?: ReadonlyMap<string, string>,
 ): ReservationWorkflowV2Extraction['requests'][number] | null {
-  const exactId = extraction.requests.filter((candidate) => candidate.id === request.id && candidate.kind === request.kind);
-  const otherRequestsWithId = proposalRequests.filter((candidate) => candidate.id === request.id && candidate.kind === request.kind);
-  if (exactId.length === 1 && otherRequestsWithId.length === 1) return exactId[0]!;
+  const mappedId = extractionIdByProposalRequestId?.get(request.id);
+  const mapped = mappedId ? extraction.requests.find((candidate) => candidate.id === mappedId && candidate.kind === request.kind) : null;
+  if (mapped) return mapped;
   const exactText = extraction.requests.filter((candidate) => candidate.kind === request.kind &&
     candidate.requestText.raw.trim() === request.requestText.trim());
   const proposalsWithExactText = proposalRequests.filter((candidate) => candidate.kind === request.kind &&
@@ -1086,6 +1087,11 @@ function extractionRequestForProposal(
   if (matches.length !== 1) return null;
   const linkedProposalRequests = proposalRequests.filter((candidate) => corresponds(candidate, matches[0]!));
   if (linkedProposalRequests.length === 1 && linkedProposalRequests[0] === request) return matches[0]!;
+  // Request IDs are model-produced and can be copied onto a different request. Prefer
+  // the unambiguous text/source link above; use IDs only when no stronger link exists.
+  const exactId = extraction.requests.filter((candidate) => candidate.id === request.id && candidate.kind === request.kind);
+  const otherRequestsWithId = proposalRequests.filter((candidate) => candidate.id === request.id && candidate.kind === request.kind);
+  if (exactId.length === 1 && otherRequestsWithId.length === 1) return exactId[0]!;
   return null;
 }
 
@@ -1314,6 +1320,21 @@ function sourceClaimsForRequestedMoney(proposal: ReservationWorkflowV2Proposal, 
   return proposal.sourceClaims.filter((claim) => claim.path === targetPath || claim.path === `${targetPath}/amount`);
 }
 
+type ReservationWorkflowV2TargetRef = ReservationWorkflowV2Proposal['content']['services'][number]['targets'][number]['target'];
+function reservationTargetExists(target: ReservationWorkflowV2TargetRef,
+  requestsById: Map<string, ReservationWorkflowV2Proposal['content']['requests'][number]>): boolean {
+  const request = requestsById.get(target.requestId);
+  if (!request) return false;
+  if (target.kind === 'allocation') return request.kind === 'create' &&
+    request.body.allocations.some((allocation) => allocation.id === target.allocationId);
+  if (target.kind === 'quote_group') return request.kind === 'quote' &&
+    request.body.groups.some((group) => group.id === target.groupId);
+  const body = 'targets' in request.body ? request.body.targets : null;
+  if (!body || !isRecord(body)) return false;
+  const hints = [...(Array.isArray(body.include) ? body.include : []), ...(Array.isArray(body.exclude) ? body.exclude : [])];
+  return hints.some((hint) => isRecord(hint) && hint.id === target.hintId);
+}
+
 function dateSourceRefs(date: ProjectableDateClaim): string[] {
   return [...new Set([...(date.arrival?.sourceRefs ?? []), ...(date.departure?.sourceRefs ?? [])])];
 }
@@ -1362,7 +1383,8 @@ function projectCurrentExtraction(input: {
   source: ReservationWorkflowV2Source;
   evidence: ReservationWorkflowV2Evidence[];
   attachmentIdentityByRef: Map<string, string>;
-}): { proposal: ReservationWorkflowV2Proposal; addedRequests: number; addedIssues: number } {
+}): { proposal: ReservationWorkflowV2Proposal; addedRequests: number; addedIssues: number;
+  extractionIdByProposalRequestId: Map<string, string> } {
   const proposal = structuredClone(input.proposal);
   const knownRefs = new Set(input.evidence.map((row) => row.ref));
   const currentRefs = new Set(input.evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
@@ -1390,11 +1412,22 @@ function projectCurrentExtraction(input: {
   }
   const prunedRequests = originalRequests.filter((request) => !linkedByRequest.has(request));
   proposal.content.requests = originalRequests.filter((request) => linkedByRequest.has(request));
+  const reservedRequestIds = new Set(proposal.content.requests.map((request) => request.id));
+  const extractionIdByProposalRequestId = new Map([...linkedByRequest].map(([request, extracted]) => [request.id, extracted.id]));
   const prunedOwnerIds = new Set(prunedRequests.map((request) => request.id));
   proposal.content.services = proposal.content.services.filter((service) =>
     service.ownerRequestId === null || !prunedOwnerIds.has(service.ownerRequestId));
-  proposal.content.documents = proposal.content.documents.filter((document) =>
-    document.ownerRequestId === null || !prunedOwnerIds.has(document.ownerRequestId));
+  proposal.content.documents = proposal.content.documents.filter((document) => {
+    if (document.ownerRequestId === null || !prunedOwnerIds.has(document.ownerRequestId)) return true;
+    const currentSourceRefs = [...new Set([document.documentSourceRef, ...document.sourceRefs])]
+      .filter((ref) => currentRefs.has(ref));
+    if (!currentSourceRefs.length) return false;
+    document.ownerRequestId = null;
+    addProjectionIssue(proposal, `/documents/${document.id}/ownerRequestId`, 'stale_document_owner_removed',
+      'The document source remains current, but its synthesized owner was removed because that request did not link to a current typed request. The document was retained without that owner for staff review.',
+      currentSourceRefs);
+    return true;
+  });
   const retainedServiceIds = new Set(proposal.content.services.map((service) => service.id));
   const retainedDocumentIds = new Set(proposal.content.documents.map((document) => document.id));
   for (const request of proposal.content.requests) {
@@ -1431,7 +1464,16 @@ function projectCurrentExtraction(input: {
     const wrongKind = possibleLinks.some((request) => request.kind !== extracted.kind);
     const ambiguous = possibleLinks.length > 0;
     const retained = structuredClone(fallbackMatches[0]!);
+    if (reservedRequestIds.has(retained.id)) {
+      const extractedRequestId = retained.id;
+      let salt = 0;
+      do { retained.id = stableId(input.source.messageId, 'recovered_request', extracted.id, String(salt++)); }
+      while (reservedRequestIds.has(retained.id));
+      extractionIdByProposalRequestId.set(retained.id, extractedRequestId);
+    } else extractionIdByProposalRequestId.set(retained.id, extracted.id);
+    reservedRequestIds.add(retained.id);
     proposal.content.requests.push(retained);
+    linkedByRequest.set(retained, extracted);
     addProjectionIssue(proposal, `/requests/${retained.id}`, wrongKind ? 'source_request_kind_mismatch' :
       ambiguous ? 'current_request_link_ambiguous' : 'source_request_retained',
     wrongKind
@@ -1452,18 +1494,7 @@ function projectCurrentExtraction(input: {
     return false;
   });
   for (const service of proposal.content.services) {
-    const validTargets = service.targets.filter(({ target }) => {
-      const request = retainedRequestsById.get(target.requestId);
-      if (!request) return false;
-      if (target.kind === 'allocation') return request.kind === 'create' &&
-        request.body.allocations.some((allocation) => allocation.id === target.allocationId);
-      if (target.kind === 'quote_group') return request.kind === 'quote' &&
-        request.body.groups.some((group) => group.id === target.groupId);
-      const body = 'targets' in request.body ? request.body.targets : null;
-      if (!body || !isRecord(body)) return false;
-      const hints = [...(Array.isArray(body.include) ? body.include : []), ...(Array.isArray(body.exclude) ? body.exclude : [])];
-      return hints.some((hint) => isRecord(hint) && hint.id === target.hintId);
-    });
+    const validTargets = service.targets.filter(({ target }) => reservationTargetExists(target, retainedRequestsById));
     if (validTargets.length === service.targets.length) continue;
     const removedTargets = service.targets.filter((target) => !validTargets.includes(target));
     service.targets = validTargets;
@@ -1475,13 +1506,28 @@ function projectCurrentExtraction(input: {
       'A synthesized service target referred to a request, allocation or saved hint that is no longer present. The source-linked service ask was retained without that target for staff resolution.',
       evidenceRefs);
   }
+  for (const document of proposal.content.documents) {
+    const validTargets = document.targetRefs.filter((target) => reservationTargetExists(target, retainedRequestsById));
+    if (validTargets.length === document.targetRefs.length) continue;
+    const removedTargets = document.targetRefs.filter((target) => !validTargets.includes(target));
+    document.targetRefs = validTargets;
+    const removedRequestIds = new Set(removedTargets.map((target) => target.requestId));
+    const evidenceRefs = [...new Set([document.documentSourceRef, ...document.sourceRefs,
+      ...prunedRequests.filter((request) => removedRequestIds.has(request.id)).flatMap((request) => request.sourceRefs)])]
+      .filter((ref) => currentRefs.has(ref)).slice(0, 100);
+    addProjectionIssue(proposal, `/documents/${document.id}/targetRefs`, 'stale_document_target_removed',
+      'A document target referred to a request, allocation or saved hint that is no longer present. The source document was retained for staff review without that target.',
+      evidenceRefs);
+  }
   const finalServiceIds = new Set(proposal.content.services.map((service) => service.id));
   for (const request of proposal.content.requests)
     request.serviceRefs = request.serviceRefs.filter((ref) => finalServiceIds.has(ref));
 
   const evidenceByRef = new Map(input.evidence.map((row) => [row.ref, row]));
   for (const request of proposal.content.requests) {
-    const extracted = linkedByRequest.get(request) ?? currentExtraction.requests.find((candidate) => candidate.id === request.id && candidate.kind === request.kind);
+    const linkedId = extractionIdByProposalRequestId.get(request.id);
+    const extracted = linkedByRequest.get(request) ?? currentExtraction.requests.find((candidate) =>
+      candidate.id === (linkedId ?? request.id) && candidate.kind === request.kind);
     if (!extracted || !currentClaim(extracted.requestText, currentRefs)) continue;
     const allRefs = [...extractionRefsForRequest(extracted)].filter((ref) => knownRefs.has(ref));
     request.sourceRefs = [...new Set([...request.sourceRefs, ...allRefs])].slice(0, 100);
@@ -1710,7 +1756,7 @@ function projectCurrentExtraction(input: {
   }
   const parsedProjection = reservationWorkflowV2ProposalSchema.safeParse(proposal);
   if (parsedProjection.success) return { proposal: parsedProjection.data, addedRequests,
-    addedIssues: Math.max(0, proposal.issues.length - existingIssueCount) };
+    addedIssues: Math.max(0, proposal.issues.length - existingIssueCount), extractionIdByProposalRequestId };
 
   const fallbackProposal = buildFallbackProposal({ extraction: currentExtraction, source: input.source,
     evidence: input.evidence, reason: 'Projected source facts did not fit the editable workflow schema; raw claims remain available for staff review.' });
@@ -1719,7 +1765,8 @@ function projectCurrentExtraction(input: {
     `Projected values were not admitted (${summarizeSchemaIssues(parsedProjection.error)}); the typed current request remains editable and raw source claims are retained.`,
     currentExtraction.requests.flatMap((request) => request.requestText.sourceRefs.filter((ref) => currentRefs.has(ref))));
   const safeFallback = reservationWorkflowV2ProposalSchema.safeParse(fallbackProposal);
-  if (safeFallback.success) return { proposal: safeFallback.data, addedRequests: Math.max(addedRequests, currentExtraction.requests.length), addedIssues: 1 };
+  if (safeFallback.success) return { proposal: safeFallback.data, addedRequests: Math.max(addedRequests, currentExtraction.requests.length),
+    addedIssues: 1, extractionIdByProposalRequestId: new Map(currentExtraction.requests.map((request) => [request.id, request.id])) };
   // buildFallbackProposal already has a schema-safe unsupported envelope for this last-resort case.
   const lastResort = buildFallbackProposal({ extraction: null, source: input.source, evidence: input.evidence,
     reason: 'Projected source facts could not be represented safely; staff review is required.' });
@@ -1728,7 +1775,8 @@ function projectCurrentExtraction(input: {
     'The editable fallback retained raw source claims because typed destination values failed schema validation.',
     currentExtraction.requests.flatMap((request) => request.requestText.sourceRefs.filter((ref) => currentRefs.has(ref))));
   return { proposal: reservationWorkflowV2ProposalSchema.parse(lastResort),
-    addedRequests: Math.max(addedRequests, currentExtraction.requests.length), addedIssues: 1 };
+    addedRequests: Math.max(addedRequests, currentExtraction.requests.length), addedIssues: 1,
+    extractionIdByProposalRequestId: new Map() };
 }
 
 type ExactConfirmationHint = { value: string; sourceRefs: string[]; index: number };
@@ -1829,13 +1877,15 @@ function applyDefaultCmsSendPolicy(
 function addRequestConfirmationSafety(input: {
   proposal: ReservationWorkflowV2Proposal;
   extraction: ReservationWorkflowV2Extraction;
+  extractionIdByProposalRequestId?: ReadonlyMap<string, string>;
   currentRefs: Set<string>;
   admittedRefs: Set<string>;
 }): { proposal: ReservationWorkflowV2Proposal } {
   const proposal = structuredClone(input.proposal);
   for (const [requestIndex, request] of proposal.content.requests.entries()) {
     if (request.kind !== 'create' && request.kind !== 'amend' && request.kind !== 'cancel') continue;
-    const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction);
+    const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction,
+      input.extractionIdByProposalRequestId);
     if (extracted) {
       const allowedRefs = request.kind === 'amend' || request.kind === 'cancel' ? input.admittedRefs : input.currentRefs;
       const hints = exactConfirmationHints(extracted, allowedRefs);
@@ -1862,16 +1912,19 @@ type BoundGuestCandidate = { read: ReservationWorkflowV2Observation; row: Record
 function bindGuestProfileObservations(input: {
   proposal: ReservationWorkflowV2Proposal;
   extraction: ReservationWorkflowV2Extraction;
+  extractionIdByProposalRequestId?: ReadonlyMap<string, string>;
   observations: ReservationWorkflowV2Observation[];
   generationId: string;
-}): { proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[] } {
+}): { proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[];
+  extractionIdByProposalRequestId?: ReadonlyMap<string, string> } {
   const proposal = structuredClone(preserveConfirmationSourceClaims(input.proposal, input.extraction));
   const added: ReservationWorkflowV2Observation[] = [];
   const newLookupRefs: string[] = [];
   let totalDisplayLeads = 0;
   for (const request of proposal.content.requests) {
     if (request.kind !== 'create') continue;
-    const extractedRequest = extractionRequestForProposal(request, proposal.content.requests, input.extraction);
+    const extractedRequest = extractionRequestForProposal(request, proposal.content.requests, input.extraction,
+      input.extractionIdByProposalRequestId);
     if (!extractedRequest) continue;
     const extractedGuests = extractedRequest.guests.filter((guest) => guest.role === 'guest');
     const sourceRequestRefs = extractionRefsForRequest(extractedRequest);
@@ -1990,18 +2043,20 @@ function bindGuestProfileObservations(input: {
     }
   }
   proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, ...newLookupRefs])].slice(0, 1000);
-  return { proposal, observations: [...input.observations, ...added] };
+  return { proposal, observations: [...input.observations, ...added],
+    extractionIdByProposalRequestId: input.extractionIdByProposalRequestId };
 }
 
 /** Split complete source-grounded party batches into field-owned selectable rows. */
 function bindPartyObservations(input: { proposal: ReservationWorkflowV2Proposal; extraction: ReservationWorkflowV2Extraction;
-  observations: ReservationWorkflowV2Observation[]; generationId: string }) {
+  extractionIdByProposalRequestId?: ReadonlyMap<string, string>; observations: ReservationWorkflowV2Observation[]; generationId: string }) {
   const proposal = structuredClone(input.proposal), added: ReservationWorkflowV2Observation[] = [];
   let totalDisplayLeads = input.observations.filter((row) => row.criteria.kind === 'source_bound_display_lead').length;
   const norm = (value: unknown) => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase() : '';
   for (const request of proposal.content.requests) {
     if (request.kind !== 'create' && request.kind !== 'quote') continue;
-    const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction);
+    const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction,
+      input.extractionIdByProposalRequestId);
     if (!extracted) continue;
     const slots: Array<{ party: Record<string, unknown>; role: string; extractedRole: string; path: string; allocationId?: string }> = [];
     const add = (fields: Record<string, unknown>, key: string, role: string, extractedRole: string, path: string, allocationId?: string) => {
@@ -2418,17 +2473,20 @@ export async function runReservationWorkflowV2Prefill(input: {
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
   const finalParsed = finalPass.ok ? reservationWorkflowV2ModelOutputSchema.safeParse(normalizeSynthesisOutput(finalPass.result.output, evidence)) : null;
   const rawProposalForValidation = finalParsed?.success ? structuredClone(finalParsed.data.proposal) : null;
-  // Service targets are repaired by the host projection below. Validate every other
+  // Service and document targets are repaired by the host projection below. Validate every other
   // synthesized reference now, then strictly validate the repaired proposal afterward.
   for (const service of rawProposalForValidation?.content.services ?? []) service.targets = [];
+  for (const document of rawProposalForValidation?.content.documents ?? []) document.targetRefs = [];
   const rawProposalIssue = rawProposalForValidation ? validateProposal(rawProposalForValidation, evidence, observations) : null;
   const extractionProjection = finalParsed?.success ? projectCurrentExtraction({ proposal: finalParsed.data.proposal,
     extraction, source: input.source, evidence, attachmentIdentityByRef }) : null;
   const guestBinding = finalParsed?.success && extractionProjection ? bindGuestProfileObservations({ proposal: extractionProjection.proposal,
-    extraction: candidateExtraction, observations, generationId }) : null;
+    extraction: candidateExtraction, extractionIdByProposalRequestId: extractionProjection.extractionIdByProposalRequestId,
+    observations, generationId }) : null;
   const partyBinding = guestBinding ? bindPartyObservations({ ...guestBinding, extraction: candidateExtraction, generationId }) : null;
   const finalObservations = partyBinding?.observations ?? observations;
   const referenceSafety = partyBinding ? addRequestConfirmationSafety({ proposal: partyBinding.proposal, extraction: currentActions,
+    extractionIdByProposalRequestId: extractionProjection?.extractionIdByProposalRequestId,
     currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)) }) : null;
   const guardedProposal = referenceSafety?.proposal ?? (finalParsed?.success ? finalParsed.data.proposal : null);
   const finalProposal = guardedProposal ? applyDefaultCmsSendPolicy(guardedProposal, input.propertyCode) : null;
@@ -2453,9 +2511,10 @@ export async function runReservationWorkflowV2Prefill(input: {
     else if (!finalParsed.success) error = { code: 'invalid_typed_synthesis', message: `Synthesis ${summarizeSchemaIssues(finalParsed.error)}; source extraction remains editable.` };
     else error = { code: 'invalid_proposal_refs', message: `Synthesis reference validation failed (${rawProposalIssue ?? proposalIssue ?? reviewIssue}); source extraction remains editable.` };
     const reason = error.message;
-    const fallbackProposal = projectCurrentExtraction({ proposal: buildFallbackProposal({ extraction, source: input.source, evidence, reason }),
-      extraction, source: input.source, evidence, attachmentIdentityByRef }).proposal;
-    const fallbackSafety = addRequestConfirmationSafety({ proposal: fallbackProposal, extraction: currentActions,
+    const fallbackProjection = projectCurrentExtraction({ proposal: buildFallbackProposal({ extraction, source: input.source, evidence, reason }),
+      extraction, source: input.source, evidence, attachmentIdentityByRef });
+    const fallbackSafety = addRequestConfirmationSafety({ proposal: fallbackProjection.proposal, extraction: currentActions,
+      extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
       currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)) });
     return { ...base, status: 'partial', observations: finalObservations,
       proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, input.propertyCode), fieldReviewRequirements: {},

@@ -59,17 +59,20 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
   mailboxAddress: string | null | undefined, allowRetry: boolean, jobFence?: ReservationPrefillJobFence, signal?: AbortSignal, parentSignal?: AbortSignal) {
   const claimed = await claimReservationWorkflowV2Prefill(scoped, { ...input, allowRetry, jobFence });
   if (!claimed.claim) return claimed.result;
-  signal ??= AbortSignal.timeout(9 * 60_000);
+  const callerSignal = signal;
+  const timeoutSignal = AbortSignal.timeout(9 * 60_000);
+  const operationSignal = callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal;
   let activeClaim = claimed.claim;
   try {
     const selection = await loadSyncedQuoteSelectionFromMailbox({ db: scoped.db, transportId: scoped.transportId,
       messageId: input.source.messageId, includeThreadState: true, sourceCutoffOnly: true,
-      includeVisionImages: true, trackVisionImages: true, signal });
+      includeVisionImages: true, trackVisionImages: true, signal: operationSignal });
+    operationSignal.throwIfAborted();
     if (!selection) return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: claimed.claim, failed: true, jobFence });
     const modelEnv = { ...process.env, EXTRACTION_REASONING_EFFORT: process.env.EXTRACTION_REASONING_EFFORT?.trim() || 'high' };
     const generated = await runReservationWorkflowV2Prefill({ db: scoped.db, transportId: scoped.transportId,
       propertyCode: scoped.propertyCode, source: input.source, selection, mailboxAddress, env: modelEnv,
-      signal, adapter: observedPrefillAdapter(createAzureExtractionAdapter(modelEnv), input.source.messageId, modelEnv.EXTRACTION_REASONING_EFFORT),
+      signal: operationSignal, adapter: observedPrefillAdapter(createAzureExtractionAdapter(modelEnv), input.source.messageId, modelEnv.EXTRACTION_REASONING_EFFORT),
       onValidatedExtraction: async (generationId, extraction) => {
         const checkpoint = await checkpointReservationWorkflowV2Extraction(scoped, { ...input, claim: activeClaim,
           generationId, extraction, jobFence });
@@ -83,6 +86,7 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
       generated.errors = [...(generated.errors ?? []).slice(0, 99), { stage: 'lookup', code: 'missing_attachment',
         message: `Some attachments could not be copied: ${missing.map((entry) => entry.fileName || entry.role).join(', ')}`.slice(0, 1000) }];
     }
+    operationSignal.throwIfAborted();
     const failed = !generated.sourceBound || (generated.skippedReason !== undefined && generated.skippedReason !== 'self_prestay') ||
       (generated.errors ?? []).some((error) => error.stage === 'extract' ||
         (error.stage === 'synthesis' && ['model_timeout', 'model_error'].includes(error.code)));
@@ -92,8 +96,12 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
         proposal: generated.proposal, observations: generated.observations,
         fieldReviewRequirements: generated.fieldReviewRequirements, errors: generated.errors } : undefined });
   } catch (error) {
-    if (signal?.aborted && (!jobFence || parentSignal?.aborted)) throw error;
-    return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: activeClaim, failed: true, jobFence });
+    const callerCancelled = Boolean(parentSignal?.aborted || (!parentSignal && callerSignal?.aborted));
+    if (callerCancelled) throw error;
+    const timedOut = timeoutSignal.aborted || operationSignal.aborted;
+    return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: activeClaim, failed: true, jobFence,
+      ...(timedOut ? { failure: { stage: 'extract' as const, code: 'model_timeout',
+        message: 'Prefill timed out before it could finish. You can retry or enter details manually.' } } : {}) });
   }
 }
 
