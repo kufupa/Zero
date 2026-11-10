@@ -1101,6 +1101,12 @@ function extractionRequestForProposal(
   const proposalsWithExactText = proposalRequests.filter((candidate) => candidate.kind === request.kind &&
     candidate.requestText.trim() === request.requestText.trim());
   if (exactText.length === 1 && proposalsWithExactText.length === 1) return exactText[0]!;
+  // Shared message evidence is common when one email asks for multiple bookings.
+  // After preferring an exact source-text match, a unique model-provided ID is the
+  // next strongest link; waiting for unique evidence refs drops otherwise-filled rows.
+  const exactId = extraction.requests.filter((candidate) => candidate.id === request.id && candidate.kind === request.kind);
+  const otherRequestsWithId = proposalRequests.filter((candidate) => candidate.id === request.id && candidate.kind === request.kind);
+  if (exactId.length === 1 && otherRequestsWithId.length === 1) return exactId[0]!;
   const corresponds = (candidate: ReservationWorkflowV2Proposal['content']['requests'][number],
     extracted: ReservationWorkflowV2Extraction['requests'][number]) => candidate.kind === extracted.kind &&
     (candidate.id === extracted.id || candidate.requestText.trim() === extracted.requestText.raw.trim() ||
@@ -1111,11 +1117,6 @@ function extractionRequestForProposal(
   if (matches.length !== 1) return null;
   const linkedProposalRequests = proposalRequests.filter((candidate) => corresponds(candidate, matches[0]!));
   if (linkedProposalRequests.length === 1 && linkedProposalRequests[0] === request) return matches[0]!;
-  // Request IDs are model-produced and can be copied onto a different request. Prefer
-  // the unambiguous text/source link above; use IDs only when no stronger link exists.
-  const exactId = extraction.requests.filter((candidate) => candidate.id === request.id && candidate.kind === request.kind);
-  const otherRequestsWithId = proposalRequests.filter((candidate) => candidate.id === request.id && candidate.kind === request.kind);
-  if (exactId.length === 1 && otherRequestsWithId.length === 1) return exactId[0]!;
   return null;
 }
 
