@@ -57,6 +57,7 @@ const MAX_CANDIDATE_READS = 32;
 const MAX_DISPLAY_LEADS = 500;
 // Match the canonical draft observation limit; display-only rows must not crowd out other evidence.
 const MAX_DRAFT_OBSERVATIONS = 5000;
+const MAX_PROPOSAL_SOURCE_CLAIMS = 1000;
 // Do not start additional reads indefinitely; in-flight non-cancellable legacy reads may finish later.
 const CANDIDATE_READ_START_BUDGET_MS = 90_000;
 const SOURCE_REF_PREFIX = 'src_';
@@ -1124,7 +1125,7 @@ function appendExtractionSourceClaims(proposal: ReservationWorkflowV2Proposal,
   extraction: ReservationWorkflowV2Extraction, knownRefs: Set<string>): void {
   const keys = new Set(proposal.sourceClaims.map((claim) => `${claim.path}\u001f${claim.raw}\u001f${[...claim.sourceRefs].sort().join('\u001e')}`));
   const add = (path: string, claim: { raw: string; sourceRefs: string[] } | undefined) => {
-    if (!claim || proposal.sourceClaims.length >= 1000) return;
+    if (!claim || proposal.sourceClaims.length >= MAX_PROPOSAL_SOURCE_CLAIMS) return;
     const sourceRefs = [...new Set(claim.sourceRefs.filter((ref) => knownRefs.has(ref)))].slice(0, 100);
     if (!sourceRefs.length) return;
     const key = `${path}\u001f${claim.raw}\u001f${[...sourceRefs].sort().join('\u001e')}`;
@@ -1167,6 +1168,38 @@ function appendExtractionSourceClaims(proposal: ReservationWorkflowV2Proposal,
       add(`${root}/documentHints/${index}/kind`, { raw: hint.kind, sourceRefs: hint.sourceRefs });
     });
   }
+}
+
+/** Keep per-Create native confirmation guards ahead of bounded, noncritical source claims. */
+function compactProposalSourceClaims(proposal: ReservationWorkflowV2Proposal, currentRefs: Set<string>): void {
+  const createIds = new Set(proposal.content.requests.filter((request) => request.kind === 'create').map((request) => request.id));
+  const confirmationsByRequest = new Map<string, { values: Set<string>; sourceRefs: Set<string> }>();
+  const otherClaims: ReservationWorkflowV2Proposal['sourceClaims'] = [];
+  for (const claim of proposal.sourceClaims) {
+    const match = /^\/proposal\/content\/requests\/([^/]+)\/confirmationReference(?:\/.*)?$/.exec(claim.path);
+    const values = [...new Set(claim.raw.match(/\b\d{6,10}-\d{1,4}\b/g) ?? [])];
+    const sourceRefs = claim.sourceRefs.filter((ref) => currentRefs.has(ref));
+    if (!match || !createIds.has(match[1]!) || !values.length || !sourceRefs.length) {
+      otherClaims.push(claim);
+      continue;
+    }
+    const group = confirmationsByRequest.get(match[1]!) ?? { values: new Set<string>(), sourceRefs: new Set<string>() };
+    values.forEach((value) => group.values.add(value));
+    sourceRefs.forEach((ref) => group.sourceRefs.add(ref));
+    confirmationsByRequest.set(match[1]!, group);
+  }
+  const confirmationClaims = [...confirmationsByRequest].map(([requestId, group]) => {
+    let raw = '';
+    for (const value of group.values) {
+      const next = raw ? `${raw}; ${value}` : value;
+      if (next.length > 2000) break;
+      raw = next;
+    }
+    return { path: `/proposal/content/requests/${requestId}/confirmationReference`, raw,
+      sourceRefs: [...group.sourceRefs].slice(0, 100) };
+  });
+  proposal.sourceClaims = [...confirmationClaims,
+    ...otherClaims.slice(0, Math.max(0, MAX_PROPOSAL_SOURCE_CLAIMS - confirmationClaims.length))];
 }
 
 function normalizedFact(value: unknown): string {
@@ -2569,6 +2602,7 @@ function projectCurrentExtraction(input: {
   }
   addedRequests += projectAgencyVoucherFilings({ proposal, extraction: currentExtraction, source: input.source,
     evidence: input.evidence, currentRefs, pdfs, sourceMessageId: input.source.messageId, observations: input.observations });
+  compactProposalSourceClaims(proposal, currentRefs);
   const parsedProjection = reservationWorkflowV2ProposalSchema.safeParse(proposal);
   if (parsedProjection.success) return { proposal: parsedProjection.data, addedRequests,
     addedIssues: Math.max(0, proposal.issues.length - existingIssueCount), extractionIdByProposalRequestId };
@@ -2789,6 +2823,7 @@ function addRequestConfirmationSafety(input: {
       explanation: 'An exact source confirmation could not be linked to one extracted request. No native target was inferred; staff must resolve the correspondence before execution.',
       evidenceRefs: [...new Set(relevantHints.flatMap((hint) => hint.sourceRefs))].slice(0, 100) });
   }
+  compactProposalSourceClaims(proposal, input.currentRefs);
   return { proposal };
 }
 
