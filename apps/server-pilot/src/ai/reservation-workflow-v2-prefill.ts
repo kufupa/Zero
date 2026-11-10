@@ -2099,6 +2099,46 @@ function projectCurrentExtraction(input: {
       evidenceRefs);
   }
   const extractionIdByProposalRequestId = new Map([...linkedByRequest].map(([request, extracted]) => [request.id, extracted.id]));
+  // Canonical confirmation claims are keyed by the synthesized request ID. When
+  // synthesis reuses an ID, keep an exact current-source confirmation attached
+  // to the retained request that its cited evidence identifies. If evidence does
+  // not choose one owner, carry it to every possible retained request so each
+  // Create receives the native lookup guard; never let the stale ID turn it into
+  // unguarded context or assign a native booking identity.
+  const remappedConfirmationClaims: ReservationWorkflowV2Proposal['sourceClaims'] = [];
+  for (const claim of proposal.sourceClaims) {
+    const match = /^\/proposal\/content\/requests\/([^/]+)\/confirmationReference(\/.*)?$/.exec(claim.path);
+    if (!match || !ambiguousRequestIds.has(match[1]!) || !/\b\d{6,10}-\d{1,2}\b/.test(claim.raw)) {
+      remappedConfirmationClaims.push(claim);
+      continue;
+    }
+    const currentClaimRefs = claim.sourceRefs.filter((ref) => currentRefs.has(ref));
+    if (!currentClaimRefs.length) {
+      remappedConfirmationClaims.push(claim);
+      continue;
+    }
+    const candidates = proposal.content.requests.filter((request) => originalIdByRequest.get(request) === match[1]);
+    if (!candidates.length) {
+      remappedConfirmationClaims.push(claim);
+      continue;
+    }
+    const claimPhysicalRefs = new Set(currentClaimRefs.flatMap((ref) => {
+      const identity = input.attachmentIdentityByRef.get(ref);
+      return identity ? [identity] : [];
+    }));
+    const sourceLinked = candidates.filter((request) => {
+      const extracted = linkedByRequest.get(request);
+      const refs = new Set([...request.sourceRefs, ...(extracted ? extractionRefsForRequest(extracted) : [])]);
+      return currentClaimRefs.some((ref) => refs.has(ref)) || [...refs].some((ref) => {
+        const identity = input.attachmentIdentityByRef.get(ref);
+        return identity !== undefined && claimPhysicalRefs.has(identity);
+      });
+    });
+    const owners = sourceLinked.length ? sourceLinked : candidates;
+    for (const request of owners) remappedConfirmationClaims.push({ ...claim,
+      path: `/proposal/content/requests/${request.id}/confirmationReference${match[2] ?? ''}` });
+  }
+  proposal.sourceClaims = remappedConfirmationClaims;
   const prunedOwnerIds = new Set(prunedRequests.map((request) => request.id)
     .filter((id) => !ambiguousRequestIds.has(id)));
   for (const service of proposal.content.services) {
@@ -2710,8 +2750,23 @@ function addRequestConfirmationSafety(input: {
             existing.sourceRefs.some((ref) => hint.sourceRefs.includes(ref))));
         const allHints = [...hints, ...evidenceHints.filter((hint) => !hints.some((existing) => existing.value === hint.value &&
           existing.sourceRefs.some((ref) => hint.sourceRefs.includes(ref)))), ...canonicalHints];
-        const relevantHints = explicitAdditionalNewRoom(extracted, input.currentRefs)
-          ? allHints.filter((hint) => ask.includes(hint.value)) : allHints;
+        const additionalNewRoom = explicitAdditionalNewRoom(extracted, input.currentRefs);
+        const relevantHints = additionalNewRoom ? allHints.filter((hint) => ask.includes(hint.value)) : allHints;
+        if (additionalNewRoom) {
+          // The additional-room exception is about a *different* booking. A
+          // model claim excluded from that request's lookup hints must not remain
+          // canonical, since runtime safety also inspects canonical claims.
+          const excludedValues = new Set((modelNativeConfirmationHints.get(request.id) ?? [])
+            .filter((hint) => !ask.includes(hint.value)).map((hint) => hint.value));
+          if (excludedValues.size) {
+            const canonicalPath = `/proposal/content/requests/${request.id}/confirmationReference`;
+            proposal.sourceClaims = proposal.sourceClaims.map((claim, claimIndex) => {
+              if (claim.path !== canonicalPath && !claim.path.startsWith(`${canonicalPath}/`)) return claim;
+              if (!(claim.raw.match(/\b\d{6,10}-\d{1,2}\b/g) ?? []).some((value) => excludedValues.has(value))) return claim;
+              return { ...claim, path: `/requests/${request.id}/confirmationHints/model_${claimIndex}` };
+            });
+          }
+        }
         addCreateExistingReferenceGuard({ proposal, requestIndex, hints: relevantHints });
         continue;
       }
@@ -3364,6 +3419,35 @@ export async function runReservationWorkflowV2Prefill(input: {
     const reason = error.message;
     const fallbackProjection = projectCurrentExtraction({ proposal: buildFallbackProposal({ extraction, source: input.source, evidence, reason }),
       extraction, source: input.source, selection: input.selection, evidence, attachmentIdentityByRef, observations });
+    const fallbackProposal = fallbackProjection.proposal;
+    const safeClaims = referenceSafety?.proposal;
+    if (safeClaims && extractionProjection) {
+      const nativeConfirmation = /\b\d{6,10}-\d{1,2}\b/;
+      const canonicalPath = /^\/proposal\/content\/requests\/([^/]+)\/confirmationReference(?:\/.*)?$/;
+      for (const request of safeClaims.content.requests) {
+        if (request.kind !== 'create') continue;
+        const guardedPath = `/proposal/content/requests/${request.id}/confirmationReference`;
+        if (!safeClaims.issues.some((issue) => issue.path === guardedPath &&
+          (issue.kind === 'existing_confirmation_requires_lookup' || issue.kind === 'existing_confirmation_requires_review'))) continue;
+        const extractedId = extractionProjection.extractionIdByProposalRequestId.get(request.id);
+        if (!extractedId) continue;
+        const targets = fallbackProposal.content.requests.filter((candidate) => candidate.kind === 'create' &&
+          fallbackProjection.extractionIdByProposalRequestId.get(candidate.id) === extractedId);
+        if (!targets.length) continue;
+        for (const claim of safeClaims.sourceClaims) {
+          const match = canonicalPath.exec(claim.path);
+          if (match?.[1] !== request.id || !nativeConfirmation.test(claim.raw)) continue;
+          const sourceRefs = [...new Set(claim.sourceRefs.filter((ref) => currentRefs.has(ref)))];
+          if (!sourceRefs.length) continue;
+          for (const target of targets) {
+            const path = `/proposal/content/requests/${target.id}/confirmationReference`;
+            if (fallbackProposal.sourceClaims.some((existing) => existing.path === path && existing.raw === claim.raw &&
+              existing.sourceRefs.length === sourceRefs.length && sourceRefs.every((ref) => existing.sourceRefs.includes(ref)))) continue;
+            fallbackProposal.sourceClaims.push({ path, raw: claim.raw, sourceRefs });
+          }
+        }
+      }
+    }
     const fallbackSafety = addRequestConfirmationSafety({ proposal: fallbackProjection.proposal, extraction: currentActions,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
       currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence });
