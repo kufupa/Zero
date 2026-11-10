@@ -17,6 +17,7 @@ export type WorkbenchCommands = {
   selectNative(path: string, observationRef: string): Promise<void>;
   verifyNativeLead?(path: string, observationRef: string): Promise<void>;
   lookup(): Promise<void>;
+  lookupChoices?(path: string): Promise<void>;
   guestProfileOptions(allocationId: string, field: ReservationGuestProfileOptionField): Promise<Record<string, unknown>>;
   createGuestProfile(allocationId: string, confirmDuplicateName?: boolean): Promise<void>;
   guestProfilePending(allocationId: string): string | null;
@@ -147,6 +148,7 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
     if (observation.status !== 'complete' || (!catalogue && record(observation.coverage).complete !== true) ||
         observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
         observation.sourceMessageId !== draft.source.messageId ||
+        (catalogue && criteria.sourceHash !== undefined && criteria.sourceHash !== draft.source.sourceHash) ||
         (kind && observation.kind !== kind && observation.criteria.catalogueKind !== kind)) return [];
     if (criteria.kind === 'verified_native_row' && !currentIdentityRow(snapshot, path, observation, true)) return [];
     const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
@@ -159,7 +161,13 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
     return candidates.map(raw => { const row = record(raw); const code = text(row.code ?? row.nativeCode ?? row.name ?? [row.firstName, row.lastName].filter(Boolean).join(' '));
       return { ref: observation.ref, value: code, label: text(row.label ?? row.name) || code, detail: [row.meaning ?? row.description, row.nativeId, row.email].filter(Boolean).join(' · ') }; }).filter(row => row.value);
   });
-  return choices.filter((row, index) => choices.findIndex(v => v.ref === row.ref && v.value === row.value) === index);
+  const identities = kind === 'guest_candidate' || kind === 'party_candidate';
+  const latest = new Map<string, NativeChoice>();
+  for (const row of choices) {
+    const key = identities ? JSON.stringify([row.ref, row.value]) : row.value;
+    latest.delete(key); latest.set(key, row);
+  }
+  return [...latest.values()];
 }
 
 /** Incomplete native searches are useful leads, never selectable identities. */

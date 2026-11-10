@@ -313,6 +313,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       return run(context => verifyNativeLead.call(client, { ...context, requestId: requireRequest(), fieldPath, observationRef }));
     } } : {}),
     lookup() { return run(context => client.lookup({ ...context, requestId: requireRequest() })); },
+    lookupChoices(nativeFieldPath) { return run(context => client.lookup({ ...context, requestId: requireRequest(), nativeFieldPath })); },
     async guestProfileOptions(allocationId, field) {
       const requestId = requireRequest();
       let reply: Record<string, unknown> = {};
@@ -325,7 +326,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     },
     createGuestProfile(allocationId, confirmDuplicateName = false) {
       if (preview) return Promise.reject(new Error('Preview only. Profile creation is disabled.'));
-      if (uncommitted.size) return Promise.reject(new Error('Apply changed fields before creating a profile.'));
+      if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before creating a profile.'));
       const requestId = requireRequest();
       const inFlightKey = guestAttemptKey(source, requestId, allocationId);
       if (guestCreatesInFlight.has(inFlightKey)) return Promise.reject(new Error('Profile creation is already in progress.'));
@@ -416,9 +417,9 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         return result;
       });
     },
-    prepare(allocationId) { if (uncommitted.size) return Promise.reject(new Error('Apply changed fields before checking Infor.')); return run(context => client.prepare({ ...context, requestId: requireRequest(), allocationId })); },
+    prepare(allocationId) { if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before checking Infor.')); return run(context => client.prepare({ ...context, requestId: requireRequest(), allocationId })); },
     review(scope, ids) { return run(context => client.reviewScope({ ...context, requestId: requireRequest(), scope, ids })); },
-    execute(allocationId) { if (uncommitted.size) return Promise.reject(new Error('Apply changed fields before saving.')); if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.execute({ ...context, requestId: requireRequest(), allocationId, idempotencyKey: crypto.randomUUID() }), true); },
+    execute(allocationId) { if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before saving.')); if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.execute({ ...context, requestId: requireRequest(), allocationId, idempotencyKey: crypto.randomUUID() }), true); },
     reconcile(operationId) { return run(context => {
       const operation = context.snapshot.operationResults.find(row => row.id === operationId);
       return operation?.workflow === 'services' ? client.reconcileServices({ ...context, operationId }) : client.reconcile({ ...context, operationId });

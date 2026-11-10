@@ -144,7 +144,7 @@ export interface ReservationWorkflowClient {
   review(input: ReservationReviewCommand): Promise<ReservationPaneSnapshot>;
   undo(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;
   redo(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;
-  lookup(input: ReservationCommandContext & { requestId?: string }): Promise<ReservationPaneSnapshot>;
+  lookup(input: ReservationCommandContext & { requestId?: string; nativeFieldPath?: string }): Promise<ReservationPaneSnapshot>;
   guestProfileOptions(input: ReservationCommandContext & { requestId: string; allocationId: string;
     field: ReservationGuestProfileOptionField }): Promise<ReservationPaneSnapshot>;
   prepareGuestProfile(input: ReservationGuestProfileCommand): Promise<ReservationPaneSnapshot>;

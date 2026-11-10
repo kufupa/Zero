@@ -112,7 +112,7 @@ export function Field({ label, path, editor, type = 'text', options, disabled, h
     version.current += 1; setLocal(value); setDirty(true); const parsed = parsedValue(value);
     editor.commands.stageEdit(path, parsed, stateFor(value, parsed));
   };
-  return <div className={`${styles.field} ${compact ? styles.compactField : ''}`}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label>{!compact && (review ? <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} requireReview={requireReview} disabled={disabled} /> : <FieldSource editor={editor} path={path} label={label} />)}</div>
+  return <div data-field-path={path} className={`${styles.field} ${compact ? styles.compactField : ''}`}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label>{!compact && (review ? <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} requireReview={requireReview} disabled={disabled} /> : <FieldSource editor={editor} path={path} label={label} />)}</div>
     <div className={styles.controlSlot}>
     {type === 'checkbox' ? <input id={id} type="checkbox" checked={saved === true} disabled={disabled || reviewing || editor.view.busy}
       onChange={event => { void editor.commands.edit(path, event.target.checked).catch(() => {}); }} />
@@ -130,7 +130,7 @@ export function Count({ label, path, editor, min = 0, max = 12, review = false, 
   const value = valueAt(editor.snapshot, path);
   const numeric = typeof value === 'number' ? value : null;
   const change = (next: number) => { void editor.commands.edit(path, Math.max(min, Math.min(max, next))).catch(() => {}); };
-  return <div className={styles.field}><div className={styles.fieldLabel}><label>{label}</label>{review && <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} />}</div>{asSelect
+  return <div data-field-path={path} className={styles.field}><div className={styles.fieldLabel}><label>{label}</label>{review && <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} />}</div>{asSelect
     ? <select aria-label={label} value={numeric ?? ''} disabled={reviewing || editor.view.busy} onChange={event => { if (event.target.value !== '') change(Number(event.target.value)); }}>
       <option value="">Choose…</option>{numeric !== null && (numeric < min || numeric > max) && <option value={numeric}>{numeric}</option>}
       {Array.from({ length: max - min + 1 }, (_, i) => min + i).map(option => <option key={option} value={option}>{option}</option>)}

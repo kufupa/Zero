@@ -276,7 +276,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
   if (reloading) return <p className="p-4 text-sm text-slate-600">Loading the latest Nava pane…</p>;
   const currentEvidencePreview = sourceEvidencePreview?.owner === owner ? sourceEvidencePreview : null;
   return (
-    <div className="flex h-full min-h-0 flex-col bg-slate-50 text-slate-800">
+    <div className={`flex ${preview ? 'h-full' : 'h-screen'} min-h-0 flex-col overflow-hidden bg-slate-50 text-slate-800`}>
       <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-white p-3">
         <div className="min-w-0"><strong className="text-base">Nava</strong>
           <p className="truncate text-xs text-slate-500">{connection?.email || 'Select a mailbox'}</p></div>
