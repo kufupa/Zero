@@ -1705,6 +1705,40 @@ function bindExistingVoucherFiling(input: {
   return true;
 }
 
+function voucherFilingTaskIds(sourceMessageId: string, createId: string, allocationId: string,
+  voucher?: CurrentPdfEvidence): { filingId: string; documentId: string | null } {
+  const filingId = stableId(sourceMessageId, 'create_voucher_filing', createId, allocationId,
+    voucher?.documentRef ?? 'select_pdf');
+  return { filingId, documentId: voucher ? stableId(filingId, 'voucher_document', voucher.documentRef) : null };
+}
+
+function appendVoucherFilingTask(input: {
+  proposal: ReservationWorkflowV2Proposal;
+  sourceMessageId: string;
+  create: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'create' }>;
+  allocation: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'create' }>['body']['allocations'][number];
+  voucher?: CurrentPdfEvidence;
+  sourceRefs: string[];
+}): void {
+  const { filingId, documentId } = voucherFilingTaskIds(input.sourceMessageId, input.create.id,
+    input.allocation.id, input.voucher);
+  const sourceRefs = [...new Set([...input.sourceRefs, ...(input.voucher?.sourceRefs ?? [])])].slice(0, 100);
+  const hintId = stableId(filingId, 'allocation_hint', input.create.id, input.allocation.id);
+  const targets = { mode: 'explicit' as const,
+    include: [{ id: hintId, candidateRefs: [], suggestedRef: null, sourceRefs }], exclude: [], sourceRefs };
+  input.proposal.content.requests.push({ id: filingId,
+    requestText: input.voucher
+      ? 'File the source-cited agency booking voucher to this Create allocation after the booking succeeds.'
+      : 'Choose the correct current PDF for Filing to this Create allocation after the booking succeeds.',
+    sourceRefs, serviceRefs: [], documentRefs: documentId ? [documentId] : [], kind: 'filing',
+    body: { targets, allocationTarget: { requestId: input.create.id, allocationId: input.allocation.id } } });
+  if (input.voucher && documentId) input.proposal.content.documents.push({ id: documentId, ownerRequestId: filingId,
+    documentSourceRef: input.voucher.documentRef, kind: 'voucher', handling: 'filing_requested',
+    targetRefs: [{ kind: 'saved_target', requestId: filingId, hintId },
+      { kind: 'allocation', requestId: input.create.id, allocationId: input.allocation.id }],
+    requestedName: null, requestedDescription: null, uploadArtifactRef: null, sourceRefs });
+}
+
 function holdCreateForExistingVoucherStay(input: {
   proposal: ReservationWorkflowV2Proposal;
   createId: string;
@@ -1813,8 +1847,9 @@ function projectAgencyVoucherFilings(input: {
     const voucherRefSet = new Set(vouchers.map((voucher) => voucher.documentRef));
     const linkedDocuments = new Set(input.proposal.content.documents.filter((document) => voucherRefSet.has(document.documentSourceRef))
       .map((document) => document.id));
-    const existingFiling = input.proposal.content.requests.find((other) => other.kind === 'filing' &&
+    const existingFilings = input.proposal.content.requests.filter((other) => other.kind === 'filing' &&
       (other.sourceRefs.some((ref) => voucherRefSet.has(ref)) || other.documentRefs.some((ref) => linkedDocuments.has(ref))));
+    const existingFiling = existingFilings.length === 1 ? existingFilings[0] : undefined;
     const additionalNewRoom = explicitAdditionalNewRoom(extracted, input.currentRefs);
     const nativeStayMatch = !additionalNewRoom && hasCurrentBoundNativeStay(extracted, input.currentRefs,
       input.sourceMessageId, input.observations);
@@ -1838,14 +1873,33 @@ function projectAgencyVoucherFilings(input: {
       }
       const allocations = projectSourceCreateAllocations({ request, extracted, currentRefs: input.currentRefs });
       const automaticVoucher = vouchers.length === 1 ? vouchers[0] : undefined;
-      const bound = existingFiling.kind === 'filing' && automaticVoucher && !allocations.failure && allocations.allocations.length === 1 &&
+      const followOnAllocations = automaticVoucher && !allocations.failure && allocations.allocations.length > 1
+        ? allocations.allocations.slice(1) : [];
+      const followOnIds = followOnAllocations.map((allocation) => voucherFilingTaskIds(input.source.messageId,
+        request.id, allocation.id, automaticVoucher));
+      const followOnSafe = input.proposal.content.requests.length + followOnIds.length <= 200 &&
+        input.proposal.content.documents.length + followOnIds.length <= 200 &&
+        new Set(followOnIds.map((identity) => identity.filingId)).size === followOnIds.length &&
+        new Set(followOnIds.flatMap((identity) => identity.documentId ? [identity.documentId] : [])).size === followOnIds.length &&
+        followOnIds.every((identity) => !input.proposal.content.requests.some((row) => row.id === identity.filingId) &&
+          !input.proposal.content.documents.some((row) => row.id === identity.documentId));
+      const canBindAll = allocations.allocations.length > 0 &&
+        (allocations.allocations.length === 1 || followOnSafe);
+      const bound = existingFiling.kind === 'filing' && automaticVoucher && !allocations.failure && canBindAll &&
         bindExistingVoucherFiling({ proposal: input.proposal, create: request, filing: existingFiling,
           voucher: automaticVoucher, allocationId: allocations.allocations[0]!.id, sourceRefs: refs });
+      if (bound && allocations.allocations.length > 1 && automaticVoucher) {
+        for (const allocation of followOnAllocations) appendVoucherFilingTask({ proposal: input.proposal,
+          sourceMessageId: input.source.messageId, create: request, allocation, voucher: automaticVoucher, sourceRefs: refs });
+        added += followOnAllocations.length;
+      }
       addProjectionIssue(input.proposal, { path: `/requests/${existingFiling.id}/body/targets`,
         kind: bound ? 'voucher_filing_request_bound' : 'voucher_filing_request_retained',
         explanation: bound
-          ? 'The existing same-voucher Filing request is linked to the exact single Create allocation; no duplicate Filing request was added.'
-          : 'A source Filing request already references this voucher. Its existing destination was preserved; resolve any missing or multi-room allocation target manually.',
+          ? allocations.allocations.length === 1
+            ? 'The existing same-voucher Filing request is linked to the exact Create allocation; no duplicate Filing request was added.'
+            : 'The existing same-voucher Filing request is linked to the first exact Create allocation; separate Filing tasks for remaining allocations cite the same original PDF.'
+          : 'A source Filing request already references this voucher. Its existing destination was preserved; resolve any missing or unsafe allocation target manually.',
         evidenceRefs: [...refs, ...existingFiling.sourceRefs.filter((ref) => input.currentRefs.has(ref))] });
       continue;
     }
@@ -1855,6 +1909,12 @@ function projectAgencyVoucherFilings(input: {
       addProjectionIssue(input.proposal, { path: `/requests/${request.id}/confirmationReference`, kind: 'voucher_existing_booking_guard',
         explanation: 'A canonical current HMS confirmation or a complete source-bound native stay read indicates an existing booking. The voucher is retained as source evidence, but no duplicate Create-to-Filing task was generated.',
         evidenceRefs: refs });
+      continue;
+    }
+    if (existingFilings.length > 1) {
+      addProjectionIssue(input.proposal, { path: `/requests/${request.id}/documents`, kind: 'voucher_filing_request_retained',
+        explanation: 'Several existing Filing requests reference this voucher. Their destinations were preserved; staff must resolve which task belongs to each Create allocation.',
+        evidenceRefs: [...refs, ...existingFilings.flatMap((filing) => filing.sourceRefs.filter((ref) => input.currentRefs.has(ref)))] });
       continue;
     }
     const allocations = projectSourceCreateAllocations({ request, extracted, currentRefs: input.currentRefs });
@@ -1874,13 +1934,14 @@ function projectAgencyVoucherFilings(input: {
         evidenceRefs: refs });
       continue;
     }
-    const generatedIds = allocations.allocations.map((allocation) => stableId(input.source.messageId,
-      'create_voucher_filing', request.id, allocation.id, automaticVoucher?.documentRef ?? 'select_pdf'));
-    const generatedDocumentIds = automaticVoucher ? allocations.allocations.map((allocation) => stableId(
-      stableId(input.source.messageId, 'create_voucher_filing', request.id, allocation.id, automaticVoucher.documentRef),
-      'voucher_document', automaticVoucher.documentRef)) : [];
+    const generatedIdentities = allocations.allocations.map((allocation) => voucherFilingTaskIds(input.source.messageId,
+      request.id, allocation.id, automaticVoucher));
+    const generatedIds = generatedIdentities.map((identity) => identity.filingId);
+    const generatedDocumentIds = generatedIdentities.flatMap((identity) => identity.documentId ? [identity.documentId] : []);
     if (generatedIds.some((id) => input.proposal.content.requests.some((row) => row.id === id)) ||
-        generatedDocumentIds.some((id) => input.proposal.content.documents.some((row) => row.id === id))) {
+        new Set(generatedIds).size !== generatedIds.length ||
+        generatedDocumentIds.some((id) => input.proposal.content.documents.some((row) => row.id === id)) ||
+        new Set(generatedDocumentIds).size !== generatedDocumentIds.length) {
       addProjectionIssue(input.proposal, { path: `/requests/${request.id}/documents`, kind: 'voucher_filing_id_collision',
         explanation: 'A generated Filing identity conflicts with existing proposal data; no dependent task was added.', evidenceRefs: refs });
       continue;
@@ -1903,28 +1964,8 @@ function projectAgencyVoucherFilings(input: {
 
     for (const allocation of allocations.allocations) {
       const sourceRefs = [...new Set([...refs, ...(automaticVoucher?.sourceRefs ?? [])])].filter((ref) => input.currentRefs.has(ref)).slice(0, 100);
-      const filingId = stableId(input.source.messageId, 'create_voucher_filing', request.id, allocation.id,
-        automaticVoucher?.documentRef ?? 'select_pdf');
-      if (input.proposal.content.requests.some((row) => row.id === filingId)) {
-        addProjectionIssue(input.proposal, { path: `/requests/${request.id}/documents`, kind: 'voucher_filing_id_collision',
-          explanation: 'A generated Filing identity conflicts with another request; no task was duplicated.', evidenceRefs: sourceRefs });
-        continue;
-      }
-      const hintId = stableId(filingId, 'allocation_hint', request.id, allocation.id);
-      const targets = { mode: 'explicit' as const,
-        include: [{ id: hintId, candidateRefs: [], suggestedRef: null, sourceRefs }], exclude: [], sourceRefs };
-      const documentId = automaticVoucher ? stableId(filingId, 'voucher_document', automaticVoucher.documentRef) : null;
-      input.proposal.content.requests.push({ id: filingId,
-        requestText: automaticVoucher
-          ? 'File the source-cited agency booking voucher to this Create allocation after the booking succeeds.'
-          : 'Choose the correct current PDF for Filing to this Create allocation after the booking succeeds.',
-        sourceRefs, serviceRefs: [], documentRefs: documentId ? [documentId] : [], kind: 'filing',
-        body: { targets, allocationTarget: { requestId: request.id, allocationId: allocation.id } } });
-      if (automaticVoucher && documentId) input.proposal.content.documents.push({ id: documentId, ownerRequestId: filingId,
-        documentSourceRef: automaticVoucher.documentRef, kind: 'voucher', handling: 'filing_requested',
-        targetRefs: [{ kind: 'saved_target', requestId: filingId, hintId },
-          { kind: 'allocation', requestId: request.id, allocationId: allocation.id }],
-        requestedName: null, requestedDescription: null, uploadArtifactRef: null, sourceRefs });
+      appendVoucherFilingTask({ proposal: input.proposal, sourceMessageId: input.source.messageId,
+        create: request, allocation, voucher: automaticVoucher, sourceRefs });
       added += 1;
     }
     addProjectionIssue(input.proposal, { path: `/requests/${request.id}/filing`, kind: 'create_voucher_filing_dependency',
@@ -2571,6 +2612,17 @@ function addRequestConfirmationSafety(input: {
   evidence: ReservationWorkflowV2Evidence[];
 }): { proposal: ReservationWorkflowV2Proposal } {
   const proposal = structuredClone(input.proposal);
+  // Synthesis sometimes promotes a supplier/travel-agent reference into the
+  // canonical HMS confirmation path. Keep that verbatim source text available
+  // for staff, but reserve the canonical path and its safety issues for exact
+  // host-validated native confirmation hints below.
+  proposal.sourceClaims = proposal.sourceClaims.map((claim, claimIndex) => {
+    const match = /^\/proposal\/content\/requests\/([^/]+)\/confirmationReference(?:\/.*)?$/.exec(claim.path);
+    return match
+      ? { ...claim, path: `/requests/${match[1]}/confirmationHints/model_${claimIndex}` }
+      : claim;
+  });
+  proposal.issues = proposal.issues.filter((issue) => !issue.kind.startsWith('existing_confirmation_'));
   for (const [requestIndex, request] of proposal.content.requests.entries()) {
     if (request.kind !== 'create' && request.kind !== 'amend' && request.kind !== 'cancel') continue;
     const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction,
