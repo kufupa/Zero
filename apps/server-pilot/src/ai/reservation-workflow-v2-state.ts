@@ -363,7 +363,7 @@ function prefillSnapshot(draft: ReservationWorkflowV2Draft): string {
 function abandonedPrefill(startedAt: string | null, now = Date.now()): boolean {
   if (!startedAt) return false;
   const started = Date.parse(startedAt);
-  return Number.isFinite(started) && now - started >= 5 * 60_000;
+  return Number.isFinite(started) && now - started >= 12 * 60_000;
 }
 
 /** Metadata is not a human edit and never advances the pane cursor. */

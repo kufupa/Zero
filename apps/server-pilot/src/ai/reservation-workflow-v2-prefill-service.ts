@@ -59,6 +59,7 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
   mailboxAddress: string | null | undefined, allowRetry: boolean, jobFence?: ReservationPrefillJobFence, signal?: AbortSignal, parentSignal?: AbortSignal) {
   const claimed = await claimReservationWorkflowV2Prefill(scoped, { ...input, allowRetry, jobFence });
   if (!claimed.claim) return claimed.result;
+  signal ??= AbortSignal.timeout(9 * 60_000);
   let activeClaim = claimed.claim;
   try {
     const selection = await loadSyncedQuoteSelectionFromMailbox({ db: scoped.db, transportId: scoped.transportId,
@@ -83,7 +84,8 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
         message: `Some attachments could not be copied: ${missing.map((entry) => entry.fileName || entry.role).join(', ')}`.slice(0, 1000) }];
     }
     const failed = !generated.sourceBound || (generated.skippedReason !== undefined && generated.skippedReason !== 'self_prestay') ||
-      (generated.errors ?? []).some((error) => error.stage === 'extract');
+      (generated.errors ?? []).some((error) => error.stage === 'extract' ||
+        (error.stage === 'synthesis' && ['model_timeout', 'model_error'].includes(error.code)));
     return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: activeClaim, failed, jobFence,
       seed: generated.sourceBound && !generated.skippedReason ? { generationId: generated.generationId,
         status: generated.status, ...(generated.extraction ? { extraction: generated.extraction } : {}),
@@ -151,18 +153,19 @@ export async function executeReservationArrival(input: {
       failureClass: 'POLICY_BLOCK' }, db);
     return 'dead_letter';
   }
-  const transientExtractionFailure = result.draft.errors.some((error) => error.stage === 'extract' &&
+  const transientModelFailure = result.draft.errors.some((error) => ['extract', 'synthesis'].includes(error.stage) &&
     ['model_timeout', 'model_error'].includes(error.code));
-  if (result.draft.prefill?.status === 'failed' && transientExtractionFailure &&
+  const failureSummary = result.draft.errors.map(error => `${error.stage}:${error.code}`).join(', ').slice(0, 800) || 'generation:prefill_unavailable';
+  if (result.draft.prefill?.status === 'failed' && transientModelFailure &&
       run.attempts < 1 && result.draft.prefill.attemptCount < 2) {
     const retry = await markAiRunRetry({ ...fence, expectedStates: ['running'], attempts: run.attempts + 1,
-      nextRunAt: new Date(Date.now() + 5 * 60_000), lastError: 'reservation prefill incomplete',
+      nextRunAt: new Date(Date.now() + 5 * 60_000), lastError: `reservation prefill incomplete (${failureSummary})`,
       failureClass: 'BEDROCK_TRANSIENT', resetDeadline: true }, db);
     return retry ? 'retry_wait' : 'dead_letter';
   }
   if (result.draft.prefill?.status === 'failed') {
-    await markAiRunDeadLetter({ ...fence, expectedStates: ['running'], lastError: 'reservation prefill attempts exhausted',
-      failureClass: transientExtractionFailure ? 'BEDROCK_TRANSIENT' : 'POLICY_BLOCK' }, db);
+    await markAiRunDeadLetter({ ...fence, expectedStates: ['running'], lastError: `reservation prefill attempts exhausted (${failureSummary})`,
+      failureClass: transientModelFailure ? 'BEDROCK_TRANSIENT' : 'POLICY_BLOCK' }, db);
     return 'dead_letter';
   }
   if (result.draft.prefill?.status === 'running' && result.draft.prefill.phase === 'native_checks' &&
