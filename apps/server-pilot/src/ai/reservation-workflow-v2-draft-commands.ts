@@ -509,6 +509,7 @@ export function separateCancelTargetDraft(draft: ReservationWorkflowV2Draft, req
   const sourceRefs = [...new Set([...request.sourceRefs, ...scope.sourceRefs, ...newHint.sourceRefs, ...exclusionSourceRefs])];
   const targetSourceRefs = [...new Set([...scope.sourceRefs, ...newHint.sourceRefs, ...exclusionSourceRefs])];
   if (sourceRefs.length > 100 || targetSourceRefs.length > 100) return null;
+  const before = structuredClone(proposal);
   const remainingTargets = { ...scope, mode: 'explicit' as const,
     include: scope.include.filter(row => row.id !== targetHintId) };
   request.body.targets = remainingTargets;
@@ -522,7 +523,6 @@ export function separateCancelTargetDraft(draft: ReservationWorkflowV2Draft, req
     serviceRefs: [], documentRefs: [],
     body: { ...effectiveBody, targets: { ...scope, mode: 'explicit', include: [newHint], exclude: exclusions, sourceRefs: targetSourceRefs },
       previewObservationRefs: [] } };
-  const before = structuredClone(proposal);
   proposal.content.requests.push(splitRequest);
   const next = rebase(draft, before, proposal, [`${requestRoot}/body/previewObservationRefs`]);
   return { draft: next, createdId: newRequestId };
