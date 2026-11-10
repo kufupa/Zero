@@ -1010,6 +1010,14 @@ function currentClaim<T extends { sourceRefs: string[] }>(claim: T | undefined, 
   return claim?.sourceRefs.some((ref) => currentRefs.has(ref)) ? claim : undefined;
 }
 
+function priorOnlySourceRefs(claims: Array<{ sourceRefs: string[] } | undefined>,
+  currentRefs: Set<string>, knownRefs: Set<string>): string[] {
+  const cited = claims.filter((claim): claim is { sourceRefs: string[] } =>
+    Boolean(claim?.sourceRefs.some((ref) => knownRefs.has(ref))));
+  if (!cited.length || cited.some((claim) => claim.sourceRefs.some((ref) => currentRefs.has(ref)))) return [];
+  return [...new Set(cited.flatMap((claim) => claim.sourceRefs.filter((ref) => knownRefs.has(ref))))];
+}
+
 function safeCurrentText(claim: { value: unknown; sourceRefs: string[] } | undefined,
   currentRefs: Set<string>, max: number): string | null | undefined {
   const source = currentClaim(claim, currentRefs);
@@ -1258,6 +1266,22 @@ function normalizedFact(value: unknown): string {
   return typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US') : '';
 }
 
+function boardMeaning(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim().toLocaleLowerCase('en-US').replace(/[\s&-]+/gu, '_');
+  const compact = normalized.replace(/_/g, '');
+  if (['room_only', 'roomonly', 'ro'].includes(normalized)) return 'room_only';
+  if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast'].includes(normalized) || compact === 'bedandbreakfast') return 'bb';
+  if (['dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_and_breakfast'].includes(normalized)) return 'dinner_bb';
+  return normalizedFact(value);
+}
+
+function boardValue(value: unknown): string | null {
+  const meaning = boardMeaning(value);
+  return ['room_only', 'bb', 'dinner_bb'].includes(meaning) ? meaning :
+    typeof value === 'string' ? value.trim() : null;
+}
+
 function projectPartyFact(target: Record<string, unknown>, field: string,
   claim: ReservationWorkflowV2Extraction['requests'][number]['parties'][number]['name'] | undefined,
   currentRefs: Set<string>): void {
@@ -1382,25 +1406,27 @@ function singleCurrentDatePair(dates: ProjectableDateClaim[], currentRefs: Set<s
   return !partial && pairs.size === 1 ? [...pairs][0]! : null;
 }
 
-function exactSourceCode(claim: { raw: string; value: unknown }): string | null {
+function exactSourceCode(claim: { raw: string; value: unknown }, kind: 'room' | 'rate'): string | null {
   if (typeof claim.value !== 'string') return null;
   const code = claim.value.trim();
   if (!/^[A-Z][A-Z0-9_-]{0,15}$/.test(code)) return null;
   if (/^(?:R|ZAR|USD|GBP|EUR|AUD|CAD)\s*\d+(?:[.,]\d{1,2})?$/i.test(code)) return null;
   const raw = claim.raw.trim();
-  if (raw.toUpperCase() === code) return code;
+  const explicitlyLabeled = kind === 'room'
+    ? /\broom\s*(?:type\s*)?code\b/i.test(raw)
+    : /\brate\s*(?:plan\s*)?(?:code|plan)\b/i.test(raw);
+  if (!explicitlyLabeled) return null;
   const tokens = raw.toUpperCase().split(/[^A-Z0-9_-]+/).filter(Boolean);
-  const explicitlyLabeled = /\b(?:room\s*(?:type\s*)?code|rate\s*(?:plan\s*)?(?:code|plan))\b/i.test(raw);
-  return explicitlyLabeled && tokens.includes(code) ? code : null;
+  return tokens.includes(code) ? code : null;
 }
 
 function currentSourceCodes(claims: Array<{ raw: string; value: unknown; sourceRefs: string[] }>,
-  currentRefs: Set<string>): { codes: string[]; sourceRefs: string[] } {
+  currentRefs: Set<string>, kind: 'room' | 'rate'): { codes: string[]; sourceRefs: string[] } {
   const byCode = new Map<string, Set<string>>();
   for (const claim of claims) {
     const current = currentClaim(claim, currentRefs);
     if (!current) continue;
-    const code = exactSourceCode(current);
+    const code = exactSourceCode(current, kind);
     if (!code) continue;
     const refs = byCode.get(code) ?? new Set<string>();
     current.sourceRefs.filter((ref) => currentRefs.has(ref)).forEach((ref) => refs.add(ref));
@@ -2549,6 +2575,72 @@ function projectCurrentExtraction(input: {
     if (request.kind === 'filing') projectSingleSourceFilingHint({ proposal, request, extracted,
       extraction: currentExtraction, currentRefs, evidence: input.evidence });
 
+    // Synthesis can echo an otherwise current request's old room facts from a prior
+    // thread. Request-level sourceRefs are not field provenance, so clear only fields
+    // whose typed extraction claims have no current-source citation.
+    const sourceExtracted = input.extraction.requests.find((candidate) =>
+      candidate.id === extracted.id && candidate.kind === extracted.kind) ?? extracted;
+    const priorRoomCountRefs = priorOnlySourceRefs([sourceExtracted.roomCount], currentRefs, knownRefs);
+    const priorBoardRefs = priorOnlySourceRefs(sourceExtracted.boardHints, currentRefs, knownRefs);
+    const priorRoomCodeRefs = priorOnlySourceRefs(sourceExtracted.roomTypeHints, currentRefs, knownRefs);
+    const isPriceRateHint = (claim: { raw: string; value: unknown }) => typeof claim.value === 'string' &&
+      /[€£$]|\b(?:USD|GBP|EUR|AUD|CAD)\b|\b(?:per|nightly?|total|person|room)\b|^\s*(?:R|ZAR)\s*\d+(?:\.\d{1,2})?\s*$|^\s*\d+(?:\.\d{1,2})?\s*$/i.test(claim.raw);
+    const priorRatePlanRefs = priorOnlySourceRefs(sourceExtracted.rateHints.filter((claim) => !isPriceRateHint(claim)), currentRefs, knownRefs);
+    const priorOccupancyRefs = priorOnlySourceRefs(sourceExtracted.occupancy.flatMap((row) =>
+      [row.adults, row.childCount, ...(row.childAges ?? [])]), currentRefs, knownRefs);
+    const clearedPriorRefs: string[] = [];
+    if (request.kind === 'quote') {
+      if (priorRoomCountRefs.length) {
+        request.body.groups.forEach((group) => { group.quantity = null; });
+        clearedPriorRefs.push(...priorRoomCountRefs);
+      }
+      if (priorBoardRefs.length) {
+        request.body.groups.forEach((group) => { group.board = null; });
+        clearedPriorRefs.push(...priorBoardRefs);
+      }
+      if (priorRoomCodeRefs.length) {
+        request.body.groups.forEach((group) => { group.roomCodes = []; });
+        clearedPriorRefs.push(...priorRoomCodeRefs);
+      }
+      if (priorRatePlanRefs.length) {
+        request.body.groups.forEach((group) => { group.ratePlan = null; });
+        clearedPriorRefs.push(...priorRatePlanRefs);
+      }
+      if (priorOccupancyRefs.length) {
+        request.body.groups.forEach((group) => { group.occupancy = {
+          scope: 'unresolved', adults: null, childCount: null, childAges: null,
+        }; });
+        clearedPriorRefs.push(...priorOccupancyRefs);
+      }
+    } else if (request.kind === 'create') {
+      if (priorRoomCountRefs.length) {
+        request.body.dateSections.forEach((section) => { section.requestedRooms = null; });
+        clearedPriorRefs.push(...priorRoomCountRefs);
+      }
+      if (priorRoomCodeRefs.length || priorRatePlanRefs.length) {
+        const bookingFields = [request.body.shared, ...request.body.dateSections.map((section) => section.defaults),
+          ...request.body.allocations.map((allocation) => allocation.overrides)];
+        bookingFields.forEach((fields) => {
+          if (priorRoomCodeRefs.length) fields.roomType = null;
+          if (priorRatePlanRefs.length) fields.ratePlan = null;
+        });
+        clearedPriorRefs.push(...priorRoomCodeRefs, ...priorRatePlanRefs);
+      }
+      if (priorOccupancyRefs.length) {
+        request.body.dateSections.forEach((section) => { section.requestedTotals = {
+          adults: null, childCount: null, childAges: null,
+        }; });
+        request.body.allocations.forEach((allocation) => { allocation.occupancy = {
+          adults: null, childCount: null, childAges: null,
+        }; });
+        clearedPriorRefs.push(...priorOccupancyRefs);
+      }
+    }
+    if (clearedPriorRefs.length) addProjectionIssue(proposal, `/requests/${request.id}/body`,
+      'prior_booking_facts_not_current',
+      'Some booking details were supported only by earlier mail, not this request. They were cleared; confirm them from the current request before continuing.',
+      [...new Set(clearedPriorRefs)]);
+
     const projectedDates = extracted.dates;
     if (request.kind === 'quote') {
       const dateLinks = matchQuoteDateProjectionTargets({ targets: request.body.groups, dates: projectedDates, currentRefs });
@@ -2580,7 +2672,7 @@ function projectCurrentExtraction(input: {
       const currentDatePair = singleCurrentDatePair(projectedDates, currentRefs);
       const linkedQuoteGroups = [...new Set([...dateLinks.targetsByDate.values()].flat())];
       const currentRoomHints = extracted.roomTypeHints.filter((hint) => currentClaim(hint, currentRefs));
-      const roomCodes = currentSourceCodes(extracted.roomTypeHints, currentRefs);
+      const roomCodes = currentSourceCodes(extracted.roomTypeHints, currentRefs, 'room');
       const roomCount = currentClaim(extracted.roomCount, currentRefs);
       if (roomCount) {
         const count = citedInteger(roomCount);
@@ -2605,12 +2697,13 @@ function projectCurrentExtraction(input: {
         const claim = currentClaim(hint, currentRefs);
         return claim && typeof claim.value === 'string' && claim.value.trim() ? [claim] : [];
       });
-      const boardsByValue = new Map(currentBoards.map((claim) => [normalizedFact(claim.value), claim]));
+      const boardsByValue = new Map(currentBoards.map((claim) => [boardMeaning(claim.value), claim]));
       if (currentBoards.length && linkedQuoteGroups.length) {
         if (boardsByValue.size === 1) {
           const board = [...boardsByValue.values()][0]!;
           for (const groupIndex of linkedQuoteGroups) projectLimitedText({ proposal,
-            target: request.body.groups[groupIndex] as unknown as Record<string, unknown>, field: 'board', claim: board,
+            target: request.body.groups[groupIndex] as unknown as Record<string, unknown>, field: 'board',
+            claim: { ...board, value: boardValue(board.value) },
             currentRefs, max: 120, path: `/requests/${request.id}/body/groups/${groupIndex}/board` });
         } else {
           for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.board = null;
@@ -2679,7 +2772,7 @@ function projectCurrentExtraction(input: {
       }
 
       const currentRateHints = extracted.rateHints.filter((hint) => currentClaim(hint, currentRefs));
-      const rateCodes = currentSourceCodes(extracted.rateHints, currentRefs);
+      const rateCodes = currentSourceCodes(extracted.rateHints, currentRefs, 'rate');
       if (rateCodes.codes.length && currentDatePair && linkedQuoteGroups.length === request.body.groups.length) {
         if (rateCodes.codes.length === 1) {
           const code = rateCodes.codes[0]!;
@@ -2876,7 +2969,7 @@ function projectCurrentExtraction(input: {
         dateLinks.unlinkedDates.length === 0 && [...dateLinks.targetsByDate.values()].includes(0) &&
         datePairKey(request.body.dateSections[0]!.arrival, request.body.dateSections[0]!.departure) === currentDatePair;
       const currentRoomHints = extracted.roomTypeHints.filter((hint) => currentClaim(hint, currentRefs));
-      const roomCodes = currentSourceCodes(extracted.roomTypeHints, currentRefs);
+      const roomCodes = currentSourceCodes(extracted.roomTypeHints, currentRefs, 'room');
       if (currentRoomHints.length) {
         if (roomCodes.codes.length === 1 && oneSectionHasSourceDate) request.body.shared.roomType = roomCodes.codes[0]!;
         else {
@@ -2889,7 +2982,7 @@ function projectCurrentExtraction(input: {
         }
       }
       const currentRateHints = extracted.rateHints.filter((hint) => currentClaim(hint, currentRefs));
-      const rateCodes = currentSourceCodes(extracted.rateHints, currentRefs);
+      const rateCodes = currentSourceCodes(extracted.rateHints, currentRefs, 'rate');
       const nonPriceRateHintRefs = [...new Set(currentRateHints.filter((claim) =>
         typeof claim.value === 'string' && !matchesTypedRequestedPrice(extracted, claim, currentRefs) &&
         !/[€£$]|\b(?:USD|GBP|EUR|AUD|CAD)\b|\b(?:per|nightly?|total|person|room)\b|^\s*(?:R|ZAR)\s*\d+(?:\.\d{1,2})?\s*$|^\s*\d+(?:\.\d{1,2})?\s*$/i.test(claim.raw))
