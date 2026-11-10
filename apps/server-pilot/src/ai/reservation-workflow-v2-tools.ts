@@ -1911,7 +1911,8 @@ function savedCreateNativePrice(draft: ReservationWorkflowV2Draft, requestId: st
   const observations = draft.observations.filter((entry) => operation.observationRefs.includes(entry.ref));
   if (observations.length !== 1) return { completed: true, price: null };
   const observation = observations[0]!, result = record(observation.result);
-  const confirmation = result?.confirmation;
+  if (!result) return { completed: true, price: null };
+  const confirmation = result.confirmation;
   if (observation.kind !== 'stay_candidate' || observation.status !== 'complete' || !observation.coverage.complete ||
       observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
       observation.sourceMessageId !== draft.source.messageId || observation.criteria.workflow !== 'create' ||
