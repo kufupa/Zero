@@ -6,7 +6,7 @@ import type { ReservationWorkflowV2Draft, ReservationWorkflowV2Proposal } from '
 import { reservationWorkflowV2ProposalSchema, type reservationWorkflowV2AddActionInputSchema,
   type reservationWorkflowV2ChangeRowsInputSchema, type reservationWorkflowV2SelectNativeInputSchema,
   type reservationWorkflowV2ReviewScopeInputSchema } from './reservation-workflow-v2-contract.js';
-import { withLockedV2DraftMutation, reservationWorkflowV2SavedTargetLocked,
+import { withLockedV2DraftMutation, reservationWorkflowV2SavedTargetLocked, reservationWorkflowV2SavedTargetOperationLocks,
   type ReservationWorkflowV2Context } from './reservation-workflow-v2-state.js';
 import { nativeStructureIsSafe, rebaseReservationV2Path, rebaseReservationV2Observations } from './work-item-revision.js';
 import { sameGuestName } from './guest-name-match.js';
@@ -19,6 +19,7 @@ const rec = (value: unknown): Record<string, any> => value && typeof value === '
 const id = () => randomUUID();
 type FilingRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'filing' }>;
 type FilingTargetHint = NonNullable<FilingRequest['body']['targets']>['include'][number];
+type CancelRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'cancel' }>;
 const occupancy = () => ({ adults: null, childCount: null, childAges: null });
 const hint = () => ({ id: id(), candidateRefs: [], suggestedRef: null, sourceRefs: [] });
 const scope = () => ({ mode: 'explicit' as const, include: [hint()], exclude: [], sourceRefs: [] });
@@ -159,6 +160,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
         return true;
       };
       const paths = input.kind === 'separate_filing_target' ? ['/proposal/content/requests', '/proposal/content/documents', `${root}/documentRefs`]
+        : input.kind === 'separate_cancel_target' ? ['/proposal/content/requests', includeRoot]
         : input.kind === 'link_created_addon_target' ? ['/proposal/content/requests', '/proposal/content/services',
           `${root}/serviceRefs`, `${root}/body/allocations`]
         : input.kind.includes('allocation') ? [`${root}/body/allocations`]
@@ -174,8 +176,15 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
         const next = separateFilingTargetDraft(draft, input.requestId, input.documentId, input.targetHintId, input.targetDisposition);
         return next && safeStructure(original, next.draft) ? next : null;
       }
+      if (input.kind === 'separate_cancel_target') {
+        if (!input.entityId) return null;
+        const next = separateCancelTargetDraft(draft, input.requestId, input.entityId);
+        return next && safeStructure(original, next.draft) ? next : null;
+      }
       if (input.kind === 'link_created_addon_target') {
         if (!input.allocationId || !input.serviceId) return null;
+        const serviceIndex = proposal.content.services.findIndex(row => row.id === input.serviceId);
+        if (serviceIndex < 0 || !materializeArray(`${ptr('proposal', 'content', 'services', serviceIndex)}/targets`)) return null;
         const target = { kind: 'allocation' as const, requestId: input.requestId, allocationId: input.allocationId };
         let receipts: Awaited<ReturnType<typeof readResolvedHmsLabtestCreates>>;
         try { receipts = await readResolvedHmsLabtestCreates(tx, input.workItemId); }
@@ -456,6 +465,69 @@ function stableRowId(prefix: string, ...parts: string[]): string {
   return `${prefix}_${createHash('sha256').update(parts.join('\u001f')).digest('hex').slice(0, 32)}`;
 }
 
+/** Move one exact included Cancel stay into its own action so native reason/fee/review stay per-target. */
+export function separateCancelTargetDraft(draft: ReservationWorkflowV2Draft, requestId: string, targetHintId: string):
+  { draft: ReservationWorkflowV2Draft; createdId: string } | null {
+  const proposal = structuredClone(draft.proposal);
+  const request = proposal.content.requests.find(row => row.id === requestId);
+  if (!request || request.kind !== 'cancel' || draft.operationResults.some(row => row.requestId === requestId &&
+      reservationWorkflowV2SavedTargetOperationLocks(draft, row))) return null;
+
+  const requestRoot = ptr('proposal', 'content', 'requests', requestId);
+  const effectiveBody = effectiveTree(draft, `${requestRoot}/body`, request.body) as CancelRequest['body'];
+  const scope = effectiveBody.targets;
+  if (!scope || scope.mode !== 'explicit' || !Array.isArray(scope.include) || !Array.isArray(scope.exclude)) return null;
+
+  const newRequestId = stableRowId('cancel', draft.workItemId, requestId, targetHintId);
+  const newHintId = stableRowId('cancel_target', newRequestId, targetHintId);
+  const existing = proposal.content.requests.find(row => row.id === newRequestId);
+  if (existing) {
+    if (scope.include.some(row => row.id === targetHintId) || existing.kind !== 'cancel') return null;
+    const currentScope = existing.body.targets;
+    const currentHint = currentScope?.include.length === 1 ? currentScope.include[0] : undefined;
+    const expectedExclusions = scope.exclude.map(row => ({ ...row, candidateRefs: [], suggestedRef: null }));
+    const sameSplit = currentScope?.mode === 'explicit' && canonicalJson(currentScope.exclude) === canonicalJson(expectedExclusions) &&
+      currentHint?.id === newHintId && currentHint.candidateRefs.length === 0 && currentHint.suggestedRef === null &&
+      /^\d{6,10}-\d{1,2}$/.test(currentHint.confirmation ?? '') &&
+      canonicalJson(existing.body.reason) === canonicalJson(effectiveBody.reason) &&
+      existing.body.cancellationNote === effectiveBody.cancellationNote;
+    return sameSplit ? { draft, createdId: newRequestId } : null;
+  }
+  if (scope.include.length < 2 || proposal.content.requests.length >= 200) return null;
+  const selected = scope.include.filter(row => row.id === targetHintId);
+  if (selected.length !== 1) return null;
+  const sourceIndex = scope.include.findIndex(row => row.id === targetHintId);
+  const sourceHint = effectiveTree(draft, `${requestRoot}/body/targets/include/${sourceIndex}`, scope.include[sourceIndex]) as FilingTargetHint;
+  const confirmation = typeof sourceHint.confirmation === 'string' ? sourceHint.confirmation.trim() : '';
+  if (sourceHint.id !== targetHintId || !/^\d{6,10}-\d{1,2}$/.test(confirmation) ||
+      scope.include.some(row => row.id !== targetHintId && typeof row.confirmation === 'string' && row.confirmation.trim() === confirmation)) return null;
+
+  const newHint = { ...sourceHint, id: newHintId, confirmation,
+    candidateRefs: [], suggestedRef: null };
+  const exclusions = scope.exclude.map(row => ({ ...row, candidateRefs: [], suggestedRef: null }));
+  const exclusionSourceRefs = exclusions.flatMap(row => row.sourceRefs);
+  const sourceRefs = [...new Set([...request.sourceRefs, ...scope.sourceRefs, ...newHint.sourceRefs, ...exclusionSourceRefs])];
+  const targetSourceRefs = [...new Set([...scope.sourceRefs, ...newHint.sourceRefs, ...exclusionSourceRefs])];
+  if (sourceRefs.length > 100 || targetSourceRefs.length > 100) return null;
+  const remainingTargets = { ...scope, mode: 'explicit' as const,
+    include: scope.include.filter(row => row.id !== targetHintId) };
+  request.body.targets = remainingTargets;
+  request.body.reason = structuredClone(effectiveBody.reason);
+  request.body.cancellationNote = effectiveBody.cancellationNote;
+  request.body.previewObservationRefs = [];
+
+  const splitRequest: CancelRequest = { ...request, id: newRequestId,
+    requestText: `Cancel separately · ${confirmation}`,
+    sourceRefs,
+    serviceRefs: [], documentRefs: [],
+    body: { ...effectiveBody, targets: { ...scope, mode: 'explicit', include: [newHint], exclude: exclusions, sourceRefs: targetSourceRefs },
+      previewObservationRefs: [] } };
+  const before = structuredClone(proposal);
+  proposal.content.requests.push(splitRequest);
+  const next = rebase(draft, before, proposal, [`${requestRoot}/body/previewObservationRefs`]);
+  return { draft: next, createdId: newRequestId };
+}
+
 /** Clone exactly one Filing PDF/target pair without changing the source action or its exclusions. */
 export function separateFilingTargetDraft(draft: ReservationWorkflowV2Draft, requestId: string, documentId: string,
   targetHintId: string, disposition: 'included' | 'excluded'):
@@ -562,7 +634,7 @@ export function linkCreatedAddonTargetDraft(draft: ReservationWorkflowV2Draft, r
   if (!sourceService || sourceService.operation !== 'add' ||
       (sourceService.ownerRequestId !== null && sourceService.ownerRequestId !== requestId) ||
       proposal.content.requests.some(row => row.id !== requestId && row.serviceRefs.includes(serviceId))) return null;
-  const serviceRoot = ptr('proposal', 'content', 'services', serviceId);
+  const serviceRoot = ptr('proposal', 'content', 'services', serviceIndex);
   const effectiveService = effectiveTree(draft, serviceRoot, sourceService) as typeof sourceService;
   const targetRows = effectiveService.targets.flatMap((target, index) => target.target.kind === 'allocation' &&
     target.target.requestId === requestId && target.target.allocationId === allocationId ? [{ target, index }] : []);
@@ -616,9 +688,17 @@ export function linkCreatedAddonTargetDraft(draft: ReservationWorkflowV2Draft, r
     serviceRefs: [newServiceId], documentRefs: [],
     body: { targets: { mode: 'explicit' as const, include: [hint], exclude: [], sourceRefs: [proof.observationRef] } } };
   const before = structuredClone(proposal);
+  const remainingTargets = effectiveService.targets.filter((_, index) => index !== targetIndex);
+  if (remainingTargets.length) sourceService.targets = structuredClone(remainingTargets);
+  else {
+    proposal.content.services.splice(serviceIndex, 1);
+    createRequest.serviceRefs = createRequest.serviceRefs.filter(ref => ref !== serviceId);
+  }
   proposal.content.requests.push(linkedRequest);
   proposal.content.services.push(linkedService);
-  const next = rebase(draft, before, proposal, []);
+  // Keep the proven Create Add-On route available until staff explicitly link it. Once linked,
+  // transfer only this allocation so the same native charge cannot be saved through both rows.
+  const next = rebase(draft, before, proposal, remainingTargets.length ? [`${serviceRoot}/targets`] : []);
   return { draft: next, createdId: newRequestId };
 }
 

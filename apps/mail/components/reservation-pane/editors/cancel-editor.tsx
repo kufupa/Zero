@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
-import { effectiveAt, record, requestPath, text, valueAt } from '@/lib/reservation-workflow/views';
+import { effectiveAt, record, requestPath, savedTargetOperationLocks, text, valueAt } from '@/lib/reservation-workflow/views';
 import { Field, Section } from '../shared/stay-fields';
 import { TargetSearch } from './amend-editor';
 import styles from './other-editors.module.css';
@@ -34,8 +34,7 @@ function definitelyDistinct(left: Record<string, unknown>, right: Record<string,
 }
 
 function lockedScope(editor: WorkbenchEditorProps) {
-  return editor.snapshot.session.draft.operationResults.some(result => result.requestId === editor.request.id &&
-    (result.status === 'succeeded' || result.status === 'failed' || result.status === 'unknown'));
+  return savedTargetOperationLocks(editor.snapshot, editor.request.id);
 }
 
 async function correctCancelScope(editor: WorkbenchEditorProps, body: string,
@@ -125,7 +124,7 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
     <Section title="Find the stay to cancel">
       <p className={styles.hint}>One exact Infor stay per cancellation. A supplier reference alone does not identify a stay.</p>
       {scopeLocked && <div className={styles.warning}>This Cancel has a recorded success, failure, or uncertain result. Reconcile it before changing target scope or identity.</div>}
-      {include.length > 1 && <div className={styles.warning}>This request includes {include.length} stays. Select one exact included stay for each cancellation; other stays are not cancelled by it.</div>}
+      {include.length > 1 && <div className={styles.warning}>Each Cancel action handles one exact stay so its reason, policy, penalty and staff review match that stay. Split the requested stays into separate Cancel actions before checking.</div>}
       {exclude.length > 0 && <div className={styles.hint}>Excluded stays stay out of native scope until an exact, deliberate correction. Original source claims remain attached to the request.</div>}
       {scope.mode !== 'explicit' && include.length > 0 && <button type="button" disabled={editor.view.busy}
         onClick={() => void editor.commands.edit(`${body}/targets/mode`, 'explicit')}>Use listed stays individually</button>}
@@ -134,6 +133,10 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
         {include.length > 1 && <button type="button" disabled={editor.view.busy || scopeLocked || scope.mode !== 'explicit'}
           onClick={() => void correctCancelScope(editor, body, include, exclude, row, 'include').catch(() => {})}>
           Exclude this exact stay from this Cancel action
+        </button>}
+        {include.length > 1 && <button type="button" disabled={editor.view.busy || scopeLocked || scope.mode !== 'explicit' || !exactConfirmation(row)}
+          onClick={() => void editor.commands.changeRows({ kind: 'separate_cancel_target', requestId: editor.request.id, entityId: text(row.id) }).catch(() => {})}>
+          Move this exact stay into its own Cancel action
         </button>}
       </div>)}
       {exclude.map((row, i) => {

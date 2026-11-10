@@ -409,7 +409,7 @@ export const reservationWorkflowV2ChangeRowsInputSchema = reservationWorkflowV2I
   kind: z.enum(['add_allocation', 'remove_allocation', 'move_allocation', 'add_date_section', 'remove_date_section',
     'add_quote_group', 'remove_quote_group', 'add_target', 'remove_target', 'add_service', 'remove_service',
     'add_document', 'remove_document', 'remove_action', 'separate_quote_money', 'split_quote_dates',
-    'separate_filing_target', 'link_created_addon_target']),
+    'separate_filing_target', 'separate_cancel_target', 'link_created_addon_target']),
   requestId: idSchema, parentId: idSchema.optional(), entityId: idSchema.optional(), childIds: z.array(idSchema).max(200).optional(),
   targetHintId: idSchema.optional(), documentId: idSchema.optional(),
   targetDisposition: z.enum(['included', 'excluded']).optional(), allocationId: idSchema.optional(), serviceId: idSchema.optional(),
@@ -421,6 +421,11 @@ export const reservationWorkflowV2ChangeRowsInputSchema = reservationWorkflowV2I
     if (!present('targetHintId') || !present('documentId') || !present('targetDisposition') ||
         present('allocationId') || present('serviceId') || invalidGeneric) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Filing split requires one exact document, target and disposition.' });
+    }
+  } else if (input.kind === 'separate_cancel_target') {
+    if (!input.entityId || present('targetHintId') || present('documentId') || present('targetDisposition') ||
+        present('allocationId') || present('serviceId') || input.parentId !== undefined || input.childIds !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Cancel split requires one exact included stay.' });
     }
   } else if (input.kind === 'link_created_addon_target') {
     if (!present('allocationId') || !present('serviceId') || present('targetHintId') || present('documentId') ||

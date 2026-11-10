@@ -5,6 +5,7 @@ export type RowChange =
   | (BasicRowChange & { kind: 'move_allocation' | 'add_allocation' | 'remove_allocation' | 'add_date_section' | 'remove_date_section'
       | 'add_quote_group' | 'remove_quote_group' | 'add_target' | 'remove_target' | 'add_service' | 'remove_service'
       | 'add_document' | 'remove_document' | 'remove_action' | 'separate_quote_money' | 'split_quote_dates' })
+  | (BasicRowChange & { kind: 'separate_cancel_target' })
   | { kind: 'separate_filing_target'; requestId: string; documentId: string; targetHintId: string;
       targetDisposition: 'included' | 'excluded' }
   | { kind: 'link_created_addon_target'; requestId: string; allocationId: string; serviceId: string };
@@ -31,6 +32,18 @@ export type WorkbenchCommands = {
   previewServices(target: string | ReservationSavedServiceTarget, serviceId?: string): Promise<void>;
   executeServices(target: string | ReservationSavedServiceTarget, serviceId: string, reviewedPrepareRef?: string): Promise<void>;
 };
+/** Failed operations only unlock scope correction when every receipt proves a no-write Prepare. */
+export function savedTargetOperationLocks(snapshot: ReservationPaneSnapshot, requestId: string): boolean {
+  const draft = snapshot.session.draft;
+  return draft.operationResults.some(result => {
+    if (result.requestId !== requestId) return false;
+    if (result.status === 'succeeded' || result.status === 'unknown') return true;
+    if (result.status !== 'failed') return false;
+    const refs = result.observationRefs;
+    return !refs.length || !refs.every(ref => draft.observations.some(observation => observation.ref === ref &&
+      observation.criteria.workflow === result.workflow && observation.criteria.stage === 'prepare'));
+  });
+}
 export type WorkbenchEditorProps = {
   source: ReservationSourceContext;
   snapshot: ReservationPaneSnapshot;
