@@ -274,7 +274,10 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
               sourceRefs: [...new Set([...request.sourceRefs, ...claim.sourceRefs])], serviceRefs: [], documentRefs: [],
               body: { supported: false, separatedFrom: { requestId: request.id, moneyId: claim.id },
                 requestedText: `Handle separately from the room quote: ${[currency, amount, unit].filter(v => v != null && typeof v !== 'object').join(' ')}. ${request.requestText}`.slice(0, 2000) } });
-          } else createdId = existing.id;
+          } else {
+            createdId = existing.id;
+            if (existing.kind === 'other') existing.body.requestedText = `Handle separately from the room quote: ${[currency, amount, unit].filter(v => v != null && typeof v !== 'object').join(' ')}. ${request.requestText}`.slice(0, 2000);
+          }
           const path = `${base}/staffAllowanceType`;
           draft.fieldOverrides[path] = { state: 'set', value: 'unsupported', updatedAt: new Date().toISOString() };
           draft.staffReviews[path] = { status: 'accepted', at: new Date().toISOString(), note: 'Staff retained this request as a separate task.' };
@@ -398,7 +401,14 @@ function effectiveTree(draft: ReservationWorkflowV2Draft, path: string, original
   const value = current === undefined ? original : current;
   if (Array.isArray(value)) return value.map((row, index) => effectiveTree(draft, `${path}/${index}`, row));
   if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, effectiveTree(draft, `${path}/${encodeURIComponent(key)}`, item)]));
+  const keys = new Set(Object.keys(value));
+  for (const overridePath of Object.keys(draft.fieldOverrides)) {
+    if (!overridePath.startsWith(`${path}/`)) continue;
+    const child = overridePath.slice(path.length + 1).split('/')[0];
+    if (child) keys.add(decodeURIComponent(child));
+  }
+  return Object.fromEntries([...keys].filter(key => key !== 'staffAllowanceType').map(key =>
+    [key, effectiveTree(draft, `${path}/${encodeURIComponent(key)}`, (value as Record<string, unknown>)[key])]));
 }
 
 // Older panes added rooms by overriding the allocation array. Move that exact

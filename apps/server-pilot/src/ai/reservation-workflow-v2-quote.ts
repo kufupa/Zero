@@ -1274,8 +1274,8 @@ async function quoteArtifacts(
   }
   return { artifacts, failures, coverEmail, ...(coverEmail ? { coverEmailDigest: hash(coverEmail) } : {}),
     outputKinds: compiled.outputKinds, revisionRef: revision.id,
-    sourceHash: compiled.input.sourceHash, nativeInputDigest: prepared?.nativeInputDigest ?? null,
-    preparedObservationRef: preparedObservation.ref, workflowRunId: prepared?.workflowRunId ?? null,
+    sourceHash: compiled.input.sourceHash, nativeInputDigest: typeof prepared?.nativeInputDigest === 'string' ? prepared.nativeInputDigest : null,
+    preparedObservationRef: preparedObservation.ref, workflowRunId: typeof prepared?.workflowRunId === 'string' ? prepared.workflowRunId : null,
     claims: compiled.input.groups.map((entry) => ({ groupId: entry.id, arrivalDate: entry.arrivalDate,
       departureDate: entry.departureDate, quantity: entry.quantity, board: entry.board, adultsPerRoom: entry.adults,
       childAgesPerRoom: entry.childrenAges })),
