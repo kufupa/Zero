@@ -366,7 +366,17 @@ export function QuoteEditor(editor: Editor) {
     `${bodyPath}/requestedMoney/${index}/staffAllowanceType`)) === 'unsupported' &&
     hasSavedSeparateOther(editor, request.id, text(row.id)));
   const storedRequest = snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id);
-  const linkedAncillary = Boolean(storedRequest?.serviceRefs.length || storedRequest?.documentRefs.length);
+  const linkedServices = Boolean(storedRequest?.serviceRefs.length);
+  const contextDocumentsAreSafe = storedRequest !== undefined && storedRequest.documentRefs.every((documentId) => {
+    const matches = snapshot.session.draft.proposal.content.documents.filter((row) => row.id === documentId);
+    if (matches.length !== 1) return false;
+    const document = matches[0]!;
+    return document.ownerRequestId === request.id && document.handling === 'context' && document.targetRefs.length === 0 &&
+      document.uploadArtifactRef === null && document.sourceRefs.includes(document.documentSourceRef) &&
+      document.sourceRefs.every((ref) => storedRequest.sourceRefs.includes(ref)) &&
+      storedRequest.sourceRefs.includes(document.documentSourceRef);
+  });
+  const linkedAncillary = linkedServices || !contextDocumentsAreSafe;
   const splitDatesReady = (!rows.length || moneySeparated) && !linkedAncillary;
   const outputOptions = [
     { kind: 'email_quote', label: 'Cover email' },
@@ -382,7 +392,7 @@ export function QuoteEditor(editor: Editor) {
           <SharedDate editor={editor} groups={groups} bodyPath={bodyPath} field="departure" label="Departure" /></div>
         {mismatch && <p className={styles.notice}>This quote contains more than one date pair. Split it into separate quote actions; dates are never combined into one price.</p>}
         {mismatch && rows.length > 0 && !moneySeparated && <p className={styles.notice}>Handle shared extras separately before splitting date ranges. Save each follow-up as an Other request first.</p>}
-        {mismatch && linkedAncillary && <p className={styles.notice}>Handle linked services and documents separately before splitting date ranges.</p>}
+        {mismatch && linkedAncillary && <p className={styles.notice}>Handle linked services and any filing or unverified document targets separately before splitting. Context-only PDFs stay linked to each quote action.</p>}
         {mismatch && <button type="button" className={styles.linkButton} disabled={view.busy || !splitDatesReady}
           onClick={() => void commands.changeRows({ kind: 'split_quote_dates', requestId: request.id } as never)}>
           Split into separate quote actions
