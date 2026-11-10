@@ -8,7 +8,7 @@
 
 /** Strip angle brackets from a raw Message-ID / In-Reply-To value. */
 function stripAngles(raw: string): string {
-  return raw.replace(/^<+|>+$/g, '').trim();
+  return raw.trim().replace(/^<+|>+$/g, '').trim();
 }
 
 /**

@@ -56,9 +56,9 @@ const denialReasons = new Set([
 function logSyncDenial(operation: string, raw: unknown, deviceId: string | null, error?: SyncDeniedError) {
   const body = raw as Record<string, unknown>;
   const kind = operation === 'inventory' ? (body.eventOnly === true ? 'live' : 'scan')
-    : operation === 'upload' ? (body.reuseObservationId ? 'reuse' : body.observation ? 'enrich'
-      : body.resolvedAttachmentRoles ? 'attachment-roles' : body.optionalMissing ? 'attachment-gaps'
-      : body.availability ? 'gap' : body.pending ? 'pending' : body.artifactId ? 'artifact' : 'manifest')
+    : operation === 'upload' ? (body.reuseObservationId && body.observationId ? 'reuse' : body.observation && body.observationId ? 'enrich'
+      : body.resolvedAttachmentRoles && body.observationId ? 'attachment-roles' : body.optionalMissing && body.observationId ? 'attachment-gaps'
+      : body.availability && body.observationId ? 'gap' : body.pending ? 'pending' : body.artifactId ? 'artifact' : 'manifest')
     : 'request';
   const reason = !deviceId ? 'device-verification'
     : error && denialReasons.has(error.reason) ? error.reason : 'unspecified';
@@ -68,7 +68,7 @@ function logSyncDenial(operation: string, raw: unknown, deviceId: string | null,
   const site = error?.stack?.split('\n').slice(1)
     .map((frame) => frame.match(/(?:^|[\\/])([^\\/()\s]+\.(?:js|ts):\d+:\d+)/)?.[1])
     .find(Boolean);
-  const key = `${operation}:${kind}:${reason}:${device ?? ''}`;
+  const key = `${operation}:${kind}:${reason}:${device ?? ''}:${source ?? ''}`;
   const now = Date.now();
   if (now - (denialLogTimes.get(key) ?? 0) < 60_000) return;
   if (denialLogTimes.size >= 256 && !denialLogTimes.has(key))

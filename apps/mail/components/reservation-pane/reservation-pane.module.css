@@ -23,6 +23,7 @@
 .actionMenu { position:absolute; z-index:35; left:12px; top:100%; width:min(270px, calc(100vw - 24px)); padding:8px; border:1px solid var(--border); border-radius:6px; background:var(--surface); box-shadow:0 6px 20px #25203624; font-size:12px; }
 .actionMenu p { margin:2px 2px 8px; line-height:1.4; }
 .actionMenuButtons { display:flex; gap:6px; justify-content:flex-end; }
+.otherActions { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin-top:12px; }
 .pane .actionMenu > button { width:100%; border:0; text-align:left; }
 .sources { display:flex; gap:6px; padding:5px 16px 9px; overflow-x:auto; }.sources button { border:0; padding:2px 0; color:var(--muted); font-size:12px; white-space:nowrap; }
 .content { padding:0 13px 14px; flex:1; min-width:0; }

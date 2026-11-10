@@ -887,7 +887,7 @@ export const workstationRouter = router({
           and(
             eq(message.transportId, ctx.activeTransportId),
             eq(message.messageIdHeader, canonicalInternetMessageId(input.internetMessageId) ?? ''),
-            paneSourceSelectionCondition(input.selection),
+            paneSourceSelectionCondition(input.selection, { userId: ctx.sessionUser.id, internetMessageId: input.internetMessageId }),
           ),
         )
         .limit(2);
