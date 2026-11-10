@@ -473,6 +473,8 @@ function nativeIssueText(issue: unknown): string | null {
   };
   if (dependencyMessages[issue]) return dependencyMessages[issue]!;
   if (issue.startsWith('create_dependency_')) return 'The linked Create result needs verification. Check Create before filing';
+  if (issue === 'existing_confirmation_found') return 'Infor already has this booking. Use the existing stay for amendment or filing; do not create it again';
+  if (issue === 'existing_confirmation_requires_lookup') return 'A confirmation in this request may identify an existing booking. Find and verify that stay before creating a new reservation';
   if (issue === 'confirmation_claim_capacity_exceeded') return 'This request has too many confirmation references to check safely. Review the original email and PDF, and split it into explicit booking actions before proceeding';
   if (issue === 'create_requested_totals_conflict') return 'The rooms or occupants do not match the requested totals. Review each room and the group totals';
   if (issue === 'native_quote_no_matching_rate') {
