@@ -27,6 +27,17 @@ function nativeOptions(control: Record<string, unknown>) {
   });
 }
 
+type CatalogueRow = { observation: Editor['snapshot']['session']['draft']['observations'][number]; candidate: Record<string, unknown> };
+function latestCatalogueByIdentity(rows: CatalogueRow[], operation: string): CatalogueRow[] {
+  const latest = new Map<string, CatalogueRow>();
+  for (const row of [...rows].reverse()) {
+    const identity = text(operation === 'add' ? row.candidate.itemId : row.candidate.nativeId).trim();
+    const key = identity ? `native:${identity}` : `observation:${row.observation.ref}`;
+    if (!latest.has(key)) latest.set(key, row);
+  }
+  return [...latest.values()].reverse();
+}
+
 function excludedScopeIssue(stay: Record<string, unknown> | null, exclusions: unknown[]): 'overlap' | 'unresolved' | null {
   if (!exclusions.length) return null;
   if (!stay) return 'unresolved';
@@ -208,7 +219,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
   const savedTargetCurrent = Boolean(savedTarget && hint && scope.mode === 'explicit' && hasExclusionList && !selectedExcluded
     && !exclusionIssue && stayObservation && ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture']
       .every(key => queryValue(stayQuery[key]) === queryValue(hint[key])));
-  const catalogue = draft.observations.flatMap(observation => {
+  const catalogueHistory = draft.observations.flatMap(observation => {
     const c = observation.criteria;
     if (observation.kind !== 'service_preview' || observation.status !== 'complete' || record(observation.coverage).complete !== true
       || observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode
@@ -220,6 +231,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
     const candidate = record(record(observation.result).candidate);
     return Object.keys(candidate).length ? [{ observation, candidate }] : [];
   });
+  const catalogue = latestCatalogueByIdentity(catalogueHistory, operation);
   const latest = [...draft.observations].reverse().find(observation => observation.kind === 'service_preview'
     && observation.status === 'complete' && observation.coverage.complete && observation.criteria.workflow === 'services'
     && observation.generationId === draft.generationId && observation.propertyCode === draft.propertyCode
@@ -233,7 +245,8 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
       : JSON.stringify(observation.criteria.targetRef) === JSON.stringify(ref)
       && observation.criteria.targetObservationRef === selectedStay && observation.criteria.candidateRef === selectedItem));
   const preview = record(latest?.result), native = record(preview.native), before = record(preview.before), after = record(preview.after);
-  const selectedCandidate = catalogue.find(row => row.observation.ref === selectedItem)?.candidate;
+  const selectedCandidateCurrent = catalogue.some(row => row.observation.ref === selectedItem);
+  const selectedCandidate = catalogueHistory.find(row => row.observation.ref === selectedItem)?.candidate;
   const controls = [record(native.controls), record(record(after.fields).controls), record(record(selectedCandidate?.fields).controls)];
   const unsavedPreview = latest?.criteria.kind === 'saved_addon_fresh_prepare'
     ? draft.observations.find(row => row.ref === latest.criteria.unsavedPreviewRef) : latest;
@@ -253,7 +266,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
     && (result.status === 'succeeded' || result.status === 'unknown')) : [];
   const amendmentCurrent = !amendments.some(result => !result.allocationId || result.status === 'unknown')
     && amendments.length <= 1 && (!amendments[0] || Boolean(latest && Date.parse(amendments[0].updatedAt) <= Date.parse(latest.observedAt)));
-  const previewCurrent = Boolean(latest && (allocation ? createCurrent : savedTargetCurrent && amendmentCurrent)
+  const previewCurrent = Boolean(latest && selectedCandidateCurrent && (allocation ? createCurrent : savedTargetCurrent && amendmentCurrent)
     && servicePreviewMatches(editor, service, serviceRoot, targetRoot, operation, preview, Boolean(savedTarget)));
   const capability = record(preview.capability);
   const fresh = latest?.criteria.kind === 'saved_addon_fresh_prepare';
@@ -326,7 +339,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
           if (ref && catalogue.some(row => row.observation.ref === ref)) void editor.commands.selectNative(selectedPath, ref).catch(() => {});
         }}>
           <option value="">{catalogue.length ? 'Select an Infor match' : 'Find items in Infor first'}</option>
-          {Boolean(selectedItem) && !catalogue.some(row => row.observation.ref === selectedItem) && <option value={text(selectedItem)}>Previous selection needs refresh</option>}
+          {Boolean(selectedItem) && !selectedCandidateCurrent && <option value={text(selectedItem)} disabled>Previous selection · reselect a current Infor choice</option>}
           {catalogue.map(({ observation, candidate }) => <option key={observation.ref} value={observation.ref}>
             {text(record(candidate.fields).code || candidate.code)} · {text(record(candidate.fields).name || candidate.name)}
             {candidate.nativeId ? ` · row ${text(candidate.nativeId)} · ${text(record(candidate.fields).startDate)} → ${text(record(candidate.fields).endDate)} · ${text(record(candidate.fields).totalCost)} ${text(record(candidate.fields).currency)}` : ''}
