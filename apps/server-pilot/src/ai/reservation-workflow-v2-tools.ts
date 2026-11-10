@@ -1419,6 +1419,26 @@ type PriceComparison = {
 type ExtractedPriceRequest = NonNullable<NonNullable<ReservationWorkflowV2Draft['extraction']>['requests'][number]['requestedPrice']>;
 type ParsedMoney = { minor: bigint; currency: string | null };
 
+function effectivePriceScope(price: ExtractedPriceRequest): 'per_room' | 'whole_group' | 'unknown' {
+  const totalRaw = price.total?.raw ?? '';
+  // Scope is singular in the extraction contract; only explicit total wording can widen it.
+  const describesWholeGroup = [
+    /\b(?:whole|entire|overall)\s+(?:booking|reservation|stay|group)\b/i,
+    /\b(?:booking|reservation|stay|group)\s+total\b/i,
+    /\btotal\s+(?:(?:for|of)\s+)?(?:(?:the|whole|entire|all)\s+)?(?:booking|reservation|stay|group)\b/i,
+    /\b(?:for|of)\s+(?:the\s+)?(?:(?:whole|entire)\s+)?group\b/i,
+    /\b(?:for\s+)?all\s+(?:\d+\s+)?rooms\b/i,
+  ].some((pattern) => pattern.test(totalRaw));
+  if (describesWholeGroup) {
+    return 'whole_group';
+  }
+  return price.scope;
+}
+
+function hasExplicitPerRoomNightlyBasis(price: ExtractedPriceRequest): boolean {
+  return /\bper\s+room\s+per\s+night\b/i.test(price.nightlyRate?.raw ?? '');
+}
+
 function currencyCode(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const raw = value.trim().toUpperCase();
@@ -1517,7 +1537,8 @@ function unknownPriceComparison(input: {
 function reservationWorkflowV2CreatePriceComparison(draft: ReservationWorkflowV2Draft, requestId: string,
   allocationId: string, propertyCode: string): PriceComparison {
   const extracted = extractionPriceRequest(draft, requestId);
-  const price = extracted?.requestedPrice;
+  const extractedPrice = extracted?.requestedPrice;
+  const price = extractedPrice ? { ...extractedPrice, scope: effectivePriceScope(extractedPrice) } : undefined;
   const requested = { nightlyRate: price?.nightlyRate?.raw ?? null, total: price?.total?.raw ?? null,
     currency: price?.currency?.raw ?? null };
   const sourceRefs = [...new Set([...(price?.nightlyRate?.sourceRefs ?? []), ...(price?.total?.sourceRefs ?? []),
@@ -1614,7 +1635,13 @@ function reservationWorkflowV2CreatePriceComparison(draft: ReservationWorkflowV2
     if (!nativeAmount || nativeAmount.currency && nativeAmount.currency !== currency) return 'unknown';
     return claim.minor === nativeAmount.minor ? 'match' : 'mismatch';
   };
-  const checks = { nightlyRate: compareAmount(nightly, native.averageRate), total: compareAmount(total, native.totalRate),
+  let nightlyRateCheck = compareAmount(nightly, native.averageRate);
+  if (nightly && hasExplicitPerRoomNightlyBasis(price)) {
+    const perRoomChecks = rooms.map((room) => compareAmount(nightly, room.price?.averageRate));
+    nightlyRateCheck = perRoomChecks.includes('mismatch') ? 'mismatch' :
+      perRoomChecks.includes('unknown') ? 'unknown' : 'match';
+  }
+  const checks = { nightlyRate: nightlyRateCheck, total: compareAmount(total, native.totalRate),
     currency: currencyCheck };
   const requestedChecks = [checks.nightlyRate, checks.total, checks.currency];
   const status = requestedChecks.includes('mismatch') ? 'mismatch' : requestedChecks.includes('unknown') ? 'unknown' : 'match';
@@ -1930,9 +1957,12 @@ function savedCreateNativePrice(draft: ReservationWorkflowV2Draft, requestId: st
 
   let prepareObservationRef: string | null = null;
   let recoveredRequestBinding: Record<string, unknown> | null = null;
+  let recoveredApprovedDigest: string | null = null;
   if (observation.criteria.recovered === true) {
+    // Recovery appends the independently verified confirmation after hashing the native readback.
+    const { confirmation: readbackConfirmation, ...recoveryReadback } = readback;
     if (observation.criteria.operationId !== operation.id || observation.criteria.sourceHash !== draft.source.sourceHash ||
-        readback.confirmation !== confirmation || result.readbackDigest !== sha256(readback)) {
+        readbackConfirmation !== confirmation || result.readbackDigest !== sha256(recoveryReadback)) {
       return { completed: true, price: null };
     }
     const attempts = draft.observations.filter((entry) => {
@@ -1946,16 +1976,20 @@ function savedCreateNativePrice(draft: ReservationWorkflowV2Draft, requestId: st
     });
     const refs = [...new Set(attempts.map((entry) => text(record(entry.result)?.prepareObservationRef)).filter(Boolean))];
     const holdIds = [...new Set(attempts.map((entry) => text(record(entry.result)?.dispatchHoldId)).filter(Boolean))];
+    // Dispatch markers carry the raw request; approvedDigest binds it to Prepare's wrapped binding.
     const binding = record(record(attempts[0]?.result)?.requestBinding);
-    if (!attempts.length || refs.length !== 1 || holdIds.length !== 1 || !binding ||
+    const approvedDigests = [...new Set(attempts.map((entry) => text(record(entry.result)?.approvedDigest)).filter(Boolean))];
+    if (!attempts.length || refs.length !== 1 || holdIds.length !== 1 || !binding || approvedDigests.length !== 1 ||
+        !/^[a-f0-9]{64}$/.test(approvedDigests[0]!) ||
         attempts.some((entry) => {
           const attempt = record(entry.result), candidate = record(attempt?.requestBinding);
-          return !candidate || attempt?.approvedDigest !== binding.digest ||
+          return !candidate || attempt?.approvedDigest !== approvedDigests[0] ||
             attempt?.prepareObservationRef !== refs[0] || canonicalJson(candidate) !== canonicalJson(binding) ||
             !priceMatches(attempt?.expectedRateAvailability, expectedPrice);
         })) return { completed: true, price: null };
     prepareObservationRef = refs[0]!;
     recoveredRequestBinding = binding;
+    recoveredApprovedDigest = approvedDigests[0]!;
   } else {
     const savedPrice = validPrice(result.savedPrice);
     if (observation.criteria.idempotencyKey !== operation.id || result.priceMatched !== true ||
@@ -1979,7 +2013,8 @@ function savedCreateNativePrice(draft: ReservationWorkflowV2Draft, requestId: st
       typeof preparedObservation.criteria.draftRevision !== 'number' ||
       preparedObservation.criteria.draftRevision > operation.draftRevision || !binding || !boundRequest ||
       typeof binding.digest !== 'string' || !/^[a-f0-9]{64}$/.test(binding.digest) ||
-      (recoveredRequestBinding !== null && canonicalJson(recoveredRequestBinding) !== canonicalJson(binding)) ||
+      (recoveredRequestBinding !== null && (canonicalJson(recoveredRequestBinding) !== canonicalJson(boundRequest) ||
+        recoveredApprovedDigest !== binding.digest)) ||
       preparedObservation.criteria.requestDigest !== binding.digest || !preparedPrice || !priceMatches(price, preparedPrice) ||
       !nativeInputMatchesBinding(compiled, boundRequest, { ignoreBookerContact: true })) {
     return { completed: true, price: null };

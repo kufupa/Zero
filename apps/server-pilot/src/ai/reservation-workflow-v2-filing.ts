@@ -28,6 +28,7 @@ import { findStay, paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { paneStayCloudTargetLock, paneStayPropertyLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
+import { hmsDateToIso } from '../../tooling/playwright-quote/cancel-stay-rules.mjs';
 import { canonicalMessageId } from '../mail/ingest/message-id.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
@@ -54,7 +55,7 @@ type FilingDocument = ReservationWorkflowV2Draft['proposal']['content']['documen
 type CreateAllocationTarget = Extract<FilingDocument['targetRefs'][number], { kind: 'allocation' }>;
 type ResolvedCreateDispatch = Awaited<ReturnType<typeof readResolvedHmsLabtestCreates>>[number];
 type CreateDependencyProof = { requestId: string; allocationId: string; operationId: string;
-  observationRef: string; confirmation: string };
+  observationRef: string; confirmation: string; arrival: string; departure: string };
 type CreateDependencyResolution = { status: 'invalid' | 'pending' | 'failed' | 'needs_reconcile'; issue: string } |
   { status: 'succeeded'; proof: CreateDependencyProof };
 type FilingSelection = {
@@ -259,6 +260,21 @@ function validSavedShot(value: unknown): boolean {
   return Boolean(shot && typeof shot.runId === 'string' && typeof shot.sha256 === 'string' && /^[a-f0-9]{64}$/.test(shot.sha256));
 }
 
+function verifiedCreateStayDates(readback: unknown, approvedRequest: unknown, confirmation: string):
+  { arrival: string; departure: string } | null {
+  const result = record(readback), fields = result?.fields;
+  if (!result || !Array.isArray(fields) || !Array.isArray(result.mismatches) || result.mismatches.length !== 0 ||
+      (result.confirmation !== undefined && result.confirmation !== confirmation)) return null;
+  const day = (name: string) => {
+    const matching = fields.filter((field) => record(field)?.name === name);
+    return matching.length === 1 ? hmsDateToIso(record(matching[0])?.value) : null;
+  };
+  const arrival = day('arrivaldate'), departure = day('departuredate');
+  const expectedStay = record(record(approvedRequest)?.stay);
+  if (!arrival || !departure || departure <= arrival || expectedStay?.arrival !== arrival || expectedStay.departure !== departure) return null;
+  return { arrival, departure };
+}
+
 /** Verify the two persisted Create receipt variants against one exact allocation; input order is irrelevant. */
 export function verifyCreateAllocationDependency(draft: ReservationWorkflowV2Draft, target: CreateAllocationTarget,
   receipts: ResolvedCreateDispatch[], transportId: string): CreateDependencyResolution {
@@ -329,8 +345,10 @@ export function verifyCreateAllocationDependency(draft: ReservationWorkflowV2Dra
       return { status: 'needs_reconcile', issue: 'create_dependency_save_proof_invalid' };
     }
   }
+  const stayDates = verifiedCreateStayDates(result?.nativeReadback, recovery?.request, confirmation);
+  if (!stayDates) return { status: 'needs_reconcile', issue: 'create_dependency_dates_unverified' };
   return { status: 'succeeded', proof: { requestId: target.requestId, allocationId: target.allocationId,
-    operationId: operation.id, observationRef: observation.ref, confirmation } };
+    operationId: operation.id, observationRef: observation.ref, confirmation, ...stayDates } };
 }
 
 function linkedCreateObservationMatches(draft: ReservationWorkflowV2Draft, target: CreateAllocationTarget,
@@ -626,7 +644,8 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReadContext,
     // Explicit Lookup refreshes native state; old observations remain for receipt provenance.
     let candidate: ReservationWorkflowV2Observation | undefined;
     if (confirmation) {
-      const stayRequest = { confirmation, ...(hint.bookedArrival ? { arrival: hint.bookedArrival } : {}) };
+      const lookupArrival = linkedProof?.arrival ?? hint.bookedArrival;
+      const stayRequest = { confirmation, ...(lookupArrival ? { arrival: lookupArrival } : {}) };
       const found = ctx.nativeBatch ? await (async () => {
         const lock = paneStayPropertyLock(target.target);
         if (!lock) return null;
@@ -637,7 +656,8 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReadContext,
         lock: () => paneStayPropertyLock(target.target), acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS) }).catch(() => null);
       const stay = found?.stay;
       const complete = found?.outcome === 'found' && Boolean(stay?.confirmation === confirmation && stay.firstName && stay.lastName && stay.status &&
-        stay.arrival && stay.departure && !found.arrivalMismatch);
+        stay.arrival && stay.departure && !found.arrivalMismatch &&
+        (!linkedProof || stay.arrival === linkedProof.arrival && stay.departure === linkedProof.departure));
       candidate = { ref: randomUUID(), generationId: loaded.draft.generationId, kind: 'stay_candidate',
         status: complete ? 'complete' : found?.outcome === 'execution_failure' ? 'failed' : 'partial',
         observedAt: new Date().toISOString(), propertyCode: loaded.draft.propertyCode, sourceMessageId: input.source.messageId,
