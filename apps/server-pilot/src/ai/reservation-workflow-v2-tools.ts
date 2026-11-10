@@ -312,7 +312,8 @@ function sourceConfirmationClaim(draft: ReservationWorkflowV2Draft, requestId: s
   const guarded = draft.proposal.issues.some((issue) =>
     (issue.path === path || issue.path === `/requests/${requestId}/confirmationReference`) &&
     (issue.kind === 'existing_confirmation_requires_lookup' || issue.kind === 'existing_confirmation_requires_review'));
-  if (!guarded && claims.length === 0) return { required: false as const, path };
+  const citesNativeConfirmation = claims.some((claim) => /\b\d{6,10}-\d{1,4}\b/.test(claim.raw));
+  if (!guarded && !citesNativeConfirmation) return { required: false as const, path };
   const claim = exactSourceConfirmationClaim(draft, path);
   if (!claim) {
     return { required: true as const, path, issue: 'existing_confirmation_requires_lookup' as const };
@@ -1518,12 +1519,11 @@ type ParsedMoney = { minor: bigint; currency: string | null };
 
 function effectivePriceScope(price: ExtractedPriceRequest): 'per_room' | 'whole_group' | 'unknown' {
   const totalRaw = price.total?.raw ?? '';
-  // Scope is singular in the extraction contract; only explicit total wording can widen it.
+  // Preserve the extractor's scope unless the total itself clearly names the
+  // whole booking/group. Weak phrases like "stay total" can mean a per-room
+  // total, and separate nightly wording must not change this claim's scope.
   const describesWholeGroup = [
     /\b(?:whole|entire|overall)\s+(?:booking|reservation|stay|group)\b/i,
-    /\b(?:booking|reservation|stay|group)\s+total\b/i,
-    /\btotal\s+(?:(?:for|of)\s+)?(?:(?:the|whole|entire|all)\s+)?(?:booking|reservation|stay|group)\b/i,
-    /\b(?:for|of)\s+(?:the\s+)?(?:(?:whole|entire)\s+)?group\b/i,
     /\b(?:for\s+)?all\s+(?:\d+\s+)?rooms\b/i,
   ].some((pattern) => pattern.test(totalRaw));
   if (describesWholeGroup) {

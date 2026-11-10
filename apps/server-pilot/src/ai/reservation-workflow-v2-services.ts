@@ -122,6 +122,14 @@ function validDate(value: unknown): value is string {
   return Number.isFinite(date.valueOf()) && date.toISOString().slice(0, 10) === value;
 }
 
+export function nonnegativeDecimal(value: unknown): string | null {
+  if (typeof value !== 'string' || !/^\d+(?:\.\d+)?$/.test(value.trim())) return null;
+  const [rawWhole, rawFraction = ''] = value.trim().split('.');
+  const whole = rawWhole!.replace(/^0+(?=\d)/, '');
+  const fraction = rawFraction.replace(/0+$/, '').padEnd(2, '0');
+  return `${whole}.${fraction}`;
+}
+
 export function positiveDecimal(value: unknown): string | null {
   if (typeof value !== 'string' || !/^\d+(?:\.\d+)?$/.test(value.trim())) return null;
   const [rawWhole, rawFraction = ''] = value.trim().split('.');
@@ -219,8 +227,8 @@ export function reservationWorkflowV2CompileServiceItem(draft: ReservationWorkfl
     if (typeof value.value !== 'string') { errors.push(`${field}:invalid_type`); continue; }
     if (!accepted(draft, value.path)) reviewPaths.add(value.path);
     if (field === 'unitPrice') {
-      const price = positiveDecimal(value.value);
-      if (!price) errors.push(`${field}:positive_source_price_required`);
+      const price = nonnegativeDecimal(value.value);
+      if (!price) errors.push(`${field}:nonnegative_source_price_required`);
       else items.unitPrice = price;
     } else if (field === 'quantity') {
       const quantity = positiveDecimal(value.value);
@@ -253,7 +261,7 @@ export function reservationWorkflowV2CompileServiceItem(draft: ReservationWorkfl
       if (!accepted(draft, quantityPath)) reviewPaths.add(quantityPath);
     }
   }
-  if (!items.unitPrice) errors.push('unitPrice:source_price_required');
+  if (!items.unitPrice) errors.push('unitPrice:nonnegative_source_price_required');
   if (!items.quantity) errors.push('quantity:target_quantity_required');
   if (!items.startDate || !items.endDate) errors.push('dates:explicit_source_or_staff_values_required');
   if (items.startDate && items.endDate && items.startDate >= items.endDate) errors.push('dates:range_invalid');
@@ -446,8 +454,8 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
     for (const [index, plan] of plans.entries()) {
       const nativeItem = record(nativeItems[index]);
       const actual = record(nativeItem?.item);
-      const expectedPrice = positiveDecimal(plan.items.unitPrice);
-      const actualPrice = positiveDecimal(actual?.unitPrice);
+      const expectedPrice = nonnegativeDecimal(plan.items.unitPrice);
+      const actualPrice = nonnegativeDecimal(actual?.unitPrice);
       const actualQuantity = positiveDecimal(actual?.quantity);
       const expectedQuantity = positiveDecimal(plan.items.quantity);
       const itemIdMatches = actual?.itemId === plan.candidate.itemId;
@@ -840,7 +848,7 @@ export function reservationWorkflowV2CompileSavedService(draft: ReservationWorkf
     }
     if (typeof resolved.value !== 'string') { errors.push(field); continue; }
     if (field === 'quantity' && !positiveDecimal(resolved.value) || field === 'unitPrice' &&
-        (operation === 'add' ? !positiveDecimal(resolved.value) : !/^\d+(?:\.\d+)?$/.test(resolved.value)) ||
+        (operation === 'add' ? !nonnegativeDecimal(resolved.value) : !/^\d+(?:\.\d+)?$/.test(resolved.value)) ||
         (field === 'startDate' || field === 'endDate') && !validDate(resolved.value)) { errors.push(field); continue; }
     fields[field] = resolved.value; paths[field] = resolved.path;
   }
@@ -856,7 +864,7 @@ export function reservationWorkflowV2CompileSavedService(draft: ReservationWorkf
   if (operation === 'add' && row.service.targets.length > 1 && row.service.quantityRequest.scope !== 'per_target' &&
       paths.quantity !== targetQuantityPath) errors.push('quantity_must_be_allocated_to_this_stay');
   if (operation === 'add' && (!fields.quantity || !fields.startDate || !fields.endDate || !fields.unitPrice)) {
-    errors.push('positive_quantity_dates_and_unit_price_required');
+    errors.push('positive_quantity_dates_and_nonnegative_unit_price_required');
   }
   if (operation === 'add' && fields.startDate && fields.endDate && fields.startDate > fields.endDate) errors.push('dates');
   if (operation === 'edit' && !Object.keys(fields).length) errors.push('edit_fields_required');
@@ -899,7 +907,7 @@ export async function reservationWorkflowV2PreviewSavedServices(ctx: Reservation
         const actual = Array.isArray(prepared.items) ? prepared.items[0] : null;
         const native = savedServiceBusiness(actual);
         if (!native || native.code !== candidate.code || native.itemId !== candidate.itemId || native.status !== 'VALID' ||
-            positiveDecimal(native.quantity) !== positiveDecimal(fields.quantity) || positiveDecimal(native.unitPrice) !== positiveDecimal(fields.unitPrice) ||
+            positiveDecimal(native.quantity) !== positiveDecimal(fields.quantity) || nonnegativeDecimal(native.unitPrice) !== nonnegativeDecimal(fields.unitPrice) ||
             native.startDate !== fields.startDate || native.endDate !== fields.endDate || !text(native.currency) || !text(native.totalCost)) return null;
         const controls = nativeServiceControls(actual);
         return { native: controls ? { ...native, controls } : native, ...(controls ? { nativeControls: controls } : {}) };
