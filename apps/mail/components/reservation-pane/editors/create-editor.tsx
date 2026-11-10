@@ -312,7 +312,7 @@ function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor
   const identityPart = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
   const sameGuest = ['firstName', 'lastName', 'mobile', 'email'].every(field => identityPart(guest[field]) === identityPart(previousGuest[field]));
   const duplicate = latest?.status === 'failed' && text(latest.summary).includes('PROFILE_NAME_ALREADY_EXISTS') && sameGuest;
-  const succeeded = operations.filter(row => row.status === 'succeeded').at(-1);
+  const succeeded = operations.slice().reverse().find(row => row.status === 'succeeded');
   const receipt = guestProfileReceipt(succeeded);
   const missingReceipt = Boolean(succeeded && !receipt);
   const selectedCreated = receipt && !unknown && receipt.observationRef === valueAt(editor.snapshot, `${guestPath}/nativeSelectionRef`);
