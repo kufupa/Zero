@@ -243,7 +243,7 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
       const state = { ...itemRow.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft };
       const advanced = advancePaneRevision({ revision: itemRow.revision, revisionHead: itemRow.revisionHead,
         seq: itemRow.revisionSeq, previousState: itemRow.state, nextState: state, extractionId: itemRow.extractionId });
-      await tx.insert(workEvent).values({ workItemId: itemRow.id, actorKind: 'ai', type: 'field.seed',
+      await tx.insert(workEvent).values({ workItemId: itemRow.id, actorKind: 'ai', type: 'field.edit',
         fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:booker_contacts`, value: { paths: recovered.paths },
         aiSource: RESERVATION_PREFILL_SCHEMA_VERSION, evidence: advanced.evidence });
       await tx.update(workItem).set({ state, revision: advanced.revision, revisionHead: advanced.revisionHead,
