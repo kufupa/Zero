@@ -229,7 +229,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
           })),
         } });
       } catch {
-        if (alive && currentOwner.current === owner) {
+        if (alive && currentOwner.current === owner && epoch.current.value === selectedEpoch) {
           setSourceError('Nava could not open this email. Check your connection and retry.');
           setSourceRetryable(true);
         }

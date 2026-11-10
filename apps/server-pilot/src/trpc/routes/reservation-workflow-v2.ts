@@ -238,11 +238,11 @@ export const reservationWorkflowV2Router = router({
       logPaneSourceResolution({ ...diagnostic, matches: 1, result: 'wrong_property' });
       return { status: 'wrong_property' as const, message: origin.message };
     }
-    logPaneSourceResolution({ ...diagnostic, matches: 1, result: 'ready',
-      matchedBy: input.selection.kind === 'web' ? 'web' : selected.nativeLinked ? 'native' : 'mailbox-copy' });
     const attachments = await scoped.db.select({ id: attachment.id, filename: attachment.filename,
       mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, isInline: attachment.isInline })
       .from(attachment).where(eq(attachment.messageId, selected.id)).limit(50);
+    logPaneSourceResolution({ ...diagnostic, matches: 1, result: 'ready',
+      matchedBy: input.selection.kind === 'web' ? 'web' : selected.nativeLinked ? 'native' : 'mailbox-copy' });
     return { status: 'ok' as const, propertyCode: scoped.propertyCode,
       internetMessageId: selected.internetMessageId,
       sourceText: preStaySourceText(selected.textBody, selected.htmlBody),
