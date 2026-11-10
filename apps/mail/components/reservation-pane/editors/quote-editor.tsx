@@ -207,7 +207,7 @@ function RoomCode({ editor, path, options }: { editor: Editor; path: string; opt
     <label htmlFor={id}>Room categories</label>
     <div ref={picker} className={pickerStyles.picker}>
       <div className={pickerStyles.pickerInput}><input id={id} value={value} role="combobox" aria-expanded={open} aria-controls={`${id}-rooms`}
-        disabled={editor.view.busy || reviewing} placeholder="Any category, or codes separated by commas" onFocus={openChoices} onClick={openChoices}
+        disabled={reviewing || editor.view.busy && !loading} placeholder="Any category, or codes separated by commas" onFocus={openChoices} onClick={openChoices}
         onChange={event => change(event.target.value)} onBlur={() => { void commit().catch(() => {}); }}
         onKeyDown={event => { if (event.key === 'Escape') setOpen(false); if (event.key === 'ArrowDown') { event.preventDefault(); openChoices(); } }} />
         <button type="button" aria-label="Show room categories" disabled={reviewing || loading} onMouseDown={event => event.preventDefault()}
