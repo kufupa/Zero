@@ -1171,7 +1171,7 @@ function updateSeparatedQuoteMoney(current: ReservationWorkflowV2Draft, next: Re
     const claim = request.body.requestedMoney[claimIndex]!;
     const moneyStable = `${stableRoot}/body/requestedMoney/${claimIndex}`;
     const moneyIndexed = `${indexedRoot}/body/requestedMoney/${claimIndex}`;
-    const link = current.proposal.content.requests.filter(row => row.kind === 'other' &&
+    const link = current.proposal.content.requests.filter((row): row is Extract<typeof row, { kind: 'other' }> => row.kind === 'other' &&
       row.body.separatedFrom?.requestId === request.id && row.body.separatedFrom.moneyId === claim.id);
     if (!link.length) continue;
     const kind = effectiveDraftPath(result, `${moneyStable}/staffAllowanceType`, `${moneyIndexed}/staffAllowanceType`);
