@@ -1331,7 +1331,7 @@ function projectCurrentExtraction(input: {
     }
     const possibleLinks = originalRequests.filter((request) => request.id === extracted.id ||
       request.requestText.trim() === extracted.requestText.raw.trim() ||
-      extractionRefsForRequest(extracted).some((ref) => request.sourceRefs.includes(ref)));
+      [...extractionRefsForRequest(extracted)].some((ref) => request.sourceRefs.includes(ref)));
     const wrongKind = possibleLinks.some((request) => request.kind !== extracted.kind);
     const ambiguous = possibleLinks.length > 0;
     const retained = structuredClone(fallbackMatches[0]!);
