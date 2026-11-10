@@ -106,6 +106,19 @@ function evidenceLocation(result, root) {
   return { runDir, cleanupRoot: root, screenshots };
 }
 
+function safeNativeDiagnostics(result) {
+  const diagnostics = {};
+  for (const key of ['checkStatus', 'uploadStatus', 'refreshStatus']) {
+    const value = result?.[key];
+    if (value === null || (Number.isSafeInteger(value) && value >= 100 && value <= 599)) diagnostics[key] = value;
+  }
+  for (const key of ['visibleDialogs', 'blockedRequests']) {
+    const value = result?.[key];
+    if (Number.isSafeInteger(value) && value >= 0 && value <= 1000) diagnostics[key] = value;
+  }
+  return Object.keys(diagnostics).length ? diagnostics : undefined;
+}
+
 async function freshDocuments(page, input, code, setNative) {
   await readShallow(page, input.confirmation, lookupOptions(input.guestName, input.arrival));
   const record = await readRecord(page, input.confirmation, { nativePropertyCode: 'HRCEN', nativeIdentityOnly: true });
@@ -279,8 +292,12 @@ export async function runCloudPaneAttach(input, { openSession = withCenturionSta
   if (!result || typeof result.outcome !== 'string') result = { outcome: 'uncertain', screenshots: [] };
   const evidence = evidenceLocation(result, root);
   const possible = dispatched || ['awaiting_readback', 'uncertain'].includes(result.outcome);
-  if (!possible) return { outcome: result.issue || result.outcome, uploadSent: false,
-    ...evidence, writerSessionClosed, dispatchCallbacksDrained: result.dispatchCallbacksDrained === true };
+  if (!possible) {
+    const nativeDiagnostics = safeNativeDiagnostics(result);
+    return { outcome: result.issue || result.outcome, uploadSent: false,
+      ...(nativeDiagnostics ? { nativeDiagnostics } : {}),
+      ...evidence, writerSessionClosed, dispatchCallbacksDrained: result.dispatchCallbacksDrained === true };
+  }
   let fresh;
   const reading = { current: null };
   try { fresh = await openSession((page) => freshRead(page, input, code, (native) => {

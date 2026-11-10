@@ -1130,7 +1130,11 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
       nativeTarget.documentName === name && beforePath && afterPath);
     if (!activeDispatch) {
       return { status: provedNoDispatch ? 'failed' : 'refused', operationId,
-        issue: String(native.issue ?? native.outcome ?? 'filing_not_dispatched') };
+        issue: String(native.issue ?? native.outcome ?? 'filing_not_dispatched'),
+        ...(native.nativeDiagnostics && typeof native.nativeDiagnostics === 'object' && !Array.isArray(native.nativeDiagnostics)
+          ? { nativeDiagnostics: native.nativeDiagnostics } : {}),
+        writerSessionClosed: native.writerSessionClosed === true,
+        dispatchCallbacksDrained: native.dispatchCallbacksDrained === true };
     }
     if (!success || !nativeTarget || !beforePath || !afterPath) {
       const shots = beforePath ? await persistFilingShots(ctx, { workItemId: input.workItemId, runId: operationId,
