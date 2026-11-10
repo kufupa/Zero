@@ -32,6 +32,7 @@ import {
 import { deriveAuthorizedExtraLines, deriveQuoteLines, extraDisplayDescription,
   type AuthorizedProposalFacts, type RowPrice } from '../quote-proposal/quote-lines.js';
 import { occupiedDates, quoteDigest, type QuoteRevision } from '../quote-proposal/quote-revision.js';
+import { getProfileBoards, profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
 
 /** Kept structurally aligned with reservationWorkflowV2ServerContext in the native tools module. */
 export type ReservationWorkflowV2QuoteContext = {
@@ -175,12 +176,22 @@ function reviewAccepted(draft: ReservationWorkflowV2Draft, path: string): boolea
   return draft.fieldReviewRequirements[path]?.required === false || draft.staffReviews[path]?.status === 'accepted';
 }
 
-function boardCode(value: unknown): 'room_only' | 'bb' | 'dinner_bb' | null {
+function boardCode(value: unknown, propertyCode?: string): 'room_only' | 'bb' | 'dinner_bb' | null {
   if (typeof value !== 'string') return null;
   const board = value.trim().toLocaleLowerCase().replace(/[\s&-]+/gu, '_');
   if (['room_only', 'roomonly', 'ro'].includes(board)) return 'room_only';
   if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast'].includes(board)) return 'bb';
   if (['dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_and_breakfast'].includes(board)) return 'dinner_bb';
+  if (propertyCode && profileFor(propertyCode)) {
+    try {
+      const mapped = getProfileBoards(propertyCode)[value.trim().toLowerCase().replace(/\s+/gu, ' ')];
+      if (mapped === 'room_only') return 'room_only';
+      if (mapped === 'breakfast') return 'bb';
+      if (mapped === 'dinner_bed_breakfast') return 'dinner_bb';
+    } catch {
+      // Unknown or incomplete property mappings stay unresolved.
+    }
+  }
   return null;
 }
 
@@ -439,7 +450,7 @@ function unavailableInventoryProof(
   const board: Record<string, unknown>[] = Array.isArray(diagnostic.availabilityBoard)
     ? diagnostic.availabilityBoard.map(record).filter((row): row is Record<string, unknown> => row !== null) : [];
   const expectedBoard = board.filter((row) => row?.groupId === group.id && row.roomCode === roomCode &&
-    row.rateCode === group.rateCode && boardCode(row.boardLabel ?? row.board) === group.board);
+    row.rateCode === group.rateCode && boardCode(row.boardLabel ?? row.board, draft.propertyCode) === group.board);
   if (expectedBoard.length !== 1) return null;
   const row = expectedBoard[0]!;
   const coverage = record(row.coverage), nightCoverage = record(row.nightCoverage);
@@ -515,7 +526,7 @@ function compileQuote(
     if (!Number.isInteger(quantity) || Number(quantity) < 1 || Number(quantity) > 100) issues.push(`${base}/quantity:valid_room_count_required`);
 
     const boardResult = resolved(path('groups', groupIndex, 'board'), group.board);
-    const board = boardResult && !('issue' in boardResult) ? boardCode(boardResult.value) : null;
+    const board = boardResult && !('issue' in boardResult) ? boardCode(boardResult.value, draft.propertyCode) : null;
     if (!board) issues.push(`${base}/board:native_board_code_required`);
 
     // Occupancy may be edited atomically as a parent object to keep child count and age slots in one revision.

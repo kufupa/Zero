@@ -246,7 +246,10 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
             const splitBody = structuredClone(effectiveBody);
             for (const role of ['company', 'agency'] as const) {
               const party = splitBody.parties[role];
-              if (party) { party.candidateRefs = []; party.suggestedRef = null; }
+              if (party && typeof party === 'object' && 'candidateRefs' in party && 'suggestedRef' in party) {
+                party.candidateRefs = [];
+                party.suggestedRef = null;
+              }
             }
             proposal.content.requests.push({ ...structuredClone(request), id: requestId,
               body: { ...splitBody, groups: rows, requestedMoney: [] } });

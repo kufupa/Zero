@@ -14,8 +14,24 @@ export type QuoteOutputResult = { status: 'saved' | 'created' | 'cancelled' | 'e
 const rec = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : {};
 
+const NATIVE_BOARD_LABELS: Record<string, string> = {
+  'room only r': 'room_only',
+  'room only nr': 'room_only',
+  'bed & breakfast r': 'bb',
+  'bed & breakfast nr': 'bb',
+  'dinner bed & breakfast r': 'dinner_bb',
+  'dinner bed & breakfast nr': 'dinner_bb',
+  'dinner, bed & breakfast r': 'dinner_bb',
+  'dinner, bed & breakfast nr': 'dinner_bb',
+  'dinner, bed, breakfast & beverage r': 'dinner_bb',
+  'dinner, bed, breakfast & beverage nr': 'dinner_bb',
+};
+
 function boardCode(value: unknown): string | null {
-  const board = typeof value === 'string' ? value.trim().toLowerCase().replace(/[\s&-]+/gu, '_') : '';
+  const label = typeof value === 'string' ? value.trim().replace(/\s+/gu, ' ').toLowerCase() : '';
+  const mapped = Object.prototype.hasOwnProperty.call(NATIVE_BOARD_LABELS, label) ? NATIVE_BOARD_LABELS[label] : null;
+  if (mapped) return mapped;
+  const board = label.replace(/[\s&-]+/gu, '_');
   if (['room_only', 'roomonly', 'ro'].includes(board)) return 'room_only';
   if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast'].includes(board)) return 'bb';
   if (['dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_and_breakfast'].includes(board)) return 'dinner_bb';
