@@ -347,6 +347,8 @@ export const reservationWorkflowV2DraftSchema = z.object({
   generationId: z.string().uuid(),
   revision: z.number().int().nonnegative(),
   status: z.enum(['ready', 'partial', 'prefill_failed']),
+  extraction: reservationWorkflowV2ExtractionSchema.optional(),
+  extractionGenerationId: z.string().uuid().optional(),
   proposal: reservationWorkflowV2ProposalSchema,
   observations: z.array(reservationWorkflowV2ObservationSchema).max(5000),
   fieldReviewRequirements: z.record(fieldReviewRequirementSchema),

@@ -15,9 +15,11 @@ import {
   RESERVATION_PREFILL_SCHEMA_VERSION,
   RESERVATION_WORKFLOW_V2_VERSION,
   reservationWorkflowV2DraftSchema,
+  reservationWorkflowV2ExtractionSchema,
   reservationWorkflowV2FieldOverrideSchema,
   reservationWorkflowV2ObservationSchema,
   type ReservationWorkflowV2Draft,
+  type ReservationWorkflowV2Extraction,
   type ReservationWorkflowV2Observation,
   type ReservationWorkflowV2Proposal,
   type ReservationWorkflowV2Source,
@@ -50,6 +52,7 @@ export async function lockReservationWorkflowV2Source(tx: Parameters<Parameters<
 export type ReservationWorkflowV2Seed = {
   generationId?: string;
   status: ReservationWorkflowV2Draft['status'];
+  extraction?: ReservationWorkflowV2Extraction;
   proposal: ReservationWorkflowV2Proposal;
   observations: ReservationWorkflowV2Observation[];
   fieldReviewRequirements?: ReservationWorkflowV2Draft['fieldReviewRequirements'];
@@ -233,6 +236,7 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
     if (existing) return buildResult(tx, ctx, itemRow, input.source, input.allowSourceChanged);
     if (hasReservationWorkflowV2Draft(itemRow.state)) return { status: 'invalid_state' as const };
     const evidenceHash = (await reservationArrivalEvidence(tx, input.source.messageId)).hash;
+    const generationId = input.seed.generationId ?? randomUUID();
     const draft = reservationWorkflowV2DraftSchema.parse({
       contractVersion: RESERVATION_WORKFLOW_V2_VERSION,
       schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
@@ -240,9 +244,10 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
       transportId: ctx.transportId,
       propertyCode: ctx.propertyCode,
       source: input.source,
-      generationId: input.seed.generationId ?? randomUUID(),
+      generationId,
       revision: itemRow.revision,
       status: input.seed.status,
+      ...(input.seed.extraction ? { extraction: input.seed.extraction, extractionGenerationId: generationId } : {}),
       proposal: input.seed.proposal,
       observations: input.seed.observations,
       fieldReviewRequirements: input.seed.fieldReviewRequirements ?? {},
@@ -277,7 +282,7 @@ export async function initializeReservationWorkflowV2Draft(ctx: Context, source:
     observations: [], prefill: { status: 'idle', attemptId: null, attemptCount: 0, startedAt: null, finishedAt: null } } });
 }
 
-type PrefillClaim = { attemptId: string; revision: number; seq: number; snapshot: string };
+type PrefillClaim = { attemptId: string; revision: number; seq: number; snapshot: string; generationId: string };
 export type ReservationPrefillJobFence = { runId: string; claimOwner: string; claimToken: string };
 
 /** Hold the ledger row while changing the draft: an expired or replaced worker cannot install. */
@@ -352,13 +357,13 @@ export async function retryReservationWorkflowV2Arrival(ctx: Context, input: Mut
 }
 function prefillSnapshot(draft: ReservationWorkflowV2Draft): string {
   const { prefill: _prefill, ...rest } = draft;
-  return JSON.stringify(rest);
+  return createHash('sha256').update(JSON.stringify(rest)).digest('hex');
 }
 
 function abandonedPrefill(startedAt: string | null, now = Date.now()): boolean {
   if (!startedAt) return false;
   const started = Date.parse(startedAt);
-  return Number.isFinite(started) && now - started >= 5 * 60_000;
+  return Number.isFinite(started) && now - started >= 12 * 60_000;
 }
 
 /** Metadata is not a human edit and never advances the pane cursor. */
@@ -414,13 +419,46 @@ export async function claimReservationWorkflowV2Prefill(ctx: Context, input: Mut
     await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
       updatedAt: new Date() }).where(eq(workItem.id, item.id));
     return { result: { ...current, draft }, claim: { attemptId, revision: item.revision, seq: item.revisionSeq,
-      snapshot: prefillSnapshot(current.draft) } };
+      snapshot: prefillSnapshot(current.draft), generationId: current.draft.generationId } };
+  });
+}
+
+/** Persist only schema-valid, source/job/claim-bound extraction without advancing the pane revision. */
+export async function checkpointReservationWorkflowV2Extraction(ctx: Context, input: MutationInput & {
+  claim: PrefillClaim; generationId: string; extraction: ReservationWorkflowV2Extraction; jobFence?: ReservationPrefillJobFence;
+}): Promise<{ result: ReservationWorkflowV2StateResult; claim?: PrefillClaim }> {
+  const extraction = reservationWorkflowV2ExtractionSchema.safeParse(input.extraction);
+  if (!extraction.success || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.generationId)) {
+    return { result: { status: 'invalid_value', issue: 'validated extraction or generation ID is invalid' } };
+  }
+  return ctx.db.transaction(async (tx) => {
+    if (input.jobFence) await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
+    await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
+    if (input.jobFence && !(await currentPrefillJob(tx, input.jobFence, input.source.messageId)))
+      return { result: { status: 'stale_revision' as const } };
+    const item = await loadItem(tx, ctx, input.workItemId, true);
+    if (!item) return { result: { status: 'not_found' as const } };
+    const current = await buildResult(tx, ctx, item, input.source);
+    if (current.status !== 'ok') return { result: current };
+    const meta = current.draft.prefill;
+    if (item.revision !== input.claim.revision || item.revisionSeq !== input.claim.seq ||
+        current.draft.generationId !== input.claim.generationId || !meta || meta.attemptId !== input.claim.attemptId ||
+        meta.status !== 'running' || meta.phase !== 'generation' || prefillSnapshot(current.draft) !== input.claim.snapshot ||
+        await hasPrefillRetryActivity(tx, item.id, current.draft.generationId, item.revisionSeq)) {
+      return { result: { status: 'stale_revision' as const } };
+    }
+    const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft,
+      extraction: extraction.data, extractionGenerationId: input.generationId });
+    await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
+      updatedAt: new Date() }).where(eq(workItem.id, item.id));
+    return { result: { ...current, draft }, claim: { ...input.claim, snapshot: prefillSnapshot(draft) } };
   });
 }
 
 /** Install only the exact claimed, still untouched generation; preserve concurrent staff/native state. */
 export async function finishReservationWorkflowV2Prefill(ctx: Context, input: MutationInput & {
   claim: PrefillClaim; seed?: ReservationWorkflowV2Seed; failed: boolean; jobFence?: ReservationPrefillJobFence;
+  failure?: ReservationWorkflowV2Draft['errors'][number];
 }): Promise<ReservationWorkflowV2StateResult> {
   return ctx.db.transaction(async (tx) => {
     if (input.jobFence) await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
@@ -432,7 +470,10 @@ export async function finishReservationWorkflowV2Prefill(ctx: Context, input: Mu
     if (current.status !== 'ok') return current;
     const meta = current.draft.prefill;
     if (!meta || meta.attemptId !== input.claim.attemptId || meta.status !== 'running') return current;
+    const extractionGenerationMismatch = Boolean(input.seed?.extraction &&
+      (!input.seed.generationId || input.seed.generationId !== current.draft.extractionGenerationId));
     const superseded = item.revision !== input.claim.revision || item.revisionSeq !== input.claim.seq ||
+      current.draft.generationId !== input.claim.generationId || extractionGenerationMismatch ||
       prefillSnapshot(current.draft) !== input.claim.snapshot ||
       await hasPrefillRetryActivity(tx, item.id, current.draft.generationId, item.revisionSeq);
     const checking = Boolean(input.jobFence && !superseded && !input.failed && input.seed);
@@ -443,9 +484,10 @@ export async function finishReservationWorkflowV2Prefill(ctx: Context, input: Mu
     const install = !superseded && input.seed;
     const next = reservationWorkflowV2DraftSchema.parse({ ...current.draft, prefill,
       ...(install ? { generationId: install.generationId ?? randomUUID(), status: install.status,
+        ...(install.extraction ? { extraction: install.extraction, extractionGenerationId: install.generationId } : {}),
         proposal: install.proposal, observations: install.observations,
         fieldReviewRequirements: install.fieldReviewRequirements ?? {}, errors: install.errors ?? [], revision: item.revision + 1 }
-        : !superseded && input.failed ? { status: 'prefill_failed', errors: [{ stage: 'extract', code: 'prefill_unavailable',
+        : !superseded && input.failed ? { status: 'prefill_failed', errors: [input.failure ?? { stage: 'extract', code: 'prefill_unavailable',
           message: 'Prefill could not finish. You can enter the request manually or retry.' }] } : {}) });
     const nextState = { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next };
     if (!install) {
