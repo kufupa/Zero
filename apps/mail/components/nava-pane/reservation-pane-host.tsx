@@ -43,11 +43,11 @@ async function sourceEvidenceRef(messageId: string, role: string, identity: stri
 async function selectedContentHash(email: { subject: string; senderEmail: string; bodyText: string; bodyHtml: string; transportHeaders?: string }) {
   // Match canonical ingestion's whitespace normalization, keeping body text out of the request URL.
   const body = ((email.bodyHtml && htmlToPlainText(email.bodyHtml)) || email.bodyText).replace(/\s+/g, ' ').trim();
-  if (!body) return undefined;
   // The bridge exposes Exchange DNs; native sync resolves SMTP. Transport From corroborates the same sender.
-  const fromHeader = email.transportHeaders?.replace(/\r?\n[ \t]+/g, ' ')
-    .split(/\r?\n/).find((line) => /^From:/i.test(line))?.slice(5).trim() ?? '';
-  const senderValue = email.senderEmail.includes('@') ? email.senderEmail : fromHeader;
+  const headers = email.transportHeaders?.replace(/\r?\n[ \t]+/g, ' ').split(/\r?\n/) ?? [];
+  const senderHeader = (headers.find((line) => /^Sender:/i.test(line)) ?? headers.find((line) => /^From:/i.test(line)))
+    ?.replace(/^[^:]+:\s*/, '').trim() ?? '';
+  const senderValue = email.senderEmail.includes('@') ? email.senderEmail : senderHeader;
   const sender = (/<([^<>]+)>/.exec(senderValue)?.[1] ?? senderValue).trim().toLowerCase();
   if (!/^[^\s<>@]+@[^\s<>@]+$/.test(sender)) return undefined;
   const value = JSON.stringify([email.subject.replace(/\s+/g, ' ').trim(), sender, body]);
@@ -216,7 +216,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
         if (result.status !== 'ok') {
           const elapsedMs = Date.now() - startedAt;
           setSourceRetryable(result.status === 'source_unavailable');
-          setSourceError(result.status === 'wrong_property'
+          const message = result.status === 'wrong_property'
             ? result.message : result.reason === 'ambiguous'
               ? 'Nava found more than one matching email. Reopen the selected email after copying finishes.'
               : result.reason === 'content_mismatch'
@@ -227,7 +227,10 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
                   ? 'Nava could not open this email copy yet. Retry opening it, or reconnect Outlook if copying has stopped.'
                   : elapsedMs >= 30_000
                   ? 'This email is taking longer to open. Nava will keep checking; you can retry now.'
-                  : 'Waiting for this email to become available in Nava.');
+                  : 'Waiting for this email to become available in Nava.';
+          setSourceError(result.status === 'source_unavailable' && elapsedMs >= 30_000 &&
+            ['ambiguous', 'attention', 'content_mismatch'].includes(result.reason)
+            ? `This email is taking longer to open. ${message}` : message);
           if (result.status === 'source_unavailable' && result.reason !== 'ambiguous' && ++attempts < 12)
             timer = setTimeout(() => void resolve(), 10_000);
           return;
