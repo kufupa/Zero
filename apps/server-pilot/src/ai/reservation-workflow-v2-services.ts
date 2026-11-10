@@ -525,23 +525,78 @@ export function savedValue(draft: ReservationWorkflowV2Draft, path: string): unk
   return value;
 }
 
+const savedTargetIdentityFields = ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'] as const;
+
+function effectiveScopeHint(draft: ReservationWorkflowV2Draft, root: string, collection: 'include' | 'exclude',
+  index: number, value: unknown): { hint: Record<string, unknown>; unresolved: boolean } | null {
+  const hint = record(value);
+  if (!hint || typeof hint.id !== 'string') return null;
+  let unresolved = false;
+  const effective = { ...hint };
+  for (const field of savedTargetIdentityFields) {
+    const paths = [`${root}/${collection}/${index}/${field}`, `${root}/${collection}/${encodeURIComponent(hint.id)}/${field}`];
+    const overrides = [...new Set(paths)].map(path => ({ path, value: draft.fieldOverrides[path] }))
+      .filter(row => row.value && row.value.state !== 'inherit');
+    const signatures = overrides.map(({ value: override }) => override!.state === 'set'
+      ? `set:${canonicalJson(override!.value)}` : override!.state);
+    if (new Set(signatures).size > 1) {
+      effective[field] = null;
+      unresolved = true;
+      continue;
+    }
+    const override = overrides[0]?.value;
+    if (override?.state === 'unknown') {
+      effective[field] = null;
+      unresolved = true;
+    } else if (override?.state === 'set') effective[field] = override.value;
+    else if (override && ['none', 'clear'].includes(override.state)) effective[field] = null;
+    else effective[field] = savedValue(draft, paths[0]!);
+  }
+  return { hint: effective, unresolved };
+}
+
+/** An exclusion without a different exact confirmation stays unresolved unless both
+ * the guest and complete booked-date range prove it is a different stay. */
+export function savedTargetExclusionIssue(stay: Record<string, unknown>, excluded: Record<string, unknown>[], unresolved: boolean): string | null {
+  if (unresolved) return 'saved_target_exclusion_unresolved';
+  const confirmation = text(stay.confirmation);
+  const nativeName = `${text(stay.firstName) ?? ''} ${text(stay.lastName) ?? ''}`.trim();
+  for (const hint of excluded) {
+    const excludedConfirmation = text(hint.confirmation);
+    if (excludedConfirmation && /^\d{6,10}-\d{1,2}$/.test(excludedConfirmation)) {
+      if (excludedConfirmation === confirmation) return 'saved_target_exclusion_overlaps_native_stay';
+      continue;
+    }
+    const guestName = text(hint.guestName), arrival = hint.bookedArrival, departure = hint.bookedDeparture;
+    const disjointDates = validDate(arrival) && validDate(departure) && validDate(stay.arrival) && validDate(stay.departure) &&
+      (departure <= stay.arrival || stay.departure <= arrival);
+    const sameGuest = nativeServiceGuestNameMatches(nativeName, guestName) || nativeServiceGuestNameMatches(guestName, nativeName);
+    const differentGuest = Boolean(guestName && nativeName && !sameGuest);
+    if (!differentGuest || !disjointDates) return 'saved_target_exclusion_overlaps_or_is_ambiguous';
+  }
+  return null;
+}
+
 export function savedTarget(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2SavedServicesInput) {
   if (input.targetRef.requestId !== input.requestId) return null;
   const request = draft.proposal.content.requests.find(row => row.id === input.requestId);
   if (!request || !('targets' in request.body)) return null;
   const root = pointer('proposal', 'content', 'requests', input.requestId, 'body', 'targets');
   const include = savedValue(draft, `${root}/include`), exclude = savedValue(draft, `${root}/exclude`);
-  if (savedValue(draft, `${root}/mode`) !== 'explicit' || !Array.isArray(include) || !Array.isArray(exclude) || exclude.length) return null;
+  if (savedValue(draft, `${root}/mode`) !== 'explicit' || !Array.isArray(include) || !Array.isArray(exclude) ||
+      exclude.some(row => record(row)?.id === input.targetRef.hintId)) return null;
   const index = include.findIndex(row => record(row)?.id === input.targetRef.hintId);
   if (index < 0) return null;
   const hintRoot = `${root}/include/${index}`;
-  const hintFields = ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'];
-  if (request.kind === 'amend' && hintFields.some(key => draft.fieldOverrides[`${hintRoot}/${key}`]?.state === 'unknown')) return null;
-  const hint = Object.fromEntries(['id', 'confirmation', 'guestName', 'bookedArrival', 'bookedDeparture']
-    .map(key => {
-      const value = savedValue(draft, `${hintRoot}/${key}`);
-      return [key, request.kind === 'amend' && key !== 'id' && typeof value === 'string' ? value.trim() || null : value];
-    }));
+  const resolvedHint = effectiveScopeHint(draft, root, 'include', index, include[index]);
+  if (!resolvedHint || resolvedHint.unresolved) return null;
+  const hint = Object.fromEntries(['id', ...savedTargetIdentityFields].map(key => {
+    const value = resolvedHint.hint[key];
+    return [key, request.kind === 'amend' && key !== 'id' && typeof value === 'string' ? value.trim() || null : value];
+  }));
+  const exclusions = exclude.map((row, excludedIndex) => effectiveScopeHint(draft, root, 'exclude', excludedIndex, row));
+  const excludedUnresolved = exclusions.some(row => !row || row.unresolved);
+  const excludedHints = exclusions.flatMap(row => row ? [row.hint] : []);
   const selectionPath = `${hintRoot}/suggestedRef`;
   const matches = draft.proposal.content.services.flatMap((service, serviceIndex) => {
     if (input.serviceId && service.id !== input.serviceId) return [];
@@ -550,7 +605,7 @@ export function savedTarget(draft: ReservationWorkflowV2Draft, input: Reservatio
       ? [{ service, serviceIndex, target, targetIndex }] : []);
   });
   if (!matches.length || input.serviceId && matches.length !== 1) return null;
-  return { request, hint, selectionPath, matches };
+  return { request, hint, selectionPath, matches, excludedHints, excludedUnresolved };
 }
 
 export function samePerson(left: unknown, right: unknown) {
@@ -632,6 +687,10 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
   if (!found) return { status: 'needs_input', issue: 'one_saved_stay_confirmation_required' };
   const amendSelection = found.request.kind === 'amend' ? selectedSavedStay(draft, input, found) : null;
   if (found.request.kind === 'amend' && !amendSelection) return { status: 'needs_input', issue: 'select_amend_saved_stay_first' };
+  if (amendSelection) {
+    const issue = savedTargetExclusionIssue(amendSelection.stay, found.excludedHints, found.excludedUnresolved);
+    if (issue) return { status: 'needs_input', issue };
+  }
   const confirmation = amendSelection?.stay.confirmation ?? found.hint.confirmation;
   const arrival = amendSelection?.stay.arrival ?? found.hint.bookedArrival;
   if (!/^\d+-\d+$/.test(String(confirmation ?? ''))) return { status: 'needs_input', issue: 'one_saved_stay_confirmation_required' };
@@ -657,6 +716,7 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
     samePerson(stay.firstName, selectedStay.firstName) && samePerson(stay.lastName, selectedStay.lastName));
   const complete = Boolean(result?.outcome === 'found' && !result.arrivalMismatch && stay &&
     (amendSelection ? sameSelected : savedStayMatches(stay, found.hint)));
+  const exclusionIssue = complete && stay ? savedTargetExclusionIssue(stay, found.excludedHints, found.excludedUnresolved) : null;
   let observation: ReservationWorkflowV2Observation | undefined;
   if (!amendSelection) {
     observation = { ref: randomUUID(), generationId: draft.generationId, kind: 'stay_candidate',
@@ -669,6 +729,7 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
     if (appended.status !== 'ok') return { ...appended };
   }
   if (!complete || !stay) return { status: 'needs_input', issue: 'reserved_stay_not_verified' };
+  if (exclusionIssue) return { status: 'needs_input', issue: exclusionIssue, observationRef: observation?.ref };
   const selected = amendSelection ?? selectedSavedStay(draft, input, found);
   if (!selected || (amendSelection ? !sameSelected : canonicalJson(selected.stay) !== canonicalJson(stay)))
     return { status: 'needs_input', issue: 'select_exact_saved_stay', observationRef: observation?.ref };
@@ -739,6 +800,8 @@ export function reservationWorkflowV2CompileSavedService(draft: ReservationWorkf
   if (!input.serviceId) return { status: 'needs_input' as const, issue: 'one_service_target_required' };
   const found = savedTarget(draft, input), selected = found && selectedSavedStay(draft, input, found);
   if (!found || !selected || found.matches.length !== 1) return { status: 'needs_input' as const, issue: 'select_exact_saved_stay' };
+  const exclusionIssue = savedTargetExclusionIssue(selected.stay, found.excludedHints, found.excludedUnresolved);
+  if (exclusionIssue) return { status: 'needs_input' as const, issue: exclusionIssue };
   const row = found.matches[0]!;
   const operation = savedValue(draft, pointer('proposal', 'content', 'services', row.serviceIndex, 'operation'));
   if (operation !== 'add' && operation !== 'edit' && operation !== 'remove') return { status: 'needs_input' as const, issue: 'service_operation_required' };

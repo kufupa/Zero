@@ -230,10 +230,67 @@ function resolveParty(draft: ReservationWorkflowV2Draft, basePath: string, raw: 
   return { value: { id: String(candidate.nativeId), name: String(candidate.name) }, issues: [], selectionPath, selectedRef: ref };
 }
 
+type CreateCompileIssueDetail = { path: string; code: string; expected?: number; actual?: number;
+  allocationIds?: string[]; unresolvedAllocationIds?: string[] };
 type CreateCompile = { outcome: 'ok'; nativeInput: Record<string, unknown>; expectedGuest: { firstName: string; lastName: string };
   target: HmsDispatchTarget; reviewPaths: string[]; partySelectionPaths: Record<string, string>;
   semanticDigest: string; preparedBinding: Record<string, unknown> | null } |
-  { outcome: 'needs_input' | 'needs_review' | 'unsupported'; issue: string; fields?: string[] };
+  { outcome: 'needs_input' | 'needs_review' | 'unsupported'; issue: string; fields?: string[]; details?: CreateCompileIssueDetail[] };
+
+type CreateRequestBody = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'create' }>['body'];
+
+function createTotalsIssues(body: CreateRequestBody, requestPath: string): CreateCompileIssueDetail[] {
+  const issues: CreateCompileIssueDetail[] = [];
+  const sectionCounts = new Map<string, number>();
+  for (const section of body.dateSections) sectionCounts.set(section.id, (sectionCounts.get(section.id) ?? 0) + 1);
+  for (const [index, section] of body.dateSections.entries()) {
+    const sectionPath = ptr(...requestPath.slice(1).split('/').map(decodeURIComponent), 'dateSections', index);
+    const allocations = body.allocations.filter((allocation) => allocation.dateSectionId === section.id);
+    const allocationIds = allocations.map((allocation) => allocation.id);
+    if (sectionCounts.get(section.id) !== 1) {
+      issues.push({ path: `${sectionPath}/id`, code: 'duplicate_date_section_id', allocationIds });
+      continue;
+    }
+    if (section.requestedRooms != null) {
+      if (!Number.isSafeInteger(section.requestedRooms) || section.requestedRooms < 0) {
+        issues.push({ path: `${sectionPath}/requestedRooms`, code: 'requested_room_count_invalid', allocationIds });
+      } else if (section.requestedRooms !== allocations.length) {
+        issues.push({ path: `${sectionPath}/requestedRooms`, code: 'requested_room_count_mismatch',
+          expected: section.requestedRooms, actual: allocations.length, allocationIds });
+      }
+    }
+    for (const field of ['adults', 'childCount'] as const) {
+      const expected = section.requestedTotals[field];
+      if (expected == null) continue; // Unknown source totals are not zero.
+      const totalPath = `${sectionPath}/requestedTotals/${field}`;
+      if (!Number.isSafeInteger(expected) || (field === 'adults' ? expected < 1 : expected < 0)) {
+        issues.push({ path: totalPath, code: 'requested_occupancy_total_invalid', allocationIds });
+        continue;
+      }
+      const unresolved = allocations.filter((allocation) => {
+        const value = allocation.occupancy?.[field];
+        return value == null || !Number.isSafeInteger(value) || (field === 'adults' ? value < 1 : value < 0);
+      }).map((allocation) => allocation.id);
+      if (unresolved.length) {
+        issues.push({ path: totalPath, code: 'requested_occupancy_total_unresolved', expected,
+          allocationIds, unresolvedAllocationIds: unresolved });
+        continue;
+      }
+      const actual = allocations.reduce((sum, allocation) => sum + allocation.occupancy[field]!, 0);
+      if (actual !== expected) issues.push({ path: totalPath, code: 'requested_occupancy_total_mismatch',
+        expected, actual, allocationIds });
+    }
+  }
+  const ids = new Set<string>();
+  for (const [index, allocation] of body.allocations.entries()) {
+    if (ids.has(allocation.id)) issues.push({ path: `${requestPath}/allocations/${index}/id`, code: 'duplicate_allocation_id' });
+    ids.add(allocation.id);
+    if (sectionCounts.get(allocation.dateSectionId) !== 1) issues.push({
+      path: ptr(...requestPath.slice(1).split('/').map(decodeURIComponent), 'allocations', index, 'dateSectionId'),
+      code: 'allocation_date_section_invalid', allocationIds: [allocation.id] });
+  }
+  return issues;
+}
 
 const existingConfirmationPath = (requestId: string) => ptr('proposal', 'content', 'requests', requestId, 'confirmationReference');
 
@@ -307,6 +364,11 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   if (!body || !Array.isArray(body.allocations) || !Array.isArray(body.dateSections) || !body.shared) {
     return { outcome: 'needs_input', issue: 'create_body_incomplete' };
   }
+  if (mode !== 'lookup') {
+    const totalsIssues = createTotalsIssues(body, req);
+    if (totalsIssues.length) return { outcome: 'needs_input', issue: 'create_requested_totals_conflict',
+      fields: totalsIssues.map((item) => item.path), details: totalsIssues };
+  }
   if (body.allocations.length < 1 || body.allocations.length > 8) {
     return { outcome: 'needs_input', issue: 'create_requires_one_to_eight_rooms', fields: [`${req}/allocations`] };
   }
@@ -353,7 +415,19 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     if (required && (result.value === undefined || result.value === null)) issues.push(`${field}:required`);
     return result.value;
   };
-  for (const field of ['roomType', 'ratePlan', 'guaranteeType']) readValue(field, true);
+  const roomTypeValue = readValue('roomType', true);
+  const ratePlanValue = readValue('ratePlan', true);
+  readValue('guaranteeType', true);
+  if (mode !== 'lookup') {
+    for (const [field, value, max] of [['roomType', roomTypeValue, 200], ['ratePlan', ratePlanValue, 100]] as const) {
+      if (value == null) continue;
+      if (typeof value !== 'string' || value.trim() !== value || !value.length || value.length > max || /[\r\n]/.test(value)) {
+        issues.push(`${field}:native_text_limit`);
+      } else if (!/^[A-Z0-9]{1,12}$/.test(value)) {
+        issues.push(`${field}:native_code_not_commit_safe`);
+      }
+    }
+  }
   const roomTypeForCharge = readValue('roomTypeForCharge');
   if (roomTypeForCharge != null && (typeof roomTypeForCharge !== 'string' || !/^[A-Z0-9]{1,12}$/.test(roomTypeForCharge))) {
     issues.push('roomTypeForCharge:invalid_code');
@@ -447,6 +521,25 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   const optionalFields = ['sourceOfBusiness', 'reasonForStay', 'billingReference', 'track', 'guestOptIn', 'bookerName',
     'bookerContact', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient'] as const;
   const optional = Object.fromEntries(optionalFields.map((field) => [field, readValue(field)]));
+  if (mode !== 'lookup') {
+    const nativeTextFields = [
+      ['reasonForStay', optional.reasonForStay, 100], ['bookerName', optional.bookerName, 50],
+      ['bookerContact', optional.bookerContact, 80], ['cmsMessageId', optional.cmsMessageId, 100],
+      ['cmsRecipient', optional.cmsRecipient, 255],
+    ] as const;
+    for (const [field, value, max] of nativeTextFields) {
+      if (value == null) continue;
+      if (typeof value !== 'string' || value.trim() !== value || !value.length || value.length > max || /[\r\n]/.test(value)) {
+        issues.push(`${field}:native_text_limit`);
+      }
+    }
+    if (optional.cmsRecipient != null && (typeof optional.cmsRecipient !== 'string' ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(optional.cmsRecipient))) issues.push('cmsRecipient:invalid_email');
+    if (optional.reservationNote != null && (typeof optional.reservationNote !== 'string' || optional.reservationNote.length > 2_000 ||
+        [...optional.reservationNote].some((char) => (char.charCodeAt(0) < 32 && char !== '\n') || char.charCodeAt(0) === 127))) {
+      issues.push('reservationNote:native_note_limit');
+    }
+  }
   for (const field of optionalFields) {
     const resolved = valueAt(field);
     if (mode !== 'lookup' && !('issue' in resolved) && resolved.value != null) {
@@ -464,8 +557,8 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   }
   if (mode === 'execute' && reviewPaths.size) return { outcome: 'needs_review', issue: 'create_requires_staff_acceptance', fields: [...reviewPaths] };
   if (issues.length) return { outcome: 'needs_input', issue: 'create_input_incomplete', fields: issues };
-  const roomType = readValue('roomType') as string;
-  const ratePlan = readValue('ratePlan') as string;
+  const roomType = roomTypeValue as string;
+  const ratePlan = ratePlanValue as string;
   const guaranteeType = readValue('guaranteeType') as string;
   if (!supportedGuarantee.has(guaranteeType)) return { outcome: 'unsupported', issue: 'guarantee_not_supported_yet', fields: ['guaranteeType'] };
   if ((!guestCandidate && mode !== 'lookup') || !firstName || !lastName || adults === null || childCount === null || childAges === null) {
@@ -512,10 +605,17 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   const targetParsed = hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'create',
     firstName: expectedGuest.firstName, lastName: expectedGuest.lastName, arrival });
   if (!targetParsed.success || targetParsed.data.kind !== 'create') return { outcome: 'needs_input', issue: 'invalid_create_target' };
+  const semanticDigest = sha256({ nativeInput, guestName });
+  if (mode === 'execute') {
+    const priceComparison = reservationWorkflowV2CreatePriceComparison(draft, requestId, allocationId, propertyCode);
+    if (priceComparison.blocksGo) return { outcome: 'needs_input',
+      issue: priceComparison.status === 'mismatch' ? 'create_requested_price_mismatch' : 'create_requested_price_unverifiable',
+      fields: ['priceComparison'] };
+  }
   // The exact binding is only available after HMS has staged and read back the fields.
   return { outcome: 'ok', nativeInput, expectedGuest, target: targetParsed.data,
     reviewPaths: [...reviewPaths], partySelectionPaths,
-    semanticDigest: sha256({ nativeInput, guestName }), preparedBinding: null };
+    semanticDigest, preparedBinding: null };
 }
 
 /** Reuse the same Create field compiler when a service preview needs its owning unsaved stay. */
@@ -1151,7 +1251,7 @@ export async function reservationWorkflowV2Prepare(ctx: ReadContext,
   if (!input.allocationId) return { status: 'needs_input', issue: 'allocation_required' };
   const compiled = compileCreate(loaded.draft, input.requestId, input.allocationId, ctx.property.propertyCode,
     ctx.nativeBatch ? 'background_prepare' : 'prepare');
-  if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [] };
+  if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [], details: compiled.details ?? [] };
   try {
     const tool = await import(new URL('../../tooling/hms-cloud/create-reservation.mjs', import.meta.url).href) as {
       createReservation: (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<NativeCreate>;
@@ -1303,6 +1403,225 @@ function preparedFor(draft: ReservationWorkflowV2Draft, requestId: string, alloc
     prepareShot: shot && typeof shot.runId === 'string' && typeof shot.sha256 === 'string' ? shot : null };
 }
 
+type PriceCheck = 'match' | 'mismatch' | 'unknown' | 'not_requested';
+type PriceComparison = {
+  status: 'not_requested' | 'not_applicable' | 'match' | 'mismatch' | 'unknown';
+  blocksGo: boolean;
+  scope?: 'per_room' | 'whole_group' | 'unknown';
+  dateIndex?: number;
+  requested: { nightlyRate: string | null; total: string | null; currency: string | null };
+  native: { averageRate: string; totalRate: string; currency: string } | null;
+  rooms: Array<{ allocationId: string; current: boolean; price?: { averageRate: string; totalRate: string; currency: string } }>;
+  checks: { nightlyRate: PriceCheck; total: PriceCheck; currency: PriceCheck };
+  sourceRefs: string[];
+  explanation: string;
+};
+type ExtractedPriceRequest = NonNullable<NonNullable<ReservationWorkflowV2Draft['extraction']>['requests'][number]['requestedPrice']>;
+type ParsedMoney = { minor: bigint; currency: string | null };
+
+function currencyCode(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const raw = value.trim().toUpperCase();
+  if (raw === 'R' || raw === 'RAND') return 'ZAR';
+  if (raw === '£') return 'GBP';
+  if (raw === '€') return 'EUR';
+  return /^[A-Z]{3}$/.test(raw) ? raw : null;
+}
+
+/** Parse an unambiguous decimal amount without floating-point arithmetic. */
+function parseMoney(value: unknown): ParsedMoney | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  if (typeof value === 'number' && (!Number.isFinite(value) || Math.abs(value) > Number.MAX_SAFE_INTEGER)) return null;
+  let raw = String(value).trim();
+  if (!raw || raw.length > 80) return null;
+  let foundCurrency: string | null = null;
+  const prefix = /^(ZAR|USD|EUR|GBP|CAD|AUD|NZD|CHF|JPY|CNY|INR|R|\$|£|€)\s*/i.exec(raw);
+  if (prefix) {
+    foundCurrency = currencyCode(prefix[1]);
+    raw = raw.slice(prefix[0].length);
+  }
+  const suffix = /\s*(ZAR|USD|EUR|GBP|CAD|AUD|NZD|CHF|JPY|CNY|INR)$/i.exec(raw);
+  if (suffix) {
+    const trailingCurrency = currencyCode(suffix[1]);
+    if (foundCurrency && trailingCurrency !== foundCurrency) return null;
+    foundCurrency = trailingCurrency;
+    raw = raw.slice(0, suffix.index).trim();
+  }
+  if (!/^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d{1,2})?$/.test(raw)) return null;
+  const [whole, fraction = ''] = raw.replaceAll(',', '').split('.');
+  if (whole!.length > 30) return null;
+  return { minor: BigInt(whole!) * 100n + BigInt((fraction + '00').slice(0, 2)), currency: foundCurrency };
+}
+
+function moneyText(minor: bigint): string {
+  const whole = minor / 100n;
+  const fraction = (minor % 100n).toString().padStart(2, '0');
+  return `${whole}.${fraction}`;
+}
+
+function extractedMoney(claim: { raw: string; value: unknown; sourceRefs: string[] } | undefined): ParsedMoney | null {
+  if (!claim || !claim.sourceRefs.length) return null;
+  const parsed = parseMoney(claim.value);
+  if (!parsed) return null;
+  return { ...parsed, currency: parsed.currency ?? parseMoney(claim.raw)?.currency ?? null };
+}
+
+function extractedCurrency(claim: { raw: string; value: unknown; sourceRefs: string[] } | undefined): string | null {
+  if (!claim || !claim.sourceRefs.length) return null;
+  return currencyCode(claim.value) ?? currencyCode(claim.raw) ?? parseMoney(claim.raw)?.currency ?? null;
+}
+
+function extractionPriceRequest(draft: ReservationWorkflowV2Draft, requestId: string) {
+  const extraction = draft.extraction;
+  if (!extraction || draft.extractionGenerationId !== draft.generationId) return null;
+  const proposed = draft.proposal.content.requests.find(request => request.id === requestId && request.kind === 'create');
+  if (!proposed) return null;
+  // Synthesis IDs can have been borrowed by another action. Match source text
+  // first, just as the source projector does, rather than comparing its price.
+  const candidates = extraction.requests.filter(request => request.kind === 'create');
+  const matchingText = candidates.filter(request => request.requestText.raw.trim() === proposed.requestText.trim());
+  if (matchingText.length === 1) return matchingText[0]!;
+  return candidates.length === 1 && candidates[0]!.id === requestId ? candidates[0]! : null;
+}
+
+function priceSection(body: CreateRequestBody, extracted: NonNullable<ReturnType<typeof extractionPriceRequest>>,
+  price: ExtractedPriceRequest): { sectionId: string } | { issue: string } {
+  if (price.scope === 'unknown') return { issue: 'The source did not distinguish per-room from whole-group pricing.' };
+  const dateIndex = price.dateIndex ?? (extracted.dates.length === 1 ? 0 : undefined);
+  if (dateIndex === undefined || dateIndex >= extracted.dates.length) {
+    return { issue: 'The requested price is not tied to one unambiguous source date range.' };
+  }
+  const dates = extracted.dates[dateIndex];
+  const arrival = text(dates?.arrival?.value), departure = text(dates?.departure?.value);
+  if (!arrival || !departure) return { issue: 'The source price date range is incomplete.' };
+  const sections = body.dateSections.filter((section) => section.arrival === arrival && section.departure === departure);
+  if (sections.length !== 1) return { issue: sections.length ? 'The source date range maps to multiple booking sections.' :
+    'The source price dates no longer match one booking date section; refresh or resolve the source dates.' };
+  return { sectionId: sections[0]!.id };
+}
+
+function unknownPriceComparison(input: {
+  price: ExtractedPriceRequest; reason: string; rooms?: PriceComparison['rooms']; native?: PriceComparison['native'];
+  blocksGo?: boolean;
+}): PriceComparison {
+  return { status: 'unknown', blocksGo: input.blocksGo ?? false, scope: input.price.scope,
+    ...(input.price.dateIndex !== undefined ? { dateIndex: input.price.dateIndex } : {}),
+    requested: { nightlyRate: input.price.nightlyRate?.raw ?? null, total: input.price.total?.raw ?? null,
+      currency: input.price.currency?.raw ?? null }, native: input.native ?? null, rooms: input.rooms ?? [],
+    checks: { nightlyRate: input.price.nightlyRate ? 'unknown' : 'not_requested',
+      total: input.price.total ? 'unknown' : 'not_requested', currency: 'unknown' },
+    sourceRefs: [...new Set([...(input.price.nightlyRate?.sourceRefs ?? []), ...(input.price.total?.sourceRefs ?? []),
+      ...(input.price.currency?.sourceRefs ?? [])])], explanation: input.reason };
+}
+
+function reservationWorkflowV2CreatePriceComparison(draft: ReservationWorkflowV2Draft, requestId: string,
+  allocationId: string, propertyCode: string): PriceComparison {
+  const extracted = extractionPriceRequest(draft, requestId);
+  const price = extracted?.requestedPrice;
+  const requested = { nightlyRate: price?.nightlyRate?.raw ?? null, total: price?.total?.raw ?? null,
+    currency: price?.currency?.raw ?? null };
+  const sourceRefs = [...new Set([...(price?.nightlyRate?.sourceRefs ?? []), ...(price?.total?.sourceRefs ?? []),
+    ...(price?.currency?.sourceRefs ?? [])])];
+  if (!extracted && draft.extractionGenerationId === draft.generationId &&
+      draft.extraction?.requests.some(row => row.kind === 'create' &&
+        (row.requestedPrice?.nightlyRate || row.requestedPrice?.total))) return {
+    status: 'unknown', blocksGo: false, requested, native: null, rooms: [],
+    checks: { nightlyRate: 'unknown', total: 'unknown', currency: 'unknown' }, sourceRefs,
+    explanation: 'A source booking price exists, but it cannot be linked uniquely to this Create action. Review the original voucher; no price from another action was assumed.' };
+  if (!price || (!price.nightlyRate && !price.total)) return { status: 'not_requested', blocksGo: false, requested,
+    native: null, rooms: [], checks: { nightlyRate: 'not_requested', total: 'not_requested', currency: 'not_requested' },
+    sourceRefs, explanation: 'No source-cited nightly rate or total was requested.' };
+  const request = draft.proposal.content.requests.find((entry) => entry.id === requestId && entry.kind === 'create');
+  const body = request && request.kind === 'create' ? effectiveSubtree(draft, request.body,
+    ptr('proposal', 'content', 'requests', requestId, 'body')) as CreateRequestBody | null : null;
+  if (!body || !extracted) return unknownPriceComparison({ price,
+    reason: 'The current Create extraction or booking fields are unavailable; no source price was assumed.' });
+  // Moving the original voucher to its dependent Filing owner must not detach
+  // that PDF's cited price from the Create allocation it describes.
+  const ownedAttachmentRefs = draft.proposal.content.documents.filter(document =>
+    document.ownerRequestId === requestId || extracted.documentRefs.includes(document.documentSourceRef) &&
+      document.targetRefs.some(target => target.kind === 'allocation' && target.requestId === requestId &&
+        body.allocations.some(allocation => allocation.id === target.allocationId)))
+    .flatMap(document => [document.documentSourceRef, ...document.sourceRefs]);
+  const currentPriceRefs = new Set([...extracted.requestText.sourceRefs, ...ownedAttachmentRefs]);
+  const priceClaims = [price.nightlyRate, price.total, price.currency].filter((claim) => claim !== undefined);
+  if (priceClaims.some((claim) => claim.sourceRefs.some((ref) => !currentPriceRefs.has(ref)))) {
+    return unknownPriceComparison({ price,
+      reason: 'A requested price cites evidence outside the current request and its owned attachments; prior-thread prices were not used.' });
+  }
+  const nightly = extractedMoney(price.nightlyRate);
+  const total = extractedMoney(price.total);
+  const claimedCurrency = extractedCurrency(price.currency) ?? nightly?.currency ?? total?.currency;
+  if ((price.nightlyRate && !nightly) || (price.total && !total)) return unknownPriceComparison({ price,
+    reason: 'A source-cited requested amount is not an unambiguous decimal; it was not compared.' });
+  if (!claimedCurrency) return unknownPriceComparison({ price,
+    reason: 'Source currency is missing or ambiguous; no currency or conversion was assumed.' });
+  if ((nightly?.currency && nightly.currency !== claimedCurrency) || (total?.currency && total.currency !== claimedCurrency)) {
+    return unknownPriceComparison({ price, reason: 'Source amount and currency claims conflict; the price was not compared.' });
+  }
+  const section = priceSection(body, extracted, price);
+  if ('issue' in section) return unknownPriceComparison({ price, reason: section.issue });
+  const allocation = body.allocations.find((entry) => entry.id === allocationId);
+  if (!allocation) return unknownPriceComparison({ price, reason: 'The target room allocation is unavailable.' });
+  if (allocation.dateSectionId !== section.sectionId) return { status: 'not_applicable', blocksGo: false,
+    scope: price.scope, ...(price.dateIndex !== undefined ? { dateIndex: price.dateIndex } : {}), requested,
+    native: null, rooms: [], checks: { nightlyRate: 'not_requested', total: 'not_requested', currency: 'not_requested' },
+    sourceRefs, explanation: 'This requested price belongs to a different date section.' };
+  const allocations = price.scope === 'whole_group'
+    ? body.allocations.filter((entry) => entry.dateSectionId === section.sectionId) : [allocation];
+  if (!allocations.length || allocations.length > 8) return unknownPriceComparison({ price,
+    reason: 'The source price room group is empty or exceeds the supported native Create room limit.' });
+  if (price.scope === 'whole_group') {
+    const sectionRow = body.dateSections.find((entry) => entry.id === section.sectionId);
+    if (!Number.isSafeInteger(sectionRow?.requestedRooms) || sectionRow?.requestedRooms !== allocations.length) {
+      return unknownPriceComparison({ price,
+        reason: 'The whole-group room count cannot be matched to the current booking allocations; the price was not compared.' });
+    }
+  }
+  const rooms = allocations.map((room) => {
+    const compiled = compileCreate(draft, requestId, room.id, propertyCode, 'prepare');
+    const prepared = compiled.outcome === 'ok' ? preparedFor(draft, requestId, room.id, compiled.semanticDigest) : null;
+    return { allocationId: room.id, current: Boolean(prepared), ...(prepared ? { price: prepared.price } : {}) };
+  });
+  if (rooms.some((room) => !room.current || !room.price)) return unknownPriceComparison({ price, rooms,
+    reason: price.scope === 'whole_group' ? 'Fresh native Prepare prices are required for every room in this date group before Create Go.' :
+      'A fresh native Prepare price is required for this room before comparison.', blocksGo: price.scope === 'whole_group' });
+  const nativeCurrency = rooms.map((room) => currencyCode(room.price?.currency));
+  if (nativeCurrency.some((currency) => !currency) || new Set(nativeCurrency).size !== 1) {
+    return unknownPriceComparison({ price, rooms, reason: 'Native room currencies are missing or inconsistent; no conversion was assumed.', blocksGo: true });
+  }
+  const currency = nativeCurrency[0]!;
+  const sumNative = (field: 'averageRate' | 'totalRate') => rooms.reduce<bigint | null>((sum, room) => {
+    const value = parseMoney(room.price?.[field]);
+    if (!value || value.currency && value.currency !== currency) return null;
+    return sum === null ? null : sum + value.minor;
+  }, 0n);
+  const averageMinor = sumNative('averageRate'), totalMinor = sumNative('totalRate');
+  const native = averageMinor === null || totalMinor === null ? null : {
+    averageRate: price.scope === 'whole_group' ? moneyText(averageMinor) : rooms[0]!.price!.averageRate,
+    totalRate: price.scope === 'whole_group' ? moneyText(totalMinor) : rooms[0]!.price!.totalRate,
+    currency,
+  };
+  if (!native) return unknownPriceComparison({ price, rooms, reason: 'Native price values are not unambiguous decimal amounts.', blocksGo: true });
+  const currencyCheck: PriceCheck = claimedCurrency === currency ? 'match' : 'mismatch';
+  const compareAmount = (claim: ParsedMoney | null, actual: string | undefined): PriceCheck => {
+    if (!claim) return 'not_requested';
+    if (currencyCheck !== 'match' || !actual) return currencyCheck === 'mismatch' ? 'mismatch' : 'unknown';
+    const nativeAmount = parseMoney(actual);
+    if (!nativeAmount || nativeAmount.currency && nativeAmount.currency !== currency) return 'unknown';
+    return claim.minor === nativeAmount.minor ? 'match' : 'mismatch';
+  };
+  const checks = { nightlyRate: compareAmount(nightly, native.averageRate), total: compareAmount(total, native.totalRate),
+    currency: currencyCheck };
+  const requestedChecks = [checks.nightlyRate, checks.total, checks.currency];
+  const status = requestedChecks.includes('mismatch') ? 'mismatch' : requestedChecks.includes('unknown') ? 'unknown' : 'match';
+  return { status, blocksGo: status !== 'match', scope: price.scope,
+    ...(price.dateIndex !== undefined ? { dateIndex: price.dateIndex } : {}), requested, native, rooms, checks, sourceRefs,
+    explanation: status === 'match' ? 'The fresh native HMS price matches the source-cited requested price.' :
+      status === 'mismatch' ? 'The source price differs from the current native HMS price. Resolve the rate in HMS and refresh Prepare; numeric price overrides are not supported.' :
+        'The source and native prices could not be compared safely; resolve in HMS and refresh Prepare.' };
+}
+
 /** Price currentness depends on native business values, not the staff review revision. */
 export function reservationWorkflowV2PreparationViews(draft: ReservationWorkflowV2Draft, propertyCode: string) {
   return draft.proposal.content.requests.flatMap((request) => {
@@ -1311,11 +1630,12 @@ export function reservationWorkflowV2PreparationViews(draft: ReservationWorkflow
     if (!body || !Array.isArray(body.allocations)) return [];
     return body.allocations.map((allocation) => {
       const compiled = compileCreate(draft, request.id, allocation.id, propertyCode, 'prepare');
+      const priceComparison = reservationWorkflowV2CreatePriceComparison(draft, request.id, allocation.id, propertyCode);
       if (compiled.outcome !== 'ok') return { requestId: request.id, allocationId: allocation.id,
-        current: false, issue: compiled.issue };
+        current: false, issue: compiled.issue, fields: compiled.fields ?? [], details: compiled.details ?? [], priceComparison };
       const prepared = preparedFor(draft, request.id, allocation.id, compiled.semanticDigest);
-      return { requestId: request.id, allocationId: allocation.id, current: Boolean(prepared),
-        ...(prepared ? { price: prepared.price } : {}) };
+      return { requestId: request.id, allocationId: allocation.id, current: Boolean(prepared) && !priceComparison.blocksGo,
+        ...(prepared ? { price: prepared.price, observedAt: prepared.observation.observedAt } : {}), priceComparison };
     });
   });
 }
@@ -1338,17 +1658,14 @@ function nativeReadbackPrice(fields: unknown): { averageRate: string; totalRate:
 }
 
 function moneyEqual(left: string, right: string): boolean {
-  const clean = (value: string) => {
-    const numeric = value.replace(/[^\d.-]/g, '');
-    return /^-?\d+(?:\.\d+)?$/.test(numeric) ? Number(numeric).toFixed(2) : null;
-  };
-  return clean(left) !== null && clean(left) === clean(right);
+  const leftAmount = parseMoney(left), rightAmount = parseMoney(right);
+  return Boolean(leftAmount && rightAmount && leftAmount.minor === rightAmount.minor);
 }
 
 function priceMatches(actual: unknown, expected: { averageRate: string; totalRate: string; currency: string }) {
   const parsed = validPrice(actual);
   return Boolean(parsed && moneyEqual(parsed.averageRate, expected.averageRate) && moneyEqual(parsed.totalRate, expected.totalRate) &&
-    parsed.currency.toUpperCase() === expected.currency.toUpperCase());
+    currencyCode(parsed.currency) === currencyCode(expected.currency));
 }
 
 function stayExpected(compiled: Extract<CreateCompile, { outcome: 'ok' }>, binding: Record<string, unknown>) {
@@ -1669,7 +1986,7 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
     return { status: 'needs_reconcile', operationId: roomResult?.id ?? prior!.id };
   }
   const compiled = compileCreate(loaded.draft, input.requestId, input.allocationId, ctx.property.propertyCode, 'execute');
-  if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [] };
+  if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [], details: compiled.details ?? [] };
   const admission = createDispatchAdmission(compiled);
   if (!admission.allowed) return { status: 'refused', issue: admission.issue };
   if (!ctx.user.sessionId || !ctx.user.sessionProfile) return { status: 'refused', issue: 'authenticated_staff_session_required' };

@@ -32,7 +32,7 @@ import { canonicalMessageId } from '../mail/ingest/message-id.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
 import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError,
-  recoverHmsLabtestV2Attach, resolveHmsLabtestDispatch, resolveNeverDispatchedAttach,
+  readResolvedHmsLabtestCreates, recoverHmsLabtestV2Attach, resolveHmsLabtestDispatch, resolveNeverDispatchedAttach,
   type HmsLabtestIntent, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { persistHmsShots, readStoredHmsShot, verifyStoredHmsShot } from './hms-shots-store.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
@@ -51,6 +51,12 @@ type PreviewResult = Awaited<ReturnType<typeof previewFiling>>;
 type WorkTransaction = Parameters<Parameters<DB['transaction']>[0]>[0];
 type FilingRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'filing' }>;
 type FilingDocument = ReservationWorkflowV2Draft['proposal']['content']['documents'][number];
+type CreateAllocationTarget = Extract<FilingDocument['targetRefs'][number], { kind: 'allocation' }>;
+type ResolvedCreateDispatch = Awaited<ReturnType<typeof readResolvedHmsLabtestCreates>>[number];
+type CreateDependencyProof = { requestId: string; allocationId: string; operationId: string;
+  observationRef: string; confirmation: string };
+type CreateDependencyResolution = { status: 'invalid' | 'pending' | 'failed' | 'needs_reconcile'; issue: string } |
+  { status: 'succeeded'; proof: CreateDependencyProof };
 type FilingSelection = {
   request: FilingRequest; requestIndex: number; document: FilingDocument; documentIndex: number;
   attachmentId: string; targetObservation: ReservationWorkflowV2Observation;
@@ -226,11 +232,148 @@ function filingRequestAndDocument(draft: ReservationWorkflowV2Draft, requestId: 
   return { request, requestIndex, document: docs[0]!.document, documentIndex: docs[0]!.documentIndex };
 }
 
+function createAllocationTarget(draft: ReservationWorkflowV2Draft, document: FilingDocument):
+  { status: 'none' } | { status: 'linked'; target: CreateAllocationTarget } | { status: 'invalid' } {
+  const refs = document.targetRefs.filter((target): target is CreateAllocationTarget => target.kind === 'allocation');
+  const owner = draft.proposal.content.requests.find(row => row.id === document.ownerRequestId && row.kind === 'filing');
+  if (!owner || owner.kind !== 'filing') return { status: 'invalid' };
+  const bodyTarget = effectiveValue(draft, ptr('proposal', 'content', 'requests', owner.id, 'body', 'allocationTarget'), owner.body.allocationTarget);
+  const body = record(bodyTarget);
+  if (body && (refs.length !== 1 || body.requestId !== refs[0]?.requestId || body.allocationId !== refs[0]?.allocationId)) return { status: 'invalid' };
+  if (!refs.length) return { status: 'none' };
+  if (refs.length !== 1) return { status: 'invalid' };
+  const target = refs[0]!;
+  const request = draft.proposal.content.requests.find((entry) => entry.id === target.requestId);
+  if (!request || request.kind !== 'create' || request.body.allocations.filter((allocation) => allocation.id === target.allocationId).length !== 1) {
+    return { status: 'invalid' };
+  }
+  return { status: 'linked', target };
+}
+
+function validConfirmation(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{6,10}-\d{1,2}$/.test(value);
+}
+
+function validSavedShot(value: unknown): boolean {
+  const shot = record(value);
+  return Boolean(shot && typeof shot.runId === 'string' && typeof shot.sha256 === 'string' && /^[a-f0-9]{64}$/.test(shot.sha256));
+}
+
+/** Verify the two persisted Create receipt variants against one exact allocation; input order is irrelevant. */
+export function verifyCreateAllocationDependency(draft: ReservationWorkflowV2Draft, target: CreateAllocationTarget,
+  receipts: ResolvedCreateDispatch[], transportId: string): CreateDependencyResolution {
+  const createRequest = draft.proposal.content.requests.find((request) => request.id === target.requestId);
+  if (!createRequest || createRequest.kind !== 'create' ||
+      !createRequest.body.allocations.some((allocation) => allocation.id === target.allocationId)) {
+    return { status: 'invalid', issue: 'create_dependency_target_invalid' };
+  }
+  const operations = draft.operationResults.filter((operation) => operation.workflow === 'create' &&
+    operation.requestId === target.requestId && operation.allocationId === target.allocationId);
+  if (operations.some((operation) => operation.generationId !== draft.generationId &&
+      (operation.status === 'succeeded' || operation.status === 'unknown'))) {
+    return { status: 'needs_reconcile', issue: 'create_dependency_generation_changed' };
+  }
+  if (operations.some((operation) => operation.status === 'unknown')) {
+    return { status: 'needs_reconcile', issue: 'create_dependency_outcome_unknown' };
+  }
+  const successes = operations.filter((operation) => operation.status === 'succeeded');
+  if (!successes.length) return operations.some((operation) => operation.status === 'failed')
+    ? { status: 'failed', issue: 'create_dependency_not_succeeded' }
+    : { status: 'pending', issue: 'create_dependency_pending' };
+  if (successes.length !== 1) return { status: 'needs_reconcile', issue: 'create_dependency_multiple_successes' };
+  const operation = successes[0]!;
+  if (operation.generationId !== draft.generationId || operation.observationRefs.length !== 1) {
+    return { status: 'needs_reconcile', issue: 'create_dependency_receipt_invalid' };
+  }
+  const observationRefs = new Set(operation.observationRefs);
+  const observations = draft.observations.filter((entry) => observationRefs.has(entry.ref));
+  if (observations.length !== 1) return { status: 'needs_reconcile', issue: 'create_dependency_observation_missing' };
+  const observation = observations[0]!;
+  const result = record(observation.result), confirmation = result?.confirmation;
+  if (observation.kind !== 'stay_candidate' || observation.status !== 'complete' || !observation.coverage.complete ||
+      observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
+      observation.sourceMessageId !== draft.source.messageId || observation.criteria.workflow !== 'create' ||
+      observation.criteria.requestId !== target.requestId || observation.criteria.allocationId !== target.allocationId ||
+      observation.criteria.draftRevision !== operation.draftRevision || !validConfirmation(confirmation)) {
+    return { status: 'needs_reconcile', issue: 'create_dependency_observation_invalid' };
+  }
+  const matchingReceipts = receipts.filter(({ intent }) => intent.grantId === operation.id.toLowerCase());
+  if (matchingReceipts.length !== 1) return { status: 'needs_reconcile', issue: 'create_dependency_dispatch_receipt_missing' };
+  const receipt = matchingReceipts[0]!;
+  const { intent, resolution } = receipt;
+  const recovery = record(intent.recovery);
+  if (intent.operation !== 'create' || resolution.operation !== 'create' || intent.workItemId !== draft.workItemId.toLowerCase() ||
+      intent.transportId !== transportId || intent.propertyCode !== draft.propertyCode || intent.grantId !== operation.id.toLowerCase() ||
+      intent.stayId !== `${target.requestId}_${target.allocationId}` || intent.sourceDigest !== draft.source.sourceHash ||
+      recovery?.requestId !== target.requestId || recovery.allocationId !== target.allocationId || recovery.operationId !== operation.id ||
+      recovery.draftRevision !== operation.draftRevision ||
+      resolution.confirmation !== confirmation || !validSavedShot(resolution.savedShot)) {
+    return { status: 'needs_reconcile', issue: 'create_dependency_scope_mismatch' };
+  }
+  if (resolution.recovered === true) {
+    const observedReadback = record(result?.nativeReadback), resolvedReadback = record(resolution.nativeReadback);
+    if (observation.criteria.recovered !== true || observation.criteria.operationId !== operation.id ||
+        observation.criteria.sourceHash !== draft.source.sourceHash || !observedReadback || !resolvedReadback ||
+        observedReadback.confirmation !== confirmation || resolvedReadback.confirmation !== confirmation ||
+        result?.readbackDigest !== resolution.readbackDigest || !validSavedShot(result?.savedShot) ||
+        canonicalJson(result?.savedShot) !== canonicalJson(resolution.savedShot) ||
+        canonicalJson(observedReadback) !== canonicalJson(resolvedReadback)) {
+      return { status: 'needs_reconcile', issue: 'create_dependency_recovery_proof_invalid' };
+    }
+  } else {
+    const readback = record(result?.nativeReadback);
+    if (observation.criteria.recovered === true || observation.criteria.idempotencyKey !== operation.id ||
+        result?.requestDigest !== intent.approvedDigest || result?.priceMatched !== true || !readback ||
+        digestJson(readback) !== resolution.readbackDigest || !validSavedShot(result?.savedShot) ||
+        canonicalJson(result?.savedShot) !== canonicalJson(resolution.savedShot)) {
+      return { status: 'needs_reconcile', issue: 'create_dependency_save_proof_invalid' };
+    }
+  }
+  return { status: 'succeeded', proof: { requestId: target.requestId, allocationId: target.allocationId,
+    operationId: operation.id, observationRef: observation.ref, confirmation } };
+}
+
+function linkedCreateObservationMatches(draft: ReservationWorkflowV2Draft, target: CreateAllocationTarget,
+  filingObservation: ReservationWorkflowV2Observation, confirmation: string): boolean {
+  if (filingObservation.criteria.createRequestId !== target.requestId ||
+      filingObservation.criteria.createAllocationId !== target.allocationId ||
+      filingObservation.criteria.createConfirmation !== confirmation ||
+      filingObservation.criteria.confirmation !== confirmation) return false;
+  const operationId = text(filingObservation.criteria.createOperationId), observationRef = text(filingObservation.criteria.createObservationRef);
+  if (!operationId || !observationRef) return false;
+  const operations = draft.operationResults.filter((operation) => operation.id === operationId && operation.workflow === 'create' &&
+    operation.status === 'succeeded' && operation.generationId === draft.generationId && operation.requestId === target.requestId &&
+    operation.allocationId === target.allocationId && operation.observationRefs.length === 1 && operation.observationRefs[0] === observationRef);
+  const observations = draft.observations.filter((observation) => observation.ref === observationRef &&
+    operations.some((operation) => operation.observationRefs.includes(observation.ref)));
+  if (operations.length !== 1 || observations.length !== 1) return false;
+  const operation = operations[0]!, observation = observations[0]!, result = record(observation.result);
+  return observation.kind === 'stay_candidate' && observation.status === 'complete' && observation.coverage.complete &&
+    observation.generationId === draft.generationId && observation.propertyCode === draft.propertyCode &&
+    observation.sourceMessageId === draft.source.messageId && observation.criteria.workflow === 'create' &&
+    observation.criteria.requestId === target.requestId && observation.criteria.allocationId === target.allocationId &&
+    observation.criteria.draftRevision === operation.draftRevision && result?.confirmation === confirmation;
+}
+
+/** Only host lookup evidence backed by the exact successful Create can fill an empty linked confirmation. */
+export function isVerifiedCreateFilingCandidate(draft: ReservationWorkflowV2Draft, requestId: string,
+  observation: ReservationWorkflowV2Observation): boolean {
+  const pair = filingRequestAndDocument(draft, requestId);
+  if (!pair || observation.kind !== 'stay_candidate' || observation.criteria.workflow !== 'filing' ||
+      observation.criteria.requestId !== requestId || observation.criteria.sourceHash !== draft.source.sourceHash ||
+      observation.generationId !== draft.generationId || observation.sourceMessageId !== draft.source.messageId) return false;
+  const dependency = createAllocationTarget(draft, pair.document);
+  return dependency.status === 'linked' && validConfirmation(observation.criteria.confirmation) &&
+    linkedCreateObservationMatches(draft, dependency.target, observation, observation.criteria.confirmation);
+}
+
 function findTargetHint(draft: ReservationWorkflowV2Draft, request: FilingRequest, document: FilingDocument) {
   const scope = filingTargets(draft, request);
   if (!scope || scope.mode !== 'explicit' || scope.include.length !== 1 || scope.exclude.length) return null;
   const hint = scope.include[0]!;
   if (!document.targetRefs.some((target) => target.kind === 'saved_target' && target.requestId === request.id && target.hintId === hint.id)) return null;
+  const dependency = createAllocationTarget(draft, document);
+  if (dependency.status === 'invalid') return null;
   const targetPath = ptr('proposal', 'content', 'requests', request.id, 'body', 'targets', 'include', hint.id, 'suggestedRef');
   const effectiveRef = effectiveValue(draft, targetPath, hint.suggestedRef);
   const proposedRef = typeof effectiveRef === 'string' ? effectiveRef : null;
@@ -241,6 +384,8 @@ function findTargetHint(draft: ReservationWorkflowV2Draft, request: FilingReques
       observation.propertyCode === draft.propertyCode && observation.generationId === draft.generationId &&
       observation.sourceMessageId === draft.source.messageId && observation.criteria.workflow === 'filing' &&
       observation.criteria.requestId === request.id && observation.criteria.targetHintId === hint.id &&
+      (dependency.status !== 'linked' || linkedCreateObservationMatches(draft, dependency.target, observation,
+        text(record(record(observation.result)?.stay)?.confirmation) ?? '')) &&
       record(observation.result)?.outcome === 'found' &&
       record(observation.result)?.stay && typeof record(observation.result)?.stay === 'object'));
   const targetObservation = proposedRef ? candidates.find((candidate) => candidate.ref === proposedRef) : undefined;
@@ -439,10 +584,49 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReadContext,
     const hints = scope && scope.mode === 'explicit' ? scope.include : [];
     if (hints.length !== 1) { lookups.push({ status: 'needs_input', requestId: request.id, issue: 'select_one_saved_stay' }); continue; }
     const hint = hints[0]!;
+    const dependency = createAllocationTarget(loaded.draft, pair.document);
+    if (dependency.status === 'invalid') {
+      lookups.push({ status: 'needs_input', requestId: request.id, documentId: pair.document.id,
+        issue: 'create_dependency_target_invalid' });
+      continue;
+    }
+    let linkedProof: CreateDependencyProof | null = null;
+    if (dependency.status === 'linked') {
+      let receipts: ResolvedCreateDispatch[];
+      try {
+        receipts = await ctx.db.transaction((tx) => readResolvedHmsLabtestCreates(tx, input.workItemId));
+      } catch {
+        lookups.push({ status: 'needs_reconcile', requestId: request.id, documentId: pair.document.id,
+          createDependency: { status: 'needs_reconcile', requestId: dependency.target.requestId,
+            allocationId: dependency.target.allocationId }, issue: 'create_dependency_receipt_unavailable' });
+        continue;
+      }
+      const resolved = verifyCreateAllocationDependency(loaded.draft, dependency.target, receipts, ctx.transport.id);
+      if (resolved.status !== 'succeeded') {
+        lookups.push({ status: resolved.status === 'pending' ? 'queued' : resolved.status,
+          requestId: request.id, documentId: pair.document.id,
+          createDependency: { status: resolved.status, requestId: dependency.target.requestId,
+            allocationId: dependency.target.allocationId },
+          issue: resolved.issue });
+        continue;
+      }
+      linkedProof = resolved.proof;
+      if (hint.confirmation && hint.confirmation !== linkedProof.confirmation) {
+        lookups.push({ status: 'needs_reconcile', requestId: request.id, documentId: pair.document.id,
+          createDependency: { status: 'needs_reconcile', ...linkedProof }, issue: 'create_confirmation_conflict' });
+        continue;
+      }
+    }
+    const confirmation = linkedProof?.confirmation ?? hint.confirmation;
+    if (!confirmation) {
+      lookups.push({ status: 'needs_input', requestId: request.id, documentId: pair.document.id,
+        issue: 'select_one_saved_stay' });
+      continue;
+    }
     // Explicit Lookup refreshes native state; old observations remain for receipt provenance.
     let candidate: ReservationWorkflowV2Observation | undefined;
-    if (hint.confirmation) {
-      const stayRequest = { confirmation: hint.confirmation, ...(hint.bookedArrival ? { arrival: hint.bookedArrival } : {}) };
+    if (confirmation) {
+      const stayRequest = { confirmation, ...(hint.bookedArrival ? { arrival: hint.bookedArrival } : {}) };
       const found = ctx.nativeBatch ? await (async () => {
         const lock = paneStayPropertyLock(target.target);
         if (!lock) return null;
@@ -452,13 +636,16 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReadContext,
       })().catch(() => null) : await findStay(stayRequest, { target: target.target,
         lock: () => paneStayPropertyLock(target.target), acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS) }).catch(() => null);
       const stay = found?.stay;
-      const complete = found?.outcome === 'found' && Boolean(stay?.confirmation && stay.firstName && stay.lastName && stay.status &&
+      const complete = found?.outcome === 'found' && Boolean(stay?.confirmation === confirmation && stay.firstName && stay.lastName && stay.status &&
         stay.arrival && stay.departure && !found.arrivalMismatch);
       candidate = { ref: randomUUID(), generationId: loaded.draft.generationId, kind: 'stay_candidate',
         status: complete ? 'complete' : found?.outcome === 'execution_failure' ? 'failed' : 'partial',
         observedAt: new Date().toISOString(), propertyCode: loaded.draft.propertyCode, sourceMessageId: input.source.messageId,
         sourceRefs: [], criteria: { workflow: 'filing', requestId: request.id, targetHintId: hint.id,
-          confirmation: hint.confirmation, bookedArrival: hint.bookedArrival || null },
+          confirmation, bookedArrival: hint.bookedArrival || null,
+          ...(linkedProof ? { createRequestId: linkedProof.requestId, createAllocationId: linkedProof.allocationId,
+            createOperationId: linkedProof.operationId, createObservationRef: linkedProof.observationRef,
+            createConfirmation: linkedProof.confirmation } : {}) },
         coverage: { complete, notes: complete ? [] : ['Fresh stay lookup did not verify one exact saved stay.'] },
         result: { outcome: found?.outcome ?? 'execution_failure', stay: complete ? stay : null,
           arrivalMismatch: found?.arrivalMismatch ?? false } };
@@ -468,8 +655,8 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReadContext,
       appended.push(candidate);
     }
     lookups.push({ status: candidate?.status === 'complete' ? 'candidate' : 'needs_input', requestId: request.id,
-      documentId: pair.document.id, targetCandidate: candidate ? { observationRef: candidate.ref,
-        stay: record(record(candidate.result)?.stay) } : null });
+      documentId: pair.document.id, ...(linkedProof ? { createDependency: { status: 'succeeded', ...linkedProof } } : {}),
+      targetCandidate: candidate ? { observationRef: candidate.ref, stay: record(record(candidate.result)?.stay) } : null });
   }
   // Only a single complete host stay observation plus a source PDF can produce the no-Save target preview.
   const refreshed = await currentDraft(ctx, input);

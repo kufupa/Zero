@@ -1,6 +1,13 @@
 import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationRequestProjection, ReservationFieldOverride, ReservationSavedServiceTarget, ReservationGuestProfileOptionField } from './types';
 
-export type RowChange = { kind: 'move_allocation' | 'add_allocation' | 'remove_allocation' | 'add_date_section' | 'remove_date_section' | 'add_quote_group' | 'remove_quote_group' | 'add_target' | 'remove_target' | 'add_service' | 'remove_service' | 'add_document' | 'remove_document' | 'remove_action' | 'separate_quote_money' | 'split_quote_dates'; requestId: string; parentId?: string; entityId?: string; childIds?: string[] };
+type BasicRowChange = { requestId: string; parentId?: string; entityId?: string; childIds?: string[] };
+export type RowChange =
+  | (BasicRowChange & { kind: 'move_allocation' | 'add_allocation' | 'remove_allocation' | 'add_date_section' | 'remove_date_section'
+      | 'add_quote_group' | 'remove_quote_group' | 'add_target' | 'remove_target' | 'add_service' | 'remove_service'
+      | 'add_document' | 'remove_document' | 'remove_action' | 'separate_quote_money' | 'split_quote_dates' })
+  | { kind: 'separate_filing_target'; requestId: string; documentId: string; targetHintId: string;
+      targetDisposition: 'included' | 'excluded' }
+  | { kind: 'link_created_addon_target'; requestId: string; allocationId: string; serviceId: string };
 export type WorkbenchCommands = {
   stageEdit(path: string, value: unknown, state?: ReservationFieldOverride['state']): void;
   setUncommitted(key: string, dirty: boolean): void;
@@ -19,7 +26,7 @@ export type WorkbenchCommands = {
   reconcile(operationId: string): Promise<void>;
   acceptServiceReview(fieldPath: string, note: string, expected?: { path: string; value: unknown; generationId: string }): Promise<void>;
   acceptFinancialReview(fieldPath: string, note: string, observationRef: string): Promise<void>;
-  configureFiling(attachmentId: string, confirmation: string, kind: 'voucher' | 'payment_proof'): Promise<void>;
+  configureFiling(attachmentId: string, target: string | { confirmation: string } | { allocationTarget: { requestId: string; allocationId: string } }, kind: 'voucher' | 'payment_proof'): Promise<void>;
   lookupServices(target: string | ReservationSavedServiceTarget, serviceId?: string): Promise<void>;
   previewServices(target: string | ReservationSavedServiceTarget, serviceId?: string): Promise<void>;
   executeServices(target: string | ReservationSavedServiceTarget, serviceId: string, reviewedPrepareRef?: string): Promise<void>;

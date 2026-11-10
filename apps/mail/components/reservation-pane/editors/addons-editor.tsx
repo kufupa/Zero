@@ -27,6 +27,39 @@ function nativeOptions(control: Record<string, unknown>) {
   });
 }
 
+function excludedScopeIssue(stay: Record<string, unknown> | null, exclusions: unknown[]): 'overlap' | 'unresolved' | null {
+  if (!exclusions.length) return null;
+  if (!stay) return 'unresolved';
+  const confirmation = text(stay.confirmation), nativeName = `${text(stay.firstName)} ${text(stay.lastName)}`.trim();
+  const validDate = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+  const sameGuest = (left: unknown, right: unknown) => {
+    const normalize = (value: unknown) => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() : '';
+    const forms = (value: unknown) => {
+      const raw = normalize(value);
+      if (typeof value !== 'string') return [raw].filter(Boolean);
+      const parts = value.split(',');
+      return [raw, ...(parts.length === 2 ? [normalize(`${parts[1]?.trim()} ${parts[0]?.trim()}`)] : [])].filter(Boolean);
+    };
+    const leftForms = forms(left);
+    return leftForms.some(value => forms(right).includes(value));
+  };
+  for (const value of exclusions) {
+    const hint = record(value), excludedConfirmation = text(hint.confirmation);
+    if (excludedConfirmation && /^\d{6,10}-\d{1,2}$/.test(excludedConfirmation)) {
+      if (excludedConfirmation === confirmation) return 'overlap';
+      continue;
+    }
+    const guestName = text(hint.guestName), arrival = hint.bookedArrival, departure = hint.bookedDeparture;
+    const disjointDates = validDate(arrival) && validDate(departure) && validDate(stay.arrival) && validDate(stay.departure) &&
+      (departure <= stay.arrival || stay.departure <= arrival);
+    const differentGuest = Boolean(guestName && nativeName && !sameGuest(nativeName, guestName));
+    if (sameGuest(guestName, nativeName) && validDate(arrival) && validDate(departure) && validDate(stay.arrival) && validDate(stay.departure) && !disjointDates) return 'overlap';
+    if (!differentGuest || !disjointDates) return 'unresolved';
+  }
+  return null;
+}
+
 const unknownServiceValue = Symbol('unknown service value');
 const noneServiceValue = Symbol('no service value');
 function servicePreviewMatches(editor: Editor, service: Service, root: string, targetRoot: string, operation: string, preview: Record<string, unknown>, savedTarget: boolean) {
@@ -98,7 +131,7 @@ export function AddonsEditor(editor: Editor) {
       || service.targets.some(target => target.target.requestId === request.id));
   return <div className={styles.stack}>
     <Section title="Add-Ons">
-      <p className={styles.hint}>Each Add-On is checked and saved for one exact room. Infor calculates the total using the unit price, pricing basis and quantity.</p>
+      <p className={styles.hint}>Each Add-On is checked and saved for one exact room or saved stay. Infor calculates the total using the unit price, pricing basis and quantity.</p>
       {!services.length && <div className={styles.warning}>No Add-On and room target are selected. Add or link the requested item and room before checking.</div>}
       {owner?.kind === 'services' && <div className={styles.row}><button type="button" disabled={editor.view.busy}
         onClick={() => void editor.commands.changeRows({ kind: 'add_target', requestId: request.id }).catch(() => {})}>Add stay</button></div>}
@@ -127,12 +160,15 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
   const serviceRoot = `/proposal/content/services/${serviceIndex}`, targetRoot = `${serviceRoot}/targets/${targetIndex}`;
   const itemPath = `${serviceRoot}/itemCandidateRef`, ref = target.target;
   const operation = text(valueAt(editor.snapshot, `${serviceRoot}/operation`)) || service.operation;
-  const allocation = ref.kind === 'allocation' ? ref.allocationId : null;
+  const allocationRef = ref.kind === 'allocation' ? ref : null;
+  const allocation = allocationRef?.allocationId ?? null;
   const savedTarget: SavedTarget | null = ref.kind === 'saved_target' ? ref : null;
   const argument = allocation || savedTarget;
   const targetBody = savedTarget ? `${requestPath(savedTarget.requestId)}/body` : '';
   const scope = savedTarget ? record(effectiveAt(editor.snapshot, `${targetBody}/targets`)) : {};
   const included = Array.isArray(scope.include) ? scope.include.map(record) : [];
+  const hasExclusionList = Array.isArray(scope.exclude);
+  const exclusionRows: unknown[] = hasExclusionList ? scope.exclude as unknown[] : [];
   const hintIndex = included.findIndex(hint => hint.id === savedTarget?.hintId);
   const hint = included[hintIndex];
   const stayPath = `${targetBody}/targets/include/${hintIndex}/suggestedRef`;
@@ -142,8 +178,15 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
   const roomGuest = room && room.kind === 'create' ? room.body.allocations.find(entry => entry.id === allocation)?.guest : null;
   const roomLabel = roomGuest ? [roomGuest.firstName, roomGuest.lastName].filter(Boolean).join(' ') : '';
   const linkedAmend = savedTarget && draft.proposal.content.requests.some(row => row.id === savedTarget.requestId && row.kind === 'amend');
-  const linkedCreate = ref.kind === 'allocation' && editor.snapshot.operationResults.some(result => result.workflow === 'create'
-    && result.requestId === ref.requestId && result.allocationId === ref.allocationId && result.status === 'succeeded');
+  const createOperations = allocation ? draft.operationResults.filter(result => result.workflow === 'create'
+    && result.requestId === ref.requestId && result.allocationId === allocation) : [];
+  const createUnknown = createOperations.filter(result => result.status === 'unknown');
+  const createSuccesses = createOperations.filter(result => result.status === 'succeeded');
+  const createStale = createOperations.some(result => result.status === 'succeeded' && result.generationId !== draft.generationId);
+  const createStatus: 'queued' | 'failed' | 'needs_reconcile' | 'succeeded' = createUnknown.length || createStale || createSuccesses.length > 1
+    ? 'needs_reconcile' : createSuccesses.length === 1 && createSuccesses[0]!.generationId === draft.generationId ? 'succeeded'
+      : createOperations.some(result => result.status === 'failed' && result.generationId === draft.generationId) ? 'failed' : 'queued';
+  const linkedCreate = createStatus === 'succeeded';
   const selectedItem = valueAt(editor.snapshot, selectedPath);
   const stayObservation = savedTarget && draft.observations.find(observation => observation.ref === selectedStay
     && observation.kind === 'stay_candidate' && observation.status === 'complete' && observation.coverage.complete
@@ -154,8 +197,16 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
       : observation.criteria.workflow === 'services' && observation.criteria.fieldPath === stayPath));
   const stayQuery = record(stayObservation?.criteria.query);
   const queryValue = (value: unknown) => linkedAmend && typeof value === 'string' ? value.trim() || null : value || null;
-  const savedTargetCurrent = Boolean(savedTarget && hint && scope.mode === 'explicit' && Array.isArray(scope.exclude) && !scope.exclude.length
-    && stayObservation && ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture']
+  const nativeStay = record(record(stayObservation?.result).candidate);
+  const exclusionIssue = savedTarget ? excludedScopeIssue(nativeStay, exclusionRows) : null;
+  const scopeRequest = savedTarget ? draft.proposal.content.requests.find(row => row.id === savedTarget.requestId) : undefined;
+  const canResolveExclusionsHere = scopeRequest?.kind === 'services' && !linkedAmend;
+  const scopeLocked = Boolean(savedTarget && draft.operationResults.some(result => result.requestId === savedTarget.requestId &&
+    (result.status === 'succeeded' || result.status === 'unknown')));
+  const exclusionPath = savedTarget ? `${targetBody}/targets/exclude` : '';
+  const selectedExcluded = hasExclusionList && exclusionRows.some(row => record(row).id === savedTarget?.hintId);
+  const savedTargetCurrent = Boolean(savedTarget && hint && scope.mode === 'explicit' && hasExclusionList && !selectedExcluded
+    && !exclusionIssue && stayObservation && ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture']
       .every(key => queryValue(stayQuery[key]) === queryValue(hint[key])));
   const catalogue = draft.observations.flatMap(observation => {
     const c = observation.criteria;
@@ -234,16 +285,35 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
       { value: 'add', label: 'Add item' }, { value: 'edit', label: 'Edit saved item' }, { value: 'remove', label: 'Remove saved item' },
     ]} />}
     {savedTarget && hint && <div className={styles.stack}>
-      {scope.mode === 'scoped_all' || Array.isArray(scope.exclude) && scope.exclude.length > 0
-        ? <div className={styles.warning}>Choose individual included stays without exclusions before checking an Add-On.</div> : null}
-      {scope.mode === 'scoped_all' && !(Array.isArray(scope.exclude) && scope.exclude.length) && <button type="button" disabled={editor.view.busy}
-        onClick={() => void editor.commands.edit(`${targetBody}/targets/mode`, 'explicit').catch(() => {})}>Use the individual included stays</button>}
+      {scope.mode !== 'explicit' && <div className={styles.warning}>This is a group action. Choose one listed stay at a time; other stays will remain unchanged.</div>}
+      {hasExclusionList && exclusionRows.length > 0 && <div className={exclusionIssue ? styles.warning : styles.hint}>
+        {exclusionIssue === 'overlap' ? 'An excluded stay matches this current Infor reservation. Resolve the exclusion before preparing or saving an Add-On.'
+          : exclusionIssue === 'unresolved' ? 'These exclusions are not proven to be different exact stays. Find the current stay; any overlap or ambiguity blocks preparation and Save.'
+            : 'Every excluded stay has a distinct exact native identity. Excluded stays remain untouched; this action applies only to the selected included stay.'}
+        {scopeLocked && exclusionIssue && <div className={styles.warning}>A prior successful or uncertain operation locks this request scope. Reconcile it before changing exclusions.</div>}
+        {linkedAmend && exclusionIssue && <div className={styles.warning}>This Add-On follows an Amend target. Resolve the exclusion in the Amendment action; this Add-On cannot change its scope.</div>}
+        {nativeStay && !scopeLocked && exclusionRows.map((value, index) => {
+          const issue = excludedScopeIssue(nativeStay, [value]);
+          if (!issue || !canResolveExclusionsHere) return null;
+          const row = record(value);
+          return <div className={styles.card} key={text(row.id) || index}>
+            <strong>Unresolved excluded stay</strong>
+            <small className={styles.hint}>{text(row.confirmation) || text(row.guestName) || 'Stay not identified'} · {text(row.bookedArrival) || 'arrival unknown'} → {text(row.bookedDeparture) || 'departure unknown'}</small>
+            <button type="button" disabled={editor.view.busy} onClick={() => void editor.commands.edit(exclusionPath,
+              exclusionRows.filter((_, rowIndex) => rowIndex !== index)).catch(() => {})}>
+              Remove this exclusion from every Add-On in this request
+            </button>
+          </div>;
+        })}
+      </div>}
+      {scope.mode !== 'explicit' && <button type="button" disabled={editor.view.busy}
+        onClick={() => void editor.commands.edit(`${targetBody}/targets/mode`, 'explicit').catch(() => {})}>Use the listed stays individually</button>}
       {linkedAmend ? <small className={styles.hint}>Uses the stay selected for this amendment.</small> : <TargetSearch editor={editor} body={targetBody} hint={hint} index={hintIndex} workflow="services" />}
       <div className={styles.row}><button type="button" disabled={editor.view.busy} onClick={() => void (async () => {
         if (scope.mode === 'unresolved') await editor.commands.edit(`${targetBody}/targets/mode`, 'explicit');
         await editor.commands.lookupServices(savedTarget, service.id);
       })().catch(() => {})}>{linkedAmend ? 'Refresh selected stay' : 'Find stay in Infor'}</button></div>
-      <small className={styles.hint}>Select the stay, then find its items and select the exact item or saved row.</small>
+      <small className={styles.hint}>Select one included stay, then find its items and select the exact item or saved row.</small>
     </div>}
     {savedTarget && !hint && <div className={styles.warning}>This item is missing its exact stay target. Link it to an included stay.</div>}
     {allocation && operation !== 'add' && <div className={styles.warning}>Edit and remove apply to a specific saved stay and saved item.</div>}
@@ -299,7 +369,19 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
       <small className={styles.hint}>Check again after any change. Infor returns the service dates and calculated total.</small>
       <small className={styles.hint}>Save mode: {text(capability.writeMode) || 'Unavailable'}. {capability.canSave === true ? 'This stay is admitted for Save.' : 'Save is unavailable for this stay or mode.'}</small>
     </div>}
-    {allocation && connected && !linkedCreate && <div className={styles.hint}>Save and verify this room before adding its service.</div>}
+    {allocation && connected && !linkedCreate && <div className={createStatus === 'needs_reconcile' || createStatus === 'failed' ? styles.warning : styles.hint}>
+      {createStatus === 'queued' ? 'Save and verify this exact room before linking its Add-On.'
+        : createStatus === 'failed' ? 'Create failed. This Add-On remains on the unsaved Create path.'
+          : 'Create is stale or uncertain. Reconcile the exact room before linking; do not retry a Save.'}
+      {createUnknown.length === 1 && <div className={styles.row}><button type="button" disabled={editor.view.busy}
+        onClick={() => void editor.commands.reconcile(createUnknown[0]!.id).catch(() => {})}>Check Create outcome</button></div>}
+    </div>}
+    {allocationRef && operation === 'add' && linkedCreate && <div className={styles.stack}>
+      <div className={styles.hint}>Create has a current success record for this exact room. The link command verifies its durable receipt before creating a separate saved-stay action; the unsaved Create Add-On path remains intact.</div>
+      <button type="button" disabled={editor.view.busy || uncertain || saved} onClick={() => void editor.commands.changeRows({
+        kind: 'link_created_addon_target', requestId: allocationRef.requestId, allocationId: allocationRef.allocationId, serviceId: service.id,
+      }).catch(() => {})}>Continue this Add-On on the saved booking</button>
+    </div>}
     {serviceResults.filter(result => result.status === 'unknown').map(result => <div className={styles.warning} key={result.id}>
       <div>{result.summary || 'Save outcome is uncertain. Check the outcome before trying again.'}</div>
       <button type="button" disabled={editor.view.busy} onClick={() => void editor.commands.reconcile(result.id).catch(() => {})}>Check outcome</button>

@@ -196,9 +196,11 @@ async function recoveryWorkflow(ctx: Awaited<ReturnType<typeof nativeContext>>,
 
 const configureFilingInput = reservationWorkflowV2ItemInputSchema.extend({
   requestId: z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/),
-  attachmentId: z.string().min(1).max(500), confirmation: z.string().trim().regex(/^\d+-\d+$/).max(200),
+  attachmentId: z.string().min(1).max(500), confirmation: z.string().trim().regex(/^\d+-\d+$/).max(200).optional(),
+  allocationTarget: z.object({ requestId: z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/),
+    allocationId: z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/) }).strict().optional(),
   kind: z.enum(['voucher', 'payment_proof']),
-}).strict();
+}).strict().refine(input => Boolean(input.confirmation) !== Boolean(input.allocationTarget), 'Choose an existing confirmation or a new-booking room.');
 
 const servicesInput = reservationWorkflowV2PrepareInputSchema.extend({
   allocationId: z.string().min(1).max(80).optional(),

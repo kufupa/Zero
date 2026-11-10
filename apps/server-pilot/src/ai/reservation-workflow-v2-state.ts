@@ -722,7 +722,9 @@ export async function reconcileReservationWorkflowV2Source(ctx: Context, input: 
 /** All command builders run under the same source validation, row lock, cursor and history. */
 export async function withLockedV2DraftMutation(ctx: Context, input: MutationInput, command: {
   fieldPath: string; eventType?: 'field.edit' | 'field.accept' | 'field.reject'; value: unknown;
-  apply: (draft: ReservationWorkflowV2Draft) => { draft: ReservationWorkflowV2Draft; createdId?: string } | null;
+  apply: (draft: ReservationWorkflowV2Draft, tx: Parameters<Parameters<DB['transaction']>[0]>[0]) =>
+    { draft: ReservationWorkflowV2Draft; createdId?: string } | null |
+    Promise<{ draft: ReservationWorkflowV2Draft; createdId?: string } | null>;
 }): Promise<ReservationWorkflowV2StateResult & { createdId?: string }> {
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
   return ctx.db.transaction(async (tx) => {
@@ -736,7 +738,7 @@ export async function withLockedV2DraftMutation(ctx: Context, input: MutationInp
     if (current.draft.operationResults.some((row) => row.workflow === 'guest_profile' && row.status === 'unknown')) {
       return { status: 'invalid_value' as const };
     }
-    const changed = command.apply(current.draft);
+    const changed = await command.apply(current.draft, tx);
     if (!changed) return { status: 'invalid_value' as const };
     const prefill = changed.draft.prefill && ['queued', 'running'].includes(changed.draft.prefill.status)
       ? { ...changed.draft.prefill, status: 'superseded' as const, finishedAt: new Date().toISOString() }
@@ -771,12 +773,13 @@ function pathParts(path: string): string[] | null {
 const NEVER_EDIT = new Set(['id', 'kind', 'dateSectionId', 'sourceRefs', 'serviceRefs', 'documentRefs', 'candidateRefs', 'priceObservationRefs',
   'evidenceRefs', 'lookupResultRefs', 'annotations', 'issues', 'sourceClaims', 'observations', 'suggestedRef']);
 
-function effectiveSavedTargetRows(draft: ReservationWorkflowV2Draft, requestId: string): unknown[] {
+function effectiveSavedTargetRows(draft: ReservationWorkflowV2Draft, requestId: string,
+  collection: 'include' | 'exclude' = 'include'): unknown[] {
   const request = draft.proposal.content.requests.find((entry) => entry.id === requestId);
   if (!request || !('targets' in request.body)) return [];
   let value: unknown = request.body;
   let path = `/proposal/content/requests/${encodeURIComponent(requestId)}/body`;
-  for (const key of ['', 'targets', 'include']) {
+  for (const key of ['', 'targets', collection]) {
     if (key) {
       value = value && typeof value === 'object' && !Array.isArray(value)
         ? (value as Record<string, unknown>)[key] : undefined;
@@ -786,7 +789,101 @@ function effectiveSavedTargetRows(draft: ReservationWorkflowV2Draft, requestId: 
     if (override?.state === 'set') value = override.value;
     else if (override && override.state !== 'inherit') value = undefined;
   }
-  return Array.isArray(value) ? value : [];
+  if (!Array.isArray(value)) return [];
+  const rows = value.map((row) => row && typeof row === 'object' && !Array.isArray(row)
+    ? { ...(row as Record<string, unknown>) } : row);
+  // Array-scope corrections copy the effective row, including any staff edits
+  // made through indexed or stable-ID pointers, without dropping source refs.
+  for (const [index, row] of rows.entries()) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+    const hint = row as Record<string, unknown>, id = typeof hint.id === 'string' ? hint.id : null;
+    for (const field of ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture', 'suggestedRef'] as const) {
+      const paths = [`${path}/${index}/${field}`, ...(id ? [`${path}/${encodeURIComponent(id)}/${field}`] : [])];
+      const overrides = [...new Set(paths)].flatMap((overridePath) => {
+        const override = draft.fieldOverrides[overridePath];
+        return override && override.state !== 'inherit' ? [{ overridePath, override }] : [];
+      });
+      const signatures = overrides.map(({ override }) => override.state === 'set'
+        ? `set:${JSON.stringify(override.value)}` : override.state);
+      if (new Set(signatures).size > 1) {
+        hint[field] = { kind: 'ambiguous_target_hint_override' };
+      } else {
+        const entry = overrides[0];
+        if (entry?.override.state === 'set') hint[field] = entry.override.value;
+        else if (entry) hint[field] = null;
+      }
+    }
+  }
+  return rows;
+}
+
+function sameSavedTargetHint(left: unknown, right: unknown): boolean {
+  if (!left || typeof left !== 'object' || Array.isArray(left) || !right || typeof right !== 'object' || Array.isArray(right)) return false;
+  const leftRow = left as Record<string, unknown>, rightRow = right as Record<string, unknown>;
+  const keys = Object.keys(leftRow);
+  return keys.length === Object.keys(rightRow).length && keys.every((key) => Object.hasOwn(rightRow, key) &&
+    JSON.stringify(leftRow[key]) === JSON.stringify(rightRow[key]));
+}
+
+function sameTargetList(left: unknown[], right: unknown[]): boolean {
+  return left.length === right.length && left.every((row, index) => sameSavedTargetHint(row, right[index]));
+}
+
+function targetRowsWithOneAppended(before: unknown[], after: unknown[]): unknown | null {
+  return after.length === before.length + 1 && before.every((row, index) => sameSavedTargetHint(row, after[index]))
+    ? after.at(-1) ?? null : null;
+}
+
+function targetRowsWithOneRemoved(before: unknown[], after: unknown[]): { row: unknown; index: number } | null {
+  if (before.length !== after.length + 1) return null;
+  for (let index = 0; index < before.length; index += 1) {
+    const remaining = before.filter((_, rowIndex) => rowIndex !== index);
+    if (sameTargetList(remaining, after)) return { row: before[index], index };
+  }
+  return null;
+}
+
+function exactTargetConfirmation(value: unknown): string | null {
+  const confirmation = value && typeof value === 'object' ? (value as Record<string, unknown>).confirmation : null;
+  return typeof confirmation === 'string' && /^\d{6,10}-\d{1,2}$/.test(confirmation) ? confirmation : null;
+}
+
+function validTargetDate(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+}
+
+function targetGuestForms(value: unknown): string[] {
+  if (typeof value !== 'string') return [];
+  const normalize = (name: string) => name.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
+  const parts = value.split(',');
+  return [...new Set([normalize(value), ...(parts.length === 2 ? [normalize(`${parts[1]?.trim()} ${parts[0]?.trim()}`)] : [])])]
+    .filter(Boolean);
+}
+
+function savedTargetsDefinitelyDistinct(left: unknown, right: unknown): boolean {
+  const first = left && typeof left === 'object' ? left as Record<string, unknown> : {};
+  const second = right && typeof right === 'object' ? right as Record<string, unknown> : {};
+  const firstConfirmation = exactTargetConfirmation(first), secondConfirmation = exactTargetConfirmation(second);
+  if (firstConfirmation && secondConfirmation) return firstConfirmation !== secondConfirmation;
+  const firstGuests = targetGuestForms(first.guestName), secondGuests = targetGuestForms(second.guestName);
+  const differentGuests = firstGuests.length > 0 && secondGuests.length > 0 && !firstGuests.some((name) => secondGuests.includes(name));
+  const firstArrival = first.bookedArrival, firstDeparture = first.bookedDeparture;
+  const secondArrival = second.bookedArrival, secondDeparture = second.bookedDeparture;
+  const disjointDates = validTargetDate(firstArrival) && validTargetDate(firstDeparture) &&
+    validTargetDate(secondArrival) && validTargetDate(secondDeparture) &&
+    (firstDeparture <= secondArrival || secondDeparture <= firstArrival);
+  return Boolean(differentGuests && disjointDates);
+}
+
+function targetAlreadyIncluded(excluded: unknown, include: unknown[]): boolean {
+  const row = excluded && typeof excluded === 'object' ? excluded as Record<string, unknown> : null;
+  const id = typeof row?.id === 'string' ? row.id : null;
+  const confirmation = exactTargetConfirmation(excluded);
+  return include.some((candidate) => {
+    const target = candidate && typeof candidate === 'object' ? candidate as Record<string, unknown> : null;
+    return Boolean(id && target?.id === id || confirmation && exactTargetConfirmation(candidate) === confirmation);
+  });
 }
 
 function editableCancelBodyField(draft: ReservationWorkflowV2Draft, parts: string[]): boolean {
@@ -794,17 +891,22 @@ function editableCancelBodyField(draft: ReservationWorkflowV2Draft, parts: strin
   const request = draft.proposal.content.requests.find((entry) => entry.id === parts[3]);
   if (request?.kind !== 'cancel') return false;
   if (parts.length === 7 && parts[5] === 'targets' && parts[6] === 'mode') return true;
-  if (parts.length === 7 && parts[5] === 'targets' && parts[6] === 'include') return true;
+  if (parts.length === 7 && parts[5] === 'targets' && ['include', 'exclude'].includes(parts[6] ?? '')) return true;
   if (parts.length === 7 && parts[5] === 'reason' && parts[6] === 'text') return true;
   if (parts.length === 6 && parts[5] === 'cancellationNote') return true;
   if (parts.length === 7 && parts[5] === 'previewObservationRefs' &&
       /^(?:0|[1-9]\d*)$/.test(parts[6] ?? '') && Number(parts[6]) < 100) return true;
-  if (parts.length !== 9 || parts[5] !== 'targets' || parts[6] !== 'include' ||
-      !/^(?:0|[1-9]\d*)$/.test(parts[7] ?? '')) return false;
-  const hint = effectiveSavedTargetRows(draft, request.id)[Number(parts[7])];
+  if (parts.length !== 9 || parts[5] !== 'targets' || !['include', 'exclude'].includes(parts[6] ?? '')) return false;
+  const rows = effectiveSavedTargetRows(draft, request.id, parts[6] as 'include' | 'exclude');
+  const key = parts[7] ?? '';
+  const index = /^(?:0|[1-9]\d*)$/.test(key) ? Number(key) : rows.findIndex((row) =>
+    row && typeof row === 'object' && !Array.isArray(row) && (row as { id?: unknown }).id === key);
+  if (!Number.isSafeInteger(index) || index < 0) return false;
+  const hint = rows[index];
   return Boolean(hint && typeof hint === 'object' && !Array.isArray(hint) &&
     typeof (hint as { id?: unknown }).id === 'string' &&
-    ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture', 'suggestedRef'].includes(parts[8]!));
+    (['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].includes(parts[8]!) ||
+      parts[6] === 'include' && parts[8] === 'suggestedRef'));
 }
 
 function editableAmendTargetSuggestedRef(draft: ReservationWorkflowV2Draft, parts: string[]): boolean {
@@ -824,14 +926,71 @@ function validCancelIncludeEdit(draft: ReservationWorkflowV2Draft, path: string,
       parts[5] !== 'targets' || parts[6] !== 'include') return true;
   const request = draft.proposal.content.requests.find((entry) => entry.id === parts[3]);
   if (request?.kind !== 'cancel') return true;
-  if (effectiveSavedTargetRows(draft, request.id).length || override.state !== 'set' ||
-      !Array.isArray(override.value) || override.value.length !== 1) return false;
-  const hint: unknown = override.value[0];
-  if (!hint || typeof hint !== 'object' || Array.isArray(hint)) return false;
-  const row = hint as Record<string, unknown>;
-  return Object.keys(row).length === 4 && typeof row.id === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(row.id) &&
-    Array.isArray(row.candidateRefs) && row.candidateRefs.length === 0 && row.suggestedRef === null &&
-    Array.isArray(row.sourceRefs) && row.sourceRefs.length === 0;
+  if (override.state !== 'set' || !Array.isArray(override.value)) return false;
+  const current = effectiveSavedTargetRows(draft, request.id), next = override.value;
+  const excluded = effectiveSavedTargetRows(draft, request.id, 'exclude');
+  const added = targetRowsWithOneAppended(current, next);
+  if (added) return excluded.some((row) => sameSavedTargetHint(row, added)) &&
+    !current.some((row) => sameSavedTargetHint(row, added)) && current.every((row) => savedTargetsDefinitelyDistinct(row, added));
+  if (!current.length) {
+    if (next.length !== 1) return false;
+    const row = next[0];
+    return Boolean(row && typeof row === 'object' && !Array.isArray(row) &&
+      Object.keys(row).length === 4 && typeof (row as Record<string, unknown>).id === 'string' &&
+      /^[A-Za-z0-9_-]{1,80}$/.test((row as Record<string, string>).id!) &&
+      Array.isArray((row as Record<string, unknown>).candidateRefs) && (row as Record<string, unknown>).candidateRefs.length === 0 &&
+      (row as Record<string, unknown>).suggestedRef === null && Array.isArray((row as Record<string, unknown>).sourceRefs) &&
+      (row as Record<string, unknown>).sourceRefs.length === 0);
+  }
+  const removed = targetRowsWithOneRemoved(current, next);
+  return Boolean(removed && next.length > 0 && excluded.some((row) => sameSavedTargetHint(row, removed.row) ||
+    targetAlreadyIncluded(row, [removed.row])));
+}
+
+/** Cancel exclusion edits only preserve a whole hint row or clear an exact duplicate confirmation. */
+function validCancelExcludeEdit(draft: ReservationWorkflowV2Draft, path: string, override: V2Override): boolean {
+  const parts = pathParts(path);
+  if (!parts || parts.length !== 7 || parts[2] !== 'requests' || parts[4] !== 'body' ||
+      parts[5] !== 'targets' || parts[6] !== 'exclude') return true;
+  const request = draft.proposal.content.requests.find((entry) => entry.id === parts[3]);
+  if (request?.kind !== 'cancel') return true;
+  if (override.state !== 'set' || !Array.isArray(override.value)) return false;
+  const current = effectiveSavedTargetRows(draft, request.id, 'exclude'), next = override.value;
+  const include = effectiveSavedTargetRows(draft, request.id);
+  const added = targetRowsWithOneAppended(current, next);
+  if (added) return include.some((row) => sameSavedTargetHint(row, added)) &&
+    !current.some((row) => sameSavedTargetHint(row, added));
+  const removed = targetRowsWithOneRemoved(current, next);
+  return Boolean(removed && targetAlreadyIncluded(removed.row, include));
+}
+
+function validAmendTargetScopeEdit(draft: ReservationWorkflowV2Draft, path: string, override: V2Override): boolean {
+  const parts = pathParts(path);
+  if (!parts || parts.length !== 7 || parts[2] !== 'requests' || parts[4] !== 'body' ||
+      parts[5] !== 'targets' || !['include', 'exclude'].includes(parts[6] ?? '')) return true;
+  const request = draft.proposal.content.requests.find((entry) => entry.id === parts[3]);
+  if (request?.kind !== 'amend') return true;
+  if (override.state !== 'set' || !Array.isArray(override.value)) return false;
+  const collection = parts[6] as 'include' | 'exclude', otherCollection = collection === 'include' ? 'exclude' : 'include';
+  const current = effectiveSavedTargetRows(draft, request.id, collection), next = override.value;
+  const other = effectiveSavedTargetRows(draft, request.id, otherCollection);
+  const added = targetRowsWithOneAppended(current, next);
+  if (added) return other.some((row) => sameSavedTargetHint(row, added)) &&
+    !current.some((row) => sameSavedTargetHint(row, added)) && current.every((row) => savedTargetsDefinitelyDistinct(row, added));
+  const removed = targetRowsWithOneRemoved(current, next);
+  return Boolean(removed && (collection !== 'include' || next.length > 0) &&
+    other.some((row) => sameSavedTargetHint(row, removed.row) || targetAlreadyIncluded(row, [removed.row])));
+}
+
+function materializableSavedTargetRows(rows: unknown[]): boolean {
+  return rows.every((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const row = value as Record<string, unknown>;
+    return typeof row.id === 'string' && Array.isArray(row.candidateRefs) && Array.isArray(row.sourceRefs) &&
+      (row.suggestedRef === null || typeof row.suggestedRef === 'string') &&
+      ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].every((field) =>
+        row[field] === undefined || typeof row[field] === 'string');
+  });
 }
 
 function cancelPreviewPath(draft: ReservationWorkflowV2Draft, path: string) {
@@ -996,11 +1155,15 @@ function safeSavedTargetEdit(draft: ReservationWorkflowV2Draft, path: string): b
   if (!parts || parts[2] !== 'requests' || parts[4] !== 'body' || parts[5] !== 'targets') return true;
   const request = draft.proposal.content.requests.find((row, index) => row.id === parts[3] || String(index) === parts[3]);
   if (!request) return false;
+  if (['mode', 'include', 'exclude'].includes(parts[6] ?? '') && draft.operationResults.some((row) =>
+      row.requestId === request.id && ['succeeded', 'failed', 'unknown'].includes(row.status))) return false;
   // Amend has a per-hint semantic guard after the edit, including ancestor edits.
-  if (request.kind === 'amend' && draft.operationResults.some((row) => row.requestId === request.id && row.workflow === 'amend' &&
-      (row.status === 'succeeded' || row.status === 'unknown'))) return true;
-  const rows = effectiveSavedTargetRows(draft, request.id);
-  const key = parts[6] === 'include' && parts.length >= 9 ? parts[7] : undefined;
+  if (request.kind === 'amend' && parts[6] !== 'exclude' &&
+      draft.operationResults.some((row) => row.requestId === request.id && row.workflow === 'amend' &&
+        (row.status === 'succeeded' || row.status === 'unknown'))) return true;
+  const collection = parts[6] === 'exclude' ? 'exclude' : 'include';
+  const rows = effectiveSavedTargetRows(draft, request.id, collection);
+  const key = ['include', 'exclude'].includes(parts[6] ?? '') && parts.length >= 9 ? parts[7] : undefined;
   const hint = key === undefined ? undefined : /^\d+$/.test(key) ? rows[Number(key)] : rows.find((row) =>
     row && typeof row === 'object' && (row as { id?: unknown }).id === key);
   const hintId = hint && typeof hint === 'object' ? (hint as { id?: unknown }).id : undefined;
@@ -1037,6 +1200,107 @@ function applyServiceTargetEdit(draft: ReservationWorkflowV2Draft, path: string,
   return nativeStructureIsSafe({ reservationWorkflowV2: draft }, { reservationWorkflowV2: next }) ? next : null;
 }
 
+function rebaseSavedTargetScopePath(path: string, before: ReservationWorkflowV2Proposal,
+  after: ReservationWorkflowV2Proposal): string | null {
+  let parts: string[];
+  try { parts = path.slice(1).split('/').map(decodeURIComponent); } catch { return null; }
+  const targetIndex = parts.indexOf('targets'), collectionIndex = targetIndex + 1, rowIndex = collectionIndex + 1;
+  const collection = parts[collectionIndex];
+  if (!['include', 'exclude'].includes(collection ?? '') || parts[rowIndex] === undefined) {
+    return rebaseReservationV2Path(path, before, after);
+  }
+  const requestIndex = parts.indexOf('requests'), requestId = parts[requestIndex + 1];
+  if (requestIndex < 0 || !requestId) return rebaseReservationV2Path(path, before, after);
+  const oldRequest = before.content.requests.find((row) => row.id === requestId);
+  const newRequest = after.content.requests.find((row) => row.id === requestId);
+  if (!oldRequest || !newRequest || !('targets' in oldRequest.body) || !('targets' in newRequest.body)) return null;
+  const oldRows = (oldRequest.body.targets as Record<string, unknown> | null)?.[collection as 'include' | 'exclude'];
+  const key = parts[rowIndex]!, rows = Array.isArray(oldRows) ? oldRows : [];
+  const index = /^(?:0|[1-9]\d*)$/.test(key) ? Number(key) : rows.findIndex((row) =>
+    row && typeof row === 'object' && !Array.isArray(row) && (row as { id?: unknown }).id === key);
+  const id = rows[index] && typeof rows[index] === 'object' && !Array.isArray(rows[index])
+    ? (rows[index] as { id?: unknown }).id : null;
+  if (typeof id !== 'string') return rebaseReservationV2Path(path, before, after);
+  const nextTargets = newRequest.body.targets as Record<string, unknown> | null;
+  const sameCollection = nextTargets?.[collection as 'include' | 'exclude'];
+  const sameRows = Array.isArray(sameCollection) ? sameCollection : [];
+  if (sameRows.some((row) => row && typeof row === 'object' && !Array.isArray(row) && (row as { id?: unknown }).id === id))
+    return rebaseReservationV2Path(path, before, after);
+  const otherCollection = collection === 'include' ? 'exclude' : 'include';
+  const otherValue = nextTargets?.[otherCollection];
+  const otherRows = Array.isArray(otherValue) ? otherValue : [];
+  const nextIndex = otherRows.findIndex((row) => row && typeof row === 'object' && !Array.isArray(row) &&
+    (row as { id?: unknown }).id === id);
+  if (nextIndex < 0) return rebaseReservationV2Path(path, before, after);
+  parts[collectionIndex] = otherCollection;
+  if (/^(?:0|[1-9]\d*)$/.test(key)) parts[rowIndex] = String(nextIndex);
+  return rebaseReservationV2Path(`/${parts.map(encodeURIComponent).join('/')}`, before, after);
+}
+
+/** Materialize exact scope moves and rebase child evidence by stable hint ID. */
+function applySavedTargetScopeEdit(draft: ReservationWorkflowV2Draft, path: string, override: V2Override): ReservationWorkflowV2Draft | null {
+  const parts = pathParts(path);
+  if (!parts || parts.length !== 7 || parts[0] !== 'proposal' || parts[1] !== 'content' || parts[2] !== 'requests' ||
+      parts[4] !== 'body' || parts[5] !== 'targets' || !['include', 'exclude'].includes(parts[6] ?? '') ||
+      override.state !== 'set' || !Array.isArray(override.value)) return null;
+  const requestId = parts[3]!, request = draft.proposal.content.requests.find((row) => row.id === requestId);
+  if (!request || !('targets' in request.body)) return null;
+  const targetRoot = `/proposal/content/requests/${encodeURIComponent(requestId)}/body/targets`;
+  const targetOverride = draft.fieldOverrides[targetRoot];
+  if (targetOverride && targetOverride.state !== 'set' && targetOverride.state !== 'inherit') return null;
+  const targets = record(targetOverride?.state === 'set' ? targetOverride.value : request.body.targets);
+  if (!Array.isArray(targets.include) || !Array.isArray(targets.exclude)) return null;
+  const before = structuredClone(draft.proposal);
+  const beforeRequest = before.content.requests.find((row) => row.id === requestId);
+  if (!beforeRequest || !('targets' in beforeRequest.body)) return null;
+  beforeRequest.body.targets = { ...targets,
+    include: effectiveSavedTargetRows(draft, requestId, 'include'),
+    exclude: effectiveSavedTargetRows(draft, requestId, 'exclude') } as typeof beforeRequest.body.targets;
+  if (!materializableSavedTargetRows(beforeRequest.body.targets.include) ||
+      !materializableSavedTargetRows(beforeRequest.body.targets.exclude)) return null;
+  const after = structuredClone(before);
+  const afterRequest = after.content.requests.find((row) => row.id === requestId);
+  if (!afterRequest || !('targets' in afterRequest.body)) return null;
+  afterRequest.body.targets = { ...afterRequest.body.targets,
+    [parts[6]!]: structuredClone(override.value) } as typeof afterRequest.body.targets;
+
+  const targetCollectionPaths = new Set([targetRoot, `${targetRoot}/include`, `${targetRoot}/exclude`]);
+  const remap = <T>(values: Record<string, T>) => {
+    const result: Record<string, T> = {};
+    for (const [key, value] of Object.entries(values)) {
+      if (targetCollectionPaths.has(key)) continue;
+      const nextPath = rebaseSavedTargetScopePath(key, before, after);
+      if (nextPath) result[nextPath] = value;
+    }
+    return result;
+  };
+  const remapRows = <T extends { path: string }>(rows: T[]) => rows.flatMap((row) => {
+    const nextPath = rebaseSavedTargetScopePath(row.path, before, after);
+    return nextPath ? [{ ...row, path: nextPath }] : [];
+  });
+  const observations = draft.observations.map((observation) => {
+    const criteria = { ...observation.criteria };
+    for (const key of ['fieldPath', 'selectionPath'] as const) {
+      if (typeof criteria[key] !== 'string') continue;
+      const nextPath = rebaseSavedTargetScopePath(criteria[key] as string, before, after);
+      if (nextPath) criteria[key] = nextPath;
+      else delete criteria[key];
+    }
+    if (Array.isArray(criteria.fieldPaths)) criteria.fieldPaths = criteria.fieldPaths.flatMap((value) => {
+      if (typeof value !== 'string') return [];
+      const nextPath = rebaseSavedTargetScopePath(value, before, after);
+      return nextPath ? [nextPath] : [];
+    });
+    return { ...observation, criteria };
+  });
+  const rebasedObservations = rebaseReservationV2Observations({ ...draft, observations }, before, after);
+  const next: ReservationWorkflowV2Draft = { ...draft, proposal: { ...after, annotations: remapRows(after.annotations),
+    issues: remapRows(after.issues), sourceClaims: remapRows(after.sourceClaims) },
+    fieldOverrides: remap(draft.fieldOverrides), staffReviews: remap(draft.staffReviews),
+    fieldReviewRequirements: remap(draft.fieldReviewRequirements), observations: rebasedObservations };
+  return nativeStructureIsSafe({ reservationWorkflowV2: draft }, { reservationWorkflowV2: next }) ? next : null;
+}
+
 function updateDraft(current: ReservationWorkflowV2Draft, input: {
   fieldPath: string; override?: V2Override; review?: ReservationWorkflowV2Draft['staffReviews'][string];
 }): ReservationWorkflowV2Draft {
@@ -1059,7 +1323,7 @@ function updateDraft(current: ReservationWorkflowV2Draft, input: {
     // Retyping a native identity or saved-stay query removes the old selection atomically.
     const guest = input.fieldPath.match(/^(.*\/guest)\/(?:firstName|lastName|email)$/);
     const party = input.fieldPath.match(/^(.*\/(?:bookingAgency|organization|arAccount|agency|company))(?:\/name)?$/);
-    const target = input.fieldPath.match(/^(.*\/targets\/include\/[^/]+)\/(?:confirmation|guestName|bookedArrival|bookedDeparture)$/);
+    const target = input.fieldPath.match(/^(.*\/targets\/(?:include|exclude)\/[^/]+)\/(?:confirmation|guestName|bookedArrival|bookedDeparture)$/);
     const service = input.fieldPath.match(/^(\/proposal\/content\/services\/[^/]+)\/code$/);
     const selection = guest ? `${guest[1]}/nativeSelectionRef` : party ? `${party[1]}/nativeSelectionRef` :
       target ? `${target[1]}/suggestedRef` : service ? `${service[1]}/itemCandidateRef` : null;
@@ -1241,7 +1505,13 @@ async function mutateDraft(ctx: Context, input: MutationInput & { fieldPath: str
       if (!(input.review ? reviewablePath(draft, input.fieldPath) : editablePath(draft, input.fieldPath))) return null;
       if (input.override && (!validStructuredEdit(input.fieldPath, input.override) ||
           !validServiceTargetEdit(draft, input.fieldPath, input.override) || !safeSavedTargetEdit(draft, input.fieldPath) ||
-          !validCancelIncludeEdit(draft, input.fieldPath, input.override) || !validCancelPreviewEdit(draft, input.fieldPath, input.override))) return null;
+          !validCancelIncludeEdit(draft, input.fieldPath, input.override) || !validCancelExcludeEdit(draft, input.fieldPath, input.override) ||
+          !validAmendTargetScopeEdit(draft, input.fieldPath, input.override) ||
+          !validCancelPreviewEdit(draft, input.fieldPath, input.override))) return null;
+      if (input.override && /^\/proposal\/content\/requests\/[^/]+\/body\/targets\/(?:include|exclude)$/.test(input.fieldPath)) {
+        const next = applySavedTargetScopeEdit(draft, input.fieldPath, input.override);
+        return next ? { draft: next } : null;
+      }
       if (input.override && /^\/proposal\/content\/services\/[^/]+\/targets$/.test(input.fieldPath)) {
         const next = applyServiceTargetEdit(draft, input.fieldPath, input.override);
         return next ? { draft: next } : null;
@@ -1265,16 +1535,19 @@ export async function editReservationWorkflowV2Draft(ctx: Context, input: Mutati
   if (!editablePath(current.draft, input.fieldPath)) return { status: 'invalid_path' };
   const override = validateOverride(input.value);
   if (!override || !validCancelIncludeEdit(current.draft, input.fieldPath, override) ||
+      !validCancelExcludeEdit(current.draft, input.fieldPath, override) ||
+      !validAmendTargetScopeEdit(current.draft, input.fieldPath, override) ||
       !validCancelPreviewEdit(current.draft, input.fieldPath, override)) return { status: 'invalid_value' };
   return mutateDraft(ctx, { ...input, override, eventType: 'field.edit', value: override });
 }
 
 /** Bind one staff-selected source attachment and an exact confirmation without a native write. */
 export async function configureReservationWorkflowV2Filing(ctx: Context, input: MutationInput & {
-  requestId: string; attachmentId: string; confirmation: string; kind: 'voucher' | 'payment_proof';
+  requestId: string; attachmentId: string; confirmation?: string; allocationTarget?: { requestId: string; allocationId: string }; kind: 'voucher' | 'payment_proof';
 }): Promise<ReservationWorkflowV2StateResult> {
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
-  if (!ctx.userId || !/^\d+-\d+$/.test(input.confirmation) || !input.attachmentId) return { status: 'invalid_value' };
+  if (!ctx.userId || Boolean(input.confirmation) === Boolean(input.allocationTarget) ||
+      (input.confirmation != null && !/^\d+-\d+$/.test(input.confirmation)) || !input.attachmentId) return { status: 'invalid_value' };
   return ctx.db.transaction(async (tx) => {
     const item = await loadItem(tx, ctx, input.workItemId, true);
     if (!item) return { status: 'not_found' as const };
@@ -1291,13 +1564,20 @@ export async function configureReservationWorkflowV2Filing(ctx: Context, input: 
       eq(attachment.id, input.attachmentId), eq(attachment.messageId, input.source.messageId))).limit(1);
     if (!file || file.isInline || file.sizeBytes > 10 * 1024 * 1024 ||
         (!/\.pdf$/i.test(file.filename) && file.mimeType.toLowerCase() !== 'application/pdf')) return { status: 'invalid_value' as const };
+    if (input.allocationTarget) {
+      const create = draft.proposal.content.requests.find(row => row.kind === 'create' && row.id === input.allocationTarget!.requestId);
+      if (!create || create.kind !== 'create' || create.body.allocations.filter(row => row.id === input.allocationTarget!.allocationId).length !== 1)
+        return { status: 'invalid_value' as const };
+    }
     const hash = (value: string) => createHash('sha256').update(value).digest('hex');
-    const targetId = `staff_target_${hash(`${request.id}\u001f${input.confirmation}`).slice(0, 20)}`;
-    const documentId = `staff_document_${hash(`${request.id}\u001f${file.id}\u001f${input.confirmation}`).slice(0, 20)}`;
+    const targetKey = input.allocationTarget ? `${input.allocationTarget.requestId}:${input.allocationTarget.allocationId}` : input.confirmation!;
+    const targetId = `staff_target_${hash(`${request.id}\u001f${targetKey}`).slice(0, 20)}`;
+    const documentId = `staff_document_${hash(`${request.id}\u001f${file.id}\u001f${targetKey}`).slice(0, 20)}`;
     const documentSourceRef = `src_${hash(`${input.source.messageId}\u001fattachment_text\u001f${file.id}`).slice(0, 12)}`;
     const document = { id: documentId, ownerRequestId: request.id, documentSourceRef, kind: input.kind,
       handling: 'filing_requested' as const,
-      targetRefs: [{ kind: 'saved_target' as const, requestId: request.id, hintId: targetId }],
+      targetRefs: [{ kind: 'saved_target' as const, requestId: request.id, hintId: targetId },
+        ...(input.allocationTarget ? [{ kind: 'allocation' as const, ...input.allocationTarget }] : [])],
       requestedName: null, requestedDescription: null, uploadArtifactRef: null, sourceRefs: [] };
     const existing = draft.proposal.content.documents.find((row) => row.id === documentId);
     if (existing && (existing.ownerRequestId !== request.id || existing.documentSourceRef !== documentSourceRef ||
@@ -1306,7 +1586,7 @@ export async function configureReservationWorkflowV2Filing(ctx: Context, input: 
     }
     if (!existing && draft.proposal.content.documents.length >= 200) return { status: 'invalid_value' as const };
     const root = `/proposal/content/requests/${encodeURIComponent(request.id)}`;
-    const docsPath = `${root}/documentRefs`, targetsPath = `${root}/body/targets`;
+    const docsPath = `${root}/documentRefs`, targetsPath = `${root}/body/targets`, allocationPath = `${root}/body/allocationTarget`;
     const docRoot = `/proposal/content/documents/${encodeURIComponent(documentId)}`;
     const now = new Date().toISOString();
     const overrides = { ...draft.fieldOverrides }, reviews = { ...draft.staffReviews };
@@ -1314,8 +1594,10 @@ export async function configureReservationWorkflowV2Filing(ctx: Context, input: 
     for (const path of Object.keys(overrides)) if (path === targetsPath || path.startsWith(`${targetsPath}/`)) delete overrides[path];
     for (const path of Object.keys(reviews)) if (path === targetsPath || path.startsWith(`${targetsPath}/`)) delete reviews[path];
     overrides[docsPath] = { state: 'set', value: [documentId], updatedAt: now };
+    overrides[allocationPath] = input.allocationTarget ? { state: 'set', value: input.allocationTarget, updatedAt: now }
+      : { state: 'unknown', updatedAt: now };
     overrides[targetsPath] = { state: 'set', value: { mode: 'explicit', include: [{ id: targetId,
-      confirmation: input.confirmation, candidateRefs: [], suggestedRef: null, sourceRefs: [] }], exclude: [], sourceRefs: [] }, updatedAt: now };
+      ...(input.confirmation ? { confirmation: input.confirmation } : {}), candidateRefs: [], suggestedRef: null, sourceRefs: [] }], exclude: [], sourceRefs: [] }, updatedAt: now };
     for (const [field, value] of [['documentSourceRef', documentSourceRef], ['kind', input.kind],
       ['handling', 'filing_requested']] as const) {
       const path = `${docRoot}/${field}`;
@@ -1331,7 +1613,7 @@ export async function configureReservationWorkflowV2Filing(ctx: Context, input: 
       seq: item.revisionSeq, previousState: item.state, nextState, extractionId: item.extractionId });
     await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'user', actorUserId: ctx.userId,
       type: 'field.edit', fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:${root}/filingSelection`,
-      value: { requestId: request.id, attachmentId: file.id, confirmation: input.confirmation, kind: input.kind },
+      value: { requestId: request.id, attachmentId: file.id, ...(input.confirmation ? { confirmation: input.confirmation } : { allocationTarget: input.allocationTarget }), kind: input.kind },
       evidence: advanced.evidence });
     await tx.update(workItem).set({ state: nextState, revision: advanced.revision, revisionHead: advanced.revisionHead,
       revisionSeq: item.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, item.id));

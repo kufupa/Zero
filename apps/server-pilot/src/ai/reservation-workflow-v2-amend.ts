@@ -26,6 +26,7 @@ import {
   type ReservationWorkflowV2Context,
 } from './reservation-workflow-v2-state.js';
 import { canonicalJson } from './draft-approval.js';
+import { savedTargetExclusionIssue } from './reservation-workflow-v2-services.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { paneStayCloudTargetLock, paneStayPropertyLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
@@ -152,6 +153,93 @@ function targetRows(body: Record<string, unknown>) {
   const targets = record(body.targets);
   return { targets, include: Array.isArray(targets?.include) ? targets.include : [],
     mode: targets?.mode, exclude: Array.isArray(targets?.exclude) ? targets.exclude : [] };
+}
+
+const targetIdentityFields = ['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'] as const;
+function unknownTargetExclusionIdentityPaths(paths: Set<string>, root: string): string[] {
+  return [...paths].filter((path) => {
+    if (path === root) return true;
+    if (!path.startsWith(`${root}/`)) return false;
+    let parts: string[];
+    try { parts = path.slice(root.length + 1).split('/').map((part) => decodeURIComponent(part)); }
+    catch { return true; }
+    return parts.length === 1 || parts.length > 1 && (parts[1] === 'id' || targetIdentityFields.includes(parts[1] as typeof targetIdentityFields[number]));
+  });
+}
+function unknownPathsOutsideTargetExclusions(paths: Set<string>, root: string): string[] {
+  return [...paths].filter((path) => path !== root && !path.startsWith(`${root}/`));
+}
+type ResolvedTargetExclusions = { rows: Array<{ hint: Record<string, unknown>; index: number; unresolved: boolean; fields: string[] }>;
+  issue?: string; fields: string[] };
+
+/** Resolve indexed and stable-ID edits, and hold malformed, duplicate, or unknown exclusion identities. */
+function resolveTargetExclusions(draft: ReservationWorkflowV2Draft, path: string, value: unknown,
+  unknownPaths: Set<string>): ResolvedTargetExclusions {
+  if (!Array.isArray(value)) return { rows: [], issue: 'unresolved', fields: [path] };
+  const sourceRows = value.map(record), ids = sourceRows.map((row) => text(row?.id));
+  const duplicateIds = new Set(ids.filter((id): id is string => Boolean(id) && ids.filter((other) => other === id).length > 1));
+  const rows: ResolvedTargetExclusions['rows'] = [];
+  const fields = new Set<string>();
+  for (const [index, source] of sourceRows.entries()) {
+    if (!source || !ids[index]) {
+      fields.add(`${path}/${index}`);
+      continue;
+    }
+    const id = ids[index]!, hint = { ...source }, rowFields: string[] = [];
+    let unresolved = duplicateIds.has(id);
+    if (unresolved) rowFields.push(path);
+    const idPaths = [...new Set([`${path}/${index}/id`, `${path}/${encodeURIComponent(id)}/id`])];
+    const idOverrides = idPaths.flatMap((overridePath) => {
+      const override = draft.fieldOverrides[overridePath];
+      return override && override.state !== 'inherit' ? [{ path: overridePath, override }] : [];
+    });
+    const idSignatures = idOverrides.map(({ override }) => override.state === 'set'
+      ? `set:${canonicalJson(override.value ?? null)}` : override.state);
+    if (new Set(idSignatures).size > 1 || idOverrides.some(({ override }) => override.state !== 'set' || override.value !== id)) {
+      unresolved = true;
+      rowFields.push(...(idOverrides.length ? idOverrides.map((entry) => entry.path) : [path]));
+    }
+    for (const field of targetIdentityFields) {
+      const indexPath = `${path}/${index}/${field}`, idPath = `${path}/${encodeURIComponent(id)}/${field}`;
+      const overrides = [...new Set([indexPath, idPath])].flatMap((overridePath) => {
+        const override = draft.fieldOverrides[overridePath];
+        return override && override.state !== 'inherit' ? [{ path: overridePath, override }] : [];
+      });
+      const signatures = overrides.map(({ override }) => override.state === 'set'
+        ? `set:${canonicalJson(override.value ?? null)}` : override.state);
+      if (new Set(signatures).size > 1) {
+        unresolved = true;
+        rowFields.push(...overrides.map((entry) => entry.path));
+        hint[field] = null;
+      } else {
+        const entry = overrides[0];
+        if (entry?.override.state === 'unknown' || unknownPaths.has(indexPath)) {
+          unresolved = true;
+          rowFields.push(entry?.path ?? indexPath);
+          hint[field] = null;
+        } else if (entry?.override.state === 'set') hint[field] = entry.override.value;
+        else if (entry && ['none', 'clear'].includes(entry.override.state)) hint[field] = null;
+      }
+    }
+    rows.push({ hint, index, unresolved, fields: rowFields });
+    rowFields.forEach((rowPath) => fields.add(rowPath));
+  }
+  if (fields.size) return { rows, issue: 'unresolved', fields: [...fields] };
+  return { rows, fields: [] };
+}
+
+function auditTargetExclusions(stay: Record<string, unknown>, exclusions: ResolvedTargetExclusions,
+  path: string): { issue: string; hintId?: string; fields: string[] } | null {
+  if (exclusions.issue) return { issue: 'amend_target_exclusion_identity_unresolved', fields: [path, ...exclusions.fields] };
+  for (const row of exclusions.rows) {
+    if (row.unresolved) return { issue: 'amend_target_exclusion_identity_unresolved', hintId: text(row.hint.id) ?? undefined,
+      fields: [path, ...row.fields] };
+    const issue = savedTargetExclusionIssue(stay, [row.hint], false);
+    if (issue) return { issue: issue === 'saved_target_exclusion_overlaps_native_stay'
+      ? 'amend_target_exclusion_overlaps_native_stay' : 'amend_target_exclusion_identity_unresolved',
+    hintId: text(row.hint.id) ?? undefined, fields: [path, `${path}/${row.index}`] };
+  }
+  return null;
 }
 
 /** Empty optional search hints mean no constraint; they are not native field clears. */
@@ -325,13 +413,24 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
   const { request, path: requestPath } = found;
   const unknownPaths = new Set<string>();
   const body = effectiveTree(draft, requestPath, request.body, unknownPaths);
-  if (unknownPaths.size) return { outcome: 'needs_input', issue: 'amend_value_unknown', fields: [...unknownPaths] };
+  const exclusionPath = ptr('proposal', 'content', 'requests', requestId, 'body', 'targets', 'exclude');
+  const unknownExclusionPaths = unknownTargetExclusionIdentityPaths(unknownPaths, exclusionPath);
+  if (unknownExclusionPaths.length) return { outcome: 'needs_input', issue: 'amend_target_exclusion_identity_unresolved',
+    fields: [exclusionPath, ...unknownExclusionPaths] };
+  const unknownOtherPaths = unknownPathsOutsideTargetExclusions(unknownPaths, exclusionPath);
+  if (unknownOtherPaths.length) return { outcome: 'needs_input', issue: 'amend_value_unknown', fields: unknownOtherPaths };
   const bodyValue = record(body);
   if (!bodyValue) return { outcome: 'needs_input', issue: 'amend_body_unavailable' };
   const scope = targetRows(bodyValue);
   if (!scope.targets || scope.mode !== 'explicit') {
     return { outcome: 'needs_input', issue: 'amend_target_scope_unresolved' };
   }
+  if (!Array.isArray(scope.targets.exclude)) {
+    return { outcome: 'needs_input', issue: 'amend_target_exclusion_identity_unresolved', fields: [exclusionPath] };
+  }
+  const targetExclusions = resolveTargetExclusions(draft, exclusionPath, scope.targets.exclude, unknownPaths);
+  if (targetExclusions.issue) return { outcome: 'needs_input', issue: 'amend_target_exclusion_identity_unresolved',
+    fields: [exclusionPath, ...targetExclusions.fields] };
   const hints = scope.include.map(record).filter((hint): hint is Record<string, unknown> => Boolean(hint));
   const hintIndex = hints.findIndex((hint) => hint.id === hintId);
   if (hintIndex < 0) return { outcome: 'needs_input', issue: 'amend_target_not_included' };
@@ -341,6 +440,8 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
   }
   const chosen = selectedStay(draft, requestId, hintId, hint, hintIndex);
   if ('issue' in chosen) return { outcome: 'needs_input', issue: chosen.issue, fields: chosen.fields ?? [] };
+  const exclusionIssue = auditTargetExclusions(chosen.selected as unknown as Record<string, unknown>, targetExclusions, exclusionPath);
+  if (exclusionIssue) return { outcome: 'needs_input', issue: exclusionIssue.issue, fields: exclusionIssue.fields };
   const targetPath = ptr('proposal', 'content', 'requests', requestId, 'body', 'perTarget');
   const perTargetUnknown = new Set<string>();
   const perTargetRoot = effectiveTree(draft, targetPath, request.body.perTarget, perTargetUnknown);
@@ -464,6 +565,9 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     adults: next.adults, children: next.children, childAges: next.childAges,
     firstName: next.firstName, lastName: next.lastName };
   const baseDigest = sha256({ requestId, hintId, selectedRef: chosen.ref, selected: chosen.selected,
+    scope: { mode: scope.mode, exclude: targetExclusions.rows.map(({ hint: excluded }) => ({ id: excluded.id ?? null,
+      confirmation: excluded.confirmation ?? null, guestName: excluded.guestName ?? null,
+      bookedArrival: excluded.bookedArrival ?? null, bookedDeparture: excluded.bookedDeparture ?? null })) },
     rateHandling: rateValue, changes: baseChanges, reviewPaths: [...reviewPaths].sort() });
   return { outcome: 'ok', requestId, hintId, selectionPath: chosen.path, selectedRef: chosen.ref,
     selected: chosen.selected, baseChanges, rateHandling: rateValue as 'retain' | 'reprice',
@@ -583,12 +687,30 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReadContext,
     const mode = effectiveTree(loaded.draft, `${targetsPath}/mode`, targets?.mode, unknownPaths);
     const includePath = `${targetsPath}/include`;
     const include = effectiveLeaf(loaded.draft, includePath, targets?.include);
-    const exclude = effectiveTree(loaded.draft, `${targetsPath}/exclude`, targets?.exclude, unknownPaths);
-    if (!body || !targets || include === UNKNOWN || unknownPaths.size) {
+    const exclusionPath = `${targetsPath}/exclude`;
+    const exclude = effectiveTree(loaded.draft, exclusionPath, targets?.exclude, unknownPaths);
+    const unknownExclusionPaths = unknownTargetExclusionIdentityPaths(unknownPaths, exclusionPath);
+    if (!body || !targets || include === UNKNOWN) {
       lookups.push({ requestId: request.id, status: 'needs_input', issue: 'amend_target_hints_unknown', fields: [...unknownPaths] });
       continue;
     }
-    if ((mode !== 'explicit' && mode !== 'unresolved') || !Array.isArray(include) || !include.length || !Array.isArray(exclude)) {
+    if (unknownExclusionPaths.length || !Array.isArray(exclude)) {
+      lookups.push({ requestId: request.id, status: 'needs_input', issue: 'amend_target_exclusion_identity_unresolved',
+        fields: [exclusionPath, ...unknownExclusionPaths] });
+      continue;
+    }
+    const targetExclusions = resolveTargetExclusions(loaded.draft, exclusionPath, exclude, unknownPaths);
+    if (targetExclusions.issue) {
+      lookups.push({ requestId: request.id, status: 'needs_input', issue: 'amend_target_exclusion_identity_unresolved',
+        fields: [exclusionPath, ...targetExclusions.fields] });
+      continue;
+    }
+    const unknownOtherPaths = unknownPathsOutsideTargetExclusions(unknownPaths, exclusionPath);
+    if (unknownOtherPaths.length) {
+      lookups.push({ requestId: request.id, status: 'needs_input', issue: 'amend_target_hints_unknown', fields: unknownOtherPaths });
+      continue;
+    }
+    if ((mode !== 'explicit' && mode !== 'unresolved') || !Array.isArray(include) || !include.length) {
       lookups.push({ requestId: request.id, status: 'needs_input', issue: 'amend_target_scope_unresolved' });
       continue;
     }
@@ -602,8 +724,10 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReadContext,
         [key, effectiveTree(loaded.draft, `${hintPath}/${key}`, rawHint[key], hintUnknownPaths)])));
       const hintId = text(hint?.id);
       if (!hint || !hintId) { lookups.push({ requestId: request.id, status: 'needs_input', issue: 'saved_target_hint_invalid' }); continue; }
-      if (exclude.some((excluded) => record(excluded)?.id === hintId)) {
-        lookups.push({ requestId: request.id, hintId, status: 'excluded' });
+      const sameHintExclusion = targetExclusions.rows.find((row) => text(row.hint.id) === hintId);
+      if (sameHintExclusion) {
+        lookups.push({ requestId: request.id, hintId, status: 'needs_input', issue: 'amend_target_excluded_by_scope',
+          fields: [exclusionPath, `${exclusionPath}/${sameHintExclusion.index}`] });
         continue;
       }
       if (hintUnknownPaths.size) {
@@ -612,11 +736,23 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReadContext,
       }
       const selectionPath = ptr('proposal', 'content', 'requests', request.id, 'body', 'targets', 'include', index, 'suggestedRef');
       const result = await lookupHint(loaded.draft, target, request.id, hintId, hint, selectionPath, ctx.nativeBatch?.signal);
-      observations.push(...result.rows.map((row) => row.observation));
+      const checkedRows = result.rows.map((row) => ({ row,
+        issue: auditTargetExclusions(row.native as unknown as Record<string, unknown>, targetExclusions, exclusionPath) }));
+      const safeRows = checkedRows.filter((entry) => !entry.issue).map((entry) => entry.row);
+      const blockedRows = checkedRows.filter((entry) => Boolean(entry.issue));
+      const firstBlocked = blockedRows[0]?.issue;
+      if (!safeRows.length && firstBlocked) {
+        const blocked = firstBlocked;
+        lookups.push({ requestId: request.id, hintId, status: 'needs_input', issue: blocked.issue, fields: blocked.fields,
+          ...(blocked.hintId ? { excludedHintId: blocked.hintId } : {}), selectionPath });
+        continue;
+      }
+      observations.push(...safeRows.map((row) => row.observation));
       if (result.observation) observations.push(result.observation);
-      lookups.push({ requestId: request.id, hintId, status: result.rows.length ? 'matches' : 'partial',
+      lookups.push({ requestId: request.id, hintId, status: safeRows.length ? 'matches' : 'partial',
         ...(result.observation ? { issue: result.observation.result.issue } : {}),
-        selectionPath, candidates: result.rows.map(({ observation, native }) => ({ ref: observation.ref,
+        ...(blockedRows.length ? { excludedCandidateCount: blockedRows.length } : {}),
+        selectionPath, candidates: safeRows.map(({ observation, native }) => ({ ref: observation.ref,
           confirmation: native.confirmation, guestName: `${native.firstName} ${native.lastName}`,
           bookedArrival: native.arrival, bookedDeparture: native.departure,
           roomType: native.roomType, ratePlan: native.ratePlan })) });

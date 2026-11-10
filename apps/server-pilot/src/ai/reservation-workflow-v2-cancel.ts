@@ -14,7 +14,10 @@ import { canonicalJson } from './draft-approval.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import { acquisitionWithin, isPropertyReadLockDeadline, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
-import { paneStayCloudTargetLock, paneWriteMode } from './pane-stay-save.js';
+import { paneStayCloudTargetLock, paneStayPropertyLock, paneWriteMode } from './pane-stay-save.js';
+import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
+import { savedTargetExclusionIssue } from './reservation-workflow-v2-services.js';
+import { paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { lockCreateActorSession } from './pane-create-actor-lock.js';
 import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
 import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError,
@@ -71,6 +74,7 @@ type CancelHint = {
 type CancelCompile = {
   outcome: 'ok'; requestId: string; hintId: string; hintIndex: number; hint: CancelHint;
   selectionPath: string; selectionRef: string; selectedObservation: ReservationWorkflowV2Observation;
+  sourceHintMismatchFields: string[];
   preimage: CancelPreimage; selectedPreflight: Record<string, unknown>;
   reasonText: string | null; cancellationNote: string; reasonSourceRefs: string[]; sourceRefs: string[];
   previewObservationRefs: string[]; semanticInput: Record<string, unknown>; semanticDigest: string;
@@ -200,6 +204,79 @@ function unknownHintPaths(unknownPaths: Set<string>, bodyPath: string, index: nu
   return identityHintFields.map((field) => `${path}/${field}`).filter((fieldPath) => unknownPaths.has(fieldPath));
 }
 
+type ResolvedTargetExclusions = { rows: Array<{ hint: Record<string, unknown>; index: number; unresolved: boolean; fields: string[] }>;
+  issue?: string; fields: string[] };
+
+/** Resolve indexed and stable-ID edits, and hold malformed, duplicate, or unknown exclusion identities. */
+function resolveTargetExclusions(draft: ReservationWorkflowV2Draft, path: string, value: unknown,
+  unknownPaths: Set<string>): ResolvedTargetExclusions {
+  if (!Array.isArray(value)) return { rows: [], issue: 'unresolved', fields: [path] };
+  const sourceRows = value.map(record), ids = sourceRows.map((row) => text(row?.id));
+  const duplicateIds = new Set(ids.filter((id): id is string => Boolean(id) && ids.filter((other) => other === id).length > 1));
+  const rows: ResolvedTargetExclusions['rows'] = [];
+  const fields = new Set<string>();
+  for (const [index, source] of sourceRows.entries()) {
+    if (!source || !ids[index]) {
+      fields.add(`${path}/${index}`);
+      continue;
+    }
+    const id = ids[index]!, hint = { ...source }, rowFields: string[] = [];
+    let unresolved = duplicateIds.has(id);
+    if (unresolved) rowFields.push(path);
+    const idPaths = [...new Set([`${path}/${index}/id`, `${path}/${encodeURIComponent(id)}/id`])];
+    const idOverrides = idPaths.flatMap((overridePath) => {
+      const override = draft.fieldOverrides[overridePath];
+      return override && override.state !== 'inherit' ? [{ path: overridePath, override }] : [];
+    });
+    const idSignatures = idOverrides.map(({ override }) => override.state === 'set'
+      ? `set:${canonicalJson(override.value ?? null)}` : override.state);
+    if (new Set(idSignatures).size > 1 || idOverrides.some(({ override }) => override.state !== 'set' || override.value !== id)) {
+      unresolved = true;
+      rowFields.push(...(idOverrides.length ? idOverrides.map((entry) => entry.path) : [path]));
+    }
+    for (const field of identityHintFields) {
+      const indexPath = `${path}/${index}/${field}`, idPath = `${path}/${encodeURIComponent(id)}/${field}`;
+      const overrides = [...new Set([indexPath, idPath])].flatMap((overridePath) => {
+        const override = draft.fieldOverrides[overridePath];
+        return override && override.state !== 'inherit' ? [{ path: overridePath, override }] : [];
+      });
+      const signatures = overrides.map(({ override }) => override.state === 'set'
+        ? `set:${canonicalJson(override.value ?? null)}` : override.state);
+      if (new Set(signatures).size > 1) {
+        unresolved = true;
+        rowFields.push(...overrides.map((entry) => entry.path));
+        hint[field] = null;
+      } else {
+        const entry = overrides[0];
+        if (entry?.override.state === 'unknown' || unknownPaths.has(indexPath)) {
+          unresolved = true;
+          rowFields.push(entry?.path ?? indexPath);
+          hint[field] = null;
+        } else if (entry?.override.state === 'set') hint[field] = entry.override.value;
+        else if (entry && ['none', 'clear'].includes(entry.override.state)) hint[field] = null;
+      }
+    }
+    rows.push({ hint, index, unresolved, fields: rowFields });
+    rowFields.forEach((rowPath) => fields.add(rowPath));
+  }
+  if (fields.size) return { rows, issue: 'unresolved', fields: [...fields] };
+  return { rows, fields: [] };
+}
+
+function auditTargetExclusions(stay: Record<string, unknown>, exclusions: ResolvedTargetExclusions,
+  path: string): { issue: string; hintId?: string; fields: string[] } | null {
+  if (exclusions.issue) return { issue: 'cancel_target_exclusion_identity_unresolved', fields: [path, ...exclusions.fields] };
+  for (const row of exclusions.rows) {
+    if (row.unresolved) return { issue: 'cancel_target_exclusion_identity_unresolved', hintId: text(row.hint.id) ?? undefined,
+      fields: [path, ...row.fields] };
+    const issue = savedTargetExclusionIssue(stay, [row.hint], false);
+    if (issue) return { issue: issue === 'saved_target_exclusion_overlaps_native_stay'
+      ? 'cancel_target_exclusion_overlaps_native_stay' : 'cancel_target_exclusion_identity_unresolved',
+    hintId: text(row.hint.id) ?? undefined, fields: [path, `${path}/${row.index}`] };
+  }
+  return null;
+}
+
 function targetHintRows(body: Record<string, unknown> | null): CancelHint[] | null {
   const targets = record(body?.targets);
   if (!Array.isArray(targets?.include)) return null;
@@ -218,7 +295,7 @@ function targetHintRows(body: Record<string, unknown> | null): CancelHint[] | nu
 
 function requestedHint(body: Record<string, unknown>, allocationId?: string): { hint: CancelHint; index: number } | null {
   const targets = record(body.targets), rows = targetHintRows(body);
-  if (!targets || !rows || targets.mode !== 'explicit' || !Array.isArray(targets.exclude) || targets.exclude.length !== 0) return null;
+  if (!targets || !rows || targets.mode !== 'explicit' || !Array.isArray(targets.exclude)) return null;
   const hintId = allocationId ?? (rows.length === 1 ? rows[0]?.id : undefined);
   if (!hintId) return null;
   const index = rows.findIndex((hint) => hint.id === hintId);
@@ -235,6 +312,15 @@ function matchesHint(preimage: CancelPreimage, hint: CancelHint): boolean {
     (!hint.guestName || sameName(hint.guestName, `${preimage.firstName} ${preimage.lastName}`)) &&
     (!hint.bookedArrival || hint.bookedArrival === preimage.arrival) &&
     (!hint.bookedDeparture || hint.bookedDeparture === preimage.departure);
+}
+
+function sourceHintMismatchFields(current: Record<string, unknown>, hint: CancelHint): string[] {
+  const fields: string[] = [];
+  const currentName = `${text(current.firstName) ?? ''} ${text(current.lastName) ?? ''}`.trim();
+  if (hint.guestName && !sameName(hint.guestName, currentName) && !sameName(hint.guestName, current.lastName)) fields.push('guestName');
+  if (hint.bookedArrival && hint.bookedArrival !== current.arrival) fields.push('bookedArrival');
+  if (hint.bookedDeparture && hint.bookedDeparture !== current.departure) fields.push('bookedDeparture');
+  return fields;
 }
 
 function observation(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2LookupInput | ReservationWorkflowV2PrepareInput |
@@ -327,6 +413,19 @@ async function nativeCancelRead(target: HmsReadTarget, confirmation: string, arr
   finally { await removeNativeRunDir(native?.runDir); }
 }
 
+async function safeCancelTargetRead(target: HmsReadTarget, confirmation: string, arrival?: string, signal?: AbortSignal) {
+  if (!paneStayLookupEnabled()) return null;
+  const request = { confirmation, ...(arrival ? { arrival } : {}) };
+  const lock = paneStayPropertyLock(target);
+  if (!lock) return null;
+  const readSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(5 * 60_000)]) : AbortSignal.timeout(5 * 60_000);
+  try {
+    return await lock.withLock(async () => projectCloudStayFind(request,
+      await runCloudStayFind({ request, target, signal: readSignal, nativeIdentityOnly: true })),
+    { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), ...(signal ? { signal } : {}) });
+  } catch { return null; }
+}
+
 type FreshPreview = {
   outcome: 'ok'; preimage: CancelPreimage; preflight: Record<string, unknown>;
   reasons: z.infer<typeof reasonOptionsSchema>; policyFacts: string[]; penaltyText: string | null;
@@ -334,18 +433,19 @@ type FreshPreview = {
 } | { outcome: 'failed'; issue: string; runDir?: string | null };
 
 async function freshPreview(target: HmsReadTarget, confirmation: string, hint: CancelHint, allowPreviewCharge = true,
-  cloudTargetKey?: string): Promise<FreshPreview> {
-  const initial = await cancellationPreflight(target, confirmation, hint.bookedArrival);
+  cloudTargetKey?: string, signal?: AbortSignal, allowReviewedSourceMismatch = false): Promise<FreshPreview> {
+  const initial = await cancellationPreflight(target, confirmation,
+    allowReviewedSourceMismatch ? undefined : hint.bookedArrival, signal);
   if (initial.outcome !== 'ok') return initial;
   const stay = record(initial.facts.stay), arrivalFact = record(stay?.arrivalDate), departureFact = record(stay?.departureDate);
   const arrival = text(arrivalFact?.value), departure = text(departureFact?.value);
-  if (!arrival || !departure || (hint.bookedDeparture && hint.bookedDeparture !== departure)) {
+  if (!arrival || !departure || (!allowReviewedSourceMismatch && hint.bookedDeparture && hint.bookedDeparture !== departure)) {
     return { outcome: 'failed', issue: 'CANCELLATION_TARGET_DATE_MISMATCH' };
   }
   let native: NativeCancelResult | null = null;
   try {
     native = await runCloudCancellation({ mode: 'preview', target, confirmation, arrival, allowRealGuest: true,
-      ...(cloudTargetKey ? { cloudTargetKey } : {}) }) as NativeCancelResult;
+      ...(cloudTargetKey ? { cloudTargetKey } : {}), ...(signal ? { signal } : {}) }) as NativeCancelResult;
     const expected = cancelPreimageSchema.safeParse(native.expected), reasons = reasonOptionsSchema.safeParse(native.reasons),
       policyFacts = z.array(z.string().trim().min(1).max(260)).max(12).safeParse(native.policyFacts ?? []),
       penaltyText = z.string().trim().min(1).max(2000).nullable().safeParse(native.penaltyText ?? null);
@@ -357,7 +457,7 @@ async function freshPreview(target: HmsReadTarget, confirmation: string, hint: C
       return { outcome: 'failed', issue: native.outcome === 'refused_scope_unverified' ? 'CANCELLATION_SCOPE_UNVERIFIED' :
         native.issue ?? native.outcome ?? 'CANCELLATION_PREVIEW_UNAVAILABLE', runDir: safeRunDir(native.runDir) ? native.runDir : null };
     }
-    if (!matchesHint(expected.data, hint)) {
+    if (!matchesHint(expected.data, hint) && !(allowReviewedSourceMismatch && expected.data.confirmation === hint.confirmation)) {
       return { outcome: 'failed', issue: 'CANCELLATION_TARGET_HINT_MISMATCH', runDir: safeRunDir(native.runDir) ? native.runDir : null };
     }
     const financialHandling = record(initial.facts.financialHandling);
@@ -397,19 +497,22 @@ function supportedCancelOverride(path: string, bodyPath: string, body: Record<st
   catch { return false; }
   if (parts.length === 1 && parts[0] === 'cancellationNote') return true;
   if (parts.length === 2 && parts[0] === 'reason' && parts[1] === 'text') return true;
-  if (parts.length === 2 && parts[0] === 'targets' && parts[1] === 'mode') return true;
-  if (parts.length === 2 && parts[0] === 'targets' && parts[1] === 'include') return true;
+  if (parts.length === 2 && parts[0] === 'targets' && ['mode', 'include', 'exclude'].includes(parts[1] ?? '')) return true;
   if (parts[0] === 'previewObservationRefs' && (parts.length === 1 ||
       (parts.length === 2 && /^(?:0|[1-9]\d*)$/.test(parts[1] ?? '')))) return true;
-  if (parts.length !== 4 || parts[0] !== 'targets' || parts[1] !== 'include' ||
-      !/^(?:0|[1-9]\d*)$/.test(parts[2] ?? '') ||
-      !['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture', 'suggestedRef'].includes(parts[3] ?? '')) return false;
-  const targets = record(body.targets), rows = targets?.include;
-  return Array.isArray(rows) && Boolean(record(rows[Number(parts[2])])?.id);
+  if (parts.length !== 4 || parts[0] !== 'targets' || !['include', 'exclude'].includes(parts[1] ?? '') ||
+      !['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture', ...(parts[1] === 'include' ? ['suggestedRef'] : [])].includes(parts[3] ?? '')) return false;
+  const targets = record(body.targets), rows = targets?.[parts[1] ?? ''];
+  if (!Array.isArray(rows)) return false;
+  if (parts[1] === 'include' && !/^(?:0|[1-9]\d*)$/.test(parts[2] ?? '')) return false;
+  const row = /^(?:0|[1-9]\d*)$/.test(parts[2] ?? '') ? record(rows[Number(parts[2])])
+    : rows.map(record).find((value) => value?.id === parts[2]);
+  return Boolean(row?.id);
 }
 
 function resolvedSelection(draft: ReservationWorkflowV2Draft, requestId: string, hint: CancelHint, hintIndex: number):
   { path: string; ref: string; observation: ReservationWorkflowV2Observation; preimage: CancelPreimage;
+    sourceHintMismatchFields: string[];
     preflight: Record<string, unknown> } | { issue: string } {
   const path = ptr('proposal', 'content', 'requests', requestId, 'body', 'targets', 'include', hintIndex, 'suggestedRef');
   const override = draft.fieldOverrides[path];
@@ -417,14 +520,21 @@ function resolvedSelection(draft: ReservationWorkflowV2Draft, requestId: string,
   const ref = override.value;
   const selected = draft.observations.find((item) => item.ref === ref && item.kind === 'stay_candidate' && item.status === 'complete');
   const criteria = record(selected?.criteria), result = record(selected?.result), preimage = cancelPreimageSchema.safeParse(result?.preimage);
+  const mismatches = preimage.success ? sourceHintMismatchFields(preimage.data, hint) : [];
+  const recordedMismatches = Array.isArray(result?.sourceHintMismatchFields)
+    ? result.sourceHintMismatchFields.filter((field): field is string => typeof field === 'string') : [];
+  const reviewedMismatch = preimage.success && preimage.data.confirmation === hint.confirmation &&
+    result?.sourceHintMismatchReviewRequired === true && canonicalJson(recordedMismatches) === canonicalJson(mismatches);
   if (!selected || !criteria || criteria.workflow !== 'cancel' || criteria.stage !== 'lookup' ||
       criteria.requestId !== requestId || criteria.hintId !== hint.id || criteria.fieldPath !== path ||
-      criteria.propertyCode !== draft.propertyCode || !preimage.success || !matchesHint(preimage.data, hint)) {
+      criteria.propertyCode !== draft.propertyCode || !preimage.success ||
+      (!matchesHint(preimage.data, hint) && !reviewedMismatch)) {
     return { issue: 'cancel_native_target_selection_stale' };
   }
   const preflight = record(result?.preflight);
   if (!preflight || preflight.outcome !== 'prepared_for_human_review') return { issue: 'cancel_target_preflight_missing' };
-  return { path, ref, observation: selected, preimage: preimage.data, preflight };
+  return { path, ref, observation: selected, preimage: preimage.data,
+    sourceHintMismatchFields: mismatches, preflight };
 }
 
 function compileCancel(draft: ReservationWorkflowV2Draft, requestId: string, hintId: string | undefined,
@@ -452,23 +562,34 @@ function compileCancel(draft: ReservationWorkflowV2Draft, requestId: string, hin
     'bookedDeparture', 'candidateRefs', 'suggestedRef', 'sourceRefs'].includes(key)))) {
     return { outcome: 'unsupported', issue: 'cancel_target_hint_contains_unsupported_fields' };
   }
-  if (!targets || targets.mode !== 'explicit' || !rows || !Array.isArray(targets.exclude) || targets.exclude.length) {
-    return { outcome: 'unsupported', issue: 'cancel_scope_must_be_one_explicit_saved_stay' };
+  if (!targets || targets.mode !== 'explicit' || !rows) {
+    return { outcome: 'needs_input', issue: 'cancel_scope_must_be_explicit' };
   }
+  const exclusionPath = ptr('proposal', 'content', 'requests', requestId, 'body', 'targets', 'exclude');
+  if (!Array.isArray(targets.exclude)) return { outcome: 'needs_input', issue: 'cancel_target_exclusion_identity_unresolved',
+    fields: [exclusionPath] };
   const chosen = requestedHint(loaded.body, hintId);
   if (!chosen) return { outcome: 'needs_input', issue: rows.length > 1 ? 'cancel_target_hint_required' : 'cancel_target_hint_missing' };
   const { hint, index } = chosen;
-  if (rows.length !== 1) return { outcome: 'unsupported', issue: 'cancel_one_target_per_operation' };
+  const targetExclusions = resolveTargetExclusions(draft, exclusionPath, targets.exclude, loaded.unknownPaths);
+  if (targetExclusions.issue) return { outcome: 'needs_input', issue: 'cancel_target_exclusion_identity_unresolved',
+    fields: [exclusionPath, ...targetExclusions.fields], hintId: hint.id };
+  const sameHintExclusion = targetExclusions.rows.find((row) => text(row.hint.id) === hint.id);
+  if (sameHintExclusion) {
+    return { outcome: 'needs_input', issue: 'cancel_target_excluded_by_scope',
+      fields: [exclusionPath, `${exclusionPath}/${sameHintExclusion.index}`], hintId: hint.id };
+  }
   const unknownHints = unknownHintPaths(loaded.unknownPaths, loaded.bodyPath, index);
   if (unknownHints.length) return { outcome: 'needs_input', issue: 'cancel_target_hints_unknown', fields: unknownHints, hintId: hint.id };
   if (!/^\d+-\d+$/.test(hint.confirmation ?? '')) {
     return { outcome: 'needs_input', issue: 'exact_confirmation_and_valid_dates_required', hintId: hint.id };
   }
-  if (loaded.request.serviceRefs.length || loaded.request.documentRefs.length) {
-    return { outcome: 'unsupported', issue: 'cancel_request_contains_unhandled_service_or_document_refs', hintId: hint.id };
-  }
+  // Linked documents/Add-Ons are separate context/actions in this case. This write is bound only
+  // to the selected stay; preserve those refs instead of turning context into a blocker or deleting work.
   const selection = resolvedSelection(draft, requestId, hint, index);
   if ('issue' in selection) return { outcome: 'needs_input', issue: selection.issue, hintId: hint.id };
+  const exclusionIssue = auditTargetExclusions(selection.preimage as unknown as Record<string, unknown>, targetExclusions, exclusionPath);
+  if (exclusionIssue) return { outcome: 'needs_input', issue: exclusionIssue.issue, fields: exclusionIssue.fields, hintId: hint.id };
   const basePath = ptr('proposal', 'content', 'requests', requestId, 'body');
   const reasonPath = ptr('proposal', 'content', 'requests', requestId, 'body', 'reason', 'text');
   const reason = leaf(draft, reasonPath, record(loaded.body.reason)?.text);
@@ -494,13 +615,18 @@ function compileCancel(draft: ReservationWorkflowV2Draft, requestId: string, hin
   }
   const previewObservationRefs = previewLeaf.unset ? [] : previewLeaf.value as string[];
   const semanticInput = { requestId, hintId: hint.id, targetSelectionRef: selection.ref,
+    sourceHintMismatchFields: selection.sourceHintMismatchFields,
     targetHint: { confirmation: hint.confirmation ?? null, guestName: hint.guestName ?? null,
       bookedArrival: hint.bookedArrival ?? null, bookedDeparture: hint.bookedDeparture ?? null },
-    scope: { mode: targets.mode, include: rows.map((row) => row.id), exclude: targets.exclude },
+    scope: { mode: targets.mode, include: rows.map((row) => row.id), exclude: targetExclusions.rows.map(({ hint: excluded }) => ({
+      id: excluded.id ?? null, confirmation: excluded.confirmation ?? null, guestName: excluded.guestName ?? null,
+      bookedArrival: excluded.bookedArrival ?? null, bookedDeparture: excluded.bookedDeparture ?? null,
+    })) },
     reason: { text: reasonText, candidateRefs: reasonSourceRefs }, cancellationNote: noteText, sourceRefs,
     selectedPreflightDigest: sha256(selection.preflight) };
   return { outcome: 'ok', requestId, hintId: hint.id, hintIndex: index, hint, selectionPath: selection.path,
     selectionRef: selection.ref, selectedObservation: selection.observation, preimage: selection.preimage,
+    sourceHintMismatchFields: selection.sourceHintMismatchFields,
     selectedPreflight: selection.preflight, reasonText, cancellationNote: noteText, reasonSourceRefs, sourceRefs,
     previewObservationRefs, semanticInput, semanticDigest: sha256(semanticInput), bodyPath: loaded.bodyPath,
     reviewPath: previewObservationRefsPath };
@@ -549,8 +675,27 @@ export async function reservationWorkflowV2CancelLookup(ctx: ReadContext,
       lookups.push({ status: 'unsupported', requestId: request.id, issue: 'cancel_target_limit' });
       continue;
     }
+    const exclusionPath = ptr('proposal', 'content', 'requests', request.id, 'body', 'targets', 'exclude');
+    if (!Array.isArray(targets.exclude)) {
+      lookups.push({ status: 'needs_input', requestId: request.id, issue: 'cancel_target_exclusion_identity_unresolved',
+        fields: [exclusionPath] });
+      continue;
+    }
+    const targetExclusions = resolveTargetExclusions(loaded.draft, exclusionPath, targets.exclude, effective.unknownPaths);
+    if (targetExclusions.issue) {
+      lookups.push({ status: 'needs_input', requestId: request.id, issue: 'cancel_target_exclusion_identity_unresolved',
+        fields: [exclusionPath, ...targetExclusions.fields] });
+      continue;
+    }
     for (const [index, hint] of rows.entries()) {
       const fieldPath = lookupHintPath(request.id, index);
+      const sameHintExclusion = targetExclusions.rows.find((row) => text(row.hint.id) === hint.id);
+      if (sameHintExclusion) {
+        lookups.push({ status: 'needs_input', requestId: request.id, hintId: hint.id,
+          issue: 'cancel_target_excluded_by_scope', fields: [exclusionPath, `${exclusionPath}/${sameHintExclusion.index}`],
+          selectionPath: fieldPath });
+        continue;
+      }
       const unknownHints = unknownHintPaths(effective.unknownPaths, effective.bodyPath, index);
       if (unknownHints.length) {
         lookups.push({ status: 'needs_input', requestId: request.id, hintId: hint.id, selectionPath: fieldPath,
@@ -566,33 +711,96 @@ export async function reservationWorkflowV2CancelLookup(ctx: ReadContext,
           issue: 'exact_confirmation_and_valid_dates_required' });
         continue;
       }
-      const preflight = await cancellationPreflight(target, confirmation, arrival, ctx.nativeBatch?.signal);
-      let preimage: CancelPreimage | null = null, reason = preflight.outcome === 'failed' ? preflight.issue : null;
-      let preflightFacts: Record<string, unknown> | null = preflight.outcome === 'ok' ? preflight.facts : null;
-      if (preflight.outcome === 'ok') {
-        const stay = record(preflight.facts.stay);
-        const nativeArrival = text(record(stay?.arrivalDate)?.value);
-        if (nativeArrival && !ctx.nativeBatch) preimage = await nativeCancelRead(target, confirmation, nativeArrival);
-        if (!preimage) reason = ctx.nativeBatch ? 'background_cancel_target_reader_unavailable' : 'native_cancel_target_unavailable';
-        else if (!matchesHint(preimage, hint)) reason = 'cancel_target_hint_mismatch';
-        else if (preimage.departure !== text(record(stay?.departureDate)?.value)) reason = 'cancel_preflight_identity_mismatch';
+      let preimage: CancelPreimage | null = null, reason: string | null = null;
+      let preflightFacts: Record<string, unknown> | null = null, preflightObservedAt: string | null = null;
+      let warmCancellationCheck: Record<string, unknown> | null = null;
+      const currentRead = await safeCancelTargetRead(target, confirmation, arrival, ctx.nativeBatch?.signal);
+      const current = currentRead?.outcome === 'found' ? record(currentRead.stay) : null;
+      const currentStay = current ? { confirmation: current.confirmation, status: current.status,
+        firstName: current.firstName, lastName: current.lastName, guestName: currentRead?.guestName ?? null,
+        arrival: current.arrival, departure: current.departure, roomType: current.roomType, ratePlan: current.ratePlan } : null;
+      const currentMismatchFields = current ? sourceHintMismatchFields(current, hint) : [];
+      const exactCurrent = currentRead?.outcome === 'found' && current?.confirmation === confirmation;
+      const exclusionIssue = exactCurrent && current
+        ? auditTargetExclusions(current, targetExclusions, exclusionPath) : null;
+      if (exclusionIssue) {
+        const item = observation(loaded.draft, input, request.id, hint.id, 'lookup', 'partial',
+          { fieldPath, propertyCode: 'HRCEN', query: { confirmation, guestName: hint.guestName ?? null,
+            arrival: arrival ?? null, departure: hint.bookedDeparture ?? null } },
+          { outcome: 'needs_input', issue: exclusionIssue.issue, fields: exclusionIssue.fields,
+            ...(exclusionIssue.hintId ? { excludedHintId: exclusionIssue.hintId } : {}),
+            ...(currentStay ? { currentStay } : {}), ...(currentMismatchFields.length ? { sourceHintMismatchFields: currentMismatchFields } : {}),
+            sourceRefs: uniqueRefs([request.sourceRefs, targets.sourceRefs, hint.sourceRefs, hint.candidateRefs, hint.suggestedRef]) },
+          [exclusionIssue.issue]);
+        observations.push(item);
+        lookups.push({ status: 'needs_input', requestId: request.id, hintId: hint.id, selectionPath: fieldPath,
+          issue: exclusionIssue.issue, fields: exclusionIssue.fields,
+          ...(exclusionIssue.hintId ? { excludedHintId: exclusionIssue.hintId } : {}), ...(currentStay ? { currentStay } : {}) });
+        continue;
       }
-      const complete = Boolean(preimage && preflightFacts && !reason);
+      if (!exactCurrent) reason = currentRead?.reason ?? 'cancel_target_current_record_unverified';
+      else if (current?.status !== 'Reserved') reason = 'cancel_target_status_not_reserved';
+      else if (currentMismatchFields.length) reason = 'cancel_source_hints_mismatch';
+
+      if (exactCurrent && current?.status === 'Reserved') {
+        const nativeArrival = text(current.arrival);
+        const preflight = nativeArrival
+          ? await cancellationPreflight(target, confirmation, nativeArrival, ctx.nativeBatch?.signal)
+          : { outcome: 'failed' as const, issue: 'cancel_current_arrival_unavailable' };
+        if (preflight.outcome === 'ok') {
+          preflightFacts = preflight.facts;
+          preflightObservedAt = preflight.observedAt;
+          const preflightStay = record(preflight.facts.stay);
+          const observedArrival = text(record(preflightStay?.arrivalDate)?.value);
+          preimage = observedArrival ? await nativeCancelRead(target, confirmation, observedArrival) : null;
+          if (!preimage) reason ??= 'native_cancel_target_unavailable';
+          else if (preimage.confirmation !== confirmation || preimage.arrival !== observedArrival ||
+              preimage.departure !== text(record(preflightStay?.departureDate)?.value)) reason = 'cancel_preflight_identity_mismatch';
+          else if (canonicalJson(sourceHintMismatchFields(preimage, hint)) !== canonicalJson(currentMismatchFields)) {
+            reason = 'cancel_source_hints_changed_during_lookup';
+          }
+        } else reason ??= preflight.issue;
+      }
+
+      if (ctx.nativeBatch && exactCurrent && current?.status === 'Reserved' && !currentMismatchFields.length && preimage && preflightFacts) {
+        // Warm options with the same no-Save preview used by staff Prepare. This lookup evidence
+        // grants no review, preview admission, write claim or Go; a failed preview leaves the
+        // independently verified Reserved target available for staff to Prepare again.
+        const warm = await freshPreview(target, confirmation, hint, true, undefined, ctx.nativeBatch.signal);
+        if (warm.outcome === 'ok') {
+          preimage = warm.preimage; preflightFacts = warm.preflight; preflightObservedAt = warm.observedAt;
+          warmCancellationCheck = { status: 'ready', observedAt: warm.observedAt, reasons: warm.reasons,
+            policyFacts: warm.policyFacts, penaltyText: warm.penaltyText,
+            feeState: text(record(warm.preflight.fee)?.state) ?? 'unknown_precommit', readOnly: true };
+        } else {
+          reason ??= warm.issue;
+          warmCancellationCheck = { status: 'unavailable', issue: warm.issue, readOnly: true };
+        }
+        await removeNativeRunDir(warm.runDir);
+      }
+      const complete = Boolean(preimage && preflightFacts && exactCurrent && current?.status === 'Reserved');
       const item = observation(loaded.draft, input, request.id, hint.id, 'lookup', complete ? 'complete' : 'partial',
         { fieldPath, propertyCode: 'HRCEN', query: { confirmation, guestName: hint.guestName ?? null,
           arrival: arrival ?? null, departure: hint.bookedDeparture ?? null } },
-        { outcome: complete ? 'found' : 'needs_review', ...(reason ? { issue: reason } : {}),
+        { outcome: complete ? (currentMismatchFields.length || reason ? 'needs_review' : 'found') : 'needs_review',
+          ...(reason ? { issue: reason } : {}), ...(currentStay ? { currentStay } : {}),
+          ...(currentMismatchFields.length ? { sourceHintMismatchFields: currentMismatchFields,
+            sourceHintMismatchReviewRequired: true } : {}),
           ...(preimage ? { preimage, target: expectedTargetIdentity(preimage) } : {}),
           ...(preflightFacts ? { preflight: { outcome: 'prepared_for_human_review', ...preflightFacts },
-            preflightObservedAt: preflight.outcome === 'ok' ? preflight.observedAt : null } : {}),
+            preflightObservedAt } : {}),
+          ...(warmCancellationCheck ? { warmCancellationCheck } : {}),
           sourceRefs: uniqueRefs([request.sourceRefs, targets.sourceRefs, hint.sourceRefs, hint.candidateRefs, hint.suggestedRef]) },
-        complete ? [] : [reason ?? 'cancel_lookup_incomplete']);
+        complete && !currentMismatchFields.length && !reason ? [] : [reason ?? 'cancel_lookup_incomplete']);
       observations.push(item);
-      lookups.push({ status: complete ? 'found' : 'partial', requestId: request.id, hintId: hint.id,
+      lookups.push({ status: complete ? (currentMismatchFields.length ? 'needs_review' : reason ? 'needs_review' : 'found') : 'partial',
+        requestId: request.id, hintId: hint.id,
         selectionPath: fieldPath,
         ...(preimage ? { candidate: { observationRef: item.ref, confirmation: preimage.confirmation,
           guestName: `${preimage.firstName} ${preimage.lastName}`, arrival: preimage.arrival,
           departure: preimage.departure, nativeStayId: preimage.nativeStayId } } : {}),
+        ...(currentStay ? { currentStay } : {}),
+        ...(currentMismatchFields.length ? { sourceHintMismatchFields: currentMismatchFields } : {}),
         ...(reason ? { issue: reason } : {}) });
     }
   }
@@ -640,7 +848,7 @@ export async function reservationWorkflowV2CancelPrepare(ctx: ReservationWorkflo
   const compiled = compileCancel(loaded.draft, input.requestId, input.allocationId, ctx.property.propertyCode);
   if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [] };
   const fresh = await freshPreview(target, compiled.preimage.confirmation, compiled.hint, true,
-    hmsDispatchTargetKey(dispatchTarget(compiled.preimage)));
+    hmsDispatchTargetKey(dispatchTarget(compiled.preimage)), undefined, compiled.sourceHintMismatchFields.length > 0);
   if (fresh.outcome !== 'ok') {
     await removeNativeRunDir(fresh.runDir);
     return { status: 'needs_review', issue: fresh.issue };
@@ -920,7 +1128,7 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
       if (!epoch) return { status: 'needs_reconcile', issue: 'cancel_dispatch_history_unavailable' };
       let fresh: FreshPreview;
       try { fresh = await freshPreview(target, compiled.preimage.confirmation, compiled.hint, true,
-        hmsDispatchTargetKey(expectedTarget)); }
+        hmsDispatchTargetKey(expectedTarget), undefined, compiled.sourceHintMismatchFields.length > 0); }
       catch { return { status: 'needs_review', issue: 'cancel_fresh_preview_unavailable' }; }
       if (fresh.outcome !== 'ok') {
         await removeNativeRunDir(fresh.runDir);

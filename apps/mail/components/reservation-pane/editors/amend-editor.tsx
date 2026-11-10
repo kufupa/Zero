@@ -18,7 +18,65 @@ const fields = [
 ] as const;
 const clearable = new Set(['guestEmail', 'bookerName', 'bookerContact', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
 const priceFields = new Set(['arrival', 'departure', 'roomType', 'ratePlan', 'adults', 'childCount', 'childAges']);
+const unsupportedFieldLabels: Record<string, string> = { roomTypeForCharge: 'Charged room type', reservationNote: 'Reservation note' };
 const rows = (value: unknown) => Array.isArray(value) ? value.map(record) : [];
+
+function exactConfirmation(hint: Record<string, unknown>) {
+  const confirmation = text(hint.confirmation).trim();
+  return /^\d{6,10}-\d{1,2}$/.test(confirmation) ? confirmation : '';
+}
+
+function definitelyDistinct(left: Record<string, unknown>, right: Record<string, unknown>) {
+  const leftConfirmation = exactConfirmation(left), rightConfirmation = exactConfirmation(right);
+  if (leftConfirmation && rightConfirmation) return leftConfirmation !== rightConfirmation;
+  const normalize = (value: unknown) => typeof value === 'string'
+    ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() : '';
+  const nameForms = (value: unknown) => {
+    if (typeof value !== 'string') return [];
+    const parts = value.split(',');
+    return [...new Set([normalize(value), ...(parts.length === 2 ? [normalize(`${parts[1]?.trim()} ${parts[0]?.trim()}`)] : [])])]
+      .filter(Boolean);
+  };
+  const leftNames = nameForms(left.guestName), rightNames = nameForms(right.guestName);
+  const validDate = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+  const leftArrival = left.bookedArrival, leftDeparture = left.bookedDeparture;
+  const rightArrival = right.bookedArrival, rightDeparture = right.bookedDeparture;
+  const disjointDates = validDate(leftArrival) && validDate(leftDeparture) && validDate(rightArrival) && validDate(rightDeparture) &&
+    (leftDeparture <= rightArrival || rightDeparture <= leftArrival);
+  return leftNames.length > 0 && rightNames.length > 0 && !leftNames.some(name => rightNames.includes(name)) && disjointDates;
+}
+
+function lockedScope(editor: Editor) {
+  return editor.snapshot.session.draft.operationResults.some(result => result.requestId === editor.request.id &&
+    (result.status === 'succeeded' || result.status === 'failed' || result.status === 'unknown'));
+}
+
+async function correctAmendScope(editor: Editor, body: string,
+  include: Record<string, unknown>[], exclude: Record<string, unknown>[], hint: Record<string, unknown>,
+  from: 'include' | 'exclude') {
+  if (lockedScope(editor) || !text(hint.id)) return;
+  const includePath = `${body}/targets/include`, excludePath = `${body}/targets/exclude`;
+  const modePath = `${body}/targets/mode`, id = text(hint.id);
+  if (valueAt(editor.snapshot, modePath) !== 'explicit') await editor.commands.edit(modePath, 'explicit');
+  if (from === 'include') {
+    if (include.length < 2) return;
+    const duplicate = exclude.some(row => text(row.id) === id || exactConfirmation(row) && exactConfirmation(row) === exactConfirmation(hint));
+    if (!duplicate) await editor.commands.edit(excludePath, [...exclude, hint]);
+    await editor.commands.edit(includePath, include.filter(row => text(row.id) !== id));
+    return;
+  }
+  const duplicate = include.some(row => text(row.id) === id || exactConfirmation(row) && exactConfirmation(row) === exactConfirmation(hint));
+  if (!duplicate) {
+    if (!include.every(row => definitelyDistinct(row, hint))) return;
+    await editor.commands.edit(includePath, [...include, hint]);
+  }
+  await editor.commands.edit(excludePath, exclude.filter(row => text(row.id) !== id));
+  const perTarget = rows(effectiveAt(editor.snapshot, `${body}/perTarget`));
+  if (!perTarget.some(row => row.hintId === id)) {
+    await editor.commands.changeRows({ kind: 'add_target', requestId: editor.request.id, entityId: id });
+  }
+}
 
 export function StayFacts({ stay }: { stay: Record<string, unknown> }) {
   return <div className={styles.facts}>
@@ -29,8 +87,8 @@ export function StayFacts({ stay }: { stay: Record<string, unknown> }) {
 }
 
 /** An email confirmation is only a search hint; selection binds a complete native observation. */
-export function TargetSearch({ editor, body, hint, index, workflow }: {
-  editor: Editor; body: string; hint: Record<string, unknown>; index: number; workflow: 'amend' | 'cancel' | 'services';
+export function TargetSearch({ editor, body, hint, index, workflow, locked = false }: {
+  editor: Editor; body: string; hint: Record<string, unknown>; index: number; workflow: 'amend' | 'cancel' | 'services' | 'filing'; locked?: boolean;
 }) {
   const root = `${body}/targets/include/${index}`;
   const path = `${root}/suggestedRef`;
@@ -38,38 +96,88 @@ export function TargetSearch({ editor, body, hint, index, workflow }: {
   const normalized = (value: unknown) => (workflow === 'amend' ? text(value).trim() : text(value)) || null;
   const query = (key: string) => normalized(valueAt(editor.snapshot, `${root}/${key}`));
   const draft = editor.snapshot.session.draft;
+  const sameName = (left: unknown, right: unknown) => typeof left === 'string' && typeof right === 'string' &&
+    left.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() ===
+      right.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
+  const currentLookup = workflow === 'cancel' ? [...draft.observations].reverse().find(observation => {
+    const criteria = observation.criteria, q = record(criteria.query), result = record(observation.result);
+    return observation.kind === 'stay_candidate' && criteria.workflow === 'cancel' && criteria.stage === 'lookup' &&
+      criteria.requestId === editor.request.id && criteria.hintId === hint.id &&
+      normalized(q.confirmation) === query('confirmation') && normalized(q.guestName) === query('guestName') &&
+      normalized(q.arrival) === query('bookedArrival') && normalized(q.departure) === query('bookedDeparture') &&
+      Object.keys(record(result.currentStay)).length > 0;
+  }) : undefined;
+  const currentStay = record(record(currentLookup?.result).currentStay);
+  const currentGuestName = text(currentStay.guestName) || [text(currentStay.firstName), text(currentStay.lastName)].filter(Boolean).join(' ');
+  const currentMismatchFields = currentStay ? [
+    query('guestName') && !sameName(query('guestName'), currentGuestName) && !sameName(query('guestName'), currentStay.lastName) ? 'guestName' : null,
+    query('bookedArrival') && query('bookedArrival') !== normalized(currentStay.arrival) ? 'bookedArrival' : null,
+    query('bookedDeparture') && query('bookedDeparture') !== normalized(currentStay.departure) ? 'bookedDeparture' : null,
+  ].filter((field): field is string => Boolean(field)) : [];
   const candidates = editor.snapshot.session.draft.observations.flatMap(observation => {
     const c = observation.criteria, q = record(c.query), result = record(observation.result);
     if (observation.kind !== 'stay_candidate' || observation.status !== 'complete' || !record(observation.coverage).complete
       || observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode
       || observation.sourceMessageId !== draft.source.messageId || c.workflow !== workflow
-      || c.requestId !== editor.request.id || c.hintId !== hint.id
-      || (workflow === 'amend' ? c.selectionPath !== path : workflow === 'services' ? c.kind !== 'saved_target' || c.fieldPath !== path : c.stage !== 'lookup' || c.fieldPath !== path)) return [];
+      || c.requestId !== editor.request.id || (workflow === 'filing' ? c.targetHintId !== hint.id : c.hintId !== hint.id)
+      || (workflow === 'amend' ? c.selectionPath !== path : workflow === 'services' ? c.kind !== 'saved_target' || c.fieldPath !== path
+        : workflow === 'filing' ? normalized(c.confirmation) !== query('confirmation') ||
+          normalized(c.bookedArrival) !== query('bookedArrival') : c.stage !== 'lookup' || c.fieldPath !== path)) return [];
     const arrival = workflow === 'cancel' ? q.arrival : q.bookedArrival;
     const departure = workflow === 'cancel' ? q.departure : q.bookedDeparture;
-    if (normalized(q.confirmation) !== query('confirmation') || normalized(q.guestName) !== query('guestName')
-      || normalized(arrival) !== query('bookedArrival') || normalized(departure) !== query('bookedDeparture')) return [];
-    const stay = record(workflow === 'cancel' ? result.preimage : result.candidate);
-    return Object.keys(stay).length ? [{ observation, stay }] : [];
+    if (workflow !== 'filing') {
+      const confirmationMatches = normalized(q.confirmation) === query('confirmation');
+      const queryMatches = confirmationMatches && normalized(q.guestName) === query('guestName')
+        && normalized(arrival) === query('bookedArrival') && normalized(departure) === query('bookedDeparture');
+      if (!queryMatches) return [];
+    }
+    const stay = record(workflow === 'cancel' ? result.preimage : workflow === 'filing' ? result.stay : result.candidate);
+    if (workflow === 'filing' && (normalized(c.confirmation) !== query('confirmation') ||
+        normalized(c.bookedArrival) !== query('bookedArrival'))) return [];
+    const candidateName = [text(stay.firstName), text(stay.lastName)].filter(Boolean).join(' ');
+    const sourceMismatchFields = workflow === 'cancel' || workflow === 'filing' ? [
+      query('guestName') && !(workflow === 'cancel' && sameName(query('guestName'), stay.lastName)) && !sameName(query('guestName'), candidateName) ? 'guestName' : null,
+      query('bookedArrival') && query('bookedArrival') !== normalized(stay.arrival) ? 'bookedArrival' : null,
+      query('bookedDeparture') && query('bookedDeparture') !== normalized(stay.departure) ? 'bookedDeparture' : null,
+    ].filter((field): field is string => Boolean(field)) : [];
+    const recordedMismatches = Array.isArray(result.sourceHintMismatchFields)
+      ? result.sourceHintMismatchFields.filter((field): field is string => typeof field === 'string') : [];
+    if (workflow === 'cancel' && (JSON.stringify(sourceMismatchFields) !== JSON.stringify(recordedMismatches) ||
+        sourceMismatchFields.length > 0 && result.sourceHintMismatchReviewRequired !== true)) return [];
+    return Object.keys(stay).length ? [{ observation, stay, sourceMismatchFields,
+      selectable: workflow !== 'filing' || sourceMismatchFields.length === 0 }] : [];
   });
   return <div className={styles.stack}>
     <div className={styles.grid}>
-      <Field label="Confirmation or supplier reference" path={`${root}/confirmation`} editor={editor} review />
-      <Field label="Guest name" path={`${root}/guestName`} editor={editor} review />
-      <Field label="Original arrival" path={`${root}/bookedArrival`} type="date" editor={editor} review />
-      <Field label="Original departure" path={`${root}/bookedDeparture`} type="date" editor={editor} review />
+      <Field label="Confirmation or supplier reference" path={`${root}/confirmation`} editor={editor} review disabled={locked} />
+      <Field label="Guest name" path={`${root}/guestName`} editor={editor} review disabled={locked} />
+      <Field label="Original arrival" path={`${root}/bookedArrival`} type="date" editor={editor} review disabled={locked} />
+      <Field label="Original departure" path={`${root}/bookedDeparture`} type="date" editor={editor} review disabled={locked} />
     </div>
-    <span className={styles.hint}>{workflow === 'cancel' || workflow === 'services' ? 'Enter the exact Infor confirmation to find this stay.' : 'Search by confirmation, or guest and original arrival.'}</span>
-    {candidates.map(({ observation, stay }) => <div className={styles.card} key={observation.ref}>
+    <span className={styles.hint}>{workflow === 'cancel' || workflow === 'services' || workflow === 'filing'
+      ? 'Enter the exact Infor confirmation to find this stay.' : 'Search by confirmation, or guest and original arrival.'}</span>
+    {currentStay && <div className={styles.card}>
+      <strong>Current Infor record · {text(currentStay.confirmation)}</strong>
+      <span>{currentGuestName || 'Guest not returned'} · {text(currentStay.arrival) || 'arrival not returned'} → {text(currentStay.departure) || 'departure not returned'}</span>
+      <span>Status: {text(currentStay.status) || 'not returned'}</span>
+      {text(currentStay.roomType) || text(currentStay.ratePlan) ? <span>{text(currentStay.roomType)} · {text(currentStay.ratePlan)}</span> : null}
+      <small className={styles.hint}>Source: {query('confirmation') || 'no confirmation'} · {query('guestName') || 'guest not specified'} · {query('bookedArrival') || 'arrival not specified'} → {query('bookedDeparture') || 'departure not specified'}</small>
+      {currentStay.status !== 'Reserved' && <div className={styles.warning}>This stay is {text(currentStay.status) || 'not confirmed as Reserved'} and cannot be cancelled here. No cancellation was prepared.</div>}
+      {currentMismatchFields.length > 0 && <div className={styles.warning}>Infor differs from the source guest or dates. Review the exact confirmation and current facts before selecting it; update the source hints and search again if this is not the intended stay.</div>}
+    </div>}
+    {candidates.map(({ observation, stay, sourceMismatchFields, selectable }) => <div className={styles.card} key={observation.ref}>
       <StayFacts stay={stay} />
-      <div className={styles.row}><button type="button" disabled={editor.view.busy} onClick={() => void (async () => {
-        if (workflow !== 'cancel' && valueAt(editor.snapshot, `${body}/targets/mode`) === 'unresolved') await editor.commands.edit(`${body}/targets/mode`, 'explicit');
+      {workflow === 'cancel' && sourceMismatchFields.length > 0 && <div className={styles.warning}>Guest or dates differ from the source. Selecting this exact confirmation records your review of the mismatch.</div>}
+      {workflow === 'filing' && sourceMismatchFields.length > 0 && <div className={styles.warning}>Update the source guest and stay dates to the verified Infor facts, then check again before filing.</div>}
+      <div className={styles.row}><button type="button" disabled={editor.view.busy || locked || !selectable} onClick={() => void (async () => {
+        if (valueAt(editor.snapshot, `${body}/targets/mode`) !== 'explicit') await editor.commands.edit(`${body}/targets/mode`, 'explicit');
         await editor.commands.selectNative(path, observation.ref);
       })()}>
-        {selected === observation.ref ? 'Selected stay' : 'Select this stay'}
+        {selected === observation.ref ? 'Selected stay' : workflow === 'cancel' && sourceMismatchFields.length ? 'Review and select this confirmation' : 'Select this stay'}
       </button></div>
     </div>)}
-    {!candidates.some(candidate => candidate.observation.ref === selected) && <span className={styles.hint}>Find and select an exact Infor stay before checking changes.</span>}
+    {!candidates.some(candidate => candidate.observation.ref === selected) && !currentStay &&
+      <span className={styles.hint}>Find and select an exact Infor stay before checking changes.</span>}
   </div>;
 }
 
@@ -137,7 +245,10 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
   const known = Boolean(spec || op === 'shift_dates' || op === 'shift_departure');
   const setOp = (next: string) => void editor.commands.edit(`${path}/op`, next === 'keep' ? null : next, next === 'keep' ? 'none' : 'set');
   const valuePath = `${path}/value`;
-  const title = op === 'shift_dates' ? 'Shift both dates' : op === 'shift_departure' ? 'Shift departure' : spec?.[1] || field || 'Source request';
+  const unsupportedValue = !known && original.value !== undefined && original.value !== null
+    ? Array.isArray(original.value) ? original.value.join(', ') : String(original.value) : null;
+  const title = op === 'shift_dates' ? 'Shift both dates' : op === 'shift_departure' ? 'Shift departure'
+    : spec?.[1] || unsupportedFieldLabels[field] || (field ? 'Additional requested change' : 'Source request');
   return <div className={styles.card}>
     <div className={styles.changeHeading}><strong>{title}</strong>
       {!known && <span>Needs Infor</span>}
@@ -147,7 +258,11 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
           <option value="set">Set</option>{clearable.has(field) && <option value="clear">Clear</option>}
         </> : <option value={op}>Requested</option>}
       </select></div>
-    {kept ? <span className={styles.hint}>Original request can be restored here.</span> : !known ? <div className={styles.warning}>This requested change is not connected to Amend. Complete it in Infor; it blocks this amendment until resolved.</div> :
+    {unsupportedValue !== null && <small className={styles.hint}>Requested: {unsupportedValue}</small>}
+    {kept ? <span className={styles.hint}>{known ? 'Original request can be restored here.'
+      : 'Infor will leave this field unchanged. Handle the displayed request manually if it is still essential.'}</span> : !known ? <div className={styles.warning}>
+        Nava cannot apply this additional requested change in Amend. Keep the saved stay unchanged here and handle the request manually in Infor if it remains essential.
+      </div> :
       op === 'shift_dates' || op === 'shift_departure' ? <Field label="Days to shift" path={`${path}/days`} type="number" editor={editor} compact hint="Each stay uses its own original dates." /> : <>
         {op === 'clear' ? <span className={styles.hint}>Clear this field on the selected stay.</span> : spec?.[2] === 'ages' ? <AgeInput editor={editor} path={valuePath} /> :
           spec?.[2] === 'count' ? <Count label={spec[1]} path={valuePath} editor={editor} min={field === 'adults' ? 1 : 0} max={field === 'adults' ? 16 : 9} /> :
@@ -169,17 +284,44 @@ export function AmendEditor(editor: Editor) {
   const body = `${requestPath(editor.request.id)}/body`;
   const scope = record(effectiveAt(editor.snapshot, `${body}/targets`));
   const targets = rows(scope.include), exclusions = rows(scope.exclude);
+  const scopeLocked = lockedScope(editor);
   const perPath = `${body}/perTarget`, per = rows(effectiveAt(editor.snapshot, perPath));
   const sharedPath = `${body}/sharedChanges`, shared = rows(effectiveAt(editor.snapshot, sharedPath));
   return <div className={styles.stack}>
     <Section title="Find saved stays">
       <p className={styles.hint}>Select exact Infor stays. Unmentioned fields stay unchanged. Each stay is checked and saved separately.</p>
-      {scope.mode === 'scoped_all' && <div className={styles.warning}>Identify individual stays before changing this group.</div>}
-      {exclusions.map((hint, i) => <div className={styles.hint} key={i}>Excluded: {text(hint.confirmation) || text(hint.guestName) || 'Unidentified stay'}</div>)}
+      {scopeLocked && <div className={styles.warning}>This Amend has a recorded success, failure, or uncertain result. Reconcile it before changing target scope or identity.</div>}
+      {scope.mode !== 'explicit' && targets.length > 0 && <div className={styles.row}>
+        <div className={styles.warning}>This request covers a group. Switch to its listed stays and handle each exact stay separately.</div>
+        <button type="button" disabled={editor.view.busy || scopeLocked} onClick={() => void editor.commands.edit(`${body}/targets/mode`, 'explicit')}>Use listed stays individually</button>
+      </div>}
+      {exclusions.map((hint, i) => {
+        const duplicate = targets.some(target => text(target.id) === text(hint.id) || exactConfirmation(target) && exactConfirmation(target) === exactConfirmation(hint));
+        const safelyDistinct = duplicate || targets.every(target => definitelyDistinct(target, hint));
+        return <div className={styles.card} key={text(hint.id) || i}>
+        <strong>Excluded · unchanged</strong>
+        <div className={styles.grid}>
+          <Field editor={editor} path={`${body}/targets/exclude/${i}/confirmation`} label="Confirmation or supplier reference" disabled={scopeLocked} />
+          <Field editor={editor} path={`${body}/targets/exclude/${i}/guestName`} label="Guest name" disabled={scopeLocked} />
+          <Field editor={editor} path={`${body}/targets/exclude/${i}/bookedArrival`} label="Original arrival" type="date" disabled={scopeLocked} />
+          <Field editor={editor} path={`${body}/targets/exclude/${i}/bookedDeparture`} label="Original departure" type="date" disabled={scopeLocked} />
+        </div>
+        <small className={styles.hint}>Correct missing or ambiguous identity facts above, then Find in Infor. This stay remains excluded until you explicitly include it.</small>
+        <button type="button" disabled={editor.view.busy || scopeLocked || scope.mode !== 'explicit' || !safelyDistinct}
+          onClick={() => void correctAmendScope(editor, body, targets, exclusions, hint, 'exclude').catch(() => {})}>
+          Include this exact stay in this Amend action
+        </button>
+        {!safelyDistinct && <small className={styles.warning}>This exclusion may overlap an included stay. Correct its exact confirmation or enter a different guest and fully disjoint original dates before including it.</small>}
+        </div>;
+      })}
       {targets.map((hint, i) => <div className={styles.card} key={text(hint.id) || i}>
-        <strong>Stay {i + 1}</strong><TargetSearch editor={editor} body={body} hint={hint} index={i} workflow="amend" />
+        <strong>Stay {i + 1}</strong><TargetSearch editor={editor} body={body} hint={hint} index={i} workflow="amend" locked={scopeLocked} />
+        {targets.length > 1 && <button type="button" disabled={editor.view.busy || scopeLocked || scope.mode !== 'explicit'}
+          onClick={() => void correctAmendScope(editor, body, targets, exclusions, hint, 'include').catch(() => {})}>
+          Exclude this exact stay; preserve its change details
+        </button>}
       </div>)}
-      <div className={styles.row}><button type="button" disabled={editor.view.busy} onClick={() => void editor.commands.changeRows({ kind: 'add_target', requestId: editor.request.id })}>Add stay</button>
+      <div className={styles.row}><button type="button" disabled={editor.view.busy || scopeLocked} onClick={() => void editor.commands.changeRows({ kind: 'add_target', requestId: editor.request.id })}>Add stay</button>
         <button type="button" disabled={editor.view.busy || !targets.length} onClick={() => void editor.commands.lookup()}>Find in Infor</button></div>
     </Section>
     <Section title="Changes for all included stays"><ChangeList editor={editor} path={sharedPath} label="" /></Section>
@@ -194,7 +336,7 @@ export function AmendEditor(editor: Editor) {
       const result = record(latest?.result), before = record(result.before), target = record(result.target);
       return <Section key={hintId || i} title={`Changes for ${text(hint.confirmation) || text(hint.guestName) || `stay ${i + 1}`}`}>
         {perIndex < 0 ? <div className={styles.warning}>Add this stay’s change and rate handling before checking.
-          <button type="button" disabled={editor.view.busy || !hintId} onClick={() => void editor.commands.changeRows({
+          <button type="button" disabled={editor.view.busy || scopeLocked || !hintId} onClick={() => void editor.commands.changeRows({
             kind: 'add_target', requestId: editor.request.id, entityId: hintId,
           })}>Add changes for this stay</button></div> : <div className={styles.stack}>
           <ChangeList editor={editor} path={`${root}/changes`} label="Only this stay" />

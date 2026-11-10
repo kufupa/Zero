@@ -47,7 +47,11 @@ export type ReservationPreparationView = {
   allocationId: string;
   current: boolean;
   issue?: string;
+  fields?: string[];
+  details?: Array<{path: string; code: string; expected?: number; actual?: number}>;
   price?: { averageRate?: unknown; totalRate?: unknown; currency?: unknown };
+  priceComparison?: Record<string, unknown>;
+  observedAt?: string;
 };
 
 export type ReservationFieldProjection = {
@@ -148,7 +152,7 @@ export interface ReservationWorkflowClient {
   prepare(input: ReservationCommandContext & { requestId: string; allocationId?: string }): Promise<ReservationPaneSnapshot>;
   execute(input: ReservationCommandContext & { requestId: string; allocationId?: string; idempotencyKey: string }): Promise<ReservationPaneSnapshot>;
   reconcile(input: ReservationCommandContext & { operationId: string }): Promise<ReservationPaneSnapshot>;
-  configureFiling(input: ReservationCommandContext & { requestId: string; attachmentId: string; confirmation: string;
+  configureFiling(input: ReservationCommandContext & { requestId: string; attachmentId: string; confirmation?: string; allocationTarget?: { requestId: string; allocationId: string };
     kind: 'voucher' | 'payment_proof' }): Promise<ReservationPaneSnapshot>;
   lookupServices(input: ReservationCommandContext & ReservationServiceInput & { requestId: string; serviceId?: string }): Promise<ReservationPaneSnapshot>;
   previewServices(input: ReservationCommandContext & ReservationServiceInput & { requestId: string; serviceId?: string }): Promise<ReservationPaneSnapshot>;
