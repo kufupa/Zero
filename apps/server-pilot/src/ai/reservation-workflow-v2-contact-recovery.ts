@@ -14,7 +14,8 @@ export function recoverReservationWorkflowV2Contacts(input: ReservationWorkflowV
   const covered = (path: string, alias: string) => [...Object.keys(draft.fieldOverrides), ...Object.keys(draft.staffReviews)]
     .some(key => [path, alias].some(target => key === target || key.startsWith(`${target}/`) || target.startsWith(`${key}/`)));
   for (const [requestIndex, request] of draft.proposal.content.requests.entries()) {
-    if (request.kind !== 'create' && request.kind !== 'quote' || draft.operationResults.some(row => row.requestId === request.id)) continue;
+    if (request.kind !== 'create' && request.kind !== 'quote' || draft.operationResults.some(row => row.requestId === request.id &&
+        (row.status !== 'prepared' || row.workflow !== request.kind))) continue;
     const candidates = input.extraction.requests.filter(row => row.kind === request.kind && row.requestText.sourceRefs.includes(currentRef));
     const exact = candidates.filter(row => row.id === request.id);
     const text = candidates.filter(row => normal(row.requestText.raw) === normal(request.requestText));
