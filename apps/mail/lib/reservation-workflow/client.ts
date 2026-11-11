@@ -122,7 +122,7 @@ const RECOGNIZED_NON_OK_RESPONSE_STATUSES = new Set([
 
 function isResponseContractFailure(value: unknown): boolean {
   if (!isRecord(value) || typeof value.status !== 'string') return true;
-  return value.status !== 'ok' && !RECOGNIZED_NON_OK_RESPONSE_STATUSES.has(value.status);
+  return !RECOGNIZED_NON_OK_RESPONSE_STATUSES.has(value.status);
 }
 
 function decodeDraft(result: unknown): ReservationWorkflowV2Session {

@@ -8,7 +8,6 @@ import {
   RESERVATION_WORKFLOW_V2_ERROR_PROCEDURES,
 } from '../../../server-pilot/src/ai/reservation-workflow-v2-contract.js';
 import { transportForCall } from '@/lib/mail/mail-cache-scope';
-import { NAVA_FAILURE_REPORT_CONTEXT_KEY } from '../workstation/mutations-in-flight';
 
 export const NAVA_ACTION_ID_CONTEXT_KEY = 'navaActionId';
 export const NAVA_BACKGROUND_POLL_CONTEXT_KEY = 'navaBackgroundPoll';
