@@ -207,7 +207,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         }
       } else await commands.execute();
       setChecked(null);
-    } catch (failure) { showFailure(failure); }
+    } catch (failure) { setChecked(null); showFailure(failure); }
   };
   const submit = async (action: () => Promise<void>) => {
     if (submitting.current || busy) return;
