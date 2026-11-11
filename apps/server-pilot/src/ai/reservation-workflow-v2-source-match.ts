@@ -1,5 +1,7 @@
 import type { ReservationWorkflowV2Extraction, ReservationWorkflowV2Proposal } from './reservation-workflow-v2-contract.js';
 
+const requestTextKey = (value: string) => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US');
+
 export function extractionRefsForRequest(request: ReservationWorkflowV2Extraction['requests'][number]): Set<string> {
   const refs = new Set<string>(request.requestText.sourceRefs);
   request.dates.forEach((date) => { date.arrival?.sourceRefs.forEach((ref) => refs.add(ref)); date.departure?.sourceRefs.forEach((ref) => refs.add(ref)); });
@@ -37,9 +39,9 @@ export function extractionRequestForProposal(
   const mapped = mappedId ? extraction.requests.find((candidate) => candidate.id === mappedId && candidate.kind === request.kind) : null;
   if (mapped) return mapped;
   const exactText = extraction.requests.filter((candidate) => candidate.kind === request.kind &&
-    candidate.requestText.raw.trim() === request.requestText.trim());
+    requestTextKey(candidate.requestText.raw) === requestTextKey(request.requestText));
   const proposalsWithExactText = proposalRequests.filter((candidate) => candidate.kind === request.kind &&
-    candidate.requestText.trim() === request.requestText.trim());
+    requestTextKey(candidate.requestText) === requestTextKey(request.requestText));
   if (exactText.length === 1 && proposalsWithExactText.length === 1) return exactText[0]!;
   // Shared message evidence is common when one email asks for multiple bookings.
   // After preferring an exact source-text match, a unique model-provided ID is the
@@ -49,10 +51,10 @@ export function extractionRequestForProposal(
   if (exactId.length === 1 && otherRequestsWithId.length === 1) return exactId[0]!;
   const corresponds = (candidate: ReservationWorkflowV2Proposal['content']['requests'][number],
     extracted: ReservationWorkflowV2Extraction['requests'][number]) => candidate.kind === extracted.kind &&
-    (candidate.id === extracted.id || candidate.requestText.trim() === extracted.requestText.raw.trim() ||
+    (candidate.id === extracted.id || requestTextKey(candidate.requestText) === requestTextKey(extracted.requestText.raw) ||
       [...extractionRefsForRequest(extracted)].some((ref) => candidate.sourceRefs.includes(ref)));
   const matches = extraction.requests.filter((candidate) => candidate.kind === request.kind &&
-    (candidate.requestText.raw.trim() === request.requestText.trim() ||
+    (requestTextKey(candidate.requestText.raw) === requestTextKey(request.requestText) ||
       [...extractionRefsForRequest(candidate)].some((ref) => request.sourceRefs.includes(ref))));
   if (matches.length !== 1) return null;
   const linkedProposalRequests = proposalRequests.filter((candidate) => corresponds(candidate, matches[0]!));
