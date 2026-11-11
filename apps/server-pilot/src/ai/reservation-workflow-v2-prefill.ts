@@ -1615,7 +1615,18 @@ function projectPartyRole(input: { proposal: ReservationWorkflowV2Proposal;
   const unique = new Map<string, typeof facts[number]>();
   for (const fact of facts) unique.set(normalizedFact(fact.value), fact);
   unique.delete('');
-  if (!unique.size) return;
+  if (!unique.size) {
+    if (input.role === 'organization') {
+      const agencies = input.parties.filter(party => party.role === 'agency')
+        .flatMap(party => currentClaim(party.name, input.currentRefs) ?? []);
+      for (const slot of input.slots) {
+        const existing = slot.target[slot.field];
+        if (isRecord(existing) && !existing.suggestedRef && Array.isArray(existing.candidateRefs) && !existing.candidateRefs.length &&
+            agencies.some(claim => normalizedFact(claim.value) === normalizedFact(existing.name))) slot.target[slot.field] = null;
+      }
+    }
+    return;
+  }
   const evidenceRefs = [...new Set(facts.flatMap((fact) => fact.sourceRefs))];
   if (unique.size === 1) {
     const fact = unique.values().next().value as typeof facts[number];
