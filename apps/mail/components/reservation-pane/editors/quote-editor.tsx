@@ -87,7 +87,13 @@ function quoteCurrent(editor: Editor, observation: ReturnType<typeof latestQuote
     return (!roomCodes.length || roomCodes.includes(native.roomCode)) && (!group.ratePlan || group.ratePlan === native.rateCode);
   });
 }
-function quoteBoardCode(value: unknown) {
+function quoteBoardCode(value: unknown, propertyCode: string) {
+  const label = text(value).trim().toLowerCase().replace(/\s+/gu, ' ');
+  if (propertyCode === 'HRCEN') {
+    if (label === 'room only r') return 'room_only';
+    if (label === 'bed & breakfast r') return 'bb';
+    if (['dinner bed & breakfast r', 'dinner, bed & breakfast r', 'dinner, bed, breakfast & beverage r'].includes(label)) return 'dinner_bb';
+  }
   const board = text(value).trim().toLocaleLowerCase().replace(/[,\s&-]+/gu, '_').replace(/_for_all$/u, '');
   if (['room_only', 'roomonly', 'ro'].includes(board)) return 'room_only';
   if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast', 'bed_breakfast'].includes(board)) return 'bb';
@@ -117,7 +123,7 @@ function quoteOffersCurrent(editor: Editor, observation: ReturnType<typeof lates
   return groups.every((group) => {
     const native = requested.find((row) => row.id === group.id), occupancy = record(group.occupancy);
     return native && native.arrivalDate === group.arrival && native.departureDate === group.departure &&
-      native.quantity === group.quantity && native.adults === occupancy.adults && native.board === quoteBoardCode(group.board) &&
+      native.quantity === group.quantity && native.adults === occupancy.adults && native.board === quoteBoardCode(group.board, editor.snapshot.session.draft.propertyCode) &&
       native.childrenAges instanceof Array && native.childrenAges.length === occupancy.childCount &&
       JSON.stringify(native.childrenAges) === JSON.stringify(occupancy.childAges ?? []) &&
       JSON.stringify(native.roomCodes ?? []) === JSON.stringify(group.roomCodes ?? []) &&
