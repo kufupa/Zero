@@ -98,6 +98,8 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
           invalidateReviews(path, `${alias}/shared/roomType`);
           draft.proposal.annotations.push({ path, basis: 'native_read', evidenceRefs: [currentRef, catalogue.ref] });
           draft.proposal.sourceClaims.push({ path, raw: hints[0]!.raw, sourceRefs: [currentRef] });
+          draft.proposal.issues = draft.proposal.issues.filter(issue => !(issue.kind === 'create_room_code_scope_ambiguous' &&
+            [path, `/requests/${request.id}/body/shared/roomType`].includes(issue.path ?? '')));
           draft.fieldReviewRequirements[path] = { required: true, reasons: ['Matched the requested room to the Infor catalogue; review before continuing.'],
             evidenceRefs: [currentRef, catalogue.ref] };
           paths.push(path);
