@@ -31,6 +31,29 @@ function issueText(explanation: string) {
   return explanation;
 }
 
+function issueBelongsToRequest(snapshot: ReservationPaneSnapshot, requestId: string, path?: string): boolean {
+  if (!path || path === '/') return true;
+  const parts = path.replace(/^\/proposal\/content(?=\/)/, '').split('/');
+  let key: string;
+  try { key = decodeURIComponent(parts[2] ?? ''); } catch { return false; }
+  const content = snapshot.session.draft.proposal.content;
+  const byKey = <T extends { id: string }>(rows: T[]) => rows.find(row => row.id === key) ??
+    (/^\d+$/.test(key) ? rows[Number(key)] : undefined);
+  const request = content.requests.find(row => row.id === requestId);
+  if (!request) return false;
+  if (parts[1] === 'requests') return byKey(content.requests)?.id === requestId;
+  if (parts[1] === 'services') {
+    const service = byKey(content.services);
+    return Boolean(service && (service.ownerRequestId === requestId || request.serviceRefs.includes(service.id) ||
+      service.targets.some(target => target.target.requestId === requestId)));
+  }
+  if (parts[1] === 'documents') {
+    const document = byKey(content.documents);
+    return Boolean(document && (document.ownerRequestId === requestId || request.documentRefs.includes(document.id)));
+  }
+  return false;
+}
+
 export function ReservationPane(props: ReservationPaneProps) {
   const workbench = useReservationWorkbench(props);
   const [checked, setChecked] = useState<string | null>(null);
@@ -224,10 +247,11 @@ export function ReservationPane(props: ReservationPaneProps) {
   const disabled = busy || !snapshot || workbench.blocked || workbench.conflict || sourceChanged;
   const actionLocked = snapshot?.operationResults.some(row => row.requestId === request?.id && ['succeeded', 'unknown'].includes(text(row.status))) ||
     (request?.kind === 'create' && ids.some(id => Boolean(commands.guestProfilePending(id))));
-  const scopedIssues = snapshot?.issues.filter(issue => issue.kind !== 'source_changed' && (!issue.path || !request || issue.path.startsWith(requestPath(request.id)))) ?? [];
+  const scopedIssues = snapshot?.issues.filter(issue => issue.kind !== 'source_changed' &&
+    (!request || issueBelongsToRequest(snapshot, request.id, issue.path))) ?? [];
   const allRoomsSaved = request?.kind === 'create' && ids.length > 0 && ids.every(id => snapshot?.operationResults.some(row =>
     row.workflow === 'create' && row.requestId === request.id && row.allocationId === id && row.status === 'succeeded'));
-  const isEarlierIssue = (issue: typeof scopedIssues[number]) => !issue.path || Boolean(allRoomsSaved &&
+  const isEarlierIssue = (issue: typeof scopedIssues[number]) => !issue.path || issue.path === '/' || Boolean(allRoomsSaved &&
     ['ambiguous_guest_profile', 'rate_availability_unavailable', 'mail_candidate_read_failed'].includes(issue.kind));
   const earlierIssues = scopedIssues.filter(isEarlierIssue);
   const currentIssues = scopedIssues.filter(issue => !isEarlierIssue(issue));

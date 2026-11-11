@@ -148,6 +148,7 @@ export function AddonsEditor(editor: Editor) {
       || service.targets.some(target => target.target.requestId === request.id));
   const ownershipConflict = (service: Service) => service.ownerRequestId !== null && service.ownerRequestId !== request.id
     || proposal.requests.some(row => row.id !== request.id && row.serviceRefs.includes(service.id));
+  const referenceCapacity = (service: Service) => Boolean(owner && owner.serviceRefs.length >= 100 && !owner.serviceRefs.includes(service.id));
   const guestUnknown = snapshot.session.draft.operationResults.some(row => row.workflow === 'guest_profile' && row.status === 'unknown');
   const targetLocked = (service: Service) => {
     const requests = new Set([service.ownerRequestId, ...proposal.requests.filter(row => row.serviceRefs.includes(service.id)).map(row => row.id)]);
@@ -176,7 +177,7 @@ export function AddonsEditor(editor: Editor) {
             (owner.serviceRefs.includes(service.id) || service.ownerRequestId === owner.id && !ownershipConflict(service))
             && (text(valueAt(snapshot, `/proposal/content/services/${index}/operation`)) || service.operation) === 'add' &&
             <label className={styles.label}>{owner.kind === 'create' ? 'Room' : 'Stay'} for this requested Add-On
-              <select value="" disabled={sourceChanged || editor.view.busy || !linkTargets.some(target => target.linkable) || targetLocked(service) || ownershipConflict(service)} onChange={event => {
+              <select value="" disabled={sourceChanged || editor.view.busy || !linkTargets.some(target => target.linkable) || targetLocked(service) || ownershipConflict(service) || referenceCapacity(service)} onChange={event => {
                 const targetId = event.target.value;
                 if (sourceChanged || !linkTargets.some(target => target.linkable && target.id === targetId)) return;
                 void editor.commands.edit(`/proposal/content/services/${index}/targets`, [{
@@ -185,7 +186,7 @@ export function AddonsEditor(editor: Editor) {
                   fields: {}, savedRowCandidateRef: null, previewObservationRef: null,
                 }]).catch(() => {});
               }}>
-                <option value="">{sourceChanged ? 'Review updated evidence first' : targetLocked(service) || ownershipConflict(service) ? 'Linking unavailable'
+                <option value="">{sourceChanged ? 'Review updated evidence first' : targetLocked(service) || ownershipConflict(service) || referenceCapacity(service) ? 'Linking unavailable'
                   : linkTargets.some(target => target.linkable) ? `Select a ${owner.kind === 'create' ? 'room' : 'stay'}`
                     : linkTargets.length ? 'No target available to link' : `Add a ${owner.kind === 'create' ? 'room' : 'stay'} first`}</option>
                 {linkTargets.map((target, targetIndex) => <option key={target.id} value={target.id} disabled={!target.linkable}>
@@ -197,6 +198,7 @@ export function AddonsEditor(editor: Editor) {
                 ? 'Check the unknown guest profile outcome before linking this Add-On.'
                 : 'A related Infor operation is saved or has an unknown outcome. Check any unknown outcome and handle this Add-On separately.'}</small>}
               {ownershipConflict(service) && <small className={styles.hint}>This Add-On is linked to another request. Handle it separately.</small>}
+              {referenceCapacity(service) && <small className={styles.hint}>This action has reached its Add-On limit. Handle this item separately.</small>}
               {rooms.some(room => !room.linkable) && <small className={styles.hint}>Some rooms in this draft cannot currently be linked here.</small>}
             </label>}
         </>}

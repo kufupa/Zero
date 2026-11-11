@@ -745,12 +745,17 @@ export async function withLockedV2DraftMutation(ctx: Context, input: MutationInp
 }): Promise<ReservationWorkflowV2StateResult & { createdId?: string }> {
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
   return ctx.db.transaction(async (tx) => {
+    const serviceTargetEdit = /^\/proposal\/content\/services\/[^/]+\/targets$/.test(command.fieldPath);
+    if (serviceTargetEdit) {
+      await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
+      await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
+    }
     const item = await loadItem(tx, ctx, input.workItemId, true);
     if (!item) return { status: 'not_found' as const };
     if (item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq) return { status: 'stale_revision' as const };
     const current = await buildResult(tx, ctx, item, input.source, true);
     if (current.status !== 'ok') return current;
-    if (current.sourceChanged && /^\/proposal\/content\/services\/[^/]+\/targets$/.test(command.fieldPath)) {
+    if (current.sourceChanged && serviceTargetEdit) {
       return { status: 'invalid_source' as const };
     }
     // A profile Save runs outside the database transaction. Keep the reviewed
@@ -1517,8 +1522,8 @@ function updateSeparatedQuoteMoney(current: ReservationWorkflowV2Draft, next: Re
       const otherIndexed = `/proposal/content/requests/${otherIndex}`;
       const textPath = `${otherRoot}/body/requestedText`, indexedTextPath = `${otherIndexed}/body/requestedText`;
       const priorText = effectiveDraftPath(current, textPath, indexedTextPath);
-      const textParents = [otherRoot, otherIndexed, `${otherRoot}/body`, `${otherIndexed}/body`];
-      if (Object.keys(current.fieldOverrides).some(path => textParents.includes(path))) return null;
+      const textParents = new Set([otherRoot, otherIndexed, `${otherRoot}/body`, `${otherIndexed}/body`]);
+      if (Object.keys(current.fieldOverrides).some(path => textParents.has(path))) return null;
       const hasTextOverride = [textPath, indexedTextPath].some(path => Object.hasOwn(current.fieldOverrides, path));
       if ((typeof priorText === 'string' && priorText !== other.body.requestedText) ||
           hasTextOverride && typeof priorText !== 'string') return null;
