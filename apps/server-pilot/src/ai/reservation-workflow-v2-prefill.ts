@@ -2429,8 +2429,10 @@ function projectCurrentExtraction(input: {
   proposal.sourceClaims = remappedConfirmationClaims;
   const prunedOwnerIds = new Set(prunedRequests.map((request) => request.id)
     .filter((id) => !ambiguousRequestIds.has(id)));
+  const ambiguousServiceIds = new Set<string>();
   for (const service of proposal.content.services) {
     if (service.ownerRequestId === null || !ambiguousRequestIds.has(service.ownerRequestId)) continue;
+    ambiguousServiceIds.add(service.id);
     service.ownerRequestId = null;
     addProjectionIssue(proposal, `/services/${service.id}/ownerRequestId`, 'ambiguous_request_owner_removed',
       'The service source was retained, but its owner pointed to a duplicate request ID and could not be assigned safely.',
@@ -2439,8 +2441,9 @@ function projectCurrentExtraction(input: {
   const unassignedServices: ReservationWorkflowV2Proposal['content']['services'] = [];
   proposal.content.services = proposal.content.services.filter((service) => {
     const removedOwner = service.ownerRequestId !== null && prunedOwnerIds.has(service.ownerRequestId);
-    const removedLink = removedOwner || prunedRequests.some((request) => request.serviceRefs.includes(service.id)) ||
-      service.targets.some(({ target }) => prunedOwnerIds.has(target.requestId));
+    const removedLink = removedOwner || ambiguousServiceIds.has(service.id) ||
+      prunedRequests.some((request) => request.serviceRefs.includes(service.id)) ||
+      service.targets.some(({ target }) => prunedOwnerIds.has(target.requestId) || ambiguousRequestIds.has(target.requestId));
     if (!removedLink) return true;
     const sourceRefs = service.sourceRefs.filter((ref) => currentRefs.has(ref) && knownRefs.has(ref));
     if (!sourceRefs.length) return false;
@@ -2553,10 +2556,15 @@ function projectCurrentExtraction(input: {
     addedRequests += 1;
     linkedExtractionRequests.add(extracted);
   }
+  if (unassignedServices.length && !proposal.content.requests.length) {
+    addProjectionIssue(proposal, '/', 'unassigned_source_service',
+      `An Add-On could not be safely assigned. Review the email and handle it for the correct stay${unassignedNames ? `: ${unassignedNames}` : '.'}`,
+      unassignedServices.flatMap((service) => service.sourceRefs).filter((ref) => currentRefs.has(ref) && knownRefs.has(ref)));
+  }
 
   for (const [index, request] of proposal.content.requests.entries()) {
     if (request.kind !== 'filing' || request.serviceRefs.length) continue;
-    const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction, extractionIdByProposalRequestId);
+    const extracted = linkedByRequest.get(request);
     const currentBody = (input.selection.currentBodyText ?? input.selection.bodyText).split(/^\s*(?:From:|On .+ wrote:)\s*/im)[0] ?? '';
     if (!extracted || !isOutgoingInvoiceRequest(extracted, currentRefs, currentBody)) continue;
     const linkedDocuments = proposal.content.documents.filter((document) => document.ownerRequestId === request.id || request.documentRefs.includes(document.id));
@@ -2581,11 +2589,13 @@ function projectCurrentExtraction(input: {
 
   for (const [index, request] of proposal.content.requests.entries()) {
     if (request.kind !== 'create') continue;
-    const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction, extractionIdByProposalRequestId);
+    const extracted = linkedByRequest.get(request);
     if (!extracted || !isPaymentProofOnlyCreate(extracted, currentRefs, input.evidence)) continue;
     const { body: _createBody, ...base } = request;
-    proposal.content.requests[index] = { ...base, kind: 'other',
-      body: { requestedText: request.requestText, supported: false } };
+    const corrected = { ...base, kind: 'other' as const,
+      body: { requestedText: extracted.requestText.raw.slice(0, 2000), supported: false as const } };
+    proposal.content.requests[index] = corrected;
+    linkedByRequest.set(corrected, extracted);
     addProjectionIssue(proposal, { path: `/requests/${request.id}`, kind: 'payment_proof_not_create',
       explanation: 'Payment-proof/POP material alone cannot authorize a new reservation. The source request remains a visible manual item.',
       evidenceRefs: request.sourceRefs.filter((ref) => currentRefs.has(ref)) });
