@@ -42,10 +42,10 @@ export function extractionRequestForProposal(
     requestTextKey(candidate.requestText.raw) === requestTextKey(request.requestText));
   const proposalsWithExactText = proposalRequests.filter((candidate) => candidate.kind === request.kind &&
     requestTextKey(candidate.requestText) === requestTextKey(request.requestText));
-  if (exactText.length === 1 && proposalsWithExactText.length === 1) return exactText[0]!;
-  // Shared message evidence is common when one email asks for multiple bookings.
-  // After preferring an exact source-text match, a unique model-provided ID is the
-  // next strongest link; waiting for unique evidence refs drops otherwise-filled rows.
+  if (requestTextKey(request.requestText) && exactText.length === 1 && proposalsWithExactText.length === 1) return exactText[0]!;
+  // Model IDs and shared email evidence cannot identify one of several same-kind requests.
+  if (extraction.requests.filter(candidate => candidate.kind === request.kind).length > 1 ||
+      proposalRequests.filter(candidate => candidate.kind === request.kind).length > 1) return null;
   const exactId = extraction.requests.filter((candidate) => candidate.id === request.id && candidate.kind === request.kind);
   const otherRequestsWithId = proposalRequests.filter((candidate) => candidate.id === request.id && candidate.kind === request.kind);
   if (exactId.length === 1 && otherRequestsWithId.length === 1) return exactId[0]!;
