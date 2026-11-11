@@ -956,7 +956,7 @@ function cancelExceptionEvidence(input: {
 }): string[] {
   // A confirmation in an exception can name the stay to keep. Extraction
   // hints have no include/exclude role, so do not guess that role.
-  const exception = /\b(?:except(?:ing)?|exclud(?:e|es|ed|ing)|other than|apart from|but not|all but|(?:keep|retain|preserve|leave)\s+(?:(?:the|these|those|this|our|their)\s+)?(?:bookings?|reservations?|rooms?|stays?|confirmations?|\d{6,10}-\d{1,2})|(?:do not|don't|dont|not|never|no)\b[^\n.!?]{0,50}\bcancell?(?:ation|ed|ing)?|not\s+(?:the\s+)?(?:booking\s+|reservation\s+|confirmation\s+)?\d{6,10}-\d{1,2})\b/i;
+  const exception = /\b(?:except(?:ing|ions?)?|exclud(?:e|es|ed|ing)|other than|apart from|but not|all but|(?:keep|retain|preserve|leave)\s+(?:(?:the|these|those|this|our|their)\s+)?(?:bookings?|reservations?|rooms?|stays?|confirmations?|\d{6,10}-\d{1,2})|(?:do not|don't|dont|not|never|no|without)\b[^\n.!?]{0,50}\bcancell?(?:ation|ed|ing)?|not\s+(?:the\s+)?(?:booking\s+|reservation\s+|confirmation\s+)?\d{6,10}-\d{1,2}|not\s+(?:the\s+)?(?:bookings?|reservations?|rooms?|stays?|guests?|mr|mrs|ms|miss)\b|remain\s+(?:booked|active|unchanged))\b/i;
   const linked = new Set(input.sourceRefs);
   const rows = input.evidence.filter((row) => input.currentRefs.has(row.ref) && linked.has(row.ref));
   const refs = rows.filter((row) => exception.test(row.text)).map((row) => row.ref);
