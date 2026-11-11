@@ -948,6 +948,22 @@ function fallbackQuoteRoomRows(input: {
   return result;
 }
 
+function cancelExceptionEvidence(input: {
+  requestText: string;
+  sourceRefs: string[];
+  evidence: ReservationWorkflowV2Evidence[];
+  currentRefs: Set<string>;
+}): string[] {
+  // A confirmation in an exception can name the stay to keep. Extraction
+  // hints have no include/exclude role, so do not guess that role.
+  const exception = /\b(?:except(?:ing)?|exclud(?:e|es|ed|ing)|other than|apart from|but not|all but|(?:keep|retain|preserve|leave)\s+(?:(?:the|these|those|this|our|their)\s+)?(?:bookings?|reservations?|rooms?|stays?|confirmations?|\d{6,10}-\d{1,2})|(?:do not|don't|dont|not|never|no)\b[^\n.!?]{0,50}\bcancell?(?:ation|ed|ing)?|not\s+(?:the\s+)?(?:booking\s+|reservation\s+|confirmation\s+)?\d{6,10}-\d{1,2})\b/i;
+  const linked = new Set(input.sourceRefs);
+  const rows = input.evidence.filter((row) => input.currentRefs.has(row.ref) && linked.has(row.ref));
+  const refs = rows.filter((row) => exception.test(row.text)).map((row) => row.ref);
+  if (exception.test(input.requestText)) refs.push(...rows.map((row) => row.ref));
+  return [...new Set(refs)].slice(0, 100);
+}
+
 function buildFallbackProposal(input: {
   extraction: ReservationWorkflowV2Extraction | null; source: ReservationWorkflowV2Source;
   evidence: ReservationWorkflowV2Evidence[]; reason: string;
@@ -1030,7 +1046,9 @@ function buildFallbackProposal(input: {
       const targetRefs = [...new Set([...(arrival?.sourceRefs ?? []), ...(departure?.sourceRefs ?? []),
         ...guestClaims.flatMap((claim) => claim.sourceRefs), ...request.confirmationHints.flatMap((hint) => hint.sourceRefs)])]
         .filter((ref) => knownRefs.has(ref)).slice(0, 100);
-      const include = request.kind === 'cancel' && request.dates.length <= 1 && confirmations.length <= 1 && hasSourceHint
+      const hasException = request.kind === 'cancel' && cancelExceptionEvidence({ requestText: request.requestText.raw,
+        sourceRefs: request.requestText.sourceRefs, evidence: input.evidence, currentRefs }).length > 0;
+      const include = request.kind === 'cancel' && !hasException && request.dates.length <= 1 && confirmations.length <= 1 && hasSourceHint
         ? [{ id: stableId(id, 'fallback_target'), ...(confirmations[0] ? { confirmation: confirmations[0] } : {}),
           ...(guestName ? { guestName } : {}), ...(bookedArrival ? { bookedArrival } : {}),
           ...(bookedDeparture ? { bookedDeparture } : {}), candidateRefs: [], suggestedRef: null, sourceRefs: targetRefs }]
@@ -3284,6 +3302,35 @@ function addUnresolvedTargetHints(
     evidenceRefs: [...new Set(issueRefs)].slice(0, 100) });
 }
 
+function holdAmbiguousCancelTargets(input: {
+  proposal: ReservationWorkflowV2Proposal;
+  request: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'cancel' }>;
+  exceptionRefs: string[];
+}): void {
+  const { proposal, request, exceptionRefs } = input;
+  const targets = request.body.targets;
+  const excluded = new Set(targets.exclude.flatMap((target) => target.confirmation?.trim() ? [target.confirmation.trim()] : []));
+  const removed = targets.include.filter((target) => exceptionRefs.length > 0 ||
+    Boolean(target.confirmation && excluded.has(target.confirmation.trim())));
+  if (!exceptionRefs.length && !removed.length) return;
+
+  const retainedIds = new Set(targets.exclude.map((target) => target.id));
+  const removedIds = new Set(removed.map((target) => target.id).filter((id) => !retainedIds.has(id)));
+  targets.include = targets.include.filter((target) => !removed.includes(target));
+  targets.mode = 'unresolved';
+  for (const service of proposal.content.services) {
+    service.targets = service.targets.filter(({ target }) => target.kind !== 'saved_target' ||
+      target.requestId !== request.id || !removedIds.has(target.hintId));
+  }
+  for (const document of proposal.content.documents) {
+    document.targetRefs = document.targetRefs.filter((target) => target.kind !== 'saved_target' ||
+      target.requestId !== request.id || !removedIds.has(target.hintId));
+  }
+  addProjectionIssue(proposal, `/proposal/content/requests/${encodeURIComponent(request.id)}/body/targets/include`, 'cancel_target_scope_ambiguous',
+    'The cancellation contains an exception or conflicting inclusion and exclusion. Review the source and select the stays to cancel; existing exclusions are retained.',
+    [...new Set([...exceptionRefs, ...removed.flatMap((target) => target.sourceRefs)])].slice(0, 100));
+}
+
 function addCreateExistingReferenceGuard(input: {
   proposal: ReservationWorkflowV2Proposal;
   requestIndex: number;
@@ -3362,6 +3409,12 @@ function addRequestConfirmationSafety(input: {
     if (request.kind !== 'create' && request.kind !== 'amend' && request.kind !== 'cancel') continue;
     const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction,
       input.extractionIdByProposalRequestId);
+    const exceptionRefs = request.kind === 'cancel' ? cancelExceptionEvidence({
+      requestText: `${request.requestText}\n${extracted?.requestText.raw ?? ''}`,
+      sourceRefs: [...request.sourceRefs, ...(extracted?.requestText.sourceRefs ?? [])],
+      evidence: input.evidence, currentRefs: input.currentRefs,
+    }) : [];
+    if (request.kind === 'cancel') holdAmbiguousCancelTargets({ proposal, request, exceptionRefs });
     if (extracted) {
       const allowedRefs = request.kind === 'amend' || request.kind === 'cancel' ? input.admittedRefs : input.currentRefs;
       const hints = exactConfirmationHints(extracted, allowedRefs);
@@ -3395,7 +3448,12 @@ function addRequestConfirmationSafety(input: {
         addCreateExistingReferenceGuard({ proposal, requestIndex, hints: relevantHints });
         continue;
       }
-      addUnresolvedTargetHints(proposal, requestIndex, extracted, hints);
+      if (request.kind !== 'cancel' || !exceptionRefs.length) {
+        const excluded = request.kind === 'cancel'
+          ? new Set(request.body.targets.exclude.flatMap((target) => target.confirmation?.trim() ? [target.confirmation.trim()] : []))
+          : new Set<string>();
+        addUnresolvedTargetHints(proposal, requestIndex, extracted, hints.filter((hint) => !excluded.has(hint.value)));
+      }
       continue;
     }
     // No unambiguous link: only requests citing the exact confirmation evidence receive a review guard.
