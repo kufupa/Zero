@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 
 const nonFailures = new Set([
   'ok', 'ready', 'complete', 'prepared', 'succeeded', 'already_succeeded', 'priced', 'linked', 'verified',
@@ -6,6 +7,7 @@ const nonFailures = new Set([
   'queued', 'running', 'pending', 'idle', 'superseded', 'accepted', 'at_boundary', 'skipped',
   'not_applicable', 'not_requested',
 ]);
+const recentPollFailures = new Map<string, number>();
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -29,7 +31,7 @@ function failure(value: unknown) {
   }) : [];
   const notes = record(row?.coverage)?.notes;
   return { status, issue: label(row?.issue ?? (Array.isArray(notes) ? notes[0] : undefined), 200),
-    kind: label(row?.kind, 80), requestId: label(row?.requestId, 80),
+    kind: label(row?.kind, 80), key: label(row?.key, 200), requestId: label(row?.requestId, 80),
     allocationId: label(row?.allocationId, 80), ...(fields.length ? { fields } : {}), ...(details.length ? { details } : {}) };
 }
 
@@ -47,11 +49,22 @@ export function logReservationWorkflowFailure(input: {
   const serviceObservations = input.path.endsWith('lookupServices') && Array.isArray(response?.observations)
     ? response.observations.map(failure) : [];
   const outcomes = [failure(response), ...(Array.isArray(response?.lookups) ? response.lookups.map(failure) : []),
+    ...(Array.isArray(response?.quotes) ? response.quotes.map(failure) : []),
+    ...(Array.isArray(prefill?.nativeChecks) ? prefill.nativeChecks.map(failure) : []),
     ...serviceObservations,
     ...(prefill?.status === 'failed' || draft?.status === 'prefill_failed' ? [{ status: 'prefill_failed' }] : [])]
     .filter((row) => row !== undefined).slice(0, 32);
   if (!input.error && outcomes.length === 0 && draftErrors.length === 0) return;
   const raw = record(input.rawInput), source = record(raw?.source);
+  const workItemId = label(raw?.workItemId);
+  if (input.path.endsWith('.get') && !input.error && workItemId) {
+    const key = createHash('sha256').update(JSON.stringify([workItemId, raw?.expectedRevision, raw?.expectedSeq,
+      outcomes, draftErrors])).digest('hex');
+    const now = Date.now();
+    if (now - (recentPollFailures.get(key) ?? 0) < 60_000) return;
+    if (recentPollFailures.size >= 1000) recentPollFailures.delete(recentPollFailures.keys().next().value!);
+    recentPollFailures.set(key, now);
+  }
   const validation = input.error?.cause instanceof z.ZodError
     ? input.error.cause.issues.slice(0, 32).map((issue) => ({ code: issue.code,
       path: issue.path.map((segment) => label(String(segment), 100) ?? '?').join('.') })) : undefined;
@@ -61,7 +74,7 @@ export function logReservationWorkflowFailure(input: {
     at: new Date().toISOString(), action: input.path, userId: label(input.userId), mailboxId: label(input.transportId),
     serverBuild: serverBuild && /^[a-f0-9]{40}$/.test(serverBuild) ? serverBuild : undefined,
     correlationId: correlationId.success ? correlationId.data : undefined,
-    workItemId: label(raw?.workItemId), messageId: label(source?.messageId), requestId: label(raw?.requestId, 80),
+    workItemId, messageId: label(source?.messageId), requestId: label(raw?.requestId, 80),
     sourceHash: typeof source?.sourceHash === 'string' && /^[a-f0-9]{64}$/.test(source.sourceHash) ? source.sourceHash : undefined,
     allocationId: label(raw?.allocationId, 80), operationId: label(raw?.operationId),
     revision: typeof raw?.expectedRevision === 'number' ? raw.expectedRevision : undefined,
