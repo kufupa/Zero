@@ -66,6 +66,7 @@ export const WORK_EVENT_TYPES = [
   'hms.lookup.started',
   'hms.lookup.finished',
   'item.dismissed',
+  'pane.error',
   'note.staff',
   'admin_review',
   'history.undo',
@@ -91,6 +92,7 @@ export const TELEMETRY_EVENT_TYPES = [
   'hms.lookup.started',
   'hms.lookup.finished',
   'item.dismissed',
+  'pane.error',
 ] as const;
 /**
  * work_event field path of the quote follow-up suggestion as a whole (R10). Not a stay path, so the field-event route

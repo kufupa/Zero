@@ -26,10 +26,11 @@ import {
   PANE_ACTION_BLOCKS,
   PANE_ACTION_FIELDS,
   PANE_ACTION_KINDS,
-  PANE_ACTION_TYPES,
+  PANE_ACTION_STANDARD_TYPES,
   maskStaffNote,
   recordPaneActions,
 } from '../../ai/work-events.js';
+import { PANE_ERROR_CLASSES, PANE_ERROR_CODES, RESERVATION_WORKFLOW_V2_ERROR_PROCEDURES } from '../../ai/reservation-workflow-v2-contract.js';
 import type { MailKind } from '../../ai/extraction/schema.js';
 import { recordFinalQuoteOutcome } from '../../ai/quote-outcomes.js';
 import {
@@ -56,11 +57,10 @@ const adminReviewInput = z
   })
   .strict();
 
-// Pane action telemetry (B1): small enums and numbers only, and the type list is the allowlist. Field and approval
-// events never reach this route.
-const paneActionEvent = z
+// Pane action telemetry accepts bounded allowlisted values only; field and approval events never reach this route.
+const paneStandardActionEvent = z
   .object({
-    type: z.enum(PANE_ACTION_TYPES),
+    type: z.enum(PANE_ACTION_STANDARD_TYPES),
     ms: z.number().int().min(0).max(86_400_000).optional(),
     surface: z.enum(['outlook', 'web']).optional(),
     kind: z.enum(PANE_ACTION_KINDS).optional(),
@@ -76,6 +76,19 @@ const paneActionEvent = z
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['field'], message: 'Field is only for contact copy.' });
     }
   });
+const paneErrorActionEvent = z.object({
+  type: z.literal('pane.error'),
+  procedure: z.enum(RESERVATION_WORKFLOW_V2_ERROR_PROCEDURES),
+  actionId: z.string().uuid(),
+  errorClass: z.enum(PANE_ERROR_CLASSES),
+  errorCode: z.enum(PANE_ERROR_CODES).optional(),
+  metadataParseFailed: z.boolean(),
+  surface: z.enum(['outlook', 'web']).optional(),
+  sourceMessageId: z.string().min(1).max(160).regex(/^[A-Za-z0-9_-]+$/).optional(),
+  requestId: z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/).optional(),
+  allocationId: z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/).optional(),
+}).strict();
+const paneActionEvent = z.union([paneStandardActionEvent, paneErrorActionEvent]);
 
 const quoteOutcomeInput = z.object({
   sourceMessageId: z.string().min(1).max(998), replyHtml: z.string().max(400_000), insertedAt: z.string().datetime(),

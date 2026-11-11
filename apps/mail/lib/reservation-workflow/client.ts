@@ -1,6 +1,12 @@
 import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Draft, type ReservationWorkflowV2Source } from '../../../server-pilot/src/ai/reservation-workflow-v2-contract.js';
 import type { RowChange } from './views';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
+import {
+  paneSurfaceForFailureEvent,
+  reservationActionIdForInput,
+  type PaneFailureEvent,
+} from './failure-reporting-link';
+import { NAVA_FAILURE_REPORT_CONTEXT_KEY } from '../workstation/mutations-in-flight';
 import type {
   ReservationCommandContext,
   ReservationGuestProfileOptionField,
@@ -23,12 +29,16 @@ type ItemInput = {
   expectedSeq: number;
 };
 type StateResult = { status: string; draft?: unknown; revision?: number; revisionHead?: number; seq?: number; preparationViews?: unknown };
-type MailboxCallOptions = NonNullable<ReturnType<typeof inMailbox>>;
+type MailboxCallOptions = { context: { activeTransportId: string; navaBackgroundPoll?: true; navaFailureReport?: true } };
 type QueryProcedure<I> = { query(input: I, options?: MailboxCallOptions): Promise<unknown> };
 type MutationProcedure<I> = { mutate(input: I, options?: MailboxCallOptions): Promise<unknown> };
+type RecordActionsMutation = {
+  mutate(input: { workItemId: string; events: PaneFailureEvent[] }, options?: MailboxCallOptions): Promise<unknown>;
+};
 
 /** Narrow structural type for the published v2 router; no legacy quote/session DTOs cross this boundary. */
 export type ReservationWorkflowV2TrpcClient = {
+  workItems?: { recordActions?: RecordActionsMutation };
   reservationWorkflowV2: {
     ensure: MutationProcedure<{ internetMessageId?: string | null; source: ReservationWorkflowV2Source; mode?: 'initialize' | 'prefill' }>;
     prefill: MutationProcedure<ItemInput>;
@@ -82,10 +92,12 @@ function itemInput(context: ReservationCommandContext): ItemInput {
   };
 }
 
-function mailboxOptions(source: ReservationSourceContext): MailboxCallOptions {
+function mailboxOptions(source: ReservationSourceContext, backgroundPoll = false): MailboxCallOptions {
   const options = inMailbox(source.mailboxId);
   if (!options) throw new Error('The selected Nava mailbox is unavailable; reopen this email before continuing.');
-  return options;
+  return backgroundPoll
+    ? { context: { ...options.context, navaBackgroundPoll: true } }
+    : options;
 }
 
 function errorFor(result: StateResult): Error {
@@ -102,6 +114,15 @@ function errorFor(result: StateResult): Error {
     invalid_state: 'The saved reservation draft is not readable by this version.',
   };
   return new Error(messages[result.status] ?? `Reservation service: ${detail}.`);
+}
+
+const RECOGNIZED_NON_OK_RESPONSE_STATUSES = new Set([
+  'not_found', 'invalid_source', 'wrong_property', 'invalid_state', 'stale_revision', 'invalid_path', 'invalid_value', 'skipped',
+]);
+
+function isResponseContractFailure(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.status !== 'string') return true;
+  return !RECOGNIZED_NON_OK_RESPONSE_STATUSES.has(value.status);
 }
 
 function decodeDraft(result: unknown): ReservationWorkflowV2Session {
@@ -647,12 +668,57 @@ function requestOwnsPath(snapshot: ReservationPaneSnapshot, path: string): boole
     || serviceOwnerForPath(snapshot, path) !== null || filingDocumentOwnerForPath(snapshot, path) !== null;
 }
 
+function reportClientContractFailure(
+  trpcClient: ReservationWorkflowV2TrpcClient,
+  procedure: 'ensure' | 'get',
+  input: unknown,
+  workItemId: string | undefined,
+  source: ReservationSourceContext,
+): void {
+  try {
+    const recordActions = trpcClient.workItems?.recordActions;
+    const actionId = reservationActionIdForInput(input);
+    const mailbox = inMailbox(source.mailboxId);
+    if (!recordActions || !actionId || !mailbox || !workItemId ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(workItemId)) return;
+    const sourceInput = isRecord(input) && isRecord(input.source) ? input.source : null;
+    const rawSourceMessageId = sourceInput?.messageId;
+    const sourceMessageId = typeof rawSourceMessageId === 'string' && /^[A-Za-z0-9_-]{1,160}$/.test(rawSourceMessageId)
+      ? rawSourceMessageId
+      : undefined;
+    const surface = paneSurfaceForFailureEvent();
+    const event: PaneFailureEvent = {
+      type: 'pane.error',
+      procedure,
+      actionId,
+      errorClass: 'client',
+      metadataParseFailed: !sourceMessageId,
+      ...(surface ? { surface } : {}),
+      ...(sourceMessageId ? { sourceMessageId } : {}),
+    };
+    void Promise.resolve(recordActions.mutate({ workItemId, events: [event] }, {
+      context: { ...mailbox.context, [NAVA_FAILURE_REPORT_CONTEXT_KEY]: true },
+    })).catch(() => undefined);
+  } catch {
+    // A malformed client response or failed telemetry must not replace the original decode error.
+  }
+}
+
 /** Typed adapter to reservationWorkflowV2. All mutations refresh the single canonical server draft. */
 export function createTrpcReservationWorkflowClient<T extends ReservationWorkflowV2TrpcClient>(trpcClient: T): ReservationWorkflowClient {
   const api = trpcClient.reservationWorkflowV2;
-  const load = async (input: ItemInput, source: ReservationSourceContext) => projectReservationSession(decodeDraft(await api.get.query({
-    workItemId: input.workItemId, source: input.source, expectedRevision: input.expectedRevision, expectedSeq: input.expectedSeq,
-  }, mailboxOptions(source))));
+  const load = async (input: ItemInput, source: ReservationSourceContext, backgroundPoll = false) => {
+    const queryInput = {
+      workItemId: input.workItemId, source: input.source, expectedRevision: input.expectedRevision, expectedSeq: input.expectedSeq,
+    };
+    const raw = await api.get.query(queryInput, mailboxOptions(source, backgroundPoll));
+    try {
+      return projectReservationSession(decodeDraft(raw));
+    } catch (error) {
+      if (isResponseContractFailure(raw)) reportClientContractFailure(trpcClient, 'get', queryInput, input.workItemId, source);
+      throw error;
+    }
+  };
   const refreshAfterStale = async (input: ItemInput, source: ReservationSourceContext, result: unknown) => {
     if (!isRecord(result) || result.status !== 'stale_revision') return;
     throw new ReservationWorkflowStaleRevisionError(await load(input, source));
@@ -691,9 +757,19 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
   return {
     async ensure({ source, mode }) {
       const wire = apiSource(source);
-      return projectReservationSession(decodeDraft(await api.ensure.mutate({
+      const queryInput = {
         ...(source.internetMessageId ? { internetMessageId: source.internetMessageId } : {}), source: wire, ...(mode ? { mode } : {}),
-      }, mailboxOptions(source))));
+      };
+      const raw = await api.ensure.mutate(queryInput, mailboxOptions(source));
+      try {
+        return projectReservationSession(decodeDraft(raw));
+      } catch (error) {
+        const rawWorkItemId = isRecord(raw) && isRecord(raw.draft) && typeof raw.draft.workItemId === 'string'
+          ? raw.draft.workItemId
+          : undefined;
+        if (isResponseContractFailure(raw)) reportClientContractFailure(trpcClient, 'ensure', queryInput, rawWorkItemId, source);
+        throw error;
+      }
     },
     prefill(command) { return refreshAfter(api.prefill, itemInput(command), command.source); },
     addAction(command) { return refreshAfter(api.addAction, { ...itemInput(command), kind: command.kind }, command.source); },
@@ -725,7 +801,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       return load(input, command.source);
     },
     reviewScope(command) { return refreshAfter(api.reviewScope, { ...itemInput(command), requestId: command.requestId, scope: command.scope, ids: command.ids }, command.source); },
-    get(command) { return load(itemInput(command), command.source); },
+    get(command) { return load(itemInput(command), command.source, command.backgroundPoll); },
     reconcileSource(command) { return refreshAfter(api.reconcileSource, { ...itemInput(command), confirmed: true }, command.source); },
     async edit(command: ReservationEditCommand) {
       const input = { ...itemInput(command), fieldPath: command.fieldPath,

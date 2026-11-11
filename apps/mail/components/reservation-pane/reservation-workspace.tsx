@@ -106,7 +106,7 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
     let live = true;
     const timer = setTimeout(() => {
       if (++refreshCount.current > 900) { setLoadError('Prefill is still processing. Reopen this email to check progress; your draft is retained.'); return; }
-      void client.get({ source, snapshot }).then(next => {
+      void client.get({ source, snapshot, backgroundPoll: true }).then(next => {
         if (live && activeSource.current === key && snapshotMatchesSource(next, source))
           setBoundSnapshot(bound => bound?.key === key && bound.value === snapshot ? { key, value: next } : bound);
       }).catch(() => {

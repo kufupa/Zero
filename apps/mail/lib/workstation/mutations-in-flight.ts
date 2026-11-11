@@ -3,6 +3,7 @@ import { observable } from '@trpc/server/observable';
 import type { AppRouter } from '@zero/server/trpc';
 
 let inFlight = 0;
+export const NAVA_FAILURE_REPORT_CONTEXT_KEY = 'navaFailureReport';
 
 /** tRPC mutations started and not yet settled. The pane will not reload while this is above zero. */
 export function mutationsInFlight(): number {
@@ -19,14 +20,14 @@ export function endMutation(): void {
 }
 
 /**
- * Counts each tRPC mutation from start until it settles, errors or is cancelled. Every
+ * Counts each business tRPC mutation from start until it settles, errors or is cancelled. Every
  * pane write (quote prep, booking, stay lookup, cancel, PDF) goes through the shared client,
- * so one link covers them all. Queries are read-only and are not counted.
+ * so one link covers them all. Best-effort failure reports are excluded; queries are read-only.
  */
 export const countMutationsLink: TRPCLink<AppRouter> = () => {
   return ({ op, next }) =>
     observable((observer) => {
-      if (op.type !== 'mutation') return next(op).subscribe(observer);
+      if (op.type !== 'mutation' || op.context[NAVA_FAILURE_REPORT_CONTEXT_KEY] === true) return next(op).subscribe(observer);
       inFlight += 1;
       let settled = false;
       const settle = () => {
