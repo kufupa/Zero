@@ -954,7 +954,7 @@ function buildFallbackProposal(input: {
       const bookedArrival = isoDay(arrivalValue) ? arrivalValue : undefined;
       const bookedDeparture = isoDay(departureValue) ? departureValue : undefined;
       const guestName = guestNames.length === 1 ? guestNames[0] : undefined;
-      const hasSourceHint = bookedArrival || bookedDeparture || guestName;
+      const hasSourceHint = bookedArrival || bookedDeparture || guestName || confirmations.length === 1;
       const targetRefs = [...new Set([...(arrival?.sourceRefs ?? []), ...(departure?.sourceRefs ?? []),
         ...guestClaims.flatMap((claim) => claim.sourceRefs), ...request.confirmationHints.flatMap((hint) => hint.sourceRefs)])]
         .filter((ref) => knownRefs.has(ref)).slice(0, 100);
