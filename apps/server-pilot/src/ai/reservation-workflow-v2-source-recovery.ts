@@ -9,9 +9,12 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
   if (!input.extraction || input.extractionGenerationId !== input.generationId ||
       !['complete', 'superseded'].includes(input.prefill?.status ?? '')) return null;
   const currentRef = `src_${createHash('sha256').update(`${input.source.messageId}\u001fmessage\u001f${input.source.messageId}`).digest('hex').slice(0, 12)}`;
-  if (!input.observations.some(row => row.kind === 'source' && row.generationId === input.generationId &&
+  const sourceObservations = input.observations.filter(row => row.kind === 'source' && row.generationId === input.generationId &&
       row.sourceMessageId === input.source.messageId && row.propertyCode === input.propertyCode &&
-      ['complete', 'partial'].includes(row.status) && row.sourceRefs.includes(currentRef))) return null;
+      ['complete', 'partial'].includes(row.status) && row.sourceRefs.includes(currentRef));
+  if (!sourceObservations.length) return null;
+  const admittedRefs = new Set(sourceObservations.flatMap(row => row.sourceRefs));
+  const sourceComplete = sourceObservations.some(row => row.status === 'complete' && row.coverage.complete);
   const draft = structuredClone(input), paths: string[] = [];
   const normal = (value: unknown) => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US') : '';
   const covered = (path: string, alias: string) => [...Object.keys(draft.fieldOverrides), ...Object.keys(draft.staffReviews)]
@@ -54,10 +57,10 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
         for (const key of Object.keys(draft.staffReviews)) if (overlaps(key, path, alias)) delete draft.staffReviews[key];
       };
       const agencyClaims = extracted.parties.filter(row => row.role === 'agency' && row.name.sourceRefs.includes(currentRef));
-      const organizationClaims = extracted.parties.filter(row => row.role === 'organization' && row.name.sourceRefs.includes(currentRef));
+      const organizationClaims = extracted.parties.filter(row => row.role === 'organization' && row.name.sourceRefs.some(ref => admittedRefs.has(ref)));
       for (const slot of bookingSlots) {
         const organization = slot.target.organization;
-        if (!organizationClaims.length && organization && organization.kind !== 'none' && organization.name &&
+        if (sourceComplete && !organizationClaims.length && organization && organization.kind !== 'none' && organization.name &&
             !organization.suggestedRef && !organization.candidateRefs.length &&
             agencyClaims.some(row => normal(row.name.value) === normal(organization.name)) &&
             !bookingCovered(`${slot.path}/organization`, `${slot.alias}/organization`)) {
@@ -82,10 +85,12 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
           !bookingCovered(`${slot.path}/roomType`, `${slot.alias}/roomType`))) {
         const catalogues = draft.observations.filter(row => row.kind === 'rate_availability' &&
           row.generationId === draft.generationId && row.sourceMessageId === draft.source.messageId &&
-          row.propertyCode === draft.propertyCode && row.criteria.workflow === 'create' && row.criteria.requestId === request.id &&
-          row.criteria.catalogueKind === 'room_type' && request.body.allocations.some((allocation, index) =>
-            row.criteria.allocationId === allocation.id && Array.isArray(row.criteria.fieldPaths) &&
-            row.criteria.fieldPaths.includes(`${root}/allocations/${index}/overrides/roomType`)));
+          row.propertyCode === draft.propertyCode && row.criteria.requestId === request.id && row.criteria.catalogueKind === 'room_type' &&
+          Array.isArray(row.criteria.fieldPaths) && (
+            row.criteria.workflow === 'create' && request.body.allocations.some((allocation, index) =>
+              row.criteria.allocationId === allocation.id && (row.criteria.fieldPaths as unknown[]).includes(`${root}/allocations/${index}/overrides/roomType`)) ||
+            row.criteria.workflow === 'create_catalogue' && row.criteria.sourceHash === draft.source.sourceHash &&
+              bookingSlots.some(slot => (row.criteria.fieldPaths as unknown[]).includes(`${slot.path}/roomType`))));
         const catalogue = catalogues.sort((left, right) => Date.parse(right.observedAt) - Date.parse(left.observedAt))[0];
         const candidates = catalogue?.status === 'complete' && catalogue.coverage.complete && Array.isArray(catalogue.result.candidates) ? catalogue.result.candidates.flatMap(value => {
           const parsed = roomCandidateSchema.safeParse(value);
