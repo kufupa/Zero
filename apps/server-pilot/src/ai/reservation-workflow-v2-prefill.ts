@@ -3184,9 +3184,8 @@ function projectCurrentExtraction(input: {
       for (const [field, original] of [['arrival', 'bookedArrival'], ['departure', 'bookedDeparture']] as const) {
         const originalDate = target[original];
         if (!originalDate || !changes.some(change => change.op === 'set' && change.field === field && change.value === originalDate)) continue;
-        delete target[original];
         addProjectionIssue(proposal, `${path}/${original}`, 'amend_original_date_unverified',
-          `The requested new ${field} was also used as the original ${field}. The original date was left blank until staff or Infor confirms it.`, target.sourceRefs);
+          `The original ${field} matches the requested new ${field}. Check whether the original date is supported by the source; clear it if unknown.`, target.sourceRefs);
       }
     }
   }
