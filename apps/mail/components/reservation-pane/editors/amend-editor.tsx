@@ -117,6 +117,17 @@ export function TargetSearch({ editor, body, hint, index, workflow, locked = fal
   const selected = valueAt(editor.snapshot, path);
   const normalized = (value: unknown) => (workflow === 'amend' ? text(value).trim() : text(value)) || null;
   const query = (key: string) => normalized(valueAt(editor.snapshot, `${root}/${key}`));
+  const reference = query('confirmation');
+  const invalidReference = reference && !(workflow === 'amend' || workflow === 'filing'
+    ? /^\d{6,10}-\d{1,2}$/ : /^\d+-\d+$/).test(reference);
+  const perTarget = rows(effectiveAt(editor.snapshot, `${body}/perTarget`)).find(row => row.hintId === hint.id);
+  const changes = workflow === 'amend' ? [
+    ...rows(effectiveAt(editor.snapshot, `${body}/sharedChanges`)), ...rows(perTarget?.changes),
+  ] : [];
+  const repeatedDates = (['arrival', 'departure'] as const).filter(field => {
+    const original = query(field === 'arrival' ? 'bookedArrival' : 'bookedDeparture');
+    return original && changes.some(change => change.op === 'set' && change.field === field && change.value === original);
+  });
   const draft = editor.snapshot.session.draft;
   const sameName = (left: unknown, right: unknown) => typeof left === 'string' && typeof right === 'string' &&
     left.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() ===
@@ -173,11 +184,21 @@ export function TargetSearch({ editor, body, hint, index, workflow, locked = fal
   });
   return <div className={styles.stack}>
     <div className={styles.grid}>
-      <Field label="Confirmation or supplier reference" path={`${root}/confirmation`} editor={editor} review disabled={locked} />
+      <Field label="Infor confirmation" path={`${root}/confirmation`} editor={editor} review disabled={locked} />
       <Field label="Guest name" path={`${root}/guestName`} editor={editor} review disabled={locked} />
       <Field label="Original arrival" path={`${root}/bookedArrival`} type="date" editor={editor} review disabled={locked} />
       <Field label="Original departure" path={`${root}/bookedDeparture`} type="date" editor={editor} review disabled={locked} />
     </div>
+    {invalidReference && <div className={styles.warning}>This reference is not an Infor confirmation.
+      {workflow === 'amend' ? <> Clear it to search by guest name and original arrival.
+        <button type="button" disabled={locked || editor.view.busy} onClick={() => void editor.commands.edit(`${root}/confirmation`, null, 'none')}>Clear reference</button></>
+        : ' Enter the Infor confirmation to find the stay.'}
+    </div>}
+    {repeatedDates.map(field => <div className={styles.warning} key={field}>
+      Original {field} matches the requested new {field}. Clear it if the original date is unknown.
+      <button type="button" disabled={locked || editor.view.busy} onClick={() => void editor.commands.edit(
+        `${root}/${field === 'arrival' ? 'bookedArrival' : 'bookedDeparture'}`, null, 'none')}>Clear original {field}</button>
+    </div>)}
     <span className={styles.hint}>{workflow === 'cancel' || workflow === 'services' || workflow === 'filing'
       ? 'Enter the exact Infor confirmation to find this stay.' : 'Search by confirmation, or guest and original arrival.'}</span>
     {workflow === 'cancel' && currentStay && <div className={styles.card}>
@@ -293,7 +314,8 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
           spec?.[2] === 'boolean' ? <label className={styles.label}>{spec[1]}<select disabled={editor.view.busy}
             value={String(valueAt(editor.snapshot, valuePath))} onChange={event => void editor.commands.edit(valuePath, event.target.value === 'true')}>
             <option value="true">Yes</option><option value="false">No</option></select></label> :
-          spec?.[2] === 'code' ? <NativePicker label={spec[1]} path={valuePath} editor={editor} compact /> :
+          spec?.[2] === 'code' ? <NativePicker label={spec[1]} path={valuePath} editor={editor}
+            kind={field === 'roomType' ? 'room_type' : 'rate_plan'} compact /> :
           <Field label={spec?.[1] || 'Value'} path={valuePath} editor={editor} compact type={spec?.[2] === 'date' ? 'date' : spec?.[2] === 'email' ? 'email' : 'text'} />}
       </>}
   </div>;
@@ -325,7 +347,7 @@ export function AmendEditor(editor: Editor) {
         return <div className={styles.card} key={text(hint.id) || i}>
         <strong>Excluded · unchanged</strong>
         <div className={styles.grid}>
-          <Field editor={editor} path={`${body}/targets/exclude/${i}/confirmation`} label="Confirmation or supplier reference" disabled={lockedTarget(editor, text(hint.id))} />
+          <Field editor={editor} path={`${body}/targets/exclude/${i}/confirmation`} label="Infor confirmation" disabled={lockedTarget(editor, text(hint.id))} />
           <Field editor={editor} path={`${body}/targets/exclude/${i}/guestName`} label="Guest name" disabled={lockedTarget(editor, text(hint.id))} />
           <Field editor={editor} path={`${body}/targets/exclude/${i}/bookedArrival`} label="Original arrival" type="date" disabled={lockedTarget(editor, text(hint.id))} />
           <Field editor={editor} path={`${body}/targets/exclude/${i}/bookedDeparture`} label="Original departure" type="date" disabled={lockedTarget(editor, text(hint.id))} />

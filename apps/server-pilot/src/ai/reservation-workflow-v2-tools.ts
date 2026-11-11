@@ -903,23 +903,35 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;
   const request = loaded.draft.proposal.content.requests.find(row => row.id === input.requestId);
-  if (!request || !['create', 'quote'].includes(request.kind) || ctx.property.propertyCode !== 'HRCEN')
+  if (!request || !['create', 'quote', 'amend'].includes(request.kind) || ctx.property.propertyCode !== 'HRCEN')
     return { status: 'unsupported', issue: 'native_choices_not_applicable' };
   const bodyPath = ptr('proposal', 'content', 'requests', request.id, 'body');
   const path = input.nativeFieldPath ?? '';
   const body = record(effectiveSubtree(loaded.draft, request.body, bodyPath));
   const relative = path.startsWith(`${bodyPath}/`) ? path.slice(bodyPath.length + 1).split('/') : [];
-  const field = relative.at(-1) ?? '';
+  let field = relative.at(-1) ?? '';
   const kinds: Record<string, string> = { roomType: 'room_type', roomTypeForCharge: 'room_type_for_charge',
     roomCodes: 'room_type', ratePlan: 'rate_plan', reasonForStay: 'reason_for_stay', guaranteeType: 'guarantee',
     cmsMessageId: 'cms_message', sourceOfBusiness: 'source_of_business' };
   const rows = (key: string) => Array.isArray(body?.[key]) ? body[key] as unknown[] : [];
   const validIndex = (key: string) => /^\d+$/.test(relative[1] ?? '') && record(rows(key)[Number(relative[1])]) !== null;
-  const scopeValid = request.kind === 'quote'
+  let scopeValid = request.kind === 'quote'
     ? relative.length === 3 && relative[0] === 'groups' && validIndex('groups') && ['roomCodes', 'ratePlan'].includes(field)
-    : (relative.length === 2 && relative[0] === 'shared' || relative.length === 4 &&
+    : request.kind === 'create' && (relative.length === 2 && relative[0] === 'shared' || relative.length === 4 &&
       (relative[0] === 'allocations' && relative[2] === 'overrides' && validIndex('allocations') ||
        relative[0] === 'dateSections' && relative[2] === 'defaults' && validIndex('dateSections'))) && field !== 'roomCodes';
+  if (request.kind === 'amend') {
+    const index = (value: string | undefined) => value && /^\d+$/.test(value) ? Number(value) : -1;
+    const perTarget = record(rows('perTarget')[index(relative[1])]);
+    const changes = relative[0] === 'sharedChanges' ? rows('sharedChanges')
+      : Array.isArray(perTarget?.changes) ? perTarget.changes : [];
+    const changeIndex = relative[0] === 'sharedChanges' ? index(relative[1]) : index(relative[3]);
+    const change = record(changes[changeIndex]);
+    scopeValid = (relative.length === 3 && relative[0] === 'sharedChanges' ||
+      relative.length === 5 && relative[0] === 'perTarget' && relative[2] === 'changes' && perTarget !== null) &&
+      relative.at(-1) === 'value' && change?.op === 'set' && ['roomType', 'ratePlan'].includes(String(change.field));
+    field = scopeValid ? String(change?.field) : '';
+  }
   const kind = kinds[field];
   if (!scopeValid || !kind) return { status: 'needs_input', issue: 'native_choice_field_not_supported' };
   const tool = await import(new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url).href) as {
@@ -1739,14 +1751,14 @@ function reservationWorkflowV2CreatePriceComparison(draft: ReservationWorkflowV2
   };
   let nightlyRateCheck = compareAmount(nightly, native.averageRate);
   if (nightly && hasExplicitPerRoomNightlyBasis(price)) {
-    const perRoomChecks = rooms.map((room) => compareAmount(nightly, room.price?.averageRate));
-    nightlyRateCheck = perRoomChecks.includes('mismatch') ? 'mismatch' :
-      perRoomChecks.includes('unknown') ? 'unknown' : 'match';
+    const perRoomChecks = new Set(rooms.map((room) => compareAmount(nightly, room.price?.averageRate)));
+    nightlyRateCheck = perRoomChecks.has('mismatch') ? 'mismatch' :
+      perRoomChecks.has('unknown') ? 'unknown' : 'match';
   }
   const checks = { nightlyRate: nightlyRateCheck, total: compareAmount(total, native.totalRate),
     currency: currencyCheck };
-  const requestedChecks = [checks.nightlyRate, checks.total, checks.currency];
-  const status = requestedChecks.includes('mismatch') ? 'mismatch' : requestedChecks.includes('unknown') ? 'unknown' : 'match';
+  const requestedChecks = new Set([checks.nightlyRate, checks.total, checks.currency]);
+  const status = requestedChecks.has('mismatch') ? 'mismatch' : requestedChecks.has('unknown') ? 'unknown' : 'match';
   return { status, blocksGo: status !== 'match', scope: price.scope,
     ...(price.dateIndex !== undefined ? { dateIndex: price.dateIndex } : {}), requested, native, rooms, checks, sourceRefs,
     explanation: status === 'match' ? 'The fresh native HMS price matches the source-cited requested price.' :

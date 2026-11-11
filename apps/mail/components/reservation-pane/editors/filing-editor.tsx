@@ -14,6 +14,9 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
   const include = Array.isArray(scope.include) ? scope.include.map(record) : [];
   const exclude = Array.isArray(scope.exclude) ? scope.exclude.map(record) : [];
   const owner = draft.proposal.content.requests.find(row => row.id === editor.request.id);
+  const requestText = editor.request.text;
+  const outgoingInvoice = /\b(?:send|forward|provide|issue|email|e-mail|share)\b[\s\S]{0,160}\binvoices?\b|\binvoices?\b[\s\S]{0,60}\b(?:requested|required)\b/i.test(requestText) &&
+    !/\b(?:do not|don't|never)\s+(?:send|forward|provide|issue|email|e-mail|share)\b/i.test(requestText);
   const effectiveRefs = valueAt(editor.snapshot, `${requestPath(editor.request.id)}/documentRefs`);
   const refs = Array.isArray(effectiveRefs) ? effectiveRefs : owner?.documentRefs ?? [];
   const docs = draft.proposal.content.documents.filter(row => refs.includes(row.id) && row.ownerRequestId === editor.request.id);
@@ -181,6 +184,7 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
         : 'Create receipt recorded. Find stay will verify its returned confirmation in HMS.';
   return <div className={styles.stack}>
     <Section title="PDF and destination">
+      {outgoingInvoice && <div className={styles.warning}>This request asks the hotel to send an invoice. Arrange and send the invoice manually. Use Filing only if the customer also asked to file a supplied PDF.</div>}
       <p className={styles.hint}>File one admitted PDF to one exact stay. Additional files or stays need separate filing actions.</p>
       {(include.length > 1 || exclude.length > 0 || scope.mode === 'scoped_all') && <div className={styles.warning}>The source contains a broader or excluded stay scope. Resolve it as a separate one-stay action before filing.</div>}
       {docs.length > 1 && <div className={styles.warning}>This action has multiple PDFs. Choose one PDF and create a separate one-document Filing action before lookup.</div>}

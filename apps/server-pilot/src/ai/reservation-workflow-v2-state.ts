@@ -157,12 +157,12 @@ async function buildResult(db: WorkTx, ctx: Context, item: ItemRow, source: Rese
 
 export async function getReservationWorkflowV2Draft(ctx: Context, input: {
   workItemId: string; source: ReservationWorkflowV2SourceInput;
-}, options?: { allowSourceChanged?: boolean }): Promise<ReservationWorkflowV2StateResult> {
+}, options?: { allowSourceChanged?: boolean; recoverSourceFields?: boolean }): Promise<ReservationWorkflowV2StateResult> {
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
   const item = await loadItem(ctx.db, ctx, input.workItemId);
   if (!item) return { status: 'not_found' };
   const current = await buildResult(ctx.db, ctx, item, input.source, options?.allowSourceChanged);
-  if (ctx.nativeBatch || ctx.recovery || current.status !== 'ok' || current.sourceChanged ||
+  if (!options?.recoverSourceFields || ctx.nativeBatch || ctx.recovery || current.status !== 'ok' || current.sourceChanged ||
       item.revision < item.revisionHead || !recoverReservationWorkflowV2SourceFields(current.draft)) return current;
   return ctx.db.transaction(async tx => {
     await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
@@ -204,7 +204,7 @@ export async function getReservationWorkflowV2DraftForSource(ctx: Context, input
       eq(workItem.sourceMessageId, input.source.messageId), sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`))
     .orderBy(desc(workItem.updatedAt), desc(workItem.id)).limit(1);
   if (!item || !hasReservationWorkflowV2Draft(item.state as State)) return { status: 'not_found' };
-  return getReservationWorkflowV2Draft(ctx, { workItemId: item.id, source: input.source });
+  return getReservationWorkflowV2Draft(ctx, { workItemId: item.id, source: input.source }, { recoverSourceFields: true });
 }
 
 function initialKind(seed: ReservationWorkflowV2Seed): (typeof MAIL_KINDS)[number] {
@@ -760,11 +760,19 @@ export async function withLockedV2DraftMutation(ctx: Context, input: MutationInp
 }): Promise<ReservationWorkflowV2StateResult & { createdId?: string }> {
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
   return ctx.db.transaction(async (tx) => {
+    const serviceTargetEdit = /^\/proposal\/content\/services\/[^/]+\/targets$/.test(command.fieldPath);
+    if (serviceTargetEdit) {
+      await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
+      await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
+    }
     const item = await loadItem(tx, ctx, input.workItemId, true);
     if (!item) return { status: 'not_found' as const };
     if (item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq) return { status: 'stale_revision' as const };
     const current = await buildResult(tx, ctx, item, input.source, true);
     if (current.status !== 'ok') return current;
+    if (current.sourceChanged && serviceTargetEdit) {
+      return { status: 'invalid_source' as const };
+    }
     // A profile Save runs outside the database transaction. Keep the reviewed
     // allocation stable until its journal has a definitive result.
     if (current.draft.operationResults.some((row) => row.workflow === 'guest_profile' && row.status === 'unknown')) {
@@ -1147,7 +1155,10 @@ function validServiceTargetEdit(draft: ReservationWorkflowV2Draft, path: string,
     const target = (item as { target?: unknown }).target;
     if (!target || typeof target !== 'object' || Array.isArray(target)) return false;
     const ref = target as Record<string, unknown>;
-    const request = draft.proposal.content.requests.find((row) => row.id === ref.requestId && row.serviceRefs.includes(service.id));
+    const request = draft.proposal.content.requests.find((row) => row.id === ref.requestId);
+    const ownedUnlinked = request && service.ownerRequestId === request.id && !service.targets.length &&
+      request.serviceRefs.length < 100 && !draft.proposal.content.requests.some((row) => row.serviceRefs.includes(service.id));
+    if (request && !request.serviceRefs.includes(service.id) && !ownedUnlinked) return false;
     if (!request || draft.operationResults.some((row) => row.workflow !== 'guest_profile' && row.requestId === request.id &&
         (row.status === 'succeeded' || row.status === 'unknown'))) return false;
     if (ref.kind === 'allocation' && request.kind === 'create' && request.body.allocations.some((row) => row.id === ref.allocationId)) continue;
@@ -1225,6 +1236,11 @@ function applyServiceTargetEdit(draft: ReservationWorkflowV2Draft, path: string,
   if (currentArray?.state === 'set' && Array.isArray(currentArray.value)) before.content.services[index]!.targets = currentArray.value as typeof before.content.services[number]['targets'];
   const after = structuredClone(before);
   after.content.services[index]!.targets = structuredClone(override.value) as typeof after.content.services[number]['targets'];
+  const service = after.content.services[index]!;
+  const owner = after.content.requests.find((row) => row.id === service.ownerRequestId);
+  if (owner && !owner.serviceRefs.includes(service.id) && service.targets.some((row) => row.target.requestId === owner.id)) {
+    owner.serviceRefs.push(service.id);
+  }
   const remap = <T>(values: Record<string, T>) => {
     const result: Record<string, T> = {};
     for (const [key, value] of Object.entries(values)) {
@@ -1521,8 +1537,8 @@ function updateSeparatedQuoteMoney(current: ReservationWorkflowV2Draft, next: Re
       const otherIndexed = `/proposal/content/requests/${otherIndex}`;
       const textPath = `${otherRoot}/body/requestedText`, indexedTextPath = `${otherIndexed}/body/requestedText`;
       const priorText = effectiveDraftPath(current, textPath, indexedTextPath);
-      const textParents = [otherRoot, otherIndexed, `${otherRoot}/body`, `${otherIndexed}/body`];
-      if (Object.keys(current.fieldOverrides).some(path => textParents.includes(path))) return null;
+      const textParents = new Set([otherRoot, otherIndexed, `${otherRoot}/body`, `${otherIndexed}/body`]);
+      if (Object.keys(current.fieldOverrides).some(path => textParents.has(path))) return null;
       const hasTextOverride = [textPath, indexedTextPath].some(path => Object.hasOwn(current.fieldOverrides, path));
       if ((typeof priorText === 'string' && priorText !== other.body.requestedText) ||
           hasTextOverride && typeof priorText !== 'string') return null;

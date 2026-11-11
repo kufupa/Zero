@@ -307,7 +307,7 @@ export const reservationWorkflowV2Router = router({
   }),
   get: mailboxProcedure.input(reservationWorkflowV2ItemInputSchema).query(({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);
-    return withPreparation(getReservationWorkflowV2Draft(scoped, input, { allowSourceChanged: true }), scoped.propertyCode);
+    return withPreparation(getReservationWorkflowV2Draft(scoped, input, { allowSourceChanged: true, recoverSourceFields: true }), scoped.propertyCode);
   }),
   reconcileSource: mailboxProcedure.input(reservationWorkflowV2ItemInputSchema.extend({ confirmed: z.literal(true) })).mutation(({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId);

@@ -87,11 +87,17 @@ function quoteCurrent(editor: Editor, observation: ReturnType<typeof latestQuote
     return (!roomCodes.length || roomCodes.includes(native.roomCode)) && (!group.ratePlan || group.ratePlan === native.rateCode);
   });
 }
-function quoteBoardCode(value: unknown) {
-  const board = text(value).trim().toLocaleLowerCase().replace(/[\s&-]+/gu, '_');
+function quoteBoardCode(value: unknown, propertyCode: string) {
+  const label = text(value).trim().toLowerCase().replace(/\s+/gu, ' ');
+  if (propertyCode === 'HRCEN') {
+    if (label === 'room only r') return 'room_only';
+    if (label === 'bed & breakfast r') return 'bb';
+    if (['dinner bed & breakfast r', 'dinner, bed & breakfast r', 'dinner, bed, breakfast & beverage r'].includes(label)) return 'dinner_bb';
+  }
+  const board = text(value).trim().toLocaleLowerCase().replace(/[,\s&-]+/gu, '_').replace(/_for_all$/u, '');
   if (['room_only', 'roomonly', 'ro'].includes(board)) return 'room_only';
-  if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast'].includes(board)) return 'bb';
-  if (['dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_and_breakfast'].includes(board)) return 'dinner_bb';
+  if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast', 'bed_breakfast'].includes(board)) return 'bb';
+  if (['dbb', 'dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_bed_and_breakfast', 'dinner_and_breakfast'].includes(board)) return 'dinner_bb';
   return null;
 }
 function quoteOffersCurrent(editor: Editor, observation: ReturnType<typeof latestQuote>) {
@@ -117,7 +123,7 @@ function quoteOffersCurrent(editor: Editor, observation: ReturnType<typeof lates
   return groups.every((group) => {
     const native = requested.find((row) => row.id === group.id), occupancy = record(group.occupancy);
     return native && native.arrivalDate === group.arrival && native.departureDate === group.departure &&
-      native.quantity === group.quantity && native.adults === occupancy.adults && native.board === quoteBoardCode(group.board) &&
+      native.quantity === group.quantity && native.adults === occupancy.adults && native.board === quoteBoardCode(group.board, editor.snapshot.session.draft.propertyCode) &&
       native.childrenAges instanceof Array && native.childrenAges.length === occupancy.childCount &&
       JSON.stringify(native.childrenAges) === JSON.stringify(occupancy.childAges ?? []) &&
       JSON.stringify(native.roomCodes ?? []) === JSON.stringify(group.roomCodes ?? []) &&
@@ -454,9 +460,9 @@ export function QuoteEditor(editor: Editor) {
   return <div className={`${styles.editor} ${styles.compactQuote}`}>
     <Section title="Stay and rooms">
       {groups.length ? <>
-        <div className={styles.twoCol}><SharedDate editor={editor} groups={groups} bodyPath={bodyPath} field="arrival" label="Arrival" />
-          <SharedDate editor={editor} groups={groups} bodyPath={bodyPath} field="departure" label="Departure" /></div>
-        {mismatch && <p className={styles.notice}>This quote contains more than one date pair. Split it into separate quote actions; dates are never combined into one price.</p>}
+        {!mismatch && <div className={styles.twoCol}><SharedDate editor={editor} groups={groups} bodyPath={bodyPath} field="arrival" label="Arrival" />
+          <SharedDate editor={editor} groups={groups} bodyPath={bodyPath} field="departure" label="Departure" /></div>}
+        {mismatch && <p className={styles.notice}>This quote contains more than one date pair. Split it into separate quote actions to price each range.</p>}
         {mismatch && rows.length > 0 && !moneySeparated && <p className={styles.notice}>Handle shared extras separately before splitting date ranges. Save each follow-up as an Other request first.</p>}
         {mismatch && linkedAncillary && <p className={styles.notice}>Handle linked services and any filing or unverified document targets separately before splitting. Context-only PDFs stay linked to each quote action.</p>}
         {mismatch && <button type="button" className={styles.linkButton} disabled={view.busy || !splitDatesReady}
@@ -471,13 +477,16 @@ export function QuoteEditor(editor: Editor) {
             entityId: `group_${crypto.randomUUID().replaceAll('-', '')}` })}>+ Group</button></div>
       {groups.map((group, index) => {
         const groupPath = `${bodyPath}/groups/${index}`;
+        const roomSource = snapshot.session.draft.proposal.sourceClaims.find((claim) => claim.path === `${groupPath}/quantity`);
         const options = Array.isArray(result.rateOptions) ? result.rateOptions.map(record).filter((option) => option.groupId === group.id) : [];
         const scope = text(record(group.occupancy).scope);
         return <div className={styles.roomCard} key={text(group.id) || index}>
           <div className={styles.groupHeading}><strong>Room group {index + 1}</strong>
             <button type="button" className={styles.linkButton} disabled={view.busy || groups.length <= 1} onClick={() => void commands.changeRows({ kind: 'remove_quote_group',
               requestId: request.id, entityId: text(group.id) })}>Remove</button></div>
-          {mismatch && <p className={styles.note}>This group: {text(group.arrival) || 'arrival missing'} – {text(group.departure) || 'departure missing'}</p>}
+          {mismatch && <div className={styles.twoCol}><Field label="Arrival" path={`${groupPath}/arrival`} editor={editor} type="date" review />
+            <Field label="Departure" path={`${groupPath}/departure`} editor={editor} type="date" review /></div>}
+          {roomSource && <p className={styles.note}>Requested: {roomSource.raw}</p>}
           <div className={styles.twoCol}><Count label="Rooms" path={`${groupPath}/quantity`} editor={editor} min={1} max={100} review />
             <Field label="Board" path={`${groupPath}/board`} editor={editor} options={boards} review /></div>
           <Field label="Occupancy scope" path={`${groupPath}/occupancy/scope`} editor={editor} compact options={[
