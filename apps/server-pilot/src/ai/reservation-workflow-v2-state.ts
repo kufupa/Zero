@@ -9,7 +9,7 @@ import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { reservationArrivalEvidence } from './reservation-workflow-v2-evidence.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
-import { recoverReservationWorkflowV2Contacts } from './reservation-workflow-v2-contact-recovery.js';
+import { recoverReservationWorkflowV2SourceFields } from './reservation-workflow-v2-source-recovery.js';
 import { advancePaneRevision, redoWorkItemRevision, undoWorkItemRevision,
   rebaseReservationV2Path, rebaseReservationV2Observations, nativeStructureIsSafe } from './work-item-revision.js';
 import {
@@ -160,7 +160,35 @@ export async function getReservationWorkflowV2Draft(ctx: Context, input: {
 }, options?: { allowSourceChanged?: boolean }): Promise<ReservationWorkflowV2StateResult> {
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
   const item = await loadItem(ctx.db, ctx, input.workItemId);
-  return item ? buildResult(ctx.db, ctx, item, input.source, options?.allowSourceChanged) : { status: 'not_found' };
+  if (!item) return { status: 'not_found' };
+  const current = await buildResult(ctx.db, ctx, item, input.source, options?.allowSourceChanged);
+  if (ctx.nativeBatch || ctx.recovery || current.status !== 'ok' || current.sourceChanged ||
+      item.revision < item.revisionHead || !recoverReservationWorkflowV2SourceFields(current.draft)) return current;
+  return ctx.db.transaction(async tx => {
+    await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
+    await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
+    const locked = await loadItem(tx, ctx, input.workItemId, true);
+    if (!locked) return { status: 'not_found' as const };
+    const latest = await buildResult(tx, ctx, locked, input.source, options?.allowSourceChanged);
+    return recoverSourceFields(tx, locked, latest);
+  });
+}
+
+async function recoverSourceFields(tx: WorkTx, item: ItemRow,
+  current: ReservationWorkflowV2StateResult): Promise<ReservationWorkflowV2StateResult> {
+  if (current.status !== 'ok' || current.sourceChanged || item.revision < item.revisionHead) return current;
+  const recovered = recoverReservationWorkflowV2SourceFields(current.draft);
+  if (!recovered) return current;
+  const draft = { ...recovered.draft, revision: item.revision + 1 };
+  const state = { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft };
+  const advanced = advancePaneRevision({ revision: item.revision, revisionHead: item.revisionHead,
+    seq: item.revisionSeq, previousState: item.state, nextState: state, extractionId: item.extractionId });
+  await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'ai', type: 'field.edit',
+    fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:source_fields`, value: { paths: recovered.paths },
+    aiSource: RESERVATION_PREFILL_SCHEMA_VERSION, evidence: advanced.evidence });
+  await tx.update(workItem).set({ state, revision: advanced.revision, revisionHead: advanced.revisionHead,
+    revisionSeq: item.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, item.id));
+  return { status: 'ok', draft, revision: advanced.revision, revisionHead: advanced.revisionHead, seq: item.revisionSeq + 1 };
 }
 
 /** Source-keyed read lets ensure routes avoid re-running prefill for an already editable WorkItem. */
@@ -176,7 +204,7 @@ export async function getReservationWorkflowV2DraftForSource(ctx: Context, input
       eq(workItem.sourceMessageId, input.source.messageId), sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`))
     .orderBy(desc(workItem.updatedAt), desc(workItem.id)).limit(1);
   if (!item || !hasReservationWorkflowV2Draft(item.state as State)) return { status: 'not_found' };
-  return buildResult(ctx.db, ctx, { ...item, state: item.state as State }, input.source);
+  return getReservationWorkflowV2Draft(ctx, { workItemId: item.id, source: input.source });
 }
 
 function initialKind(seed: ReservationWorkflowV2Seed): (typeof MAIL_KINDS)[number] {
@@ -236,20 +264,7 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
     const existing = reservationWorkflowV2DraftOf(itemRow.state);
     if (existing) {
       const current = await buildResult(tx, ctx, itemRow, input.source, input.allowSourceChanged);
-      // Reopening must preserve the staff member's pending Redo history.
-      if (current.status !== 'ok' || current.sourceChanged || itemRow.revision < itemRow.revisionHead) return current;
-      const recovered = recoverReservationWorkflowV2Contacts(current.draft);
-      if (!recovered) return current;
-      const draft = { ...recovered.draft, revision: itemRow.revision + 1 };
-      const state = { ...itemRow.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft };
-      const advanced = advancePaneRevision({ revision: itemRow.revision, revisionHead: itemRow.revisionHead,
-        seq: itemRow.revisionSeq, previousState: itemRow.state, nextState: state, extractionId: itemRow.extractionId });
-      await tx.insert(workEvent).values({ workItemId: itemRow.id, actorKind: 'ai', type: 'field.edit',
-        fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:booker_contacts`, value: { paths: recovered.paths },
-        aiSource: RESERVATION_PREFILL_SCHEMA_VERSION, evidence: advanced.evidence });
-      await tx.update(workItem).set({ state, revision: advanced.revision, revisionHead: advanced.revisionHead,
-        revisionSeq: itemRow.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, itemRow.id));
-      return { status: 'ok' as const, draft, revision: advanced.revision, revisionHead: advanced.revisionHead, seq: itemRow.revisionSeq + 1 };
+      return recoverSourceFields(tx, itemRow, current);
     }
     if (hasReservationWorkflowV2Draft(itemRow.state)) return { status: 'invalid_state' as const };
     const evidenceHash = (await reservationArrivalEvidence(tx, input.source.messageId)).hash;

@@ -463,6 +463,9 @@ function operationNotice(result: unknown, success: string[]): string | undefined
 
 function nativeIssueText(issue: unknown): string | null {
   if (!isString(issue)) return null;
+  if (issue === 'create_input_incomplete' || issue === 'native_create_input_incomplete') {
+    return 'Complete the missing booking details and select any unresolved Infor matches before checking the booking';
+  }
   const dependencyMessages: Record<string, string> = {
     create_dependency_waiting: 'Save the linked room in Create first; Filing will then find its exact confirmation',
     create_dependency_dispatch_receipt_missing: 'The Create confirmation could not be verified. Check the Create result before filing',
