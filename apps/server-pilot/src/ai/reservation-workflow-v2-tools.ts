@@ -1751,14 +1751,14 @@ function reservationWorkflowV2CreatePriceComparison(draft: ReservationWorkflowV2
   };
   let nightlyRateCheck = compareAmount(nightly, native.averageRate);
   if (nightly && hasExplicitPerRoomNightlyBasis(price)) {
-    const perRoomChecks = rooms.map((room) => compareAmount(nightly, room.price?.averageRate));
-    nightlyRateCheck = perRoomChecks.includes('mismatch') ? 'mismatch' :
-      perRoomChecks.includes('unknown') ? 'unknown' : 'match';
+    const perRoomChecks = new Set(rooms.map((room) => compareAmount(nightly, room.price?.averageRate)));
+    nightlyRateCheck = perRoomChecks.has('mismatch') ? 'mismatch' :
+      perRoomChecks.has('unknown') ? 'unknown' : 'match';
   }
   const checks = { nightlyRate: nightlyRateCheck, total: compareAmount(total, native.totalRate),
     currency: currencyCheck };
-  const requestedChecks = [checks.nightlyRate, checks.total, checks.currency];
-  const status = requestedChecks.includes('mismatch') ? 'mismatch' : requestedChecks.includes('unknown') ? 'unknown' : 'match';
+  const requestedChecks = new Set([checks.nightlyRate, checks.total, checks.currency]);
+  const status = requestedChecks.has('mismatch') ? 'mismatch' : requestedChecks.has('unknown') ? 'unknown' : 'match';
   return { status, blocksGo: status !== 'match', scope: price.scope,
     ...(price.dateIndex !== undefined ? { dateIndex: price.dateIndex } : {}), requested, native, rooms, checks, sourceRefs,
     explanation: status === 'match' ? 'The fresh native HMS price matches the source-cited requested price.' :
