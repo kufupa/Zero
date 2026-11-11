@@ -157,12 +157,12 @@ async function buildResult(db: WorkTx, ctx: Context, item: ItemRow, source: Rese
 
 export async function getReservationWorkflowV2Draft(ctx: Context, input: {
   workItemId: string; source: ReservationWorkflowV2SourceInput;
-}, options?: { allowSourceChanged?: boolean }): Promise<ReservationWorkflowV2StateResult> {
+}, options?: { allowSourceChanged?: boolean; recoverSourceFields?: boolean }): Promise<ReservationWorkflowV2StateResult> {
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
   const item = await loadItem(ctx.db, ctx, input.workItemId);
   if (!item) return { status: 'not_found' };
   const current = await buildResult(ctx.db, ctx, item, input.source, options?.allowSourceChanged);
-  if (ctx.nativeBatch || ctx.recovery || current.status !== 'ok' || current.sourceChanged ||
+  if (!options?.recoverSourceFields || ctx.nativeBatch || ctx.recovery || current.status !== 'ok' || current.sourceChanged ||
       item.revision < item.revisionHead || !recoverReservationWorkflowV2SourceFields(current.draft)) return current;
   return ctx.db.transaction(async tx => {
     await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
@@ -204,7 +204,7 @@ export async function getReservationWorkflowV2DraftForSource(ctx: Context, input
       eq(workItem.sourceMessageId, input.source.messageId), sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`))
     .orderBy(desc(workItem.updatedAt), desc(workItem.id)).limit(1);
   if (!item || !hasReservationWorkflowV2Draft(item.state as State)) return { status: 'not_found' };
-  return getReservationWorkflowV2Draft(ctx, { workItemId: item.id, source: input.source });
+  return getReservationWorkflowV2Draft(ctx, { workItemId: item.id, source: input.source }, { recoverSourceFields: true });
 }
 
 function initialKind(seed: ReservationWorkflowV2Seed): (typeof MAIL_KINDS)[number] {
