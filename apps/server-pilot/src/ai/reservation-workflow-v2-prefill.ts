@@ -2437,6 +2437,7 @@ function projectCurrentExtraction(input: {
       service.sourceRefs.filter((ref) => currentRefs.has(ref) && knownRefs.has(ref)));
   }
   const unassignedServices: ReservationWorkflowV2Proposal['content']['services'] = [];
+  const detachedServicesByRequest = new Map<string, ReservationWorkflowV2Proposal['content']['services']>();
   proposal.content.services = proposal.content.services.filter((service) => {
     const removedOwner = service.ownerRequestId !== null && prunedOwnerIds.has(service.ownerRequestId);
     const removedLink = removedOwner || prunedRequests.some((request) => request.serviceRefs.includes(service.id)) ||
@@ -2444,6 +2445,13 @@ function projectCurrentExtraction(input: {
     if (!removedLink) return true;
     const sourceRefs = service.sourceRefs.filter((ref) => currentRefs.has(ref) && knownRefs.has(ref));
     if (!sourceRefs.length) return false;
+    for (const request of proposal.content.requests) {
+      if (service.ownerRequestId !== request.id && !request.serviceRefs.includes(service.id) &&
+          !service.targets.some(({ target }) => target.requestId === request.id)) continue;
+      const services = detachedServicesByRequest.get(request.id) ?? [];
+      services.push(service);
+      detachedServicesByRequest.set(request.id, services);
+    }
     service.ownerRequestId = null;
     service.targets = [];
     for (const request of proposal.content.requests) {
@@ -2452,6 +2460,12 @@ function projectCurrentExtraction(input: {
     unassignedServices.push(service);
     return true;
   });
+  for (const [requestId, services] of detachedServicesByRequest) {
+    const names = [...new Set(services.map((service) => service.requestedText))].filter(Boolean).slice(0, 3).join('; ').slice(0, 800);
+    addProjectionIssue(proposal, `/requests/${requestId}`, 'unassigned_source_service',
+      `An Add-On could not be safely assigned. Review the email and handle it for the correct stay${names ? `: ${names}` : '.'}`,
+      services.flatMap((service) => service.sourceRefs).filter((ref) => currentRefs.has(ref) && knownRefs.has(ref)));
+  }
   proposal.content.documents = proposal.content.documents.filter((document) => {
     if (!currentRefs.has(document.documentSourceRef)) {
       addProjectionIssue(proposal, `/documents/${document.id}`, 'prior_thread_document_pruned',
