@@ -521,12 +521,30 @@ function quoteLookupNotice(result: unknown): string | undefined {
 
 function filingLookupNotice(result: unknown): string | undefined {
   if (!isRecord(result) || !Array.isArray(result.lookups)) return undefined;
-  if (Array.isArray(result.requests) && result.requests.some((request) => isRecord(request) && request.kind === 'amend')) return undefined;
+  if (Array.isArray(result.requests) && result.requests.some((request) => isRecord(request) &&
+    (request.kind === 'amend' || request.kind === 'cancel'))) return undefined;
   const issues = result.lookups.flatMap((value) => {
     if (!isRecord(value) || value.status === 'candidate' || value.status === 'ready') return [];
     const status = isString(value.status) ? value.status.replaceAll('_', ' ') : 'unknown outcome';
     const issue = nativeIssueText(value.issue);
     return [`Filing lookup: ${issue ?? status}.`];
+  });
+  return issues.length ? issues.join(' ') : undefined;
+}
+
+function cancelLookupNotice(result: unknown): string | undefined {
+  if (!isRecord(result) || !Array.isArray(result.requests) ||
+      !result.requests.some((request) => isRecord(request) && request.kind === 'cancel') || !Array.isArray(result.lookups)) return undefined;
+  const issues = result.lookups.flatMap((value) => {
+    if (!isRecord(value) || value.status === 'found') return [];
+    const message = value.issue === 'cancel_confirmation_target_required' ? 'Choose the stay to cancel before searching.'
+      : value.issue === 'exact_confirmation_and_valid_dates_required' ? 'Enter the exact Infor confirmation and valid original dates.'
+      : value.issue === 'cancel_target_status_not_reserved' ? 'This stay is not Reserved in Infor. Check the current booking.'
+      : value.issue === 'cancel_source_hints_mismatch' ? 'Infor differs from the supplied guest or dates. Review the current stay before selecting it.'
+      : value.issue === 'cancel_target_excluded_by_scope' || value.issue === 'cancel_target_exclusion_identity_unresolved'
+        ? 'Review the included and excluded stays before searching.'
+      : 'Infor could not verify this stay. Check the booking details and find it again.';
+    return [`Cancellation lookup: ${message}`];
   });
   return issues.length ? issues.join(' ') : undefined;
 }
@@ -699,7 +717,8 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       const raw = await api.lookup.mutate(input, mailboxOptions(command.source));
       await refreshAfterStale(input, command.source, raw);
       const result = okResult(raw);
-      const notice = operationNotice(result, ['ok']) ?? quoteLookupNotice(result) ?? amendLookupNotice(result) ?? filingLookupNotice(result);
+      const notice = operationNotice(result, ['ok']) ?? quoteLookupNotice(result) ?? amendLookupNotice(result) ??
+        cancelLookupNotice(result) ?? filingLookupNotice(result);
       return { ...await load(input, command.source), ...(notice ? { serviceNotice: notice } : {}), ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
     async guestProfileOptions(command) {

@@ -939,7 +939,32 @@ function buildFallbackProposal(input: {
       })), allocations: [],
     } };
     if (request.kind === 'amend' || request.kind === 'cancel') {
-      const targets = { mode: 'unresolved' as const, include: [], exclude: [], sourceRefs: request.confirmationHints.flatMap((hint) => hint.sourceRefs) };
+      const confirmationHints = exactConfirmationHints(request, knownRefs);
+      const confirmations = [...new Set(confirmationHints.map((hint) => hint.value))];
+      const date = request.dates.length === 1 ? request.dates[0] : undefined;
+      const arrival = currentClaim(date?.arrival, currentRefs);
+      const departure = currentClaim(date?.departure, currentRefs);
+      const guestClaims = request.guests.flatMap((guest) => {
+        const name = guest.role === 'guest' ? currentClaim(guest.name, currentRefs) : undefined;
+        return name ? [name] : [];
+      });
+      const guestNames = [...new Set(guestClaims.flatMap((claim) =>
+        typeof claim.value === 'string' && claim.value.trim().length <= 300 && claim.value.trim() ? [claim.value.trim()] : []))];
+      const arrivalValue = arrival?.value, departureValue = departure?.value;
+      const bookedArrival = isoDay(arrivalValue) ? arrivalValue : undefined;
+      const bookedDeparture = isoDay(departureValue) ? departureValue : undefined;
+      const guestName = guestNames.length === 1 ? guestNames[0] : undefined;
+      const hasSourceHint = bookedArrival || bookedDeparture || guestName;
+      const targetRefs = [...new Set([...(arrival?.sourceRefs ?? []), ...(departure?.sourceRefs ?? []),
+        ...guestClaims.flatMap((claim) => claim.sourceRefs), ...request.confirmationHints.flatMap((hint) => hint.sourceRefs)])]
+        .filter((ref) => knownRefs.has(ref)).slice(0, 100);
+      const include = request.kind === 'cancel' && request.dates.length <= 1 && confirmations.length <= 1 && hasSourceHint
+        ? [{ id: stableId(id, 'fallback_target'), ...(confirmations[0] ? { confirmation: confirmations[0] } : {}),
+          ...(guestName ? { guestName } : {}), ...(bookedArrival ? { bookedArrival } : {}),
+          ...(bookedDeparture ? { bookedDeparture } : {}), candidateRefs: [], suggestedRef: null, sourceRefs: targetRefs }]
+        : [];
+      const targets = { mode: 'unresolved' as const, include, exclude: [], sourceRefs: request.kind === 'amend'
+        ? request.confirmationHints.flatMap((hint) => hint.sourceRefs) : targetRefs };
       return request.kind === 'amend' ? { ...base, kind: 'amend' as const, body: { targets, sharedChanges: [], perTarget: [] } }
         : { ...base, kind: 'cancel' as const, body: { targets, reason: { text: null, candidateRefs: [], suggestedRef: null }, cancellationNote: null, previewObservationRefs: [] } };
     }

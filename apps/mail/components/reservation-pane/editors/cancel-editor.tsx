@@ -122,6 +122,7 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
     && editor.snapshot.session.draft.staffReviews[String(binding.reviewFieldPath)]?.note === binding.reviewNote;
   return <div className={styles.stack}>
     <Section title="Find the stay to cancel">
+      {editor.request.text && <p className={styles.hint}>Customer request: {editor.request.text}</p>}
       <p className={styles.hint}>One exact Infor stay per cancellation. A supplier reference alone does not identify a stay.</p>
       {scopeLocked && <div className={styles.warning}>This Cancel has a recorded success, failure, or uncertain result. Reconcile it before changing target scope or identity.</div>}
       {include.length > 1 && <div className={styles.warning}>Each Cancel action handles one exact stay so its reason, policy, penalty and staff review match that stay. Split the requested stays into separate Cancel actions before checking.</div>}
