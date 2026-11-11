@@ -750,6 +750,9 @@ export async function withLockedV2DraftMutation(ctx: Context, input: MutationInp
     if (item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq) return { status: 'stale_revision' as const };
     const current = await buildResult(tx, ctx, item, input.source, true);
     if (current.status !== 'ok') return current;
+    if (current.sourceChanged && /^\/proposal\/content\/services\/[^/]+\/targets$/.test(command.fieldPath)) {
+      return { status: 'invalid_source' as const };
+    }
     // A profile Save runs outside the database transaction. Keep the reviewed
     // allocation stable until its journal has a definitive result.
     if (current.draft.operationResults.some((row) => row.workflow === 'guest_profile' && row.status === 'unknown')) {
@@ -1132,7 +1135,10 @@ function validServiceTargetEdit(draft: ReservationWorkflowV2Draft, path: string,
     const target = (item as { target?: unknown }).target;
     if (!target || typeof target !== 'object' || Array.isArray(target)) return false;
     const ref = target as Record<string, unknown>;
-    const request = draft.proposal.content.requests.find((row) => row.id === ref.requestId && row.serviceRefs.includes(service.id));
+    const request = draft.proposal.content.requests.find((row) => row.id === ref.requestId);
+    const ownedUnlinked = request && service.ownerRequestId === request.id && !service.targets.length &&
+      request.serviceRefs.length < 100 && !draft.proposal.content.requests.some((row) => row.serviceRefs.includes(service.id));
+    if (request && !request.serviceRefs.includes(service.id) && !ownedUnlinked) return false;
     if (!request || draft.operationResults.some((row) => row.workflow !== 'guest_profile' && row.requestId === request.id &&
         (row.status === 'succeeded' || row.status === 'unknown'))) return false;
     if (ref.kind === 'allocation' && request.kind === 'create' && request.body.allocations.some((row) => row.id === ref.allocationId)) continue;
@@ -1210,6 +1216,11 @@ function applyServiceTargetEdit(draft: ReservationWorkflowV2Draft, path: string,
   if (currentArray?.state === 'set' && Array.isArray(currentArray.value)) before.content.services[index]!.targets = currentArray.value as typeof before.content.services[number]['targets'];
   const after = structuredClone(before);
   after.content.services[index]!.targets = structuredClone(override.value) as typeof after.content.services[number]['targets'];
+  const service = after.content.services[index]!;
+  const owner = after.content.requests.find((row) => row.id === service.ownerRequestId);
+  if (owner && !owner.serviceRefs.includes(service.id) && service.targets.some((row) => row.target.requestId === owner.id)) {
+    owner.serviceRefs.push(service.id);
+  }
   const remap = <T>(values: Record<string, T>) => {
     const result: Record<string, T> = {};
     for (const [key, value] of Object.entries(values)) {

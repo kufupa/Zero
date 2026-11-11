@@ -172,7 +172,8 @@ export function AddonsEditor(editor: Editor) {
         </small>}
         {!service.targets.length && <>
           <div className={styles.warning}>Choose the specific room for this Add-On. No room will be charged automatically.</div>
-          {owner && ['create', 'amend', 'services'].includes(owner.kind) && owner.serviceRefs.includes(service.id)
+          {owner && ['create', 'amend', 'services'].includes(owner.kind) &&
+            (owner.serviceRefs.includes(service.id) || service.ownerRequestId === owner.id && !ownershipConflict(service))
             && (text(valueAt(snapshot, `/proposal/content/services/${index}/operation`)) || service.operation) === 'add' &&
             <label className={styles.label}>{owner.kind === 'create' ? 'Room' : 'Stay'} for this requested Add-On
               <select value="" disabled={sourceChanged || editor.view.busy || !linkTargets.some(target => target.linkable) || targetLocked(service) || ownershipConflict(service)} onChange={event => {
