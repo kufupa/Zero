@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 const nonFailures = new Set([
   'ok', 'ready', 'complete', 'prepared', 'succeeded', 'already_succeeded', 'priced', 'linked', 'verified',
+  'matches', 'found', 'candidate',
   'queued', 'running', 'pending', 'idle', 'superseded', 'accepted', 'at_boundary', 'skipped',
   'not_applicable', 'not_requested',
 ]);
