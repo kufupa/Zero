@@ -69,9 +69,10 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
           paths.push(`${slot.path}/organization`);
         }
       }
-      const hints = extracted.roomTypeHints.filter((claim, index) => typeof claim.value === 'string' && claim.sourceRefs.includes(currentRef) &&
+      const hints = extracted.roomTypeHints.filter((claim, index) => typeof claim.value === 'string' && claim.sourceRefs.some(ref => admittedRefs.has(ref)) &&
         draft.proposal.sourceClaims.some(row => row.path === `/extraction/requests/${extracted.id}/roomTypeHints/${index}` &&
-          row.raw === claim.raw && row.sourceRefs.includes(currentRef)));
+          row.raw === claim.raw && row.sourceRefs.some(ref => claim.sourceRefs.includes(ref) && admittedRefs.has(ref))));
+      const emailHint = hints.find(hint => hint.sourceRefs.includes(currentRef));
       const roomName = (value: unknown) => normal(value).replace(/\s+rooms?$/, '');
       const names = new Set(hints.map(hint => roomName(hint.value)).filter(Boolean));
       const section = request.body.dateSections.length === 1 ? request.body.dateSections[0] : undefined;
@@ -81,7 +82,7 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
         date.arrival.value === section.arrival && date.departure.value === section.departure &&
         quantity?.sourceRefs.includes(currentRef) && quantity.value === request.body.allocations.length &&
         request.body.allocations.length > 0 && request.body.allocations.every(row => row.dateSectionId === section.id);
-      if (sourceScopeMatches && names.size === 1 && bookingSlots.every(slot => slot.target.roomType == null &&
+      if (sourceComplete && sourceScopeMatches && emailHint && names.size === 1 && bookingSlots.every(slot => slot.target.roomType == null &&
           !bookingCovered(`${slot.path}/roomType`, `${slot.alias}/roomType`))) {
         const catalogues = draft.observations.filter(row => row.kind === 'rate_availability' &&
           row.generationId === draft.generationId && row.sourceMessageId === draft.source.messageId &&
@@ -102,7 +103,7 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
           request.body.shared.roomType = candidates[0]!.code;
           invalidateReviews(path, `${alias}/shared/roomType`);
           draft.proposal.annotations.push({ path, basis: 'native_read', evidenceRefs: [currentRef, catalogue.ref] });
-          draft.proposal.sourceClaims.push({ path, raw: hints[0]!.raw, sourceRefs: [currentRef] });
+          draft.proposal.sourceClaims.push({ path, raw: emailHint.raw, sourceRefs: [currentRef] });
           draft.proposal.issues = draft.proposal.issues.filter(issue => !(issue.kind === 'create_room_code_scope_ambiguous' &&
             [path, `/requests/${request.id}/body/shared/roomType`].includes(issue.path ?? '')));
           draft.fieldReviewRequirements[path] = { required: true, reasons: ['Matched the requested room to the Infor catalogue; review before continuing.'],
