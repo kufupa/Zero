@@ -178,10 +178,10 @@ function reviewAccepted(draft: ReservationWorkflowV2Draft, path: string): boolea
 
 function boardCode(value: unknown, propertyCode?: string): 'room_only' | 'bb' | 'dinner_bb' | null {
   if (typeof value !== 'string') return null;
-  const board = value.trim().toLocaleLowerCase().replace(/[\s&-]+/gu, '_');
+  const board = value.trim().toLocaleLowerCase().replace(/[,\s&-]+/gu, '_').replace(/_for_all$/u, '');
   if (['room_only', 'roomonly', 'ro'].includes(board)) return 'room_only';
-  if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast'].includes(board)) return 'bb';
-  if (['dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_and_breakfast'].includes(board)) return 'dinner_bb';
+  if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast', 'bed_breakfast'].includes(board)) return 'bb';
+  if (['dbb', 'dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_bed_and_breakfast', 'dinner_and_breakfast'].includes(board)) return 'dinner_bb';
   if (propertyCode && profileFor(propertyCode)) {
     try {
       const mapped = getProfileBoards(propertyCode)[value.trim().toLowerCase().replace(/\s+/gu, ' ')];

@@ -572,12 +572,33 @@ function amendLookupNotice(result: unknown): string | undefined {
 }
 
 function quoteOperationNotice(result: unknown, success: string[], action: string): string | undefined {
-  if (!isRecord(result)) return `${action}: unreadable native quote response.`;
+  if (!isRecord(result)) return `${action}: Infor returned an unreadable response.`;
   if (success.includes(String(result.status))) return undefined;
-  const status = isString(result.status) ? result.status.replaceAll('_', ' ') : 'unknown outcome';
-  const issue = isString(result.issue) ? result.issue.replaceAll('_', ' ') : null;
-  const fields = Array.isArray(result.fields) ? result.fields.filter(isString) : [];
-  return `${action}: ${status}${issue ? ` — ${issue}` : ''}${fields.length ? `; review ${fields.join(', ')}` : ''}.`;
+  const messages: Record<string, string> = {
+    quote_inputs_incomplete: 'Complete the quote details before checking Infor',
+    quote_requires_staff_acceptance: 'Review the quote details before continuing',
+    quote_native_scope_unsupported: 'Handle the requested details separately before continuing',
+  };
+  const issue = isString(result.issue) ? messages[result.issue] ?? nativeIssueText(result.issue)
+    : result.status === 'needs_reconcile' || result.status === 'unknown'
+      ? 'The result is uncertain. Check the recorded result before trying again' : null;
+  const labels: Record<string, string> = {
+    arrival: 'arrival date', departure: 'departure date', quantity: 'number of rooms', board: 'meal plan',
+    scope: 'occupancy per room', occupancy: 'number of children and their ages', adults: 'adults per room',
+    childCount: 'number of children', childAges: 'children’s ages', roomCodes: 'room type', ratePlan: 'rate plan',
+    salesStrategy: 'sales strategy', email: 'recipient email', attention: 'contact name', telephone: 'contact number',
+    artifacts: 'quote outputs', provisionalBookingRequested: 'quote-only choice', requestedMoney: 'extra charges',
+    agency_selection_required: 'Infor agency', company_selection_required: 'Infor company',
+  };
+  const fields = Array.isArray(result.fields) ? [...new Set(result.fields.filter(isString).map((field) => {
+    const [path, reason] = field.split(':');
+    const group = /\/groups\/(\d+)(?:\/|$)/u.exec(path ?? '');
+    const key = path?.split('/').at(-1) ?? '';
+    const label = reason === 'separate_quote_runs_required' ? 'separate date ranges'
+      : reason === 'date_range_invalid' ? 'date range' : key === 'groups' ? 'room groups' : labels[key] ?? labels[reason ?? ''] ?? 'quote details';
+    return group ? `room group ${Number(group[1]) + 1}: ${label}` : label;
+  }))] : [];
+  return `${action}: ${issue ?? 'Infor could not complete this step. Review the quote and recorded result'}${fields.length ? `. Review: ${fields.join(', ')}` : ''}.`;
 }
 
 function serviceOwnerForPath(snapshot: ReservationPaneSnapshot, path: string): string | null {

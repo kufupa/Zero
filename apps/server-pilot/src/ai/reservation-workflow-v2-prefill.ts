@@ -876,6 +876,78 @@ function seedObservation(input: {
   };
 }
 
+/** Retain source-written room rows only when every date and room count has a unique current-message match. */
+function fallbackQuoteRoomRows(input: {
+  request: ReservationWorkflowV2Extraction['requests'][number]; evidence: ReservationWorkflowV2Evidence[];
+}): Array<{ arrival: string; departure: string; quantity: number; raw: string; sourceRef: string }> | null {
+  const { request } = input;
+  if (request.dates.length < 2) return null;
+  const evidence = input.evidence.filter((row) => row.relation === 'current_message' &&
+    request.requestText.sourceRefs.includes(row.ref));
+  if (evidence.length !== 1) return null;
+  const source = evidence[0]!;
+  const normalize = (text: string) => text.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en-US');
+  const sourceDate = (raw: string, value: string) => {
+    if (!/^\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{4}$/iu.test(raw.trim())) return false;
+    const parsed = new Date(`${raw} UTC`);
+    return !Number.isNaN(parsed.valueOf()) && parsed.getUTCDate() === Number(raw.trim().split(/\s+/u)[0]) &&
+      parsed.toISOString().slice(0, 10) === value;
+  };
+  const headerEnd = source.text.indexOf('\n\n');
+  const body = source.text.slice(headerEnd < 0 ? 0 : headerEnd + 2)
+    .split(/^(?:From:\s|Sent:\s|On .{1,250}wrote:|Begin forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/imu)[0] ?? '';
+  const lines = body.split(/\r?\n/u).map((line) => line.trim().replace(/^[*•-]\s*/u, ''));
+  const headings = lines.flatMap((line, index) => /^check\s*-?\s*in\s*:\s*(.+)$/iu.test(line) ? [index] : []);
+  const result: Array<{ arrival: string; departure: string; quantity: number; raw: string; sourceRef: string }> = [];
+  const usedDates = new Set<number>();
+  for (const [headingIndex, start] of headings.entries()) {
+    const end = headings[headingIndex + 1] ?? lines.length;
+    const arrivalText = /^check\s*-?\s*in\s*:\s*(.+)$/iu.exec(lines[start]!)?.[1];
+    let cursor = start + 1;
+    while (cursor < end && !lines[cursor]) cursor++;
+    const departureText = /^check\s*-?\s*out\s*:\s*(.+)$/iu.exec(lines[cursor] ?? '')?.[1];
+    if (!arrivalText || !departureText) continue;
+    const dates = request.dates.flatMap((date, index) => {
+      const arrival = date.arrival, departure = date.departure;
+      return arrival && departure && arrival.sourceRefs.includes(source.ref) && departure.sourceRefs.includes(source.ref) &&
+        normalize(arrival.raw) === normalize(arrivalText) && normalize(departure.raw) === normalize(departureText) &&
+        typeof arrival.value === 'string' && typeof departure.value === 'string' &&
+        sourceDate(arrivalText, arrival.value) && sourceDate(departureText, departure.value)
+        ? [{ index, arrival: arrival.value, departure: departure.value }] : [];
+    });
+    if (!dates.length) continue;
+    if (dates.length !== 1 || usedDates.has(dates[0]!.index)) return null;
+    const date = dates[0]!;
+    const hints = request.roomTypeHints.filter((hint) => hint.sourceRefs.includes(source.ref) &&
+      normalize(hint.raw).includes(normalize(arrivalText)) && normalize(hint.raw).includes(normalize(departureText)));
+    if (hints.length !== 1) return null;
+    cursor++;
+    let closed = false, count = 0;
+    for (; cursor < end; cursor++) {
+      const line = lines[cursor]!;
+      if (!line) continue;
+      const row = /^(\d{1,3})\s*[x×]\s*(single|double|twin)\s+rooms?\b(?:\s*\([^()]*\))?\s*$/iu.exec(line);
+      if (!row) {
+        if (/^\d{1,3}\s*[x×]/iu.test(line)) return null;
+        closed = true;
+        continue;
+      }
+      if (closed) return null;
+      const quantity = Number(row[1]);
+      const pattern = new RegExp(`\\b${quantity}\\s*[x×]\\s*${row[2]}\\s+rooms?\\b`, 'iu');
+      if (quantity < 1 || quantity > 100 || !pattern.test(hints[0]!.raw)) return null;
+      result.push({ arrival: date.arrival, departure: date.departure, quantity, raw: line, sourceRef: source.ref });
+      count++;
+    }
+    if (!count) return null;
+    usedDates.add(date.index);
+  }
+  if (usedDates.size !== request.dates.length || result.length > 8) return null;
+  const claimedCount = citedInteger(currentClaim(request.roomCount, new Set([source.ref])));
+  if (claimedCount != null && claimedCount !== result.reduce((sum, row) => sum + row.quantity, 0)) return null;
+  return result;
+}
+
 function buildFallbackProposal(input: {
   extraction: ReservationWorkflowV2Extraction | null; source: ReservationWorkflowV2Source;
   evidence: ReservationWorkflowV2Evidence[]; reason: string;
@@ -1293,11 +1365,11 @@ function normalizedFact(value: unknown): string {
 
 function boardMeaning(value: unknown): string {
   if (typeof value !== 'string') return '';
-  const normalized = value.trim().toLocaleLowerCase('en-US').replace(/[\s&-]+/gu, '_');
+  const normalized = value.trim().toLocaleLowerCase('en-US').replace(/[,\s&-]+/gu, '_').replace(/_for_all$/u, '');
   const compact = normalized.replace(/_/g, '');
   if (['room_only', 'roomonly', 'ro'].includes(normalized)) return 'room_only';
-  if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast'].includes(normalized) || compact === 'bedandbreakfast') return 'bb';
-  if (['dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_and_breakfast'].includes(normalized)) return 'dinner_bb';
+  if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast', 'bed_breakfast'].includes(normalized) || compact === 'bedandbreakfast') return 'bb';
+  if (['dbb', 'dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_bed_and_breakfast', 'dinner_and_breakfast'].includes(normalized)) return 'dinner_bb';
   return normalizedFact(value);
 }
 
@@ -3975,6 +4047,25 @@ export async function runReservationWorkflowV2Prefill(input: {
     const fallbackProjection = projectCurrentExtraction({ proposal: buildFallbackProposal({ extraction, source: input.source, evidence, reason }),
       extraction, source: input.source, selection: input.selection, evidence, attachmentIdentityByRef, observations });
     const fallbackProposal = fallbackProjection.proposal;
+    for (const request of fallbackProposal.content.requests) {
+      if (request.kind !== 'quote') continue;
+      const extracted = extraction.requests.find((row) => row.id === request.id && row.kind === 'quote');
+      if (!extracted || extraction.requests.filter((row) => row.kind === 'quote' &&
+        row.requestText.sourceRefs.some((ref) => extracted.requestText.sourceRefs.includes(ref))).length !== 1) continue;
+      const rows = fallbackQuoteRoomRows({ request: extracted, evidence });
+      if (!rows || fallbackProposal.sourceClaims.length + rows.length > MAX_PROPOSAL_SOURCE_CLAIMS ||
+          fallbackProposal.annotations.length + rows.length > 2000) continue;
+      const board = request.body.groups[0]?.board ?? null;
+      request.body.groups = rows.map((row, index) => ({ id: stableId(request.id, 'source-room', String(index)),
+        arrival: row.arrival, departure: row.departure, quantity: row.quantity, board,
+        roomCodes: [], ratePlan: null, occupancy: { scope: 'unresolved', adults: null, childCount: null, childAges: null },
+        priceObservationRefs: [] }));
+      rows.forEach((row, index) => {
+        const path = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/groups/${index}/quantity`;
+        fallbackProposal.sourceClaims.push({ path, raw: row.raw, sourceRefs: [row.sourceRef] });
+        fallbackProposal.annotations.push({ path, basis: 'source', evidenceRefs: [row.sourceRef] });
+      });
+    }
     const safeClaims = referenceSafety?.proposal;
     if (safeClaims && extractionProjection) {
       const nativeConfirmation = /\b\d{6,10}-\d{1,2}\b/;
