@@ -2444,11 +2444,12 @@ function projectCurrentExtraction(input: {
     if (!removedLink) return true;
     const sourceRefs = service.sourceRefs.filter((ref) => currentRefs.has(ref) && knownRefs.has(ref));
     if (!sourceRefs.length) return false;
-    if (removedOwner) service.ownerRequestId = null;
-    service.targets = service.targets.filter(({ target }) => !prunedOwnerIds.has(target.requestId));
-    const exposed = proposal.content.requests.some((request) => service.ownerRequestId === request.id ||
-      request.serviceRefs.includes(service.id));
-    if (!exposed) unassignedServices.push(service);
+    service.ownerRequestId = null;
+    service.targets = [];
+    for (const request of proposal.content.requests) {
+      request.serviceRefs = request.serviceRefs.filter((ref) => ref !== service.id);
+    }
+    unassignedServices.push(service);
     return true;
   });
   proposal.content.documents = proposal.content.documents.filter((document) => {
