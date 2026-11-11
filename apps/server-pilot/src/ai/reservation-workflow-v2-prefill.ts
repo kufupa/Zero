@@ -76,7 +76,7 @@ const VOUCHER_SYNTHESIS_RULES = `Keep requestedPrice as cited source evidence. W
 
 // PRODUCT.md describes the staff-controlled CMS capability; codes/labels come
 // from the existing property profile. Later corpus outcomes never enter T0 input.
-const HRCEN_AMEND_CAPABILITIES = `Trusted HRCEN tool capability context (applies only to Amend): HMS can issue revised reservation documents when the amendment is saved, through the existing change fields cmsSend, cmsMessageId and cmsRecipient. A customer's request to send revised confirmation/proforma documents is a business delivery intent, not an incoming attachment or filing request. Translate that explicit intent into editable set changes: cmsSend=true and cmsRecipient=the source-supported requested recipient or current requester's address. For an explicit proforma request, choose only a configured CMS template whose supplied label supports proforma. A confirmation-only request does not justify switching to the proforma template: preserve the applicable native template, or leave template choice for staff when unknown. Template selection is host policy, not a customer claim: its change.sourceRefs and policy annotation.evidenceRefs must be empty; cite the current request for delivery intent and recipient. If recipient or intent is ambiguous, leave it unresolved for staff review. Do not require customers to name CMS controls, create incoming document entities for generated confirmations, change guest/booker contact records merely to deliver a document, or claim anything was sent before a verified Save. If no delivery is requested, leave CMS unchanged for native preservation. Existing stay room, occupancy and rate codes come from native Lookup unless the customer asks to change them; do not guess missing native codes. The supported native tool uses per-target rateHandling="reprice" for date, occupancy, room or rate changes: propose that editable method for the ordinary supported path and let native Prepare supply prices. Repricing with the existing rate code is distinct from changing that code or retaining a numeric nightly price. For price-affecting changes, explicit retained-price instructions are unsupported and must remain visible for staff resolution, never silently replaced by repricing; numeric manual-price overrides are unsupported.`;
+const HRCEN_AMEND_CAPABILITIES = `Trusted HRCEN tool capability context (applies only to Amend): Target bookedArrival and bookedDeparture identify the original saved stay, not the requested new dates. Put a requested new date only in its change; leave the corresponding original date absent unless the original is separately supported by the source or a native stay read. HMS can issue revised reservation documents when the amendment is saved, through the existing change fields cmsSend, cmsMessageId and cmsRecipient. A customer's request to send revised confirmation/proforma documents is a business delivery intent, not an incoming attachment or filing request. Translate that explicit intent into editable set changes: cmsSend=true and cmsRecipient=the source-supported requested recipient or current requester's address. For an explicit proforma request, choose only a configured CMS template whose supplied label supports proforma. A confirmation-only request does not justify switching to the proforma template: preserve the applicable native template, or leave template choice for staff when unknown. Template selection is host policy, not a customer claim: its change.sourceRefs and policy annotation.evidenceRefs must be empty; cite the current request for delivery intent and recipient. If recipient or intent is ambiguous, leave it unresolved for staff review. Do not require customers to name CMS controls, create incoming document entities for generated confirmations, change guest/booker contact records merely to deliver a document, or claim anything was sent before a verified Save. If no delivery is requested, leave CMS unchanged for native preservation. Existing stay room, occupancy and rate codes come from native Lookup unless the customer asks to change them; do not guess missing native codes. The supported native tool uses per-target rateHandling="reprice" for date, occupancy, room or rate changes: propose that editable method for the ordinary supported path and let native Prepare supply prices. Repricing with the existing rate code is distinct from changing that code or retaining a numeric nightly price. For price-affecting changes, explicit retained-price instructions are unsupported and must remain visible for staff resolution, never silently replaced by repricing; numeric manual-price overrides are unsupported.`;
 
 const OMIT_UNKNOWN_CLAIM = Symbol('omit-uncited-unknown-claim');
 function omitUncitedUnknownClaims(value: unknown): unknown {
@@ -3063,6 +3063,36 @@ function projectCurrentExtraction(input: {
   }
   addedRequests += projectAgencyVoucherFilings({ proposal, extraction: currentExtraction, source: input.source,
     evidence: input.evidence, currentRefs, pdfs, sourceMessageId: input.source.messageId, observations: input.observations });
+  for (const request of proposal.content.requests) {
+    if (request.kind !== 'amend') continue;
+    for (const [index, target] of request.body.targets.include.entries()) {
+      const path = `/proposal/content/requests/${request.id}/body/targets/include/${index}`;
+      const reference = target.confirmation?.trim();
+      if (reference && !/^\d{6,10}-\d{1,2}$/.test(reference)) {
+        const sourceRefs = target.sourceRefs.filter(ref => input.evidence.some(row => row.ref === ref && row.text.includes(reference)));
+        if (sourceRefs.length) {
+          if (proposal.sourceClaims.length < MAX_PROPOSAL_SOURCE_CLAIMS) proposal.sourceClaims.push({
+            path: `${path}/supplierReference`, raw: reference, sourceRefs,
+          });
+          delete target.confirmation;
+          target.candidateRefs = [];
+          target.suggestedRef = null;
+          addProjectionIssue(proposal, path, 'supplier_reference_not_infor_confirmation',
+            `Source reference ${reference} is not an Infor confirmation; use an exact Infor confirmation or search using the original stay details.`, sourceRefs);
+        }
+      }
+      if (target.suggestedRef || target.candidateRefs.length) continue;
+      const perTarget = request.body.perTarget.find(row => row.hintId === target.id);
+      const changes = [...request.body.sharedChanges, ...(perTarget?.changes ?? [])];
+      for (const [field, original] of [['arrival', 'bookedArrival'], ['departure', 'bookedDeparture']] as const) {
+        const originalDate = target[original];
+        if (!originalDate || !changes.some(change => change.op === 'set' && change.field === field && change.value === originalDate)) continue;
+        delete target[original];
+        addProjectionIssue(proposal, `${path}/${original}`, 'amend_original_date_unverified',
+          `The requested new ${field} was also used as the original ${field}. The original date was left blank until staff or Infor confirms it.`, target.sourceRefs);
+      }
+    }
+  }
   compactProposalSourceClaims(proposal, currentRefs);
   const parsedProjection = reservationWorkflowV2ProposalSchema.safeParse(proposal);
   if (parsedProjection.success) return { proposal: parsedProjection.data, addedRequests,
