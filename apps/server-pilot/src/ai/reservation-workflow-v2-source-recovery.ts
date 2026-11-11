@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Draft } from './reservation-workflow-v2-contract.js';
+import { extractionRequestForProposal } from './reservation-workflow-v2-source-match.js';
 
 const roomCandidateSchema = z.object({ code: z.string().regex(/^[A-Z0-9]{1,12}$/), label: z.string().min(1) });
 
@@ -19,15 +20,15 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
   const normal = (value: unknown) => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US') : '';
   const covered = (path: string, alias: string) => [...Object.keys(draft.fieldOverrides), ...Object.keys(draft.staffReviews)]
     .some(key => [path, alias].some(target => key === target || key.startsWith(`${target}/`) || target.startsWith(`${key}/`)));
+  const extraction = { ...input.extraction,
+    requests: input.extraction.requests.filter(row => row.requestText.sourceRefs.includes(currentRef)) };
+  const links = draft.proposal.content.requests.map(request =>
+    extractionRequestForProposal(request, draft.proposal.content.requests, extraction));
   for (const [requestIndex, request] of draft.proposal.content.requests.entries()) {
     if (request.kind !== 'create' && request.kind !== 'quote' || draft.operationResults.some(row => row.requestId === request.id &&
         (row.status !== 'prepared' || row.workflow !== request.kind))) continue;
-    const candidates = input.extraction.requests.filter(row => row.kind === request.kind && row.requestText.sourceRefs.includes(currentRef));
-    const exact = candidates.filter(row => row.id === request.id);
-    const text = candidates.filter(row => normal(row.requestText.raw) === normal(request.requestText));
-    const linked = exact.length ? exact : text.length ? text : candidates.filter(row => row.requestText.sourceRefs.some(ref => request.sourceRefs.includes(ref)));
-    if (linked.length !== 1) continue;
-    const extracted = linked[0]!;
+    const extracted = links[requestIndex];
+    if (!extracted || links.filter(link => link === extracted).length !== 1) continue;
     if (request.kind === 'create' && !draft.operationResults.some(row => row.requestId === request.id)) {
       const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
       const alias = `/proposal/content/requests/${requestIndex}/body`;
