@@ -906,7 +906,7 @@ function fallbackQuoteRoomRows(input: {
     let cursor = start + 1;
     while (cursor < end && !lines[cursor]) cursor++;
     const departureText = /^check\s*-?\s*out\s*:\s*(.+)$/iu.exec(lines[cursor] ?? '')?.[1];
-    if (!arrivalText || !departureText) continue;
+    if (!arrivalText || !departureText) return null;
     const dates = request.dates.flatMap((date, index) => {
       const arrival = date.arrival, departure = date.departure;
       return arrival && departure && arrival.sourceRefs.includes(source.ref) && departure.sourceRefs.includes(source.ref) &&
@@ -915,7 +915,7 @@ function fallbackQuoteRoomRows(input: {
         sourceDate(arrivalText, arrival.value) && sourceDate(departureText, departure.value)
         ? [{ index, arrival: arrival.value, departure: departure.value }] : [];
     });
-    if (!dates.length) continue;
+    if (!dates.length) return null;
     if (dates.length !== 1 || usedDates.has(dates[0]!.index)) return null;
     const date = dates[0]!;
     const hints = request.roomTypeHints.filter((hint) => hint.sourceRefs.includes(source.ref) &&
