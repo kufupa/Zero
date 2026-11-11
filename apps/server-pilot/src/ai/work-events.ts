@@ -5,9 +5,10 @@ import { workEvent, workItem, WORK_EVENT_TYPES, type WorkEventType } from '../db
 import type { RowPrice } from '../quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../quote-proposal/quote-revision.js';
 import { maskCardNumbers } from './card-mask.js';
+import { PANE_ERROR_CLASSES, PANE_ERROR_CODES, RESERVATION_WORKFLOW_V2_ERROR_PROCEDURES } from './reservation-workflow-v2-contract.js';
 
 /** Pane action telemetry (v5 B1). The batch route accepts only these types, so no approval or field event comes through it. */
-export const PANE_ACTION_TYPES = [
+export const PANE_ACTION_STANDARD_TYPES = [
   'pane.opened',
   'copy.hms_line',
   'copy.confirmation',
@@ -21,20 +22,34 @@ export const PANE_ACTION_TYPES = [
   'hms.lookup.finished',
   'item.dismissed',
 ] as const;
+export const PANE_ACTION_TYPES = [...PANE_ACTION_STANDARD_TYPES, 'pane.error'] as const;
 export type PaneActionType = (typeof PANE_ACTION_TYPES)[number];
 export const PANE_ACTION_KINDS = ['selected', 'all', 'saved', 'option', 'combined', 'comment', 'booking'] as const;
 export const PANE_ACTION_BLOCKS = ['notes'] as const;
 export const PANE_ACTION_FIELDS = ['name', 'company', 'endClient', 'email', 'phone'] as const;
 export const PANE_ACTION_BATCH_MAX = 50;
 
-export type PaneActionEvent = {
-  type: PaneActionType;
+type StandardPaneActionEvent = {
+  type: (typeof PANE_ACTION_STANDARD_TYPES)[number];
   ms?: number;
   surface?: 'outlook' | 'web';
   kind?: (typeof PANE_ACTION_KINDS)[number];
   block?: (typeof PANE_ACTION_BLOCKS)[number];
   field?: (typeof PANE_ACTION_FIELDS)[number];
 };
+type PaneErrorEvent = {
+  type: 'pane.error';
+  procedure: (typeof RESERVATION_WORKFLOW_V2_ERROR_PROCEDURES)[number];
+  actionId: string;
+  errorClass: (typeof PANE_ERROR_CLASSES)[number];
+  errorCode?: (typeof PANE_ERROR_CODES)[number];
+  metadataParseFailed: boolean;
+  surface?: 'outlook' | 'web';
+  sourceMessageId?: string;
+  requestId?: string;
+  allocationId?: string;
+};
+export type PaneActionEvent = StandardPaneActionEvent | PaneErrorEvent;
 
 /**
  * Appends a batch of pane actions to one work item, as the session user. Null when the item is not in this transport,

@@ -577,7 +577,7 @@ type PrefillRetryInput = { source: ReservationWorkflowV2SourceInput; workItemId:
   revision: number; seq: number; draft: ReservationWorkflowV2Draft };
 
 function prefillActivityPredicate() {
-  return or(and(eq(workEvent.actorKind, 'user'), ne(workEvent.type, 'pane.opened')),
+  return or(and(eq(workEvent.actorKind, 'user'), ne(workEvent.type, 'pane.opened'), ne(workEvent.type, 'pane.error')),
     eq(workEvent.type, 'write.evidence'), eq(workEvent.type, 'hms.lookup.finished'));
 }
 
