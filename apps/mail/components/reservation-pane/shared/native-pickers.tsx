@@ -151,7 +151,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       {loading && <small role="status">Loading {label.toLocaleLowerCase()} from Infor…</small>}
       {lookupError && <small role="alert">{lookupError}</small>}
       {!choices.length && !loading && !lookupError && <small>{entity ? 'Enter a name to find Infor matches.' : 'No Infor choices loaded yet.'}</small>}
-      {!entity && ['room_type', 'room_type_for_charge', 'rate_plan'].includes(choiceKind ?? '') && <small>Hotel codes and meanings. Review & check verifies prices and availability for these dates and guests.</small>}
+      {!entity && ['room_type', 'room_type_for_charge', 'rate_plan'].includes(choiceKind ?? '') && <small>Hotel codes and meanings. The booking check verifies prices and availability for these dates and guests.</small>}
       <button type="button" disabled={loading} onMouseDown={event => event.preventDefault()} onClick={() => { void loadChoices(); }}>{lookupError ? 'Retry Infor' : entity ? 'Search Infor' : 'Refresh Infor choices'}</button>
     </div>}
   {dirty ? <small>Unsaved search</small> : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}{hint && <small>{hint}</small>}</div>

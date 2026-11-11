@@ -314,7 +314,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         {attention.fields[0] && <button type="button" onClick={() => focusField(attention.fields[0]!)}>Review {inputFieldLabel(attention.fields[0])}</button>}
       </small>}
       {checked !== digest && <small className={styles.small}>Check the current details and Infor price first. Then approve the final action.</small>}
-      <div className={styles.actions}><button type="button" disabled={busy || !snapshot || workbench.conflict || sourceChanged} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(check); }}>Review & check</button>
+      <div className={styles.actions}>
         <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{checked !== digest ? request.kind === 'quote' ? 'Check quote' : request.kind === 'create' ? 'Check booking' : 'Check details' : request.kind === 'quote' ? record(quoteObservation?.result).failureKind === 'proven_shortage' ? 'Generate unsent decline' : 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : 'Save in Infor'}</button></div>
       {workbench.blocked && <small>Apply the changed selection before checking.</small>}
     </footer>}
