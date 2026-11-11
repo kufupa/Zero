@@ -1,4 +1,4 @@
-import { extractionRefsForRequest, extractionRequestForProposal } from './reservation-workflow-v2-source-match.js';
+import { extractionRefsForRequest, extractionRequestForProposal, requestTextKey } from './reservation-workflow-v2-source-match.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { profileCms, profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
 import { zodToJsonSchema } from 'zod-to-json-schema';
@@ -2102,10 +2102,11 @@ function projectAgencyVoucherFilings(input: {
   pdfs: Map<string, CurrentPdfEvidence>;
   sourceMessageId: string;
   observations: ReservationWorkflowV2Observation[];
+  extractionIdByProposalRequestId: ReadonlyMap<string, string>;
 }): number {
   const candidateCreates = input.proposal.content.requests.flatMap((request) => {
     if (request.kind !== 'create') return [];
-    const extracted = extractionRequestForProposal(request, input.proposal.content.requests, input.extraction);
+    const extracted = extractionRequestForProposal(request, input.proposal.content.requests, input.extraction, input.extractionIdByProposalRequestId);
     if (!extracted || !currentClaim(extracted.requestText, input.currentRefs)) return [];
     const vouchers = currentVoucherAttachments({ extracted, currentRefs: input.currentRefs, pdfs: input.pdfs });
     return vouchers.length ? [{ request, extracted, vouchers }] : [];
@@ -2113,7 +2114,7 @@ function projectAgencyVoucherFilings(input: {
   const documentOwners = new Map<string, Set<string>>();
   for (const request of input.proposal.content.requests) {
     if (request.kind !== 'create') continue;
-    const extracted = extractionRequestForProposal(request, input.proposal.content.requests, input.extraction);
+    const extracted = extractionRequestForProposal(request, input.proposal.content.requests, input.extraction, input.extractionIdByProposalRequestId);
     if (!extracted || !currentClaim(extracted.requestText, input.currentRefs)) continue;
     for (const documentRef of extracted.documentRefs) {
       if (!input.pdfs.has(documentRef)) continue;
@@ -2435,8 +2436,21 @@ function projectCurrentExtraction(input: {
       'The service source was retained, but its owner pointed to a duplicate request ID and could not be assigned safely.',
       service.sourceRefs.filter((ref) => currentRefs.has(ref) && knownRefs.has(ref)));
   }
-  proposal.content.services = proposal.content.services.filter((service) =>
-    service.ownerRequestId === null || !prunedOwnerIds.has(service.ownerRequestId));
+  const unassignedServices: ReservationWorkflowV2Proposal['content']['services'] = [];
+  proposal.content.services = proposal.content.services.filter((service) => {
+    const removedOwner = service.ownerRequestId !== null && prunedOwnerIds.has(service.ownerRequestId);
+    const removedLink = removedOwner || prunedRequests.some((request) => request.serviceRefs.includes(service.id)) ||
+      service.targets.some(({ target }) => prunedOwnerIds.has(target.requestId));
+    if (!removedLink) return true;
+    const sourceRefs = service.sourceRefs.filter((ref) => currentRefs.has(ref) && knownRefs.has(ref));
+    if (!sourceRefs.length) return false;
+    if (removedOwner) service.ownerRequestId = null;
+    service.targets = service.targets.filter(({ target }) => !prunedOwnerIds.has(target.requestId));
+    const exposed = proposal.content.requests.some((request) => service.ownerRequestId === request.id ||
+      request.serviceRefs.includes(service.id));
+    if (!exposed) unassignedServices.push(service);
+    return true;
+  });
   proposal.content.documents = proposal.content.documents.filter((document) => {
     if (!currentRefs.has(document.documentSourceRef)) {
       addProjectionIssue(proposal, `/documents/${document.id}`, 'prior_thread_document_pruned',
@@ -2515,13 +2529,20 @@ function projectCurrentExtraction(input: {
     reservedRequestIds.add(retained.id);
     proposal.content.requests.push(retained);
     linkedByRequest.set(retained, extracted);
+    const sourceHints = extracted.serviceHints.filter((hint) => hint.sourceRefs.some((ref) => currentRefs.has(ref) && knownRefs.has(ref)));
+    const serviceNames = [...new Set([...sourceHints.map((hint) => hint.raw), ...unassignedServices.map((service) => service.requestedText)])]
+      .filter(Boolean).slice(0, 3).join('; ').slice(0, 800);
+    const serviceNotice = sourceHints.length || unassignedServices.length
+      ? ` Review the email and manually handle any Add-Ons for the correct stay${serviceNames ? `: ${serviceNames}` : '.'}` : '';
+    const issueRefs = [...currentEvidenceRefs, ...sourceHints.flatMap((hint) => hint.sourceRefs),
+      ...unassignedServices.flatMap((service) => service.sourceRefs)].filter((ref) => currentRefs.has(ref) && knownRefs.has(ref));
     addProjectionIssue(proposal, `/requests/${retained.id}`, wrongKind ? 'source_request_kind_mismatch' :
       ambiguous ? 'current_request_link_ambiguous' : 'source_request_retained',
-    wrongKind
+    (wrongKind
       ? 'Synthesis used the wrong workflow kind for this current typed request; the typed workflow is retained once for staff review.'
       : ambiguous
         ? 'Synthesis could not link this request uniquely to one current typed item; the typed request is retained once and ambiguous synthesized actions were removed.'
-        : 'The current source request was kept as an editable item because synthesis omitted it.', currentEvidenceRefs);
+        : 'The current source request was kept as an editable item because synthesis omitted it.') + serviceNotice, issueRefs);
     addedRequests += 1;
     linkedExtractionRequests.add(extracted);
   }
@@ -2553,7 +2574,7 @@ function projectCurrentExtraction(input: {
 
   for (const [index, request] of proposal.content.requests.entries()) {
     if (request.kind !== 'create') continue;
-    const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction);
+    const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction, extractionIdByProposalRequestId);
     if (!extracted || !isPaymentProofOnlyCreate(extracted, currentRefs, input.evidence)) continue;
     const { body: _createBody, ...base } = request;
     proposal.content.requests[index] = { ...base, kind: 'other',
@@ -2677,8 +2698,10 @@ function projectCurrentExtraction(input: {
     // Synthesis can echo an otherwise current request's old room facts from a prior
     // thread. Request-level sourceRefs are not field provenance, so clear only fields
     // whose typed extraction claims have no current-source citation.
-    const sourceExtracted = input.extraction.requests.find((candidate) =>
-      candidate.id === extracted.id && candidate.kind === extracted.kind) ?? extracted;
+    const sourceCandidates = input.extraction.requests.filter((candidate) =>
+      candidate.id === extracted.id && candidate.kind === extracted.kind);
+    const sameText = sourceCandidates.filter((candidate) => requestTextKey(candidate.requestText.raw) === requestTextKey(extracted.requestText.raw));
+    const sourceExtracted = sourceCandidates.length === 1 ? sourceCandidates[0]! : sameText.length === 1 ? sameText[0]! : extracted;
     const priorRoomCountRefs = priorOnlySourceRefs([sourceExtracted.roomCount], currentRefs, knownRefs);
     const priorBoardRefs = priorOnlySourceRefs(sourceExtracted.boardHints, currentRefs, knownRefs);
     const priorRoomCodeRefs = priorOnlySourceRefs(sourceExtracted.roomTypeHints, currentRefs, knownRefs);
@@ -3141,7 +3164,8 @@ function projectCurrentExtraction(input: {
     }
   }
   addedRequests += projectAgencyVoucherFilings({ proposal, extraction: currentExtraction, source: input.source,
-    evidence: input.evidence, currentRefs, pdfs, sourceMessageId: input.source.messageId, observations: input.observations });
+    evidence: input.evidence, currentRefs, pdfs, sourceMessageId: input.source.messageId, observations: input.observations,
+    extractionIdByProposalRequestId });
   for (const request of proposal.content.requests) {
     if (request.kind !== 'amend') continue;
     for (const [index, target] of request.body.targets.include.entries()) {
