@@ -1,6 +1,6 @@
 import type { ReservationWorkflowV2Extraction, ReservationWorkflowV2Proposal } from './reservation-workflow-v2-contract.js';
 
-const requestTextKey = (value: string) => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US');
+export const requestTextKey = (value: string) => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US');
 
 export function extractionRefsForRequest(request: ReservationWorkflowV2Extraction['requests'][number]): Set<string> {
   const refs = new Set<string>(request.requestText.sourceRefs);
@@ -36,16 +36,18 @@ export function extractionRequestForProposal(
   extractionIdByProposalRequestId?: ReadonlyMap<string, string>,
 ): ReservationWorkflowV2Extraction['requests'][number] | null {
   const mappedId = extractionIdByProposalRequestId?.get(request.id);
-  const mapped = mappedId ? extraction.requests.find((candidate) => candidate.id === mappedId && candidate.kind === request.kind) : null;
-  if (mapped) return mapped;
+  if (mappedId) {
+    const mapped = extraction.requests.filter((candidate) => candidate.id === mappedId && candidate.kind === request.kind);
+    if (mapped.length === 1) return mapped[0]!;
+  }
   const exactText = extraction.requests.filter((candidate) => candidate.kind === request.kind &&
     requestTextKey(candidate.requestText.raw) === requestTextKey(request.requestText));
   const proposalsWithExactText = proposalRequests.filter((candidate) => candidate.kind === request.kind &&
     requestTextKey(candidate.requestText) === requestTextKey(request.requestText));
-  if (exactText.length === 1 && proposalsWithExactText.length === 1) return exactText[0]!;
-  // Shared message evidence is common when one email asks for multiple bookings.
-  // After preferring an exact source-text match, a unique model-provided ID is the
-  // next strongest link; waiting for unique evidence refs drops otherwise-filled rows.
+  if (requestTextKey(request.requestText) && exactText.length === 1 && proposalsWithExactText.length === 1) return exactText[0]!;
+  if (mappedId) return null;
+  // Model IDs and shared email evidence cannot identify one of several requests.
+  if (extraction.requests.length > 1 || proposalRequests.length > 1) return null;
   const exactId = extraction.requests.filter((candidate) => candidate.id === request.id && candidate.kind === request.kind);
   const otherRequestsWithId = proposalRequests.filter((candidate) => candidate.id === request.id && candidate.kind === request.kind);
   if (exactId.length === 1 && otherRequestsWithId.length === 1) return exactId[0]!;
