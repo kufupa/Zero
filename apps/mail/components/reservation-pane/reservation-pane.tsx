@@ -212,7 +212,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     } catch (failure) {
       const latest = workbench.latestSnapshot(), reply = record(latest?.workflowReply), review = record(reply.financialReview);
       const currentFeePreview = request.kind === 'cancel' && reply.status === 'needs_review' && review.required === true &&
-        latest?.operationResults.some(row => row.workflow === 'cancel' && row.requestId === request.id &&
+        latest?.session.draft.operationResults.some(row => row.workflow === 'cancel' && row.requestId === request.id &&
           row.allocationId === activeTarget.current && row.generationId === latest.session.draft.generationId && row.status === 'prepared' &&
           row.observationRefs.includes(text(review.observationRef))) && latest.session.draft.observations.some(row =>
           row.ref === review.observationRef && row.generationId === latest.session.draft.generationId && record(row.result).ready === true);
