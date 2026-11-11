@@ -675,8 +675,13 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReadContext,
       if (saved.status !== 'ok') return saved;
       appended.push(candidate);
     }
+    const outcome = candidate?.result.outcome;
+    const issue = candidate?.status === 'complete' ? undefined : outcome === 'execution_failure' ? 'filing_stay_lookup_failed'
+      : outcome === 'not_found' ? 'filing_stay_not_found' : candidate?.result.arrivalMismatch === true
+        ? 'filing_stay_date_mismatch' : 'filing_stay_unverified';
     lookups.push({ status: candidate?.status === 'complete' ? 'candidate' : 'needs_input', requestId: request.id,
-      documentId: pair.document.id, ...(linkedProof ? { createDependency: { status: 'succeeded', ...linkedProof } } : {}),
+      ...(issue ? { issue } : {}), documentId: pair.document.id,
+      ...(linkedProof ? { createDependency: { status: 'succeeded', ...linkedProof } } : {}),
       targetCandidate: candidate ? { observationRef: candidate.ref, stay: record(record(candidate.result)?.stay) } : null });
   }
   // Only a single complete host stay observation plus a source PDF can produce the no-Save target preview.

@@ -1882,12 +1882,12 @@ function explicitAdditionalNewRoom(extracted: ReservationWorkflowV2Extraction['r
     .test(ask);
 }
 
-function isOutgoingInvoiceRequest(extracted: ReservationWorkflowV2Extraction['requests'][number], currentRefs: Set<string>): boolean {
-  if (extracted.kind !== 'filing' || !currentClaim(extracted.requestText, currentRefs) || extracted.documentRefs.length) return false;
+function isOutgoingInvoiceRequest(extracted: ReservationWorkflowV2Extraction['requests'][number], currentRefs: Set<string>, currentBody: string): boolean {
+  if (extracted.kind !== 'filing' || !currentClaim(extracted.requestText, currentRefs)) return false;
   const text = extracted.requestText.raw;
-  const asksForInvoice = /\b(?:send|forward|provide|issue|email|e-mail)\b[\s\S]{0,160}\binvoice\b/i.test(text);
-  const negatesSending = /\b(?:do not|don't|do not yet|never)\s+(?:send|forward|provide|issue|email|e-mail)\b/i.test(text);
-  const asksToFile = /\b(?:file|filing|upload|save|store|attach)\b/i.test(text);
+  const asksForInvoice = /\b(?:send|forward|provide|issue|email|e-mail|share)\b[\s\S]{0,160}\binvoices?\b/i.test(text);
+  const negatesSending = /\b(?:do not|don't|do not yet|never)\s+(?:send|forward|provide|issue|email|e-mail|share)\b/i.test(text);
+  const asksToFile = /\b(?:please|kindly|also|then)\s+(?:file|upload|save|store|attach|keep|record|link|add|put)\b|\b(?:file|upload|save|store|attach|keep|record|link|add|put)\s+(?:the|this|these|it|them|attached|proof|voucher|receipt|payment|pdf|documents?|attachments?|in|to|on)\b|\b(?:for|to)\s+filing\b/i.test(`${text}\n${currentBody}`);
   return asksForInvoice && !negatesSending && !asksToFile;
 }
 
@@ -2575,15 +2575,27 @@ function projectCurrentExtraction(input: {
   }
 
   for (const [index, request] of proposal.content.requests.entries()) {
-    if (request.kind !== 'filing' || request.documentRefs.length || request.serviceRefs.length) continue;
+    if (request.kind !== 'filing' || request.serviceRefs.length) continue;
     const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction, extractionIdByProposalRequestId);
-    if (!extracted || !isOutgoingInvoiceRequest(extracted, currentRefs)) continue;
+    const currentBody = (input.selection.currentBodyText ?? input.selection.bodyText).split(/^\s*(?:From:|On .+ wrote:)\s*/im)[0] ?? '';
+    if (!extracted || !isOutgoingInvoiceRequest(extracted, currentRefs, currentBody)) continue;
+    const linkedDocuments = proposal.content.documents.filter((document) => document.ownerRequestId === request.id || request.documentRefs.includes(document.id));
+    if (linkedDocuments.some((document) => document.ownerRequestId !== request.id ||
+      document.targetRefs.some((target) => target.requestId !== request.id) ||
+      proposal.content.requests.some((other) => other.id !== request.id && other.documentRefs.includes(document.id)))) continue;
+    for (const document of linkedDocuments) {
+      document.handling = 'context';
+      document.targetRefs = [];
+      document.uploadArtifactRef = null;
+    }
     const { body: _filingBody, ...base } = request;
-    proposal.content.requests[index] = { ...base, kind: 'other',
-      body: { requestedText: request.requestText, supported: false } };
+    const corrected = { ...base, kind: 'other' as const,
+      body: { requestedText: extracted.requestText.raw.slice(0, 2000), supported: false as const } };
+    proposal.content.requests[index] = corrected;
+    linkedByRequest.set(corrected, extracted);
     proposal.issues = proposal.issues.filter((issue) => issue.kind !== 'source_request_kind_mismatch' || issue.path !== `/requests/${request.id}`);
     addProjectionIssue(proposal, { path: `/requests/${request.id}`, kind: 'outgoing_invoice_request',
-      explanation: 'The customer asks for an invoice to be sent. Handle this request separately; no incoming PDF was supplied for filing.',
+      explanation: 'The customer asks for an invoice to be sent. Handle this request manually; linked attachments are context unless separately requested for filing.',
       evidenceRefs: request.sourceRefs.filter((ref) => currentRefs.has(ref)) });
   }
 

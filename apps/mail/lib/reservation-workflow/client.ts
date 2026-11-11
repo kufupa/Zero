@@ -478,6 +478,10 @@ function nativeIssueText(issue: unknown): string | null {
   if (issue === 'select_one_saved_stay') return 'Choose one exact saved stay for this PDF';
   if (issue === 'review_one_source_pdf_and_one_saved_stay') return 'Review and select one source PDF and one exact saved stay before filing';
   if (issue === 'filing_preview_requires_staff_document_review') return 'Review the PDF and its filing details before continuing';
+  if (issue === 'filing_stay_lookup_failed') return 'Infor could not complete the stay search. Try Find stay again; contact support if it remains blocked';
+  if (issue === 'filing_stay_not_found') return 'Infor did not find this confirmation. Check the confirmation and search again';
+  if (issue === 'filing_stay_date_mismatch') return 'Infor returned a different arrival date. Check the original booking dates before filing';
+  if (issue === 'filing_stay_unverified') return 'Infor did not verify one complete stay. Check the confirmation and original dates before filing';
   if (issue === 'existing_confirmation_found') return 'Infor already has this booking. Use the existing stay for amendment or filing; do not create it again';
   if (issue === 'existing_confirmation_requires_lookup') return 'A confirmation in this request may identify an existing booking. Find and verify that stay before creating a new reservation';
   if (issue === 'confirmation_claim_capacity_exceeded') return 'This request has too many confirmation references to check safely. Review the original email and PDF, and split it into explicit booking actions before proceeding';
