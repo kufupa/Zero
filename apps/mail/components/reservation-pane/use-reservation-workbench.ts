@@ -186,6 +186,8 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
           if (buffer.pending.get(pending.path)?.token !== pending.token) continue;
           if (buffer.sourceKey !== sourceKey(bound)) throw new Error('The email changed. Review its updated evidence before applying your edits.');
           if (!buffer.snapshot) throw new Error('The email draft is still opening.');
+          if (buffer.snapshot.session.sourceChanged && /^\/proposal\/content\/services\/[^/]+\/targets$/.test(pending.path))
+            throw new Error('Review the updated email and attachments before linking this Add-On.');
           if (!pendingMatches(buffer.snapshot, pending)) throw new Error('The room or action changed elsewhere. Discard this pending edit and enter it on the current row.');
           const requestId = buffer.snapshot.requests.find(request => pending.path.startsWith(`${requestPath(request.id)}/`))?.id
             ?? buffer.snapshot.requests[0]?.id;

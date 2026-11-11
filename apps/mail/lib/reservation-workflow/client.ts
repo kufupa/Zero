@@ -473,6 +473,11 @@ function nativeIssueText(issue: unknown): string | null {
   };
   if (dependencyMessages[issue]) return dependencyMessages[issue]!;
   if (issue.startsWith('create_dependency_')) return 'The linked Create result needs verification. Check Create before filing';
+  if (issue === 'select_one_document') return 'Choose one PDF from this email to file';
+  if (issue === 'source_pdf_not_admitted') return 'Choose an available, supported PDF from this email';
+  if (issue === 'select_one_saved_stay') return 'Choose one exact saved stay for this PDF';
+  if (issue === 'review_one_source_pdf_and_one_saved_stay') return 'Review and select one source PDF and one exact saved stay before filing';
+  if (issue === 'filing_preview_requires_staff_document_review') return 'Review the PDF and its filing details before continuing';
   if (issue === 'existing_confirmation_found') return 'Infor already has this booking. Use the existing stay for amendment or filing; do not create it again';
   if (issue === 'existing_confirmation_requires_lookup') return 'A confirmation in this request may identify an existing booking. Find and verify that stay before creating a new reservation';
   if (issue === 'confirmation_claim_capacity_exceeded') return 'This request has too many confirmation references to check safely. Review the original email and PDF, and split it into explicit booking actions before proceeding';

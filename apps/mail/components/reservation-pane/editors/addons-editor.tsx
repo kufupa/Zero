@@ -130,16 +130,30 @@ function NativeItem({ title, item }: { title: string; item: Record<string, unkno
 
 export function AddonsEditor(editor: Editor) {
   const { snapshot, request } = editor;
+  const sourceChanged = snapshot.session.sourceChanged === true;
   const proposal = snapshot.session.draft.proposal.content;
   const owner = proposal.requests.find(row => row.id === request.id);
-  const addTargets = owner?.kind === 'create' ? owner.body.allocations.map((room, index) => ({ id: room.id,
-    label: [room.guest.firstName, room.guest.lastName].filter(Boolean).join(' ') || `Room ${index + 1}` }))
+  const allocations = owner?.kind === 'create' ? effectiveAt(snapshot, `${requestPath(request.id)}/body/allocations`) : null;
+  const rooms = owner?.kind === 'create' && Array.isArray(allocations) ? allocations.map(record).map((room, index) => ({
+    id: text(room.id), label: [text(record(room.guest).firstName), text(record(room.guest).lastName)].filter(Boolean).join(' ') || `Room ${index + 1}`,
+    linkable: owner.body.allocations.some(allocation => allocation.id === room.id),
+  })).filter(room => room.id) : [];
+  const addTargets = owner?.kind === 'create' ? rooms.filter(room => room.linkable)
     : owner && 'targets' in owner.body ? (Array.isArray(record(effectiveAt(snapshot, `${requestPath(request.id)}/body/targets`)).include)
       ? (record(effectiveAt(snapshot, `${requestPath(request.id)}/body/targets`)).include as unknown[]).map((hint, index) => ({
         id: text(record(hint).id), label: text(record(hint).confirmation) || text(record(hint).guestName) || `Stay ${index + 1}` })) : []) : [];
+  const linkTargets = owner?.kind === 'create' ? rooms : addTargets.filter(target => target.id).map(target => ({ ...target, linkable: true }));
   const services = proposal.services.map((service, index) => ({ service, index })).filter(({ service }) =>
     service.ownerRequestId === request.id || owner?.serviceRefs.includes(service.id)
       || service.targets.some(target => target.target.requestId === request.id));
+  const ownershipConflict = (service: Service) => service.ownerRequestId !== null && service.ownerRequestId !== request.id
+    || proposal.requests.some(row => row.id !== request.id && row.serviceRefs.includes(service.id));
+  const guestUnknown = snapshot.session.draft.operationResults.some(row => row.workflow === 'guest_profile' && row.status === 'unknown');
+  const targetLocked = (service: Service) => {
+    const requests = new Set([service.ownerRequestId, ...proposal.requests.filter(row => row.serviceRefs.includes(service.id)).map(row => row.id)]);
+    return guestUnknown || snapshot.session.draft.operationResults.some(row => row.workflow !== 'guest_profile' && requests.has(row.requestId)
+      && (row.status === 'succeeded' || row.status === 'unknown'));
+  };
   return <div className={styles.stack}>
     <Section title="Add-Ons">
       <p className={styles.hint}>Each Add-On is checked and saved for one exact room or saved stay. Infor calculates the total using the unit price, pricing basis and quantity.</p>
@@ -153,7 +167,38 @@ export function AddonsEditor(editor: Editor) {
       {services.map(({ service, index }) => <div className={styles.stack} key={service.id}>
         {(service.requestedText || service.code) && <strong>{service.requestedText || service.code}</strong>}
         {service.requestedMoney.map(money => <div className={styles.hint} key={money.id}>Requested: {money.amount || 'amount unknown'} {money.currency || ''} {money.unit || ''} · {money.scope.replaceAll('_', ' ')}</div>)}
-        {!service.targets.length && <div className={styles.warning}>Choose the specific room for this Add-On. No room will be charged automatically.</div>}
+        {service.quantityRequest.scope === 'overall' && service.quantityRequest.value && <small className={styles.hint}>
+          Requested quantity: {service.quantityRequest.value} for the booking. The full quantity may be used for one linked room; enter a room quantity if different.
+        </small>}
+        {!service.targets.length && <>
+          <div className={styles.warning}>Choose the specific room for this Add-On. No room will be charged automatically.</div>
+          {owner && ['create', 'amend', 'services'].includes(owner.kind) && owner.serviceRefs.includes(service.id)
+            && (text(valueAt(snapshot, `/proposal/content/services/${index}/operation`)) || service.operation) === 'add' &&
+            <label className={styles.label}>{owner.kind === 'create' ? 'Room' : 'Stay'} for this requested Add-On
+              <select value="" disabled={sourceChanged || editor.view.busy || !linkTargets.some(target => target.linkable) || targetLocked(service) || ownershipConflict(service)} onChange={event => {
+                const targetId = event.target.value;
+                if (sourceChanged || !linkTargets.some(target => target.linkable && target.id === targetId)) return;
+                void editor.commands.edit(`/proposal/content/services/${index}/targets`, [{
+                  target: owner.kind === 'create' ? { kind: 'allocation', requestId: request.id, allocationId: targetId }
+                    : { kind: 'saved_target', requestId: request.id, hintId: targetId },
+                  fields: {}, savedRowCandidateRef: null, previewObservationRef: null,
+                }]).catch(() => {});
+              }}>
+                <option value="">{sourceChanged ? 'Review updated evidence first' : targetLocked(service) || ownershipConflict(service) ? 'Linking unavailable'
+                  : linkTargets.some(target => target.linkable) ? `Select a ${owner.kind === 'create' ? 'room' : 'stay'}`
+                    : linkTargets.length ? 'No target available to link' : `Add a ${owner.kind === 'create' ? 'room' : 'stay'} first`}</option>
+                {linkTargets.map((target, targetIndex) => <option key={target.id} value={target.id} disabled={!target.linkable}>
+                  {owner.kind === 'create' ? `Room ${targetIndex + 1}${target.label === `Room ${targetIndex + 1}` ? '' : ` · ${target.label}`}${target.linkable ? '' : ' · unavailable to link'}` : target.label}
+                </option>)}
+              </select>
+              {sourceChanged && <small className={styles.hint}>Review the updated email and attachments before linking this Add-On.</small>}
+              {targetLocked(service) && <small className={styles.hint}>{guestUnknown
+                ? 'Check the unknown guest profile outcome before linking this Add-On.'
+                : 'A related Infor operation is saved or has an unknown outcome. Check any unknown outcome and handle this Add-On separately.'}</small>}
+              {ownershipConflict(service) && <small className={styles.hint}>This Add-On is linked to another request. Handle it separately.</small>}
+              {rooms.some(room => !room.linkable) && <small className={styles.hint}>Some rooms in this draft cannot currently be linked here.</small>}
+            </label>}
+        </>}
         {service.targets.length > 1 && <div className={styles.warning}>This request covers several rooms. Use “Add item” for each room above and enter each quantity. This request stays here for reference.</div>}
         {service.targets.map((target, targetIndex) => <ServiceRow key={`${service.id}:${targetIndex}`} editor={editor}
           service={service} serviceIndex={index} target={target} targetIndex={targetIndex} multiTarget={service.targets.length > 1} />)}
@@ -185,9 +230,12 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
   const stayPath = `${targetBody}/targets/include/${hintIndex}/suggestedRef`;
   const selectedStay = hintIndex >= 0 ? valueAt(editor.snapshot, stayPath) : null;
   const selectedPath = operation === 'add' ? itemPath : `${targetRoot}/savedRowCandidateRef`;
-  const room = allocation ? editor.snapshot.session.draft.proposal.content.requests.find(row => row.id === ref.requestId) : null;
-  const roomGuest = room && room.kind === 'create' ? room.body.allocations.find(entry => entry.id === allocation)?.guest : null;
-  const roomLabel = roomGuest ? [roomGuest.firstName, roomGuest.lastName].filter(Boolean).join(' ') : '';
+  const rooms = allocation ? effectiveAt(editor.snapshot, `${requestPath(ref.requestId)}/body/allocations`) : null;
+  const roomRows = Array.isArray(rooms) ? rooms.map(record) : [];
+  const roomIndex = roomRows.findIndex(entry => entry.id === allocation);
+  const guest = record(roomRows[roomIndex]?.guest);
+  const roomGuest = [text(guest.firstName), text(guest.lastName)].filter(Boolean).join(' ');
+  const roomLabel = roomIndex >= 0 ? `Room ${roomIndex + 1}${roomGuest ? ` · ${roomGuest}` : ''}` : 'Room no longer available';
   const linkedAmend = savedTarget && draft.proposal.content.requests.some(row => row.id === savedTarget.requestId && row.kind === 'amend');
   const createOperations = allocation ? draft.operationResults.filter(result => result.workflow === 'create'
     && result.requestId === ref.requestId && result.allocationId === allocation) : [];
@@ -292,7 +340,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
   const connected = Boolean(allocation && operation === 'add' || savedTarget && hint);
   return <div className={styles.card}>
     <h3>{operation === 'add' ? 'Add' : operation === 'edit' ? 'Edit' : 'Remove'} · {service.code || service.requestedText || 'item'}</h3>
-    <div className={styles.hint}>{allocation ? `Create room${roomLabel ? ` · ${roomLabel}` : ''}` : savedTarget
+    <div className={styles.hint}>{allocation ? `Create · ${roomLabel}` : savedTarget
       ? `Existing saved stay${text(hint?.confirmation) || text(hint?.guestName) ? ` · ${text(hint?.confirmation) || text(hint?.guestName)}` : ''}` : 'Unresolved target'} · one native item</div>
     {savedTarget && <Field editor={editor} path={`${serviceRoot}/operation`} label="Action" compact options={[
       { value: 'add', label: 'Add item' }, { value: 'edit', label: 'Edit saved item' }, { value: 'remove', label: 'Remove saved item' },
