@@ -2659,23 +2659,27 @@ function projectSingleSourceFilingHint(input: {
   evidence: ReservationWorkflowV2Evidence[];
 }): void {
   const scope = input.request.body.targets;
-  if (input.request.body.allocationTarget) return;
-  const currentFilings = input.extraction.requests.filter((candidate) => candidate.kind === 'filing' &&
-    currentClaim(candidate.requestText, input.currentRefs));
-  if (currentFilings.length !== 1 || currentFilings[0]!.id !== input.extracted.id || !input.request.documentRefs.length) return;
-
   const admittedRefs = new Set(input.evidence.map((row) => row.ref));
   const confirmationHints = exactConfirmationHints(input.extracted, admittedRefs);
   const confirmations = new Set(confirmationHints.map((hint) => hint.value));
   if (confirmations.size > 1) {
+    const allocationTarget = input.request.body.allocationTarget;
+    delete input.request.body.allocationTarget;
     input.request.body.targets = { mode: 'unresolved', include: [], exclude: [],
       sourceRefs: [...new Set(confirmationHints.flatMap((hint) => hint.sourceRefs))].slice(0, 100) };
-    for (const document of input.proposal.content.documents) if (input.request.documentRefs.includes(document.id)) document.targetRefs = [];
+    for (const document of input.proposal.content.documents) if (input.request.documentRefs.includes(document.id))
+      document.targetRefs = document.targetRefs.filter((target) => target.requestId !== input.request.id &&
+        !(allocationTarget && target.kind === 'allocation' && target.requestId === allocationTarget.requestId &&
+          target.allocationId === allocationTarget.allocationId));
     addProjectionIssue(input.proposal, `/requests/${input.request.id}/body/targets`, 'filing_confirmation_scope_ambiguous',
       'The current submission contains different source confirmation hints. No stay was selected or inferred; review the email and each document before binding Filing.',
       confirmationHints.flatMap((hint) => hint.sourceRefs));
     return;
   }
+  if (input.request.body.allocationTarget) return;
+  const currentFilings = input.extraction.requests.filter((candidate) => candidate.kind === 'filing' &&
+    currentClaim(candidate.requestText, input.currentRefs));
+  if (currentFilings.length !== 1 || currentFilings[0]!.id !== input.extracted.id || !input.request.documentRefs.length) return;
   if (!(scope === null || scope.mode === 'unresolved' && scope.include.length === 0 && scope.exclude.length === 0)) return;
   if (confirmations.size !== 1 || !confirmationHints.length) return;
   const date = input.extracted.dates.length === 1 ? input.extracted.dates[0] : undefined;
