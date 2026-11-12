@@ -133,11 +133,12 @@ function recoverExtractionFacts(value: unknown, input: {
   source: ReservationWorkflowV2Source; evidence: ReservationWorkflowV2Evidence[]; body: string;
 }): unknown {
   if (!isRecord(value) || !Array.isArray(value.requests)) return value;
+  const extractedRequests = value.requests;
   const requestSchema = reservationWorkflowV2ExtractionSchema.shape.requests.removeDefault().element;
   const known = new Set(input.evidence.map((row) => row.ref));
   const current = new Set(input.evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
   const issues: ReservationWorkflowV2Extraction['issues'] = [];
-  const requests = value.requests.flatMap((item, index) => {
+  const requests = extractedRequests.flatMap((item, index) => {
     if (!isRecord(item)) return [];
     const omitInvalidCitation = (entry: unknown): unknown | typeof OMIT_UNKNOWN_CLAIM => {
       if (Array.isArray(entry)) return entry.flatMap((child) => {
@@ -169,7 +170,7 @@ function recoverExtractionFacts(value: unknown, input: {
         .filter(([key]) => key !== 'sourceRefs').flatMap(([, child]) => cited(child))];
     };
     const refs = [...new Set(cited(request))].slice(0, 20);
-    if (!Object.hasOwn(item, 'requestText') && value.requests.length === 1 && refs.some((ref) => current.has(ref))) {
+    if (!Object.hasOwn(item, 'requestText') && extractedRequests.length === 1 && refs.some((ref) => current.has(ref))) {
       const message = input.evidence.find((row) => row.relation === 'current_message');
       const raw = input.body.trim().slice(0, 2000);
       if (message && raw) {
@@ -2066,7 +2067,7 @@ function recoverSourceIntent(input: {
     const text = input.evidence.find((row) => row.ref === pdf.documentRef)?.text ?? '';
     const kind = submittedDocumentKind(text);
     const explicitlySuppliedPayment = /\b(?:attached|herewith|attachment)\b[^.!?\n]{0,80}\b(?:POP|proof\s+of\s+payment)\b|\b(?:POP|proof\s+of\s+payment)\b[^.!?\n]{0,80}\b(?:attached|herewith|attachment)\b/i.test(currentBody);
-    return (kind || explicitlySuppliedPayment && pdfs.size === 1) && pdf.contentRefs.length ? [{ pdf, text, kind: kind ?? 'unclassified' }] : [];
+    return (kind || explicitlySuppliedPayment && pdfs.size === 1) && pdf.contentRefs.length ? [{ pdf, text, kind: kind ?? ('unclassified' as const) }] : [];
   });
   if (!documents.length) return extraction;
   const attachmentConfirmations = documents.flatMap(({ text, pdf }) => (text.match(/\b\d{6,10}-\d{1,2}\b/g) ?? [])
