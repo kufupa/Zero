@@ -1742,33 +1742,58 @@ function countedSourceQuoteRooms(request: ReservationWorkflowV2Extraction['reque
     new Set(rows.map((row) => normalizedFact(row.description))).size === rows.length &&
     total === rows.reduce((sum, row) => sum + row.quantity, 0);
   if (!complete) return [];
-  const source = evidence.find((entry) => entry.relation === 'current_message' && rows.every((row) =>
-    row.claim.sourceRefs.includes(entry.ref) && normalizedFact(entry.text).indexOf(normalizedFact(row.claim.raw)) ===
-      normalizedFact(entry.text).lastIndexOf(normalizedFact(row.claim.raw)) && normalizedFact(entry.text).includes(normalizedFact(row.claim.raw))));
-  const text = normalizedFact(source?.text ?? '');
+  const bodyText = (entry: ReservationWorkflowV2Evidence) => {
+    const headerEnd = entry.text.indexOf('\n\n');
+    return entry.text.slice(headerEnd < 0 ? 0 : headerEnd + 2)
+      .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
+  };
+  const source = evidence.find((entry) => entry.relation === 'current_message' && rows.every((row) => {
+    const text = normalizedFact(bodyText(entry)), raw = normalizedFact(row.claim.raw);
+    return row.claim.sourceRefs.includes(entry.ref) && text.indexOf(raw) === text.lastIndexOf(raw) && text.includes(raw);
+  }));
+  const text = normalizedFact(source ? bodyText(source) : '');
   const starts = rows.map((row) => text.indexOf(normalizedFact(row.claim.raw)));
   return rows.map((row, index) => {
     const start = starts[index] ?? -1;
     const end = starts.filter((position) => position > start).sort((a, b) => a - b)[0] ?? text.length;
-    const clause = source && start >= 0 ? text.slice(start, end) : '';
-    const dinner = /\bdinner\b|\bdbb\b/iu.test(clause), breakfast = /\bbreakfast\b|\bb&b\b|\bdbb\b/iu.test(clause);
+    const clause = source && start >= 0 ? text.slice(start, Math.min(end, start + 500)).split(
+      /\b(?:check\s*-?\s*(?:in|out)|arrival|departure|regards|sincerely|thank\s+you|notes?|comments?|payment|I|we|please\s+note|however|also)\b/iu)[0] ?? '' : '';
+    const affirmativeMeal = (pattern: RegExp) => {
+      const mentions = clause.split(/[;,/.!?]|\bbut\b/iu).flatMap((fragment) => {
+        const meals = [...fragment.matchAll(/\b(?:dinner|breakfast|dbb|b&b)\b/giu)];
+        return meals.flatMap((meal, index) => {
+          if (!pattern.test(meal[0])) return [];
+          const before = fragment.slice(index ? meals[index - 1]!.index + meals[index - 1]![0].length : 0, meal.index);
+          const after = fragment.slice(meal.index + meal[0].length, meals[index + 1]?.index ?? fragment.length);
+          const negated = /\b(?:no|not|without|declin(?:e|ed|ing)|exclud(?:e|ed|ing)|(?:don|isn|aren|won|needn)['’]t|unwanted)\b/iu.test(before) ||
+            /^\s*(?:(?:is|are|was|were)\s+)?(?:not\s+(?:required|needed|included|wanted)|(?:isn|aren)['’]t\s+(?:required|needed|included|wanted)|declined|excluded|unwanted|elsewhere|offsite)\b/iu.test(after);
+          return [!negated];
+        });
+      });
+      return mentions.length > 0 && mentions.every(Boolean);
+    };
+    const dinner = affirmativeMeal(/\bdinner\b|\bdbb\b/iu), breakfast = affirmativeMeal(/\bbreakfast\b|\bb&b\b|\bdbb\b/iu);
     const board = dinner && breakfast ? 'dinner_bb' : breakfast ? 'bb' : dinner ? 'Dinner' : null;
     return { ...row, board };
   });
 }
 
-function operationalSourceNote(input: { selection: SyncedQuoteSelection }): string | null {
+function operationalSourceNote(input: { selection: SyncedQuoteSelection }): string[] {
   const body = (input.selection.currentBodyText ?? input.selection.bodyText)
     .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
   const clauses = body.split(/\r?\n|(?<=[.!?])\s+/u).map((line) => line.trim()).filter((line) =>
     /\b(?:passport|firearms?|safe\s+storage|parking|shuttle|airport\s+transfer)\b/i.test(line) &&
-    line.length > 3 && line.length < 1000 && !/https?:\/\/|www\./i.test(line));
-  return clauses.length ? [...new Set(clauses)].join('\n').slice(0, 4000) : null;
+    line.length > 3 && !/https?:\/\/|www\./i.test(line));
+  return [...new Set(clauses)];
 }
 
 /** Exact date identity first; a single wholly empty slot may be filled by the only remaining source date. */
 function matchDateProjectionTargets(input: { targets: DateProjectionTarget[]; dates: ProjectableDateClaim[];
   currentRefs: Set<string> }): { targetsByDate: Map<number, number>; unlinkedDates: number[]; unlinkedTargets: number[] } {
+  if (input.dates.length === 1 && input.targets.length === 1 &&
+      (currentClaim(input.dates[0]!.arrival, input.currentRefs) || currentClaim(input.dates[0]!.departure, input.currentRefs))) {
+    return { targetsByDate: new Map([[0, 0]]), unlinkedDates: [], unlinkedTargets: [] };
+  }
   const keys = input.dates.map((date) => datePairKey(citedText(currentClaim(date.arrival, input.currentRefs)),
     citedText(currentClaim(date.departure, input.currentRefs))));
   const targetKeys = input.targets.map((target) => datePairKey(target.arrival, target.departure));
@@ -2026,7 +2051,8 @@ function recoverSourceIntent(input: {
     .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
   for (const request of extraction.requests) {
     const text = currentClaim(request.requestText, currentRefs)?.raw ?? '';
-    if (request.kind === 'cancel' && /\bcancel\b[^.!?\n]{0,32}\b(?:last|final)\s+(?:day|night)\b/i.test(text)) {
+    const partialStayCancellation = /\bcancel\s+(?:(?:only|just)\s+)?(?:the\s+)?(?:last|final)\s+(?:day|night)\b/i.test(text);
+    if (request.kind === 'cancel' && partialStayCancellation) {
       request.kind = 'amend';
       addIssue({ explanation: 'Canceling only the last day/night is a departure amendment; the existing stay remains the target.', sourceRefs: request.requestText.sourceRefs });
     }
@@ -2037,14 +2063,29 @@ function recoverSourceIntent(input: {
       typeof guest.name?.value === 'string' ? [guest.name.value] : []);
     const sameBooking = (row: ReservationWorkflowV2Evidence) => {
       const subject = /^Subject:\s*(.+)$/im.exec(row.text)?.[1] ?? '';
+      const headerEnd = row.text.indexOf('\n\n');
+      const body = row.text.slice(headerEnd < 0 ? 0 : headerEnd + 2)
+        .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
+      const statements = body.split(/[.!?\n]/u).filter((statement) =>
+        /\b(?:booking|reservation)\b[^.!?\n]{0,40}\b(?:has\s+been|was|is|already)\s+cancel{1,2}ed\b/i.test(statement) &&
+        !/\b(?:no|not|never|unless|if|whether)\b/i.test(statement));
+      if (!statements.length) return false;
+      const statedReferences = new Set(statements.flatMap((statement) => [
+        ...(statement.match(/\b\d{6,10}-\d{1,2}\b/g) ?? []),
+        ...[...statement.matchAll(/\b(?:booking|reservation)\s+(?:(?:number|no\.?|reference)\s*[:#]?\s*)?([A-Z0-9][A-Z0-9-]{5,})\b/giu)]
+          .map((match) => match[1]!).filter((value) => /\d/u.test(value)),
+      ]));
+      const rowNativeReferences = new Set(row.text.match(/\b\d{6,10}-\d{1,2}\b/g) ?? []);
       // An explicit confirmation outranks guest-name overlap. A guest can have
       // several bookings in this thread, including an earlier cancelled stay.
       if (nativeReferences.length) return new Set(nativeReferences).size === 1 &&
+        [...rowNativeReferences, ...statedReferences].every((value) => nativeReferences.includes(value)) &&
         nativeReferences.some((value) => subject.includes(value));
-      if (references.length) return references.some((value) => subject.includes(value));
+      if (references.length) return rowNativeReferences.size === 0 &&
+        [...statedReferences].every((value) => references.includes(value)) && references.some((value) => subject.includes(value));
       const nativeThreadReferences = new Set(input.evidence.filter((entry) => entry.relation === 'prior_thread')
         .flatMap((entry) => entry.text.match(/\b\d{6,10}-\d{1,2}\b/g) ?? []));
-      return extraction.requests.length === 1 && nativeThreadReferences.size <= 1 && guestNames.length === 1 &&
+      return statedReferences.size === 0 && extraction.requests.length === 1 && nativeThreadReferences.size <= 1 && guestNames.length === 1 &&
         normalizedFact(subject).includes(normalizedFact(guestNames[0]));
     };
     const priorHotel = input.evidence.filter((row) => row.kind === 'message' && row.relation === 'prior_thread' &&
@@ -2070,6 +2111,13 @@ function recoverSourceIntent(input: {
     return (kind || explicitlySuppliedPayment && pdfs.size === 1) && pdf.contentRefs.length ? [{ pdf, text, kind: kind ?? ('unclassified' as const) }] : [];
   });
   if (!documents.length) return extraction;
+  const eligible = extraction.requests.filter((request) => ['other', 'filing', 'create'].includes(request.kind) &&
+    currentClaim(request.requestText, currentRefs));
+  if (eligible.length > 1 || extraction.requests.some((request) => !eligible.includes(request))) return extraction;
+  const documentEvidenceRefs = new Set(documents.flatMap(({ pdf }) => pdf.sourceRefs));
+  const typedCurrentClaims = (eligible[0]?.confirmationHints ?? []).filter((claim) =>
+    claim.sourceRefs.every((ref) => currentRefs.has(ref)) &&
+    claim.sourceRefs.some((ref) => ref === message.ref || documentEvidenceRefs.has(ref)));
   const attachmentConfirmations = documents.flatMap(({ text, pdf }) => (text.match(/\b\d{6,10}-\d{1,2}\b/g) ?? [])
     .map((value) => ({ raw: value, value, sourceRefs: [pdf.documentRef] })));
   const currentConfirmations = (`${subject}\n${currentBody}`.match(/\b\d{6,10}-\d{1,2}\b/g) ?? [])
@@ -2077,29 +2125,34 @@ function recoverSourceIntent(input: {
   const priorConfirmations = input.evidence.flatMap((row) =>
     row.relation === 'prior_thread' && /\b(?:confirmation\s*(?:number|no)|confirming\s+your\s+reservation)\b/i.test(row.text)
       ? (row.text.match(/\b\d{6,10}-\d{1,2}\b/g) ?? []).map((value) => ({ raw: value, value, sourceRefs: [row.ref] })) : []);
-  const confirmationClaims = currentConfirmations.length ? [...currentConfirmations, ...attachmentConfirmations] :
-    attachmentConfirmations.length ? attachmentConfirmations : priorConfirmations;
-  if (!confirmationClaims.length) return extraction;
-  const conflictingConfirmations = new Set(confirmationClaims.map((claim) => claim.value)).size > 1;
+  const currentClaims = [...typedCurrentClaims, ...currentConfirmations, ...attachmentConfirmations];
+  const hasExactCurrentClaim = currentClaims.some((claim) => typeof claim.value === 'string' && /^\d{6,10}-\d{1,2}$/u.test(claim.value.trim()));
+  const confirmationClaims = hasExactCurrentClaim ? currentClaims : [...currentClaims, ...priorConfirmations];
+  const exactClaims = confirmationClaims.filter((claim) => typeof claim.value === 'string' && /^\d{6,10}-\d{1,2}$/u.test(claim.value.trim()));
+  if (!exactClaims.length) return extraction;
+  const conflictingConfirmations = new Set(exactClaims.map((claim) => claim.value)).size > 1;
   // More than one historical booking cannot establish this document's target.
-  if (!currentConfirmations.length && !attachmentConfirmations.length && conflictingConfirmations) return extraction;
-  const eligible = extraction.requests.filter((request) => ['other', 'filing', 'create'].includes(request.kind) &&
-    currentClaim(request.requestText, currentRefs));
-  if (eligible.length > 1 || extraction.requests.some((request) => !eligible.includes(request))) return extraction;
+  if (!hasExactCurrentClaim && conflictingConfirmations) return extraction;
   const raw = (currentBody.trim() || subject).slice(0, 2000);
   const seed = eligible[0] ?? reservationWorkflowV2ExtractionSchema.parse({ requests: [{
     id: stableId(input.source.messageId, 'submitted_document'), kind: 'filing', requestText: { raw, value: raw, sourceRefs: [message.ref] },
   }] }).requests[0];
   if (!seed) return extraction;
   seed.kind = 'filing';
-  seed.confirmationHints = confirmationClaims.slice(0, 100);
+  const mergedClaims = new Map<string, typeof seed.confirmationHints[number]>();
+  for (const claim of confirmationClaims) {
+    const key = `${typeof claim.value}:${String(claim.value)}`;
+    const existing = mergedClaims.get(key);
+    mergedClaims.set(key, existing ? { ...existing, sourceRefs: [...new Set([...existing.sourceRefs, ...claim.sourceRefs])].slice(0, 20) } : claim);
+  }
+  seed.confirmationHints = [...mergedClaims.values()].slice(0, 100);
   seed.documentRefs = [...new Set([...seed.documentRefs, ...documents.map(({ pdf }) => pdf.documentRef)])].slice(0, 200);
   const hints: typeof seed.documentHints = documents.map(({ pdf, kind }) => ({ documentRef: pdf.documentRef,
     kind, sourceRefs: pdf.contentRefs.slice(0, 20) }));
   seed.documentHints = [...seed.documentHints.filter((hint) => !hints.some((row) => row.documentRef === hint.documentRef)), ...hints].slice(0, 200);
   if (!eligible.length) extraction.requests.push(seed);
   if (conflictingConfirmations) addIssue({ explanation:
-    `Current submission/document confirmations disagree (${[...new Set(confirmationClaims.map((claim) => claim.value))].join(', ')}). Filing remains unbound; staff must identify the correct document and stay.`,
+    `Current submission/document confirmations disagree (${[...new Set(exactClaims.map((claim) => claim.value))].join(', ')}). Filing remains unbound; staff must identify the correct document and stay.`,
   sourceRefs: [...new Set(confirmationClaims.flatMap((claim) => claim.sourceRefs))].slice(0, 20) });
   addIssue({ explanation: 'The current message submits an incoming voucher/payment document for one source-identified existing stay. Filing was recovered with an unresolved source confirmation; native identity and document handling still require review.',
     sourceRefs: [message.ref, ...documents.map(({ pdf }) => pdf.documentRef)].slice(0, 20) });
@@ -3055,12 +3108,39 @@ function projectCurrentExtraction(input: {
     request.sourceRefs = [...new Set([...request.sourceRefs, ...allRefs])].slice(0, 100);
     request.requestText = extracted.requestText.raw.slice(0, 2000);
     projectBookerContacts({ proposal, request, extracted, currentRefs });
-    const sourceNote = currentExtraction.requests.length === 1 ? operationalSourceNote(input) : null;
-    if (sourceNote && (request.kind === 'create' || request.kind === 'quote')) {
+    const sourceNotes = currentExtraction.requests.length === 1 ? operationalSourceNote(input) : [];
+    if (request.kind === 'create' || request.kind === 'quote') {
       const existing = request.kind === 'create' ? request.body.shared.reservationNote : request.body.notes;
-      if (existing === null || existing === undefined || existing === '') {
-        if (request.kind === 'create') request.body.shared.reservationNote = sourceNote;
-        else request.body.notes = sourceNote;
+      const limit = request.kind === 'create' ? 2000 : 1000;
+      const existingOverflow = typeof existing === 'string' && existing.length > limit;
+      const noteParts: string[] = [];
+      for (const clause of sourceNotes) {
+        if ([...noteParts, clause].join('\n').length > limit) break;
+        noteParts.push(clause);
+      }
+      const path = `/proposal/content/requests/${request.id}/body/${request.kind === 'create' ? 'shared/reservationNote' : 'notes'}`;
+      const sourceRefs = input.evidence.filter((row) => row.relation === 'current_message').map((row) => row.ref);
+      if (existingOverflow || sourceNotes.length && (existing === null || existing === undefined || existing === '')) {
+        const note = noteParts.length ? noteParts.join('\n') : null;
+        if (request.kind === 'create') request.body.shared.reservationNote = note;
+        else request.body.notes = note;
+        if (note) proposal.annotations.push({ path, basis: 'source', evidenceRefs: sourceRefs });
+      }
+      const sourceOverflow = sourceNotes.join('\n').length > limit;
+      if (sourceOverflow || existingOverflow) {
+        const sourceBackedExisting = typeof existing === 'string' && existingOverflow && input.evidence.some((row) =>
+          row.relation === 'current_message' && normalizedFact(row.text).includes(normalizedFact(existing)));
+        const retainedClauses = sourceBackedExisting && typeof existing === 'string' ? [...sourceNotes, existing] : sourceNotes;
+        for (const clause of retainedClauses) for (let offset = 0; offset < clause.length; offset += 2000) {
+          if (proposal.sourceClaims.length >= MAX_PROPOSAL_SOURCE_CLAIMS) break;
+          const raw = clause.slice(offset, offset + 2000);
+          if (!proposal.sourceClaims.some((claim) => claim.path === path && claim.raw === raw)) proposal.sourceClaims.push({ path, raw, sourceRefs });
+        }
+        addProjectionIssue(proposal, path, 'source_note_exceeds_native_limit',
+          `This note exceeds HMS's ${limit}-character limit. Only complete source clauses that fit were projected; overflow remains in source claims where capacity permits and in the selected email for staff review.`, sourceRefs);
+        if (existingOverflow && !sourceBackedExisting && typeof existing === 'string') for (let offset = 0; offset < existing.length; offset += 1500)
+          addProjectionIssue(proposal, path, 'withheld_oversized_note',
+            `Oversized synthesized note was withheld; verify this text against the selected email (part ${offset / 1500 + 1}): ${existing.slice(offset, offset + 1500)}`, []);
       }
     }
     if (request.kind === 'create' && extracted.requestedPrice) {
@@ -3191,6 +3271,7 @@ function projectCurrentExtraction(input: {
     const projectedDates = extracted.dates.map((date) => ({ arrival: editableDate(date.arrival), departure: editableDate(date.departure) }));
     if (request.kind === 'quote') {
       const sourceRooms = countedSourceQuoteRooms(extracted, input.evidence, currentRefs);
+      const sourceRoomByGroupId = new Map<string, typeof sourceRooms[number]>();
       if (sourceRooms.length && singleCurrentDatePair(projectedDates, currentRefs)) {
         const originalGroups = request.body.groups;
         const linkedIds = new Set<string>();
@@ -3200,6 +3281,7 @@ function projectCurrentExtraction(input: {
           const original = matches.length === 1 && !linkedIds.has(matches[0]!.id) ? matches[0] : undefined;
           if (original) linkedIds.add(original.id);
           const id = original?.id ?? stableId(request.id, 'source_room_group', String(index));
+          sourceRoomByGroupId.set(id, row);
           return { ...(original ?? { id, arrival: null, departure: null, board: null, roomCodes: [], ratePlan: null,
             occupancy: { scope: 'unresolved' as const, adults: null, childCount: null, childAges: null }, priceObservationRefs: [] }),
           id, quantity: row.quantity, requestedRoomDescription: row.description, board: row.board };
@@ -3261,7 +3343,7 @@ function projectCurrentExtraction(input: {
         if (request.body.groups.length === 1 && (currentDatePair || singleSourceGroup) && linkedQuoteGroups.includes(0) &&
             typeof count === 'number' && count >= 1 && count <= 100) {
           request.body.groups[0]!.quantity = count;
-        } else if (!sourceRooms.length) {
+        } else if (!sourceRoomByGroupId.size) {
           // The extraction schema carries one request-wide count, while Quote compiles
           // each group additively. Copying this count into mixed groups inflates demand.
           for (const group of request.body.groups) group.quantity = null;
@@ -3286,10 +3368,19 @@ function projectCurrentExtraction(input: {
         boardsByValue.set('dinner_bb', { raw: `${dinner.raw}; ${breakfast.raw}`, value: 'dinner_bb',
           sourceRefs: [...new Set([...dinner.sourceRefs, ...breakfast.sourceRefs])] });
       }
-      if (sourceRooms.length && linkedQuoteGroups.length === request.body.groups.length) {
-        for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.board = sourceRooms[groupIndex]?.board ?? null;
+      if (sourceRoomByGroupId.size && linkedQuoteGroups.length === request.body.groups.length) {
+        for (const groupIndex of linkedQuoteGroups) {
+          const group = request.body.groups[groupIndex]!;
+          const sourceRoom = sourceRoomByGroupId.get(group.id);
+          if (sourceRoom && datePairKey(group.arrival, group.departure) === currentDatePair) group.board = sourceRoom.board;
+        }
         if (sourceRooms.some((row) => !row.board)) addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
           'Some room-specific board choices could not be bound to their counted source clause. Those boards remain unresolved; independently bound group boards were retained.',
+          currentBoards.flatMap((claim) => claim.sourceRefs));
+      } else if (sourceRooms.length) {
+        for (const group of request.body.groups) group.board = null;
+        addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
+          'Counted room clauses could not be bound to one current stay range and matching room groups. Their board claims remain available; no board was copied by group position.',
           currentBoards.flatMap((claim) => claim.sourceRefs));
       } else if (currentBoards.length && linkedQuoteGroups.length) {
         if (boardsByValue.size === 1) {
