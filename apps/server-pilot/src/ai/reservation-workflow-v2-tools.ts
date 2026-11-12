@@ -51,6 +51,8 @@ import { lockCreateActorSession } from './pane-create-actor-lock.js';
 import { stayCommitsOf } from './work-items.js';
 import { sameGuestName } from './guest-name-match.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
+import { partyMatchSearchTerms } from './party-match-v2.js';
+import { reservationEntityKey } from './reservation-workflow-v2-native-leads.js';
 import type { ReservationWorkflowV2SystemReadContext } from './reservation-workflow-v2-system-read-context.js';
 
 type V2StateContext = ReservationWorkflowV2Context;
@@ -1213,20 +1215,33 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
               if (allocationStatus === 'ok' || allocationStatus === 'matches' || allocationStatus === 'no_match') allocationStatus = 'partial';
               continue;
             }
-            const found = await runTool({ tool: spec.tool, query: party.name });
+            let nativeQuery = party.name;
+            let found = await runTool({ tool: spec.tool, query: nativeQuery });
+            const searchesTried = [{ query: nativeQuery, outcome: found.outcome }];
+            if (found.outcome === 'no_match') {
+              const fallbacks = partyMatchSearchTerms(party.name).filter(term => term !== party.name).slice(0, 2);
+              for (const term of fallbacks) {
+                nativeQuery = term;
+                found = await runTool({ tool: spec.tool, query: nativeQuery });
+                searchesTried.push({ query: nativeQuery, outcome: found.outcome });
+                if (found.outcome !== 'no_match') break;
+              }
+            }
             const closed = await runTool({ tool: 'closeGuestStayPartyPicker', propertyCode: ctx.property.propertyCode });
             const coverage = record(found.coverage), verifiedFields = verifiedNativeFields(found);
             const candidates = Array.isArray(found.candidates) ? found.candidates.map(record).filter(Boolean) : [];
             const projected = partyCandidateViews(candidates, spec.role, verifiedFields);
             const criteria = record(found.criteria);
             const complete = ['matches', 'no_match'].includes(String(found.outcome)) && typeof found.searchId === 'string' &&
-              criteria?.query === party.name && coverage?.possiblyTruncated === false &&
+              criteria?.query === nativeQuery && coverage?.possiblyTruncated === false &&
               typeof coverage.loaded === 'number' && Number.isInteger(coverage.loaded) && candidates.length === coverage.loaded &&
               verifiedFields.includes(spec.idField) && verifiedFields.includes(spec.nameField) && projected.valid &&
               closed.outcome === 'closed_unsaved';
+            projected.rows.sort((left, right) => Number(reservationEntityKey(String(right.name), spec.role) === reservationEntityKey(party.name, spec.role)) -
+              Number(reservationEntityKey(String(left.name), spec.role) === reservationEntityKey(party.name, spec.role)));
             const info = { outcome: complete ? found.outcome : 'partial', searchOutcome: found.outcome,
               query: party.name, searchId: typeof found.searchId === 'string' ? found.searchId : null,
-              criteria, coverage, correlation: { verifiedFields }, candidates: projected.rows,
+              criteria, coverage, correlation: { verifiedFields }, candidates: projected.rows, nativeQuery, searchesTried,
               closeOutcome: closed.outcome };
             partySearches[spec.key] = info;
             if (found.searchId && ['matches', 'no_match'].includes(String(found.outcome))) {
@@ -1236,7 +1251,8 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
                   kind: 'party_candidate', status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
                   propertyCode: loaded.draft!.propertyCode, sourceMessageId: loaded.draft!.source.messageId, sourceRefs: [],
                   criteria: { workflow: 'create', kind: 'party_name', requestId: request.id, allocationId,
-                    role: spec.role, fieldPaths: [party.selectionPath], query: party.name, candidateIndex, coverage,
+                    role: spec.role, fieldPaths: [party.selectionPath], query: party.name, nativeQuery, searchesTried,
+                    candidateIndex, coverage,
                     correlation: { verifiedFields } },
                   coverage: { complete: Boolean(complete), notes: complete ? [] : ['native_party_lookup_incomplete'] },
                   result: { outcome: found.outcome, criteria: record(found.criteria), coverage,

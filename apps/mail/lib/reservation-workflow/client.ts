@@ -185,7 +185,7 @@ function wireValueAtPath(draft: ReservationWorkflowV2Draft, path: string): unkno
   return value;
 }
 
-const reviewedAggregateArrays = new Set(['childAges', 'roomCodes', 'artifacts']);
+const reviewedAggregateArrays = new Set(['childAges', 'roomCodes', 'artifacts', 'guestNames']);
 const nonReviewMetadata = new Set(['requestText', 'title', 'dateSectionId', 'requestedRooms', 'unassignedGuestNames',
   'requestedTotals', 'scope', 'profileIntent', 'candidateRefs', 'suggestedRef', 'sourceRefs', 'serviceRefs', 'documentRefs', 'targetRefs',
   'priceObservationRefs', 'lookupResultRefs', 'evidenceRefs', 'ownerRequestId', 'uploadArtifactRef', 'id', 'kind']);

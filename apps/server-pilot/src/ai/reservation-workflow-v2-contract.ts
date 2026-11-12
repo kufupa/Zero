@@ -128,6 +128,8 @@ export const reservationWorkflowV2PrefillInputSchema = z.object({
 export type ReservationWorkflowV2PrefillInput = z.infer<typeof reservationWorkflowV2PrefillInputSchema>;
 
 const bookingFieldsSchema = z.object({
+  requestedRoomDescription: value(z.string().max(1000)).optional(),
+  requestedBoard: value(z.string().max(120)).optional(),
   roomType: value(z.string().max(120)).optional(),
   roomTypeForCharge: value(z.string().max(120)).optional(),
   ratePlan: value(z.string().max(120)).optional(),
@@ -188,11 +190,14 @@ const quoteBodySchema = z.object({
     departure: z.string().max(40).nullable(),
     quantity: z.number().int().nullable(),
     board: z.string().max(120).nullable(),
+    requestedRoomDescription: z.string().max(1000).nullable().optional(),
+    guestNames: z.array(z.string().max(300)).max(200).optional(),
     roomCodes: z.array(z.string().max(120)).max(100),
     ratePlan: z.string().max(120).nullable(),
     occupancy: occupancySchema.extend({ scope: z.enum(['per_room', 'whole_group', 'unresolved']) }),
     priceObservationRefs: z.array(refSchema).max(100),
   }).strict()).max(100),
+  guestNames: z.array(z.string().max(300)).max(200).optional(),
   parties: z.object({ company: value(partySchema).optional(), agency: value(partySchema).optional() }).strict(),
   salesStrategy: z.string().max(1000).nullable(),
   client: z.object({ attention: z.string().max(300).nullable(), email: z.string().max(320).nullable(),

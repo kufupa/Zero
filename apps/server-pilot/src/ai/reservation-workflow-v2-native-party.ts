@@ -1,5 +1,7 @@
 import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
+import { partyMatchSearchTerms } from './party-match-v2.js';
+import { reservationEntityKey } from './reservation-workflow-v2-native-leads.js';
 
 export type NativePartyRole = 'agency' | 'organization' | 'ar_account';
 
@@ -63,7 +65,18 @@ export async function lookupNativeParty(input: {
     const result = await session.withBookingLookupSession<ReservationWorkflowV2NativePartyRead>(async ({ runTool }) => {
       signal?.throwIfAborted();
       const spec = specs[role];
-      const found = await runTool({ tool: spec.tool, query: name });
+      let nativeQuery = name;
+      let found = await runTool({ tool: spec.tool, query: nativeQuery });
+      const searchesTried = [{ query: nativeQuery, outcome: found.outcome }];
+      if (found.outcome === 'no_match') {
+        for (const term of partyMatchSearchTerms(name).filter(term => term !== name).slice(0, 2)) {
+          signal?.throwIfAborted();
+          nativeQuery = term;
+          found = await runTool({ tool: spec.tool, query: nativeQuery });
+          searchesTried.push({ query: nativeQuery, outcome: found.outcome });
+          if (found.outcome !== 'no_match') break;
+        }
+      }
       const closed = await runTool({ tool: 'closeGuestStayPartyPicker', propertyCode: target.propertyCode });
       const outcome = text(found.outcome) ?? 'execution_failure';
       const closeOutcome = text(closed.outcome) ?? 'execution_failure';
@@ -95,18 +108,21 @@ export async function lookupNativeParty(input: {
           ...(verified.has('city') && text(row?.city) ? { city: text(row?.city) } : {}),
           ...(verified.has('country') && text(row?.country) ? { country: text(row?.country) } : {}) }];
       });
+      candidates.sort((left, right) => Number(reservationEntityKey(right.name, role) === reservationEntityKey(name, role)) -
+        Number(reservationEntityKey(left.name, role) === reservationEntityKey(name, role)));
       if (new Set(candidates.map((candidate) => candidate.nativeId)).size !== candidates.length) valid = false;
       const truncated = typeof nativeCoverage?.truncated === 'boolean' ? nativeCoverage.truncated : null;
       const loaded = nativeCoverage?.loaded;
       const complete = ['matches', 'no_match'].includes(outcome) && typeof found.searchId === 'string' &&
-        criteria?.query === name && nativeCoverage?.possiblyTruncated === false && truncated === false &&
+        criteria?.query === nativeQuery && nativeCoverage?.possiblyTruncated === false && truncated === false &&
         typeof loaded === 'number' && Number.isInteger(loaded) && loaded >= 0 && loaded === rawCandidates.length &&
         (outcome === 'matches' ? loaded > 0 : loaded === 0) && valid && closeOutcome === 'closed_unsaved';
       const isError = !['matches', 'no_match'].includes(outcome);
       const reason = isError ? issue(found.issue, 'native_party_search_failed') : closeOutcome !== 'closed_unsaved'
         ? issue(closed.issue, 'native_party_picker_close_unverified') : 'native_party_lookup_incomplete';
       const status = complete ? 'complete' : isError ? (outcome === 'input_gap' || outcome === 'unavailable' ? 'unavailable' : 'failed') : 'partial';
-      return { status, result: { outcome, kind: role, searchedFor: name, candidates, truncated,
+      return { status, result: { outcome, kind: role, searchedFor: name, nativeQuery, searchesTried, nativeCriteria: criteria,
+        candidates, truncated,
         ...(complete ? {} : { reason }),
         ...(isError ? { searchIssue: issue(found.issue, 'native_party_search_failed'),
           ...(found.stage ? { stage: issue(found.stage, 'native_party_search') } : {}) } : {}),

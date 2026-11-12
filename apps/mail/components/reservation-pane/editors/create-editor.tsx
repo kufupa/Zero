@@ -9,6 +9,8 @@ import styles from './create-quote-editor.module.css';
 type Editor = WorkbenchEditorProps;
 type BookingField = { key: string; label: string; picker?: string; party?: boolean; type?: string; hint?: string; maxLength?: number };
 const roomFields: BookingField[] = [
+  { key: 'requestedRoomDescription', label: 'Requested room', maxLength: 1000, hint: 'Customer room description. Choose the Infor category below.' },
+  { key: 'requestedBoard', label: 'Requested board', maxLength: 120, hint: 'Customer board request. Confirm it against the Infor rate.' },
   { key: 'roomType', label: 'Room Type', picker: 'room_type' },
   { key: 'roomTypeForCharge', label: 'Room Type for Charge', picker: 'room_type_for_charge', hint: 'Blank uses the Infor default. Infor checks the price for the selected category.' },
   { key: 'ratePlan', label: 'Rate Plan', picker: 'rate_plan' },

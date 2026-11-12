@@ -92,14 +92,17 @@ export function Field({ label, path, editor, type = 'text', options, disabled, h
 }) {
   const id = useId();
   const saved = resolvedValue === undefined ? valueAt(editor.snapshot, path) : resolvedValue;
-  const [local, setLocal] = useState(text(saved));
+  const savedText = type === 'string-list' && Array.isArray(saved)
+    ? saved.filter((item): item is string => typeof item === 'string').join('\n') : text(saved);
+  const [local, setLocal] = useState(savedText);
   const [dirty, setDirty] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const version = useRef(0);
-  useEffect(() => { if (!dirty) setLocal(text(saved)); }, [saved, dirty]);
+  useEffect(() => { if (!dirty) setLocal(savedText); }, [savedText, dirty]);
   const clearedCreateOptional = (value: unknown) => editor.request.kind === 'create' && value === ''
     && /\/(?:bookerName|bookerContact|billingReference|reservationNote|cmsRecipient)$/.test(path);
-  const parsedValue = (value: string) => type === 'number' ? value === '' ? null : Number(value)
+  const parsedValue = (value: string) => type === 'string-list' ? value.split(/[\n,]/u).map(item => item.trim()).filter(Boolean)
+    : type === 'number' ? value === '' ? null : Number(value)
     : value === '' && defaultValue ? defaultValue : value;
   const stateFor = (raw: string, value: unknown) => raw === '' && emptyState ? emptyState
     : clearedCreateOptional(value) ? 'none' as const : 'set' as const;
@@ -118,8 +121,9 @@ export function Field({ label, path, editor, type = 'text', options, disabled, h
       onChange={event => { void editor.commands.edit(path, event.target.checked).catch(() => {}); }} />
       : options ? <select id={id} value={local} disabled={disabled || reviewing} onChange={event => { const value = event.target.value; setLocal(value); void editor.commands.edit(path, value).catch(() => setDirty(true)); }}>
         <option value="">Choose…</option>{local && !options.some(option => option.value === local) && <option value={local} disabled={Boolean(unmatchedOptionLabel)}>{local}{unmatchedOptionLabel ? ` · ${unmatchedOptionLabel}` : ''}</option>}{options.filter(option => option.value).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
-      : type === 'textarea' ? <textarea id={id} value={local} maxLength={maxLength} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} />
+      : type === 'textarea' || type === 'string-list' ? <textarea id={id} value={local} maxLength={maxLength} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} />
       : <input id={id} type={type} value={local} maxLength={maxLength} placeholder={defaultValue} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); } }} />}
+    {type === 'date' && local && !/^\d{4}-\d{2}-\d{2}$/.test(local) && <small>Requested: {local}. Choose the full date above.</small>}
     {dirty && <span className={styles.small}>Unsaved</span>}{hint && <small>{hint}</small>}</div>
     {compact && <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} requireReview={requireReview} disabled={disabled} />}
   </div>;

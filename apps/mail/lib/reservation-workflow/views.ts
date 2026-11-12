@@ -97,6 +97,42 @@ export function effectiveAt(snapshot: ReservationPaneSnapshot, path: string): un
   return raw;
 }
 export type NativeChoice = { ref: string; label: string; value: string; detail?: string };
+export type NativeRecommendationLead = { ref: string; value: string; label: string;
+  basis: 'exact_sender' | 'normalized_entity'; support: number };
+
+/** Historical names and codes are search suggestions, never native selections. */
+export function nativeRecommendationLeads(snapshot: ReservationPaneSnapshot, path: string, kind?: string): NativeRecommendationLead[] {
+  if (kind !== 'party_candidate' && kind !== 'rate_plan') return [];
+  const draft = snapshot.session.draft;
+  const requestId = decodeURIComponent(path.split('/')[4] ?? '');
+  const request = draft.proposal.content.requests.find(row => row.id === requestId);
+  if (!request || !['create', 'quote'].includes(request.kind)) return [];
+  const owner = path.replace(/\/nativeSelectionRef$/, '');
+  const role = kind === 'rate_plan' ? 'rate_plan' : owner.endsWith('/bookingAgency') || owner.endsWith('/agency') ? 'agency'
+    : owner.endsWith('/arAccount') ? 'ar_account' : owner.endsWith('/company') ? 'company' : 'organization';
+  const queryPath = kind === 'rate_plan' ? path : `${owner}/name`;
+  const normalize = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  const currentQuery = normalize(valueAt(snapshot, queryPath));
+  const leads = draft.observations.flatMap(observation => {
+    const criteria = record(observation.criteria);
+    const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
+    if (criteria.kind !== 'historical_lookup_leads' || criteria.requestId !== request.id || criteria.workflow !== request.kind ||
+        criteria.role !== role || criteria.sourceHash !== draft.source.sourceHash || !paths.includes(path) ||
+        observation.status !== 'partial' || observation.coverage.complete !== false ||
+        observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
+        observation.sourceMessageId !== draft.source.messageId || normalize(criteria.query) !== currentQuery) return [];
+    const rows = record(observation.result).leads;
+    if (!Array.isArray(rows)) return [];
+    return rows.flatMap(raw => {
+      const row = record(raw);
+      if (typeof row.value !== 'string' || !row.value.trim() || typeof row.label !== 'string' ||
+          (row.basis !== 'exact_sender' && row.basis !== 'normalized_entity') ||
+          typeof row.support !== 'number' || !Number.isSafeInteger(row.support) || row.support < 1) return [];
+      return [{ ref: observation.ref, value: row.value, label: row.label, basis: row.basis, support: row.support } satisfies NativeRecommendationLead];
+    });
+  });
+  return leads.filter((row, index) => leads.findIndex(other => normalize(other.value) === normalize(row.value)) === index).slice(0, 3);
+}
 function currentIdentityRow(snapshot: ReservationPaneSnapshot, path: string, observation: ReservationPaneSnapshot['session']['draft']['observations'][number], verified: boolean): boolean {
   const criteria = record(observation.criteria), result = record(observation.result);
   if (verified && (record(result.rowVerification).status !== 'verified' || criteria.fieldPath !== path ||

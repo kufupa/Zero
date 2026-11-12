@@ -47,6 +47,7 @@ function SharedDate({ editor, groups, bodyPath, field, label }: {
         if (version.current === before) { dirty.current = false; editor.commands.setUncommitted(editKey, false); }
       }).catch(() => {});
     }} />
+    {value && !/^\d{4}-\d{2}-\d{2}$/.test(value) && <small>Requested: {value}. Choose the full date above.</small>}
   </div>;
 }
 
@@ -459,6 +460,8 @@ export function QuoteEditor(editor: Editor) {
   const provisional = valueAt(snapshot, `${bodyPath}/provisionalBookingRequested`);
   return <div className={`${styles.editor} ${styles.compactQuote}`}>
     <Section title="Stay and rooms">
+      <Field label="Requested guests" path={`${bodyPath}/guestNames`} editor={editor} type="string-list" compact
+        hint="One name per line or comma. This roster has no room allocation yet." />
       {groups.length ? <>
         {!mismatch && <div className={styles.twoCol}><SharedDate editor={editor} groups={groups} bodyPath={bodyPath} field="arrival" label="Arrival" />
           <SharedDate editor={editor} groups={groups} bodyPath={bodyPath} field="departure" label="Departure" /></div>}
@@ -489,6 +492,10 @@ export function QuoteEditor(editor: Editor) {
           {roomSource && <p className={styles.note}>Requested: {roomSource.raw}</p>}
           <div className={styles.twoCol}><Count label="Rooms" path={`${groupPath}/quantity`} editor={editor} min={1} max={100} review />
             <Field label="Board" path={`${groupPath}/board`} editor={editor} options={boards} review /></div>
+          <Field label="Requested room" path={`${groupPath}/requestedRoomDescription`} editor={editor} maxLength={1000} compact
+            hint="Customer room description. Choose the Infor categories below." />
+          <Field label="Requested guests for this group" path={`${groupPath}/guestNames`} editor={editor} type="string-list" compact
+            hint="One name per line or comma. Names are not assigned to individual rooms." />
           <Field label="Occupancy scope" path={`${groupPath}/occupancy/scope`} editor={editor} compact options={[
             { value: 'unresolved', label: 'Needs allocation' }, { value: 'whole_group', label: 'Whole group · needs allocation' },
             { value: 'per_room', label: 'Per room' },

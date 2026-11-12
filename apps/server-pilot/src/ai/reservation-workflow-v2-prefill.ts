@@ -26,6 +26,7 @@ import { PANE_PROPERTY_LOCK_WAIT_MS, acquisitionWithin } from '../hms/property-r
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { findParty } from './pane-party-lookup.js';
 import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
+import { loadReservationNativeLeads } from './reservation-workflow-v2-native-leads.js';
 import { findStay, paneStayLookupEnabled, searchGuest, searchGuestCloudBatch, type GuestSearchQuery } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { normalizeGuestName, sameGuestName } from './guest-name-match.js';
@@ -79,6 +80,8 @@ const VOUCHER_SYNTHESIS_RULES = `Keep requestedPrice as cited source evidence. W
 // from the existing property profile. Later corpus outcomes never enter T0 input.
 const HRCEN_AMEND_CAPABILITIES = `Trusted HRCEN tool capability context (applies only to Amend): Target bookedArrival and bookedDeparture identify the original saved stay, not the requested new dates. Put a requested new date only in its change; leave the corresponding original date absent unless the original is separately supported by the source or a native stay read. HMS can issue revised reservation documents when the amendment is saved, through the existing change fields cmsSend, cmsMessageId and cmsRecipient. A customer's request to send revised confirmation/proforma documents is a business delivery intent, not an incoming attachment or filing request. Translate that explicit intent into editable set changes: cmsSend=true and cmsRecipient=the source-supported requested recipient or current requester's address. For an explicit proforma request, choose only a configured CMS template whose supplied label supports proforma. A confirmation-only request does not justify switching to the proforma template: preserve the applicable native template, or leave template choice for staff when unknown. Template selection is host policy, not a customer claim: its change.sourceRefs and policy annotation.evidenceRefs must be empty; cite the current request for delivery intent and recipient. If recipient or intent is ambiguous, leave it unresolved for staff review. Do not require customers to name CMS controls, create incoming document entities for generated confirmations, change guest/booker contact records merely to deliver a document, or claim anything was sent before a verified Save. If no delivery is requested, leave CMS unchanged for native preservation. Existing stay room, occupancy and rate codes come from native Lookup unless the customer asks to change them; do not guess missing native codes. The supported native tool uses per-target rateHandling="reprice" for date, occupancy, room or rate changes: propose that editable method for the ordinary supported path and let native Prepare supply prices. Repricing with the existing rate code is distinct from changing that code or retaining a numeric nightly price. For price-affecting changes, explicit retained-price instructions are unsupported and must remain visible for staff resolution, never silently replaced by repricing; numeric manual-price overrides are unsupported.`;
 
+const SOURCE_INTENT_RULES = `Canceling only the last/final day or night of an existing stay is an Amend to departure, not cancellation of the whole stay. Unable/cannot keep a reservation expresses cancellation, not an instruction to keep it. A current submission of a voucher or proof of payment for a source-identified existing stay is Filing, including "please see attached billback voucher" and a forwarded accommodation-voucher email whose supplied document states the hotel's exact confirmation. The document alone does not create a stay or establish native identity: retain the exact source confirmation as an unresolved target until native lookup. A prior hotel acknowledgement that this same booking was already cancelled means review/status work (other), not a duplicate Cancel; retain the supporting evidence. Preserve source room descriptions in requestedRoomDescription separately from native roomType/roomCodes; Create's requestedBoard contains explicit source board meaning. Quote guestNames is the overall unassigned roster; group guestNames requires explicit source group assignment. For one source stay range, preserve separately counted room categories as separate Quote groups, including 5 Standard and 1 Executive. Dinner and Breakfast components for the same group mean Dinner, Bed & Breakfast; preserve group scope and do not treat them as conflicting alternatives. Missing-year source dates remain editable without inventing a year. Preserve explicit operational instructions in notes/reservationNote, including passport on arrival, parking and labelled contacts.`;
+
 const OMIT_UNKNOWN_CLAIM = Symbol('omit-uncited-unknown-claim');
 function omitUncitedUnknownClaims(value: unknown): unknown {
   const normalize = (item: unknown): unknown | typeof OMIT_UNKNOWN_CLAIM => {
@@ -123,6 +126,230 @@ function repairQuotedEvidenceRefs(value: unknown, evidence: ReservationWorkflowV
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+/** Faults in one cited fact must not discard independent facts or requests. */
+function recoverExtractionFacts(value: unknown, input: {
+  source: ReservationWorkflowV2Source; evidence: ReservationWorkflowV2Evidence[]; body: string;
+}): unknown {
+  if (!isRecord(value) || !Array.isArray(value.requests)) return value;
+  const requestSchema = reservationWorkflowV2ExtractionSchema.shape.requests.removeDefault().element;
+  const known = new Set(input.evidence.map((row) => row.ref));
+  const current = new Set(input.evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
+  const issues: ReservationWorkflowV2Extraction['issues'] = [];
+  const requests = value.requests.flatMap((item, index) => {
+    if (!isRecord(item)) return [];
+    const omitInvalidCitation = (entry: unknown): unknown | typeof OMIT_UNKNOWN_CLAIM => {
+      if (Array.isArray(entry)) return entry.flatMap((child) => {
+        const kept = omitInvalidCitation(child);
+        return kept === OMIT_UNKNOWN_CLAIM ? [] : [kept];
+      });
+      if (!isRecord(entry)) return entry;
+      if (typeof entry.raw === 'string' && Object.hasOwn(entry, 'value') && Array.isArray(entry.sourceRefs) &&
+          entry.sourceRefs.some((ref) => typeof ref !== 'string' || !known.has(ref))) return OMIT_UNKNOWN_CLAIM;
+      return Object.fromEntries(Object.entries(entry).flatMap(([key, child]) => {
+        const kept = omitInvalidCitation(child);
+        return kept === OMIT_UNKNOWN_CLAIM ? [] : [[key, kept]];
+      }));
+    };
+    const clean = omitInvalidCitation(item);
+    if (!isRecord(clean)) return [];
+    const request = structuredClone(clean);
+    if (Array.isArray(request.documentRefs)) request.documentRefs = request.documentRefs.filter((ref) => typeof ref === 'string' && known.has(ref));
+    if (Array.isArray(request.documentHints)) request.documentHints = request.documentHints.filter((hint) => isRecord(hint) &&
+      typeof hint.documentRef === 'string' && known.has(hint.documentRef) && Array.isArray(hint.sourceRefs) &&
+      hint.sourceRefs.every((ref) => typeof ref === 'string' && known.has(ref)));
+    request.id = stableId(input.source.messageId, 'extracted_request', String(index),
+      typeof request.kind === 'string' ? request.kind : 'invalid');
+    const cited = (entry: unknown): string[] => {
+      if (Array.isArray(entry)) return entry.flatMap(cited);
+      if (!isRecord(entry)) return [];
+      return [...(Array.isArray(entry.sourceRefs) ? entry.sourceRefs.filter((ref): ref is string =>
+        typeof ref === 'string' && known.has(ref)) : []), ...Object.entries(entry)
+        .filter(([key]) => key !== 'sourceRefs').flatMap(([, child]) => cited(child))];
+    };
+    const refs = [...new Set(cited(request))].slice(0, 20);
+    if (!Object.hasOwn(item, 'requestText') && value.requests.length === 1 && refs.some((ref) => current.has(ref))) {
+      const message = input.evidence.find((row) => row.relation === 'current_message');
+      const raw = input.body.trim().slice(0, 2000);
+      if (message && raw) {
+        request.requestText = { raw, value: raw, sourceRefs: [message.ref] };
+        issues.push({ explanation: 'Missing request text was recovered from the selected message; cited facts were retained for review.', sourceRefs: [message.ref] });
+      }
+    }
+    // Only known fact containers may lose a malformed claim. Intent and required
+    // request text are never replaced with a guessed/default workflow.
+    const arrays = new Set(['dates', 'occupancy', 'guests', 'parties', 'confirmationHints',
+      'roomTypeHints', 'rateHints', 'boardHints', 'serviceHints', 'documentRefs', 'documentHints']);
+    for (let remaining = 32; remaining > 0; remaining--) {
+      const parsed = requestSchema.safeParse(request);
+      if (parsed.success) return [parsed.data];
+      const issue = parsed.error.issues[0];
+      if (!issue) break;
+      const [field, rowIndex, child] = issue.path;
+      let removed = false;
+      if (issue.code === 'unrecognized_keys' && issue.path.length === 0) {
+        for (const key of issue.keys) delete request[key];
+        removed = true;
+      } else if (typeof field === 'string' && arrays.has(field)) {
+        const rows = request[field];
+        if (Array.isArray(rows) && typeof rowIndex === 'number') {
+          const row = rows[rowIndex];
+          if (['dates', 'guests', 'occupancy'].includes(field) && isRecord(row) && typeof child === 'string' &&
+              ['arrival', 'departure', 'name', 'email', 'mobile', 'adults', 'childCount', 'childAges'].includes(child)) delete row[child];
+          else rows.splice(rowIndex, 1);
+        } else delete request[field];
+        removed = true;
+      } else if (field === 'roomCount' || field === 'requestedPrice') {
+        delete request[field];
+        removed = true;
+      }
+      issues.push({ explanation: `Extraction field ${issue.path.join('.').slice(0, 160) || 'request'} failed validation; only its affected fact${removed ? '' : ' request'} was withheld.`, sourceRefs: refs });
+      if (!removed) break;
+    }
+    return [];
+  });
+  const issueSchema = reservationWorkflowV2ExtractionSchema.shape.issues.removeDefault().element;
+  const suppliedIssues = Array.isArray(value.issues) ? value.issues.flatMap((row) => {
+    const parsed = issueSchema.safeParse(row);
+    return parsed.success ? [{ ...parsed.data, sourceRefs: parsed.data.sourceRefs.filter((ref) => known.has(ref)) }] : [];
+  }) : [];
+  return { requests, issues: [...suppliedIssues, ...issues].slice(0, 200) };
+}
+
+/** Validate proposal entities independently; malformed siblings retain source fallback below. */
+function recoverSynthesisEntities(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.proposal) || !isRecord(value.proposal.content)) return value;
+  const output = structuredClone(value);
+  if (!isRecord(output.proposal) || !isRecord(output.proposal.content)) return value;
+  const proposal = output.proposal, content = output.proposal.content;
+  const dropped: string[] = [];
+  const fields = reservationWorkflowV2ProposalSchema.shape;
+  for (const key of ['requests', 'services', 'documents'] as const) {
+    const entries = content[key];
+    if (!Array.isArray(entries)) continue;
+    const schema = fields.content.shape[key].element;
+    content[key] = entries.flatMap((entry, index) => {
+      let parsed = schema.safeParse(entry);
+      if (key === 'requests' && isRecord(entry) && entry.kind === 'create' && isRecord(entry.body)) {
+        const body = entry.body;
+        if (Array.isArray(body.dateSections)) for (const section of body.dateSections) {
+          if (!isRecord(section)) continue;
+          if (typeof section.unassignedGuestNames === 'string') section.unassignedGuestNames = [section.unassignedGuestNames];
+          else if (section.unassignedGuestNames === null) section.unassignedGuestNames = [];
+        }
+        parsed = schema.safeParse(entry);
+        // Booking fields are optional staff choices. Withhold only the malformed
+        // field, retaining the rest of this request and its extraction claims.
+        for (let remaining = 32; !parsed.success && remaining > 0; remaining--) {
+          const issue = parsed.error.issues[0];
+          if (!issue) break;
+          const path = issue.path;
+          const bookingSlot = path[0] === 'body' && (path[1] === 'shared' ||
+            path[1] === 'dateSections' && path[3] === 'defaults' || path[1] === 'allocations' && path[3] === 'overrides');
+          const roster = path[0] === 'body' && path[1] === 'dateSections' && path[3] === 'unassignedGuestNames';
+          if (!bookingSlot && !roster) break;
+          let parent: unknown = entry;
+          const containerPath = issue.code === 'unrecognized_keys' ? path : path.slice(0, -1);
+          for (const part of containerPath) parent = Array.isArray(parent) && typeof part === 'number' ? parent[part] :
+            isRecord(parent) ? parent[String(part)] : undefined;
+          if (issue.code === 'unrecognized_keys' && isRecord(parent)) for (const unknownKey of issue.keys) delete parent[unknownKey];
+          else if (Array.isArray(parent) && typeof path.at(-1) === 'number') parent.splice(Number(path.at(-1)), 1);
+          else if (isRecord(parent) && typeof path.at(-1) === 'string' && bookingSlot) delete parent[String(path.at(-1))];
+          else break;
+          dropped.push(`requests[${index}].${path.join('.')}`);
+          parsed = schema.safeParse(entry);
+        }
+      }
+      if (parsed.success) return [parsed.data];
+      dropped.push(`${key}[${index}]: ${summarizeSchemaIssues(parsed.error)}`);
+      return [];
+    });
+  }
+  for (const key of ['annotations', 'issues', 'sourceClaims', 'lookupResultRefs'] as const) {
+    if (!Array.isArray(proposal[key])) continue;
+    const schema = fields[key].element;
+    proposal[key] = proposal[key].flatMap((entry, index) => {
+      const parsed = schema.safeParse(entry);
+      if (parsed.success) return [parsed.data];
+      dropped.push(`${key}[${index}]`);
+      return [];
+    });
+  }
+  const entityIds = (key: 'services' | 'documents') => new Set(Array.isArray(content[key]) ? content[key].flatMap((entry) =>
+    isRecord(entry) && typeof entry.id === 'string' ? [entry.id] : []) : []);
+  const serviceIds = entityIds('services'), documentIds = entityIds('documents');
+  for (const request of Array.isArray(content.requests) ? content.requests : []) {
+    if (!isRecord(request)) continue;
+    if (Array.isArray(request.serviceRefs)) request.serviceRefs = request.serviceRefs.filter((ref) => typeof ref === 'string' && serviceIds.has(ref));
+    if (Array.isArray(request.documentRefs)) request.documentRefs = request.documentRefs.filter((ref) => typeof ref === 'string' && documentIds.has(ref));
+  }
+  if (isRecord(output.reviewRequirements)) output.reviewRequirements = Object.fromEntries(Object.entries(output.reviewRequirements)
+    .flatMap(([path, entry]) => {
+      const parsed = reservationWorkflowV2ModelOutputSchema.safeParse({ proposal: proposal, reviewRequirements: { [path]: entry } });
+      if (parsed.success) return [[path, parsed.data.reviewRequirements?.[path]]];
+      dropped.push(`reviewRequirements.${path}`);
+      return [];
+    }));
+  if (dropped.length && Array.isArray(proposal.issues)) proposal.issues.push({ path: '/',
+    kind: 'local_synthesis_validation', explanation: `Invalid synthesized entities were withheld independently; source requests remain editable. ${dropped.slice(0, 6).join('; ')}`.slice(0, 2000), evidenceRefs: [] });
+  return output;
+}
+
+/** Invalid citations cannot select a native value, but valid sibling fields survive. */
+function recoverSynthesisReferences(value: unknown, evidence: ReservationWorkflowV2Evidence[],
+  observations: ReservationWorkflowV2Observation[]): unknown {
+  const sources = new Set(evidence.map((row) => row.ref));
+  const observationRefs = new Set(observations.map((row) => row.ref));
+  const all = new Set([...sources, ...observationRefs]);
+  const targetObservations = new Set(observations.filter((row) => row.kind !== 'mail_candidate' ||
+    Array.isArray(row.result.matches) && row.result.matches.some((match) => isRecord(match) && match.matchEligible === true)).map((row) => row.ref));
+  const changes: string[] = [];
+  const visit = (entry: unknown, path: string): unknown | typeof OMIT_UNKNOWN_CLAIM => {
+    if (Array.isArray(entry)) return entry.flatMap((child, index) => {
+      const kept = visit(child, `${path}/${index}`);
+      return kept === OMIT_UNKNOWN_CLAIM ? [] : [kept];
+    });
+    if (!isRecord(entry)) return entry;
+    if (typeof entry.documentSourceRef === 'string' && !sources.has(entry.documentSourceRef) ||
+        (typeof entry.raw === 'string' || typeof entry.op === 'string') && Array.isArray(entry.sourceRefs) &&
+        (entry.sourceRefs.length === 0 && typeof entry.raw === 'string' ||
+          entry.sourceRefs.some((ref) => typeof ref !== 'string' || !sources.has(ref)))) {
+      changes.push(path);
+      return OMIT_UNKNOWN_CLAIM;
+    }
+    const out = Object.fromEntries(Object.entries(entry).flatMap(([key, child]) => {
+      const kept = visit(child, `${path}/${key}`);
+      return kept === OMIT_UNKNOWN_CLAIM ? [] : [[key, kept]];
+    }));
+    for (const [key, child] of Object.entries(out)) {
+      const allowed = key === 'sourceRefs' ? sources : key === 'candidateRefs' ? targetObservations :
+        key === 'evidenceRefs' ? all : ['priceObservationRefs', 'lookupResultRefs', 'previewObservationRefs',
+          'observationRefs', 'currentObservationRefs'].includes(key) ? observationRefs : null;
+      if (allowed && Array.isArray(child)) {
+        const filtered = child.filter((ref) => typeof ref === 'string' && allowed.has(ref));
+        if (filtered.length !== child.length) {
+          out[key] = filtered;
+          changes.push(`${path}/${key}`);
+          if (key === 'priceObservationRefs') {
+            for (const field of ['roomType', 'roomTypeForCharge', 'ratePlan']) if (Object.hasOwn(out, field)) out[field] = null;
+            if (isRecord(out.overrides)) for (const field of ['roomType', 'roomTypeForCharge', 'ratePlan']) delete out.overrides[field];
+          }
+        }
+      }
+      if (['suggestedRef', 'itemCandidateRef', 'previewObservationRef'].includes(key) && child !== null &&
+          (typeof child !== 'string' || !(key === 'previewObservationRef' ? observationRefs : targetObservations).has(child))) {
+        out[key] = null;
+        changes.push(`${path}/${key}`);
+      }
+    }
+    return out;
+  };
+  const result = visit(value, '');
+  if (isRecord(result) && isRecord(result.proposal) && Array.isArray(result.proposal.issues) && changes.length)
+    result.proposal.issues.push({ path: '/', kind: 'local_reference_validation',
+      explanation: `Unadmitted citations and affected native suggestions were withheld locally; independent source facts remain editable. ${changes.slice(0, 6).join('; ')}`.slice(0, 2000), evidenceRefs: [] });
+  return result === OMIT_UNKNOWN_CLAIM ? undefined : result;
 }
 
 function emptyQuotePlaceholder(key: string, value: unknown): boolean {
@@ -745,7 +972,9 @@ export function createReservationWorkflowV2CandidateReader(input: {
       const query = exactSearchTerm(candidate.criteria.confirmationOrGuestText);
       if (!query) return unavailable('Stay lookup term is missing or too short.');
       if (/^\d{6,10}-\d{1,2}$/.test(query)) {
-        const request = { confirmation: query };
+        const dates = Array.isArray(candidate.criteria.dates) ? candidate.criteria.dates as Array<Record<string, unknown>> : [];
+        const arrivals = [...new Set(dates.flatMap((date) => isoDay(date.arrival) ? [date.arrival] : []))];
+        const request = { confirmation: query, ...(arrivals.length === 1 ? { arrival: arrivals[0] } : {}) };
         const propertyLock = lock();
         if (!propertyLock) return unavailable('Property read lock is unavailable.');
         const found = target.propertyCode === 'HRCEN'
@@ -960,8 +1189,10 @@ function cancelExceptionEvidence(input: {
   const exception = /\b(?:except(?:ing|ions?)?|exclud(?:e|es|ed|ing)|other than|apart from|but not|all but|(?:keep|retain|preserve|leave)\s+(?:(?:the|these|those|this|our|their)\s+)?(?:bookings?|reservations?|rooms?|stays?|confirmations?|\d{6,10}-\d{1,2})|(?:do not|don't|dont|not|never|no|without)\b[^\n.!?]{0,50}\bcancell?(?:ation|ed|ing)?|not\s+(?:the\s+)?(?:booking\s+|reservation\s+|confirmation\s+)?\d{6,10}-\d{1,2}|not\s+(?:the\s+)?(?:bookings?|reservations?|rooms?|stays?|guests?|mr|mrs|ms|miss)\b|remain\s+(?:booked|active|unchanged))\b/i;
   const linked = new Set(input.sourceRefs);
   const rows = input.evidence.filter((row) => input.currentRefs.has(row.ref) && linked.has(row.ref));
-  const refs = rows.filter((row) => exception.test(row.text)).map((row) => row.ref);
-  if (exception.test(input.requestText)) refs.push(...rows.map((row) => row.ref));
+  const hasException = (text: string) => exception.test(text.replace(
+    /\b(?:unable\s+to|not\s+able\s+to|cannot|can['’]t|could\s+not|couldn['’]t)\s+(?:\w+\s+){0,3}(?:keep|retain|preserve)\s+(?:(?:the|this|our|their)\s+)?(?:booking|reservation|room|stay)\b/giu, 'cannot proceed'));
+  const refs = rows.filter((row) => hasException(row.text)).map((row) => row.ref);
+  if (hasException(input.requestText)) refs.push(...rows.map((row) => row.ref));
   return [...new Set(refs)].slice(0, 100);
 }
 
@@ -998,10 +1229,8 @@ function buildFallbackProposal(input: {
     const base = { id, requestText: request.requestText.raw.slice(0, 2_000), sourceRefs: refs.length ? refs : currentRef ? [currentRef] : [],
       serviceRefs: [] as string[], documentRefs: [] as string[] };
     const booker = request.guests.find((guest) => guest.role === 'booker');
-    const bookerName = safeCurrentText(booker?.name, currentRefs, 300);
-    const bookerEmail = safeCurrentText(booker?.email, currentRefs, 500);
-    const bookerMobile = safeCurrentText(booker?.mobile, currentRefs, 500);
-    const bookerContact = bookerMobile || bookerEmail;
+    const bookerName = safeCurrentText(booker?.name, currentRefs, 50);
+    const bookerContact = safeCurrentText(booker?.mobile, currentRefs, 80) || safeCurrentText(booker?.email, currentRefs, 80);
     const board = safeCurrentText(request.boardHints[0], currentRefs, 120);
     if (request.kind === 'quote') return { ...base, kind: 'quote' as const, body: {
       groups: request.dates.length ? request.dates.map((date, dateIndex) => ({ id: stableId(id, 'date', String(dateIndex)),
@@ -1130,7 +1359,7 @@ function currentCandidateExtraction(extraction: ReservationWorkflowV2Extraction,
       childAges: row.childAges?.map((claim) => currentClaim(claim, currentRefs)).filter((claim) => claim !== undefined) }));
     // A current Amend/Cancel may refer to a confirmation established earlier in this
     // thread. That identity is lookup context, not a prior action.
-    const confirmationHints = request.kind === 'amend' || request.kind === 'cancel'
+    const confirmationHints = request.kind === 'amend' || request.kind === 'cancel' || request.kind === 'filing'
       ? request.confirmationHints : request.confirmationHints.filter((claim) => currentClaim(claim, currentRefs));
     return { ...request, dates, occupancy, guests,
       roomCount: currentClaim(request.roomCount, currentRefs),
@@ -1328,7 +1557,8 @@ function boardMeaning(value: unknown): string {
   const compact = normalized.replace(/_/g, '');
   if (['room_only', 'roomonly', 'ro'].includes(normalized)) return 'room_only';
   if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast', 'bed_breakfast'].includes(normalized) || compact === 'bedandbreakfast') return 'bb';
-  if (['dbb', 'dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_bed_and_breakfast', 'dinner_and_breakfast'].includes(normalized)) return 'dinner_bb';
+  if (['dbb', 'dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_bed_and_breakfast', 'dinner_and_breakfast',
+    'bed_breakfast_and_dinner', 'bed_and_breakfast_and_dinner'].includes(normalized)) return 'dinner_bb';
   return normalizedFact(value);
 }
 
@@ -1434,9 +1664,9 @@ function projectBookerContacts(input: { proposal: ReservationWorkflowV2Proposal;
     project('email', email, 320);
     project('telephone', mobile, 120);
   } else {
-    project('bookerName', name, 300);
+    project('bookerName', name, 50);
     const contact = mobile.some(hasText) ? mobile : email.some(hasText) ? email : mobile.length ? mobile : email;
-    project('bookerContact', contact, 500);
+    project('bookerContact', contact, 80);
     if (target.cmsRecipient === undefined || target.cmsRecipient === null || target.cmsRecipient === '')
       project('cmsRecipient', email, 255);
   }
@@ -1496,6 +1726,45 @@ function quoteGroupsShareRoomScope(groups: Array<{ roomCodes: string[] }>): bool
   return Boolean(scopes[0]) && scopes.every((scope) => scope === scopes[0]);
 }
 
+function countedSourceQuoteRooms(request: ReservationWorkflowV2Extraction['requests'][number],
+  evidence: ReservationWorkflowV2Evidence[], currentRefs: Set<string>) {
+  const rows = request.roomTypeHints.flatMap((hint) => {
+    const claim = currentClaim(hint, currentRefs);
+    const match = claim ? /^\s*(\d{1,3})\s*(?:[x×]\s*)?(.+?\brooms?)\s*$/iu.exec(claim.raw) : null;
+    const quantity = match ? Number(match[1]) : null;
+    if (!claim || !match || !quantity || quantity > 100 || !evidence.some((row) =>
+      currentRefs.has(row.ref) && claim.sourceRefs.includes(row.ref) && normalizedFact(row.text).includes(normalizedFact(claim.raw)))) return [];
+    return [{ quantity, description: match[2]!.trim(), claim }];
+  });
+  const total = citedInteger(currentClaim(request.roomCount, currentRefs));
+  const complete = rows.length > 1 && rows.length <= 8 && rows.length === request.roomTypeHints.length &&
+    new Set(rows.map((row) => normalizedFact(row.description))).size === rows.length &&
+    total === rows.reduce((sum, row) => sum + row.quantity, 0);
+  if (!complete) return [];
+  const source = evidence.find((entry) => entry.relation === 'current_message' && rows.every((row) =>
+    row.claim.sourceRefs.includes(entry.ref) && normalizedFact(entry.text).indexOf(normalizedFact(row.claim.raw)) ===
+      normalizedFact(entry.text).lastIndexOf(normalizedFact(row.claim.raw)) && normalizedFact(entry.text).includes(normalizedFact(row.claim.raw))));
+  const text = normalizedFact(source?.text ?? '');
+  const starts = rows.map((row) => text.indexOf(normalizedFact(row.claim.raw)));
+  return rows.map((row, index) => {
+    const start = starts[index] ?? -1;
+    const end = starts.filter((position) => position > start).sort((a, b) => a - b)[0] ?? text.length;
+    const clause = source && start >= 0 ? text.slice(start, end) : '';
+    const dinner = /\bdinner\b|\bdbb\b/iu.test(clause), breakfast = /\bbreakfast\b|\bb&b\b|\bdbb\b/iu.test(clause);
+    const board = dinner && breakfast ? 'dinner_bb' : breakfast ? 'bb' : dinner ? 'Dinner' : null;
+    return { ...row, board };
+  });
+}
+
+function operationalSourceNote(input: { selection: SyncedQuoteSelection }): string | null {
+  const body = (input.selection.currentBodyText ?? input.selection.bodyText)
+    .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
+  const clauses = body.split(/\r?\n|(?<=[.!?])\s+/u).map((line) => line.trim()).filter((line) =>
+    /\b(?:passport|firearms?|safe\s+storage|parking|shuttle|airport\s+transfer)\b/i.test(line) &&
+    line.length > 3 && line.length < 1000 && !/https?:\/\/|www\./i.test(line));
+  return clauses.length ? [...new Set(clauses)].join('\n').slice(0, 4000) : null;
+}
+
 /** Exact date identity first; a single wholly empty slot may be filled by the only remaining source date. */
 function matchDateProjectionTargets(input: { targets: DateProjectionTarget[]; dates: ProjectableDateClaim[];
   currentRefs: Set<string> }): { targetsByDate: Map<number, number>; unlinkedDates: number[]; unlinkedTargets: number[] } {
@@ -1543,6 +1812,12 @@ function matchQuoteDateProjectionTargets(input: { targets: DateProjectionTarget[
     sourceIndexesByKey.set(key, [...(sourceIndexesByKey.get(key) ?? []), index]);
 
   const targetsByDate = new Map<number, number[]>(), linkedTargets = new Set<number>(), linkedDates = new Set<number>();
+  if (input.dates.length === 1 && input.targets.length === 1 &&
+      (currentClaim(input.dates[0]!.arrival, input.currentRefs) || currentClaim(input.dates[0]!.departure, input.currentRefs))) {
+    // A source date without a year still belongs to its only group; do not invent
+    // a year merely to retain the room count, board and editable date wording.
+    return { targetsByDate: new Map([[0, [0]]]), unlinkedDates: [], unlinkedTargets: [] };
+  }
   const sourceKeys = [...sourceIndexesByKey.keys()];
   const hasPartialCurrentDate = input.dates.some((date) =>
     (currentClaim(date.arrival, input.currentRefs) || currentClaim(date.departure, input.currentRefs)) &&
@@ -1735,6 +2010,107 @@ function currentPdfEvidence(input: {
     result.set(documentRef, { documentRef, sourceRefs: [documentRef, ...visionRefs], contentRefs });
   }
   return result;
+}
+
+function recoverSourceIntent(input: {
+  extraction: ReservationWorkflowV2Extraction; source: ReservationWorkflowV2Source;
+  selection: SyncedQuoteSelection; evidence: ReservationWorkflowV2Evidence[];
+}): ReservationWorkflowV2Extraction {
+  const extraction = structuredClone(input.extraction);
+  const addIssue = (issue: ReservationWorkflowV2Extraction['issues'][number]) => {
+    if (extraction.issues.length < 200) extraction.issues.push(issue);
+  };
+  const currentRefs = new Set(input.evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
+  const currentBody = (input.selection.currentBodyText ?? input.selection.bodyText)
+    .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
+  for (const request of extraction.requests) {
+    const text = currentClaim(request.requestText, currentRefs)?.raw ?? '';
+    if (request.kind === 'cancel' && /\bcancel\b[^.!?\n]{0,32}\b(?:last|final)\s+(?:day|night)\b/i.test(text)) {
+      request.kind = 'amend';
+      addIssue({ explanation: 'Canceling only the last day/night is a departure amendment; the existing stay remains the target.', sourceRefs: request.requestText.sourceRefs });
+    }
+    if (request.kind !== 'cancel') continue;
+    const references = request.confirmationHints.flatMap((claim) => typeof claim.value === 'string' ? [claim.value.trim()] : []);
+    const nativeReferences = references.filter((value) => /^\d{6,10}-\d{1,2}$/u.test(value));
+    const guestNames = request.guests.filter((guest) => guest.role === 'guest').flatMap((guest) =>
+      typeof guest.name?.value === 'string' ? [guest.name.value] : []);
+    const sameBooking = (row: ReservationWorkflowV2Evidence) => {
+      const subject = /^Subject:\s*(.+)$/im.exec(row.text)?.[1] ?? '';
+      // An explicit confirmation outranks guest-name overlap. A guest can have
+      // several bookings in this thread, including an earlier cancelled stay.
+      if (nativeReferences.length) return new Set(nativeReferences).size === 1 &&
+        nativeReferences.some((value) => subject.includes(value));
+      if (references.length) return references.some((value) => subject.includes(value));
+      const nativeThreadReferences = new Set(input.evidence.filter((entry) => entry.relation === 'prior_thread')
+        .flatMap((entry) => entry.text.match(/\b\d{6,10}-\d{1,2}\b/g) ?? []));
+      return extraction.requests.length === 1 && nativeThreadReferences.size <= 1 && guestNames.length === 1 &&
+        normalizedFact(subject).includes(normalizedFact(guestNames[0]));
+    };
+    const priorHotel = input.evidence.filter((row) => row.kind === 'message' && row.relation === 'prior_thread' &&
+      /^From:\s*outbound\b/im.test(row.text) && /\b(?:booking|reservation)\b[^.!?\n]{0,40}\b(?:has\s+been|was|is|already)\s+cancel{1,2}ed\b/i.test(row.text) &&
+      sameBooking(row));
+    if (!priorHotel.length || /\b(?:another|additional|different|remaining)\s+(?:booking|reservation|room|stay)\b/i.test(text)) continue;
+    request.kind = 'other';
+    addIssue({ explanation: 'A prior hotel acknowledgement says this booking was already cancelled. Review its current native status; no duplicate cancellation was proposed.',
+      sourceRefs: [...new Set([...request.requestText.sourceRefs, ...priorHotel.map((row) => row.ref)])].slice(0, 20) });
+  }
+  const message = input.evidence.find((row) => row.relation === 'current_message');
+  if (!message) return extraction;
+  const subject = input.selection.subject ?? '';
+  const submission = /\b(?:attached|attachment|herewith|proof\s+of\s+payment|payment\s+proof|remittance|POP)\b/i.test(currentBody) ||
+    /^\s*(?:fw|fwd):[^\n]*\b(?:voucher|proof\s+of\s+payment|POP)\b/i.test(subject);
+  const bookingAsk = /\b(?:book|reserve)\b|\b(?:create|make|place|arrange)\s+(?:(?:a|an|the|new)\s+)?(?:booking|reservation|stay)\b/i.test(currentBody);
+  if (!submission || bookingAsk) return extraction;
+  const pdfs = currentPdfEvidence(input);
+  const documents = [...pdfs.values()].flatMap((pdf) => {
+    const text = input.evidence.find((row) => row.ref === pdf.documentRef)?.text ?? '';
+    const kind = submittedDocumentKind(text);
+    const explicitlySuppliedPayment = /\b(?:attached|herewith|attachment)\b[^.!?\n]{0,80}\b(?:POP|proof\s+of\s+payment)\b|\b(?:POP|proof\s+of\s+payment)\b[^.!?\n]{0,80}\b(?:attached|herewith|attachment)\b/i.test(currentBody);
+    return (kind || explicitlySuppliedPayment && pdfs.size === 1) && pdf.contentRefs.length ? [{ pdf, text, kind: kind ?? 'unclassified' }] : [];
+  });
+  if (!documents.length) return extraction;
+  const attachmentConfirmations = documents.flatMap(({ text, pdf }) => (text.match(/\b\d{6,10}-\d{1,2}\b/g) ?? [])
+    .map((value) => ({ raw: value, value, sourceRefs: [pdf.documentRef] })));
+  const currentConfirmations = (`${subject}\n${currentBody}`.match(/\b\d{6,10}-\d{1,2}\b/g) ?? [])
+    .map((value) => ({ raw: value, value, sourceRefs: [message.ref] }));
+  const priorConfirmations = input.evidence.flatMap((row) =>
+    row.relation === 'prior_thread' && /\b(?:confirmation\s*(?:number|no)|confirming\s+your\s+reservation)\b/i.test(row.text)
+      ? (row.text.match(/\b\d{6,10}-\d{1,2}\b/g) ?? []).map((value) => ({ raw: value, value, sourceRefs: [row.ref] })) : []);
+  const confirmationClaims = currentConfirmations.length ? [...currentConfirmations, ...attachmentConfirmations] :
+    attachmentConfirmations.length ? attachmentConfirmations : priorConfirmations;
+  if (!confirmationClaims.length) return extraction;
+  const conflictingConfirmations = new Set(confirmationClaims.map((claim) => claim.value)).size > 1;
+  // More than one historical booking cannot establish this document's target.
+  if (!currentConfirmations.length && !attachmentConfirmations.length && conflictingConfirmations) return extraction;
+  const eligible = extraction.requests.filter((request) => ['other', 'filing', 'create'].includes(request.kind) &&
+    currentClaim(request.requestText, currentRefs));
+  if (eligible.length > 1 || extraction.requests.some((request) => !eligible.includes(request))) return extraction;
+  const raw = (currentBody.trim() || subject).slice(0, 2000);
+  const seed = eligible[0] ?? reservationWorkflowV2ExtractionSchema.parse({ requests: [{
+    id: stableId(input.source.messageId, 'submitted_document'), kind: 'filing', requestText: { raw, value: raw, sourceRefs: [message.ref] },
+  }] }).requests[0];
+  if (!seed) return extraction;
+  seed.kind = 'filing';
+  seed.confirmationHints = confirmationClaims.slice(0, 100);
+  seed.documentRefs = [...new Set([...seed.documentRefs, ...documents.map(({ pdf }) => pdf.documentRef)])].slice(0, 200);
+  const hints: typeof seed.documentHints = documents.map(({ pdf, kind }) => ({ documentRef: pdf.documentRef,
+    kind, sourceRefs: pdf.contentRefs.slice(0, 20) }));
+  seed.documentHints = [...seed.documentHints.filter((hint) => !hints.some((row) => row.documentRef === hint.documentRef)), ...hints].slice(0, 200);
+  if (!eligible.length) extraction.requests.push(seed);
+  if (conflictingConfirmations) addIssue({ explanation:
+    `Current submission/document confirmations disagree (${[...new Set(confirmationClaims.map((claim) => claim.value))].join(', ')}). Filing remains unbound; staff must identify the correct document and stay.`,
+  sourceRefs: [...new Set(confirmationClaims.flatMap((claim) => claim.sourceRefs))].slice(0, 20) });
+  addIssue({ explanation: 'The current message submits an incoming voucher/payment document for one source-identified existing stay. Filing was recovered with an unresolved source confirmation; native identity and document handling still require review.',
+    sourceRefs: [message.ref, ...documents.map(({ pdf }) => pdf.documentRef)].slice(0, 20) });
+  extraction.issues = extraction.issues.slice(0, 200);
+  return extraction;
+}
+
+function submittedDocumentKind(text: string): 'voucher' | 'payment_proof' | null {
+  const title = text.slice(0, 1200);
+  if (/^\s*(?:proof\s+of\s+payment|payment\s+(?:proof|confirmation|receipt)|remittance\s+(?:advice|receipt)|deposit\s+receipt)\b/im.test(title)) return 'payment_proof';
+  if (/^\s*(?:(?:hotel|accommodation|travel\s+agent|billback|hotel\s+billback)\s+)?voucher\b/im.test(title)) return 'voucher';
+  return null;
 }
 
 function currentAgencyClaim(extracted: ReservationWorkflowV2Extraction['requests'][number], currentRefs: Set<string>) {
@@ -2283,36 +2659,42 @@ function projectSingleSourceFilingHint(input: {
   evidence: ReservationWorkflowV2Evidence[];
 }): void {
   const scope = input.request.body.targets;
-  if (input.request.body.allocationTarget || !(scope === null || scope.mode === 'unresolved' &&
-      scope.include.length === 0 && scope.exclude.length === 0)) return;
+  if (input.request.body.allocationTarget) return;
   const currentFilings = input.extraction.requests.filter((candidate) => candidate.kind === 'filing' &&
     currentClaim(candidate.requestText, input.currentRefs));
-  if (currentFilings.length !== 1 || currentFilings[0]!.id !== input.extracted.id || input.request.documentRefs.length !== 1) return;
+  if (currentFilings.length !== 1 || currentFilings[0]!.id !== input.extracted.id || !input.request.documentRefs.length) return;
 
-  const confirmationHints = exactConfirmationHints(input.extracted, input.currentRefs);
+  const admittedRefs = new Set(input.evidence.map((row) => row.ref));
+  const confirmationHints = exactConfirmationHints(input.extracted, admittedRefs);
   const confirmations = new Set(confirmationHints.map((hint) => hint.value));
+  if (confirmations.size > 1) {
+    input.request.body.targets = { mode: 'unresolved', include: [], exclude: [],
+      sourceRefs: [...new Set(confirmationHints.flatMap((hint) => hint.sourceRefs))].slice(0, 100) };
+    for (const document of input.proposal.content.documents) if (input.request.documentRefs.includes(document.id)) document.targetRefs = [];
+    addProjectionIssue(input.proposal, `/requests/${input.request.id}/body/targets`, 'filing_confirmation_scope_ambiguous',
+      'The current submission contains different source confirmation hints. No stay was selected or inferred; review the email and each document before binding Filing.',
+      confirmationHints.flatMap((hint) => hint.sourceRefs));
+    return;
+  }
+  if (!(scope === null || scope.mode === 'unresolved' && scope.include.length === 0 && scope.exclude.length === 0)) return;
   if (confirmations.size !== 1 || !confirmationHints.length) return;
-  if (input.extracted.dates.length !== 1) return;
-  const date = input.extracted.dates[0]!;
-  const arrival = currentClaim(date.arrival, input.currentRefs), departure = currentClaim(date.departure, input.currentRefs);
-  if (typeof arrival?.value !== 'string' || !isoDay(arrival.value) || typeof departure?.value !== 'string' ||
-      !isoDay(departure.value) || departure.value <= arrival.value) return;
-
-  const documentId = input.request.documentRefs[0];
-  const entity = documentId ? input.proposal.content.documents.find((row) => row.id === documentId &&
-    row.ownerRequestId === input.request.id && row.targetRefs.length === 0) : undefined;
-  if (!entity || !input.evidence.some((row) => row.ref === entity.documentSourceRef && row.relation === 'attachment' &&
-      input.currentRefs.has(row.ref))) return;
-
-  const sourceRefs = [...new Set([...confirmationHints.flatMap((hint) => hint.sourceRefs), ...dateSourceRefs(date)])]
-    .filter((ref) => input.currentRefs.has(ref)).slice(0, 100);
+  const date = input.extracted.dates.length === 1 ? input.extracted.dates[0] : undefined;
+  const arrival = currentClaim(date?.arrival, input.currentRefs), departure = currentClaim(date?.departure, input.currentRefs);
+  const entities = input.proposal.content.documents.filter((row) => input.request.documentRefs.includes(row.id) &&
+    row.ownerRequestId === input.request.id && row.targetRefs.length === 0);
+  if (entities.length !== input.request.documentRefs.length || entities.some((entity) => !input.evidence.some((row) =>
+    row.ref === entity.documentSourceRef && row.relation === 'attachment' && input.currentRefs.has(row.ref)))) return;
+  const sourceRefs = [...new Set([...confirmationHints.flatMap((hint) => hint.sourceRefs),
+    ...input.extracted.requestText.sourceRefs, ...(date ? dateSourceRefs(date) : [])])]
+    .filter((ref) => admittedRefs.has(ref)).slice(0, 100);
   if (!sourceRefs.length) return;
-  const confirmation = confirmations.values().next().value as string;
-  const hintId = stableId(input.request.id, 'source_filing_hint', confirmation, arrival.value, departure.value);
-  input.request.body.targets = { mode: 'explicit', include: [{ id: hintId, confirmation,
-    bookedArrival: arrival.value, bookedDeparture: departure.value, candidateRefs: [], suggestedRef: null, sourceRefs }],
+  const confirmation = confirmationHints[0]!.value;
+  const hintId = stableId(input.request.id, 'source_filing_hint', confirmation);
+  input.request.body.targets = { mode: 'unresolved', include: [{ id: hintId, confirmation,
+    ...(isoDay(arrival?.value) ? { bookedArrival: arrival.value } : {}),
+    ...(isoDay(departure?.value) ? { bookedDeparture: departure.value } : {}), candidateRefs: [], suggestedRef: null, sourceRefs }],
   exclude: [], sourceRefs };
-  entity.targetRefs = [{ kind: 'saved_target', requestId: input.request.id, hintId }];
+  for (const entity of entities) entity.targetRefs = [{ kind: 'saved_target', requestId: input.request.id, hintId }];
 }
 
 function projectCurrentExtraction(input: {
@@ -2668,6 +3050,14 @@ function projectCurrentExtraction(input: {
     request.sourceRefs = [...new Set([...request.sourceRefs, ...allRefs])].slice(0, 100);
     request.requestText = extracted.requestText.raw.slice(0, 2000);
     projectBookerContacts({ proposal, request, extracted, currentRefs });
+    const sourceNote = currentExtraction.requests.length === 1 ? operationalSourceNote(input) : null;
+    if (sourceNote && (request.kind === 'create' || request.kind === 'quote')) {
+      const existing = request.kind === 'create' ? request.body.shared.reservationNote : request.body.notes;
+      if (existing === null || existing === undefined || existing === '') {
+        if (request.kind === 'create') request.body.shared.reservationNote = sourceNote;
+        else request.body.notes = sourceNote;
+      }
+    }
     if (request.kind === 'create' && extracted.requestedPrice) {
       const priceRefs = [extracted.requestedPrice.nightlyRate, extracted.requestedPrice.total, extracted.requestedPrice.currency]
         .flatMap((claim) => currentClaim(claim, currentRefs)?.sourceRefs ?? []);
@@ -2790,8 +3180,45 @@ function projectCurrentExtraction(input: {
       'Some booking details were supported only by earlier mail, not this request. They were cleared; confirm them from the current request before continuing.',
       [...new Set(clearedPriorRefs)]);
 
-    const projectedDates = extracted.dates;
+    const editableDate = (claim: typeof extracted.dates[number]['arrival']) => claim && claim.value === null &&
+      /^\s*\d{1,2}(?:\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)|[/-]\d{1,2})\s*$/iu.test(claim.raw)
+      ? { ...claim, value: claim.raw.trim() } : claim;
+    const projectedDates = extracted.dates.map((date) => ({ arrival: editableDate(date.arrival), departure: editableDate(date.departure) }));
     if (request.kind === 'quote') {
+      const sourceRooms = countedSourceQuoteRooms(extracted, input.evidence, currentRefs);
+      if (sourceRooms.length && singleCurrentDatePair(projectedDates, currentRefs)) {
+        const originalGroups = request.body.groups;
+        const linkedIds = new Set<string>();
+        const groups = sourceRooms.map((row, index) => {
+          const matches = originalGroups.filter((group) => normalizedFact(group.requestedRoomDescription) === normalizedFact(row.description) ||
+            group.quantity === row.quantity && !group.requestedRoomDescription && sourceRooms.filter((other) => other.quantity === row.quantity).length === 1);
+          const original = matches.length === 1 && !linkedIds.has(matches[0]!.id) ? matches[0] : undefined;
+          if (original) linkedIds.add(original.id);
+          const id = original?.id ?? stableId(request.id, 'source_room_group', String(index));
+          return { ...(original ?? { id, arrival: null, departure: null, board: null, roomCodes: [], ratePlan: null,
+            occupancy: { scope: 'unresolved' as const, adults: null, childCount: null, childAges: null }, priceObservationRefs: [] }),
+          id, quantity: row.quantity, requestedRoomDescription: row.description, board: row.board };
+        });
+        request.body.groups = groups;
+        // A removed model group cannot lend its service/money target to a new source
+        // category merely because both appeared in the same email.
+        const groupIds = new Set(groups.map((group) => group.id));
+        for (const service of proposal.content.services) service.targets = service.targets.filter(({ target }) =>
+          target.kind !== 'quote_group' || target.requestId !== request.id || groupIds.has(target.groupId));
+        for (const money of request.body.requestedMoney) money.targetRefs = money.targetRefs.filter((target) =>
+          !originalGroups.some((group) => group.id === target) || groupIds.has(target));
+        for (const [index, row] of sourceRooms.entries()) {
+          const path = `/proposal/content/requests/${request.id}/body/groups/${index}/quantity`;
+          proposal.sourceClaims.push({ path, raw: row.claim.raw, sourceRefs: row.claim.sourceRefs });
+          proposal.annotations.push({ path, basis: 'source', evidenceRefs: row.claim.sourceRefs });
+        }
+      }
+      const sourceGuests = [...new Set(extracted.guests.flatMap((guest) => guest.role === 'guest' ?
+        safeCurrentText(guest.name, currentRefs, 300) ?? [] : []))].filter((name): name is string => typeof name === 'string');
+      // A request-wide roster is not an allocation. Keep it editable once globally;
+      // group rosters require explicit source room/name grouping, which Pass1 lacks.
+      request.body.guestNames = request.body.groups.length === 1 ? [] : sourceGuests;
+      for (const group of request.body.groups) group.guestNames = request.body.groups.length === 1 ? sourceGuests : [];
       const dateLinks = matchQuoteDateProjectionTargets({ targets: request.body.groups, dates: projectedDates, currentRefs });
       for (const [dateIndex, groupIndexes] of dateLinks.targetsByDate) {
         const date = projectedDates[dateIndex]!;
@@ -2819,16 +3246,17 @@ function projectCurrentExtraction(input: {
         'A synthesized date group had no unique current source date; its dates were cleared while source claims and group associations were retained for staff review.',
         request.sourceRefs.filter((ref) => knownRefs.has(ref)));
       const currentDatePair = singleCurrentDatePair(projectedDates, currentRefs);
+      const singleSourceGroup = projectedDates.length === 1 && request.body.groups.length === 1 && dateLinks.targetsByDate.has(0);
       const linkedQuoteGroups = [...new Set([...dateLinks.targetsByDate.values()].flat())];
       const currentRoomHints = extracted.roomTypeHints.filter((hint) => currentClaim(hint, currentRefs));
       const roomCodes = currentSourceCodes(extracted.roomTypeHints, currentRefs, 'room');
       const roomCount = currentClaim(extracted.roomCount, currentRefs);
       if (roomCount) {
         const count = citedInteger(roomCount);
-        if (request.body.groups.length === 1 && currentDatePair && linkedQuoteGroups.includes(0) &&
+        if (request.body.groups.length === 1 && (currentDatePair || singleSourceGroup) && linkedQuoteGroups.includes(0) &&
             typeof count === 'number' && count >= 1 && count <= 100) {
           request.body.groups[0]!.quantity = count;
-        } else {
+        } else if (!sourceRooms.length) {
           // The extraction schema carries one request-wide count, while Quote compiles
           // each group additively. Copying this count into mixed groups inflates demand.
           for (const group of request.body.groups) group.quantity = null;
@@ -2847,7 +3275,18 @@ function projectCurrentExtraction(input: {
         return claim && typeof claim.value === 'string' && claim.value.trim() ? [claim] : [];
       });
       const boardsByValue = new Map(currentBoards.map((claim) => [boardMeaning(claim.value), claim]));
-      if (currentBoards.length && linkedQuoteGroups.length) {
+      if (request.body.groups.length === 1 && boardsByValue.size === 2 && boardsByValue.has('dinner') && boardsByValue.has('bb')) {
+        const dinner = boardsByValue.get('dinner')!, breakfast = boardsByValue.get('bb')!;
+        boardsByValue.clear();
+        boardsByValue.set('dinner_bb', { raw: `${dinner.raw}; ${breakfast.raw}`, value: 'dinner_bb',
+          sourceRefs: [...new Set([...dinner.sourceRefs, ...breakfast.sourceRefs])] });
+      }
+      if (sourceRooms.length && linkedQuoteGroups.length === request.body.groups.length) {
+        for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.board = sourceRooms[groupIndex]?.board ?? null;
+        if (sourceRooms.some((row) => !row.board)) addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
+          'Some room-specific board choices could not be bound to their counted source clause. Those boards remain unresolved; independently bound group boards were retained.',
+          currentBoards.flatMap((claim) => claim.sourceRefs));
+      } else if (currentBoards.length && linkedQuoteGroups.length) {
         if (boardsByValue.size === 1) {
           const board = [...boardsByValue.values()][0]!;
           for (const groupIndex of linkedQuoteGroups) projectLimitedText({ proposal,
@@ -2918,6 +3357,8 @@ function projectCurrentExtraction(input: {
           roomCodes.sourceRefs.length ? roomCodes.sourceRefs :
             [...new Set(currentRoomHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
       }
+      if (currentRoomHints.length === 1 && request.body.groups.length === 1) request.body.groups[0]!.requestedRoomDescription =
+        safeCurrentText(currentRoomHints[0], currentRefs, 1000) ?? null;
 
       const currentRateHints = extracted.rateHints.filter((hint) => currentClaim(hint, currentRefs));
       const rateCodes = currentSourceCodes(extracted.rateHints, currentRefs, 'rate');
@@ -3148,6 +3589,12 @@ function projectCurrentExtraction(input: {
       const currentRoomHints = extracted.roomTypeHints.filter((hint) => currentClaim(hint, currentRefs));
       const roomCodes = currentSourceCodes(extracted.roomTypeHints, currentRefs, 'room');
       if (currentRoomHints.length) {
+        const descriptions = [...new Set(currentRoomHints.flatMap((hint) => safeCurrentText(hint, currentRefs, 1000) ?? []))];
+        const description = descriptions.join('; ');
+        request.body.shared.requestedRoomDescription = description.length <= 1000 ? description : null;
+        if (description.length > 1000) addProjectionIssue(proposal, `/requests/${request.id}/body/shared/requestedRoomDescription`,
+          'source_value_not_projected', 'The requested room description exceeds this field limit; its source claims remain available for review.',
+          currentRoomHints.flatMap((hint) => hint.sourceRefs));
         if (roomCodes.codes.length === 1 && oneSectionHasSourceDate) request.body.shared.roomType = roomCodes.codes[0]!;
         else {
           request.body.shared.roomType = null;
@@ -3157,6 +3604,30 @@ function projectCurrentExtraction(input: {
               : 'The source room preference is not an exact explicit native room code. It remains available in source claims for staff selection.',
             [...new Set(currentRoomHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
         }
+      }
+      const boards = extracted.boardHints.filter((hint) => currentClaim(hint, currentRefs));
+      const explicitRateBoards = boards.length ? [] : extracted.rateHints.filter((hint) => currentClaim(hint, currentRefs) &&
+        /\b(?:DBB|B&B|bed\s+(?:and\s+)?breakfast|dinner\s+(?:and\s+)?breakfast)\b/i.test(hint.raw));
+      const boardClaims = [...boards, ...explicitRateBoards];
+      const meanings = new Set(boardClaims.map((hint) => boardMeaning(hint.value)));
+      if (currentRoomHints.length <= 1) {
+        if (meanings.size === 2 && meanings.has('dinner') && meanings.has('bb')) request.body.shared.requestedBoard = 'dinner_bb';
+        else if (explicitRateBoards.length === 1 && /\bDBB\b/i.test(explicitRateBoards[0]!.raw)) request.body.shared.requestedBoard = 'dinner_bb';
+        else if (meanings.size === 1) request.body.shared.requestedBoard = boardValue(boardClaims[0]!.value);
+      } else if (boardClaims.length) {
+        request.body.shared.requestedBoard = null;
+        addProjectionIssue(proposal, `/requests/${request.id}/body/shared/requestedBoard`, 'create_board_scope_ambiguous',
+          'The request contains different room categories. A shared board was not imposed without a source group mapping; board claims remain available for staff selection.', boardClaims.flatMap((claim) => claim.sourceRefs));
+      }
+      const requestedBoard = request.body.shared.requestedBoard;
+      if (typeof requestedBoard === 'string' && requestedBoard.length > 120) {
+        request.body.shared.requestedBoard = null;
+        addProjectionIssue(proposal, `/requests/${request.id}/body/shared/requestedBoard`, 'source_value_not_projected',
+          'The board wording exceeds this field limit; its source claims remain available for review.', boardClaims.flatMap((hint) => hint.sourceRefs));
+      }
+      if (boardClaims.length && request.body.shared.requestedBoard) {
+        const path = `/proposal/content/requests/${request.id}/body/shared/requestedBoard`;
+        proposal.annotations.push({ path, basis: 'source', evidenceRefs: [...new Set(boardClaims.flatMap((hint) => hint.sourceRefs))] });
       }
       const currentRateHints = extracted.rateHints.filter((hint) => currentClaim(hint, currentRefs));
       const rateCodes = currentSourceCodes(extracted.rateHints, currentRefs, 'rate');
@@ -3729,7 +4200,7 @@ function validateProposal(proposal: ReservationWorkflowV2Proposal, evidence: Res
         }
         return null;
       }
-      if (['priceObservationRefs', 'lookupResultRefs', 'previewObservationRefs', 'observationRefs'].includes(key)) {
+      if (['priceObservationRefs', 'lookupResultRefs', 'previewObservationRefs', 'observationRefs', 'currentObservationRefs'].includes(key)) {
         return refsIssue(value as string[], observationRefs, `${path}.${key}`, 'observation');
       }
       if (key === 'evidenceRefs') return refsIssue(value as string[], all, `${path}.${key}`, 'evidence');
@@ -3834,6 +4305,47 @@ function validateProposal(proposal: ReservationWorkflowV2Proposal, evidence: Res
     if (!sourceRefs.has(proposal.content.documents[index]!.documentSourceRef)) return `document source is not admitted at proposal.content.documents[${index}].documentSourceRef`;
   }
   return null;
+}
+
+function localizeProposalValidation(input: Parameters<typeof projectCurrentExtraction>[0],
+  projection: ReturnType<typeof projectCurrentExtraction>): ReturnType<typeof projectCurrentExtraction> {
+  let recovered = projection;
+  const withheld = new Set<string>();
+  for (let remaining = 32; remaining > 0; remaining--) {
+    const issue = validateProposal(recovered.proposal, input.evidence, input.observations);
+    if (!issue) return recovered;
+    const entity = /proposal\.content\.(requests|services|documents)(?:\[(\d+)\]|\/([^/.]+))/u.exec(issue);
+    const sourceClaim = /proposal\.sourceClaims\[(\d+)\]/u.exec(issue);
+    const proposal = structuredClone(recovered.proposal);
+    if (sourceClaim) proposal.sourceClaims.splice(Number(sourceClaim[1]), 1);
+    else if (entity) {
+      const key = entity[1];
+      if (key !== 'requests' && key !== 'services' && key !== 'documents') return recovered;
+      const rows = proposal.content[key];
+      const index = entity[2] !== undefined ? Number(entity[2]) : rows.findIndex((row) => row.id === entity[3]);
+      const row = rows[index];
+      if (!row || withheld.has(`${key}/${row.id}`)) return recovered;
+      withheld.add(`${key}/${row.id}`);
+      rows.splice(index, 1);
+      if (key === 'requests') {
+        for (const service of proposal.content.services) {
+          if (service.ownerRequestId === row.id) service.ownerRequestId = null;
+          service.targets = service.targets.filter(({ target }) => target.requestId !== row.id);
+        }
+        for (const document of proposal.content.documents) {
+          if (document.ownerRequestId === row.id) document.ownerRequestId = null;
+          document.targetRefs = document.targetRefs.filter((target) => target.requestId !== row.id);
+        }
+      } else for (const request of proposal.content.requests) {
+        if (key === 'services') request.serviceRefs = request.serviceRefs.filter((ref) => ref !== row.id);
+        else request.documentRefs = request.documentRefs.filter((ref) => ref !== row.id);
+      }
+    } else return recovered; // An unlocalizable envelope fault remains fail-closed.
+    addProjectionIssue(proposal, '/', 'local_proposal_validation',
+      `One invalid synthesized entity was withheld; source projection recovers that item while retaining independent requests. ${issue}`.slice(0, 2000), []);
+    recovered = projectCurrentExtraction({ ...input, proposal });
+  }
+  return recovered;
 }
 
 function validateReviewRequirementRefs(
@@ -3946,7 +4458,7 @@ export async function runReservationWorkflowV2Prefill(input: {
   const guidancePrompt = (projection: WorkflowGuidanceProjection[]): string => projection.length ?
     `\nHost workflow guidance follows. It is advisory interpretation; current explicit evidence, source/native validation and staff review rules take precedence. It cannot introduce facts, source refs, native choices or policy approvals.\n${JSON.stringify(projection)}` : '';
   const extractGuidance = selectGuidance('extract', input.selection.currentBodyText ?? input.selection.bodyText);
-  const firstPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${EXTRACTION_RULES}\n${VOUCHER_EXTRACTION_RULES}\n${ANCILLARY_EXTRACTION_RULES}${selfPreStayRules}${guidancePrompt(extractGuidance)}`,
+  const firstPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${EXTRACTION_RULES}\n${VOUCHER_EXTRACTION_RULES}\n${SOURCE_INTENT_RULES}\n${ANCILLARY_EXTRACTION_RULES}${selfPreStayRules}${guidancePrompt(extractGuidance)}`,
     userPrompt: JSON.stringify({ propertyCode: input.propertyCode, source: input.source, evidence }),
     responseSchema: zodToJsonSchema(reservationWorkflowV2ExtractionSchema, { $refStrategy: 'none' }) as Record<string, unknown>,
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
@@ -3955,16 +4467,8 @@ export async function runReservationWorkflowV2Prefill(input: {
   const firstPassFacts = repairQuotedEvidenceRefs(omitUncitedUnknownClaims(firstPass.result.output), evidence);
   // Request IDs are host metadata, not model claims. Derive them before validating
   // the facts so an omitted/malformed model ID cannot discard a valid request.
-  const identifiedFacts = firstPassFacts && typeof firstPassFacts === 'object' && !Array.isArray(firstPassFacts) &&
-    Array.isArray((firstPassFacts as Record<string, unknown>).requests) ? {
-      ...firstPassFacts,
-      requests: ((firstPassFacts as Record<string, unknown>).requests as unknown[]).map((value, index) => {
-        if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-        const request = value as Record<string, unknown>;
-        return { ...request, id: stableId(input.source.messageId, 'extracted_request', String(index),
-          typeof request.kind === 'string' ? request.kind : 'invalid') };
-      }),
-    } : firstPassFacts;
+  const identifiedFacts = recoverExtractionFacts(firstPassFacts, { source: input.source, evidence,
+    body: input.selection.currentBodyText ?? input.selection.bodyText });
   const parsedExtraction = reservationWorkflowV2ExtractionSchema.safeParse(identifiedFacts);
   if (!parsedExtraction.success) {
     const shape = parsedExtraction.error.issues.slice(0, 10).map((issue) => {
@@ -3980,7 +4484,8 @@ export async function runReservationWorkflowV2Prefill(input: {
     const reason = `Typed extraction cited ${unknownRefs.length} evidence reference(s) outside the admitted source registry; source remains editable.`;
     return fallback(reason, { stage: 'extract', code: 'unknown_evidence_refs', message: reason });
   }
-  const extraction = parsedExtraction.data;
+  const extraction = selfPreStay ? parsedExtraction.data : recoverSourceIntent({ extraction: parsedExtraction.data,
+    source: input.source, selection: input.selection, evidence });
   const currentRefs = new Set(evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
   const currentActions = currentRequestExtraction(extraction, currentRefs);
   const candidateExtraction = currentCandidateExtraction(extraction, currentRefs);
@@ -4061,27 +4566,27 @@ export async function runReservationWorkflowV2Prefill(input: {
   // Selection may report a final-stage failure after lookup errors were assembled.
   for (const error of base.errors) if (!readErrors.includes(error)) readErrors.push(error);
   const createShapeContext = extraction.requests.some((request) => request.kind === 'create') ? `\n${CREATE_SYNTHESIS_SHAPE_RULES}` : '';
-  const finalPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${SYNTHESIS_RULES}\n${VOUCHER_SYNTHESIS_RULES}\n${SYNTHESIS_SHAPE_RULES}\n${ANCILLARY_SYNTHESIS_RULES}${createShapeContext}${cmsCapabilityContext}${guidancePrompt(synthesisGuidance)}`,
+  const finalPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${SYNTHESIS_RULES}\n${VOUCHER_SYNTHESIS_RULES}\n${SOURCE_INTENT_RULES}\n${SYNTHESIS_SHAPE_RULES}\n${ANCILLARY_SYNTHESIS_RULES}${createShapeContext}${cmsCapabilityContext}${guidancePrompt(synthesisGuidance)}`,
     userPrompt: JSON.stringify({ propertyCode: input.propertyCode, source: input.source, evidence, extraction,
       observations: synthesisObservations(observations) }),
     responseSchema: zodToJsonSchema(reservationWorkflowV2ModelOutputSchema, { $refStrategy: 'none' }) as Record<string, unknown>,
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
-  const finalParsed = finalPass.ok ? reservationWorkflowV2ModelOutputSchema.safeParse(normalizeSynthesisOutput(finalPass.result.output, evidence)) : null;
-  const rawProposalForValidation = finalParsed?.success ? structuredClone(finalParsed.data.proposal) : null;
-  // Service and document targets are repaired by the host projection below. Validate every other
-  // synthesized reference now, then strictly validate the repaired proposal afterward.
-  for (const service of rawProposalForValidation?.content.services ?? []) service.targets = [];
-  for (const document of rawProposalForValidation?.content.documents ?? []) document.targetRefs = [];
-  const rawProposalIssue = rawProposalForValidation ? validateProposal(rawProposalForValidation, evidence, observations) : null;
-  const extractionProjection = finalParsed?.success ? projectCurrentExtraction({ proposal: finalParsed.data.proposal,
-    extraction, source: input.source, selection: input.selection, evidence, attachmentIdentityByRef, observations }) : null;
+  const finalParsed = finalPass.ok ? reservationWorkflowV2ModelOutputSchema.safeParse(recoverSynthesisEntities(
+    recoverSynthesisReferences(normalizeSynthesisOutput(finalPass.result.output, evidence), evidence, observations))) : null;
+  // Native/source reference guards remain authoritative on the host-projected
+  // proposal. A fault in one entity recovers only its own source workflow.
+  const projectionInput = finalParsed?.success ? { proposal: finalParsed.data.proposal,
+    extraction, source: input.source, selection: input.selection, evidence, attachmentIdentityByRef, observations } : null;
+  const extractionProjection = projectionInput ? localizeProposalValidation(projectionInput, projectCurrentExtraction(projectionInput)) : null;
   const guestBinding = finalParsed?.success && extractionProjection ? bindGuestProfileObservations({ proposal: extractionProjection.proposal,
     extraction: candidateExtraction, extractionIdByProposalRequestId: extractionProjection.extractionIdByProposalRequestId,
     observations, generationId }) : null;
   const partyBinding = guestBinding ? bindPartyObservations({ ...guestBinding, extraction: candidateExtraction, generationId }) : null;
   const finalObservations = partyBinding?.observations ?? observations;
-  const referenceSafety = partyBinding ? addRequestConfirmationSafety({ proposal: partyBinding.proposal, extraction: currentActions,
-    extractionIdByProposalRequestId: extractionProjection?.extractionIdByProposalRequestId,
+  const boundProjection = partyBinding && extractionProjection && projectionInput ? localizeProposalValidation({ ...projectionInput,
+    proposal: partyBinding.proposal, observations: finalObservations }, { ...extractionProjection, proposal: partyBinding.proposal }) : extractionProjection;
+  const referenceSafety = boundProjection ? addRequestConfirmationSafety({ proposal: boundProjection.proposal, extraction: currentActions,
+    extractionIdByProposalRequestId: boundProjection.extractionIdByProposalRequestId,
     currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence }) : null;
   const guardedProposal = referenceSafety?.proposal ?? (finalParsed?.success ? finalParsed.data.proposal : null);
   const finalProposal = guardedProposal ? applyDefaultCmsSendPolicy(guardedProposal, input.propertyCode) : null;
@@ -4099,12 +4604,12 @@ export async function runReservationWorkflowV2Prefill(input: {
   const proposalIssue = finalParsed?.success && finalProposal
     ? validateProposal(finalProposal, evidence, finalObservations) : null;
   const reviewIssue = finalParsed?.success ? validateReviewRequirementRefs(finalReviewRequirements, evidence, finalObservations) : null;
-  if (!finalPass.ok || !finalParsed?.success || rawProposalIssue || proposalIssue || reviewIssue) {
+  if (!finalPass.ok || !finalParsed?.success || proposalIssue || reviewIssue) {
     let error: { code: string; message: string };
     if (!finalPass.ok) error = { code: `model_${finalPass.reason}`, message: `Synthesis call failed (${finalPass.reason}); source extraction remains editable.` };
     else if (!finalParsed) error = { code: 'invalid_typed_synthesis', message: 'Synthesis output could not be parsed; source extraction remains editable.' };
     else if (!finalParsed.success) error = { code: 'invalid_typed_synthesis', message: `Synthesis ${summarizeSchemaIssues(finalParsed.error)}; source extraction remains editable.` };
-    else error = { code: 'invalid_proposal_refs', message: `Synthesis reference validation failed (${rawProposalIssue ?? proposalIssue ?? reviewIssue}); source extraction remains editable.` };
+    else error = { code: 'invalid_proposal_refs', message: `Synthesis reference validation failed (${proposalIssue ?? reviewIssue}); source extraction remains editable.` };
     const reason = error.message;
     const fallbackProjection = projectCurrentExtraction({ proposal: buildFallbackProposal({ extraction, source: input.source, evidence, reason }),
       extraction, source: input.source, selection: input.selection, evidence, attachmentIdentityByRef, observations });
@@ -4129,11 +4634,11 @@ export async function runReservationWorkflowV2Prefill(input: {
       });
     }
     const safeClaims = referenceSafety?.proposal;
-    if (safeClaims && extractionProjection) {
+    if (safeClaims && boundProjection) {
       const nativeConfirmation = /\b\d{6,10}-\d{1,2}\b/;
       const canonicalPath = /^\/proposal\/content\/requests\/([^/]+)\/confirmationReference(?:\/.*)?$/;
       carryConfirmationClaimCapacityIssues({ source: safeClaims, target: fallbackProposal,
-        sourceRequestToExtractionId: extractionProjection.extractionIdByProposalRequestId,
+        sourceRequestToExtractionId: boundProjection.extractionIdByProposalRequestId,
         targetRequestToExtractionId: fallbackProjection.extractionIdByProposalRequestId, currentRefs });
       for (const request of safeClaims.content.requests) {
         if (request.kind !== 'create') continue;
@@ -4143,7 +4648,7 @@ export async function runReservationWorkflowV2Prefill(input: {
         const exceedsClaimCapacity = safeClaims.issues.some((issue) => issue.path === guardedPath &&
           issue.kind === CONFIRMATION_CLAIM_CAPACITY_ISSUE);
         if (!hasNativeLookupGuard && !exceedsClaimCapacity) continue;
-        const extractedId = extractionProjection.extractionIdByProposalRequestId.get(request.id);
+        const extractedId = boundProjection.extractionIdByProposalRequestId.get(request.id);
         if (!extractedId) continue;
         const targets = fallbackProposal.content.requests.filter((candidate) => candidate.kind === 'create' &&
           fallbackProjection.extractionIdByProposalRequestId.get(candidate.id) === extractedId);
@@ -4165,11 +4670,20 @@ export async function runReservationWorkflowV2Prefill(input: {
     const fallbackSafety = addRequestConfirmationSafety({ proposal: fallbackProjection.proposal, extraction: currentActions,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
       currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence });
-    return { ...base, status: 'partial', observations: finalObservations,
-      proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, input.propertyCode), fieldReviewRequirements: {},
+    const proposal = applyDefaultCmsSendPolicy(fallbackSafety.proposal, input.propertyCode);
+    const historicalLeads = await loadReservationNativeLeads({ propertyCode: input.propertyCode, source: input.source,
+      generationId, proposal, fromAddress: input.selection.fromAddress ?? null, env, signal: input.signal,
+      db: input.db, transportId: input.transportId,
+      sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []) });
+    return { ...base, status: 'partial', observations: [...finalObservations, ...historicalLeads].slice(0, MAX_DRAFT_OBSERVATIONS),
+      proposal, fieldReviewRequirements: {},
       errors: [...readErrors, { stage: 'synthesis', ...error }] };
   }
-  return { ...base, observations: finalObservations,
+  const historicalLeads = await loadReservationNativeLeads({ propertyCode: input.propertyCode, source: input.source,
+    generationId, proposal: finalProposal!, fromAddress: input.selection.fromAddress ?? null, env, signal: input.signal,
+    db: input.db, transportId: input.transportId,
+    sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []) });
+  return { ...base, observations: [...finalObservations, ...historicalLeads].slice(0, MAX_DRAFT_OBSERVATIONS),
     status: readErrors.length || finalObservations.some((row) => row.status !== 'complete') ||
       Boolean(extractionProjection?.addedRequests || extractionProjection?.addedIssues) ? 'partial' : 'ready',
     proposal: finalProposal!, fieldReviewRequirements: finalReviewRequirements, errors: readErrors };
