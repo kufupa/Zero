@@ -1008,14 +1008,17 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
     const prepared = await locked.lock.withLock(async () => {
       ctx.nativeBatch?.signal.throwIfAborted();
       let childAgePreimage: number[] | undefined;
-      if (compiled.selected.childAges === 'unknown') {
+      {
         const read = await module.readCloudSavedChildAges({ target: locked.target, selected: compiled.selected,
           confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, allowRealGuest: true,
           cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
         if (read.outcome !== 'ok' || !Array.isArray(read.ages) || read.ages.length !== compiled.selected.children ||
             read.ages.some(age => !Number.isInteger(age) || age < 0 || age > 17)) return { issue: 'amend_child_age_baseline_unavailable' };
         childAgePreimage = read.ages as number[];
-        compiled.target.childAges = childAgePreimage;
+        if (Array.isArray(compiled.selected.childAges) &&
+            canonicalJson([...compiled.selected.childAges].sort((a, b) => a - b)) !==
+              canonicalJson([...childAgePreimage].sort((a, b) => a - b))) return { issue: 'amend_child_age_baseline_changed' };
+        if (compiled.target.childAges === 'unknown') compiled.target.childAges = childAgePreimage;
       }
       const discovery = await module.prepareCloudPaneAmend({ target: locked.target, selected: compiled.selected,
         ...(childAgePreimage ? { childAgePreimage } : {}),
