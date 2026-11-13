@@ -1805,7 +1805,7 @@ function countedSourceQuoteRooms(request: ReservationWorkflowV2Extraction['reque
     total === rows.reduce((sum, row) => sum + row.quantity, 0);
   if (!complete) return [];
   const bodyText = (entry: ReservationWorkflowV2Evidence) => {
-    const headerEnd = entry.text.indexOf('\n\n');
+    const headerEnd = /^(?:From|Subject|Participants):/iu.test(entry.text) ? entry.text.indexOf('\n\n') : -1;
     return entry.text.slice(headerEnd < 0 ? 0 : headerEnd + 2)
       .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
   };
@@ -1836,9 +1836,15 @@ function countedSourceQuoteRooms(request: ReservationWorkflowV2Extraction['reque
     const dinner = affirmativeMeal(/\bdinner\b|\bdbb\b/iu), breakfast = affirmativeMeal(/\bbreakfast\b|\bb&b\b|\bdbb\b/iu);
     return dinner && breakfast ? 'dinner_bb' : breakfast ? 'bb' : dinner ? 'Dinner' : null;
   };
-  const paragraphs = source && singleRequest ? bodyText(source).split(/\r?\n\s*\r?\n/u).filter((paragraph) =>
-    rows.every((row) => normalizedFact(paragraph).includes(normalizedFact(row.claim.raw)))) : [];
-  const paragraph = paragraphs.length === 1 ? normalizedFact(paragraphs[0]) : '';
+  const paragraphs = source && singleRequest ? bodyText(source).split(/\r?\n\s*\r?\n/u) : [];
+  const roomParagraphs = paragraphs.flatMap((paragraph, index) =>
+    rows.every((row) => normalizedFact(paragraph).includes(normalizedFact(row.claim.raw))) ? [index] : []);
+  const roomIndex = roomParagraphs.length === 1 ? roomParagraphs[0]! : -1;
+  const preceding = roomIndex > 0 ? normalizedFact(paragraphs[roomIndex - 1]) : '';
+  const precedingCounts = [...preceding.matchAll(/\b(\d{1,3})\s+rooms?\b/giu)];
+  const sameScopeHeader = precedingCounts.length === 1 && Number(precedingCounts[0]![1]) === total &&
+    /\btotal\b/iu.test(preceding) && !/\b(?:previous|prior|earlier|another|separate|other)\b/iu.test(preceding);
+  const paragraph = roomIndex < 0 ? '' : `${sameScopeHeader ? `${preceding} ` : ''}${normalizedFact(paragraphs[roomIndex])}`;
   const firstRoom = paragraph ? Math.min(...rows.map((row) => paragraph.indexOf(normalizedFact(row.claim.raw)))) : -1;
   const header = firstRoom >= 0 ? paragraph.slice(0, firstRoom) : '';
   const scopedHeaders = header.split(/[;.!?]/u).filter((clause) =>
@@ -2278,6 +2284,9 @@ function recoverSourceIntent(input: {
 function anchorCurrentExtractionDates(input: { extraction: ReservationWorkflowV2Extraction;
   source: ReservationWorkflowV2Source; evidence: ReservationWorkflowV2Evidence[] }): ReservationWorkflowV2Extraction {
   const extraction = structuredClone(input.extraction);
+  const month = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
+  const endpoint = `\\d{1,2}(?:st|nd|rd|th)?\\s+${month}(?:\\s*,?\\s*(?:19|20)\\d{2})?`;
+  const sameText = (left: string, right: string) => left.trim().replace(/\s+/gu, ' ').toLowerCase() === right.trim().replace(/\s+/gu, ' ').toLowerCase();
   for (const request of extraction.requests) {
     const rollover = request.kind === 'create' || request.kind === 'quote';
     for (const date of request.dates) {
@@ -2299,6 +2308,38 @@ function anchorCurrentExtractionDates(input: { extraction: ReservationWorkflowV2
         const resolved = resolveSourceStayDate(phrase, input.source.arrivedAt, rollover);
         if (resolved) claim.value = resolved;
         else if (ranges.length || relativeNextYear) claim.value = null;
+      }
+      const start = date.arrival, end = date.departure;
+      if (start && end) {
+        const spans = input.evidence.flatMap((row) => {
+          if (row.relation === 'prior_thread' || !start.sourceRefs.includes(row.ref) || !end.sourceRefs.includes(row.ref)) return [];
+          const pattern = new RegExp(`\\b(${endpoint})\\s*(?:to|until|through|[-–—])\\s*(${endpoint})\\b`, 'giu');
+          return [...row.text.matchAll(pattern)].filter((match) =>
+            (sameText(start.raw, match[1]!) || sameText(start.raw, match[0])) &&
+            (sameText(end.raw, match[2]!) || sameText(end.raw, match[0])));
+        });
+        const uniqueSpans = new Map(spans.map((span) => [
+          `${span[1]!.trim().replace(/\s+/gu, ' ').toLowerCase()}\u001f${span[2]!.trim().replace(/\s+/gu, ' ').toLowerCase()}`, span,
+        ]));
+        if (uniqueSpans.size === 1) {
+          const span = uniqueSpans.values().next().value!;
+          const first = span[1]!, last = span[2]!;
+          const firstYear = first.match(/\b(?:19|20)\d{2}\b/u)?.[0], lastYear = last.match(/\b(?:19|20)\d{2}\b/u)?.[0];
+          if (Boolean(firstYear) !== Boolean(lastYear)) {
+            const year = Number(firstYear ?? lastYear);
+            const firstDate = resolveSourceStayDate(firstYear ? first : `${first} ${year}`, input.source.arrivedAt, false);
+            const lastDate = resolveSourceStayDate(lastYear ? last : `${last} ${year}`, input.source.arrivedAt, false);
+            if (firstDate && lastDate) {
+              const crossesYear = firstDate.slice(5, 7) === '12' && lastDate.slice(5, 7) === '01';
+              const adjustedStart = crossesYear && lastYear ? `${year - 1}${firstDate.slice(4)}` : firstDate;
+              const adjustedEnd = crossesYear && firstYear ? `${year + 1}${lastDate.slice(4)}` : lastDate;
+              if (isoDay(adjustedStart) && isoDay(adjustedEnd) && adjustedStart < adjustedEnd) {
+                start.value = adjustedStart;
+                end.value = adjustedEnd;
+              }
+            }
+          }
+        }
       }
       const arrival = date.arrival?.value, departure = date.departure?.value;
       if (rollover && isoDay(arrival) && isoDay(departure) && arrival.slice(5, 7) === '12' &&
@@ -4414,8 +4455,10 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
     if (request.kind !== 'amend') continue;
     const target = request.body.targets.mode !== 'scoped_all' && request.body.targets.include.length === 1 && request.body.targets.exclude.length === 0
       ? request.body.targets.include[0] : undefined;
-    const sourceNotes = input.extraction.requests.length === 1 ? operationalSourceNote(input).filter((clause) =>
+    const singleRequest = input.extraction.requests.length === 1;
+    const sourceNotes = singleRequest ? operationalSourceNote(input).filter((clause) =>
       input.evidence.some((row) => row.relation === 'current_message' && row.text.includes(clause))) : [];
+    const noteEvidence = new Map<string, Set<string>>();
     let removedModelNote = false;
     let foreignTargetNote = false;
     let unverifiedNoteInstruction = false;
@@ -4423,11 +4466,16 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
       if (change.op !== 'set' || change.field !== 'reservationNote') return true;
       removedModelNote = true;
       const note = change.value;
-      if (input.extraction.requests.length === 1 && typeof note === 'string' && note.trim()) {
+      if (typeof note === 'string' && note.trim()) {
         const cited = input.evidence.filter((row) => change.sourceRefs.includes(row.ref) &&
           row.relation === 'current_message' && row.text.includes(note));
         const lines = cited.flatMap((row) => row.text.split(/\r?\n|(?<=[.!?])\s+/u).filter((line) => line.includes(note)));
-        if (cited.length && !sourceNotes.some((clause) => clause.includes(note))) sourceNotes.push(note);
+        if (cited.length && !sourceNotes.some((clause) => singleRequest ? clause.includes(note) : clause === note)) sourceNotes.push(note);
+        if (cited.length) {
+          const refs = noteEvidence.get(note) ?? new Set<string>();
+          cited.forEach((row) => refs.add(row.ref));
+          noteEvidence.set(note, refs);
+        }
         if (!lines.some((line) => /\b(?:note|instruction)\b/i.test(line) &&
           !/\b(?:not|never|do\s+not|don['’]t|without)\b/i.test(line))) unverifiedNoteInstruction = true;
       }
@@ -4440,16 +4488,21 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
     }
     const uniqueSourceNotes = [...new Set(sourceNotes)];
     sourceNotes.splice(0, sourceNotes.length, ...uniqueSourceNotes);
-    const sourceRefs = input.evidence.filter((row) => row.relation === 'current_message' &&
-      sourceNotes.some((clause) => row.text.includes(clause))).map((row) => row.ref).slice(0, 99);
+    const sourceRefs = singleRequest ? input.evidence.filter((row) => row.relation === 'current_message' &&
+      sourceNotes.some((clause) => row.text.includes(clause))).map((row) => row.ref).slice(0, 99) :
+      [...new Set([...noteEvidence.values()].flatMap((refs) => [...refs]))].slice(0, 99);
     if (!sourceNotes.length && !removedModelNote) continue;
     const path = `/proposal/content/requests/${request.id}/body`;
     for (const clause of sourceNotes) for (let offset = 0; offset < clause.length; offset += 2000) {
       const raw = clause.slice(offset, offset + 2000);
       if (proposal.sourceClaims.length < MAX_PROPOSAL_SOURCE_CLAIMS &&
           !proposal.sourceClaims.some((claim) => claim.path === `${path}/reservationNote` && claim.raw === raw))
-        proposal.sourceClaims.push({ path: `${path}/reservationNote`, raw, sourceRefs });
+        proposal.sourceClaims.push({ path: `${path}/reservationNote`, raw,
+          sourceRefs: singleRequest ? sourceRefs : [...(noteEvidence.get(clause) ?? [])].slice(0, 99) });
     }
+    if (!singleRequest) for (const clause of sourceNotes) addProjectionIssue(proposal, `${path}/reservationNote`,
+      'source_note_for_review', `Source text to review: ${clause.slice(0, 1800)}${clause.length > 1800 ? '…' : ''}`,
+      [...(noteEvidence.get(clause) ?? [])]);
     const confirmation = target?.confirmation?.trim();
     const extractionId = input.extractionIdByProposalRequestId.get(request.id);
     const extracted = input.extraction.requests.find((row) => row.id === extractionId && row.kind === 'amend');
@@ -4463,7 +4516,7 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
       confirmations.length === 1 && confirmations[0] === confirmation;
     const uniqueRequest = extractionId && proposal.content.requests.filter((row) => row.kind === 'amend' &&
       input.extractionIdByProposalRequestId.get(row.id) === extractionId).length === 1;
-    const matches = currentConfirmation && uniqueRequest && !foreignTargetNote && !unverifiedNoteInstruction ? input.observations.filter((row) =>
+    const matches = singleRequest && currentConfirmation && uniqueRequest && !foreignTargetNote && !unverifiedNoteInstruction ? input.observations.filter((row) =>
       row.kind === 'stay_candidate' && row.status === 'complete' && row.coverage.complete &&
       row.sourceMessageId === input.source.messageId && row.criteria.kind === 'prefill_saved_note_baseline' &&
       row.criteria.requestId === extractionId && row.criteria.confirmationOrGuestText === confirmation && row.result.outcome === 'found' &&
