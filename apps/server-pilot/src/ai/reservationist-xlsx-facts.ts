@@ -3,7 +3,7 @@ import { AMBIGUOUS_NUMBER_GROUPS } from './card-mask.js';
 
 type Cell = { columnNumber: number; displayText: string };
 type Row = { rowNumber: number; cells: Cell[] };
-type Role = 'room' | 'roomIndex' | 'quantity' | 'adults' | 'children' | 'childAges' | 'totalGuests' | 'firstName' | 'lastName' | 'guest' | 'age' | 'arrival' | 'departure' | 'board' | 'party' | 'reference';
+type Role = 'room' | 'roomIndex' | 'quantity' | 'adults' | 'children' | 'childAges' | 'totalGuests' | 'firstName' | 'lastName' | 'guest' | 'age' | 'arrival' | 'departure' | 'mealPlan' | 'party' | 'reference';
 
 // Deliberately recognize explicit column labels only. Everything else remains
 // visible for staff review; we do not guess a rooming-list layout.
@@ -21,7 +21,7 @@ const labels: Record<Role, readonly string[]> = {
   age: ['age', 'guest age'],
   arrival: ['arrival', 'arrival date', 'check in', 'check in date'],
   departure: ['departure', 'departure date', 'check out', 'check out date'],
-  board: ['board', 'meal plan', 'meal basis'],
+  mealPlan: ['board', 'meal plan', 'meal basis'],
   party: ['company', 'agency', 'organization', 'organisation'],
   reference: ['confirmation', 'confirmation number', 'reservation reference', 'reservation number'],
 };
@@ -108,7 +108,7 @@ function rawCell(row: Row, columns: Map<Role, number>, role: Role): string | und
   return value?.trim() ? value : undefined;
 }
 
-export type XlsxRowContext = { arrival?: string; departure?: string; board?: string };
+export type XlsxRowContext = { arrival?: string; departure?: string; mealPlan?: string };
 
 /** Return printed same-row stay context without normalizing or hiding unreadable cells. */
 export function xlsxRowContext(fact: ValidatedDocumentFact, source: DocumentSource | undefined): XlsxRowContext | undefined {
@@ -117,10 +117,10 @@ export function xlsxRowContext(fact: ValidatedDocumentFact, source: DocumentSour
   const context: XlsxRowContext = {};
   const arrival = rawCell(located.row, located.columns, 'arrival');
   const departure = rawCell(located.row, located.columns, 'departure');
-  const board = rawCell(located.row, located.columns, 'board');
+  const mealPlan = rawCell(located.row, located.columns, 'mealPlan');
   if (arrival !== undefined) context.arrival = arrival;
   if (departure !== undefined) context.departure = departure;
-  if (board !== undefined) context.board = board;
+  if (mealPlan !== undefined) context.mealPlan = mealPlan;
   return context;
 }
 
@@ -173,7 +173,7 @@ export function xlsxRowEntails(fact: ValidatedDocumentFact, source: DocumentSour
     if (!arrival || !departure) return false;
     try { return normalizedDate(arrival) === fact.value.arrival && normalizedDate(departure) === fact.value.departure; } catch { return false; }
   }
-  if (fact.kind === 'board') return typeof fact.value === 'string' ? same('board', fact.value) : same('board', fact.value.board) && same('room', fact.value.roomRef);
+  if (fact.kind === 'mealPlan') return typeof fact.value === 'string' ? same('mealPlan', fact.value) : same('mealPlan', fact.value.mealPlan) && same('room', fact.value.roomRef);
   if (fact.kind === 'party') return same('party', fact.value);
   if (fact.kind === 'reservation_reference') return same('reference', fact.value);
   return false;

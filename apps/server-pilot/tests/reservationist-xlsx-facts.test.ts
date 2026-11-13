@@ -132,7 +132,7 @@ describe('reservationist XLSX row facts', () => {
       arrival: '2027-02-10', departure: '2027-02-11',
     });
     expect(xlsxRowContext(fact, source)).toEqual({
-      arrival: ' TBC ', board: '[card ••••1111]',
+      arrival: ' TBC ', mealPlan: '[card ••••1111]',
     });
 
     const noStayColumns = sheet(['Room', 'First name', 'Last name'], [['A-12', 'Ada', 'Lovelace']]);

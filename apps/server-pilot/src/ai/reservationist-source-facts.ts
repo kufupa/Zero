@@ -29,8 +29,8 @@ export function assertRevisionSourceFacts(facts: readonly ValidatedDocumentFact[
       const groups = revision.groups.filter(group => group.id === fact.value.roomRef || group.roomCode === fact.value.roomRef);
       if (!groups.length) fail('mismatch', 'room');
       if (groups.some(group => group.adults !== fact.value.adults || quoteDigest(group.childAges) !== quoteDigest(fact.value.childAges) || fact.value.quantity !== undefined && group.quantity !== fact.value.quantity)) fail('mismatch', 'room');
-    } else if (fact.kind === 'board') {
-      const value=typeof fact.value==='string'?fact.value:fact.value.board;
+    } else if (fact.kind === 'mealPlan') {
+      const value=typeof fact.value==='string'?fact.value:fact.value.mealPlan;
       const board = boardLabels[value.toLowerCase().replace(/\s+/g, ' ').trim()];
       if (!board) fail('missing', 'board');
       const target=typeof fact.value==='string'?undefined:fact.value.roomRef;

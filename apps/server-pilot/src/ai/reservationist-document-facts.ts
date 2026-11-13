@@ -62,7 +62,7 @@ const factSchema = z.discriminatedUnion('kind', [
         .strict(),
     })
     .strict(),
-  z.object({ ...base, kind: z.literal('board'), value: z.union([z.string().min(1).max(128), z.object({board:z.string().min(1).max(128),roomRef:identifier}).strict()]) }).strict(),
+  z.object({ ...base, kind: z.literal('mealPlan'), value: z.union([z.string().min(1).max(128), z.object({mealPlan:z.string().min(1).max(128),roomRef:identifier}).strict()]) }).strict(),
   z.object({ ...base, kind: z.literal('party'), value: z.string().min(1).max(512) }).strict(),
   z.object({
     ...base,
