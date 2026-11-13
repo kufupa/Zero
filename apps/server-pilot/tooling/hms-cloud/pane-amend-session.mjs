@@ -10,7 +10,7 @@ import { createSavedRoomStageRequestGate } from './saved-stay-room-stage-gate.mj
 import { createSavedRateStageRequestGate } from './saved-stay-rate-stage-gate.mjs';
 import { stageSavedGuestFieldsForComposition } from './guest-stay-amend-contact.mjs';
 import { stageSavedChargeRoomForComposition } from './guest-stay-amend-charge-room.mjs';
-import { stageSavedTrackForComposition } from './guest-stay-amend-track.mjs';
+import { listSavedTrackChoices, stageSavedTrackForComposition } from './guest-stay-amend-track.mjs';
 import { labtestCombinedAmendPreimageBinding } from './saved-stay-combined-preimage.mjs';
 import { nativeCmsSendValue, runLabtestAmendSave } from './labtest-amend-save.mjs';
 import { createLabtestAmendDispatch } from './labtest-amend-dispatch.mjs';
@@ -271,6 +271,48 @@ export async function prepareCloudPaneAmend(input, { openSession = withCenturion
   } catch {
     return { outcome: 'refused', issue: 'NATIVE_READ_UNAVAILABLE' };
   }
+}
+
+/** Read the selected reservation's Track choices with Save permanently disarmed. */
+export async function listCloudPaneAmendTrackChoices(input, { openSession = withCenturionStay360Page,
+  guard = installSavedStayReadGuard, shallow = readShallow, read = readRecord,
+  current = currentLabtestRecord, snapshot = snapshotLabtestRecord } = {}) {
+  const selected = input?.selected;
+  if (!validTarget(input?.target) || !selected || selected.confirmation !== input.confirmation ||
+      selected.arrival !== input.arrival || !amendTarget(selected, { retainRates: 'no', cmsSend: false, cmsMessageId: '', cmsRecipient: '' },
+        { allowRealGuest: input.allowRealGuest === true })) {
+    return { outcome: 'refused', issue: 'AMEND_INPUT_INVALID' };
+  }
+  try {
+    const protectedSession = guardedSession(input, guard);
+    return await openSession(async page => {
+      if (!protectedSession.hasGuard(page.context())) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
+      await shallow(page, input.confirmation, searchHints(selected, input.arrival));
+      const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
+      const expected = expectedLabtestAmendRecord(record, selected, { allowRealGuest: input.allowRealGuest === true });
+      if (!expected) return { outcome: 'refused', issue: 'APPROVED_STAY_MISMATCH' };
+      const result = await runLabtestAmendSave(page, {
+        timeoutMs: 120_000, signal: protectedSession.options.signal, prepareOnly: true,
+        prepare: async bounded => {
+          const state = await bounded(current(page, expected, nativeOptions(input, record)));
+          const baseline = await bounded(snapshot(state.frame));
+          const save = state.frame.locator('[data-qtip="Save Record (Ctrl+S)"]:visible');
+          if (!baseline || await bounded(save.count()) !== 1 ||
+              await bounded(state.frame.locator('.x-window:visible:not(.x-menu)').count()) !== 0) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
+          return { frame: state.frame, save, baseline, enableComposedStage: true, allowRealGuest: input.allowRealGuest === true,
+            rateStageGate: createSavedRateStageRequestGate({ frame: state.frame, selected, deadlineAt: performance.now() + 120_000 }) };
+        },
+        stage: async (bounded, _prepared, context) => bounded(listSavedTrackChoices(context)),
+        validate: async (_bounded, _prepared, staged) => staged?.coverage?.complete === true &&
+          staged.coverage.nativeResponseCorrelated === true && Array.isArray(staged.candidates),
+        matches: () => false,
+        stageDetails: staged => ({ candidates: staged?.candidates, coverage: staged?.coverage }),
+      });
+      return result.issue === 'PREPARE_ONLY' && result.coverage?.complete === true && result.blockedRequests === 0
+        ? { outcome: 'ok', candidates: result.candidates, coverage: result.coverage }
+        : { outcome: 'refused', issue: result.issue || 'TRACK_CHOICES_UNVERIFIED' };
+    }, protectedSession.options);
+  } catch { return { outcome: 'refused', issue: 'TRACK_CHOICES_UNVERIFIED' }; }
 }
 
 /** Synchronize only the native response's verified local form values; this performs no request. */

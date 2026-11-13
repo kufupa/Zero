@@ -975,7 +975,13 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
       Promise<unknown>, options?: Record<string, unknown>) => Promise<unknown>;
   };
   let read: Record<string, unknown> | null;
-  try {
+  if (request.kind === 'amend' && field === 'track') {
+    const amend = await import('./reservation-workflow-v2-amend.js');
+    const scoped = await amend.readAmendTrackChoices(ctx, loaded.draft, request.id, path);
+    if (scoped.status !== 'ok') return scoped;
+    read = { candidates: scoped.candidates, complete: true, clean: true,
+      selectedTargets: scoped.selectedTargets, nativeCoverage: scoped.nativeCoverage };
+  } else try {
     read = record(await tool.withBookingLookupSession(async ({ page, runTool }) => {
       if (field === 'track') {
         const tracks = await import(new URL('../../tooling/hms-cloud/guest-stay-track-catalog.mjs', import.meta.url).href) as {
@@ -1046,7 +1052,8 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
     kind: 'rate_availability', status: 'complete', observedAt: new Date().toISOString(), propertyCode: loaded.draft.propertyCode,
     sourceMessageId: loaded.draft.source.messageId, sourceRefs: [],
     criteria: { workflow: `${request.kind}_catalogue`, kind: 'native_catalogue', catalogueKind: kind, requestId: request.id,
-      sourceHash: loaded.draft.source.sourceHash, fieldPaths: [path], nativeCriteria: read.nativeCriteria, nativeCoverage: read.nativeCoverage },
+      sourceHash: loaded.draft.source.sourceHash, fieldPaths: [path], nativeCriteria: read.nativeCriteria, nativeCoverage: read.nativeCoverage,
+      ...(Array.isArray(read.selectedTargets) ? { selectedTargets: read.selectedTargets } : {}) },
     coverage: { complete: read.complete === true, notes: read.complete === true ? [] : ['native_choice_coverage_incomplete'] },
     result: { candidates, closeOutcome: 'closed_unsaved' } };
   const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), { workItemId: input.workItemId,

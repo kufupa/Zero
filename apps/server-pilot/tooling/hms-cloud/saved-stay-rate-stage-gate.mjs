@@ -16,24 +16,27 @@ export function createSavedRateStageRequestGate({ frame, selected, deadlineAt } 
       !/^\d+$/.test(selected.recordId || '') || !Number.isFinite(deadlineAt) || deadlineAt <= performance.now()) {
     throw new Error('RATE_STAGE_GATE_INPUT_INVALID');
   }
-  let state = 'ready', native, target, trackTarget, trackGrid, validationGrid = 'LVRATEPLANS2', chargeVerified = false;
+  let state = 'ready', native, target, trackTarget, trackGrid, trackRows, validationGrid = 'LVRATEPLANS2', chargeVerified = false;
   const requests = new Map();
   const active = () => {
     if (performance.now() >= deadlineAt) state = 'closed';
     return state !== 'closed';
   };
-  const gate = Object.freeze({
-    armTrack(snapshot, next) {
-      const data = snapshot?.data, display = snapshot?.values?.track;
-      if (!active() || state !== 'ready' || !data || typeof display !== 'string' || String(data.track ?? '') !== display ||
-          data.propertycode !== 'HRCEN' || data.status !== 'Reserved' ||
-          String(data.confirmationnumber ?? '') !== selected.confirmation || String(data.guestid ?? '') !== selected.guestId ||
-          String(data.reservationstayid ?? '') !== selected.reservationStayId || String(data.reservationid ?? '') !== selected.reservationId ||
-          String(data.recordid ?? '') !== selected.recordId || ![false, 0, '0', 'false', ''].includes(data.udfchkbox04) ||
+  const armTrack = (snapshot, next, readOnly = false) => {
+    const data = snapshot?.data, display = snapshot?.values?.track;
+    if (!active() || state !== 'ready' || !data || typeof display !== 'string' || String(data.track ?? '') !== display ||
+        data.propertycode !== 'HRCEN' || data.status !== 'Reserved' ||
+        String(data.confirmationnumber ?? '') !== selected.confirmation || String(data.guestid ?? '') !== selected.guestId ||
+        String(data.reservationstayid ?? '') !== selected.reservationStayId || String(data.reservationid ?? '') !== selected.reservationId ||
+        String(data.recordid ?? '') !== selected.recordId ||
+        (!readOnly && (![false, 0, '0', 'false', ''].includes(data.udfchkbox04) ||
           !next || !/^[A-Z0-9]{1,12}$/.test(next.lookupCode || '') || typeof next.display !== 'string' ||
-          !next.display.trim() || next.display !== next.display.trim() || next.display.length > 200 || /[\p{Cc}]/u.test(next.display)) return false;
-      native = { track: display }; trackTarget = next; state = 'track_popup_armed'; return true;
-    },
+          !next.display.trim() || next.display !== next.display.trim() || next.display.length > 200 || /[\p{Cc}]/u.test(next.display)))) return false;
+    native = { track: display }; trackTarget = readOnly ? null : next; trackRows = null; state = 'track_popup_armed'; return true;
+  };
+  const gate = Object.freeze({
+    armTrack(snapshot, next) { return armTrack(snapshot, next); },
+    armTrackRead(snapshot) { return armTrack(snapshot, null, true); },
     armTrackReset(metadata) {
       if (!active() || state !== 'track_popup_consumed' || metadata?.GRIDNAME !== 'LVTRACKCODE' ||
           !/^\d+$/.test(String(metadata.GRIDID ?? '')) || !/^\d+$/.test(String(metadata.DATASPYID ?? ''))) return false;
@@ -46,11 +49,15 @@ export function createSavedRateStageRequestGate({ frame, selected, deadlineAt } 
         const grid = parseSavedStayNativeResponse(body)?.grid?.GRIDRESULT?.GRID, rows = grid?.DATA;
         if (grid?.METADATA?.GRIDNAME !== 'LVTRACKCODE' || grid.METADATA.MORERECORDPRESENT !== '-' ||
             !Array.isArray(rows) || Number(grid.METADATA.RECORDS) !== rows.length ||
-            rows.filter(row => row.trackcode === trackTarget.lookupCode && row.tcddesc === trackTarget.display).length !== 1 ||
-            rows.filter(row => row.trackcode === trackTarget.lookupCode).length !== 1) return false;
+            rows.some(row => !/^[A-Z0-9]{1,12}$/.test(row?.trackcode || '') || typeof row?.tcddesc !== 'string' ||
+              !row.tcddesc.trim() || row.tcddesc !== row.tcddesc.trim() || row.tcddesc.length > 200 || /[\p{Cc}]/u.test(row.tcddesc)) ||
+            new Set(rows.map(row => row.trackcode)).size !== rows.length ||
+            (trackTarget && rows.filter(row => row.trackcode === trackTarget.lookupCode && row.tcddesc === trackTarget.display).length !== 1)) return false;
+        trackRows = rows.map(row => ({ code: row.trackcode, label: row.tcddesc }));
         state = 'track_verified'; return true;
       } catch { return false; }
     },
+    trackChoices() { return active() && state === 'track_verified' && trackRows ? structuredClone(trackRows) : null; },
     completeTrack() {
       if (!active() || state !== 'track_verified') return false;
       state = 'ready'; return true;

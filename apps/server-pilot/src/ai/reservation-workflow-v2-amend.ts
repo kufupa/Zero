@@ -687,6 +687,74 @@ function targetWriteLock(ctx: ReadContext, selected: HmsCloudNativePreimage) {
     lock: paneStayCloudTargetLock(target, targetRef.data, { kind: 'independent_cloud' }) };
 }
 
+/** Read the current Track picker for every selected reservation in this change's scope. */
+export async function readAmendTrackChoices(ctx: ReadContext, draft: ReservationWorkflowV2Draft,
+  requestId: string, fieldPath: string): Promise<Outcome> {
+  if (!paneStayLookupEnabled()) return { status: 'needs_input', issue: 'stay_lookup_disabled' };
+  const found = requestBody(draft, requestId);
+  if (!found) return { status: 'needs_input', issue: 'amend_track_target_selection_required' };
+  const unknown = new Set<string>(), targetsPath = `${found.path}/targets`;
+  const targets = record(effectiveTree(draft, targetsPath, found.request.body.targets, unknown));
+  if (!targets || targets.mode !== 'explicit' || !Array.isArray(targets.include) || !targets.include.length ||
+      !Array.isArray(targets.exclude) || unknown.size) return { status: 'needs_input', issue: 'amend_track_target_selection_required' };
+  const exclusionPath = `${targetsPath}/exclude`;
+  const exclusions = resolveTargetExclusions(draft, exclusionPath, targets.exclude, unknown);
+  if (exclusions.issue) return { status: 'needs_input', issue: 'amend_track_target_selection_required' };
+  const relative = fieldPath.startsWith(`${found.path}/`) ? fieldPath.slice(found.path.length + 1).split('/') : [];
+  let targetHint: string | null = null;
+  if (relative[0] === 'perTarget' && /^\d+$/.test(relative[1] ?? '')) {
+    const index = Number(relative[1]), root = `${found.path}/perTarget`;
+    const rows = effectiveLeaf(draft, root, found.request.body.perTarget);
+    const row = Array.isArray(rows) ? record(effectiveLeaf(draft, `${root}/${index}`, rows[index])) : null;
+    const value = effectiveLeaf(draft, `${root}/${index}/hintId`, row?.hintId);
+    targetHint = text(value);
+    if (!targetHint) return { status: 'needs_input', issue: 'amend_track_target_selection_required' };
+  } else if (relative[0] !== 'sharedChanges') return { status: 'needs_input', issue: 'amend_track_target_selection_required' };
+  const selected: Array<{ hintId: string; ref: string; native: HmsCloudNativePreimage }> = [];
+  const ids = new Set<string>();
+  for (const [index, value] of targets.include.entries()) {
+    const hint = record(value), hintId = text(hint?.id);
+    if (!hint || !hintId || ids.has(hintId)) return { status: 'needs_input', issue: 'amend_track_target_selection_required' };
+    ids.add(hintId);
+    if (targets.exclude.some(value => record(value)?.id === hintId) || (targetHint && hintId !== targetHint)) continue;
+    const chosen = selectedStay(draft, requestId, hintId, normalizedTargetHint(hint), index);
+    if ('issue' in chosen || auditTargetExclusions(chosen.selected as unknown as Record<string, unknown>, exclusions, exclusionPath)) {
+      return { status: 'needs_input', issue: 'amend_track_target_selection_required' };
+    }
+    selected.push({ hintId, ref: chosen.ref, native: chosen.selected });
+  }
+  if (!selected.length || (targetHint && selected.length !== 1)) return { status: 'needs_input', issue: 'amend_track_target_selection_required' };
+  const native = await import(new URL('../../tooling/hms-cloud/pane-amend-session.mjs', import.meta.url).href) as {
+    listCloudPaneAmendTrackChoices: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  };
+  let intersection: Array<{ code: string; label: string }> | null = null;
+  for (const item of selected) {
+    const locked = targetWriteLock(ctx, item.native);
+    if (!locked?.lock) return { status: 'failed', issue: 'amend_track_choices_unavailable' };
+    let result: Record<string, unknown>;
+    try {
+      result = await locked.lock.withLock(() => native.listCloudPaneAmendTrackChoices({ target: locked.target,
+        selected: item.native, confirmation: item.native.confirmation, arrival: item.native.arrival, allowRealGuest: true,
+        cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget), signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) }),
+      { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch?.signal });
+    } catch { return { status: 'failed', issue: 'amend_track_choices_unavailable' }; }
+    const coverage = record(result.coverage), rows = Array.isArray(result.candidates) ? result.candidates : null;
+    if (result.outcome !== 'ok' || coverage?.complete !== true || coverage.nativeResponseCorrelated !== true || !rows) {
+      return { status: 'failed', issue: 'amend_track_choices_unavailable' };
+    }
+    const choices: Array<{ code: string; label: string }> = [];
+    for (const value of rows) {
+      const row = record(value), code = text(row?.code), label = text(row?.label);
+      if (!code || !label || choices.some(choice => choice.code === code)) return { status: 'failed', issue: 'amend_track_choices_unavailable' };
+      choices.push({ code, label });
+    }
+    intersection = intersection === null ? choices : intersection.filter(choice =>
+      choices.some(other => other.code === choice.code && other.label === choice.label));
+  }
+  return { status: 'ok', candidates: intersection ?? [], selectedTargets: selected.map(({ hintId, ref }) => ({ hintId, ref })),
+    nativeCoverage: { complete: true, nativeResponseCorrelated: true, selectedStayCount: selected.length } };
+}
+
 function preparationObservation(draft: ReservationWorkflowV2Draft, compiled: Compile & { outcome: 'ok' },
   native: Record<string, unknown>, changes: Amendment, preserved: Record<string, unknown>, price: Record<string, unknown>,
   recoveryBaseline: Record<string, unknown>, semanticDigest: string): ReservationWorkflowV2Observation {
