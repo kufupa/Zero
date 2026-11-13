@@ -9,9 +9,9 @@ import styles from './other-editors.module.css';
 type Editor = WorkbenchEditorProps;
 type SavedTarget = { kind: 'saved_target'; requestId: string; hintId: string };
 const serviceFields = [
-  ['quantity', 'Quantity', 'text', 80], ['startDate', 'Start date', 'date', 40], ['endDate', 'End date', 'date', 40],
-  ['frequency', 'Frequency', 'text', 120], ['pricingControl', 'Pricing Control', 'text', 120], ['unitPrice', 'Unit price', 'text', 80],
-  ['folio', 'Folio', 'text', 120], ['comment', 'Comment', 'text', 2000],
+  ['quantity', 'Quantity', 'text', 55], ['startDate', 'Start date', 'date', undefined], ['endDate', 'End date', 'date', undefined],
+  ['frequency', 'Frequency', 'text', undefined], ['pricingControl', 'Pricing Control', 'text', undefined], ['unitPrice', 'Unit price', 'text', 55],
+  ['folio', 'Folio', 'text', undefined], ['comment', 'Comment', 'text', 255],
 ] as const;
 const nativeFields = [
   ['code', 'Item'], ['name', 'Description'], ['quantity', 'Quantity'], ['startDate', 'Start'], ['endDate', 'End'],
@@ -407,7 +407,13 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
         </select>
       </label>
       {operation !== 'remove' && <div className={styles.grid}>{serviceFields.map(([field, label, type, maxLength]) => {
+        const path = `${targetRoot}/fields/${field}`;
+        const local = valueAt(editor.snapshot, path), override = draft.fieldOverrides[path];
         const shared = valueAt(editor.snapshot, `${serviceRoot}/sharedFields/${field}`);
+        const explicitlyEmpty = override && ['none', 'clear', 'unknown'].includes(override.state) || record(local).kind === 'none' ||
+          operation === 'edit' && field === 'comment' && override?.state === 'set' && override.value === '';
+        const effective = explicitlyEmpty ? null : override?.state === 'inherit' ? shared : text(local).trim() ? local : shared;
+        const overLimit = maxLength !== undefined && typeof effective === 'string' && effective.length > maxLength;
         const isChoice = field === 'frequency' || field === 'pricingControl' || field === 'folio';
         const control = isChoice ? controls.map(source => record(source[field])).find(source => Object.keys(source).length > 0) : undefined;
         const options = control ? nativeOptions(control) : [];
@@ -419,10 +425,10 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
           : options.length ? 'Infor choices; check again after changes.' : 'Check the Add-On to load Infor choices.' : '';
         const priceHint = field === 'unitPrice' ? 'Enter source price or an explicit staff price; zero is allowed. Infor calculates the total.' : '';
         const sharedHint = shared != null && text(shared) ? `Shared value: ${text(shared)}; a room value overrides it.` : operation === 'edit' ? 'Leave unmentioned values unchanged.' : '';
-        return <Field key={field} editor={editor} path={`${targetRoot}/fields/${field}`} label={label} type={type} maxLength={maxLength} review
+        return <Field key={field} editor={editor} path={path} label={label} type={type} maxLength={maxLength} review
           options={options.length ? options : undefined} disabled={editor.view.busy || control?.editable === false}
           unmatchedOptionLabel={options.length ? 'Not returned by Infor' : undefined}
-          hint={[sharedHint, nativeHint, choiceHint, priceHint].filter(Boolean).join(' ') || undefined} />;
+          hint={[sharedHint, nativeHint, choiceHint, priceHint, overLimit ? `This value exceeds Infor's ${maxLength}-character limit. Edit it before checking.` : ''].filter(Boolean).join(' ') || undefined} />;
       })}</div>
       }
       {operation !== 'remove' && <small className={reversedDates ? styles.warning : styles.hint}>

@@ -9,11 +9,6 @@ import styles from './create-quote-editor.module.css';
 import pickerStyles from '../reservation-pane.module.css';
 
 type Editor = WorkbenchEditorProps;
-const mealPlans = [
-  { value: 'room_only', label: 'Room only' },
-  { value: 'bb', label: 'Bed and breakfast' },
-  { value: 'dinner_bb', label: 'Dinner, bed and breakfast' },
-];
 const strategies = [
   { value: 'BAR', label: 'BAR · best available rate' }, { value: 'PROMO', label: 'PROMO · promotion' },
   { value: 'PRESET', label: 'PRESET' }, { value: 'WS', label: 'WS' }, { value: 'NC', label: 'NC' },
@@ -124,7 +119,9 @@ function quoteOffersCurrent(editor: Editor, observation: ReturnType<typeof lates
   return groups.every((group) => {
     const native = requested.find((row) => row.id === group.id), occupancy = record(group.occupancy);
     return native && native.arrivalDate === group.arrival && native.departureDate === group.departure &&
-      native.quantity === group.quantity && native.adults === occupancy.adults && native.mealPlan === quoteMealPlanCode(group.mealPlan, editor.snapshot.session.draft.propertyCode) &&
+      native.quantity === group.quantity && native.adults === occupancy.adults &&
+      native.mealPlan === (quoteMealPlanCode(group.mealPlan, editor.snapshot.session.draft.propertyCode)
+        ?? quoteMealPlanCode(group.requestedMealPlan, editor.snapshot.session.draft.propertyCode) ?? 'bb') &&
       native.childrenAges instanceof Array && native.childrenAges.length === occupancy.childCount &&
       JSON.stringify(native.childrenAges) === JSON.stringify(occupancy.childAges ?? []) &&
       JSON.stringify(native.roomCodes ?? []) === JSON.stringify(group.roomCodes ?? []) &&
@@ -491,7 +488,8 @@ export function QuoteEditor(editor: Editor) {
             <Field label="Departure" path={`${groupPath}/departure`} editor={editor} type="date" review /></div>}
           {roomSource && <p className={styles.note}>Requested: {roomSource.raw}</p>}
           <div className={styles.twoCol}><Count label="Rooms" path={`${groupPath}/quantity`} editor={editor} min={1} max={100} review />
-            <Field label="Meal Plan" path={`${groupPath}/mealPlan`} editor={editor} options={mealPlans} review /></div>
+            <Field label="Requested Meal Plan" path={`${groupPath}/requestedMealPlan`} editor={editor} maxLength={120} review
+              hint="Customer request; Infor confirms the Meal Plan for the selected rate." /></div>
           <Field label="Requested room" path={`${groupPath}/requestedRoomDescription`} editor={editor} maxLength={1000} compact
             hint="Customer room description. Choose the Infor categories below." />
           <Field label="Requested guests for this group" path={`${groupPath}/guestNames`} editor={editor} type="string-list" compact
@@ -505,6 +503,11 @@ export function QuoteEditor(editor: Editor) {
             <ChildAges editor={editor} path={`${groupPath}/occupancy`} max={6} /></div>
           <RoomCode editor={editor} path={`${groupPath}/roomCodes`} options={options} />
           <NativePicker label="Rate Plan" path={`${groupPath}/ratePlan`} editor={editor} kind="rate_plan" compact />
+          <div data-field-path={`${groupPath}/mealPlan`} className={styles.localField}>
+            <div className={styles.countHeading}><span>Infor Meal Plan</span>
+              {group.mealPlan != null && <FieldReview editor={editor} path={`${groupPath}/mealPlan`} label="Infor Meal Plan" requireReview />}</div>
+            <span>{text(group.mealPlan) || 'Not confirmed. Check Infor offers.'}</span>
+          </div>
           <OfferList editor={editor} groupId={text(group.id)} groupPath={groupPath} observation={observation} />
         </div>;
       })}
