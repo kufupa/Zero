@@ -63,7 +63,7 @@ function hasCurrentUnavailableInventoryProof(snapshot: ReservationPaneSnapshot, 
   const nights = stayNights(group?.arrival, group?.departure);
   if (!group || roomCodes.length !== 1 || !group.ratePlan || !nights.length ||
       marker.groupId !== group.id || marker.roomCode !== roomCodes[0] || marker.rateCode !== group.ratePlan ||
-      marker.board !== boardCode(group.mealPlan) || marker.arrivalDate !== group.arrival ||
+      marker.mealPlan !== boardCode(group.mealPlan) || marker.arrivalDate !== group.arrival ||
       marker.departureDate !== group.departure || marker.quantity !== group.quantity) return false;
   const availability = draft.observations.find((item) => item.ref === availabilityRef);
   const native = rec(availability?.result), criteria = rec(availability?.criteria), shortfall = rec(native.shortfall);
@@ -95,7 +95,7 @@ function hasCurrentUnavailableInventoryProof(snapshot: ReservationPaneSnapshot, 
   const board: Array<Record<string, unknown>> = Array.isArray(diagnostic.availabilityBoard)
     ? diagnostic.availabilityBoard.map(rec).filter((item) => Object.keys(item).length > 0) : [];
   const rows = board.filter((item) => item.groupId === group.id && item.roomCode === marker.roomCode &&
-    item.rateCode === marker.rateCode && boardCode(item.boardLabel ?? item.board) === marker.board);
+    item.rateCode === marker.rateCode && boardCode(item.mealPlanLabel ?? item.mealPlan) === marker.mealPlan);
   if (rows.length !== 1) return false;
   const row = rows[0]!, coverage = rec(row.coverage), nightCoverage = rec(row.nightCoverage);
   const facts: Array<Record<string, unknown>> = Array.isArray(row.nightly)

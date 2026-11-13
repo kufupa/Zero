@@ -1140,7 +1140,7 @@ export function BookingCards({
   rateCatalogue?: RatePlanCatalogueEntry[];
   workItemPane?: WorkItemPaneControls | null;
   rateEvidence?: PartyEvidence;
-  partyFieldEdited?: { agency: boolean; company: boolean };
+  partyFieldEdited?: { bookingAgency: boolean; organization: boolean };
   /**
    * Signed-in user and saved confirmation default. Without it, confirmation defaults to an
    * unresolved staff address until staff choose a recipient.
@@ -1203,9 +1203,9 @@ export function BookingCards({
             workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.lastName`))) guestNamesEdited.current[key] = true;
           if (binding && (fieldStaff('reservationNote') ||
             workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.reservationNote`))) reservationNoteDirty.current[key] = true;
-          const agency = savedField('parties.agency', projected?.bookingAgency, null);
-          const agencyWasChosen = binding && (fieldStaff('parties.agency') ||
-            workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.parties.agency`));
+          const agency = savedField('parties.bookingAgency', projected?.bookingAgency, null);
+          const agencyWasChosen = binding && (fieldStaff('parties.bookingAgency') ||
+            workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.parties.bookingAgency`));
           if (binding && (fieldStaff('parties.organization') ||
             workItemPane?.requestDraft?.held(binding.requestId, `${binding.prefix}.parties.organization`))) organizationEdited.current[key] = true;
           const choice: RoomChoice = {
@@ -1221,11 +1221,11 @@ export function BookingCards({
             firstName,
             lastName,
             bookingAgency: agency && typeof agency === 'object' && 'nativeId' in agency
-              ? !parties?.agency || agency.nativeId === parties.agency.nativeId ? '__bound__' : '__unresolved__'
+              ? !parties?.bookingAgency || agency.nativeId === parties.bookingAgency.nativeId ? '__bound__' : '__unresolved__'
               : agencyWasChosen ? '__none__' : '',
             organization: textValue((() => {
               const value = savedField('parties.organization', projected?.organization,
-                textValue(projected?.sourceOrganizationName) || textValue(room.request.organization) || pickedName(parties?.company));
+                textValue(projected?.sourceOrganizationName) || textValue(room.request.organization) || pickedName(parties?.organization));
               return value && typeof value === 'object' && 'name' in value ? value.name : value;
             })()),
             reservationNote: textValue(savedField('reservationNote', projected?.reservationNote, existingNote)),
@@ -1267,7 +1267,7 @@ export function BookingCards({
         const existing = current[key];
         if (organizationEdited.current[key] || !existing) continue;
         const projected = createRoomBinding(room, groups, workItemPane, session)?.value;
-        const label = pickedName(parties?.company) || projected?.organization?.name || projected?.sourceOrganizationName;
+        const label = pickedName(parties?.organization) || projected?.organization?.name || projected?.sourceOrganizationName;
         if (label && existing.organization !== label) {
           next ??= { ...current };
           next[key] = { ...existing, organization: label };
@@ -1275,7 +1275,7 @@ export function BookingCards({
       }
       return next ?? current;
     });
-  }, [draft, groups, workItemPane, session, parties?.company]);
+  }, [draft, groups, workItemPane, session, parties?.organization]);
 
   const [localSaves, setSaves] = useState<Record<string, RoomSaveState>>(() =>
     savesFromSavedStays(draft, groups, savedStays),
@@ -1344,7 +1344,7 @@ export function BookingCards({
   });
   const sendHmsConfirmation = labtestOnly ? false : sendConfirmation;
   const [chosenCmsMessage, setChosenCmsMessage] = useState<string | null>(typeof savedCmsMessage === 'string' ? savedCmsMessage : null);
-  const hasBoundParty = Boolean(pickedName(parties?.agency) || pickedName(parties?.company));
+  const hasBoundParty = Boolean(pickedName(parties?.bookingAgency) || pickedName(parties?.organization));
   const defaultCmsMessage = hasBoundParty ? (options.cmsDefaults?.agency ?? '03') : (options.cmsDefaults?.guest ?? '01');
   const cmsMessage = chosenCmsMessage ?? defaultCmsMessage;
   const contextConfirmation = useConfirmationSources();
@@ -1605,7 +1605,7 @@ export function BookingCards({
           ['childAges', binding.value.childAges, roomStay.childAges ?? [], (roomStay.childAges ?? []).length <= 9],
           ['roomTypeCode', binding.value.roomType, roomStay.roomType, /^[A-Z0-9]{1,12}$/.test(roomStay.roomType)],
           ['ratePlan', binding.value.ratePlan, roomStay.ratePlan, /^[A-Z0-9]{1,12}$/.test(roomStay.ratePlan)],
-          ['parties.agency', binding.value.bookingAgency, party(roomStay.bookingAgency)],
+          ['parties.bookingAgency', binding.value.bookingAgency, party(roomStay.bookingAgency)],
           ['parties.organization', binding.value.organization, party(roomStay.organization)],
           ['sourceOfBusiness', binding.value.sourceOfBusiness, roomStay.sourceOfBusiness || null],
           ['track', binding.value.track, roomStay.track || null], ['guaranteeType', binding.value.guaranteeType, roomStay.guaranteeType || null],
@@ -1711,12 +1711,12 @@ export function BookingCards({
     const group = roomGroupFor(room, groups);
     const choice = choices[roomKeyOf(room)] ?? NO_CHOICE;
     const roomBinding = createRoomBinding(room, groups, workItemPane, session);
-    const boundAgency = parties?.agency?.nativeId ? parties.agency :
-      !partyFieldEdited?.agency ? roomBinding?.value.bookingAgency ?? undefined : undefined;
-    const boundCompany = parties?.company?.nativeId ? parties.company :
-      !partyFieldEdited?.company ? roomBinding?.value.organization ?? undefined : undefined;
+    const boundAgency = parties?.bookingAgency?.nativeId ? parties.bookingAgency :
+      !partyFieldEdited?.bookingAgency ? roomBinding?.value.bookingAgency ?? undefined : undefined;
+    const boundCompany = parties?.organization?.nativeId ? parties.organization :
+      !partyFieldEdited?.organization ? roomBinding?.value.organization ?? undefined : undefined;
     const savedAgency = roomBinding?.value.bookingAgency?.name;
-    const unboundName = textValue(savedAgency).trim() || textValue(roomBinding?.value.sourceAgencyName).trim() || textValue(room.request.agency).trim();
+    const unboundName = textValue(savedAgency).trim() || textValue(roomBinding?.value.sourceAgencyName).trim() || textValue(room.request.bookingAgency).trim();
     const agencyUnresolved = choice.bookingAgency !== '__none__' &&
       (!boundAgency || choice.bookingAgency === '__unresolved__') && Boolean(unboundName);
     const currentEmail = currentContact ? textValue(currentContact.email) :
@@ -2318,13 +2318,13 @@ export function BookingCards({
             record('childAges', valid ? ages : patch.childAges.join('|'), valid);
           }
           if (patch.bookingAgency !== undefined) {
-            const agency = parties?.agency;
-            record('parties.agency', patch.bookingAgency === '__bound__' && agency?.nativeId
+            const agency = parties?.bookingAgency;
+            record('parties.bookingAgency', patch.bookingAgency === '__bound__' && agency?.nativeId
               ? { nativeId: agency.nativeId, name: agency.name } : null,
             patch.bookingAgency === '__none__' || Boolean(patch.bookingAgency === '__bound__' && agency?.nativeId));
           }
           if (patch.organization !== undefined) {
-            const company = parties?.company;
+            const company = parties?.organization;
             const name = patch.organization.trim();
             record('parties.organization', name && company?.nativeId && name === company.name
               ? { nativeId: company.nativeId, name: company.name } : name || null,
@@ -2402,10 +2402,10 @@ export function BookingCards({
         const inheritedAges = inheritedChildAges(room, group);
         const ages = choice.childAges ?? (Array.isArray(inheritedAges) ? inheritedAges.map(String) : []);
         const agesKnown = choice.childAges !== undefined || Array.isArray(inheritedAges);
-        const boundAgency = parties?.agency?.nativeId ? parties.agency :
-          !partyFieldEdited?.agency ? binding?.value.bookingAgency ?? undefined : undefined;
-        const boundCompany = parties?.company?.nativeId ? parties.company :
-          !partyFieldEdited?.company ? binding?.value.organization ?? undefined : undefined;
+        const boundAgency = parties?.bookingAgency?.nativeId ? parties.bookingAgency :
+          !partyFieldEdited?.bookingAgency ? binding?.value.bookingAgency ?? undefined : undefined;
+        const boundCompany = parties?.organization?.nativeId ? parties.organization :
+          !partyFieldEdited?.organization ? binding?.value.organization ?? undefined : undefined;
         const matchingGuests = (guestCandidates[key] ?? []).filter((candidate) =>
           (!choice.firstName.trim() || candidate.firstName.trim().toLowerCase() === choice.firstName.trim().toLowerCase()) &&
           candidate.lastName.trim().toLowerCase() === choice.lastName.trim().toLowerCase());
@@ -2574,8 +2574,8 @@ export function BookingCards({
               <CopyButton label="Booking agency" roomLabel={roomLabel} value={agencyValue === '__bound__' ? boundAgency?.name ?? '' : ''} />
             </div>
             {(!boundAgency || choice.bookingAgency === '__unresolved__') &&
-              (textValue(request.agency).trim() || binding?.value.bookingAgency?.name || binding?.value.sourceAgencyName) && agencyValue !== '__none__' ? (
-              <p className="text-[11px] text-[#64748b]">{binding?.value.bookingAgency?.name || binding?.value.sourceAgencyName || textValue(request.agency).trim()}: select this agency in Agency &amp; company above, or choose No agency.</p>
+              (textValue(request.bookingAgency).trim() || binding?.value.bookingAgency?.name || binding?.value.sourceAgencyName) && agencyValue !== '__none__' ? (
+              <p className="text-[11px] text-[#64748b]">{binding?.value.bookingAgency?.name || binding?.value.sourceAgencyName || textValue(request.bookingAgency).trim()}: select this agency in Agency &amp; company above, or choose No agency.</p>
             ) : null}
         </>);
         const organizationField = (<>
@@ -2648,8 +2648,8 @@ export function BookingCards({
             {requireDurableCreate && group && session && rateEvidence && binding && queue ? <ContextualRateCheck
               group={group} session={session} pane={workItemPane ?? null} evidence={rateEvidence} plans={rateCatalogue}
               onChoose={(ratePlan) => setChoice({ ratePlan })} create={{ roomIndex: binding.roomIndex, rateCode: selectedRate,
-                agency: agencyValue === '__none__' ? 'none' : agencyValue === '__bound__' ? 'selected' : 'unknown',
-                company: !choice.organization.trim() ? 'none' : boundCompany?.nativeId &&
+                bookingAgency: agencyValue === '__none__' ? 'none' : agencyValue === '__bound__' ? 'selected' : 'unknown',
+                organization: !choice.organization.trim() ? 'none' : boundCompany?.nativeId &&
                   choice.organization.trim() === boundCompany.name ? 'selected' : 'unknown',
                 contextKey: JSON.stringify([arrival, departure, selectedRoom, choice.adults ?? group.adults,
                   agesKnown ? ages : null, selectedRate, choice.bookingAgency, boundAgency?.nativeId ?? null,
@@ -2786,7 +2786,7 @@ export function BookingCards({
             <CopyHmsNotesButton
               block={hmsNotesBlock({
                 booker: choice.bookerName ?? (contact ? textValue(contact.name) : textValue(request.bookerName)),
-                company: choice.organization || contact?.company,
+                company: choice.organization || contact?.bookingAgency,
                 confirmations: bookedCommit ? [bookedCommit.confirmationNumber] : [],
                 rooms: [
                   {
@@ -2801,7 +2801,7 @@ export function BookingCards({
                           textValue(request.ratePlan)),
                       nightlyMinor:
                         price ? [price.amountMinor] : group?.quotedAmountMinor != null ? [group.quotedAmountMinor] : undefined,
-                      board: room.board ? BOARD_LABELS[room.board] : undefined,
+                      mealPlan: room.mealPlan ? BOARD_LABELS[room.mealPlan] : undefined,
                     },
                   },
                 ],

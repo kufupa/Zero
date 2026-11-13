@@ -26,7 +26,7 @@ export type PropertyProfile = {
   rooms?: Record<string, { label: string; aliases?: string[]; autoQuote?: boolean }>;
   ratePlans?: Record<string, {
     label: string;
-    board: string;
+    mealPlan: string;
     contract?: boolean;
     government?: boolean;
     event?: boolean;

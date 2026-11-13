@@ -41,7 +41,7 @@ const input = () =>
         quantity: 2,
         adults: 1,
         childrenAges: [],
-        board: 'room_only',
+        mealPlan: 'room_only',
         roomCodes: ['SKNG'],
       },
     ],
@@ -58,7 +58,7 @@ function modelDinnerBoard(board: 'dbb' | 'half_board'): Board {
         rooms: 2,
         adultsPerRoom: 1,
         childAges: [],
-        board,
+        mealPlan: board,
         roomPreference: null,
         guestNames: [],
       }],
@@ -69,7 +69,7 @@ function modelDinnerBoard(board: 'dbb' | 'half_board'): Board {
       tasks: [{ kind: 'quote', groupIndexes: [0], note: 'Quote the requested stay' }],
     }),
   );
-  return decision.groups[0]!.board;
+  return decision.groups[0]!.mealPlan;
 }
 
 async function fixture(confirmed = input()) {
@@ -106,10 +106,10 @@ async function fixture(confirmed = input()) {
                 id: 'option',
                 room: { code: 'SKNG', label: 'Standard King', buildingCode: 'MAIN' },
                 rate: { code: 'BARRO', label: 'Room Only' },
-                board:
-                  r.required?.boardBases?.[0] === 'breakfast'
+                mealPlan:
+                  r.required?.mealPlanBases?.[0] === 'breakfast'
                     ? 'Bed & Breakfast R'
-                    : r.required?.boardBases?.[0] === 'dinner_bed_breakfast'
+                    : r.required?.mealPlanBases?.[0] === 'dinner_bed_breakfast'
                       ? 'Dinner Bed & Breakfast R'
                       : 'Room Only R',
                 appliedContext: Object.fromEntries(
@@ -145,7 +145,7 @@ async function fixture(confirmed = input()) {
       propertyCode: 'HRCEN',
       sourceHashes: ['c'.repeat(64)],
       authoredDates: ['2026-09-08'],
-      families: [{ rateCode: 'BARRO', board }],
+      families: [{ rateCode: 'BARRO', mealPlan: board }],
       vat: 'included' as const,
       levy: 'included' as const,
     }),
@@ -156,12 +156,12 @@ afterEach(() => vi.useRealTimers());
 describe('staff-approved quotation beneath native guards', () => {
   it('retries dinner boards as B&B without changing any other quote input', () => {
     const source = input();
-    source.groups[0]!.board = 'dinner_bb';
+    source.groups[0]!.mealPlan = 'dinner_bb';
     source.groups[0]!.rateCode = 'AGENCY';
     source.salesStrategy = 'BAR';
     source.parties = {
-      company: { kind: 'company', nativeId: 'co-17', name: 'Example Company' },
-      agency: { kind: 'agency', nativeId: 'ag-29', name: 'Example Travel' },
+      organization: { kind: 'organization', nativeId: 'co-17', name: 'Example Company' },
+      bookingAgency: { kind: 'bookingAgency', nativeId: 'ag-29', name: 'Example Travel' },
     };
     source.rowPrices = [{ groupId: 'single', source: 'one_off', oneOffRate: 42_000 }];
     const { rateCode: _dinnerRateCode, ...fallbackGroup } = source.groups[0]!;
@@ -171,18 +171,18 @@ describe('staff-approved quotation beneath native guards', () => {
     expect(retry).toEqual({
       input: {
         ...source,
-        groups: [{ ...fallbackGroup, board: 'bb' }],
+        groups: [{ ...fallbackGroup, mealPlan: 'bb' }],
       },
       groupIds: ['single'],
     });
     expect(retry?.input.groups[0]).not.toHaveProperty('rateCode');
-    expect(source.groups[0]?.board).toBe('dinner_bb');
+    expect(source.groups[0]?.mealPlan).toBe('dinner_bb');
     expect(staffQuoteDinnerFallback(input())).toBeNull();
   });
 
   it('BAR retries only dinner groups without a selected verified party contract rate', () => {
     const publicDinner = input();
-    publicDinner.groups[0]!.board = 'dinner_bb';
+    publicDinner.groups[0]!.mealPlan = 'dinner_bb';
     expect(
       staffQuoteDinnerGroupIdsToRetryAsBb(publicDinner, [
         { groupId: 'single', selected: true, contract: false, rateCode: 'BAR' },
@@ -191,7 +191,7 @@ describe('staff-approved quotation beneath native guards', () => {
 
     const contractedDinner = {
       ...publicDinner,
-      parties: { company: { kind: 'company' as const, nativeId: 'co-17', name: 'Example Company' } },
+      parties: { organization: { kind: 'organization' as const, nativeId: 'co-17', name: 'Example Company' } },
     };
     // A government/public code is not a party contract just because it is not BAR.
     expect(
@@ -230,7 +230,7 @@ describe('staff-approved quotation beneath native guards', () => {
 
   it('keeps Government DBB results and requires staff choice after no-match', () => {
     const governmentDinner = input();
-    governmentDinner.groups[0]!.board = 'dinner_bb';
+    governmentDinner.groups[0]!.mealPlan = 'dinner_bb';
     governmentDinner.salesStrategy = 'Government';
 
     expect(staffQuoteGovernmentDinnerNote(governmentDinner)).toBe(
@@ -243,20 +243,20 @@ describe('staff-approved quotation beneath native guards', () => {
     expect(staffQuoteGovernmentDinnerNote(barDinner)).toBeNull();
     expect(staffQuoteDinnerNoMatchFallback(barDinner)).toMatchObject({
       note: null,
-      input: { salesStrategy: 'BAR', groups: [{ board: 'bb' }] },
+      input: { salesStrategy: 'BAR', groups: [{ mealPlan: 'bb' }] },
     });
   });
 
   it('can apply the B&B retry to only the uncontracted dinner groups', () => {
     const source = input();
-    source.groups[0]!.board = 'dinner_bb';
+    source.groups[0]!.mealPlan = 'dinner_bb';
     source.groups[0]!.rateCode = 'NGOVDB';
     source.groups.push({ ...source.groups[0]!, id: 'contract', rateCode: 'ACME1' });
 
     const retry = staffQuoteDinnerFallback(source, ['single']);
 
     expect(retry?.groupIds).toEqual(['single']);
-    expect(retry?.input.groups[0]).toMatchObject({ id: 'single', board: 'bb' });
+    expect(retry?.input.groups[0]).toMatchObject({ id: 'single', mealPlan: 'bb' });
     expect(retry?.input.groups[0]).not.toHaveProperty('rateCode');
     expect(retry?.input.groups[1]).toEqual(source.groups[1]);
     expect(retry?.input.dinnerAllowanceGroupIds).toBeUndefined();
@@ -271,8 +271,8 @@ describe('staff-approved quotation beneath native guards', () => {
       const source = input();
       const group = source.groups[0]!;
       source.groups = [
-        { ...group, id: 'bb', quantity: 1, adults: 2, board: 'bb' },
-        { ...group, id: 'dinner', quantity: 1, adults: 1, board: 'dinner_bb' },
+        { ...group, id: 'bb', quantity: 1, adults: 2, mealPlan: 'bb' },
+        { ...group, id: 'dinner', quantity: 1, adults: 1, mealPlan: 'dinner_bb' },
       ];
       source.dinnerAllowanceMinor = 12_500;
       source.dinnerAllowanceUnit = 'per_person_per_night';
@@ -304,8 +304,8 @@ describe('staff-approved quotation beneath native guards', () => {
     const source = input();
     const group = source.groups[0]!;
     source.groups = [
-      { ...group, id: 'first', quantity: 1, adults: 1, board: 'dinner_bb' },
-      { ...group, id: 'added', quantity: 1, adults: 1, board: 'dinner_bb' },
+      { ...group, id: 'first', quantity: 1, adults: 1, mealPlan: 'dinner_bb' },
+      { ...group, id: 'added', quantity: 1, adults: 1, mealPlan: 'dinner_bb' },
     ];
     source.dinnerAllowanceMinor = 12_500;
     source.dinnerAllowanceUnit = 'per_person_per_night';
@@ -331,8 +331,8 @@ describe('staff-approved quotation beneath native guards', () => {
     const source = input();
     const group = source.groups[0]!;
     source.groups = [
-      { ...group, id: 'bb', quantity: 1, adults: 2, board: 'bb' },
-      { ...group, id: 'dinner', quantity: 1, adults: 1, board: 'dinner_bb' },
+      { ...group, id: 'bb', quantity: 1, adults: 2, mealPlan: 'bb' },
+      { ...group, id: 'dinner', quantity: 1, adults: 1, mealPlan: 'dinner_bb' },
     ];
 
     const retry = staffQuoteDinnerFallback(source)!;
@@ -367,8 +367,8 @@ describe('staff-approved quotation beneath native guards', () => {
     'requires a dinner price after retry when model board is %s',
     async (modelBoard) => {
       const source = input();
-      source.groups[0]!.board = modelDinnerBoard(modelBoard);
-      expect(source.groups[0]!.board).toBe('dinner_bb');
+      source.groups[0]!.mealPlan = modelDinnerBoard(modelBoard);
+      expect(source.groups[0]!.mealPlan).toBe('dinner_bb');
 
       const retry = staffQuoteDinnerFallback(source)!;
       const retryInput = { ...retry.input };
@@ -391,7 +391,7 @@ describe('staff-approved quotation beneath native guards', () => {
         proposalOptions,
       );
 
-      expect(retry.input.groups[0]).toMatchObject({ id: 'single', board: 'bb' });
+      expect(retry.input.groups[0]).toMatchObject({ id: 'single', mealPlan: 'bb' });
       expect(proposal.facts).toBeNull();
       expect(proposal.dinnerAddOnRequired).toBe(true);
       expect(proposal.extrasReviewItems).toContain('Dinner price — enter amount');
@@ -474,7 +474,7 @@ describe('staff-approved quotation beneath native guards', () => {
 
   it('uses the Centurion Dinner Allowance default for DBB at guests times nights', async () => {
     const dbbInput = input();
-    dbbInput.groups[0]!.board = 'dinner_bb';
+    dbbInput.groups[0]!.mealPlan = 'dinner_bb';
     const fallback = staffQuoteDinnerFallback(dbbInput)!;
     const f = await fixture(fallback.input);
     const revision = await executeStaffQuote(
@@ -518,7 +518,7 @@ describe('staff-approved quotation beneath native guards', () => {
   it('does not apply the Centurion dinner default to a Government quote', async () => {
     const dbbInput = input();
     dbbInput.salesStrategy = 'Government';
-    dbbInput.groups[0]!.board = 'dinner_bb';
+    dbbInput.groups[0]!.mealPlan = 'dinner_bb';
     const fallback = staffQuoteDinnerFallback(dbbInput)!;
     const f = await fixture(fallback.input);
     const revision = await executeStaffQuote(
@@ -622,7 +622,7 @@ describe('staff-approved quotation beneath native guards', () => {
         revisionRef: revision.id,
         factRefs: [],
         sourceHash: scope.sourceHash,
-        party: { company: '', agency: '' },
+        party: { organization: '', bookingAgency: '' },
       }).revision.id,
     ).toBe(revision.id);
     const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60_000);
@@ -655,7 +655,7 @@ describe('staff-approved quotation beneath native guards', () => {
           revisionRef: revision.id,
           factRefs: [],
           sourceHash: scope.sourceHash,
-          party: { company: '', agency: '' },
+          party: { organization: '', bookingAgency: '' },
           now: new Date(),
         },
       ).revision.id,
@@ -676,7 +676,7 @@ describe('staff-approved quotation beneath native guards', () => {
           revisionRef: revision.id,
           factRefs: [],
           sourceHash: scope.sourceHash,
-          party: { company: '', agency: '' },
+          party: { organization: '', bookingAgency: '' },
         },
       ),
     ).toThrow(/proposal_not_ready/);
@@ -687,14 +687,14 @@ describe('staff-approved quotation beneath native guards', () => {
         revisionRef: revision.id,
         factRefs: [],
         sourceHash: 'e'.repeat(64),
-        party: { company: '', agency: '' },
+        party: { organization: '', bookingAgency: '' },
       }),
     ).toThrow(/proposal_not_ready/);
 
     const contractInput = staffQuoteInput.parse({
         ...f.confirmed,
-        company: 'Example Company',
-        parties: { company: { kind: 'company', nativeId: 'co-17', name: 'Example Company' } },
+        organization: 'Example Company',
+        parties: { organization: { kind: 'organization', nativeId: 'co-17', name: 'Example Company' } },
       }),
       contractPrepared = prepareStaffQuote(
         contractInput,
@@ -729,7 +729,7 @@ describe('staff-approved quotation beneath native guards', () => {
         revisionRef: contractRevision.id,
         factRefs: [],
         sourceHash: scope.sourceHash,
-        party: { company: 'Example Company', agency: '' },
+        party: { organization: 'Example Company', bookingAgency: '' },
       }).revision.id,
     ).toBe(contractRevision.id);
     expect(resolvePreparedLedgerProposal(contractRun, {
@@ -738,7 +738,7 @@ describe('staff-approved quotation beneath native guards', () => {
       revisionRef: contractRevision.id,
       factRefs: [],
       sourceHash: scope.sourceHash,
-      party: { company: 'Example Company', agency: 'Quote' },
+      party: { organization: 'Example Company', bookingAgency: 'Quote' },
     }).revision.id).toBe(contractRevision.id);
     expect(() => resolvePreparedLedgerProposal(contractRun, {
       transportId: scope.transportId,
@@ -746,7 +746,7 @@ describe('staff-approved quotation beneath native guards', () => {
       revisionRef: contractRevision.id,
       factRefs: [],
       sourceHash: scope.sourceHash,
-      party: { company: 'Different Company', agency: '' },
+      party: { organization: 'Different Company', bookingAgency: '' },
     })).toThrow(/proposal_not_ready/);
     expect(() => resolvePreparedLedgerProposal({
       ...preparedRun,
@@ -757,7 +757,7 @@ describe('staff-approved quotation beneath native guards', () => {
       revisionRef: revision.id,
       factRefs: [],
       sourceHash: scope.sourceHash,
-      party: { company: '', agency: '' },
+      party: { organization: '', bookingAgency: '' },
     })).toThrow(/proposal_not_ready/);
 
     expect(() =>
@@ -822,7 +822,7 @@ describe('staff-approved quotation beneath native guards', () => {
     // A company the staff typed and did not pick is text only: no party service is needed, nothing is looked up, and the
     // quote goes out at public rates with no rate context.
     const other = await fixture();
-    other.prepared.header.company = 'Company';
+    other.prepared.header.organization = 'Company';
     await executeStaffQuote(
       other.prepared,
       createReservationistBusinessServices(other.options, other.prepared.approval),

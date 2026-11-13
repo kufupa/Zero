@@ -33,6 +33,6 @@ export function manualCreatePayload(input: {
     agency: null, endClient: null, confirmationNumbers: [], missing: [],
     stays: [{ id: marker.stayId, hotel: null, requested: { arrival: null, departure: null }, booked: null,
       totalRooms: null, totalAdults: null, totalChildren: null, action: 'new_booking',
-      rows: [{ id: marker.rowId, roomType: null, rooms: null, adultsPerRoom: null, childAges: null, board: null }] }],
+      rows: [{ id: marker.rowId, roomType: null, rooms: null, adultsPerRoom: null, childAges: null, mealPlan: null }] }],
   });
 }

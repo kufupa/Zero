@@ -291,7 +291,7 @@ test('on-screen rate label may differ from native desc; binding uses room and ra
 test('BAR grid Walk-in Rate stays in options with existing BAR rows',()=>{
   // G9 HRDAV 2026-11-08→12 STKNG: HMS BAR grid showed WAL Walk-in Rate 4680×4 that Nava omitted.
   const stay={propertyCode:'HRDAV',arrivalDate:'2026-11-08',departureDate:'2026-11-12',
-    rooms:[{quantity:1,adults:1,children:0,childAges:[],required:{roomCodes:['STKNG'],boardBases:['breakfast']}}]};
+    rooms:[{quantity:1,adults:1,children:0,childAges:[],required:{roomCodes:['STKNG'],mealPlanBases:['breakfast']}}]};
   const amounts={BAR:'4680.00',BLRB:'4220.00',BARDIS:'3744.00',WAL:'4680.00'};
   for (const includeNativeWal of [false, true]) {
     const f=barWalkInSource({includeNativeWal});
@@ -305,7 +305,7 @@ test('BAR grid Walk-in Rate stays in options with existing BAR rows',()=>{
     }
     const wal=result.options.find(o=>o.rate.code==='WAL');
     assert.equal(wal.rate.label,'Walk-in Rate');
-    assert.equal(wal.board,'Bed & Breakfast NR');
+    assert.equal(wal.mealPlan,'Bed & Breakfast NR');
     assert.equal(wal.matchStatus,'match');
     assert.equal(result.options.filter(o=>o.rate.code==='WAL').length,1);
     if (!includeNativeWal) assert.notEqual(wal.availability,'available');
@@ -356,8 +356,8 @@ test('restricted and non-public rates remain information, never eligible quotes'
   assert.notEqual(result.options.find(x=>x.rate.code==='CORP').eligibility,'verified');
 });
 test('applied context binds resolved native IDs; mismatches and stale public reset fail',()=>{
-  const scoped={...request,rateContext:{organization:{code:'1'},agency:{code:'123'},group:{code:'456'}}};
-  const resolved={organization:{id:'1'},agency:{id:'23'},group:{id:'56'}};
+  const scoped={...request,rateContext:{organization:{code:'1'},bookingAgency:{code:'123'},group:{code:'456'}}};
+  const resolved={organization:{id:'1'},bookingAgency:{id:'23'},group:{id:'56'}};
   const criteria={propertyCodes:'HRCEN',startDate:'2026-09-24T00:00:00',adultCount:1,childCount:0,
     salesStrategy:null,lengthOfStay:'DY',shopByDay:false,roomTypeCodes:'',ratePlanCodes:'',groupID:'56',organizationID:'1',travelAgencyID:'23',
     convertFromPropertyCurrency:false,currency:null};
@@ -375,12 +375,12 @@ test('currency application is source-bound rather than local FX',()=>{
   assert.throws(()=>quote.assertApplied({...request,requestedCurrency:'USD'},request.rooms[0],{...criteria,currency:'ZAR'}));
 });
 test('bed matching uses exact room information, never misleading Twin room name',()=>{
-  const facts=quote.sourceFacts?.({room:{code:'STWN',label:'Standard Twin'},rate:{code:'BAR'},board:'Bed & Breakfast R'},'Standard Twin\nTwo Double Beds\nSleeps 4');
+  const facts=quote.sourceFacts?.({room:{code:'STWN',label:'Standard Twin'},rate:{code:'BAR'},mealPlan:'Bed & Breakfast R'},'Standard Twin\nTwo Double Beds\nSleeps 4');
   assert.equal(facts?.bedType,'double');
-  assert.equal(facts.boardBase,'breakfast');
-  assert.equal(quote.sourceFacts({room:{code:'STKNG',label:'Standard King'},rate:{code:'WAL'},board:'Bed & Breakfast NR'},'').boardBase,'breakfast');
+  assert.equal(facts.mealPlanBase,'breakfast');
+  assert.equal(quote.sourceFacts({room:{code:'STKNG',label:'Standard King'},rate:{code:'WAL'},mealPlan:'Bed & Breakfast NR'},'').mealPlanBase,'breakfast');
   assert.equal(quote.sourceFacts({room:{code:'EXKNG',label:'Executive King'},rate:{code:'BAR'}},'King Bed').bedType,'king');
-  assert.equal(quote.sourceFacts({room:{code:'STWN',label:'Standard Twin'},rate:{code:'BAR'},board:'invented breakfast'},'').bedType,undefined);
+  assert.equal(quote.sourceFacts({room:{code:'STWN',label:'Standard Twin'},rate:{code:'BAR'},mealPlan:'invented breakfast'},'').bedType,undefined);
 });
 test('source projection keeps pricing identity but excludes unrelated session fields',()=>{
   const f=multipleSource();f.data.bookingSessionID='secret';f.rate.billingprofilesratekey='not-needed';
@@ -400,10 +400,10 @@ test('picker references require unique exact normalized names or native codes',(
 });
 test('picker filters only use fields the live HMS pickers expose',()=>{
   assert.deepEqual(quote.pickerFilter('organization',{nativeId:'49'}),{name:'ff_companyid',value:'49'});
-  assert.deepEqual(quote.pickerFilter('agency',{nativeId:'290',name:'CWT JNB'}),{name:'ff_travelagencyname',value:'CWT JNB'});
-  assert.deepEqual(quote.pickerFilter('agency',{code:'77218175'}),{name:'ff_iatanumber',value:'77218175'});
+  assert.deepEqual(quote.pickerFilter('bookingAgency',{nativeId:'290',name:'CWT JNB'}),{name:'ff_travelagencyname',value:'CWT JNB'});
+  assert.deepEqual(quote.pickerFilter('bookingAgency',{code:'77218175'}),{name:'ff_iatanumber',value:'77218175'});
   assert.deepEqual(quote.pickerFilter('group',{name:'Conference'}),{name:'ff_groupsname',value:'Conference'});
-  assert.throws(()=>quote.pickerFilter('agency',{nativeId:'290'}),/REFERENCE_FILTER_MISSING/);
+  assert.throws(()=>quote.pickerFilter('bookingAgency',{nativeId:'290'}),/REFERENCE_FILTER_MISSING/);
 });
 test('search signatures share quantity/preferences only, never occupancy/context/currency/filter changes',()=>{
   const a=quote.searchSignature?.(request,request.rooms[0]);
@@ -452,10 +452,10 @@ test('full-mode 17-row wholesale window stays quote with unread leftover details
   const wsPlans=['BWS1B','BWS2B','BWS3B','NG139B','NGD73B','NGD77B','NGD90B','NGDS1B','NGDS2B','NGDS8B','NGDTSB','WSF1B','WSF2B','WSF3B','WSG5B','WSG5DB','BWS4B'];
   const open={israteavailable:true,restricted:false,combClosed:false,combClosedToArrival:false,combClosedToDeparture:false,combMinLOSToArrival:0,combMinLOSToDeparture:0,combMaxLOSToArrival:null,combMaxLOSToDeparture:null,combMinLOSToThrough:null,combMaxLOSToThrough:null};
   const columns=Object.fromEntries([1,2].map(n=>[`col${n}`,{...open,value:2500}]));
-  const stay={propertyCode:'HRDAV',arrivalDate:'2027-02-16',departureDate:'2027-02-17',details:'full',rooms:[{quantity:1,adults:1,children:0,childAges:[]}],search:{salesStrategy:'Wholesale'},rateContext:{agency:{name:'Example Agency'}}};
+  const stay={propertyCode:'HRDAV',arrivalDate:'2027-02-16',departureDate:'2027-02-17',details:'full',rooms:[{quantity:1,adults:1,children:0,childAges:[]}],search:{salesStrategy:'Wholesale'},rateContext:{bookingAgency:{name:'Example Agency'}}};
   const data={datesList:['02/16/2027','02/17/2027'],children:[{isprop:true,issummary:false,code:'HRDAV',currency:'ZAR',children:[{code:'STKNG',desc:'Standard King',buildingCode:null,children:wsPlans.map(code=>({code,desc:`Wholesale ${code}`,currency:'ZAR',isNegotiatedRate:code==='BWS4B',restricted:false,minLOS:null,maxLOS:null,minLeadTime:null,maxLeadTime:null,haspolicies:true,columns})),columns:Object.fromEntries([1,2].map(n=>[`col${n}`,{value:84}]))}]}]};
-  const calendar={headers:['16-FEB-2027Tuesday','17-FEB-2027Wednesday'],options:wsPlans.map(code=>({room:{code:'STKNG',inventory:['84','84']},rate:`${code}: Wholesale ${code}`,board:'Bed & Breakfast NR',prices:['R2,500.00','R2,500.00']}))};
-  const result=quote.extractOptions(stay,stay.rooms[0],[{data,calendar,criteria:{salesStrategy:'WS',travelAgencyID:'23'}}],{agency:{id:'23'}});
+  const calendar={headers:['16-FEB-2027Tuesday','17-FEB-2027Wednesday'],options:wsPlans.map(code=>({room:{code:'STKNG',inventory:['84','84']},rate:`${code}: Wholesale ${code}`,mealPlan:'Bed & Breakfast NR',prices:['R2,500.00','R2,500.00']}))};
+  const result=quote.extractOptions(stay,stay.rooms[0],[{data,calendar,criteria:{salesStrategy:'WS',travelAgencyID:'23'}}],{bookingAgency:{id:'23'}});
   assert.equal(result.options.length,17);
   const nights=quote.stayDates(stay);
   for(const [index,option] of result.options.entries()) {
@@ -488,8 +488,8 @@ test('negotiated eligibility requires every applied context ID, not merely a ret
   const f=multipleSource();
   for(const room of f.data.children[0].children){room.children[0].code='BWS2B';room.children[0].isNegotiatedRate=true;}
   for(const row of f.calendar.options)row.rate='BWS2B: Best Available Rate';
-  const scoped={...request,rateContext:{agency:{name:'Example Agency'},organization:{code:'1'}}};
-  const resolved={agency:{id:'23'},organization:{id:'1'}};
+  const scoped={...request,rateContext:{bookingAgency:{name:'Example Agency'},organization:{code:'1'}}};
+  const resolved={bookingAgency:{id:'23'},organization:{id:'1'}};
   const criteria={travelAgencyID:'23',organizationID:'1'};
   const matched=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],resolved);
   assert.equal(matched.options[0].eligibility,'verified');
@@ -500,8 +500,8 @@ test('negotiated eligibility requires every applied context ID, not merely a ret
 });
 test('bound party with no negotiated rates returns public BAR and flags no special rates',()=>{
   const f=multipleSource();
-  const scoped={...request,rateContext:{agency:{name:'CWT JNB'}}};
-  const resolved={agency:{id:'290'}};
+  const scoped={...request,rateContext:{bookingAgency:{name:'CWT JNB'}}};
+  const resolved={bookingAgency:{id:'290'}};
   const criteria={travelAgencyID:'290'};
   const result=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],resolved);
   assert.equal(result.completeness.search,'complete');
@@ -525,8 +525,8 @@ test('bound party with no negotiated rates returns public BAR and flags no speci
 });
 test('filtered rate or room search cannot claim the party has no special rates',()=>{
   const f=multipleSource();
-  const scoped={...request,rateContext:{agency:{name:'CWT JNB'}},rateCode:'BAR'};
-  const resolved={agency:{id:'290'}};
+  const scoped={...request,rateContext:{bookingAgency:{name:'CWT JNB'}},rateCode:'BAR'};
+  const resolved={bookingAgency:{id:'290'}};
   const criteria={travelAgencyID:'290'};
   const filtered=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],resolved);
   assert.equal(filtered.issues.some(i=>i.code==='NO_SPECIAL_RATES'),false);
@@ -534,9 +534,9 @@ test('filtered rate or room search cannot claim the party has no special rates',
 });
 test('a verified party keeps its public row bookable; an unverified party still keeps public BAR bookable',()=>{
   const f=multipleSource();
-  const scoped={...request,rateContext:{agency:{name:'CWT JNB'}}};
+  const scoped={...request,rateContext:{bookingAgency:{name:'CWT JNB'}}};
   const criteria={travelAgencyID:'290'};
-  const verified=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],{agency:{id:'290'}});
+  const verified=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],{bookingAgency:{id:'290'}});
   assert.ok(verified.options.length>0&&verified.options.every(o=>o.rateScope==='public'));
   assert.ok(verified.issues.some(i=>i.code==='NO_SPECIAL_RATES'));
   assert.match(verified.issues.find(i=>i.code==='NO_SPECIAL_RATES').action,/not a contracted rate/i);
@@ -570,13 +570,13 @@ test('two-group public BAR/PROMO rows verify and compose; unbound WS stays condi
   const columns=Object.fromEntries([1,2].map(n=>[`col${n}`,{...open,value:2500}]));
   const windowFor=(room,rates,strategy)=>({
     data:{datesList:['02/07/2027','02/08/2027'],children:[{isprop:true,issummary:false,code:'HRDAV',currency:'ZAR',children:[{code:room,desc:room,buildingCode:null,children:rates.map(r=>({code:r.code,desc:r.desc,currency:'ZAR',isNegotiatedRate:false,restricted:false,minLOS:null,maxLOS:null,minLeadTime:null,maxLeadTime:null,haspolicies:true,columns})),columns:Object.fromEntries([1,2].map(n=>[`col${n}`,{value:84}]))}]}]},
-    calendar:{headers:['07-FEB-2027Sunday','08-FEB-2027Monday'],options:rates.map(r=>({room:{code:room,inventory:['84','84']},rate:`${r.code}: ${r.desc}`,board:'Bed & Breakfast NR',prices:['R2,500.00','R2,500.00']}))},
+    calendar:{headers:['07-FEB-2027Sunday','08-FEB-2027Monday'],options:rates.map(r=>({room:{code:room,inventory:['84','84']},rate:`${r.code}: ${r.desc}`,mealPlan:'Bed & Breakfast NR',prices:['R2,500.00','R2,500.00']}))},
     criteria:{salesStrategy:strategy},
   });
   const barPromo=[{code:'BAR',desc:'Best Available Rate'},{code:'PMO1B',desc:'Promotion Breakfast'}];
   const mixed=[{code:'BAR',desc:'Best Available Rate'},{code:'BWS1B',desc:'Wholesale Best Available Rate 1'}];
   const groups=[{id:'g1',room:'STKNG'},{id:'g2',room:'STWN'}];
-  const wholesale={propertyCode:'HRDAV',arrivalDate:'2027-02-07',departureDate:'2027-02-08',details:'summary',rooms:groups.map(g=>({id:g.id,quantity:g.id==='g1'?1:2,adults:g.id==='g1'?2:1,children:0,childAges:[]})),search:{salesStrategy:'Wholesale'},rateContext:{agency:{name:'Example Agency'}}};
+  const wholesale={propertyCode:'HRDAV',arrivalDate:'2027-02-07',departureDate:'2027-02-08',details:'summary',rooms:groups.map(g=>({id:g.id,quantity:g.id==='g1'?1:2,adults:g.id==='g1'?2:1,children:0,childAges:[]})),search:{salesStrategy:'Wholesale'},rateContext:{bookingAgency:{name:'Example Agency'}}};
   for(const group of groups){
     const result=quote.extractOptions(wholesale,wholesale.rooms.find(r=>r.id===group.id),[{...windowFor(group.room,mixed,'WS')}],{});
     const bar=result.options.find(o=>o.rate.code==='BAR');
@@ -624,10 +624,10 @@ test('two-group public BAR/PROMO rows verify and compose; unbound WS stays condi
 test('WS contract rows without a verified agency stay conditional',()=>{
   const open={israteavailable:true,restricted:false,combClosed:false,combClosedToArrival:false,combClosedToDeparture:false,combMinLOSToArrival:0,combMinLOSToDeparture:0,combMaxLOSToArrival:null,combMaxLOSToDeparture:null,combMinLOSToThrough:null,combMaxLOSToThrough:null};
   const columns=Object.fromEntries([1,2].map(n=>[`col${n}`,{...open,value:2500}]));
-  const stay={propertyCode:'HRDAV',arrivalDate:'2027-02-07',departureDate:'2027-02-08',details:'summary',rooms:[{id:'g1',quantity:1,adults:2,children:0,childAges:[]}],search:{salesStrategy:'Wholesale'},rateContext:{agency:{name:'Example Agency'}}};
+  const stay={propertyCode:'HRDAV',arrivalDate:'2027-02-07',departureDate:'2027-02-08',details:'summary',rooms:[{id:'g1',quantity:1,adults:2,children:0,childAges:[]}],search:{salesStrategy:'Wholesale'},rateContext:{bookingAgency:{name:'Example Agency'}}};
   const result=quote.extractOptions(stay,stay.rooms[0],[{
     data:{datesList:['02/07/2027','02/08/2027'],children:[{isprop:true,issummary:false,code:'HRDAV',currency:'ZAR',children:[{code:'STKNG',desc:'STKNG',buildingCode:null,children:[{code:'BWS1B',desc:'Wholesale Best Available Rate 1',currency:'ZAR',isNegotiatedRate:false,restricted:false,minLOS:null,maxLOS:null,minLeadTime:null,maxLeadTime:null,haspolicies:true,columns}],columns:Object.fromEntries([1,2].map(n=>[`col${n}`,{value:84}]))}]}]},
-    calendar:{headers:['07-FEB-2027Sunday','08-FEB-2027Monday'],options:[{room:{code:'STKNG',inventory:['84','84']},rate:'BWS1B: Wholesale Best Available Rate 1',board:'Bed & Breakfast NR',prices:['R2,500.00','R2,500.00']}]},
+    calendar:{headers:['07-FEB-2027Sunday','08-FEB-2027Monday'],options:[{room:{code:'STKNG',inventory:['84','84']},rate:'BWS1B: Wholesale Best Available Rate 1',mealPlan:'Bed & Breakfast NR',prices:['R2,500.00','R2,500.00']}]},
     criteria:{salesStrategy:'WS'},
   }],{});
   const ws=result.options.find(o=>o.rate.code==='BWS1B');
@@ -672,8 +672,8 @@ test('empty grid cannot claim no special rates',()=>{
   const f=multipleSource();
   f.data.children[0].children=[];
   f.calendar.options=[];
-  const scoped={...request,rateContext:{agency:{name:'CWT JNB'}}};
-  const result=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria:{travelAgencyID:'290'}}],{agency:{id:'290'}});
+  const scoped={...request,rateContext:{bookingAgency:{name:'CWT JNB'}}};
+  const result=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria:{travelAgencyID:'290'}}],{bookingAgency:{id:'290'}});
   assert.equal(result.issues.some(i=>i.code==='NO_SPECIAL_RATES'),false);
 });
 test('summary does not treat one group no-special as party-wide',()=>{
@@ -689,11 +689,11 @@ test('summary does not treat one group no-special as party-wide',()=>{
 });
 test('incomplete later page cannot claim no special rates',()=>{
   const f=multipleSource();
-  const scoped={...request,rateContext:{agency:{name:'CWT JNB'}}};
+  const scoped={...request,rateContext:{bookingAgency:{name:'CWT JNB'}}};
   const result=quote.extractOptions(scoped,request.rooms[0],[
     {data:f.data,calendar:f.calendar,criteria:{travelAgencyID:'290'}},
     {data:null,calendar:null,criteria:{travelAgencyID:'290'}},
-  ],{agency:{id:'290'}});
+  ],{bookingAgency:{id:'290'}});
   assert.equal(result.issues.some(i=>i.code==='NO_SPECIAL_RATES'),false);
   assert.equal(result.completeness.search,'partial');
 });
@@ -815,10 +815,10 @@ test('HRDAV wholesale BWS1B with a verified agency is contextual and verified',(
   // Codes/labels from HRDAV observedStrategyRatePlans.WS (wholesale-shop.png, docs/research/2026-10-25-hrdav-dom-read.md). Amounts are fixture, not live prices.
   const open={israteavailable:true,restricted:false,combClosed:false,combClosedToArrival:false,combClosedToDeparture:false,combMinLOSToArrival:0,combMinLOSToDeparture:0,combMaxLOSToArrival:null,combMaxLOSToDeparture:null,combMinLOSToThrough:null,combMaxLOSToThrough:null};
   const columns=Object.fromEntries([1,2].map(n=>[`col${n}`,{...open,value:2500}]));
-  const stay={propertyCode:'HRDAV',arrivalDate:'2027-02-16',departureDate:'2027-02-17',rooms:[{quantity:1,adults:1,children:0,childAges:[]}],search:{salesStrategy:'Wholesale'},rateContext:{agency:{name:'Example Agency'}}};
+  const stay={propertyCode:'HRDAV',arrivalDate:'2027-02-16',departureDate:'2027-02-17',rooms:[{quantity:1,adults:1,children:0,childAges:[]}],search:{salesStrategy:'Wholesale'},rateContext:{bookingAgency:{name:'Example Agency'}}};
   const data={datesList:['02/16/2027','02/17/2027'],children:[{isprop:true,issummary:false,code:'HRDAV',currency:'ZAR',children:[{code:'STKNG',desc:'Standard King',buildingCode:null,children:[{code:'BWS1B',desc:'Wholesale Best Available Rate 1',currency:'ZAR',isNegotiatedRate:false,restricted:false,minLOS:null,maxLOS:null,minLeadTime:null,maxLeadTime:null,haspolicies:true,columns}],columns:Object.fromEntries([1,2].map(n=>[`col${n}`,{value:84}]))}]}]};
-  const calendar={headers:['16-FEB-2027Tuesday','17-FEB-2027Wednesday'],options:[{room:{code:'STKNG',inventory:['84','84']},rate:'BWS1B: Wholesale Best Available Rate 1',board:'Bed & Breakfast NR',prices:['R2,500.00','R2,500.00']}]};
-  const result=quote.extractOptions(stay,stay.rooms[0],[{data,calendar,criteria:{salesStrategy:'WS',travelAgencyID:'23'}}],{agency:{id:'23'}});
+  const calendar={headers:['16-FEB-2027Tuesday','17-FEB-2027Wednesday'],options:[{room:{code:'STKNG',inventory:['84','84']},rate:'BWS1B: Wholesale Best Available Rate 1',mealPlan:'Bed & Breakfast NR',prices:['R2,500.00','R2,500.00']}]};
+  const result=quote.extractOptions(stay,stay.rooms[0],[{data,calendar,criteria:{salesStrategy:'WS',travelAgencyID:'23'}}],{bookingAgency:{id:'23'}});
   const option=result.options.find(o=>o.rate.code==='BWS1B');
   assert.equal(option.rateScope,'contextual');
   assert.equal(option.eligibility,'verified');

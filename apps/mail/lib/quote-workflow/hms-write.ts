@@ -370,7 +370,7 @@ const LEAF_LABELS: Record<string, string> = {
   roomType: 'Room type',
   ratePlan: 'Rate plan',
   retainRates: 'Retain current rates',
-  board: 'Board',
+  mealPlan: 'Board',
   removed: 'Removed',
   confirmation: 'Booking',
   firstName: 'Guest first name',
@@ -413,7 +413,7 @@ function valueText(key: string, value: unknown): string {
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   if (Array.isArray(value)) return value.length > 0 ? value.map(scalarText).join(', ') : NONE;
   const text = scalarText(value);
-  if (leafName(key) === 'board') return BOARD_LABELS[text] ?? text;
+  if (leafName(key) === 'mealPlan') return BOARD_LABELS[text] ?? text;
   if (leafName(key) === 'retainRates' && (text === 'yes' || text === 'no')) return text === 'yes' ? 'Yes' : 'No';
   return ISO_DAY.test(text) ? formatStayDate(text) : text;
 }

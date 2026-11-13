@@ -1,3 +1,4 @@
+import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
 import {
   attestStaffQuote,
   buildStaffProposalFacts,
@@ -516,32 +517,32 @@ export async function verifyStaffParties(
         : {},
     );
   };
-  if (parties.company) {
+  if (parties.organization) {
     const result = await verifyPartyPick({
-      kind: 'company',
-      nativeId: parties.company.nativeId,
-      name: parties.company.name,
+      kind: 'organization',
+      nativeId: parties.organization.nativeId,
+      name: parties.organization.name,
       target: target ?? null,
     });
     if (!result.ok) refuse(result.reason);
     if (result.ok)
-      verified.company = {
-        kind: 'company',
+      verified.organization = {
+        kind: 'organization',
         nativeId: result.party.nativeId,
         name: result.party.name,
       };
   }
-  if (parties.agency) {
+  if (parties.bookingAgency) {
     const result = await verifyPartyPick({
-      kind: 'agency',
-      nativeId: parties.agency.nativeId,
-      name: parties.agency.name,
+      kind: 'bookingAgency',
+      nativeId: parties.bookingAgency.nativeId,
+      name: parties.bookingAgency.name,
       target: target ?? null,
     });
     if (!result.ok) refuse(result.reason);
     if (result.ok)
-      verified.agency = {
-        kind: 'agency',
+      verified.bookingAgency = {
+        kind: 'bookingAgency',
         nativeId: result.party.nativeId,
         name: result.party.name,
       };
@@ -705,10 +706,10 @@ export async function runStaffQuote(
     if (quoteRateContextEnabled()) {
       if (options.persistence === 'return_only') {
         const verified: StaffQuoteParties = {};
-        for (const role of ['company', 'agency'] as const) {
+        for (const role of ['organization', 'bookingAgency'] as const) {
           const picked = input.parties[role];
           if (!picked) continue;
-          const found = await lookupNativeParty({ role: role === 'company' ? 'organization' : 'agency',
+          const found = await lookupNativeParty({ role: role === 'organization' ? 'organization' : 'agency',
             name: picked.name, target: quoteTarget.target, signal: options.signal });
           options.signal!.throwIfAborted();
           const candidates = Array.isArray(found.result.candidates) ? found.result.candidates : [];
@@ -721,8 +722,8 @@ export async function runStaffQuote(
               found.result.closeOutcome !== 'closed_unsaved' || exact.length !== 1) {
             refuseQuote('staff_quote_party_unavailable', 'The selected organisation or agency could not be verified.');
           }
-          if (role === 'company' && picked.kind === 'company') verified.company = picked;
-          else if (role === 'agency' && picked.kind === 'agency') verified.agency = picked;
+          if (role === 'organization' && picked.kind === 'organization') verified.organization = picked;
+          else if (role === 'bookingAgency' && picked.kind === 'bookingAgency') verified.bookingAgency = picked;
           else refuseQuote('staff_quote_party_unavailable', 'The selected organisation or agency could not be verified.');
         }
         quoteInput = { ...input, parties: verified };
@@ -986,7 +987,7 @@ export async function runStaffQuote(
         cause.code,
         staffQuoteFailureMessage(error, {
           salesStrategy: input.salesStrategy,
-          dinnerRequested: input.groups.some((group) => group.board === 'dinner_bb'),
+          dinnerRequested: input.groups.some((group) => group.mealPlan === 'dinner_bb'),
         }),
         { cause },
       );
@@ -1088,10 +1089,11 @@ export async function runStaffQuote(
         const [extraction] = await tx.select({ payload: mailExtraction.payload, kind: mailExtraction.kind }).from(mailExtraction)
           .where(and(eq(mailExtraction.messageId, mail.id), eq(mailExtraction.status, 'succeeded')))
           .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id)).limit(1);
-        const extractedFields = extraction?.payload ?? null;
+        const parsedExtraction = safeParseStoredMailExtraction(extraction?.payload);
+        const extractedFields = parsedExtraction.success ? parsedExtraction.data : null;
         const extractedContact = (extractedFields?.contact ?? {}) as Record<string, unknown>;
-        const groups = revision.groups.map(({ id, arrivalDate, departureDate, quantity, adults, children, childAges, roomCode, board }) =>
-          ({ id, arrivalDate, departureDate, quantity, adults, children, childAges, roomCode, board }));
+        const groups = revision.groups.map(({ id, arrivalDate, departureDate, quantity, adults, children, childAges, roomCode, mealPlan }) =>
+          ({ id, arrivalDate, departureDate, quantity, adults, children, childAges, roomCode, mealPlan }));
         const fields = { groups, contact: {
           name: typeof extractedContact.name === 'string' ? extractedContact.name : '',
           email: typeof extractedContact.email === 'string' ? extractedContact.email : '',

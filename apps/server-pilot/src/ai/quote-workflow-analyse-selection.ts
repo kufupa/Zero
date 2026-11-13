@@ -271,7 +271,7 @@ function fallbackLunaCarrier(treatAs: QuoteTreatAs, analysis: QuoteWorkflowAnaly
       rooms: group.quantity ?? null,
       adultsPerRoom: group.adults ?? null,
       childAges: group.fields.childAges === 'missing' ? null : [...group.childrenAges],
-      board: group.board === 'unknown' ? null : group.board === 'dinner_bb' ? 'dbb' : group.board,
+      mealPlan: group.mealPlan === 'unknown' ? null : group.mealPlan === 'dinner_bb' ? 'dbb' : group.mealPlan,
       roomPreference: null,
       guestNames: [],
     })),
@@ -503,7 +503,7 @@ export async function hmsTodoCardFromLuna(
             guestName: group.guestNames?.[index] ?? null,
           })),
         ),
-        boardText: groups[0]?.board ?? null,
+        boardText: groups[0]?.mealPlan ?? null,
         rateText: null,
         agencyName: party?.kind === 'agency' ? (party.name ?? null) : null,
         organizationName:

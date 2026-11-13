@@ -498,7 +498,7 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
               const guests = rows(room.guests).slice(0, 16).map(guest => `${text(guest.firstName)} ${text(guest.lastName)}${typeof guest.age === 'number' ? ` (age ${guest.age})` : ''}`.trim()).filter(Boolean);
               details.push(`Room ${typeof room.roomIndex === 'number' ? room.roomIndex : 'unresolved'} · ${guests.join(', ') || 'Guests unresolved'} · ${text(request.arrival)} to ${text(request.departure)} · ${text(scope.roomLabel) || text(request.roomType)} · ${typeof request.adults === 'number' ? request.adults : '?'} adults · ${Array.isArray(request.childAges) ? request.childAges.length : '?'} children · ${text(scope.rateLabel) || text(request.ratePlan)}`);
               const boards: Record<string, string> = {room_only: 'Room only', breakfast: 'Breakfast', dinner_bed_breakfast: 'Dinner, bed and breakfast'};
-              if (boards[text(scope.board)]) details.push(`Room ${room.roomIndex} · ${boards[text(scope.board)]}`);
+              if (boards[text(scope.mealPlan)]) details.push(`Room ${room.roomIndex} · ${boards[text(scope.mealPlan)]}`);
               const inclusions = record(scope.inclusions), terms: string[] = [];
               if (inclusions.vat === 'included') terms.push('VAT included');
               if (inclusions.levy === 'included') terms.push('Tourism levy included');
@@ -562,7 +562,7 @@ export function buildReservationistReviewSummary(raw: unknown, now = new Date(),
   for (const quote of rows(result.quoteRevisions).slice(0, 8)) {
     const total = money(quote.totalMinor, quote.currency); if (!total) continue;
     for (const group of rows(quote.groups).slice(0, 8))
-      pricingProof.push(`${text(group.roomLabel)} · ${text(group.arrivalDate)} to ${text(group.departureDate)} · ${group.adults} adults, ${group.children} children · ${{ room_only: 'Room only', breakfast: 'Breakfast', dinner_bed_breakfast: 'Dinner, bed and breakfast' }[text(group.board) as 'room_only'] ?? 'Board unresolved'} · ${text(group.rateLabel)} · Observed ${text(group.observedAt)}`);
+      pricingProof.push(`${text(group.roomLabel)} · ${text(group.arrivalDate)} to ${text(group.departureDate)} · ${group.adults} adults, ${group.children} children · ${{ room_only: 'Room only', breakfast: 'Breakfast', dinner_bed_breakfast: 'Dinner, bed and breakfast' }[text(group.mealPlan) as 'room_only'] ?? 'Meal plan unresolved'} · ${text(group.rateLabel)} · Observed ${text(group.observedAt)}`);
     pricingProof.push(`${total} total · Price observed; inventory not held.`);
   }
   for (const override of rows(result.approvedOverrides).slice(0, 8)) {

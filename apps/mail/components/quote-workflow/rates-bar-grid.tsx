@@ -49,16 +49,16 @@ export function RatesBarGrid({
   if (!cells.length) return null;
   return (
     <div className="flex flex-col gap-1.5">
-      <h5 className="text-[13px] font-semibold text-[#475569]">BAR by room, rate and board</h5>
+      <h5 className="text-[13px] font-semibold text-[#475569]">BAR by room, rate and meal plan</h5>
       {contractChecked ? null : (
         <p className="text-[12px] text-[#64748b]">Public rates — contract not checked</p>
       )}
-      <table className="w-full border-collapse text-[12px]" aria-label="BAR by room, rate and board">
+      <table className="w-full border-collapse text-[12px]" aria-label="BAR by room, rate and meal plan">
         <thead>
           <tr className="border-b border-[#e2e8f0] text-left text-[11px] font-semibold uppercase tracking-wide text-[#64748b]">
             <th className="py-1 pr-2 font-semibold">Room</th>
             <th className="py-1 pr-2 font-semibold">Rate</th>
-            <th className="py-1 pr-2 font-semibold">Board</th>
+            <th className="py-1 pr-2 font-semibold">Meal plan</th>
             <th className="py-1 pr-2 font-semibold">Nightly</th>
             <th className="py-1 pr-2 font-semibold">Rooms left</th>
             <th className="py-1 font-semibold">Tag</th>
@@ -69,12 +69,12 @@ export function RatesBarGrid({
             const tag = gridRateTag(cell.rateCode, cell.rateScope, { contractChecked, plans });
             return (
               <tr
-                key={`${cell.groupId}|${cell.roomCode}|${cell.rateCode}|${cell.board}`}
+                key={`${cell.groupId}|${cell.roomCode}|${cell.rateCode}|${cell.mealPlan}`}
                 className="border-b border-[#f1f5f9] text-[#1e293b]"
               >
                 <td className="py-1 pr-2">{`${cell.roomLabel} (${cell.roomCode})`}</td>
                 <td className="py-1 pr-2">{cell.rateCode}</td>
-                <td className="py-1 pr-2">{cell.boardLabel}</td>
+                <td className="py-1 pr-2">{cell.mealPlanLabel}</td>
                 <td className="py-1 pr-2">
                   {cell.nightlyPriceMinor === null ? 'not checked' : draftMoney(cell.nightlyPriceMinor)}
                 </td>

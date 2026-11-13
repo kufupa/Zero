@@ -1,5 +1,6 @@
 import type { QuoteSalesStrategy } from '../hms/rate-catalogue.js';
 import { mailExtractionPayloadSchema } from './extraction/schema.js';
+import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
 import { addDays } from './stay-date-anchoring.js';
 import { applyPartyBindRule, buildPartyMatchCandidates, type PartyMatchRow } from './party-match-v2.js';
 import { matchRoomType } from './room-types.js';
@@ -188,7 +189,7 @@ function groupForStay(
       quantity,
       adults,
       childrenAges: row.childAges,
-      board: row.board === 'room_only' ? 'room_only' : row.board === 'dbb' ? 'dinner_bb' : 'bb',
+      mealPlan: row.mealPlan === 'room_only' ? 'room_only' : row.mealPlan === 'dbb' ? 'dinner_bb' : 'bb',
       ...(roomCode ? { roomCodes: [roomCode] } : {}),
     });
   }
@@ -213,7 +214,7 @@ export function confidentPartyFromV2Result(input: {
     result.confidence !== 'high' ||
     result.truncated !== false ||
     !bound ||
-    (bound.kind !== 'company' && bound.kind !== 'agency') ||
+    (bound.kind !== 'organization' && bound.kind !== 'bookingAgency') ||
     typeof bound.nativeId !== 'string' ||
     !/^[A-Za-z0-9._-]{1,64}$/.test(bound.nativeId) ||
     typeof bound.name !== 'string' ||
@@ -230,7 +231,7 @@ export function confidentPartyFromV2Result(input: {
     const row = record(candidate);
     if (
       !row ||
-      (row.kind !== 'company' && row.kind !== 'agency') ||
+      (row.kind !== 'organization' && row.kind !== 'bookingAgency') ||
       typeof row.nativeId !== 'string' ||
       !/^[A-Za-z0-9._-]{1,64}$/.test(row.nativeId) ||
       typeof row.name !== 'string' ||
@@ -269,8 +270,9 @@ export function confidentPartyFromV2Result(input: {
   });
   if (decision.matchStatus !== 'bound' || !decision.boundParty) return undefined;
   const { kind, nativeId, name } = decision.boundParty;
-  const party = { kind, nativeId, name };
-  const parties = kind === 'company' ? { company: party } : { agency: party };
+  const parties = kind === 'organization'
+    ? { organization: { kind: 'organization' as const, nativeId, name } }
+    : { bookingAgency: { kind: 'bookingAgency' as const, nativeId, name } };
   const parsed = staffQuoteInput.shape.parties.safeParse(parties);
   return parsed.success && Object.keys(parsed.data ?? {}).length ? parsed.data : undefined;
 }
@@ -284,7 +286,7 @@ export function buildPreparedStaffQuotePlan(input: {
   now?: Date;
   propertyCode?: string;
 }): PreparedStaffQuotePlan {
-  const parsedPayload = mailExtractionPayloadSchema.safeParse(input.payload);
+  const parsedPayload = safeParseStoredMailExtraction(input.payload);
   if (!parsedPayload.success || !input.messageId || !/^[a-f0-9]{64}$/.test(input.sourceHash)) {
     return { inputs: [], stays: [], reason: 'invalid_extraction', partyBound: false };
   }
@@ -315,8 +317,8 @@ export function buildPreparedStaffQuotePlan(input: {
       selectionEpoch: 0,
       inputRevision: 0,
       groups: groupResult.groups,
-      company: payload.endClient ?? '',
-      agency: payload.agency ?? '',
+      organization: payload.organization ?? '',
+      bookingAgency: payload.bookingAgency ?? '',
       attention: payload.contact.name ?? '',
       clientEmail: payload.contact.email ?? '',
       clientTelephone: payload.contact.phone ?? '',
@@ -344,7 +346,7 @@ function priceShape(input: StaffQuoteInput): unknown {
       quantity: group.quantity,
       adults: group.adults,
       childrenAges: group.childrenAges,
-      board: group.board,
+      mealPlan: group.mealPlan,
       roomCodes: [...(group.roomCodes ?? [])].sort(),
       rateCode: group.rateCode ?? null,
     })),
@@ -377,6 +379,6 @@ export function staffQuoteInputsPriceEquivalent(
   if (staffQuotePriceKey(left) === staffQuotePriceKey(right)) return true;
   // Only an explicitly party-bound prepared quote may ignore the pane's default strategy.
   // The price key still requires identical parties, stay terms, and charges.
-  if (!allowBoundStrategyMismatch || (!left.parties?.agency && !left.parties?.company)) return false;
+  if (!allowBoundStrategyMismatch || (!left.parties?.bookingAgency && !left.parties?.organization)) return false;
   return staffQuotePriceKey(left) === staffQuotePriceKey({ ...right, salesStrategy: left.salesStrategy });
 }

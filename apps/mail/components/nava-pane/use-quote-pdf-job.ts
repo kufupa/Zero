@@ -49,7 +49,7 @@ type UseQuotePdfJobArgs = {
 type PdfJobOwner = { workItemId: string; transportId: string };
 type PdfJobQueryInput = Pick<
   QualifiedStaffPdfInput,
-  'revisionRef' | 'additionalStays' | 'attention' | 'company' | 'clientEmail' | 'clientTelephone' | 'agency' | 'notes'
+  'revisionRef' | 'additionalStays' | 'attention' | 'organization' | 'clientEmail' | 'clientTelephone' | 'bookingAgency' | 'notes'
 > & { workItemId: string };
 
 const PDF_JOB_POLL_MS = 3_000;
@@ -61,10 +61,10 @@ function quotePdfJobQueryInput(input: QualifiedStaffPdfInput, workItemId: string
     revisionRef: input.revisionRef,
     ...(input.additionalStays?.length ? { additionalStays: input.additionalStays } : {}),
     attention: input.attention,
-    company: input.company,
+    organization: input.organization,
     clientEmail: input.clientEmail,
     clientTelephone: input.clientTelephone,
-    agency: input.agency,
+    bookingAgency: input.bookingAgency,
     ...(input.notes ? { notes: input.notes } : {}),
   };
 }
@@ -292,8 +292,8 @@ export function useQuotePdfJob({
   }, [
     quoteSession,
     documentContact?.name,
-    documentContact?.company,
-    documentContact?.endClient,
+    documentContact?.bookingAgency,
+    documentContact?.organization,
     documentContact?.email,
     documentContact?.phone,
     workItemId,
@@ -420,8 +420,8 @@ export function useQuotePdfJob({
       messageId: source.messageId,
       outlookEmail: session.binding?.mailboxEmail ?? '',
       factRefs: quote.factRefs,
-      company: header.company,
-      agency: header.agency,
+      organization: header.organization,
+      bookingAgency: header.bookingAgency,
       ...withContactLines(
         { attention: header.attention, clientEmail: header.clientEmail, clientTelephone: header.clientTelephone },
         documentContactRef.current,

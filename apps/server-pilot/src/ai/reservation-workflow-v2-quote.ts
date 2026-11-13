@@ -200,7 +200,7 @@ function selectedParty(
   request: QuoteRequest,
   role: 'organization' | 'bookingAgency',
   execute: boolean,
-): { party?: { kind: 'company' | 'agency'; nativeId: string; name: string }; issue?: string; reviewPaths: string[]; observationRef?: string } {
+): { party?: { kind: 'organization' | 'bookingAgency'; nativeId: string; name: string }; issue?: string; reviewPaths: string[]; observationRef?: string } {
   const raw = request.body.parties[role];
   const basePath = ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role);
   const namePath = ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role, 'name');
@@ -246,7 +246,7 @@ function selectedParty(
     : [];
   if (execute && reviewPaths.length) return { reviewPaths, issue: `${role}_requires_staff_acceptance` };
   return {
-    party: { kind: role === 'organization' ? 'company' : 'agency', nativeId: String(candidate.nativeId), name: String(candidate.name) },
+    party: { kind: role, nativeId: String(candidate.nativeId), name: String(candidate.name) },
     reviewPaths,
     observationRef: observation.ref,
   };
@@ -270,7 +270,7 @@ function pricedDinnerFallbackMatches(
   const facts = record(factsValue);
   const fallbackGroupIds = Array.isArray(fallbackGroupIdsValue) ? fallbackGroupIdsValue : [];
   if ((input.salesStrategy !== 'BAR' && input.salesStrategy !== 'Government' && input.salesStrategy !== 'GOV') ||
-      actual.board !== 'breakfast' || typeof actual.rateCode !== 'string' || !actual.rateCode.trim() ||
+      actual.mealPlan !== 'breakfast' || typeof actual.rateCode !== 'string' || !actual.rateCode.trim() ||
       !fallbackGroupIds.includes(expected.id) || !facts || facts.revisionId !== revision.id ||
       facts.authorizationId !== revision.authorizationId || facts.sourceHash !== input.sourceHash) return false;
 
@@ -337,9 +337,9 @@ function preparedQuoteMatches(
   }
   for (const expected of input.groups) {
     const actual = groups.find((group) => group?.id === expected.id);
-    const board = expected.board === 'bb' ? 'breakfast'
-      : expected.board === 'dinner_bb' ? 'dinner_bed_breakfast' : 'room_only';
-    const boardMatches = actual?.board === board || Boolean(actual && expected.board === 'dinner_bb' &&
+    const board = expected.mealPlan === 'bb' ? 'breakfast'
+      : expected.mealPlan === 'dinner_bb' ? 'dinner_bed_breakfast' : 'room_only';
+    const boardMatches = actual?.mealPlan === board || Boolean(actual && expected.mealPlan === 'dinner_bb' &&
       pricedDinnerFallbackMatches(input, expected, actual, revision, factsValue, fallbackGroupIdsValue));
     if (!actual || actual.arrivalDate !== expected.arrivalDate || actual.departureDate !== expected.departureDate ||
         actual.quantity !== expected.quantity || actual.adults !== expected.adults ||
@@ -401,7 +401,7 @@ function unavailableInventoryMarker(
     roomCode: proof.roomCode,
     roomLabel: proof.roomLabel,
     rateCode: group.rateCode,
-    board: group.board,
+    mealPlan: group.mealPlan,
     arrivalDate: group.arrivalDate,
     departureDate: group.departureDate,
     quantity: group.quantity,
@@ -450,7 +450,7 @@ function unavailableInventoryProof(
   const board: Record<string, unknown>[] = Array.isArray(diagnostic.availabilityBoard)
     ? diagnostic.availabilityBoard.map(record).filter((row): row is Record<string, unknown> => row !== null) : [];
   const expectedBoard = board.filter((row) => row?.groupId === group.id && row.roomCode === roomCode &&
-    row.rateCode === group.rateCode && boardCode(row.boardLabel ?? row.board, draft.propertyCode) === group.board);
+    row.rateCode === group.rateCode && boardCode(row.mealPlanLabel ?? row.mealPlan, draft.propertyCode) === group.mealPlan);
   if (expectedBoard.length !== 1) return null;
   const row = expectedBoard[0]!;
   const coverage = record(row.coverage), nightCoverage = record(row.nightCoverage);
@@ -502,7 +502,7 @@ function compileQuote(
 
   const nativeGroups: Array<{
     id: string; arrivalDate: string; departureDate: string; quantity: number; adults: number;
-    childrenAges: number[]; board: 'room_only' | 'bb' | 'dinner_bb'; roomCodes?: string[]; rateCode?: string;
+    childrenAges: number[]; mealPlan: 'room_only' | 'bb' | 'dinner_bb'; roomCodes?: string[]; rateCode?: string;
   }> = [];
   const datePairs = new Set<string>();
   for (const [groupIndex, group] of request.body.groups.entries()) {
@@ -574,7 +574,7 @@ function compileQuote(
     if (typeof arrival === 'string' && typeof departure === 'string' && Number.isInteger(quantity) &&
         Number.isInteger(adults) && childrenAges && board) {
       nativeGroups.push({ id: group.id, arrivalDate: arrival, departureDate: departure,
-        quantity: Number(quantity), adults: Number(adults), childrenAges, board,
+        quantity: Number(quantity), adults: Number(adults), childrenAges, mealPlan: board,
         ...(roomCodes ? { roomCodes } : {}), ...(rateCode ? { rateCode } : {}) });
     }
   }
@@ -692,8 +692,8 @@ function compileQuote(
   }
 
   const parties = {
-    ...(company.party ? { company: company.party } : {}),
-    ...(agency.party ? { agency: agency.party } : {}),
+    ...(company.party ? { organization: company.party } : {}),
+    ...(agency.party ? { bookingAgency: agency.party } : {}),
   };
   const nativeInput = {
     messageId: draft.source.messageId,
@@ -702,8 +702,8 @@ function compileQuote(
     inputRevision: draft.revision,
     groups: nativeGroups,
     salesStrategy: strategyDefaulted ? 'BAR' : strategy === 'GOV' ? 'Government' : strategy,
-    company: company.party?.name ?? '',
-    agency: agency.party?.name ?? '',
+    organization: company.party?.name ?? '',
+    bookingAgency: agency.party?.name ?? '',
     attention,
     clientEmail,
     clientTelephone,
@@ -950,8 +950,8 @@ export function quoteDiagnosticMatchesParty(
   rateContext: Record<string, unknown> | undefined,
 ): boolean {
   const expected = {
-    ...(parties?.company ? { organization: parties.company.nativeId } : {}),
-    ...(parties?.agency ? { agency: parties.agency.nativeId } : {}),
+    ...(parties?.organization ? { organization: parties.organization.nativeId } : {}),
+    ...(parties?.bookingAgency ? { bookingAgency: parties.bookingAgency.nativeId } : {}),
   };
   const context = rateContext ?? {};
   const selected = Object.entries(expected);
@@ -1086,7 +1086,7 @@ async function lookupPartyCandidates(
     }
     let found: Awaited<ReturnType<typeof findParty>>;
     try {
-      found = await findParty({ kind: role === 'organization' ? 'company' : 'agency', name }, { target: target.target });
+      found = await findParty({ kind: role, name }, { target: target.target });
     } catch {
       const observation: ReservationWorkflowV2Observation = {
         ref: randomUUID(), generationId: draft.generationId, kind: 'party_candidate', status: 'failed',
@@ -1273,7 +1273,7 @@ function makeCoverEmail(
     const ages = group.children ? ` (ages ${group.childAges.join(', ')})` : '';
     return [
       `Room group ${groupIndex + 1} · ${quoteDateLabel(line.arrivalDate, line.departureDate)}: ${group.roomLabel}`,
-      `${line.quantity} room${line.quantity === 1 ? '' : 's'}, ${group.adults} adult${group.adults === 1 ? '' : 's'} and ${group.children} ${group.children === 1 ? 'child' : 'children'}${ages} per room · ${boardLabels[group.board]}`,
+      `${line.quantity} room${line.quantity === 1 ? '' : 's'}, ${group.adults} adult${group.adults === 1 ? '' : 's'} and ${group.children} ${group.children === 1 ? 'child' : 'children'}${ages} per room · ${boardLabels[group.mealPlan]}`,
       `${line.quantity} room${line.quantity === 1 ? '' : 's'} × ${line.nights} night${line.nights === 1 ? '' : 's'} × ${money(line.rateMinor)} per room per night = ${money(line.totalMinor)}`,
     ].join('\n');
   });
@@ -1328,7 +1328,7 @@ async function quoteArtifacts(
   const header = {
     attention: compiled.input.attention,
     // HMS party still scopes the native rate; the client company is deliberately omitted from quote covers.
-    company: '',
+    organization: '',
     clientEmail: compiled.input.clientEmail,
     clientTelephone: compiled.input.clientTelephone,
     signerName: actor?.name ?? '',
@@ -1342,7 +1342,7 @@ async function quoteArtifacts(
     else try {
       const workbook = quoteWorkbookForStays({ stays, header, note: compiled.input.notes });
       const bytes = Buffer.from(workbook.bytes);
-      artifacts.push({ kind: 'xlsx_quote', fileName: quoteWorkbookFileName(compiled.input.agency || compiled.input.company,
+      artifacts.push({ kind: 'xlsx_quote', fileName: quoteWorkbookFileName(compiled.input.bookingAgency || compiled.input.organization,
         group.arrivalDate, group.departureDate), mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         sha256: createHash('sha256').update(bytes).digest('hex'), sizeBytes: bytes.length, bytesBase64: bytes.toString('base64'),
         totalMinor: workbook.totalMinor, currency: revision.currency });
@@ -1356,7 +1356,7 @@ async function quoteArtifacts(
     else if (!gotenbergUrl) failures.push('pdf_converter_unavailable');
     else {
       try {
-        const pdf = await buildStaysProposalPdf(stays, { ...header, agency: compiled.input.agency, notes: compiled.input.notes },
+        const pdf = await buildStaysProposalPdf(stays, { ...header, bookingAgency: compiled.input.bookingAgency, notes: compiled.input.notes },
           { url: gotenbergUrl });
         const bytes = Buffer.from(pdf.pdf);
         artifacts.push({ kind: 'pdf_quote', fileName: pdf.fileName, mimeType: 'application/pdf',
@@ -1377,7 +1377,7 @@ async function quoteArtifacts(
     sourceHash: compiled.input.sourceHash, nativeInputDigest: typeof prepared?.nativeInputDigest === 'string' ? prepared.nativeInputDigest : null,
     preparedObservationRef: preparedObservation.ref, workflowRunId: typeof prepared?.workflowRunId === 'string' ? prepared.workflowRunId : null,
     claims: compiled.input.groups.map((entry) => ({ groupId: entry.id, arrivalDate: entry.arrivalDate,
-      departureDate: entry.departureDate, quantity: entry.quantity, board: entry.board, adultsPerRoom: entry.adults,
+      departureDate: entry.departureDate, quantity: entry.quantity, mealPlan: entry.mealPlan, adultsPerRoom: entry.adults,
       childAgesPerRoom: entry.childrenAges })),
     companyShownInCover: false as const };
 }
@@ -1405,7 +1405,7 @@ function unavailableQuoteReply(
     preparedObservationRef: proof.observation.ref,
     workflowRunId: null,
     claims: [{ groupId: group.id, arrivalDate: group.arrivalDate, departureDate: group.departureDate,
-      quantity: group.quantity, board: group.board, adultsPerRoom: group.adults,
+      quantity: group.quantity, mealPlan: group.mealPlan, adultsPerRoom: group.adults,
       childAgesPerRoom: group.childrenAges }],
     unavailableInventory: unavailableInventoryMarker(compiled, proof),
     companyShownInCover: false as const,

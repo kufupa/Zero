@@ -146,7 +146,7 @@ function analysingCopy(session: QuoteSession): string {
 /** Contract tags need the existing staff_quote read for a confirmed party. No new HMS read. */
 function confirmedPartyRead(header: StaffQuoteHeader, stayFound: boolean): boolean {
   return (
-    stayFound && Boolean(header.parties?.company?.nativeId || header.parties?.agency?.nativeId)
+    stayFound && Boolean(header.parties?.organization?.nativeId || header.parties?.bookingAgency?.nativeId)
   );
 }
 
@@ -216,9 +216,9 @@ function money(minor: number): string {
   return `R${(minor / 100).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-/** The picked company, else the picked agency. A contract rate is named after one of them. */
+/** The picked organization, else the picked bookingAgency. A contract rate is named after one of them. */
 function contractPartyName(header: StaffQuoteHeader): string | undefined {
-  const party = header.parties?.company ?? header.parties?.agency;
+  const party = header.parties?.organization ?? header.parties?.bookingAgency;
   return party?.name?.trim() || undefined;
 }
 
@@ -251,7 +251,7 @@ function OfferCard({
       }`}
     >
       <span className="text-[13px] font-bold text-[#1e293b]">
-        {offer.roomLabel} · {offer.rateCode} · {offer.board}
+        {offer.roomLabel} · {offer.rateCode} · {offer.mealPlan}
       </span>
       <span className="text-[13px] text-[#64748b]">
         {offer.kind === 'alternative' ? 'Alternative — not counted in the total' : 'Counted in the total'}
@@ -307,7 +307,7 @@ const CONTACT_QUESTION_FIELDS = new Set([
 /** The first quote fact to resolve follows the reservationist's decision order, not model output order. */
 function missingQuestionPriority(field: string): number {
   const key = field.toLowerCase().replace(/[\s_-]/g, '');
-  if (/(party|company|agency)/.test(key)) return 0;
+  if (/(party|organization|bookingAgency)/.test(key)) return 0;
   if (/(authority|authoris|authoriz|approv|rateplan|salesstrategy|contract)/.test(key)) return 1;
   if (/(arrival|departure|checkin|checkout|stay|date|room|guest|adult|child|occupancy)/.test(key)) return 2;
   if (/(availability|price|amount|rate|nightly|cost)/.test(key)) return 3;
@@ -354,10 +354,10 @@ function missingQuestionAnswered(
     );
   }
   if (key === 'party') {
-    return Boolean(header.parties?.company?.nativeId || header.parties?.agency?.nativeId);
+    return Boolean(header.parties?.organization?.nativeId || header.parties?.bookingAgency?.nativeId);
   }
-  if (key === 'company') return Boolean(header.company.trim() || header.parties?.company?.nativeId);
-  if (key === 'agency') return Boolean(header.agency.trim() || header.parties?.agency?.nativeId);
+  if (key === 'organization') return Boolean(header.organization.trim() || header.parties?.organization?.nativeId);
+  if (key === 'bookingAgency') return Boolean(header.bookingAgency.trim() || header.parties?.bookingAgency?.nativeId);
   if (
     ['room', 'roomtype', 'roomtypes', 'roompreference', 'roomtypecode', 'roomcodes'].includes(key)
   ) {
@@ -493,7 +493,7 @@ export function QuoteWorkflowPanel({
   screenshot?: PaneStayClient['screenshot'] | null;
   /** Read-only stored availability lookup; independent of whether saving to HMS is enabled. */
   availabilityReader?: PaneStayAvailabilityReader | null;
-  /** The stored read's contact (booker and company) for the HMS notes. Null while the mail has no stored read. */
+  /** The stored read's contact (booker and organization) for the HMS notes. Null while the mail has no stored read. */
   contact?: StoredContact | null;
   /** Key keeps Contact corrections scoped to the selected request/work item. */
   contactEditorKey?: string;
@@ -535,10 +535,10 @@ export function QuoteWorkflowPanel({
   onEditReply?: () => void;
   onPatchStaffHeader?: (header: Partial<StaffQuoteHeader>, options?: { staffEdit?: boolean }) => void;
   onPatchStayExtras?: (stayKey: string, extras: Partial<StaffStayExtras>) => void;
-  /** HMS company and agency search for the quote header's Find in HMS picker. Null or absent: no picker. */
+  /** HMS organization and bookingAgency search for the quote header's Find in HMS picker. Null or absent: no picker. */
   findParty?: PartyFinder | null;
-  /** Tells the pane whether a company or agency search still decides its pick. A rates run waits for it. */
-  onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
+  /** Tells the pane whether a organization or bookingAgency search still decides its pick. A rates run waits for it. */
+  onPartyLookupPending?: (kind: 'organization' | 'bookingAgency', pending: boolean) => void;
   onSelectStayKey?: (stayKey: string) => void;
   /** Display-only outcomes keyed by stay and registry strategy code; bind/session owns their lifecycle. */
   quoteStrategyRows?: Record<string, Partial<Record<QuoteSalesStrategyCode, QuoteStrategyRow>>>;
@@ -557,10 +557,10 @@ export function QuoteWorkflowPanel({
   workItemPane?: WorkItemPaneControls | null;
 }) {
   const ratePartyKey = JSON.stringify([session.binding?.transportId, session.binding?.selectionEpoch, session.staffSource]);
-  const [rateParty, setRateParty] = useState<{ key: string; company: RatePartyEvidence | null; agency: RatePartyEvidence | null }>({
-    key: ratePartyKey, company: null, agency: null,
+  const [rateParty, setRateParty] = useState<{ key: string; organization: RatePartyEvidence | null; bookingAgency: RatePartyEvidence | null }>({
+    key: ratePartyKey, organization: null, bookingAgency: null,
   });
-  const rateEvidence = rateParty.key === ratePartyKey ? rateParty : { company: null, agency: null };
+  const rateEvidence = rateParty.key === ratePartyKey ? rateParty : { organization: null, bookingAgency: null };
   const currentEmailKey = session.binding?.entryId
     ? JSON.stringify([session.binding.storeId, session.binding.folderEntryId, session.binding.entryId]) : null;
   const shuttleArrivalDate = session.groups.find((group) => group.arrivalDate)?.arrivalDate ?? null;
@@ -587,15 +587,15 @@ export function QuoteWorkflowPanel({
   } | null>(null);
   const [mealPlanFilters, setMealPlanFilters] = useState<Record<string, QuoteBoard | 'all'>>({});
   const selectionEpoch = session.binding?.selectionEpoch ?? 0;
-  const editedPartyFields = useRef({ selectionEpoch, company: false, agency: false });
+  const editedPartyFields = useRef({ selectionEpoch, organization: false, bookingAgency: false });
   if (editedPartyFields.current.selectionEpoch !== selectionEpoch) {
-    editedPartyFields.current = { selectionEpoch, company: false, agency: false };
+    editedPartyFields.current = { selectionEpoch, organization: false, bookingAgency: false };
   }
-  const markPartyFieldEdited = (kind: 'company' | 'agency') => {
+  const markPartyFieldEdited = (kind: 'organization' | 'bookingAgency') => {
     editedPartyFields.current[kind] = true;
   };
-  const contactAgency = contact?.company?.trim() ?? '';
-  const contactCompany = contact?.endClient?.trim() ?? '';
+  const contactAgency = contact?.bookingAgency?.trim() ?? '';
+  const contactCompany = contact?.organization?.trim() ?? '';
   const sourceParties = sourceCreatePartyNames(workItemPane?.requestDraft?.snapshot);
   const contactPrefillKey = contact
     ? JSON.stringify([selectionEpoch, session.binding?.entryId ?? '', contactAgency, contactCompany])
@@ -604,9 +604,9 @@ export function QuoteWorkflowPanel({
   useEffect(() => {
     if (!onPatchStaffHeader) return;
     const patch: Partial<StaffQuoteHeader> = {};
-    for (const kind of ['agency', 'company'] as const) {
+    for (const kind of ['bookingAgency', 'organization'] as const) {
       if (editedPartyFields.current[kind] || session.staffHeader.parties?.[kind]) continue;
-      const pick = kind === 'agency' ? sourceParties.agencyPick : sourceParties.companyPick;
+      const pick = kind === 'bookingAgency' ? sourceParties.bookingAgencyPick : sourceParties.organizationPick;
       const label = pick?.name || sourceParties[kind];
       if (pick) patch.parties = { ...(patch.parties ?? session.staffHeader.parties), [kind]: { ...pick, kind } };
       if (label && session.staffHeader[kind] !== label) patch[kind] = label;
@@ -667,39 +667,39 @@ export function QuoteWorkflowPanel({
     appliedContactPrefill.current = contactPrefillKey;
     const party = session.analysis?.luna?.party;
     const partyName = party?.name?.trim();
-    const agency = session.staffHeader.agency.trim();
-    const company = session.staffHeader.company.trim();
-    const usesLunaAgency = party?.kind === 'agency' && agency === partyName;
+    const bookingAgency = session.staffHeader.bookingAgency.trim();
+    const organization = session.staffHeader.organization.trim();
+    const usesLunaAgency = party?.kind === 'agency' && bookingAgency === partyName;
     const usesLunaCompany =
-      (party?.kind === 'organization' || party?.kind === 'government') && company === partyName;
+      (party?.kind === 'organization' || party?.kind === 'government') && organization === partyName;
     const patch: Partial<StaffQuoteHeader> = {};
     if (
-      contactAgency && !sourceParties.agency &&
-      !editedPartyFields.current.agency &&
-      !session.staffHeader.parties?.agency &&
-      (!agency || usesLunaAgency)
+      contactAgency && !sourceParties.bookingAgency &&
+      !editedPartyFields.current.bookingAgency &&
+      !session.staffHeader.parties?.bookingAgency &&
+      (!bookingAgency || usesLunaAgency)
     ) {
-      patch.agency = contactAgency;
+      patch.bookingAgency = contactAgency;
     }
     if (
-      contactCompany && !sourceParties.company &&
-      !editedPartyFields.current.company &&
-      !session.staffHeader.parties?.company &&
-      (!company || usesLunaCompany)
+      contactCompany && !sourceParties.organization &&
+      !editedPartyFields.current.organization &&
+      !session.staffHeader.parties?.organization &&
+      (!organization || usesLunaCompany)
     ) {
-      patch.company = contactCompany;
+      patch.organization = contactCompany;
     }
     if (Object.keys(patch).length) onPatchStaffHeader(patch);
   }, [
     contactAgency,
     contactCompany,
-    sourceParties.agency,
-    sourceParties.company,
+    sourceParties.bookingAgency,
+    sourceParties.organization,
     contactPrefillKey,
     onPatchStaffHeader,
     session.analysis?.luna?.party,
-    session.staffHeader.agency,
-    session.staffHeader.company,
+    session.staffHeader.bookingAgency,
+    session.staffHeader.organization,
   ]);
   // The session and pin as of the last render. A saved-rate edit lands after an await, so it reads these, not the ones it began with.
   const latest = useRef({ session, pinRun });
@@ -856,7 +856,7 @@ export function QuoteWorkflowPanel({
         : 'all';
   // Government parties and Dinner B&B asks default to Government; "All rates" returns to that default.
   const governmentParty = session.analysis?.luna?.party?.kind === 'government';
-  const dinnerBbAsk = session.groups.length > 0 && session.groups.every((group) => group.board === 'dinner_bb');
+  const dinnerBbAsk = session.groups.length > 0 && session.groups.every((group) => group.mealPlan === 'dinner_bb');
   const changeRatePlan = (value: string) => {
     setRatePlanState({ selectionEpoch, analysis: session.analysis, value });
     // The search's sales strategy lives in the header. "All rates" restores the default for
@@ -873,7 +873,7 @@ export function QuoteWorkflowPanel({
   const mealPlanForStay = (stayId: string, rows: StayGroupRequirement[]): QuoteBoard | 'all' => {
     const saved = mealPlanFilters[stayId];
     if (saved) return saved;
-    const boards = new Set(rows.map((row) => row.board).filter((board) => board !== 'unknown'));
+    const boards = new Set(rows.map((row) => row.mealPlan).filter((board) => board !== 'unknown'));
     return boards.size === 1 ? [...boards][0]! : 'all';
   };
   // Room names follow the type and count, so a rate or override always identifies the actual row.
@@ -911,9 +911,9 @@ export function QuoteWorkflowPanel({
   const partyState =
     session.pendingPartyKinds?.length
       ? 'Looking up'
-      : !header.company.trim() && !header.agency.trim()
+      : !header.organization.trim() && !header.bookingAgency.trim()
       ? 'Optional'
-      : header.parties?.company || header.parties?.agency
+      : header.parties?.organization || header.parties?.bookingAgency
         ? 'Done'
         : 'Pending';
   const rateKeys = requestedQuoteKeys(session.groups);
@@ -956,7 +956,7 @@ export function QuoteWorkflowPanel({
     if (!step || quoteRunBlockReason(session, step)) return;
     // A card is an HMS price, so it replaces the row's own price. Otherwise the run would charge a price the card does not show.
     onPatchGroup(group.id, {
-      board: option.board,
+      mealPlan: option.mealPlan,
       roomCodes: [option.roomCode],
       rateCode: option.rateCode,
       ...(group.rowPrice ? { rowPrice: undefined } : {}),
@@ -1044,7 +1044,7 @@ export function QuoteWorkflowPanel({
   const missingCandidates = orderedMissing.map(({ item, index, priority }) => ({ item, index, priority }));
   if (hasUnconfirmedParty && !hasPartyBlocker) {
     missingCandidates.push({
-      item: { field: 'party', question: 'Confirm the company or agency in HMS before using a contract rate.' },
+      item: { field: 'party', question: 'Confirm the organization or bookingAgency in HMS before using a contract rate.' },
       index: -1,
       priority: 0,
     });
@@ -1158,7 +1158,7 @@ export function QuoteWorkflowPanel({
           onContactEdit={onContactEdit}
           onPartyLookupPending={onPartyLookupPending}
           onRatePartyChange={(kind, evidence) => setRateParty((previous) => {
-            const current = previous.key === ratePartyKey ? previous : { key: ratePartyKey, company: null, agency: null };
+            const current = previous.key === ratePartyKey ? previous : { key: ratePartyKey, organization: null, bookingAgency: null };
             return JSON.stringify(current[kind]) === JSON.stringify(evidence) ? current : { ...current, [kind]: evidence };
           })}
           scrollToStep={scrollToStep}
@@ -1249,7 +1249,7 @@ export function QuoteWorkflowPanel({
                   const row = quoteStrategyRows?.[stayKey]?.[strategy.code];
                   const unique = (values: string[]) => [...new Set(values.filter(Boolean))].join(', ') || '—';
                   const room = row?.status === 'ready' ? unique(row.roomLabels) : '—';
-                  const board = row?.status === 'ready' ? unique(row.boardLabels) : '—';
+                  const board = row?.status === 'ready' ? unique(row.mealPlanLabels) : '—';
                   const nightly = row?.status === 'ready' ? unique(row.nightlyMinor.map(money)) : '—';
                   const status = row?.status === 'ready'
                     ? 'Rates found'
@@ -1501,7 +1501,7 @@ export function QuoteWorkflowPanel({
                             selection={session.roomRateBoardSelections?.[group.id]}
                             onSelect={(selection) => {
                               onStayAction?.({ type: 'room_rate_board_selected', groupId: group.id, selection });
-                              const board = quoteBoardFromGrid(selection.board);
+                              const board = quoteBoardFromGrid(selection.mealPlan);
                               const match = board
                                 ? (session.rateOptions ?? []).find(
                                     (option) =>
@@ -1509,7 +1509,7 @@ export function QuoteWorkflowPanel({
                                       option.groupId === group.id &&
                                       option.roomCode === selection.roomCode &&
                                       option.rateCode === selection.rateCode &&
-                                      option.board === board,
+                                      option.mealPlan === board,
                                   )
                                 : undefined;
                               const picked = rateOptionForGridPick(group.id, selection, match);
@@ -1736,8 +1736,8 @@ const GRID_BOARD_DINNER = new Set([
   'dinner, bed, breakfast & beverage nr',
 ]);
 
-function quoteBoardFromGrid(board: string): RateOption['board'] | null {
-  const key = board.trim().replace(/\s+/g, ' ').toLowerCase();
+function quoteBoardFromGrid(mealPlan: string): RateOption['mealPlan'] | null {
+  const key = mealPlan.trim().replace(/\s+/g, ' ').toLowerCase();
   if (GRID_BOARD_BB.has(key)) return 'bb';
   if (GRID_BOARD_ROOM.has(key)) return 'room_only';
   if (GRID_BOARD_DINNER.has(key)) return 'dinner_bb';
@@ -1747,17 +1747,17 @@ function quoteBoardFromGrid(board: string): RateOption['board'] | null {
 /** Grid click uses the rate-card pick. An unknown board is not a rate, so it does not pin or re-price. */
 function rateOptionForGridPick(
   groupId: string,
-  selection: { roomCode: string; rateCode: string; board: string },
+  selection: { roomCode: string; rateCode: string; mealPlan: string },
   match: RateOption | undefined,
 ): RateOption | null {
   if (match) return match;
-  const board = quoteBoardFromGrid(selection.board);
+  const board = quoteBoardFromGrid(selection.mealPlan);
   if (!board) return null;
   return {
     id: `grid:${groupId}:${selection.roomCode}:${selection.rateCode}:${board}`,
     groupId,
-    board,
-    boardLabel: selection.board,
+    mealPlan: board,
+    mealPlanLabel: selection.mealPlan,
     rateCode: selection.rateCode,
     rateLabel: selection.rateCode,
     roomCode: selection.roomCode,

@@ -82,24 +82,24 @@ test('AE2: required twin vs queen is alternative; unknown bed stays unresolved; 
     children: 0,
     childAges: [],
     required: { bedTypes: ['twin'] },
-    preferred: { boardBases: ['breakfast'] },
+    preferred: { mealPlanBases: ['breakfast'] },
   };
   const queen = assessConstraints(group, {
     roomCode: 'STQN',
     rateCode: 'BAR',
     bedType: 'queen',
-    boardBase: 'breakfast',
+    mealPlanBase: 'breakfast',
     boardLabel: 'Bed & Breakfast R',
   });
   assert.equal(queen.matchStatus, 'alternative');
   assert.equal(queen.conditions.find((c) => c.field === 'bedTypes' && c.kind === 'required').status, 'unsatisfied');
-  assert.equal(queen.conditions.find((c) => c.field === 'boardBases' && c.kind === 'preferred').status, 'satisfied');
+  assert.equal(queen.conditions.find((c) => c.field === 'mealPlanBases' && c.kind === 'preferred').status, 'satisfied');
 
   const unknownBed = assessConstraints(group, {
     roomCode: 'STQN',
     rateCode: 'BAR',
     bedType: null,
-    boardBase: 'breakfast',
+    mealPlanBase: 'breakfast',
   });
   assert.equal(unknownBed.matchStatus, 'unresolved');
   assert.equal(unknownBed.conditions.find((c) => c.field === 'bedTypes' && c.kind === 'required').status, 'unknown');
@@ -108,10 +108,10 @@ test('AE2: required twin vs queen is alternative; unknown bed stays unresolved; 
     roomCode: 'STWN',
     rateCode: 'BAR',
     bedType: 'twin',
-    boardBase: 'room_only',
+    mealPlanBase: 'room_only',
   });
   assert.equal(twinRoomOnly.matchStatus, 'match');
-  assert.equal(twinRoomOnly.conditions.find((c) => c.field === 'boardBases').status, 'unsatisfied');
+  assert.equal(twinRoomOnly.conditions.find((c) => c.field === 'mealPlanBases').status, 'unsatisfied');
 });
 
 test('AE4: displayed-nightly sums use exact decimals and the full stay, not the first night', () => {
@@ -172,7 +172,7 @@ test('legacy adult and child fixtures normalize with assigned group ids, aliases
   assert.equal(adult.request.rooms[0].quantity, 2);
   assert.equal(adult.request.rooms[0].adults, 1);
   assert.deepEqual(adult.request.rooms[0].preferred.bedTypes, ['double']);
-  assert.deepEqual(adult.request.rooms[0].preferred.boardBases, ['breakfast']);
+  assert.deepEqual(adult.request.rooms[0].preferred.mealPlanBases, ['breakfast']);
   assert.ok(adult.request.rooms[0].preferred.features.some((f) => f.name === 'room_description' && f.value === 'Standard'));
   assert.ok(adult.request.rooms[0].preferred.features.some((f) => f.name === 'refundability'));
   assert.ok(adult.request.rooms[0].preferred.features.some((f) => f.name === 'payment_method'));
@@ -182,7 +182,7 @@ test('legacy adult and child fixtures normalize with assigned group ids, aliases
   assert.equal(child.ok, true, child.ok ? '' : JSON.stringify(child.issues));
   assert.equal(child.request.rooms[0].id, 'group-1');
   assert.deepEqual(child.request.rooms[0].childAges, [12]);
-  assert.deepEqual(child.request.rooms[0].preferred.boardBases, ['breakfast']);
+  assert.deepEqual(child.request.rooms[0].preferred.mealPlanBases, ['breakfast']);
 });
 
 test('legacy roomCode and rateCode become required singleton lists on every group', async () => {
@@ -256,13 +256,13 @@ test('required lists are OR within a field and AND across fields; empty lists ar
     adults: 1,
     children: 0,
     childAges: [],
-    required: { bedTypes: ['twin', 'double'], boardBases: ['breakfast'] },
+    required: { bedTypes: ['twin', 'double'], mealPlanBases: ['breakfast'] },
   };
-  const eitherBed = assessConstraints(group, { bedType: 'double', boardBase: 'breakfast' });
+  const eitherBed = assessConstraints(group, { bedType: 'double', mealPlanBase: 'breakfast' });
   assert.equal(eitherBed.matchStatus, 'match');
-  const queenBreakfast = assessConstraints(group, { bedType: 'queen', boardBase: 'breakfast' });
+  const queenBreakfast = assessConstraints(group, { bedType: 'queen', mealPlanBase: 'breakfast' });
   assert.equal(queenBreakfast.matchStatus, 'alternative');
-  const twinRoomOnly = assessConstraints(group, { bedType: 'twin', boardBase: 'room_only' });
+  const twinRoomOnly = assessConstraints(group, { bedType: 'twin', mealPlanBase: 'room_only' });
   assert.equal(twinRoomOnly.matchStatus, 'alternative');
 });
 
@@ -344,7 +344,7 @@ test('available room alternatives keep only observed, usable rooms on the reques
       adults: 2,
       children: 0,
       childAges: [],
-      required: { roomCodes: ['STQN'], boardBases: ['breakfast'] },
+      required: { roomCodes: ['STQN'], mealPlanBases: ['breakfast'] },
     }],
   };
   const nights = (inventory) => ['2026-09-24', '2026-09-25', '2026-09-26'].map((date) => ({
@@ -358,37 +358,37 @@ test('available room alternatives keep only observed, usable rooms on the reques
     options: [
       {
         room: { code: 'STQN', label: 'Standard Queen' }, rate: { code: 'BAR', label: 'Bed & Breakfast' },
-        board: 'Bed & Breakfast', matchStatus: 'match', eligibility: 'verified', availability: 'available', held: false,
+        mealPlan: 'Bed & Breakfast', matchStatus: 'match', eligibility: 'verified', availability: 'available', held: false,
         nightly: nights(1),
       },
       {
         room: { code: 'DLXTWN', label: 'Deluxe Twin' }, rate: { code: 'BAR', label: 'Bed & Breakfast' },
-        board: 'Bed & Breakfast', matchStatus: 'alternative', eligibility: 'verified', availability: 'available', held: false,
+        mealPlan: 'Bed & Breakfast', matchStatus: 'alternative', eligibility: 'verified', availability: 'available', held: false,
         nightly: nights(1),
       },
       {
         room: { code: 'SKNG', label: 'Standard King' }, rate: { code: 'BAR', label: 'Bed & Breakfast' },
-        board: 'Bed & Breakfast', matchStatus: 'alternative', eligibility: 'verified', availability: 'unavailable', held: false,
+        mealPlan: 'Bed & Breakfast', matchStatus: 'alternative', eligibility: 'verified', availability: 'unavailable', held: false,
         nightly: nights(1),
       },
       {
         room: { code: 'DLXTWN', label: 'Deluxe Twin' }, rate: { code: 'BARRO', label: 'Bed & Breakfast' },
-        board: 'B&B', matchStatus: 'alternative', eligibility: 'verified', availability: 'available', held: false,
+        mealPlan: 'B&B', matchStatus: 'alternative', eligibility: 'verified', availability: 'available', held: false,
         nightly: nights(2),
       },
       {
         room: { code: 'EXKNG', label: 'Executive King' }, rate: { code: 'DBB', label: 'Dinner B&B' },
-        board: 'Dinner, bed & breakfast', matchStatus: 'alternative', eligibility: 'verified', availability: 'available', held: false,
+        mealPlan: 'Dinner, bed & breakfast', matchStatus: 'alternative', eligibility: 'verified', availability: 'available', held: false,
         nightly: nights(2),
       },
       {
         room: { code: 'DLXQN', label: 'Deluxe Queen' }, rate: { code: 'BAR', label: 'Bed & Breakfast' },
-        board: 'Bed & Breakfast', matchStatus: 'alternative', eligibility: 'conditional', availability: 'available', held: false,
+        mealPlan: 'Bed & Breakfast', matchStatus: 'alternative', eligibility: 'conditional', availability: 'available', held: false,
         nightly: nights(2),
       },
       {
         room: { code: 'LUXKNG', label: 'Luxury King' }, rate: { code: 'BAR', label: 'Bed & Breakfast' },
-        board: 'Bed & Breakfast', matchStatus: 'alternative', eligibility: 'verified', availability: 'available', held: true,
+        mealPlan: 'Bed & Breakfast', matchStatus: 'alternative', eligibility: 'verified', availability: 'available', held: true,
         nightly: nights(2),
       },
     ],
@@ -412,7 +412,7 @@ test('available room alternatives recognize native HMS board labels', () => {
       adults: 1,
       children: 0,
       childAges: [],
-      required: { roomCodes: ['STQN'], boardBases: ['breakfast'] },
+      required: { roomCodes: ['STQN'], mealPlanBases: ['breakfast'] },
     }],
   };
   const groups = [{
@@ -420,7 +420,7 @@ test('available room alternatives recognize native HMS board labels', () => {
     options: [{
       room: { code: 'DLXTWN', label: 'Deluxe Twin' },
       rate: { code: 'BAR' },
-      board: 'Bed & Breakfast R',
+      mealPlan: 'Bed & Breakfast R',
       matchStatus: 'alternative',
       eligibility: 'verified',
       availability: 'available',
@@ -446,7 +446,7 @@ test('available room alternatives keep a checked party\'s public rows and drop u
   const option = (code, condition) => ({
     room: { code, label: `Room ${code}` },
     rate: { code: 'BAR' },
-    board: 'Bed & Breakfast R',
+    mealPlan: 'Bed & Breakfast R',
     rateScope: 'public',
     matchStatus: 'alternative',
     eligibility: 'verified',
@@ -488,18 +488,18 @@ test('v2 rooms require ids; rate context accepts exactly one of code, name or na
 
   const lookedUp = normalizeQuoteRequest(v2(
     [{ id: 'group-1', quantity: 1, adults: 1, children: 0, childAges: [] }],
-    { rateContext: { organization: { nativeId: '1842' }, agency: { nativeId: '91', name: ' CWT JNB ' } } },
+    { rateContext: { organization: { nativeId: '1842' }, bookingAgency: { nativeId: '91', name: ' CWT JNB ' } } },
   ));
   assert.equal(lookedUp.ok, true, lookedUp.ok ? '' : JSON.stringify(lookedUp.issues));
   assert.deepEqual(lookedUp.request.rateContext.organization, { nativeId: '1842' });
-  assert.deepEqual(lookedUp.request.rateContext.agency, { nativeId: '91', name: 'CWT JNB' });
+  assert.deepEqual(lookedUp.request.rateContext.bookingAgency, { nativeId: '91', name: 'CWT JNB' });
 
   const agencyIdOnly = normalizeQuoteRequest(v2(
     [{ id: 'group-1', quantity: 1, adults: 1, children: 0, childAges: [] }],
-    { rateContext: { agency: { nativeId: '91' } } },
+    { rateContext: { bookingAgency: { nativeId: '91' } } },
   ));
   assert.equal(agencyIdOnly.ok, false);
-  assert.ok(issuePaths(agencyIdOnly).includes('rateContext.agency.name'));
+  assert.ok(issuePaths(agencyIdOnly).includes('rateContext.bookingAgency.name'));
 
   const groupNativeId = normalizeQuoteRequest(v2(
     [{ id: 'group-1', quantity: 1, adults: 1, children: 0, childAges: [] }],

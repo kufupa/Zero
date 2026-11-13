@@ -20,15 +20,15 @@ export type PriorStaffQuoteRequoteGroup = {
   quantity: number;
   adults: number;
   childrenAges: number[];
-  board: 'room_only' | 'bb' | 'dinner_bb';
+  mealPlan: 'room_only' | 'bb' | 'dinner_bb';
   roomCodes?: string[];
 };
 
 export type PriorStaffQuoteRequotePayload = {
   groups: PriorStaffQuoteRequoteGroup[];
   salesStrategy: 'BAR' | 'Government';
-  company: string;
-  agency: string;
+  organization: string;
+  bookingAgency: string;
   dinnerAllowanceMinor?: number;
   dinnerAllowanceUnit?: 'per_person_per_night' | 'per_room_per_night' | 'per_person';
   dinnerAllowanceGroupIds?: string[];
@@ -78,7 +78,7 @@ function iso(value: Date | string | null | undefined): string {
 
 function partyNameFromRevision(revision: QuoteRevision): string | null {
   const context = revision.groups[0]?.context ?? {};
-  const agency = context.agency as { name?: string } | undefined;
+  const agency = context.bookingAgency as { name?: string } | undefined;
   if (typeof agency?.name === 'string' && agency.name.trim()) return agency.name;
   const organization = context.organization as { name?: string } | undefined;
   if (typeof organization?.name === 'string' && organization.name.trim()) return organization.name;
@@ -164,7 +164,7 @@ export function collectThreadQuoteRevisions(
   return summaries;
 }
 
-function staffBoardFromRevision(board: Board): PriorStaffQuoteRequoteGroup['board'] {
+function staffBoardFromRevision(board: Board): PriorStaffQuoteRequoteGroup['mealPlan'] {
   if (board === 'room_only') return 'room_only';
   if (board === 'dinner_bed_breakfast') return 'dinner_bb';
   return 'bb';
@@ -241,8 +241,8 @@ function qualifierFromLabel(label: string, base: string): string | undefined {
 function extrasHeaderFromFacts(
   facts: AuthorizedProposalFacts | undefined,
   stayNights: number,
-): Omit<PriorStaffQuoteRequotePayload, 'groups' | 'salesStrategy' | 'company' | 'agency' | 'notes'> {
-  const out: Omit<PriorStaffQuoteRequotePayload, 'groups' | 'salesStrategy' | 'company' | 'agency' | 'notes'> = {};
+): Omit<PriorStaffQuoteRequotePayload, 'groups' | 'salesStrategy' | 'organization' | 'bookingAgency' | 'notes'> {
+  const out: Omit<PriorStaffQuoteRequotePayload, 'groups' | 'salesStrategy' | 'organization' | 'bookingAgency' | 'notes'> = {};
   for (const row of facts?.extras ?? []) {
     if (row.service === 'dinner_add_on') {
       out.dinnerAllowanceMinor = row.unitMinor;
@@ -333,12 +333,12 @@ export function priorStaffQuoteRequotePayload(
       quantity: group.quantity,
       adults: group.adults,
       childrenAges: [...group.childAges],
-      board: staffBoardFromRevision(group.board),
+      mealPlan: staffBoardFromRevision(group.mealPlan),
       ...(group.roomCode ? { roomCodes: [group.roomCode] } : {}),
     })),
     salesStrategy: staff.salesStrategy === 'Government' ? 'Government' : 'BAR',
-    company: staff.header.company ?? '',
-    agency: staff.header.agency ?? '',
+    organization: staff.header.organization ?? '',
+    bookingAgency: staff.header.bookingAgency ?? '',
     ...extrasHeaderFromFacts(
       proposalFactsForRevision(run, revisionRef),
       stay ? occupiedDates(stay.arrivalDate, stay.departureDate).length : 0,

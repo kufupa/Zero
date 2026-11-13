@@ -174,7 +174,7 @@ export async function readCalendar(page) {
         room = { code: label?.textContent.trim(), label: label?.getAttribute('data-qtip'), inventory: cells.slice(1).map(e=>e.textContent.trim()) };
       }
       const rate = cells[0]?.querySelector('.rateshopping-treecolumn-rateplan-cell');
-      if (rate && room) options.push({ room, rate: rate.textContent.trim(), board: cells[0].querySelector('.mealplan')?.getAttribute('data-qtip') ?? null,
+      if (rate && room) options.push({ room, rate: rate.textContent.trim(), mealPlan: cells[0].querySelector('.mealplan')?.getAttribute('data-qtip') ?? null,
         prices: cells.slice(1).map(e=>e.textContent.trim()) });
     }
     return { headers, options };
@@ -252,7 +252,7 @@ export function assertApplied(request, room, criteria, {resolvedContext={},start
   const expected = {propertyCodes:request.propertyCode,startDate:`${startDate}T00:00:00`,
     adultCount:room.adults,childCount:room.children,salesStrategy,lengthOfStay:'DY',shopByDay:false,
     roomTypeCodes:roomCodes,ratePlanCodes:rateCodes};
-  for (const [kind,key] of Object.entries({organization:'organizationID',agency:'travelAgencyID',group:'groupID'})) {
+  for (const [kind,key] of Object.entries({organization:'organizationID',bookingAgency:'travelAgencyID',group:'groupID'})) {
     if (request.rateContext?.[kind] && resolvedContext[kind]?.id===undefined) throw new Error(`UNRESOLVED_CONTEXT_${kind}`);
     expected[key]=request.rateContext?.[kind]?resolvedContext[kind].id:'';
   }
@@ -289,7 +289,7 @@ export function matchReference(reference,rows) {
 
 const contextControls={
   organization:{field:'organization',nameFilter:'ff_companyname',codeFilter:'ff_companyid',idFilter:'ff_companyid',id:'companyid',code:'companyid',name:'companyname'},
-  agency:{field:'travelagency',nameFilter:'ff_travelagencyname',codeFilter:'ff_iatanumber',id:'travelagencyid',code:'iatanumber',name:'travelagencyname'},
+  bookingAgency:{field:'travelagency',nameFilter:'ff_travelagencyname',codeFilter:'ff_iatanumber',id:'travelagencyid',code:'iatanumber',name:'travelagencyname'},
   group:{field:'groupname',nameFilter:'ff_groupsname',codeFilter:'ff_confirmationnumber',id:'propgroupbookingid',code:'confirmationnumber',name:'groupsname'},
 };
 
@@ -444,7 +444,7 @@ async function applyCriteria(page, request, room, criteriaCheckpoint, clock) {
   await setArrivalDate(page,request.arrivalDate);
   const resolvedContext={};
   // Group changes date/strategy; restore requested occupancy/dates afterward.
-  for (const kind of ['group','organization','agency']) if (request.rateContext?.[kind])
+  for (const kind of ['group','organization','bookingAgency']) if (request.rateContext?.[kind])
     resolvedContext[kind]=await resolveReference(page,kind,request.rateContext[kind]);
   if (request.rateContext?.group&&request.search?.salesStrategy) throw new Error('UNSUPPORTED_GROUP_SALES_STRATEGY');
   const strategy=request.rateContext?.group?null:await selectSalesStrategy(page,request.search?.salesStrategy??(request.rateContext?'Preset':'BAR'));
@@ -541,8 +541,8 @@ export function sourceFacts(option, roomInformation='') {
     ['Two Single Beds','twin'],['One Single Bed','single'],['One Double Bed','double']]);
   const lines=new Set(roomInformation.split('\n').map(x=>x.trim()));
   const bedType=[...bedLabels].find(([label])=>lines.has(label))?.[1];
-  const boardBase=({'Bed & Breakfast R':'breakfast','Bed & Breakfast NR':'breakfast','Room Only R':'room_only','Dinner Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed, Breakfast & Beverage R':'dinner_bed_breakfast'})[option.board];
-  return {roomCode:option.room.code,rateCode:option.rate.code,bedType,boardBase,
+  const mealPlanBase=({'Bed & Breakfast R':'breakfast','Bed & Breakfast NR':'breakfast','Room Only R':'room_only','Dinner Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed, Breakfast & Beverage R':'dinner_bed_breakfast'})[option.mealPlan];
+  return {roomCode:option.room.code,rateCode:option.rate.code,bedType,mealPlanBase,
     features:[{name:'room_description',value:option.room.label}]};
 }
 
@@ -605,7 +605,7 @@ function strategyPartyKind(profile, strategy, code) {
   if (!strategies || typeof strategies !== 'object') return null;
   const kindOf = (row) => {
     if (!row || !Array.isArray(row.plans) || !row.plans.includes(code)) return null;
-    if (row.scope === 'agency') return 'agency';
+    if (row.scope === 'agency') return 'bookingAgency';
     if (row.scope === 'company') return 'organization';
     return null;
   };
@@ -664,7 +664,7 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
       let option=candidates.get(id);
       if (!option) {
         option={id,room:{code:nativeRoom.code,label:nativeRoom.desc,buildingCode:nativeRoom.buildingCode??null},
-          rate:{code:rate.code,label:rate.desc,...(nativeBundleLabels(rate.nonroombundleslist).length?{bundleLabels:nativeBundleLabels(rate.nonroombundleslist)}:{})},roomCode:nativeRoom.code,rateCode:rate.code,board:null,
+          rate:{code:rate.code,label:rate.desc,...(nativeBundleLabels(rate.nonroombundleslist).length?{bundleLabels:nativeBundleLabels(rate.nonroombundleslist)}:{})},roomCode:nativeRoom.code,rateCode:rate.code,mealPlan:null,
           nightly:[],observations:new Map(),issues:[],held:false,_rate:rate,_nativeRoom:nativeRoom,
           sourceCurrency:property.currency,rateScope:quoteRateScope(profile,rate.code,strategyCode,rate.isNegotiatedRate)};
         candidates.set(id,option);
@@ -678,7 +678,7 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
       // price/inventory agreement below is the binding proof.
       const dom=calendar.options.filter(o=>o.room.code===nativeRoom.code&&o.rate.startsWith(`${rate.code}: `));
       if (dom.length!==1) {option.issues.push(issue('RATE_NOT_BOUND_TO_VISIBLE_GRID',id,'Native row is hidden, missing or ambiguous.'));continue;}
-      option.board=dom[0].board;
+      option.mealPlan=dom[0].mealPlan;
       const shown=dom[0].rate.slice(rate.code.length+2).trim();
       option.rate={...(shown&&shown!==rate.desc?{code:rate.code,label:shown,nativeLabel:rate.desc}:{code:rate.code,label:rate.desc}),...(nativeBundleLabels(rate.nonroombundleslist).length?{bundleLabels:nativeBundleLabels(rate.nonroombundleslist)}:{})};
       for (const date of wanted) {
@@ -702,7 +702,7 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
   const options=[];
   const contextRequested=Object.keys(request.rateContext??{});
   const contextVerified=contextRequested.length>0&&contextRequested.every(k=>resolvedContext[k]?.id!==undefined&&
-    windows.every(w=>w.criteria?.[({organization:'organizationID',agency:'travelAgencyID',group:'groupID'})[k]]===resolvedContext[k].id));
+    windows.every(w=>w.criteria?.[({organization:'organizationID',bookingAgency:'travelAgencyID',group:'groupID'})[k]]===resolvedContext[k].id));
   const rateFilter=[...(room.required?.rateCodes??[]),...(request.rateCode?[request.rateCode]:[])];
   const roomFilter=[...(room.required?.roomCodes??[]),...(request.roomCode?[request.roomCode]:[])];
   const strategy=String(request.search?.salesStrategy??'').toUpperCase();
@@ -969,7 +969,7 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
               room:{status:'complete',text:detail.roomInformation??null},
               rate:{status:!detail.rowInformation?.rateInfoControlPresent?'not_shown':'not_inspected',label:option.rate.label,
                 reason:detail.rowInformation?.rateInfoControlPresent?'Additional information control requires inspection.':'No Rate Plan Information control exposed on inspected native row.'},
-              meal:{status:'not_shown',label:option.board,configured:option._rate.ismealplan,reason:'Native meal label shown; no separate detail view exposed.'},
+              meal:{status:'not_shown',label:option.mealPlan,configured:option._rate.ismealplan,reason:'Native meal label shown; no separate detail view exposed.'},
               package:{status:option._rate.ispkg!==true?'not_shown':'not_inspected',configured:option._rate.ispkg},
               policy:{status:!detail.rowInformation?.rateInfoControlPresent?'not_shown':'not_inspected',configured:option._rate.haspolicies,exactText:null},
               inlineEvidence:detail.rowInformation??null};
@@ -1271,7 +1271,7 @@ export function summarize(result) {
     if(hasSpecial(group)&&!allGroups&&!resultHas)lines.push(`${group.id}: no special rates; returned public BAR is not a contracted rate.`);
     if(hasUnchecked(group)&&!allUnchecked&&!resultUnchecked)lines.push(`${group.id}: party rates were not checked; public BAR shown.`);
     for(const option of group.options??[]) {
-      lines.push(`${option.room.code} — ${option.room.label}; ${option.rate.code} — ${option.rate.label}; ${option.board??'board not shown'}; ${option.matchStatus??'unassessed'}; eligibility ${option.eligibility??'unknown'}; ${option.availability??'unknown'}`);
+      lines.push(`${option.room.code} — ${option.room.label}; ${option.rate.code} — ${option.rate.label}; ${option.mealPlan??'board not shown'}; ${option.matchStatus??'unassessed'}; eligibility ${option.eligibility??'unknown'}; ${option.availability??'unknown'}`);
       for(const night of option.nightly??[]) lines.push(`${night.date}: ${night.price.currency} ${night.price.amount} per room/night; inventory ${night.inventory}`);
       if(option.calculated?.ok)lines.push(`Displayed-nightly sum: ${option.calculated.perRoom.currency} ${option.calculated.perRoom.amount} per room; ${option.calculated.forQuantity.amount} for this group's quantity. Not an official payable total.`);
       if(option.details)lines.push(`Details: ${option.details.status}.`);

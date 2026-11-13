@@ -35,7 +35,7 @@ export function assertRevisionSourceFacts(facts: readonly ValidatedDocumentFact[
       if (!board) fail('missing', 'board');
       const target=typeof fact.value==='string'?undefined:fact.value.roomRef;
       const groups=target===undefined?revision.groups:revision.groups.filter(group=>group.id===target||group.roomCode===target);
-      if (!groups.length || groups.some(group => group.board !== board)) fail('mismatch', 'board');
+      if (!groups.length || groups.some(group => group.mealPlan !== board)) fail('mismatch', 'board');
     } else if (fact.kind === 'party') {
       if (!revision.groups.some(group => Object.values(group.context).some(context => (context as {name?:string}).name === fact.value || rooms===undefined&&typeof (context as {name?:string}).name==='string'&&nativePartyLabelMatches(fact.value,(context as {name:string}).name))) && !(rooms===undefined&&revision.groups.every(group=>Object.keys(group.context).length===0)&&quotationAddressee&&[quotationAddressee.company,quotationAddressee.agency].includes(fact.value))) fail('mismatch', 'party');
     } else if (fact.kind === 'guest' && rooms !== undefined) {

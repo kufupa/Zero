@@ -14,7 +14,7 @@ export type RatePlanChoice = RatePlanCatalogueEntry & {
   readByNava: boolean;
 };
 
-const RATE_OPTION_BOARD: Record<RateOption['board'], RatePlanBoard> = {
+const RATE_OPTION_BOARD: Record<RateOption['mealPlan'], RatePlanBoard> = {
   room_only: 'room_only',
   bb: 'bed_breakfast',
   dinner_bb: 'dinner_bed_breakfast',
@@ -55,7 +55,7 @@ export function ratePlanChoices(
     choices.set(code, {
       code,
       name: option.rateLabel.trim() || choices.get(code)?.name || code,
-      board: RATE_OPTION_BOARD[option.board],
+      mealPlan: RATE_OPTION_BOARD[option.mealPlan],
       ...(event ? { event: true } : {}),
       ...(option.contract ? { contract: true } : {}),
       ...(known?.government ? { government: true } : {}),

@@ -215,7 +215,7 @@ export async function buildNavaPrefill(input: BuildInput): Promise<{ source: Fie
   const agency = nameOf(payload.agency), organization = nameOf(payload.organization), kind = str(bound.kind) ?? (agency ? 'agency' : organization ? 'organization' : boundId ? 'agency' : null);
   const defaults = boundId ? bookingCodeDefaults(kind === 'government' ? 'government' : kind === 'organization' ? 'organization' : 'agency') : DIRECT_BOOKING_DEFAULTS;
   const booker = rec(payload.booker), contact = rec(payload.contact), email = str(payload.bookerEmail ?? booker.email ?? contact.email);
-  const rate = rateCode(input.preparedRateRun) ?? str(payload.ratePlan ?? payload.rateText), boardText = str(requested.board ?? stay.board ?? rows[0]?.board);
+  const rate = rateCode(input.preparedRateRun) ?? str(payload.ratePlan ?? payload.rateText), boardText = str(requested.mealPlan ?? stay.mealPlan ?? rows[0]?.mealPlan);
   const options = createRequestFieldOptions(input.propertyCode);
   const build = await buildCreatePrefill({
     arrival: str(requested.arrival) ?? '', departure: str(requested.departure), nights: Number.isInteger(requested.nights) ? Number(requested.nights) : null,

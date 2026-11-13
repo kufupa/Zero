@@ -13,7 +13,7 @@ export type RoomRequest = {
   adults: number;
   children: number;
   childAges: number[];
-  required?: { roomCodes?: string[]; rateCodes?: string[]; boardBases?: string[] };
+  required?: { roomCodes?: string[]; rateCodes?: string[]; mealPlanBases?: string[] };
 };
 export type NativeNight = {
   date: string;
@@ -24,7 +24,7 @@ export type NativeOption = {
   id: string;
   room: { code: string; label: string; buildingCode: string | null };
   rate: { code: string; label: string; bundleLabels?: {code?:string;label:string}[] };
-  board: string | null;
+  mealPlan: string | null;
   appliedContext: Record<string, unknown>;
   /** From the Rate Shop read: 'contextual' only for a row HMS flags as negotiated (isNegotiatedRate). */
   rateScope?: 'public' | 'contextual' | 'unknown';
@@ -67,7 +67,7 @@ export type InclusionPolicy = {
   authoredDates: string[];
   // Original source publication timestamps are distinct from printed invoice-authored dates.
   sourcePublications?: {sourceHash: string; publishedAt: string}[];
-  families: { rateCode: string; board: Board }[];
+  families: { rateCode: string; mealPlan: Board }[];
   vat: 'included';
   levy: 'included';
   bundleLabels?: string[];
@@ -95,7 +95,7 @@ export type SelectedQuoteGroup = {
   roomLabel: string;
   rateCode: string;
   rateLabel: string;
-  board: Board;
+  mealPlan: Board;
   currency: string;
   context: Record<string, unknown>;
   // An imported original offer can establish prices without historical stock.
@@ -299,9 +299,9 @@ export async function resolveQuoteRevision(input: {
       (req.required?.rateCodes && !req.required.rateCodes.includes(o.rate.code))
     )
       throw new Error('wrong_room_rate');
-    const board: Board | undefined = nativeBoard(s.request.propertyCode, o.board);
+    const board: Board | undefined = nativeBoard(s.request.propertyCode, o.mealPlan);
     if (!board) throw new Error('unknown_board');
-    if (req.required?.boardBases && !req.required.boardBases.includes(board))
+    if (req.required?.mealPlanBases && !req.required.mealPlanBases.includes(board))
       throw new Error('wrong_board');
     for (const [kind, ref] of Object.entries(s.request.rateContext ?? {})) {
       const evidence = o.appliedContext[kind] as Record<string, unknown> | undefined,
@@ -353,7 +353,7 @@ export async function resolveQuoteRevision(input: {
       (policy.sourcePublications?.some(p=>!policy.sourceHashes.includes(p.sourceHash)||!Number.isFinite(Date.parse(p.publishedAt))||Date.parse(p.publishedAt)>Date.parse(input.admission.sourceEvaluationAt))??false) ||
       policy.vat !== 'included' ||
       policy.levy !== 'included' ||
-      !policy.families.some((f) => f.rateCode === o.rate.code && f.board === board) ||
+      !policy.families.some((f) => f.rateCode === o.rate.code && f.mealPlan === board) ||
       o.totals.taxInclusive === false
     )
       throw new Error('unqualified_inclusions');
@@ -396,7 +396,7 @@ export async function resolveQuoteRevision(input: {
       roomLabel: o.room.label,
       rateCode: o.rate.code,
       rateLabel: o.rate.label,
-      board,
+      mealPlan: board,
       currency,
       context: structuredClone(o.appliedContext),
       nightly,
@@ -445,7 +445,7 @@ export async function resolveQuoteRevision(input: {
       childAges: g.childAges,
       room: g.roomCode,
       rate: g.rateCode,
-      board: g.board,
+      mealPlan: g.mealPlan,
       currency: g.currency,
       context: g.context,
     })),

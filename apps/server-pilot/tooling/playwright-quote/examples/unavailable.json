@@ -5,5 +5,5 @@
   "roomCode": "STQN",
   "rateCode": "BAR",
   "rooms": [{"quantity": 2, "adults": 1, "children": 0, "childAges": []}],
-  "preferences": {"room": "Standard", "board": "Breakfast"}
+  "preferences": {"room": "Standard", "mealPlan": "Breakfast"}
 }

@@ -1689,7 +1689,7 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
                   durableDraft?.record('ratePlan', option.rateCode);
                 }}>
                 <span className="block text-[12px] font-semibold">{option.rateCode}{option.rateLabel ? ` · ${option.rateLabel}` : ''}</span>
-                <span className={captionClass}>{[option.roomLabel ?? option.roomCode, option.boardLabel,
+                <span className={captionClass}>{[option.roomLabel ?? option.roomCode, option.mealPlanLabel,
                   option.state === 'unchecked' ? 'Not fully checked' : option.state,
                   nightly ? `${nightly} estimated per night` : null, total ? `${total} total` : null,
                   option.minRoomsAvailable !== null ? `${option.minRoomsAvailable} rooms listed` : null].filter(Boolean).join(' · ')}</span>

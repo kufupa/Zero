@@ -40,7 +40,7 @@
           "minItems": 1,
           "items": { "type": "string", "enum": ["single", "twin", "double", "queen", "king"] }
         },
-        "boardBases": {
+        "mealPlanBases": {
           "type": "array",
           "minItems": 1,
           "items": { "type": "string", "enum": ["room_only", "breakfast", "dinner_bed_breakfast", "half_board", "full_board", "all_inclusive"] }
@@ -118,7 +118,7 @@
           "description": "Optional organization, agency and group references. All supplied contexts must be applied together where the PMS supports that combination. Unsupported or unapplied context yields partial, not a silent public quote.",
           "properties": {
             "organization": { "$ref": "#/$defs/contextRef" },
-            "agency": { "$ref": "#/$defs/contextRef" },
+            "bookingAgency": { "$ref": "#/$defs/contextRef" },
             "group": { "$ref": "#/$defs/contextRef" }
           }
         },

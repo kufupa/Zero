@@ -31,7 +31,7 @@ export function source(): QuoteSourceRecord {
               id: 'HRCEN:STQN:BAR',
               room: { code: 'STQN', label: 'Standard Queen', buildingCode: 'MAIN' },
               rate: { code: 'BAR', label: 'Best available' },
-              board: 'Room Only R',
+              mealPlan: 'Room Only R',
               appliedContext: {},
               eligibility: 'verified',
               availability: 'available',
@@ -55,7 +55,7 @@ const policy = {
   propertyCode: 'HRCEN',
   sourceHashes: ['b'.repeat(64)],
   authoredDates: ['2026-09-26'],
-  families: [{ rateCode: 'BAR', board: 'room_only' as const }],
+  families: [{ rateCode: 'BAR', mealPlan: 'room_only' as const }],
   vat: 'included' as const,
   levy: 'included' as const,
 };
@@ -135,7 +135,7 @@ describe('server-resolved immutable nightly quote revisions', () => {
     if (kind === 'wrong_property') s.result.propertyCode = 'OTHER';
     if (kind === 'wrong_quantity') s.result.groups[0].request.quantity = 1;
     if (kind === 'incomplete') s.result.groups[0].completeness.search = 'partial';
-    if (kind === 'unknown_board') o.board = 'unknown';
+    if (kind === 'unknown_board') o.mealPlan = 'unknown';
     if (kind === 'context') s.request.rateContext = { organization: { nativeId: 'org-1' } };
     await expect(revision(s)).rejects.toThrow();
   });
@@ -143,11 +143,11 @@ describe('server-resolved immutable nightly quote revisions', () => {
     const record = source();
     record.request.propertyCode = 'HRDAV';
     record.result.propertyCode = 'HRDAV';
-    record.result.groups[0].options[0].board = 'Bed & Breakfast NR';
+    record.result.groups[0].options[0].mealPlan = 'Bed & Breakfast NR';
     const nrPolicy = {
       ...policy,
       propertyCode: 'HRDAV',
-      families: [{ rateCode: 'BAR', board: 'breakfast' as const }],
+      families: [{ rateCode: 'BAR', mealPlan: 'breakfast' as const }],
     };
     const r = await resolveQuoteRevision({
       admission: admission([record]),
@@ -157,7 +157,7 @@ describe('server-resolved immutable nightly quote revisions', () => {
       resolveSource: async () => record,
       resolvePolicy: async () => nrPolicy,
     });
-    expect(r.groups[0].board).toBe('breakfast');
+    expect(r.groups[0].mealPlan).toBe('breakfast');
     expect(r.totalMinor).toBe(220002);
   });
   it('rejects impossible calendar dates rather than rolling February into March', async () => {
@@ -289,10 +289,10 @@ it('rejects unresolved child meal entitlement and retains sourced inclusion prov
   req.children = 1;
   req.childAges = [7];
   s.result.groups[0].request = structuredClone(req);
-  s.result.groups[0].options[0].board = 'Bed & Breakfast R';
+  s.result.groups[0].options[0].mealPlan = 'Bed & Breakfast R';
   const p = {
     ...policy,
-    families: [{ rateCode: 'BAR', board: 'breakfast' as const }],
+    families: [{ rateCode: 'BAR', mealPlan: 'breakfast' as const }],
     bundleLabels: ['Adult breakfast'],
     restrictions: { status: 'supported' as const, sourceRefs: ['rule-1'] },
   };

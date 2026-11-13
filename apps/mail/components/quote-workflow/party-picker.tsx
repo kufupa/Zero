@@ -106,7 +106,7 @@ function isPartyCandidate(value: unknown): value is PartyCandidate {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
   return (
-    (candidate.kind === 'company' || candidate.kind === 'agency') &&
+    (candidate.kind === 'organization' || candidate.kind === 'bookingAgency') &&
     typeof candidate.nativeId === 'string' &&
     candidate.nativeId.trim().length > 0 &&
     typeof candidate.name === 'string' &&
@@ -471,11 +471,11 @@ export function PartyPicker({
   jobReadBackStatusOwner = true,
   onLookupPending,
 }: {
-  /** The text to search for: this field's company or agency name. */
+  /** The text to search for: this field's organization or bookingAgency name. */
   name: string;
   /** The kind this field holds. Omitted, the picker covers both kinds. */
   kind?: StaffQuoteParty['kind'];
-  /** What is picked so far: at most one company and one agency. */
+  /** What is picked so far: at most one organization and one bookingAgency. */
   parties: StaffQuoteParties;
   find: PartyFinder;
   onPick: (party: StaffQuoteParty, evidence?: RatePartyEvidence) => void;
@@ -520,7 +520,7 @@ export function PartyPicker({
   const [manualSearchOpen, setManualSearchOpen] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   // A field that already holds its pick asks the list and HMS nothing more.
-  const selectedParty = kind ? parties[kind] ?? null : parties.company ?? parties.agency ?? null;
+  const selectedParty = kind ? parties[kind] ?? null : parties.organization ?? parties.bookingAgency ?? null;
   const pickedHere = Boolean(selectedParty);
   const [queueMode, setQueueMode] = useState<'checking' | 'on' | 'off'>(() =>
     jobTransport?.jobQueueEnabled ? 'checking' : 'off',
@@ -552,7 +552,7 @@ export function PartyPicker({
     (query.length >= MANUAL_LOOKUP_MIN_CHARS || kind)
       ? {
           kind: 'party' as const,
-          ...(query && !(autoLookup && (queueMode === 'on' || kind === 'agency'))
+          ...(query && !(autoLookup && (queueMode === 'on' || kind === 'bookingAgency'))
             ? { name: query }
             : {}),
           ...(kind ? { partyKind: kind } : {}),
@@ -591,7 +591,7 @@ export function PartyPicker({
   // Agency renders first and owns shared prefetch by default.
   // If it is already picked, its hook does not resume the job, so Company owns the line.
   const showJobStatus =
-    !sharedPrefetch || !kind || kind === 'agency' || Boolean(parties.agency);
+    !sharedPrefetch || !kind || kind === 'bookingAgency' || Boolean(parties.bookingAgency);
   const jobStatusKind = sharedPrefetch ? undefined : kind;
   const v2JobScopeKey = JSON.stringify([
     threadId ?? null,
@@ -780,7 +780,7 @@ export function PartyPicker({
   }, [onSearchName, pickedHere, query, topSuggestion, v2BoundForField, requireExplicitPick]);
 
   const picked: StaffQuoteParty[] = [];
-  for (const party of [parties.company, parties.agency])
+  for (const party of [parties.organization, parties.bookingAgency])
     if (party && inScope(party)) picked.push(party);
   // The automatic search's matches, without the row already picked for this field.
   const autoRows = uniqueCandidates(autoReply?.results ?? []).filter(
@@ -889,7 +889,7 @@ export function PartyPicker({
   const timeoutMessage = 'Party search timed out after four minutes. You can retry.';
   const jobName = currentJobView?.request?.kind === 'party' ? currentJobView.request.name : query;
   const jobDisplayName = sharedPrefetch ? jobName : query || jobName;
-  const partyType = jobStatusKind ? partyKindLabel(jobStatusKind).toLowerCase() : 'company or agency';
+  const partyType = jobStatusKind ? partyKindLabel(jobStatusKind).toLowerCase() : 'organization or bookingAgency';
   const jobDetail = `Searching for the ${partyType} in HMS.`;
   const jobStatusSurface = Boolean(
     showJobStatus &&

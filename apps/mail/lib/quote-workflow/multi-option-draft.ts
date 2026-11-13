@@ -41,7 +41,7 @@ const CLOSING = 'The options are quotes only and are not bookings.';
 
 function roomDescription(offer: QuoteOffer, group?: StayGroupRequirement): string {
   const label = offer.roomLabel || group?.roomPreference?.trim() || '';
-  const board = BOARD_LABELS[offer.board] ?? (group?.board ? BOARD_LABELS[group.board] : undefined);
+  const board = BOARD_LABELS[offer.mealPlan] ?? (group?.mealPlan ? BOARD_LABELS[group.mealPlan] : undefined);
   return [label, board].filter(Boolean).join(' · ');
 }
 

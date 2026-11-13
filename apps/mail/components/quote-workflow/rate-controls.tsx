@@ -215,7 +215,7 @@ export type HmsNotesRoom = {
     /** The amount for each night, in minor units. One amount is the rate for every night. */
     nightlyMinor?: number[];
     stay?: HmsNotesStay | null;
-    board?: string | null;
+    mealPlan?: string | null;
   };
 };
 
@@ -265,7 +265,7 @@ function hmsRateLine(rate: HmsNotesRoom['rate']): string {
     (name, index, all) => name !== '' && all.indexOf(name) === index,
   );
   const price = hmsPriceText(rate?.nightlyMinor ?? [], rate?.stay);
-  return [[...names, price].filter(Boolean).join(' '), noteText(rate?.board)].filter(Boolean).join(', ');
+  return [[...names, price].filter(Boolean).join(' '), noteText(rate?.mealPlan)].filter(Boolean).join(', ');
 }
 
 /**

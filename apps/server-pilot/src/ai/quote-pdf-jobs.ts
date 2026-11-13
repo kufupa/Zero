@@ -58,10 +58,10 @@ export type QuotePdfDocumentIdentity = {
   revisionRef: string;
   additionalStays?: Array<{ revisionRef: string }>;
   attention?: string;
-  company?: string;
+  organization?: string;
   clientEmail?: string;
   clientTelephone?: string;
-  agency?: string;
+  bookingAgency?: string;
   notes?: string | null;
 };
 
@@ -70,10 +70,10 @@ function quotePdfHeaderDigest(header: Omit<QuotePdfDocumentIdentity, 'revisionRe
     .update(
       JSON.stringify({
         attention: header.attention ?? '',
-        company: header.company ?? '',
+        organization: header.organization ?? '',
         clientEmail: header.clientEmail ?? '',
         clientTelephone: header.clientTelephone ?? '',
-        agency: header.agency ?? '',
+        bookingAgency: header.bookingAgency ?? '',
         notes: header.notes ?? '',
       }),
     )

@@ -32,8 +32,8 @@ export function boardsFor(propertyCode?:string):Record<string,Board>{
 export type RateOption = {
   id: string;
   groupId: string;
-  board: 'room_only' | 'bb' | 'dinner_bb';
-  boardLabel: string;
+  mealPlan: 'room_only' | 'bb' | 'dinner_bb';
+  mealPlanLabel: string;
   rateCode: string;
   rateLabel: string;
   roomCode: string;
@@ -54,8 +54,8 @@ export type RateOption = {
 
 /** HMS event rates. GNC3B and GNC4B are shown with a hint; they are never matched, ranked or priced differently. */
 const EVENT_RATE_CODES = new Set(['GNC3B', 'GNC4B']);
-const staffBoard:Record<Board,RateOption['board']>={room_only:'room_only',breakfast:'bb',dinner_bed_breakfast:'dinner_bb'};
-const boardName:Record<RateOption['board'],string>={room_only:'room only',bb:'bed and breakfast',dinner_bb:'dinner, bed and breakfast'};
+const staffBoard:Record<Board,RateOption['mealPlan']>={room_only:'room_only',breakfast:'bb',dinner_bed_breakfast:'dinner_bb'};
+const boardName:Record<RateOption['mealPlan'],string>={room_only:'room only',bb:'bed and breakfast',dinner_bb:'dinner, bed and breakfast'};
 
 /** The row was read under the requested party: each requested kind resolves to the same HMS id, or the same code and name. */
 export function partyRowMatches(rateContext:Record<string,unknown>|undefined,option:NativeOption):boolean{
@@ -63,15 +63,15 @@ export function partyRowMatches(rateContext:Record<string,unknown>|undefined,opt
 }
 /** The requested room, pinned rate code and board. */
 export function requestMatches(request:RoomRequest,option:NativeOption,propertyCode?:string):boolean{
- const mapped=boardsFor(propertyCode)[norm(option.board??'')];
- return(!request.required?.roomCodes||request.required.roomCodes.includes(option.room.code))&&(!request.required?.rateCodes||request.required.rateCodes.includes(option.rate.code))&&(!request.required?.boardBases||request.required.boardBases.includes(mapped));
+ const mapped=boardsFor(propertyCode)[norm(option.mealPlan??'')];
+ return(!request.required?.roomCodes||request.required.roomCodes.includes(option.room.code))&&(!request.required?.rateCodes||request.required.rateCodes.includes(option.rate.code))&&(!request.required?.mealPlanBases||request.required.mealPlanBases.includes(mapped));
 }
 /** A row the quote can price: verified, available, held-free, every requested night covered and priced in the requested currency. */
 export function sellable(source:QuoteSourceRecord,quantity:number,option:NativeOption):boolean{
  const dates=occupiedDates(source.request.arrivalDate,source.request.departureDate);
  const detailStatus=(option as NativeOption&{details?:{status?:string}}).details?.status;
  const boardMap=boardsFor(source.request.propertyCode);
- return detailStatus!=='not_read'&&detailStatus!=='partial'&&option.eligibility==='verified'&&option.availability==='available'&&option.held===false&&!!boardMap[norm(option.board??'')]&&partyRowMatches(source.request.rateContext,option)&&option.nightly.length===dates.length&&new Set(option.nightly.map(n=>n.date)).size===dates.length&&option.nightly.every(n=>dates.includes(n.date)&&Number.isSafeInteger(n.inventory)&&n.inventory>=quantity&&exactMinor(n.price.amount)>0&&n.price.currency===source.request.requestedCurrency);
+ return detailStatus!=='not_read'&&detailStatus!=='partial'&&option.eligibility==='verified'&&option.availability==='available'&&option.held===false&&!!boardMap[norm(option.mealPlan??'')]&&partyRowMatches(source.request.rateContext,option)&&option.nightly.length===dates.length&&new Set(option.nightly.map(n=>n.date)).size===dates.length&&option.nightly.every(n=>dates.includes(n.date)&&Number.isSafeInteger(n.inventory)&&n.inventory>=quantity&&exactMinor(n.price.amount)>0&&n.price.currency===source.request.requestedCurrency);
 }
 
 /**
@@ -83,7 +83,7 @@ export function sellable(source:QuoteSourceRecord,quantity:number,option:NativeO
 export function buildRateOptions(source:QuoteSourceRecord,selected:readonly {groupId:string;optionId:string}[],requestedRooms:readonly RoomRequest[]=source.request.rooms):RateOption[]{
  const nights=occupiedDates(source.request.arrivalDate,source.request.departureDate).length;
  return source.request.rooms.flatMap(request=>{
-  const cheapest=new Map<string,{option:NativeOption;matches:boolean;contract:boolean;board:RateOption['board'];perRoomMinor:number;totalMinor:number}>();
+  const cheapest=new Map<string,{option:NativeOption;matches:boolean;contract:boolean;board:RateOption['mealPlan'];perRoomMinor:number;totalMinor:number}>();
   const selectedId=selected.find(s=>s.groupId===request.id)?.optionId;
   for(const option of source.result.groups.find(g=>g.id===request.id)?.options??[]){
    const matches=requestMatches(requestedRooms.find(room=>room.id===request.id)??request,option,source.request.propertyCode);
@@ -92,7 +92,7 @@ export function buildRateOptions(source:QuoteSourceRecord,selected:readonly {gro
    if(!sellable(source,request.quantity,option))continue;
    const perRoomMinor=option.nightly.reduce((sum,n)=>sum+exactMinor(n.price.amount),0),totalMinor=perRoomMinor*request.quantity;
    if(!(totalMinor>0))continue;
-   const mapped=boardsFor(source.request.propertyCode)[norm(option.board??'')];
+   const mapped=boardsFor(source.request.propertyCode)[norm(option.mealPlan??'')];
    const contract=option.rateScope==='contextual',board=staffBoard[mapped],key=JSON.stringify([option.room.code,option.rate.code.toUpperCase(),board,contract,matches]),held=cheapest.get(key);
    const optionSelected=option.id===selectedId,heldSelected=held?.option.id===selectedId;
    if(!held||optionSelected||(!heldSelected&&(totalMinor<held.totalMinor||(totalMinor===held.totalMinor&&option.id<held.option.id))))cheapest.set(key,{option,matches,contract,board,perRoomMinor,totalMinor});
@@ -104,7 +104,7 @@ export function buildRateOptions(source:QuoteSourceRecord,selected:readonly {gro
    const isSelected=selected.some(s=>s.groupId===request.id&&s.optionId===r.option.id);
    const inventory=r.option.nightly.map(n=>n.inventory),roomsLeft=inventory.length>0&&inventory.every(n=>Number.isFinite(n)&&n>=0)?Math.min(...inventory):undefined;
    return{
-    id:`${request.id}:${r.option.id}`,groupId:request.id,board:r.board,boardLabel:r.option.board??'',rateCode:r.option.rate.code,rateLabel:r.option.rate.label,
+    id:`${request.id}:${r.option.id}`,groupId:request.id,mealPlan:r.board,mealPlanLabel:r.option.mealPlan??'',rateCode:r.option.rate.code,rateLabel:r.option.rate.label,
     roomCode:r.option.room.code,roomLabel:r.option.room.label,contract:r.contract,onlyContract:r.contract&&contracts===1,matchesRequest:r.matches,
     perNightMinor:Math.round(r.perRoomMinor/nights),...(roomsLeft===undefined?{}:{roomsLeft}),totalMinor:r.totalMinor,currency:source.request.requestedCurrency,priced:isSelected?'full':'summary',selected:isSelected,...(EVENT_RATE_CODES.has(r.option.rate.code)?{hint:'event_rate' as const}:{})};
   });
@@ -118,7 +118,7 @@ export function buildRateOptions(source:QuoteSourceRecord,selected:readonly {gro
 export function otherBoardContractNotes(names:readonly string[],options:readonly RateOption[]):string[]{
  // ponytail: the note names the first other-board contract per group; the cards list every other contract.
  const party=names.join(' and ');
- return [...new Set(options.filter(o=>o.selected&&!o.contract).flatMap(quoted=>{const contract=options.find(o=>o.groupId===quoted.groupId&&o.roomCode===quoted.roomCode&&o.board!==quoted.board&&o.contract&&!o.matchesRequest);return contract?[`${party}'s contract rate is ${contract.boardLabel} only (${contract.rateCode}). Quoted ${boardName[quoted.board]} at the public rate as asked. Pick the contract option to switch.`]:[];}))];
+ return [...new Set(options.filter(o=>o.selected&&!o.contract).flatMap(quoted=>{const contract=options.find(o=>o.groupId===quoted.groupId&&o.roomCode===quoted.roomCode&&o.mealPlan!==quoted.mealPlan&&o.contract&&!o.matchesRequest);return contract?[`${party}'s contract rate is ${contract.mealPlanLabel} only (${contract.rateCode}). Quoted ${boardName[quoted.mealPlan]} at the public rate as asked. Pick the contract option to switch.`]:[];}))];
 }
 
 /** Canonical pricing digest; object insertion order and display names cannot change pricing identity. */
@@ -134,7 +134,7 @@ export type RateCandidate = {
   id: string; groupId: string;
   rateCode: string; rateLabel: string | null;
   roomCode: string; roomLabel: string | null;
-  board: 'room_only' | 'bb' | 'dbb' | null; boardLabel: string | null;
+  mealPlan: 'room_only' | 'bb' | 'dbb' | null; mealPlanLabel: string | null;
   state: 'available' | 'unavailable' | 'restricted' | 'unchecked' | 'failed';
   reasons: string[]; contract: boolean | null; matchesRequest: boolean;
   minRoomsAvailable: number | null;
@@ -154,14 +154,9 @@ export type RateRecommendation = {
   validation: 'verified_for_context' | 'needs_native_check' | 'none';
 };
 
-// Distinct confirmation reads in the 2026-10-29 HRCEN snapshot, E-Mail cohort (492 reads).
-// These are ranking hints, not native labels, availability, or contract entitlement.
-const EMAIL_RATE_COUNTS: Readonly<Record<string, number>> = {
-  NGOVDB: 204, NCOR1B: 95, NGOVB: 63, NCOR2B: 52, BAR: 45,
-};
 export function orderRateCandidates(context: RateContext, options: readonly RateCandidate[], history?: PaneRateHistory): RateCandidate[] {
   const counts = history && Object.keys(history.email).length ? history.email : history && Object.keys(history.full).length
-    ? history.full : context.propertyCode === 'HRCEN' ? EMAIL_RATE_COUNTS : {};
+    ? history.full : {};
   return [...options].sort((a, b) => {
     const frequency = (counts[b.rateCode] ?? 0) - (counts[a.rateCode] ?? 0);
     return frequency || a.rateCode.localeCompare(b.rateCode) || a.id.localeCompare(b.id);
@@ -186,7 +181,7 @@ export function recommendRateCandidate(context: RateContext, options: readonly R
     explanation: 'Used in prepared quotes with the same verified company and agency; check this stay in HMS.',
     evidenceCount: history!.boundParty[bound.rateCode]!, historyDigest: null, historyAsOf: null,
     validation: bound.state === 'available' && bound.coverage.eligibilityVerified ? 'verified_for_context' : 'needs_native_check' };
-  const email = history?.digest ? history.email : EMAIL_RATE_COUNTS;
+  const email = history?.email ?? {};
   let counts: Readonly<Record<string, number>> = email;
   let frequencyBasis: 'email_frequency' | 'full_frequency' = 'email_frequency';
   let candidate = orderRateCandidates(context, usable, history).find(option => email[option.rateCode] &&
@@ -199,7 +194,7 @@ export function recommendRateCandidate(context: RateContext, options: readonly R
   if (!candidate) return null;
   return { rateCode: candidate.rateCode, basis: frequencyBasis, explanation: frequencyBasis === 'email_frequency'
     ? 'Often used for email bookings; check this stay in HMS.' : 'Often used across booking sources; check this stay in HMS.',
-    evidenceCount: counts[candidate.rateCode]!, historyDigest: history?.digest ?? null, historyAsOf: history?.asOf ?? '2026-10-29',
+    evidenceCount: counts[candidate.rateCode]!, historyDigest: history?.digest ?? null, historyAsOf: history?.asOf ?? null,
     validation: candidate.state === 'available' && candidate.coverage.eligibilityVerified ? 'verified_for_context' : 'needs_native_check' };
 }
 
@@ -238,14 +233,14 @@ export function buildCloudRateCandidates(context: RateContext, groups: readonly 
         return amountMinor === null ? [] : [{ date: night.date, amountMinor }];
       });
       const sum = pricedNights.reduce((total, night) => total + BigInt(night.amountMinor), 0n);
-      const boardLabel = option.boardLabel;
+      const boardLabel = option.mealPlanLabel;
       const nativeBoard = boardLabel ? boardsFor(context.propertyCode)[norm(boardLabel)] : undefined;
-      const board: RateCandidate['board'] = nativeBoard === 'breakfast' ? 'bb' : nativeBoard === 'dinner_bed_breakfast' ? 'dbb' : nativeBoard === 'room_only' ? 'room_only' : null;
+      const board: RateCandidate['mealPlan'] = nativeBoard === 'breakfast' ? 'bb' : nativeBoard === 'dinner_bed_breakfast' ? 'dbb' : nativeBoard === 'room_only' ? 'room_only' : null;
       const candidate: RateCandidate = {
         id: JSON.stringify([group.id, roomCode, rateCode, option.promotionCode]), groupId: group.id,
         rateCode, rateLabel: option.ratePlan.label, roomCode, roomLabel: option.room.label,
-        board, boardLabel, state, reasons, contract: null,
-        matchesRequest: (!context.typedRatePlan || context.typedRatePlan === rateCode) && (!context.board || context.board === board),
+        mealPlan: board, mealPlanLabel: boardLabel, state, reasons, contract: null,
+        matchesRequest: (!context.typedRatePlan || context.typedRatePlan === rateCode) && (!context.mealPlan || context.mealPlan === board),
         minRoomsAvailable,
         coverage: { nightsExpected: dates.length, nightsObserved: new Set(nightly.map(night => night.date)).size,
           eligibilityVerified: false, nativePartyIdsMatched: group.outcome === 'observed' },
@@ -265,7 +260,7 @@ export function buildCloudRateCandidates(context: RateContext, groups: readonly 
       candidates.push({
         id: JSON.stringify([group.id, context.roomCode, context.typedRatePlan, null]), groupId: group.id,
         rateCode: context.typedRatePlan, rateLabel: null, roomCode: context.roomCode, roomLabel: null,
-        board: null, boardLabel: null, state: 'unchecked', reasons: ['NATIVE_RATE_ROW_NOT_OBSERVED'], contract: null,
+        mealPlan: null, mealPlanLabel: null, state: 'unchecked', reasons: ['NATIVE_RATE_ROW_NOT_OBSERVED'], contract: null,
         matchesRequest: true, minRoomsAvailable: null,
         coverage: { nightsExpected: dates.length, nightsObserved: 0, eligibilityVerified: false,
           nativePartyIdsMatched: group.outcome === 'observed' },

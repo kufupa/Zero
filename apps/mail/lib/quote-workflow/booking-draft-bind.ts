@@ -117,7 +117,7 @@ export type UsePriorQuoteForBookingReady = BookingDraftReady & {
   departureDate: string;
   roomCode: string;
   rateCode: string;
-  board: QuoteBoard;
+  mealPlan: QuoteBoard;
   /** Whether the earlier quote's total has the once-per-quote extras. Absent from an older server: treated as no. */
   onceExtras?: boolean;
 };
@@ -165,12 +165,12 @@ export function overlayLunaGroupsFromStaff(
       rooms: group.quantity ?? null,
       adultsPerRoom: group.adults ?? null,
       childAges: group.fields.childAges === 'missing' ? null : [...(group.childrenAges ?? [])],
-      board:
-        group.board === 'dinner_bb'
+      mealPlan:
+        group.mealPlan === 'dinner_bb'
           ? 'dbb'
-          : group.board === 'unknown' || !group.board
+          : group.mealPlan === 'unknown' || !group.mealPlan
             ? null
-            : group.board,
+            : group.mealPlan,
       roomPreference: group.roomPreference ?? null,
       guestNames: [...(match?.guestNames ?? [])],
       ...(stayId ? { stayId } : {}),
@@ -178,9 +178,9 @@ export function overlayLunaGroupsFromStaff(
   });
 }
 
-export function offerBoardFromRevision(board: string | null | undefined): QuoteBoard {
-  if (board === 'room_only') return 'room_only';
-  if (board === 'dinner_bed_breakfast' || board === 'dinner_bb' || board === 'dbb') return 'dinner_bb';
+export function offerBoardFromRevision(mealPlan: string | null | undefined): QuoteBoard {
+  if (mealPlan === 'room_only') return 'room_only';
+  if (mealPlan === 'dinner_bed_breakfast' || mealPlan === 'dinner_bb' || mealPlan === 'dbb') return 'dinner_bb';
   return 'bb';
 }
 
@@ -264,7 +264,7 @@ export async function bindUsePriorQuoteForBooking(args: {
         departureDate: result.departureDate,
         roomCode: result.roomCode,
         rateCode: result.rateCode,
-        board: offerBoardFromRevision(result.board),
+        mealPlan: offerBoardFromRevision(result.mealPlan),
         onceExtras: result.onceExtras === true,
       },
     };
@@ -276,8 +276,8 @@ export async function bindUsePriorQuoteForBooking(args: {
 export type PriorStaffQuoteRequotePayload = {
   groups: StaffQuoteGroupInput[];
   salesStrategy: 'BAR' | 'Government';
-  company: string;
-  agency: string;
+  organization: string;
+  bookingAgency: string;
   dinnerAllowanceMinor?: number;
   dinnerAllowanceUnit?: 'per_person_per_night' | 'per_room_per_night' | 'per_person';
   dinnerAllowanceGroupIds?: string[];
@@ -350,7 +350,7 @@ export function buildExpiredPriorRequoteBindArgs(args: {
         quantity: group.quantity,
         adults: group.adults,
         childrenAges: [...group.childrenAges],
-        board: group.board,
+        mealPlan: group.mealPlan,
         roomCodes: group.roomCodes ? [...group.roomCodes] : undefined,
         roomPreference: group.roomCodes?.[0],
         specialRequests: [],
@@ -363,8 +363,8 @@ export function buildExpiredPriorRequoteBindArgs(args: {
       header: {
         ...args.sessionHeader,
         salesStrategy: args.stored.salesStrategy,
-        company: args.stored.company,
-        agency: args.stored.agency,
+        organization: args.stored.organization,
+        bookingAgency: args.stored.bookingAgency,
         ...(args.stored.dinnerAllowanceMinor !== undefined
           ? { dinnerAllowanceMinor: args.stored.dinnerAllowanceMinor }
           : {}),
@@ -422,7 +422,7 @@ export function staffQuoteGroupsForExpiredPriorRequote(args: {
   const { groups } = buildExpiredPriorRequoteBindArgs({
     stored: args.stored,
     sessionGroups: args.sessionGroups,
-    sessionHeader: { salesStrategy: args.stored.salesStrategy, company: '', agency: '', attention: '', clientEmail: '', clientTelephone: '' },
+    sessionHeader: { salesStrategy: args.stored.salesStrategy, organization: '', bookingAgency: '', attention: '', clientEmail: '', clientTelephone: '' },
     staffEdited: args.staffEdited,
   });
   const prepared = staffQuoteGroupsFromStay(groups);

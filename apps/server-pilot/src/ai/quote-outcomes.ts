@@ -1,3 +1,4 @@
+import { hydrateStoredMailExtraction } from './extraction/stored-mail-extraction.js';
 import { and, desc, eq } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import type { DB } from '../db/client.js';
@@ -9,9 +10,9 @@ export type QuoteOutcomeVersion = {
   version: 1; sourceMessageId: string; workflowRunId: string; revisionRef: string; action: 'quote_availability';
   extractedFields: Record<string, unknown> | null;
   fields: { groups: Array<{ id: string; arrivalDate: string; departureDate: string; quantity: number; adults: number;
-    children: number; childAges: number[]; roomCode: string; board: string }>;
+    children: number; childAges: number[]; roomCode: string; mealPlan: string }>;
     contact: { name: string; email: string; phone: string } };
-  party: { company?: { nativeId: string; name: string }; agency?: { nativeId: string; name: string } } | null;
+  party: { organization?: { nativeId: string; name: string }; bookingAgency?: { nativeId: string; name: string } } | null;
   lines: Array<{ groupId: string; totalMinor: number; rateMinor: number; nights: number }>;
   totalMinor: number; currency: string;
 };
@@ -88,9 +89,9 @@ function quoteOccupancy(value: QuoteOutcomeVersion) {
   return value.fields.groups.map(({ quantity, adults, childAges }) => ({ rooms: quantity, adults, childAges }))
     .sort((a, b) => canonical(a).localeCompare(canonical(b)));
 }
-function partyName(value: QuoteOutcomeVersion, kind: 'company' | 'agency') {
+function partyName(value: QuoteOutcomeVersion, kind: 'organization' | 'bookingAgency') {
   const finalParty = value.party?.[kind]?.name;
-  const extracted = value.extractedFields?.[kind === 'agency' ? 'agency' : 'endClient'];
+  const extracted = value.extractedFields?.[kind];
   return normalized(finalParty ?? extracted);
 }
 
@@ -108,7 +109,7 @@ export function scoreQuoteOutcomes(cases: readonly QuoteOutcomeCase[]) {
     if (beforeDates?.length) dates.push(canonical(beforeDates) === canonical(quoteDates(item.staffFinal)));
     const beforeOccupancy = occupancyFacts(item.prepared);
     if (beforeOccupancy?.length) occupancy.push(canonical(beforeOccupancy) === canonical(quoteOccupancy(item.staffFinal)));
-    for (const kind of ['company', 'agency'] as const) {
+    for (const kind of ['organization', 'bookingAgency'] as const) {
       const before = partyName(item.prepared, kind);
       const after = normalized(item.staffFinal.party?.[kind]?.name ?? null);
       if (before) party.push(before === after);
@@ -227,8 +228,8 @@ export function selectPreparedQuoteOutcomes(
   if (new Set(keys).size !== keys.length) return null;
   const selected = refs.map((ref) => {
     const matches = events.flatMap((event) => {
-      const prepared = finalQuoteVersion(event.aiValue);
-      const staffFinal = finalQuoteVersion(event.value);
+      const prepared = finalQuoteVersion(hydrateStoredQuoteOutcome(event.aiValue));
+      const staffFinal = finalQuoteVersion(hydrateStoredQuoteOutcome(event.value));
       return prepared?.sourceMessageId === sourceMessageId &&
         prepared.workflowRunId === ref.workflowRunId && prepared.revisionRef === ref.revisionRef &&
         staffFinal?.sourceMessageId === sourceMessageId &&
@@ -295,6 +296,26 @@ export async function recordFinalQuoteOutcome(
   return true;
 }
 
+/** Historical event values predate the canonical quote names. */
+function hydrateStoredQuoteOutcome(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const row = value as Record<string, unknown>;
+  const fields = row.fields && typeof row.fields === 'object' && !Array.isArray(row.fields)
+    ? row.fields as Record<string, unknown> : null;
+  const groups = Array.isArray(fields?.groups) ? fields.groups.map(raw => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+    const { board, ...group } = raw as Record<string, unknown>;
+    return { ...group, mealPlan: group.mealPlan ?? board };
+  }) : fields?.groups;
+  const party = row.party && typeof row.party === 'object' && !Array.isArray(row.party)
+    ? row.party as Record<string, unknown> : null;
+  const { company, agency, ...canonicalParty } = party ?? {};
+  return { ...row, extractedFields: hydrateStoredMailExtraction(row.extractedFields),
+    ...(fields ? { fields: { ...fields, groups } } : {}),
+    ...(party ? { party: { ...canonicalParty, organization: canonicalParty.organization ?? company,
+      bookingAgency: canonicalParty.bookingAgency ?? agency } } : {}) };
+}
+
 export function finalQuoteVersion(value: unknown): QuoteOutcomeVersion | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const row = value as Partial<QuoteOutcomeVersion>;
@@ -309,7 +330,7 @@ export function finalQuoteVersion(value: unknown): QuoteOutcomeVersion | null {
       typeof group.departureDate === 'string' && Number.isSafeInteger(group.quantity) &&
       Number.isSafeInteger(group.adults) && Array.isArray(group.childAges) &&
       group.childAges.every((age) => Number.isSafeInteger(age)) && typeof group.roomCode === 'string' &&
-      typeof group.board === 'string';
+      typeof group.mealPlan === 'string';
   });
   const validLines = Array.isArray(row.lines) && row.lines.every((raw) => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
@@ -318,7 +339,7 @@ export function finalQuoteVersion(value: unknown): QuoteOutcomeVersion | null {
       Number.isSafeInteger(line.rateMinor) && Number.isSafeInteger(line.nights);
   });
   const validParty = row.party === null || Boolean(row.party && typeof row.party === 'object' && !Array.isArray(row.party) &&
-    (['company', 'agency'] as const).every((kind) => {
+    (['organization', 'bookingAgency'] as const).every((kind) => {
       const party = row.party?.[kind];
       return party === undefined || (typeof party.nativeId === 'string' && typeof party.name === 'string');
     }));

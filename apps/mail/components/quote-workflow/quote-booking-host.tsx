@@ -34,7 +34,7 @@ export function QuoteBookingHost({
   rateCatalogue?: RatePlanCatalogueEntry[];
   workItemPane?: WorkItemPaneControls | null;
   rateEvidence?: PartyEvidence;
-  partyFieldEdited?: { agency: boolean; company: boolean };
+  partyFieldEdited?: { bookingAgency: boolean; organization: boolean };
   onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
 }) {
   const confirmation = useConfirmationSources();

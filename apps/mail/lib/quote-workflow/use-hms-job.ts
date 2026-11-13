@@ -65,7 +65,7 @@ function resumedFor(
   confirmation: string | null,
   lastName: string | null,
   partyName: string | null,
-  partyKind: 'company' | 'agency' | null,
+  partyKind: 'organization' | 'bookingAgency' | null,
   arrival: string | null | undefined,
   departure: string | null | undefined,
 ): boolean {
@@ -99,7 +99,7 @@ export function useHmsJob(input: {
     confirmation?: string;
     lastName?: string;
     name?: string;
-    partyKind?: 'company' | 'agency';
+    partyKind?: 'organization' | 'bookingAgency';
     arrival?: string | null;
     departure?: string | null;
   } | null;

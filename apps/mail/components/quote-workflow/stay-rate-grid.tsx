@@ -19,7 +19,7 @@ function rowKey(cell: BarGridCell): string {
     cell.groupId,
     cell.roomCode,
     cell.rateCode,
-    cell.board,
+    cell.mealPlan,
   ].join('|');
 }
 
@@ -28,7 +28,7 @@ function isSelected(cell: BarGridCell, selection?: QuoteRoomRateBoardSelection |
     selection &&
       cell.roomCode === selection.roomCode &&
       cell.rateCode === selection.rateCode &&
-      cell.board === selection.board,
+      cell.mealPlan === selection.mealPlan,
   );
 }
 
@@ -46,21 +46,21 @@ export function StayRateGrid({
 
   return (
     <div className="flex flex-col gap-1.5">
-      <h5 className="text-[13px] font-semibold text-[#475569]">Room, rate and board</h5>
+      <h5 className="text-[13px] font-semibold text-[#475569]">Room, rate and meal plan</h5>
       <p className="text-[12px] text-[#64748b]">
         Price and rooms left are reference only. Run a quote search to confirm them.
       </p>
       {!contractChecked ? (
         <p className="text-[12px] text-[#64748b]">Public rates — contract not checked</p>
       ) : null}
-      <div role="group" aria-label="Room, rate and board choices" className="flex flex-col gap-1">
+      <div role="group" aria-label="Room, rate and meal plan choices" className="flex flex-col gap-1">
         {rows.map((cell) => {
           const selected = isSelected(cell, selection);
           const tag = gridRateTag(cell.rateCode, cell.rateScope, { contractChecked, plans });
           const tagLabel = tag ? GRID_TAG_LABEL[tag] : null;
           const roomLabel = cell.roomLabel.trim() || cell.roomCode;
           const rateLabel = cell.rateLabel.trim() || cell.rateCode;
-          const boardLabel = cell.boardLabel.trim() || cell.board;
+          const mealPlanLabel = cell.mealPlanLabel.trim() || cell.mealPlan;
           const nightlyLabel = cell.nightlyPriceMinor === null
             ? 'Nightly price not checked'
             : `Nightly price ${draftMoney(cell.nightlyPriceMinor)}`;
@@ -71,7 +71,7 @@ export function StayRateGrid({
             `Select ${roomLabel} (${cell.roomCode})`,
             `${rateLabel} (${cell.rateCode})`,
             ...(tagLabel ? [tagLabel] : []),
-            boardLabel,
+            mealPlanLabel,
             nightlyLabel,
             inventoryLabel,
           ].join(', ');
@@ -90,7 +90,7 @@ export function StayRateGrid({
               aria-pressed={selected}
               aria-label={selectionLabel}
               onClick={() =>
-                onSelect({ roomCode: cell.roomCode, rateCode: cell.rateCode, board: cell.board })
+                onSelect({ roomCode: cell.roomCode, rateCode: cell.rateCode, mealPlan: cell.mealPlan })
               }
               className={cellClassName}
             >
@@ -105,7 +105,7 @@ export function StayRateGrid({
                   </span>
                 ) : null}
               </span>
-              <span className="min-w-0 break-words text-[#64748b]">{boardLabel}</span>
+              <span className="min-w-0 break-words text-[#64748b]">{mealPlanLabel}</span>
               <span className="text-right font-semibold text-[#1e293b]">
                 <span className="font-normal text-[#64748b]">Nightly: </span>
                 {cell.nightlyPriceMinor === null

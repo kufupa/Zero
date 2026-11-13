@@ -1,3 +1,4 @@
+import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
 /**
  * Pane HMS lookups as persisted jobs.
  *
@@ -272,7 +273,7 @@ export const hmsJobRequestSchema = z.union([
     .object({
       kind: z.literal('party'),
       name: z.string().min(1).max(256),
-      partyKind: z.enum(['company', 'agency']).optional(),
+      partyKind: z.enum(['organization', 'bookingAgency']).optional(),
       /** Only inbound prefetch can opt into the experimental V2 worker path. */
       matchVersion: z.literal(2).optional(),
     })
@@ -285,6 +286,48 @@ export const hmsJobRequestSchema = z.union([
     .strict(),
   availabilityJobRequestSchema,
 ]);
+/** Adapt persisted jobs before parsing; enqueue remains strict on canonical fields. */
+function hydrateStoredHmsRequest(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const request = { ...(value as Record<string, unknown>) };
+  const rename = (source: Record<string, unknown>, oldKey: string, newKey: string) => {
+    if (!Object.hasOwn(source, newKey) && Object.hasOwn(source, oldKey)) source[newKey] = source[oldKey];
+    delete source[oldKey];
+  };
+  const partyKind = (kind: unknown) => kind === 'company' ? 'organization' : kind === 'agency' ? 'bookingAgency' : kind;
+  if (request.kind === 'party') request.partyKind = partyKind(request.partyKind);
+  if (request.kind === 'availability') {
+    if (request.rateContext && typeof request.rateContext === 'object' && !Array.isArray(request.rateContext)) {
+      const context = { ...(request.rateContext as Record<string, unknown>) };
+      rename(context, 'board', 'mealPlan'); rename(context, 'agencyId', 'bookingAgencyId'); request.rateContext = context;
+    }
+    if (request.rateParties && typeof request.rateParties === 'object' && !Array.isArray(request.rateParties)) {
+      const parties = { ...(request.rateParties as Record<string, unknown>) };
+      rename(parties, 'agency', 'bookingAgency'); request.rateParties = parties;
+    }
+  }
+  if (request.kind === 'staff_quote' && request.input && typeof request.input === 'object' && !Array.isArray(request.input)) {
+    const input = { ...(request.input as Record<string, unknown>) };
+    rename(input, 'company', 'organization'); rename(input, 'agency', 'bookingAgency');
+    if (Array.isArray(input.groups)) input.groups = input.groups.map(value => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+      const group = { ...(value as Record<string, unknown>) }; rename(group, 'board', 'mealPlan'); return group;
+    });
+    if (input.parties && typeof input.parties === 'object' && !Array.isArray(input.parties)) {
+      const parties = { ...(input.parties as Record<string, unknown>) };
+      rename(parties, 'company', 'organization'); rename(parties, 'agency', 'bookingAgency');
+      for (const key of ['organization', 'bookingAgency']) {
+        const party = parties[key];
+        if (party && typeof party === 'object' && !Array.isArray(party))
+          parties[key] = { ...(party as Record<string, unknown>), kind: partyKind((party as Record<string, unknown>).kind) };
+      }
+      input.parties = parties;
+    }
+    request.input = input;
+  }
+  return request;
+}
+
 export type HmsJobRequest = z.infer<typeof hmsJobRequestSchema>;
 
 export type HmsJobStatus = 'queued' | 'running' | 'retrying' | 'done' | 'failed';
@@ -400,9 +443,9 @@ function prefetchGuestSurname(
   const labelled = explicitGuestSurname(subject, textBody);
   if (labelled) return labelled;
   const record = objectRecord(payload);
-  const fromEndClient = personSurnameFromName(record.endClient);
+  const fromEndClient = personSurnameFromName(record.organization);
   if (fromEndClient) return fromEndClient;
-  const agency = typeof record.agency === 'string' ? record.agency.trim() : '';
+  const agency = typeof record.bookingAgency === 'string' ? record.bookingAgency.trim() : '';
   if (agency) return null;
   return personSurnameFromName(objectRecord(record.contact).name);
 }
@@ -534,7 +577,7 @@ export function selectPartyPrefetchRequest(input: {
 }): Extract<HmsJobRequest, { kind: 'party' }> | null {
   if (partyPrefetchKindReason(input.kind)) return null;
   const payload = objectRecord(input.payload);
-  const agency = typeof payload.agency === 'string' ? payload.agency.trim() : '';
+  const agency = typeof payload.bookingAgency === 'string' ? payload.bookingAgency.trim() : '';
   if (agency.length > 0 && agency.length <= 256)
     return { kind: 'party', name: agency };
   const suggestion = suggestPartiesFor({
@@ -808,7 +851,7 @@ function reusableHmsMailRead(
   expectedKey: string,
   now: Date,
 ): boolean {
-  const parsed = hmsJobRequestSchema.safeParse(run.readRequest);
+  const parsed = hmsJobRequestSchema.safeParse(hydrateStoredHmsRequest(run.readRequest));
   if (!parsed.success || hmsMailReadRequestKey(parsed.data) !== expectedKey) return false;
   if (['queued', 'claimed', 'running', 'retry_wait'].includes(run.state)) return true;
   return (
@@ -1460,7 +1503,7 @@ async function loadHmsBatchSources(db: DB, input: HmsBatchEnqueueInput): Promise
         extractions.set(version.messageId, {
           status: version.status,
           kind: version.kind,
-          payload: version.payload,
+          payload: hydrateStoredExtraction(version.payload),
         });
       }
     }
@@ -1562,7 +1605,7 @@ function batchPrefetchKeys(
 }
 
 function isReusableHmsRun(run: AiWorkflowRun, request: HmsJobRequest, now: Date): boolean {
-  const parsed = hmsJobRequestSchema.safeParse(run.readRequest);
+  const parsed = hmsJobRequestSchema.safeParse(hydrateStoredHmsRequest(run.readRequest));
   if (!parsed.success || hmsRequestKey(parsed.data) !== hmsRequestKey(request)) return false;
   if (
     run.state === 'queued' ||
@@ -1841,7 +1884,7 @@ export async function enqueueHmsBatch(
     const reusableBySignature = new Map<string, AiWorkflowRun[]>();
     const reusableByMessageSignature = new Map<string, AiWorkflowRun[]>();
     for (const run of reusable.runs) {
-      const request = hmsJobRequestSchema.safeParse(run.readRequest);
+      const request = hmsJobRequestSchema.safeParse(hydrateStoredHmsRequest(run.readRequest));
       if (!request.success || !isReusableHmsRun(run, request.data, now)) continue;
       const signature = batchReuseSignature(request.data, runPropertyCode(run));
       if (reusable.sameTransportCandidateIds.has(run.id)) {
@@ -2160,7 +2203,7 @@ export async function prefetchHmsConfirmations(
   const target = resolved.target;
   const workItemId = triggerItem?.id ?? null;
   let created = 0;
-  const numbers = prefetchConfirmations(source.payload, source.subject, source.textBody);
+  const numbers = prefetchConfirmations(hydrateStoredExtraction(source.payload), source.subject, source.textBody);
   // Find keeps its existing cap; extraction confirmations are first, followed by any number in the mail text.
   const dayKey = new Date().toISOString().slice(0, 10);
   for (const confirmation of numbers) {
@@ -2198,8 +2241,8 @@ export async function prefetchHmsConfirmations(
   }
 
   if (numbers.length === 0) {
-    const lastName = prefetchGuestSurname(source.subject, source.textBody, source.payload);
-    const arrival = extractUniqueArrivalForHmsPrefetch(source.kind ?? '', source.payload);
+    const lastName = prefetchGuestSurname(source.subject, source.textBody, hydrateStoredExtraction(source.payload));
+    const arrival = extractUniqueArrivalForHmsPrefetch(source.kind ?? '', hydrateStoredExtraction(source.payload));
     if (!lastName || !arrival || env.HMS_GUEST_PREFETCH_PER_HOUR <= 0) return created;
     const queued = await enqueueGuestPrefetchWithinCap(
       db,
@@ -2310,7 +2353,7 @@ export async function prefetchAvailabilityForExtraction(
   const workItemId = await latestWorkItemId(db, run.transportId, extraction.threadId);
   const dayKey = new Date().toISOString().slice(0, 10);
   let created = 0;
-  for (const request of availabilityRequestsFor(extraction.payload)) {
+  for (const request of availabilityRequestsFor(hydrateStoredExtraction(extraction.payload))) {
     const used = await countRecentPrefetches(
       db,
       run.transportId,
@@ -2463,7 +2506,7 @@ export async function prefetchPartyForExtraction(
   const request = env.PARTY_MATCH_V2
     ? selectPartyMatchV2PrefetchRequest({
         kind: source.kind,
-        payload: source.payload,
+        payload: hydrateStoredExtraction(source.payload),
         sender: source.fromAddress,
         subject: source.subject,
         body: source.textBody,
@@ -2472,7 +2515,7 @@ export async function prefetchPartyForExtraction(
       })
     : selectPartyPrefetchRequest({
         kind: source.kind,
-        payload: source.payload,
+        payload: hydrateStoredExtraction(source.payload),
         sender: source.fromAddress,
         body: source.textBody,
         propertyCode: partyHistoryPropertyCode(target),
@@ -2580,7 +2623,7 @@ async function quoteReadySourceForMessage(
     )
     .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
     .limit(1);
-  return (source as QuoteReadyMessageSource | undefined) ?? null;
+  return source ? { ...source, payload: hydrateStoredExtraction(source.payload) } as QuoteReadyMessageSource : null;
 }
 
 async function threadIsAutomatedChannel(db: DB, source: QuoteReadyMessageSource): Promise<boolean> {
@@ -2675,7 +2718,7 @@ export async function evaluateQuoteReadyForMessage(
   const source = await quoteReadySourceForMessage(db, input.messageId, input.transportId);
   if (!source) return empty('source_not_found');
   if (source.extractionStatus !== 'succeeded') return empty('extraction_not_succeeded', source);
-  if (quotePrepareKindReason({ kind: source.kind, payload: source.payload, subject: source.subject }) === 'not_quote') {
+  if (quotePrepareKindReason({ kind: source.kind, payload: hydrateStoredExtraction(source.payload), subject: source.subject }) === 'not_quote') {
     return empty('not_quote', source);
   }
   if (source.direction !== 'inbound') return empty('not_inbound', source);
@@ -2718,7 +2761,7 @@ export async function evaluateQuoteReadyForMessage(
     const allowLearnedSenderHistory = Boolean(historyProperty);
     const readParties = () =>
       confidentPartyFromV2Result({
-        payload: source.payload,
+        payload: hydrateStoredExtraction(source.payload),
         fromAddress: source.fromAddress,
         subject: source.subject,
         body: source.textBody ?? source.htmlBody,
@@ -2737,7 +2780,7 @@ export async function evaluateQuoteReadyForMessage(
       textBody: source.textBody,
       htmlBody: source.htmlBody,
     }),
-    payload: source.payload,
+    payload: hydrateStoredExtraction(source.payload),
     ...(parties ? { parties } : {}),
     now,
     ...(resolvedProperty.kind === 'property'
@@ -3038,7 +3081,7 @@ async function executePartyMatchV2(input: {
     input.run.triggerMessageId,
   );
   const emailInput = {
-    payload: source.payload,
+    payload: hydrateStoredExtraction(source.payload),
     fromAddress: source.fromAddress,
     subject: source.subject,
     body: source.textBody,
@@ -3511,7 +3554,7 @@ export function staffQuoteRefusal(error: unknown, request: StaffQuoteInput): {
     ? directMessage
     : staffQuoteFailureMessage(error, {
         salesStrategy: request.salesStrategy,
-        dinnerRequested: request.groups.some((group) => group.board === 'dinner_bb'),
+        dinnerRequested: request.groups.some((group) => group.mealPlan === 'dinner_bb'),
       });
   const cause = error && typeof error === 'object' && 'cause' in error ? error.cause : undefined;
   const detail = error && typeof error === 'object' && 'detail' in error ? error.detail : undefined;
@@ -3532,7 +3575,7 @@ export function staffQuoteRefusal(error: unknown, request: StaffQuoteInput): {
 type SenderPartyObservation = Omit<RecordSenderPartyInput, 'host' | 'propertyCode'>;
 
 function senderPartyObservation(
-  kind: 'company' | 'agency',
+  kind: 'organization' | 'bookingAgency',
   value: unknown,
 ): SenderPartyObservation | null {
   const row = objectRecord(value);
@@ -3553,8 +3596,8 @@ export function selectSenderPartyForHost(
   host: string,
   parties: readonly SenderPartyObservation[],
 ): SenderPartyObservation | null {
-  const agency = parties.find((party) => party.kind === 'agency');
-  const company = parties.find((party) => party.kind === 'company');
+  const agency = parties.find((party) => party.kind === 'bookingAgency');
+  const company = parties.find((party) => party.kind === 'organization');
   if (!agency || !company) return agency ?? company ?? null;
 
   const hostLabel = (host.trim().toLowerCase().replace(/\.+$/, '').split('.')[0] ?? '')
@@ -3574,8 +3617,8 @@ export function selectSenderPartyForHost(
 function senderPartiesFromFindResult(result: unknown): SenderPartyObservation[] {
   const commercial = objectRecord(objectRecord(result).commercial);
   return [
-    senderPartyObservation('agency', commercial.agency),
-    senderPartyObservation('company', commercial.company),
+    senderPartyObservation('bookingAgency', commercial.bookingAgency),
+    senderPartyObservation('organization', commercial.organization),
   ].filter((party): party is SenderPartyObservation => party !== null);
 }
 
@@ -3730,7 +3773,7 @@ export async function executeHmsJob(input: {
     claimToken: fence.claimToken,
     expectedStates: ['running'],
   };
-  const parsed = hmsJobRequestSchema.safeParse(run.readRequest);
+  const parsed = hmsJobRequestSchema.safeParse(hydrateStoredHmsRequest(run.readRequest));
   if (!parsed.success) {
     await markAiRunDeadLetter(
       { ...mark, lastError: 'hms job request invalid', failureClass: 'SCHEMA_DRIFT' },
@@ -4022,19 +4065,19 @@ export async function executeHmsJob(input: {
       );
       if (staffQuoteCanTeachSenderHistory(Boolean(user), systemPreparedQuote)) {
         const selectedParties: SenderPartyObservation[] = [];
-        if (request.input.parties?.agency) {
+        if (request.input.parties?.bookingAgency) {
           selectedParties.push({
-            kind: 'agency',
-            name: request.input.parties.agency.name,
-            nativeId: request.input.parties.agency.nativeId,
+            kind: 'bookingAgency',
+            name: request.input.parties.bookingAgency.name,
+            nativeId: request.input.parties.bookingAgency.nativeId,
             iata: null,
           });
         }
-        if (request.input.parties?.company) {
+        if (request.input.parties?.organization) {
           selectedParties.push({
-            kind: 'company',
-            name: request.input.parties.company.name,
-            nativeId: request.input.parties.company.nativeId,
+            kind: 'organization',
+            name: request.input.parties.organization.name,
+            nativeId: request.input.parties.organization.nativeId,
             iata: null,
           });
         }
@@ -4328,7 +4371,7 @@ async function toView(
   run: AiWorkflowRun,
   options: { includePosition?: boolean } = {},
 ): Promise<HmsJobView> {
-  const request = hmsJobRequestSchema.safeParse(run.readRequest);
+  const request = hmsJobRequestSchema.safeParse(hydrateStoredHmsRequest(run.readRequest));
   const status = STATUS_BY_STATE[run.state];
   const result = run.state === 'succeeded' && run.readResult ? run.readResult : null;
   return {
@@ -4409,7 +4452,7 @@ async function latestStaffQuoteRunFor(
     ) {
       continue;
     }
-    const parsed = hmsJobRequestSchema.safeParse(userRun.readRequest);
+    const parsed = hmsJobRequestSchema.safeParse(hydrateStoredHmsRequest(userRun.readRequest));
     const sameTerms =
       parsed.success &&
       parsed.data.kind === 'staff_quote' &&
@@ -4426,7 +4469,7 @@ async function latestStaffQuoteRunFor(
 
   // A ready, selected contract for the bound party wins over the pane's default public strategy.
   // Preserve the original newest-first order within each tier. Comparison callers still validate the strategy.
-  const preferBoundContract = Boolean(quoteInput.parties?.agency || quoteInput.parties?.company) &&
+  const preferBoundContract = Boolean(quoteInput.parties?.bookingAgency || quoteInput.parties?.organization) &&
     ['BAR', 'Government', 'GOV'].includes(quoteInput.salesStrategy);
   const hasReadySelectedContract = (run: AiWorkflowRun): boolean => {
     const result = objectRecord(run.readResult);
@@ -4454,7 +4497,7 @@ async function latestStaffQuoteRunFor(
     ) {
       continue;
     }
-    const parsed = hmsJobRequestSchema.safeParse(preparedRun.readRequest);
+    const parsed = hmsJobRequestSchema.safeParse(hydrateStoredHmsRequest(preparedRun.readRequest));
     const sameMessageCopy = preparedRun.triggerMessageId === messageId;
     if (
       !parsed.success ||
@@ -5067,4 +5110,9 @@ export function createHmsRecoveryGate(
       }
     },
   };
+}
+
+function hydrateStoredExtraction(value: unknown): unknown {
+  const parsed = safeParseStoredMailExtraction(value);
+  return parsed.success ? parsed.data : value;
 }

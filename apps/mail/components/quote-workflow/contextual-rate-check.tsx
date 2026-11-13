@@ -9,14 +9,14 @@ import type { QuoteSession, RatePlanCatalogueEntry, StayGroupRequirement } from 
 import type { RatePartyEvidence } from './party-picker';
 import { HmsAsOf } from './hms-queue-status';
 
-export type PartyEvidence = { company: RatePartyEvidence | null; agency: RatePartyEvidence | null };
-type CreateContext = { roomIndex: number; rateCode: string; agency: 'none' | 'selected' | 'unknown';
-  company: 'none' | 'selected' | 'unknown'; contextKey: string; locked: boolean; prepare: () => boolean;
+export type PartyEvidence = { organization: RatePartyEvidence | null; bookingAgency: RatePartyEvidence | null };
+type CreateContext = { roomIndex: number; rateCode: string; bookingAgency: 'none' | 'selected' | 'unknown';
+  organization: 'none' | 'selected' | 'unknown'; contextKey: string; locked: boolean; prepare: () => boolean;
   onContextChange?: () => void };
 type Binding = { workItemId: string; source: { threadId: string; messageId: string; sourceHash: string };
   request: { requestId: string; stayId: string; rowId: string; roomIndex: number | null }; expectedSeq: number; expectedExtractionId: string };
 type Selection = { kind: 'none'; ratePlan: string | null } | { kind: 'selected';
-  agency: { nativeId: string; name: string; jobId: string } | null;
+  bookingAgency: { nativeId: string; name: string; jobId: string } | null;
   organization: { nativeId: string; name: string; jobId: string } | null; ratePlan: string | null };
 type SelectionReply = { status: string; requestId: string; previousSeq?: number; seq?: number; revision?: number;
   revisionHead?: number; workItemExtractionId?: string };
@@ -55,8 +55,8 @@ export function ContextualRateCheck({ group, session, pane, evidence, plans, onC
     client?.quoteWorkflow?.rateContextSelection?.mutate && client.quoteWorkflow.rateCandidates?.mutate);
   const header = session.staffHeader;
   const key = JSON.stringify([draft?.transportId, draft?.snapshot.workItemId, source, request?.requestId, ref,
-    session.binding?.selectionEpoch, request?.fields?.value, session.groups, header.agency, header.company, header.parties, evidence,
-    create && [create.roomIndex, create.rateCode, create.agency, create.company, create.contextKey, create.locked], pane?.historyBusy]);
+    session.binding?.selectionEpoch, request?.fields?.value, session.groups, header.bookingAgency, header.organization, header.parties, evidence,
+    create && [create.roomIndex, create.rateCode, create.bookingAgency, create.organization, create.contextKey, create.locked], pane?.historyBusy]);
   const currentKey = useRef(key);
   currentKey.current = key;
   const generation = useRef(0);
@@ -75,13 +75,13 @@ export function ContextualRateCheck({ group, session, pane, evidence, plans, onC
   if (!usable || !draft || !request || !ref?.rowId || !source || !projectedRow) return null;
   const suffix = create ? `rows[${ref.rowId}].rooms[${create.roomIndex}].ratePlan` : `rows[${ref.rowId}].ratePlan`;
 
-  const picked = (kind: 'company' | 'agency') => {
+  const picked = (kind: 'organization' | 'bookingAgency') => {
     const party = header.parties?.[kind];
     const state = create?.[kind];
     if (state === 'unknown') return { pick: null, error: true };
     if (state === 'none') return { pick: null, error: false };
     if (state === 'selected' && !party) return { pick: null, error: true };
-    const name = create ? party?.name ?? '' : (kind === 'company' ? header.company : header.agency).trim();
+    const name = create ? party?.name ?? '' : (kind === 'organization' ? header.organization : header.bookingAgency).trim();
     if (!party && !name) return { pick: null, error: false };
     const proof = evidence[kind];
     const time = proof ? Date.parse(proof.asOf) : NaN;
@@ -89,8 +89,8 @@ export function ContextualRateCheck({ group, session, pane, evidence, plans, onC
         !Number.isFinite(time) || time > Date.now() || Date.now() - time >= 5 * 60_000) return { pick: null, error: true };
     return { pick: { nativeId: proof.nativeId, name: proof.name, jobId: proof.jobId }, error: false };
   };
-  const agency = picked('agency');
-  const company = picked('company');
+  const agency = picked('bookingAgency');
+  const company = picked('organization');
   const partyMissing = agency.error || company.error;
   const rate = (create?.rateCode ?? group.rateCode ?? projectedRow.ratePlan ?? group.quotedRateCode ?? '').trim().toUpperCase();
   const validRate = !rate || /^[A-Z0-9]{1,12}$/.test(rate);
@@ -143,7 +143,7 @@ export function ContextualRateCheck({ group, session, pane, evidence, plans, onC
         request: { requestId: request.requestId, stayId: request.stayId, rowId: ref.rowId!, roomIndex: create?.roomIndex ?? null }, expectedSeq: cursor.seq,
         expectedExtractionId: source.extractionId };
       const selection: Selection = agency.pick || company.pick
-        ? { kind: 'selected', agency: agency.pick, organization: company.pick, ratePlan: rate || null }
+        ? { kind: 'selected', bookingAgency: agency.pick, organization: company.pick, ratePlan: rate || null }
         : { kind: 'none', ratePlan: rate || null };
       create?.onContextChange?.();
       const selected = await client!.quoteWorkflow!.rateContextSelection!.mutate({ kind: 'select', binding, selection }, mailbox);
@@ -253,7 +253,7 @@ export function ContextualRateCheck({ group, session, pane, evidence, plans, onC
             <button type="button" className="w-full py-1.5 text-left disabled:opacity-60" disabled={!onChoose || ['unavailable', 'restricted', 'failed'].includes(option.state)}
               onClick={() => void choose(option.rateCode)}>
               <span className="block text-xs font-semibold">{option.rateCode}{option.rateLabel ? ` · ${option.rateLabel}` : ''}</span>
-              <span className="block text-[11px] text-[#64748b]">{[option.roomLabel ?? option.roomCode, option.boardLabel,
+              <span className="block text-[11px] text-[#64748b]">{[option.roomLabel ?? option.roomCode, option.mealPlanLabel,
                 option.state === 'unchecked' ? 'Availability needs Prepare' : option.state, nightly ? `${nightly} nightly estimate from HMS` : null,
                 total ? `${total} native total` : null].filter(Boolean).join(' · ')}</span>
               <span className="block text-[11px] text-[#64748b]">{option.coverage.nightsObserved}/{option.coverage.nightsExpected} nights checked

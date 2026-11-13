@@ -22,15 +22,15 @@ export type BarGridCell = {
   roomLabel: string;
   rateCode: string;
   rateLabel: string;
-  board: string;
-  boardLabel: string;
+  mealPlan: string;
+  mealPlanLabel: string;
   nightlyPriceMinor: number | null;
   roomsLeft: number | null;
   rateScope?: 'public' | 'contextual' | 'unknown';
 };
 
-function barGridKey(groupId: string, roomCode: string, rateCode: string, board: string): string {
-  return `${groupId}|${roomCode}|${rateCode}|${board}`;
+function barGridKey(groupId: string, roomCode: string, rateCode: string, mealPlan: string): string {
+  return `${groupId}|${roomCode}|${rateCode}|${mealPlan}`;
 }
 
 /**
@@ -40,7 +40,7 @@ function barGridKey(groupId: string, roomCode: string, rateCode: string, board: 
 export function projectBarGrid(options: readonly AvailabilityBoardRow[]): BarGridCell[] {
   const byKey = new Map<string, BarGridCell>();
   for (const option of options) {
-    const key = barGridKey(option.groupId, option.roomCode, option.rateCode, option.board);
+    const key = barGridKey(option.groupId, option.roomCode, option.rateCode, option.mealPlan);
     const nightlyPriceMinor =
       option.nightlyPriceMinor !== null && option.nightlyPriceMinor > 0 ? option.nightlyPriceMinor : null;
     const roomsLeft = option.roomsLeft;
@@ -50,8 +50,8 @@ export function projectBarGrid(options: readonly AvailabilityBoardRow[]): BarGri
       roomLabel: displayLabel(option.roomLabel) || hrdavOnlyRoomName(option.roomCode) || option.roomCode,
       rateCode: option.rateCode,
       rateLabel: displayLabel(option.rateLabel) || option.rateCode,
-      board: option.board,
-      boardLabel: displayLabel(option.boardLabel) || option.board,
+      mealPlan: option.mealPlan,
+      mealPlanLabel: displayLabel(option.mealPlanLabel) || option.mealPlan,
       nightlyPriceMinor,
       roomsLeft,
       ...(option.rateScope ? { rateScope: option.rateScope } : {}),
@@ -80,26 +80,26 @@ export function BarAvailabilityGrid({
   if (!cells.length) return null;
   return (
     <div className="flex flex-col gap-1.5">
-      <h5 className="text-[13px] font-semibold text-[#475569]">BAR by room, rate and board</h5>
+      <h5 className="text-[13px] font-semibold text-[#475569]">BAR by room, rate and meal plan</h5>
       {truncated ? (
         <p className="text-[12px] text-[#64748b]">More room options exist than this grid shows.</p>
       ) : null}
-      <table className="w-full border-collapse text-[12px]" aria-label="BAR by room, rate and board">
+      <table className="w-full border-collapse text-[12px]" aria-label="BAR by room, rate and meal plan">
         <thead>
           <tr className="border-b border-[#e2e8f0] text-left text-[11px] font-semibold uppercase tracking-wide text-[#64748b]">
             <th className="py-1 pr-2 font-semibold">Room</th>
             <th className="py-1 pr-2 font-semibold">Rate</th>
-            <th className="py-1 pr-2 font-semibold">Board</th>
+            <th className="py-1 pr-2 font-semibold">Meal plan</th>
             <th className="py-1 pr-2 font-semibold">Nightly</th>
             <th className="py-1 font-semibold">Rooms left</th>
           </tr>
         </thead>
         <tbody>
           {cells.map((cell) => (
-            <tr key={barGridKey(cell.groupId, cell.roomCode, cell.rateCode, cell.board)} className="border-b border-[#f1f5f9] text-[#1e293b]">
+            <tr key={barGridKey(cell.groupId, cell.roomCode, cell.rateCode, cell.mealPlan)} className="border-b border-[#f1f5f9] text-[#1e293b]">
               <td className="py-1 pr-2">{`${cell.roomLabel} (${cell.roomCode})`}</td>
               <td className="py-1 pr-2">{cell.rateCode}</td>
-              <td className="py-1 pr-2">{cell.boardLabel}</td>
+              <td className="py-1 pr-2">{cell.mealPlanLabel}</td>
               <td className="py-1 pr-2">
                 {cell.nightlyPriceMinor === null ? 'not checked' : draftMoney(cell.nightlyPriceMinor)}
               </td>
@@ -145,12 +145,12 @@ export function RateCards({
       {cards.map((option) => {
         const selected = loading ? option.rateCode === pendingRateCode : option.selected;
         const restricted = option.onlyContract && !partyName;
-        const mealPlanMatch = preferredBoard === 'all' || option.board === preferredBoard;
+        const mealPlanMatch = preferredBoard === 'all' || option.mealPlan === preferredBoard;
         const from = option.priced === 'summary' && !selected ? 'from ' : '';
         const rateLabel = displayLabel(option.rateLabel) || option.rateCode;
-        const boardLabel = displayLabel(option.boardLabel);
+        const mealPlanLabel = displayLabel(option.mealPlanLabel);
         const roomLabel = displayLabel(option.roomLabel) || hrdavOnlyRoomName(option.roomCode);
-        const boardRoomLabel = [boardLabel, roomLabel].filter(Boolean).join(' · ');
+        const boardRoomLabel = [mealPlanLabel, roomLabel].filter(Boolean).join(' · ');
         return (
           <div
             key={option.id}
@@ -200,7 +200,7 @@ export function RateCards({
                 {option.contract ? <RateTag>{partyName ? `${partyName} contract` : 'Contract'}</RateTag> : null}
                 {mealPlanMatch && preferredBoard !== 'all' ? <RateTag>Meal plan match</RateTag> : null}
                 {option.matchesRequest ? null : (
-                  <RateTag tone="warning">{`Not what they asked: ${boardLabel}`}</RateTag>
+                  <RateTag tone="warning">{`Not what they asked: ${mealPlanLabel}`}</RateTag>
                 )}
                 {restricted ? <span className="font-semibold text-amber-800">Restricted — find a company or agency in HMS first</span> : null}
               </span>
