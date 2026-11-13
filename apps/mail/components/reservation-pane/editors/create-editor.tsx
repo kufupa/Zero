@@ -195,19 +195,25 @@ export function ChildAges({ editor, path, max = 12 }: { editor: Editor; path: st
 
 function Price({ editor, allocationId }: { editor: Editor; allocationId: string }) {
   const price = editor.snapshot.preparationViews.find((item) => item.requestId === editor.request.id && item.allocationId === allocationId);
-  if (!price?.price) return null;
-  const details = price.price;
-  const operation = [...editor.snapshot.session.draft.operationResults].reverse().find((item) => item.requestId === editor.request.id &&
-    item.allocationId === allocationId && item.workflow === 'create' && item.status === 'prepared');
-  const observation = price.current && operation ? editor.snapshot.session.draft.observations.find((item) =>
-    operation.observationRefs.includes(item.ref) && item.kind === 'rate_availability' && item.status === 'complete') : undefined;
-  const input = record(record(observation?.result).semanticInput), stay = record(input.stay), room = record(input.room);
+  const draft = editor.snapshot.session.draft;
+  const operation = [...draft.operationResults].reverse().find((item) => item.requestId === editor.request.id &&
+    item.allocationId === allocationId && item.workflow === 'create' && (item.status === 'prepared' || item.status === 'failed'));
+  const observation = operation && draft.observations.find((item) => operation.observationRefs.includes(item.ref) &&
+    item.kind === 'rate_availability' && (item.status === 'complete' || item.status === 'partial') &&
+    item.generationId === draft.generationId && item.propertyCode === draft.propertyCode && item.sourceMessageId === draft.source.messageId &&
+    item.criteria.workflow === 'create' && item.criteria.requestId === editor.request.id && item.criteria.allocationId === allocationId &&
+    item.criteria.draftRevision === editor.snapshot.session.revision && typeof item.criteria.semanticDigest === 'string');
+  const result = record(observation?.result), mealPlan = text(record(result.applied).mealPlan);
+  if (!price?.price && !mealPlan) return null;
+  const details = price?.price;
+  const input = record(result.semanticInput), stay = record(input.stay), room = record(input.room);
   return <div className={styles.price}>
-    <strong>{price.current ? 'Infor price' : 'Infor price · check needed'}</strong>
+    <strong>{details ? price?.current ? 'Infor price' : 'Infor price · check needed' : 'Last Infor check'}</strong>
     {details && <span>{text(details.currency)} {text(details.totalRate) || '—'} total{details.averageRate != null ? ` · ${text(details.averageRate)} average` : ''}</span>}
+    {mealPlan && <span>Infor Meal Plan: {mealPlan}</span>}
     {observation && <small>{text(stay.arrival)} – {text(stay.departure)} · {text(stay.adults)} adults, {text(stay.childCount)} children · {text(room.roomType)} / {text(room.ratePlan)}
-      {observation.observedAt ? ` · observed ${new Date(observation.observedAt).toLocaleString()}` : ''}</small>}
-    {price.issue && <small>Price needs attention. Check the room details.</small>}
+      {observation.observedAt ? ` · observed ${new Date(observation.observedAt).toLocaleString()}` : ''}. Check again after changes.</small>}
+    {price?.issue && <small>Price needs attention. Check the room details.</small>}
   </div>;
 }
 
