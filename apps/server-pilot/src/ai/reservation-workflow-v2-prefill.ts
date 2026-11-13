@@ -4110,6 +4110,30 @@ function dinnerAmount(text: string): string | null {
   return amounts.length === 1 ? amounts[0]! : null;
 }
 
+function hasUniformSharedCreateScope(
+  body: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'create' }>['body'],
+  includeMeal: boolean,
+): boolean {
+  const scopeFields = ['bookingAgency', 'organization', 'arAccount', 'requestedMealPlan', 'mealPlan'] as const;
+  const scopeKey = (field: typeof scopeFields[number], value: unknown): string | null => {
+    if (value == null) return 'unset';
+    if (isRecord(value) && value.kind === 'none') return 'none';
+    if (field === 'requestedMealPlan' || field === 'mealPlan')
+      return typeof value === 'string' ? `meal:${normalizedFact(value)}` : null;
+    if (!isRecord(value) || typeof value.name !== 'string' || !normalizedFact(value.name)) return null;
+    return `party:${normalizedFact(value.name)}:${typeof value.suggestedRef === 'string' ? value.suggestedRef : ''}`;
+  };
+  return body.allocations.length > 0 && body.allocations.every((allocation) => {
+    const sections = body.dateSections.filter((section) => section.id === allocation.dateSectionId);
+    if (sections.length !== 1) return false;
+    return scopeFields.filter((field) => includeMeal || field !== 'requestedMealPlan' && field !== 'mealPlan').every((field) => {
+      const sharedKey = scopeKey(field, body.shared[field]);
+      const effective = allocation.overrides[field] ?? sections[0]!.defaults[field] ?? body.shared[field];
+      return sharedKey !== null && sharedKey === scopeKey(field, effective);
+    });
+  });
+}
+
 async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal; source: ReservationWorkflowV2Source;
   propertyCode: string; generationId: string; selection: SyncedQuoteSelection; evidence: ReservationWorkflowV2Evidence[];
   db?: DB; transportId: string; env: NodeJS.ProcessEnv }): Promise<{ proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[] }> {
@@ -4122,6 +4146,7 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
     .catch(() => ({ status: 'unavailable' as const, issue: 'guarantee_catalog_unavailable' }));
   for (const request of proposal.content.requests) {
     if (request.kind !== 'create') continue;
+    if (!hasUniformSharedCreateScope(request.body, true)) continue;
     const name = (value: unknown) => isRecord(value) && typeof value.name === 'string' ? value.name : null;
     const organizationName = name(request.body.shared.organization);
     const memory = await loadReservationMemoryGuidance({ propertyCode: input.propertyCode, source: input.source,
@@ -4151,27 +4176,30 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
       return ranked[0] && ranked[0][1] / memory.denominator >= 0.8 && (!ranked[1] || ranked[0][1] > ranked[1][1])
         ? ranked[0] : null;
     };
-    const payer = leader(payerCounts), rememberedCap = leader(capCounts);
+    const existing = typeof request.body.shared.reservationNote === 'string' ? request.body.shared.reservationNote : '';
+    const sourcePayer = /\b(?:settle(?:ment|d)?|pay(?:ment|s|ing|able)?|bill(?:ing|ed)?|charg(?:e|ed|es|ing)|pre[-\s]?paid|pre[-\s]?pay(?:ment)?|to\s+(?:the\s+)?(?:agent|agency|company))\b/i
+      .test(`${currentText}\n${existing}`);
+    const payer = sourcePayer ? null : leader(payerCounts), rememberedCap = leader(capCounts);
     const guarantees = [...memory.guarantees].sort((a, b) => b.support - a.support);
     const guarantee = guarantees[0] && guarantees[0].confidence >= 0.8 &&
       (!guarantees[1] || guarantees[0].support > guarantees[1].support) ? guarantees[0] : null;
     const matchingGuarantees = guarantee && catalog.status === 'available' ? catalog.records.filter((row) =>
       row.code && (normalizedFact(row.code) === normalizedFact(guarantee.value) ||
         normalizedFact(row.meaning) === normalizedFact(guarantee.value))) : [];
-    const guaranteeCode = request.body.shared.guaranteeType == null && matchingGuarantees.length === 1
+    const guaranteeCode = !sourcePayer && request.body.shared.guaranteeType == null && matchingGuarantees.length === 1
       ? matchingGuarantees[0]?.code ?? null : null;
-    const currentMeal = request.body.shared.requestedMealPlan ?? request.body.shared.mealPlan;
+    const currentMeal = request.body.shared.mealPlan ?? request.body.shared.requestedMealPlan;
     const namedMeal = typeof currentMeal === 'string' && /\bdinner\b/i.test(currentMeal) && /\bbreakfast\b/i.test(currentMeal)
       ? 'dinner_bb' : typeof currentMeal === 'string' && /\bbed\b/i.test(currentMeal) && /\bbreakfast\b/i.test(currentMeal)
         ? 'bb' : boardMeaning(currentMeal);
     const meal = currentMeal == null ? leader(mealCounts)?.[0] ?? '' : namedMeal;
     const presetId = payer?.[0] === 'direct' ? 'settle-direct' : ['bb', 'dinner_bb'].includes(meal) && payer
       ? `${meal === 'dinner_bb' ? 'dbb' : 'bb'}-${payer[0]}` : null;
-    const preset = RESERVATION_NOTE_PRESETS.find((row) => row.id === presetId);
+    const noteExplicitlyNone = isRecord(request.body.shared.reservationNote) && request.body.shared.reservationNote.kind === 'none';
+    const preset = noteExplicitlyNone ? undefined : RESERVATION_NOTE_PRESETS.find((row) => row.id === presetId);
     const explicitCap = meal === 'dinner_bb' ? dinnerAmount(currentText) : null;
-    const cap = meal === 'dinner_bb' ? explicitCap ?? rememberedCap?.[0] ?? null : null;
+    const cap = !noteExplicitlyNone && meal === 'dinner_bb' ? explicitCap ?? rememberedCap?.[0] ?? null : null;
     if (!preset && !cap && !guaranteeCode) continue;
-    const existing = typeof request.body.shared.reservationNote === 'string' ? request.body.shared.reservationNote : '';
     const noteExisting = explicitCap ? existing.split(/([;\n!?]|\.(?!\d))/u).map((clause) => {
       const previousCap = dinnerAmount(clause);
       if (!previousCap || previousCap === explicitCap) return clause;
@@ -4439,22 +4467,53 @@ async function applyHistoricalPartySuggestions(input: { proposal: ReservationWor
   const proposal = structuredClone(input.proposal), added: ReservationWorkflowV2Observation[] = [];
   for (const request of proposal.content.requests) {
     if (request.kind !== 'create' && request.kind !== 'quote') continue;
-    if (request.kind === 'create' && !request.body.allocations.length) continue;
+    if (request.kind === 'create' && !hasUniformSharedCreateScope(request.body, false)) continue;
     const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
     const fields: Record<string, unknown> = request.kind === 'create' ? request.body.shared : request.body.parties;
+    const slotPath = `${root}/${request.kind === 'create' ? 'shared' : 'parties'}`;
     for (const role of ['agency', 'organization', 'ar_account'] as const) {
       if (request.kind === 'quote' && role === 'ar_account') continue;
+      if (request.kind === 'create' && !hasUniformSharedCreateScope(request.body, false)) break;
       const field = role === 'agency' ? 'bookingAgency' : role === 'organization' ? 'organization' : 'arAccount';
-      const path = `${root}/${request.kind === 'create' ? 'shared' : 'parties'}/${field}/nativeSelectionRef`;
-      const leadObservation = input.leads.find((row) => row.criteria.fieldPath === path);
+      const path = `${slotPath}/${field}/nativeSelectionRef`;
+      const leadObservation = input.leads.find((row) => row.kind === 'party_candidate' && row.generationId === input.generationId &&
+        row.propertyCode === input.propertyCode && row.sourceMessageId === input.source.messageId &&
+        row.criteria.kind === 'historical_lookup_leads' && row.criteria.workflow === request.kind &&
+        row.criteria.requestId === request.id && row.criteria.sourceHash === input.source.sourceHash &&
+        row.criteria.slotPath === slotPath && row.criteria.fieldPath === path &&
+        row.criteria.role === (role === 'agency' ? 'bookingAgency' : role) &&
+        row.criteria.scopeKind === (request.kind === 'create' ? 'shared' : 'quote_parties'));
       const leads = Array.isArray(leadObservation?.result.leads) ? leadObservation.result.leads.filter(isRecord) : [];
-      const relatedSelected = ['bookingAgency', 'organization'].some((key) => {
-        const party = fields[key];
-        return isRecord(party) && typeof party.suggestedRef === 'string';
-      });
+      const sourceSelected = (value: unknown): boolean => {
+        if (!isRecord(value) || (value.role !== 'bookingAgency' && value.role !== 'organization') ||
+            typeof value.name !== 'string' || !normalizedFact(value.name) ||
+            value.suggestedRef !== null && typeof value.suggestedRef !== 'string' ||
+            value.fieldPath !== `${slotPath}/${value.role}`) return false;
+        const party = fields[value.role], selectionPath = `${value.fieldPath}/nativeSelectionRef`;
+        if (!isRecord(party) || typeof party.suggestedRef !== 'string' ||
+            typeof value.suggestedRef === 'string' && party.suggestedRef !== value.suggestedRef ||
+            normalizedFact(party.name) !== normalizedFact(value.name)) return false;
+        const observations = [...input.observations, ...added].filter((row) => row.ref === party.suggestedRef);
+        if (observations.length !== 1) return false;
+        const row = observations[0]!;
+        const candidates = Array.isArray(row.result.candidates) ? row.result.candidates : [row.result];
+        return row.kind === 'party_candidate' && row.status === 'complete' && row.coverage.complete &&
+          row.generationId === input.generationId && row.propertyCode === input.propertyCode &&
+          row.sourceMessageId === input.source.messageId && row.criteria.workflow === request.kind &&
+          row.criteria.requestId === request.id && row.criteria.role === value.role &&
+          row.criteria.nativeCandidateCount === 1 &&
+          (request.kind !== 'create' || typeof row.criteria.allocationId === 'string' &&
+            request.body.allocations.some((allocation) => allocation.id === row.criteria.allocationId)) &&
+          (row.criteria.fieldPath === selectionPath || Array.isArray(row.criteria.fieldPaths) &&
+            row.criteria.fieldPaths.includes(selectionPath)) && candidates.length === 1 && isRecord(candidates[0]) &&
+          typeof candidates[0].nativeId === 'string' && /^\d{1,30}$/.test(candidates[0].nativeId) &&
+          normalizedFact(candidates[0].name) === normalizedFact(value.name);
+      };
       const eligible = leads.filter((lead) => typeof lead.value === 'string' && typeof lead.confidence === 'number' &&
-        lead.confidence >= 0.8 && (role === 'ar_account' ? relatedSelected && lead.basis === 'normalized_entity' : lead.autoSelectable === true));
-      if (eligible.length !== 1) continue;
+        lead.confidence >= 0.8 && (role === 'ar_account' ? lead.basis === 'normalized_entity' && sourceSelected(lead.sourceParty)
+          : lead.autoSelectable === true && (lead.basis === 'normalized_entity' ? sourceSelected(lead.sourceParty)
+            : lead.basis === 'exact_sender' && lead.sourceParty === null && typeof lead.sourceSender === 'string')));
+      if (!eligible.length || new Set(eligible.map((lead) => normalizedFact(lead.value))).size !== 1) continue;
       const leadName = String(eligible[0]!.value);
       const leadKey = normalizedFact(leadName);
       if (!leadKey) continue;
@@ -4471,6 +4530,7 @@ async function applyHistoricalPartySuggestions(input: { proposal: ReservationWor
         row.generationId === input.generationId && row.propertyCode === input.propertyCode &&
         row.sourceMessageId === input.source.messageId && row.criteria.workflow === request.kind &&
         row.criteria.requestId === request.id && row.criteria.role === (role === 'agency' ? 'bookingAgency' : role) &&
+        row.criteria.nativeCandidateCount === 1 &&
         (request.kind !== 'create' || typeof row.criteria.allocationId === 'string' &&
           request.body.allocations.some((allocation) => allocation.id === row.criteria.allocationId)) &&
         (row.criteria.fieldPath === path || Array.isArray(row.criteria.fieldPaths) && row.criteria.fieldPaths.includes(path)) &&
@@ -4480,14 +4540,15 @@ async function applyHistoricalPartySuggestions(input: { proposal: ReservationWor
         let read: Awaited<ReturnType<typeof lookupNativeParty>> | null = null;
         try { read = await lookupNativeParty({ role, name: leadName, target: hmsReadTargetForProperty(input.propertyCode), signal: input.signal }); }
         catch { input.signal?.throwIfAborted(); }
-        const rows = read?.status === 'complete' && read.coverage.complete && Array.isArray(read.result.candidates)
-          ? read.result.candidates.filter(isRecord).filter(matchesLead) : [];
+        const rows = read?.status === 'complete' && read.coverage.complete && Array.isArray(read.result.candidates) &&
+          read.result.candidates.length === 1 && matchesLead(read.result.candidates[0])
+          ? read.result.candidates.filter(isRecord) : [];
         if (rows.length === 1 && read) {
           const ref = `obs_${randomUUID()}`;
           chosen = { ref, generationId: input.generationId, kind: 'party_candidate', status: 'complete',
             observedAt: new Date().toISOString(), propertyCode: input.propertyCode, sourceMessageId: input.source.messageId,
             sourceRefs: [], criteria: { kind: 'historical_party_native_confirmation', workflow: request.kind, requestId: request.id,
-              role: role === 'agency' ? 'bookingAgency' : role, fieldPath: path, fieldPaths: [path],
+              role: role === 'agency' ? 'bookingAgency' : role, fieldPath: path, fieldPaths: [path], nativeCandidateCount: 1,
               ...(request.kind === 'create' && request.body.allocations[0] ? { allocationId: request.body.allocations[0].id } : {}) },
             coverage: read.coverage, result: { ...read.result, kind: role === 'agency' ? 'bookingAgency' : role, candidates: rows } };
           added.push(chosen);
@@ -4834,7 +4895,8 @@ function bindPartyObservations(input: { proposal: ReservationWorkflowV2Proposal;
         const ref = `obs_${stableId(read.ref, request.id, slot.path, nativeId, 'party-binding')}`;
         const observation: ReservationWorkflowV2Observation = { ...read, ref, generationId: input.generationId,
           criteria: { ...read.criteria, workflow: request.kind, requestId: request.id, role: slot.role,
-            ...(slot.allocationId ? { allocationId: slot.allocationId } : {}), fieldPath: slot.path, fieldPaths: [slot.path] },
+            ...(slot.allocationId ? { allocationId: slot.allocationId } : {}), fieldPath: slot.path, fieldPaths: [slot.path],
+            nativeCandidateCount: Array.isArray(read.result.candidates) ? read.result.candidates.length : 0 },
           result: { ...read.result, ...(request.kind === 'quote' ? { nativeId, name: raw.name } : {}), candidates: [raw] } };
         candidates.push(observation); added.push(observation);
       }
