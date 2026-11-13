@@ -678,7 +678,6 @@ export function reservationWorkflowV2MealPlanMatches(expected: string | null, ob
   if (expected === null) return true;
   if (typeof observed !== 'string') return false;
   const requested = normalizeRequestedMealPlan(expected);
-  if (requested.lunchRequested && requested.mealPlan === null) return true;
   const aliases = boardsFor(propertyCode);
   const mealCode = (value: string) => {
     const normalized = norm(value);
@@ -687,6 +686,7 @@ export function reservationWorkflowV2MealPlanMatches(expected: string | null, ob
     return aliases[normalized] ?? (key ? aliases[key] : undefined);
   };
   const expectedCode = mealCode(expected), observedCode = mealCode(observed);
+  if (requested.lunchRequested && requested.mealPlan === null) return observedCode !== undefined;
   return expectedCode !== undefined && expectedCode === observedCode;
 }
 
