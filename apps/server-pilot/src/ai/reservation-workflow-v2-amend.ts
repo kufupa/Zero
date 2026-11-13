@@ -158,6 +158,25 @@ function effectiveRefList(draft: ReservationWorkflowV2Draft, path: string, sourc
   return values.some(value => value === undefined) ? UNKNOWN : values;
 }
 
+function amendDigestBody(draft: ReservationWorkflowV2Draft, requestId: string, requestPath: string,
+  body: Record<string, unknown>): Record<string, unknown> {
+  const reviews = new Set(draft.operationResults.filter(operation => operation.workflow === 'amend' &&
+    operation.requestId === requestId && operation.generationId === draft.generationId && operation.status === 'prepared')
+    .flatMap(operation => operation.observationRefs.filter(ref => draft.observations.some(observation =>
+      observation.ref === ref && observation.kind === 'rate_availability' && observation.status === 'complete' &&
+      observation.generationId === draft.generationId && observation.propertyCode === draft.propertyCode &&
+      observation.sourceMessageId === draft.source.messageId && observation.criteria.workflow === 'amend' &&
+      observation.criteria.stage === 'callback_price_review' && observation.criteria.requestId === requestId &&
+      observation.criteria.hintId === operation.allocationId))));
+  if (!Array.isArray(body.perTarget)) return body;
+  return { ...body, perTarget: body.perTarget.map((value, index) => {
+    const row = record(value);
+    if (!row) return value;
+    const refs = effectiveRefList(draft, `${requestPath}/perTarget/${index}/currentObservationRefs`, row.currentObservationRefs);
+    return Array.isArray(refs) ? { ...row, currentObservationRefs: refs.filter(ref => typeof ref !== 'string' || !reviews.has(ref)) } : row;
+  }) };
+}
+
 function accepted(draft: ReservationWorkflowV2Draft, path: string): boolean {
   return draft.fieldReviewRequirements[path]?.required === false || draft.staffReviews[path]?.status === 'accepted';
 }
@@ -667,7 +686,8 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     adults: next.adults, children: next.children, childAges: next.childAges,
     firstName: next.firstName, lastName: next.lastName };
   const baseDigest = sha256({ requestId, hintId, selectedRef: chosen.ref, selected: chosen.selected,
-    scope: { mode: scope.mode, exclude: targetExclusions.rows.map(({ hint: excluded }) => ({ id: excluded.id ?? null,
+    body: amendDigestBody(draft, requestId, requestPath, bodyValue),
+    scope: { mode: scope.mode, include: scope.include, exclude: targetExclusions.rows.map(({ hint: excluded }) => ({ id: excluded.id ?? null,
       confirmation: excluded.confirmation ?? null, guestName: excluded.guestName ?? null,
       bookedArrival: excluded.bookedArrival ?? null, bookedDeparture: excluded.bookedDeparture ?? null })) },
     rateHandling: rateValue, changes: baseChanges, noteBaselineRefs: noteBaselines.map(item => item.ref),
@@ -1300,7 +1320,8 @@ function callbackReviewState(draft: ReservationWorkflowV2Draft, compiled: Compil
   }
   const request = requestBody(draft, compiled.requestId)?.request;
   const perPath = `${compiled.requestPath}/perTarget`, rows = effectiveLeaf(draft, perPath, request?.body.perTarget);
-  const index = Array.isArray(rows) ? rows.findIndex(row => record(row)?.hintId === compiled.hintId) : -1;
+  if (!Array.isArray(rows)) return { status: 'needs_reconcile', operationId: operation.id, issue: 'amend_callback_review_target_changed' };
+  const index = rows.findIndex(row => record(row)?.hintId === compiled.hintId);
   if (index < 0) return { status: 'needs_reconcile', operationId: operation.id, issue: 'amend_callback_review_target_changed' };
   const refsPath = `${perPath}/${index}/currentObservationRefs`, row = record(rows[index]);
   const refs = effectiveRefList(draft, refsPath, row?.currentObservationRefs);

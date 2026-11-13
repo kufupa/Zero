@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ExtractionStay, MailExtractionPayload } from './extraction/schema.js';
+import { formatBookerContact } from './reservation-workflow-v2-booker-contact.js';
 
 export type DraftSource = { threadId: string; messageId: string; sourceHash: string };
 export type AmendField =
@@ -63,11 +64,28 @@ export function validAmendRequestValue(field: AmendField, value: unknown): boole
 type Proposal = NonNullable<ExtractionStay['amendProposal']>;
 const PROPOSAL_KEYS: Partial<Record<AmendField, keyof Proposal>> = {
   ratePlan: 'ratePlan', retainRates: 'retainRates', firstName: 'firstName', lastName: 'lastName',
-  guestEmail: 'guestEmail', bookerName: 'bookerName', bookerContact: 'bookerContact',
+  guestEmail: 'guestEmail', bookerName: 'bookerName',
   'cms.send': 'cmsSend', 'cms.messageId': 'cmsMessageId', 'cms.recipient': 'cmsRecipient',
 };
 
+function bookerContactProposal(stay: ExtractionStay) {
+  const proposal: unknown = stay.amendProposal;
+  if (!plainRecord(proposal)) return null;
+  const part = (key: 'bookerEmail' | 'bookerMobile') => {
+    const value = proposal[key];
+    return plainRecord(value) && typeof value.value === 'string' && value.value.trim() &&
+      typeof value.excerpt === 'string' && value.attributedTo === 'booker' ? { value: value.value, excerpt: value.excerpt } : null;
+  };
+  const email = part('bookerEmail'), mobile = part('bookerMobile');
+  if (!email && !mobile) return null;
+  // A partial source request cannot replace an existing combined native contact safely.
+  const value = email && mobile ? formatBookerContact(email.value, mobile.value) : null;
+  const excerpt = email?.excerpt ?? mobile?.excerpt ?? '';
+  return { value, excerpt, attributedTo: 'booker' as const };
+}
+
 export function amendEmailValue(stay: ExtractionStay, field: AmendField): unknown {
+  if (field === 'bookerContact') return bookerContactProposal(stay)?.value ?? null;
   const key = PROPOSAL_KEYS[field];
   const proposed = key ? stay.amendProposal?.[key] : undefined;
   if (!proposed) return null;
@@ -94,7 +112,7 @@ export function projectAmendRequests(source: DraftSource, payload: MailExtractio
     const valueOf = (field: AmendField): unknown => {
       const path = `requests[${requestId}].${field}`;
       const key = PROPOSAL_KEYS[field];
-      const proposal = key ? stay.amendProposal?.[key] : undefined;
+      const proposal = field === 'bookerContact' ? bookerContactProposal(stay) : key ? stay.amendProposal?.[key] : undefined;
       const edited = Object.hasOwn(state, path);
       meta[path] = {
         origin: edited ? 'staff' : proposal ? 'email' : 'missing',
