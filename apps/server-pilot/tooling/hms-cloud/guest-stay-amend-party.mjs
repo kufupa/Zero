@@ -2,7 +2,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { isLabtestAmendStageContext } from './labtest-amend-save.mjs';
 import { snapshotLabtestRecord } from './labtest-record.mjs';
 import { parseSavedStayNativeResponse } from './saved-stay-native-response.mjs';
-import { isSavedPartyStageRequestGate, savedPartyBeforeImage, savedPartySpec } from './saved-stay-party-request-gate.mjs';
+import { isSavedPartyStageRequestGate, SAVED_PARTY_POST_CALLBACK_AMOUNTS,
+  savedPartyBeforeImage, savedPartyCommissionKey, savedPartySpec } from './saved-stay-party-request-gate.mjs';
 
 const issue = error => /^[A-Z][A-Z0-9_]{2,100}$/.test(error?.message || '') ? error.message : 'PARTY_STAGE_UNVERIFIED';
 const remaining = context => Math.max(1, Math.min(15_000, context.remainingMs()));
@@ -144,17 +145,28 @@ export async function inspectSavedPartyForComposition(context, input) {
   }
 }
 
-function changed(before, after, exempt) {
-  const fields = [];
-  for (const part of ['data', 'values']) for (const [name, old] of Object.entries(before?.[part] ?? {})) {
-    if (!exempt.has(name) && !isDeepStrictEqual(old, after?.[part]?.[name])) fields.push(`${part}.${name}`);
+/** Preserve the raw amount changes for the host's mandatory reprice and second Go. */
+export function savedPartyCallbackDelta(before, after, { kind, allowCommission = false } = {}) {
+  const spec = savedPartySpec(kind);
+  if (!spec || !before?.data || !before?.values || !after?.data || !after?.values) return null;
+  const exempt = new Set([spec.link, spec.display, ...(kind === 'arAccount' ? ['arprofileid'] : []),
+    ...(kind === 'bookingAgency' && allowCommission ? ['ta1commission'] : [])]);
+  const amounts = new Set(SAVED_PARTY_POST_CALLBACK_AMOUNTS), priceChanges = [], unexpectedChanges = [];
+  for (const part of ['data', 'values']) {
+    const names = new Set([...Object.keys(before[part]), ...Object.keys(after[part])]);
+    for (const name of names) {
+      const old = before[part][name] ?? { present: false }, next = after[part][name] ?? { present: false };
+      if (isDeepStrictEqual(old, next) || exempt.has(name)) continue;
+      if (amounts.has(name)) priceChanges.push({ part, field: name, before: structuredClone(old), after: structuredClone(next) });
+      else unexpectedChanges.push(`${part}.${name}`);
+    }
   }
-  return fields;
+  return { priceChanges, unexpectedChanges };
 }
 
 /** Requery one exact row on Go; a native callback can persist before the final Save. */
 export async function applySavedPartyOnGo(context, input, authority = {}) {
-  let attempted = false, beforeImage, afterImage, snapshot, changedFields;
+  let attempted = false, beforeImage, afterImage, snapshot, changedFields, priceChanges;
   try {
     if (!input || !input.expected || !input.candidate || typeof authority.authorizeCandidate !== 'function' ||
         typeof authority.dispatchCandidate !== 'function') throw new Error('PARTY_GO_INPUT_INVALID');
@@ -218,33 +230,35 @@ export async function applySavedPartyOnGo(context, input, authority = {}) {
     active(context);
     snapshot = await snapshotLabtestRecord(context.frame);
     active(context);
+    afterImage = savedPartyBeforeImage(snapshot);
+    const delta = savedPartyCallbackDelta(result.beforeImage, afterImage,
+      { kind, allowCommission: Boolean(candidate.expectedEffects) });
+    if (!delta) throw new Error('PARTY_CALLBACK_READBACK_UNVERIFIED');
+    changedFields = delta.unexpectedChanges;
+    priceChanges = delta.priceChanges;
     if (String(snapshot.data?.[spec.link] ?? '') !== row[0].nativeId ||
         String(snapshot.data?.[spec.display] ?? '') !== row[0].name ||
         String(snapshot.values?.[spec.display] ?? '') !== row[0].name ||
         (kind === 'arAccount' && String(snapshot.data?.arprofileid ?? '') !== row[0].profileId)) {
       throw new Error('PARTY_CALLBACK_READBACK_UNVERIFIED');
     }
-    afterImage = savedPartyBeforeImage(snapshot);
     if (candidate.expectedEffects &&
         [snapshot.data?.ta1commission, snapshot.values?.ta1commission].some(value =>
-          value == null || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(String(value)) ||
-          Number(value) !== Number(candidate.expectedEffects.ta1commission))) {
+          savedPartyCommissionKey(value) !== savedPartyCommissionKey(candidate.expectedEffects.ta1commission))) {
       throw new Error('PARTY_COMMISSION_READBACK_UNVERIFIED');
     }
-    const exemption = new Set([spec.link, spec.display, ...(kind === 'arAccount' ? ['arprofileid'] : []),
-      ...(candidate.expectedEffects ? ['ta1commission'] : [])]);
-    changedFields = changed(result.beforeImage, afterImage, exemption);
     if (changedFields.length) throw new Error('PARTY_CALLBACK_OTHER_FIELDS_CHANGED');
     if (!gate.finishCandidate()) throw new Error('PARTY_CALLBACK_STATE_UNVERIFIED');
     return { outcome: 'applied', snapshot, beforeImage: result.beforeImage, afterImage,
-      partialEffect: 'possible', needsRecovery: true, pricing: 'recheck_required',
+      partialEffect: 'possible', needsRecovery: true, pricing: 'recheck_required', priceChanges,
       ...(candidate.expectedEffects ? { nativeEffects: { ta1commission: {
         before: result.beforeImage.data.ta1commission, after: afterImage.data.ta1commission } } } : {}) };
   } catch (error) {
     context?.stop?.(issue(error));
     if (attempted) return { outcome: 'uncertain', issue: issue(error), partialEffect: 'possible',
       needsRecovery: true, pricing: 'recheck_required', ...(beforeImage ? { beforeImage } : {}),
-      ...(afterImage ? { afterImage } : {}), ...(changedFields ? { changedFields } : {}) };
+      ...(afterImage ? { afterImage } : {}), ...(priceChanges ? { priceChanges } : {}),
+      ...(changedFields ? { changedFields } : {}) };
     throw new Error(issue(error));
   }
 }

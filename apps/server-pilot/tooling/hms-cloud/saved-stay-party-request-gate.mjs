@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { blankSavedPartyFields } from './labtest-party-fields.mjs';
 import { matchesSavedStageRequest } from './saved-stay-room-stage-gate.mjs';
 import { parseSavedStayNativeResponse } from './saved-stay-native-response.mjs';
 
@@ -24,6 +25,22 @@ const text = value => value == null ? '' : String(value);
 const validId = value => /^\d{1,100}$/.test(value || '');
 const validText = value => typeof value === 'string' && value.length > 0 && value.length <= 200 &&
   value.trim() === value && !/[\p{Cc}]/u.test(value);
+
+/** Compare commission decimals without rounding or accepting values above 100. */
+export function savedPartyCommissionKey(value) {
+  if (!(typeof value === 'string' || typeof value === 'number' && Number.isFinite(value))) return null;
+  const source = String(value);
+  if (source.length > 200) return null;
+  const match = /^(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(source);
+  if (!match || Math.abs(Number(match[3] || 0)) > 400) return null;
+  let digits = (match[1] + (match[2] || '')).replace(/^0+/, '');
+  if (!digits) return '0e0';
+  let power = Number(match[3] || 0) - (match[2] || '').length;
+  while (digits.endsWith('0')) { digits = digits.slice(0, -1); power += 1; }
+  const magnitude = digits.length + power;
+  if (magnitude > 3 || (magnitude === 3 && (digits !== '1' || power !== 2))) return null;
+  return `${digits}e${power}`;
+}
 const field = (source, name) => {
   if (!source || typeof source !== 'object' || Array.isArray(source)) return { present: false };
   const keys = Object.keys(source).filter(key => key.toLowerCase() === name.toLowerCase());
@@ -33,17 +50,25 @@ const field = (source, name) => {
 const value = (source, name) => field(source, name).present ? text(source[name]) : null;
 const identityFields = ['PKID', 'propertycode', 'status', 'confirmationnumber', 'reservationstayid',
   'reservationid', 'recordid', 'guestid', 'bookingsessionid', 'firstname', 'lastname'];
-const partyFields = ['companyid', 'company', 'companyname', 'taid1', 'ta1', 'araccountid', 'araccountname',
+const partyFields = [...blankSavedPartyFields, 'companyid', 'company', 'companyname', 'taid1', 'ta1', 'araccountid', 'araccountname',
   'arprofileid', 'groupid', 'groupname', 'grouptaid', 'bookingagencycontractid', 'bacontract',
   'bookingagency1iatanumber', 'ta1commission', 'billingreference', 'sourceofbus', 'sourceofbusinessdesc'];
-const businessFields = ['arrivaldate', 'departuredate', 'roomtype', 'roomtypecharge', 'rateplan', 'mealplan',
+const businessFields = ['arrivaldate', 'departuredate', 'nights', 'roomtype', 'roomtypecharge', 'rateplan', 'mealplan', 'marketsegment',
   'adults', 'children', 'child1', 'child2', 'child3', 'childages', 'track', 'guaranteetype', 'reservationnote',
-  'emailaddress', 'caller', 'udfchar06', 'udfchkbox04', 'udfchar09', 'udfchar13'];
-const priceFields = ['averagerate', 'averageratecurr', 'totalrate', 'totalratecurr', 'totalratewithtax',
-  'enhancedexptotal', 'grandtotal', 'guesttotal', 'guesttax', 'guesttotalwithtax', 'tax', 'totalresortfee',
-  'ratetax', 'currency', 'enablecheckavailability'];
+  'emailaddress', 'caller', 'udfchar06', 'guestoptin4', 'udfchkbox04', 'udfchar09', 'udfchar13',
+  'newprofileclick', 'createinactiveprofileflag', 'reqguestprofilelookup', 'linkprofileflag', 'linkedprofileflag',
+  'savecctoprofile', 'savesettlementcctoprofile'];
+export const SAVED_PARTY_POST_CALLBACK_AMOUNTS = Object.freeze([
+  'grandtotal', 'averagenightly', 'averagerate', 'totalrate', 'totalratewithtax', 'enhancedexptotal',
+  'guesttotal', 'guesttax', 'guesttotalwithtax', 'tax', 'totalresortfee', 'ratetax',
+]);
+const priceFields = [...SAVED_PARTY_POST_CALLBACK_AMOUNTS, 'averageratecurr', 'totalratecurr', 'currency',
+  'enablecheckavailability'];
+const observedPrice = name => /(?:price|tax|total|amount|averagenightly|averagerate|currency|curr)$/i.test(name);
 const preimageFields = [...new Set([...identityFields, ...partyFields, ...businessFields, ...priceFields])];
 const guardedIfPresent = [...new Set([...identityFields, ...partyFields, ...businessFields, ...priceFields])];
+const profileWriteSwitches = new Set(['newprofileclick', 'createinactiveprofileflag', 'reqguestprofilelookup',
+  'linkprofileflag', 'linkedprofileflag', 'savecctoprofile', 'savesettlementcctoprofile']);
 const requestFields = ['PKID', 'propertycode', 'confirmationnumber', 'reservationstayid', 'reservationid',
   'recordid', 'guestid', 'bookingsessionid', 'companyid', 'company', 'companyname', 'taid1', 'ta1',
   'araccountid', 'araccountname', 'arprofileid', 'guaranteetype', 'rateplan', 'roomtype', 'arrivaldate',
@@ -53,14 +78,16 @@ const requestFields = ['PKID', 'propertycode', 'confirmationnumber', 'reservatio
 export function savedPartyBeforeImage(snapshot) {
   if (!snapshot?.data || !snapshot?.values) return null;
   const image = {};
+  const names = [...new Set([...preimageFields, ...['data', 'values'].flatMap(part =>
+    Object.keys(snapshot[part]).filter(observedPrice))])];
   for (const part of ['data', 'values']) {
     const source = snapshot[part];
     if (typeof source !== 'object' || Array.isArray(source)) return null;
-    for (const name of preimageFields) {
+    for (const name of names) {
       const keys = Object.keys(source).filter(key => key.toLowerCase() === name.toLowerCase());
       if (keys.length > 1 || (keys.length === 1 && (keys[0] !== name || !scalar(source[name])))) return null;
     }
-    image[part] = Object.fromEntries(preimageFields.map(name => [name, field(source, name)]));
+    image[part] = Object.fromEntries(names.map(name => [name, field(source, name)]));
   }
   return image;
 }
@@ -188,8 +215,8 @@ export function createSavedPartyStageRequestGate({ frame, selected, deadlineAt }
       if (effects !== undefined) {
         if (kind !== 'bookingAgency' || !effects || typeof effects !== 'object' || Array.isArray(effects) ||
             Object.keys(effects).length !== 1 || !Object.hasOwn(effects, 'ta1commission') ||
-            typeof effects.ta1commission !== 'string' || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(effects.ta1commission) ||
-            Number(effects.ta1commission) > 100 || effects.ta1commission !== matches[0].commissionPercentage ||
+            typeof effects.ta1commission !== 'string' || !savedPartyCommissionKey(effects.ta1commission) ||
+            effects.ta1commission !== matches[0].commissionPercentage ||
             matches[0].payCommissionFlag !== '-1') return false;
       }
       chosen = matches[0]; expectedEffects = effects ? structuredClone(effects) : null;
@@ -208,12 +235,16 @@ export function createSavedPartyStageRequestGate({ frame, selected, deadlineAt }
         if (url.username || url.password) return false;
         const actionCounts = [...body.keys()].filter(key => ['pageaction', 'action'].includes(key.toLowerCase()));
         if (new Set(actionCounts.map(key => key.toLowerCase())).size !== actionCounts.length) return false;
-        for (const name of guardedIfPresent) {
+        const guarded = new Set([...guardedIfPresent, ...[...body.keys()].filter(observedPrice)]);
+        for (const name of guarded) {
           const matching = [...body.keys()].filter(key => key.toLowerCase() === name.toLowerCase());
           if (!matching.length) continue;
           if (matching.length !== 1 || matching[0] !== name) return false;
           const expected = Object.hasOwn(wanted, name) ? wanted[name] : value(snapshot.data, name);
-          if (expected === null) return false;
+          if (expected === null) {
+            if (profileWriteSwitches.has(name) && ['', '0', 'false'].includes(body.get(name).trim().toLowerCase())) continue;
+            return false;
+          }
           const native = snapshot.data[name];
           const wire = !Object.hasOwn(wanted, name) && typeof native === 'boolean' ? (native ? '1' : '0') : String(expected);
           if (body.get(name) !== wire) return false;
