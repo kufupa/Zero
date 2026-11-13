@@ -36,7 +36,7 @@ const moneyRequestSchema = z.object({
   scope: z.enum(['overall', 'per_target', 'unresolved']),
   targetRefs: z.array(refSchema).max(100),
   sourceRefs: z.array(refSchema).max(100),
-  staffAllowanceType: z.enum(['dinner', 'unsupported']).optional(),
+  staffAllowanceType: z.enum(['dinner', 'lunch', 'airport_transfer', 'office_transfer', 'unsupported']).optional(),
 }).strict();
 const partySchema = z.object({
   name: z.string().max(300).nullable(),

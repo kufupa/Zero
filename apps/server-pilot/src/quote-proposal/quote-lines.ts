@@ -84,7 +84,7 @@ const DINNER_ADD_ON_UNIT_LABELS:Partial<Record<NonNullable<AuthorizedProposalFac
 };
 /** Include the charging basis in customer-facing document descriptions; the generic columns alone are ambiguous. */
 export function extraDisplayDescription(line:ExtraDisplayLine):string{
- const unit=line.service==='dinner_add_on'&&line.chargeUnit?DINNER_ADD_ON_UNIT_LABELS[line.chargeUnit]:undefined;
+ const unit=line.chargeUnit?{...DINNER_ADD_ON_UNIT_LABELS,per_trip:'per trip',item:'once'}[line.chargeUnit]:undefined;
  return unit?`${line.description} (${unit})`:line.description;
 }
 /** Facts must be resolved from authorized document/policy storage; callers cannot supply model text as authority. */
@@ -98,7 +98,7 @@ export function deriveAuthorizedExtraLines(revision:QuoteRevision,facts:Authoriz
  for(const extra of facts.extras){
   if(!extra.id||seen.has(extra.id)||!extra.label.trim()||!extra.service)throw new Error('extra_identity');seen.add(extra.id);
   if(extra.groupIds!==undefined&&(
-   extra.service!=='dinner_add_on'||!extra.groupIds.length||new Set(extra.groupIds).size!==extra.groupIds.length||extra.groupIds.some(id=>!revision.groups.some(group=>group.id===id))
+   !extra.groupIds.length||new Set(extra.groupIds).size!==extra.groupIds.length||extra.groupIds.some(id=>!revision.groups.some(group=>group.id===id))
   ))throw new Error('extra_scope');
   if(!Number.isSafeInteger(extra.quantity)||extra.quantity<1||!Number.isSafeInteger(extra.units)||extra.units<1||!Number.isSafeInteger(extra.unitMinor)||extra.unitMinor<0)throw new Error('extra_money');
   if(!['person_service','item','trip'].includes(extra.unitKind))throw new Error('extra_units');

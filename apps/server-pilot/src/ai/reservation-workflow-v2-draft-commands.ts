@@ -325,8 +325,6 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
               draft.operationResults.some(row => row.requestId === request.id && ['succeeded', 'unknown'].includes(row.status))) return null;
           const contextDocuments = quoteSplitContextDocuments(draft, proposal, request);
           if (!contextDocuments) return null;
-          if (request.body.requestedMoney.some((claim, index) => valueAt(draft, `${root}/body/requestedMoney/${index}/staffAllowanceType`) !== 'unsupported' || !proposal.content.requests.some(row => row.kind === 'other' &&
-              row.body.separatedFrom?.requestId === request.id && row.body.separatedFrom.moneyId === claim.id))) return null;
           const groups = request.body.groups.map((row, index) => effectiveTree(draft, `${root}/body/groups/${index}`, row) as typeof row);
           const buckets = new Map<string, typeof groups>();
           for (const row of groups) {
@@ -345,7 +343,20 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
             if (party && typeof party === 'object') delete party.nativeSelectionRef;
           }
           const dateGroups = [...buckets.values()];
-          request.body = { ...effectiveBody, groups: dateGroups[0]! };
+          const moneyRows = request.body.requestedMoney.map((claim, index) => ({
+            ...effectiveTree(draft, `${root}/body/requestedMoney/${index}`, claim) as typeof claim,
+            staffAllowanceType: valueAt(draft, `${root}/body/requestedMoney/${index}/staffAllowanceType`) as typeof claim.staffAllowanceType,
+          }));
+          const splitMoney = (rows: typeof groups, first: boolean) => moneyRows.flatMap(claim => {
+            const groupIds = new Set(rows.map(row => row.id));
+            if (claim.scope === 'per_target') {
+              const targetRefs = claim.targetRefs.filter(ref => groupIds.has(ref));
+              return targetRefs.length ? [{ ...claim, targetRefs }] : [];
+            }
+            const repeats = ['per_person_per_night', 'per_person_night', 'per_room_per_night', 'per_person'].includes(claim.unit ?? '');
+            return first || repeats && claim.staffAllowanceType !== 'unsupported' ? [{ ...claim }] : [];
+          });
+          request.body = { ...effectiveBody, groups: dateGroups[0]!, requestedMoney: splitMoney(dateGroups[0]!, true) };
           dateGroups.slice(1).forEach(rows => {
             const requestId = id(); createdId ??= requestId;
             const splitBody = structuredClone(effectiveBody);
@@ -357,7 +368,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
               }
             }
             const splitRequest = { ...structuredClone(request), id: requestId, documentRefs: [] as string[],
-              body: { ...splitBody, groups: rows, requestedMoney: [] } };
+              body: { ...splitBody, groups: rows, requestedMoney: splitMoney(rows, false) } };
             for (const sourceDocument of contextDocuments) {
               const documentId = id();
               proposal.content.documents.push({ ...structuredClone(sourceDocument), id: documentId, ownerRequestId: requestId });
@@ -368,7 +379,13 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
             const nextRoot = ptr('proposal', 'content', 'requests', requestId);
             const groupIds = new Set(rows.map(row => row.id));
             const remap = (path: string): string | null => {
-              if (!path.startsWith(`${root}/`) || path.startsWith(`${root}/body/requestedMoney/`)) return null;
+              if (!path.startsWith(`${root}/`)) return null;
+              const moneyMatch = /\/requestedMoney\/(\d+)(?:\/|$)/.exec(path);
+              if (moneyMatch) {
+                const moneyId = moneyRows[Number(moneyMatch[1])]?.id;
+                const nextIndex = splitRequest.body.requestedMoney.findIndex(claim => claim.id === moneyId);
+                return nextIndex < 0 ? null : path.replace(root, nextRoot).replace(`/requestedMoney/${moneyMatch[1]}`, `/requestedMoney/${nextIndex}`);
+              }
               const match = /\/groups\/(\d+)(?:\/|$)/.exec(path);
               if (!match) return path.replace(root, nextRoot);
               const groupId = groups[Number(match[1])]?.id;
@@ -381,9 +398,9 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
             }
           });
           // The materialized bodies now own the staff values; old checks and reviews are invalidated.
-          changedRoots.push(`${root}/body/groups`);
+          changedRoots.push(`${root}/body/groups`, `${root}/body/requestedMoney`);
           for (const path of Object.keys(draft.fieldOverrides)) if (path.startsWith(`${root}/body/`) &&
-              !path.endsWith('/staffAllowanceType') && !/^\/proposal\/content\/requests\/[^/]+\/body\/parties\/(?:organization|bookingAgency)\/nativeSelectionRef$/.test(path)) {
+              !/^\/proposal\/content\/requests\/[^/]+\/body\/parties\/(?:organization|bookingAgency)\/nativeSelectionRef$/.test(path)) {
             delete draft.fieldOverrides[path];
           }
           break;
