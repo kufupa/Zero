@@ -1934,8 +1934,10 @@ async function executeCallbackSecond(ctx: ReservationWorkflowV2AmendContext, inp
     if (!await verifyStoredHmsShot({ ...state.beforeShot, name: 'before.png', owner, propertyCode: 'HRCEN',
       workItemId: input.workItemId }, 'before.png') || !await verifyStoredHmsShot({ ...state.afterShot, name: 'saved.png', owner,
       propertyCode: 'HRCEN', workItemId: input.workItemId }, 'saved.png')) throw new Error('reservation_v2_amend_screenshot_unverified');
+    const finalReceipt = { confirmation: actual.confirmation, nativeStayId: actual.nativeStayId,
+      operationPhase: 'final_save', finalSave: true, freshReadbackDigest: sha256(actual) };
     await resolveHmsLabtestDispatch(ctx.db, state.handle, { operation: 'amend', confirmation: String(actual.confirmation),
-      nativeStayId: String(actual.nativeStayId), nativeReadback: actual, readbackDigest: sha256(actual), savedShot: state.afterShot },
+      nativeStayId: String(actual.nativeStayId), nativeReadback: finalReceipt, readbackDigest: sha256(finalReceipt), savedShot: state.afterShot },
     async (tx, intent) => {
       const { version: _version, kind: _kind, holdId: _holdId, ownerDigest: _ownerDigest, ...claimed } = intent;
       if (!approvedClaim || canonicalJson(claimed) !== approvedClaim) throw new Error('reservation_v2_amend_intent_changed');
@@ -2013,20 +2015,21 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
     handle: HmsLabtestWriteHandle | null; claimAttempted: boolean } = {
     beforeEvidence: null, beforeShot: null, afterShot: null, handle: null, claimAttempted: false };
   let result: Record<string, unknown>;
+  const ordinaryRecovery = structuredClone({ selected: compiled.selected, confirmation: compiled.selected.confirmation,
+    reservationStayId: compiled.selected.reservationStayId, reservationId: compiled.selected.reservationId,
+    recordId: compiled.selected.recordId, approved: nativeChanges, approvedPrices: price, preserved,
+    nativeDigest: preparedResult.nativeDigest, prepareObservationRef: prepared.ref, approvedAfter: preparedResult.target,
+    recoveryBaseline: preparedResult.recoveryBaseline, requestId: input.requestId, hintId: compiled.hintId,
+    operationId: input.idempotencyKey, draftRevision: input.expectedRevision });
   const claimInputBase = {
     workItemId: input.workItemId, transportId: ctx.transport.id, actorUserId: ctx.user.id,
     grantId: input.idempotencyKey, propertyCode: 'HRCEN' as const,
     firstName: compiled.selected.firstName, lastName: compiled.selected.lastName,
     nativeGuestId: compiled.selected.guestId, operation: 'amend' as const,
     sourceDigest: input.source.sourceHash, approvedDigest: prepared.criteria.semanticDigest as string,
-    recovery: { selected: compiled.selected, confirmation: compiled.selected.confirmation,
-      reservationStayId: compiled.selected.reservationStayId, reservationId: compiled.selected.reservationId,
-      recordId: compiled.selected.recordId, approved: nativeChanges,
-      approvedPrices: price, preserved, nativeDigest: preparedResult.nativeDigest,
-      prepareObservationRef: prepared.ref,
-      approvedAfter: preparedResult.target, recoveryBaseline: preparedResult.recoveryBaseline,
-      requestId: input.requestId, hintId: compiled.hintId, operationId: input.idempotencyKey,
-      draftRevision: input.expectedRevision },
+    recovery: { confirmation: compiled.selected.confirmation, reservationStayId: compiled.selected.reservationStayId,
+      prepareObservationRef: prepared.ref, requestId: input.requestId, hintId: compiled.hintId,
+      operationId: input.idempotencyKey, draftRevision: input.expectedRevision, recoveryEvidenceDigest: sha256(ordinaryRecovery) },
     target: locked.dispatchTarget,
   };
   let approvedClaim = '';
@@ -2037,21 +2040,24 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
         typeof step.requestDigest !== 'string' || !/^[a-f0-9]{64}$/.test(step.requestDigest) || !dispatchState.beforeEvidence) {
       throw new Error('AMEND_APPROVAL_INVALID');
     }
-    dispatchState.claimAttempted = true;
     const claimInput = { ...claimInputBase, requestDigest: step.requestDigest,
       recovery: { ...claimInputBase.recovery, firstPhase: step.phase,
         runId, beforeShot: dispatchState.beforeShot } };
     approvedClaim = canonicalJson(claimInput);
+    if (Buffer.byteLength(approvedClaim) > 16_384) throw new Error('AMEND_CLAIM_TOO_LARGE');
+    dispatchState.claimAttempted = true;
     const attempt = observationForWrite(loaded.draft!, input, compiled.hintId, 'partial', {
       outcome: 'dispatch_pending', requestDigest: step.requestDigest,
       approvedDigest: prepared.criteria.semanticDigest, prepareObservationRef: prepared.ref,
       target: preparedResult.target, before: compiled.selected, approvedPrices: price,
       beforeShot: dispatchState.beforeShot, semanticInput: preparedResult.semanticInput,
     });
-    dispatchState.handle = await claimHmsLabtestDispatch(ctx.db, claimInput,
-      async (tx) => authorizeCurrentAmend(tx, ctx, input, compiled, prepared,
-        prepared.criteria.semanticDigest as string, attempt),
-      expectedEpoch);
+    dispatchState.handle = await claimHmsLabtestDispatch(ctx.db, claimInput, async tx => {
+      await authorizeCurrentAmend(tx, ctx, input, compiled, prepared, prepared.criteria.semanticDigest as string, attempt);
+      await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
+        fieldPath: 'nava.hms.amend.recovery.v1', value: { operationId: input.idempotencyKey,
+          sourceDigest: input.source.sourceHash, recovery: ordinaryRecovery }, evidence: { sourceHash: input.source.sourceHash } });
+    }, expectedEpoch);
     return dispatchState.handle;
   };
   const sealBeforeEvidence = async () => {
@@ -2136,9 +2142,11 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
       workItemId: input.workItemId }, 'before.png') ||
       !await verifyStoredHmsShot({ ...afterShot, name: 'saved.png', owner, propertyCode: 'HRCEN',
         workItemId: input.workItemId }, 'saved.png')) throw new Error('reservation_v2_amend_screenshot_unverified');
+    const finalReceipt = { confirmation: readback.confirmation, nativeStayId: readback.nativeStayId,
+      operationPhase: 'final_save', finalSave: true, freshReadbackDigest: sha256(readback) };
     await resolveHmsLabtestDispatch(ctx.db, handle, { operation: 'amend', confirmation: String(readback.confirmation),
-      nativeStayId: String(readback.nativeStayId), nativeReadback: readback,
-      readbackDigest: sha256(readback), savedShot: afterShot }, async (tx, durableIntent) => {
+      nativeStayId: String(readback.nativeStayId), nativeReadback: finalReceipt,
+      readbackDigest: sha256(finalReceipt), savedShot: afterShot }, async (tx, durableIntent) => {
       const { version: _version, kind: _kind, holdId: _holdId, ownerDigest: _ownerDigest, ...claimed } = durableIntent;
       if (!approvedClaim || canonicalJson(claimed) !== approvedClaim) throw new Error('reservation_v2_amend_intent_changed');
       await persistResolvedResult(tx, ctx, input, compiled.hintId, success,
