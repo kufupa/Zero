@@ -34,7 +34,19 @@ export function createSavedRateStageRequestGate({ frame, selected, deadlineAt } 
           !next.display.trim() || next.display !== next.display.trim() || next.display.length > 200 || /[\p{Cc}]/u.test(next.display)))) return false;
     native = { track: display }; trackTarget = readOnly ? null : next; trackRows = null; state = 'track_popup_armed'; return true;
   };
+  const trackRequestKind = (request) => {
+    const base = { GRID_NAME:'LVTRACKCODE', GRID_TYPE:'LOV', LOV_TAGNAME:'track',
+      USER_FUNCTION_NAME:'OSRESV', CURRENT_TAB_NAME:'HDR', LOV_ALIAS_NAME_1:'param.propertycode',
+      LOV_ALIAS_VALUE_1:'HRCEN', LOV_ALIAS_TYPE_1:'text' };
+    if (state === 'track_popup_armed' && matchesSavedStageRequest(request, frame, SAVED_RATE_STAGE_PATHS[3], {
+      ...base, REQUEST_TYPE:'LOV.HEAD_DATA.STORED', popup:'true', filterfields:'tcddesc',
+      filteroperator:'CONTAINS', filtervalue:native.track })) return 'track_popup';
+    if (state === 'track_reset_armed' && matchesSavedStageRequest(request, frame, SAVED_RATE_STAGE_PATHS[4], {
+      ...base, ...trackGrid, REQUEST_TYPE:'LOV.DATA_ONLY.STORED' })) return 'track_reset';
+    return null;
+  };
   const gate = Object.freeze({
+    isTrackRequest(request) { return active() && trackRequestKind(request) !== null; },
     armTrack(snapshot, next) { return armTrack(snapshot, next); },
     armTrackRead(snapshot) { return armTrack(snapshot, null, true); },
     armTrackReset(metadata) {
@@ -110,16 +122,8 @@ export function createSavedRateStageRequestGate({ frame, selected, deadlineAt } 
     },
     consume(request) {
       if (!active()) return false;
-      let kind = null;
-      const trackBase = { GRID_NAME:'LVTRACKCODE', GRID_TYPE:'LOV', LOV_TAGNAME:'track',
-        USER_FUNCTION_NAME:'OSRESV', CURRENT_TAB_NAME:'HDR', LOV_ALIAS_NAME_1:'param.propertycode',
-        LOV_ALIAS_VALUE_1:'HRCEN', LOV_ALIAS_TYPE_1:'text' };
-      if (state === 'track_popup_armed' && matchesSavedStageRequest(request, frame, SAVED_RATE_STAGE_PATHS[3], {
-        ...trackBase, REQUEST_TYPE:'LOV.HEAD_DATA.STORED', popup:'true', filterfields:'tcddesc',
-        filteroperator:'CONTAINS', filtervalue:native.track })) kind = 'track_popup';
-      else if (state === 'track_reset_armed' && matchesSavedStageRequest(request, frame, SAVED_RATE_STAGE_PATHS[4], {
-        ...trackBase, ...trackGrid, REQUEST_TYPE:'LOV.DATA_ONLY.STORED' })) kind = 'track_reset';
-      else if (state === 'charge_armed' && matchesSavedStageRequest(request, frame, SAVED_RATE_STAGE_PATHS[0], {
+      let kind = trackRequestKind(request);
+      if (!kind && state === 'charge_armed' && matchesSavedStageRequest(request, frame, SAVED_RATE_STAGE_PATHS[0], {
         GRID_NAME:'LVROOMTYPE2', GRID_TYPE:'LOV', REQUEST_TYPE:'LOV.HEAD_DATA.STORED', LOV_TAGNAME:'roomtypecharge',
         USER_FUNCTION_NAME:'OSRESV', CURRENT_TAB_NAME:'HDR', LOV_ALIAS_NAME_1:'param.propertycode',
         LOV_ALIAS_VALUE_1:'HRCEN', filterfields:'roomtypecode', filteroperator:'=', filtervalue:target })) kind = 'validation';

@@ -22,7 +22,7 @@ import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
 import {
   compileReservationWorkflowV2Create,
-  reservationWorkflowV2MealPlanMatches,
+  reservationWorkflowV2CreateMealPlanMatches,
   type ReservationWorkflowV2ServerContext,
 } from './reservation-workflow-v2-tools.js';
 
@@ -375,8 +375,12 @@ export async function reservationWorkflowV2LookupServices(ctx: ReservationWorkfl
     const listing = record(addon);
     const candidates = Array.isArray(listing?.candidates) ? listing.candidates.map(record).filter(Boolean) : [];
     const coverage = record(listing?.coverage);
+    const actualMeal = record(native.applied)?.mealPlan;
+    const boundMeal = record(record(native.requestBinding?.request)?.room)?.mealPlan;
     const complete = native.outcome === 'prepared' && typeof record(native.requestBinding)?.digest === 'string' &&
-      record(native.ratePlanAvailability) !== null && listing?.outcome === 'ok' && listing.unsaved === true &&
+      record(native.ratePlanAvailability) !== null && actualMeal === boundMeal &&
+      reservationWorkflowV2CreateMealPlanMatches(compiled.requestedMealPlan, compiled.mealPlan, actualMeal, ctx.property.propertyCode) &&
+      listing?.outcome === 'ok' && listing.unsaved === true &&
       listing.saved !== true && listing.propertyCode === 'HRCEN' && coverage?.complete === true;
     const observations: ReservationWorkflowV2Observation[] = [];
     const serviceRows = new Map(addRows.map(row => [row.service.id, row]));
@@ -454,9 +458,12 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
         expectedGuest: compiledCreate.expectedGuest, readForm, items }), ctx.nativeBatch?.signal);
     const preview = record(addon), nativeItems = Array.isArray(preview?.items) ? preview.items.map(record) : [];
     const capability = (await import('./reservation-workflow-v2-services-execute.js')).linkedServiceCapability(loaded.draft, input);
+    const actualMeal = record(native.applied)?.mealPlan;
+    const boundMeal = record(record(native.requestBinding?.request)?.room)?.mealPlan;
     const createBound = native.outcome === 'prepared' && typeof record(native.requestBinding)?.digest === 'string' &&
-      record(native.ratePlanAvailability) !== null && reservationWorkflowV2MealPlanMatches(compiledCreate.mealPlan,
-        record(native.applied)?.mealPlan, ctx.property.propertyCode);
+      record(native.ratePlanAvailability) !== null && actualMeal === boundMeal &&
+      reservationWorkflowV2CreateMealPlanMatches(compiledCreate.requestedMealPlan, compiledCreate.mealPlan,
+        actualMeal, ctx.property.propertyCode);
     const results: Result[] = [];
     for (const [index, plan] of plans.entries()) {
       const nativeItem = record(nativeItems[index]);

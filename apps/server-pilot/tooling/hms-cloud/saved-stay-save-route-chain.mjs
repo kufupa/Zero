@@ -403,7 +403,16 @@ export async function installLabtestSaveRouteChain(page, {
       return route.fallback();
     }
     const partyPath = SAVED_PARTY_STAGE_PATHS.findIndex(path => path.toLowerCase() === url.pathname.toLowerCase());
-    if (partyPath >= 0 && partyStageGate && isPartyStageActive()) {
+    // Shared picker paths belong to the exact armed room or Track read, not
+    // the idle party gate. Their own one-use gates still consume the request.
+    let roomRead = false, trackRead = false;
+    try {
+      if (partyPath >= 0 && partyPath < 2 && isChildStageActive()) {
+        roomRead = Boolean(roomStageGate?.isRoomReadRequest(request));
+        trackRead = Boolean(rateStageGate?.isTrackRequest(request));
+      }
+    } catch { /* Reject through the normal fenced route. */ }
+    if (partyPath >= 0 && partyStageGate && isPartyStageActive() && !roomRead && !trackRead) {
       let allowed = false;
       try {
         allowed = Boolean(active && !fence.isQuarantined() && isSameFrame(request) && partyStageGate.isActive() &&
@@ -441,7 +450,8 @@ export async function installLabtestSaveRouteChain(page, {
     if (roomPath || ratePath) {
       let allowed = false, gate = null;
       try {
-        gate = roomPath && roomStageGate?.isActive() ? roomStageGate : ratePath && rateStageGate?.isActive() ? rateStageGate : null;
+        gate = roomRead ? roomStageGate : trackRead ? rateStageGate :
+          roomPath && roomStageGate?.isActive() ? roomStageGate : ratePath && rateStageGate?.isActive() ? rateStageGate : null;
         allowed = Boolean(active && gate && isChildStageActive() && !fence.isQuarantined() &&
           isSameFrame(request) && gate.consume(request) && scope.allow(request));
       } catch { /* The page fence remains closed. */ }
