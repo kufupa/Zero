@@ -1649,6 +1649,14 @@ function updateSeparatedQuoteMoney(current: ReservationWorkflowV2Draft, next: Re
       const target = proposal.content.requests.find(row => row.id === other.id);
       if (!target || target.kind !== 'other') return null;
       target.body.requestedText = generated;
+      const allowance = target.body.separatedFrom?.allowance;
+      if (allowance && kind === 'unsupported') {
+        const ids = new Set(request.body.groups.map(group => group.id));
+        const scope = readMoney('scope', claim.scope), refs = readMoney('targetRefs', claim.targetRefs);
+        const selected = scope === 'overall' && Array.isArray(refs) && !refs.length ? [...ids]
+          : scope === 'per_target' && Array.isArray(refs) ? [...ids].filter(id => refs.includes(id)) : [];
+        allowance.groupIds = [...new Set([...allowance.groupIds.filter(id => !ids.has(id)), ...selected])];
+      }
       const fieldOverrides = { ...result.fieldOverrides };
       for (const path of [textPath, indexedTextPath]) if (fieldOverrides[path]?.state === 'set') {
         fieldOverrides[path] = { ...fieldOverrides[path]!, value: generated, updatedAt: new Date().toISOString() };
