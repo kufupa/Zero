@@ -256,7 +256,7 @@ function ChangeList({ editor, path, label }: { editor: Editor; path: string; lab
       <label className={styles.changeAdd}><span className={styles.visuallyHidden}>Add requested change</span>
         <select value="" disabled={editor.view.busy} onChange={event => add(event.target.value)}>
           <option value="">+ Change</option>
-          {fields.map(([name, title]) => <option value={name} key={name}>{title}</option>)}
+          {fields.filter(([name]) => name !== 'roomCount').map(([name, title]) => <option value={name} key={name}>{title}</option>)}
           <option value="shift_dates">Shift both dates</option><option value="shift_departure">Shift departure</option>
         </select>
       </label>
@@ -314,6 +314,8 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
           <option value="set">Set</option>{clearable.has(field) && <option value="clear">Clear</option>}
         </> : <option value={op}>Requested</option>}
       </select></div>
+    {field === 'roomCount' && <span className={styles.hint}>Add or cancel rooms as separate reservations.{!kept && ' Select Keep current to save other changes.'}</span>}
+    {kept && field === 'roomCount' && original.value != null && <span className={styles.hint}>Requested rooms: {text(original.value)}</span>}
     {unsupportedValue !== null && <small className={styles.hint}>Requested: {unsupportedValue}</small>}
     {kept ? <span className={styles.hint}>{known ? 'Original request can be restored here.'
       : 'Infor will leave this field unchanged. Handle the displayed request manually if it is still essential.'}</span> : !known ? <div className={styles.warning}>
