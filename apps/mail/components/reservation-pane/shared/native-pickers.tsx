@@ -190,6 +190,9 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
           onMouseDown={event => event.preventDefault()} onClick={() => { void searchRecommendation(lead.value); }}>
           <strong>{lead.value}</strong>{lead.label !== lead.value && <span> — {lead.label}</span>}
           <small>{lead.basis === 'exact_sender' ? 'From previous bookings' : 'Matches requested name'} · Search Infor</small>
+          {lead.stock && <small>{lead.stock.status === 'available_each_night' ? 'Per-night stock available on each night'
+            : lead.stock.status === 'sold_or_restricted' ? 'Some nights sold or restricted' : 'Per-night stock unresolved'}
+            {' · '}read {new Date(lead.stock.observedAt).toLocaleString()} · whole-stay availability not confirmed</small>}
         </button>)}
       </div>}
       {allowNone && <button type="button" role="option" aria-selected={!query} onMouseDown={event => event.preventDefault()} onClick={() => {

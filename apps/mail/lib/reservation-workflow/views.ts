@@ -98,7 +98,37 @@ export function effectiveAt(snapshot: ReservationPaneSnapshot, path: string): un
 }
 export type NativeChoice = { ref: string; label: string; value: string; detail?: string };
 export type NativeRecommendationLead = { ref: string; value: string; label: string;
-  basis: 'exact_sender' | 'normalized_entity'; support: number };
+  basis: 'exact_sender' | 'normalized_entity'; support: number;
+  stock?: { status: 'available_each_night' | 'sold_or_restricted' | 'unknown'; observedAt: string } };
+
+function currentRoomStock(snapshot: ReservationPaneSnapshot, requestId: string, raw: unknown): NativeRecommendationLead['stock'] {
+  const stock = record(raw), draft = snapshot.session.draft;
+  if (!['available_each_night', 'sold_or_restricted', 'unknown'].includes(text(stock.status)) ||
+      typeof stock.observationRef !== 'string' || typeof stock.observedAt !== 'string' || !Number.isFinite(Date.parse(stock.observedAt)) ||
+      typeof stock.arrival !== 'string' || typeof stock.departure !== 'string' ||
+      typeof stock.requestedCount !== 'number' || typeof stock.adults !== 'number' || !Array.isArray(stock.childAges) ||
+      stock.combinedAvailability !== 'unknown') return undefined;
+  const read = draft.observations.find(row => row.ref === stock.observationRef && row.kind === 'rate_availability' &&
+    (row.status === 'complete' || row.status === 'partial') && row.generationId === draft.generationId &&
+    row.propertyCode === draft.propertyCode && row.sourceMessageId === draft.source.messageId);
+  const result = record(read?.result);
+  if (!read || result.outcome !== 'read' || result.source !== 'hms_cloud_hotel_availability' ||
+      result.roomScope !== 'all_room_types' || result.observedAt !== stock.observedAt) return undefined;
+  const body = record(effectiveAt(snapshot, `${requestPath(requestId)}/body`));
+  const sections = Array.isArray(body.dateSections) ? body.dateSections.map(record) : [];
+  const allocations = Array.isArray(body.allocations) ? body.allocations.map(record) : [];
+  if (sections.length !== 1 || !allocations.length || allocations.length !== stock.requestedCount) return undefined;
+  const section = sections[0]!, childAges = stock.childAges;
+  if (section.arrival !== stock.arrival || section.departure !== stock.departure || allocations.some(allocation => {
+    const occupancy = record(allocation.occupancy);
+    return allocation.dateSectionId !== section.id || occupancy.adults !== stock.adults ||
+      occupancy.childCount !== childAges.length || !Array.isArray(occupancy.childAges) ||
+      JSON.stringify(occupancy.childAges) !== JSON.stringify(childAges);
+  })) return undefined;
+  if (stock.status === 'available_each_night' || stock.status === 'sold_or_restricted' || stock.status === 'unknown')
+    return { status: stock.status, observedAt: stock.observedAt };
+  return undefined;
+}
 
 /** Historical names and codes are search suggestions, never native selections. */
 export function nativeRecommendationLeads(snapshot: ReservationPaneSnapshot, path: string, kind?: string): NativeRecommendationLead[] {
@@ -129,10 +159,17 @@ export function nativeRecommendationLeads(snapshot: ReservationPaneSnapshot, pat
           (row.basis !== 'exact_sender' && row.basis !== 'normalized_entity') ||
           typeof row.support !== 'number' || !Number.isSafeInteger(row.support) || row.support < 1 ||
           kind === 'room_type' && (typeof row.confidence !== 'number' || row.confidence < 0.8)) return [];
-      return [{ ref: observation.ref, value: row.value, label: row.label, basis: row.basis, support: row.support } satisfies NativeRecommendationLead];
+      const stock = kind === 'room_type' ? currentRoomStock(snapshot, request.id, row.liveStock) : undefined;
+      const historicalRank = typeof row.historicalRank === 'number' && Number.isSafeInteger(row.historicalRank) && row.historicalRank >= 0
+        ? row.historicalRank : undefined;
+      return [{ ref: observation.ref, value: row.value, label: row.label, basis: row.basis, support: row.support,
+        ...(stock ? { stock } : {}), ...(historicalRank !== undefined ? { historicalRank } : {}) } satisfies NativeRecommendationLead & { historicalRank?: number }];
     });
   });
-  return leads.filter((row, index) => leads.findIndex(other => normalize(other.value) === normalize(row.value)) === index).slice(0, 3);
+  const stockRank = (row: NativeRecommendationLead) => row.stock?.status === 'available_each_night' ? 0
+    : row.stock?.status === 'sold_or_restricted' ? 2 : 1;
+  return leads.filter((row, index) => leads.findIndex(other => normalize(other.value) === normalize(row.value)) === index)
+    .sort((a, b) => stockRank(a) - stockRank(b) || (a.historicalRank ?? 0) - (b.historicalRank ?? 0)).slice(0, 3);
 }
 function amendPartyRole(snapshot: ReservationPaneSnapshot, requestId: string, owner: string): string | null {
   const root = `${requestPath(requestId)}/body/`;
