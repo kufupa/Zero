@@ -279,6 +279,7 @@ function stayAskActionFromTask(kind: LunaAnalysisWire['tasks'][number]['kind']):
   if (kind === 'create_booking') return 'booking';
   if (kind === 'amend') return 'amend';
   if (kind === 'cancel') return 'cancel';
+  if (kind === 'other') return 'other';
   return null;
 }
 
