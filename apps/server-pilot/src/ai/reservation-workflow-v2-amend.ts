@@ -988,6 +988,10 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
   if (!loaded.draft) return loaded.result;
   const compiled = compileBase(loaded.draft, input.requestId, input.allocationId, 'prepare');
   if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [] };
+  if (Object.hasOwn(compiled.baseChanges, 'children') && (compiled.target.children !== compiled.selected.children ||
+      canonicalJson(compiled.target.childAges) !== canonicalJson(compiled.selected.childAges))) {
+    return { status: 'needs_input', issue: 'amend_child_age_go_authorization_required', fields: ['childCount', 'childAges'] };
+  }
   if (typeof compiled.target.children === 'number' && compiled.target.children > 0 &&
       !Array.isArray(compiled.target.childAges)) {
     return { status: 'needs_input', issue: 'amend_child_age_baseline_unavailable', fields: ['childAges'] };
@@ -1220,6 +1224,10 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
   if (prior?.status === 'unknown' || targetResult?.status === 'unknown') return { status: 'needs_reconcile', operationId: targetResult?.id ?? prior!.id };
   const compiled = compileBase(loaded.draft, input.requestId, input.allocationId, 'execute');
   if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [] };
+  if (Object.hasOwn(compiled.baseChanges, 'children') && (compiled.target.children !== compiled.selected.children ||
+      canonicalJson(compiled.target.childAges) !== canonicalJson(compiled.selected.childAges))) {
+    return { status: 'needs_input', issue: 'amend_child_age_go_authorization_required', fields: ['childCount', 'childAges'] };
+  }
   if (!ctx.user.sessionId || !ctx.user.sessionProfile) {
     return { status: 'refused', issue: 'authenticated_staff_session_required' };
   }

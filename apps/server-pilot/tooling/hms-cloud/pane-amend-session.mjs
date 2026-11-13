@@ -476,6 +476,9 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
   const dateChanged = Object.hasOwn(proposed, 'arrival') || Object.hasOwn(proposed, 'departure');
   const childChanged = Object.hasOwn(changes, 'children') && (changes.children !== selected.children ||
     !same(changes.childAges, selected.childAges));
+  // The native child validation callback may persist before Save. Keep it fenced
+  // until explicit Go authorization and partial-effect recovery cover that callback.
+  if (childChanged) throw new Error('CHILD_AGE_GO_AUTHORIZATION_REQUIRED');
   const roomChanged = target.roomType !== selected.roomType, rateChanged = target.ratePlan !== selected.ratePlan;
   const chargeChanged = Object.hasOwn(changes, 'roomTypeForCharge'), trackChanged = Object.hasOwn(changes, 'track');
   const needsAvailability = dateChanged || Object.hasOwn(proposed, 'adults') || childChanged || roomChanged || rateChanged || chargeChanged;
