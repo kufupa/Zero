@@ -664,6 +664,7 @@ export function buildReservationWorkflowV2CandidateReadPlan(input: {
       const availabilityRefs = [...new Set([...sourceRefs, ...occupancy.flatMap((row) => row.sourceRefs),
         ...request.roomTypeHints.flatMap((hint) => hint.sourceRefs), ...(request.roomCount?.sourceRefs ?? [])])];
       if (request.kind !== 'amend' && sourceRefs.length) add('rate_availability', request.id, `${date.arrival?.raw ?? ''}:${date.departure?.raw ?? ''}`, {
+        requestId: request.id,
         dates: [{ arrival: date.arrival?.value ?? null, departure: date.departure?.value ?? null,
           arrivalRaw: date.arrival?.raw ?? null, departureRaw: date.departure?.raw ?? null,
           sourceRefs: [...(date.arrival?.sourceRefs ?? []), ...(date.departure?.sourceRefs ?? [])] }],
@@ -4403,6 +4404,61 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
   return { proposal, observations, requirements };
 }
 
+function rankHistoricalRoomLeads(input: { proposal: ReservationWorkflowV2Proposal; leads: ReservationWorkflowV2Observation[];
+  observations: ReservationWorkflowV2Observation[]; extractionIdByProposalRequestId: Map<string, string> }): ReservationWorkflowV2Observation[] {
+  return input.leads.map((lead) => {
+    if (lead.criteria.kind !== 'historical_lookup_leads' || lead.criteria.role !== 'room_type' ||
+        typeof lead.criteria.requestId !== 'string' || !Array.isArray(lead.result.leads)) return lead;
+    const request = input.proposal.content.requests.find((row) => row.id === lead.criteria.requestId);
+    if (!request || request.kind !== 'create' || request.body.dateSections.length !== 1 || !request.body.allocations.length) return lead;
+    const section = request.body.dateSections[0]!;
+    if (!isoDay(section.arrival) || !isoDay(section.departure)) return lead;
+    const start = Date.parse(`${section.arrival}T00:00:00Z`), end = Date.parse(`${section.departure}T00:00:00Z`);
+    const count = (end - start) / 86_400_000;
+    if (!Number.isInteger(count) || count < 1 || count > 90) return lead;
+    const dates = Array.from({ length: count }, (_, index) => new Date(start + index * 86_400_000).toISOString().slice(0, 10));
+    const sourceRequestId = input.extractionIdByProposalRequestId.get(request.id);
+    if (!sourceRequestId || input.proposal.content.requests.filter((row) => row.kind === 'create' &&
+      input.extractionIdByProposalRequestId.get(row.id) === sourceRequestId).length !== 1) return lead;
+    const reads = input.observations.filter((row) => row.kind === 'rate_availability' && row.generationId === lead.generationId &&
+      (row.status === 'complete' || row.status === 'partial') && row.propertyCode === lead.propertyCode &&
+      row.sourceMessageId === lead.sourceMessageId && row.criteria.requestId === sourceRequestId &&
+      Array.isArray(row.criteria.dates) && row.criteria.dates.some((date) => isRecord(date) &&
+        date.arrival === section.arrival && date.departure === section.departure) &&
+      row.result.outcome === 'read' && row.result.roomScope === 'all_room_types' && typeof row.result.observedAt === 'string' &&
+      Array.isArray(row.result.groups) && row.result.groups.length === 1 && isRecord(row.result.groups[0]) &&
+      row.result.groups[0].outcome === 'observed' && Array.isArray(row.result.groups[0].options));
+    if (reads.length !== 1) return lead;
+    const read = reads[0]!, group = (read.result.groups as Array<Record<string, unknown>>)[0]!;
+    const adults = group.requestedAdults, requestedCount = group.requestedCount;
+    const childAges = Array.isArray(group.requestedChildAges) ? group.requestedChildAges : null;
+    if (typeof adults !== 'number' || !childAges || typeof requestedCount !== 'number' ||
+        request.body.allocations.length !== requestedCount || request.body.allocations.some((allocation) =>
+          allocation.dateSectionId !== section.id || allocation.occupancy.adults !== adults ||
+          allocation.occupancy.childCount !== childAges.length || !Array.isArray(allocation.occupancy.childAges) ||
+          JSON.stringify(allocation.occupancy.childAges) !== JSON.stringify(childAges))) return lead;
+    const options = (group.options as unknown[]).filter(isRecord);
+    const ranked = lead.result.leads.map((item, historicalRank) => {
+      if (!isRecord(item) || typeof item.value !== 'string') return { item, rank: 1 };
+      const matching = options.filter((option) => isRecord(option.room) && normalizedFact(option.room.code) === normalizedFact(item.value));
+      const results = matching.map((option) => {
+        const nights = Array.isArray(option.nightly) ? option.nightly.filter(isRecord) : [];
+        if (dates.some((date) => nights.filter((night) => night.date === date && night.requestedCount === requestedCount).length !== 1)) return 'unknown';
+        const statuses = dates.map((date) => nights.find((night) => night.date === date)?.stockStatus);
+        return statuses.every((status) => status === 'available') ? 'available_each_night' :
+          statuses.some((status) => status === 'sold' || status === 'restricted') ? 'sold_or_restricted' : 'unknown';
+      });
+      const status = results.includes('available_each_night') ? 'available_each_night' :
+        results.length && results.every((result) => result === 'sold_or_restricted') ? 'sold_or_restricted' : 'unknown';
+      return { item: { ...item, historicalRank, liveStock: { status, observationRef: read.ref, arrival: section.arrival, departure: section.departure,
+        requestedCount, adults, childAges, observedAt: read.result.observedAt, combinedAvailability: 'unknown' } },
+      rank: status === 'available_each_night' ? 0 : status === 'sold_or_restricted' ? 2 : 1 };
+    });
+    ranked.sort((left, right) => left.rank - right.rank);
+    return { ...lead, result: { ...lead.result, leads: ranked.map((row) => row.item) } };
+  });
+}
+
 async function applyHistoricalPartySuggestions(input: { proposal: ReservationWorkflowV2Proposal;
   observations: ReservationWorkflowV2Observation[]; leads: ReservationWorkflowV2Observation[];
   source: ReservationWorkflowV2Source; propertyCode: string; generationId: string; env: NodeJS.ProcessEnv;
@@ -5341,10 +5397,12 @@ export async function runReservationWorkflowV2Prefill(input: {
       selection: input.selection, evidence, observations: finalObservations, source: input.source });
     finalObservations.push(...amendNotes.observations);
     const proposal = amendNotes.proposal;
-    const historicalLeads = await loadReservationNativeLeads({ propertyCode: input.propertyCode, source: input.source,
+    const nativeLeads = await loadReservationNativeLeads({ propertyCode: input.propertyCode, source: input.source,
       generationId, proposal, fromAddress: input.selection.fromAddress ?? null, env, signal: input.signal,
       db: input.db, transportId: input.transportId,
       sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []) });
+    const historicalLeads = rankHistoricalRoomLeads({ proposal, leads: nativeLeads, observations: finalObservations,
+      extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId });
     const partyResult = await applyHistoricalPartySuggestions({ proposal, observations: finalObservations, leads: historicalLeads,
       source: input.source, propertyCode: input.propertyCode, generationId, env, signal: input.signal,
       allowNativeRead: Boolean(input.db && input.lookupFixtures === undefined && !input.readCandidate) });
@@ -5352,10 +5410,12 @@ export async function runReservationWorkflowV2Prefill(input: {
       proposal: partyResult.proposal, fieldReviewRequirements: amendNotes.requirements,
       errors: [...readErrors, { stage: 'synthesis', ...error }] };
   }
-  const historicalLeads = await loadReservationNativeLeads({ propertyCode: input.propertyCode, source: input.source,
+  const nativeLeads = await loadReservationNativeLeads({ propertyCode: input.propertyCode, source: input.source,
     generationId, proposal: finalProposal!, fromAddress: input.selection.fromAddress ?? null, env, signal: input.signal,
     db: input.db, transportId: input.transportId,
     sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []) });
+  const historicalLeads = rankHistoricalRoomLeads({ proposal: finalProposal!, leads: nativeLeads, observations: finalObservations,
+    extractionIdByProposalRequestId: boundProjection?.extractionIdByProposalRequestId ?? new Map() });
   const partyResult = await applyHistoricalPartySuggestions({ proposal: finalProposal!, observations: finalObservations, leads: historicalLeads,
     source: input.source, propertyCode: input.propertyCode, generationId, env, signal: input.signal,
     allowNativeRead: Boolean(input.db && input.lookupFixtures === undefined && !input.readCandidate) });
