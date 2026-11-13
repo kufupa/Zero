@@ -21,11 +21,11 @@ export function inferOutlookDirection(evidence: SyncObservationV1,
   const identities = new Set([mailbox.email, ...configured].map(address));
   const sender = address(evidence.semantic.sentRepresenting?.address || evidence.semantic.sender?.address || evidence.semantic.from);
   if (!sender) return 'unknown';
-  if (identities.has(sender)) return 'outbound';
   const recipients = [...evidence.semantic.to, ...evidence.semantic.cc.map(value => value.address),
     ...evidence.semantic.bcc.map(value => value.address)];
-  if (recipients.some(value => identities.has(address(value))) ||
-      (evidence.timestamps.receivedAt && !evidence.event.wasUnsent)) return 'inbound';
+  if (recipients.some(value => identities.has(address(value)))) return 'inbound';
+  if (identities.has(sender)) return 'outbound';
+  if (evidence.timestamps.receivedAt && !evidence.event.wasUnsent) return 'inbound';
   return 'unknown';
 }
 
