@@ -13,6 +13,10 @@ export function outlookSyncLabel(status: SyncStatusV1 | null, error: string | nu
     0,
     (status.live?.discovered ?? status.discovered) - (status.live?.committed ?? status.committed),
   );
+  const gaps = status.live?.gaps ?? status.gaps;
+  if (gaps > 0) return pending > 0
+    ? `${gaps} copies need attention. ${pending} not yet searchable`
+    : `${gaps} copies need attention`;
   if (pending) return `${pending} copies pending`;
   if (status.committedThrough)
     return `Up to date — checked ${new Date(status.committedThrough).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;

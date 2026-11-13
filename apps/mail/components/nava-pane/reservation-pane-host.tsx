@@ -222,7 +222,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
               : result.reason === 'content_mismatch'
                 ? 'The selected email differs from Nava’s copy. Retry after Outlook finishes copying it.'
               : result.reason === 'attention'
-                ? 'This email copy needs checking before Nava can open it. Retry after copying finishes.'
+                ? 'This email copy needs attention before Nava can open it. Open sync details and choose Retry missing.'
                 : elapsedMs >= 110_000
                   ? 'Nava could not open this email copy yet. Retry opening it, or reconnect Outlook if copying has stopped.'
                   : elapsedMs >= 30_000

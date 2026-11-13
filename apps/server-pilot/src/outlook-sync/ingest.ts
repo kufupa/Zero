@@ -8,6 +8,27 @@ import type { OutlookHistoryInput } from '../mail/ingest/outlook-history.js';
 import { syncObservationV1, type SyncObservationV1 } from './contracts.js';
 import { reusableContent } from './content.js';
 
+export function inferOutlookDirection(evidence: SyncObservationV1,
+  mailbox?: { email: string; sendFromConfig: unknown }): SyncObservationV1['direction'] {
+  if (evidence.direction !== 'unknown' || evidence.event.isUnsent) return evidence.direction;
+  if (evidence.event.kind === 'saved-sent' || evidence.event.sentCopySaved) return 'outbound';
+  if (evidence.event.kind === 'new-mail') return 'inbound';
+  if (!mailbox || !evidence.semanticReady) return 'unknown';
+  const address = (raw: string) => (/<([^<>]+)>/.exec(raw)?.[1] ?? raw).trim().toLowerCase();
+  const config = mailbox.sendFromConfig;
+  const configured = config && typeof config === 'object' && 'aliases' in config && Array.isArray(config.aliases)
+    ? config.aliases.filter((value): value is string => typeof value === 'string') : [];
+  const identities = new Set([mailbox.email, ...configured].map(address));
+  const sender = address(evidence.semantic.sentRepresenting?.address || evidence.semantic.sender?.address || evidence.semantic.from);
+  if (!sender) return 'unknown';
+  if (identities.has(sender)) return 'outbound';
+  const recipients = [...evidence.semantic.to, ...evidence.semantic.cc.map(value => value.address),
+    ...evidence.semantic.bcc.map(value => value.address)];
+  if (recipients.some(value => identities.has(address(value))) ||
+      (evidence.timestamps.receivedAt && !evidence.event.wasUnsent)) return 'inbound';
+  return 'unknown';
+}
+
 export type SyncIngestionStorage = Pick<OutlookSyncStorage, 'verifyReceipt' | 'readSealedBounded'>;
 export type IngestionSource = typeof outlookSyncSource.$inferSelect;
 export type IngestionObservation = typeof outlookSyncObservation.$inferSelect;
@@ -52,13 +73,15 @@ export async function buildOutlookHistoryInput(
   observation: IngestionObservation,
   artifacts: IngestionArtifact[],
   origin?: IngestionObservation,
+  mailbox?: { email: string; sendFromConfig: unknown },
 ): Promise<{ input: OutlookHistoryInput; evidence: SyncObservationV1 }> {
   const parsed = syncObservationV1.safeParse(observation.evidence);
   if (!parsed.success) throw new SyncIngestionGap('INVALID_OBSERVATION');
-  const evidence = parsed.data;
+  const evidence = { ...parsed.data, direction: inferOutlookDirection(parsed.data, mailbox) };
   if (!evidence.semanticReady) throw new SyncIngestionGap('METADATA_NOT_ENRICHED');
   if (observation.availability !== 'available') throw new SyncIngestionGap('CONTENT_UNAVAILABLE');
-  if (evidence.direction === 'unknown' || evidence.direction !== observation.direction)
+  if (evidence.direction === 'unknown' ||
+      (observation.direction !== 'unknown' && evidence.direction !== observation.direction))
     throw new SyncIngestionGap('UNKNOWN_DIRECTION');
   const date =
     evidence.direction === 'outbound' ? evidence.timestamps.sentAt : evidence.timestamps.receivedAt;

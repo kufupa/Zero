@@ -311,13 +311,13 @@ describe('server-owned durable Outlook ingestion drain', () => {
     30000,
   );
   it(
-    'keeps missing required artifacts pending and reports unknown direction as an attention gap',
+    'keeps missing required artifacts pending and recovers unknown direction from mailbox evidence',
     async () =>
       withIngestionDb(async ({ db }) => {
         const missing = await accepted(db, { missing: true });
         expect(await claimSyncIngestion(db, 'worker')).toBeNull();
         const unknown = await accepted(db, { direction: 'unknown' });
-        expect((await runSyncDrainPass(db, unknown.adapter, 'worker')).attention).toBe(1);
+        expect((await runSyncDrainPass(db, unknown.adapter, 'worker')).committed).toBe(1);
         expect(
           (
             await db
@@ -325,7 +325,7 @@ describe('server-owned durable Outlook ingestion drain', () => {
               .from(outlookSyncObservation)
               .where(eq(outlookSyncObservation.id, unknown.observationId))
           )[0].errorCode,
-        ).toBe('UNKNOWN_DIRECTION');
+        ).toBeNull();
         expect(
           (
             await db
@@ -333,7 +333,7 @@ describe('server-owned durable Outlook ingestion drain', () => {
               .from(outlookSyncSource)
               .where(eq(outlookSyncSource.id, unknown.sourceId))
           )[0].gapCount,
-        ).toBe(1);
+        ).toBe(0);
         expect(missing.adapter.bytes.size).toBe(2);
       }),
     30000,
