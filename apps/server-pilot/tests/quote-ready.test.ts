@@ -263,7 +263,7 @@ describe('prepared quote input from stored extraction', () => {
         totalRooms: 1,
         totalAdults: 2,
         totalChildren: null,
-        rows: [{ ...stay.rows[0]!, roomType: 'Standard King', rooms: 1, adultsPerRoom: 2, childAges: [], board: null }],
+        rows: [{ ...stay.rows[0]!, roomType: 'Standard King', rooms: 1, adultsPerRoom: 2, childAges: [], mealPlan: null }],
       }],
       missing: [],
     });

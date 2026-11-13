@@ -6,9 +6,7 @@ import { amendDraftMatchesForm, cloudAmendFirstPilotScopeSupported, cloudAmendSo
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { AE1_OUTPUT } from './fixtures/inbound-extraction.js';
 
-const { agency, endClient, stays, ...extraction } = AE1_OUTPUT;
-const ACTION_OUTPUT = { ...extraction, bookingAgency: agency, organization: endClient,
-  stays: stays.map(stay => ({ ...stay, rows: stay.rows.map(({ board, ...row }) => ({ ...row, mealPlan: board })) })),
+const ACTION_OUTPUT = { ...AE1_OUTPUT,
   needsAction: true, action: 'amend' as const, actionEvidence: 'Please change the rate to BAR.', actionConfidence: 'high' as const };
 
 describe('amendment request draft', () => {
