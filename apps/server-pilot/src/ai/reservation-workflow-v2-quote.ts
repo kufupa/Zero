@@ -698,8 +698,13 @@ function compileQuote(
   const notesPath = path('notes');
   const notesResult = resolved(notesPath, request.body.notes);
   const sourceNotes = notesResult && !('issue' in notesResult) ? cleanText(notesResult.value) ?? undefined : undefined;
-  const lunchRequested = request.body.groups.some(group => normalizeRequestedMealPlan(group.requestedMealPlan).lunchRequested) ||
-    request.body.requestedMoney.some(claim => claim.staffAllowanceType === 'lunch');
+  const lunchRequested = request.body.groups.some((group, index) => {
+    const requested = resolvedLeaf(draft, path('groups', index, 'requestedMealPlan'), group.requestedMealPlan);
+    return !('issue' in requested) && normalizeRequestedMealPlan(requested.value).lunchRequested;
+  }) || extras.some(extra => extra.service === 'lunch_allowance') || request.body.requestedMoney.some((claim, index) => {
+    const kind = resolvedLeaf(draft, path('requestedMoney', index, 'staffAllowanceType'), claim.staffAllowanceType);
+    return !('issue' in kind) && kind.value === 'lunch';
+  });
   const lunchNotice = lunchRequested ? 'Centurion meal plans do not include lunch. Lunch is quoted as a separate extra.' : undefined;
   const notes = [sourceNotes, lunchNotice].filter(Boolean).join('\n') || undefined;
   if (execute && lunchRequested && !extras.some(extra => extra.service === 'lunch_allowance')) {

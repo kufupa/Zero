@@ -677,6 +677,8 @@ export function compileReservationWorkflowV2Create(draft: ReservationWorkflowV2D
 export function reservationWorkflowV2MealPlanMatches(expected: string | null, observed: unknown, propertyCode: string): boolean {
   if (expected === null) return true;
   if (typeof observed !== 'string') return false;
+  const requested = normalizeRequestedMealPlan(expected);
+  if (requested.lunchRequested && requested.mealPlan === null) return true;
   const aliases = boardsFor(propertyCode);
   const mealCode = (value: string) => {
     const normalized = norm(value);
