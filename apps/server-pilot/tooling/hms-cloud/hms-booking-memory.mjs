@@ -46,6 +46,46 @@ export function buildHmsRateFrequency({ propertyCode, pmsSnapshots = [] } = {}) 
     full: counts(false), email: counts(true) };
 }
 
+/** Derive only recorded rate/meal pairs from native-confirmed stays captured before asOf. */
+export function buildHmsRateMealMapping({ propertyCode, pmsSnapshots = [], asOf } = {}) {
+  const scope = text(propertyCode).toUpperCase(), cutoff = Date.parse(asOf);
+  if (!scope || !Number.isFinite(cutoff)) throw new TypeError('Property and asOf timestamp are required.');
+  const latest = new Map();
+  for (const snapshot of pmsSnapshots) {
+    if (text(snapshot?.propertyCode) && text(snapshot.propertyCode).toUpperCase() !== scope) throw new TypeError('Rate history spans properties.');
+    const times = [snapshot?.startedAt, snapshot?.updatedAt].filter(Boolean).map(value => Date.parse(value));
+    if (!times.length || times.some(value => !Number.isFinite(value))) continue;
+    const captured = Math.max(...times);
+    if (captured >= cutoff) continue;
+    for (const result of snapshot?.results || []) {
+      const key = confirmationKey(result?.confirmation);
+      if (!key || result.ok === false || historicalIdentity(result, key).nativeConfirmation !== 'matched' ||
+          (text(result.propertyCode) && text(result.propertyCode).toUpperCase() !== scope)) continue;
+      const fields = [...(result.recordView?.details?.fields || []),
+        ...(result.stay360?.details?.cards || []).flatMap(card => Array.isArray(card?.fields) ? card.fields : [])];
+      const values = label => [...new Set(fields.filter(field => labelOf(field) === label).map(field => text(field.value)).filter(Boolean))];
+      const rate = values('rate plan'), meal = values('meal plan');
+      if (rate.length !== 1 || !/^[A-Z0-9]{1,12}$/.test(rate[0].toUpperCase()) || meal.length > 1) continue;
+      const item = { ratePlan: rate[0].toUpperCase(), mealPlan: meal[0] || null, captured };
+      const previous = latest.get(key);
+      if (!previous || captured > previous.captured) latest.set(key, item);
+      else if (captured === previous.captured && (previous.ratePlan !== item.ratePlan || previous.mealPlan !== item.mealPlan)) {
+        latest.set(key, { ...item, conflicting: true });
+      }
+    }
+  }
+  const byRate = Map.groupBy([...latest.values()].filter(item => !item.conflicting), item => item.ratePlan);
+  return [...byRate].map(([ratePlan, records]) => {
+    const meals = Map.groupBy(records.filter(item => item.mealPlan), item => item.mealPlan);
+    const ranked = [...meals].map(([mealPlan, matches]) => ({ mealPlan, support: matches.length,
+      denominator: records.length, confidence: matches.length / records.length }))
+      .sort((a, b) => b.support - a.support || a.mealPlan.localeCompare(b.mealPlan));
+    return { propertyCode: scope, ratePlan, countingUnit: 'distinct_verified_stays',
+      capturedThrough: new Date(Math.max(...records.map(item => item.captured))).toISOString(),
+      denominator: records.length, candidates: ranked };
+  }).sort((a, b) => a.ratePlan.localeCompare(b.ratePlan));
+}
+
 const LABELS = {
   'primary booking agency': 'bookingAgency',
   'booking agency': 'bookingAgency',
@@ -334,6 +374,47 @@ export function buildHmsBookingMemory({
   };
 }
 
+function observationSnapshots(propertyCode, observations) {
+  const scope = text(propertyCode).toUpperCase();
+  const unique = new Map();
+  for (const observation of observations) {
+    if (observation?.schemaVersion !== 'hms-stay-observation/v1' ||
+        text(observation.propertyCode).toUpperCase() !== scope ||
+        !Number.isFinite(Date.parse(observation.capturedAt)) || !text(observation.source) ||
+        !observation.result || typeof observation.result !== 'object') {
+      throw new TypeError('Invalid stay observation, property, timestamp, or provenance.');
+    }
+    const result = observation.result;
+    const key = confirmationKey(result.confirmation);
+    if (!key || (text(result.propertyCode) && text(result.propertyCode).toUpperCase() !== scope) ||
+        historicalIdentity(result, key).nativeConfirmation !== 'matched') {
+      throw new TypeError('Stay observation requires a verified native confirmation.');
+    }
+    const capturedAt = new Date(observation.capturedAt).toISOString();
+    const item = { ...observation, propertyCode: scope, capturedAt };
+    const identity = JSON.stringify([scope, capturedAt, key, text(observation.source)]);
+    const prior = unique.get(identity);
+    if (prior && JSON.stringify(prior.result) !== JSON.stringify(result)) {
+      throw new TypeError('A stay observation identity has conflicting contents.');
+    }
+    unique.set(identity, item);
+  }
+  return [...unique.values()].map(item => ({ propertyCode: scope, startedAt: item.capturedAt,
+    updatedAt: item.capturedAt, sourceType: item.source, results: [item.result] }));
+}
+
+/** Add a verified, timestamped native stay read; repeated identical reads are idempotent. */
+export function ingestStayObservation({ propertyCode, pmsSnapshots = [], outboundPdfRecords = [],
+  messageRecords = [], observations = [] } = {}, observation) {
+  const next = [...observations, observation];
+  const snapshots = observationSnapshots(propertyCode, next);
+  const deduplicated = new Map(next.map(item => [JSON.stringify([text(item.propertyCode).toUpperCase(),
+    new Date(item.capturedAt).toISOString(), confirmationKey(item.result.confirmation), text(item.source)]), item]));
+  return { propertyCode: text(propertyCode).toUpperCase(), pmsSnapshots, outboundPdfRecords, messageRecords,
+    observations: [...deduplicated.values()], memory: buildHmsBookingMemory({ propertyCode,
+      pmsSnapshots: [...pmsSnapshots, ...snapshots], outboundPdfRecords, messageRecords }) };
+}
+
 async function readSource(path, jsonl) {
   const content = await readFile(path, 'utf8');
   try {
@@ -344,18 +425,29 @@ async function readSource(path, jsonl) {
   }
 }
 
+export async function loadHmsRateMealMapping({ propertyCode, pmsPaths = [], observationsPath, asOf } = {}) {
+  if (!pmsPaths.length && !observationsPath) throw new TypeError('Provide a native stay source.');
+  const [snapshots, observations] = await Promise.all([
+    Promise.all(pmsPaths.map(path => readSource(path, false))),
+    observationsPath ? readSource(observationsPath, true) : [],
+  ]);
+  return buildHmsRateMealMapping({ propertyCode, asOf,
+    pmsSnapshots: [...snapshots, ...observationSnapshots(propertyCode, observations)] });
+}
+
 /** Load private source files once, then reuse or JSON-serialize the returned memory. */
 export async function loadHmsBookingMemory({
-  propertyCode, pmsPath, outboundPdfPath,
+  propertyCode, pmsPath, outboundPdfPath, observationsPath,
   pmsPaths = pmsPath ? [pmsPath] : [], outboundPdfPaths = outboundPdfPath ? [outboundPdfPath] : [],
 } = {}) {
   if (!pmsPaths.length) throw new TypeError('Provide at least one pmsPath.');
-  const [pmsSnapshots, outbound] = await Promise.all([
+  const [pmsSnapshots, outbound, observations] = await Promise.all([
     Promise.all(pmsPaths.map(path => readSource(path, false))),
     Promise.all(outboundPdfPaths.map(path => readSource(path, true))),
+    observationsPath ? readSource(observationsPath, true) : [],
   ]);
   return buildHmsBookingMemory({
-    propertyCode, pmsSnapshots, outboundPdfRecords: outbound.flat(),
+    propertyCode, pmsSnapshots: [...pmsSnapshots, ...observationSnapshots(propertyCode, observations)], outboundPdfRecords: outbound.flat(),
     pmsSourceFiles: pmsPaths, outboundSourceFiles: outboundPdfPaths,
   });
 }

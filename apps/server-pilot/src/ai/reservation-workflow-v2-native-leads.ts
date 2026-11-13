@@ -10,7 +10,7 @@ import { partyMatchSearchTerms } from './party-match-v2.js';
 
 type PartyRole = 'agency' | 'organization' | 'ar_account';
 type Lead = { value: string; label: string; basis: 'exact_sender' | 'normalized_entity';
-  support: number; confirmations: string[] };
+  support: number; confirmations: string[]; denominator: number; confidence: number | null; autoSelectable: boolean };
 const partyFields = [
   { role: 'agency', field: 'bookingAgency' },
   { role: 'organization', field: 'organization' },
@@ -24,16 +24,45 @@ const memorySchema = z.object({
     historicalIdentity: z.object({ nativeConfirmation: z.string() }).passthrough() }).passthrough()),
   addressEvidence: z.array(z.object({ confirmationKey: z.string(), role: z.string(), address: z.string(),
     sentAt: z.string().nullable().optional(), messageDbId: z.string().nullable().optional(),
-    threadId: z.string().nullable().optional() }).passthrough()),
+    threadId: z.string().nullable().optional(), linkMethod: z.string().optional(),
+    linkProvenance: z.object({ ambiguousAttachment: z.boolean().optional(),
+      labeledConfirmationMatch: z.boolean().nullable().optional(), subjectHasOtherConfirmation: z.boolean().nullable().optional() }).passthrough().optional(),
+    linkedPmsSnapshotIds: z.array(z.string()).optional() }).passthrough()),
 }).passthrough();
+const historicalHintSchema = z.object({ values: z.array(z.object({
+  value: z.string(), valueTruncated: z.boolean(),
+  evidence: z.object({ confirmationRecords: z.array(z.object({ confirmationNumber: z.string().nullable() }).passthrough()) }).passthrough(),
+}).passthrough()) }).passthrough();
 const querySchema = z.object({ candidates: z.array(z.object({
   combination: z.record(z.string().nullable()),
   conflictingFields: z.array(z.string()),
-  evidence: z.object({ confirmationRecords: z.array(z.object({ confirmationNumber: z.string().nullable() }).passthrough()) }).passthrough(),
-}).passthrough()), historicalHints: z.object({ ratePlan: z.object({ values: z.array(z.object({
-  value: z.string(), valueTruncated: z.boolean(),
-  evidence: z.object({ confirmationRecords: z.array(z.object({ confirmationNumber: z.string().nullable() }).passthrough()) }).passthrough(),
-}).passthrough()) }).passthrough() }).passthrough() }).passthrough();
+  evidence: z.object({ confirmationRecords: z.array(z.object({ confirmationNumber: z.string().nullable() }).passthrough()),
+    truncated: z.boolean() }).passthrough(),
+}).passthrough()), candidatesTruncated: z.boolean(), conflictsTruncated: z.boolean(),
+  conflicts: z.array(z.object({ evidence: z.object({ confirmationNumber: z.string().nullable() }).passthrough() }).passthrough()),
+  historicalHints: z.object({ ratePlan: historicalHintSchema, roomType: historicalHintSchema }).passthrough() }).passthrough();
+
+const rateMealMappingSchema = z.array(z.object({ propertyCode: z.string(), ratePlan: z.string(),
+  countingUnit: z.literal('distinct_verified_stays'), capturedThrough: z.string(), denominator: z.number().int().positive(),
+  candidates: z.array(z.object({ mealPlan: z.string(), support: z.number().int().positive(),
+    denominator: z.number().int().positive(), confidence: z.number().min(0).max(1) })) }));
+
+/** Native stay evidence, scoped to the selected message's arrival; no rate-code guessing. */
+export async function loadReservationRateMealMapping(input: { propertyCode: string; arrivedAt: string; env?: NodeJS.ProcessEnv }):
+  Promise<{ status: 'available'; mappings: z.infer<typeof rateMealMappingSchema> } | { status: 'unavailable'; issue: string }> {
+  const env = input.env ?? process.env;
+  const dir = env.HMS_MEMORY_DATA_DIR || '/home/orca/.local/share/zero/research/halloween/raw-data';
+  try {
+    const module = await import(new URL('../../tooling/hms-cloud/hms-booking-memory.mjs', import.meta.url).href);
+    const parsed = rateMealMappingSchema.safeParse(await module.loadHmsRateMealMapping({ propertyCode: input.propertyCode,
+      asOf: input.arrivedAt, pmsPaths: [env.HMS_MEMORY_PMS_PATH || `${dir}/stay360-1a-1b-1c-20261029-run01.json`],
+      observationsPath: env.HMS_MEMORY_OBSERVATIONS_PATH || undefined }));
+    if (!parsed.success) return { status: 'unavailable', issue: 'RATE_MEAL_MEMORY_INVALID' };
+    return { status: 'available', mappings: parsed.data };
+  } catch {
+    return { status: 'unavailable', issue: 'RATE_MEAL_MEMORY_UNAVAILABLE' };
+  }
+}
 
 /** Mechanical aliases stay within their entity type; commercial names remain display evidence. */
 export function reservationEntityKey(value: string, role: PartyRole): string {
@@ -48,7 +77,7 @@ export function reservationEntityKey(value: string, role: PartyRole): string {
 type Memory = z.infer<typeof memorySchema>;
 let cached: { key: string; loadedAt: number; value: Promise<Memory | null> } | undefined;
 async function loadMemory(env: NodeJS.ProcessEnv): Promise<Memory | null> {
-  const key = JSON.stringify([env.HMS_MEMORY_PMS_PATH, env.HMS_MEMORY_OUTBOUND_PATH, env.HMS_MEMORY_DATA_DIR]);
+  const key = JSON.stringify([env.HMS_MEMORY_PMS_PATH, env.HMS_MEMORY_OUTBOUND_PATH, env.HMS_MEMORY_DATA_DIR, env.HMS_MEMORY_OBSERVATIONS_PATH]);
   if (!cached || cached.key !== key || Date.now() - cached.loadedAt > 5 * 60_000) {
     const value = (async () => {
       const tool = await import(new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url).href);
@@ -56,6 +85,7 @@ async function loadMemory(env: NodeJS.ProcessEnv): Promise<Memory | null> {
       const loaded = await tool.loadOptionalBookingMemory({
         pmsPath: env.HMS_MEMORY_PMS_PATH || `${dir}/stay360-1a-1b-1c-20261029-run01.json`,
         outboundPdfPath: env.HMS_MEMORY_OUTBOUND_PATH || (env.HMS_MEMORY_PMS_PATH ? undefined : `${dir}/centurion-outbound-pdf-records-2026-10-29.jsonl`),
+        observationsPath: env.HMS_MEMORY_OBSERVATIONS_PATH || undefined,
       });
       const parsed = memorySchema.safeParse(loaded.memory);
       return parsed.success ? parsed.data : null;
@@ -78,9 +108,10 @@ export async function loadReservationNativeLeads(input: { propertyCode: string;
     if (!loaded || loaded.propertyCode !== input.propertyCode) return [];
     const cutoff = Date.parse(input.source.arrivedAt);
     const snapshotTimes = new Map(loaded.snapshots.flatMap(snapshot => {
-      const captured = snapshot.updatedAt || snapshot.startedAt;
-      return captured && Number.isFinite(Date.parse(captured)) && Date.parse(captured) < cutoff
-        ? [[snapshot.snapshotId, captured] satisfies [string, string]] : [];
+      const captured = [snapshot.startedAt, snapshot.updatedAt].filter((value): value is string => Boolean(value));
+      if (!captured.length || captured.some(value => !Number.isFinite(Date.parse(value)))) return [];
+      const latest = Math.max(...captured.map(value => Date.parse(value)));
+      return latest < cutoff ? [[snapshot.snapshotId, new Date(latest).toISOString()] satisfies [string, string]] : [];
     }));
     if (!snapshotTimes.size) return [];
     const excluded = new Set(JSON.stringify(input.proposal).match(/\b\d{6,10}-\d{1,2}\b/g) ?? []);
@@ -98,7 +129,11 @@ export async function loadReservationNativeLeads(input: { propertyCode: string;
       address.threadId === input.source.threadId) excluded.add(address.confirmationKey);
     const memory = { ...loaded, observations: loaded.observations.filter(row =>
       snapshotTimes.has(row.snapshotId) && row.historicalIdentity.nativeConfirmation === 'matched' && !excluded.has(row.confirmationKey)),
-      addressEvidence: loaded.addressEvidence.filter(row => !excluded.has(row.confirmationKey) && row.sentAt && Date.parse(row.sentAt) < cutoff) };
+      addressEvidence: loaded.addressEvidence.filter(row => !excluded.has(row.confirmationKey) && row.sentAt &&
+        Number.isFinite(Date.parse(row.sentAt)) && Date.parse(row.sentAt) < cutoff && row.linkMethod === 'attachment-id' &&
+        row.linkProvenance?.ambiguousAttachment === false && row.linkProvenance.labeledConfirmationMatch === true &&
+        row.linkProvenance.subjectHasOtherConfirmation !== true &&
+        row.linkedPmsSnapshotIds?.some(id => snapshotTimes.has(id))) };
     if (!memory.observations.length) return [];
     const module = await import(new URL('../../tooling/hms-cloud/hms-booking-memory.mjs', import.meta.url).href);
     const query = (criteria: object) => {
@@ -111,6 +146,14 @@ export async function loadReservationNativeLeads(input: { propertyCode: string;
     const email = addresses.success && addresses.data.length === 1 ? addresses.data[0] : null;
     const sender = email
       ? [query({ email, role: 'inbound-sender' }), query({ email, role: 'outbound-recipient' })].filter(row => row !== null) : [];
+    const domain = email?.split('@')[1];
+    const domainResults = domain ? [query({ domain, role: 'inbound-sender' }), query({ domain, role: 'outbound-recipient' })]
+      .filter(row => row !== null) : [];
+    const organizations = new Set(domainResults.flatMap(result => result.candidates.flatMap(candidate => {
+      const value = candidate.combination.organization;
+      return value && !candidate.conflictingFields.includes('organization') ? [reservationEntityKey(value, 'organization')] : [];
+    })));
+    const multiClientDomain = organizations.size > 1 || domainResults.some(result => result.candidatesTruncated || result.conflictsTruncated);
     const observations: ReservationWorkflowV2Observation[] = [];
     for (const request of input.proposal.content.requests) {
       if (request.kind !== 'create' && request.kind !== 'quote') continue;
@@ -131,67 +174,87 @@ export async function loadReservationNativeLeads(input: { propertyCode: string;
           const result = query({ name: term });
           return result ? [{ role, name, result }] : [];
         })));
-      for (const role of [...partyFields.map(spec => spec.role), 'rate_plan'] satisfies Array<PartyRole | 'rate_plan'>) {
-        const field = role === 'rate_plan' ? 'ratePlan' : partyFields.find(spec => spec.role === role)?.field;
+      for (const role of [...partyFields.map(spec => spec.role), 'rate_plan', 'room_type'] satisfies Array<PartyRole | 'rate_plan' | 'room_type'>) {
+        const field = role === 'rate_plan' ? 'ratePlan' : role === 'room_type' ? 'roomType' : partyFields.find(spec => spec.role === role)?.field;
         if (!field) continue;
         const leads = new Map<string, Lead>();
+        const denominators = new Map<Lead['basis'], Set<string>>();
+        const incomplete = new Set<Lead['basis']>();
         const add = (value: string, basis: Lead['basis'], confirmations: Array<string | null>) => {
           const ids = confirmations.filter((id): id is string => Boolean(id));
           if (!value.trim() || !ids.length) return;
-          const key = role === 'rate_plan' ? value.toUpperCase() : reservationEntityKey(value, role);
+          const key = role === 'rate_plan' || role === 'room_type' ? value.toUpperCase() : reservationEntityKey(value, role);
           if (!key) return;
           const prior = leads.get(key);
           if (prior?.basis === 'exact_sender' && basis === 'normalized_entity') return;
           const combined = [...new Set([...(prior?.basis === basis ? prior.confirmations : []), ...ids])];
           leads.set(key, { value, label: value, basis,
-            support: combined.length, confirmations: combined });
+            support: combined.length, confirmations: combined, denominator: 0, confidence: null, autoSelectable: false });
         };
         const accept = (result: z.infer<typeof querySchema>, basis: Lead['basis'], name?: string, relatedRole?: PartyRole) => {
-          if (role === 'rate_plan') {
-            const relatedField = partyFields.find(spec => spec.role === relatedRole)?.field;
+          const conflicts = new Set(result.conflicts.flatMap(conflict => conflict.evidence.confirmationNumber ? [conflict.evidence.confirmationNumber] : []));
+          const relatedField = partyFields.find(spec => spec.role === relatedRole)?.field;
+          const sourceMatches = (candidate: z.infer<typeof querySchema>['candidates'][number]) => !name || !relatedRole || !relatedField ||
+            Boolean(candidate.combination[relatedField] && !candidate.conflictingFields.includes(relatedField) &&
+              reservationEntityKey(candidate.combination[relatedField], relatedRole) === reservationEntityKey(name, relatedRole));
+          const ids = (candidate: z.infer<typeof querySchema>['candidates'][number]) => candidate.evidence.confirmationRecords
+            .map(row => row.confirmationNumber).filter((id): id is string => Boolean(id) && !conflicts.has(id ?? ''));
+          const denominator = denominators.get(basis) ?? new Set<string>();
+          for (const candidate of result.candidates.filter(sourceMatches)) for (const id of ids(candidate)) denominator.add(id);
+          denominators.set(basis, denominator);
+          if (result.candidatesTruncated || result.conflictsTruncated || result.candidates.some(candidate => candidate.evidence.truncated)) incomplete.add(basis);
+          if (role === 'rate_plan' || role === 'room_type') {
             const matching = name && relatedRole && relatedField ? new Set(result.candidates.flatMap(candidate => {
               const value = candidate.combination[relatedField];
               return value && !candidate.conflictingFields.includes(relatedField) &&
                 reservationEntityKey(value, relatedRole) === reservationEntityKey(name, relatedRole)
                 ? candidate.evidence.confirmationRecords.map(row => row.confirmationNumber) : [];
             })) : null;
-            for (const hint of result.historicalHints.ratePlan.values) if (!hint.valueTruncated && /^[A-Z0-9]{1,12}$/.test(hint.value))
+            for (const hint of result.historicalHints[role === 'rate_plan' ? 'ratePlan' : 'roomType'].values) if (!hint.valueTruncated && /^[A-Z0-9]{1,12}$/.test(hint.value))
               add(hint.value, basis, hint.evidence.confirmationRecords.map(row => row.confirmationNumber)
                 .filter(id => !matching || matching.has(id)));
           } else for (const candidate of result.candidates) {
             const value = candidate.combination[field];
-            if (value && !candidate.conflictingFields.includes(field) &&
-                (!name || reservationEntityKey(value, role) === reservationEntityKey(name, role)))
-              add(value, basis, candidate.evidence.confirmationRecords.map(row => row.confirmationNumber));
+            if (value && !candidate.conflictingFields.includes(field) && sourceMatches(candidate))
+              add(value, basis, ids(candidate));
           }
         };
         for (const result of sender) accept(result, 'exact_sender');
-        for (const item of related) if (role === 'rate_plan' || item.role === role)
+        for (const item of related) if (role === 'rate_plan' || role === 'room_type' || item.role === role ||
+          (role === 'ar_account' && (item.role === 'agency' || item.role === 'organization')))
           accept(item.result, 'normalized_entity', item.name, item.role);
+        for (const lead of leads.values()) {
+          lead.denominator = denominators.get(lead.basis)?.size ?? 0;
+          lead.confidence = lead.denominator && !incomplete.has(lead.basis) ? lead.support / lead.denominator : null;
+          lead.autoSelectable = lead.confidence !== null && lead.confidence >= 0.8 &&
+            (role === 'agency' || (role === 'organization' && lead.basis === 'exact_sender' && !multiClientDomain));
+        }
         const ranked = [...leads.values()].sort((a, b) => Number(b.basis === 'exact_sender') - Number(a.basis === 'exact_sender') ||
           b.support - a.support || a.value.localeCompare(b.value)).slice(0, 3);
         if (!ranked.length) continue;
         const actualField = field;
-        const fieldPaths = role === 'rate_plan' && request.kind === 'quote'
+        const fieldPaths = role === 'room_type' && request.kind === 'quote' ? [] : role === 'rate_plan' && request.kind === 'quote'
           ? request.body.groups.map((_, index) => `${root}/groups/${index}/ratePlan`)
           : role === 'ar_account' && request.kind === 'quote' ? [] : slots.map(slot => `${slot.path}/${actualField}/nativeSelectionRef`);
-        if (role === 'rate_plan' && request.kind === 'create') fieldPaths.splice(0, fieldPaths.length, ...slots.map(slot => `${slot.path}/ratePlan`));
+        if ((role === 'rate_plan' || role === 'room_type') && request.kind === 'create') fieldPaths.splice(0, fieldPaths.length, ...slots.map(slot => `${slot.path}/${field}`));
         if (!fieldPaths.length) continue;
         for (const fieldPath of fieldPaths) {
           const slot = slots.find(row => fieldPath === `${row.path}/${actualField}/nativeSelectionRef` ||
-            fieldPath === `${row.path}/ratePlan`);
+            fieldPath === `${row.path}/${field}`);
           const party = slot ? role === 'agency' ? slot.fields.bookingAgency : role === 'organization'
             ? slot.fields.organization : 'arAccount' in slot.fields ? slot.fields.arAccount : undefined : undefined;
-          const rate = request.kind === 'quote' ? request.body.groups.find((_, index) => fieldPath === `${root}/groups/${index}/ratePlan`)?.ratePlan
-            : slot && 'ratePlan' in slot.fields ? slot.fields.ratePlan : undefined;
-          const sourceQuery = role === 'rate_plan' ? typeof rate === 'string' ? rate : null
+          const code = request.kind === 'quote' ? request.body.groups.find((_, index) => fieldPath === `${root}/groups/${index}/ratePlan`)?.ratePlan
+            : role === 'room_type' && slot && 'roomType' in slot.fields ? slot.fields.roomType
+              : slot && 'ratePlan' in slot.fields ? slot.fields.ratePlan : undefined;
+          const sourceQuery = role === 'rate_plan' || role === 'room_type' ? typeof code === 'string' ? code : null
             : party && typeof party === 'object' && 'name' in party ? party.name : null;
           observations.push({ ref: randomUUID(), generationId: input.generationId,
-            kind: role === 'rate_plan' ? 'rate_availability' : 'party_candidate', status: 'partial',
+            kind: role === 'rate_plan' || role === 'room_type' ? 'rate_availability' : 'party_candidate', status: 'partial',
             observedAt: new Date().toISOString(), propertyCode: input.propertyCode, sourceMessageId: input.source.messageId,
             sourceRefs: [], criteria: { kind: 'historical_lookup_leads', workflow: request.kind, requestId: request.id,
               sourceHash: input.source.sourceHash, role: request.kind === 'quote' && role === 'agency' ? 'bookingAgency' : role,
-              query: sourceQuery, fieldPath, fieldPaths: [fieldPath], rankBasis: ['exact_sender', 'normalized_entity'], snapshotTimes: [...snapshotTimes.values()] },
+              query: sourceQuery, fieldPath, fieldPaths: [fieldPath], rankBasis: ['exact_sender', 'normalized_entity'],
+              multiClientDomain, snapshotTimes: [...snapshotTimes.values()] },
             coverage: { complete: false, notes: ['Historical names/codes require a current Infor search and staff selection.',
               'Support counts observed confirmations; journey/room grouping is unavailable where source links are missing.'] },
             result: { leads: ranked.map(lead => ({ ...lead, confirmations: lead.confirmations.slice(0, 3) })),
