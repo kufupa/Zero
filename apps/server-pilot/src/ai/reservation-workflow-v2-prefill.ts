@@ -4226,9 +4226,23 @@ function applyDefaultCmsSendPolicy(
   propertyCode: string,
   extraction: ReservationWorkflowV2Extraction & { sourceReadComplete: boolean },
   extractionIds: ReadonlyMap<string, string> | undefined,
+  input: { source: ReservationWorkflowV2Source; selection: SyncedQuoteSelection; evidence: ReservationWorkflowV2Evidence[] },
 ): ReservationWorkflowV2Proposal {
   const proposal = structuredClone(proposalInput);
   if (propertyCode !== 'HRCEN') return proposal;
+  const message = input.evidence.find((row) => row.relation === 'current_message' &&
+    row.messageId === input.source.messageId && row.threadId === input.source.threadId);
+  const currentBody = maskCardNumbers(input.selection.currentBodyText ?? input.selection.bodyText)
+    .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
+  const cmsInstructions = message ? currentBody.split(/\r?\n|(?<=[.!?])\s+|;/u).map((part) => part.trim())
+    .filter((part) => /\bCMS\s+Send\b/iu.test(part) && message.text.includes(part))
+    .map((raw) => {
+      const match = /^CMS\s+Send\s*(?::|=|is)\s*(on|off)\s*[.!?]?$/iu.exec(raw);
+      return { raw, value: match ? match[1]!.toLowerCase() === 'on' : null };
+    }) : [];
+  const createRequests = proposal.content.requests.filter((request) => request.kind === 'create');
+  if (createRequests.length) proposal.issues = proposal.issues.filter((issue) =>
+    !/^CMS message [\w-]+ and CMS Send (?:ON|OFF) are retained as source claims, but are not represented as native Create fields here\.?$/iu.test(issue.explanation));
   for (const request of proposal.content.requests) {
     if (request.kind === 'quote') {
       const source = extractionRequestForProposal(request, proposal.content.requests, extraction, extractionIds);
@@ -4264,12 +4278,42 @@ function applyDefaultCmsSendPolicy(
         allocation.occupancy.childAges = [];
       }
     }
-    if (request.body.allocations.some(({ guest }) => /^proof$/i.test(guest.firstName?.trim() ?? '') &&
-        /^labtest$/i.test(guest.lastName?.trim() ?? ''))) {
+    const labtest = request.body.allocations.some(({ guest }) => /^proof$/i.test(guest.firstName?.trim() ?? '') &&
+      /^labtest$/i.test(guest.lastName?.trim() ?? ''));
+    if (labtest) {
       request.body.shared.cmsSend = false;
-      continue;
     }
     const cmsSend = request.body.shared.cmsSend;
+    if (cmsInstructions.length && message) {
+      const values = new Set(cmsInstructions.map((instruction) => instruction.value));
+      const roomCount = citedInteger(source?.roomCount);
+      const bound = extraction.requests.length === 1 && createRequests.length === 1 && source?.kind === 'create' &&
+        source.requestText.sourceRefs.includes(message.ref) && message.text.includes(source.requestText.raw) &&
+        cmsInstructions.every((instruction) => source.requestText.raw.includes(instruction.raw)) &&
+        source.dates.length <= 1 && request.body.dateSections.length <= 1 && request.body.allocations.length <= 1 &&
+        !(typeof roomCount === 'number' && roomCount > 1);
+      const path = `/proposal/content/requests/${request.id}/body/shared/cmsSend`;
+      const unambiguous = bound && values.size === 1 && !values.has(null);
+      if (labtest || isRecord(cmsSend) && cmsSend.kind === 'none') {
+        if (!unambiguous) addProjectionIssue(proposal, path, 'cms_send_scope_ambiguous',
+          'The source has conflicting or unscoped CMS Send instructions. The initial setting is off; review the correct choice.', [message.ref]);
+        else if (values.has(true)) addProjectionIssue(proposal, path, 'cms_send_policy_restricted',
+          'An existing setting keeps CMS sending off. Review the source instruction and the Send choice.', [message.ref]);
+        continue;
+      }
+      request.body.shared.cmsSend = unambiguous ? values.has(true) : false;
+      proposal.annotations = proposal.annotations.filter((annotation) => annotation.path !== path);
+      if (proposal.annotations.length < 2000) proposal.annotations.push({ path,
+        basis: unambiguous ? 'source' : 'policy', evidenceRefs: unambiguous ? [message.ref] : [] });
+      for (const instruction of unambiguous ? cmsInstructions : []) {
+        if (instruction.raw.length > 2000 || proposal.sourceClaims.length >= MAX_PROPOSAL_SOURCE_CLAIMS || proposal.sourceClaims.some((claim) =>
+          claim.path === path && claim.raw === instruction.raw && claim.sourceRefs.includes(message.ref))) continue;
+        proposal.sourceClaims.push({ path, raw: instruction.raw, sourceRefs: [message.ref] });
+      }
+      if (!unambiguous) addProjectionIssue(proposal, path, 'cms_send_scope_ambiguous',
+        'The source has conflicting or unscoped CMS Send instructions. The initial setting is off; review the correct choice.', [message.ref]);
+      continue;
+    }
     if (cmsSend === false || isRecord(cmsSend) && cmsSend.kind === 'none') continue;
     if (cmsSend !== null && cmsSend !== undefined) continue;
     const path = `/proposal/content/requests/${request.id}/body/shared/cmsSend`;
@@ -5537,7 +5581,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence }) : null;
   const guardedProposal = referenceSafety?.proposal ?? (finalParsed?.success ? finalParsed.data.proposal : null);
   let finalProposal = guardedProposal ? applyDefaultCmsSendPolicy(guardedProposal, input.propertyCode,
-    currentActions, boundProjection?.extractionIdByProposalRequestId) : null;
+    currentActions, boundProjection?.extractionIdByProposalRequestId, input) : null;
   let amendNoteRequirements: ReservationWorkflowV2Draft['fieldReviewRequirements'] = {};
   if (finalProposal) {
     const trackResult = await applyRateTrackMemory({ proposal: finalProposal, source: input.source,
@@ -5633,7 +5677,7 @@ export async function runReservationWorkflowV2Prefill(input: {
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
       currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence });
     const trackResult = await applyRateTrackMemory({ proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, input.propertyCode,
-      currentActions, fallbackProjection.extractionIdByProposalRequestId), source: input.source,
+      currentActions, fallbackProjection.extractionIdByProposalRequestId, input), source: input.source,
       propertyCode: input.propertyCode, generationId, env });
     const noteResult = await applyNoteMemory({ proposal: trackResult.proposal, source: input.source, propertyCode: input.propertyCode,
       generationId, selection: input.selection, evidence, db: input.db, transportId: input.transportId, env });
