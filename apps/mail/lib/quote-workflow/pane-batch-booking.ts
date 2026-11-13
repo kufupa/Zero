@@ -13,7 +13,7 @@ export type BatchReviewedRoom = {
   allocationId: string; identity: BatchSourceIdentity; roomType: string; ratePlan: string;
   guest: { firstName: string; lastName: string; profileId: string };
   stay: { arrival: string; departure: string; adults: number; childAges: number[] };
-  agency: { name: string; nativeId: string } | null;
+  bookingAgency: { name: string; nativeId: string } | null;
   organization: { name: string; nativeId: string } | null;
   guaranteeType: string; sourceOfBusiness: string | null; note: string | null;
   track: string | null; marketSegment: string | null; guestOptIn: boolean;

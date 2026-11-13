@@ -202,7 +202,7 @@ export function BatchBookingReview({ client, input, missing, onLock }: {
         {fresh.rooms.some((item) => item.cmsSend) ? <p>{room.cmsSend
           ? `HMS will send confirmation to ${room.cmsRecipient?.address} · type ${room.cmsMessageId}`
           : 'HMS confirmation email is off'}</p> : null}
-        <p>Agency {room.agency?.name ?? 'none'} · Company {room.organization?.name ?? 'none'} · Guarantee {room.guaranteeType}</p>
+        <p>Booking agency {room.bookingAgency?.name ?? 'none'} · Company {room.organization?.name ?? 'none'} · Guarantee {room.guaranteeType}</p>
         {room.sourceOfBusiness ? <p>Source {room.sourceOfBusiness}</p> : null}
         {room.track || room.marketSegment ? <p>Track {room.track ?? 'not set'} · Market segment {room.marketSegment ?? 'not set'}</p> : null}
         <p>Guest opt-in {room.guestOptIn ? 'yes' : 'no'}{room.booker ? ` · Booker ${room.booker.name ?? 'not set'}${room.booker.email ? ` (${room.booker.email})` : ''}` : ''}</p>
