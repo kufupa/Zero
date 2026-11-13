@@ -16,6 +16,11 @@ const indexRow = z.object({ row_id: z.string(), thread_id: z.string(), message_i
 const addressesSchema = z.object({ from: z.array(z.string()).default([]), to: z.array(z.string()).default([]),
   cc: z.array(z.string()).default([]), bcc: z.array(z.string()).default([]) });
 
+export type OriginalMailboxMessage = {
+  id: string; thread_id: string; subject: string | null; text_body: string | null; html_body: string | null;
+  from_address?: string | null;
+};
+
 export type RecoveredAttachment = {
   id: string; messageId: string; filename: string; mimeType: string; path: string; sha256: string;
   bytes?: number; isInline?: boolean; contentId?: string | null; sourceAttachmentId?: string | null;
@@ -178,13 +183,16 @@ export async function readConfirmationCatalog(path: string): Promise<RecoveredAt
 }
 
 /** Reconstruct the entire saved mailbox, leaving unknown visibility/arrival metadata explicit. */
-export async function seedMailbox(db: DB, indexPath: string, mailboxAddress: string): Promise<{ messages: number; threads: number }> {
+export async function seedMailbox(db: DB, indexPath: string, mailboxAddress: string,
+  originals: ReadonlyMap<string, OriginalMailboxMessage>): Promise<{ messages: number; threads: number }> {
   await assertDisposableDatabase(db);
   const index = new DatabaseSync(indexPath, { readOnly: true });
   try {
     const source = index.prepare('select row_id,thread_id,message_id,timestamp,sent_at,direction,transport_id,subject,addresses_json,headers_json,body from messages').all();
     const rows = source.map((value) => indexRow.parse(value));
     if (rows.some((row) => row.transport_id !== 'transport-centurion')) throw new Error('Unexpected source transport');
+    if (rows.length !== originals.size || rows.some(row => originals.get(row.row_id)?.thread_id !== row.thread_id))
+      throw new Error('Original mailbox and source index do not match');
     await db.insert(mailboxTransport).values({ id: 'transport-centurion', email: mailboxAddress,
       ownerHeaderValue: mailboxAddress }).onConflictDoNothing();
     const threads = [...new Set(rows.map((row) => row.thread_id))].map((id) => ({ id,
@@ -193,14 +201,15 @@ export async function seedMailbox(db: DB, indexPath: string, mailboxAddress: str
     for (let i = 0; i < rows.length; i += 200) {
       const values = rows.slice(i, i + 200).map((row) => {
         const addresses = addressesSchema.parse(JSON.parse(row.addresses_json));
+        const original = originals.get(row.row_id)!;
         const receivedAt = new Date(row.timestamp);
         const sentAt = row.sent_at ? new Date(row.sent_at) : null;
         if (!Number.isFinite(receivedAt.getTime()) || (sentAt && !Number.isFinite(sentAt.getTime())))
           throw new Error(`Invalid source timestamp for ${row.row_id}`);
         return { id: row.row_id, transportId: row.transport_id, threadId: row.thread_id,
-          messageIdHeader: row.message_id, direction: row.direction, fromAddress: addresses.from[0] ?? '',
+          messageIdHeader: row.message_id, direction: row.direction, fromAddress: original.from_address ?? '',
           toAddresses: addresses.to, ccAddresses: addresses.cc, bccAddresses: addresses.bcc,
-          subject: row.subject, textBody: row.body, receivedAt, sentAt, createdAt: receivedAt,
+          subject: original.subject, textBody: original.text_body, htmlBody: original.html_body, receivedAt, sentAt, createdAt: receivedAt,
           sourceProvenance: { replay: { arrival: 'reconstructed_from_saved_timestamp', visibility: 'unknown' } } };
       });
       await db.insert(message).values(values).onConflictDoNothing();

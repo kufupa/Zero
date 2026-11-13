@@ -146,7 +146,7 @@ function safeDatabaseIdentity(value: string | undefined) {
   try { parsed = new URL(value); } catch { throw new Error('REPLAY_DATABASE_URL_INVALID'); }
   const database = parsed.pathname.slice(1);
   if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || parsed.hostname !== '127.0.0.1' || parsed.port !== '55447' ||
-      parsed.username !== 'fresh_replay' || !['nava_replay_wave1_20261112_195632', 'nava_replay_wave1_20261112_195632_r2', 'nava_replay_wave1_20261112_195632_r3', 'nava_replay_wave1_20261112_195632_r4', 'nava_replay_wave1_20261112_195632_r5', 'nava_replay_wave1_20261112_195632_r6', 'nava_replay_tier1_4_baseline', 'nava_replay_tier1_4_candidate'].includes(database))
+      parsed.username !== 'fresh_replay' || !['nava_replay_wave1_20261112_195632', 'nava_replay_wave1_20261112_195632_r2', 'nava_replay_wave1_20261112_195632_r3', 'nava_replay_wave1_20261112_195632_r4', 'nava_replay_wave1_20261112_195632_r5', 'nava_replay_wave1_20261112_195632_r6', 'nava_replay_tier1_4_baseline', 'nava_replay_tier1_4_baseline2', 'nava_replay_tier1_4_candidate'].includes(database))
     throw new Error('REPLAY_DATABASE_NOT_THE_OWNED_LOCAL_DATABASE');
   return { host: parsed.hostname, port: Number(parsed.port), database, user: parsed.username };
 }
@@ -399,7 +399,7 @@ async function runCohort(selectionPath: string, sealPath: string | undefined, co
     const [workflowCount, workItemCount] = await Promise.all([count(aiWorkflowRun), count(workItem)]);
     if (workflowCount || workItemCount) throw new Error('REPLAY_DATABASE_HAS_PRIOR_WORKFLOW_ATTEMPTS');
     const storage = createReplayStorage();
-    const seeded = await seedMailbox(db, SOURCE_INDEX, MAILBOX_ADDRESS);
+    const seeded = await seedMailbox(db, SOURCE_INDEX, MAILBOX_ADDRESS, inputs.originalById);
     const seededAttachments = await seedAllRecoveredAttachments({ db, storage, recovered: inputs.recovered });
     const gateway = await createEvidenceGateway(join(runDir, 'native-cache'), { catalogPath: CACHE_CATALOG });
 
