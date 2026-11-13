@@ -450,7 +450,7 @@ async function search(page, kind, input, { timeoutMs = 20000, field = 'name', co
     if (signature(grid.records, keys) !== expected || JSON.stringify(await readCriteria(win)) !== JSON.stringify(controls)) {
       throw new Error('LOOKUP_RESULTS_UNVERIFIED');
     }
-    if (collectPages) for (let pageNumber = 1; pageNumber < 20 && coverage(metadata, rows.length).serverMoreRecords === true; pageNumber += 1) {
+    if (collectPages) for (let pageNumber = 1; pageNumber < 200 && coverage(metadata, rows.length).serverMoreRecords === true; pageNumber += 1) {
       const next = page.waitForResponse((res) => {
         const req = res.request(), target = new URL(req.url());
         const params = new URLSearchParams(req.postData() || '');
