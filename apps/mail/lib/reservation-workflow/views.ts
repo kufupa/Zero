@@ -226,13 +226,33 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
   const draft = snapshot.session.draft;
   const request = draft.proposal.content.requests.find(row => row.id === requestId);
   const amendTrack = request?.kind === 'amend' && kind === 'track';
+  const bodyPath = `${requestPath(requestId)}/body`;
+  const body = amendTrack ? record(effectiveAt(snapshot, bodyPath)) : {};
+  const scope = record(body.targets);
+  const included = Array.isArray(scope.include) ? scope.include.map(record) : [];
+  const excluded = Array.isArray(scope.exclude) ? scope.exclude.map(record) : [];
+  const relativePath = path.startsWith(`${bodyPath}/`) ? path.slice(bodyPath.length + 1).split('/') : [];
+  const perTargets = Array.isArray(body.perTarget) ? body.perTarget.map(record) : [];
+  const perTarget = relativePath[0] === 'perTarget' && /^\d+$/.test(relativePath[1] ?? '')
+    ? perTargets[Number(relativePath[1])] : undefined;
+  const excludedIds = new Set(excluded.map(row => row.id));
+  const scopedTargets = included.filter(row => !excludedIds.has(row.id) &&
+    (relativePath[0] === 'sharedChanges' || row.id === perTarget?.hintId));
+  const targetKeys = scopedTargets.map(row => JSON.stringify([row.id, row.suggestedRef])).sort();
+  const validTrackScope = scope.mode === 'explicit' && Array.isArray(scope.include) && Array.isArray(scope.exclude) &&
+    scopedTargets.length > 0 && scopedTargets.every(row => typeof row.id === 'string' && row.id &&
+      typeof row.suggestedRef === 'string' && row.suggestedRef) &&
+    new Set(scopedTargets.map(row => row.id)).size === scopedTargets.length;
   const latestTrackRef = amendTrack ? draft.observations.findLast(observation => {
     const criteria = record(observation.criteria);
+    const selectedTargets = Array.isArray(criteria.selectedTargets) ? criteria.selectedTargets.map(record) : [];
+    const selectedKeys = selectedTargets.map(row => JSON.stringify([row.hintId, row.ref])).sort();
     return observation.status === 'complete' && observation.generationId === draft.generationId &&
       observation.propertyCode === draft.propertyCode && observation.sourceMessageId === draft.source.messageId &&
       criteria.kind === 'native_catalogue' && criteria.workflow === 'amend_catalogue' && criteria.catalogueKind === 'track' &&
       criteria.requestId === requestId && criteria.sourceHash === draft.source.sourceHash &&
       Array.isArray(criteria.fieldPaths) && criteria.fieldPaths.includes(path) &&
+      validTrackScope && JSON.stringify(selectedKeys) === JSON.stringify(targetKeys) &&
       record(observation.coverage).complete === true && record(criteria.nativeCoverage).nativeResponseCorrelated === true;
   })?.ref : undefined;
   const choices = draft.observations.flatMap(observation => {

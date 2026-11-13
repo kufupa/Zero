@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react';
-import { nativeChoices, nativeRecommendationLeads, partialNativeLeads, record, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { effectiveAt, nativeChoices, nativeRecommendationLeads, partialNativeLeads, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import styles from '../reservation-pane.module.css';
 import { FieldReview, FieldSource } from './stay-fields';
 
@@ -63,6 +63,8 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [trackReady, setTrackReady] = useState(false);
   const trackPreviousRefs = useRef(new Set<string>());
+  const trackLookupScope = useRef('');
+  const trackScope = amendTrack ? (JSON.stringify(effectiveAt(editor.snapshot, `${requestPath(editor.request.id)}/body/targets`)) ?? '') : '';
   const loadingRef = useRef(false);
   const editVersion = useRef(0);
   const loadChoices = async () => {
@@ -70,6 +72,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     if (amendTrack) {
       setTrackReady(false);
       trackPreviousRefs.current = new Set(editor.snapshot.session.draft.observations.map(observation => observation.ref));
+      trackLookupScope.current = trackScope;
     }
     loadingRef.current = true; setLoading(true); setLookupError(null);
     try {
@@ -107,7 +110,9 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const candidateRefs = entity ? record(valueAt(editor.snapshot, party ? path : guestPath ?? '')).candidateRefs : null;
   const rank = (ref: string) => Array.isArray(candidateRefs) && candidateRefs.includes(ref) ? candidateRefs.indexOf(ref) : Number.MAX_SAFE_INTEGER;
   const ordered = [...availableChoices].sort((left, right) => rank(left.ref) - rank(right.ref) || recommendationRank(left.value) - recommendationRank(right.value));
-  const choices = amendTrack ? trackReady && !loading ? ordered.filter(row => !trackPreviousRefs.current.has(row.ref)) : []
+  const trackScopeChanged = amendTrack && trackReady && trackLookupScope.current !== trackScope;
+  const choices = amendTrack ? trackReady && !loading && !trackScopeChanged
+    ? ordered.filter(row => !trackPreviousRefs.current.has(row.ref)) : []
     : guestPath ? ordered.slice(0, 3) : ordered;
   const leads = entity && (!dirty || normalized(query) === normalized(saved))
     ? partialNativeLeads(editor.snapshot, selectionPath, choiceKind).slice(0, 3) : [];
@@ -238,7 +243,9 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
         })}</div>}
       {loading && <small role="status">Loading {label.toLocaleLowerCase()} from Infor…</small>}
       {lookupError && <small role="alert">{lookupError}</small>}
-      {!choices.length && !loading && !lookupError && <small>{entity ? 'Enter a name to find Infor matches.' : 'No Infor choices loaded yet.'}</small>}
+      {!choices.length && !loading && !lookupError && <small>{trackScopeChanged ? 'The stay selection changed. Refresh Infor choices.'
+        : amendTrack && trackReady ? 'No common Track choices for the selected stays.'
+        : entity ? 'Enter a name to find Infor matches.' : 'No Infor choices loaded yet.'}</small>}
       {!entity && ['room_type', 'room_type_for_charge', 'rate_plan'].includes(choiceKind ?? '') && <small>Hotel codes and meanings. The booking check verifies prices and availability for these dates and guests.</small>}
       <button type="button" disabled={loading} onMouseDown={event => event.preventDefault()} onClick={() => { void loadChoices(); }}>{lookupError ? 'Retry Infor' : entity ? 'Search Infor' : 'Refresh Infor choices'}</button>
     </div>}
