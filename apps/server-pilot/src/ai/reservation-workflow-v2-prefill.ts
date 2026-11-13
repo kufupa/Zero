@@ -3945,6 +3945,31 @@ function projectCurrentExtraction(input: {
             guestNames: date.guestNames?.flatMap(claim => safeCurrentText(claim, currentRefs, 300)
               ? [safeCurrentText(claim, currentRefs, 300)!] : []) ?? original?.guestNames ?? [] }];
         });
+        const nextIndexById = new Map(request.body.groups.map((group, index) => [group.id, index]));
+        const requestKeys = new Set([request.id, encodeURIComponent(request.id), String(proposal.content.requests.indexOf(request))]);
+        const reindexGroupPath = (path: string): string | null => {
+          const parts = path.split('/'), requestIndex = parts.indexOf('requests');
+          if (requestIndex < 0 || !requestKeys.has(parts[requestIndex + 1] ?? '') ||
+              parts[requestIndex + 2] !== 'body' || parts[requestIndex + 3] !== 'groups' ||
+              !/^\d+$/.test(parts[requestIndex + 4] ?? '')) return path;
+          const group = previous[Number(parts[requestIndex + 4])];
+          const nextIndex = group ? nextIndexById.get(group.id) : undefined;
+          if (nextIndex === undefined) return null;
+          parts[requestIndex + 4] = String(nextIndex);
+          return parts.join('/');
+        };
+        proposal.sourceClaims = proposal.sourceClaims.flatMap(row => {
+          const path = reindexGroupPath(row.path);
+          return path === null ? [] : [{ ...row, path }];
+        });
+        proposal.annotations = proposal.annotations.flatMap(row => {
+          const path = reindexGroupPath(row.path);
+          return path === null ? [] : [{ ...row, path }];
+        });
+        proposal.issues = proposal.issues.flatMap(row => {
+          const path = reindexGroupPath(row.path);
+          return path === null ? [] : [{ ...row, path }];
+        });
         const retainedIds = new Set(request.body.groups.map(group => group.id));
         const removedIds = new Set(previous.map(group => group.id).filter(id => !retainedIds.has(id)));
         for (const service of proposal.content.services) service.targets = service.targets.filter(({ target }) =>
@@ -3958,6 +3983,8 @@ function projectCurrentExtraction(input: {
             'quote_board_scope_ambiguous'].includes(issue.kind));
         projectedGroupRows.forEach(({ date, inferred, category }, index) => {
           const path = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/groups/${index}`;
+          appendProjectedSource(proposal, `${path}/arrival`, date.arrival, currentRefs);
+          appendProjectedSource(proposal, `${path}/departure`, date.departure, currentRefs);
           if (inferred) {
             const evidenceRefs = [...new Set((date.guestNames ?? []).flatMap(claim =>
               currentClaim(claim, currentRefs)?.sourceRefs.filter(ref => currentRefs.has(ref)) ?? []))];
@@ -6006,12 +6033,30 @@ export async function runReservationWorkflowV2Prefill(input: {
   }
   const admittedReviewRefs = new Set([...evidence.map((row) => row.ref), ...finalObservations.map((row) => row.ref)]);
   let unverifiedReviewEvidence = false;
+  const reindexReviewPath = (path: string): string | null => {
+    const parts = path.split('/'), requestIndex = parts.indexOf('requests');
+    if (requestIndex < 0 || parts[requestIndex + 2] !== 'body' || parts[requestIndex + 3] !== 'groups' ||
+        !/^\d+$/.test(parts[requestIndex + 4] ?? '')) return path;
+    const modelRequests = finalParsed?.success ? finalParsed.data.proposal.content.requests : [];
+    const modelRequest = modelRequests.find((row, index) => [row.id, encodeURIComponent(row.id), String(index)]
+      .includes(parts[requestIndex + 1] ?? ''));
+    if (modelRequest?.kind !== 'quote') return path;
+    const nextRequest = finalProposal?.content.requests.find(row => row.id === modelRequest.id);
+    if (nextRequest?.kind !== 'quote') return null;
+    const group = modelRequest.body.groups[Number(parts[requestIndex + 4])];
+    const nextIndex = nextRequest.body.groups.findIndex(row => row.id === group?.id);
+    if (nextIndex < 0) return null;
+    parts[requestIndex + 4] = String(nextIndex);
+    return parts.join('/');
+  };
   const finalReviewRequirements = { ...Object.fromEntries(Object.entries(finalParsed?.success ? finalParsed.data.reviewRequirements ?? {} : {})
-    .map(([path, requirement]) => {
+    .flatMap(([path, requirement]) => {
+      const displayedPath = reindexReviewPath(path);
+      if (displayedPath === null) return [];
       const evidenceRefs = requirement.evidenceRefs.filter((ref) => admittedReviewRefs.has(ref));
       if (evidenceRefs.length !== requirement.evidenceRefs.length) unverifiedReviewEvidence = true;
       // Model output may request review, never waive a staff decision.
-      return [path, { ...requirement, required: true, evidenceRefs }];
+      return [[displayedPath, { ...requirement, required: true, evidenceRefs }]];
     })), ...amendNoteRequirements };
   if (unverifiedReviewEvidence) readErrors.push({ stage: 'lookup', code: 'review_evidence_unverified',
     message: 'Some model-cited review evidence was unavailable; staff review remains required.' });
