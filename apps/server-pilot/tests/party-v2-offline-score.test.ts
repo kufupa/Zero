@@ -8,9 +8,9 @@ import { describe, expect, it } from 'vitest';
 describe('offline HMS contains simulator', () => {
   it('matches case-insensitive substrings in order and flags results beyond the cap', () => {
     const universe = [
-      { kind: 'agency' as const, nativeId: 'a-1', name: 'Northwind Travel' },
-      { kind: 'company' as const, nativeId: 'c-1', name: 'Windward Group' },
-      { kind: 'company' as const, nativeId: 'c-2', name: 'Acme' },
+      { kind: 'bookingAgency' as const, nativeId: 'a-1', name: 'Northwind Travel' },
+      { kind: 'organization' as const, nativeId: 'c-1', name: 'Windward Group' },
+      { kind: 'organization' as const, nativeId: 'c-2', name: 'Acme' },
     ];
 
     expect(simulateHmsContains(universe, 'WIND')).toEqual({
@@ -19,7 +19,7 @@ describe('offline HMS contains simulator', () => {
     });
 
     const crowded = Array.from({ length: 51 }, (_, index) => ({
-      kind: 'company' as const,
+      kind: 'organization' as const,
       nativeId: `c-${index}`,
       name: `Acme ${index}`,
     }));
@@ -31,10 +31,10 @@ describe('offline HMS contains simulator', () => {
 
 describe('offline party-v2 failure examples', () => {
   it('reports unique abstentions and wrong binds, but omits correct binds', () => {
-    const expected = { kind: 'agency' as const, name: 'Truth Travel' };
+    const expected = { kind: 'bookingAgency' as const, name: 'Truth Travel' };
     const candidates = [
       {
-        kind: 'agency' as const,
+        kind: 'bookingAgency' as const,
         name: 'Extracted Agency',
         source: 'extraction_agency' as const,
         strength: 'strong' as const,

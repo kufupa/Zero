@@ -26,7 +26,7 @@ export const PANE_ACTION_TYPES = [
 export type PaneActionType = (typeof PANE_ACTION_TYPES)[number];
 export const PANE_ACTION_KINDS = ['selected', 'all', 'saved', 'option', 'combined', 'comment', 'booking'] as const;
 export type PaneActionKind = (typeof PANE_ACTION_KINDS)[number];
-export const PANE_ACTION_FIELDS = ['name', 'company', 'endClient', 'email', 'phone'] as const;
+export const PANE_ACTION_FIELDS = ['name', 'bookingAgency', 'organization', 'email', 'phone'] as const;
 export type PaneActionField = (typeof PANE_ACTION_FIELDS)[number];
 /** Which block a copy_hms_line copied. `notes` is the HMS notes block (rate-controls). */
 export const PANE_ACTION_BLOCKS = ['notes'] as const;

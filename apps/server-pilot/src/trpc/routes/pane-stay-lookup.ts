@@ -126,7 +126,7 @@ const queuePartyInput = z
     threadId: threadIdInput,
     messageId: messageIdInput.optional(),
     name: z.string().min(1).max(256),
-    partyKind: z.enum(['company', 'agency']).optional(),
+    partyKind: z.enum(['organization', 'bookingAgency']).optional(),
     retry: z.literal(true).optional(),
     devEval: z.literal(true).optional(),
   })
@@ -157,7 +157,7 @@ const jobStatusInput = z.union([
       // A guest search is picked by its surname too: one thread can carry vouchers for different guests.
       lastName: searchGuestInput.shape.lastName.optional(),
       name: z.string().min(1).max(256).optional(),
-      partyKind: z.enum(['company', 'agency']).optional(),
+    partyKind: z.enum(['organization', 'bookingAgency']).optional(),
       // An availability snapshot is picked by its stay's dates, and by its rooms when two stays share the dates.
       arrival: arrival.nullable().optional(),
       departure: arrival.nullable().optional(),

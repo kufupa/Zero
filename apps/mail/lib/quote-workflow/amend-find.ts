@@ -176,8 +176,8 @@ export type StayPartyCommercialWire = { name?: string; nativeId?: string };
 
 /** Commercial attribution returned from the same opened HMS record. Fields are absent when HMS did not show them. */
 export type StayCommercialWire = {
-  company?: StayPartyCommercialWire;
-  agency?: StayPartyCommercialWire;
+  organization?: StayPartyCommercialWire;
+  bookingAgency?: StayPartyCommercialWire;
   ratePlan?: string;
   mealPlan?: string;
   roomType?: string;
@@ -264,7 +264,7 @@ export type HmsJobKind = 'find' | 'search_guest' | 'party';
 export type HmsJobRequest =
   | { kind: 'find'; confirmation: string; arrival?: string }
   | { kind: 'search_guest'; lastName: string; arrival: string; departure?: string }
-  | { kind: 'party'; name: string; partyKind?: 'company' | 'agency'; matchVersion?: 2 };
+  | { kind: 'party'; name: string; partyKind?: 'organization' | 'bookingAgency'; matchVersion?: 2 };
 
 export type HmsJobQueueOptions = { autoStart?: true; retry?: true };
 
@@ -311,7 +311,7 @@ export type HmsJobClient = {
     threadId: string;
     messageId?: string;
     name: string;
-    partyKind?: 'company' | 'agency';
+    partyKind?: 'organization' | 'bookingAgency';
     retry?: true;
   }) => Promise<QueuedHmsJob>;
   /** The server's exact HMS_JOB_QUEUE switch, used to preserve the queue-off inline party lookup. */
@@ -321,7 +321,7 @@ export type HmsJobClient = {
   searchGuest?: (input: GuestSearchInput) => Promise<GuestSearchReply>;
   findParty?: (input: {
     name: string;
-    kind?: 'company' | 'agency';
+    kind?: 'organization' | 'bookingAgency';
     threadId?: string;
     messageId?: string;
   }) => Promise<PartyFindReply>;
@@ -336,7 +336,7 @@ export type HmsJobClient = {
           confirmation?: string;
           lastName?: string;
           name?: string;
-          partyKind?: 'company' | 'agency';
+          partyKind?: 'organization' | 'bookingAgency';
           arrival?: string | null;
           departure?: string | null;
         },
@@ -356,7 +356,7 @@ export type HmsJobTransport = {
           confirmation?: string;
           lastName?: string;
           name?: string;
-          partyKind?: 'company' | 'agency';
+          partyKind?: 'organization' | 'bookingAgency';
           arrival?: string | null;
           departure?: string | null;
         },
@@ -405,7 +405,7 @@ export function amendFindClientFromTrpc(trpc: unknown, transportId?: string | nu
       ? {
           findParty: (input: {
             name: string;
-            kind?: 'company' | 'agency';
+            kind?: 'organization' | 'bookingAgency';
             threadId?: string;
             messageId?: string;
           }) => pinned ? party.mutate(input, pinned) : party.mutate(input),

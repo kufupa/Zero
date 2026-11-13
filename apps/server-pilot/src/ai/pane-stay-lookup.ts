@@ -53,8 +53,8 @@ export type PaneStayPartyIdentity = { name?: string; nativeId?: string; iata?: s
 
 /** Optional commercial facts read from the same opened Guest Stay record. */
 export type PaneStayCommercial = {
-  company?: PaneStayPartyIdentity;
-  agency?: PaneStayPartyIdentity;
+  organization?: PaneStayPartyIdentity;
+  bookingAgency?: PaneStayPartyIdentity;
   ratePlan?: string;
   mealPlan?: string;
   roomType?: string;
@@ -378,10 +378,10 @@ function toPaneStayCommercial(raw: unknown): PaneStayCommercial | undefined {
     };
   };
   const commercial: PaneStayCommercial = {};
-  const company = party(source.company);
-  const agency = party(source.agency);
-  if (company) commercial.company = company;
-  if (agency) commercial.agency = agency;
+  const organization = party(source.organization ?? source.company);
+  const bookingAgency = party(source.bookingAgency ?? source.agency);
+  if (organization) commercial.organization = organization;
+  if (bookingAgency) commercial.bookingAgency = bookingAgency;
   for (const field of [
     'ratePlan', 'mealPlan', 'roomType', 'marketSegment', 'sourceOfBusiness', 'averageRate',
     'status', 'arrival', 'departure', 'guaranteeType', 'depositReceived',

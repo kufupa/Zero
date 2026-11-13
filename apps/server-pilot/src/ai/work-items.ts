@@ -34,7 +34,7 @@ import {
 } from '../db/schema/work.js';
 import type { AttachmentRead } from './extraction/extract.js';
 import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
-import { hydrateStoredFieldPath, hydrateStoredWorkState } from './stored-work-state.js';
+import { hydrateStoredFieldPath, hydrateStoredWorkState, storedFieldPathAliases } from './stored-work-state.js';
 import {
   rowContentKey,
   stayContentKey,
@@ -101,8 +101,7 @@ import type { CloudCreateHoldProjection } from './pane-cloud-preview.js';
  * extraction does not have is a stay or row the person added, and `stays[s_x].removed` / `...rows[r_y].removed`
  * (true) is one she deleted. Both come back on reopen.
  *
- * The contact block (U16) uses `contact.name`, `contact.company`, `contact.endClient`, `contact.email` and
- * `contact.phone`. `contact.company` reads the extraction's agency. The other fields read their extraction values.
+ * The contact block uses `contact.name`, `contact.bookingAgency`, `contact.organization`, `contact.email` and `contact.phone`.
  */
 
 export const ROW_FIELDS = ['count', 'adults', 'roomType', 'childAges', 'mealPlan'] as const;
@@ -417,10 +416,9 @@ function stayIdFromCommitKey(key: string): string {
 }
 
 /**
- * The contact block's fields (U16). Paths are `contact.<field>`. `company` is the sender's organisation, which the
- * extraction calls the agency, so its AI value is `agency`.
+ * The contact block's fields (U16). Paths are `contact.<field>`.
  */
-export const CONTACT_FIELDS = ['name', 'company', 'endClient', 'email', 'phone'] as const;
+export const CONTACT_FIELDS = ['name', 'bookingAgency', 'organization', 'email', 'phone'] as const;
 export type ContactField = (typeof CONTACT_FIELDS)[number];
 export type StoredContact = Record<ContactField, string | null>;
 const CONTACT_PATH = new RegExp(`^contact\\.(${CONTACT_FIELDS.join('|')})$`);
@@ -435,9 +433,9 @@ function contactAiValue(payload: MailExtractionPayload | null | undefined, field
   switch (field) {
     case 'name':
       return payload.contact.name;
-    case 'company':
+    case 'bookingAgency':
       return payload.bookingAgency;
-    case 'endClient':
+    case 'organization':
       return payload.organization;
     case 'email':
       return payload.contact.email;
@@ -459,8 +457,8 @@ export function storedContact(payload: MailExtractionPayload, state: WorkState):
   };
   return {
     name: valueOf('name'),
-    company: valueOf('company'),
-    endClient: valueOf('endClient'),
+    bookingAgency: valueOf('bookingAgency'),
+    organization: valueOf('organization'),
     email: valueOf('email'),
     phone: valueOf('phone'),
   };
@@ -841,7 +839,7 @@ export function storedAnalysis(
     flags,
     groups,
     party: {
-      kind: payload.bookingAgency ? 'agency' : payload.organization ? 'organization' : null,
+      kind: payload.bookingAgency ? 'bookingAgency' : payload.organization ? 'organization' : null,
       name: payload.bookingAgency ?? payload.organization,
       reference: null,
     },
@@ -2646,7 +2644,7 @@ export async function acceptUneditedFields(
       (path) => !path.endsWith('.removed') && (contactFieldOf(path) !== null || parseFieldPath(path) !== null),
     );
     if (!paths.length) return { status: 'recorded' as const, accepted: 0 };
-    const storedPaths = paths.flatMap(path => [path, path.replace(/^(stays\[[A-Za-z0-9_-]{1,40}\]\.rows\[[A-Za-z0-9_-]{1,40}\])\.mealPlan$/, '$1.board')]);
+    const storedPaths = paths.flatMap(storedFieldPathAliases);
     const seen = await tx
       .select({ path: workEvent.fieldPath })
       .from(workEvent)

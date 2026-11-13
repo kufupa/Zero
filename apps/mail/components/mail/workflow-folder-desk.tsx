@@ -67,7 +67,7 @@ export function WorkflowFolderDesk() {
   const { data: bodyThread, isLoading: isBodyLoading } = useThread(threadId ?? null);
   const bodyMessage = bodyThread?.messages.find((message) => message.id === selectedMessageId);
   const extraction = selectedSourceMessage?.extraction;
-  const payload = extraction?.payload ?? null;
+  const payload = storedExtractionForDisplay(extraction?.payload ?? null);
   const runs = detailQuery.data?.runs.filter((run) => run.triggerMessageId === selectedMessageId) ?? [];
   const selectedStats = validFolder ? workflowSummary?.[validFolder] : undefined;
 
@@ -340,8 +340,8 @@ function ExtractedFieldsSection({ payload }: { payload: Record<string, unknown> 
     { label: 'Contact', value: contact.name },
     { label: 'Email', value: contact.email },
     { label: 'Phone', value: contact.phone },
-    { label: 'Agency / company', value: payload.agency },
-    { label: 'End client', value: payload.endClient },
+    { label: 'Booking agency', value: payload.bookingAgency },
+    { label: 'Organization', value: payload.organization },
     { label: 'Confirmations', value: payload.confirmationNumbers },
   ];
   return (
@@ -374,7 +374,7 @@ function ExtractedFieldsSection({ payload }: { payload: Record<string, unknown> 
             Array.isArray(row.childAges) && row.childAges.length
               ? `child ages ${row.childAges.map(displayValue).join(', ')}`
               : null,
-            isDisplayable(row.board) ? `board ${displayValue(row.board)}` : null,
+            isDisplayable(row.mealPlan) ? `meal plan ${displayValue(row.mealPlan)}` : null,
           ].filter((part): part is string => Boolean(part));
           if (roomDetails.length) details.push(`Room ${rowIndex + 1}: ${roomDetails.join(' · ')}`);
         });
@@ -591,11 +591,34 @@ function storedRunSummary(
   return serialized.length > 6000 ? `${serialized.slice(0, 6000)}\n… snapshot truncated` : serialized;
 }
 
+function storedExtractionForDisplay(payload: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!payload) return null;
+  return {
+    ...payload,
+    bookingAgency: Object.hasOwn(payload, 'bookingAgency') ? payload.bookingAgency : payload.agency,
+    organization: Object.hasOwn(payload, 'organization') ? payload.organization : payload.endClient,
+    ...(Array.isArray(payload.stays) ? {
+      stays: payload.stays.map((value) => {
+        const stay = objectRecord(value);
+        return {
+          ...stay,
+          ...(Array.isArray(stay.rows) ? {
+            rows: stay.rows.map((value) => {
+              const row = objectRecord(value);
+              return { ...row, mealPlan: Object.hasOwn(row, 'mealPlan') ? row.mealPlan : row.board };
+            }),
+          } : {}),
+        };
+      }),
+    } : {}),
+  };
+}
+
 function extractionTerms(payload: Record<string, unknown> | null): string[] {
   if (!payload) return [];
   const terms: string[] = [];
   const contact = objectRecord(payload.contact);
-  for (const value of [contact.name, contact.email, contact.phone, payload.agency, payload.endClient]) {
+  for (const value of [contact.name, contact.email, contact.phone, payload.bookingAgency, payload.organization]) {
     if (typeof value === 'string' && value.trim().length >= 2) terms.push(value.trim());
   }
   if (Array.isArray(payload.confirmationNumbers)) {

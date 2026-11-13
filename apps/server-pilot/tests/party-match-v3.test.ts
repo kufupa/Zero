@@ -38,7 +38,7 @@ const TOURVEST_IDS = [
 ] as const;
 
 const tourvestAgency = (nativeId: string, extra: Partial<PartyMatchV3Row> = {}): PartyMatchV3Row => ({
-  kind: 'agency',
+  kind: 'bookingAgency',
   nativeId,
   name: 'Tourvest Travel Services',
   ...extra,
@@ -46,10 +46,10 @@ const tourvestAgency = (nativeId: string, extra: Partial<PartyMatchV3Row> = {}):
 
 const TOURVEST_COPIES: PartyMatchV3Row[] = TOURVEST_IDS.map((id) => tourvestAgency(id));
 
-const candidate = (name: string, kind: 'company' | 'agency' = 'agency'): PartyMatchCandidate => ({
+const candidate = (name: string, kind: 'organization' | 'bookingAgency' = 'bookingAgency'): PartyMatchCandidate => ({
   name,
   kind,
-  source: kind === 'agency' ? 'extraction_agency' : 'extraction_end_client',
+  source: kind === 'bookingAgency' ? 'extraction_agency' : 'extraction_end_client',
   strength: 'strong',
 });
 
@@ -75,7 +75,7 @@ function invokeResult(output: Record<string, unknown>): ModelInvokeResult {
   return { modelId: 'gpt-6-luna', output, usage };
 }
 
-function highPick(nativeId: string, kind: 'company' | 'agency' = 'agency') {
+function highPick(nativeId: string, kind: 'organization' | 'bookingAgency' = 'bookingAgency') {
   return {
     pickNativeId: nativeId,
     kind,
@@ -102,30 +102,30 @@ describe('sanitizePartySearchTerms', () => {
   it('drops empty or 1–2 character terms and dedupes kind+term', () => {
     expect(
       sanitizePartySearchTerms([
-        { kind: 'agency', term: '' },
-        { kind: 'agency', term: 'x' },
-        { kind: 'agency', term: 'ab' },
-        { kind: 'agency', term: 'Tourvest' },
-        { kind: 'agency', term: ' tourvest ' },
-        { kind: 'company', term: 'Tourvest' },
-        { kind: 'agency', term: 'Travel With Flair' },
+        { kind: 'bookingAgency', term: '' },
+        { kind: 'bookingAgency', term: 'x' },
+        { kind: 'bookingAgency', term: 'ab' },
+        { kind: 'bookingAgency', term: 'Tourvest' },
+        { kind: 'bookingAgency', term: ' tourvest ' },
+        { kind: 'organization', term: 'Tourvest' },
+        { kind: 'bookingAgency', term: 'Travel With Flair' },
       ]),
     ).toEqual([
-      { kind: 'agency', term: 'Tourvest' },
-      { kind: 'company', term: 'Tourvest' },
-      { kind: 'agency', term: 'Travel With Flair' },
+      { kind: 'bookingAgency', term: 'Tourvest' },
+      { kind: 'organization', term: 'Tourvest' },
+      { kind: 'bookingAgency', term: 'Travel With Flair' },
     ]);
   });
 
   it('drops own-brand and country-only searches but keeps distinctive party terms', () => {
     expect(
       sanitizePartySearchTerms([
-        { kind: 'agency', term: 'Legacy Hotels' },
-        { kind: 'agency', term: 'Argentina' },
-        { kind: 'agency', term: 'South Africa' },
-        { kind: 'agency', term: 'Nexus' },
+        { kind: 'bookingAgency', term: 'Legacy Hotels' },
+        { kind: 'bookingAgency', term: 'Argentina' },
+        { kind: 'bookingAgency', term: 'South Africa' },
+        { kind: 'bookingAgency', term: 'Nexus' },
       ]),
-    ).toEqual([{ kind: 'agency', term: 'Nexus' }]);
+    ).toEqual([{ kind: 'bookingAgency', term: 'Nexus' }]);
   });
 
 });
@@ -136,7 +136,7 @@ describe('PARTY MATCH V3 duplicate bind', () => {
       candidates: [candidate('Tourvest Travel Services')],
       rows: [
         ...TOURVEST_COPIES,
-        { kind: 'company', nativeId: 'co-1', name: 'Tourvest Travel Services' },
+        { kind: 'organization', nativeId: 'co-1', name: 'Tourvest Travel Services' },
       ],
       pick: highPick('280'),
       emailText: 'Please quote for Tourvest Travel Services.',
@@ -150,9 +150,9 @@ describe('PARTY MATCH V3 duplicate bind', () => {
     const result = applyPartyBindV3({
       candidates: [candidate('Nexus Travel'), candidate('XL Nexus Travel ATNS')],
       rows: [
-        { kind: 'agency', nativeId: 'exact', name: 'Nexus Travel' },
-        { kind: 'agency', nativeId: '1', name: 'XL Nexus Travel ATNS' },
-        { kind: 'agency', nativeId: '2', name: 'XL Nexus Travel ATNS' },
+        { kind: 'bookingAgency', nativeId: 'exact', name: 'Nexus Travel' },
+        { kind: 'bookingAgency', nativeId: '1', name: 'XL Nexus Travel ATNS' },
+        { kind: 'bookingAgency', nativeId: '2', name: 'XL Nexus Travel ATNS' },
       ],
       pick: highPick('1'),
       emailText: 'Please quote for Nexus Travel.',
@@ -173,7 +173,7 @@ describe('PARTY MATCH V3 duplicate bind', () => {
     });
     expect(result).toMatchObject({
       matchStatus: 'bound',
-      boundParty: { kind: 'agency', nativeId: '543', name: 'Tourvest Travel Services' },
+      boundParty: { kind: 'bookingAgency', nativeId: '543', name: 'Tourvest Travel Services' },
     });
   });
 
@@ -183,11 +183,11 @@ describe('PARTY MATCH V3 duplicate bind', () => {
       rows: TOURVEST_COPIES,
       pick: highPick('280'),
       emailText: 'Please quote for Tourvest Travel Services.',
-      senderHistory: [{ kind: 'agency', nativeId: '6' }],
+      senderHistory: [{ kind: 'bookingAgency', nativeId: '6' }],
     });
     expect(result).toMatchObject({
       matchStatus: 'bound',
-      boundParty: { nativeId: '6', kind: 'agency' },
+      boundParty: { nativeId: '6', kind: 'bookingAgency' },
     });
   });
 
@@ -197,24 +197,24 @@ describe('PARTY MATCH V3 duplicate bind', () => {
         candidate('Nexus Travel'),
         {
           name: 'XL Nexus',
-          kind: 'agency',
+          kind: 'bookingAgency',
           source: 'sender_history',
           strength: 'strong',
         },
       ],
       rows: [
-        { kind: 'agency', nativeId: 'nexus', name: 'XL Nexus' },
-        { kind: 'agency', nativeId: 'other', name: 'Beacon Agency' },
-        { kind: 'company', nativeId: 'company', name: 'XL Nexus' },
+        { kind: 'bookingAgency', nativeId: 'nexus', name: 'XL Nexus' },
+        { kind: 'bookingAgency', nativeId: 'other', name: 'Beacon Agency' },
+        { kind: 'organization', nativeId: 'organization', name: 'XL Nexus' },
       ],
       pick: highPick('other'),
       emailText: 'Please quote for Nexus Travel.',
-      senderHistory: [{ kind: 'agency', nativeId: null, name: 'XL Nexus' }] as never,
+      senderHistory: [{ kind: 'bookingAgency', nativeId: null, name: 'XL Nexus' }] as never,
     });
 
     expect(result).toMatchObject({
       matchStatus: 'bound',
-      boundParty: { nativeId: 'nexus', kind: 'agency' },
+      boundParty: { nativeId: 'nexus', kind: 'bookingAgency' },
     });
   });
 
@@ -224,18 +224,18 @@ describe('PARTY MATCH V3 duplicate bind', () => {
         candidate('Acme South'),
         {
           name: 'Acme North',
-          kind: 'agency',
+          kind: 'bookingAgency',
           source: 'sender_history',
           strength: 'strong',
         },
       ],
       rows: [
-        { kind: 'agency', nativeId: 'north', name: 'Acme North' },
-        { kind: 'agency', nativeId: 'south', name: 'Acme South' },
+        { kind: 'bookingAgency', nativeId: 'north', name: 'Acme North' },
+        { kind: 'bookingAgency', nativeId: 'south', name: 'Acme South' },
       ],
       pick: highPick('south'),
       emailText: 'Please quote for Acme South.',
-      senderHistory: [{ kind: 'agency', nativeId: null, name: 'Acme North' }] as never,
+      senderHistory: [{ kind: 'bookingAgency', nativeId: null, name: 'Acme North' }] as never,
     });
 
     expect(result.boundParty?.nativeId).not.toBe('north');
@@ -247,15 +247,15 @@ describe('PARTY MATCH V3 duplicate bind', () => {
         candidate('Acme Consulting'),
         {
           name: 'Acme Consulting',
-          kind: 'agency',
+          kind: 'bookingAgency',
           source: 'sender_history',
           strength: 'strong',
         },
       ],
-      rows: [{ kind: 'agency', nativeId: 'beacon', name: 'Beacon Consulting' }],
+      rows: [{ kind: 'bookingAgency', nativeId: 'beacon', name: 'Beacon Consulting' }],
       pick: highPick('beacon'),
       emailText: 'Please quote for Acme Consulting.',
-      senderHistory: [{ kind: 'agency', nativeId: null, name: 'Acme Consulting' }] as never,
+      senderHistory: [{ kind: 'bookingAgency', nativeId: null, name: 'Acme Consulting' }] as never,
     });
 
     expect(result.matchStatus).toBe('needs_pick');
@@ -268,7 +268,7 @@ describe('PARTY MATCH V3 duplicate bind', () => {
         candidate('Tourvest Travel Services'),
         {
           name: 'Tourvest Travel Services',
-          kind: 'agency',
+          kind: 'bookingAgency',
           source: 'sender_history',
           strength: 'strong',
         },
@@ -277,7 +277,7 @@ describe('PARTY MATCH V3 duplicate bind', () => {
       pick: highPick('280'),
       emailText: 'Please quote for Tourvest Travel Services.',
       senderHistory: [
-        { kind: 'agency', nativeId: null, name: 'Tourvest Travel Services' },
+        { kind: 'bookingAgency', nativeId: null, name: 'Tourvest Travel Services' },
       ] as never,
     });
 
@@ -300,10 +300,10 @@ describe('PARTY MATCH V3 reservationist loop', () => {
     const adapter: ModelAdapter = {
       invoke: vi.fn(async (input) =>
         input.systemPrompt.includes('Propose')
-          ? invokeResult({ searches: [{ kind: 'agency', term: 'Tourvest' }] })
+          ? invokeResult({ searches: [{ kind: 'bookingAgency', term: 'Tourvest' }] })
           : invokeResult({
               pick: '280',
-              kind: 'agency',
+              kind: 'bookingAgency',
               confidence: 'high',
               reason: 'Exact party name.',
             }),
@@ -314,7 +314,7 @@ describe('PARTY MATCH V3 reservationist loop', () => {
       candidates: [candidate('Tourvest Travel Services')],
       context,
       emailText: 'Please quote for Tourvest Travel Services.',
-      senderHistory: [{ kind: 'agency', nativeId: '6' }],
+      senderHistory: [{ kind: 'bookingAgency', nativeId: '6' }],
       findParty,
     });
 
@@ -322,7 +322,7 @@ describe('PARTY MATCH V3 reservationist loop', () => {
     expect(result).toMatchObject({
       matcher: 'v3',
       matchStatus: 'bound',
-      boundParty: { kind: 'agency', nativeId: '6' },
+      boundParty: { kind: 'bookingAgency', nativeId: '6' },
     });
   });
 
@@ -338,7 +338,7 @@ describe('PARTY MATCH V3 reservationist loop', () => {
     const adapter: ModelAdapter = {
       invoke: vi.fn(async (input) => {
         if (input.systemPrompt.includes('Propose')) {
-          return invokeResult({ searches: [{ kind: 'agency', term: 'x' }] });
+          return invokeResult({ searches: [{ kind: 'bookingAgency', term: 'x' }] });
         }
         if (String(input.userPrompt).includes('"returnedRows":[]')) {
           return invokeResult({
@@ -347,20 +347,20 @@ describe('PARTY MATCH V3 reservationist loop', () => {
             confidence: 'low',
             reason: 'No rows yet.',
             nextTerms: [
-              { kind: 'agency', term: 'Tourvest' },
-              { kind: 'agency', term: 'Travel With Flair' },
-              { kind: 'agency', term: 'Rennies' },
-              { kind: 'agency', term: 'WebBeds' },
-              { kind: 'agency', term: 'Cullinan' },
+              { kind: 'bookingAgency', term: 'Tourvest' },
+              { kind: 'bookingAgency', term: 'Travel With Flair' },
+              { kind: 'bookingAgency', term: 'Rennies' },
+              { kind: 'bookingAgency', term: 'WebBeds' },
+              { kind: 'bookingAgency', term: 'Cullinan' },
             ],
           });
         }
         return invokeResult({
           pick: '280',
-          kind: 'agency',
+          kind: 'bookingAgency',
           confidence: 'high',
           reason: 'Exact agency name.',
-          nextTerms: [{ kind: 'agency', term: 'should-not-run' }],
+          nextTerms: [{ kind: 'bookingAgency', term: 'should-not-run' }],
         });
       }),
     };
@@ -375,9 +375,9 @@ describe('PARTY MATCH V3 reservationist loop', () => {
 
     expect(findParty).toHaveBeenCalledTimes(1);
     expect(findParty.mock.calls[0]?.[0]).toEqual([
-      { kind: 'agency', term: 'Tourvest' },
-      { kind: 'agency', term: 'Travel With Flair' },
-      { kind: 'agency', term: 'Rennies' },
+      { kind: 'bookingAgency', term: 'Tourvest' },
+      { kind: 'bookingAgency', term: 'Travel With Flair' },
+      { kind: 'bookingAgency', term: 'Rennies' },
     ]);
     expect(adapter.invoke).toHaveBeenCalledTimes(3);
     expect(result.matchVersion).toBe(2);
@@ -390,7 +390,7 @@ describe('PARTY MATCH V3 reservationist loop', () => {
     const findParty = vi.fn(async (searches: ReadonlyArray<{ kind: string; term: string }>) =>
       searches.map((search) => ({
         outcome: 'resolved' as const,
-        results: [{ kind: 'agency' as const, nativeId: '280', name: 'Tourvest Travel Services' }],
+        results: [{ kind: 'bookingAgency' as const, nativeId: '280', name: 'Tourvest Travel Services' }],
         truncated: false,
         searchedFor: search.term,
       })),
@@ -415,7 +415,7 @@ describe('PARTY MATCH V3 reservationist loop', () => {
       matcher: 'v3',
       pickSource: 'fallback',
       matchStatus: 'bound',
-      boundParty: { nativeId: '280', kind: 'agency' },
+      boundParty: { nativeId: '280', kind: 'bookingAgency' },
     });
   });
 
@@ -423,7 +423,7 @@ describe('PARTY MATCH V3 reservationist loop', () => {
     const findParty = vi.fn(async (searches: ReadonlyArray<{ kind: string; term: string }>) =>
       searches.map((search) => ({
         outcome: 'resolved' as const,
-        results: [{ kind: 'agency' as const, nativeId: 'ey', name: 'EY' }],
+        results: [{ kind: 'bookingAgency' as const, nativeId: 'ey', name: 'EY' }],
         truncated: false,
         searchedFor: search.term,
       })),
@@ -439,9 +439,9 @@ describe('PARTY MATCH V3 reservationist loop', () => {
 
     expect(findParty).toHaveBeenCalled();
     expect(findParty.mock.calls[0]?.[0]).toEqual(
-      expect.arrayContaining([{ kind: 'agency', term: 'EY' }]),
+      expect.arrayContaining([{ kind: 'bookingAgency', term: 'EY' }]),
     );
-    expect(result.boundParty).toMatchObject({ nativeId: 'ey', kind: 'agency' });
+    expect(result.boundParty).toMatchObject({ nativeId: 'ey', kind: 'bookingAgency' });
   });
 
   it('searches the distinctive word in round 2 when a full name returned 0 rows and the model echoes it', async () => {
@@ -450,7 +450,7 @@ describe('PARTY MATCH V3 reservationist loop', () => {
         outcome: search.term === 'Limits' ? ('resolved' as const) : ('no_match' as const),
         results:
           search.term === 'Limits'
-            ? [{ kind: 'agency' as const, nativeId: '119', name: 'No Limits Travel & Tours' }]
+            ? [{ kind: 'bookingAgency' as const, nativeId: '119', name: 'No Limits Travel & Tours' }]
             : [],
         truncated: false,
         searchedFor: search.term,
@@ -460,7 +460,7 @@ describe('PARTY MATCH V3 reservationist loop', () => {
       invoke: vi.fn(async (input) => {
         if (input.systemPrompt.includes('Propose')) {
           return invokeResult({
-            searches: [{ kind: 'agency', term: 'No Limits Travel & Tours' }],
+            searches: [{ kind: 'bookingAgency', term: 'No Limits Travel & Tours' }],
           });
         }
         if (String(input.userPrompt).includes('"returnedRows":[]')) {
@@ -469,12 +469,12 @@ describe('PARTY MATCH V3 reservationist loop', () => {
             kind: null,
             confidence: 'low',
             reason: 'No rows.',
-            nextTerms: [{ kind: 'agency', term: 'No Limits Travel & Tours' }],
+            nextTerms: [{ kind: 'bookingAgency', term: 'No Limits Travel & Tours' }],
           });
         }
         return invokeResult({
           pick: '119',
-          kind: 'agency',
+          kind: 'bookingAgency',
           confidence: 'high',
           reason: 'Distinctive word hit.',
         });
@@ -497,11 +497,11 @@ describe('PARTY MATCH V3 reservationist loop', () => {
     expect(firstPick?.systemPrompt.toLowerCase()).toMatch(/never repeat/);
     expect(findParty).toHaveBeenCalledTimes(2);
     expect(findParty.mock.calls[0]?.[0]).toEqual([
-      { kind: 'agency', term: 'No Limits Travel & Tours' },
+      { kind: 'bookingAgency', term: 'No Limits Travel & Tours' },
     ]);
-    expect(findParty.mock.calls[1]?.[0]).toEqual([{ kind: 'agency', term: 'Limits' }]);
+    expect(findParty.mock.calls[1]?.[0]).toEqual([{ kind: 'bookingAgency', term: 'Limits' }]);
     expect(result.matchVersion).toBe(2);
-    expect(result.boundParty).toMatchObject({ nativeId: '119', kind: 'agency' });
+    expect(result.boundParty).toMatchObject({ nativeId: '119', kind: 'bookingAgency' });
   });
 
   it('never re-searches a term already tried (same kind and normalised name)', async () => {
@@ -516,7 +516,7 @@ describe('PARTY MATCH V3 reservationist loop', () => {
     const adapter: ModelAdapter = {
       invoke: vi.fn(async (input) => {
         if (input.systemPrompt.includes('Propose')) {
-          return invokeResult({ searches: [{ kind: 'agency', term: 'Tourvest' }] });
+          return invokeResult({ searches: [{ kind: 'bookingAgency', term: 'Tourvest' }] });
         }
         return invokeResult({
           pick: null,
@@ -524,8 +524,8 @@ describe('PARTY MATCH V3 reservationist loop', () => {
           confidence: 'low',
           reason: 'No rows.',
           nextTerms: [
-            { kind: 'agency', term: 'tourvest' },
-            { kind: 'agency', term: 'Travel With Flair' },
+            { kind: 'bookingAgency', term: 'tourvest' },
+            { kind: 'bookingAgency', term: 'Travel With Flair' },
           ],
         });
       }),
@@ -541,7 +541,7 @@ describe('PARTY MATCH V3 reservationist loop', () => {
 
     expect(findParty).toHaveBeenCalledTimes(2);
     expect(findParty.mock.calls[1]?.[0]).toEqual([
-      { kind: 'agency', term: 'Travel With Flair' },
+      { kind: 'bookingAgency', term: 'Travel With Flair' },
     ]);
     const round2 = findParty.mock.calls[1]?.[0] ?? [];
     expect(
@@ -561,7 +561,7 @@ describe('PARTY MATCH V3 reservationist loop', () => {
     const adapter: ModelAdapter = {
       invoke: vi.fn(async (input) => {
         if (input.systemPrompt.includes('Propose')) {
-          return invokeResult({ searches: [{ kind: 'agency', term: 'Tourvest' }] });
+          return invokeResult({ searches: [{ kind: 'bookingAgency', term: 'Tourvest' }] });
         }
         return invokeResult({
           pick: null,
@@ -569,11 +569,11 @@ describe('PARTY MATCH V3 reservationist loop', () => {
           confidence: 'low',
           reason: 'No rows.',
           nextTerms: [
-            { kind: 'agency', term: 'Tourvest' },
-            { kind: 'agency', term: 'Alpha Agency' },
-            { kind: 'agency', term: 'Bravo Agency' },
-            { kind: 'agency', term: 'Charlie Agency' },
-            { kind: 'agency', term: 'Delta Agency' },
+            { kind: 'bookingAgency', term: 'Tourvest' },
+            { kind: 'bookingAgency', term: 'Alpha Agency' },
+            { kind: 'bookingAgency', term: 'Bravo Agency' },
+            { kind: 'bookingAgency', term: 'Charlie Agency' },
+            { kind: 'bookingAgency', term: 'Delta Agency' },
           ],
         });
       }),
@@ -588,9 +588,9 @@ describe('PARTY MATCH V3 reservationist loop', () => {
     });
 
     expect(findParty.mock.calls[1]?.[0]).toEqual([
-      { kind: 'agency', term: 'Alpha Agency' },
-      { kind: 'agency', term: 'Bravo Agency' },
-      { kind: 'agency', term: 'Charlie Agency' },
+      { kind: 'bookingAgency', term: 'Alpha Agency' },
+      { kind: 'bookingAgency', term: 'Bravo Agency' },
+      { kind: 'bookingAgency', term: 'Charlie Agency' },
     ]);
   });
 
@@ -600,7 +600,7 @@ describe('PARTY MATCH V3 reservationist loop', () => {
         outcome: search.term === 'Acme' ? ('resolved' as const) : ('no_match' as const),
         results:
           search.term === 'Acme'
-            ? [{ kind: 'agency' as const, nativeId: '77', name: 'Acme' }]
+            ? [{ kind: 'bookingAgency' as const, nativeId: '77', name: 'Acme' }]
             : [],
         truncated: false,
         searchedFor: search.term,
@@ -609,7 +609,7 @@ describe('PARTY MATCH V3 reservationist loop', () => {
     const adapter: ModelAdapter = {
       invoke: vi.fn(async (input) => {
         if (input.systemPrompt.includes('Propose')) {
-          return invokeResult({ searches: [{ kind: 'agency', term: 'Acme Ltd' }] });
+          return invokeResult({ searches: [{ kind: 'bookingAgency', term: 'Acme Ltd' }] });
         }
         if (String(input.userPrompt).includes('"returnedRows":[]')) {
           return invokeResult({
@@ -617,12 +617,12 @@ describe('PARTY MATCH V3 reservationist loop', () => {
             kind: null,
             confidence: 'low',
             reason: 'No rows.',
-            nextTerms: [{ kind: 'agency', term: 'Acme' }],
+            nextTerms: [{ kind: 'bookingAgency', term: 'Acme' }],
           });
         }
         return invokeResult({
           pick: '77',
-          kind: 'agency',
+          kind: 'bookingAgency',
           confidence: 'high',
           reason: 'Shorter form hit.',
         });
@@ -637,9 +637,9 @@ describe('PARTY MATCH V3 reservationist loop', () => {
       findParty,
     });
 
-    expect(findParty.mock.calls[0]?.[0]).toEqual([{ kind: 'agency', term: 'Acme Ltd' }]);
-    expect(findParty.mock.calls[1]?.[0]).toEqual([{ kind: 'agency', term: 'Acme' }]);
-    expect(result.boundParty).toMatchObject({ nativeId: '77', kind: 'agency' });
+    expect(findParty.mock.calls[0]?.[0]).toEqual([{ kind: 'bookingAgency', term: 'Acme Ltd' }]);
+    expect(findParty.mock.calls[1]?.[0]).toEqual([{ kind: 'bookingAgency', term: 'Acme' }]);
+    expect(result.boundParty).toMatchObject({ nativeId: '77', kind: 'bookingAgency' });
   });
 });
 
@@ -660,7 +660,7 @@ describe('PARTY MATCH V3 v2 picker after unbound loop', () => {
     const findParty = vi.fn(async (searches: ReadonlyArray<{ kind: string; term: string }>) =>
       searches.map((search) => ({
         outcome: 'resolved' as const,
-        results: [{ kind: 'agency' as const, nativeId: '119', name: 'Acme and Travel Tours' }],
+        results: [{ kind: 'bookingAgency' as const, nativeId: '119', name: 'Acme and Travel Tours' }],
         truncated: false,
         searchedFor: search.term,
       })),
@@ -668,12 +668,12 @@ describe('PARTY MATCH V3 v2 picker after unbound loop', () => {
     const adapter: ModelAdapter = {
       invoke: vi.fn(async (input) => {
         if (input.systemPrompt.includes('Propose')) {
-          return invokeResult({ searches: [{ kind: 'agency', term: 'Acme Travel & Tours' }] });
+          return invokeResult({ searches: [{ kind: 'bookingAgency', term: 'Acme Travel & Tours' }] });
         }
         if (isV2PickerPrompt(input.systemPrompt)) {
           return invokeResult({
             pickNativeId: '119',
-            kind: 'agency',
+            kind: 'bookingAgency',
             confidence: 'high',
             reason: 'Same organisation; word order differs.',
             alternatives: [],
@@ -703,7 +703,7 @@ describe('PARTY MATCH V3 v2 picker after unbound loop', () => {
       matcher: 'v3',
       matchStatus: 'bound',
       pickSource: 'llm',
-      boundParty: { nativeId: '119', kind: 'agency' },
+      boundParty: { nativeId: '119', kind: 'bookingAgency' },
     });
   });
 
@@ -719,12 +719,12 @@ describe('PARTY MATCH V3 v2 picker after unbound loop', () => {
     const adapter: ModelAdapter = {
       invoke: vi.fn(async (input) => {
         if (input.systemPrompt.includes('Propose')) {
-          return invokeResult({ searches: [{ kind: 'agency', term: 'Tourvest' }] });
+          return invokeResult({ searches: [{ kind: 'bookingAgency', term: 'Tourvest' }] });
         }
         if (isV2PickerPrompt(input.systemPrompt)) {
           return invokeResult({
             pickNativeId: '280',
-            kind: 'agency',
+            kind: 'bookingAgency',
             confidence: 'high',
             reason: 'Named in the email.',
             alternatives: [],
@@ -767,14 +767,14 @@ describe('PARTY MATCH V3 v2 picker after unbound loop', () => {
     const adapter: ModelAdapter = {
       invoke: vi.fn(async (input) => {
         if (input.systemPrompt.includes('Propose')) {
-          return invokeResult({ searches: [{ kind: 'agency', term: 'Tourvest' }] });
+          return invokeResult({ searches: [{ kind: 'bookingAgency', term: 'Tourvest' }] });
         }
         if (isV2PickerPrompt(input.systemPrompt)) {
           throw new Error('v2 picker should not run');
         }
         return invokeResult({
           pick: '280',
-          kind: 'agency',
+          kind: 'bookingAgency',
           confidence: 'high',
           reason: 'Exact agency name.',
         });
@@ -794,7 +794,7 @@ describe('PARTY MATCH V3 v2 picker after unbound loop', () => {
     expect(result).toMatchObject({
       matchStatus: 'bound',
       pickSource: 'llm',
-      boundParty: { nativeId: '280', kind: 'agency' },
+      boundParty: { nativeId: '280', kind: 'bookingAgency' },
     });
   });
 
@@ -803,7 +803,7 @@ describe('PARTY MATCH V3 v2 picker after unbound loop', () => {
     const findParty = vi.fn(async (searches: ReadonlyArray<{ kind: string; term: string }>) =>
       searches.map((search) => ({
         outcome: 'resolved' as const,
-        results: [{ kind: 'agency' as const, nativeId: '119', name: 'Acme and Travel Tours' }],
+        results: [{ kind: 'bookingAgency' as const, nativeId: '119', name: 'Acme and Travel Tours' }],
         truncated: false,
         searchedFor: search.term,
       })),
@@ -811,7 +811,7 @@ describe('PARTY MATCH V3 v2 picker after unbound loop', () => {
     const adapter: ModelAdapter = {
       invoke: vi.fn(async (input) => {
         if (input.systemPrompt.includes('Propose')) {
-          return invokeResult({ searches: [{ kind: 'agency', term: 'Acme Travel & Tours' }] });
+          return invokeResult({ searches: [{ kind: 'bookingAgency', term: 'Acme Travel & Tours' }] });
         }
         return invokeResult({
           pick: null,

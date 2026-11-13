@@ -13,6 +13,7 @@
  * PARTY_INDEX_PATH / PARTY_INDEX_PATH_HRDAV choose another file. No Centurion fallback.
  */
 import { readFile, rm } from 'node:fs/promises';
+import { z } from 'zod';
 import { panePartyFindResultFromCli, spawnPartyLookup, type PanePartyKind } from '../src/ai/pane-party-lookup.js';
 import {
   parsePartyIndexProperty,
@@ -35,8 +36,18 @@ import {
   PANE_PROPERTY_LOCK_WAIT_MS,
 } from '../src/hms/property-read-lock.js';
 
-const USAGE = `usage: party-index-sweep.ts [--property HRCEN|HRDAV] [--kinds company,agency] [--delay-ms 15000]
+const USAGE = `usage: party-index-sweep.ts [--property HRCEN|HRDAV] [--kinds organization,bookingAgency] [--delay-ms 15000]
                           [--max-runs 150] [--lock-retries 5] [--lock-retry-ms 60000] [--fresh]`;
+
+// Only this persisted progress reader accepts the prior kind names.
+const storedKind = z.enum(['organization', 'bookingAgency', 'company', 'agency'])
+  .transform(kind => kind === 'company' ? 'organization' : kind === 'agency' ? 'bookingAgency' : kind);
+const storedProgress = z.object({
+  version: z.literal(1), startedAt: z.string(), runs: z.number().int().nonnegative(),
+  queue: z.array(z.object({ kind: storedKind, prefix: z.string() })),
+  done: z.array(z.object({ kind: storedKind, prefix: z.string(), outcome: z.string(), count: z.number(), truncated: z.boolean() })),
+  entries: z.array(z.object({ kind: storedKind, nativeId: z.string(), name: z.string() })),
+});
 
 type Args = {
   property: PartyIndexProperty;
@@ -52,7 +63,7 @@ type Args = {
 function parseArgs(argv: string[]): Args {
   const args: Args = {
     property: 'HRCEN',
-    kinds: ['company', 'agency'],
+    kinds: ['organization', 'bookingAgency'],
     delayMs: 15_000,
     maxRuns: 150,
     lockRetries: 5,
@@ -77,8 +88,8 @@ function parseArgs(argv: string[]): Args {
       i += 1;
     } else if (flag === '--kinds') {
       const kinds = (value ?? '').split(',').map((kind) => kind.trim());
-      if (!kinds.every((kind) => kind === 'company' || kind === 'agency') || kinds.length === 0) {
-        throw new Error('--kinds takes company, agency, or both');
+      if (!kinds.every((kind) => kind === 'organization' || kind === 'bookingAgency') || kinds.length === 0) {
+        throw new Error('--kinds takes organization, bookingAgency, or both');
       }
       args.kinds = kinds as PanePartyKind[];
       i += 1;
@@ -138,8 +149,8 @@ async function main(): Promise<number> {
     isLockBusy: (error: unknown) => isPropertyReadLockDeadline(error),
     loadProgress: async (): Promise<SweepProgress | null> => {
       try {
-        const parsed = JSON.parse(await readFile(progressPath, 'utf8')) as SweepProgress;
-        return parsed?.version === 1 && Array.isArray(parsed.queue) ? parsed : null;
+        const parsed = storedProgress.safeParse(JSON.parse(await readFile(progressPath, 'utf8')));
+        return parsed.success ? parsed.data : null;
       } catch {
         return null;
       }

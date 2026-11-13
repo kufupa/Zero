@@ -51,7 +51,7 @@ export const rateContextSchema = z.object({
   roomCode: nativeCode, quantity: z.number().int().min(1).max(99),
   adults: z.number().int().min(1).max(9), childAges: z.array(z.number().int().min(0).max(99)).max(9),
   mealPlan: z.enum(['room_only', 'bb', 'dbb']).nullable(), currency: z.string().regex(/^[A-Z]{3}$/),
-  agencyId: nativeId.nullable(), organizationId: nativeId.nullable(), guestProfileId: nativeId.nullable(),
+  bookingAgencyId: nativeId.nullable(), organizationId: nativeId.nullable(), guestProfileId: nativeId.nullable(),
   sourceOfBusiness: z.string().nullable(), track: z.string().nullable(), guaranteeType: z.string().nullable(),
   typedRatePlan: nativeCode.nullable(),
   savedTarget: z.object({ confirmation: z.string().min(1), bookedArrival: z.string().regex(ISO_DAY),
@@ -102,7 +102,7 @@ export const availabilityJobRequestSchema = availabilityRequestSchema.superRefin
         (Date.parse(context.departure) - Date.parse(context.arrival)) / 86_400_000 > MAX_NIGHTS) {
       ctx.addIssue({ code: 'custom', message: 'Rate context must match one complete room scenario within 30 nights.' });
     }
-    for (const [kind, id] of [['organization', context.organizationId], ['bookingAgency', context.agencyId]] as const) {
+    for (const [kind, id] of [['organization', context.organizationId], ['bookingAgency', context.bookingAgencyId]] as const) {
       if ((request.rateParties?.[kind]?.nativeId ?? null) !== id) {
         ctx.addIssue({ code: 'custom', message: `Rate ${kind} reference must match the context ID.` });
       }
@@ -175,7 +175,7 @@ export function boundSourceRateRequest(input: {
     rooms: [{ roomType: roomCode, quantity, adults, childAges }], rateParties,
     rateContext: { propertyCode: input.propertyCode, workflow: input.workflow, arrival, departure, roomCode, quantity,
       adults, childAges, mealPlan: board, currency: 'ZAR', // Existing HRCEN Quote currency; observations must match it.
-      agencyId: selection.kind === 'selected' ? selection.bookingAgency?.nativeId ?? null : null,
+      bookingAgencyId: selection.kind === 'selected' ? selection.bookingAgency?.nativeId ?? null : null,
       organizationId: selection.kind === 'selected' ? selection.organization?.nativeId ?? null : null,
       guestProfileId: null, sourceOfBusiness: roomPick('sourceOfBusiness', null),
       track: roomPick('track', null), guaranteeType: roomPick('guaranteeType', null),
@@ -235,7 +235,7 @@ export function boundAmendRateRequest(input: {
     rooms: [{ roomType: roomCode, quantity: 1, adults, childAges }], rateParties,
     rateContext: { propertyCode: input.propertyCode, workflow: 'amend', arrival, departure, roomCode,
       quantity: 1, adults, childAges, mealPlan: null, currency: lookup.currency,
-      agencyId: lookup.parties.agency.nativeId, organizationId: lookup.parties.organization.nativeId,
+      bookingAgencyId: lookup.parties.agency.nativeId, organizationId: lookup.parties.organization.nativeId,
       guestProfileId: native.guestId,
       sourceOfBusiness: lookup.sourceOfBusiness.state === 'observed' ? lookup.sourceOfBusiness.value : null,
       track: lookup.track.state === 'observed' ? lookup.track.value : null,

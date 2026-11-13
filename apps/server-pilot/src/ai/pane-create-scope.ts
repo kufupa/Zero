@@ -13,7 +13,7 @@ const stableId = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/);
 export const paneCreatePartySchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('none') }).strict(),
   z.object({ kind: z.literal('unknown') }).strict(),
-  z.object({ kind: z.literal('selected'), company: z.string().max(200).nullable(), agency: z.string().max(200).nullable() }).strict(),
+  z.object({ kind: z.literal('selected'), organization: z.string().max(200).nullable(), bookingAgency: z.string().max(200).nullable() }).strict(),
 ]);
 export const paneCreateIdentitySchema = z.object({
   stayId: stableId, rowId: stableId, roomIndex: z.number().int().min(1).max(999),
@@ -104,7 +104,7 @@ export function reconcilePaneCreateScope(input: {
       !paneCreatePartySchema.safeParse(input.party).success || input.party.kind === 'unknown') return false;
   const agency = input.stay.bookingAgency?.name ?? null, company = input.stay.organization?.name ?? null;
   if (input.party.kind === 'none' ? agency !== null || company !== null :
-      input.party.agency !== agency || input.party.company !== company) return false;
+      input.party.bookingAgency !== agency || input.party.organization !== company) return false;
   const payload = parsed.data;
   const stays = new Map<string, ExtractionStay>();
   const originallyRowless = new Set<string>();
