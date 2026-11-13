@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { canonicalJson } from './draft-approval.js';
 import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Draft, type ReservationWorkflowV2Observation } from './reservation-workflow-v2-contract.js';
-import { compileReservationWorkflowV2Create } from './reservation-workflow-v2-tools.js';
+import { compileReservationWorkflowV2BackgroundCreate } from './reservation-workflow-v2-tools.js';
 import { reservationWorkflowV2ServicesForAllocation, reservationWorkflowV2CompileServiceItem,
   reservationWorkflowV2CompileSavedService, nativeServiceGuestNameMatches, savedServiceBusiness,
   savedTarget, selectedSavedStay, savedStayMatches, savedValue, samePerson, pointer, positiveDecimal,
@@ -15,6 +15,15 @@ import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 export type AddOnObservationInput = { draft: ReservationWorkflowV2Draft; input: ReservationWorkflowV2ServicesInput | ReservationWorkflowV2SavedServicesInput; transportId: string; signal: AbortSignal };
 export type AddOnObservationResult = { status: string; observations: ReservationWorkflowV2Observation[]; issue?: string };
 type NativeCreate = { outcome?: string; issue?: string; requestBinding?: { request?: unknown; digest?: unknown }; ratePlanAvailability?: unknown; commitOnlyFields?: string[] };
+type CompiledCreate = Pick<Extract<ReturnType<typeof compileReservationWorkflowV2BackgroundCreate>, { outcome: 'ok' }>, 'nativeInput' | 'expectedGuest'>;
+export type CheckAddOnsTarget =
+  | { kind: 'unsaved'; nativeInput: CompiledCreate['nativeInput']; expectedGuest: CompiledCreate['expectedGuest']; nativeBindingDigest: string }
+  | { kind: 'saved'; confirmation: string; guestName: string; arrival: string; departure: string };
+export type CheckAddOnsItem = { serviceId: string; operation?: 'add' | 'edit' | 'remove'; code: string; quantity: string;
+  unitPrice: string; startDate: string; endDate: string };
+export type CheckAddOnsResult = { status: 'prepared' | 'needs_input' | 'failed'; saved: false;
+  coverage: { complete: boolean; loaded?: number; reportedTotal?: number }; candidates: Array<Record<string, unknown>>;
+  previews: Array<Record<string, unknown>>; target?: Record<string, unknown>; issue?: string };
 const record = (value: unknown): Record<string, unknown> | null => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const text = (value: unknown): string | null => typeof value === 'string' && value.trim() ? value.trim() : null;
 const nativeServiceControls = (value: unknown): Record<string, unknown> | undefined => {
@@ -59,7 +68,7 @@ export async function previewAddOns(args: AddOnObservationInput): Promise<AddOnO
 }
 
 
-async function createThenAddon(compiled: Extract<ReturnType<typeof compileReservationWorkflowV2Create>, { outcome: 'ok' }>,
+async function createThenAddon(compiled: CompiledCreate,
   operation: (page: unknown, readForm: () => Promise<unknown>) => Promise<unknown>, signal?: AbortSignal) {
   signal?.throwIfAborted();
   if (compiled.nativeInput.mode !== 'prepare') throw new Error('create_prepare_required');
@@ -87,6 +96,124 @@ async function createThenAddon(compiled: Extract<ReturnType<typeof compileReserv
   return { native, addon };
 }
 
+/** Caller holds the HRCEN property lock through cleanup and fences source and persistence. */
+export async function checkAddOns({ propertyCode, target, items, signal }: { propertyCode: string; target: CheckAddOnsTarget;
+  items: CheckAddOnsItem[]; signal: AbortSignal }): Promise<CheckAddOnsResult> {
+  signal.throwIfAborted();
+  const result = (status: CheckAddOnsResult['status'], issue: string): CheckAddOnsResult =>
+    ({ status, issue, saved: false, coverage: { complete: false }, candidates: [], previews: [] });
+  const validDate = (value: unknown) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+  if (propertyCode !== 'HRCEN' || !target || !Array.isArray(items) || !items.length || items.length > 100 ||
+      items.some(item => !item || (item.operation !== undefined && item.operation !== 'add') ||
+        !text(item.serviceId) || !text(item.code) || item.code !== item.code.trim() ||
+        !positiveDecimal(item.quantity) || !positiveDecimal(item.unitPrice) || !validDate(item.startDate) || !validDate(item.endDate)) ||
+      new Set(items.map(item => item.serviceId)).size !== items.length)
+    return result('needs_input', 'addon_check_input_unresolved');
+  if (target.kind === 'unsaved') {
+    if (target.nativeInput?.mode !== 'prepare' || target.nativeInput?.propertyCode !== 'HRCEN' ||
+        !text(target.expectedGuest?.firstName) || !text(target.expectedGuest?.lastName) ||
+        !/^[a-f0-9]{64}$/.test(target.nativeBindingDigest ?? ''))
+      return result('needs_input', 'addon_create_binding_required');
+  } else if (target.kind === 'saved') {
+    if (!paneStayLookupEnabled()) return result('needs_input', 'pane_stay_lookup_flag_off');
+    if (!/^\d+-\d+$/.test(target.confirmation ?? '') || !text(target.guestName) ||
+        !validDate(target.arrival) || !validDate(target.departure)) return result('needs_input', 'addon_saved_target_required');
+  } else return result('needs_input', 'addon_target_unresolved');
+
+  const nativeItems = items.map(({ code, quantity, unitPrice, startDate, endDate }) => ({ code, quantity, unitPrice, startDate, endDate }));
+  const matched = (listing: Record<string, unknown> | null) => {
+    const coverage = record(listing?.coverage);
+    const rows = Array.isArray(listing?.candidates) ? listing.candidates.map(record).filter((row): row is Record<string, unknown> => !!row) : [];
+    const candidates = items.flatMap(item => rows.filter(row => row.code === item.code && text(row.itemId) && typeof row.name === 'string')
+      .map(row => ({ serviceId: item.serviceId, code: row.code, name: row.name, itemId: row.itemId })));
+    const complete = listing?.outcome === 'ok' && coverage?.complete === true && Array.isArray(listing.candidates);
+    const unique = complete && items.every(item => rows.filter(row => row.code === item.code).length === 1 &&
+      candidates.filter(row => row.serviceId === item.serviceId).length === 1);
+    const missing = items.some(item => !rows.some(row => row.code === item.code));
+    return { complete, unique, missing, coverage: { complete, ...(typeof coverage?.loaded === 'number' ? { loaded: coverage.loaded } : {}),
+      ...(typeof coverage?.reportedTotal === 'number' ? { reportedTotal: coverage.reportedTotal } : {}) }, candidates };
+  };
+  try {
+    let listing: Record<string, unknown> | null = null, prepared: Record<string, unknown> | null = null;
+    let verifiedTarget: Record<string, unknown> | null = null;
+    if (target.kind === 'unsaved') {
+      const addonTool = await import(new URL('../../tooling/hms-cloud/stay360-addons.mjs', import.meta.url).href) as {
+        previewUnsavedStay360AddOns: (page: unknown, options: Record<string, unknown>) => Promise<unknown>;
+      };
+      const { native, addon } = await createThenAddon(target, (page, readForm) =>
+        addonTool.previewUnsavedStay360AddOns(page, { expectedCreate: target.nativeInput, expectedGuest: target.expectedGuest,
+          readForm, items: nativeItems, includeCatalogue: true }), signal);
+      const binding = record(native.requestBinding);
+      prepared = record(addon); listing = record(prepared?.catalogue);
+      if (native.outcome !== 'prepared' || binding?.digest !== target.nativeBindingDigest || !record(binding.request) ||
+          !record(native.ratePlanAvailability))
+        return result('needs_input', 'addon_create_binding_unverified');
+      if (!listing || listing.outcome !== 'ok') return result(listing?.outcome === 'execution_failure' ? 'failed' : 'needs_input',
+        text(listing?.issue) ?? 'addon_catalogue_unavailable');
+      if (listing.propertyCode !== 'HRCEN' || listing.unsaved !== true) return result('needs_input', 'addon_create_target_unverified');
+      const listingTarget = record(listing.target), preparedTarget = record(prepared?.target);
+      if (!listingTarget || (prepared && (!preparedTarget || canonicalJson(listingTarget) !== canonicalJson(preparedTarget))))
+        return result('needs_input', 'addon_create_target_changed');
+      verifiedTarget = { kind: 'unsaved', native: listingTarget, requestBinding: binding };
+    } else {
+      const addon = await import(new URL('../../tooling/hms-cloud/stay360-addons-session.mjs', import.meta.url).href) as {
+        withStay360AddOnSession: (callback: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<unknown>,
+          options: Record<string, unknown>) => Promise<unknown>;
+      };
+      const browser = await import(new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url).href) as {
+        withCenturionStay360Page: (callback: (page: unknown) => Promise<unknown>, options: Record<string, unknown>) => Promise<unknown>;
+      };
+      const data = record(await addon.withStay360AddOnSession(async session => {
+        const run = async (request: Record<string, unknown>) => { signal.throwIfAborted();
+          const value = await session.runTool(request); signal.throwIfAborted(); return record(value); };
+        const read = await run({ tool: 'read', confirmation: target.confirmation, guestName: target.guestName, arrivalDate: target.arrival });
+        const stay = record(read?.target);
+        if (read?.outcome !== 'ok' || read.propertyCode !== 'HRCEN' || record(read.coverage)?.complete !== true ||
+            !stay || stay.confirmation !== target.confirmation || stay.status !== 'Reserved' || stay.arrival !== target.arrival ||
+            stay.departure !== target.departure || !nativeServiceGuestNameMatches(stay.guestName, target.guestName)) return { read };
+        const found = await run({ tool: 'list', confirmation: target.confirmation });
+        const preview = matched(found).unique ? await run({ tool: 'prepare', confirmation: target.confirmation, items: nativeItems }) : null;
+        return { stay, found, preview };
+      }, { headless: true, blockServiceWorkers: true, withPage: (callback: (page: unknown) => Promise<unknown>, options: Record<string, unknown>) =>
+        browser.withCenturionStay360Page(callback, { ...options, signal }) }));
+      signal.throwIfAborted();
+      if (!data || !record(data.stay)) {
+        const read = record(data?.read);
+        return result(read?.outcome === 'execution_failure' ? 'failed' : 'needs_input', text(read?.issue) ?? 'addon_saved_target_unverified');
+      }
+      listing = record(data.found); prepared = record(data.preview); verifiedTarget = record(data.stay);
+    }
+    if (!listing || listing.outcome !== 'ok') return result(listing?.outcome === 'execution_failure' ? 'failed' : 'needs_input',
+      text(listing?.issue) ?? 'addon_catalogue_unavailable');
+    const match = matched(listing);
+    const base = { saved: false as const, coverage: match.coverage, candidates: match.candidates, target: verifiedTarget ?? undefined };
+    if (!match.unique) return { ...base, status: 'needs_input', previews: [],
+      issue: !match.complete ? 'addon_catalogue_incomplete' : match.missing ? 'addon_catalogue_item_missing' : 'addon_catalogue_ambiguous_or_unverified' };
+    if (prepared?.outcome !== 'prepared' || prepared.propertyCode !== 'HRCEN' || prepared.saved !== false ||
+        !Array.isArray(prepared.items) || prepared.items.length !== items.length ||
+        (target.kind === 'unsaved' && prepared.unsaved !== true) || (target.kind === 'saved' && prepared.confirmation !== target.confirmation))
+      return { ...base, status: 'needs_input', previews: [], issue: text(prepared?.issue) ?? 'addon_preview_unverified' };
+    const preparedItems = prepared.items;
+    const previews = items.map((item, index) => {
+      const entry = record(preparedItems[index]);
+      const actual = target.kind === 'unsaved' ? record(entry?.item) : entry;
+      const candidate = match.candidates.find(row => row.serviceId === item.serviceId);
+      const valid = actual && (target.kind !== 'unsaved' || entry?.outcome === 'prepared') &&
+        actual.code === item.code && actual.itemId === candidate?.itemId && actual.status === 'VALID' &&
+        positiveDecimal(actual.quantity) === positiveDecimal(item.quantity) && positiveDecimal(actual.unitPrice) === positiveDecimal(item.unitPrice) &&
+        actual.startDate === item.startDate && actual.endDate === item.endDate && text(actual.currency) && text(actual.totalCost);
+      return valid ? { serviceId: item.serviceId, native: actual } : null;
+    });
+    if (previews.some(preview => !preview)) return { ...base, status: 'needs_input', previews: [], issue: 'addon_preview_fields_unverified' };
+    signal.throwIfAborted();
+    return { ...base, status: 'prepared', previews: previews.filter((preview): preview is NonNullable<typeof preview> => !!preview) };
+  } catch {
+    signal.throwIfAborted();
+    return result('failed', 'addon_native_check_failed');
+  }
+}
+
 
 async function lookupUnsaved(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2ServicesInput, signal: AbortSignal): Promise<AddOnObservationResult> {
   const loaded = { draft };
@@ -96,7 +223,7 @@ async function lookupUnsaved(draft: ReservationWorkflowV2Draft, input: Reservati
   const unsupported = linked.rows.filter(row => row.service.operation !== 'add');
   const addRows = linked.rows.filter(row => row.service.operation === 'add');
   if (!addRows.length) return { status: 'unsupported', issue: 'saved_addon_edit_remove_not_connected', observations: [] };
-  const compiled = compileReservationWorkflowV2Create(loaded.draft, input.requestId, input.allocationId, draft.propertyCode);
+  const compiled = compileReservationWorkflowV2BackgroundCreate(loaded.draft, input.requestId, input.allocationId, draft.propertyCode);
   if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, observations: [] };
   try {
     const addonTool = await import(new URL('../../tooling/hms-cloud/stay360-addons.mjs', import.meta.url).href) as {
@@ -147,7 +274,7 @@ async function previewUnsaved(draft: ReservationWorkflowV2Draft, input: Reservat
   if (linked.outcome !== 'ok') return { status: linked.outcome, issue: linked.issue, observations: [] };
   if (!linked.rows.length) return { status: 'needs_input', issue: input.serviceId ? 'service_target_not_found' : 'no_service_target', observations: [] };
   const unsupported = linked.rows.filter(row => row.service.operation !== 'add');
-  const compiledCreate = compileReservationWorkflowV2Create(loaded.draft, input.requestId, input.allocationId, draft.propertyCode);
+  const compiledCreate = compileReservationWorkflowV2BackgroundCreate(loaded.draft, input.requestId, input.allocationId, draft.propertyCode);
   if (compiledCreate.outcome !== 'ok') return { status: compiledCreate.outcome, issue: compiledCreate.issue, observations: [] };
   const compiled = linked.rows.map(row => ({ row, plan: reservationWorkflowV2CompileServiceItem(loaded.draft!, input, row) }));
   const invalid = compiled.filter(item => item.plan.outcome === 'needs_input');
