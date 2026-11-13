@@ -106,7 +106,7 @@ export function partyChipText(party: StaffQuoteParty): string {
 
 /** The word shown beside each candidate, so a company and an agency with one name are told apart. */
 export function partyKindLabel(kind: StaffQuoteParty['kind']): string {
-  return kind === 'agency' ? 'Agency' : 'Company';
+  return kind === 'bookingAgency' ? 'Booking Agency' : 'Organization';
 }
 
 /** Shown when a search reached HMS's 50-row load: the name is too broad to list every match. */

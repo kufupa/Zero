@@ -53,7 +53,8 @@ export async function readDocumentsFromStay360(page, confirmation) {
         if (!/^no\s+documents?[.!]?$/i.test(label)) unrecognizedLeaves += 1;
         return;
       }
-      documents.push({ name, documentCode, label });
+      const description = typeof data.description === 'string' ? data.description : null;
+      documents.push({ name, documentCode, label, ...(description === null ? {} : { description }) });
     });
     return {
       documents,

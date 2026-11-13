@@ -117,7 +117,7 @@ vi.mock('../providers/query-provider', () => ({
           propertyCode: 'HRCEN',
           roomTypes: [],
           ratePlans: [],
-          boards: [],
+          mealPlans: [],
           overrideRateCodes: [],
           eventRateCodes: [],
         }),

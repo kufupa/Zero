@@ -8,6 +8,8 @@ import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { canonicalJson } from './draft-approval.js';
 import type { CreateFenceTransaction } from './pane-create-dispatch-fence.js';
 import { MANUAL_CREATE_KEY, manualCreatePayload, manualCreateMarker } from './manual-create-source.js';
+import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
+import { hydrateStoredWorkState } from './stored-work-state.js';
 
 const id = z.string().min(1).max(200).refine((value) => value === value.trim() && !/\p{Cc}/u.test(value));
 const cursorSchema = z.object({ extractionId: z.string().uuid(), revision: z.number().int().nonnegative().safe(),
@@ -55,10 +57,12 @@ export async function lockCreateSource<T>(tx: CreateFenceTransaction, raw: z.inp
       item.revisionHead !== input.cursor.revisionHead || item.revisionSeq !== input.cursor.seq ||
       item.status === 'done' || item.status === 'dismissed') throw new Error('create_source_stale');
 
+  item.state = hydrateStoredWorkState(item.state);
   const manual = allowManual ? manualCreatePayload({ item, extraction, source }) : null;
   if ((Object.hasOwn(item.state, MANUAL_CREATE_KEY) && !manual) ||
       (extraction.status !== 'succeeded' && !manual)) throw new Error('create_source_stale');
-  const effectivePayload = manual ?? extraction.payload;
+  const stored = safeParseStoredMailExtraction(extraction.payload);
+  const effectivePayload = manual ?? (stored.success ? stored.data : null);
 
   const sourceDigest = createHash('sha256').update(canonicalJson({
     message: { id: source.id, transportId: source.transportId, threadId: source.threadId, direction: source.direction,

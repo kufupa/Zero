@@ -22,6 +22,7 @@ import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
 import {
   compileReservationWorkflowV2Create,
+  reservationWorkflowV2CreateMealPlanMatches,
   type ReservationWorkflowV2ServerContext,
 } from './reservation-workflow-v2-tools.js';
 
@@ -30,7 +31,7 @@ export type ReservationWorkflowV2ServicesInput = { workItemId: string; source: R
 type Input = ReservationWorkflowV2ServicesInput;
 type Result = { status: string; issue?: string; [key: string]: unknown };
 type NativeCreate = { outcome?: string; issue?: string; requestBinding?: { request?: unknown; digest?: unknown };
-  ratePlanAvailability?: unknown; commitOnlyFields?: string[] };
+  ratePlanAvailability?: unknown; applied?: Record<string, unknown>; commitOnlyFields?: string[] };
 type AddOnItem = { code: string; quantity?: string; startDate?: string; endDate?: string; unitPrice?: string;
   frequency?: string; pricingControl?: string; folio?: string; comment?: string };
 type Effective = { value: unknown; path: string; override?: boolean; none?: boolean } | { issue: string; path: string };
@@ -123,19 +124,21 @@ function validDate(value: unknown): value is string {
 }
 
 export function nonnegativeDecimal(value: unknown): string | null {
-  if (typeof value !== 'string' || !/^\d+(?:\.\d+)?$/.test(value.trim())) return null;
+  if (typeof value !== 'string' || value.length > 55 || !/^\d+(?:\.\d+)?$/.test(value.trim())) return null;
   const [rawWhole, rawFraction = ''] = value.trim().split('.');
   const whole = rawWhole!.replace(/^0+(?=\d)/, '');
   const fraction = rawFraction.replace(/0+$/, '').padEnd(2, '0');
-  return `${whole}.${fraction}`;
+  const normalized = `${whole}.${fraction}`;
+  return normalized.length <= 55 ? normalized : null;
 }
 
 export function positiveDecimal(value: unknown): string | null {
-  if (typeof value !== 'string' || !/^\d+(?:\.\d+)?$/.test(value.trim())) return null;
+  if (typeof value !== 'string' || value.length > 55 || !/^\d+(?:\.\d+)?$/.test(value.trim())) return null;
   const [rawWhole, rawFraction = ''] = value.trim().split('.');
   const whole = rawWhole!.replace(/^0+(?=\d)/, '');
   const fraction = rawFraction.replace(/0+$/, '').padEnd(2, '0');
-  return /^0+$/.test(`${whole}${fraction}`) ? null : `${whole}.${fraction}`;
+  const normalized = `${whole}.${fraction}`;
+  return normalized.length > 55 || /^0+$/.test(`${whole}${fraction}`) ? null : normalized;
 }
 
 function targetRefOf(value: unknown) {
@@ -225,6 +228,9 @@ export function reservationWorkflowV2CompileServiceItem(draft: ReservationWorkfl
       continue;
     }
     if (typeof value.value !== 'string') { errors.push(`${field}:invalid_type`); continue; }
+    if (field === 'comment' && (value.value.length > 255 || /[\p{Cc}]/u.test(value.value))) {
+      errors.push(`${field}:invalid_native_value`); continue;
+    }
     if (!accepted(draft, value.path)) reviewPaths.add(value.path);
     if (field === 'unitPrice') {
       const price = nonnegativeDecimal(value.value);
@@ -264,7 +270,7 @@ export function reservationWorkflowV2CompileServiceItem(draft: ReservationWorkfl
   if (!items.unitPrice) errors.push('unitPrice:nonnegative_source_price_required');
   if (!items.quantity) errors.push('quantity:target_quantity_required');
   if (!items.startDate || !items.endDate) errors.push('dates:explicit_source_or_staff_values_required');
-  if (items.startDate && items.endDate && items.startDate >= items.endDate) errors.push('dates:range_invalid');
+  if (items.startDate && items.endDate && items.startDate > items.endDate) errors.push('dates:range_invalid');
   if (serviceTargets.length > 1 && quantityScope === 'overall' && !targetQuantitySet) {
     errors.push('quantity:whole_booking_quantity_must_not_be_split');
   }
@@ -369,8 +375,12 @@ export async function reservationWorkflowV2LookupServices(ctx: ReservationWorkfl
     const listing = record(addon);
     const candidates = Array.isArray(listing?.candidates) ? listing.candidates.map(record).filter(Boolean) : [];
     const coverage = record(listing?.coverage);
+    const actualMeal = record(native.applied)?.mealPlan;
+    const boundMeal = record(record(native.requestBinding?.request)?.room)?.mealPlan;
     const complete = native.outcome === 'prepared' && typeof record(native.requestBinding)?.digest === 'string' &&
-      record(native.ratePlanAvailability) !== null && listing?.outcome === 'ok' && listing.unsaved === true &&
+      record(native.ratePlanAvailability) !== null && actualMeal === boundMeal &&
+      reservationWorkflowV2CreateMealPlanMatches(compiled.requestedMealPlan, compiled.mealPlan, actualMeal, ctx.property.propertyCode) &&
+      listing?.outcome === 'ok' && listing.unsaved === true &&
       listing.saved !== true && listing.propertyCode === 'HRCEN' && coverage?.complete === true;
     const observations: ReservationWorkflowV2Observation[] = [];
     const serviceRows = new Map(addRows.map(row => [row.service.id, row]));
@@ -448,8 +458,12 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
         expectedGuest: compiledCreate.expectedGuest, readForm, items }), ctx.nativeBatch?.signal);
     const preview = record(addon), nativeItems = Array.isArray(preview?.items) ? preview.items.map(record) : [];
     const capability = (await import('./reservation-workflow-v2-services-execute.js')).linkedServiceCapability(loaded.draft, input);
+    const actualMeal = record(native.applied)?.mealPlan;
+    const boundMeal = record(record(native.requestBinding?.request)?.room)?.mealPlan;
     const createBound = native.outcome === 'prepared' && typeof record(native.requestBinding)?.digest === 'string' &&
-      record(native.ratePlanAvailability) !== null;
+      record(native.ratePlanAvailability) !== null && actualMeal === boundMeal &&
+      reservationWorkflowV2CreateMealPlanMatches(compiledCreate.requestedMealPlan, compiledCreate.mealPlan,
+        actualMeal, ctx.property.propertyCode);
     const results: Result[] = [];
     for (const [index, plan] of plans.entries()) {
       const nativeItem = record(nativeItems[index]);
@@ -464,7 +478,9 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
       const complete = createBound && preview?.outcome === 'prepared' && preview.unsaved === true && preview.saved === false &&
         preview.propertyCode === 'HRCEN' && nativeItem?.outcome === 'prepared' &&
         itemIdMatches && priceMatches && actual?.code === plan.candidate.code &&
-        actualQuantity === expectedQuantity && actual?.startDate === plan.items.startDate && actual?.endDate === plan.items.endDate;
+        actualQuantity === expectedQuantity && actual?.startDate === plan.items.startDate && actual?.endDate === plan.items.endDate &&
+        (['frequency', 'pricingControl', 'folio', 'comment'] as const)
+          .every(key => plan.items[key] === undefined || actual?.[key] === plan.items[key]);
       const businessItem = actual ? Object.fromEntries(['code', 'name', 'itemId', 'quantity', 'startDate', 'endDate',
         'unitPrice', 'frequency', 'pricingControl', 'folio', 'comment', 'currency', 'averageDaily', 'totalCost', 'status']
         .filter(key => Object.hasOwn(actual, key)).map(key => [key, actual[key]])) : null;
@@ -847,8 +863,9 @@ export function reservationWorkflowV2CompileSavedService(draft: ReservationWorkf
       continue;
     }
     if (typeof resolved.value !== 'string') { errors.push(field); continue; }
+    if (field === 'comment' && (resolved.value.length > 255 || /[\p{Cc}]/u.test(resolved.value))) { errors.push(field); continue; }
     if (field === 'quantity' && !positiveDecimal(resolved.value) || field === 'unitPrice' &&
-        (operation === 'add' ? !nonnegativeDecimal(resolved.value) : !/^\d+(?:\.\d+)?$/.test(resolved.value)) ||
+        !nonnegativeDecimal(resolved.value) ||
         (field === 'startDate' || field === 'endDate') && !validDate(resolved.value)) { errors.push(field); continue; }
     fields[field] = resolved.value; paths[field] = resolved.path;
   }
@@ -866,7 +883,8 @@ export function reservationWorkflowV2CompileSavedService(draft: ReservationWorkf
   if (operation === 'add' && (!fields.quantity || !fields.startDate || !fields.endDate || !fields.unitPrice)) {
     errors.push('positive_quantity_dates_and_nonnegative_unit_price_required');
   }
-  if (operation === 'add' && fields.startDate && fields.endDate && fields.startDate > fields.endDate) errors.push('dates');
+  const startDate = fields.startDate ?? prior?.startDate, endDate = fields.endDate ?? prior?.endDate;
+  if (operation !== 'remove' && startDate && endDate && startDate > endDate) errors.push('dates');
   if (operation === 'edit' && !Object.keys(fields).length) errors.push('edit_fields_required');
   if (errors.length) return { status: 'needs_input' as const, issue: 'service_fields_incomplete_or_invalid', fields: errors };
   const requested = operation === 'add' ? { code: candidate.code, ...fields }
@@ -908,7 +926,9 @@ export async function reservationWorkflowV2PreviewSavedServices(ctx: Reservation
         const native = savedServiceBusiness(actual);
         if (!native || native.code !== candidate.code || native.itemId !== candidate.itemId || native.status !== 'VALID' ||
             positiveDecimal(native.quantity) !== positiveDecimal(fields.quantity) || nonnegativeDecimal(native.unitPrice) !== nonnegativeDecimal(fields.unitPrice) ||
-            native.startDate !== fields.startDate || native.endDate !== fields.endDate || !text(native.currency) || !text(native.totalCost)) return null;
+            native.startDate !== fields.startDate || native.endDate !== fields.endDate || !text(native.currency) || !text(native.totalCost) ||
+            (['frequency', 'pricingControl', 'folio', 'comment'] as const)
+              .some(key => fields[key] !== undefined && native[key] !== fields[key])) return null;
         const controls = nativeServiceControls(actual);
         return { native: controls ? { ...native, controls } : native, ...(controls ? { nativeControls: controls } : {}) };
       }

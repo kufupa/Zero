@@ -13,8 +13,8 @@ const FIELDS: Array<{ field: ContactField; label: string; pii: boolean }> = [
 
 const NO_CONTACT: StoredContact = {
   name: null,
-  company: null,
-  endClient: null,
+  bookingAgency: null,
+  organization: null,
   email: null,
   phone: null,
 };

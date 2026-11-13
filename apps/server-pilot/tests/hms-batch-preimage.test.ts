@@ -7,7 +7,7 @@ const digest = 'a'.repeat(64);
 function fixture() {
   const room: BatchManifest['rooms'][number] = { allocationId: 'a', identity: { stayId: 's1', rowId: 'r1', roomIndex: 1 }, guest: { firstName: 'Proof', lastName: 'Labtest', profileId: '123' },
     stay: { arrival: '2027-03-01', departure: '2027-03-03', adults: 1, childAges: [] }, roomType: 'STQN', ratePlan: 'BAR',
-    amount: { status: 'unknown' }, agency: null, organization: null, guaranteeType: 'NGI', sourceOfBusiness: null, note: null,
+    amount: { status: 'unknown' }, bookingAgency: null, organization: null, guaranteeType: 'NGI', sourceOfBusiness: null, note: null,
     track: null, marketSegment: null, guestOptIn: false, booker: null, cmsSend: false, cmsMessageId: null, cmsRecipient: null };
   const manifest: BatchManifest = { version: 'hms-batch/1', propertyCode: 'HRCEN',
     source: { transportId: 'transport', threadId: 'thread', messageId: 'message', workItemId: '11111111-1111-4111-8111-111111111111' },

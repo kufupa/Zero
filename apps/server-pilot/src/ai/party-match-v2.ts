@@ -5,7 +5,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import { matchKey } from './party-match.js';
 import { z } from 'zod';
 
-export type PartyMatchKind = 'company' | 'agency';
+export type PartyMatchKind = 'organization' | 'bookingAgency';
 export type PartyMatchStrength = 'strong' | 'weak';
 export type PartyMatchSource =
   | 'extraction_agency'
@@ -194,7 +194,7 @@ export function partyMatchSearchTerms(name: string): string[] {
 
 function sourcePriority(candidate: PartyMatchCandidate): number {
   // Agency contracts are the first place a reservationist checks when the sender is an agency.
-  const kind = candidate.kind === 'agency' ? 0 : 10;
+  const kind = candidate.kind === 'bookingAgency' ? 0 : 10;
   const strength = candidate.strength === 'strong' ? 0 : 1;
   return kind + strength;
 }
@@ -375,7 +375,7 @@ function signatureOrganisationRows(
     if (label?.[2]) {
       found.push({
         name: label[2].trim(),
-        kind: /agency/i.test(label[1] ?? '') ? 'agency' : 'company',
+        kind: /agency/i.test(label[1] ?? '') ? 'bookingAgency' : 'organization',
       });
       continue;
     }
@@ -387,7 +387,7 @@ function signatureOrganisationRows(
     ) {
       found.push({
         name: line,
-        kind: /\b(?:travel|travels|tours|agency)\b/i.test(line) ? 'agency' : 'company',
+        kind: /\b(?:travel|travels|tours|agency)\b/i.test(line) ? 'bookingAgency' : 'organization',
       });
     }
   }
@@ -411,10 +411,10 @@ function quoteLlmPartyOf(input: { quoteLlmParty?: unknown; payload: Record<strin
   const party = objectRecord(quoteOutput.party ?? nested.party ?? quoteOutput);
   const rawKind = typeof party.kind === 'string' ? party.kind.toLowerCase() : '';
   const kind =
-    rawKind === 'agency'
-      ? 'agency'
-      : ['organization', 'company', 'government'].includes(rawKind)
-        ? 'company'
+    rawKind === 'bookingagency'
+      ? 'bookingAgency'
+      : ['organization', 'government'].includes(rawKind)
+        ? 'organization'
         : null;
   const groups = Array.isArray(quoteOutput.groups)
     ? quoteOutput.groups
@@ -494,8 +494,8 @@ export function buildPartyMatchCandidates(input: {
   const quoteParty = quoteLlmPartyOf({ payload, quoteLlmParty: input.quoteLlmParty });
   const contact = objectRecord(payload.contact);
   const contactName = text(contact.name);
-  const agency = text(payload.agency);
-  const endClient = text(payload.endClient);
+  const agency = text(payload.bookingAgency);
+  const endClient = text(payload.organization);
   const bodyPartyMentions = extractPartyMentions(input.body);
   const signatureOrganisations = signatureOrganisationRows(signature);
   const domain = domainLabel(sender.address);
@@ -541,8 +541,8 @@ export function buildPartyMatchCandidates(input: {
     candidates.push({ name, kind, source, strength });
   };
 
-  add(agency, 'agency', 'extraction_agency', 'strong');
-  add(endClient, 'company', 'extraction_end_client', 'strong');
+  add(agency, 'bookingAgency', 'extraction_agency', 'strong');
+  add(endClient, 'organization', 'extraction_end_client', 'strong');
   if (quoteParty.name && quoteParty.kind)
     add(quoteParty.name, quoteParty.kind, 'quote_llm', 'strong');
   for (const mention of bodyPartyMentions) {
@@ -569,7 +569,7 @@ export function buildPartyMatchCandidates(input: {
   }
   if (domain) {
     const kind: PartyMatchKind =
-      alias?.kind ?? (isAgencyDomainLabel(domain.name) ? 'agency' : 'company');
+      alias?.kind ?? (isAgencyDomainLabel(domain.name) ? 'bookingAgency' : 'organization');
     add(domain.name, kind, 'sender_domain_label', 'weak');
   }
   return candidates;
@@ -606,8 +606,8 @@ export function partyMatchEmailContext(input: {
     signature,
   });
   const names = [
-    text(payload.agency),
-    text(payload.endClient),
+    text(payload.bookingAgency),
+    text(payload.organization),
     quoteParty.name,
     contactName,
     sender.displayName,
@@ -629,7 +629,7 @@ export function partyMatchEmailContext(input: {
 const partyPickSchema = z
   .object({
     pickNativeId: z.string().min(1).max(100).nullable(),
-    kind: z.enum(['company', 'agency']).nullable(),
+    kind: z.enum(['organization', 'bookingAgency']).nullable(),
     confidence: z.enum(['high', 'medium', 'low']),
     reason: z.string().min(1).max(500),
     alternatives: z.array(z.string().min(1).max(100)).max(3),

@@ -1,4 +1,6 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { hydrateStoredReservationWorkflowV2 } from './reservation-workflow-v2-stored-draft.js';
+import { hydrateStoredWorkState } from './stored-work-state.js';
 import type { DB } from '../db/client.js';
 import { workEvent, workItem } from '../db/schema/work.js';
 import type { ReservationWorkflowV2Draft, ReservationWorkflowV2Proposal } from './reservation-workflow-v2-contract.js';
@@ -53,10 +55,12 @@ export function withPaneState(state: PaneState, pane: PaneState): PaneState {
   }
   for (const [key, value] of Object.entries(paneStateOf(pane))) {
     if (key === RESERVATION_V2_KEY) {
-      const current = state[key] && typeof state[key] === 'object' && !Array.isArray(state[key])
-        ? state[key] as Record<string, unknown> : {};
-      const restored = value && typeof value === 'object' && !Array.isArray(value)
-        ? value as Record<string, unknown> : {};
+      const currentValue = hydrateStoredReservationWorkflowV2(state[key]);
+      const current = currentValue && typeof currentValue === 'object' && !Array.isArray(currentValue)
+        ? currentValue as Record<string, unknown> : {};
+      const restoredValue = hydrateStoredReservationWorkflowV2(value);
+      const restored = restoredValue && typeof restoredValue === 'object' && !Array.isArray(restoredValue)
+        ? restoredValue as Record<string, unknown> : {};
       // Old snapshots have no proposal. Native observations, receipts, source and generation always survive.
       next[key] = { ...current, ...(Object.hasOwn(restored, 'proposal') ? { proposal: restored.proposal } : {}),
         fieldOverrides: restored.fieldOverrides ?? {}, staffReviews: restored.staffReviews ?? {} };
@@ -97,7 +101,7 @@ function asRevision(value: unknown): number | null {
 
 function asState(value: unknown): PaneState {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return { ...(value as PaneState) };
+  return hydrateStoredWorkState(value as PaneState);
 }
 
 async function latestEvidence(
@@ -431,7 +435,7 @@ async function applyHistoryMove(
     const restored = undo ? snapshot.previousPaneState : snapshot.paneState;
     const nextRevision = undo ? revision - 1 : revision + 1;
     const nextSeq = seq + 1;
-    const state = withPaneState(item.state, restored);
+    const state = withPaneState(hydrateStoredWorkState(item.state), restored);
     if (!nativeStructureIsSafe(item.state, state)) return { status: 'history_stale' as const, revision, revisionHead, seq };
     const previousV2 = item.state[RESERVATION_V2_KEY] as ReservationWorkflowV2Draft | undefined;
     const restoredV2 = state[RESERVATION_V2_KEY] as ReservationWorkflowV2Draft | undefined;

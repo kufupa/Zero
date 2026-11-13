@@ -6,7 +6,8 @@ import { amendDraftMatchesForm, cloudAmendFirstPilotScopeSupported, cloudAmendSo
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { AE1_OUTPUT } from './fixtures/inbound-extraction.js';
 
-const ACTION_OUTPUT = { ...AE1_OUTPUT, needsAction: true, action: 'amend' as const, actionEvidence: 'Please change the rate to BAR.', actionConfidence: 'high' as const };
+const ACTION_OUTPUT = { ...AE1_OUTPUT,
+  needsAction: true, action: 'amend' as const, actionEvidence: 'Please change the rate to BAR.', actionConfidence: 'high' as const };
 
 describe('amendment request draft', () => {
   it('does not approve an old total for retained-rate price changes', () => {
@@ -22,7 +23,7 @@ describe('amendment request draft', () => {
   });
   it('binds an amendment review to the selected extraction stay and revision', () => {
     const parsed = mailExtractionSchema.parse({ ...ACTION_OUTPUT, kind: 'amendment',
-      stays: [{ ...AE1_OUTPUT.stays[0]!, action: 'amend' }] });
+      stays: [{ ...ACTION_OUTPUT.stays[0]!, action: 'amend' }] });
     const payload = sanitizeExtraction(parsed, { messageId: 'm1', sourceText: ACTION_OUTPUT.actionEvidence,
       currentMessageText: ACTION_OUTPUT.actionEvidence }).payload;
     const mail = { id: 'm1', transportId: 't1', threadId: 'th1', direction: 'inbound', historyOnly: false,
@@ -67,7 +68,7 @@ describe('amendment request draft', () => {
       kind: 'amendment',
       action: 'amend',
       stays: [{
-        ...AE1_OUTPUT.stays[0]!,
+        ...ACTION_OUTPUT.stays[0]!,
         action: 'amend',
         amendProposal: {
           ratePlan: { value: 'BAR', excerpt: 'change the rate to BAR', attributedTo: null },

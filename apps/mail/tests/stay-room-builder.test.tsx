@@ -16,7 +16,7 @@ function row(id: string, dates: typeof dateA, over: Partial<StayGroupRequirement
   return {
     id,
     ...dates,
-    board: 'bb',
+    mealPlan: 'bb',
     quantity: 1,
     adults: 2,
     roomPreference: 'STWN',

@@ -189,8 +189,8 @@ export function quoteAnalysisOf(ready: ReadyAnalyse): QuoteAnalysis {
   };
 }
 
-/** The contact block's fields. Each is one `contact.<field>` event path. `company` is the sender's organisation. */
-export type ContactField = 'name' | 'company' | 'endClient' | 'email' | 'phone';
+/** The contact block's fields. Each is one `contact.<field>` event path. */
+export type ContactField = 'name' | 'bookingAgency' | 'organization' | 'email' | 'phone';
 export type StoredContact = Record<ContactField, string | null>;
 /** One stay's last HMS commit, as workItems.getByMessage returns it. */
 export type StoredStayCommit = {
@@ -239,22 +239,22 @@ export type AmendDraftSnapshot = {
 
 /** A source label is a search suggestion; it never supplies an HMS identity. */
 export function sourceCreatePartyNames(snapshot: AmendDraftSnapshot | null | undefined) {
-  const names = { agency: new Map<string, string>(), company: new Map<string, string>() };
-  const picks = { agency: new Map<string, { nativeId: string; name: string }>(), company: new Map<string, { nativeId: string; name: string }>() };
-  const pickedRooms = { agency: 0, company: 0 };
+  const names = { bookingAgency: new Map<string, string>(), organization: new Map<string, string>() };
+  const picks = { bookingAgency: new Map<string, { nativeId: string; name: string }>(), organization: new Map<string, { nativeId: string; name: string }>() };
+  const pickedRooms = { bookingAgency: 0, organization: 0 };
   let rooms = 0;
   for (const request of snapshot?.requests ?? []) {
     if (request.action !== 'new_booking' || request.fields?.kind !== 'create' || !Array.isArray(request.fields.value)) continue;
     for (const room of request.fields.value) {
       if (!room || typeof room !== 'object') continue;
       rooms += 1;
-      for (const [kind, field] of [['agency', 'sourceAgencyName'], ['company', 'sourceOrganizationName']] as const) {
+      for (const [kind, field] of [['bookingAgency', 'sourceAgencyName'], ['organization', 'sourceOrganizationName']] as const) {
         const value: unknown = (room as Record<string, unknown>)[field];
         if (typeof value !== 'string' || !value.trim()) continue;
         const label = value.trim();
         names[kind].set(label.replace(/\s+/g, ' ').toLowerCase(), label);
       }
-      for (const [kind, field] of [['agency', 'bookingAgency'], ['company', 'organization']] as const) {
+      for (const [kind, field] of [['bookingAgency', 'bookingAgency'], ['organization', 'organization']] as const) {
         const value: unknown = (room as Record<string, unknown>)[field];
         if (!value || typeof value !== 'object') continue;
         const { nativeId, name } = value as Record<string, unknown>;
@@ -264,10 +264,10 @@ export function sourceCreatePartyNames(snapshot: AmendDraftSnapshot | null | und
       }
     }
   }
-  return { agency: names.agency.size === 1 ? [...names.agency.values()][0]! : '',
-    company: names.company.size === 1 ? [...names.company.values()][0]! : '',
-    agencyPick: rooms > 0 && pickedRooms.agency === rooms && picks.agency.size === 1 ? [...picks.agency.values()][0] : undefined,
-    companyPick: rooms > 0 && pickedRooms.company === rooms && picks.company.size === 1 ? [...picks.company.values()][0] : undefined };
+  return { bookingAgency: names.bookingAgency.size === 1 ? [...names.bookingAgency.values()][0]! : '',
+    organization: names.organization.size === 1 ? [...names.organization.values()][0]! : '',
+    bookingAgencyPick: rooms > 0 && pickedRooms.bookingAgency === rooms && picks.bookingAgency.size === 1 ? [...picks.bookingAgency.values()][0] : undefined,
+    organizationPick: rooms > 0 && pickedRooms.organization === rooms && picks.organization.size === 1 ? [...picks.organization.values()][0] : undefined };
 }
 
 /** Until requests can be selected in the pane, only a single pending Amend is unambiguous. */

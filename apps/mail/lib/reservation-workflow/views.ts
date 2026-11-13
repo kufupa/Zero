@@ -49,7 +49,7 @@ export type WorkbenchEditorProps = {
   source: ReservationSourceContext;
   snapshot: ReservationPaneSnapshot;
   request: ReservationRequestProjection;
-  view: { busy: boolean; error: string | null; preview: boolean; saving: boolean };
+  view: { busy: boolean; error: string | null; preview: boolean; saving: boolean; blocked?: boolean };
   commands: WorkbenchCommands;
   onOpenEvidence?: (ref: string) => void;
 };
@@ -97,6 +97,199 @@ export function effectiveAt(snapshot: ReservationPaneSnapshot, path: string): un
   return raw;
 }
 export type NativeChoice = { ref: string; label: string; value: string; detail?: string };
+export type NativeRecommendationLead = { ref: string; value: string; label: string;
+  basis: 'exact_sender' | 'normalized_entity'; support: number;
+  stock?: { status: 'available_each_night' | 'sold_or_restricted' | 'unknown'; observedAt: string } };
+
+export function autoTransferHistory(snapshot: ReservationPaneSnapshot, path: string): { support: number; denominator: number; partyKind: 'organization' | 'arAccount' } | null {
+  const draft = snapshot.session.draft;
+  if (snapshot.session.sourceChanged) return null;
+  const requestId = decodeURIComponent(path.split('/')[4] ?? '');
+  const request = draft.proposal.content.requests.find(row => row.id === requestId);
+  if (!request || request.kind !== 'create' && request.kind !== 'amend') return null;
+  const root = `${requestPath(requestId)}/body/`;
+  if (!path.startsWith(root)) return null;
+  const relative = path.slice(root.length);
+  const createParty = request.kind === 'create' ? /^(?:shared|dateSections\/\d+\/defaults|allocations\/\d+\/overrides)\/(organization|arAccount)$/.exec(relative)?.[1] : undefined;
+  const amendChange = request.kind === 'amend' && /^(?:sharedChanges\/\d+|perTarget\/\d+\/changes\/\d+)\/value$/.test(relative)
+    ? path.slice(0, -'/value'.length) : null;
+  const partyKind = createParty ?? (amendChange && valueAt(snapshot, `${amendChange}/op`) === 'set'
+    ? valueAt(snapshot, `${amendChange}/field`) : null);
+  if (partyKind !== 'organization' && partyKind !== 'arAccount') return null;
+  const normalize = (value: unknown) => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase() : '';
+  const currentName = normalize(valueAt(snapshot, `${path}/name`));
+  if (!currentName) return null;
+  const observation = [...draft.observations].reverse().find(row => {
+    const criteria = record(row.criteria), result = record(row.result);
+    return row.kind === 'stay_candidate' && row.status === 'partial' && row.coverage.complete === false &&
+      row.generationId === draft.generationId && row.propertyCode === draft.propertyCode && row.sourceMessageId === draft.source.messageId &&
+      criteria.kind === 'historical_auto_transfer_hint' && criteria.workflow === request.kind && criteria.requestId === request.id &&
+      criteria.sourceHash === draft.source.sourceHash && criteria.fieldPath === path && criteria.partyKind === partyKind &&
+      normalize(criteria.partyQuery) === currentName && result.value === true && result.evidence === 'stay360_auto_transfer_card_row' &&
+      typeof result.support === 'number' && Number.isSafeInteger(result.support) && result.support > 0 &&
+      typeof result.denominator === 'number' && Number.isSafeInteger(result.denominator) && result.denominator >= result.support &&
+      typeof result.confidence === 'number' && result.confidence >= 0.8 && result.confidence <= 1 && result.support / result.denominator >= 0.8;
+  });
+  if (!observation) return null;
+  const result = record(observation.result);
+  return typeof result.support === 'number' && typeof result.denominator === 'number'
+    ? { support: result.support, denominator: result.denominator, partyKind } : null;
+}
+
+export function savedAutoTransferHistory(snapshot: ReservationPaneSnapshot, requestId: string, hintId: string,
+  partyKind: 'organization' | 'arAccount'): { name: string; support: number; denominator: number } | null {
+  const draft = snapshot.session.draft;
+  if (snapshot.session.sourceChanged) return null;
+  const request = draft.proposal.content.requests.find(row => row.id === requestId && row.kind === 'amend');
+  if (!request) return null;
+  const root = `${requestPath(requestId)}/body`, body = record(effectiveAt(snapshot, root)), scope = record(body.targets);
+  if (scope.mode !== 'explicit' || !Array.isArray(scope.include) || !Array.isArray(scope.exclude) ||
+      !Array.isArray(body.sharedChanges) || !Array.isArray(body.perTarget)) return null;
+  const targets = scope.include.map(record), indices = targets.flatMap((row, index) => row.id === hintId ? [index] : []);
+  if (indices.length !== 1 || scope.exclude.map(record).some(row => row.id === hintId)) return null;
+  const perTarget = body.perTarget.map(record).filter(row => row.hintId === hintId);
+  const targetChanges = perTarget.length === 1 ? perTarget[0]?.changes : null;
+  if (!Array.isArray(targetChanges)) return null;
+  const changes = [...body.sharedChanges, ...targetChanges].map(record);
+  if (changes.some(change => change.op != null && (change.field === partyKind || typeof change.field !== 'string'))) return null;
+  if (draft.operationResults.some(operation => operation.workflow === 'amend' && operation.requestId === requestId &&
+      (!operation.allocationId || operation.allocationId === hintId) && (operation.status === 'succeeded' || operation.status === 'unknown' ||
+      operation.status === 'failed' && (!operation.observationRefs.length || !operation.observationRefs.every(ref =>
+        draft.observations.some(row => row.ref === ref && row.criteria.workflow === 'amend' &&
+          ['prepare', 'retain_callback_unsupported'].includes(text(row.criteria.stage))))) ||
+      operation.status === 'prepared' && operation.observationRefs.some(ref =>
+        draft.observations.some(row => row.ref === ref && row.criteria.stage === 'callback_price_review'))))) return null;
+  const index = indices[0]!, target = targets[index]!, selectionPath = `${root}/targets/include/${index}/suggestedRef`;
+  const selectedRef = valueAt(snapshot, selectionPath);
+  if (typeof selectedRef !== 'string' || !selectedRef) return null;
+  const bound = (row: ReservationPaneSnapshot['session']['draft']['observations'][number]) =>
+    row.generationId === draft.generationId && row.propertyCode === draft.propertyCode && row.sourceMessageId === draft.source.messageId;
+  const selectedRows = draft.observations.filter(row => row.ref === selectedRef && row.kind === 'stay_candidate' &&
+    row.status === 'complete' && row.coverage.complete === true && bound(row) && row.criteria.workflow === 'amend' &&
+    row.criteria.kind === 'saved_target' && row.criteria.requestId === requestId && row.criteria.hintId === hintId &&
+    row.criteria.selectionPath === selectionPath);
+  if (selectedRows.length !== 1) return null;
+  const selected = selectedRows[0]!, query = record(selected.criteria.query), candidate = record(selected.result.candidate);
+  const normalized = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : null;
+  if (!['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].every(key => normalized(query[key]) === normalized(target[key])) ||
+      typeof candidate.confirmation !== 'string' || !/^\d{6,10}-\d{1,2}$/.test(candidate.confirmation.trim()) ||
+      normalized(target.confirmation) && normalized(candidate.confirmation) !== normalized(target.confirmation)) return null;
+  const prepare = draft.observations.findLast(row => row.kind === 'rate_availability' && row.status === 'complete' &&
+    row.coverage.complete === true && bound(row) && row.criteria.workflow === 'amend' && row.criteria.requestId === requestId &&
+    row.criteria.hintId === hintId && row.criteria.selectedRef === selectedRef && row.result.outcome === 'prepared');
+  if (!prepare || prepare.criteria.draftRevision !== draft.revision) return null;
+  const beforeStay = record(prepare.result.before), identity = ['confirmation', 'reservationStayId', 'reservationId', 'recordId', 'guestId'];
+  if (candidate.source !== 'record_view_ext_model' || beforeStay.source !== candidate.source ||
+      identity.some(key => typeof candidate[key] !== 'string' || !candidate[key] || candidate[key] !== beforeStay[key])) return null;
+  const baseChanges = record(prepare.result.semanticInput).baseChanges;
+  if (!baseChanges || typeof baseChanges !== 'object' || Array.isArray(baseChanges) || Object.hasOwn(baseChanges, partyKind)) return null;
+  const baseline = record(prepare.result.nativePartyBaseline), party = record(baseline[partyKind]);
+  const before = record(record(prepare.result.recoveryBaseline).beforeParties);
+  const idField = partyKind === 'organization' ? 'companyid' : 'araccountid';
+  const nameFields = partyKind === 'organization' ? ['company', 'companyname'] : ['araccountname'];
+  const names = nameFields.map(key => before[key]).filter(value => value !== null && value !== undefined && value !== '');
+  const normalizeName = (value: string) => value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase('en-US');
+  const partyName = typeof party.name === 'string' ? party.name : '';
+  if (party.state !== 'selected' || typeof party.nativeId !== 'string' || !/^[1-9]\d*$/.test(party.nativeId) ||
+      !partyName.trim() || String(before[idField] ?? '').trim() !== party.nativeId || !names.length ||
+      names.some(name => typeof name !== 'string' || normalizeName(name) !== normalizeName(partyName))) return null;
+  const hint = draft.observations.findLast(row => {
+    const criteria = record(row.criteria), result = record(row.result);
+    return row.kind === 'stay_candidate' && row.status === 'partial' && row.coverage.complete === false && bound(row) &&
+      criteria.kind === 'historical_auto_transfer_hint' && criteria.binding === 'saved_amend_baseline' &&
+      criteria.workflow === 'amend' && criteria.requestId === requestId && criteria.hintId === hintId &&
+      criteria.sourceHash === draft.source.sourceHash && criteria.fieldPath === selectionPath && criteria.selectionPath === selectionPath &&
+      criteria.selectedRef === selectedRef && criteria.prepareRef === prepare.ref && criteria.draftRevision === draft.revision &&
+      criteria.partyKind === partyKind && criteria.partyNativeId === party.nativeId && criteria.partyQuery === partyName &&
+      result.value === true && result.evidence === 'stay360_auto_transfer_card_row' &&
+      typeof result.support === 'number' && Number.isSafeInteger(result.support) && result.support > 0 &&
+      typeof result.denominator === 'number' && Number.isSafeInteger(result.denominator) && result.denominator >= result.support &&
+      typeof result.confidence === 'number' && result.confidence >= 0.8 && result.confidence <= 1 && result.support / result.denominator >= 0.8;
+  });
+  if (!hint) return null;
+  const result = record(hint.result);
+  return typeof result.support === 'number' && typeof result.denominator === 'number'
+    ? { name: partyName, support: result.support, denominator: result.denominator } : null;
+}
+
+function currentRoomStock(snapshot: ReservationPaneSnapshot, requestId: string, raw: unknown): NativeRecommendationLead['stock'] {
+  const stock = record(raw), draft = snapshot.session.draft;
+  if (!['available_each_night', 'sold_or_restricted', 'unknown'].includes(text(stock.status)) ||
+      typeof stock.observationRef !== 'string' || typeof stock.observedAt !== 'string' || !Number.isFinite(Date.parse(stock.observedAt)) ||
+      typeof stock.arrival !== 'string' || typeof stock.departure !== 'string' ||
+      typeof stock.requestedCount !== 'number' || typeof stock.adults !== 'number' || !Array.isArray(stock.childAges) ||
+      stock.combinedAvailability !== 'unknown') return undefined;
+  const read = draft.observations.find(row => row.ref === stock.observationRef && row.kind === 'rate_availability' &&
+    (row.status === 'complete' || row.status === 'partial') && row.generationId === draft.generationId &&
+    row.propertyCode === draft.propertyCode && row.sourceMessageId === draft.source.messageId);
+  const result = record(read?.result);
+  if (!read || result.outcome !== 'read' || result.source !== 'hms_cloud_hotel_availability' ||
+      result.roomScope !== 'all_room_types' || result.observedAt !== stock.observedAt) return undefined;
+  const body = record(effectiveAt(snapshot, `${requestPath(requestId)}/body`));
+  const sections = Array.isArray(body.dateSections) ? body.dateSections.map(record) : [];
+  const allocations = Array.isArray(body.allocations) ? body.allocations.map(record) : [];
+  if (sections.length !== 1 || !allocations.length || allocations.length !== stock.requestedCount) return undefined;
+  const section = sections[0]!, childAges = stock.childAges;
+  if (section.arrival !== stock.arrival || section.departure !== stock.departure || allocations.some(allocation => {
+    const occupancy = record(allocation.occupancy);
+    return allocation.dateSectionId !== section.id || occupancy.adults !== stock.adults ||
+      occupancy.childCount !== childAges.length || !Array.isArray(occupancy.childAges) ||
+      JSON.stringify(occupancy.childAges) !== JSON.stringify(childAges);
+  })) return undefined;
+  if (stock.status === 'available_each_night' || stock.status === 'sold_or_restricted' || stock.status === 'unknown')
+    return { status: stock.status, observedAt: stock.observedAt };
+  return undefined;
+}
+
+/** Historical names and codes are search suggestions, never native selections. */
+export function nativeRecommendationLeads(snapshot: ReservationPaneSnapshot, path: string, kind?: string): NativeRecommendationLead[] {
+  if (kind !== 'party_candidate' && kind !== 'rate_plan' && kind !== 'room_type') return [];
+  const draft = snapshot.session.draft;
+  const requestId = decodeURIComponent(path.split('/')[4] ?? '');
+  const request = draft.proposal.content.requests.find(row => row.id === requestId);
+  if (!request || !['create', 'quote'].includes(request.kind)) return [];
+  const owner = path.replace(/\/nativeSelectionRef$/, '');
+  const role = kind === 'rate_plan' ? 'rate_plan' : kind === 'room_type' ? 'room_type' : owner.endsWith('/bookingAgency') ? 'bookingAgency'
+    : owner.endsWith('/arAccount') ? 'ar_account' : 'organization';
+  const queryPath = kind === 'rate_plan' || kind === 'room_type' ? path : `${owner}/name`;
+  const normalize = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  const currentQuery = normalize(valueAt(snapshot, queryPath));
+  const leads = draft.observations.flatMap(observation => {
+    const criteria = record(observation.criteria);
+    const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
+    if (criteria.kind !== 'historical_lookup_leads' || criteria.requestId !== request.id || criteria.workflow !== request.kind ||
+        criteria.role !== role || criteria.sourceHash !== draft.source.sourceHash || !paths.includes(path) ||
+        observation.status !== 'partial' || observation.coverage.complete !== false ||
+        observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
+        observation.sourceMessageId !== draft.source.messageId || normalize(criteria.query) !== currentQuery) return [];
+    const rows = record(observation.result).leads;
+    if (!Array.isArray(rows)) return [];
+    return rows.flatMap(raw => {
+      const row = record(raw);
+      if (typeof row.value !== 'string' || !row.value.trim() || typeof row.label !== 'string' ||
+          (row.basis !== 'exact_sender' && row.basis !== 'normalized_entity') ||
+          typeof row.support !== 'number' || !Number.isSafeInteger(row.support) || row.support < 1 ||
+          kind === 'room_type' && (typeof row.confidence !== 'number' || row.confidence < 0.8)) return [];
+      const stock = kind === 'room_type' ? currentRoomStock(snapshot, request.id, row.liveStock) : undefined;
+      const historicalRank = typeof row.historicalRank === 'number' && Number.isSafeInteger(row.historicalRank) && row.historicalRank >= 0
+        ? row.historicalRank : undefined;
+      return [{ ref: observation.ref, value: row.value, label: row.label, basis: row.basis, support: row.support,
+        ...(stock ? { stock } : {}), ...(historicalRank !== undefined ? { historicalRank } : {}) } satisfies NativeRecommendationLead & { historicalRank?: number }];
+    });
+  });
+  const stockRank = (row: NativeRecommendationLead) => row.stock?.status === 'available_each_night' ? 0
+    : row.stock?.status === 'sold_or_restricted' ? 2 : 1;
+  return leads.filter((row, index) => leads.findIndex(other => normalize(other.value) === normalize(row.value)) === index)
+    .sort((a, b) => stockRank(a) - stockRank(b) || (a.historicalRank ?? 0) - (b.historicalRank ?? 0)).slice(0, 3);
+}
+function amendPartyRole(snapshot: ReservationPaneSnapshot, requestId: string, owner: string): string | null {
+  const root = `${requestPath(requestId)}/body/`;
+  if (!owner.startsWith(root) || !/^(?:sharedChanges\/\d+|perTarget\/\d+\/changes\/\d+)\/value$/.test(owner.slice(root.length))) return null;
+  const change = record(effectiveAt(snapshot, owner.slice(0, -'/value'.length)));
+  if (change.op !== 'set') return null;
+  return change.field === 'bookingAgency' ? 'bookingAgency' : change.field === 'organization' ? 'organization'
+    : change.field === 'arAccount' ? 'ar_account' : null;
+}
 function currentIdentityRow(snapshot: ReservationPaneSnapshot, path: string, observation: ReservationPaneSnapshot['session']['draft']['observations'][number], verified: boolean): boolean {
   const criteria = record(observation.criteria), result = record(observation.result);
   if (verified && (record(result.rowVerification).status !== 'verified' || criteria.fieldPath !== path ||
@@ -104,12 +297,13 @@ function currentIdentityRow(snapshot: ReservationPaneSnapshot, path: string, obs
   if (criteria.fieldPath !== path && (!Array.isArray(criteria.fieldPaths) || !criteria.fieldPaths.includes(path))) return false;
   const parts = path.split('/'), requestId = decodeURIComponent(parts[4] ?? '');
   const request = snapshot.session.draft.proposal.content.requests.find(row => row.id === requestId);
-  if (!request || (request.kind !== 'create' && request.kind !== 'quote') ||
+  if (!request || (request.kind !== 'create' && request.kind !== 'quote' && request.kind !== 'amend') ||
       criteria.workflow !== request.kind || criteria.requestId !== request.id) return false;
   const owner = path.replace(/\/nativeSelectionRef$/, ''), guest = observation.kind === 'guest_candidate';
-  const role = guest ? 'guest' : owner.endsWith('/bookingAgency') || owner.endsWith('/agency') ? 'agency'
-    : owner.endsWith('/arAccount') ? 'ar_account' : owner.endsWith('/company') ? 'company' : 'organization';
-  if (!guest && criteria.role !== role || guest && request.kind !== 'create') return false;
+  const role = request.kind === 'amend' ? amendPartyRole(snapshot, request.id, owner) : guest ? 'guest' : owner.endsWith('/bookingAgency') ? 'bookingAgency'
+    : owner.endsWith('/arAccount') ? 'ar_account' : 'organization';
+  if (!role || !guest && criteria.role !== role || guest && request.kind !== 'create' ||
+      request.kind === 'amend' && (guest || criteria.kind !== 'party_name')) return false;
   if (request.kind === 'create') {
     const body = record(effectiveAt(snapshot, `${requestPath(request.id)}/body`));
     const allocations = Array.isArray(body.allocations) ? body.allocations.map(record) : [];
@@ -131,18 +325,51 @@ function currentIdentityRow(snapshot: ReservationPaneSnapshot, path: string, obs
     return query.field === 'lastName' && Boolean(normal(query.value)) &&
       normal(query.value) === normal(valueAt(snapshot, `${owner}/lastName`)) &&
       normal(query.firstName) === normal(valueAt(snapshot, `${owner}/firstName`)) &&
-      normal(query.email) === normal(valueAt(snapshot, `${owner}/email`));
+      normal(query.email) === normal(valueAt(snapshot, `${owner}/email`)) &&
+      normal(query.mobile) === normal(valueAt(snapshot, `${owner}/mobile`));
   }
   const search = typeof criteria.query === 'string' ? criteria.query : criteria.searchName;
   return typeof search === 'string' && Boolean(normal(search)) && normal(search) === normal(valueAt(snapshot, `${owner}/name`));
 }
 export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, kind?: string): NativeChoice[] {
   const field = path.split('/').at(-1);
-  const requestId = path.split('/')[4];
+  const requestId = decodeURIComponent(path.split('/')[4] ?? '');
   const draft = snapshot.session.draft;
+  const request = draft.proposal.content.requests.find(row => row.id === requestId);
+  const amendTrack = request?.kind === 'amend' && kind === 'track';
+  const bodyPath = `${requestPath(requestId)}/body`;
+  const body = amendTrack ? record(effectiveAt(snapshot, bodyPath)) : {};
+  const scope = record(body.targets);
+  const included = Array.isArray(scope.include) ? scope.include.map(record) : [];
+  const excluded = Array.isArray(scope.exclude) ? scope.exclude.map(record) : [];
+  const relativePath = path.startsWith(`${bodyPath}/`) ? path.slice(bodyPath.length + 1).split('/') : [];
+  const perTargets = Array.isArray(body.perTarget) ? body.perTarget.map(record) : [];
+  const perTarget = relativePath[0] === 'perTarget' && /^\d+$/.test(relativePath[1] ?? '')
+    ? perTargets[Number(relativePath[1])] : undefined;
+  const excludedIds = new Set(excluded.map(row => row.id));
+  const scopedTargets = included.filter(row => !excludedIds.has(row.id) &&
+    (relativePath[0] === 'sharedChanges' || row.id === perTarget?.hintId));
+  const targetKeys = scopedTargets.map(row => JSON.stringify([row.id, row.suggestedRef])).sort();
+  const validTrackScope = scope.mode === 'explicit' && Array.isArray(scope.include) && Array.isArray(scope.exclude) &&
+    scopedTargets.length > 0 && scopedTargets.every(row => typeof row.id === 'string' && row.id &&
+      typeof row.suggestedRef === 'string' && row.suggestedRef) &&
+    new Set(scopedTargets.map(row => row.id)).size === scopedTargets.length;
+  const latestTrackRef = amendTrack ? draft.observations.findLast(observation => {
+    const criteria = record(observation.criteria);
+    const selectedTargets = Array.isArray(criteria.selectedTargets) ? criteria.selectedTargets.map(record) : [];
+    const selectedKeys = selectedTargets.map(row => JSON.stringify([row.hintId, row.ref])).sort();
+    return observation.status === 'complete' && observation.generationId === draft.generationId &&
+      observation.propertyCode === draft.propertyCode && observation.sourceMessageId === draft.source.messageId &&
+      criteria.kind === 'native_catalogue' && criteria.workflow === 'amend_catalogue' && criteria.catalogueKind === 'track' &&
+      criteria.requestId === requestId && criteria.sourceHash === draft.source.sourceHash &&
+      Array.isArray(criteria.fieldPaths) && criteria.fieldPaths.includes(path) &&
+      validTrackScope && JSON.stringify(selectedKeys) === JSON.stringify(targetKeys) &&
+      record(observation.coverage).complete === true && record(criteria.nativeCoverage).nativeResponseCorrelated === true;
+  })?.ref : undefined;
   const choices = draft.observations.flatMap(observation => {
     const criteria = record(observation.criteria);
     const catalogue = criteria.kind === 'native_catalogue';
+    if (amendTrack && (!latestTrackRef || observation.ref !== latestTrackRef)) return [];
     // Catalogue entries are individually observed even when the full list is incomplete.
     // Identity matches, however, require a complete search before they can be selected.
     if (observation.status !== 'complete' || (!catalogue && record(observation.coverage).complete !== true) ||
@@ -150,7 +377,10 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
         observation.sourceMessageId !== draft.source.messageId ||
         (catalogue && criteria.sourceHash !== undefined && criteria.sourceHash !== draft.source.sourceHash) ||
         (kind && observation.kind !== kind && observation.criteria.catalogueKind !== kind)) return [];
-    if (criteria.kind === 'verified_native_row' && !currentIdentityRow(snapshot, path, observation, true)) return [];
+    if (criteria.kind === 'verified_native_row' && !currentIdentityRow(snapshot, path, observation, true) ||
+        criteria.kind === 'guest_profile' && observation.kind === 'guest_candidate' && !currentIdentityRow(snapshot, path, observation, false) ||
+        request?.kind === 'amend' && observation.kind === 'party_candidate' &&
+        !currentIdentityRow(snapshot, path, observation, false)) return [];
     const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
     const matches = paths.includes(path) || catalogue && criteria.requestId === requestId && paths.some(p => typeof p === 'string' && p.split('/').at(-1) === field);
     if (!matches) return [];
@@ -158,8 +388,12 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
     const candidates = Array.isArray(result.candidates) ? result.candidates : Array.isArray(result.options) ? result.options : [result];
     // Entity selections need a unique observation for the candidate, not a batch ref.
     if (!catalogue && candidates.length > 1) return [];
-    return candidates.map(raw => { const row = record(raw); const code = text(row.code ?? row.nativeCode ?? row.name ?? [row.firstName, row.lastName].filter(Boolean).join(' '));
-      return { ref: observation.ref, value: code, label: text(row.label ?? row.name) || code, detail: [row.meaning ?? row.description, row.nativeId, row.email].filter(Boolean).join(' · ') }; }).filter(row => row.value);
+    const rows = candidates.map(raw => { const row = record(raw); const code = text(row.code ?? row.nativeCode ?? row.name ?? [row.firstName, row.lastName].filter(Boolean).join(' '));
+      const label = amendTrack ? typeof row.label === 'string' ? row.label : '' : text(row.label ?? row.name) || code;
+      return { ref: observation.ref, value: code, label, detail: [row.meaning ?? row.description, row.nativeId, row.email].filter(Boolean).join(' · ') }; }).filter(row => row.value);
+    return amendTrack ? rows.filter(row => /^[A-Z0-9]{1,12}$/.test(row.value) && row.label.trim() &&
+      row.label.length <= 200 && ![...row.label].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) &&
+      rows.filter(other => other.value === row.value).length === 1) : rows;
   });
   const identities = kind === 'guest_candidate' || kind === 'party_candidate';
   const latest = new Map<string, NativeChoice>();
@@ -180,6 +414,7 @@ export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: stri
   const name = normal(valueAt(snapshot, guest ? `${ownerPath}/lastName` : `${ownerPath}/name`));
   const first = normal(valueAt(snapshot, `${ownerPath}/firstName`));
   const email = normal(valueAt(snapshot, `${ownerPath}/email`));
+  const mobile = normal(valueAt(snapshot, `${ownerPath}/mobile`));
   if (!name) return [];
   const parts = path.split('/'), requestId = parts[4];
   const allocationIndex = parts.indexOf('allocations');
@@ -192,25 +427,27 @@ export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: stri
   const expectedAllocation = allocationIndex >= 0 ? allocation : sectionIndex >= 0
     ? record(allocations.find(row => record(row).dateSectionId === section.id)) : record(allocations[0]);
   const request = draft.proposal.content.requests.find(row => row.id === decodeURIComponent(requestId ?? ''));
-  const role = guest ? 'guest' : ownerPath.endsWith('/bookingAgency') || ownerPath.endsWith('/agency') ? 'agency'
-    : ownerPath.endsWith('/arAccount') ? 'ar_account' : ownerPath.endsWith('/company') ? 'company' : 'organization';
+  const role = guest ? 'guest' : ownerPath.endsWith('/bookingAgency') ? 'bookingAgency'
+    : ownerPath.endsWith('/arAccount') ? 'ar_account' : 'organization';
   const leads = draft.observations.flatMap(observation => {
     if (observation.kind !== kind || observation.status !== 'partial' ||
         observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
         observation.sourceMessageId !== draft.source.messageId) return [];
     const criteria = record(observation.criteria), query = record(criteria.query);
     const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
+    if ((request?.kind === 'amend' || criteria.kind === 'guest_profile' && guest) &&
+        !currentIdentityRow(snapshot, path, observation, false)) return [];
     if (criteria.kind === 'source_bound_display_lead') {
       if (observation.coverage.complete !== false || !request || (request.kind !== 'create' && request.kind !== 'quote') ||
           criteria.workflow !== request.kind || criteria.requestId !== request.id || criteria.role !== role ||
           criteria.fieldPath !== path || paths.length !== 1 || paths[0] !== path ||
           request.kind === 'create' && (!expectedAllocation.id || criteria.allocationId !== expectedAllocation.id) ||
-          guest && (query.field !== 'lastName' || normal(query.value) !== name || normal(query.firstName) !== first || normal(query.email) !== email) ||
+          guest && (query.field !== 'lastName' || normal(query.value) !== name || normal(query.firstName) !== first || normal(query.email) !== email || normal(query.mobile) !== mobile) ||
           !guest && (typeof criteria.query !== 'string' || normal(criteria.query) !== name)) return [];
     } else if (!paths.includes(path)) return [];
     const search = normal(typeof criteria.query === 'string' ? criteria.query : query.value ?? criteria.searchName);
     if (search && search !== name || normal(query.firstName) && normal(query.firstName) !== first ||
-        normal(query.email) && normal(query.email) !== email) return [];
+        normal(query.email) && normal(query.email) !== email || normal(query.mobile) && normal(query.mobile) !== mobile) return [];
     const result = record(observation.result);
     const coverage = record(guest ? result.coverage : result.nativeCoverage ?? result.coverage);
     const detail = coverage.truncated === true || coverage.serverMoreRecords === true ? 'Search truncated; more matches may exist.'
@@ -219,7 +456,7 @@ export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: stri
     const candidate = record(rows[0]);
     const canVerify = rows.length === 1 && typeof candidate.nativeId === 'string' && /^\d{1,30}$/.test(candidate.nativeId) &&
       (guest || typeof candidate.name === 'string' && Boolean(candidate.name.trim())) &&
-      currentIdentityRow(snapshot, path, observation, false);
+      criteria.workflow !== 'amend' && currentIdentityRow(snapshot, path, observation, false);
     return rows.map(raw => {
       const row = record(raw);
       const label = text(row.name) || [text(row.firstName), text(row.lastName)].filter(Boolean).join(' ');

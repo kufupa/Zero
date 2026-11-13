@@ -26,7 +26,7 @@ export const PANE_ACTION_TYPES = [...PANE_ACTION_STANDARD_TYPES, 'pane.error'] a
 export type PaneActionType = (typeof PANE_ACTION_TYPES)[number];
 export const PANE_ACTION_KINDS = ['selected', 'all', 'saved', 'option', 'combined', 'comment', 'booking'] as const;
 export const PANE_ACTION_BLOCKS = ['notes'] as const;
-export const PANE_ACTION_FIELDS = ['name', 'company', 'endClient', 'email', 'phone'] as const;
+export const PANE_ACTION_FIELDS = ['name', 'bookingAgency', 'organization', 'email', 'phone'] as const;
 export const PANE_ACTION_BATCH_MAX = 50;
 
 type StandardPaneActionEvent = {

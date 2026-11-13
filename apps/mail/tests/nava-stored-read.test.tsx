@@ -99,7 +99,7 @@ const ANALYSIS: QuoteAnalysis = {
       quantity: 1,
       adults: 2,
       childrenAges: [],
-      board: 'bb',
+      mealPlan: 'bb',
       specialRequests: [],
       fields: {},
     },
@@ -116,7 +116,7 @@ const STORED_READY = {
   extractionId: 'extraction-1',
   refs: {},
   analysis: ANALYSIS,
-  contact: { name: null, company: null, endClient: null, email: null, phone: null },
+  contact: { name: null, bookingAgency: null, organization: null, email: null, phone: null },
   language: null,
   translation: null,
 } as unknown as Extract<StoredWork, { status: 'ready' }>;

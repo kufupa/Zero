@@ -53,7 +53,7 @@ import {
 } from '../../outlook-security/authorization.js';
 import { buildQuoteProposalPdf, ProposalInputError } from '../../quote-proposal/proposal-pdf.js';
 import type { ImportedOffer, QuoteRevision } from '../../quote-proposal/quote-revision.js';
-import { PRICED_QUOTE_REUSE_MS, quoteDigest } from '../../quote-proposal/quote-revision.js';
+import { hydrateStoredQuoteRevision, PRICED_QUOTE_REUSE_MS, quoteDigest } from '../../quote-proposal/quote-revision.js';
 import {
   classifyBookingDraft,
   classifyPdf,
@@ -102,6 +102,7 @@ import {
   enqueueHmsJob,
   queueAutoStaffQuoteHmsJob,
   hmsJobQueueEnabled,
+  hydrateStoredHmsRequest,
   quotePreparationEnabled,
   HMS_JOB_PRIORITY_DEV,
   HMS_JOB_PRIORITY_USER,
@@ -153,10 +154,10 @@ const quoteProposalLineInput = z.object({
 export const quoteProposalPdfInput = z.object({
   outlookEmail: z.string().min(1),
   attention: z.string().default(''),
-  company: z.string().default(''),
+  organization: z.string().default(''),
   clientEmail: z.string().default(''),
   clientTelephone: z.string().default(''),
-  agency: z.string().min(1),
+  bookingAgency: z.string().min(1),
   dateLabel: z.string().min(1),
   lines: z.array(quoteProposalLineInput).min(1).max(6),
 });
@@ -221,7 +222,7 @@ function partyClassFromRevision(
   attestation: (StaffQuoteAttestation & { salesStrategy?: string }) | undefined,
 ): PartyClass {
   const context = revision.groups[0]?.context ?? {};
-  if ('agency' in context) return 'agency';
+  if ('bookingAgency' in context) return 'bookingAgency';
   if ('organization' in context) {
     return attestation?.salesStrategy === 'Government' ? 'government' : 'organization';
   }
@@ -245,10 +246,10 @@ export const qualifiedProposalInput = z
     outlookEmail: z.string().min(1),
     factRefs: z.array(z.string().min(1)).max(32).default([]),
     attention: z.string().max(256).default(''),
-    company: z.string().max(256).default(''),
+    organization: z.string().max(256).default(''),
     clientEmail: z.string().max(256).default(''),
     clientTelephone: z.string().max(128).default(''),
-    agency: z.string().max(256).default('Quote'),
+    bookingAgency: z.string().max(256).default('Quote'),
     notes: z.string().trim().max(1000).optional(),
     // Empty for one stay. A combined quote lists its other stays here; the first stay stays in the fields above.
     additionalStays: z.array(qualifiedStayInput).max(62).default([]),
@@ -299,7 +300,8 @@ export function resolveLedgerProposal(
   const matches = result.quoteRevisions?.filter((r) => r.id === scope.revisionRef) ?? [];
   if (matches.length !== 1 || !result.quoteRevisionIds?.includes(scope.revisionRef))
     throw new Error('revision_missing');
-  const revision = matches[0];
+  const revision = hydrateStoredQuoteRevision(matches[0]);
+  if (!revision) throw new Error('revision_missing');
   deriveQuoteLines(revision, storedRowPrices(run, revision.id));
   assertReservationistResultFreshForAction({ version: 1, quoteRevisions: [revision] }, new Date());
   const selectedBundles =
@@ -344,21 +346,22 @@ export function resolvePreparedLedgerProposal(
     revisionRef: string;
     factRefs: string[];
     sourceHash: string;
-    party: { company: string; agency: string };
+    party: { organization: string; bookingAgency: string };
     now?: Date;
   },
 ): { revision: QuoteRevision; facts?: AuthorizedProposalFacts; rowPrices: RowPrice[] } {
   const now = scope.now ?? new Date();
   const metrics = run.metrics ?? {};
-  const request = run.readRequest && typeof run.readRequest === 'object' && !Array.isArray(run.readRequest)
-    ? run.readRequest as Record<string, unknown>
+  const hydratedRequest = hydrateStoredHmsRequest(run.readRequest);
+  const request = hydratedRequest && typeof hydratedRequest === 'object' && !Array.isArray(hydratedRequest)
+    ? hydratedRequest as Record<string, unknown>
     : null;
   const parsedInput = staffQuoteInput.safeParse(request?.kind === 'staff_quote' ? request.input : null);
   const result = run.readResult;
   const prepared = result?.preparedProposal && typeof result.preparedProposal === 'object' && !Array.isArray(result.preparedProposal)
     ? result.preparedProposal as Record<string, unknown>
     : null;
-  const revision = prepared?.revision as QuoteRevision | undefined;
+  const revision = hydrateStoredQuoteRevision(prepared?.revision);
   const rowPrices = Array.isArray(prepared?.rowPrices) ? prepared.rowPrices as RowPrice[] : [];
   const facts = prepared?.facts as AuthorizedProposalFacts | undefined;
   const factRefs = Array.isArray(result?.factRefs) ? result.factRefs : null;
@@ -367,11 +370,11 @@ export function resolvePreparedLedgerProposal(
   const samePartyName = (left: string, right: string) =>
     left.replace(/\s+/g, ' ').trim().toLowerCase() === right.replace(/\s+/g, ' ').trim().toLowerCase();
   const boundPartyHeaderMatches = parsedInput.success &&
-    (parties?.company
-      ? samePartyName(scope.party.company, parties.company.name)
+    (parties?.organization
+      ? samePartyName(scope.party.organization, parties.organization.name)
       : true) &&
-    (parties?.agency
-      ? samePartyName(scope.party.agency, parties.agency.name)
+    (parties?.bookingAgency
+      ? samePartyName(scope.party.bookingAgency, parties.bookingAgency.name)
       : true);
   const sourceStillCurrent = parsedInput.success &&
     parsedInput.data.messageId === scope.messageId &&
@@ -676,7 +679,7 @@ async function proposalStaysFor(
       });
     }
     if (staff) {
-      const party = { company: input.company, agency: input.agency };
+      const party = { organization: input.organization, bookingAgency: input.bookingAgency };
       const problem = staffQuoteCurrencyProblem({
         staff,
         runGenerationId: run.generationId,
@@ -700,7 +703,7 @@ async function proposalStaysFor(
         const prepared = resolvePreparedLedgerProposal(run, {
           ...proposalScope,
           sourceHash: current ? staffQuoteSourceHash(current) : '',
-          party: { company: input.company, agency: input.agency },
+          party: { organization: input.organization, bookingAgency: input.bookingAgency },
         });
         resolved = { revision: prepared.revision, facts: prepared.facts };
         rowPrices = prepared.rowPrices;
@@ -747,10 +750,10 @@ async function buildQualifiedQuotePdf(
       stays,
       {
         attention: input.attention,
-        company: input.company,
+        organization: input.organization,
         clientEmail: input.clientEmail,
         clientTelephone: input.clientTelephone,
-        agency: input.agency,
+        bookingAgency: input.bookingAgency,
         signerName: ctx.sessionUser.name ?? '',
         signerEmail: ctx.sessionUser.email,
         notes: stayNotes(stays),
@@ -766,8 +769,8 @@ async function buildQualifiedQuotePdf(
   }
   await proposalStaysFor(input, ctx, 'Proposal evidence expired during conversion');
   const party = quotePdfPartyName(
-    input.agency,
-    input.company,
+    input.bookingAgency,
+    input.organization,
     input.attention,
     quotePdfSenderDisplayName(fromAddress),
   );
@@ -778,7 +781,7 @@ async function buildQualifiedQuotePdf(
     fileName: retargetQuotePdfFileName(
       result.fileName,
       party,
-      quotePdfPartyName(input.agency, input.company),
+      quotePdfPartyName(input.bookingAgency, input.organization),
     ),
     totalMinor: result.totalMinor,
     pdfBase64: Buffer.from(result.pdf).toString('base64'),
@@ -1102,8 +1105,8 @@ export const workstationRouter = router({
         const prefill = await buildCreatePrefill({
           arrival: group.arrival ?? null, departure: group.departure ?? null, nights: null,
           rooms: roomRows.map(({ adults, childAges, roomTypeText, guestName }) => ({ adults, childAges, roomTypeText, guestName })),
-          boardText: group.board ?? null, rateText: input.rateCode ?? null,
-          agencyName: party.kind === 'agency' ? party.name : null,
+          mealPlanText: group.mealPlan ?? null, rateText: input.rateCode ?? null,
+          bookingAgencyName: party.kind === 'bookingAgency' ? party.name : null,
           organizationName: party.kind === 'organization' || party.kind === 'government' ? party.name : null,
           voucherNumber: null, bookerName: null, bookerEmail: null, billingReference: party.reference,
           paidBy: null, defaults: { track: null, sourceOfBusiness: null, guaranteeType: null },
@@ -1114,7 +1117,7 @@ export const workstationRouter = router({
           status: 'ready' as const,
           draft: bookingDraftFromPrefill({
             requests: prefill.requests, missing: prefill.missing, schemaErrors: prefill.schemaErrors,
-            board: prefillBoardFromLuna(group.board),
+            mealPlan: prefillBoardFromLuna(group.mealPlan),
             ...(input.groupIds ? { roomIdentity: roomRows.map((row) => ({ groupId: row.groupId!, roomIndex: row.roomIndex })) } : {}),
           }),
           options: createRequestFieldOptions(propertyCode),
@@ -1243,7 +1246,7 @@ export const workstationRouter = router({
         departureDate: resolved.revision.groups.at(-1)!.departureDate,
         roomCode: resolved.revision.groups[0]!.roomCode,
         rateCode: resolved.revision.groups[0]!.rateCode,
-        board: resolved.revision.groups[0]!.board,
+        mealPlan: resolved.revision.groups[0]!.mealPlan,
         // Whether this quote's total already has the once-per-quote extras (the shuttle, a flat other charge).
         onceExtras: revisionCarriesOnceExtras(run, resolved.revision.id),
       };
@@ -1427,10 +1430,10 @@ export const workstationRouter = router({
             });
             renderImportedProposalHtml(offer, {
               attention: '',
-              company: '',
+              organization: '',
               clientEmail: '',
               clientTelephone: '',
-              agency: '',
+              bookingAgency: '',
               signerName: '',
               signerEmail: '',
             });
@@ -1460,10 +1463,10 @@ export const workstationRouter = router({
             });
             renderApprovedOverrideHtml(offer, {
               attention: '',
-              company: '',
+              organization: '',
               clientEmail: '',
               clientTelephone: '',
-              agency: '',
+              bookingAgency: '',
               signerName: '',
               signerEmail: '',
             });
@@ -1561,10 +1564,10 @@ export const workstationRouter = router({
           revisionRef: z.string().min(1),
           additionalStays: z.array(qualifiedStayInput).max(62).default([]),
           attention: z.string().max(256).default(''),
-          company: z.string().max(256).default(''),
+          organization: z.string().max(256).default(''),
           clientEmail: z.string().max(256).default(''),
           clientTelephone: z.string().max(128).default(''),
-          agency: z.string().max(256).default('Quote'),
+          bookingAgency: z.string().max(256).default('Quote'),
           notes: z.string().trim().max(1000).optional(),
         })
         .strict(),
@@ -1593,7 +1596,7 @@ export const workstationRouter = router({
           stays,
           header: {
             attention: input.attention,
-            company: input.company,
+            organization: input.organization,
             clientEmail: input.clientEmail,
             clientTelephone: input.clientTelephone,
             signerName: ctx.sessionUser.name ?? '',
@@ -1612,7 +1615,7 @@ export const workstationRouter = router({
       const arrival = groups.map((group) => group.arrivalDate).sort()[0] ?? stays[0]!.revision.authoredDate;
       const departure = groups.map((group) => group.departureDate).sort().at(-1) ?? arrival;
       return {
-        fileName: quoteWorkbookFileName(input.agency.trim() || input.company, arrival, departure),
+        fileName: quoteWorkbookFileName(input.bookingAgency.trim() || input.organization, arrival, departure),
         xlsxBase64: Buffer.from(workbook.bytes).toString('base64'),
         totalMinor: workbook.totalMinor,
         revisionId: documentIdFor(stays),

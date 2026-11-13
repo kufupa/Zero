@@ -1,5 +1,7 @@
 import { z } from 'zod';
-import { mailExtractionPayloadSchema, type ExtractionRow, type ExtractionStay } from './extraction/schema.js';
+import type { ExtractionRow, ExtractionStay } from './extraction/schema.js';
+import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
+import { hydrateStoredFieldPath } from './stored-work-state.js';
 import { formStays, parseFieldPath, validFieldValue, type WorkState } from './work-items.js';
 import type { PaneStay } from './pane-stay-save.js';
 import { matchRoomType } from './room-types.js';
@@ -11,7 +13,7 @@ const stableId = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/);
 export const paneCreatePartySchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('none') }).strict(),
   z.object({ kind: z.literal('unknown') }).strict(),
-  z.object({ kind: z.literal('selected'), company: z.string().max(200).nullable(), agency: z.string().max(200).nullable() }).strict(),
+  z.object({ kind: z.literal('selected'), organization: z.string().max(200).nullable(), bookingAgency: z.string().max(200).nullable() }).strict(),
 ]);
 export const paneCreateIdentitySchema = z.object({
   stayId: stableId, rowId: stableId, roomIndex: z.number().int().min(1).max(999),
@@ -32,7 +34,7 @@ export function paneCreateRoomAliases(identity: PaneCreateIdentity): string[] {
 /** Bind the reviewed form to one currently visible, unambiguous source room. */
 export function activePaneCreateIdentity(payload: unknown, state: WorkState, identity: PaneCreateIdentity,
   { legacyKey = false }: { legacyKey?: boolean } = {}): boolean {
-  const parsed = mailExtractionPayloadSchema.safeParse(payload);
+  const parsed = safeParseStoredMailExtraction(payload);
   if (!parsed.success || !paneCreateIdentitySchema.safeParse(identity).success) return false;
   const stayIds = parsed.data.stays.map((stay) => stay.id);
   const rowIds = parsed.data.stays.flatMap((stay) => stay.rows.map((row) => row.id));
@@ -72,7 +74,7 @@ export function activePaneCreateIdentity(payload: unknown, state: WorkState, ide
 /** A fresh cursor must not approve dates from a form that missed another staff edit. */
 export function currentPaneCreateDatesMatch(payload: unknown, state: WorkState, identity: PaneCreateIdentity,
   stay: PaneStay, source: DraftSource): boolean {
-  const parsed = mailExtractionPayloadSchema.safeParse(payload);
+  const parsed = safeParseStoredMailExtraction(payload);
   if (!parsed.success) return false;
   const matches = formStays(parsed.data, state).filter((item) => item.id === identity.stayId);
   if (matches.length !== 1) return false;
@@ -97,12 +99,12 @@ export function reconcilePaneCreateScope(input: {
    * and the same linked source message's extraction recorded by each event. Never accept browser claims. */
   historicalOwnRows?: ReadonlyArray<HistoricalOwnRow>;
 }): boolean {
-  const parsed = mailExtractionPayloadSchema.safeParse(input.payload);
+  const parsed = safeParseStoredMailExtraction(input.payload);
   if (!parsed.success || !paneCreateIdentitySchema.safeParse(input.identity).success ||
       !paneCreatePartySchema.safeParse(input.party).success || input.party.kind === 'unknown') return false;
   const agency = input.stay.bookingAgency?.name ?? null, company = input.stay.organization?.name ?? null;
   if (input.party.kind === 'none' ? agency !== null || company !== null :
-      input.party.agency !== agency || input.party.company !== company) return false;
+      input.party.bookingAgency !== agency || input.party.organization !== company) return false;
   const payload = parsed.data;
   const stays = new Map<string, ExtractionStay>();
   const originallyRowless = new Set<string>();
@@ -123,11 +125,12 @@ export function reconcilePaneCreateScope(input: {
     return input.historicalOwnRows.some((proof) => {
       if (!proof || !z.string().uuid().safeParse(proof.eventId).success ||
           !z.string().uuid().safeParse(proof.extractionId).success) return false;
-      const path = parseFieldPath(proof.fieldPath);
+      const fieldPath = hydrateStoredFieldPath(proof.fieldPath);
+      const path = parseFieldPath(fieldPath);
       if (!path || path.stayId !== stayId || path.rowId !== rowId || path.field === 'removed' ||
-          !Object.hasOwn(input.state, proof.fieldPath) || !validFieldValue(path.field, proof.value) ||
-          JSON.stringify(input.state[proof.fieldPath]) !== JSON.stringify(proof.value)) return false;
-      const prior = mailExtractionPayloadSchema.safeParse(proof.extraction);
+          !Object.hasOwn(input.state, fieldPath) || !validFieldValue(path.field, proof.value) ||
+          JSON.stringify(input.state[fieldPath]) !== JSON.stringify(proof.value)) return false;
+      const prior = safeParseStoredMailExtraction(proof.extraction);
       if (!prior.success) return false;
       const matches = prior.data.stays.filter((stay) => stay.id === stayId);
       return matches.length === 1 && matches[0]!.rows.length === 0;
@@ -153,7 +156,7 @@ export function reconcilePaneCreateScope(input: {
       // The UI also gives an initially rowless extraction a deterministic own-row id.
       if (input.state[marker] !== null && !(originallyRowless.has(path.stayId) && path.rowId === `${path.stayId}_row`) &&
           !hasHistoricalOwnRow(path.stayId, path.rowId)) return false;
-      stay.rows.push({ id: path.rowId, roomType: null, rooms: null, adultsPerRoom: null, childAges: null, board: null });
+      stay.rows.push({ id: path.rowId, roomType: null, rooms: null, adultsPerRoom: null, childAges: null, mealPlan: null });
     }
   }
   // formStays also hides a rowless stay when its only projected row was removed.

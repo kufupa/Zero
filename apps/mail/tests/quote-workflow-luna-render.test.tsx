@@ -10,6 +10,8 @@ import type {
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
+import { NavaPane } from '../components/nava-pane/nava-pane';
+import { useOutlookBridge } from '../lib/workstation/use-outlook-bridge';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 afterEach(() => cleanup());
@@ -21,7 +23,7 @@ const g1: StayGroupRequirement = {
   quantity: 1,
   adults: 2,
   childrenAges: [],
-  board: 'bb',
+  mealPlan: 'bb',
   specialRequests: [],
   fields: { arrivalDate: 'extracted', departureDate: 'extracted', adults: 'extracted' },
 };
@@ -63,7 +65,7 @@ describe('QuoteWorkflowPanel Nava extras', () => {
       groups: [
         {
           ...g1,
-          fields: { ...g1.fields, board: 'defaulted' },
+          fields: { ...g1.fields, mealPlan: 'defaulted' },
         },
       ],
       secondaryAsks: [],
@@ -468,7 +470,7 @@ describe('QuoteWorkflowPanel Nava extras', () => {
             rooms: 1,
             adultsPerRoom: 1,
             childAges: [],
-            board: 'bb',
+            mealPlan: 'bb',
             roomPreference: null,
             guestNames: ['Ada Example'],
             stayId: 'stay-a',
@@ -479,7 +481,7 @@ describe('QuoteWorkflowPanel Nava extras', () => {
             rooms: 1,
             adultsPerRoom: 1,
             childAges: [],
-            board: 'bb',
+            mealPlan: 'bb',
             roomPreference: null,
             guestNames: ['Bea Example'],
             stayId: 'stay-a',
@@ -590,7 +592,11 @@ vi.mock('../providers/query-provider', () => ({
   },
 }));
 
-describe('Outlook pane Nava analysis bind', () => {
+function LegacyOutlookQuotePane() {
+  return <NavaPane bridge={useOutlookBridge()} />;
+}
+
+describe('Legacy NavaPane analysis bind', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     paneState.entryId = '001';
@@ -599,8 +605,7 @@ describe('Outlook pane Nava analysis bind', () => {
 
   it('leaves analysing when analyseSelection is unavailable and does not keep a local regex group', async () => {
     analyseMutate.mockRejectedValue(new Error('analyseSelection network down'));
-    const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
-    render(<OutlookPanePage />);
+    render(<LegacyOutlookQuotePane />);
     await waitFor(() => {
       expect(screen.queryByText(/Nava is reading the email/i)).toBeNull();
     });
@@ -624,7 +629,7 @@ describe('Outlook pane Nava analysis bind', () => {
             id: 'g1',
             adults: 3,
             childrenAges: [],
-            board: 'unknown',
+            mealPlan: 'unknown',
             quantity: 1,
             specialRequests: [],
             fields: { arrivalDate: 'missing', organisation: 'extracted' },
@@ -635,11 +640,10 @@ describe('Outlook pane Nava analysis bind', () => {
         sourceRevision: 2,
       };
     });
-    const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
-    const view = render(<OutlookPanePage />);
+    const view = render(<LegacyOutlookQuotePane />);
     await waitFor(() => expect(analyseMutate).toHaveBeenCalled());
     paneState.entryId = '002';
-    view.rerender(<OutlookPanePage />);
+    view.rerender(<LegacyOutlookQuotePane />);
     await waitFor(() => expect(screen.getByText('3 adults per room')).toBeDefined());
     await act(async () => {
       resolveFirst({
@@ -650,7 +654,7 @@ describe('Outlook pane Nava analysis bind', () => {
             id: 'g1',
             adults: 1,
             childrenAges: [],
-            board: 'unknown',
+            mealPlan: 'unknown',
             quantity: 1,
             specialRequests: [],
             fields: { arrivalDate: 'missing', organisation: 'extracted' },
@@ -688,8 +692,7 @@ describe('Outlook pane Nava analysis bind', () => {
         luna: lunaWire({ workflow: 'other' }),
       };
     });
-    const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
-    render(<OutlookPanePage />);
+    render(<LegacyOutlookQuotePane />);
     await waitFor(() => expect(screen.getByLabelText('Change how Nava reads this email')).toBeDefined());
     fireEvent.change(screen.getByLabelText('Change how Nava reads this email'), { target: { value: 'quote' } });
     await waitFor(() => {
@@ -710,8 +713,7 @@ describe('Outlook pane Nava analysis bind', () => {
       sourceRevision: 1,
       luna: lunaWire({ workflow: 'quote' }),
     });
-    const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
-    render(<OutlookPanePage />);
+    render(<LegacyOutlookQuotePane />);
     await waitFor(() => expect(screen.getByLabelText('Change how Nava reads this email')).toBeDefined());
     expect(screen.queryByText(/Tell Nava/i)).toBeNull();
     expect(screen.queryByLabelText(/what's wrong/i)).toBeNull();

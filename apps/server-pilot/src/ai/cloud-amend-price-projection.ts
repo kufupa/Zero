@@ -12,7 +12,7 @@ const party = z.object({ nativeId: z.string().regex(/^\d{1,30}$/),
 /** Values sent unchanged by the complete native saved-record form. */
 export const cloudAmendPreservedSchema = z.object({ cmsRecipient: printable(1000), cmsMessageId: printable(1000).optional(),
   cmsSend: z.boolean().optional(), guestEmail: printable(1000).optional(), bookerName: printable(1000).optional(),
-  bookerContact: printable(1000).optional(), agency: party.nullable(), organization: party.nullable() }).strict();
+  bookerContact: printable(1000).optional(), bookingAgency: party.nullable(), organization: party.nullable() }).strict();
 
 const cents = z.string().regex(/^(?:0|[1-9]\d{0,13})$/);
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
@@ -93,5 +93,5 @@ export function publicCloudAmendFields(input: unknown) {
   return { bound: true as const, ...(prices ? { approvedPrices: prices } : {}),
     ...(preserved?.success ? { preserved: { cmsRecipient: preserved.data.cmsRecipient,
       cmsMessageId: preserved.data.cmsMessageId, cmsSend: preserved.data.cmsSend,
-      agency: preserved.data.agency?.name ?? null, organization: preserved.data.organization?.name ?? null } } : {}) };
+      bookingAgency: preserved.data.bookingAgency?.name ?? null, organization: preserved.data.organization?.name ?? null } } : {}) };
 }

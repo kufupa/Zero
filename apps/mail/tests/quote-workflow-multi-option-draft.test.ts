@@ -37,7 +37,7 @@ function stayGroup(id: string, arrivalDate: string, departureDate: string): Stay
     roomPreference: 'standard king',
     adults: 1,
     childrenAges: [],
-    board: 'bb',
+    mealPlan: 'bb',
     specialRequests: [],
     fields: { arrivalDate: 'extracted', departureDate: 'extracted', adults: 'extracted' },
   };
@@ -54,7 +54,7 @@ function allocation(
     kind: 'allocation',
     roomCode: '',
     roomLabel,
-    board: 'bb',
+    mealPlan: 'bb',
     rateCode: '',
     currency: 'ZAR',
     nightly: [],
@@ -91,8 +91,8 @@ function staffRun(
     quoteRequestKey,
     approvedHeader: {
       salesStrategy: 'BAR',
-      company: '',
-      agency: '',
+      organization: '',
+      bookingAgency: '',
       attention: '',
       clientEmail: '',
       clientTelephone: '',

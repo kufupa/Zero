@@ -103,7 +103,7 @@ export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGr
     roomPreference: group.roomPreference,
     adults: group.adults,
     childrenAges: [...group.childrenAges],
-    board: group.board,
+    mealPlan: group.mealPlan,
     organisation: group.organisation,
     specialRequests: [...group.specialRequests],
   };
@@ -114,7 +114,7 @@ export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGr
  * quote-ready.ts: Government only when every requested row is Dinner B&B, else BAR, so the prepared run matches.
  */
 export function autoRunHeader(session: Pick<QuoteSession, 'staffHeader' | 'groups'>): StaffQuoteHeader {
-  const allDinner = session.groups.length > 0 && session.groups.every((group) => group.board === 'dinner_bb');
+  const allDinner = session.groups.length > 0 && session.groups.every((group) => group.mealPlan === 'dinner_bb');
   return { ...session.staffHeader, salesStrategy: allDinner ? 'Government' : 'BAR' };
 }
 
@@ -392,7 +392,8 @@ export function pendingPdfStayKey(
 export function partyLookupWaitReason(session: Pick<QuoteSession, 'pendingPartyKinds'>): string | null {
   const pending = session.pendingPartyKinds ?? [];
   if (!pending.length) return null;
-  const names = (['company', 'agency'] as const).filter((kind) => pending.includes(kind));
+  const names = (['organization', 'bookingAgency'] as const).filter((kind) => pending.includes(kind))
+    .map((kind) => kind === 'bookingAgency' ? 'booking agency' : 'organization');
   return `Finding the ${names.join(' and ')} in HMS…`;
 }
 
@@ -558,7 +559,7 @@ export function initialQuoteSession(): QuoteWorkflowSession {
     staffQuotes: {},
     stayPdfs: {},
     rateOptions: [],
-    roomRateBoardSelections: {},
+    roomRateMealPlanSelections: {},
     staffHeader: emptyStaffQuoteHeader(),
     staffActions: [],
     preparedStaffTasks: [],
@@ -610,14 +611,14 @@ function agesMatch(left: readonly number[], right: readonly number[]): boolean {
 function occupancySatisfied(group: StayGroupRequirement, covering: readonly QuoteOffer[]): boolean {
   if (covering.length === 0) return false;
   if (!group.arrivalDate || !group.departureDate) return false;
-  if (group.board === 'unknown') return false;
+  if (group.mealPlan === 'unknown') return false;
   if (typeof group.quantity !== 'number') return false;
   const dateKey = `${group.arrivalDate}:${group.departureDate}`;
   let haveQty = 0;
   for (const offer of covering) {
     if (typeof offer.quantity !== 'number') return false;
     if (offer.quoteRequestKey !== dateKey) return false;
-    if (offer.board !== group.board) return false;
+    if (offer.mealPlan !== group.mealPlan) return false;
     if (!agesMatch(offer.childrenAges ?? [], group.childrenAges)) return false;
     if (group.adults != null && offer.adults !== group.adults) return false;
     haveQty += offer.quantity;
@@ -664,8 +665,8 @@ export function currentStayRun(session: QuoteSession, key: string): StaffQuoteAl
     quote.messageId === source.messageId &&
     quote.threadId === source.threadId &&
     quote.approvedHeader.salesStrategy === header.salesStrategy &&
-    quote.approvedHeader.company === header.company &&
-    quote.approvedHeader.agency === header.agency &&
+    quote.approvedHeader.organization === header.organization &&
+    quote.approvedHeader.bookingAgency === header.bookingAgency &&
     offer.stayTotalMinor === quote.totalMinor;
   if (!current) return null;
   // Each stay owns its one-time extras; a stale run must not add or lose that stay's charge.
@@ -731,7 +732,7 @@ export function staffQuoteMatchesSession(session: QuoteSession): boolean {
   const current = approvedExecuteHeader(session.staffHeader);
   const approved = quote.approvedHeader;
   if (!approved) return false;
-  if (current.company !== approved.company || current.agency !== approved.agency) return false;
+  if (current.organization !== approved.organization || current.bookingAgency !== approved.bookingAgency) return false;
   if (current.salesStrategy !== approved.salesStrategy) return false;
   return true;
 }
@@ -857,7 +858,7 @@ export function missingQuoteReplyFieldsForGroups(groups: readonly StayGroupRequi
   const fields: string[] = [];
   const targets: readonly Partial<StayGroupRequirement>[] = groups.length
     ? groups
-    : [{ id: 'g1', childrenAges: [], board: 'unknown' as const, specialRequests: [], fields: {} }];
+    : [{ id: 'g1', childrenAges: [], mealPlan: 'unknown' as const, specialRequests: [], fields: {} }];
   targets.forEach((group, index) => {
     const stay = index + 1;
     if (!group.arrivalDate) fields.push(`Arrival date for stay ${stay}`);
@@ -1167,10 +1168,10 @@ function shuttleRequestedFromAnalysis(analysis: QuoteAnalysis): boolean {
 
 /** Government for a government party or when every row asks Dinner B&B; otherwise BAR. */
 function automaticSalesStrategy(
-  groups: readonly { board: string }[],
+  groups: readonly { mealPlan: string }[],
   partyKind: string | null | undefined,
 ): StaffQuoteHeader['salesStrategy'] {
-  const allDinner = groups.length > 0 && groups.every((group) => group.board === 'dinner_bb');
+  const allDinner = groups.length > 0 && groups.every((group) => group.mealPlan === 'dinner_bb');
   return partyKind === 'government' || allDinner ? 'Government' : 'BAR';
 }
 
@@ -1182,13 +1183,13 @@ function prefillStaffHeaderFromLuna(
   let next = header;
   const party = analysis.luna?.party;
   const name = party?.name?.trim();
-  if (party && name && !header.company.trim() && !header.agency.trim()) {
-    if (party.kind === 'agency') next = { ...next, agency: name };
-    else if (party.kind === 'organization') next = { ...next, company: name };
+  if (party && name && !header.organization.trim() && !header.bookingAgency.trim()) {
+    if (party.kind === 'bookingAgency') next = { ...next, bookingAgency: name };
+    else if (party.kind === 'organization') next = { ...next, organization: name };
     else if (party.kind === 'government') {
       next = {
         ...next,
-        company: name,
+        organization: name,
         ...(!staffSalesStrategyEdited ? { salesStrategy: 'Government' } : {}),
       };
     }
@@ -1224,13 +1225,13 @@ function reviewItemsFromExtrasNotes(
 }
 
 /** Fields that decide which rate HMS quotes. A rate pin does not survive a change to any of them. */
-const RATE_PIN_FIELDS = ['board', 'arrivalDate', 'departureDate', 'roomPreference', 'roomCodes'] as const;
+const RATE_PIN_FIELDS = ['mealPlan', 'arrivalDate', 'departureDate', 'roomPreference', 'roomCodes'] as const;
 
 /** The blank stay the form shows while Nava reads the email or after a failed read, so she can type before it lands. */
 export const DRAFT_GROUP_ID = 'draft-stay';
 
 export function draftStayGroup(): StayGroupRequirement {
-  return { id: DRAFT_GROUP_ID, childrenAges: [], board: 'unknown', specialRequests: [], fields: {} };
+  return { id: DRAFT_GROUP_ID, childrenAges: [], mealPlan: 'unknown', specialRequests: [], fields: {} };
 }
 
 function applyGroupPatch(
@@ -1317,7 +1318,7 @@ function syncTotalRoomsForStay(
 function blankRow(
   id: string,
   stayId: string,
-  dates: Pick<StayGroupRequirement, 'arrivalDate' | 'departureDate' | 'board'>,
+  dates: Pick<StayGroupRequirement, 'arrivalDate' | 'departureDate' | 'mealPlan'>,
 ): StayGroupRequirement {
   return { id, stayId, ...dates, childrenAges: [], specialRequests: [], fields: {} };
 }
@@ -1920,7 +1921,7 @@ export function reduceQuoteSession(
         : pending.filter((kind) => kind !== action.kind);
       return { ...session, pendingPartyKinds };
     }
-    case 'room_rate_board_selected': {
+    case 'room_rate_meal_plan_selected': {
       const group = session.groups.find((item) => item.id === action.groupId);
       if (!group) return session;
       const quote = staffQuoteForStay(session, stayKeyForGroup(group));
@@ -1929,27 +1930,27 @@ export function reduceQuoteSession(
           row.groupId === action.groupId &&
           row.roomCode === action.selection.roomCode &&
           row.rateCode === action.selection.rateCode &&
-          row.board === action.selection.board,
+          row.mealPlan === action.selection.mealPlan,
       );
       if (!knownRow) return session;
 
-      const previous = session.roomRateBoardSelections?.[action.groupId];
+      const previous = session.roomRateMealPlanSelections?.[action.groupId];
       if (
         previous?.roomCode === action.selection.roomCode &&
         previous.rateCode === action.selection.rateCode &&
-        previous.board === action.selection.board
+        previous.mealPlan === action.selection.mealPlan
       ) {
         return session;
       }
       // Keep this as staff intent only: a grid choice does not create or validate a quote.
       return {
         ...session,
-        roomRateBoardSelections: {
-          ...session.roomRateBoardSelections,
+        roomRateMealPlanSelections: {
+          ...session.roomRateMealPlanSelections,
           [action.groupId]: {
             roomCode: action.selection.roomCode,
             rateCode: action.selection.rateCode,
-            board: action.selection.board,
+            mealPlan: action.selection.mealPlan,
           },
         },
       };
@@ -1961,8 +1962,8 @@ export function reduceQuoteSession(
         return { ...session, staffHeader: { ...session.staffHeader, fieldErrors: keptFieldErrors(fieldErrors) } };
       }
       const staffHeader = { ...session.staffHeader, ...action.header };
-      if (action.header.agency !== undefined && !action.header.agency.trim()) {
-        staffHeader.agency = '';
+      if (action.header.bookingAgency !== undefined && !action.header.bookingAgency.trim()) {
+        staffHeader.bookingAgency = '';
       }
       return clearDownstream({
         ...session,
@@ -2184,7 +2185,7 @@ export function reduceQuoteSession(
     case 'staff_dinner_bb_fallback': {
       if (!action.groupIds.length) return session;
       const patched = action.groupIds.reduce<QuoteSession>(
-        (next, groupId) => reduceQuoteSession(next, { type: 'patch_group', groupId, patch: { board: 'bb' } }),
+        (next, groupId) => reduceQuoteSession(next, { type: 'patch_group', groupId, patch: { mealPlan: 'bb' } }),
         session,
       );
       // Keep fallback allowances scoped to the stay(s) containing these groups, then clear those stay results.
@@ -2260,7 +2261,7 @@ export function reduceQuoteSession(
       );
     }
     case 'add_stay': {
-      const row = blankRow(`r_${action.token}`, `s_${action.token}`, { board: session.groups[0]?.board ?? 'unknown' });
+      const row = blankRow(`r_${action.token}`, `s_${action.token}`, { mealPlan: session.groups[0]?.mealPlan ?? 'unknown' });
       return editStays(session, [...session.groups, row], new Set([stayKeyForGroup(row)]));
     }
     case 'add_row': {
@@ -2275,7 +2276,7 @@ export function reduceQuoteSession(
         ...blankRow(`r_${action.token}`, stayId, {
           arrivalDate: template.arrivalDate,
           departureDate: template.departureDate,
-          board: template.board,
+          mealPlan: template.mealPlan,
         }),
         ...(adultsTotal.value !== null || adultsTotal.provenance === 'staff_corrected' ? { adultsTotal: adultsTotal.value } : {}),
         ...(childrenTotal.value !== null || childrenTotal.provenance === 'staff_corrected' ? { childrenTotal: childrenTotal.value } : {}),

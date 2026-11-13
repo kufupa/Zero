@@ -24,10 +24,10 @@ const input: QualifiedStaffPdfInput = {
   outlookEmail: 'centurion@legacyhotels.co.za',
   factRefs: ['extras'],
   attention: 'David Miller',
-  company: 'CIDB',
+  organization: 'CIDB',
   clientEmail: 'guest@example.com',
   clientTelephone: '',
-  agency: 'CIDB',
+  bookingAgency: 'CIDB',
   notes: 'Breakfast only on day two.',
 };
 const xlsxBase64 = btoa(String.fromCharCode(0x50, 0x4b, 0x03, 0x04, 0, 0));
@@ -60,8 +60,8 @@ describe('Excel download request', () => {
           totalMinor: 270_000,
           approvedHeader: {
             salesStrategy: 'BAR',
-            company: 'CIDB',
-            agency: 'CIDB',
+            organization: 'CIDB',
+            bookingAgency: 'CIDB',
             attention: 'David Miller',
             clientEmail: 'guest@example.com',
             clientTelephone: '',

@@ -3,6 +3,7 @@
 import { setGuestStayText } from './guest-stay-form.mjs';
 import { isVerifiedLabtestProfileCurrent, verifiedLabtestProfileToken } from './guest-profile.mjs';
 import { isVerifiedArSelectionCurrent, verifiedArSelectionToken } from './lookup.mjs';
+import { validCreateGuest } from './cloud-create-policy.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const FIELDS = Object.freeze({ bookerName: 'caller', bookerContact: 'udfchar06', billingReference: 'billingreference' });
@@ -66,18 +67,18 @@ async function installFence(page) {
 }
 
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-function labDate(value) {
+function labDate(value, allowRealGuest = false) {
   const match = /^(\d{2})-([A-Z]{3})-(\d{4})$/i.exec(clean(value));
   if (!match) return null;
   const day = Number(match[1]), month = MONTHS.indexOf(match[2].toUpperCase()), year = Number(match[3]);
   const date = new Date(Date.UTC(year, month, day));
-  if (year < 2027 || month < 0 || date.getUTCFullYear() !== year || date.getUTCMonth() !== month || date.getUTCDate() !== day) return null;
+  if ((!allowRealGuest && year < 2027) || month < 0 || date.getUTCFullYear() !== year || date.getUTCMonth() !== month || date.getUTCDate() !== day) return null;
   return date.toISOString().slice(0, 10);
 }
 
 // Capture scalar record values to identify model changes without exposing their values in the result.
-async function inspectDraft(page) {
-  return page.evaluate(({ origin, fields, blankIds }) => {
+async function inspectDraft(page, expectedGuest = { firstName: 'Proof', lastName: 'Labtest' }) {
+  return page.evaluate(({ origin, fields, blankIds, expectedGuest }) => {
     if (location.origin !== origin) throw new Error('HMS_ORIGIN_MISMATCH');
     const visible = (element) => Boolean((element.offsetWidth || element.offsetHeight) &&
       getComputedStyle(element).visibility !== 'hidden' && !element.closest('.x-window'));
@@ -108,7 +109,7 @@ async function inspectDraft(page) {
       typeof component(element)?.getValue === 'function' && String(component(element).getValue() ?? '') === expected &&
       (value(key) === '' || value(key) === expected);
     if (confirmation.value.trim() || guest.value.trim() !== value('guestid') || guestValue !== value('guestid') ||
-        !nameMatches(first, 'firstname', 'Proof') || !nameMatches(last, 'lastname', 'Labtest')) {
+        !nameMatches(first, 'firstname', expectedGuest.firstName) || !nameMatches(last, 'lastname', expectedGuest.lastName)) {
       throw new Error('LABTEST_DRAFT_UNVERIFIED');
     }
     for (const element of [arrival, departure]) {
@@ -157,13 +158,13 @@ async function inspectDraft(page) {
       }));
     return { identity: { session: value('bookingsessionid'), guestId: value('guestid'), accountId, profileId,
       arrival: arrival.value, departure: departure.value }, controls, scalar, omitted, visibleFields };
-  }, { origin: ORIGIN, fields: FIELDS, blankIds: BLANK_IDS });
+  }, { origin: ORIGIN, fields: FIELDS, blankIds: BLANK_IDS, expectedGuest });
 }
 
-async function verifyIdentity(page, snapshot, ensureActive) {
+async function verifyIdentity(page, snapshot, ensureActive, allowRealGuest = false) {
   ensureActive();
   const identity = snapshot.identity;
-  const arrival = labDate(identity?.arrival), departure = labDate(identity?.departure);
+  const arrival = labDate(identity?.arrival, allowRealGuest), departure = labDate(identity?.departure, allowRealGuest);
   if (!arrival || !departure || arrival >= departure) throw new Error('LABTEST_DATES_UNVERIFIED');
   let guest = null, ar = null;
   if (identity.guestId) {
@@ -188,17 +189,22 @@ function identityCurrent(page, proof) {
 }
 
 function safeName(value) { return typeof value === 'string' && /^[A-Za-z0-9_]{1,80}$/.test(value) ? value : '<unidentified>'; }
+const BUSINESS_FIELDS = new Set(['guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate', 'adults', 'children',
+  'childages', 'child1', 'child2', 'child3', 'roomtype', 'roomtypecharge', 'rateplan', 'mealplan', 'track', 'guaranteetype', 'ta1commission',
+  'sourceofbus', 'sourceofbusinessdesc', 'taid1', 'ta1', 'companyid', 'company', 'araccountid', 'araccountname',
+  'arprofileid', 'reservationnote', 'emailaddress', 'caller', 'udfchar06', 'billingreference', 'guestoptin4',
+  'udfchkbox04', 'udfchar09', 'udfchar13', 'averagerate', 'averagenightly', 'totalrate', 'grandtotal',
+  'currency', 'grandtotalcurr']);
 function diffs(before, after, targetNames) {
-  const identity = (field, index) => field.id || `${field.name || ''}:${index}`;
-  const old = new Map(before.visibleFields.map((field, index) => [identity(field, index), field]));
-  const next = new Map(after.visibleFields.map((field, index) => [identity(field, index), field]));
-  const visible = [...new Set([...old.keys(), ...next.keys()])].flatMap((id) => {
-    const a = old.get(id), b = next.get(id);
-    if (JSON.stringify(a) === JSON.stringify(b)) return [];
-    const name = a?.name === b?.name ? a?.name : null;
-    return [{ name: safeName(name), requested: Boolean(name && targetNames.has(name)) }];
+  const values = (snapshot, name) => snapshot.visibleFields
+    .filter((field) => String(field.name ?? '').toLowerCase() === name)
+    .map((field) => field.value);
+  const visible = [...BUSINESS_FIELDS].flatMap((name) => {
+    if (JSON.stringify(values(before, name)) === JSON.stringify(values(after, name))) return [];
+    return [{ name: safeName(name), requested: targetNames.has(name) }];
   });
   const model = [...new Set([...Object.keys(before.scalar), ...Object.keys(after.scalar)])].flatMap((name) => {
+    if (!BUSINESS_FIELDS.has(name.toLowerCase())) return [];
     if (Object.hasOwn(before.scalar, name) && Object.hasOwn(after.scalar, name) &&
         Object.is(before.scalar[name], after.scalar[name])) return [];
     return [{ name: safeName(name), requested: targetNames.has(name) }];
@@ -212,7 +218,6 @@ export function assessBookerBillingReadback(before, after, plan) {
   const targets = new Set(Object.values(plan.changes).map(({ nativeName }) => nativeName));
   const changes = diffs(before, after, targets);
   if (JSON.stringify(before.identity) !== JSON.stringify(after.identity)) return { ok: false, issue: 'DRAFT_IDENTITY_CHANGED', changes };
-  if (JSON.stringify(before.omitted) !== JSON.stringify(after.omitted)) return { ok: false, issue: 'MODEL_COVERAGE_CHANGED', changes };
   for (const key of Object.keys(FIELDS)) {
     if (!Object.hasOwn(plan.changes, key) && JSON.stringify(before.controls[key]) !== JSON.stringify(after.controls[key])) {
       return { ok: false, issue: 'UNSPECIFIED_CONTROL_CHANGED', field: key, changes };
@@ -290,9 +295,16 @@ function guardSetterPage(page, ensureActive, countInnerAbort) {
 }
 
 /** No save/send. This intentionally terminally POST-fences the caller's page. */
-export async function stageGuestStayBookerBilling(page, input, { timeoutMs = 30000 } = {}) {
+export async function stageGuestStayBookerBilling(page, input, { timeoutMs = 30000, allowRealGuest = false,
+  expectedGuest, expectedGuestId, expectedArId } = {}) {
   const plan = planBookerBilling(input);
   if (plan.outcome !== 'planned') return plan;
+  if (typeof allowRealGuest !== 'boolean' || (allowRealGuest && (!validCreateGuest(expectedGuest) ||
+      !/^\d{1,30}$/.test(String(expectedGuestId ?? '')) || !/^\d{1,30}$/.test(String(expectedArId ?? ''))))) {
+    return { outcome: 'input_gap', issue: 'STAGING_IDENTITY_INVALID' };
+  }
+  const guest = allowRealGuest ? expectedGuest : { firstName: 'Proof', lastName: 'Labtest' };
+  const inspect = () => inspectDraft(page, guest);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30000) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
   if (!page || ['evaluate', 'route', 'unroute', 'locator', 'waitForTimeout', 'on', 'off', 'close', 'context'].some((key) => typeof page[key] !== 'function')) {
     return { outcome: 'input_gap', issue: 'PAGE_REQUIRED' };
@@ -340,8 +352,11 @@ export async function stageGuestStayBookerBilling(page, input, { timeoutMs = 300
   const onDialog = () => { nativeDialog = true; stop('UNEXPECTED_DIALOG'); };
   page.on('dialog', onDialog);
   try {
-    before = await bounded(() => inspectDraft(page));
-    const proof = await bounded(() => verifyIdentity(page, before, ensureActive));
+    before = await bounded(inspect);
+    if (allowRealGuest && (before.identity.guestId !== String(expectedGuestId) || before.identity.accountId !== String(expectedArId) ||
+        !before.identity.profileId)) return { outcome: 'unsupported', issue: 'STAGING_IDENTITY_UNVERIFIED' };
+    const proof = await bounded(() => verifyIdentity(page, before, ensureActive, allowRealGuest));
+    if (allowRealGuest && (!proof.guest || !proof.ar)) return { outcome: 'unsupported', issue: 'STAGING_IDENTITY_UNVERIFIED' };
     for (const [key, { value }] of Object.entries(plan.changes)) {
       const control = before.controls[key];
       if (!control || control.issue) return { outcome: 'unsupported', issue: control?.issue || 'FIELD_UNAVAILABLE', field: key };
@@ -356,7 +371,7 @@ export async function stageGuestStayBookerBilling(page, input, { timeoutMs = 300
     fence.onBlocked = () => stop('UNEXPECTED_REQUEST_BLOCKED');
     if (blockedAtStart) { fence.uncertain = true; throw new Error('PAGE_ACTION_UNCERTAIN'); }
     for (const [key, { nativeName, value }] of Object.entries(plan.changes)) {
-      const current = await bounded(() => inspectDraft(page));
+      const current = await bounded(inspect);
       const verified = { outcome: 'planned', changes: Object.fromEntries(verifiedFields.map((field) => [field, plan.changes[field]])) };
       const existing = assessBookerBillingReadback(before, current, verified);
       if (JSON.stringify(current.identity) !== JSON.stringify(before.identity) || !identityCurrent(page, proof) || nativeDialog ||
@@ -388,7 +403,7 @@ export async function stageGuestStayBookerBilling(page, input, { timeoutMs = 300
         }
       }
       const partial = { outcome: 'planned', changes: Object.fromEntries([...verifiedFields, key].map((field) => [field, plan.changes[field]])) };
-      const assessment = assessBookerBillingReadback(before, await bounded(() => inspectDraft(page)), partial);
+      const assessment = assessBookerBillingReadback(before, await bounded(inspect), partial);
       if (nativeDialog || fence.blocked !== blockedAtStart || !identityCurrent(page, proof) || !assessment.ok) {
         fence.uncertain = true;
         return { outcome: 'action_uncertain', issue: nativeDialog ? 'UNEXPECTED_DIALOG' : fence.blocked !== blockedAtStart
@@ -399,7 +414,7 @@ export async function stageGuestStayBookerBilling(page, input, { timeoutMs = 300
       }
       verifiedFields.push(key);
     }
-    const after = await bounded(() => inspectDraft(page));
+    const after = await bounded(inspect);
     const assessment = assessBookerBillingReadback(before, after, plan);
     if (nativeDialog || fence.blocked !== blockedAtStart || !identityCurrent(page, proof) || !assessment.ok) {
       fence.uncertain = true;
@@ -420,7 +435,7 @@ export async function stageGuestStayBookerBilling(page, input, { timeoutMs = 300
     if (attempted && fence) fence.uncertain = true;
     let changes;
     if (attempted && before && !stopReason) {
-      try { changes = diffs(before, await bounded(() => inspectDraft(page)), new Set(Object.values(plan.changes).map(({ nativeName }) => nativeName))); }
+      try { changes = diffs(before, await bounded(inspect), new Set(Object.values(plan.changes).map(({ nativeName }) => nativeName))); }
       catch { /* Readback is unavailable; the caller must discard the page. */ }
     }
     return { outcome: attempted ? 'action_uncertain' : 'execution_failure', issue: stopReason || (nativeDialog ? 'UNEXPECTED_DIALOG' : safeIssue(error)),

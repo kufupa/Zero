@@ -49,7 +49,7 @@ const stay: StayGroupRequirement = {
   adults: 2,
   childrenAges: [],
   roomPreference: 'STWN',
-  board: 'bb',
+  mealPlan: 'bb',
   specialRequests: [],
   fields: {},
 };
@@ -73,8 +73,8 @@ const READY: ExecuteStaffQuoteResult = {
 function rate(overrides: Partial<RateOption> & Pick<RateOption, 'id' | 'rateCode'>): RateOption {
   return {
     groupId: 'g1',
-    board: 'bb',
-    boardLabel: 'Bed & breakfast',
+    mealPlan: 'bb',
+    mealPlanLabel: 'Bed & breakfast',
     rateLabel: 'Best available rate',
     roomCode: 'STWN',
     roomLabel: 'Standard Twin',
@@ -104,8 +104,8 @@ const BARRO = rate({
   id: 'o-barro',
   rateCode: 'BARRO',
   rateLabel: 'Best available, room only',
-  board: 'room_only',
-  boardLabel: 'Room only',
+  mealPlan: 'room_only',
+  mealPlanLabel: 'Room only',
   matchesRequest: false,
   priced: 'summary',
   perNightMinor: 243000,
@@ -239,8 +239,8 @@ describe('rate cards in the quote panel', () => {
         roomLabel: 'Standard Twin',
         rateCode: 'BAR',
         rateLabel: 'Best available rate',
-        board: 'bb',
-        boardLabel: 'Bed & breakfast',
+        mealPlan: 'bb',
+        mealPlanLabel: 'Bed & breakfast',
         nightlyPriceMinor: BAR.perNightMinor,
         roomsLeft: 3,
       },
@@ -250,8 +250,8 @@ describe('rate cards in the quote panel', () => {
         roomLabel: 'Standard Queen',
         rateCode: 'BAR',
         rateLabel: 'Best available rate',
-        board: 'bb',
-        boardLabel: 'Bed & breakfast',
+        mealPlan: 'bb',
+        mealPlanLabel: 'Bed & breakfast',
         nightlyPriceMinor: null,
         roomsLeft: null,
       },
@@ -270,10 +270,10 @@ describe('rate cards in the quote panel', () => {
         : session.staffQuotes,
     };
     render(<QuoteWorkflowPanel session={withBoard} />);
-    const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    const grid = screen.getByRole('group', { name: 'Room, rate and meal plan choices' });
     expect(within(grid).getByText('Standard Twin (STWN)')).toBeDefined();
     expect(within(grid).getByText('Standard Queen (STQN)')).toBeDefined();
-    expect(within(grid).getAllByText('not checked').length).toBeGreaterThan(0);
+    expect(within(grid).getAllByText(/not checked/i).length).toBeGreaterThan(0);
     expect(screen.getByText('Public rates — contract not checked')).toBeDefined();
     expect(within(grid).getAllByText('Public').length).toBe(2);
     expect(within(grid).queryByText('Contract')).toBeNull();
@@ -288,8 +288,8 @@ describe('rate cards in the quote panel', () => {
         roomLabel: 'Standard Twin',
         rateCode: 'NCOR',
         rateLabel: 'Corporate negotiated',
-        board: 'bb',
-        boardLabel: 'Bed & breakfast',
+        mealPlan: 'bb',
+        mealPlanLabel: 'Bed & breakfast',
         nightlyPriceMinor: NCOR.perNightMinor,
         roomsLeft: 3,
         rateScope: 'contextual',
@@ -300,8 +300,8 @@ describe('rate cards in the quote panel', () => {
         roomLabel: 'Standard Twin',
         rateCode: 'BAR',
         rateLabel: 'Best available rate',
-        board: 'bb',
-        boardLabel: 'Bed & breakfast',
+        mealPlan: 'bb',
+        mealPlanLabel: 'Bed & breakfast',
         nightlyPriceMinor: BAR.perNightMinor,
         roomsLeft: 4,
         rateScope: 'public',
@@ -312,13 +312,13 @@ describe('rate cards in the quote panel', () => {
         roomLabel: 'Standard Twin',
         rateCode: 'NGOVB',
         rateLabel: 'Local Government Rate Breakfast',
-        board: 'bb',
-        boardLabel: 'Bed & breakfast',
+        mealPlan: 'bb',
+        mealPlanLabel: 'Bed & breakfast',
         nightlyPriceMinor: 190000,
         roomsLeft: 2,
       },
     ];
-    const header = { parties: { company: { kind: 'company' as const, nativeId: 'C1', name: 'Provincial Treasury' } } };
+    const header = { parties: { organization: { kind: 'organization' as const, nativeId: 'C1', name: 'Provincial Treasury' } } };
     const session = await quotedSession(
       [{ ...NCOR, contract: true, onlyContract: true }, BAR],
       header,
@@ -335,11 +335,11 @@ describe('rate cards in the quote panel', () => {
       <QuoteWorkflowPanel
         session={withBoard}
         rateCatalogue={[
-          { code: 'NGOVB', name: 'Local Government Rate Breakfast', board: 'bed_breakfast', government: true },
+          { code: 'NGOVB', name: 'Local Government Rate Breakfast', mealPlan: 'bed_breakfast', government: true },
         ]}
       />,
     );
-    const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    const grid = screen.getByRole('group', { name: 'Room, rate and meal plan choices' });
     expect(screen.queryByText('Public rates — contract not checked')).toBeNull();
     expect(within(grid).getByText('Contract')).toBeDefined();
     expect(within(grid).getByText('Public')).toBeDefined();
@@ -354,8 +354,8 @@ describe('rate cards in the quote panel', () => {
         roomLabel: 'Standard Twin',
         rateCode: 'NCOR',
         rateLabel: 'Corporate negotiated',
-        board: 'bb',
-        boardLabel: 'Bed & breakfast',
+        mealPlan: 'bb',
+        mealPlanLabel: 'Bed & breakfast',
         nightlyPriceMinor: NCOR.perNightMinor,
         roomsLeft: 3,
       },
@@ -372,10 +372,10 @@ describe('rate cards in the quote panel', () => {
     render(
       <QuoteWorkflowPanel
         session={withBoard}
-        rateCatalogue={[{ code: 'NCOR', name: 'Corporate negotiated', board: 'bed_breakfast', contract: true }]}
+        rateCatalogue={[{ code: 'NCOR', name: 'Corporate negotiated', mealPlan: 'bed_breakfast', contract: true }]}
       />,
     );
-    const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    const grid = screen.getByRole('group', { name: 'Room, rate and meal plan choices' });
     expect(screen.getByText('Public rates — contract not checked')).toBeDefined();
     expect(within(grid).queryByText('Contract')).toBeNull();
   });
@@ -388,8 +388,8 @@ describe('rate cards in the quote panel', () => {
         roomLabel: 'Standard Twin',
         rateCode: 'BCO1B',
         rateLabel: 'Negotiated',
-        board: 'bb',
-        boardLabel: 'Bed & breakfast',
+        mealPlan: 'bb',
+        mealPlanLabel: 'Bed & breakfast',
         nightlyPriceMinor: null,
         roomsLeft: null,
         rateScope: 'contextual',
@@ -397,7 +397,7 @@ describe('rate cards in the quote panel', () => {
     ];
     expect(projectBarGrid(board).map((cell) => cell.rateScope)).toEqual(['contextual']);
 
-    const header = { parties: { company: { kind: 'company' as const, nativeId: 'C1', name: 'Provincial Treasury' } } };
+    const header = { parties: { organization: { kind: 'organization' as const, nativeId: 'C1', name: 'Provincial Treasury' } } };
     const withParty = await quotedSession([BAR], header);
     const quoted = withParty.staffQuote ?? withParty.staffQuotes[STAY_KEY];
     const partySession: QuoteSession = {
@@ -408,10 +408,10 @@ describe('rate cards in the quote panel', () => {
         : withParty.staffQuotes,
     };
     const { unmount } = render(<QuoteWorkflowPanel session={partySession} />);
-    const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    const grid = screen.getByRole('group', { name: 'Room, rate and meal plan choices' });
     expect(screen.queryByText('Public rates — contract not checked')).toBeNull();
     expect(within(grid).getByText('Contract')).toBeDefined();
-    expect(within(grid).getByText('BCO1B')).toBeDefined();
+    expect(within(grid).getByText(/Negotiated \(BCO1B\)/)).toBeDefined();
     expect(rateCards().some((card) => card.textContent?.includes('BCO1B'))).toBe(false);
     unmount();
 
@@ -425,7 +425,7 @@ describe('rate cards in the quote panel', () => {
         : noParty.staffQuotes,
     };
     render(<QuoteWorkflowPanel session={noPartySession} />);
-    const publicGrid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    const publicGrid = screen.getByRole('group', { name: 'Room, rate and meal plan choices' });
     expect(screen.getByText('Public rates — contract not checked')).toBeDefined();
     expect(within(publicGrid).queryByText('Contract')).toBeNull();
   });
@@ -444,8 +444,8 @@ describe('rate cards in the quote panel', () => {
             roomLabel: 'Standard Twin',
             rateCode: 'BCO1B',
             rateLabel: 'Negotiated',
-            board: 'bb',
-            boardLabel: 'Bed & breakfast',
+            mealPlan: 'bb',
+            mealPlanLabel: 'Bed & breakfast',
             nightlyPriceMinor: null,
             roomsLeft: null,
             rateScope: 'contextual',
@@ -522,7 +522,7 @@ describe('rate cards in the quote panel', () => {
       id: 'o-encoded-label',
       rateCode: 'bb',
       rateLabel: 'Bed &amp; Breakfast',
-      boardLabel: 'Bed &amp; Breakfast',
+      mealPlanLabel: 'Bed &amp; Breakfast',
       roomLabel: '',
     });
     render(<QuoteWorkflowPanel session={await quotedSession([encoded])} />);
@@ -580,7 +580,7 @@ describe('rate cards in the quote panel', () => {
   });
 
   it('shows the contract badge only on contract rows, named after the picked party', async () => {
-    const header = { parties: { company: { kind: 'company' as const, nativeId: 'C1', name: 'Provincial Treasury' } } };
+    const header = { parties: { organization: { kind: 'organization' as const, nativeId: 'C1', name: 'Provincial Treasury' } } };
     const contractNcor = { ...NCOR, contract: true, onlyContract: true };
     render(<QuoteWorkflowPanel session={await quotedSession([contractNcor, BAR, BARRO], header)} />);
     const cards = rateCards();
@@ -644,7 +644,7 @@ describe('rate cards in the quote panel', () => {
     render(
       <QuoteWorkflowPanel
         session={await quotedSession([BAR, unknown])}
-        rateCatalogue={[{ code: 'BAR', name: 'Best Available Rate', board: 'bed_breakfast' }] as never}
+        rateCatalogue={[{ code: 'BAR', name: 'Best Available Rate', mealPlan: 'bed_breakfast' }] as never}
       />,
     );
 
@@ -666,9 +666,9 @@ describe('rate cards in the quote panel', () => {
     render(<PinnedPanel initial={initial} onRunStep={onRunStep} seen={seen} />);
     fireEvent.click(rateCards()[2]!);
     await waitFor(() => expect(onRunStep).toHaveBeenCalledWith(STEP_ID));
-    expect(seen.session?.groups[0]).toMatchObject({ board: 'room_only', roomCodes: ['STWN'], rateCode: 'BARRO' });
+    expect(seen.session?.groups[0]).toMatchObject({ mealPlan: 'room_only', roomCodes: ['STWN'], rateCode: 'BARRO' });
     expect(staffQuoteGroupsFromStay(seen.session?.groups ?? [])).toEqual({
-      ok: [expect.objectContaining({ board: 'room_only', roomCodes: ['STWN'], rateCode: 'BARRO' })],
+      ok: [expect.objectContaining({ mealPlan: 'room_only', roomCodes: ['STWN'], rateCode: 'BARRO' })],
     });
   });
 
@@ -692,11 +692,11 @@ describe('rate pins in the session', () => {
     const picked = reduceQuoteSession(session, {
       type: 'patch_group',
       groupId: 'g1',
-      patch: { board: 'room_only', roomCodes: ['STWN'], rateCode: 'BARRO' },
+      patch: { mealPlan: 'room_only', roomCodes: ['STWN'], rateCode: 'BARRO' },
     });
     expect(picked.groups[0]?.rateCode).toBe('BARRO');
     expect(picked.rateOptions).toHaveLength(3);
-    const boardByHand = reduceQuoteSession(picked, { type: 'patch_group', groupId: 'g1', patch: { board: 'bb' } });
+    const boardByHand = reduceQuoteSession(picked, { type: 'patch_group', groupId: 'g1', patch: { mealPlan: 'bb' } });
     expect(boardByHand.groups[0]?.rateCode).toBeUndefined();
     expect(boardByHand.rateOptions).toEqual([]);
     const datesByHand = reduceQuoteSession(picked, {
@@ -718,7 +718,7 @@ describe('rate pins in the session', () => {
     const picked = reduceQuoteSession(session, {
       type: 'patch_group',
       groupId: 'g1',
-      patch: { board: 'room_only', roomCodes: ['STWN'], rateCode: 'BARRO' },
+      patch: { mealPlan: 'room_only', roomCodes: ['STWN'], rateCode: 'BARRO' },
     });
     const adults = reduceQuoteSession(picked, { type: 'patch_group', groupId: 'g1', patch: { adults: 1 } });
     expect(adults.groups[0]?.rateCode).toBe('BARRO');
@@ -738,13 +738,13 @@ describe('the pinned rate on the execute request', () => {
       source,
       selectionEpoch: 1,
       inputRevision: 1,
-      groups: [{ ...stay, board: 'room_only', rateCode: 'BARRO' }],
+      groups: [{ ...stay, mealPlan: 'room_only', rateCode: 'BARRO' }],
       header: emptyStaffQuoteHeader(),
       propertyCode: HRCEN_PROPERTY_CODE,
     });
     expect(result.status).toBe('ok');
     expect(mutate.mock.calls[0]?.[0].groups).toEqual([
-      expect.objectContaining({ board: 'room_only', roomCodes: ['STWN'], rateCode: 'BARRO' }),
+      expect.objectContaining({ mealPlan: 'room_only', roomCodes: ['STWN'], rateCode: 'BARRO' }),
     ]);
     if (result.status === 'ok') expect(result.staffQuote.rateOptions).toHaveLength(2);
   });
@@ -789,7 +789,7 @@ describe('the pinned rate on the execute request', () => {
   });
 
   it('keeps well-formed rate rows and drops the rest', () => {
-    expect(readRateOptions([NCOR, { id: 'x' }, { ...BAR, board: 'brunch' }, 'nope'])).toEqual([NCOR]);
+    expect(readRateOptions([NCOR, { id: 'x' }, { ...BAR, mealPlan: 'brunch' }, 'nope'])).toEqual([NCOR]);
   });
 });
 
@@ -820,8 +820,8 @@ describe('HRDAV BAR grid labels', () => {
         roomLabel: 'Junior Suite',
         rateCode: 'BAR',
         rateLabel: 'Best Available Rate',
-        board: 'bb',
-        boardLabel: 'Bed & Breakfast NR',
+        mealPlan: 'bb',
+        mealPlanLabel: 'Bed & Breakfast NR',
         nightlyPriceMinor: 630_000,
         roomsLeft: 5,
       },
@@ -831,8 +831,8 @@ describe('HRDAV BAR grid labels', () => {
         roomLabel: 'Standard Twin',
         rateCode: 'BARRO',
         rateLabel: 'Room Only BAR',
-        board: '',
-        boardLabel: '',
+        mealPlan: '',
+        mealPlanLabel: '',
         nightlyPriceMinor: 528_000,
         roomsLeft: 28,
       },
@@ -841,16 +841,16 @@ describe('HRDAV BAR grid labels', () => {
     expect(cells[0]).toMatchObject({
       roomCode: 'JNRSUI',
       roomLabel: 'Junior Suite',
-      boardLabel: 'Bed & Breakfast NR',
+      mealPlanLabel: 'Bed & Breakfast NR',
     });
     expect(cells[1]).toMatchObject({
       roomCode: 'STWN',
       rateCode: 'BARRO',
-      board: '',
-      boardLabel: '',
+      mealPlan: '',
+      mealPlanLabel: '',
     });
-    expect(cells[1]?.board).not.toBe('room_only');
-    expect(cells[1]?.boardLabel).not.toMatch(/room only/i);
-    expect(cells.map((cell) => cell.boardLabel).join(' ')).not.toMatch(/\b(?:DBB|BB)\b/);
+    expect(cells[1]?.mealPlan).not.toBe('room_only');
+    expect(cells[1]?.mealPlanLabel).not.toMatch(/room only/i);
+    expect(cells.map((cell) => cell.mealPlanLabel).join(' ')).not.toMatch(/\b(?:DBB|BB)\b/);
   });
 });

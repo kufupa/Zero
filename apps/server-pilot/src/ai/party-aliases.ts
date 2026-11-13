@@ -5,7 +5,7 @@
  */
 import { lookupLearnedSenderHistory, lookupLearnedSenderParty } from './party-sender-map.js';
 
-export type PartyKind = 'company' | 'agency';
+export type PartyKind = 'organization' | 'bookingAgency';
 
 export type PartySuggestion = {
   kind: PartyKind;
@@ -27,14 +27,14 @@ type SenderAlias = {
 };
 
 const SENDER_ALIASES: readonly SenderAlias[] = [
-  { domains: ['destinitravel.co.za'], kind: 'agency', name: 'Destini/Club Travel' },
-  { domains: ['renniesbcdtravel.com'], kind: 'agency', name: 'Rennies Travel' },
-  { domains: ['atlantiscorporate.co.za'], kind: 'agency', name: 'Atlantis Corporate' },
-  { domains: ['mycwt.co.za'], kind: 'agency', name: 'CWT JNB' },
-  { domains: ['nexustravel.co.za'], kind: 'agency', name: 'Nexus' },
-  { domains: ['360travel.co.za'], kind: 'agency', name: '360 degrees Travel' },
-  { domains: ['tourvest-mice.co.za', 'tourvestdm.com'], kind: 'company', name: 'Tourvest' },
-  { domains: ['planettours.co.za'], kind: 'agency', name: 'Planet Africa' },
+  { domains: ['destinitravel.co.za'], kind: 'bookingAgency', name: 'Destini/Club Travel' },
+  { domains: ['renniesbcdtravel.com'], kind: 'bookingAgency', name: 'Rennies Travel' },
+  { domains: ['atlantiscorporate.co.za'], kind: 'bookingAgency', name: 'Atlantis Corporate' },
+  { domains: ['mycwt.co.za'], kind: 'bookingAgency', name: 'CWT JNB' },
+  { domains: ['nexustravel.co.za'], kind: 'bookingAgency', name: 'Nexus' },
+  { domains: ['360travel.co.za'], kind: 'bookingAgency', name: '360 degrees Travel' },
+  { domains: ['tourvest-mice.co.za', 'tourvestdm.com'], kind: 'organization', name: 'Tourvest' },
+  { domains: ['planettours.co.za'], kind: 'bookingAgency', name: 'Planet Africa' },
 ];
 
 const LABELLED_LINES: ReadonlyArray<{
@@ -44,12 +44,12 @@ const LABELLED_LINES: ReadonlyArray<{
 }> = [
   {
     pattern: /^[\s*>\-•]{0,10}travel\s{1,5}agency\s{1,5}details\s{0,5}:(.{1,200})$/i,
-    kind: 'agency',
+    kind: 'bookingAgency',
     source: 'travel_agency_details',
   },
   {
     pattern: /^[\s*>\-•]{0,10}organi[sz]ation\s{1,5}details\s{0,5}:(.{1,200})$/i,
-    kind: 'company',
+    kind: 'organization',
     source: 'organization_details',
   },
 ];
@@ -142,7 +142,7 @@ export function extractPartyMentions(body: unknown): PartyMention[] {
     const employee = line.match(EMPLOYEE_LINE);
     const phrase = employee?.[1];
     if (phrase && !NOT_A_PARTY_WORD.test(phrase.split(/\s+/)[0] ?? '')) {
-      add('company', phrase, 'employee_line');
+      add('organization', phrase, 'employee_line');
     }
   }
   return out;

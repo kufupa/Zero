@@ -4,12 +4,12 @@
 import { useRef, useState } from 'react';
 import { inputFieldLabel } from '@/lib/reservation-workflow/client';
 import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationWorkflowClient, ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
-import { effectiveAt, guestProfileReceipt, record, requestPath, text, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { effectiveAt, guestProfileReceipt, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { QuoteOutputPanel, type SaveQuoteOutput } from './quote-output-panel';
 import { useReservationWorkbench } from './use-reservation-workbench';
 import { CreateEditor, resolveCreateCmsRecipientDefault } from './editors/create-editor';
 import { QuoteEditor } from './editors/quote-editor';
-import { AmendEditor } from './editors/amend-editor';
+import { AmendEditor, isExactConfirmation } from './editors/amend-editor';
 import { CancelEditor } from './editors/cancel-editor';
 import { AddonsEditor } from './editors/addons-editor';
 import { FilingEditor } from './editors/filing-editor';
@@ -23,8 +23,8 @@ export type ReservationPaneProps = {
 const labels: Record<ReservationWorkflowKind, string> = { create: 'Create', quote: 'Quote', amend: 'Amend', cancel: 'Cancel', services: 'Add-Ons', filing: 'Filing', other: 'Other' };
 const editors = { create: CreateEditor, quote: QuoteEditor, amend: AmendEditor, cancel: CancelEditor, services: AddonsEditor, filing: FilingEditor };
 const actionKinds = Object.keys(editors) as Array<Exclude<ReservationWorkflowKind, 'other'>>;
-const createScopedFields = new Set(['roomType', 'roomTypeForCharge', 'ratePlan', 'guaranteeType', 'bookingAgency', 'organization', 'arAccount',
-  'sourceOfBusiness', 'reasonForStay', 'billingReference', 'track', 'guestOptIn', 'bookerName', 'bookerContact', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
+const createScopedFields = new Set(['requestedMealPlan', 'mealPlan', 'taCommission', 'roomType', 'roomTypeForCharge', 'ratePlan', 'guaranteeType', 'bookingAgency', 'organization', 'arAccount',
+  'sourceOfBusiness', 'reasonForStay', 'billingReference', 'track', 'guestOptIn', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
 function issueText(explanation: string) {
   if (/^Candidate read v2_[a-z0-9]+ failed\.$/i.test(explanation)) return 'An Infor search during email prefill failed. Search again to verify the details.';
   if (/^Candidate read v2_[a-z0-9]+ .+; coverage is not complete\.$/i.test(explanation)) return 'An Infor search during email prefill was incomplete. Search again to verify the details.';
@@ -57,6 +57,7 @@ function issueBelongsToRequest(snapshot: ReservationPaneSnapshot, requestId: str
 export function ReservationPane(props: ReservationPaneProps) {
   const workbench = useReservationWorkbench(props);
   const [checked, setChecked] = useState<string | null>(null);
+  const [checkedAmendReview, setCheckedAmendReview] = useState<string | null>(null);
   const [formReset, setFormReset] = useState(0);
   const [actionMenu, setActionMenu] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -71,15 +72,78 @@ export function ReservationPane(props: ReservationPaneProps) {
   const directPrefillAbandoned = prefill?.status === 'running' && !prefill.jobRunId && prefill.startedAt
     && Date.now() - Date.parse(prefill.startedAt) >= 12 * 60_000;
   const editor: WorkbenchEditorProps | null = snapshot && request ? { source, snapshot, request,
-    view: { busy, error: workbench.error, preview, saving: workbench.saving }, commands, onOpenEvidence: props.onOpenEvidence } : null;
+    view: { busy, error: workbench.error, preview, saving: workbench.saving, blocked: workbench.blocked }, commands, onOpenEvidence: props.onOpenEvidence } : null;
   const body = snapshot && request ? record(effectiveAt(snapshot, `${requestPath(request.id)}/body`)) : {};
   const ids = request?.kind === 'create' ? (Array.isArray(body.allocations) ? body.allocations.map(row => text(record(row).id)) : [])
     : request?.kind === 'amend' || request?.kind === 'cancel' ? (Array.isArray(record(body.targets).include) ? (record(body.targets).include as unknown[]).map(row => text(record(row).id)) : []) : [];
-  const digestFor = (current: ReservationPaneSnapshot | null) => JSON.stringify({
-    generation: current?.session.draft.generationId, request: request?.id,
-    body: current && request ? Object.fromEntries(Object.entries(record(effectiveAt(current, `${requestPath(request.id)}/body`))).filter(([field]) => request.kind !== 'cancel' || field !== 'previewObservationRefs')) : {},
-    overrides: Object.fromEntries(Object.entries(current?.session.draft.fieldOverrides ?? {}).filter(([path]) => request && (path === requestPath(request.id) || path.startsWith(`${requestPath(request.id)}/`)) && (request.kind !== 'cancel' || !path.startsWith(`${requestPath(request.id)}/body/previewObservationRefs`))).map(([path, value]) => [path, {state: value.state, value: value.value}])) });
+  const digestFor = (current: ReservationPaneSnapshot | null) => {
+    const draft = current?.session.draft;
+    const priceRefs = new Set(request?.kind === 'amend' ? (draft?.operationResults ?? []).filter(row =>
+      row.workflow === 'amend' && row.requestId === request.id && row.status === 'prepared').flatMap(row =>
+      row.observationRefs.filter(ref => draft && draft.observations.some(observation => observation.ref === ref &&
+        observation.kind === 'rate_availability' && observation.status === 'complete' && observation.coverage.complete &&
+        observation.generationId === draft.generationId && observation.propertyCode === draft.propertyCode &&
+        observation.sourceMessageId === draft.source.messageId && observation.criteria.workflow === 'amend' &&
+        observation.criteria.requestId === request.id && observation.criteria.hintId === row.allocationId &&
+        observation.criteria.stage === 'callback_price_review'))) : []);
+    const currentBody = current && request ? record(effectiveAt(current, `${requestPath(request.id)}/body`)) : {};
+    const perTarget = request?.kind === 'amend' && Array.isArray(currentBody.perTarget) ? currentBody.perTarget.map(value => {
+      const row = record(value), refs = row.currentObservationRefs;
+      return Array.isArray(refs) ? { ...row, currentObservationRefs: refs.filter(ref => !priceRefs.has(text(ref))) } : row;
+    }) : currentBody.perTarget;
+    const body = Object.fromEntries(Object.entries(currentBody).filter(([field]) => request?.kind !== 'cancel' || field !== 'previewObservationRefs'));
+    if (request?.kind === 'amend' && perTarget !== undefined) body.perTarget = perTarget;
+    const overrides = Object.fromEntries(Object.entries(draft?.fieldOverrides ?? {}).filter(([path, value]) => request &&
+      (path === requestPath(request.id) || path.startsWith(`${requestPath(request.id)}/`)) &&
+      (request.kind !== 'cancel' || !path.startsWith(`${requestPath(request.id)}/body/previewObservationRefs`)) &&
+      !(request.kind === 'amend' && /\/body\/perTarget\/\d+\/currentObservationRefs\/\d+$/.test(path) &&
+        value.state === 'set' && priceRefs.has(text(value.value)))).map(([path, value]) => [path, { state: value.state, value: value.value }]));
+    return JSON.stringify({ generation: draft?.generationId, request: request?.id, body, overrides });
+  };
   const digest = digestFor(snapshot);
+  const amendPriceReviews = snapshot && request?.kind === 'amend' ? ids.flatMap((id, index) => {
+    const draft = snapshot.session.draft, root = `${requestPath(request.id)}/body`;
+    if (snapshot.operationResults.some(row => row.workflow === 'amend' && row.requestId === request.id &&
+      row.allocationId === id && ['succeeded', 'unknown'].includes(text(row.status)))) return [];
+    const selected = valueAt(snapshot, `${root}/targets/include/${index}/suggestedRef`);
+    const operation = [...draft.operationResults].reverse().find(row => row.workflow === 'amend' && row.requestId === request.id &&
+      row.allocationId === id && row.generationId === draft.generationId && row.status === 'prepared' && row.observationRefs.some(ref =>
+        draft.observations.some(observation => observation.ref === ref && observation.criteria.stage === 'callback_price_review')));
+    const observation = operation && draft.observations.find(row => operation.observationRefs.includes(row.ref) &&
+      row.kind === 'rate_availability' && row.status === 'complete' && row.coverage.complete && row.generationId === draft.generationId &&
+      row.propertyCode === draft.propertyCode && row.sourceMessageId === draft.source.messageId && row.criteria.workflow === 'amend' &&
+      row.criteria.stage === 'callback_price_review' && row.criteria.requestId === request.id && row.criteria.hintId === id &&
+      row.criteria.selectedRef === selected);
+    const result = record(observation?.result), price = record(result.price), target = record(result.target);
+    const approval = text(result.approvalDigest), total = text(price.totalCents), average = price.averageCents == null ? '' : text(price.averageCents);
+    if (!observation || typeof selected !== 'string' || !selected || result.outcome !== 'callback_price_review' || result.ready !== true ||
+      !/^[a-f0-9]{64}$/.test(approval) || !/^[a-f0-9]{64}$/.test(text(observation.criteria.baseDigest)) ||
+      !/^[a-f0-9]{64}$/.test(text(observation.criteria.semanticDigest)) || price.version !== 2 ||
+      !/^[A-Z]{3}$/.test(text(price.currency)) || typeof price.totalCents !== 'string' || !/^\d+$/.test(total) ||
+      (price.averageCents != null && (typeof price.averageCents !== 'string' || !/^\d+$/.test(average))) ||
+      !isExactConfirmation(target.confirmation) || !/^\d{4}-\d{2}-\d{2}$/.test(text(target.arrival)) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(text(target.departure))) return [];
+    const per = Array.isArray(body.perTarget) ? body.perTarget.map(record) : [], perIndex = per.findIndex(row => row.hintId === id);
+    if (perIndex < 0) return [];
+    const refsPath = `${root}/perTarget/${perIndex}/currentObservationRefs`, refs = effectiveAt(snapshot, refsPath);
+    const existingPath = Object.entries(draft.fieldOverrides).find(([path, value]) => path.startsWith(`${refsPath}/`) &&
+      /^\d+$/.test(path.slice(refsPath.length + 1)) && value.state === 'set' && value.value === observation.ref)?.[0];
+    const refIndex = Array.isArray(refs) ? refs.indexOf(observation.ref) : -1;
+    const path = existingPath ?? `${refsPath}/${refIndex < 0 ? Array.isArray(refs) ? refs.length : 0 : refIndex}`;
+    const note = `amend-price:${observation.ref}:${approval}`, review = draft.staffReviews[path];
+    const accepted = valueAt(snapshot, path) === observation.ref && review?.status === 'accepted' && review.note === note;
+    return [{ id, operation, observation, result, price, target, path, note, accepted }];
+  }) : [];
+  const hasPendingAmendPrice = snapshot && request?.kind === 'amend' && snapshot.session.draft.operationResults.some(operation =>
+    operation.workflow === 'amend' && operation.requestId === request.id && operation.status === 'prepared' &&
+    operation.generationId === snapshot.session.draft.generationId &&
+    !snapshot.operationResults.some(row => row.workflow === 'amend' && row.requestId === request.id &&
+      row.allocationId === operation.allocationId && ['succeeded', 'unknown'].includes(text(row.status))) &&
+    snapshot.session.draft.observations.some(row => operation.observationRefs.includes(row.ref) && row.kind === 'rate_availability' &&
+      row.status === 'complete' && row.coverage.complete && row.generationId === snapshot.session.draft.generationId &&
+      row.propertyCode === snapshot.session.draft.propertyCode && row.sourceMessageId === snapshot.session.draft.source.messageId &&
+      row.criteria.workflow === 'amend' && row.criteria.stage === 'callback_price_review' &&
+      row.criteria.requestId === request.id && row.criteria.hintId === operation.allocationId));
   const focusField = (field: string) => {
     const pane = paneRef.current;
     if (!pane || !request) return;
@@ -115,7 +179,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         }) ?? choices[0]!;
       }
     }
-    if (request.kind === 'amend' && (path === 'arrival' || path === 'departure')) {
+    if (request.kind === 'amend' && (path === 'arrival' || path === 'departure' || path === 'requestedMealPlan')) {
       const root = `${requestPath(request.id)}/body`;
       const latest = workbench.latestSnapshot();
       if (!latest) return;
@@ -127,8 +191,8 @@ export function ReservationPane(props: ReservationPaneProps) {
       const changes = [...changeRows(currentBody.sharedChanges, `${root}/sharedChanges`),
         ...changeRows(per[index]?.changes, `${root}/perTarget/${index}/changes`)].reverse();
       const changed = changes.find(row => row.change.op === 'set' && row.change.field === path)
-        ?? changes.find(row => row.change.op === 'set' && ['arrival', 'departure'].includes(text(row.change.field)))
-        ?? changes.find(row => row.change.op === 'shift_dates' || row.change.op === 'shift_departure');
+        ?? (path !== 'requestedMealPlan' ? changes.find(row => row.change.op === 'set' && ['arrival', 'departure'].includes(text(row.change.field)))
+          ?? changes.find(row => row.change.op === 'shift_dates' || row.change.op === 'shift_departure') : undefined);
       if (changed) path = `${changed.path}/${changed.change.op === 'set' ? 'value' : 'days'}`;
     }
     const candidates = Array.from(pane.querySelectorAll<HTMLElement>('[data-field-path]'));
@@ -158,13 +222,74 @@ export function ReservationPane(props: ReservationPaneProps) {
     const reply = record(latest?.workflowReply);
     const fields = Array.isArray(reply.fields) ? reply.fields.filter((field): field is string => typeof field === 'string')
       : latest?.preparationViews.filter(view => view.requestId === request?.id && view.issue).flatMap(view => view.fields ?? []) ?? [];
-    showAttention(failure instanceof Error ? failure.message : 'Infor could not complete this check. Review the details and try again.', fields);
+    const review = record(reply.financialReview), draft = latest?.session.draft;
+    const observation = draft ? draft.observations.find(row => row.ref === review.observationRef && row.kind === 'rate_availability' &&
+      row.status === 'complete' && row.coverage.complete && row.generationId === draft.generationId &&
+      row.propertyCode === draft.propertyCode && row.sourceMessageId === draft.source.messageId && row.criteria.workflow === 'amend' &&
+      row.criteria.stage === 'callback_price_review' && row.criteria.requestId === request?.id && row.criteria.hintId === activeTarget.current) : undefined;
+    const result = record(observation?.result), approval = text(result.approvalDigest), price = record(result.price);
+    const replyPrice = record(reply.price), target = record(result.target);
+    const currentBody = latest && request ? record(effectiveAt(latest, `${requestPath(request.id)}/body`)) : {};
+    const targets = Array.isArray(record(currentBody.targets).include) ? (record(currentBody.targets).include as unknown[]).map(record) : [];
+    const targetIndex = targets.findIndex(row => row.id === activeTarget.current);
+    const per = Array.isArray(currentBody.perTarget) ? currentBody.perTarget.map(record) : [];
+    const perIndex = per.findIndex(row => row.hintId === activeTarget.current);
+    const refsPath = request && perIndex >= 0 ? `${requestPath(request.id)}/body/perTarget/${perIndex}/currentObservationRefs/` : '';
+    const reviewPath = text(review.reviewFieldPath);
+    const selectedRef = targets[targetIndex]?.suggestedRef;
+    const currentAmendReview = request?.kind === 'amend' && reply.status === 'needs_review' &&
+      reply.issue === 'amend_applied_price_requires_second_go' && reply.requestId === request.id &&
+      reply.allocationId === activeTarget.current && review.required === true && observation && targetIndex >= 0 &&
+      typeof selectedRef === 'string' && selectedRef && observation.criteria.selectedRef === selectedRef &&
+      !latest?.operationResults.some(row => row.workflow === 'amend' && row.requestId === request.id &&
+        row.allocationId === activeTarget.current && ['succeeded', 'unknown'].includes(text(row.status))) &&
+      result.outcome === 'callback_price_review' &&
+      result.ready === true && /^[a-f0-9]{64}$/.test(approval) && review.approvalDigest === approval &&
+      /^[a-f0-9]{64}$/.test(text(observation.criteria.baseDigest)) && /^[a-f0-9]{64}$/.test(text(observation.criteria.semanticDigest)) &&
+      price.version === 2 && /^[A-Z]{3}$/.test(text(price.currency)) && typeof price.totalCents === 'string' && /^\d+$/.test(price.totalCents) &&
+      (price.averageCents == null || typeof price.averageCents === 'string' && /^\d+$/.test(price.averageCents)) &&
+      replyPrice.version === 2 && replyPrice.currency === price.currency && replyPrice.totalCents === price.totalCents && replyPrice.averageCents === price.averageCents &&
+      isExactConfirmation(target.confirmation) && reply.confirmation === target.confirmation &&
+      /^\d{4}-\d{2}-\d{2}$/.test(text(target.arrival)) && /^\d{4}-\d{2}-\d{2}$/.test(text(target.departure)) &&
+      review.reviewNote === `amend-price:${observation.ref}:${approval}` && refsPath && reviewPath.startsWith(refsPath) &&
+      /^\d+$/.test(reviewPath.slice(refsPath.length)) && draft && draft.operationResults.some(row => row.id === reply.operationId &&
+        row.workflow === 'amend' && row.requestId === request.id && row.allocationId === activeTarget.current &&
+        row.generationId === draft.generationId && row.status === 'prepared' && row.observationRefs.includes(observation.ref));
+    if (currentAmendReview) setAttention(null);
+    else showAttention(failure instanceof Error ? failure.message : 'Infor could not complete this check. Review the details and try again.', fields);
+    return currentAmendReview && observation ? observation.ref : null;
   };
   const createPriceBlocked = request?.kind === 'create' && snapshot?.preparationViews.some(view => view.requestId === request.id && record(record(view).priceComparison).blocksGo === true && !snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === view.allocationId && row.status === 'succeeded'));
   const quotePrepared = request?.kind === 'quote' && snapshot ? [...snapshot.session.draft.operationResults].reverse().find(row => row.workflow === 'quote' && row.requestId === request.id && row.status === 'prepared') : null;
   const quoteObservation = quotePrepared && snapshot?.session.draft.observations.find(row => quotePrepared.observationRefs.includes(row.ref) && row.kind === 'rate_availability');
-  const needsCheck = () => checked !== digest || request?.kind === 'quote' &&
-    (!quoteObservation || !(Date.parse(text(record(quoteObservation.result).freshUntil)) > Date.now()));
+  const amendCallbackTargets = snapshot && request?.kind === 'amend' ? ids.flatMap((id, index) => {
+    if (snapshot.operationResults.some(row => row.workflow === 'amend' && row.requestId === request.id && row.allocationId === id &&
+      ['succeeded', 'unknown'].includes(text(row.status))) || amendPriceReviews.some(row => row.id === id)) return [];
+    const draft = snapshot.session.draft, root = `${requestPath(request.id)}/body`;
+    const selected = valueAt(snapshot, `${root}/targets/include/${index}/suggestedRef`);
+    const prepared = [...draft.observations].reverse().find(row => row.kind === 'rate_availability' && row.status === 'complete' &&
+      row.coverage.complete && row.generationId === draft.generationId && row.propertyCode === draft.propertyCode &&
+      row.sourceMessageId === draft.source.messageId && row.criteria.workflow === 'amend' && row.criteria.requestId === request.id &&
+      row.criteria.hintId === id && row.criteria.selectedRef === selected && record(row.result).outcome === 'prepared');
+    const result = record(prepared?.result), target = record(result.target);
+    const parties = record(result.callbackPlan).parties;
+    const agency = Array.isArray(parties) ? parties.map(record).find(row => row.kind === 'bookingAgency') : undefined;
+    const nativeDefault = record(agency?.expectedEffects).ta1commission, requested = record(result.nativeChanges).taCommission;
+    const validDefault = typeof nativeDefault === 'string' && /^(?:0|[1-9]\d?)(?:\.\d+)?$|^100(?:\.0+)?$/.test(nativeDefault);
+    const validRequested = requested === undefined || typeof requested === 'number' && Number.isFinite(requested) && requested >= 0 && requested <= 100;
+    const name = typeof agency?.name === 'string' ? agency.name.trim() : '';
+    const commissionUnknown = nativeDefault !== undefined && (!validDefault || !validRequested || !name);
+    const commission = typeof nativeDefault === 'string' && validDefault && validRequested && name
+      ? { name, nativeDefault, requested: typeof requested === 'number' ? requested : null } : null;
+    return typeof selected === 'string' && selected && result.callbackPriceReviewRequired === true &&
+      isExactConfirmation(target.confirmation) && text(target.arrival) && text(target.departure)
+      ? [{ id, target, commission, commissionUnknown }] : [];
+  }) : [];
+  const needsCheck = () => checked !== digest || request?.kind === 'amend' && (checkedAmendReview !== null || hasPendingAmendPrice) &&
+    !amendPriceReviews.some(row => row.observation.ref === checkedAmendReview) || !hasPendingAmendPrice && Boolean(amendCallbackTargets[0]?.commissionUnknown) ||
+    request?.kind === 'quote' && (!quoteObservation || !(Date.parse(text(record(quoteObservation.result).freshUntil)) > Date.now()));
+  const pendingAmendReview = amendPriceReviews.find(row => row.observation.ref === checkedAmendReview) ??
+    amendPriceReviews.find(row => row.id === activeTarget.current) ?? amendPriceReviews[0];
   const quoteExtras = record(quoteObservation?.result).extrasReviewItems;
   const quoteReview = request && snapshot?.session.draft.staffReviews[`${requestPath(request.id)}/body`];
   const extrasNeedReview = Array.isArray(quoteExtras) && quoteExtras.some(item => typeof item === 'string' && item.trim()) &&
@@ -212,16 +337,42 @@ export function ReservationPane(props: ReservationPaneProps) {
           await commands.prepare(id);
         }
       } else await commands.prepare();
+      setCheckedAmendReview(null);
       setChecked(digestFor(workbench.latestSnapshot()));
-    } catch (failure) { setChecked(null); showFailure(failure); }
+    } catch (failure) {
+      const reviewRef = showFailure(failure);
+      setCheckedAmendReview(reviewRef);
+      setChecked(reviewRef ? digestFor(workbench.latestSnapshot()) : null);
+    }
   };
   const save = async () => {
     if (!request || createBlocked || preview) return;
+    if (request.kind === 'amend' && !workbench.readyForReply()) {
+      setChecked(null);
+      showAttention('Finish editing and check the current details before saving.');
+      return;
+    }
     if (needsCheck()) { await check(); return; }
     if (extrasNeedReview) { showAttention('Review the extra charges shown in the prepared quote before generating it.', [`${requestPath(request.id)}/body`]); return; }
     if (createPriceBlocked) { showAttention('Resolve the customer price and current Infor price before saving. Refresh the Infor price after correcting it.'); return; }
     setAttention(null);
     try {
+      if (request.kind === 'amend' && pendingAmendReview) {
+        if (!pendingAmendReview.accepted) {
+          showAttention(`Review the Infor price for ${text(pendingAmendReview.target.confirmation)} before saving.`);
+          return;
+        }
+        activeTarget.current = pendingAmendReview.id;
+        await commands.execute(pendingAmendReview.id);
+        setChecked(null);
+        return;
+      }
+      if (request.kind === 'amend' && amendCallbackTargets[0]) {
+        activeTarget.current = amendCallbackTargets[0].id;
+        await commands.execute(amendCallbackTargets[0].id);
+        setChecked(null);
+        return;
+      }
       if (request.kind === 'create' || request.kind === 'amend' || request.kind === 'cancel') {
         for (const id of ids) {
           const result = [...(workbench.latestSnapshot()?.operationResults ?? [])].reverse().find(row => row.workflow === request.kind && row.requestId === request.id && row.allocationId === id && ['succeeded', 'unknown'].includes(String(row.status)));
@@ -239,8 +390,9 @@ export function ReservationPane(props: ReservationPaneProps) {
           row.allocationId === activeTarget.current && row.generationId === latest.session.draft.generationId && row.status === 'prepared' &&
           row.observationRefs.includes(text(review.observationRef))) && latest.session.draft.observations.some(row =>
           row.ref === review.observationRef && row.generationId === latest.session.draft.generationId && record(row.result).ready === true);
-      setChecked(currentFeePreview ? digestFor(latest) : null);
-      showFailure(failure);
+      const currentAmendPreview = showFailure(failure);
+      setCheckedAmendReview(currentAmendPreview);
+      setChecked(currentFeePreview || currentAmendPreview ? digestFor(latest) : null);
     }
   };
   const submit = async (action: () => Promise<void>) => {
@@ -257,7 +409,7 @@ export function ReservationPane(props: ReservationPaneProps) {
   const sourceChanged = snapshot?.session.sourceChanged === true;
   const disabled = busy || !snapshot || workbench.blocked || workbench.conflict || sourceChanged;
   const actionLocked = snapshot?.operationResults.some(row => row.requestId === request?.id && ['succeeded', 'unknown'].includes(text(row.status))) ||
-    (request?.kind === 'create' && ids.some(id => Boolean(commands.guestProfilePending(id))));
+    hasPendingAmendPrice || (request?.kind === 'create' && ids.some(id => Boolean(commands.guestProfilePending(id))));
   const scopedIssues = snapshot?.issues.filter(issue => issue.kind !== 'source_changed' &&
     (!request || issueBelongsToRequest(snapshot, request.id, issue.path))) ?? [];
   const allRoomsSaved = request?.kind === 'create' && ids.length > 0 && ids.every(id => snapshot?.operationResults.some(row =>
@@ -311,6 +463,46 @@ export function ReservationPane(props: ReservationPaneProps) {
             {actionKinds.filter(kind => !(source.selfPreStay && kind === 'create')).map(kind => <button type="button" key={kind}
               disabled={disabled} onClick={() => { void workbench.addAction(kind).catch(() => {}); }}>{labels[kind]}</button>)}
           </div></div>}
+      {hasPendingAmendPrice && amendPriceReviews.length === 0 && <p className={styles.notice}>
+        An earlier price review no longer matches the selected stay. Restore the selection and check again before saving.
+      </p>}
+      {amendPriceReviews.map(review => {
+        const total = text(review.price.totalCents).padStart(3, '0'), average = text(review.price.averageCents).padStart(3, '0');
+        const effects = record(review.result.callbackState).effects;
+        const previous = snapshot && [...snapshot.session.draft.observations].reverse().find(row => row.kind === 'rate_availability' &&
+          row.status === 'complete' && row.generationId === snapshot.session.draft.generationId && row.criteria.workflow === 'amend' &&
+          row.propertyCode === snapshot.session.draft.propertyCode && row.sourceMessageId === snapshot.session.draft.source.messageId &&
+          row.criteria.requestId === request?.id && row.criteria.hintId === review.id &&
+          row.criteria.selectedRef === review.observation.criteria.selectedRef &&
+          row.criteria.baseDigest === review.observation.criteria.baseDigest && record(row.result).outcome === 'prepared');
+        const previousPrice = record(record(previous?.result).approvedPrices), previousTotal = text(previousPrice.totalCents);
+        const changed = previousPrice.currency === review.price.currency && /^\d+$/.test(previousTotal) &&
+          previousTotal.replace(/^0+(?=\d)/, '') !== text(review.price.totalCents).replace(/^0+(?=\d)/, '');
+        const oldTotal = previousTotal.padStart(3, '0');
+        const labels: Record<string, string> = { guaranteeType: 'Guarantee', organization: 'Organization',
+          bookingAgency: 'Booking Agency', arAccount: 'A/R Account', childAges: 'Child ages' };
+        return <section className={styles.priceBlock} key={review.observation.ref}>
+          <div className={styles.notice}><strong>Step 1: details may already have changed in Infor.</strong>
+            <p>Review this price before saving the stay.</p></div>
+          <p>{text(review.target.confirmation)} · {text(review.target.arrival)} → {text(review.target.departure)}</p>
+          {Array.isArray(effects) && effects.map(value => {
+            const effect = record(value), label = labels[text(effect.field)];
+            const requested = Array.isArray(effect.requested) ? effect.requested.map(text).join(', ') : text(effect.requested);
+            return label ? <p key={label}>Requested {label}: {requested || 'See change above'}</p> : null;
+          })}
+          {!needsCheck() && !disabled && !workbench.saving && <>
+            {typeof review.result.requestedMealPlan === 'string' && review.result.requestedMealPlan.trim() && <p>Requested Meal Plan: {review.result.requestedMealPlan}</p>}
+            {Object.hasOwn(record(review.result.applied), 'mealPlan') && <p>Infor Meal Plan: {text(record(review.result.applied).mealPlan) || 'Not returned'}</p>}
+          </>}
+          <div className={styles.price}><span>Current Infor total</span><strong>{text(review.price.currency)} {total.slice(0, -2)}.{total.slice(-2)}</strong></div>
+          {review.price.averageCents != null && <small className={styles.small}>Infor average: {text(review.price.currency)} {average.slice(0, -2)}.{average.slice(-2)}</small>}
+          {changed && <p className={styles.notice}>Infor total changed from {text(review.price.currency)} {oldTotal.slice(0, -2)}.{oldTotal.slice(-2)}.</p>}
+          {needsCheck() ? <p className={styles.notice}>Check the current details again before reviewing this price.</p>
+            : review.accepted ? <p className={styles.small}>Price reviewed for this stay.</p>
+            : <button type="button" disabled={disabled || workbench.saving || preview || pendingAmendReview?.id !== review.id}
+              onClick={() => { if (workbench.readyForReply()) void commands.acceptFinancialReview(review.path, review.note, review.observation.ref).then(() => setAttention(null)).catch(() => {}); }}>I reviewed this Infor price</button>}
+        </section>;
+      })}
       {request?.kind === 'quote' && snapshot && <QuoteOutputPanel source={source} snapshot={snapshot} requestId={request.id} save={props.onSaveQuoteOutput} latestSnapshot={workbench.latestSnapshot} readyForReply={workbench.readyForReply} blocked={busy || workbench.saving || workbench.blocked || workbench.conflict || sourceChanged} />}
       {request?.kind === 'create' && snapshot?.preparationViews.filter(view => view.requestId === request.id && !snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === view.allocationId && ['succeeded','unknown'].includes(text(row.status)))).map(view => {
         const comparison = record(record(view).priceComparison), requested = record(comparison.requested);
@@ -320,7 +512,7 @@ export function ReservationPane(props: ReservationPaneProps) {
           <div className={styles.price}><span>Room {ids.indexOf(view.allocationId) + 1} · Infor total</span><strong>{view.price ? [view.price.currency, view.price.totalRate].filter(value => value != null).join(' ') : 'Check price in Infor'}</strong></div>
           {view.price && <small className={styles.small}>{text(view.price.currency)} {text(view.price.averageRate)} per night{observedAt ? ` · Read ${new Date(observedAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : ''}</small>}
           {hasSourcePrice && <><div className={styles.price}><span>Voucher / customer price</span><strong>{[requested.currency, requested.nightlyRate != null ? `${text(requested.nightlyRate)} per night` : '', requested.total != null ? `total ${text(requested.total)}` : ''].filter(Boolean).join(' ') || 'Amount or currency unresolved'}</strong></div>
-            <p className={comparison.blocksGo === true ? styles.notice : styles.small}>{text(comparison.explanation)}</p></>}
+            <p className={comparison.status === 'mismatch' || comparison.blocksGo === true ? styles.notice : styles.small}>{comparison.status === 'mismatch' && text(requested.currency).toUpperCase() === 'ZAR' ? 'ZAR price differs. ' : ''}{text(comparison.explanation)}</p></>}
           <button type="button" disabled={disabled || preview} onClick={() => { setChecked(null); void commands.prepare(view.allocationId).catch(() => {}); }}>Refresh Infor price</button>
         </div>;
       })}
@@ -348,10 +540,19 @@ export function ReservationPane(props: ReservationPaneProps) {
       {attention?.digest === digest && <small className={styles.small}>{attention.message}
         {attention.fields[0] && <button type="button" onClick={() => focusField(attention.fields[0]!)}>Review {inputFieldLabel(attention.fields[0])}</button>}
       </small>}
+      {checked === digest && !pendingAmendReview && amendCallbackTargets[0]?.commissionUnknown && <div className={styles.notice}>
+        Infor's agency commission could not be verified. Check the agency again before applying changes.
+      </div>}
       {needsCheck() && <small className={styles.small}>Check the current details and Infor price first. Then approve the final action.</small>}
+      {!needsCheck() && !pendingAmendReview && amendCallbackTargets[0] && <div className={styles.notice}>
+        For {text(amendCallbackTargets[0].target.confirmation)} · {text(amendCallbackTargets[0].target.arrival)} → {text(amendCallbackTargets[0].target.departure)}.
+        {amendCallbackTargets[0].commission && <><br />Agency {amendCallbackTargets[0].commission.name}: Infor selection default TA commission {amendCallbackTargets[0].commission.nativeDefault}%.
+          {amendCallbackTargets[0].commission.requested !== null && <> Requested final TA commission: {amendCallbackTargets[0].commission.requested}%.</>}</>}
+        <br />Infor details may change when you check the price. Review that price before saving.
+      </div>}
       <div className={styles.actions}>
-        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{needsCheck() ? request.kind === 'quote' ? 'Check quote' : request.kind === 'create' ? 'Check booking' : 'Check details' : request.kind === 'quote' ? record(quoteObservation?.result).failureKind === 'proven_shortage' ? 'Generate unsent decline' : 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : 'Save in Infor'}</button></div>
-      {workbench.blocked && <small>Apply the changed selection before checking.</small>}
+        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview || request.kind === 'amend' && (workbench.saving || workbench.blocked)} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{needsCheck() ? request.kind === 'quote' ? 'Check quote' : request.kind === 'create' ? 'Check booking' : 'Check details' : request.kind === 'quote' ? record(quoteObservation?.result).failureKind === 'proven_shortage' ? 'Generate unsent decline' : 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : pendingAmendReview ? 'Save reviewed stay in Infor' : amendCallbackTargets.length ? 'Apply changes & check price' : 'Save in Infor'}</button></div>
+      {(workbench.blocked || request.kind === 'amend' && workbench.saving) && <small>Finish editing or choose a selection before checking.</small>}
     </footer>}
   </div>;
 }

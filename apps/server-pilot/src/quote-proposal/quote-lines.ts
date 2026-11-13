@@ -1,4 +1,4 @@
-import { occupiedDates, quoteDigest, type QuoteRevision } from './quote-revision.js';
+import { occupiedDates, quoteRevisionIdentityValid, type QuoteRevision } from './quote-revision.js';
 export type QuoteDisplayLine = { nights:number;rateMinor:number;totalMinor:number;arrivalDate:string;departureDate:string;sourceRef:string;sourceHash:string;groupId:string;description:string;quantity:number };
 const meals = {room_only:'Room Only', breakfast:'Bed & Breakfast', dinner_bed_breakfast:'Dinner Bed & Breakfast'};
 /**
@@ -13,8 +13,7 @@ export type RowPrice =
 export function deriveQuoteLines(revision: QuoteRevision, rowPrices: readonly RowPrice[] = []): QuoteDisplayLine[] {
  const raw = revision as QuoteRevision & Record<string,unknown>;
  if ('extras' in raw || 'overrides' in raw || 'imported' in raw) throw new Error('unsupported_revision_facts');
- const {id,...data}=revision;
- if(id!==`quote:${quoteDigest(data)}`)throw new Error('revision_identity');
+ if(!quoteRevisionIdentityValid(revision))throw new Error('revision_identity');
  const priceByGroup=new Map<string,RowPrice>();
  for(const price of rowPrices){
   if(!revision.groups.some(group=>group.id===price.groupId)||priceByGroup.has(price.groupId))throw new Error('row_price_scope');
@@ -26,7 +25,7 @@ export function deriveQuoteLines(revision: QuoteRevision, rowPrices: readonly Ro
  for(const group of revision.groups){
   const dates=occupiedDates(group.arrivalDate,group.departureDate);
   if(dates.length!==group.nightly.length||dates.some((date,i)=>date!==group.nightly[i].date))throw new Error('night_coverage');
-  if(!group.sourceRef||!/^[a-f0-9]{64}$/.test(group.sourceHash)||!group.inclusions.policyRef||!meals[group.board])throw new Error('missing_provenance');
+  if(!group.sourceRef||!/^[a-f0-9]{64}$/.test(group.sourceHash)||!group.inclusions.policyRef||!meals[group.mealPlan])throw new Error('missing_provenance');
   const label=group.roomCode==='SKNG'?'Standard King':group.roomCode==='EXKNG'?'Executive':group.roomLabel;
   if(!label.trim())throw new Error('missing_room_label');
   const occupancy=`${group.adults} adult${group.adults===1?'':'s'}${group.children?` + ${group.children} child${group.children===1?'':'ren'} (ages ${group.childAges.join(', ')})`:''} per room`;
@@ -40,7 +39,7 @@ export function deriveQuoteLines(revision: QuoteRevision, rowPrices: readonly Ro
    const nights=i-start,totalMinor=rateMinor*nights*group.quantity;
    if(!Number.isSafeInteger(totalMinor)||totalMinor<=0)throw new Error('money_overflow');
    sum+=totalMinor;
-   lines.push({nights,rateMinor,totalMinor,quantity:group.quantity,arrivalDate:dates[start],departureDate:i===dates.length?group.departureDate:dates[i],sourceRef:group.sourceRef,sourceHash:group.sourceHash,groupId:group.id,description:`${label} · ${occupancy} · ${meals[group.board]}`});
+   lines.push({nights,rateMinor,totalMinor,quantity:group.quantity,arrivalDate:dates[start],departureDate:i===dates.length?group.departureDate:dates[i],sourceRef:group.sourceRef,sourceHash:group.sourceHash,groupId:group.id,description:`${label} · ${occupancy} · ${meals[group.mealPlan]}`});
   }
   const groupTotal=price?price.amountMinor*dates.length*group.quantity:group.totalMinor;
   const perRoomMinor=price?price.amountMinor*dates.length:group.perRoomMinor;

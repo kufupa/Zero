@@ -34,12 +34,12 @@ function analysis(over: Partial<LunaAnalysis> = {}): LunaAnalysis {
         rooms: 2,
         adultsPerRoom: 1,
         childAges: [],
-        board: 'room_only',
+        mealPlan: 'room_only',
         roomPreference: null,
         guestNames: ['Mr John Smith'],
       },
     ],
-    party: { kind: 'agency', name: 'XYZ TRAVEL', reference: null },
+    party: { kind: 'bookingAgency', name: 'XYZ TRAVEL', reference: null },
     rateClaims: [],
     missing: [],
     evidence: [],
@@ -137,7 +137,7 @@ async function freshRevision() {
     await syntheticRevision(['1850.00'], 'Room Only R', 'STQN', '2026-10-07T02:50:00Z'),
   );
   revision.groups[0]!.rateCode = 'TAXYZ';
-  revision.groups[0]!.context = { agency: { nativeId: '455', name: 'XYZ TRAVEL' } };
+  revision.groups[0]!.context = { bookingAgency: { nativeId: '455', name: 'XYZ TRAVEL' } };
   return revision;
 }
 
@@ -277,8 +277,8 @@ describe('priorStaffQuoteRequotePayload', () => {
     );
     expect(payload).toMatchObject({
       salesStrategy: 'BAR',
-      company: 'Acme',
-      agency: 'XYZ TRAVEL',
+      organization: 'Acme',
+      bookingAgency: 'XYZ TRAVEL',
       groups: [
         expect.objectContaining({
           arrivalDate: revision.groups[0]!.arrivalDate,
@@ -382,7 +382,7 @@ describe('priorStaffQuoteRequotePayload', () => {
             quantity: revision.groups[0]!.quantity,
             adults: revision.groups[0]!.adults,
             childrenAges: revision.groups[0]!.childAges,
-            board: 'bb',
+            mealPlan: 'bb',
           },
         ],
         dinnerAllowanceMinor: 17_500,
@@ -447,7 +447,7 @@ describe('priorStaffQuoteRequotePayload', () => {
       selectionEpoch: 1,
       inputRevision: 1,
       groups: [
-        { id: 'g1', arrivalDate: '2026-10-12', departureDate: '2026-10-13', quantity: 1, adults: 2, childrenAges: [], board: 'bb' },
+        { id: 'g1', arrivalDate: '2026-10-12', departureDate: '2026-10-13', quantity: 1, adults: 2, childrenAges: [], mealPlan: 'bb' },
       ],
       other: { label: 'Laundry', amountMinor: 10_000, unit: 'per_person_night' },
     });
@@ -585,7 +585,7 @@ describe('priorStaffQuoteRequotePayload', () => {
         selectionEpoch: 1,
         inputRevision: 1,
         groups: [
-          { id: 'g1', arrivalDate: '2026-10-12', departureDate, quantity: 1, adults: 2, childrenAges: [], board: 'bb' },
+          { id: 'g1', arrivalDate: '2026-10-12', departureDate, quantity: 1, adults: 2, childrenAges: [], mealPlan: 'bb' },
         ],
         officeTransferMinor: 20_000,
         ...(officeTransferDays === undefined ? {} : { officeTransferDays }),
@@ -737,7 +737,7 @@ describe('resolvePriorQuoteForBooking', () => {
   it('does not restore a prepared quote after staff edits the board or room preference', async () => {
     const revision = await freshRevision();
     const editedAnalysis = analysis({
-      groups: [{ ...analysis().groups[0]!, board: 'bb', roomPreference: 'Queen' }],
+      groups: [{ ...analysis().groups[0]!, mealPlan: 'bb', roomPreference: 'Queen' }],
     });
     const resolved = resolvePriorQuoteForBooking(
       {

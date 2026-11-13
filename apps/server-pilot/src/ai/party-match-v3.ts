@@ -139,7 +139,7 @@ export function sanitizePartySearchTerms(
   const out: PartyMatchV3Search[] = [];
   const seen = new Set<string>();
   for (const item of terms) {
-    if (item.kind !== 'company' && item.kind !== 'agency') continue;
+    if (item.kind !== 'organization' && item.kind !== 'bookingAgency') continue;
     const term = item.term.replace(/\s+/g, ' ').trim();
     if (term.length < minChars || isNonPartySearchTerm(term)) continue;
     const key = `${item.kind}:${normalisePartyName(term)}`;
@@ -188,7 +188,7 @@ export function selectRound2SearchTerms(
 }
 
 const searchTermSchema = z.object({
-  kind: z.enum(['company', 'agency']),
+  kind: z.enum(['organization', 'bookingAgency']),
   term: z.string().min(1).max(256),
 });
 
@@ -201,7 +201,7 @@ const proposeSchema = z
 const pickSchema = z
   .object({
     pick: z.string().min(1).max(100).nullable(),
-    kind: z.enum(['company', 'agency']).nullable(),
+    kind: z.enum(['organization', 'bookingAgency']).nullable(),
     confidence: z.enum(['high', 'medium', 'low']),
     reason: z.string().min(1).max(500),
     nextTerms: z.array(searchTermSchema).max(ROUND1_TERM_CAP).optional(),

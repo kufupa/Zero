@@ -20,7 +20,7 @@ const GROUP: StayGroupRequirement = {
   quantity: 2,
   adults: 3,
   childrenAges: [],
-  board: 'bb',
+  mealPlan: 'bb',
   specialRequests: [],
   fields: { adults: 'staff_corrected' },
 };

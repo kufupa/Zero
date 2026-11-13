@@ -106,6 +106,13 @@ function harness(options = {}) {
     }
   };
   return { calls, get freshReads() { return freshReads; }, get censuses() { return censuses; }, get sessionOptions() { return sessionOptions; }, options: {
+    listTrack: async () => ({ outcome: 'ok', coverage: { complete: true, nativeResponseCorrelated: true, loaded: 2 },
+      candidates: [{ code: 'BAR', description: 'Best Available' }, { code: 'COR', description: 'Corporate Rate' }] }),
+    stageBookerBilling: async (_page, request, identity) => {
+      calls.push({ tool: 'stageBookerBilling', ...request, identity });
+      const value = request.billingReference;
+      return { outcome: 'updated_unsaved', fields: { billingReference: { visible: value, native: value, submit: value } } };
+    },
     selectTrack: async (_page, code) => {
       calls.push({ tool: 'selectTrack', code });
       if (!options.trackUnchanged) partyFields.track = normalizeCreateTrack(code)?.display;
@@ -526,13 +533,13 @@ test('supported inputs stage without claiming approval readiness', async () => {
   assert.equal((await rate({ ...createDraft, source: { nativeCode: '', description: 'E-Mail' } })).issue, 'CREATE_AVAILABILITY_INPUT_INCOMPLETE');
 });
 
-test('prepare does not bind a billing reference before its guarded save-time staging and readback', async () => {
+test('prepare binds a billing reference after staging and verifying it on the selected A/R account', async () => {
   const fake = harness();
   const result = await createReservation({ ...input, mode: 'prepare', billingReference: 'INV-123',
     parties: { organizationId: '41', arAccountId: '75', arAccountName: 'Example Account' } }, fake.options);
-  assert.equal(result.outcome, 'unsupported');
-  assert.equal(result.requestBinding, undefined);
-  assert.ok(result.unsupportedFields.some(({ field, issue }) => field === 'billingReference' && issue === 'commit_only'));
+  assert.equal(result.outcome, 'prepared');
+  assert.equal(result.requestBinding.request.billingReference, 'INV-123');
+  assert.equal(fake.calls.find(({ tool }) => tool === 'stageBookerBilling').identity.expectedArId, '75');
   assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
 });
 
@@ -960,7 +967,7 @@ test('explicit billing reference with selected A/R is passed exactly to the guar
   assert.equal(checked.billingReference, reference);
 });
 
-test('billing reference is commit-only, explicit, nonblank and requires a selected A/R account', async () => {
+test('billing reference is explicit, nonblank and requires a selected A/R account', async () => {
   let sessions = 0;
   const noSession = async () => { sessions += 1; throw new Error('unexpected session'); };
   for (const value of ['', '   ', 'bad\nreference', 1]) {
@@ -993,11 +1000,11 @@ test('billing create cannot report saved without staged screenshot and fresh exa
 });
 
 
-test('prepare reports billing reference unsupported without sending a save', async () => {
+test('prepare requires an A/R account for billing reference without sending a save', async () => {
   const fake = harness();
   const result = await createReservation({ ...input, mode: 'prepare', billingReference: 'PO-123' }, fake.options);
-  assert.equal(result.outcome, 'unsupported');
-  assert.ok(result.unsupportedFields.some(({ field, issue }) => field === 'billingReference' && issue === 'commit_only'));
+  assert.equal(result.outcome, 'needs_input');
+  assert.ok(result.missing.includes('parties.arAccountId'));
   assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
 });
 

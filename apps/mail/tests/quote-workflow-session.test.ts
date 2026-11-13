@@ -102,7 +102,7 @@ const quoteAnalysis: QuoteAnalysis = {
       roomPreference: 'standard king',
       adults: 1,
       childrenAges: [] as number[],
-      board: 'bb' as const,
+      mealPlan: 'bb' as const,
       specialRequests: [] as string[],
       fields: { arrivalDate: 'extracted' as const, adults: 'extracted' as const },
     },
@@ -174,8 +174,8 @@ describe('quote session', () => {
       roomLabel: 'Room 17',
       rateCode: 'RATE-8',
       rateLabel: 'Flexible',
-      board: 'BOARD-5',
-      boardLabel: 'Meal plan',
+      mealPlan: 'BOARD-5',
+      mealPlanLabel: 'Meal plan',
       nightlyPriceMinor: 12345,
       roomsLeft: 4,
       rateScope: 'unknown' as const,
@@ -195,8 +195,8 @@ describe('quote session', () => {
       quoteRequestKey: stayKey,
       approvedHeader: {
         salesStrategy: 'BAR' as const,
-        company: '',
-        agency: '',
+        organization: '',
+        bookingAgency: '',
         attention: '',
         clientEmail: '',
         clientTelephone: '',
@@ -210,35 +210,35 @@ describe('quote session', () => {
       staffQuote: allocation,
       staffQuotes: { [stayKey]: allocation },
     };
-    delete session.roomRateBoardSelections;
-    const tuple = { roomCode: boardRow.roomCode, rateCode: boardRow.rateCode, board: boardRow.board };
+    delete session.roomRateMealPlanSelections;
+    const tuple = { roomCode: boardRow.roomCode, rateCode: boardRow.rateCode, mealPlan: boardRow.mealPlan };
     const selected = reduceQuoteSession(session, {
-      type: 'room_rate_board_selected',
+      type: 'room_rate_meal_plan_selected',
       groupId: group.id,
       selection: boardRow,
     });
     const reloaded = JSON.parse(JSON.stringify(selected)) as typeof selected;
 
-    expect(reloaded.roomRateBoardSelections).toEqual({
+    expect(reloaded.roomRateMealPlanSelections).toEqual({
       [group.id]: tuple,
     });
     const invalidSelections: QuoteSessionAction[] = [
       {
-        type: 'room_rate_board_selected',
+        type: 'room_rate_meal_plan_selected',
         groupId: group.id,
         selection: { ...tuple, roomCode: 'UNKNOWN-ROOM' },
       },
       {
-        type: 'room_rate_board_selected',
+        type: 'room_rate_meal_plan_selected',
         groupId: group.id,
         selection: { ...tuple, rateCode: 'UNKNOWN-RATE' },
       },
       {
-        type: 'room_rate_board_selected',
+        type: 'room_rate_meal_plan_selected',
         groupId: group.id,
-        selection: { ...tuple, board: 'UNKNOWN-BOARD' },
+        selection: { ...tuple, mealPlan: 'UNKNOWN-BOARD' },
       },
-      { type: 'room_rate_board_selected', groupId: 'UNKNOWN-GROUP', selection: tuple },
+      { type: 'room_rate_meal_plan_selected', groupId: 'UNKNOWN-GROUP', selection: tuple },
     ];
     for (const invalidSelection of invalidSelections) {
       expect(reduceQuoteSession(session, invalidSelection)).toBe(session);
@@ -280,7 +280,7 @@ describe('quote session', () => {
   it('defaults Dinner B&B asks to Government unless staff already chose a rate strategy', () => {
     const dinnerAnalysis: QuoteAnalysis = {
       ...quoteAnalysis,
-      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, mealPlan: 'dinner_bb' as const })),
     };
     const defaulted = reduceQuoteSession(initialQuoteSession(), {
       type: 'analysis_ready',
@@ -301,7 +301,7 @@ describe('quote session', () => {
 
     const governmentBAndB: QuoteAnalysis = {
       ...dinnerAnalysis,
-      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'bb' as const })),
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, mealPlan: 'bb' as const })),
       luna: {
         ...dinnerAnalysis.luna!,
         party: { kind: 'government', name: 'Department X', reference: null },
@@ -312,17 +312,17 @@ describe('quote session', () => {
       analysis: governmentBAndB,
     });
     expect(preservedForGovernmentParty.staffHeader.salesStrategy).toBe('BAR');
-    expect(preservedForGovernmentParty.staffHeader.company).toBe('Department X');
+    expect(preservedForGovernmentParty.staffHeader.organization).toBe('Department X');
   });
 
   it('returns to BAR when a corrected read or a row edit removes dinner, unless staff chose the strategy', () => {
     const dinnerAnalysis: QuoteAnalysis = {
       ...quoteAnalysis,
-      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, mealPlan: 'dinner_bb' as const })),
     };
     const bbAnalysis: QuoteAnalysis = {
       ...quoteAnalysis,
-      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'bb' as const })),
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, mealPlan: 'bb' as const })),
     };
     const dinner = reduceQuoteSession(initialQuoteSession(), { type: 'analysis_ready', analysis: dinnerAnalysis });
     expect(dinner.staffHeader.salesStrategy).toBe('Government');
@@ -330,7 +330,7 @@ describe('quote session', () => {
     expect(corrected.staffHeader.salesStrategy).toBe('BAR');
 
     const edited = dinner.groups.reduce(
-      (next, group) => reduceQuoteSession(next, { type: 'patch_group', groupId: group.id, patch: { board: 'bb' } }),
+      (next, group) => reduceQuoteSession(next, { type: 'patch_group', groupId: group.id, patch: { mealPlan: 'bb' } }),
       dinner,
     );
     expect(edited.staffHeader.salesStrategy).toBe('BAR');
@@ -340,7 +340,7 @@ describe('quote session', () => {
       header: { salesStrategy: 'Government' },
     });
     const kept = staffGovernment.groups.reduce(
-      (next, group) => reduceQuoteSession(next, { type: 'patch_group', groupId: group.id, patch: { board: 'bb' } }),
+      (next, group) => reduceQuoteSession(next, { type: 'patch_group', groupId: group.id, patch: { mealPlan: 'bb' } }),
       staffGovernment,
     );
     expect(kept.staffHeader.salesStrategy).toBe('Government');
@@ -363,7 +363,7 @@ describe('quote session', () => {
     const ready = reduceQuoteSession(initialQuoteSession(), { type: 'analysis_ready', analysis });
 
     expect(ready.staffHeader.salesStrategy).toBe('Government');
-    expect(ready.staffHeader.company).toBe('Department X');
+    expect(ready.staffHeader.organization).toBe('Department X');
   });
 
   it('an unreadable amount blocks the run and the PDF until it is fixed, without clearing results', () => {
@@ -530,7 +530,7 @@ describe('quote session', () => {
           kind: 'allocation',
           roomCode: 'SKNG',
           roomLabel: 'Standard King',
-          board: 'bb',
+          mealPlan: 'bb',
           rateCode: 'BAR',
           currency: 'ZAR',
           nightly: [{ date: '2026-11-12', amountMinor: 136000 }],
@@ -577,7 +577,7 @@ describe('quote session', () => {
         kind: 'allocation',
         roomCode: 'SKNG',
         roomLabel: 'Standard King',
-        board: 'bb',
+        mealPlan: 'bb',
         rateCode: 'BAR',
         currency: 'ZAR',
         nightly: [{ date: '2026-11-12', amountMinor: 214000 }],
@@ -596,7 +596,7 @@ describe('quote session', () => {
         kind: 'alternative',
         roomCode: 'SKNG',
         roomLabel: 'Standard King',
-        board: 'room_only',
+        mealPlan: 'room_only',
         rateCode: 'BARRO',
         currency: 'ZAR',
         nightly: [{ date: '2026-11-12', amountMinor: 190000 }],
@@ -634,7 +634,7 @@ describe('quote session', () => {
           kind: 'allocation',
           roomCode: 'SKNG',
           roomLabel: 'Standard King',
-          board: 'bb',
+          mealPlan: 'bb',
           rateCode: 'BAR',
           currency: 'ZAR',
           nightly: [],
@@ -690,7 +690,7 @@ describe('quote session', () => {
           kind: 'allocation',
           roomCode: 'SKNG',
           roomLabel: 'Standard King',
-          board: 'bb',
+          mealPlan: 'bb',
           rateCode: 'BAR',
           currency: 'ZAR',
           nightly: [{ date: '2026-11-12', amountMinor: 99999 }],
@@ -724,7 +724,7 @@ describe('quote session', () => {
           kind: 'allocation',
           roomCode: 'SKNG',
           roomLabel: 'Standard King',
-          board: 'bb',
+          mealPlan: 'bb',
           rateCode: 'BAR',
           currency: 'ZAR',
           nightly: [{ date: '2026-11-12', amountMinor: 136000 }],
@@ -763,7 +763,7 @@ describe('quote session', () => {
           kind: 'allocation',
           roomCode: 'SKNG',
           roomLabel: 'Standard King',
-          board: 'bb',
+          mealPlan: 'bb',
           rateCode: 'BAR',
           currency: 'ZAR',
           nightly: [{ date: '2026-11-12', amountMinor: 136000 }],
@@ -793,7 +793,7 @@ describe('quote session', () => {
       kind: 'allocation',
       roomCode: 'SKNG',
       roomLabel: 'Standard King',
-      board: 'bb',
+      mealPlan: 'bb',
       rateCode: 'BAR',
       currency: 'ZAR',
       nightly: [{ date: '2026-11-12', amountMinor: 136000 }],
@@ -951,7 +951,7 @@ describe('quote session', () => {
       kind: 'allocation',
       roomCode: 'SKNG',
       roomLabel: 'Standard King',
-      board: 'bb',
+      mealPlan: 'bb',
       rateCode: 'BAR',
       currency: 'ZAR',
       nightly: [{ date: '2026-11-02', amountMinor: 136000 }],
@@ -1072,7 +1072,7 @@ describe('quote session', () => {
       kind: 'allocation',
       roomCode: 'STWN',
       roomLabel: 'Standard Twin',
-      board: 'bb',
+      mealPlan: 'bb',
       rateCode: 'BAR',
       currency: 'ZAR',
       nightly: [{ date: '2026-10-16', amountMinor: 313000 }],
@@ -1132,7 +1132,7 @@ describe('quote session', () => {
       kind: 'allocation',
       roomCode: 'SKNG',
       roomLabel: 'Standard King',
-      board: 'bb',
+      mealPlan: 'bb',
       rateCode: 'BAR',
       currency: 'ZAR',
       nightly: [],
@@ -1166,7 +1166,7 @@ describe('quote session', () => {
       kind: 'allocation',
       roomCode: 'SKNG',
       roomLabel: 'Standard King',
-      board: 'bb',
+      mealPlan: 'bb',
       rateCode: 'BAR',
       currency: 'ZAR',
       nightly: [{ date: '2026-11-12', amountMinor: 136000 }],
@@ -1195,7 +1195,7 @@ describe('quote session', () => {
 
     s = reduceQuoteSession(s, {
       type: 'results_ready',
-      offers: [{ ...extraQty, quantity: 1, board: 'dinner_bb' }],
+      offers: [{ ...extraQty, quantity: 1, mealPlan: 'dinner_bb' }],
       selectionEpoch: 1,
       inputRevision: 1,
       provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
@@ -1250,7 +1250,7 @@ describe('quote session', () => {
           ...quoteAnalysis.groups[0]!,
           organisation: 'Provincial Treasury',
           childrenAges: [8],
-          board: 'dinner_bb' as const,
+          mealPlan: 'dinner_bb' as const,
           specialRequests: ['late arrival'],
           quantity: 2,
           roomPreference: 'suite',
@@ -1280,7 +1280,7 @@ describe('quote session', () => {
           roomPreference: 'suite',
           adults: 1,
           childrenAges: [8],
-          board: 'dinner_bb',
+          mealPlan: 'dinner_bb',
           organisation: 'Provincial Treasury',
           specialRequests: ['late arrival'],
         },
@@ -1294,7 +1294,7 @@ const authorisedOffer: QuoteOffer = {
   kind: 'allocation',
   roomCode: 'SKNG',
   roomLabel: 'Standard King',
-  board: 'bb',
+  mealPlan: 'bb',
   rateCode: 'BAR',
   currency: 'ZAR',
   nightly: [{ date: '2026-11-12', amountMinor: 136000 }],
@@ -1312,8 +1312,8 @@ const authorisedOffer: QuoteOffer = {
 function emptyHeader() {
   return {
     salesStrategy: 'BAR' as const,
-    company: '',
-    agency: '',
+    organization: '',
+    bookingAgency: '',
     attention: '',
     clientEmail: '',
     clientTelephone: '',
@@ -1359,12 +1359,12 @@ function declinedQuoteSession() {
 }
 
 const quoteDeclineInputEdits: Array<[string, QuoteSessionAction]> = [
-  ['company', { type: 'patch_staff_header', header: { company: 'Another company' } }],
-  ['agency', { type: 'patch_staff_header', header: { agency: 'Another agency' } }],
+  ['organization', { type: 'patch_staff_header', header: { organization: 'Another company' } }],
+  ['bookingAgency', { type: 'patch_staff_header', header: { bookingAgency: 'Another agency' } }],
   ['rate strategy', { type: 'patch_staff_header', header: { salesStrategy: 'Government' } }],
   ['dates', { type: 'patch_group', groupId: 'g1', patch: { arrivalDate: '2026-11-13' } }],
   ['room count', { type: 'patch_group', groupId: 'g1', patch: { quantity: 2 } }],
-  ['board', { type: 'patch_group', groupId: 'g1', patch: { board: 'room_only' } }],
+  ['board', { type: 'patch_group', groupId: 'g1', patch: { mealPlan: 'room_only' } }],
 ];
 
 describe('generated quote-decline freshness', () => {
@@ -1601,7 +1601,7 @@ function strategyOutcome(
     row: {
       status: 'ready' as const,
       roomLabels: ['Standard King'],
-      boardLabels: ['Bed & Breakfast'],
+      mealPlanLabels: ['Bed & Breakfast'],
       nightlyMinor: [totalMinor],
       totalMinor,
     },
@@ -1632,8 +1632,8 @@ function strategyOutcome(
         rateOptions: groupIds.map((groupId) => ({
           id: `rate-${revisionRef}-${groupId}`,
           groupId,
-          board: 'bb',
-          boardLabel: 'Bed & Breakfast',
+          mealPlan: 'bb',
+          mealPlanLabel: 'Bed & Breakfast',
           rateCode: 'BAR',
           rateLabel: 'BAR',
           roomCode: 'STKNG',
@@ -2415,8 +2415,8 @@ describe('quote session staff review items', () => {
   it('keeps approved execute company/agency on the quote and invalidates PDF if they change', () => {
     const approvedHeader = {
       salesStrategy: 'BAR' as const,
-      company: 'Provincial Treasury',
-      agency: '',
+      organization: 'Provincial Treasury',
+      bookingAgency: '',
       attention: '',
       clientEmail: '',
       clientTelephone: '',
@@ -2426,7 +2426,7 @@ describe('quote session staff review items', () => {
       kind: 'allocation',
       roomCode: '',
       roomLabel: 'Selected allocation',
-      board: 'bb',
+      mealPlan: 'bb',
       rateCode: '',
       currency: 'ZAR',
       nightly: [],
@@ -2467,11 +2467,11 @@ describe('quote session staff review items', () => {
       inputRevision: s.inputRevision,
     });
     expect(s.staffQuote?.approvedHeader).toEqual(approvedHeader);
-    expect(s.staffQuote?.approvedHeader.agency).toBe('');
+    expect(s.staffQuote?.approvedHeader.bookingAgency).toBe('');
     expect(canCreatePdf(s)).toBe(true);
-    const aliased = { ...s, staffHeader: { ...s.staffHeader, company: s.groups[0]?.organisation || 'Display alias' } };
+    const aliased = { ...s, staffHeader: { ...s.staffHeader, organization: s.groups[0]?.organisation || 'Display alias' } };
     expect(canCreatePdf(aliased)).toBe(false);
-    const changed = reduceQuoteSession(s, { type: 'patch_staff_header', header: { company: 'Other company' } });
+    const changed = reduceQuoteSession(s, { type: 'patch_staff_header', header: { organization: 'Other company' } });
     expect(changed.staffQuote).toBeNull();
     expect(canCreatePdf(changed)).toBe(false);
   });
@@ -2639,7 +2639,7 @@ describe('quote session staff review items', () => {
   it('a header change clears every date result and makes each option runnable again', () => {
     let s = twoDateSession();
     s = reduceQuoteSession(s, staffQuoteFor(STAY_A, 'rev-a', 850000, s.inputRevision));
-    s = reduceQuoteSession(s, { type: 'patch_staff_header', header: { company: 'Acme' } });
+    s = reduceQuoteSession(s, { type: 'patch_staff_header', header: { organization: 'Acme' } });
     expect(s.staffQuotes).toEqual({});
     expect(s.stayPdfs).toEqual({});
     expect(s.steps.map((step) => step.status)).toEqual(['ready', 'ready']);
@@ -2755,7 +2755,7 @@ describe('quote session staff review items', () => {
           {
             groupId: 'g1',
             roomIndex: 1,
-            request: { agency: 'XYZ TRAVEL', roomType: 'STQN', ratePlan: 'TAXYZ' },
+            request: { bookingAgency: 'XYZ TRAVEL', roomType: 'STQN', ratePlan: 'TAXYZ' },
             schemaErrors: [] as string[],
           },
         ],
@@ -2939,14 +2939,14 @@ describe('quote session staff review items', () => {
         tasks: [],
       },
     });
-    expect(s.staffHeader.company).toBe('Dept X');
+    expect(s.staffHeader.organization).toBe('Dept X');
     expect(s.staffHeader.salesStrategy).toBe('Government');
-    expect(s.staffHeader.agency).toBe('');
+    expect(s.staffHeader.bookingAgency).toBe('');
   });
 
   it('does not overwrite a staff-edited header with luna.party', () => {
     let s = analysisReady();
-    s = reduceQuoteSession(s, { type: 'patch_staff_header', header: { company: 'Staff Co' } });
+    s = reduceQuoteSession(s, { type: 'patch_staff_header', header: { organization: 'Staff Co' } });
     s = reduceQuoteSession(s, {
       type: 'analysis_ready',
       analysis: {
@@ -2963,7 +2963,7 @@ describe('quote session staff review items', () => {
         },
       },
     });
-    expect(s.staffHeader.company).toBe('Staff Co');
+    expect(s.staffHeader.organization).toBe('Staff Co');
     expect(s.staffHeader.salesStrategy).toBe('BAR');
   });
 
@@ -3031,8 +3031,8 @@ describe('quote session staff review items', () => {
     s = withStaffSource(s);
     const approvedHeader = {
       salesStrategy: 'BAR' as const,
-      company: 'Acme Corp',
-      agency: 'XYZ TRAVEL',
+      organization: 'Acme Corp',
+      bookingAgency: 'XYZ TRAVEL',
       attention: '',
       clientEmail: '',
       clientTelephone: '',
@@ -3042,7 +3042,7 @@ describe('quote session staff review items', () => {
       kind: 'allocation',
       roomCode: '',
       roomLabel: 'Selected allocation',
-      board: 'bb',
+      mealPlan: 'bb',
       rateCode: '',
       currency: 'ZAR',
       nightly: [],
@@ -3078,8 +3078,8 @@ describe('quote session staff review items', () => {
       approvedHeader,
     });
     expect(quoted.inputRevision).toBe(s.inputRevision);
-    expect(quoted.staffHeader.company).toBe('Acme Corp');
-    expect(quoted.staffHeader.agency).toBe('XYZ TRAVEL');
+    expect(quoted.staffHeader.organization).toBe('Acme Corp');
+    expect(quoted.staffHeader.bookingAgency).toBe('XYZ TRAVEL');
     expect(canCreatePdf(quoted)).toBe(true);
   });
 
@@ -3100,7 +3100,7 @@ describe('quote session staff review items', () => {
       kind: 'allocation',
       roomCode: '',
       roomLabel: 'Selected allocation',
-      board: 'bb',
+      mealPlan: 'bb',
       rateCode: '',
       currency: 'ZAR',
       nightly: [],
@@ -3149,7 +3149,7 @@ describe('quote session staff review items', () => {
       kind: 'allocation',
       roomCode: '',
       roomLabel: 'Selected allocation',
-      board: 'bb',
+      mealPlan: 'bb',
       rateCode: '',
       currency: 'ZAR',
       nightly: [],
@@ -3228,7 +3228,7 @@ describe('Tell Luna runs racing staff stay edits', () => {
     session = reduceQuoteSession(session, { type: 'analysis_started' });
     session = reduceQuoteSession(session, {
       type: 'patch_staff_header',
-      header: { company: 'Staff Co', agency: 'XYZ TRAVEL' },
+      header: { organization: 'Staff Co', bookingAgency: 'XYZ TRAVEL' },
     });
     session = reduceQuoteSession(session, {
       type: 'analysis_ready',
@@ -3241,8 +3241,8 @@ describe('Tell Luna runs racing staff stay edits', () => {
     expect(session.groups[0]?.departureDate).toBe('2026-12-03');
     expect(session.groups[0]?.adults).toBe(2);
     expect(session.phase).toBe('requirements');
-    expect(session.staffHeader.company).toBe('Staff Co');
-    expect(session.staffHeader.agency).toBe('XYZ TRAVEL');
+    expect(session.staffHeader.organization).toBe('Staff Co');
+    expect(session.staffHeader.bookingAgency).toBe('XYZ TRAVEL');
     expect(session.staffNote).toBe('arrive 1 Dec, leave 3 Dec');
   });
 
@@ -3342,7 +3342,7 @@ describe('staff dinner B&B fallback', () => {
           quantity: 1,
           adults: 2,
           childrenAges: [],
-          board: 'dinner_bb',
+          mealPlan: 'dinner_bb',
           specialRequests: [],
           fields: {},
         },
@@ -3357,7 +3357,7 @@ describe('staff dinner B&B fallback', () => {
     });
     const stayKey = '2026-11-12:2026-11-14';
     const extras = after.staffHeader.stayExtrasByKey?.[stayKey];
-    expect(after.groups[0]?.board).toBe('bb');
+    expect(after.groups[0]?.mealPlan).toBe('bb');
     expect(extras).toMatchObject({ dinnerEnabled: true, dinnerAllowanceRequired: true, dinnerAllowanceGroupIds: ['g1'] });
     expect(extras?.dinnerAllowanceMinor).toBeUndefined();
     expect(after.inputRevision).toBe(before.inputRevision);
@@ -3385,7 +3385,7 @@ describe('staff dinner B&B fallback', () => {
   it('clears the required allowance after a priced B&B quote with no fallback group ids', () => {
     const analysis = {
       ...quoteAnalysis,
-      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, mealPlan: 'dinner_bb' as const })),
     };
     let before = withStaffSource(analysisReady(analysis));
     // The B&B-plus-dinner fallback is the BAR path; a Dinner B&B ask now defaults to Government.
@@ -3491,7 +3491,7 @@ describe('staff dinner B&B fallback', () => {
     const run = { selectionEpoch: before.binding?.selectionEpoch ?? 0, inputRevision: before.inputRevision, stayRevision: before.stayRevision };
     expect(quoteRunIsCurrent(before, run)).toBe(true);
     const groupId = before.groups[0]!.id;
-    const edited = reduceQuoteSession(before, { type: 'patch_group', groupId, patch: { board: 'room_only' } });
+    const edited = reduceQuoteSession(before, { type: 'patch_group', groupId, patch: { mealPlan: 'room_only' } });
     expect(edited.inputRevision).toBe(before.inputRevision);
     expect(quoteRunIsCurrent(edited, run)).toBe(false);
   });
@@ -3641,7 +3641,7 @@ describe('a header patched while Nava reads', () => {
 
   it('keeps the stays and the read when the header is patched before the read lands', () => {
     let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
-    s = reduceQuoteSession(s, { type: 'patch_staff_header', header: { agency: 'Agency A' } });
+    s = reduceQuoteSession(s, { type: 'patch_staff_header', header: { bookingAgency: 'Agency A' } });
     s = reduceQuoteSession(s, { type: 'analysis_started' });
     s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: oneStayTwoRows });
     expect(s.groups.map((group) => group.id)).toEqual(['r1', 'r2']);
@@ -3685,7 +3685,7 @@ describe('stay edits: rows, stays and their rates', () => {
     return {
       id,
       ...dates,
-      board: 'bb',
+      mealPlan: 'bb',
       quantity: 1,
       adults: 2,
       roomPreference: 'STWN',
@@ -3702,7 +3702,7 @@ describe('stay edits: rows, stays and their rates', () => {
       kind: 'allocation',
       roomCode: 'STWN',
       roomLabel: 'Standard Twin',
-      board: 'bb',
+      mealPlan: 'bb',
       rateCode: 'BAR',
       currency: 'ZAR',
       nightly: [{ date: quoteRequestKey.slice(0, 10), amountMinor: 100 }],
@@ -3758,8 +3758,8 @@ describe('stay edits: rows, stays and their rates', () => {
     return {
       id: `rate-${groupId}`,
       groupId,
-      board: 'bb',
-      boardLabel: 'Bed & breakfast',
+      mealPlan: 'bb',
+      mealPlanLabel: 'Bed & breakfast',
       rateCode: 'BAR',
       rateLabel: 'Best available',
       roomCode: 'STWN',
@@ -3781,7 +3781,7 @@ describe('stay edits: rows, stays and their rates', () => {
     const next = reduceQuoteSession(withCards, {
       type: 'patch_group',
       groupId: 'b1',
-      patch: { board: 'dinner_bb', rateCode: 'DBB' },
+      patch: { mealPlan: 'dinner_bb', rateCode: 'DBB' },
     });
     expect(next.rateOptions?.map((option) => option.groupId)).toEqual(['a1', 'b1']);
     const cleared = reduceQuoteSession(withCards, { type: 'patch_group', groupId: 'b1', patch: { adults: 3 } });
@@ -3862,7 +3862,7 @@ describe('stay edits: rows, stays and their rates', () => {
     const removed = reduceQuoteSession(s, { type: 'remove_row', groupId: 'b2' });
     expect(removed.groups.map((group) => group.id)).toEqual(['a1', 'b1']);
     const added = reduceQuoteSession(s, { type: 'add_stay', token: 'y' });
-    expect(added.groups.at(-1)).toMatchObject({ id: 'r_y', stayId: 's_y', board: 'bb' });
+    expect(added.groups.at(-1)).toMatchObject({ id: 'r_y', stayId: 's_y', mealPlan: 'bb' });
     expect(added.groups.at(-1)?.arrivalDate).toBeUndefined();
   });
 
@@ -3971,8 +3971,8 @@ describe('stay edits: rows, stays and their rates', () => {
         quoteRequestKey: keyA,
         approvedHeader: {
           salesStrategy: 'BAR',
-          company: '',
-          agency: '',
+          organization: '',
+          bookingAgency: '',
           attention: '',
           clientEmail: '',
           clientTelephone: '',
@@ -4278,12 +4278,12 @@ describe('autoRunHeader', () => {
   const header = { ...emptyStaffQuoteHeader(), salesStrategy: 'Government' as const };
 
   it('mirrors the background prepare: Government only when every row is Dinner B&B, else BAR', () => {
-    expect(autoRunHeader({ staffHeader: emptyStaffQuoteHeader(), groups: [{ board: 'dinner_bb' }] as never }).salesStrategy).toBe(
+    expect(autoRunHeader({ staffHeader: emptyStaffQuoteHeader(), groups: [{ mealPlan: 'dinner_bb' }] as never }).salesStrategy).toBe(
       'Government',
     );
-    expect(autoRunHeader({ staffHeader: header, groups: [{ board: 'bb' }] as never }).salesStrategy).toBe('BAR');
+    expect(autoRunHeader({ staffHeader: header, groups: [{ mealPlan: 'bb' }] as never }).salesStrategy).toBe('BAR');
     expect(
-      autoRunHeader({ staffHeader: header, groups: [{ board: 'dinner_bb' }, { board: 'bb' }] as never }).salesStrategy,
+      autoRunHeader({ staffHeader: header, groups: [{ mealPlan: 'dinner_bb' }, { mealPlan: 'bb' }] as never }).salesStrategy,
     ).toBe('BAR');
   });
 });
@@ -4293,7 +4293,7 @@ it('a mixed Dinner B&B + B&B mail keeps the session default on BAR', () => {
     ...quoteAnalysis,
     groups: quoteAnalysis.groups.flatMap((group, index) =>
       index === 0
-        ? [{ ...group, board: 'dinner_bb' as const }, { ...group, id: `${group.id}-bb`, board: 'bb' as const }]
+        ? [{ ...group, mealPlan: 'dinner_bb' as const }, { ...group, id: `${group.id}-bb`, mealPlan: 'bb' as const }]
         : [group],
     ),
   };
@@ -4316,7 +4316,7 @@ describe('multi-ask stay cards: guests, action, split', () => {
       rooms: 1,
       adultsPerRoom: 1,
       childAges: [] as number[],
-      board: 'bb' as const,
+      mealPlan: 'bb' as const,
       roomPreference: 'standard king',
       guestNames: [guest.name],
       stayId: 'stay-a',
@@ -4470,7 +4470,7 @@ describe('multi-ask stay cards: guests, action, split', () => {
             rooms: 1,
             adultsPerRoom: 1,
             childAges: [],
-            board: 'bb',
+            mealPlan: 'bb',
             roomPreference: 'standard king',
             guestNames: ['Ada Example'],
             stayId: 'stay-a',
@@ -4481,7 +4481,7 @@ describe('multi-ask stay cards: guests, action, split', () => {
             rooms: 1,
             adultsPerRoom: 1,
             childAges: [],
-            board: 'bb',
+            mealPlan: 'bb',
             roomPreference: 'standard king',
             guestNames: ['Bea Example'],
             stayId: 'stay-a',

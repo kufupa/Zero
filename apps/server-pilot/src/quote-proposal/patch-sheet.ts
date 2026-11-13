@@ -8,7 +8,7 @@ export type ProposalLine = {
 
 export type ProposalPatchInput = {
   attention: string;
-  company: string;
+  organization: string;
   clientEmail: string;
   clientTelephone: string;
   signerName: string;
@@ -81,7 +81,7 @@ export function patchSheetXml(sheetXml: string, input: ProposalPatchInput): stri
     sheet = setInlineStr(sheet, 'F39', '');
   }
   sheet = setInlineStr(sheet, 'B12', input.attention);
-  sheet = setInlineStr(sheet, 'B13', input.company);
+  sheet = setInlineStr(sheet, 'B13', input.organization);
   sheet = setInlineStr(sheet, 'B14', input.clientEmail);
   sheet = setInlineStr(sheet, 'B15', input.clientTelephone);
   input.lines.forEach((line, index) => {

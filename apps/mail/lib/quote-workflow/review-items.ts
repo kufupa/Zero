@@ -39,7 +39,7 @@ export function pricingReviewItems(groups: StayGroupRequirement[]): QuoteReviewI
         });
       }
     }
-    if (group.board === 'unknown') {
+    if (group.mealPlan === 'unknown') {
       items.push({
         id: `pricing:${group.id}:board`,
         kind: 'pricing_fact',

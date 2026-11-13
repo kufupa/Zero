@@ -68,7 +68,7 @@ const stay: StayGroupRequirement = {
   adults: 2,
   childrenAges: [],
   roomPreference: 'STWN',
-  board: 'bb',
+  mealPlan: 'bb',
   specialRequests: [],
   fields: {},
 };
@@ -103,8 +103,8 @@ const SELECTED_RATE: RateOption = {
   rateLabel: 'Corporate negotiated',
   roomCode: 'STWN',
   roomLabel: 'Standard Twin',
-  board: 'bb',
-  boardLabel: 'Bed & breakfast',
+  mealPlan: 'bb',
+  mealPlanLabel: 'Bed & breakfast',
   contract: false,
   onlyContract: false,
   matchesRequest: true,
@@ -284,7 +284,7 @@ describe('row price controls in the quote panel', () => {
           transportId: 'transport-davinci',
           roomTypes: [{ code: 'JNRSUI', label: 'Junior Suite' }],
           ratePlans: [],
-          boards: ['room_only', 'bb'],
+          mealPlans: ['room_only', 'bb'],
           salesStrategies: [],
           overrideRateCodes: ['BAR', 'BARRO', 'BLRB', 'BARDIS', 'DEF'],
           eventRateCodes: [],
@@ -498,8 +498,8 @@ describe('row price changes that race or replace each other', () => {
     return {
       id,
       groupId: 'g1',
-      board: 'bb',
-      boardLabel: 'Bed & breakfast',
+      mealPlan: 'bb',
+      mealPlanLabel: 'Bed & breakfast',
       rateCode,
       rateLabel: rateCode,
       roomCode: 'STWN',
@@ -575,10 +575,10 @@ describe('row price changes that race or replace each other', () => {
   it('an expired re-quote asks for the row prices the stored quote was run with', () => {
     const { groups } = buildExpiredPriorRequoteBindArgs({
       stored: {
-        groups: [{ id: 'stored-1', arrivalDate: stay.arrivalDate!, departureDate: stay.departureDate!, quantity: 1, adults: 2, childrenAges: [], board: 'bb' }],
+        groups: [{ id: 'stored-1', arrivalDate: stay.arrivalDate!, departureDate: stay.departureDate!, quantity: 1, adults: 2, childrenAges: [], mealPlan: 'bb' }],
         salesStrategy: 'BAR',
-        company: '',
-        agency: '',
+        organization: '',
+        bookingAgency: '',
         rowPrices: [{ groupId: 'stored-1', source: 'override', rateCode: 'NCOR1B', overrideRate: 185000, note: NOTE }],
       },
       sessionGroups: [stay],
@@ -694,19 +694,19 @@ describe('row price rules', () => {
 });
 
 describe('HMS notes block', () => {
-  const CONTACT = { name: 'Jane Smith', company: 'Acme Travel', endClient: null, email: null, phone: null };
+  const CONTACT = { name: 'Jane Smith', bookingAgency: 'Acme Travel', organization: null, email: null, phone: null };
 
   it('writes every field once: booker and company, each room, then the confirmation number', () => {
     const block = hmsNotesBlock({
       booker: 'Jane Smith',
-      company: 'Acme Travel',
+      organization: 'Acme Travel',
       confirmations: ['57291630-1'],
       rooms: [
         {
           label: 'Room 1',
           specialRequests: ['Late check-in', 'Cot'],
           authorisedBy: NOTE,
-          rate: { code: 'NCOR1B', label: 'Corporate rate', nightlyMinor: [185000], board: 'Bed & breakfast' },
+          rate: { code: 'NCOR1B', label: 'Corporate rate', nightlyMinor: [185000], mealPlan: 'Bed & breakfast' },
         },
       ],
     });
@@ -726,9 +726,9 @@ describe('HMS notes block', () => {
     expect(
       hmsNotesBlock({
         booker: '  ',
-        company: null,
+        organization: null,
         confirmations: [],
-        rooms: [{ label: 'Room 1', specialRequests: ['', ' '], rate: { code: 'BAR', label: 'BAR', board: null } }],
+        rooms: [{ label: 'Room 1', specialRequests: ['', ' '], rate: { code: 'BAR', label: 'BAR', mealPlan: null } }],
       }),
     ).toBe('Rate: BAR');
     expect(hmsNotesBlock({ rooms: [{ label: 'Room 1' }] })).toBe('');
@@ -739,7 +739,7 @@ describe('HMS notes block', () => {
     const block = hmsNotesBlock({
       booker: 'Jane Smith',
       rooms: [
-        { label: 'Stay 1 · Room 1', specialRequests: ['Cot'], rate: { code: 'NCOR1B', nightlyMinor: [185000], board: 'Room only' } },
+        { label: 'Stay 1 · Room 1', specialRequests: ['Cot'], rate: { code: 'NCOR1B', nightlyMinor: [185000], mealPlan: 'Room only' } },
         { label: 'Stay 2 · Room 1', rate: { nightlyMinor: [210000] } },
         { label: 'Stay 2 · Room 2' },
       ],
@@ -800,7 +800,7 @@ describe('HMS notes block', () => {
               code: 'NCOR1B',
               nightlyMinor: [10001, 50000, 50000],
               stay: { arrival: '2026-10-26', departure: '2026-10-29' },
-              board: 'Room only',
+              mealPlan: 'Room only',
             },
           },
         ],

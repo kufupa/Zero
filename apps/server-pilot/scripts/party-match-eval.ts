@@ -9,11 +9,13 @@ import {
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
+type GoldKind = 'company' | 'agency' | PartyMatchKind;
+
 type RecordedSearch = {
   term: string;
   candidateName: string;
-  kind: PartyMatchKind;
-  rows: PartyMatchRow[];
+  kind: GoldKind;
+  rows: Array<Omit<PartyMatchRow, 'kind'> & { kind: GoldKind }>;
   truncated?: boolean;
 };
 
@@ -61,7 +63,9 @@ function candidateRows(recorded: RecordedSearch[]): PartyMatchRow[] {
   for (const search of recorded) {
     if (!search || !Array.isArray(search.rows)) continue;
     for (const row of search.rows) {
-      if (!row || (row.kind !== 'company' && row.kind !== 'agency')) continue;
+      if (!row) continue;
+      const kind = row.kind === 'company' ? 'organization' : row.kind === 'agency' ? 'bookingAgency' : row.kind;
+      if (kind !== 'organization' && kind !== 'bookingAgency') continue;
       if (
         typeof row.nativeId !== 'string' ||
         !row.nativeId.trim() ||
@@ -69,10 +73,10 @@ function candidateRows(recorded: RecordedSearch[]): PartyMatchRow[] {
         !row.name.trim()
       )
         continue;
-      const key = `${row.kind}:${row.nativeId}`;
+      const key = `${kind}:${row.nativeId}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      rows.push({ kind: row.kind, nativeId: row.nativeId, name: row.name });
+      rows.push({ kind, nativeId: row.nativeId, name: row.name });
     }
   }
   return rows;
@@ -101,8 +105,8 @@ async function main() {
     const email = testCase.email;
     const body = email.body ?? email.signatureBlock ?? '';
     const payload = {
-      agency: email.agency ?? null,
-      endClient: email.endClient ?? null,
+      bookingAgency: email.agency ?? null,
+      organization: email.endClient ?? null,
       contact: { name: email.contactName ?? null },
       quoteLlmParty: email.quoteLlmParty,
     };

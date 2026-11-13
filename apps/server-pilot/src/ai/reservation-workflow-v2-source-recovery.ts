@@ -57,7 +57,7 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
       const invalidateReviews = (path: string, alias: string) => {
         for (const key of Object.keys(draft.staffReviews)) if (overlaps(key, path, alias)) delete draft.staffReviews[key];
       };
-      const agencyClaims = extracted.parties.filter(row => row.role === 'agency' && row.name.sourceRefs.includes(currentRef));
+      const agencyClaims = extracted.parties.filter(row => row.role === 'bookingAgency' && row.name.sourceRefs.includes(currentRef));
       const organizationClaims = extracted.parties.filter(row => row.role === 'organization' && row.name.sourceRefs.some(ref => admittedRefs.has(ref)));
       for (const slot of bookingSlots) {
         const organization = slot.target.organization;
@@ -141,7 +141,7 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
       paths.push(path);
     };
     if (request.kind === 'quote') { fill('attention', name, 300); fill('email', email, 320); fill('telephone', mobile, 120); }
-    else { fill('bookerName', name, 50); fill('bookerContact', mobile.length ? mobile : email, 80); fill('cmsRecipient', email, 255); }
+    else { fill('bookerName', name, 50); fill('bookerEmail', email, 320); fill('bookerMobile', mobile, 120); fill('cmsRecipient', email, 255); }
   }
   if (!paths.length) return null;
   const parsed = reservationWorkflowV2DraftSchema.safeParse(draft);

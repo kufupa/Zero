@@ -23,7 +23,7 @@ type Ready = Extract<StoredWork, { status: 'ready' }>;
 
 const ANALYSIS = { intent: 'quote', groups: [], secondaryAsks: [], alternatives: [] } as unknown as Ready['analysis'];
 
-const NO_CONTACT = { name: null, company: null, endClient: null, email: null, phone: null };
+const NO_CONTACT = { name: null, bookingAgency: null, organization: null, email: null, phone: null };
 
 const READY: Ready = {
   status: 'ready',
@@ -52,7 +52,7 @@ function row(id: string, stayId: string | undefined, values: Partial<StayGroupRe
     quantity: 1,
     adults: 2,
     childrenAges: [],
-    board: 'bb',
+    mealPlan: 'bb',
     specialRequests: [],
     fields: {},
     ...values,
@@ -106,11 +106,11 @@ describe('storedDecision', () => {
 describe('fieldEventsBetween', () => {
   it('maps a row edit to its stable stay and row ids, and a stay date to the stay', () => {
     expect(
-      fieldEventsBetween(READY.refs, [G1, G2], [row('g1', 'st-1', { arrivalDate: '2026-10-11', quantity: 2, board: 'dinner_bb' }), G2]),
+      fieldEventsBetween(READY.refs, [G1, G2], [row('g1', 'st-1', { arrivalDate: '2026-10-11', quantity: 2, mealPlan: 'dinner_bb' }), G2]),
     ).toEqual([
       { path: 'stays[st-1].requested.arrival', value: '2026-10-11' },
       { path: 'stays[st-1].rows[rw-1].count', value: 2 },
-      { path: 'stays[st-1].rows[rw-1].board', value: 'dbb' },
+      { path: 'stays[st-1].rows[rw-1].mealPlan', value: 'dbb' },
     ]);
   });
 
@@ -168,8 +168,8 @@ describe('fieldEventsBetween', () => {
       { path: 'stays[st-2].rows[st-2_row].adults', value: 3 },
       { path: 'stays[st-2].rows[st-2_row].roomType', value: 'Family' },
     ]);
-    expect(fieldEventsBetween(READY.refs, [G2], [{ ...G2, board: 'unknown' }])).toEqual([
-      { path: 'stays[st-1].rows[rw-2].board', value: null },
+    expect(fieldEventsBetween(READY.refs, [G2], [{ ...G2, mealPlan: 'unknown' }])).toEqual([
+      { path: 'stays[st-1].rows[rw-2].mealPlan', value: null },
     ]);
   });
 
@@ -198,11 +198,11 @@ describe('fieldEventsBetween', () => {
   });
 
   it('logs a row she adds under its own id, with the values it has', () => {
-    const added = row('r_ab12', 'st-1', { quantity: undefined, adults: undefined, board: 'bb' });
+    const added = row('r_ab12', 'st-1', { quantity: undefined, adults: undefined, mealPlan: 'bb' });
     expect(fieldEventsBetween(READY.refs, [G1, G2], [G1, G2, added])).toEqual([
       { path: 'stays[st-1].rows[r_ab12].removed', value: null },
       { path: 'stays[st-1].rows[r_ab12].childAges', value: [] },
-      { path: 'stays[st-1].rows[r_ab12].board', value: 'bb' },
+      { path: 'stays[st-1].rows[r_ab12].mealPlan', value: 'bb' },
     ]);
   });
 
@@ -216,7 +216,7 @@ describe('fieldEventsBetween', () => {
       { path: 'stays[s_cd34].rows[r_cd34_0].count', value: 1 },
       { path: 'stays[s_cd34].rows[r_cd34_0].adults', value: 2 },
       { path: 'stays[s_cd34].rows[r_cd34_0].childAges', value: [] },
-      { path: 'stays[s_cd34].rows[r_cd34_0].board', value: 'bb' },
+      { path: 'stays[s_cd34].rows[r_cd34_0].mealPlan', value: 'bb' },
     ]);
     expect(fieldEventsBetween(READY.refs, [G3], [G1, G3]).slice(0, 2)).toEqual([
       { path: 'stays[st-1].removed', value: null },
@@ -243,7 +243,7 @@ describe('fieldEventsBetween', () => {
       expect(fieldEventsBetween(READY.refs, session.groups, added.groups)).toEqual([
         { path: 'stays[st-1].rows[r_ab12].removed', value: null },
         { path: 'stays[st-1].rows[r_ab12].childAges', value: [] },
-        { path: 'stays[st-1].rows[r_ab12].board', value: 'bb' },
+        { path: 'stays[st-1].rows[r_ab12].mealPlan', value: 'bb' },
       ]);
     });
 
@@ -254,7 +254,7 @@ describe('fieldEventsBetween', () => {
         { path: 'stays[st-1].rows[r_ef56].removed', value: null },
         { path: 'stays[st-1].rows[r_ef56].adults', value: 2 },
         { path: 'stays[st-1].rows[r_ef56].childAges', value: [] },
-        { path: 'stays[st-1].rows[r_ef56].board', value: 'bb' },
+        { path: 'stays[st-1].rows[r_ef56].mealPlan', value: 'bb' },
       ]);
     });
 
@@ -279,7 +279,7 @@ describe('fieldEventsBetween', () => {
       expect(fieldEventsBetween(READY.refs, removed.groups, again.groups)).toEqual([
         { path: 'stays[st-1].rows[r_cd34].removed', value: null },
         { path: 'stays[st-1].rows[r_cd34].childAges', value: [] },
-        { path: 'stays[st-1].rows[r_cd34].board', value: 'bb' },
+        { path: 'stays[st-1].rows[r_cd34].mealPlan', value: 'bb' },
       ]);
     });
 
@@ -854,14 +854,14 @@ describe('the form while Nava reads', () => {
       analysis: {
         intent: 'quote',
         groups: [
-          { id: 'g1', arrivalDate: '2026-12-01', childrenAges: [], board: 'bb', specialRequests: [], fields: {} },
+          { id: 'g1', arrivalDate: '2026-12-01', childrenAges: [], mealPlan: 'bb', specialRequests: [], fields: {} },
         ],
         secondaryAsks: [],
         alternatives: [],
       },
     });
     expect(landed.groups).toHaveLength(1);
-    expect(landed.groups[0]).toMatchObject({ id: 'g1', arrivalDate: '2026-11-03', board: 'bb' });
+    expect(landed.groups[0]).toMatchObject({ id: 'g1', arrivalDate: '2026-11-03', mealPlan: 'bb' });
     expect(landed.groups[0]!.fields.arrivalDate).toBe('staff_corrected');
     expect(landed.inputRevision).toBeGreaterThan(edited.inputRevision);
   });

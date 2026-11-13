@@ -295,13 +295,13 @@ describe('inbound extraction stored read', () => {
       // The model sees the From address, so the agency can come from the sender domain, and the mailbox address, so
       // a sender on the hotel's own domain reads as staff.
       expect(model.calls[0]?.userPrompt).toContain(`Mailbox: centurion@legacyhotels.co.za\nFrom: ${AE1_FROM}`);
-      expect(model.calls[0]?.systemPrompt).toMatch(/agency is the organisation of the sender/);
+      expect(model.calls[0]?.systemPrompt).toMatch(/bookingAgency is the travel agency or tour operator writing for its client/);
       const row = await rowFor(db, messageId);
       expect(row).toMatchObject({ status: 'succeeded', kind: 'quote', language: 'en', translation: null });
       const payload = row!.payload as MailExtractionPayload;
       // The sender's organisation is the agency. The client named in the subject is the end client.
-      expect(payload.agency).toBe('Horizon Trail Tours');
-      expect(payload.endClient).toBe('Summit Africa');
+      expect(payload.bookingAgency).toBe('Horizon Trail Tours');
+      expect(payload.organization).toBe('Summit Africa');
       expect(payload.contact.email).toBe('priya@horizontrailtours.example');
       expect(payload.stays.map((stay) => stay.requested)).toEqual([
         { arrival: '2027-10-26', departure: '2027-10-28' },
@@ -387,7 +387,7 @@ describe('inbound extraction stored read', () => {
       const row = await rowFor(db, messageId);
       expect(row).toMatchObject({ status: 'succeeded', kind: 'quote' });
       const payload = row!.payload as MailExtractionPayload;
-      expect(payload.agency).toBe('Horizon Trail Tours');
+      expect(payload.bookingAgency).toBe('Horizon Trail Tours');
       expect(payload.contact.email).toBe('priya@horizontrailtours.example');
       expect(payload.stays).toHaveLength(2);
       const [item] = await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId));
@@ -926,7 +926,7 @@ describe('flags, cap parsing and the rules', () => {
       'centurion@legacyhotels.co.za',
     );
     expect(system).toMatch(/a sender on the Mailbox address's domain, or one who signs for this hotel or its hotel group, is staff/);
-    expect(system).toMatch(/kind, stays, agency, endClient and contact come from the request passed on/);
+    expect(system).toMatch(/kind, stays, bookingAgency, organization and contact come from the request passed on/);
     expect(system).toMatch(/The hotel and its group are never the agency/);
     expect(system).toMatch(/Only a staff mail that passes on no outside request is other/);
     expect(user.indexOf('Subject:')).toBeGreaterThanOrEqual(0);

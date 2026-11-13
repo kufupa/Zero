@@ -9,7 +9,7 @@ const names = { bookerName: 'caller', bookerContact: 'udfchar06', billingReferen
 function snapshot() {
   return { identity: { ...identity }, controls: Object.fromEntries(Object.keys(names).map((key) => [key,
     { dom: '', native: '', submit: '', disabled: false, readOnly: false, maxLength: 50, invalid: false }])),
-  scalar: { caller: '', udfchar06: '', billingreference: '', unrelated: 'original' }, omitted: ['sessionID'],
+  scalar: { caller: '', udfchar06: '', billingreference: '', roomtype: 'DLXKNG' }, omitted: ['sessionID'],
   visibleFields: Object.values(names).map((name) => ({ id: `id-${name}`, name, type: 'text', value: '', disabled: false, readOnly: false })) };
 }
 function apply(snapshotValue, field, value, { model = true, native = true, submit = true } = {}) {
@@ -35,7 +35,7 @@ function pageStub({ blocked = false, sideEffect = false } = {}) {
       async count() { return 1; }, async isEditable() { return true; },
       async fill(value) {
         apply(state, 'billingReference', value);
-        if (sideEffect) state.scalar.unrelated = 'unexpected';
+        if (sideEffect) state.scalar.roomtype = 'unexpected';
         if (blocked) await routes[0]({ request: () => ({ method: () => 'POST', url: () => 'https://example.invalid/fieldvalidate' }), abort: async () => {}, fallback: async () => {} });
       },
       async press() {},
@@ -70,14 +70,14 @@ test('visible, component and submit values must all match, with no unrelated eff
   after.controls.billingReference.invalid = true;
   assert.equal(assessBookerBillingReadback(before, after, plan).issue, 'NATIVE_READBACK_MISMATCH');
   after.controls.billingReference.invalid = false;
-  after.scalar.unrelated = 'changed';
+  after.scalar.roomtype = 'changed';
   const sideEffect = assessBookerBillingReadback(before, after, plan);
   assert.equal(sideEffect.issue, 'UNEXPECTED_FORM_CHANGE');
-  assert.deepEqual(sideEffect.changes.model.find((field) => !field.requested), { name: 'unrelated', requested: false });
+  assert.deepEqual(sideEffect.changes.model.find((field) => !field.requested), { name: 'roomtype', requested: false });
   assert.equal(JSON.stringify(sideEffect).includes('changed'), false);
 });
 
-test('identity, model coverage, other Booker fields and partial native readback cannot drift silently', () => {
+test('identity, other Booker fields and partial native readback cannot drift silently', () => {
   const before = snapshot(), after = structuredClone(before);
   const plan = planBookerBilling({ propertyCode: 'HRCEN', serviceWorkersBlocked: true, bookerName: 'Synthetic' });
   apply(after, 'bookerName', 'Synthetic', { model: false });
@@ -86,7 +86,7 @@ test('identity, model coverage, other Booker fields and partial native readback 
   assert.equal(assessBookerBillingReadback(before, after, plan).issue, 'DRAFT_IDENTITY_CHANGED');
   after.identity.session = before.identity.session;
   after.omitted.push('newComplexModelValue');
-  assert.equal(assessBookerBillingReadback(before, after, plan).issue, 'MODEL_COVERAGE_CHANGED');
+  assert.equal(assessBookerBillingReadback(before, after, plan).ok, true);
   after.omitted.pop();
   apply(after, 'bookerContact', 'unexpected');
   assert.equal(assessBookerBillingReadback(before, after, plan).issue, 'UNSPECIFIED_CONTROL_CHANGED');

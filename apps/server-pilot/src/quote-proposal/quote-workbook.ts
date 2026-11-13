@@ -50,7 +50,7 @@ export type WorkbookLine = {
 
 export type WorkbookHeader = {
   attention: string;
-  company: string;
+  organization: string;
   clientEmail: string;
   clientTelephone: string;
   signerName: string;
@@ -488,7 +488,7 @@ export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
 
   sheet = setNumber(sheet, 'B9', excelSerialDate(input.authoredDate));
   sheet = setText(sheet, 'B12', input.header.attention);
-  sheet = setText(sheet, 'B13', input.header.company);
+  sheet = setText(sheet, 'B13', input.header.organization);
   sheet = setText(sheet, 'B14', input.header.clientEmail);
   sheet = setText(sheet, 'B15', input.header.clientTelephone);
   const lineRows = Math.max(TEMPLATE_LINE_ROWS, input.lines.length);
@@ -559,7 +559,7 @@ export function quoteWorkbookForStays(args: {
     // The earliest read sets the date, so no stay is quoted beyond the validity of its own read.
     authoredDate: args.stays.map((stay) => stay.revision.authoredDate).sort()[0]!,
     breakfastIncluded: args.stays.every((stay) =>
-      stay.revision.groups.every((group) => group.board === 'breakfast' || group.board === 'dinner_bed_breakfast'),
+      stay.revision.groups.every((group) => group.mealPlan === 'breakfast' || group.mealPlan === 'dinner_bed_breakfast'),
     ),
     header: args.header,
     lines,
@@ -585,8 +585,8 @@ export function quoteWorkbookForRevision(args: {
 }
 
 /** "Quote - <Company or Guest> <stay span>.xlsx" with path-unsafe characters removed. */
-export function quoteWorkbookFileName(company: string, arrivalDate: string, departureDate = arrivalDate): string {
-  const label = Array.from(company)
+export function quoteWorkbookFileName(partyName: string, arrivalDate: string, departureDate = arrivalDate): string {
+  const label = Array.from(partyName)
     .filter((ch) => ch >= ' ' && !'\\/:*?"<>|'.includes(ch))
     .join('')
     .replace(/\s+/g, ' ')

@@ -19,6 +19,8 @@ export type BoundFilingForm = {
   sourceMessageId: string; sourceInternetMessageId: string; attachmentId: string; documentName: string;
   /** Original mail attachment name; documentName is the actual name uploaded to HMS. */
   sourceDocumentName?: string;
+  requestedDocumentName?: string;
+  documentDescription?: string;
   pdfSha256: string; sourceSnapshotDigest: string; sourceThreadId?: string; sourceHash?: string;
   documentCode?: string; filingStateDigest?: string;
 };

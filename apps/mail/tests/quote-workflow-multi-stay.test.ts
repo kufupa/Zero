@@ -65,7 +65,7 @@ function stayGroup(
     roomPreference: 'standard king',
     adults: 1,
     childrenAges: [],
-    board: 'bb',
+    mealPlan: 'bb',
     specialRequests: [],
     fields: { arrivalDate: 'extracted', departureDate: 'extracted', adults: 'extracted' },
   };
@@ -77,7 +77,7 @@ function allocation(revisionRef: string, quoteRequestKey: string, totalMinor: nu
     kind: 'allocation',
     roomCode: '',
     roomLabel: 'Standard King',
-    board: 'bb',
+    mealPlan: 'bb',
     rateCode: '',
     currency: 'ZAR',
     nightly: [],
@@ -115,8 +115,8 @@ function staffRun(
     quoteRequestKey,
     approvedHeader: {
       salesStrategy: 'BAR',
-      company: '',
-      agency: '',
+      organization: '',
+      bookingAgency: '',
       attention: '',
       clientEmail: '',
       clientTelephone: '',
@@ -206,7 +206,7 @@ function lunaRow(arrival: string, departure: string, guestNames: string[], stayI
     rooms: 1,
     adultsPerRoom: 1,
     childAges: [],
-    board: 'bb' as const,
+    mealPlan: 'bb' as const,
     roomPreference: null,
     guestNames,
     ...(stayId ? { stayId } : {}),
@@ -485,8 +485,8 @@ describe('one booking draft and one set of guests per stay', () => {
     ];
     const stored = {
       salesStrategy: 'BAR' as const,
-      company: '',
-      agency: '',
+      organization: '',
+      bookingAgency: '',
       groups: [
         {
           id: 'old-b',
@@ -495,7 +495,7 @@ describe('one booking draft and one set of guests per stay', () => {
           quantity: 1,
           adults: 1,
           childrenAges: [],
-          board: 'bb' as const,
+          mealPlan: 'bb' as const,
         },
         {
           id: 'old-a',
@@ -504,7 +504,7 @@ describe('one booking draft and one set of guests per stay', () => {
           quantity: 1,
           adults: 1,
           childrenAges: [],
-          board: 'bb' as const,
+          mealPlan: 'bb' as const,
         },
       ],
     };
@@ -513,8 +513,8 @@ describe('one booking draft and one set of guests per stay', () => {
       sessionGroups,
       sessionHeader: {
         salesStrategy: 'BAR',
-        company: '',
-        agency: '',
+        organization: '',
+        bookingAgency: '',
         attention: '',
         clientEmail: '',
         clientTelephone: '',
@@ -738,16 +738,16 @@ describe('the combined PDF while staff move between options', () => {
 describe('re-quoting an expired stay after staff edits', () => {
   const header = {
     salesStrategy: 'BAR' as const,
-    company: '',
-    agency: '',
+    organization: '',
+    bookingAgency: '',
     attention: '',
     clientEmail: '',
     clientTelephone: '',
   };
   const storedFor = (arrivalDate: string, departureDate: string) => ({
     salesStrategy: 'BAR' as const,
-    company: '',
-    agency: '',
+    organization: '',
+    bookingAgency: '',
     groups: [
       {
         id: 'old',
@@ -756,7 +756,7 @@ describe('re-quoting an expired stay after staff edits', () => {
         quantity: 1,
         adults: 1,
         childrenAges: [],
-        board: 'bb' as const,
+        mealPlan: 'bb' as const,
       },
     ],
   });

@@ -741,13 +741,13 @@ export function NavaPane({
     storedWork.pane.state === 'ready'
       ? storedWork.pane.contact
       : senderFallback
-        ? { ...senderFallback, company: null, endClient: null, phone: null }
+        ? { ...senderFallback, bookingAgency: null, organization: null, phone: null }
         : null;
   const normalizedContact = sourceContact ? { ...sourceContact } : null;
   const contactFields = contactCorrection?.key === contactCorrectionKey ? contactCorrection.fields : null;
   const documentContact = contactFields
     ? {
-        ...(normalizedContact ?? { name: null, company: null, endClient: null, email: null, phone: null }),
+        ...(normalizedContact ?? { name: null, bookingAgency: null, organization: null, email: null, phone: null }),
         ...contactFields,
       }
     : normalizedContact;
@@ -791,8 +791,8 @@ export function NavaPane({
     if (storedWork.historyPending || storedWork.historyNeedsReload) return;
     const previous = documentContactRef.current ?? {
       name: null,
-      company: null,
-      endClient: null,
+      bookingAgency: null,
+      organization: null,
       email: null,
       phone: null,
     };
@@ -1433,7 +1433,7 @@ export function NavaPane({
             kind: 'allocation',
             roomCode: prior.roomCode,
             roomLabel: 'Selected allocation',
-            board: offerBoardFromRevision(prior.board),
+            mealPlan: offerBoardFromRevision(prior.mealPlan),
             rateCode: prior.rateCode,
             currency: 'ZAR',
             nightly: [],

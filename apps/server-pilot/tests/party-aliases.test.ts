@@ -9,7 +9,7 @@ afterEach(() => {
 describe('suggestPartyFromSender', () => {
   it('suggests Rennies Travel for a sender at renniesbcdtravel.com, with no id until HMS confirms one', () => {
     expect(suggestPartyFromSender('Jane Doe <jane@renniesbcdtravel.com>')).toEqual({
-      kind: 'agency',
+      kind: 'bookingAgency',
       name: 'Rennies Travel',
       nativeId: null,
       idStatus: 'unverified',
@@ -18,13 +18,13 @@ describe('suggestPartyFromSender', () => {
 
   it('suggests Tourvest as a company for both of its domains, and matches a subdomain of them', () => {
     expect(suggestPartyFromSender('a@tourvest-mice.co.za')).toEqual({
-      kind: 'company',
+      kind: 'organization',
       name: 'Tourvest',
       nativeId: null,
       idStatus: 'unverified',
     });
     expect(suggestPartyFromSender('a@mail.tourvestdm.com')).toMatchObject({
-      kind: 'company',
+      kind: 'organization',
       name: 'Tourvest',
       nativeId: null,
     });
@@ -52,10 +52,10 @@ describe('suggestPartyFromSender', () => {
 
   it('suggests the party for a host in the learned table', () => {
     replaceLearnedSenderMapForTests([
-      { host: 'learned-agency.test', kind: 'agency', name: 'Learned Agency', support: 4 },
+      { host: 'learned-agency.test', kind: 'bookingAgency', name: 'Learned Agency', support: 4 },
     ]);
     expect(suggestPartyFromSender('ops@learned-agency.test')).toEqual({
-      kind: 'agency',
+      kind: 'bookingAgency',
       name: 'Learned Agency',
       nativeId: null,
       idStatus: 'unverified',
@@ -64,19 +64,19 @@ describe('suggestPartyFromSender', () => {
 
   it('suggests nothing for freemail even when the table is loaded', () => {
     replaceLearnedSenderMapForTests([
-      { host: 'gmail.com', kind: 'agency', name: 'Wrong Freemail Party', support: 9 },
-      { host: 'learned-agency.test', kind: 'agency', name: 'Learned Agency', support: 4 },
+      { host: 'gmail.com', kind: 'bookingAgency', name: 'Wrong Freemail Party', support: 9 },
+      { host: 'learned-agency.test', kind: 'bookingAgency', name: 'Learned Agency', support: 4 },
     ]);
     expect(suggestPartyFromSender('a@gmail.com')).toBeNull();
   });
 
   it('prefers an exact host over a parent domain', () => {
     replaceLearnedSenderMapForTests([
-      { host: 'agency.test', kind: 'company', name: 'Parent Co', support: 2 },
-      { host: 'desk.agency.test', kind: 'agency', name: 'Desk Agency', support: 3 },
+      { host: 'agency.test', kind: 'organization', name: 'Parent Co', support: 2 },
+      { host: 'desk.agency.test', kind: 'bookingAgency', name: 'Desk Agency', support: 3 },
     ]);
     expect(suggestPartyFromSender('a@desk.agency.test')).toEqual({
-      kind: 'agency',
+      kind: 'bookingAgency',
       name: 'Desk Agency',
       nativeId: null,
       idStatus: 'unverified',
@@ -85,10 +85,10 @@ describe('suggestPartyFromSender', () => {
 
   it('lets a static alias win when the table has the same host', () => {
     replaceLearnedSenderMapForTests([
-      { host: 'renniesbcdtravel.com', kind: 'company', name: 'Wrong Learned Name', support: 99 },
+      { host: 'renniesbcdtravel.com', kind: 'organization', name: 'Wrong Learned Name', support: 99 },
     ]);
     expect(suggestPartyFromSender('a@renniesbcdtravel.com')).toEqual({
-      kind: 'agency',
+      kind: 'bookingAgency',
       name: 'Rennies Travel',
       nativeId: null,
       idStatus: 'unverified',
@@ -108,16 +108,16 @@ describe('extractPartyMentions', () => {
 
   it('reads the travel agency and organization lines, in the order they appear', () => {
     expect(extractPartyMentions(body).slice(0, 2)).toEqual([
-      { kind: 'agency', name: 'RENNIES TRAVEL (PTY) LTD', source: 'travel_agency_details' },
-      { kind: 'company', name: 'Bidvest Facilities Management Pty Ltd', source: 'organization_details' },
+      { kind: 'bookingAgency', name: 'RENNIES TRAVEL (PTY) LTD', source: 'travel_agency_details' },
+      { kind: 'organization', name: 'Bidvest Facilities Management Pty Ltd', source: 'organization_details' },
     ]);
   });
 
   it('reads a "for X employees" phrase as a company, and counts an exact name once', () => {
     expect(extractPartyMentions(`${body}\nTravel Agency Details: rennies travel (pty) ltd`)).toEqual([
-      { kind: 'agency', name: 'RENNIES TRAVEL (PTY) LTD', source: 'travel_agency_details' },
-      { kind: 'company', name: 'Bidvest Facilities Management Pty Ltd', source: 'organization_details' },
-      { kind: 'company', name: 'Bidvest Facilities Management', source: 'employee_line' },
+      { kind: 'bookingAgency', name: 'RENNIES TRAVEL (PTY) LTD', source: 'travel_agency_details' },
+      { kind: 'organization', name: 'Bidvest Facilities Management Pty Ltd', source: 'organization_details' },
+      { kind: 'organization', name: 'Bidvest Facilities Management', source: 'employee_line' },
     ]);
   });
 
@@ -154,7 +154,7 @@ describe('extractPartyMentions', () => {
 describe('suggestPartiesFor rank', () => {
   it('orders body mention, then learned sender history, then domain', () => {
     replaceLearnedSenderMapForTests([
-      { host: 'renniesbcdtravel.com', kind: 'agency', name: 'Harbor Travel', support: 4 },
+      { host: 'renniesbcdtravel.com', kind: 'bookingAgency', name: 'Harbor Travel', support: 4 },
     ]);
     expect(
       suggestPartiesFor({
@@ -174,13 +174,13 @@ describe('suggestPartiesFor rank', () => {
       body: '',
     });
     expect(suggestions).toEqual([
-      { source: 'sender', kind: 'agency', name: 'CWT JNB', nativeId: null, idStatus: 'unverified' },
+      { source: 'sender', kind: 'bookingAgency', name: 'CWT JNB', nativeId: null, idStatus: 'unverified' },
     ]);
   });
 
   it('does not repeat a history name that the body already stated', () => {
     replaceLearnedSenderMapForTests([
-      { host: 'learned-agency.test', kind: 'agency', name: 'Harbor Travel', support: 3 },
+      { host: 'learned-agency.test', kind: 'bookingAgency', name: 'Harbor Travel', support: 3 },
     ]);
     expect(
       suggestPartiesFor({
@@ -188,7 +188,7 @@ describe('suggestPartiesFor rank', () => {
         body: 'Travel Agency Details: Harbor Travel',
       }),
     ).toEqual([
-      { source: 'body', kind: 'agency', name: 'Harbor Travel', nativeId: null, idStatus: 'unverified' },
+      { source: 'body', kind: 'bookingAgency', name: 'Harbor Travel', nativeId: null, idStatus: 'unverified' },
     ]);
   });
 
@@ -197,7 +197,7 @@ describe('suggestPartiesFor rank', () => {
       {
         propertyCode: 'HRCEN',
         host: 'learned-agency.test',
-        kind: 'agency',
+        kind: 'bookingAgency',
         name: 'Centurion Only',
         support: 3,
       },

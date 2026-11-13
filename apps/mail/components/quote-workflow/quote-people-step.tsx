@@ -102,7 +102,7 @@ function GuestNameField({
 }
 
 /** Editing a field away from its picked name drops that pick, so the quote never sends a party the text no longer names. */
-function pickClearedBy(kind: 'company' | 'agency', header: StaffQuoteHeader, text: string): Partial<StaffQuoteHeader> {
+function pickClearedBy(kind: 'organization' | 'bookingAgency', header: StaffQuoteHeader, text: string): Partial<StaffQuoteHeader> {
   const picked = header.parties?.[kind];
   if (!picked || text === picked.name) return {};
   return { parties: { ...header.parties, [kind]: undefined } };
@@ -126,8 +126,8 @@ function StaffPartyFields({
 }: {
   header: StaffQuoteHeader;
   onPatch?: (header: Partial<StaffQuoteHeader>) => void;
-  onFieldEdit?: (kind: 'company' | 'agency') => void;
-  /** Find in HMS. Null or absent keeps the company and agency as plain text, as before. */
+  onFieldEdit?: (kind: 'organization' | 'bookingAgency') => void;
+  /** Find in HMS. Null or absent keeps the organization and bookingAgency as plain text, as before. */
   findParty?: PartyFinder | null;
   /** Suggestions from the email. The top name is preselected when V2 has not bound a party. */
   partySuggestions?: PartySuggestion[];
@@ -137,14 +137,14 @@ function StaffPartyFields({
   threadId?: string | null;
   sourceMessageId?: string | null;
   /** Tells the pane whether a field's automatic HMS search still decides its pick, so a rates run waits for it. */
-  onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
-  onRatePartyChange?: (kind: 'company' | 'agency', evidence: RatePartyEvidence | null) => void;
+  onPartyLookupPending?: (kind: 'organization' | 'bookingAgency', pending: boolean) => void;
+  onRatePartyChange?: (kind: 'organization' | 'bookingAgency', evidence: RatePartyEvidence | null) => void;
   requireExplicitPick?: boolean;
   propertyCode?: string | null;
 }) {
-  const partyPicker = (kind: 'company' | 'agency') => {
-    const label = kind === 'agency' ? 'Agency' : 'Company';
-    const value = kind === 'agency' ? header.agency : header.company;
+  const partyPicker = (kind: 'organization' | 'bookingAgency') => {
+    const label = kind === 'bookingAgency' ? 'Agency' : 'Company';
+    const value = kind === 'bookingAgency' ? header.bookingAgency : header.organization;
     const id = `quote-${kind}-name`;
     if (!findParty) {
       return (
@@ -159,7 +159,7 @@ function StaffPartyFields({
               onFieldEdit?.(kind);
               onRatePartyChange?.(kind, null);
               onPatch?.({
-                ...(kind === 'company' ? { company: searched } : { agency: searched }),
+                ...(kind === 'organization' ? { organization: searched } : { bookingAgency: searched }),
                 ...pickClearedBy(kind, header, searched),
               });
             }}
@@ -175,7 +175,7 @@ function StaffPartyFields({
         kind={kind}
         name={value}
         parties={header.parties ?? {}}
-        jobReadBackStatusOwner={kind === 'agency' || Boolean(header.parties?.agency)}
+        jobReadBackStatusOwner={kind === 'bookingAgency' || Boolean(header.parties?.bookingAgency)}
         find={findParty}
         jobTransport={partyJobTransport}
         threadId={threadId}
@@ -188,10 +188,10 @@ function StaffPartyFields({
           onRatePartyChange?.(kind, evidence ?? null);
           return onPatch?.({
             parties:
-              party.kind === 'company'
-                ? { ...header.parties, company: party }
-                : { ...header.parties, agency: party },
-            ...(party.kind === 'company' ? { company: party.name } : { agency: party.name }),
+              party.kind === 'organization'
+                ? { ...header.parties, organization: party }
+                : { ...header.parties, bookingAgency: party },
+            ...(party.kind === 'organization' ? { organization: party.name } : { bookingAgency: party.name }),
           });
         }}
         onClear={(cleared) => {
@@ -199,16 +199,16 @@ function StaffPartyFields({
           onRatePartyChange?.(cleared, null);
           return onPatch?.({
             parties:
-              cleared === 'company'
-                ? { ...header.parties, company: undefined }
-                : { ...header.parties, agency: undefined },
+              cleared === 'organization'
+                ? { ...header.parties, organization: undefined }
+                : { ...header.parties, bookingAgency: undefined },
           });
         }}
         onSearchName={(searched, searchKind) => {
           onFieldEdit?.(searchKind);
           onRatePartyChange?.(searchKind, null);
           return onPatch?.({
-            ...(searchKind === 'company' ? { company: searched } : { agency: searched }),
+            ...(searchKind === 'organization' ? { organization: searched } : { bookingAgency: searched }),
             ...pickClearedBy(searchKind, header, searched),
           });
         }}
@@ -217,9 +217,9 @@ function StaffPartyFields({
   };
   return (
     <div className="flex flex-col gap-2.5">
-      {partyPicker('agency')}
+      {partyPicker('bookingAgency')}
       <div aria-hidden="true" className="border-t border-[#e2e8f0]" />
-      {partyPicker('company')}
+      {partyPicker('organization')}
     </div>
   );
 }
@@ -247,7 +247,7 @@ export function QuotePeopleStep({
   partyState: 'Done' | 'Pending' | 'Optional' | 'Looking up';
   header: StaffQuoteHeader;
   onPatchStaffHeader?: (header: Partial<StaffQuoteHeader>, options?: { staffEdit?: boolean }) => void;
-  onFieldEdit?: (kind: 'company' | 'agency') => void;
+  onFieldEdit?: (kind: 'organization' | 'bookingAgency') => void;
   findParty?: PartyFinder | null;
   partySuggestions?: PartySuggestion[];
   partyIndex?: PartyIndexSearcher | null;
@@ -255,8 +255,8 @@ export function QuotePeopleStep({
   contact?: StoredContact | null;
   contactEditorKey?: string;
   onContactEdit?: (field: ContactField, value: string | null) => void;
-  onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
-  onRatePartyChange?: (kind: 'company' | 'agency', evidence: RatePartyEvidence | null) => void;
+  onPartyLookupPending?: (kind: 'organization' | 'bookingAgency', pending: boolean) => void;
+  onRatePartyChange?: (kind: 'organization' | 'bookingAgency', evidence: RatePartyEvidence | null) => void;
   scrollToStep: (id: string) => void;
   workItemPane?: WorkItemPaneControls | null;
   propertyCode?: string | null;

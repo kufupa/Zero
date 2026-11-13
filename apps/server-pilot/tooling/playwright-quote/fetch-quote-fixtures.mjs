@@ -33,7 +33,7 @@ export function selectionFixture() {
         {
           room: { code: 'STQN', inventory: ['3', '3', '3', '3'] },
           rate: 'BAR: Best Available Rate',
-          board: 'Bed & Breakfast R',
+          mealPlan: 'Bed & Breakfast R',
           prices: ['R1,780.00', 'R1,780.00', 'R1,780.00', 'R1,780.00'],
         },
       ],
@@ -114,7 +114,7 @@ export function barWalkInSource({ includeNativeWal = false } = {}) {
   const grid = (code, label, board, amount) => ({
     room: { code: 'STKNG', inventory: ['84', '84', '84', '84', '84'] },
     rate: `${code}: ${label}`,
-    board,
+    mealPlan: board,
     prices: Array(5).fill(`R${Number(amount).toLocaleString('en-US')}.00`),
   });
   const children = [

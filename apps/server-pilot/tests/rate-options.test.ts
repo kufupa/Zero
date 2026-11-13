@@ -11,7 +11,7 @@ type Row = {
   id: string;
   room?: string;
   rate: string;
-  board?: string;
+  mealPlan?: string;
   scope?: 'public' | 'contextual';
   match?: 'match' | 'alternative' | 'unresolved';
   availability?: string;
@@ -26,7 +26,7 @@ function row(r: Row): NativeOption {
     id: r.id,
     room: { code: r.room ?? 'SKNG', label: `${r.room ?? 'SKNG'} label`, buildingCode: 'MAIN' },
     rate: { code: r.rate, label: `${r.rate} label` },
-    board: r.board ?? 'Room Only R',
+    mealPlan: r.mealPlan ?? 'Room Only R',
     appliedContext: PARTY,
     rateScope: r.scope ?? 'public',
     eligibility: r.eligibility ?? 'verified',
@@ -43,7 +43,7 @@ function row(r: Row): NativeOption {
 }
 
 /** One room group asking for `quantity` rooms of the given room code and board, under the party. */
-function source(options: NativeOption[], ask: { roomCodes?: string[]; boardBases?: string[]; quantity?: number } = {}): QuoteSourceRecord {
+function source(options: NativeOption[], ask: { roomCodes?: string[]; mealPlanBases?: string[]; quantity?: number } = {}): QuoteSourceRecord {
   const room = {
     id: 'single',
     quantity: ask.quantity ?? 1,
@@ -52,7 +52,7 @@ function source(options: NativeOption[], ask: { roomCodes?: string[]; boardBases
     childAges: [],
     required: {
       ...(ask.roomCodes ? { roomCodes: ask.roomCodes } : {}),
-      ...(ask.boardBases ? { boardBases: ask.boardBases } : {}),
+      ...(ask.mealPlanBases ? { mealPlanBases: ask.mealPlanBases } : {}),
     },
   };
   return {
@@ -76,7 +76,7 @@ function source(options: NativeOption[], ask: { roomCodes?: string[]; boardBases
   };
 }
 
-const ROOM_ONLY = { roomCodes: ['SKNG'], boardBases: ['room_only'] };
+const ROOM_ONLY = { roomCodes: ['SKNG'], mealPlanBases: ['room_only'] };
 
 describe('rate cards from one summary read', () => {
   it('(d) a sold-out requested room lists the other room that is available, marked as not the request', () => {
@@ -113,17 +113,17 @@ describe('rate cards from one summary read', () => {
     const selected = row({ id: 'SKNG:BARRO', rate: 'BARRO', amount: '500.00' });
     const kept = [
       row({ id: 'STQN:BCO1B', room: 'STQN', rate: 'BCO1B', scope: 'contextual', match: 'alternative', amount: '520.00' }),
-      row({ id: 'SKNG:BCO2B', rate: 'BCO2B', board: 'Bed & Breakfast R', scope: 'contextual', match: 'alternative', amount: '640.00' }),
-      row({ id: 'SKNG:BCO5B', rate: 'BCO5B', board: 'Dinner, Bed & Breakfast R', scope: 'contextual', match: 'alternative', amount: '700.00' }),
-      row({ id: 'SKNG:BBP', rate: 'BBP', board: 'Bed & Breakfast R', match: 'alternative', amount: '600.00' }),
-      row({ id: 'SKNG:DBBP', rate: 'DBBP', board: 'Dinner, Bed & Breakfast R', match: 'alternative', amount: '650.00' }),
+      row({ id: 'SKNG:BCO2B', rate: 'BCO2B', mealPlan: 'Bed & Breakfast R', scope: 'contextual', match: 'alternative', amount: '640.00' }),
+      row({ id: 'SKNG:BCO5B', rate: 'BCO5B', mealPlan: 'Dinner, Bed & Breakfast R', scope: 'contextual', match: 'alternative', amount: '700.00' }),
+      row({ id: 'SKNG:BBP', rate: 'BBP', mealPlan: 'Bed & Breakfast R', match: 'alternative', amount: '600.00' }),
+      row({ id: 'SKNG:DBBP', rate: 'DBBP', mealPlan: 'Dinner, Bed & Breakfast R', match: 'alternative', amount: '650.00' }),
     ];
     const excluded = [
-      row({ id: 'SKNG:BCO3B', rate: 'BCO3B', board: 'Bed & Breakfast R', scope: 'contextual', match: 'alternative', availability: 'restricted', amount: '100.00' }),
+      row({ id: 'SKNG:BCO3B', rate: 'BCO3B', mealPlan: 'Bed & Breakfast R', scope: 'contextual', match: 'alternative', availability: 'restricted', amount: '100.00' }),
       row({ id: 'SKNG:BCO4B', rate: 'BCO4B', scope: 'contextual', match: 'alternative', availability: 'unavailable', amount: '90.00' }),
-      row({ id: 'SKNG:BBX', rate: 'BBX', board: 'Bed & Breakfast R', match: 'alternative', held: true, amount: '50.00' }),
-      row({ id: 'SKNG:DBBX', rate: 'DBBX', board: 'Dinner, Bed & Breakfast R', match: 'unresolved', amount: '10.00' }),
-      row({ id: 'SKNG:BCO6B', rate: 'BCO6B', board: 'Bed & Breakfast R', scope: 'contextual', match: 'alternative', eligibility: 'conditional', amount: '30.00' }),
+      row({ id: 'SKNG:BBX', rate: 'BBX', mealPlan: 'Bed & Breakfast R', match: 'alternative', held: true, amount: '50.00' }),
+      row({ id: 'SKNG:DBBX', rate: 'DBBX', mealPlan: 'Dinner, Bed & Breakfast R', match: 'unresolved', amount: '10.00' }),
+      row({ id: 'SKNG:BCO6B', rate: 'BCO6B', mealPlan: 'Bed & Breakfast R', scope: 'contextual', match: 'alternative', eligibility: 'conditional', amount: '30.00' }),
     ];
     const cards = buildRateOptions(source([selected, ...kept, ...excluded], ROOM_ONLY), [{ groupId: 'single', optionId: 'SKNG:BARRO' }]);
     expect(cards.map((card) => card.rateCode)).toEqual(['BARRO', 'BCO1B', 'BCO2B', 'BCO5B', 'BBP', 'DBBP']);
@@ -153,7 +153,7 @@ describe('rate cards from one summary read', () => {
         [
           row({ id: 'SKNG:BARRO', rate: 'BARRO', amount: '500.00' }),
           row({ id: 'STQN:BCO1B', room: 'STQN', rate: 'BCO1B', scope: 'contextual', match: 'alternative', amount: '520.00' }),
-          row({ id: 'SKNG:BBP', rate: 'BBP', board: 'Bed & Breakfast R', match: 'alternative', amount: '600.00' }),
+          row({ id: 'SKNG:BBP', rate: 'BBP', mealPlan: 'Bed & Breakfast R', match: 'alternative', amount: '600.00' }),
         ],
         { ...ROOM_ONLY, quantity: 2 },
       ),
@@ -170,7 +170,7 @@ describe('rate cards from one summary read', () => {
       source(
         [
           row({ id: 'SKNG:BARRO', rate: 'BARRO', inventories: [7, 3] }),
-          row({ id: 'SKNG:BBP', rate: 'BBP', board: 'Bed & Breakfast R', match: 'alternative', inventories: [5, 4] }),
+          row({ id: 'SKNG:BBP', rate: 'BBP', mealPlan: 'Bed & Breakfast R', match: 'alternative', inventories: [5, 4] }),
         ],
         ROOM_ONLY,
       ),
@@ -217,8 +217,8 @@ describe('the note for a contract on another board', () => {
   const option = (over: Partial<RateOption>): RateOption => ({
     id: 'single:BARRO',
     groupId: 'single',
-    board: 'room_only',
-    boardLabel: 'Room Only R',
+    mealPlan: 'room_only',
+    mealPlanLabel: 'Room Only R',
     rateCode: 'BARRO',
     rateLabel: 'Room Only',
     roomCode: 'SKNG',
@@ -235,8 +235,8 @@ describe('the note for a contract on another board', () => {
   });
   const contractElsewhere = option({
     id: 'single:BCO2B',
-    board: 'bb',
-    boardLabel: 'Bed & Breakfast R',
+    mealPlan: 'bb',
+    mealPlanLabel: 'Bed & Breakfast R',
     rateCode: 'BCO2B',
     contract: true,
     onlyContract: true,
@@ -252,7 +252,7 @@ describe('the note for a contract on another board', () => {
   });
 
   it('is silent when the contract itself was quoted, or when no contract exists elsewhere', () => {
-    expect(otherBoardContractNotes(['Woolworths'], [option({ contract: true, board: 'room_only', boardLabel: 'Room Only R' }), contractElsewhere])).toEqual([]);
+    expect(otherBoardContractNotes(['Woolworths'], [option({ contract: true, mealPlan: 'room_only', mealPlanLabel: 'Room Only R' }), contractElsewhere])).toEqual([]);
     expect(otherBoardContractNotes(['Woolworths'], [option({})])).toEqual([]);
   });
 });
@@ -269,9 +269,9 @@ describe('HMS event rates (U13)', () => {
 });
 
 it('keeps the selected Standard King on a tied BAR card when Accessible sorts first by id', () => {
-  const acces = row({ id: 'HRDAV:ACCES:BAR', room: 'ACCES', rate: 'BAR', board: 'Bed & Breakfast R', amount: '4656.00' });
-  const stkng = row({ id: 'HRDAV:STKNG:BAR', room: 'STKNG', rate: 'BAR', board: 'Bed & Breakfast R', amount: '4656.00' });
-  const base = source([acces, stkng], { boardBases: ['breakfast'] });
+  const acces = row({ id: 'HRDAV:ACCES:BAR', room: 'ACCES', rate: 'BAR', mealPlan: 'Bed & Breakfast R', amount: '4656.00' });
+  const stkng = row({ id: 'HRDAV:STKNG:BAR', room: 'STKNG', rate: 'BAR', mealPlan: 'Bed & Breakfast R', amount: '4656.00' });
+  const base = source([acces, stkng], { mealPlanBases: ['breakfast'] });
   const cards = buildRateOptions({ ...base, request: { ...base.request, propertyCode: 'HRDAV' } }, [{ groupId: 'single', optionId: 'HRDAV:STKNG:BAR' }]);
   expect(cards.find((card) => card.selected)).toMatchObject({ roomCode: 'STKNG', selected: true, priced: 'full', rateCode: 'BAR' });
 });
@@ -279,11 +279,11 @@ it('keeps the selected Standard King on a tied BAR card when Accessible sorts fi
 it('maps a Non-Rewardable breakfast label from the property profile', () => {
   expect(boardsFor('HRDAV')['bed & breakfast nr']).toBe('breakfast');
   expect(boardsFor('UNKNOWN')['bed & breakfast nr']).toBeUndefined();
-  const nr = row({ id: 'STKNG:BWS1B', room: 'STKNG', rate: 'BWS1B', board: 'Bed & Breakfast NR', scope: 'contextual', amount: '2500.00' });
-  const base = source([nr], { roomCodes: ['STKNG'], boardBases: ['breakfast'] });
+  const nr = row({ id: 'STKNG:BWS1B', room: 'STKNG', rate: 'BWS1B', mealPlan: 'Bed & Breakfast NR', scope: 'contextual', amount: '2500.00' });
+  const base = source([nr], { roomCodes: ['STKNG'], mealPlanBases: ['breakfast'] });
   const cards = buildRateOptions({ ...base, request: { ...base.request, propertyCode: 'HRDAV' } }, []);
   expect(cards).toHaveLength(1);
-  expect(cards[0]).toMatchObject({ rateCode: 'BWS1B', board: 'bb', priced: 'summary' });
+  expect(cards[0]).toMatchObject({ rateCode: 'BWS1B', mealPlan: 'bb', priced: 'summary' });
 });
 
 it('does not quote a cheaper unread leftover row', () => {

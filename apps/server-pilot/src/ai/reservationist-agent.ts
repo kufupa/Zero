@@ -59,7 +59,7 @@ const quoteInput = z.object({
     )
     .min(1)
     .max(8),
-  rateContext: z.object({ organization: contextRef, agency: contextRef }).partial().optional(),
+  rateContext: z.object({ organization: contextRef, bookingAgency: contextRef }).partial().strict().optional(),
 });
 
 const partyInput = z.object({
@@ -80,10 +80,10 @@ const partyInput = z.object({
 
 const pdfInput = z.object({
   attention: z.string(),
-  company: z.string(),
+  organization: z.string(),
   clientEmail: z.string(),
   clientTelephone: z.string(),
-  agency: z.string().min(1),
+  bookingAgency: z.string().min(1),
   dateLabel: z.string().min(1),
   lines: z
     .array(

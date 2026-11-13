@@ -89,10 +89,11 @@ function snapshotApprovedNativeIdentity(native) {
 }
 
 /** A fresh listing confirms metadata only; it does not verify the stored bytes. */
-export function hasUniqueDocumentListing(docs, code, name) {
+export function hasUniqueDocumentListing(docs, code, name, description) {
   if (!Array.isArray(docs?.documents)) return false;
   const codes = docs.documents.filter((item) => item?.documentCode === code);
-  return codes.length === 1 && codes[0].name === name;
+  return codes.length === 1 && codes[0].name === name &&
+    (description === undefined || codes[0].description === description);
 }
 
 /** Give the sealer the native evidence directory, retaining its parent for cleanup. */
@@ -126,10 +127,11 @@ async function freshDocuments(page, input, code, setNative) {
   if (!expected) throw new Error('READBACK_STAY_MISMATCH');
   setNative(record.nativePreimage);
   const docs = await readDocuments(page, input.confirmation);
-  const listed = hasUniqueDocumentListing(docs, code, input.documentName);
+  const listed = hasUniqueDocumentListing(docs, code, input.documentName, input.documentDescription);
   const nativeReadback = { confirmation: record.nativePreimage.confirmation,
     nativeStayId: record.nativePreimage.reservationStayId, nativeGuestId: record.nativePreimage.guestId,
-    documentCode: code, documentName: input.documentName, uniqueFreshListing: listed };
+    documentCode: code, documentName: input.documentName,
+    ...(input.documentDescription && listed ? { documentDescription: input.documentDescription } : {}), uniqueFreshListing: listed };
   return { listed, nativeReadback, screenshot: listed ? await page.screenshot({ fullPage: true }) : null };
 }
 
@@ -167,7 +169,7 @@ export async function provePositiveAttachRecovery(intent, { openSession = withCe
       approvedNative.current = snapshotApprovedNativeIdentity(record.nativePreimage);
       ref.current = record.nativePreimage;
       const listing = await documents(page, recovery.confirmation);
-      if (!hasUniqueDocumentListing(listing, recovery.documentCode, recovery.documentName)) return { outcome: 'unconfirmed' };
+      if (!hasUniqueDocumentListing(listing, recovery.documentCode, recovery.documentName, recovery.documentDescription)) return { outcome: 'unconfirmed' };
       const screenshot = await page.screenshot({ fullPage: true });
       if (!Buffer.isBuffer(screenshot) || !screenshot.length || screenshot.length > 10 * 1024 * 1024) {
         return { outcome: 'unconfirmed' };
@@ -175,7 +177,8 @@ export async function provePositiveAttachRecovery(intent, { openSession = withCe
       return { outcome: 'verified', confirmation: recovery.confirmation, screenshot,
         readback: { confirmation: record.nativePreimage.confirmation, nativeStayId: record.nativePreimage.reservationStayId,
           nativeGuestId: intent.nativeGuestId,
-          documentCode: recovery.documentCode, documentName: recovery.documentName, uniqueFreshListing: true } };
+          documentCode: recovery.documentCode, documentName: recovery.documentName,
+          ...(recovery.documentDescription ? { documentDescription: recovery.documentDescription } : {}), uniqueFreshListing: true } };
     }, { headless: true, blockServiceWorkers: true, signal: AbortSignal.timeout(5 * 60_000),
       ...(recovery.cloudTargetKey ? { cloudTargetKey: recovery.cloudTargetKey } : {}),
       prepareContext: (context) => installPaneAttachReadGuard(context, {
@@ -209,7 +212,7 @@ export async function prepareCloudPaneAttach(input, { openSession = withCenturio
       approvedNative.current = snapshotApprovedNativeIdentity(record.nativePreimage);
       native.current = record.nativePreimage;
       return attach(page, expected, { name: input.documentName, documentCode: code,
-        description: input.documentName, mimeType: 'application/pdf', bytes: input.bytes },
+        description: input.documentDescription ?? input.documentName, mimeType: 'application/pdf', bytes: input.bytes },
       { evidenceRoot: root, expectedDocumentContext: input.approvedSnapshot,
         strictNetwork: true, prepareOnly: true, timeoutMs: 5 * 60_000 });
     }, { headless: true, blockServiceWorkers: true, signal: AbortSignal.timeout(6 * 60_000),
@@ -219,7 +222,7 @@ export async function prepareCloudPaneAttach(input, { openSession = withCenturio
         getNative: () => native.current, getApprovedNativeIdentity: () => approvedNative.current,
       }) });
     return result?.outcome === 'prepared' && result.documentCode === code &&
-      result.documentName === input.documentName && result.description === input.documentName
+      result.documentName === input.documentName && result.description === (input.documentDescription ?? input.documentName)
       ? { outcome: 'prepared', documentCode: code } : { outcome: 'refused', issue: result?.issue };
   } catch {
     return { outcome: 'refused', issue: 'DOCUMENT_PREPARE_UNAVAILABLE' };
@@ -271,7 +274,7 @@ export async function runCloudPaneAttach(input, { openSession = withCenturionSta
       writing.current = record.nativePreimage;
       attachAttempted = true;
       return attach(page, expected, { name: input.documentName, documentCode: code,
-        description: input.documentName, mimeType: 'application/pdf', bytes },
+        description: input.documentDescription ?? input.documentName, mimeType: 'application/pdf', bytes },
       { evidenceRoot: root, expectedDocumentContext: input.approvedSnapshot,
         beforeDispatch: input.beforeDispatch, finalAuthority: () => input.finalAuthority(code),
         continuationAllowed: input.continuationAllowed,

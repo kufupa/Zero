@@ -263,7 +263,7 @@ const documentSchema = z
       .passthrough(),
     authoredDate: z.string().optional(),
     rateCode: z.string().optional(),
-    board: z.enum(['room_only', 'breakfast', 'dinner_bed_breakfast']).optional(),
+    mealPlan: z.enum(['room_only', 'breakfast', 'dinner_bed_breakfast']).optional(),
     publicationAt: z.string().optional(),
     acquisitionReceiptPath: z.string().optional(),
     acquisitionReceiptSHA256: hashSchema.optional(),
@@ -271,13 +271,26 @@ const documentSchema = z
   .passthrough();
 const rateConfigurationSchema = z
   .object({
-    version: z.literal('source-native-invoice-rate-policy-v1'),
+    version: z.literal('source-native-invoice-rate-policy-v2'),
     ownerRef: z.string().min(1),
     propertyCode: z.string().min(1),
     documents: z.array(documentSchema).max(64),
     corpusPaths: z.array(z.string().min(1)).min(1).max(4).optional(),
   })
   .passthrough();
+/** Versioned private descriptors are hydrated only when read from the installed artifact. */
+function migrateStoredRatePolicy(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const policy = value as Record<string, unknown>;
+  if (policy.version !== 'source-native-invoice-rate-policy-v1' || !Array.isArray(policy.documents)) return value;
+  return { ...policy, version: 'source-native-invoice-rate-policy-v2', documents: policy.documents.map((raw: unknown) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+    const { board, ...document } = raw as Record<string, unknown>;
+    if (board !== undefined && document.mealPlan !== undefined && board !== document.mealPlan)
+      throw new Error('staff_quote_policy_family_invalid');
+    return board === undefined ? document : { ...document, mealPlan: board };
+  }) };
+}
 const originalRowSchema = z
   .object({
     id: z.string(),
@@ -328,7 +341,7 @@ export function createStaffQuoteRatePolicyDocumentReader(options: {
     family: {
       propertyCode: string;
       rateCode: string;
-      board: import('../quote-proposal/quote-revision.js').Board;
+      mealPlan: import('../quote-proposal/quote-revision.js').Board;
     },
   ): Promise<readonly ReservationistRatePolicyDocument[]> => {
     const guard = async () => {
@@ -339,7 +352,7 @@ export function createStaffQuoteRatePolicyDocumentReader(options: {
     await guard();
     const bytes = checkedPrivateFile(configurationPath, 1024 * 1024),
       identity = sha(bytes);
-    const configuration = rateConfigurationSchema.parse(JSON.parse(bytes.toString()));
+    const configuration = rateConfigurationSchema.parse(migrateStoredRatePolicy(JSON.parse(bytes.toString())));
     if (
       configuration.ownerRef !== ctx.input.authorizationScope?.ownerRef ||
       configuration.propertyCode !== ctx.input.propertyCode
@@ -363,7 +376,7 @@ export function createStaffQuoteRatePolicyDocumentReader(options: {
       const terms = configured.kind === 'hotel_rate_terms';
       if (
         configured.propertyCode !== family.propertyCode ||
-        (!terms && (configured.rateCode !== family.rateCode || configured.board !== family.board))
+        (!terms && (configured.rateCode !== family.rateCode || configured.mealPlan !== family.mealPlan))
       )
         continue;
       if (
@@ -399,7 +412,7 @@ export function createStaffQuoteRatePolicyDocumentReader(options: {
           configured.publicationAt !== row.eventAt ||
           configured.authoredDate !== undefined ||
           configured.rateCode !== undefined ||
-          configured.board !== undefined ||
+          configured.mealPlan !== undefined ||
           !configured.acquisitionReceiptPath ||
           !configured.acquisitionReceiptSHA256
         )
@@ -446,7 +459,7 @@ export function createStaffQuoteRatePolicyDocumentReader(options: {
           receipt.sourceSnapshotHash !== scope.sourceSnapshotHash
         )
           throw new Error('staff_quote_policy_receipt_invalid');
-      } else if (!configured.authoredDate || !configured.rateCode || !configured.board)
+      } else if (!configured.authoredDate || !configured.rateCode || !configured.mealPlan)
         throw new Error('staff_quote_policy_family_invalid');
       const extracted = await extractEmbeddedPdfText(
         {
@@ -482,7 +495,7 @@ export function createStaffQuoteRatePolicyDocumentReader(options: {
               kind: 'family_invoice',
               authoredDate: configured.authoredDate!,
               rateCode: configured.rateCode!,
-              board: configured.board!,
+              mealPlan: configured.mealPlan!,
             },
       );
       await guard();

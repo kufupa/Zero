@@ -33,7 +33,7 @@ seed = reduceQuoteSession(seed, { type: 'analysis_ready', analysis: { intent: 'q
 }] } });
 seed = reduceQuoteSession(seed, { type: 'staff_source_ready', source });
 seed = reduceQuoteSession(seed, { type: 'mailbox_status', status: 'ready' });
-seed = reduceQuoteSession(seed, { type: 'patch_staff_header', header: { salesStrategy: 'Government', company: proof.approved.company, agency: '' } });
+seed = reduceQuoteSession(seed, { type: 'patch_staff_header', header: { salesStrategy: 'Government', organization: proof.approved.company, bookingAgency: '' } });
 
 function RecordedPane() {
   const [session, dispatch] = useReducer(reduceQuoteSession, seed);

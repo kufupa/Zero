@@ -74,7 +74,7 @@ function groupFromStayAsk(
     adultsPerRoom,
     ...(stay.childrenTotal !== undefined ? { childrenTotal: stay.childrenTotal } : {}),
     childAges: stay.children > 0 ? null : [],
-    board: null,
+    mealPlan: null,
     roomPreference: null,
     guestNames: [],
   };

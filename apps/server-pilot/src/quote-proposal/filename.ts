@@ -60,12 +60,12 @@ function sanitizePdfParty(raw: string | null | undefined): string {
 
 /** Agency, then company, then guest/contact, then the From display name. Never "Guest". */
 export function quotePdfPartyName(
-  agency?: string | null,
-  company?: string | null,
+  bookingAgency?: string | null,
+  organization?: string | null,
   guestName?: string | null,
   senderDisplayName?: string | null,
 ): string {
-  for (const raw of [agency, company, guestName, senderDisplayName]) {
+  for (const raw of [bookingAgency, organization, guestName, senderDisplayName]) {
     const org = sanitizePdfParty(raw);
     if (org) return org;
   }
@@ -84,8 +84,8 @@ export function quotePdfSenderDisplayName(fromAddress: string | null | undefined
  * "Quote - <agency> <stay span>.pdf". The document id's first eight hex digits follow the span, so two options quoted
  * for the same agency and dates on the same day never share a name.
  */
-export function quotePdfFileName(agency: string, dateLabel: string, documentId?: string): string {
-  const org = quotePdfPartyName(agency);
+export function quotePdfFileName(partyName: string, dateLabel: string, documentId?: string): string {
+  const org = quotePdfPartyName(partyName);
   const dates = dateLabel.replace(/\s+/g, ' ').trim();
   const option = documentId ? ` (${documentId.replace(/^[a-z]+:/, '').slice(0, 8)})` : '';
   return `Quote - ${org} ${dates}${option}.pdf`;

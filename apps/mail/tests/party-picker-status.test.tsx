@@ -32,7 +32,7 @@ function partyFields(
 ) {
   const shared = {
     parties: agencySelected
-      ? { agency: { kind: 'agency' as const, nativeId: 'agency-1', name: 'Example Agency' } }
+      ? { bookingAgency: { kind: 'bookingAgency' as const, nativeId: 'agency-1', name: 'Example Agency' } }
       : {},
     find: vi.fn(),
     jobTransport,
@@ -49,14 +49,14 @@ function partyFields(
         autoLookup
         jobReadBackStatusOwner
         name="Example Agency"
-        kind="agency"
+        kind="bookingAgency"
       />
       <PartyPicker
         {...shared}
         autoLookup
         jobReadBackStatusOwner={agencySelected}
         name="Example Group"
-        kind="company"
+        kind="organization"
       />
     </>
   );
@@ -86,7 +86,7 @@ describe('PartyPicker shared job status', () => {
     expect(screen.getAllByRole('status')).toHaveLength(1);
     expect(screen.getByRole('status').textContent).toContain('Running');
     expect(screen.getByRole('status').textContent).toContain(
-      'Searching for the company or agency in HMS.',
+      'Searching for the organization or primary booking agency in HMS.',
     );
 
     view = sharedPartyJob('failed', 'message-2');
@@ -113,7 +113,7 @@ describe('PartyPicker shared job status', () => {
       <PartyPicker
         autoLookup
         name="Example Company"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -127,7 +127,7 @@ describe('PartyPicker shared job status', () => {
     await waitFor(() => expect(pendingReadbacks).toHaveLength(1));
     expect(screen.getAllByRole('status')).toHaveLength(1);
     expect(screen.getByRole('status').textContent).toContain(
-      'Searching HMS for "Example Company" (company)',
+      'Searching HMS for "Example Company" (organization)',
     );
     expect(screen.queryByText('Checking for a background HMS lookup…')).toBeNull();
 
@@ -137,7 +137,7 @@ describe('PartyPicker shared job status', () => {
   });
 
   it('keeps inline match confirmation and failed read-back Retry visible together', async () => {
-    const candidate = { kind: 'company' as const, nativeId: 'company-1', name: 'Example Company' };
+    const candidate = { kind: 'organization' as const, nativeId: 'company-1', name: 'Example Company' };
     const find = vi.fn(async () => ({
       outcome: 'resolved' as const,
       results: [candidate],
@@ -158,7 +158,7 @@ describe('PartyPicker shared job status', () => {
       <PartyPicker
         autoLookup
         name="Example Company"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={find}
         jobTransport={jobTransport}
@@ -172,7 +172,7 @@ describe('PartyPicker shared job status', () => {
     expect(await screen.findByRole('button', { name: 'Confirm Example Company' })).toBeTruthy();
     expect(screen.getByRole('alert').textContent).toContain("Couldn't reach HMS.");
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
-    expect(screen.queryByText('Searching HMS for "Example Company" (company)')).toBeNull();
+    expect(screen.queryByText('Searching HMS for "Example Company" (organization)')).toBeNull();
     expect(onPick).not.toHaveBeenCalled();
   });
 });

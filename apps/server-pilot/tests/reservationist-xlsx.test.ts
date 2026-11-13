@@ -49,7 +49,7 @@ describe('spreadsheet rows in reservationist extraction', () => {
       { id: 'room', kind: 'room', value: { roomRef: '1', quantity: 1, adults: 2, childAges: [] }, disclosure: 'guest', source: sheetSource },
       { id: 'guest', kind: 'guest', value: { firstName: mode === 'cross-row name' ? 'Jamie' : mode === 'masked name' ? '[card ••••1111]' : 'Alex', lastName: 'Example', roomRef: '1', ...(mode === 'unprinted room index' ? { roomIndex: 1 } : {}) }, disclosure: 'guest', source: sheetSource },
       { id: 'dates', kind: 'dates', value: { arrival: mode === 'conflicting stay' ? '2027-03-10' : '2027-02-10', departure: mode === 'conflicting stay' ? '2027-03-11' : '2027-02-11' }, disclosure: 'guest', source: mode === 'conflicting stay' ? otherSource : sheetSource },
-      ...(mode === 'conflicting board' ? [{ id: 'board', kind: 'board', value: 'RO', disclosure: 'guest', source: otherSource }] : []),
+      ...(mode === 'conflicting board' ? [{ id: 'board', kind: 'mealPlan', value: 'RO', disclosure: 'guest', source: otherSource }] : []),
     ];
     const metadata = { attachmentId: 'sheet', messageId: 'm', threadId: 't', ownerRef: 'o', messageAt: at,
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', sizeBytes: body.length, sourceHash: hash, disclosure: 'guest' as const };

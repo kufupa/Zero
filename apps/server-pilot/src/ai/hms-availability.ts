@@ -50,8 +50,8 @@ export const rateContextSchema = z.object({
   arrival: z.string().regex(ISO_DAY), departure: z.string().regex(ISO_DAY),
   roomCode: nativeCode, quantity: z.number().int().min(1).max(99),
   adults: z.number().int().min(1).max(9), childAges: z.array(z.number().int().min(0).max(99)).max(9),
-  board: z.enum(['room_only', 'bb', 'dbb']).nullable(), currency: z.string().regex(/^[A-Z]{3}$/),
-  agencyId: nativeId.nullable(), organizationId: nativeId.nullable(), guestProfileId: nativeId.nullable(),
+  mealPlan: z.enum(['room_only', 'bb', 'dbb']).nullable(), currency: z.string().regex(/^[A-Z]{3}$/),
+  bookingAgencyId: nativeId.nullable(), organizationId: nativeId.nullable(), guestProfileId: nativeId.nullable(),
   sourceOfBusiness: z.string().nullable(), track: z.string().nullable(), guaranteeType: z.string().nullable(),
   typedRatePlan: nativeCode.nullable(),
   savedTarget: z.object({ confirmation: z.string().min(1), bookedArrival: z.string().regex(ISO_DAY),
@@ -68,7 +68,7 @@ export const availabilityRequestSchema = z
     arrival: z.string().regex(ISO_DAY),
     departure: z.string().regex(ISO_DAY),
     rateContext: rateContextSchema.optional(),
-    rateParties: z.object({ organization: partyRef.optional(), agency: partyRef.optional() }).strict().optional(),
+    rateParties: z.object({ organization: partyRef.optional(), bookingAgency: partyRef.optional() }).strict().optional(),
     rooms: z
       .array(
         z
@@ -102,7 +102,7 @@ export const availabilityJobRequestSchema = availabilityRequestSchema.superRefin
         (Date.parse(context.departure) - Date.parse(context.arrival)) / 86_400_000 > MAX_NIGHTS) {
       ctx.addIssue({ code: 'custom', message: 'Rate context must match one complete room scenario within 30 nights.' });
     }
-    for (const [kind, id] of [['organization', context.organizationId], ['agency', context.agencyId]] as const) {
+    for (const [kind, id] of [['organization', context.organizationId], ['bookingAgency', context.bookingAgencyId]] as const) {
       if ((request.rateParties?.[kind]?.nativeId ?? null) !== id) {
         ctx.addIssue({ code: 'custom', message: `Rate ${kind} reference must match the context ID.` });
       }
@@ -113,9 +113,9 @@ export type AvailabilityRequest = z.infer<typeof availabilityRequestSchema>;
 const pickedRateParty = partyRef.extend({ jobId: z.string().uuid() }).strict();
 export const ratePartySelectionSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('none'), ratePlan: nativeCode.nullable().optional() }).strict(),
-  z.object({ kind: z.literal('selected'), agency: pickedRateParty.nullable(), organization: pickedRateParty.nullable(),
+  z.object({ kind: z.literal('selected'), bookingAgency: pickedRateParty.nullable(), organization: pickedRateParty.nullable(),
     ratePlan: nativeCode.nullable().optional() }).strict(),
-]).refine(selection => selection.kind === 'none' || selection.agency !== null || selection.organization !== null);
+]).refine(selection => selection.kind === 'none' || selection.bookingAgency !== null || selection.organization !== null);
 export type RatePartySelection = z.infer<typeof ratePartySelectionSchema>;
 
 /** Durable picker evidence, separate from native Prepare authority. */
@@ -164,18 +164,18 @@ export function boundSourceRateRequest(input: {
       (!perRoomAges && stay.rows.length === 1 && stay.totalChildren != null && stay.totalChildren !== childAges.length * (count as number))) {
     return { reason: 'CHILD_AGES_UNRESOLVED' };
   }
-  const rawBoard = pick(`${rowPrefix}board`, row.board);
+  const rawBoard = pick(`${rowPrefix}mealPlan`, row.mealPlan);
   const board = rawBoard === 'unknown' || rawBoard == null ? null : rawBoard;
   const quantity = input.workflow === 'create' ? 1 : count;
   const rateParties = selection.kind === 'none' ? {} : Object.fromEntries(
-    (['agency', 'organization'] as const).flatMap(kind => selection[kind] ?
+    (['bookingAgency', 'organization'] as const).flatMap(kind => selection[kind] ?
       [[kind, { nativeId: selection[kind]!.nativeId, name: selection[kind]!.name }]] : []));
   const explicitCode = selection.ratePlan ?? null;
   const parsed = availabilityJobRequestSchema.safeParse({ kind: 'availability', arrival, departure,
     rooms: [{ roomType: roomCode, quantity, adults, childAges }], rateParties,
     rateContext: { propertyCode: input.propertyCode, workflow: input.workflow, arrival, departure, roomCode, quantity,
-      adults, childAges, board, currency: 'ZAR', // Existing HRCEN Quote currency; observations must match it.
-      agencyId: selection.kind === 'selected' ? selection.agency?.nativeId ?? null : null,
+      adults, childAges, mealPlan: board, currency: 'ZAR', // Existing HRCEN Quote currency; observations must match it.
+      bookingAgencyId: selection.kind === 'selected' ? selection.bookingAgency?.nativeId ?? null : null,
       organizationId: selection.kind === 'selected' ? selection.organization?.nativeId ?? null : null,
       guestProfileId: null, sourceOfBusiness: roomPick('sourceOfBusiness', null),
       track: roomPick('track', null), guaranteeType: roomPick('guaranteeType', null),
@@ -194,7 +194,7 @@ export function boundAmendRateRequest(input: {
 }): { request: AvailabilityRequest; selectedCode: string | null; explicitCode: string | null; unchangedCode: string; draftContextKey: string } |
   { reason: string } {
   const { lookup, fields, state } = input;
-  if (!lookup?.native || !lookup.parties?.agency || !lookup.parties.organization || !lookup.group ||
+  if (!lookup?.native || !lookup.parties?.bookingAgency || !lookup.parties.organization || !lookup.group ||
       !lookup.promotion || !lookup.arAccount || !lookup.sourceOfBusiness || !lookup.track) return { reason: 'SAVED_CONTEXT_READ_REQUIRED' };
   const native = lookup.native;
   const target = fields.target as { confirmation?: unknown; arrival?: unknown } | null;
@@ -234,8 +234,8 @@ export function boundAmendRateRequest(input: {
   const parsed = availabilityJobRequestSchema.safeParse({ kind: 'availability', arrival, departure,
     rooms: [{ roomType: roomCode, quantity: 1, adults, childAges }], rateParties,
     rateContext: { propertyCode: input.propertyCode, workflow: 'amend', arrival, departure, roomCode,
-      quantity: 1, adults, childAges, board: null, currency: lookup.currency,
-      agencyId: lookup.parties.agency.nativeId, organizationId: lookup.parties.organization.nativeId,
+      quantity: 1, adults, childAges, mealPlan: null, currency: lookup.currency,
+      bookingAgencyId: lookup.parties.bookingAgency.nativeId, organizationId: lookup.parties.organization.nativeId,
       guestProfileId: native.guestId,
       sourceOfBusiness: lookup.sourceOfBusiness.state === 'observed' ? lookup.sourceOfBusiness.value : null,
       track: lookup.track.state === 'observed' ? lookup.track.value : null,
@@ -383,7 +383,7 @@ type QuoteNight = {
 type QuoteOption = {
   room?: { code?: unknown; label?: unknown } | null;
   rate?: { code?: unknown; label?: unknown } | null;
-  board?: unknown;
+  mealPlan?: unknown;
   availability?: unknown;
   availabilityReason?: unknown;
   eligibility?: unknown;
@@ -446,7 +446,7 @@ export type AvailabilitySnapshot = {
     options: Array<{
       room: string | null;
       rate: string | null;
-      board?: string;
+      mealPlan?: string;
       availability: string;
       roomLabel?: string;
       rateLabel?: string;
@@ -689,14 +689,14 @@ export function availabilitySnapshotOf(result: QuoteEnvelope, request?: Availabi
         );
         const roomLabel = text(option?.room?.label);
         const eligibility = text(option?.eligibility);
-        const board = text(option?.board);
+        const board = text(option?.mealPlan);
         const rateScope = rateScopeOf(option);
         const hasNightlyFacts = nightly !== undefined;
         return {
           room: text(option?.room?.code),
           rate,
           availability,
-          ...(board ? { board } : {}),
+          ...(board ? { mealPlan: board } : {}),
           ...(availabilityReason ? { availabilityReason } : {}),
           ...(hasNightlyFacts && roomLabel ? { roomLabel } : {}),
           ...(hasNightlyFacts && rateLabel ? { rateLabel } : {}),
@@ -732,8 +732,8 @@ export type AvailabilityBoardRow = {
   roomLabel: string;
   rateCode: string;
   rateLabel: string;
-  board: string;
-  boardLabel: string;
+  mealPlan: string;
+  mealPlanLabel: string;
   nightlyPriceMinor: number | null;
   roomsLeft: number | null;
   availability?: string;
@@ -777,15 +777,15 @@ export function availabilityBoardOf(result: QuoteEnvelope, stay?: { arrivalDate:
       const observedDates = new Set(nights.map(night => night.date));
       const covered = expectedDates === null || nights.length === expectedDates.length && observedDates.size === expectedDates.length && expectedDates.every(date => observedDates.has(date));
       const currencies = new Set(nights.map(night => night.price.currency).filter((value): value is string => value !== null));
-      const boardLabel = option.board ?? '';
+      const boardLabel = option.mealPlan ?? '';
       rows.push({
         groupId,
         roomCode,
         roomLabel: option.roomLabel ?? roomCode,
         rateCode,
         rateLabel: option.rateLabel ?? rateCode,
-        board: boardLabel || rateCode,
-        boardLabel,
+        mealPlan: boardLabel || rateCode,
+        mealPlanLabel: boardLabel,
         nightlyPriceMinor: covered && priced.length > 0 && priced.length === nights.length && currencies.size === 1
           ? Math.round(priced.reduce((sum, value) => sum + value, 0) / priced.length)
           : null,

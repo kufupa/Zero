@@ -37,15 +37,15 @@ function stay(over: Record<string, unknown> = {}) {
     departure: '2027-09-16',
     nights: null,
     rooms: [{ adults: 1, childAges: [] as number[], roomTypeText: 'STQN', guestName: GUEST }],
-    boardText: null,
+    mealPlanText: null,
     rateText: 'BAR',
-    agencyName: 'Northwind Travel',
+    bookingAgencyName: 'Northwind Travel',
     organizationName: null,
     voucherNumber: null,
     bookerName: null,
     bookerEmail: null,
     billingReference: null,
-    paidBy: 'agency' as const,
+    paidBy: 'bookingAgency' as const,
     defaults: COMPLETE_DEFAULTS,
     ...over,
   };
@@ -166,9 +166,10 @@ describe('buildCreatePrefill', () => {
       guaranteeType: 'Guaranteed By Agent',
       firstName: 'Proof',
       lastName: 'Labtest',
-      agency: 'Northwind Travel',
+      bookingAgency: 'Northwind Travel',
     });
-    const checked = await validateCreate(result.requests[0]!);
+    const { bookingAgency, ...nativeFields } = result.requests[0]!;
+    const checked = await validateCreate({ ...nativeFields, agency: bookingAgency });
     expect(checked.ok).toBe(true);
     expect(result.schemaErrors[0]).toEqual([]);
   });
@@ -186,7 +187,7 @@ describe('buildCreatePrefill', () => {
   it('prefills Walk in / BAR / Non-Guaranteed Individual for a direct booking', async () => {
     const result = await buildCreatePrefill(
       stay({
-        agencyName: null,
+        bookingAgencyName: null,
         organizationName: null,
         paidBy: 'guest',
         defaults: NULL_DEFAULTS,
@@ -223,7 +224,7 @@ describe('buildCreatePrefill', () => {
     expect(agency.requests[0]).not.toHaveProperty('track');
     expect(agency.requests[0]).not.toHaveProperty('sourceOfBusiness');
     const company = await buildCreatePrefill(
-      stay({ agencyName: null, organizationName: 'Woolworths Holdings', defaults: NULL_DEFAULTS }),
+      stay({ bookingAgencyName: null, organizationName: 'Woolworths Holdings', defaults: NULL_DEFAULTS }),
     );
     expect(company.requests[0]).not.toHaveProperty('track');
     expect(company.requests[0]).not.toHaveProperty('sourceOfBusiness');
@@ -232,10 +233,10 @@ describe('buildCreatePrefill', () => {
   it('leaves Track and Source empty when partyKind is set even if the name is missing', async () => {
     const result = await buildCreatePrefill(
       stay({
-        agencyName: null,
+        bookingAgencyName: null,
         organizationName: null,
         paidBy: null,
-        partyKind: 'agency',
+        partyKind: 'bookingAgency',
         defaults: NULL_DEFAULTS,
       }),
     );

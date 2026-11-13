@@ -32,7 +32,19 @@ export function createSavedRoomStageRequestGate({ frame, selected, deadlineAt } 
     if (performance.now() >= deadlineAt) state = 'closed';
     return state !== 'closed';
   };
+  const roomReadRequestKind = (request) => {
+    const base = { GRID_NAME:'LVROOMTYPE2', GRID_TYPE:'LOV', LOV_TAGNAME:'roomtype',
+      USER_FUNCTION_NAME:'OSRESV', CURRENT_TAB_NAME:'HDR', LOV_ALIAS_NAME_1:'param.propertycode',
+      LOV_ALIAS_VALUE_1:'HRCEN', LOV_ALIAS_TYPE_1:'text' };
+    if (state === 'initial_armed' && matchesSavedStageRequest(request, frame, SAVED_ROOM_STAGE_PATHS[0], {
+      ...base, REQUEST_TYPE:'LOV.HEAD_DATA.STORED', popup:'true', filterfields:'roomtypecode',
+      filteroperator:'CONTAINS', filtervalue:current })) return 'initial';
+    if (state === 'reset_armed' && matchesSavedStageRequest(request, frame, SAVED_ROOM_STAGE_PATHS[1], {
+      ...base, ...grid, REQUEST_TYPE:'LOV.DATA_ONLY.STORED' })) return 'reset';
+    return null;
+  };
   const gate = Object.freeze({
+    isRoomReadRequest(request) { return active() && roomReadRequestKind(request) !== null; },
     arm(snapshot, before, after) {
       const data = snapshot?.data;
       if (!active() || state !== 'ready' || !data || !/^[A-Z0-9]{1,12}$/.test(before || '') ||
@@ -68,16 +80,8 @@ export function createSavedRoomStageRequestGate({ frame, selected, deadlineAt } 
     },
     consume(request) {
       if (!active()) return false;
-      const base = { GRID_NAME:'LVROOMTYPE2', GRID_TYPE:'LOV', LOV_TAGNAME:'roomtype',
-        USER_FUNCTION_NAME:'OSRESV', CURRENT_TAB_NAME:'HDR', LOV_ALIAS_NAME_1:'param.propertycode',
-        LOV_ALIAS_VALUE_1:'HRCEN', LOV_ALIAS_TYPE_1:'text' };
-      let kind = null;
-      if (state === 'initial_armed' && matchesSavedStageRequest(request, frame, SAVED_ROOM_STAGE_PATHS[0], {
-        ...base, REQUEST_TYPE:'LOV.HEAD_DATA.STORED', popup:'true', filterfields:'roomtypecode',
-        filteroperator:'CONTAINS', filtervalue:current })) kind = 'initial';
-      else if (state === 'reset_armed' && matchesSavedStageRequest(request, frame, SAVED_ROOM_STAGE_PATHS[1], {
-        ...base, ...grid, REQUEST_TYPE:'LOV.DATA_ONLY.STORED' })) kind = 'reset';
-      else if (state === 'change_armed' && matchesSavedStageRequest(request, frame, SAVED_ROOM_STAGE_PATHS[2], { ...native, ...chosen })) kind = 'change';
+      let kind = roomReadRequestKind(request);
+      if (!kind && state === 'change_armed' && matchesSavedStageRequest(request, frame, SAVED_ROOM_STAGE_PATHS[2], { ...native, ...chosen })) kind = 'change';
       else if (state === 'change_consumed' && matchesSavedStageRequest(request, frame, SAVED_ROOM_STAGE_PATHS[3], { ...native, ...chosen })) kind = 'refresh';
       if (!kind) { state = 'closed'; return false; }
       requests.set(kind, request); state = `${kind}_consumed`; return true;

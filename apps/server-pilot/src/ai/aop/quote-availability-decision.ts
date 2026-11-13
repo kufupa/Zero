@@ -31,7 +31,7 @@ export const decideQuoteAvailabilityInputSchema = z
         adultsPerRoom: z.number().int().positive(),
         arrival: isoDateSchema,
         departure: isoDateSchema.nullable(),
-        board: z.enum(['room_only', 'bb', 'dbb']).nullable(),
+        mealPlan: z.enum(['room_only', 'bb', 'dbb']).nullable(),
       })
       .strict(),
     available: z.array(
@@ -110,7 +110,7 @@ export function decideQuoteAvailability(raw: DecideQuoteAvailabilityInput): Deci
       : decision === 'sold_out'
         ? `Unfortunately we are fully booked for ${dates}.`
         : null;
-  const dinnerLine = requested.board === 'dbb' ? (dinnerAddOn ?? { ...CENTURION_DINNER_ADD_ON }) : null;
+  const dinnerLine = requested.mealPlan === 'dbb' ? (dinnerAddOn ?? { ...CENTURION_DINNER_ADD_ON }) : null;
 
   return decideQuoteAvailabilityOutputSchema.parse({
     decision,

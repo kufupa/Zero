@@ -9,6 +9,7 @@ import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { reservationArrivalEvidence } from './reservation-workflow-v2-evidence.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
+import { hydrateStoredReservationWorkflowV2 } from './reservation-workflow-v2-stored-draft.js';
 import { recoverReservationWorkflowV2SourceFields } from './reservation-workflow-v2-source-recovery.js';
 import { advancePaneRevision, redoWorkItemRevision, undoWorkItemRevision,
   rebaseReservationV2Path, rebaseReservationV2Observations, nativeStructureIsSafe } from './work-item-revision.js';
@@ -66,7 +67,7 @@ export type ReservationWorkflowV2StateResult =
   | { status: 'not_found' | 'invalid_source' | 'wrong_property' | 'invalid_state' | 'stale_revision' | 'invalid_path' | 'invalid_value'; issue?: string };
 
 export function reservationWorkflowV2DraftOf(state: State): ReservationWorkflowV2Draft | null {
-  const parsed = reservationWorkflowV2DraftSchema.safeParse(state[RESERVATION_WORKFLOW_V2_STATE_KEY]);
+  const parsed = reservationWorkflowV2DraftSchema.safeParse(hydrateStoredReservationWorkflowV2(state[RESERVATION_WORKFLOW_V2_STATE_KEY]));
   return parsed.success ? parsed.data : null;
 }
 
@@ -1125,7 +1126,47 @@ function validateOverride(value: unknown): V2Override | null {
   return parsed.success ? { ...parsed.data, updatedAt: new Date().toISOString() } : null;
 }
 
-function validStructuredEdit(path: string, override: V2Override): boolean {
+function validStructuredEdit(draft: ReservationWorkflowV2Draft, path: string, override: V2Override): boolean {
+  const parts = pathParts(path);
+  const requestKey = parts?.[3];
+  const request = parts?.[2] === 'requests' && requestKey ? draft.proposal.content.requests.find((row) => row.id === requestKey) ??
+    (/^\d+$/.test(requestKey) ? draft.proposal.content.requests[Number(requestKey)] : undefined) : undefined;
+  if (request?.kind === 'create' && parts?.[4] === 'body' && override.state === 'set') {
+    if (parts.at(-1) === 'reservationNote' && typeof override.value !== 'string') return false;
+    let stable = '', indexed = '';
+    for (const part of parts) {
+      const parent = stable ? effectiveDraftPath(draft, stable, indexed) : draft;
+      const index = Array.isArray(parent) ? (/^\d+$/.test(part) ? Number(part) : parent.findIndex((row) =>
+        row && typeof row === 'object' && (row as { id?: unknown }).id === part)) : -1;
+      const id = index >= 0 && Array.isArray(parent) ? parent[index]?.id : undefined;
+      stable += `/${encodeURIComponent(typeof id === 'string' && !/^\d+$/.test(id) ? id : part)}`;
+      indexed += `/${encodeURIComponent(index >= 0 ? String(index) : part)}`;
+    }
+    const requestId = encodeURIComponent(request.id), requestIndex = String(draft.proposal.content.requests.indexOf(request));
+    const sameEffectiveNote = (value: string, stablePath: string, indexPath: string): boolean => {
+      const aliases = new Set([stablePath, indexPath].flatMap((candidate) => [requestId, requestIndex].map((id) =>
+        candidate.replace(/^(\/proposal\/content\/requests\/)[^/]+/, `$1${id}`))));
+      return [...aliases].every((candidate) => effectiveDraftPath(draft, candidate) === value);
+    };
+    const unchanged = (value: unknown, stablePath: string, indexPath: string): boolean => {
+      if (typeof value === 'string' && stablePath.endsWith('/reservationNote') && value.length > 2000)
+        return sameEffectiveNote(value, stablePath, indexPath);
+      if (Array.isArray(value)) {
+        const previous = effectiveDraftPath(draft, stablePath, indexPath);
+        return value.every((entry, index) => {
+          const id = entry && typeof entry === 'object' && !Array.isArray(entry) ? (entry as { id?: unknown }).id : null;
+          const matches = typeof id === 'string' && Array.isArray(previous) ? previous.flatMap((row, position) =>
+            row && typeof row === 'object' && row.id === id ? [position] : []) : [];
+          const oldIndex = typeof id === 'string' ? (matches.length === 1 ? matches[0]! : -1) : index;
+          const stableKey = typeof id === 'string' && !/^\d+$/.test(id) && oldIndex >= 0 ? id : String(oldIndex);
+          return unchanged(entry, `${stablePath}/${encodeURIComponent(stableKey)}`, `${indexPath}/${oldIndex}`);
+        });
+      }
+      return !value || typeof value !== 'object' || Object.entries(value).every(([key, entry]) =>
+        unchanged(entry, `${stablePath}/${encodeURIComponent(key)}`, `${indexPath}/${encodeURIComponent(key)}`));
+    };
+    if (!unchanged(override.value, stable, indexed)) return false;
+  }
   if (/\/requestedMoney\/\d+\/staffAllowanceType$/.test(path))
     return override.state === 'set' && (override.value === 'dinner' || override.value === 'unsupported');
   if (!/\/(?:occupancy|requestedTotals)$/.test(path) || override.state !== 'set') return true;
@@ -1392,11 +1433,14 @@ function updateDraft(current: ReservationWorkflowV2Draft, input: {
       }
     }
     // Retyping a native identity or saved-stay query removes the old selection atomically.
-    const guest = input.fieldPath.match(/^(.*\/guest)\/(?:firstName|lastName|email)$/);
-    const party = input.fieldPath.match(/^(.*\/(?:bookingAgency|organization|arAccount|agency|company))(?:\/name)?$/);
+    const guest = input.fieldPath.match(/^(.*\/guest)\/(?:firstName|lastName|email|mobile)$/);
+    const party = input.fieldPath.match(/^(.*\/(?:bookingAgency|organization|arAccount))(?:\/name)?$/);
+    const amendValue = input.fieldPath.match(/^(\/proposal\/content\/requests\/[^/]+\/body\/(?:sharedChanges\/\d+|perTarget\/\d+\/changes\/\d+)\/value)(?:\/name)?$/);
+    const amendField = amendValue ? effectiveDraftPath(current, `${amendValue[1]!.slice(0, -'/value'.length)}/field`) : null;
+    const amendParty = ['bookingAgency', 'organization', 'arAccount'].includes(String(amendField)) ? amendValue : null;
     const target = input.fieldPath.match(/^(.*\/targets\/(?:include|exclude)\/[^/]+)\/(?:confirmation|guestName|bookedArrival|bookedDeparture)$/);
     const service = input.fieldPath.match(/^(\/proposal\/content\/services\/[^/]+)\/code$/);
-    const selection = guest ? `${guest[1]}/nativeSelectionRef` : party ? `${party[1]}/nativeSelectionRef` :
+    const selection = guest ? `${guest[1]}/nativeSelectionRef` : party ? `${party[1]}/nativeSelectionRef` : amendParty ? `${amendParty[1]}/nativeSelectionRef` :
       target ? `${target[1]}/suggestedRef` : service ? `${service[1]}/itemCandidateRef` : null;
     const selections = new Set(selection ? [selection] : []);
     if (target) {
@@ -1417,6 +1461,14 @@ function updateDraft(current: ReservationWorkflowV2Draft, input: {
     for (const path of selections) {
       fieldOverrides[path] = { state: 'unknown', updatedAt: input.override.updatedAt };
       delete staffReviews[path];
+    }
+    const quoteRate = input.fieldPath.match(/^(\/proposal\/content\/requests\/[^/]+\/body\/groups\/[^/]+)\/ratePlan$/);
+    const quoteParts = quoteRate && pathParts(input.fieldPath);
+    const quoteRequest = quoteParts && current.proposal.content.requests.find(row => row.id === quoteParts[3]);
+    if (quoteRate && quoteRequest?.kind === 'quote') {
+      const mealPlan = `${quoteRate[1]}/mealPlan`;
+      fieldOverrides[mealPlan] = { state: 'unknown', updatedAt: input.override.updatedAt };
+      delete staffReviews[mealPlan];
     }
     // A review belongs to the displayed value and scope; replacing a parent also replaces its child values.
     for (const path of Object.keys(staffReviews)) {
@@ -1574,7 +1626,7 @@ async function mutateDraft(ctx: Context, input: MutationInput & { fieldPath: str
   return withLockedV2DraftMutation(ctx, input, { fieldPath: input.fieldPath, eventType: input.eventType,
     value: input.value, apply: (draft) => {
       if (!(input.review ? reviewablePath(draft, input.fieldPath) : editablePath(draft, input.fieldPath))) return null;
-      if (input.override && (!validStructuredEdit(input.fieldPath, input.override) ||
+      if (input.override && (!validStructuredEdit(draft, input.fieldPath, input.override) ||
           !validServiceTargetEdit(draft, input.fieldPath, input.override) || !safeSavedTargetEdit(draft, input.fieldPath) ||
           !validCancelIncludeEdit(draft, input.fieldPath, input.override) || !validCancelExcludeEdit(draft, input.fieldPath, input.override) ||
           !validAmendTargetScopeEdit(draft, input.fieldPath, input.override) ||
@@ -1738,6 +1790,27 @@ async function bufferedNativeResult(ctx: Context, input: { workItemId: string; s
       ...batch.results] }) };
 }
 
+// Callback claims/results do not advance the editable draft revision. Recheck
+// these hints under the same row lock as persistence, including batch commits.
+function currentSavedAmendBaselineHint(draft: ReservationWorkflowV2Draft, hint: ReservationWorkflowV2Observation): boolean {
+  if (hint.criteria.binding !== 'saved_amend_baseline') return true;
+  const prepare = draft.observations.find(row => row.ref === hint.criteria.prepareRef);
+  const target = draft.observations.find(row => row.ref === hint.criteria.selectedRef);
+  const preparedAt = prepare ? Date.parse(prepare.observedAt) : NaN;
+  if (!prepare || !target || !Number.isFinite(preparedAt) || hint.criteria.draftRevision !== draft.revision ||
+      prepare.kind !== 'rate_availability' || prepare.status !== 'complete' || !prepare.coverage.complete ||
+      prepare.result.outcome !== 'prepared' || prepare.generationId !== draft.generationId ||
+      prepare.criteria.selectedRef !== target.ref || prepare.criteria.requestId !== hint.criteria.requestId ||
+      prepare.criteria.hintId !== hint.criteria.hintId || prepare.criteria.draftRevision !== draft.revision ||
+      target.kind !== 'stay_candidate' || target.status !== 'complete' || target.generationId !== draft.generationId ||
+      !draft.operationResults.some(row => row.workflow === 'amend' && row.status === 'prepared' &&
+        row.requestId === hint.criteria.requestId && row.allocationId === hint.criteria.hintId && row.observationRefs.includes(prepare.ref))) return false;
+  return !draft.operationResults.some(row => row.workflow === 'amend' && row.generationId === draft.generationId &&
+    (row.status === 'unknown' || (row.status === 'prepared' &&
+      row.summary === 'Native details may have changed; review the refreshed price before Save') ||
+      (row.status === 'succeeded' && Date.parse(row.updatedAt) >= preparedAt)));
+}
+
 /** Commit one completed native check and its evidence as a single fenced transaction. */
 export async function commitReservationNativeCheck(ctx: Context, input: {
   workItemId: string; source: ReservationWorkflowV2SourceInput; batch: ReservationNativeCheckBatch;
@@ -1779,6 +1852,8 @@ export async function commitReservationNativeCheck(ctx: Context, input: {
           parsed.data.propertyCode !== ctx.propertyCode || parsed.data.sourceMessageId !== input.source.messageId ||
           observations.some((entry) => entry.ref === parsed.data.ref) ||
           parsed.data.sourceRefs.some((ref) => !observations.some((entry) => entry.ref === ref))) return { status: 'invalid_value' as const };
+      if (!currentSavedAmendBaselineHint({ ...current.draft, observations,
+        operationResults: [...current.draft.operationResults, ...input.batch.results] }, parsed.data)) continue;
       observations.push(parsed.data);
     }
     const results = [...current.draft.operationResults];
@@ -1801,7 +1876,8 @@ export async function commitReservationNativeCheck(ctx: Context, input: {
     if (!next.success) return { status: 'invalid_value' as const };
     input.batch.signal.throwIfAborted();
     if (input.check) await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'system', type: 'hms.lookup.finished',
-      value: { check: input.check.key, status: input.check.status, observations: input.batch.observations.map((entry) => entry.ref),
+      value: { check: input.check.key, status: input.check.status, observations: input.batch.observations
+        .filter(entry => observations.some(row => row.ref === entry.ref)).map(entry => entry.ref),
         results: input.batch.results.map((entry) => entry.id) },
       evidence: { sourceHash: input.source.sourceHash, generationId: current.draft.generationId } });
     input.batch.signal.throwIfAborted();
@@ -1826,7 +1902,8 @@ export async function appendReservationWorkflowV2Observation(ctx: Context, input
     if (current.status !== 'ok') return current;
     if (parsed.data.generationId !== current.draft.generationId || parsed.data.sourceMessageId !== input.source.messageId ||
         current.draft.observations.some((entry) => entry.ref === parsed.data.ref) ||
-        parsed.data.sourceRefs.some((ref) => !current.draft.observations.some((entry) => entry.ref === ref))) return { status: 'invalid_value' };
+        parsed.data.sourceRefs.some((ref) => !current.draft.observations.some((entry) => entry.ref === ref)) ||
+        !currentSavedAmendBaselineHint(current.draft, parsed.data)) return { status: 'invalid_value' };
     ctx.nativeBatch.observations.push(parsed.data);
     return bufferedNativeResult(ctx, input);
   }
@@ -1847,7 +1924,8 @@ export async function appendReservationWorkflowV2Observation(ctx: Context, input
     const existingRefs = new Set(current.draft.observations.map((entry) => entry.ref));
     if (parsed.data.generationId !== current.draft.generationId ||
         (input.fence && parsed.data.sourceMessageId !== input.source.messageId) ||
-        parsed.data.sourceRefs.some((ref) => !existingRefs.has(ref)) || existingRefs.has(parsed.data.ref)) {
+        parsed.data.sourceRefs.some((ref) => !existingRefs.has(ref)) || existingRefs.has(parsed.data.ref) ||
+        !currentSavedAmendBaselineHint(current.draft, parsed.data)) {
       return { status: 'invalid_value' as const };
     }
     const next = reservationWorkflowV2DraftSchema.parse({ ...current.draft, observations: [...current.draft.observations, parsed.data] });

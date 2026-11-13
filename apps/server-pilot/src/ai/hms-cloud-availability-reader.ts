@@ -66,7 +66,7 @@ export type HmsCloudAvailabilityResult = ({
       ratePlan: { code: string | null; label: string | null };
       /** HMS promotion identifier keeps same-code promotional options distinct. */
       promotionCode: string | null;
-      boardLabel: string | null;
+      mealPlanLabel: string | null;
       rateScope: 'unknown';
       eligibility: 'unknown';
       availability: 'unknown';
@@ -187,7 +187,7 @@ function mapOption(value: unknown, requestedCount: number) {
     room: { code: text(room?.code), label: text(room?.label ?? room?.name ?? room?.desc) },
     ratePlan: { code: text(rate?.code), label: text(rate?.label ?? rate?.name) },
     promotionCode: text(rate?.promotioncode),
-    boardLabel: text(source.board ?? rate?.board),
+    mealPlanLabel: text(source.mealPlan ?? rate?.mealPlan),
     rateScope: 'unknown' as const,
     eligibility: 'unknown' as const,
     // Per-night counts do not prove a room can be held across the whole stay.
@@ -251,7 +251,7 @@ function appliedContextMatches(request: AvailabilityRequest, view: RecordValue, 
     Number(applied.numberOfDays) === expectedNights && Number(applied.adultCount) === context.adults &&
     Number(applied.childCount) === context.childAges.length && JSON.stringify(ages) === JSON.stringify(context.childAges) &&
     String(applied.organizationID ?? '') === (context.organizationId ?? '') &&
-    String(applied.travelAgencyID ?? '') === (context.agencyId ?? '') && String(applied.groupID ?? '') === '' &&
+    String(applied.travelAgencyID ?? '') === (context.bookingAgencyId ?? '') && String(applied.groupID ?? '') === '' &&
     codes(applied.roomTypeCodes).length === 1 && codes(applied.roomTypeCodes)[0] === context.roomCode &&
     (!context.typedRatePlan || (codes(applied.ratePlanCodes).length === 1 && codes(applied.ratePlanCodes)[0] === context.typedRatePlan));
 }
@@ -392,7 +392,7 @@ export async function runCloudAvailability(input: CloudAvailabilityRunInput): Pr
       for (const [kind, ref] of Object.entries(input.request.rateParties ?? {})) {
         if (!ref) continue;
         input.signal?.throwIfAborted();
-        const nativeKind = kind === 'agency' ? 'bookingAgency' : 'organization';
+        const nativeKind = kind === 'bookingAgency' ? 'bookingAgency' : 'organization';
         const search = await partyPicker.searchHotelAvailabilityParty(page, {
           kind: nativeKind, query: ref.name, propertyCode: input.target.propertyCode,
         });
@@ -424,7 +424,7 @@ export async function runCloudAvailability(input: CloudAvailabilityRunInput): Pr
           ratePlans: context?.typedRatePlan ? [context.typedRatePlan] : 'all',
           partyContext: context ? {
             ...(context.organizationId ? { organization: context.organizationId } : {}),
-            ...(context.agencyId ? { bookingAgency: context.agencyId } : {}),
+            ...(context.bookingAgencyId ? { bookingAgency: context.bookingAgencyId } : {}),
           } : {},
         };
         const quote = await quoteRead.readQuote(page, {

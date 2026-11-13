@@ -44,7 +44,7 @@ export type QuoteWorkflowStayGroup = {
   quantity?: number;
   adults?: number;
   childrenAges: number[];
-  board: 'dinner_bb' | 'bb' | 'room_only' | 'unknown';
+  mealPlan: 'dinner_bb' | 'bb' | 'room_only' | 'unknown';
   organisation?: string;
   specialRequests: string[];
   fields: Record<string, 'extracted' | 'staff_corrected' | 'missing'>;
@@ -216,7 +216,7 @@ export function analyseQuoteSources(input: QuoteWorkflowAnalyseInput): QuoteWork
     quantity: 1,
     adults,
     childrenAges: [],
-    board:
+    mealPlan:
       alternatives.includes('RO') && !alternatives.includes('BB')
         ? 'room_only'
         : alternatives.includes('BB')

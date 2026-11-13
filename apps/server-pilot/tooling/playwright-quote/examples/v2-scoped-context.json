@@ -13,7 +13,7 @@
     }
   ],
   "rateContext": {
-    "agency": { "code": "REPLACE_WITH_EXACT_PICKER_CODE" }
+    "bookingAgency": { "code": "REPLACE_WITH_EXACT_PICKER_CODE" }
   },
   "search": { "includeRestricted": false, "includeAlternatives": true }
 }

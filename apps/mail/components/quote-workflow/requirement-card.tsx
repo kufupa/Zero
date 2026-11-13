@@ -41,7 +41,7 @@ const FIELD_EVIDENCE_ALIASES: Record<string, string[]> = {
   quantity: ['quantity', 'rooms'],
   roomPreference: ['roomPreference'],
   childrenAges: ['childrenAges', 'childAges'],
-  board: ['board'],
+  mealPlan: ['mealPlan'],
 };
 
 function quotesFor(
@@ -88,7 +88,7 @@ function stayHeaderDates(arrival: string | undefined, departure: string | undefi
 }
 
 function inferredMealPlan(rows: StayGroupRequirement[]): QuoteBoard | 'all' {
-  const boards = new Set(rows.map((row) => row.board).filter((board) => board !== 'unknown'));
+  const boards = new Set(rows.map((row) => row.mealPlan).filter((board) => board !== 'unknown'));
   return boards.size === 1 ? [...boards][0]! : 'all';
 }
 
@@ -148,7 +148,7 @@ export function StayCard({
   propertyCode = HRCEN_PROPERTY_CODE,
   roomTypes: configuredRoomTypes,
   strictRoomTypes: configuredStrictRoomTypes,
-  boards: configuredBoards,
+  mealPlans: configuredBoards,
 }: {
   stayId: string;
   rows: StayGroupRequirement[];
@@ -169,7 +169,7 @@ export function StayCard({
   roomTypes?: QuotePaneRoomType[];
   /** Callers with a merged option list can preserve legacy matching separately. */
   strictRoomTypes?: boolean;
-  boards?: QuotePaneBoard[];
+  mealPlans?: QuotePaneBoard[];
 }) {
   const id = useId();
   const stayNumber = index + 1;
@@ -265,7 +265,7 @@ export function StayCard({
         <Field
           label="Meal plan"
           htmlFor={`${id}-meal-plan`}
-          aside={<ProvenanceFlag value={first?.fields.board} />}
+          aside={<ProvenanceFlag value={first?.fields.mealPlan} />}
           hint="Highlights matching rates below. This display filter does not change or send the HMS search."
         >
           <select
@@ -279,14 +279,14 @@ export function StayCard({
             {boards.map((board) => (
               <option key={board} value={board}>{MEAL_PLAN_LABELS[board]}</option>
             ))}
-            {first?.board && first.board !== 'unknown' && !boards.includes(first.board) ? (
-              <option value={first.board} disabled>
-                {`${MEAL_PLAN_LABELS[first.board]} (not offered at this hotel)`}
+            {first?.mealPlan && first.mealPlan !== 'unknown' && !boards.includes(first.mealPlan) ? (
+              <option value={first.mealPlan} disabled>
+                {`${MEAL_PLAN_LABELS[first.mealPlan]} (not offered at this hotel)`}
               </option>
             ) : null}
-            {first?.board === 'unknown' ? <option value="unknown">Not stated in email</option> : null}
+            {first?.mealPlan === 'unknown' ? <option value="unknown">Not stated in email</option> : null}
           </select>
-          <FieldEvidence quotes={quotesFor('board', evidence)} />
+          <FieldEvidence quotes={quotesFor('mealPlan', evidence)} />
         </Field>
 
         <section aria-label="Room types and occupancy" className="flex flex-col gap-2">

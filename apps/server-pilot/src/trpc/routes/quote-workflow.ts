@@ -1,3 +1,4 @@
+import { hydrateStoredWorkState } from '../../ai/stored-work-state.js';
 import {
   loadSyncedQuoteSelectionFromMailbox,
   resolveThreadConfirmationEvidence,
@@ -63,7 +64,7 @@ import { boundAmendRateRequest, boundSourceRateRequest, ratePartyBindingKey, rat
   ratePartySelectionSchema, type RateContext, type RatePartySelection } from '../../ai/hms-availability.js';
 import { rateContextKey, recommendRateCandidate, orderRateCandidates, type RateCandidate, type RateRecommendation } from '../../ai/rate-options.js';
 import { amendRequestId, projectAmendRequests } from '../../ai/pane-amend-draft.js';
-import { mailExtractionPayloadSchema } from '../../ai/extraction/schema.js';
+import { safeParseStoredMailExtraction } from '../../ai/extraction/stored-mail-extraction.js';
 import { hmsJobQueueEnabled, queueRateCandidatesHmsJob, readRateCandidatesHmsJob, readHmsJobView } from '../../ai/hms-jobs.js';
 import type { HmsCloudRateLookup } from '../../ai/hms-cloud-saved-stay-find.js';
 import { paneStayHmsTargetForTransport } from '../../ai/pane-stay-spawn-env.js';
@@ -231,12 +232,19 @@ async function selectedRateSource(db: DB, binding: z.infer<typeof rateBinding>, 
 }
 
 function storedRatePartyBinding(state: Record<string, unknown>, binding: z.infer<typeof rateBinding>, extractionId: string, actorId: string) {
-  const parsed = ratePartyBindingSchema.safeParse(state[ratePartyBindingKey(binding.request)]);
-  const record = parsed.success ? parsed.data : null;
-  return record && record.selectedBy === actorId && record.extractionId === extractionId && record.requestId === binding.request.requestId &&
-    record.stayId === binding.request.stayId && record.rowId === binding.request.rowId &&
-    record.roomIndex === binding.request.roomIndex && record.source.threadId === binding.source.threadId &&
-    record.source.messageId === binding.source.messageId && record.source.sourceHash === binding.source.sourceHash ? record : null;
+  const stored = state[ratePartyBindingKey(binding.request)];
+  const record = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored as Record<string, unknown> : null;
+  const selection = record?.selection && typeof record.selection === 'object' && !Array.isArray(record.selection)
+    ? record.selection as Record<string, unknown> : null;
+  const { agency, ...canonical } = selection ?? {};
+  const hydrated = record && selection ? { ...record, selection: { ...canonical,
+    ...(canonical.bookingAgency !== undefined || agency !== undefined ? { bookingAgency: Object.hasOwn(canonical, 'bookingAgency') ? canonical.bookingAgency : agency } : {}) } } : stored;
+  const parsed = ratePartyBindingSchema.safeParse(hydrated);
+  const parsedRecord = parsed.success ? parsed.data : null;
+  return parsedRecord && parsedRecord.selectedBy === actorId && parsedRecord.extractionId === extractionId && parsedRecord.requestId === binding.request.requestId &&
+    parsedRecord.stayId === binding.request.stayId && parsedRecord.rowId === binding.request.rowId &&
+    parsedRecord.roomIndex === binding.request.roomIndex && parsedRecord.source.threadId === binding.source.threadId &&
+    parsedRecord.source.messageId === binding.source.messageId && parsedRecord.source.sourceHash === binding.source.sourceHash ? parsedRecord : null;
 }
 export type RateCandidatesReply = {
   status: 'queued' | 'running' | 'ready' | 'blocked' | 'failed' | 'stale';
@@ -287,11 +295,11 @@ export const quoteWorkflowRouter = router({
     const selected = await selectedRateSource(db, binding, ctx.activeTransportId);
     const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
     if (!selected || !target.ok || target.target.propertyCode !== 'HRCEN') return unavailable;
-    const parsed = mailExtractionPayloadSchema.safeParse(selected.payload);
+    const parsed = safeParseStoredMailExtraction(selected.payload);
     if (!parsed.success || amendRequestId(binding.source, binding.request.stayId) !== binding.request.requestId ||
         binding.request.rowId === null || binding.request.roomIndex === null) return unavailable;
-    const stay = formStays(parsed.data, selected.item.state).find((item) => item.id === binding.request.stayId);
-    const sourceStay = requestPayload(parsed.data, selected.item.state, selected.item.kind).stays
+    const stay = formStays(parsed.data, hydrateStoredWorkState(selected.item.state)).find((item) => item.id === binding.request.stayId);
+    const sourceStay = requestPayload(parsed.data, hydrateStoredWorkState(selected.item.state), selected.item.kind).stays
       .find((item) => item.id === binding.request.stayId);
     const action = sourceStay?.action ?? (parsed.data.stays.length === 1
       ? parsed.data.action ?? (selected.item.kind === 'booking' ? 'new_booking' : null) : null);
@@ -345,26 +353,26 @@ export const quoteWorkflowRouter = router({
     if (!selected) return refuse('stale', 'SOURCE_OR_REVISION_CHANGED');
     const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
     if (!target.ok || target.target.propertyCode !== 'HRCEN') return refuse('blocked', 'PROPERTY_CONTEXT_UNSUPPORTED');
-    const parsed = mailExtractionPayloadSchema.safeParse(selected.payload);
+    const parsed = safeParseStoredMailExtraction(selected.payload);
     if (!parsed.success || amendRequestId(binding.source, binding.request.stayId) !== binding.request.requestId) {
       return refuse('stale', 'REQUEST_IDENTITY_CHANGED');
     }
-    const sourceStay = requestPayload(parsed.data, selected.item.state, selected.item.kind).stays.find(stay => stay.id === binding.request.stayId);
+    const sourceStay = requestPayload(parsed.data, hydrateStoredWorkState(selected.item.state), selected.item.kind).stays.find(stay => stay.id === binding.request.stayId);
     const action = sourceStay?.action ?? (parsed.data.stays.length === 1
       ? parsed.data.action ?? (selected.item.kind === 'quote' ? 'quote_availability' : selected.item.kind === 'booking' ? 'new_booking' : null)
       : null);
     const workflow = action === 'quote_availability' ? 'quote' : action === 'new_booking' ? 'create' : null;
-    const stay = formStays(parsed.data, selected.item.state).find(stay => stay.id === binding.request.stayId);
+    const stay = formStays(parsed.data, hydrateStoredWorkState(selected.item.state)).find(stay => stay.id === binding.request.stayId);
     if (!workflow) return refuse('blocked', 'RATE_SELECTION_WORKFLOW_UNSUPPORTED');
     if (!stay || binding.request.rowId === null || !stay.rows.some(row => row.id === binding.request.rowId) ||
         (workflow === 'quote' ? binding.request.roomIndex !== null : binding.request.roomIndex === null)) {
       return refuse('stale', 'ROOM_IDENTITY_CHANGED');
     }
-    const previous = storedRatePartyBinding(selected.item.state, binding, selected.extraction.id, ctx.sessionUser.id);
+    const previous = storedRatePartyBinding(hydrateStoredWorkState(selected.item.state), binding, selected.extraction.id, ctx.sessionUser.id);
     if (input.kind === 'read') return { status: 'ready' as const, reason: previous ? null : 'RATE_PARTY_SELECTION_REQUIRED',
       requestId: binding.request.requestId, seq: selected.item.revisionSeq, selection: previous?.selection ?? null };
     if (input.selection.kind === 'selected') {
-      for (const [kind, pick] of [['agency', input.selection.agency], ['company', input.selection.organization]] as const) {
+      for (const [kind, pick] of [['bookingAgency', input.selection.bookingAgency], ['organization', input.selection.organization]] as const) {
         if (!pick) continue;
         const job = await readHmsJobView({ transportId: ctx.activeTransportId, runId: pick.jobId,
           threadId: binding.source.threadId, messageId: binding.source.messageId, sourceHash: binding.source.sourceHash,
@@ -400,7 +408,7 @@ export const quoteWorkflowRouter = router({
         const record = ratePartyBindingSchema.parse({ version: 1, source: binding.source, extractionId: selected.extraction.id,
           ...binding.request, workflow, selectedBy: ctx.sessionUser.id, selectedAt: new Date().toISOString(), selection });
         const fieldPath = ratePartyBindingKey(binding.request);
-        const state = { ...current.item.state, [fieldPath]: record };
+        const state = { ...hydrateStoredWorkState(current.item.state), [fieldPath]: record };
         const advanced = advancePaneRevision({ revision: current.item.revision, revisionHead: current.item.revisionHead,
           seq: current.item.revisionSeq, previousState: current.item.state, nextState: state, extractionId: selected.extraction.id });
         await tx.insert(workEvent).values({ workItemId: binding.workItemId, actorKind: 'user', actorUserId: ctx.sessionUser.id,
@@ -423,11 +431,11 @@ export const quoteWorkflowRouter = router({
     if (!selected) return refuse('stale', 'SOURCE_OR_REVISION_CHANGED', 'This request has changed. Refresh the email.');
     const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
     if (!target.ok || target.target.propertyCode !== 'HRCEN') return refuse('blocked', 'PROPERTY_CONTEXT_UNSUPPORTED', 'Rate lookup is not available for this hotel yet.');
-    const payload = mailExtractionPayloadSchema.safeParse(selected.payload);
+    const payload = safeParseStoredMailExtraction(selected.payload);
     if (!payload.success || amendRequestId(binding.source, binding.request.stayId) !== requestId) {
       return refuse('stale', 'REQUEST_IDENTITY_CHANGED', 'This stay request has changed. Refresh the email.');
     }
-    const state = selected.item.state;
+    const state = hydrateStoredWorkState(selected.item.state);
     const stay = formStays(payload.data, state).find(stay => stay.id === binding.request.stayId);
     if (!stay || (binding.request.rowId !== null &&
         !stay.rows.some(row => row.id === binding.request.rowId))) {
@@ -511,7 +519,7 @@ export const quoteWorkflowRouter = router({
     if (!Number.isFinite(observed) || observed > Date.now() || Date.now() - observed >= 5 * 60_000) {
       return { ...refuse('stale', 'RATE_OBSERVATION_EXPIRED', 'These rate observations have expired. Check rates again.'), jobId: runId, contextKey, context };
     }
-    const history = await loadPaneRateHistory(context, db);
+    const history = await loadPaneRateHistory(context, db, selected.mail.receivedAt);
     const options = orderRateCandidates(context, job.result.rateCandidates as RateCandidate[], history);
     const coverage = job.result.coverage as { candidateList?: 'complete' | 'partial' | 'unknown'; reason?: string | null } | undefined;
     return { ...reply, status: 'ready', observedAt, expiresAt: new Date(observed + 5 * 60_000).toISOString(),

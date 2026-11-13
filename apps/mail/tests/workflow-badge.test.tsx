@@ -98,7 +98,7 @@ describe('shared Nava read-as vocabulary', () => {
   });
 
   it('offers each explicit action once and excludes passive stays', () => {
-    const group = { id: 'one', board: 'bb' as const, childrenAges: [], specialRequests: [], fields: {} };
+    const group = { id: 'one', mealPlan: 'bb' as const, childrenAges: [], specialRequests: [], fields: {} };
     expect(mixedStayActions(analysis('other', { groups: [
       { ...group, stayAction: 'no_action' },
       { ...group, id: 'two', stayAction: 'amend' },

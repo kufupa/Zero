@@ -129,10 +129,10 @@ export function projectEffectiveWork(source: DraftSource, payload: MailExtractio
         return { rowId: row.id, rooms: structural('count', row.rooms),
           requestedRoomType: structural('roomType', row.roomType), roomTypeCode: selected('roomTypeCode', null),
           adults: structural('adults', row.adultsPerRoom), childAges: structural('childAges', row.childAges),
-          board: structural('board', row.board), ratePlan: selected('ratePlan', value('ratePlan', 'ratePlan')) };
+          mealPlan: structural('mealPlan', row.mealPlan), ratePlan: selected('ratePlan', value('ratePlan', 'ratePlan')) };
       });
       fields = { kind: 'quote', value: { stayId: stay.id, arrival: stayValue('arrival'), departure: stayValue('departure'),
-        rows, bookingAgency: value('parties.agency'), organization: value('parties.organization'),
+        rows, bookingAgency: value('parties.bookingAgency'), organization: value('parties.organization'),
         selectedOfferIds: value('quote.selectedOfferIds'), amountOverride: value('quote.amountOverride') } };
       if (Object.hasOwn(state, `requests[${requestId}].quote.selectedOfferIds`) ||
           Object.hasOwn(state, `requests[${requestId}].quote.amountOverride`)) {
@@ -151,7 +151,7 @@ export function projectEffectiveWork(source: DraftSource, payload: MailExtractio
       const common = { guestProfile: value('guest.profile'), firstName: value('firstName', 'firstName'),
         lastName: value('lastName', 'lastName'), guestEmail: value('guestEmail', 'guestEmail'),
         guestMobile: value('guestMobile', 'guestMobile'), arrival: date('arrival'), departure: date('departure'),
-        ratePlan: value('ratePlan', 'ratePlan'), bookingAgency: value('parties.agency'), organization: value('parties.organization'),
+        ratePlan: value('ratePlan', 'ratePlan'), bookingAgency: value('parties.bookingAgency'), organization: value('parties.organization'),
         sourceAgencyName: value('sourceAgencyName', 'agencyName'), sourceOrganizationName: value('sourceOrganizationName', 'organizationName'),
         sourceOfBusiness: value('sourceOfBusiness', 'sourceOfBusiness'), track: value('track', 'track'),
         guaranteeType: value('guaranteeType', 'guaranteeType'), reservationNote: value('reservationNote', 'reservationNote'),
@@ -159,7 +159,7 @@ export function projectEffectiveWork(source: DraftSource, payload: MailExtractio
         cms: { send: value('cms.send', 'cmsSend'), messageId: value('cms.messageId', 'cmsMessageId'),
           recipient: value('cms.recipient', 'cmsRecipient') } };
       const sourceRows = stay.rows.length ? stay.rows : [{ id: `${stay.id}_row`, roomType: null, rooms: null,
-        adultsPerRoom: null, childAges: null, board: null }];
+        adultsPerRoom: null, childAges: null, mealPlan: null }];
       const rooms = sourceRows.flatMap((row) => {
         const countPath = `stays[${stay.id}].rows[${row.id}].count`;
         const count = Object.hasOwn(state, countPath) ? state[countPath] : row.rooms ??
@@ -196,7 +196,7 @@ export function projectEffectiveWork(source: DraftSource, payload: MailExtractio
             childAges: roomValue('childAges', rowField('childAges', row.childAges)),
             roomType: roomValue('roomTypeCode', rowValue('roomTypeCode', null)),
             ratePlan: roomValue('ratePlan', rowValue('ratePlan', common.ratePlan)),
-            bookingAgency: roomValue('parties.agency', common.bookingAgency),
+            bookingAgency: roomValue('parties.bookingAgency', common.bookingAgency),
             organization: roomValue('parties.organization', common.organization),
             sourceOfBusiness: roomValue('sourceOfBusiness', common.sourceOfBusiness), track: roomValue('track', common.track),
             guaranteeType: roomValue('guaranteeType', common.guaranteeType),

@@ -12,7 +12,7 @@ type RatePolicyDocumentIdentity={
  ref:string;propertyCode:string;ownerRef:string;messageId:string;threadId:string;messageAt:string;direction:'outbound';
  attachmentId:string;sourceHash:string;body:Uint8Array;pages:string[];
 };
-export type ReservationistRatePolicyDocument=RatePolicyDocumentIdentity&({kind?:'family_invoice';authoredDate:string;rateCode:string;board:Board;publicationAt?:never}|{kind:'hotel_rate_terms';publicationAt:string;authoredDate?:never;rateCode?:never;board?:never});
+export type ReservationistRatePolicyDocument=RatePolicyDocumentIdentity&({kind?:'family_invoice';authoredDate:string;rateCode:string;mealPlan:Board;publicationAt?:never}|{kind:'hotel_rate_terms';publicationAt:string;authoredDate?:never;rateCode?:never;mealPlan?:never});
 const sha=(body:Uint8Array)=>createHash('sha256').update(body).digest('hex');
 export function letterIdentity(propertyCode:string):{hotel:RegExp;confirmation:RegExp}|null{
  if(!profileFor(propertyCode))return null;
@@ -22,7 +22,7 @@ export function letterIdentity(propertyCode:string):{hotel:RegExp;confirmation:R
 function validateOriginalDocument(ctx:Context,d:ReservationistRatePolicyDocument,propertyCode:string){
  const terms=d.kind==='hotel_rate_terms';
  if(d.kind!==undefined&&!['family_invoice','hotel_rate_terms'].includes(d.kind))throw new Error('rate_policy_document_identity_invalid');
- if(!d.ref||d.propertyCode!==propertyCode||d.ownerRef!==ctx.input.authorizationScope!.ownerRef||!d.messageId||!d.threadId||!d.attachmentId||d.direction!=='outbound'||!Number.isFinite(Date.parse(d.messageAt))||Date.parse(d.messageAt)>Date.parse(ctx.input.clock.causalAt)||!/^[a-f0-9]{64}$/.test(d.sourceHash)||!d.body||d.body.length<1||d.body.length>20*1024*1024||sha(d.body)!==d.sourceHash||!Array.isArray(d.pages)||!d.pages.length||d.pages.length>50||d.pages.some((p:unknown)=>typeof p!=='string')||d.pages.join('').length>256*1024||(!terms&&(!/^\d{4}-\d{2}-\d{2}$/.test(d.authoredDate!)||!Number.isFinite(Date.parse(d.authoredDate+'T00:00:00Z'))||new Date(d.authoredDate+'T00:00:00Z').toISOString().slice(0,10)!==d.authoredDate||Date.parse(d.authoredDate+'T00:00:00Z')>Date.parse(d.messageAt)))||(terms&&(d.authoredDate!==undefined||d.rateCode!==undefined||d.board!==undefined||d.publicationAt!==d.messageAt||!Number.isFinite(Date.parse(d.publicationAt)))))throw new Error('rate_policy_document_identity_invalid');
+ if(!d.ref||d.propertyCode!==propertyCode||d.ownerRef!==ctx.input.authorizationScope!.ownerRef||!d.messageId||!d.threadId||!d.attachmentId||d.direction!=='outbound'||!Number.isFinite(Date.parse(d.messageAt))||Date.parse(d.messageAt)>Date.parse(ctx.input.clock.causalAt)||!/^[a-f0-9]{64}$/.test(d.sourceHash)||!d.body||d.body.length<1||d.body.length>20*1024*1024||sha(d.body)!==d.sourceHash||!Array.isArray(d.pages)||!d.pages.length||d.pages.length>50||d.pages.some((p:unknown)=>typeof p!=='string')||d.pages.join('').length>256*1024||(!terms&&(!/^\d{4}-\d{2}-\d{2}$/.test(d.authoredDate!)||!Number.isFinite(Date.parse(d.authoredDate+'T00:00:00Z'))||new Date(d.authoredDate+'T00:00:00Z').toISOString().slice(0,10)!==d.authoredDate||Date.parse(d.authoredDate+'T00:00:00Z')>Date.parse(d.messageAt)))||(terms&&(d.authoredDate!==undefined||d.rateCode!==undefined||d.mealPlan!==undefined||d.publicationAt!==d.messageAt||!Number.isFinite(Date.parse(d.publicationAt)))))throw new Error('rate_policy_document_identity_invalid');
 }
 
 /** Reads literal general hotel terms, without qualifying a selected rate, room count or guarantee. */
@@ -78,7 +78,7 @@ export function createReservationistQuoteTermsAnswerResolver(options:{
  */
 export function createReservationistSelectedRatePolicyResolver(options:{
  authorizeContext:(ctx:Context)=>Promise<boolean>;
- readDocuments:(ctx:Context,family:{propertyCode:string;rateCode:string;board:Board})=>Promise<readonly ReservationistRatePolicyDocument[]>;
+ readDocuments:(ctx:Context,family:{propertyCode:string;rateCode:string;mealPlan:Board})=>Promise<readonly ReservationistRatePolicyDocument[]>;
 }){
  if(typeof options.authorizeContext!=='function'||typeof options.readDocuments!=='function')throw new Error('rate_policy_source_configuration_invalid');
  const authorize=options.authorizeContext,read=options.readDocuments;
@@ -88,14 +88,14 @@ export function createReservationistSelectedRatePolicyResolver(options:{
   await guard();
   if(propertyCode!==ctx.input.propertyCode||source.request.propertyCode!==propertyCode||source.result.propertyCode!==propertyCode||source.result.outcome!=='quote'||!source.ref||!/^[a-f0-9]{64}$/.test(source.sha256)||!rateCode||!['room_only','breakfast','dinner_bed_breakfast'].includes(board))throw new Error('rate_policy_selected_scope_invalid');
   const selected=selections.map(s=>{const group=source.result.groups.find(g=>g.id===s.groupId),option=group?.options.find(o=>o.id===s.optionId);if(s.sourceRef!==source.ref||!group||!option||group.completeness.search!=='complete'||group.completeness.requiredFacts!=='complete'||option.eligibility!=='verified'||option.availability!=='available'||option.matchStatus!=='match'||option.held!==false)throw new Error('rate_policy_selected_scope_invalid');return{group,option};});
-  const matched=selected.filter(({option})=>option.rate.code===rateCode&&boardsFor(propertyCode)[norm(option.board??'')]===board);
+  const matched=selected.filter(({option})=>option.rate.code===rateCode&&boardsFor(propertyCode)[norm(option.mealPlan??'')]===board);
   if(!matched.length)throw new Error('rate_policy_selected_family_invalid');
   if(matched.some(({option})=>!option.nightly.length||option.nightly.some(n=>{const row=n as typeof n&{restricted?:boolean;rateAvailable?:boolean};return row.restricted!==false||row.rateAvailable!==true;})))return null;
-  const documents=await read(ctx,{propertyCode,rateCode,board}),documentsIdentity=quoteDigest(documents);await guard();
+  const documents=await read(ctx,{propertyCode,rateCode,mealPlan:board}),documentsIdentity=quoteDigest(documents);await guard();
   if(!Array.isArray(documents)||documents.length>64)throw new Error('rate_policy_document_inventory_invalid');
   const letter=letterIdentity(propertyCode);
   const usable=documents.filter(d=>{
-   const terms=d.kind==='hotel_rate_terms';if(!terms&&(d.rateCode!==rateCode||d.board!==board))return false;
+   const terms=d.kind==='hotel_rate_terms';if(!terms&&(d.rateCode!==rateCode||d.mealPlan!==board))return false;
    validateOriginalDocument(ctx,d,propertyCode);
    const text=d.pages.join('\n'),flat=text.replace(/\s+/g,' ');
    if(!letter)return false;
@@ -118,6 +118,6 @@ export function createReservationistSelectedRatePolicyResolver(options:{
   const familyInvoices=usable.filter(d=>d.kind!=='hotel_rate_terms'),qualified=familyInvoices.length?familyInvoices:usable;
   const bundleLabels=familyInvoices.length?[...new Set(matched.flatMap(({option})=>option.rate.bundleLabels?.map(b=>b.label)??[]))]:[];
   const payload={propertyCode,rateCode,board,documents:qualified.map(d=>({ref:d.ref,sourceHash:d.sourceHash,...(d.kind==='hotel_rate_terms'?{publicationAt:d.publicationAt}:{authoredDate:d.authoredDate}),ownerRef:d.ownerRef,messageId:d.messageId,threadId:d.threadId,messageAt:d.messageAt,attachmentId:d.attachmentId})),nativeSource:{ref:source.ref,sha256:source.sha256,observedAt:source.observedAt},selections:matched.map(({group,option})=>({groupId:group.id,optionId:option.id}))};
-  return{ref:'source-rate-policy:'+quoteDigest(payload),propertyCode,sourceHashes:[...new Set(qualified.map(d=>d.sourceHash))],authoredDates:[...new Set(qualified.flatMap(d=>d.kind==='hotel_rate_terms'?[]:[d.authoredDate]))],...(qualified.some(d=>d.kind==='hotel_rate_terms')?{sourcePublications:qualified.filter(d=>d.kind==='hotel_rate_terms').map(d=>({sourceHash:d.sourceHash,publishedAt:d.publicationAt!}))}:{}),families:[{rateCode,board}],vat:'included',levy:'included',...(bundleLabels.length?{bundleLabels}:{}),restrictions:{status:'supported',sourceRefs:[source.ref]}};
+  return{ref:'source-rate-policy:'+quoteDigest(payload),propertyCode,sourceHashes:[...new Set(qualified.map(d=>d.sourceHash))],authoredDates:[...new Set(qualified.flatMap(d=>d.kind==='hotel_rate_terms'?[]:[d.authoredDate]))],...(qualified.some(d=>d.kind==='hotel_rate_terms')?{sourcePublications:qualified.filter(d=>d.kind==='hotel_rate_terms').map(d=>({sourceHash:d.sourceHash,publishedAt:d.publicationAt!}))}:{}),families:[{rateCode,mealPlan:board}],vat:'included',levy:'included',...(bundleLabels.length?{bundleLabels}:{}),restrictions:{status:'supported',sourceRefs:[source.ref]}};
  };
 }

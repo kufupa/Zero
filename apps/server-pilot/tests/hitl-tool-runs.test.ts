@@ -775,12 +775,13 @@ describe('tool-run ledger: quote input', () => {
           quantity: 1,
           adults: 2,
           childrenAges: [],
-          board: 'bb',
+          mealPlan: 'bb',
           roomCodes: ['STQN'],
         },
       ],
-      company: 'Acme Travel Ltd',
-      agency: 'XYZ TRAVEL',
+      organization: 'Acme Travel Ltd',
+      bookingAgency: 'XYZ TRAVEL',
+      parties: { bookingAgency: { kind: 'bookingAgency', nativeId: '455', name: 'XYZ TRAVEL' } },
       attention: 'Thandi Mokoena',
       clientEmail: 'thandi@example.test',
       clientTelephone: '+27 82 555 0100',
@@ -793,11 +794,11 @@ describe('tool-run ledger: quote input', () => {
       other: { label: 'Parking pass', amountMinor: 30_000, unit: 'item' },
       notes: 'Late arrival, call Thandi',
     });
-    const stored = ledgerQuoteInput({ ...parsed, party: { kind: 'agency', nativeId: '455', name: 'XYZ TRAVEL' } });
+    const stored = ledgerQuoteInput(parsed);
     expect(stored).toMatchObject({
-      company: 'Acme Travel Ltd',
-      agency: 'XYZ TRAVEL',
-      party: { kind: 'agency', nativeId: '455', name: 'XYZ TRAVEL' },
+      organization: 'Acme Travel Ltd',
+      bookingAgency: 'XYZ TRAVEL',
+      parties: { bookingAgency: { kind: 'bookingAgency', nativeId: '455', name: 'XYZ TRAVEL' } },
       dinnerAllowanceMinor: 12_500,
       dinnerAllowanceUnit: 'per_person',
       dinnerAllowanceGroupIds: ['g1'],
@@ -806,7 +807,7 @@ describe('tool-run ledger: quote input', () => {
       other: { amountMinor: 30_000, unit: 'item' },
       groups: [expect.objectContaining({ arrivalDate: '2026-10-12', quantity: 1, roomCodes: ['STQN'] })],
     });
-    expect(ledgerQuoteInput(parsed).party).toBeUndefined();
+    expect(ledgerQuoteInput({ ...parsed, parties: undefined }).parties).toBeUndefined();
     const text = JSON.stringify(stored);
     for (const secret of ['Thandi', 'thandi@example', '555 0100', 'food only', 'Parking', 'Late arrival']) {
       expect(text).not.toContain(secret);

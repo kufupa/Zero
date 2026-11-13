@@ -4,7 +4,11 @@ import { installLabtestSaveRouteChain } from './saved-stay-save-route-chain.mjs'
 import { isSavedChildStageRequestGate, SAVED_CHILD_STAGE_PATHS } from './saved-stay-child-request-gate.mjs';
 import { isSavedRoomStageRequestGate, SAVED_ROOM_STAGE_PATHS } from './saved-stay-room-stage-gate.mjs';
 import { isSavedRateStageRequestGate, SAVED_RATE_STAGE_PATHS } from './saved-stay-rate-stage-gate.mjs';
+import { isSavedGuaranteeRequestGate, SAVED_GUARANTEE_PATH } from './saved-stay-guarantee-request-gate.mjs';
+import { isSavedPartyStageRequestGate, SAVED_PARTY_STAGE_PATHS } from './saved-stay-party-request-gate.mjs';
 import { parseNativePricingJson } from './saved-stay-nightly-rates.mjs';
+import { isFirstGoCallbackAuthority } from './pane-amend-callback-authority.mjs';
+import { isFinalGoCallbackAuthority } from './pane-amend-final-authority.mjs';
 
 /** Native loadVault only initializes the card iframe. This POST remains aborted. */
 export function isNativeCardEntryInitialization(request) {
@@ -230,6 +234,10 @@ export async function runLabtestAmendSave(page, {
   reportDispatchDrain = false,
   dispatchDrainTimeoutMs = 5_000,
   prepareOnly = false,
+  callbackReviewOnly = false,
+  callbackAuthority,
+  partyStageActive = () => false,
+  dispatchChildCandidate,
   prepare,
   stage,
   matches,
@@ -253,7 +261,9 @@ export async function runLabtestAmendSave(page, {
       (reportDispatchDrain && dispatchDrainTimeoutMs === 0)) {
     return result('input_gap', { issue: 'INVALID_DRAIN_TIMEOUT' });
   }
-  if (typeof prepareOnly !== 'boolean') return result('input_gap', { issue: 'INVALID_PREPARE_ONLY' });
+  if (typeof partyStageActive !== 'function') return result('input_gap', { issue: 'AMEND_CALLBACKS_INVALID' });
+  if (typeof prepareOnly !== 'boolean' || typeof callbackReviewOnly !== 'boolean' ||
+      (prepareOnly && callbackReviewOnly)) return result('input_gap', { issue: 'INVALID_PREPARE_ONLY' });
   if (!page || typeof page.route !== 'function' || typeof page.locator !== 'function' ||
       typeof page.on !== 'function' || typeof page.off !== 'function') {
     return result('input_gap', { issue: 'PAGE_REQUIRED' });
@@ -261,6 +271,7 @@ export async function runLabtestAmendSave(page, {
   if (usedPages.has(page)) return result('refused', { issue: 'PAGE_WRITE_ALREADY_USED' });
   if ([prepare, stage, matches, validate].some((callback) => typeof callback !== 'function') ||
       (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
+      (dispatchChildCandidate !== undefined && typeof dispatchChildCandidate !== 'function') ||
       (beforeSave !== undefined && typeof beforeSave !== 'function')) {
     return result('input_gap', { issue: 'AMEND_CALLBACKS_INVALID' });
   }
@@ -271,6 +282,23 @@ export async function runLabtestAmendSave(page, {
       (availability.recipient !== undefined && (typeof availability.recipient !== 'string' ||
         availability.recipient.length > 1000 || /[\p{Cc}]/u.test(availability.recipient))))) {
     return result('input_gap', { issue: 'AMEND_AVAILABILITY_CALLBACKS_INVALID' });
+  }
+  if (callbackReviewOnly && (!availability || retainRate !== undefined || extendRate !== undefined ||
+      !isFirstGoCallbackAuthority(callbackAuthority) || !callbackAuthority.isActive() ||
+      availability.dispatchCandidate !== callbackAuthority.dispatchAvailability ||
+      (dispatchChildCandidate !== undefined && dispatchChildCandidate !== callbackAuthority.dispatchChildren))) {
+    return result('input_gap', { issue: 'AMEND_CALLBACK_REVIEW_INVALID' });
+  }
+  const callbackFinal = isFinalGoCallbackAuthority(callbackAuthority);
+  if (callbackFinal && (prepareOnly || callbackReviewOnly || !availability || extendRate !== undefined ||
+      !callbackAuthority.isActive() || availability.dispatchCandidate !== callbackAuthority.dispatchAvailability ||
+      dispatchCandidate !== callbackAuthority.dispatchSave || !retainRate || retainRate.choice !== 'no' ||
+      retainRate.dispatchCandidate !== callbackAuthority.dispatchRetain ||
+      (dispatchChildCandidate !== undefined && dispatchChildCandidate !== callbackAuthority.dispatchChildren))) {
+    return result('input_gap', { issue: 'AMEND_CALLBACK_FINAL_INVALID' });
+  }
+  if (!callbackReviewOnly && callbackAuthority !== undefined && !callbackFinal) {
+    return result('input_gap', { issue: 'AMEND_CALLBACK_REVIEW_INVALID' });
   }
   if (retainRate !== undefined && (!retainRate || typeof retainRate !== 'object' || prepareOnly ||
       !['yes', 'no'].includes(retainRate.choice) || typeof dispatchCandidate !== 'function' ||
@@ -286,7 +314,7 @@ export async function runLabtestAmendSave(page, {
 
   let armed = false, possiblyDispatched = false, dispatched = false, blockedAtDispatch = 0;
   let blocked = 0, sendRequests = 0, blockedCardEntry = 0, blockedTaxValues = 0, nativeDialog = null, response = null, authorizedRequest = null;
-  let stopReason = null, scope, fence, routeChain, prepared, staged, inStage = false, childStageGate = null, roomStageGate = null, rateStageGate = null;
+  let stopReason = null, scope, fence, routeChain, prepared, staged, inStage = false, childStageGate = null, roomStageGate = null, rateStageGate = null, guaranteeStageGate = null, partyStageGate = null;
   let routeSetupSettled = true;
   let availabilityArmed = false, availabilityRequest = null, availabilityDispatched = false, availabilitySnapshot = null;
   let retainArmed = false, retainRequest = null, retainDispatched = false, retainSnapshot = null;
@@ -304,6 +332,8 @@ export async function runLabtestAmendSave(page, {
     childStageGate?.close();
     roomStageGate?.close();
     rateStageGate?.close();
+    guaranteeStageGate?.close();
+    partyStageGate?.close();
     routeChain?.disarm();
     fence?.quarantine();
     signalStop({ reason });
@@ -354,23 +384,37 @@ export async function runLabtestAmendSave(page, {
     const candidateGate = prepared.childStageGate ?? null;
     if (candidateGate !== null && !isSavedChildStageRequestGate(candidateGate)) throw new Error('CHILD_STAGE_GATE_INVALID');
     childStageGate = candidateGate;
+    if ((callbackReviewOnly || callbackFinal) && childStageGate && dispatchChildCandidate !== callbackAuthority.dispatchChildren) {
+      throw new Error('CHILD_STAGE_AUTHORITY_INVALID');
+    }
     roomStageGate = prepared.roomStageGate ?? null;
     if (roomStageGate !== null && !isSavedRoomStageRequestGate(roomStageGate)) throw new Error('ROOM_STAGE_GATE_INVALID');
     rateStageGate = prepared.rateStageGate ?? null;
     if (rateStageGate !== null && !isSavedRateStageRequestGate(rateStageGate)) throw new Error('RATE_STAGE_GATE_INVALID');
+    partyStageGate = prepared.partyStageGate ?? null;
+    if (partyStageGate !== null && !isSavedPartyStageRequestGate(partyStageGate)) throw new Error('PARTY_STAGE_GATE_INVALID');
+    guaranteeStageGate = prepared.guaranteeStageGate ?? null;
+    if (guaranteeStageGate !== null && (prepareOnly || !isSavedGuaranteeRequestGate(guaranteeStageGate))) {
+      throw new Error('GUARANTEE_STAGE_GATE_INVALID');
+    }
     fence = await bounded(installPageRequestFence(page, [SAVE_PATH, ...(availability ? [AVAILABILITY_PATH] : []),
       ...(childStageGate ? SAVED_CHILD_STAGE_PATHS : []), ...(roomStageGate ? SAVED_ROOM_STAGE_PATHS : []),
-      ...(rateStageGate ? SAVED_RATE_STAGE_PATHS : [])]));
+      ...(rateStageGate ? SAVED_RATE_STAGE_PATHS : []), ...(guaranteeStageGate ? [SAVED_GUARANTEE_PATH] : []), ...(partyStageGate ? SAVED_PARTY_STAGE_PATHS : [])]));
     scope = fence.open();
     routeSetupSettled = false;
     const routeSetup = installLabtestSaveRouteChain(page, {
       frame: prepared.frame,
       fence,
       scope,
-      isArmed: () => !prepareOnly && armed && withinDeadline(),
-      childStageGate,
+      isArmed: () => !prepareOnly && !callbackReviewOnly && (!callbackFinal || callbackAuthority.mayAttemptSave()) && armed && withinDeadline(),
+      childStageGate, canDispatchChild: () => !prepareOnly && typeof dispatchChildCandidate === 'function',
+      dispatchChildCandidate, onChildCandidate: () => { possiblyDispatched = true; },
       roomStageGate,
       rateStageGate,
+      guaranteeStageGate,
+      onGuaranteeCandidate: () => { possiblyDispatched = true; },
+      partyStageGate, isPartyStageActive: () => inStage && partyStageActive() && withinDeadline(),
+      canDispatchParty: () => !prepareOnly, onPartyCandidate: () => { possiblyDispatched = true; },
       isChildStageActive: () => inStage && withinDeadline(),
       dispatchCandidate,
       availability: availability ? {
@@ -422,6 +466,8 @@ export async function runLabtestAmendSave(page, {
         childStageGate?.close();
         roomStageGate?.close();
         rateStageGate?.close();
+        guaranteeStageGate?.close();
+        partyStageGate?.close();
         try {
           const url = new URL(request.url());
           if (/send|email|mail/i.test(url.pathname)) sendRequests += 1;
@@ -446,7 +492,8 @@ export async function runLabtestAmendSave(page, {
     usedPages.add(page);
 
     inStage = true;
-    const stageContext = Object.freeze({ page, frame: prepared.frame, childStageGate, roomStageGate, rateStageGate,
+    const stageContext = Object.freeze({ page, frame: prepared.frame, childStageGate, roomStageGate, rateStageGate, guaranteeStageGate, partyStageGate,
+      ...(callbackReviewOnly || callbackFinal ? { callbackAuthority } : {}),
       allowRealGuest: prepared.allowRealGuest === true,
       baseline: prepared.enableComposedStage === true && prepared.baseline ? structuredClone(prepared.baseline) : null,
       isActive: () => inStage && blocked === 0 && withinDeadline() && !fence.isQuarantined(),
@@ -459,11 +506,13 @@ export async function runLabtestAmendSave(page, {
     childStageGate?.close();
     roomStageGate?.close();
     rateStageGate?.close();
+    guaranteeStageGate?.close();
+    partyStageGate?.close();
     const verification = blocked || nativeDialog
       ? { ok: false, issue: 'AMEND_DRAFT_CHANGED' }
       : await bounded(validate(bounded, prepared, staged));
     if (verification !== true && verification?.ok !== true) {
-      return result('not_dispatched', {
+      return result(possiblyDispatched ? 'uncertain' : 'not_dispatched', {
         issue: verification?.issue || 'AMEND_DRAFT_CHANGED',
         ...diagnostics(),
         ...details(),
@@ -488,9 +537,13 @@ export async function runLabtestAmendSave(page, {
       }
     }
 
-    // Prepare may reprice but can never arm Save.
+    // Prepare may reprice but can never arm Save. Callback review also stops
+    // here: its potentially persistent callbacks have their own durable claim.
     if (prepareOnly) return result('not_dispatched', {
       issue: 'PREPARE_ONLY', ...diagnostics(), ...details(),
+    });
+    if (callbackReviewOnly) return result('callback_review_ready', {
+      ...diagnostics(), ...details(),
     });
 
     if (beforeSave) await bounded(beforeSave(bounded, prepared, staged, { fence, scope }));
@@ -602,6 +655,8 @@ export async function runLabtestAmendSave(page, {
     retainArmed = false;
     extendArmed = false;
     childStageGate?.close();
+    guaranteeStageGate?.close();
+    partyStageGate?.close();
     armed = false;
     routeChain?.disarm();
     scope?.close();

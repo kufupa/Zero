@@ -23,7 +23,7 @@ function review(source = input()): BatchReview {
     propertyCode: source.propertyCode, source: source.source, rooms: source.rooms.map((room) => ({ allocationId: room.allocationId, identity: room.identity,
       roomType: room.stay.roomType, ratePlan: room.stay.ratePlan, guest: { firstName: room.stay.firstName, lastName: room.stay.lastName, profileId: '123' },
       stay: { arrival: room.stay.arrival, departure: room.stay.departure, adults: room.stay.adults, childAges: [] },
-      agency: null, organization: null, guaranteeType: 'NGI', sourceOfBusiness: null, note: null,
+      bookingAgency: null, organization: null, guaranteeType: 'NGI', sourceOfBusiness: null, note: null,
       track: 'BAR', marketSegment: null, guestOptIn: false, booker: null, cmsSend: false, cmsMessageId: room.stay.cmsMessageId ?? null,
       cmsRecipient: room.stay.confirmationRecipient ?? null, amount: room.amount })) };
 }

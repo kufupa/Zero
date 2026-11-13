@@ -57,7 +57,7 @@ const V2_ROOT = new Set([
   'rateContext', 'requestedCurrency', 'search', 'details', 'maxOptionsPerGroup', 'notes',
 ]);
 const ROOM_BASE = new Set(['quantity', 'adults', 'children', 'childAges', 'id']);
-const CONSTRAINT_FIELDS = new Set(['roomCodes', 'rateCodes', 'bedTypes', 'boardBases', 'features']);
+const CONSTRAINT_FIELDS = new Set(['roomCodes', 'rateCodes', 'bedTypes', 'mealPlanBases', 'features']);
 const NATIVE_CODE = /^[A-Z0-9_-]+$/;
 const SALES_STRATEGIES = new Set(['Preset', 'BAR', 'Promotions', 'Wholesale', 'Negotiated Contracted', 'Negoticated Contracted', 'Group & Convention', 'Government', 'Comp / House Use', 'Airline Crews', 'Domestic Leisure', 'Other']);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -132,7 +132,7 @@ function uniqueStrings(values, path, issues, pattern) {
       mapped.push(bed);
       return;
     }
-    if (pattern === 'board') {
+    if (pattern === 'mealPlan') {
       const board = mapBoard(value);
       if (!board) {
         issues.push(issue('INVALID_CONSTRAINT', `${path}[${index}]`, 'Board vocabulary is room_only, breakfast, dinner_bed_breakfast, half_board, full_board or all_inclusive.', 'Use a known alias; half board is not a specific meal.'));
@@ -168,12 +168,12 @@ function parseFeatures(values, path, issues) {
 function parseConstraints(raw, path, issues) {
   if (raw === undefined) return undefined;
   if (!isRecord(raw)) {
-    issues.push(issue('INVALID_CONSTRAINT', path, 'Constraints must be an object.', 'Use roomCodes, rateCodes, bedTypes, boardBases and features.'));
+    issues.push(issue('INVALID_CONSTRAINT', path, 'Constraints must be an object.', 'Use roomCodes, rateCodes, bedTypes, mealPlanBases and features.'));
     return undefined;
   }
   for (const key of Object.keys(raw)) {
     if (!CONSTRAINT_FIELDS.has(key)) {
-      issues.push(issue('UNKNOWN_FIELD', `${path}.${key}`, 'Unknown constraint field.', 'Use roomCodes, rateCodes, bedTypes, boardBases or features.'));
+      issues.push(issue('UNKNOWN_FIELD', `${path}.${key}`, 'Unknown constraint field.', 'Use roomCodes, rateCodes, bedTypes, mealPlanBases or features.'));
     }
   }
   const parsed = {};
@@ -189,9 +189,9 @@ function parseConstraints(raw, path, issues) {
     const values = uniqueStrings(raw.bedTypes, `${path}.bedTypes`, issues, 'bed');
     if (values) parsed.bedTypes = values;
   }
-  if (raw.boardBases !== undefined) {
-    const values = uniqueStrings(raw.boardBases, `${path}.boardBases`, issues, 'board');
-    if (values) parsed.boardBases = values;
+  if (raw.mealPlanBases !== undefined) {
+    const values = uniqueStrings(raw.mealPlanBases, `${path}.mealPlanBases`, issues, 'mealPlan');
+    if (values) parsed.mealPlanBases = values;
   }
   if (raw.features !== undefined) {
     const values = parseFeatures(raw.features, `${path}.features`, issues);
@@ -250,7 +250,7 @@ function parseNativeReference(raw, path, issues, kind) {
     return undefined;
   }
   // The HMS agency picker has no internal-ID filter; it is searched by name, then matched on travelagencyid.
-  if (kind === 'agency' && !hasName) {
+  if (kind === 'bookingAgency' && !hasName) {
     issues.push(issue('INVALID_RATE_CONTEXT', `${path}.name`, 'Agency nativeId needs the candidate name to search the picker.', 'Pass candidates[].displayName from party-lookup as name.'));
     return undefined;
   }
@@ -264,12 +264,12 @@ function parseRateContext(raw, issues) {
     return undefined;
   }
   for (const key of Object.keys(raw)) {
-    if (!['organization', 'agency', 'group'].includes(key)) {
+    if (!['organization', 'bookingAgency', 'group'].includes(key)) {
       issues.push(issue('UNKNOWN_FIELD', `rateContext.${key}`, 'Unknown rate context field.', 'Use organization, agency or group.'));
     }
   }
   const parsed = {};
-  for (const key of ['organization', 'agency', 'group']) {
+  for (const key of ['organization', 'bookingAgency', 'group']) {
     if (raw[key] !== undefined) {
       const value = parseReference(raw[key], `rateContext.${key}`, issues, key);
       if (value) parsed[key] = value;
@@ -316,7 +316,7 @@ function parsePreferences(preferences, path, issues) {
     return undefined;
   }
   for (const key of Object.keys(preferences)) {
-    if (!['room', 'bed', 'board', 'flexibility', 'paymentQuestion'].includes(key)) {
+    if (!['room', 'bed', 'mealPlan', 'flexibility', 'paymentQuestion'].includes(key)) {
       issues.push(issue('UNKNOWN_FIELD', `${path}.${key}`, 'Unknown legacy preference.', 'Use room, bed, board, flexibility or paymentQuestion.'));
     }
   }
@@ -327,11 +327,11 @@ function parsePreferences(preferences, path, issues) {
       issues.push(issue('INVALID_CONSTRAINT', `${path}.bed`, 'Bed vocabulary is single, twin, double, queen or king.', 'Do not equate occupancy with a bed type.'));
     } else preferred.bedTypes = [bed];
   }
-  if (preferences.board !== undefined) {
-    const board = mapBoard(preferences.board);
+  if (preferences.mealPlan !== undefined) {
+    const board = mapBoard(preferences.mealPlan);
     if (!board) {
-      issues.push(issue('INVALID_CONSTRAINT', `${path}.board`, 'Board value is not a known alias.', 'Use breakfast, room only, DBB, half board, full board or all inclusive.'));
-    } else preferred.boardBases = [board];
+      issues.push(issue('INVALID_CONSTRAINT', `${path}.mealPlan`, 'Board value is not a known alias.', 'Use breakfast, room only, DBB, half board, full board or all inclusive.'));
+    } else preferred.mealPlanBases = [board];
   }
   const features = [];
   if (preferences.room !== undefined && preferences.room.trim()) {
@@ -573,9 +573,9 @@ function conditionsFor(kind, constraints, facts) {
     const result = listStatus(constraints.bedTypes, facts.bedType, 'bedTypes');
     conditions.push({ kind, field: 'bedTypes', requested: constraints.bedTypes, ...result });
   }
-  if (constraints.boardBases) {
-    const result = listStatus(constraints.boardBases, facts.boardBase, 'boardBases');
-    conditions.push({ kind, field: 'boardBases', requested: constraints.boardBases, ...result });
+  if (constraints.mealPlanBases) {
+    const result = listStatus(constraints.mealPlanBases, facts.mealPlanBase, 'mealPlanBases');
+    conditions.push({ kind, field: 'mealPlanBases', requested: constraints.mealPlanBases, ...result });
   }
   if (constraints.features) {
     const byName = new Map();
@@ -816,15 +816,15 @@ export function availableRoomAlternatives(groups = [], request) {
     const requestedQuantity = requested?.quantity ?? group?.request?.quantity ?? group?.quantity;
     if (!requested || !Number.isInteger(requestedQuantity) || requestedQuantity < 1) continue;
     const required = requested.required ?? {};
-    const requiredBoards = Array.isArray(required.boardBases)
-      ? required.boardBases.map(mapBoard).filter(Boolean)
+    const requiredBoards = Array.isArray(required.mealPlanBases)
+      ? required.mealPlanBases.map(mapBoard).filter(Boolean)
       : [];
     const requestedRooms = Array.isArray(required.roomCodes) ? required.roomCodes : [];
     const requestedRates = Array.isArray(required.rateCodes) ? required.rateCodes : [];
     for (const option of group?.options ?? []) {
       const roomCode = option?.room?.code;
       const roomLabel = typeof option?.room?.label === 'string' ? option.room.label.trim() : '';
-      const board = mapBoard(option?.board);
+      const board = mapBoard(option?.mealPlan);
       if (
         typeof roomCode !== 'string' || !NATIVE_CODE.test(roomCode) ||
         !roomLabel || roomLabel.length > 120 ||

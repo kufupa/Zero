@@ -11,10 +11,10 @@ const TEMPLATE_PATH = fileURLToPath(
 
 export type ProposalPdfInput = {
   attention: string;
-  company: string;
+  organization: string;
   clientEmail: string;
   clientTelephone: string;
-  agency: string;
+  bookingAgency: string;
   dateLabel: string;
   propertyCode: string;
   lines: Array<{
@@ -50,7 +50,7 @@ export async function buildQuoteProposalPdf(
     xlsx = brandQuoteWorkbookBytes(
       patchProposalWorkbook(readFileSync(TEMPLATE_PATH), {
         attention: input.attention,
-        company: input.company,
+        organization: input.organization,
         clientEmail: input.clientEmail,
         clientTelephone: input.clientTelephone,
         signerName: signer.name,
@@ -71,7 +71,7 @@ export async function buildQuoteProposalPdf(
     throw new ProposalInputError(err instanceof Error ? err.message : 'invalid proposal input');
   }
   return {
-    fileName: quotePdfFileName(input.agency, input.dateLabel),
+    fileName: quotePdfFileName(input.bookingAgency, input.dateLabel),
     pdf: await convertXlsxWithGotenberg(xlsx, { url: gotenbergUrl }),
   };
 }
@@ -81,7 +81,7 @@ import { unzipSync } from 'fflate';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, extraDisplayDescription, pricedRoomTotal, type AuthorizedProposalFacts, type RowPrice } from './quote-lines.js';
 import { quoteDigest, exactMinor, type QuoteRevision, type ImportedOffer } from './quote-revision.js';
 import { assertProposalLineLimit, brandQuoteWorkbookBytes, quoteDateLabel, quoteOutputPropertyCode, quoteWorkbookForStays, WorkbookLineLimitError, WorkbookRefusalError, type WorkbookStay } from './quote-workbook.js';
-export type RevisionProposalHeader = {attention:string;company:string;clientEmail:string;clientTelephone:string;agency:string;signerName:string;signerEmail:string;/** Unpriced staff note printed under the total. */notes?:string};
+export type RevisionProposalHeader = {attention:string;organization:string;clientEmail:string;clientTelephone:string;bookingAgency:string;signerName:string;signerEmail:string;/** Unpriced staff note printed under the total. */notes?:string};
 function htmlText(value:string):string {
   return value.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
@@ -116,7 +116,7 @@ export function renderRevisionProposalHtml(revision: QuoteRevision, header: Revi
   if (!Number.isSafeInteger(totalMinor)) throw new ProposalInputError('money_overflow');
   const images = identity.letterhead === 'centurion-template' ? quotationLetterheadImages() : [];
   const breakfastIncluded = revision.groups.every(
-    (group) => group.board === 'breakfast' || group.board === 'dinner_bed_breakfast',
+    (group) => group.mealPlan === 'breakfast' || group.mealPlan === 'dinner_bed_breakfast',
   );
   const hotel = htmlText(identity.name);
   const address = identity.addressLines.map((line) => htmlText(line)).join('<br>');
@@ -145,7 +145,7 @@ export function renderRevisionProposalHtml(revision: QuoteRevision, header: Revi
     const totalBlock = last
       ? `<p class="subtotal" data-proposal-subtotal="${totalMinor}">subtotal ${moneyMinor(totalMinor, revision.currency)}</p><p class="vat">15% vat <span>Included</span></p><p class="total" data-proposal-total="${totalMinor}">total of displayed line amounts ${moneyMinor(totalMinor, revision.currency)}</p>${header.notes?.trim() ? `<p class="staff-note"><strong>Note:</strong> ${htmlText(header.notes.trim()).replace(/\n/g, '<br>')}</p>` : ''}${rateBenefits}`
       : '<p>Continued on the following page. Final proposal total appears on the last page.</p>';
-    const clientBlock = `<div class="client"><strong>Attention:</strong> ${htmlText(header.attention)}<br><strong>Company:</strong> ${htmlText(header.company)}<br><strong>Email:</strong> ${htmlText(header.clientEmail)}<br><strong>Telephone:</strong> ${htmlText(header.clientTelephone)}</div>`;
+    const clientBlock = `<div class="client"><strong>Attention:</strong> ${htmlText(header.attention)}<br><strong>Organization:</strong> ${htmlText(header.organization)}<br><strong>Email:</strong> ${htmlText(header.clientEmail)}<br><strong>Telephone:</strong> ${htmlText(header.clientTelephone)}</div>`;
     const headerBlock = start === 0
       ? identity.letterhead === 'none'
         ? `<p>Date: ${htmlText(quoteDateLabel(revision.authoredDate, revision.authoredDate))}</p><p>Valid until: 3 days from date quoted above</p>${clientBlock}`
@@ -231,7 +231,7 @@ export async function buildStaysProposalPdf(
         stays,
         header: {
           attention: header.attention,
-          company: header.company,
+          organization: header.organization,
           clientEmail: header.clientEmail,
           clientTelephone: header.clientTelephone,
           signerName: header.signerName,
@@ -257,7 +257,7 @@ export async function buildStaysProposalPdf(
     pdfHash: createHash('sha256').update(rendered.pdf).digest('hex'),
     pdf: rendered.pdf,
     // ponytail: every PDF carries the document-id suffix, so same-day options never collide and no existing names are looked up.
-    fileName: quotePdfFileName(header.agency.trim() || header.company, staySpanLabel(stays), documentId),
+    fileName: quotePdfFileName(header.bookingAgency.trim() || header.organization, staySpanLabel(stays), documentId),
     totalMinor: rendered.totalMinor,
   };
 }
@@ -268,7 +268,7 @@ export async function buildRevisionProposalPdf(revision:QuoteRevision,header:Rev
 type ApprovedOverridePacket=Awaited<ReturnType<typeof import('./quote-revision.js').resolveApprovedOverride>>;
 function renderSourceLinePages(input:{id:string;title:string;lines:Array<{description:string;amountMinor:number}>;totalMinor:number;currency:string;terms:string},header:RevisionProposalHeader):string{
  const files=unzipSync(readFileSync(TEMPLATE_PATH));const logo=`data:image/png;base64,${Buffer.from(files['xl/media/image1.png']).toString('base64')}`;
- const pages=[];for(let start=0;start<input.lines.length;start+=6){const last=start+6>=input.lines.length;pages.push(`<section class="proposal-page"><img style="max-width:70%;max-height:90px" src="${logo}"><h1>${htmlText(input.title)}</h1><p>${htmlText(header.attention)} · ${htmlText(header.company)}</p><table><thead><tr><th>ORIGINAL SOURCE LINE</th><th>AMOUNT</th></tr></thead><tbody>${input.lines.slice(start,start+6).map(line=>`<tr><td>${htmlText(line.description)}</td><td>${moneyMinor(line.amountMinor,input.currency)}</td></tr>`).join('')}</tbody></table>${last?`<p data-proposal-total="${input.totalMinor}">TOTAL ${moneyMinor(input.totalMinor,input.currency)}</p><p>${htmlText(input.terms)}</p><p>No rooms are currently being held. Availability must be verified before booking.</p>`:'<p>Continued on the following page.</p>'}<footer>${htmlText(input.id)}</footer></section>`);}
+ const pages=[];for(let start=0;start<input.lines.length;start+=6){const last=start+6>=input.lines.length;pages.push(`<section class="proposal-page"><img style="max-width:70%;max-height:90px" src="${logo}"><h1>${htmlText(input.title)}</h1><p>${htmlText(header.attention)} · ${htmlText(header.organization)}</p><table><thead><tr><th>ORIGINAL SOURCE LINE</th><th>AMOUNT</th></tr></thead><tbody>${input.lines.slice(start,start+6).map(line=>`<tr><td>${htmlText(line.description)}</td><td>${moneyMinor(line.amountMinor,input.currency)}</td></tr>`).join('')}</tbody></table>${last?`<p data-proposal-total="${input.totalMinor}">TOTAL ${moneyMinor(input.totalMinor,input.currency)}</p><p>${htmlText(input.terms)}</p><p>No rooms are currently being held. Availability must be verified before booking.</p>`:'<p>Continued on the following page.</p>'}<footer>${htmlText(input.id)}</footer></section>`);}
  return `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:A4;margin:14mm}body{font:11px Arial;color:#242424}h1{color:#78633a;border-bottom:2px solid #b49c68}.proposal-page{break-after:page}.proposal-page:last-child{break-after:auto}table{width:100%;border-collapse:collapse;table-layout:fixed}td,th{border:1px solid #8d887d;padding:10px;overflow-wrap:anywhere}th{background:#e7dfcb}th:last-child{width:25%}tr{break-inside:avoid}footer{font-size:7px;overflow-wrap:anywhere}</style></head><body>${pages.join('')}</body></html>`;
 }
 export function renderImportedProposalHtml(offer:ImportedOffer,header:RevisionProposalHeader):string{

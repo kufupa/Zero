@@ -20,8 +20,9 @@ export async function verifyBatchSiblings(census, siblings, {
       sameCreateGuest(request?.guest, target) && request?.stay?.arrival === census.arrival);
     if (census.sameArrival.length !== matching.length) return false;
     for (const sibling of siblings) {
-      const { confirmation, approvedRequest: request, requestDigest } = sibling;
-      const binding = digestCloudCreateRequest(request);
+      const { confirmation, approvedRequest, requestDigest } = sibling;
+      const binding = digestCloudCreateRequest(approvedRequest);
+      const request = binding.request;
       const row = census.sameArrival.find((item) => item.confirmation === confirmation);
       const sameTarget = matching.includes(sibling);
       if (binding.outcome !== 'ok' || binding.normalizedRequestDigest !== requestDigest ||
@@ -39,6 +40,7 @@ export async function verifyBatchSiblings(census, siblings, {
           child2: ages.filter((age) => age >= 3 && age <= 12).length,
           child3: ages.filter((age) => age >= 13).length },
         roomType: request.room.roomType, ratePlan: request.room.ratePlan, note: request.note,
+        ...(request.room.mealPlan ? { mealPlan: request.room.mealPlan } : {}),
         guestId: request.guest.nativeId, firstName: request.guest.firstName, lastName: request.guest.lastName,
         allowRealGuest: true,
         ...(request.sourceOfBusiness ? { source: request.sourceOfBusiness.description } : {}),
@@ -47,6 +49,7 @@ export async function verifyBatchSiblings(census, siblings, {
         ...(request.cmsMessageId !== undefined ? { cmsMessageId: request.cmsMessageId } : {}),
         ...(request.cmsRecipient !== undefined ? { cmsRecipient: request.cmsRecipient } : {}),
         ...(request.track ? { track: request.track.display } : {}),
+        ...(request.nativeCommissionPercent !== undefined ? { nativeCommissionPercent: request.nativeCommissionPercent } : {}),
         ...(request.booker ? { booker: request.booker } : {}),
         ...(request.guestOptIn === false ? { guestOptIn: false } : {}) };
       const proof = await read({ confirmation, stay: request.stay, expected }, { cloudTargetKey: browserKey });

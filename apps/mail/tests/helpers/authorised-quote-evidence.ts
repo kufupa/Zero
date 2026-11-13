@@ -7,7 +7,7 @@ export const AUTHORISED_QUOTE_OFFERS: QuoteOffer[] = [
     kind: 'allocation',
     roomCode: 'SKNG',
     roomLabel: 'Standard King',
-    board: 'bb',
+    mealPlan: 'bb',
     rateCode: 'BAR',
     currency: 'ZAR',
     nightly: [

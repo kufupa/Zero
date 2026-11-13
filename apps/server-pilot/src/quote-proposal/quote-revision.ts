@@ -13,7 +13,7 @@ export type RoomRequest = {
   adults: number;
   children: number;
   childAges: number[];
-  required?: { roomCodes?: string[]; rateCodes?: string[]; boardBases?: string[] };
+  required?: { roomCodes?: string[]; rateCodes?: string[]; mealPlanBases?: string[] };
 };
 export type NativeNight = {
   date: string;
@@ -24,7 +24,7 @@ export type NativeOption = {
   id: string;
   room: { code: string; label: string; buildingCode: string | null };
   rate: { code: string; label: string; bundleLabels?: {code?:string;label:string}[] };
-  board: string | null;
+  mealPlan: string | null;
   appliedContext: Record<string, unknown>;
   /** From the Rate Shop read: 'contextual' only for a row HMS flags as negotiated (isNegotiatedRate). */
   rateScope?: 'public' | 'contextual' | 'unknown';
@@ -67,7 +67,7 @@ export type InclusionPolicy = {
   authoredDates: string[];
   // Original source publication timestamps are distinct from printed invoice-authored dates.
   sourcePublications?: {sourceHash: string; publishedAt: string}[];
-  families: { rateCode: string; board: Board }[];
+  families: { rateCode: string; mealPlan: Board }[];
   vat: 'included';
   levy: 'included';
   bundleLabels?: string[];
@@ -95,7 +95,7 @@ export type SelectedQuoteGroup = {
   roomLabel: string;
   rateCode: string;
   rateLabel: string;
-  board: Board;
+  mealPlan: Board;
   currency: string;
   context: Record<string, unknown>;
   // An imported original offer can establish prices without historical stock.
@@ -147,6 +147,55 @@ export function quoteDigest(value: unknown): string {
   return createHash('sha256')
     .update(JSON.stringify(stable(value)))
     .digest('hex');
+}
+
+/** Revisions written before the terminology migration retain their original content identity. */
+export function quoteRevisionIdentityValid(revision: QuoteRevision): boolean {
+  const { id, ...data } = revision;
+  if (id === `quote:${quoteDigest(data)}`) return true;
+  if (!Array.isArray(data.groups) || data.groups.some((group) =>
+    !group || typeof group !== 'object' || !group.context || typeof group.context !== 'object' ||
+    Array.isArray(group.context) || !group.mealPlan,
+  )) return false;
+  const groups = data.groups.map((group) => {
+    const { mealPlan, context, ...rest } = group;
+    const { bookingAgency, ...oldContext } = context;
+    return {
+      ...rest,
+      board: mealPlan,
+      context: bookingAgency === undefined ? oldContext : { ...oldContext, agency: bookingAgency },
+    };
+  });
+  return id === `quote:${quoteDigest({ ...data, groups })}`;
+}
+
+/** Read old persisted revisions only after verifying their original digest; never change their IDs. */
+export function hydrateStoredQuoteRevision(value: unknown): QuoteRevision | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const revision = value as QuoteRevision;
+  if (!Array.isArray(revision.groups) || revision.groups.some((group) =>
+    !group || typeof group !== 'object' || !group.context || typeof group.context !== 'object' || Array.isArray(group.context),
+  )) return null;
+  const needsHydration = revision.groups.some((group) =>
+    Object.hasOwn(group, 'board') || (group.context && Object.hasOwn(group.context, 'agency')),
+  );
+  if (!needsHydration) return revision;
+  const { id, ...stored } = revision;
+  if (id !== `quote:${quoteDigest(stored)}`) return null;
+  const groups = revision.groups.map((group) => {
+    const { board, ...rest } = group as SelectedQuoteGroup & { board?: Board };
+    const { agency, ...context } = group.context as Record<string, unknown>;
+    if ((board !== undefined && rest.mealPlan !== undefined) ||
+        (agency !== undefined && Object.hasOwn(context, 'bookingAgency'))) return null;
+    return {
+      ...rest,
+      mealPlan: rest.mealPlan ?? board,
+      context: agency === undefined ? context : { ...context, bookingAgency: agency },
+    };
+  });
+  if (groups.some((group) => !group)) return null;
+  const hydrated = { ...revision, groups } as QuoteRevision;
+  return quoteRevisionIdentityValid(hydrated) ? hydrated : null;
 }
 export function occupiedDates(arrival: string, departure: string): string[] {
   const parse = (s: string) => {
@@ -299,9 +348,9 @@ export async function resolveQuoteRevision(input: {
       (req.required?.rateCodes && !req.required.rateCodes.includes(o.rate.code))
     )
       throw new Error('wrong_room_rate');
-    const board: Board | undefined = nativeBoard(s.request.propertyCode, o.board);
+    const board: Board | undefined = nativeBoard(s.request.propertyCode, o.mealPlan);
     if (!board) throw new Error('unknown_board');
-    if (req.required?.boardBases && !req.required.boardBases.includes(board))
+    if (req.required?.mealPlanBases && !req.required.mealPlanBases.includes(board))
       throw new Error('wrong_board');
     for (const [kind, ref] of Object.entries(s.request.rateContext ?? {})) {
       const evidence = o.appliedContext[kind] as Record<string, unknown> | undefined,
@@ -353,7 +402,7 @@ export async function resolveQuoteRevision(input: {
       (policy.sourcePublications?.some(p=>!policy.sourceHashes.includes(p.sourceHash)||!Number.isFinite(Date.parse(p.publishedAt))||Date.parse(p.publishedAt)>Date.parse(input.admission.sourceEvaluationAt))??false) ||
       policy.vat !== 'included' ||
       policy.levy !== 'included' ||
-      !policy.families.some((f) => f.rateCode === o.rate.code && f.board === board) ||
+      !policy.families.some((f) => f.rateCode === o.rate.code && f.mealPlan === board) ||
       o.totals.taxInclusive === false
     )
       throw new Error('unqualified_inclusions');
@@ -396,7 +445,7 @@ export async function resolveQuoteRevision(input: {
       roomLabel: o.room.label,
       rateCode: o.rate.code,
       rateLabel: o.rate.label,
-      board,
+      mealPlan: board,
       currency,
       context: structuredClone(o.appliedContext),
       nightly,
@@ -445,7 +494,7 @@ export async function resolveQuoteRevision(input: {
       childAges: g.childAges,
       room: g.roomCode,
       rate: g.rateCode,
-      board: g.board,
+      mealPlan: g.mealPlan,
       currency: g.currency,
       context: g.context,
     })),
@@ -508,8 +557,7 @@ export function assessQuoteAcceptance(input: {
     new Date(authored).toISOString().slice(0, 10) !== input.revision.authoredDate
   )
     return { status: 'invalid_time' };
-  const { id, ...revisionData } = input.revision;
-  if (id !== `quote:${quoteDigest(revisionData)}`) return { status: 'invalid_revision' };
+  if (!quoteRevisionIdentityValid(input.revision)) return { status: 'invalid_revision' };
   const time = Date.parse(input.acceptedAt);
   if (!Number.isFinite(time)) return { status: 'invalid_time' };
   const day = new Intl.DateTimeFormat('en-CA', {
@@ -674,8 +722,7 @@ export async function resolveApprovedOverride(input: {
     sourceRevision: QuoteRevision;
   }
 > {
-  const { id: revisionId, ...revisionData } = input.revision;
-  if (revisionId !== `quote:${quoteDigest(revisionData)}`) throw new Error('invalid_revision');
+  if (!quoteRevisionIdentityValid(input.revision)) throw new Error('invalid_revision');
   const approval = structuredClone(await input.resolveApproval(input.ref));
   const time = Date.parse(approval.approvedAt),
     evaluation = Date.parse(input.evaluationAt);

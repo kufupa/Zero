@@ -30,12 +30,12 @@ beforeEach(() => {
 });
 
 const WOOLWORTHS: StaffQuoteParty = {
-  kind: 'company',
+  kind: 'organization',
   nativeId: '49',
   name: 'Woolworths Holdings',
 };
 const WOOLWORTHS_FOODS: StaffQuoteParty = {
-  kind: 'company',
+  kind: 'organization',
   nativeId: '50',
   name: 'Woolworths Foods',
 };
@@ -57,7 +57,7 @@ function Harness({
   autoLookup = true,
   initial = {},
   name = 'Woolworths',
-  kind = 'company',
+  kind = 'organization',
   jobTransport,
   suggestions,
   onPick,
@@ -123,17 +123,17 @@ describe('automatic HMS lookup for a company or agency field', () => {
     const status = screen.getByRole('status');
     expect(status.textContent).toContain('Looking up in HMS — you can keep working');
     expect(status.textContent).toContain('elapsed');
-    expect(status.textContent).toContain('Searching HMS for "Woolworths" (company)');
+    expect(status.textContent).toContain('Searching HMS for "Woolworths" (organization)');
     expect(status.querySelector('svg')).toBeNull();
     const confirm = await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' });
     expect(screen.queryByText(/✓ Woolworths Holdings/)).toBeNull();
     fireEvent.click(confirm);
-    const companyPreset = await screen.findByRole('combobox', { name: 'Company from HMS' });
-    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('company:49');
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm Company' }));
-    expect(screen.getByRole('button', { name: 'Edit Company' })).toBeTruthy();
+    const companyPreset = await screen.findByRole('combobox', { name: 'Organization from HMS' });
+    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('organization:49');
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Organization' }));
+    expect(screen.getByRole('button', { name: 'Edit Organization' })).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(1);
-    expect(find).toHaveBeenCalledWith('Woolworths', 'company', { threadId: 'thread-1' });
+    expect(find).toHaveBeenCalledWith('Woolworths', 'organization', { threadId: 'thread-1' });
   });
 
   it('keeps queue-off explicit Find inline and lists manual results for a staff pick', async () => {
@@ -156,18 +156,18 @@ describe('automatic HMS lookup for a company or agency field', () => {
     });
     expect(find).toHaveBeenCalledTimes(2);
     fireEvent.click(within(results).getByRole('button', { name: 'Woolworths Holdings' }));
-    const companyPreset = await screen.findByRole('combobox', { name: 'Company from HMS' });
-    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('company:49');
-    expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
+    const companyPreset = await screen.findByRole('combobox', { name: 'Organization from HMS' });
+    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('organization:49');
+    expect(screen.getByRole('button', { name: 'Confirm Organization' })).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(2);
-    expect(find).toHaveBeenCalledWith('Woolworths', 'company', { threadId: 'thread-1' });
+    expect(find).toHaveBeenCalledWith('Woolworths', 'organization', { threadId: 'thread-1' });
   });
 
   it('does not bind a domain suggestion when auto-lookup finds a matching HMS row', async () => {
     const onPick = vi.fn();
     const domainHint: PartySuggestion = {
       source: 'sender',
-      kind: 'company',
+      kind: 'organization',
       name: 'Woolworths Holdings',
       nativeId: null,
       idStatus: 'unverified',
@@ -190,7 +190,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
     );
     expect(await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' })).toBeTruthy();
     expect(onPick).not.toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: 'Edit Company' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Edit Organization' })).toBeNull();
   });
 
   it('does not queue HMS jobs while typing; explicit Find queues one user lookup', async () => {
@@ -223,7 +223,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
     expect(queueParty).toHaveBeenCalledWith({
       threadId: 'thread-1',
       name: 'Woolworths',
-      partyKind: 'company',
+      partyKind: 'organization',
     });
     expect(find).not.toHaveBeenCalled();
   });
@@ -239,14 +239,14 @@ describe('automatic HMS lookup for a company or agency field', () => {
     );
     render(<Harness find={find} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' }));
-    const companyPreset = await screen.findByRole('combobox', { name: 'Company from HMS' });
-    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('company:49');
+    const companyPreset = await screen.findByRole('combobox', { name: 'Organization from HMS' });
+    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('organization:49');
     expect(within(companyPreset).getByRole('option', { name: 'Woolworths Foods' })).toBeTruthy();
-    fireEvent.change(companyPreset, { target: { value: 'company:50' } });
-    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('company:50');
-    expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
+    fireEvent.change(companyPreset, { target: { value: 'organization:50' } });
+    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('organization:50');
+    expect(screen.getByRole('button', { name: 'Confirm Organization' })).toBeTruthy();
     fireEvent.change(companyPreset, { target: { value: '__search_hms__' } });
-    expect(screen.getByRole('textbox', { name: 'Search company in HMS' })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Search organization in HMS' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Find in HMS' })).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(1);
   });
@@ -262,10 +262,10 @@ describe('automatic HMS lookup for a company or agency field', () => {
     );
     render(<Harness find={find} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' }));
-    const companyPreset = await screen.findByRole('combobox', { name: 'Company from HMS' });
-    fireEvent.change(companyPreset, { target: { value: 'company:50' } });
-    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('company:50');
-    expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
+    const companyPreset = await screen.findByRole('combobox', { name: 'Organization from HMS' });
+    fireEvent.change(companyPreset, { target: { value: 'organization:50' } });
+    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('organization:50');
+    expect(screen.getByRole('button', { name: 'Confirm Organization' })).toBeTruthy();
     expect(screen.queryByText(/picked by Nava/)).toBeNull();
   });
 
@@ -284,7 +284,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
     render(<Harness find={find} />);
     expect(
       await screen.findByText(
-        'No company in HMS matches “Woolworths”. Check the spelling or search a shorter name.',
+        'No organization in HMS matches “Woolworths”. Check the spelling or search a shorter name.',
         undefined,
         { timeout: 3000 },
       ),
@@ -294,9 +294,9 @@ describe('automatic HMS lookup for a company or agency field', () => {
     const result = await screen.findByRole('list', { name: 'Companies and agencies found in HMS' });
     expect(screen.queryByText(/Not found in HMS/)).toBeNull();
     fireEvent.click(within(result).getByRole('button', { name: 'Woolworths Holdings' }));
-    const companyPreset = await screen.findByRole('combobox', { name: 'Company from HMS' });
-    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('company:49');
-    expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
+    const companyPreset = await screen.findByRole('combobox', { name: 'Organization from HMS' });
+    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('organization:49');
+    expect(screen.getByRole('button', { name: 'Confirm Organization' })).toBeTruthy();
     expect(screen.queryByText(/picked by Nava/)).toBeNull();
     expect(find).toHaveBeenCalledTimes(2);
   });
@@ -307,7 +307,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
     render(
       <PartyPicker
         name="Woolworths"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={find}
         onPick={onPick}
@@ -336,12 +336,12 @@ describe('automatic HMS lookup for a company or agency field', () => {
       await screen.findByRole('button', { name: 'Woolworths Holdings' }, { timeout: 3000 }),
     ).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(1);
-    expect(find).toHaveBeenCalledWith('Woolworths', 'company', { threadId: 'thread-1' });
+    expect(find).toHaveBeenCalledWith('Woolworths', 'organization', { threadId: 'thread-1' });
   });
 
   it('keeps Find in HMS visible for an empty Company field, disabled until a name is entered', () => {
     const find = vi.fn(async () => reply({ outcome: 'no_match' }));
-    render(<Harness find={find} name="" kind="company" />);
+    render(<Harness find={find} name="" kind="organization" />);
     const button = screen.getByRole('button', { name: 'Find in HMS' }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     expect(find).not.toHaveBeenCalled();
@@ -358,7 +358,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
     const button = screen.getByRole('button', { name: 'Find in HMS' }) as HTMLButtonElement;
     expect(button.disabled).toBe(false);
     fireEvent.click(button);
-    await waitFor(() => expect(find).toHaveBeenCalledWith('Ab', 'company', { threadId: 'thread-1' }));
+    await waitFor(() => expect(find).toHaveBeenCalledWith('Ab', 'organization', { threadId: 'thread-1' }));
   });
 
   it('shows manual HMS matches under the party field so staff can confirm one', async () => {
@@ -382,11 +382,11 @@ describe('automatic HMS lookup for a company or agency field', () => {
     const find = vi.fn(async () =>
       reply({ outcome: 'resolved', results: [WOOLWORTHS], best: WOOLWORTHS }),
     );
-    render(<Harness find={find} initial={{ company: WOOLWORTHS }} />);
+    render(<Harness find={find} initial={{ organization: WOOLWORTHS }} />);
     await waitForDebounce();
     expect(find).not.toHaveBeenCalled();
-    expect((screen.getByRole('combobox', { name: 'Company from HMS' }) as unknown as HTMLSelectElement).value).toBe('company:49');
-    expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
+    expect((screen.getByRole('combobox', { name: 'Organization from HMS' }) as unknown as HTMLSelectElement).value).toBe('organization:49');
+    expect(screen.getByRole('button', { name: 'Confirm Organization' })).toBeTruthy();
   });
 
   it('runs no search for a name under three characters', async () => {
@@ -411,7 +411,7 @@ describe('automatic lookup when the name changes mid-search', () => {
     );
     const { rerender } = render(<Harness find={find} name="Woolworths" />);
     await waitFor(() =>
-      expect(find).toHaveBeenCalledWith('Woolworths', 'company', { threadId: 'thread-1' }),
+      expect(find).toHaveBeenCalledWith('Woolworths', 'organization', { threadId: 'thread-1' }),
     );
     rerender(<Harness find={find} name="Pick n Pay" />);
     finish(reply({ results: [WOOLWORTHS], best: WOOLWORTHS, searchedFor: 'Woolworths' }));
@@ -428,14 +428,14 @@ describe('the finder passes the kind it was given', () => {
     const trpc = Object.assign(() => undefined, { panePartyLookup: { findParty: { mutate } } });
     const find = partyFinderFromTrpc(trpc);
     expect(find).not.toBeNull();
-    await find?.('Foschini', 'company');
+    await find?.('Foschini', 'organization');
     await find?.('Foschini');
-    await find?.('Foschini', 'company', { threadId: 'thread-1' });
-    expect(mutate).toHaveBeenNthCalledWith(1, { name: 'Foschini', kind: 'company' });
+    await find?.('Foschini', 'organization', { threadId: 'thread-1' });
+    expect(mutate).toHaveBeenNthCalledWith(1, { name: 'Foschini', kind: 'organization' });
     expect(mutate).toHaveBeenNthCalledWith(2, { name: 'Foschini' });
     expect(mutate).toHaveBeenNthCalledWith(3, {
       name: 'Foschini',
-      kind: 'company',
+      kind: 'organization',
       threadId: 'thread-1',
     });
   });
@@ -448,7 +448,7 @@ describe('automatic lookup reports whether it still decides the pick', () => {
     render(
       <PartyPicker
         name="Woolworths"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={find}
         onPick={vi.fn()}
@@ -468,7 +468,7 @@ describe('automatic lookup reports whether it still decides the pick', () => {
     render(
       <PartyPicker
         name="Woolworths"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={find}
         onPick={vi.fn()}

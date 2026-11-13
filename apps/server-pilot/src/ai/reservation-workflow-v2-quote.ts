@@ -198,9 +198,9 @@ function boardCode(value: unknown, propertyCode?: string): 'room_only' | 'bb' | 
 function selectedParty(
   draft: ReservationWorkflowV2Draft,
   request: QuoteRequest,
-  role: 'company' | 'agency',
+  role: 'organization' | 'bookingAgency',
   execute: boolean,
-): { party?: { kind: 'company' | 'agency'; nativeId: string; name: string }; issue?: string; reviewPaths: string[]; observationRef?: string } {
+): { party?: { kind: 'organization' | 'bookingAgency'; nativeId: string; name: string }; issue?: string; reviewPaths: string[]; observationRef?: string } {
   const raw = request.body.parties[role];
   const basePath = ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role);
   const namePath = ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role, 'name');
@@ -270,7 +270,7 @@ function pricedDinnerFallbackMatches(
   const facts = record(factsValue);
   const fallbackGroupIds = Array.isArray(fallbackGroupIdsValue) ? fallbackGroupIdsValue : [];
   if ((input.salesStrategy !== 'BAR' && input.salesStrategy !== 'Government' && input.salesStrategy !== 'GOV') ||
-      actual.board !== 'breakfast' || typeof actual.rateCode !== 'string' || !actual.rateCode.trim() ||
+      actual.mealPlan !== 'breakfast' || typeof actual.rateCode !== 'string' || !actual.rateCode.trim() ||
       !fallbackGroupIds.includes(expected.id) || !facts || facts.revisionId !== revision.id ||
       facts.authorizationId !== revision.authorizationId || facts.sourceHash !== input.sourceHash) return false;
 
@@ -337,9 +337,9 @@ function preparedQuoteMatches(
   }
   for (const expected of input.groups) {
     const actual = groups.find((group) => group?.id === expected.id);
-    const board = expected.board === 'bb' ? 'breakfast'
-      : expected.board === 'dinner_bb' ? 'dinner_bed_breakfast' : 'room_only';
-    const boardMatches = actual?.board === board || Boolean(actual && expected.board === 'dinner_bb' &&
+    const board = expected.mealPlan === 'bb' ? 'breakfast'
+      : expected.mealPlan === 'dinner_bb' ? 'dinner_bed_breakfast' : 'room_only';
+    const boardMatches = actual?.mealPlan === board || Boolean(actual && expected.mealPlan === 'dinner_bb' &&
       pricedDinnerFallbackMatches(input, expected, actual, revision, factsValue, fallbackGroupIdsValue));
     if (!actual || actual.arrivalDate !== expected.arrivalDate || actual.departureDate !== expected.departureDate ||
         actual.quantity !== expected.quantity || actual.adults !== expected.adults ||
@@ -360,6 +360,7 @@ type CompiledQuote = {
   sourceRefs: string[];
   outputKinds: Array<'email_quote' | 'pdf_quote' | 'xlsx_quote'>;
   strategyDefaulted: boolean;
+  mealPlanDefaultedGroupIds: string[];
 } | {
   status: 'needs_input' | 'needs_review' | 'unsupported';
   issue: string;
@@ -401,7 +402,7 @@ function unavailableInventoryMarker(
     roomCode: proof.roomCode,
     roomLabel: proof.roomLabel,
     rateCode: group.rateCode,
-    board: group.board,
+    mealPlan: group.mealPlan,
     arrivalDate: group.arrivalDate,
     departureDate: group.departureDate,
     quantity: group.quantity,
@@ -414,7 +415,7 @@ function unavailableInventoryProof(
   draft: ReservationWorkflowV2Draft,
   compiled: Extract<CompiledQuote, { status: 'ok' }>,
 ): UnavailableInventoryProof | null {
-  if (compiled.input.groups.length !== 1) return null;
+  if (compiled.input.groups.length !== 1 || compiled.mealPlanDefaultedGroupIds.length) return null;
   const group = compiled.input.groups[0];
   const roomCode = group?.roomCodes?.length === 1 ? group.roomCodes[0] : undefined;
   if (!group || !roomCode || !group.rateCode) return null;
@@ -450,7 +451,7 @@ function unavailableInventoryProof(
   const board: Record<string, unknown>[] = Array.isArray(diagnostic.availabilityBoard)
     ? diagnostic.availabilityBoard.map(record).filter((row): row is Record<string, unknown> => row !== null) : [];
   const expectedBoard = board.filter((row) => row?.groupId === group.id && row.roomCode === roomCode &&
-    row.rateCode === group.rateCode && boardCode(row.boardLabel ?? row.board, draft.propertyCode) === group.board);
+    row.rateCode === group.rateCode && boardCode(row.mealPlanLabel ?? row.mealPlan, draft.propertyCode) === group.mealPlan);
   if (expectedBoard.length !== 1) return null;
   const row = expectedBoard[0]!;
   const coverage = record(row.coverage), nightCoverage = record(row.nightCoverage);
@@ -473,6 +474,7 @@ function compileQuote(
   draft: ReservationWorkflowV2Draft,
   request: QuoteRequest,
   execute: boolean,
+  allowRequestedForUnavailable = false,
 ): CompiledQuote {
   const bodyPath = ['proposal', 'content', 'requests', request.id, 'body'] as const;
   const path = (...parts: Array<string | number>) => ptr(...bodyPath, ...parts);
@@ -502,9 +504,10 @@ function compileQuote(
 
   const nativeGroups: Array<{
     id: string; arrivalDate: string; departureDate: string; quantity: number; adults: number;
-    childrenAges: number[]; board: 'room_only' | 'bb' | 'dinner_bb'; roomCodes?: string[]; rateCode?: string;
+    childrenAges: number[]; mealPlan: 'room_only' | 'bb' | 'dinner_bb'; roomCodes?: string[]; rateCode?: string;
   }> = [];
   const datePairs = new Set<string>();
+  const mealPlanDefaultedGroupIds: string[] = [];
   for (const [groupIndex, group] of request.body.groups.entries()) {
     const base = path('groups', groupIndex);
     if (group.id.length > 64) issues.push(`${base}/id:native_group_id_limit`);
@@ -525,9 +528,17 @@ function compileQuote(
     const quantity = quantityResult && !('issue' in quantityResult) ? quantityResult.value : null;
     if (!Number.isInteger(quantity) || Number(quantity) < 1 || Number(quantity) > 100) issues.push(`${base}/quantity:valid_room_count_required`);
 
-    const boardResult = resolved(path('groups', groupIndex, 'board'), group.board);
-    const board = boardResult && !('issue' in boardResult) ? boardCode(boardResult.value, draft.propertyCode) : null;
-    if (!board) issues.push(`${base}/board:native_board_code_required`);
+    const boardResult = execute ? resolved(path('groups', groupIndex, 'mealPlan'), group.mealPlan)
+      : resolvedLeaf(draft, path('groups', groupIndex, 'mealPlan'), group.mealPlan);
+    const actual = boardResult && !('issue' in boardResult) ? boardCode(boardResult.value, draft.propertyCode) : null;
+    const useRequested = execute && allowRequestedForUnavailable && !('issue' in boardResult) && boardResult.value == null;
+    const requestedPath = path('groups', groupIndex, 'requestedMealPlan');
+    const requested = useRequested ? resolved(requestedPath, group.requestedMealPlan)
+      : resolvedLeaf(draft, requestedPath, group.requestedMealPlan);
+    const requestedBoard = !('issue' in requested) ? boardCode(requested.value, draft.propertyCode) : null;
+    const board = actual ?? (useRequested ? requestedBoard : !execute ? requestedBoard ?? 'bb' : null);
+    if (!execute && !actual && !requestedBoard) mealPlanDefaultedGroupIds.push(group.id);
+    if (!board) issues.push(`${base}/mealPlan:native_meal_plan_code_required`);
 
     // Occupancy may be edited atomically as a parent object to keep child count and age slots in one revision.
     const occupancyResult = resolvedLeaf(draft, path('groups', groupIndex, 'occupancy'), group.occupancy);
@@ -574,7 +585,7 @@ function compileQuote(
     if (typeof arrival === 'string' && typeof departure === 'string' && Number.isInteger(quantity) &&
         Number.isInteger(adults) && childrenAges && board) {
       nativeGroups.push({ id: group.id, arrivalDate: arrival, departureDate: departure,
-        quantity: Number(quantity), adults: Number(adults), childrenAges, board,
+        quantity: Number(quantity), adults: Number(adults), childrenAges, mealPlan: board,
         ...(roomCodes ? { roomCodes } : {}), ...(rateCode ? { rateCode } : {}) });
     }
   }
@@ -589,7 +600,7 @@ function compileQuote(
   for (const [index, claim] of request.body.requestedMoney.entries()) {
     const base = path('requestedMoney', index);
     const read = (key: string, original: unknown) => resolvedLeaf(draft, `${base}/${key}`, original);
-    const kind = read('staffAllowanceType', undefined);
+    const kind = read('staffAllowanceType', claim.staffAllowanceType);
     const amount = read('amount', claim.amount), currency = read('currency', claim.currency),
       unit = read('unit', claim.unit), scope = read('scope', claim.scope), targets = read('targetRefs', claim.targetRefs);
     const values = [kind, amount, currency, unit, scope, targets];
@@ -637,8 +648,8 @@ function compileQuote(
     }
   }
 
-  const company = selectedParty(draft, request, 'company', execute);
-  const agency = selectedParty(draft, request, 'agency', execute);
+  const company = selectedParty(draft, request, 'organization', execute);
+  const agency = selectedParty(draft, request, 'bookingAgency', execute);
   for (const selected of [company, agency]) {
     if (selected.issue) issues.push(selected.issue);
     selected.reviewPaths.forEach((item) => reviewPaths.add(item));
@@ -692,8 +703,8 @@ function compileQuote(
   }
 
   const parties = {
-    ...(company.party ? { company: company.party } : {}),
-    ...(agency.party ? { agency: agency.party } : {}),
+    ...(company.party ? { organization: company.party } : {}),
+    ...(agency.party ? { bookingAgency: agency.party } : {}),
   };
   const nativeInput = {
     messageId: draft.source.messageId,
@@ -702,8 +713,8 @@ function compileQuote(
     inputRevision: draft.revision,
     groups: nativeGroups,
     salesStrategy: strategyDefaulted ? 'BAR' : strategy === 'GOV' ? 'Government' : strategy,
-    company: company.party?.name ?? '',
-    agency: agency.party?.name ?? '',
+    organization: company.party?.name ?? '',
+    bookingAgency: agency.party?.name ?? '',
     attention,
     clientEmail,
     clientTelephone,
@@ -729,7 +740,7 @@ function compileQuote(
     // Staff acknowledgement advances pane revisions without changing quote scope.
     inputDigest: hash({ sourceHash: draft.source.sourceHash, requestId: request.id,
       input: { ...input, selectionEpoch: 0, inputRevision: 0 } }),
-    reviewPaths: [...reviewPaths], sourceRefs, outputKinds, strategyDefaulted,
+    reviewPaths: [...reviewPaths], sourceRefs, outputKinds, strategyDefaulted, mealPlanDefaultedGroupIds,
   };
 }
 
@@ -768,9 +779,11 @@ function quoteObservation(
     inputDigest,
     sourceHash: draft.source.sourceHash,
     searchContext: { salesStrategy: compiled.input.salesStrategy,
-      strategySource: compiled.strategyDefaulted ? 'discovery_default' : 'draft' },
+      strategySource: compiled.strategyDefaulted ? 'discovery_default' : 'draft',
+      mealPlanDefaultedGroupIds: compiled.mealPlanDefaultedGroupIds },
     nativeInputDigest: result.inputDigest ?? null,
     inputOverrides: quoteInputOverrides(draft, compiled.request.id),
+    requestedGroups: compiled.input.groups,
     observedAt: new Date().toISOString(),
     freshUntil: result.freshUntil ?? null,
     totalMinor: result.totalMinor ?? null,
@@ -901,6 +914,15 @@ function preparedUnavailableOperation(
     result.summary === UNAVAILABLE_PREPARED_SUMMARY && result.observationRefs.includes(observationRef)) ?? null;
 }
 
+/** Only a current, prepared shortage can use the reviewed requested meal plan to compile a decline. */
+function compilePreparedUnavailableQuote(draft: ReservationWorkflowV2Draft, request: QuoteRequest): CompiledQuote | null {
+  const discovery = compileQuote(draft, request, false);
+  if (discovery.status !== 'ok') return null;
+  const proof = unavailableInventoryProof(draft, discovery);
+  if (!proof || !preparedUnavailableOperation(draft, request.id, proof.observation.ref)) return null;
+  return compileQuote(draft, request, true, true);
+}
+
 async function prepareUnavailableInventory(
   ctx: ReadContext,
   input: QuoteBaseInput,
@@ -950,8 +972,8 @@ export function quoteDiagnosticMatchesParty(
   rateContext: Record<string, unknown> | undefined,
 ): boolean {
   const expected = {
-    ...(parties?.company ? { organization: parties.company.nativeId } : {}),
-    ...(parties?.agency ? { agency: parties.agency.nativeId } : {}),
+    ...(parties?.organization ? { organization: parties.organization.nativeId } : {}),
+    ...(parties?.bookingAgency ? { bookingAgency: parties.bookingAgency.nativeId } : {}),
   };
   const context = rateContext ?? {};
   const selected = Object.entries(expected);
@@ -988,7 +1010,8 @@ async function priceQuote(
     const latest = [...diagnostics].reverse().find((diagnostic) => diagnostic.contextMatchesSelection);
     const failureDetails = {
       searchContext: { salesStrategy: compiled.input.salesStrategy,
-        strategySource: compiled.strategyDefaulted ? 'discovery_default' : 'draft' },
+        strategySource: compiled.strategyDefaulted ? 'discovery_default' : 'draft',
+      mealPlanDefaultedGroupIds: compiled.mealPlanDefaultedGroupIds },
       failureCode: cause.code,
       failurePhase: cause.phase ?? 'unknown',
       failureKind: cause.code === 'native_quote_no_matching_rate' ? 'requested_mismatch'
@@ -1041,7 +1064,7 @@ async function lookupPartyCandidates(
   const target = await quoteTarget(ctx, input);
   if (!target.target) return { status: 'unsupported', issue: target.issue, candidates: [] as unknown[] };
   const candidates: Array<Record<string, unknown>> = [];
-  for (const role of ['company', 'agency'] as const) {
+  for (const role of ['organization', 'bookingAgency'] as const) {
     const basePath = ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role);
     const partyLeaf = resolvedLeaf(draft, basePath, request.body.parties[role]);
     const party = !('issue' in partyLeaf) ? record(partyLeaf.value) : null;
@@ -1064,7 +1087,7 @@ async function lookupPartyCandidates(
       continue;
     }
     if (ctx.nativeBatch) {
-      const found = await lookupNativeParty({ role: role === 'company' ? 'organization' : 'agency',
+      const found = await lookupNativeParty({ role: role === 'organization' ? 'organization' : 'agency',
         name, target: target.target, signal: ctx.nativeBatch.signal });
       const rows = Array.isArray(found.result.candidates) ? found.result.candidates : [];
       const rowValues = rows.length ? rows : [null];
@@ -1273,7 +1296,7 @@ function makeCoverEmail(
     const ages = group.children ? ` (ages ${group.childAges.join(', ')})` : '';
     return [
       `Room group ${groupIndex + 1} · ${quoteDateLabel(line.arrivalDate, line.departureDate)}: ${group.roomLabel}`,
-      `${line.quantity} room${line.quantity === 1 ? '' : 's'}, ${group.adults} adult${group.adults === 1 ? '' : 's'} and ${group.children} ${group.children === 1 ? 'child' : 'children'}${ages} per room · ${boardLabels[group.board]}`,
+      `${line.quantity} room${line.quantity === 1 ? '' : 's'}, ${group.adults} adult${group.adults === 1 ? '' : 's'} and ${group.children} ${group.children === 1 ? 'child' : 'children'}${ages} per room · ${boardLabels[group.mealPlan]}`,
       `${line.quantity} room${line.quantity === 1 ? '' : 's'} × ${line.nights} night${line.nights === 1 ? '' : 's'} × ${money(line.rateMinor)} per room per night = ${money(line.totalMinor)}`,
     ].join('\n');
   });
@@ -1328,7 +1351,7 @@ async function quoteArtifacts(
   const header = {
     attention: compiled.input.attention,
     // HMS party still scopes the native rate; the client company is deliberately omitted from quote covers.
-    company: '',
+    organization: '',
     clientEmail: compiled.input.clientEmail,
     clientTelephone: compiled.input.clientTelephone,
     signerName: actor?.name ?? '',
@@ -1342,7 +1365,7 @@ async function quoteArtifacts(
     else try {
       const workbook = quoteWorkbookForStays({ stays, header, note: compiled.input.notes });
       const bytes = Buffer.from(workbook.bytes);
-      artifacts.push({ kind: 'xlsx_quote', fileName: quoteWorkbookFileName(compiled.input.agency || compiled.input.company,
+      artifacts.push({ kind: 'xlsx_quote', fileName: quoteWorkbookFileName(compiled.input.bookingAgency || compiled.input.organization,
         group.arrivalDate, group.departureDate), mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         sha256: createHash('sha256').update(bytes).digest('hex'), sizeBytes: bytes.length, bytesBase64: bytes.toString('base64'),
         totalMinor: workbook.totalMinor, currency: revision.currency });
@@ -1356,7 +1379,7 @@ async function quoteArtifacts(
     else if (!gotenbergUrl) failures.push('pdf_converter_unavailable');
     else {
       try {
-        const pdf = await buildStaysProposalPdf(stays, { ...header, agency: compiled.input.agency, notes: compiled.input.notes },
+        const pdf = await buildStaysProposalPdf(stays, { ...header, bookingAgency: compiled.input.bookingAgency, notes: compiled.input.notes },
           { url: gotenbergUrl });
         const bytes = Buffer.from(pdf.pdf);
         artifacts.push({ kind: 'pdf_quote', fileName: pdf.fileName, mimeType: 'application/pdf',
@@ -1377,7 +1400,7 @@ async function quoteArtifacts(
     sourceHash: compiled.input.sourceHash, nativeInputDigest: typeof prepared?.nativeInputDigest === 'string' ? prepared.nativeInputDigest : null,
     preparedObservationRef: preparedObservation.ref, workflowRunId: typeof prepared?.workflowRunId === 'string' ? prepared.workflowRunId : null,
     claims: compiled.input.groups.map((entry) => ({ groupId: entry.id, arrivalDate: entry.arrivalDate,
-      departureDate: entry.departureDate, quantity: entry.quantity, board: entry.board, adultsPerRoom: entry.adults,
+      departureDate: entry.departureDate, quantity: entry.quantity, mealPlan: entry.mealPlan, adultsPerRoom: entry.adults,
       childAgesPerRoom: entry.childrenAges })),
     companyShownInCover: false as const };
 }
@@ -1405,7 +1428,7 @@ function unavailableQuoteReply(
     preparedObservationRef: proof.observation.ref,
     workflowRunId: null,
     claims: [{ groupId: group.id, arrivalDate: group.arrivalDate, departureDate: group.departureDate,
-      quantity: group.quantity, board: group.board, adultsPerRoom: group.adults,
+      quantity: group.quantity, mealPlan: group.mealPlan, adultsPerRoom: group.adults,
       childAgesPerRoom: group.childrenAges }],
     unavailableInventory: unavailableInventoryMarker(compiled, proof),
     companyShownInCover: false as const,
@@ -1436,9 +1459,17 @@ export async function reservationWorkflowV2QuoteExecute(
       (operationObservation(loaded.draft, prior.id, prior.observationRefs) || !quoteOperationExpired(prior))) {
     return { status: 'needs_reconcile', operationId: prior.id };
   }
-  const compiled = compileQuote(loaded.draft, request, true);
+  let compiled = compileQuote(loaded.draft, request, true);
+  let declineOnly = false;
+  if (compiled.status !== 'ok') {
+    const decline = compilePreparedUnavailableQuote(loaded.draft, request);
+    if (decline) {
+      compiled = decline;
+      declineOnly = true;
+    }
+  }
   if (compiled.status !== 'ok') return { status: compiled.status, issue: compiled.issue, fields: compiled.fields };
-  const preparedObservation = matchingPreparedQuote(loaded.draft, compiled, true);
+  const preparedObservation = declineOnly ? null : matchingPreparedQuote(loaded.draft, compiled, true);
   const unavailable = preparedObservation ? null : unavailableInventoryProof(loaded.draft, compiled);
   if (!preparedObservation && !unavailable) return { status: 'needs_prepare', issue: 'current_native_quote_prepare_required' };
   if (unavailable && !preparedUnavailableOperation(loaded.draft, request.id, unavailable.observation.ref)) {
@@ -1532,7 +1563,8 @@ function validUnavailableInventoryReceipt(
 ): boolean {
   const request = quoteRequests(draft, result.requestId)[0];
   if (!request) return false;
-  const compiled = compileQuote(draft, request, true);
+  const strict = compileQuote(draft, request, true);
+  const compiled = strict.status === 'ok' ? strict : compilePreparedUnavailableQuote(draft, request) ?? strict;
   if (compiled.status !== 'ok' || !compiled.outputKinds.includes('email_quote')) return false;
   const proof = unavailableInventoryProof(draft, compiled);
   if (!proof) return false;

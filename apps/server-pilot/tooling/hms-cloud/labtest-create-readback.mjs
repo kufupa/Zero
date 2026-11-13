@@ -40,6 +40,7 @@ function compareRecord(fields, expected) {
     ['arrival', 'arrivaldate', displayDate(expected.arrival)], ['departure', 'departuredate', displayDate(expected.departure)],
     ['adults', 'adults', expected.adults], ['children', 'children', expected.children],
     ['roomType', 'roomtype', expected.roomType], ['ratePlan', 'rateplan', expected.ratePlan],
+    ['mealPlan', 'mealplan', expected.mealPlan],
     ['roomTypeForCharge', 'roomtypecharge', expected.roomTypeForCharge],
     ['note', 'reservationnote', expected.note], ['guestId', 'guestid', expected.guestId], ['status', 'status', 'Reserved'],
     ['firstName', 'firstname', expected.allowRealGuest ? expected.firstName : 'Proof'],
@@ -54,8 +55,15 @@ function compareRecord(fields, expected) {
   ]) {
     if (wanted == null) continue;
     const actual = uniqueValue(fields, name);
-    if (actual == null || (['note', 'guestId', 'firstName', 'lastName', 'roomType', 'roomTypeForCharge', 'ratePlan', 'cmsMessageId', 'cmsRecipient', 'guestEmail', 'bookerName', 'bookerContact'].includes(field) ? String(actual) !== String(wanted) : !same(actual, wanted))) {
+    if (actual == null || (['note', 'guestId', 'firstName', 'lastName', 'roomType', 'roomTypeForCharge', 'ratePlan', 'mealPlan', 'cmsMessageId', 'cmsRecipient', 'guestEmail', 'bookerName', 'bookerContact'].includes(field) ? String(actual) !== String(wanted) : !same(actual, wanted))) {
       mismatches.push({ field, expected: wanted, actual, ...(actual == null ? { issue: 'not_visible_or_ambiguous' } : {}) });
+    }
+  }
+  if (expected.nativeCommissionPercent !== undefined) {
+    const value = uniqueValue(fields, 'ta1commission');
+    if ((typeof value !== 'string' && typeof value !== 'number') || !String(value).trim() ||
+        !Number.isFinite(Number(value)) || Number(value) !== expected.nativeCommissionPercent) {
+      mismatches.push({ field: 'taCommission', expected: expected.nativeCommissionPercent, actual: value });
     }
   }
   return mismatches;

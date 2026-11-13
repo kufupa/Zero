@@ -12,7 +12,7 @@ import { z } from 'zod';
 const findPartyInput = z
   .object({
     name: z.string().max(256),
-    kind: z.enum(['company', 'agency']).optional(),
+    kind: z.enum(['organization', 'bookingAgency']).optional(),
     threadId: z.string().min(1).optional(),
     messageId: z.string().min(1).optional(),
   })

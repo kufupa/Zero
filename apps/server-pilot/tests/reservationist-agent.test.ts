@@ -30,6 +30,7 @@ const stay = {
   arrivalDate: '2026-10-02',
   departureDate: '2026-10-04',
   rooms: [{ id: 'group-1', quantity: 1, adults: 2, children: 0, childAges: [] }],
+  rateContext: { bookingAgency: { nativeId: 'agency-1', name: 'Travel' } },
 };
 
 type Exec = (input: unknown, context: unknown) => Promise<unknown>;

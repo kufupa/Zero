@@ -22,18 +22,18 @@ afterEach(() => {
   cleanup();
 });
 
-const WOOLWORTHS: StaffQuoteParty = { kind: 'company', nativeId: '49', name: 'Woolworths' };
-const AGENCY: StaffQuoteParty = { kind: 'agency', nativeId: '569', name: 'Woolworths Agency' };
+const WOOLWORTHS: StaffQuoteParty = { kind: 'organization', nativeId: '49', name: 'Woolworths' };
+const AGENCY: StaffQuoteParty = { kind: 'bookingAgency', nativeId: '569', name: 'Woolworths Agency' };
 const CWT: PartySuggestion = {
   source: 'sender',
-  kind: 'agency',
+  kind: 'bookingAgency',
   name: 'CWT JNB',
   nativeId: null,
   idStatus: 'unverified',
 };
 const RENNIES: PartySuggestion = {
   source: 'body',
-  kind: 'agency',
+  kind: 'bookingAgency',
   name: 'RENNIES TRAVEL (PTY) LTD',
   nativeId: null,
   idStatus: 'unverified',
@@ -41,20 +41,20 @@ const RENNIES: PartySuggestion = {
 
 describe('the company and agency the quote sends', () => {
   it('keeps one company and one agency, each with a plain HMS id, and drops anything else', () => {
-    expect(pickedParties({ company: WOOLWORTHS, agency: AGENCY })).toEqual({
-      company: WOOLWORTHS,
-      agency: AGENCY,
+    expect(pickedParties({ organization: WOOLWORTHS, bookingAgency: AGENCY })).toEqual({
+      organization: WOOLWORTHS,
+      bookingAgency: AGENCY,
     });
-    expect(pickedParties({ company: { ...WOOLWORTHS, nativeId: null as unknown as string } })).toBeUndefined();
-    expect(pickedParties({ company: { ...AGENCY, kind: 'agency' } as StaffQuoteParty })).toBeUndefined();
-    expect(pickedParties({ agency: { ...AGENCY, nativeId: 'id with spaces' } })).toBeUndefined();
+    expect(pickedParties({ organization: { ...WOOLWORTHS, nativeId: null as unknown as string } })).toBeUndefined();
+    expect(pickedParties({ organization: { ...AGENCY, kind: 'bookingAgency' } as StaffQuoteParty })).toBeUndefined();
+    expect(pickedParties({ bookingAgency: { ...AGENCY, nativeId: 'id with spaces' } })).toBeUndefined();
     expect(pickedParties({})).toBeUndefined();
     expect(pickedParties(undefined)).toBeUndefined();
   });
 
   it('sends both picks on the pane bind, and nothing for an unverified pick', async () => {
     const mutate = vi.fn<(input: unknown) => Promise<{ status: 'unavailable' }>>(async () => ({ status: 'unavailable' as const }));
-    const header = { ...emptyStaffQuoteHeader(), parties: { company: WOOLWORTHS, agency: AGENCY } };
+    const header = { ...emptyStaffQuoteHeader(), parties: { organization: WOOLWORTHS, bookingAgency: AGENCY } };
     await bindExecuteStaffQuote({
       mutate,
       source: { messageId: 'm', threadId: 't', sourceHash: 'ab'.repeat(32) },
@@ -69,7 +69,7 @@ describe('the company and agency the quote sends', () => {
           quantity: 1,
           adults: 1,
           childrenAges: [] as number[],
-          board: 'bb' as const,
+          mealPlan: 'bb' as const,
           specialRequests: [] as string[],
           fields: {},
         },
@@ -77,7 +77,7 @@ describe('the company and agency the quote sends', () => {
       header,
     });
     const sent = mutate.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
-    expect(sent?.parties).toEqual({ company: WOOLWORTHS, agency: AGENCY });
+    expect(sent?.parties).toEqual({ organization: WOOLWORTHS, bookingAgency: AGENCY });
   });
 });
 
@@ -107,7 +107,7 @@ describe('PartyPicker with both kinds and suggestions', () => {
     render(
       <PartyPicker
         name="Woolworths"
-        parties={{ company: WOOLWORTHS, agency: AGENCY }}
+        parties={{ organization: WOOLWORTHS, bookingAgency: AGENCY }}
         find={noFind}
         onPick={vi.fn()}
         onClear={onClear}
@@ -118,7 +118,7 @@ describe('PartyPicker with both kinds and suggestions', () => {
     const clears = screen.getAllByRole('button', { name: 'Change' });
     expect(clears).toHaveLength(2);
     fireEvent.click(clears[0]!);
-    expect(onClear).toHaveBeenCalledWith('company');
+    expect(onClear).toHaveBeenCalledWith('organization');
   });
 
   it('fills the top suggestion name when the field is empty, and does not pick without HMS', () => {
@@ -136,7 +136,7 @@ describe('PartyPicker with both kinds and suggestions', () => {
         onSearchName={onSearchName}
       />,
     );
-    expect(onSearchName).toHaveBeenCalledWith('RENNIES TRAVEL (PTY) LTD', 'agency');
+    expect(onSearchName).toHaveBeenCalledWith('RENNIES TRAVEL (PTY) LTD', 'bookingAgency');
     expect(screen.queryByText(/not confirmed in HMS/)).toBeNull();
     expect(screen.queryByText(/learned/i)).toBeNull();
     expect(onPick).not.toHaveBeenCalled();
@@ -148,11 +148,11 @@ describe('PartyPicker with both kinds and suggestions', () => {
     render(
       <PartyPicker
         name="Woolworths"
-        parties={{ company: WOOLWORTHS }}
+        parties={{ organization: WOOLWORTHS }}
         find={noFind}
         onPick={vi.fn()}
         onClear={vi.fn()}
-        suggestions={[{ ...RENNIES, kind: 'company', name: 'Another Company' }]}
+        suggestions={[{ ...RENNIES, kind: 'organization', name: 'Another Company' }]}
         onSearchName={onSearchName}
       />,
     );
@@ -167,17 +167,17 @@ describe('PartyPicker scoped to one field of the header', () => {
     const find = vi.fn<(name: string) => Promise<PartyFindReply>>(async () => ({
       outcome: 'resolved',
       results: [
-        { kind: 'company', nativeId: '49', name: 'Woolworths Holdings' },
-        { kind: 'agency', nativeId: '290', name: 'CWT JNB' },
+        { kind: 'organization', nativeId: '49', name: 'Woolworths Holdings' },
+        { kind: 'bookingAgency', nativeId: '290', name: 'CWT JNB' },
       ],
       truncated: false,
     }));
-    const companySuggestion: PartySuggestion = { ...CWT, kind: 'company', name: 'Woolworths Company' };
+    const companySuggestion: PartySuggestion = { ...CWT, kind: 'organization', name: 'Woolworths Company' };
     render(
       <PartyPicker
-        kind="agency"
+        kind="bookingAgency"
         name="CWT"
-        parties={{ company: WOOLWORTHS }}
+        parties={{ organization: WOOLWORTHS }}
         find={find}
         onPick={vi.fn()}
         onClear={vi.fn()}
@@ -189,7 +189,7 @@ describe('PartyPicker scoped to one field of the header', () => {
     expect(screen.queryByText(/Woolworths Company/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'CWT JNB' })).toBeTruthy());
-    expect(find).toHaveBeenCalledWith('CWT', 'agency');
+    expect(find).toHaveBeenCalledWith('CWT', 'bookingAgency');
     expect(screen.queryByRole('button', { name: 'Woolworths Holdings' })).toBeNull();
   });
 
@@ -197,12 +197,12 @@ describe('PartyPicker scoped to one field of the header', () => {
     const onPick = vi.fn();
     const find = vi.fn<(name: string) => Promise<PartyFindReply>>(async () => ({
       outcome: 'resolved',
-      results: [{ kind: 'company', nativeId: '49', name: 'Woolworths Holdings' }],
+      results: [{ kind: 'organization', nativeId: '49', name: 'Woolworths Holdings' }],
       truncated: false,
     }));
-    render(<PartyPicker kind="agency" name="Woolworths" parties={{}} find={find} onPick={onPick} onClear={vi.fn()} />);
+    render(<PartyPicker kind="bookingAgency" name="Woolworths" parties={{}} find={find} onPick={onPick} onClear={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
-    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('No agency match in HMS for this name.'));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('No booking agency match in HMS for this name.'));
     expect(screen.queryByRole('button', { name: 'Woolworths Holdings' })).toBeNull();
     expect(onPick).not.toHaveBeenCalled();
   });
@@ -211,7 +211,7 @@ describe('PartyPicker scoped to one field of the header', () => {
 describe('PartyPicker preselects the top suggestion', () => {
   it('never binds a domain suggestion when HMS returns a matching best row', async () => {
     const picked: StaffQuoteParty[] = [];
-    const agency = { kind: 'agency' as const, nativeId: '290', name: 'CWT JNB' };
+    const agency = { kind: 'bookingAgency' as const, nativeId: '290', name: 'CWT JNB' };
     const find = vi.fn(async (): Promise<PartyFindReply> => ({
       outcome: 'resolved',
       results: [agency],
@@ -220,18 +220,18 @@ describe('PartyPicker preselects the top suggestion', () => {
       searchedFor: 'CWT JNB',
     }));
     function PreselectHarness() {
-      const [parties, setParties] = useState<{ agency?: StaffQuoteParty }>({});
+      const [parties, setParties] = useState<{ bookingAgency?: StaffQuoteParty }>({});
       return (
         <PartyPicker
           autoLookup
-          kind="agency"
+          kind="bookingAgency"
           name="CWT JNB"
           parties={parties}
           find={find}
           suggestions={[CWT]}
           onPick={(party) => {
             picked.push(party);
-            setParties({ agency: party });
+            setParties({ bookingAgency: party });
           }}
           onClear={vi.fn()}
         />
@@ -240,12 +240,12 @@ describe('PartyPicker preselects the top suggestion', () => {
     render(<PreselectHarness />);
     expect(await screen.findByRole('button', { name: 'Confirm CWT JNB' })).toBeTruthy();
     expect(picked).toEqual([]);
-    expect(screen.queryByRole('button', { name: 'Confirm Agency' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Confirm Booking Agency' })).toBeNull();
   });
 
   it('does not pick an HMS best whose name is not the suggestion', async () => {
     const onPick = vi.fn();
-    const best = { kind: 'agency' as const, nativeId: '1', name: 'Other Agency' };
+    const best = { kind: 'bookingAgency' as const, nativeId: '1', name: 'Other Agency' };
     const find = vi.fn(async (): Promise<PartyFindReply> => ({
       outcome: 'resolved',
       results: [best],
@@ -256,7 +256,7 @@ describe('PartyPicker preselects the top suggestion', () => {
     render(
       <PartyPicker
         autoLookup
-        kind="agency"
+        kind="bookingAgency"
         name="CWT JNB"
         parties={{}}
         find={find}
@@ -278,7 +278,7 @@ describe('the quote workflow header: each field finds in HMS with its own text',
     const { resetPartyAutoLookupForTests } = await import('../components/quote-workflow/party-picker');
     resetPartyAutoLookupForTests();
     const onPatchStaffHeader = vi.fn();
-    const woolworths = { kind: 'company' as const, nativeId: '49', name: 'Woolworths Holdings' };
+    const woolworths = { kind: 'organization' as const, nativeId: '49', name: 'Woolworths Holdings' };
     const find = vi.fn(async (): Promise<PartyFindReply> => ({
       outcome: 'resolved',
       results: [woolworths],
@@ -289,7 +289,7 @@ describe('the quote workflow header: each field finds in HMS with its own text',
     const session = {
       ...initialQuoteSession(),
       phase: 'review' as const,
-      staffHeader: { ...emptyStaffQuoteHeader(), company: 'Woolworths' },
+      staffHeader: { ...emptyStaffQuoteHeader(), organization: 'Woolworths' },
     };
     render(<QuoteWorkflowPanel session={session} onPatchStaffHeader={onPatchStaffHeader} findParty={find} />);
     const confirm = await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' });
@@ -299,15 +299,15 @@ describe('the quote workflow header: each field finds in HMS with its own text',
       () =>
         expect(onPatchStaffHeader).toHaveBeenCalledWith(
           {
-            parties: { company: woolworths },
-            company: 'Woolworths Holdings',
+            parties: { organization: woolworths },
+            organization: 'Woolworths Holdings',
           },
           { staffEdit: true },
         ),
       { timeout: 3000 },
     );
-    expect(find).toHaveBeenCalledWith('Woolworths', 'company');
-    expect(find).not.toHaveBeenCalledWith('Woolworths', 'agency');
+    expect(find).toHaveBeenCalledWith('Woolworths', 'organization');
+    expect(find).not.toHaveBeenCalledWith('Woolworths', 'bookingAgency');
   }, 20_000);
 
   it('Nava searches the Agency text as an agency, never the Company text', async () => {
@@ -325,12 +325,12 @@ describe('the quote workflow header: each field finds in HMS with its own text',
     const session = {
       ...initialQuoteSession(),
       phase: 'review' as const,
-      staffHeader: { ...emptyStaffQuoteHeader(), company: 'Woolworths', agency: 'Acme Travel' },
+      staffHeader: { ...emptyStaffQuoteHeader(), organization: 'Woolworths', bookingAgency: 'Acme Travel' },
     };
     render(<QuoteWorkflowPanel session={session} onPatchStaffHeader={vi.fn()} findParty={find} />);
-    await waitFor(() => expect(find).toHaveBeenCalledWith('Acme Travel', 'agency'), { timeout: 3000 });
-    expect(find).not.toHaveBeenCalledWith('Woolworths', 'agency');
-    expect(find).not.toHaveBeenCalledWith('Acme Travel', 'company');
+    await waitFor(() => expect(find).toHaveBeenCalledWith('Acme Travel', 'bookingAgency'), { timeout: 3000 });
+    expect(find).not.toHaveBeenCalledWith('Woolworths', 'bookingAgency');
+    expect(find).not.toHaveBeenCalledWith('Acme Travel', 'organization');
   }, 20_000);
 
   it('keeps the header plain text when no finder is bound', async () => {
@@ -338,7 +338,7 @@ describe('the quote workflow header: each field finds in HMS with its own text',
     const { initialQuoteSession } = await import('../lib/quote-workflow/session');
     render(
       <QuoteWorkflowPanel
-        session={{ ...initialQuoteSession(), phase: 'review' as const, staffHeader: { ...emptyStaffQuoteHeader(), company: 'Woolworths' } }}
+        session={{ ...initialQuoteSession(), phase: 'review' as const, staffHeader: { ...emptyStaffQuoteHeader(), organization: 'Woolworths' } }}
       />,
     );
     expect(screen.queryByRole('button', { name: 'Find in HMS' })).toBeNull();

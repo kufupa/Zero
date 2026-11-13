@@ -3,7 +3,7 @@ import { isVerifiedCreateFilingCandidate, verifyCreateAllocationDependency } fro
 import { readResolvedHmsLabtestCreates } from './hms-labtest-dispatch.js';
 import type { z } from 'zod';
 import type { ReservationWorkflowV2Draft, ReservationWorkflowV2Proposal } from './reservation-workflow-v2-contract.js';
-import { reservationWorkflowV2ProposalSchema, type reservationWorkflowV2AddActionInputSchema,
+import { reservationWorkflowV2DraftSchema, type reservationWorkflowV2AddActionInputSchema,
   type reservationWorkflowV2ChangeRowsInputSchema, type reservationWorkflowV2SelectNativeInputSchema,
   type reservationWorkflowV2ReviewScopeInputSchema } from './reservation-workflow-v2-contract.js';
 import { withLockedV2DraftMutation, reservationWorkflowV2SavedTargetLocked, reservationWorkflowV2SavedTargetOperationLocks,
@@ -30,7 +30,7 @@ const section = () => ({ id: id(), arrival: null, departure: null, requestedRoom
 const allocation = (dateSectionId: string) => ({ id: id(), dateSectionId, overrides: {},
   guest: { firstName: null, lastName: null, email: null, mobile: null, profileIntent: 'existing_or_unknown' as const,
     candidateRefs: [], suggestedRef: null }, occupancy: occupancy(), priceObservationRefs: [] });
-const group = () => ({ id: id(), arrival: null, departure: null, quantity: null, board: null, roomCodes: [],
+const group = () => ({ id: id(), arrival: null, departure: null, quantity: null, mealPlan: null, requestedMealPlan: null, roomCodes: [],
   ratePlan: null, occupancy: { ...occupancy(), scope: 'unresolved' as const }, priceObservationRefs: [] });
 const service = (requestId: string) => ({ id: id(), ownerRequestId: requestId, operation: 'add' as const,
   requestedText: '', code: null, itemCandidateRef: null, sharedFields: {}, requestedMoney: [], targets: [],
@@ -322,7 +322,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           // Native party selections are staff-only evidence, not proposal fields.
           // Keep the original request's selection in its override; the split
           // requests get a fresh lookup rather than reusing a request-bound ref.
-          for (const role of ['company', 'agency'] as const) {
+          for (const role of ['organization', 'bookingAgency'] as const) {
             const party = effectiveBody.parties[role] as (typeof effectiveBody.parties)[typeof role] & Record<string, unknown>;
             if (party && typeof party === 'object') delete party.nativeSelectionRef;
           }
@@ -331,7 +331,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           dateGroups.slice(1).forEach(rows => {
             const requestId = id(); createdId ??= requestId;
             const splitBody = structuredClone(effectiveBody);
-            for (const role of ['company', 'agency'] as const) {
+            for (const role of ['organization', 'bookingAgency'] as const) {
               const party = splitBody.parties[role];
               if (party && typeof party === 'object' && 'candidateRefs' in party && 'suggestedRef' in party) {
                 party.candidateRefs = [];
@@ -365,7 +365,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           // The materialized bodies now own the staff values; old checks and reviews are invalidated.
           changedRoots.push(`${root}/body/groups`);
           for (const path of Object.keys(draft.fieldOverrides)) if (path.startsWith(`${root}/body/`) &&
-              !path.endsWith('/staffAllowanceType') && !/^\/proposal\/content\/requests\/[^/]+\/body\/parties\/(?:company|agency)\/nativeSelectionRef$/.test(path)) {
+              !path.endsWith('/staffAllowanceType') && !/^\/proposal\/content\/requests\/[^/]+\/body\/parties\/(?:organization|bookingAgency)\/nativeSelectionRef$/.test(path)) {
             delete draft.fieldOverrides[path];
           }
           break;
@@ -477,7 +477,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           changedRoots.push('/proposal/content/requests', '/proposal/content/services', '/proposal/content/documents'); break;
         }
       }
-      if (!reservationWorkflowV2ProposalSchema.safeParse(proposal).success) return null;
+      if (!reservationWorkflowV2DraftSchema.shape.proposal.safeParse(proposal).success) return null;
       const next = rebase(draft, before, proposal, changedRoots);
       duplicateQuoteDocumentState(next, copiedQuoteDocumentIds);
       if (request.kind === 'create' && ['add_allocation', 'remove_allocation', 'move_allocation', 'add_date_section', 'remove_date_section'].includes(input.kind)) {
@@ -791,7 +791,7 @@ function materializeCreateAllocations(draft: ReservationWorkflowV2Draft, request
   const target = proposal.content.requests.find((row) => row.id === requestId);
   if (!target || target.kind !== 'create') return null;
   target.body.allocations = structuredClone(override.value) as typeof target.body.allocations;
-  const parsed = reservationWorkflowV2ProposalSchema.safeParse(proposal);
+  const parsed = reservationWorkflowV2DraftSchema.shape.proposal.safeParse(proposal);
   if (!parsed.success) return null;
   const fieldOverrides = { ...draft.fieldOverrides };
   delete fieldOverrides[path];
@@ -920,12 +920,21 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
         proposal = { ...draft.proposal, issues };
       } else if (observation.kind === 'party_candidate' && input.fieldPath.endsWith('/nativeSelectionRef')) {
         const parent = input.fieldPath.slice(0, -'/nativeSelectionRef'.length);
-        const field = parent.split('/').at(-1);
-        const roles: Record<string, string> = { bookingAgency: 'agency', organization: 'organization', arAccount: 'ar_account',
-          company: 'company', agency: 'agency' };
-        if (!field || !roles[field] || observation.criteria.role !== roles[field] ||
+        const amendPath = request.kind === 'amend' && /\/body\/(?:sharedChanges\/\d+|perTarget\/\d+\/changes\/\d+)\/value$/.test(parent);
+        const field = amendPath ? valueAt(draft, `${parent.slice(0, -'/value'.length)}/field`) : parent.split('/').at(-1);
+        const roles: Record<string, string> = { bookingAgency: 'bookingAgency',
+          organization: 'organization', arAccount: 'ar_account' };
+        if (typeof field !== 'string' || !roles[field] || observation.criteria.role !== roles[field] ||
             !((request.kind === 'create' && /\/body\/(shared|dateSections\/\d+\/defaults|allocations\/\d+\/overrides)\//.test(parent)) ||
-              (request.kind === 'quote' && /\/body\/parties\//.test(parent)))) return null;
+              (request.kind === 'quote' && /\/body\/parties\//.test(parent)) || amendPath) ||
+            observation.criteria.workflow !== request.kind) return null;
+        if (amendPath) {
+          const changePath = parent.slice(0, -'/value'.length), query = observation.criteria.query;
+          const name = valueAt(draft, `${parent}/name`);
+          const normalize = (value: unknown) => typeof value === 'string'
+            ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() : '';
+          if (valueAt(draft, `${changePath}/op`) !== 'set' || !normalize(name) || normalize(name) !== normalize(query)) return null;
+        }
         const rows = Array.isArray(observation.result.candidates) ? observation.result.candidates : [observation.result];
         if (rows.length !== 1) return null;
         const candidate = rec(rows[0]);
@@ -951,6 +960,7 @@ function reviewedGuestSelection(draft: ReservationWorkflowV2Draft, requestId: st
   if (typeof selected !== 'string' || valueAt(draft, `${guestPath}/profileIntent`) !== 'existing_or_unknown') return null;
   const firstName = valueAt(draft, `${guestPath}/firstName`), lastName = valueAt(draft, `${guestPath}/lastName`);
   const email = valueAt(draft, `${guestPath}/email`);
+  const mobile = valueAt(draft, `${guestPath}/mobile`);
   if (typeof firstName !== 'string' || !firstName.trim() || typeof lastName !== 'string' || !lastName.trim()) return null;
   const matches = draft.observations.filter((row) => row.ref === selected);
   if (matches.length !== 1) return null;
@@ -977,7 +987,9 @@ function reviewedGuestSelection(draft: ReservationWorkflowV2Draft, requestId: st
   const normalize = (value: string) => value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
   if (typeof candidate.nativeId !== 'string' || !sameGuestName(candidate.firstName, firstName) || !sameGuestName(candidate.lastName, lastName) ||
       !sameGuestName(candidate.name ?? `${candidate.firstName} ${candidate.lastName}`, `${firstName} ${lastName}`) ||
-      (typeof email === 'string' && email.trim() && (typeof candidate.email !== 'string' || normalize(candidate.email) !== normalize(email)))) return null;
+      (typeof email === 'string' && email.trim() && (typeof candidate.email !== 'string' || normalize(candidate.email) !== normalize(email))) ||
+      (typeof mobile === 'string' && mobile.trim() && (typeof candidate.phoneNumber !== 'string' ||
+        !mobile.replace(/\D/g, '') || candidate.phoneNumber.replace(/\D/g, '') !== mobile.replace(/\D/g, '')))) return null;
   return selectionPath;
 }
 
@@ -1144,7 +1156,7 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
         if (NON_REVIEW_FIELDS.has(last)) return;
         if (request.kind === 'create' && /\/body\/allocations\/\d+\/guest\/nativeSelectionRef$/.test(path)) return;
         if ((request.kind === 'create' || request.kind === 'quote') &&
-            /\/(?:bookingAgency|organization|arAccount|company|agency)\/nativeSelectionRef$/.test(path)) return;
+            /\/(?:bookingAgency|organization|arAccount)\/nativeSelectionRef$/.test(path)) return;
         const override = draft.fieldOverrides[path];
         if (override?.state === 'unknown') return;
         if (override?.state === 'none' || override?.state === 'clear') {
@@ -1155,10 +1167,27 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
         const value = override?.state === 'set' ? override.value : source;
         const parent = path.slice(0, path.lastIndexOf('/'));
         const clearValue = last === 'value' && valueAt(draft, `${parent}/op`) === 'clear' &&
-          ['guestEmail', 'bookerName', 'bookerContact', 'cmsSend', 'cmsMessageId', 'cmsRecipient'].includes(String(valueAt(draft, `${parent}/field`)));
+          ['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'roomTypeForCharge', 'cmsSend', 'cmsMessageId', 'cmsRecipient', 'guestOptIn'].includes(String(valueAt(draft, `${parent}/field`)));
         const reviewedEmpty = request.kind === 'quote' || (last === 'comment' && override?.state === 'set');
         if ((value === null || value === undefined || (value === '' && !reviewedEmpty)) && !clearValue) return;
-        if (!(request.kind === 'quote' && input.scope === 'request' && path === `${root}/body` && !hasPreparedExtras))
+        // A reviewed first-Go price is a distinct approval of exact native effects;
+        // reviewing the rest of the target must not erase its bound approval note.
+        const pricePath = request.kind === 'amend' ? path.match(/\/perTarget\/(\d+)\/currentObservationRefs\/\d+$/) : null;
+        const priceHintId = pricePath ? valueAt(draft, `${root}/body/perTarget/${pricePath[1]}/hintId`) : null;
+        const priceHints = pricePath ? valueAt(draft, `${root}/body/targets/include`) : null;
+        const priceHintIndex = Array.isArray(priceHints) ? priceHints.findIndex(hint => rec(hint).id === priceHintId) : -1;
+        const priceSelectedRef = priceHintIndex >= 0 ? valueAt(draft, `${root}/body/targets/include/${priceHintIndex}/suggestedRef`) : null;
+        const priceRef = pricePath && typeof priceHintId === 'string' && typeof priceSelectedRef === 'string' &&
+          typeof value === 'string' ? draft.observations.find(item => item.ref === value && item.kind === 'rate_availability' &&
+            item.status === 'complete' && item.coverage.complete && item.generationId === draft.generationId &&
+            item.propertyCode === draft.propertyCode && item.sourceMessageId === draft.source.messageId &&
+            item.criteria.workflow === 'amend' && item.criteria.stage === 'callback_price_review' &&
+            item.criteria.requestId === request.id && item.criteria.hintId === priceHintId &&
+            item.criteria.selectedRef === priceSelectedRef) : null;
+        const approval = priceRef && rec(priceRef.result).approvalDigest;
+        const priorPriceReview = typeof approval === 'string' && /^[a-f0-9]{64}$/.test(approval) &&
+          reviews[path]?.status === 'accepted' && reviews[path]?.note === `amend-price:${value}:${approval}`;
+        if (!priorPriceReview && !(request.kind === 'quote' && input.scope === 'request' && path === `${root}/body` && !hasPreparedExtras))
           reviews[path] = { status: 'accepted', note: null, at: now };
         if (Array.isArray(value)) value.forEach((row, index) => walk(`${path}/${index}`, row));
         else if (typeof value === 'object') {
@@ -1182,7 +1211,7 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
         const all = request.body.allocations;
         const parties: Array<{ path: string; role: string; allocations: Set<string> }> = [];
         const add = (base: string, allocations: Set<string>) => {
-          for (const [key, role] of [['bookingAgency', 'agency'], ['organization', 'organization'], ['arAccount', 'ar_account']] as const)
+          for (const [key, role] of [['bookingAgency', 'bookingAgency'], ['organization', 'organization'], ['arAccount', 'ar_account']] as const)
             parties.push({ path: `${base}/${key}`, role, allocations });
         };
         add(`${root}/body/shared`, new Set(all.map((row) => row.id)));
@@ -1199,7 +1228,7 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
           if (path) reviews[path] = { status: 'accepted', note: null, at: now };
         }
       }
-      if (request.kind === 'quote' && input.scope === 'request') for (const role of ['company', 'agency'] as const) {
+      if (request.kind === 'quote' && input.scope === 'request') for (const role of ['organization', 'bookingAgency'] as const) {
         const party = `${root}/body/parties/${role}`;
         delete reviews[`${party}/nativeSelectionRef`];
         const path = reviewedPartySelection(draft, request.id, 'quote', party, role, new Set());

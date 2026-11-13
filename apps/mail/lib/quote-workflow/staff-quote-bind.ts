@@ -77,7 +77,7 @@ export type StaffQuoteGroupInput = {
   quantity: number;
   adults: number;
   childrenAges: number[];
-  board: 'room_only' | 'bb' | 'dinner_bb';
+  mealPlan: 'room_only' | 'bb' | 'dinner_bb';
   roomCodes?: string[];
   /** The HMS rate a rate card pinned. Absent means HMS picks the rate, as before. */
   rateCode?: string;
@@ -96,8 +96,8 @@ export type ExecuteStaffQuoteInput = {
   inputRevision: number;
   groups: StaffQuoteGroupInput[];
   salesStrategy: QuoteSalesStrategyValue;
-  company: string;
-  agency: string;
+  organization: string;
+  bookingAgency: string;
   attention: string;
   clientEmail: string;
   clientTelephone: string;
@@ -114,7 +114,7 @@ export type ExecuteStaffQuoteInput = {
   shuttleTrips?: number;
   other?: { label: string; amountMinor: number; unit: StaffQuoteOtherUnit };
   notes?: string;
-  /** Sent only when staff picked a company or agency in HMS. Without one the request is unchanged. */
+  /** Sent only when staff picked a organization or bookingAgency in HMS. Without one the request is unchanged. */
   parties?: StaffQuoteParties;
   /** Sent only when staff priced a row. Without one the request is unchanged. */
   rowPrices?: StaffRowPriceWire[];
@@ -177,7 +177,7 @@ function stableJson(value: unknown): string {
 }
 
 const STAFF_QUOTE_NON_PRICE_FIELDS = new Set(
-  'messageId sourceHash selectionEpoch inputRevision company agency attention clientEmail clientTelephone dinnerAllowanceLabel lunchAllowanceLabel notes maxOptionsPerGroup'.split(' '),
+  'messageId sourceHash selectionEpoch inputRevision organization bookingAgency attention clientEmail clientTelephone dinnerAllowanceLabel lunchAllowanceLabel notes maxOptionsPerGroup'.split(' '),
 );
 
 function staffQuoteRequestMatches(
@@ -196,7 +196,7 @@ function staffQuoteRequestMatches(
     ...(canIgnoreStrategy ? { salesStrategy: expected.salesStrategy } : {}),
     groups: input.groups.map((group) => ({
       id: group.id, arrivalDate: group.arrivalDate, departureDate: group.departureDate, quantity: group.quantity,
-      adults: group.adults, childrenAges: group.childrenAges, board: group.board,
+      adults: group.adults, childrenAges: group.childrenAges, mealPlan: group.mealPlan,
       roomCodes: [...(group.roomCodes ?? [])].sort(), rateCode: group.rateCode ?? null,
     })),
   });
@@ -216,7 +216,7 @@ function staffQuoteStayTermsMatch(
         quantity: group.quantity,
         adults: group.adults,
         childrenAges: group.childrenAges,
-        board: group.board,
+        mealPlan: group.mealPlan,
         roomCodes: [...(group.roomCodes ?? [])].sort(),
       })),
     );
@@ -284,10 +284,10 @@ export type QualifiedStaffPdfInput = {
   outlookEmail: string;
   factRefs: string[];
   attention: string;
-  company: string;
+  organization: string;
   clientEmail: string;
   clientTelephone: string;
-  agency: string;
+  bookingAgency: string;
   notes?: string;
   /** A combined quote: the other stays' runs. Absent for one stay. */
   additionalStays?: QualifiedStayRun[];
@@ -510,7 +510,7 @@ export function staffQuoteGroupsFromStay(
     if (!group.arrivalDate || !group.departureDate) {
       return { error: 'Enter the arrival and departure dates before running the quote.' };
     }
-    if (group.board === 'unknown' || (propertyCode === HRDAV_PROPERTY_CODE && group.board === 'dinner_bb')) {
+    if (group.mealPlan === 'unknown' || (propertyCode === HRDAV_PROPERTY_CODE && group.mealPlan === 'dinner_bb')) {
       return { error: 'Choose a meal plan for the stay before running the quote.' };
     }
     if (group.fields.childAges === 'missing') {
@@ -539,7 +539,7 @@ export function staffQuoteGroupsFromStay(
       quantity: group.quantity,
       adults: group.adults,
       childrenAges: [...group.childrenAges],
-      board: group.board,
+      mealPlan: group.mealPlan,
       ...(rooms.status === 'codes' ? { roomCodes: rooms.codes } : {}),
       ...(group.rateCode ? { rateCode: group.rateCode } : {}),
     });
@@ -658,8 +658,8 @@ export function readRateOptions(value: unknown): RateOption[] {
     if (
       typeof raw.id !== 'string' ||
       typeof raw.groupId !== 'string' ||
-      typeof raw.board !== 'string' ||
-      !RATE_OPTION_BOARDS.has(raw.board) ||
+      typeof raw.mealPlan !== 'string' ||
+      !RATE_OPTION_BOARDS.has(raw.mealPlan) ||
       typeof raw.rateCode !== 'string' ||
       typeof raw.roomCode !== 'string' ||
       !Number.isSafeInteger(raw.perNightMinor) ||
@@ -670,8 +670,8 @@ export function readRateOptions(value: unknown): RateOption[] {
     options.push({
       id: raw.id,
       groupId: raw.groupId,
-      board: raw.board as RateOption['board'],
-      boardLabel: typeof raw.boardLabel === 'string' ? raw.boardLabel : '',
+      mealPlan: raw.mealPlan as RateOption['mealPlan'],
+      mealPlanLabel: typeof raw.mealPlanLabel === 'string' ? raw.mealPlanLabel : '',
       rateCode: raw.rateCode,
       rateLabel: typeof raw.rateLabel === 'string' ? raw.rateLabel : '',
       roomCode: raw.roomCode,
@@ -722,8 +722,8 @@ function readAvailabilityBoard(value: unknown): AvailabilityBoardRow[] {
       roomLabel: typeof raw.roomLabel === 'string' ? raw.roomLabel : raw.roomCode,
       rateCode: raw.rateCode,
       rateLabel: typeof raw.rateLabel === 'string' ? raw.rateLabel : raw.rateCode,
-      board: typeof raw.board === 'string' ? raw.board : '',
-      boardLabel: typeof raw.boardLabel === 'string' ? raw.boardLabel : typeof raw.board === 'string' ? raw.board : '',
+      mealPlan: typeof raw.mealPlan === 'string' ? raw.mealPlan : '',
+      mealPlanLabel: typeof raw.mealPlanLabel === 'string' ? raw.mealPlanLabel : typeof raw.mealPlan === 'string' ? raw.mealPlan : '',
       nightlyPriceMinor,
       roomsLeft,
       ...(rateScope ? { rateScope } : {}),
@@ -909,7 +909,7 @@ export function allocationFromStaffQuote(
     kind: 'allocation',
     roomCode: '',
     roomLabel: result.description.trim() || 'Selected room option',
-    board: groups[0]?.board === 'unknown' ? 'bb' : groups[0]?.board ?? 'bb',
+    mealPlan: groups[0]?.mealPlan === 'unknown' ? 'bb' : groups[0]?.mealPlan ?? 'bb',
     rateCode: '',
     currency: 'ZAR',
     nightly: [],
@@ -945,8 +945,8 @@ export function approvedExecuteHeader(
 ): Pick<
   ExecuteStaffQuoteInput,
   | 'salesStrategy'
-  | 'company'
-  | 'agency'
+  | 'organization'
+  | 'bookingAgency'
   | 'attention'
   | 'clientEmail'
   | 'clientTelephone'
@@ -971,8 +971,8 @@ export function approvedExecuteHeader(
   const dinnerGroupIds = dinnerAllowanceGroupIdsFor(header, quoteGroupIds);
   return {
     salesStrategy,
-    company: header.company.trim(),
-    agency: header.agency.trim(),
+    organization: header.organization.trim(),
+    bookingAgency: header.bookingAgency.trim(),
     attention: header.attention.trim(),
     clientEmail: header.clientEmail.trim(),
     clientTelephone: header.clientTelephone.trim(),
@@ -1064,17 +1064,17 @@ export function hasPerStaySingleChargeExtras(header: StaffQuoteHeader): boolean 
 }
 
 /**
- * The picked parties the quote sends: a company as company and an agency as agency, each with its HMS id and name. A pick
+ * The picked parties the quote sends: a organization as organization and an bookingAgency as bookingAgency, each with its HMS id and name. A pick
  * without a plain HMS id (an unverified suggestion, for one) is never sent. Undefined when nothing valid was picked.
  */
 export function pickedParties(parties: StaffQuoteParties | undefined): StaffQuoteParties | undefined {
-  const company = validPick(parties?.company, 'company');
-  const agency = validPick(parties?.agency, 'agency');
-  if (!company && !agency) return undefined;
-  return { ...(company ? { company } : {}), ...(agency ? { agency } : {}) };
+  const organization = validPick(parties?.organization, 'organization');
+  const bookingAgency = validPick(parties?.bookingAgency, 'bookingAgency');
+  if (!organization && !bookingAgency) return undefined;
+  return { ...(organization ? { organization } : {}), ...(bookingAgency ? { bookingAgency } : {}) };
 }
 
-function validPick(party: StaffQuoteParty | undefined, kind: 'company' | 'agency'): StaffQuoteParty | undefined {
+function validPick(party: StaffQuoteParty | undefined, kind: 'organization' | 'bookingAgency'): StaffQuoteParty | undefined {
   if (!party || party.kind !== kind) return undefined;
   if (typeof party.nativeId !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(party.nativeId)) return undefined;
   if (typeof party.name !== 'string' || !party.name.trim()) return undefined;
@@ -1210,7 +1210,7 @@ function boundStaffQuoteResult(
   const dinnerFallbackGroupSet = new Set(dinnerFallbackGroupIds);
   const offerGroups = dinnerFallbackGroupSet.size
     ? args.groups.map((group) =>
-        dinnerFallbackGroupSet.has(group.id) ? { ...group, board: 'bb' as const } : group,
+        dinnerFallbackGroupSet.has(group.id) ? { ...group, mealPlan: 'bb' as const } : group,
       )
     : args.groups;
   const staffQuote: StaffQuoteAllocation = {
@@ -1235,8 +1235,8 @@ function boundStaffQuoteResult(
     ...(dinnerAddOn ? { dinnerAddOn } : {}),
     approvedHeader: {
       salesStrategy: built.sent.salesStrategy,
-      company: built.header.company,
-      agency: built.header.agency,
+      organization: built.header.organization,
+      bookingAgency: built.header.bookingAgency,
       attention: built.header.attention,
       clientEmail: built.header.clientEmail,
       clientTelephone: built.header.clientTelephone,
@@ -1626,7 +1626,7 @@ function rowForBoundStrategy(
     row: {
       status: 'ready',
       roomLabels: selected.map((option) => option.roomLabel),
-      boardLabels: selected.map((option) => option.boardLabel),
+      mealPlanLabels: selected.map((option) => option.mealPlanLabel),
       nightlyMinor: selected.map((option) => option.perNightMinor),
       totalMinor: result.staffQuote.totalMinor,
     },
@@ -1757,10 +1757,10 @@ export async function bindQualifiedStaffProposalPdf(args: {
         'PDF creation is not connected to this pane yet. Refresh the pane and try again.',
     };
   }
-  if (typeof args.input.company !== 'string' || typeof args.input.agency !== 'string') {
+  if (typeof args.input.organization !== 'string' || typeof args.input.bookingAgency !== 'string') {
     return {
       status: 'unavailable',
-      reason: 'The company or agency on the PDF does not match the quote. Run the quote again.',
+      reason: 'The organization or primary booking agency on the PDF does not match the quote. Run the quote again.',
     };
   }
   try {
@@ -1771,10 +1771,10 @@ export async function bindQualifiedStaffProposalPdf(args: {
       outlookEmail: args.input.outlookEmail,
       factRefs: args.input.factRefs,
       attention: args.input.attention,
-      company: args.input.company,
+      organization: args.input.organization,
       clientEmail: args.input.clientEmail,
       clientTelephone: args.input.clientTelephone,
-      agency: args.input.agency,
+      bookingAgency: args.input.bookingAgency,
       ...(args.input.notes ? { notes: args.input.notes } : {}),
       ...(args.input.additionalStays?.length ? { additionalStays: args.input.additionalStays } : {}),
     });
@@ -1888,8 +1888,8 @@ type StaffQuoteClient = {
           payload: {
             groups: StaffQuoteGroupInput[];
             salesStrategy: 'BAR' | 'Government';
-            company: string;
-            agency: string;
+            organization: string;
+            bookingAgency: string;
           };
         }
     >;

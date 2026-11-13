@@ -8,13 +8,13 @@ import type { AttachmentRead } from './extraction/extract.js';
 
 const BASE_FIELDS = new Set([
   'action', 'target', 'roomType', 'childAges', 'ratePlan', 'retainRates', 'guest.profile', 'firstName', 'lastName',
-  'guestEmail', 'guestMobile', 'bookerName', 'bookerEmail', 'bookerContact', 'parties.agency', 'parties.organization',
+  'guestEmail', 'guestMobile', 'bookerName', 'bookerEmail', 'bookerContact', 'parties.bookingAgency', 'parties.organization',
   'sourceOfBusiness', 'track', 'guaranteeType', 'reservationNote', 'cms.send', 'cms.messageId', 'cms.recipient',
   'quote.selectedOfferIds', 'quote.amountOverride', 'cancel.reason', 'cancel.note',
 ]);
 const ROOM_FIELDS = new Set([
   'guest.profile', 'firstName', 'lastName', 'guestEmail', 'guestMobile', 'bookerName', 'bookerEmail', 'bookerContact',
-  'ratePlan', 'roomTypeCode', 'parties.agency', 'parties.organization', 'sourceOfBusiness', 'track', 'guaranteeType',
+  'ratePlan', 'roomTypeCode', 'parties.bookingAgency', 'parties.organization', 'sourceOfBusiness', 'track', 'guaranteeType',
   'reservationNote', 'cms.send', 'cms.messageId', 'cms.recipient',
   'arrival', 'departure', 'adults', 'childAges',
 ]);
@@ -60,9 +60,9 @@ export function requestFieldApplies(request: RequestField, action: MailAction | 
   const fields: Partial<Record<MailAction, readonly string[]>> = {
     amend: ['target', 'roomType', 'childAges', 'ratePlan', 'retainRates', 'firstName', 'lastName', 'guestEmail',
       'bookerName', 'bookerContact', 'cms.send', 'cms.messageId', 'cms.recipient'],
-    quote_availability: ['ratePlan', 'parties.agency', 'parties.organization', 'quote.selectedOfferIds', 'quote.amountOverride'],
+    quote_availability: ['ratePlan', 'parties.bookingAgency', 'parties.organization', 'quote.selectedOfferIds', 'quote.amountOverride'],
     new_booking: ['guest.profile', 'firstName', 'lastName', 'guestEmail', 'guestMobile', 'bookerName', 'bookerEmail',
-      'parties.agency', 'parties.organization', 'ratePlan', 'sourceOfBusiness', 'track', 'guaranteeType',
+      'parties.bookingAgency', 'parties.organization', 'ratePlan', 'sourceOfBusiness', 'track', 'guaranteeType',
       'reservationNote', 'cms.send', 'cms.messageId', 'cms.recipient'],
     cancel: ['target', 'cancel.reason', 'cancel.note'],
   };
@@ -94,7 +94,7 @@ export function validRequestValue(field: string, value: unknown): boolean {
       return isObject(value) && keys(value, ['nativeId', 'firstName', 'lastName']) &&
         typeof value.nativeId === 'string' && /^\d{1,40}$/.test(value.nativeId) &&
         text(value.firstName, 100, true) && text(value.lastName, 100, true);
-    case 'parties.agency':
+    case 'parties.bookingAgency':
     case 'parties.organization':
       return isObject(value) && keys(value, ['nativeId', 'name', 'code']) && text(value.nativeId, 40, true) &&
         text(value.name, 200, true) && (value.code === undefined || text(value.code, 80, true));

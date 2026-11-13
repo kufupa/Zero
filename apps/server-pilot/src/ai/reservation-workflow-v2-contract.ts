@@ -36,6 +36,7 @@ const moneyRequestSchema = z.object({
   scope: z.enum(['overall', 'per_target', 'unresolved']),
   targetRefs: z.array(refSchema).max(100),
   sourceRefs: z.array(refSchema).max(100),
+  staffAllowanceType: z.enum(['dinner', 'unsupported']).optional(),
 }).strict();
 const partySchema = z.object({
   name: z.string().max(300).nullable(),
@@ -85,7 +86,7 @@ const extractedClaimSchema = z.object({
 }).strict();
 const guestHintSchema = z.object({ role: z.enum(['guest', 'booker']), name: extractedClaimSchema.optional(),
   email: extractedClaimSchema.optional(), mobile: extractedClaimSchema.optional() }).strict();
-const partyHintSchema = z.object({ role: z.enum(['agency', 'organization', 'ar_account']),
+const partyHintSchema = z.object({ role: z.enum(['bookingAgency', 'organization', 'ar_account']),
   name: extractedClaimSchema }).strict();
 const prefillRequestFactsSchema = z.object({
   id: idSchema,
@@ -104,7 +105,7 @@ const prefillRequestFactsSchema = z.object({
   confirmationHints: z.array(extractedClaimSchema).max(100).default([]),
   roomTypeHints: z.array(extractedClaimSchema).max(100).default([]),
   rateHints: z.array(extractedClaimSchema).max(100).default([]),
-  boardHints: z.array(extractedClaimSchema).max(100).default([]),
+  mealPlanHints: z.array(extractedClaimSchema).max(100).default([]),
   serviceHints: z.array(extractedClaimSchema).max(200).default([]),
   documentRefs: z.array(refSchema).max(200).default([]),
   documentHints: z.array(z.object({ documentRef: refSchema,
@@ -128,6 +129,9 @@ export const reservationWorkflowV2PrefillInputSchema = z.object({
 export type ReservationWorkflowV2PrefillInput = z.infer<typeof reservationWorkflowV2PrefillInputSchema>;
 
 const bookingFieldsSchema = z.object({
+  requestedRoomDescription: value(z.string().max(1000)).optional(),
+  requestedMealPlan: value(z.string().max(120)).optional(),
+  mealPlan: value(z.string().max(120)).optional(),
   roomType: value(z.string().max(120)).optional(),
   roomTypeForCharge: value(z.string().max(120)).optional(),
   ratePlan: value(z.string().max(120)).optional(),
@@ -135,14 +139,16 @@ const bookingFieldsSchema = z.object({
   organization: value(partySchema).optional(),
   arAccount: value(partySchema).optional(),
   guaranteeType: value(z.string().max(120)).optional(),
+  taCommission: value(z.union([z.number().min(0).max(100), z.string().max(40)])).optional(),
   sourceOfBusiness: value(z.string().max(120)).optional(),
   reasonForStay: value(z.string().max(500)).optional(),
-  billingReference: value(z.string().max(300)).optional(),
+  billingReference: value(z.string().max(4000)).optional(),
   track: value(z.string().max(120)).optional(),
   guestOptIn: value(z.boolean()).optional(),
   bookerName: value(z.string().max(300)).optional(),
-  bookerContact: value(z.string().max(500)).optional(),
-  reservationNote: value(z.string().max(4000)).optional(),
+  bookerEmail: value(z.string().max(320)).optional(),
+  bookerMobile: value(z.string().max(120)).optional(),
+  reservationNote: value(z.string().max(2000)).optional(),
   cmsSend: value(z.boolean()).optional(),
   cmsMessageId: value(z.string().max(200)).optional(),
   cmsRecipient: value(z.string().max(500)).optional(),
@@ -187,13 +193,17 @@ const quoteBodySchema = z.object({
     arrival: z.string().max(40).nullable(),
     departure: z.string().max(40).nullable(),
     quantity: z.number().int().nullable(),
-    board: z.string().max(120).nullable(),
+    mealPlan: z.string().max(120).nullable(),
+    requestedMealPlan: z.string().max(120).nullable().default(null),
+    requestedRoomDescription: z.string().max(1000).nullable().optional(),
+    guestNames: z.array(z.string().max(300)).max(200).optional(),
     roomCodes: z.array(z.string().max(120)).max(100),
     ratePlan: z.string().max(120).nullable(),
     occupancy: occupancySchema.extend({ scope: z.enum(['per_room', 'whole_group', 'unresolved']) }),
     priceObservationRefs: z.array(refSchema).max(100),
   }).strict()).max(100),
-  parties: z.object({ company: value(partySchema).optional(), agency: value(partySchema).optional() }).strict(),
+  guestNames: z.array(z.string().max(300)).max(200).optional(),
+  parties: z.object({ organization: value(partySchema).optional(), bookingAgency: value(partySchema).optional() }).strict(),
   salesStrategy: z.string().max(1000).nullable(),
   client: z.object({ attention: z.string().max(300).nullable(), email: z.string().max(320).nullable(),
     telephone: z.string().max(120).nullable() }).strict(),
@@ -206,11 +216,19 @@ const quoteBodySchema = z.object({
 
 const amendFieldSchema = z.enum([
   'arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'roomTypeForCharge', 'ratePlan',
-  'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'cmsSend',
-  'cmsMessageId', 'cmsRecipient',
+  'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'cmsSend',
+  'requestedMealPlan', 'roomCount', 'bookingAgency', 'organization', 'arAccount', 'billingReference', 'taCommission', 'track', 'guaranteeType',
+  'cmsMessageId', 'cmsRecipient', 'guestOptIn',
 ]);
+export const reservationWorkflowV2TrackSchema = z.object({
+  lookupCode: z.string().regex(/^[A-Z0-9]{1,12}$/),
+  display: z.string().max(200).regex(/\S/u)
+    .refine((text) => ![...text].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)),
+}).strict();
+export type ReservationWorkflowV2Track = z.infer<typeof reservationWorkflowV2TrackSchema>;
 const amendScalarSchema = z.union([
-  z.string().max(4000), z.number().int(), z.boolean(), z.array(z.number().int().nullable()).max(12),
+  z.string().max(4000), z.number(), z.boolean(), z.array(z.number().int().nullable()).max(12), partySchema,
+  reservationWorkflowV2TrackSchema,
 ]);
 const changeSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('set'), field: amendFieldSchema, value: amendScalarSchema, sourceRefs: z.array(refSchema).max(100) }).strict(),
@@ -308,6 +326,21 @@ export const reservationWorkflowV2ProposalSchema = z.object({
 
 export type ReservationWorkflowV2Proposal = z.infer<typeof reservationWorkflowV2ProposalSchema>;
 
+// Existing drafts may contain notes accepted before the native limit was fixed.
+// New/model proposals still use the strict 2,000-character schema above.
+const storedBookingFieldsSchema = bookingFieldsSchema.extend({ reservationNote: value(z.string().max(4000)).optional() });
+const storedCreateBodySchema = createBodySchema.extend({
+  shared: storedBookingFieldsSchema,
+  dateSections: z.array(createBodySchema.shape.dateSections.element.extend({ defaults: storedBookingFieldsSchema })).max(100),
+  allocations: z.array(createBodySchema.shape.allocations.element.extend({ overrides: storedBookingFieldsSchema })).max(100),
+});
+const storedRequestSchema = z.discriminatedUnion('kind', [requestSchema.options[0],
+  requestSchema.options[1].extend({ body: storedCreateBodySchema }), requestSchema.options[2], requestSchema.options[3],
+  requestSchema.options[4], requestSchema.options[5], requestSchema.options[6]]);
+const storedProposalSchema = reservationWorkflowV2ProposalSchema.extend({
+  content: reservationWorkflowV2ProposalSchema.shape.content.extend({ requests: z.array(storedRequestSchema).max(200) }),
+});
+
 /** Host-owned evidence. Model output can cite these refs but cannot create or edit registry entries. */
 export const reservationWorkflowV2ObservationSchema = z.object({
   ref: refSchema,
@@ -372,7 +405,7 @@ export const reservationWorkflowV2DraftSchema = z.object({
   status: z.enum(['ready', 'partial', 'prefill_failed']),
   extraction: reservationWorkflowV2ExtractionSchema.optional(),
   extractionGenerationId: z.string().uuid().optional(),
-  proposal: reservationWorkflowV2ProposalSchema,
+  proposal: storedProposalSchema,
   observations: z.array(reservationWorkflowV2ObservationSchema).max(5000),
   fieldReviewRequirements: z.record(fieldReviewRequirementSchema),
   staffReviews: z.record(staffReviewSchema),
@@ -397,9 +430,32 @@ export const reservationWorkflowV2DraftSchema = z.object({
 }).strict();
 export type ReservationWorkflowV2Draft = z.infer<typeof reservationWorkflowV2DraftSchema>;
 
+// Native, derived and staff-only Create fields are filled after synthesis.
+const modelBookingFieldsSchema = bookingFieldsSchema.omit({ mealPlan: true, roomType: true,
+  roomTypeForCharge: true, ratePlan: true, bookingAgency: true, organization: true, arAccount: true,
+  guaranteeType: true, taCommission: true, sourceOfBusiness: true, reasonForStay: true, track: true,
+  guestOptIn: true, cmsSend: true, cmsMessageId: true, cmsRecipient: true });
+const modelCreateBodySchema = createBodySchema.extend({
+  shared: modelBookingFieldsSchema,
+  dateSections: z.array(createBodySchema.shape.dateSections.element.extend({ defaults: modelBookingFieldsSchema })).max(100),
+  allocations: z.array(createBodySchema.shape.allocations.element.extend({ overrides: modelBookingFieldsSchema })).max(100),
+});
+const modelMoneyRequestSchema = moneyRequestSchema.omit({ staffAllowanceType: true });
+const modelQuoteGroupSchema = quoteBodySchema.shape.groups.element.omit({ mealPlan: true })
+  .transform((group) => ({ ...group, mealPlan: null }));
+const modelQuoteBodySchema = quoteBodySchema.extend({ groups: z.array(modelQuoteGroupSchema).max(100),
+  requestedMoney: z.array(modelMoneyRequestSchema).max(100) });
+const modelServiceRequestSchema = serviceRequestSchema.extend({ requestedMoney: z.array(modelMoneyRequestSchema).max(100) });
+const modelRequestSchema = z.discriminatedUnion('kind', [requestSchema.options[0].extend({ body: modelQuoteBodySchema }),
+  requestSchema.options[1].extend({ body: modelCreateBodySchema }), requestSchema.options[2],
+  requestSchema.options[3], requestSchema.options[4], requestSchema.options[5], requestSchema.options[6]]);
+const modelProposalSchema = reservationWorkflowV2ProposalSchema.extend({
+  content: reservationWorkflowV2ProposalSchema.shape.content.extend({ requests: z.array(modelRequestSchema).max(200),
+    services: z.array(modelServiceRequestSchema).max(200) }),
+});
 /** A model's first-pass output is evidence-only: it cannot author host observations or staff state. */
 export const reservationWorkflowV2ModelOutputSchema = z.object({
-  proposal: reservationWorkflowV2ProposalSchema,
+  proposal: modelProposalSchema,
   reviewRequirements: z.record(fieldReviewRequirementSchema).optional(),
 }).strict();
 export type ReservationWorkflowV2ModelOutput = z.infer<typeof reservationWorkflowV2ModelOutputSchema>;

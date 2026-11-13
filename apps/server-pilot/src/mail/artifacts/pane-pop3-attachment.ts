@@ -30,7 +30,7 @@ export async function panePop3AttachmentCandidate(input: Identity & { db: DB; bu
   if (row.transportId !== input.transportId || row.messageId !== input.messageId || row.attachmentId !== input.attachmentId ||
       !key || key.slice(1).some((part) => part === '.' || part === '..' || /[\\\p{Cc}]/u.test(part)) ||
       !row.mailboxId || !row.uidl || row.direction !== 'inbound' || row.historyOnly || row.isInline ||
-      row.provenance?.attention != null || row.filename.length > 120 || /["\\/\p{Cc}]/u.test(row.filename) ||
+      row.provenance?.attention != null || row.filename.length > 150 || /["\\/\p{Cc}]/u.test(row.filename) ||
       Buffer.from(row.filename, 'utf8').toString('utf8') !== row.filename || !/\.pdf$/i.test(row.filename) ||
       !['application/pdf', 'application/x-pdf', 'application/octet-stream'].includes(
         row.mimeType.split(';', 1)[0]?.trim().toLowerCase() ?? '') ||

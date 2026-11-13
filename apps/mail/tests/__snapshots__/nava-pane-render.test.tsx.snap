@@ -588,7 +588,7 @@ exports[`NavaPane screen states > diagnostics: the connection step after a succe
         </time>
       </section>
       <div
-        class="mx-3 mt-2 shrink-0"
+        class="mx-3 mt-2 flex shrink-0 flex-col gap-1.5"
       >
         <section
           aria-label="Nava reads this as: Quote"
@@ -1016,7 +1016,7 @@ exports[`NavaPane screen states > tour: the first slide of the feature tour, ope
         </time>
       </section>
       <div
-        class="mx-3 mt-2 shrink-0"
+        class="mx-3 mt-2 flex shrink-0 flex-col gap-1.5"
       >
         <section
           aria-label="Nava reads this as: Quote"
@@ -1472,7 +1472,7 @@ exports[`NavaPane screen states > welcome: a first run shows the account step an
         </time>
       </section>
       <div
-        class="mx-3 mt-2 shrink-0"
+        class="mx-3 mt-2 flex shrink-0 flex-col gap-1.5"
       >
         <section
           aria-label="Nava reads this as: Quote"

@@ -50,7 +50,7 @@ const quoteGroup = {
   rooms: 1,
   adultsPerRoom: 2,
   childAges: [] as number[],
-  board: 'bb' as const,
+  mealPlan: 'bb' as const,
   roomPreference: null,
   guestNames: [] as string[],
 };
@@ -519,7 +519,7 @@ describe('quoteWorkflow.analyseSelection', () => {
           messageId: 'm1',
         },
       ],
-      async () => ({ text: null }),
+      async () => ({ text: null, reason: 'office conversion failed' }),
     );
     quoteWorkflowLoaders.loadSyncedSelection = async () => ({
       subject: 'Rooms',
@@ -548,7 +548,7 @@ describe('quoteWorkflow.analyseSelection', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
         blocking: false,
-        text: "Nava can't read rooming.docx (not a PDF) — open it if it has booking details.",
+        text: "Nava can't read rooming.docx (Word file could not be read) — open it if it has booking details.",
       });
     }
   });
@@ -587,7 +587,7 @@ describe('quoteWorkflow.analyseSelection', () => {
       expect(result.source).toBe('luna');
       expect(result.aiUnavailable).toBe(false);
       expect(result.workflow).toBe('quote');
-      expect(result.groups[0]).toMatchObject({ quantity: 1, adults: 2, board: 'bb' });
+      expect(result.groups[0]).toMatchObject({ quantity: 1, adults: 2, mealPlan: 'bb' });
       expect(result.sourceRevision).toBe(4);
     }
   });

@@ -99,7 +99,7 @@ export function useRequestWorkItem(args: {
     const request = session.snapshot.requests.find((item) => item.requestId === requestId && item.status === 'pending');
     if (!request || !request.fields || request.fields.kind !== request.workflow) return null;
     const quoteRow = /^rows\[([A-Za-z0-9_-]{1,40})\]\.ratePlan$/.exec(suffix);
-    const room = /^rows\[([A-Za-z0-9_-]{1,40})\]\.rooms\[([0-7])\]\.(firstName|lastName|guest\.profile|guestEmail|guestMobile|bookerName|bookerEmail|roomTypeCode|ratePlan|adults|childAges|arrival|departure|parties\.agency|parties\.organization|sourceOfBusiness|track|guaranteeType|reservationNote|cms\.send|cms\.messageId|cms\.recipient)$/.exec(suffix);
+    const room = /^rows\[([A-Za-z0-9_-]{1,40})\]\.rooms\[([0-7])\]\.(firstName|lastName|guest\.profile|guestEmail|guestMobile|bookerName|bookerEmail|roomTypeCode|ratePlan|adults|childAges|arrival|departure|parties\.bookingAgency|parties\.organization|sourceOfBusiness|track|guaranteeType|reservationNote|cms\.send|cms\.messageId|cms\.recipient)$/.exec(suffix);
     if (quoteRow && request.action === 'quote_availability' && request.workflow === 'quote') {
       const value = request.fields.value as { rows?: Array<{ rowId?: string }> } | null;
       if (!Array.isArray(value?.rows) || !value.rows.some((row) => row.rowId === quoteRow[1])) return null;

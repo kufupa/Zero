@@ -18,7 +18,7 @@ afterEach(() => {
   replaceLearnedSenderMapForTests(null);
 });
 
-const candidate = (name: string, kind: 'company' | 'agency' = 'company'): PartyMatchCandidate => ({
+const candidate = (name: string, kind: 'organization' | 'bookingAgency' = 'organization'): PartyMatchCandidate => ({
   name,
   kind,
   source: 'extraction_end_client',
@@ -60,12 +60,12 @@ describe('PARTY MATCH V2 search plan', () => {
   it('puts an agency candidate first, deduplicates searches and caps the email at six', () => {
     const candidates = [
       candidate('Amicis Health (Pty) Ltd'),
-      { ...candidate('360 Degrees Travel Agency', 'agency'), source: 'extraction_agency' as const },
+      { ...candidate('360 Degrees Travel Agency', 'bookingAgency'), source: 'extraction_agency' as const },
     ];
     const searches = planPartySearches(candidates);
     expect(searches[0]).toMatchObject({
       candidateName: '360 Degrees Travel Agency',
-      kind: 'agency',
+      kind: 'bookingAgency',
     });
     expect(searches).toHaveLength(6);
     expect(new Set(searches.map((row) => `${row.kind}:${normalisePartyName(row.term)}`)).size).toBe(
@@ -90,11 +90,11 @@ describe('PARTY MATCH V2 search plan', () => {
       subject: 'Accommodation request for Karen Vickers',
       body: 'Regards,\nKaren Vickers\nAmicis Health (Pty) Ltd',
       payload: {
-        agency: 'Karen Vickers',
-        endClient: 'Amicis Health (Pty) Ltd',
+        bookingAgency: 'Karen Vickers',
+        organization: 'Amicis Health (Pty) Ltd',
         contact: { name: 'Karen Vickers' },
       },
-      quoteLlmParty: { kind: 'agency', name: 'Karen Vickers', guestNames: ['Karen Vickers'] },
+      quoteLlmParty: { kind: 'bookingAgency', name: 'Karen Vickers', guestNames: ['Karen Vickers'] },
     });
     expect(candidates.map((row) => row.name)).not.toContain('Karen Vickers');
     expect(candidates.map((row) => row.name)).toContain('Amicis Health (Pty) Ltd');
@@ -102,22 +102,22 @@ describe('PARTY MATCH V2 search plan', () => {
     const mixedSignature = buildPartyMatchCandidates({
       fromAddress: 'karen@example.test',
       body: 'Please arrange the quote.\nRegards, Karen Vickers | Reservations Consultant',
-      payload: { agency: 'Karen Vickers Travel' },
+      payload: { bookingAgency: 'Karen Vickers Travel' },
     });
     expect(mixedSignature).toContainEqual({
       name: 'Karen Vickers Travel',
-      kind: 'agency',
+      kind: 'bookingAgency',
       source: 'extraction_agency',
       strength: 'strong',
     });
 
     const titledContact = buildPartyMatchCandidates({
       fromAddress: 'karen@example.test',
-      payload: { agency: 'Karen Vickers Travel', contact: { name: 'Dr. Karen Vickers' } },
+      payload: { bookingAgency: 'Karen Vickers Travel', contact: { name: 'Dr. Karen Vickers' } },
     });
     expect(titledContact).toContainEqual({
       name: 'Karen Vickers Travel',
-      kind: 'agency',
+      kind: 'bookingAgency',
       source: 'extraction_agency',
       strength: 'strong',
     });
@@ -125,9 +125,9 @@ describe('PARTY MATCH V2 search plan', () => {
 
   it('uses guest names from the existing quote-Luna answer to reject a party-shaped person name', () => {
     const candidates = buildPartyMatchCandidates({
-      payload: { agency: 'Karen Vickers' },
+      payload: { bookingAgency: 'Karen Vickers' },
       quoteLlmParty: {
-        party: { kind: 'agency', name: 'Karen Vickers' },
+        party: { kind: 'bookingAgency', name: 'Karen Vickers' },
         groups: [{ guestNames: ['Karen Vickers'] }],
       },
     });
@@ -136,7 +136,7 @@ describe('PARTY MATCH V2 search plan', () => {
 
   it('rejects an extracted end client repeated as a guest before planning HMS searches', () => {
     const candidates = buildPartyMatchCandidates({
-      payload: { endClient: 'Karen Vickers' },
+      payload: { organization: 'Karen Vickers' },
       body: 'Guest: Karen Vickers',
     });
 
@@ -146,13 +146,13 @@ describe('PARTY MATCH V2 search plan', () => {
 
   it('keeps a person-name candidate only when it also contains an organisation word', () => {
     const candidates = buildPartyMatchCandidates({
-      payload: { endClient: 'Karen Vickers Travel' },
+      payload: { organization: 'Karen Vickers Travel' },
       body: 'Guest: Karen Vickers',
     });
 
     expect(candidates).toContainEqual({
       name: 'Karen Vickers Travel',
-      kind: 'company',
+      kind: 'organization',
       source: 'extraction_end_client',
       strength: 'strong',
     });
@@ -163,30 +163,30 @@ describe('PARTY MATCH V2 search plan', () => {
     ['signature person line', { body: 'Regards,\nKaren Vickers' }],
   ] as const)('prefers %s evidence over an extracted end client', (_source, evidence) => {
     expect(
-      buildPartyMatchCandidates({ payload: { endClient: 'Karen Vickers' }, ...evidence }),
+      buildPartyMatchCandidates({ payload: { organization: 'Karen Vickers' }, ...evidence }),
     ).toEqual([]);
   });
 
   it('treats a compact travel domain as a weak agency-first hint', () => {
     const candidates = buildPartyMatchCandidates({
       fromAddress: 'booker@acme-travelagency.co.za',
-      payload: { endClient: 'Mahindra Group' },
+      payload: { organization: 'Mahindra Group' },
     });
     expect(candidates).toContainEqual({
       name: 'acme travelagency',
-      kind: 'agency',
+      kind: 'bookingAgency',
       source: 'sender_domain_label',
       strength: 'weak',
     });
     expect(planPartySearches(candidates)[0]).toMatchObject({
-      kind: 'agency',
+      kind: 'bookingAgency',
       strength: 'weak',
       source: 'sender_domain_label',
     });
 
     expect(
       buildPartyMatchCandidates({ fromAddress: 'events@tourvestdm.com' }).every(
-        (candidateRow) => candidateRow.kind === 'company',
+        (candidateRow) => candidateRow.kind === 'organization',
       ),
     ).toBe(true);
   });
@@ -195,12 +195,12 @@ describe('PARTY MATCH V2 search plan', () => {
     const candidates = buildPartyMatchCandidates({
       fromAddress: 'Northwind Mining <bookings@northwind-mining.com>',
       body: 'Please arrange the quote.\nRegards,\nNorthwind Mining',
-      payload: { endClient: 'Northwind Mining' },
+      payload: { organization: 'Northwind Mining' },
     });
 
     expect(candidates).toContainEqual({
       name: 'Northwind Mining',
-      kind: 'company',
+      kind: 'organization',
       source: 'extraction_end_client',
       strength: 'strong',
     });
@@ -214,7 +214,7 @@ describe('PARTY MATCH V2 search plan', () => {
 
     expect(candidates).toContainEqual({
       name: 'Northwind Mining',
-      kind: 'company',
+      kind: 'organization',
       source: 'signature',
       strength: 'strong',
     });
@@ -225,12 +225,12 @@ describe('party sender history candidates', () => {
   it('keeps learned sender history weak when the flag is off', () => {
     vi.stubEnv('PARTY_HISTORY_BIND', 'off');
     replaceLearnedSenderMapForTests([
-      { host: 'agency.example.test', kind: 'agency', name: 'Harbor Travel', support: 2 },
+      { host: 'agency.example.test', kind: 'bookingAgency', name: 'Harbor Travel', support: 2 },
     ]);
 
     expect(buildPartyMatchCandidates({ fromAddress: 'agent@agency.example.test' })).toContainEqual({
       name: 'Harbor Travel',
-      kind: 'agency',
+      kind: 'bookingAgency',
       source: 'sender_domain_alias',
       strength: 'weak',
     });
@@ -239,7 +239,7 @@ describe('party sender history candidates', () => {
   it('strengthens learned sender history only after two supports', () => {
     vi.stubEnv('PARTY_HISTORY_BIND', 'on');
     replaceLearnedSenderMapForTests([
-      { host: 'agency.example.test', kind: 'agency', name: 'Harbor Travel', support: 2 },
+      { host: 'agency.example.test', kind: 'bookingAgency', name: 'Harbor Travel', support: 2 },
     ]);
     expect(
       buildPartyMatchCandidates({
@@ -254,13 +254,13 @@ describe('party sender history candidates', () => {
       }),
     ).toContainEqual({
       name: 'Harbor Travel',
-      kind: 'agency',
+      kind: 'bookingAgency',
       source: 'sender_history',
       strength: 'strong',
     });
 
     replaceLearnedSenderMapForTests([
-      { host: 'agency.example.test', kind: 'agency', name: 'Harbor Travel', support: 1 },
+      { host: 'agency.example.test', kind: 'bookingAgency', name: 'Harbor Travel', support: 1 },
     ]);
     expect(
       buildPartyMatchCandidates({
@@ -269,7 +269,7 @@ describe('party sender history candidates', () => {
       }),
     ).toContainEqual({
       name: 'Harbor Travel',
-      kind: 'agency',
+      kind: 'bookingAgency',
       source: 'sender_history',
       strength: 'weak',
     });
@@ -278,24 +278,24 @@ describe('party sender history candidates', () => {
   it('downgrades history when names share no distinctive token', () => {
     vi.stubEnv('PARTY_HISTORY_BIND', 'on');
     replaceLearnedSenderMapForTests([
-      { host: 'agency.example.test', kind: 'agency', name: 'Tourvest', support: 5 },
+      { host: 'agency.example.test', kind: 'bookingAgency', name: 'Tourvest', support: 5 },
     ]);
 
     const candidates = buildPartyMatchCandidates({
       fromAddress: 'agent@agency.example.test',
-      payload: { agency: 'Flight Centre' },
+      payload: { bookingAgency: 'Flight Centre' },
       allowLearnedSenderHistory: true,
     });
     expect(candidates.slice(0, 2)).toEqual([
       {
         name: 'Flight Centre',
-        kind: 'agency',
+        kind: 'bookingAgency',
         source: 'extraction_agency',
         strength: 'strong',
       },
       {
         name: 'Tourvest',
-        kind: 'agency',
+        kind: 'bookingAgency',
         source: 'sender_history',
         strength: 'weak',
       },
@@ -308,12 +308,12 @@ describe('party sender history candidates', () => {
   ])('keeps learned history weak when the email names a different same-kind party: $emailName', ({ emailName, historyName }) => {
     vi.stubEnv('PARTY_HISTORY_BIND', 'on');
     replaceLearnedSenderMapForTests([
-      { host: 'agency.example.test', kind: 'agency', name: historyName, support: 2 },
+      { host: 'agency.example.test', kind: 'bookingAgency', name: historyName, support: 2 },
     ]);
 
     const history = buildPartyMatchCandidates({
       fromAddress: 'agent@agency.example.test',
-      payload: { agency: emailName },
+      payload: { bookingAgency: emailName },
       allowLearnedSenderHistory: true,
     }).find((candidate) => candidate.source === 'sender_history');
 
@@ -326,7 +326,7 @@ describe('party sender history candidates', () => {
       {
         propertyCode: 'HRCEN',
         host: 'agency.example.test',
-        kind: 'agency',
+        kind: 'bookingAgency',
         name: 'Harbor Travel',
         support: 2,
       },
@@ -345,21 +345,21 @@ describe('PARTY MATCH V2 binding', () => {
   it('does not bind a person name or the Dire/Directorate false positive', () => {
     const people = buildPartyMatchCandidates({
       fromAddress: 'Dire Itumeleng <dire@example.test>',
-      payload: { agency: 'Dire Itumeleng', contact: { name: 'Dire Itumeleng' } },
+      payload: { bookingAgency: 'Dire Itumeleng', contact: { name: 'Dire Itumeleng' } },
       body: 'Travel Agency Details: Dire Itumeleng',
     });
     const result = applyPartyBindRule({
       candidates: people,
       rows: [
         {
-          kind: 'company',
+          kind: 'organization',
           nativeId: 'ict-1',
           name: 'Directorate Information Communication Technology',
         },
       ],
       pick: {
         pickNativeId: 'ict-1',
-        kind: 'company',
+        kind: 'organization',
         confidence: 'high',
         reason: 'Looks similar',
         alternatives: [],
@@ -374,12 +374,12 @@ describe('PARTY MATCH V2 binding', () => {
     const result = applyPartyBindRule({
       candidates: [candidate('Tourvest')],
       rows: [
-        { kind: 'company', nativeId: '1', name: 'Tourvest Destination Management' },
-        { kind: 'company', nativeId: '2', name: 'TOURVEST TRAVEL SERVICES' },
+        { kind: 'organization', nativeId: '1', name: 'Tourvest Destination Management' },
+        { kind: 'organization', nativeId: '2', name: 'TOURVEST TRAVEL SERVICES' },
       ],
       pick: {
         pickNativeId: '1',
-        kind: 'company',
+        kind: 'organization',
         confidence: 'high',
         reason: 'Tourvest is named',
         alternatives: ['2'],
@@ -394,10 +394,10 @@ describe('PARTY MATCH V2 binding', () => {
     const result = applyPartyBindRule({
       candidates: [candidate('Purple Surgical')],
       rows: [
-        { kind: 'company', nativeId: 'unrelated', name: 'Northwind Mining' },
-        { kind: 'company', nativeId: 'exact', name: 'Purple Surgical' },
-        { kind: 'company', nativeId: 'expanded', name: 'Purple Surgical Medical' },
-        { kind: 'company', nativeId: 'another', name: 'Cedar Consulting' },
+        { kind: 'organization', nativeId: 'unrelated', name: 'Northwind Mining' },
+        { kind: 'organization', nativeId: 'exact', name: 'Purple Surgical' },
+        { kind: 'organization', nativeId: 'expanded', name: 'Purple Surgical Medical' },
+        { kind: 'organization', nativeId: 'another', name: 'Cedar Consulting' },
       ],
       pick: {
         pickNativeId: null,
@@ -420,12 +420,12 @@ describe('PARTY MATCH V2 binding', () => {
     const result = applyPartyBindRule({
       candidates: [candidate('Nexus Travel')],
       rows: [
-        { kind: 'company', nativeId: 'nexus', name: 'Nexus Travel' },
-        { kind: 'company', nativeId: 'xl-nexus', name: 'XL Nexus Travel ATNS' },
+        { kind: 'organization', nativeId: 'nexus', name: 'Nexus Travel' },
+        { kind: 'organization', nativeId: 'xl-nexus', name: 'XL Nexus Travel ATNS' },
       ],
       pick: {
         pickNativeId: 'nexus',
-        kind: 'company',
+        kind: 'organization',
         confidence: 'high',
         reason: 'Exact company name',
         alternatives: ['xl-nexus'],
@@ -439,12 +439,12 @@ describe('PARTY MATCH V2 binding', () => {
     const result = applyPartyBindRule({
       candidates: [candidate('Nexus Travel')],
       rows: [
-        { kind: 'company', nativeId: 'nexus', name: 'Nexus Travel' },
-        { kind: 'company', nativeId: 'xl-nexus', name: 'XL Nexus Travel ATNS' },
+        { kind: 'organization', nativeId: 'nexus', name: 'Nexus Travel' },
+        { kind: 'organization', nativeId: 'xl-nexus', name: 'XL Nexus Travel ATNS' },
       ],
       pick: {
         pickNativeId: 'xl-nexus',
-        kind: 'company',
+        kind: 'organization',
         confidence: 'high',
         reason: 'The broader row also contains Nexus Travel.',
         alternatives: ['nexus'],
@@ -460,15 +460,15 @@ describe('PARTY MATCH V2 binding', () => {
     const result = applyPartyBindRule({
       candidates: [
         candidate('Amicis Health'),
-        { ...candidate('Northwind Travel', 'agency'), source: 'extraction_agency' },
+        { ...candidate('Northwind Travel', 'bookingAgency'), source: 'extraction_agency' },
       ],
       rows: [
-        { kind: 'company', nativeId: 'client', name: 'Amicis Health' },
-        { kind: 'agency', nativeId: 'agency', name: 'Northwind Travel' },
+        { kind: 'organization', nativeId: 'client', name: 'Amicis Health' },
+        { kind: 'bookingAgency', nativeId: 'bookingAgency', name: 'Northwind Travel' },
       ],
       pick: {
         pickNativeId: 'client',
-        kind: 'company',
+        kind: 'organization',
         confidence: 'high',
         reason: 'Exact client row.',
         alternatives: [],
@@ -478,19 +478,19 @@ describe('PARTY MATCH V2 binding', () => {
 
     expect(result).toMatchObject({
       matchStatus: 'bound',
-      boundParty: { kind: 'company', nativeId: 'client', name: 'Amicis Health' },
+      boundParty: { kind: 'organization', nativeId: 'client', name: 'Amicis Health' },
     });
   });
 
   it('never binds from a sender-domain-only hint, even when the HMS name is exact', () => {
     const result = applyPartyBindRule({
       candidates: [
-        { name: 'Nexus', kind: 'agency', source: 'sender_domain_alias', strength: 'weak' },
+        { name: 'Nexus', kind: 'bookingAgency', source: 'sender_domain_alias', strength: 'weak' },
       ],
-      rows: [{ kind: 'agency', nativeId: 'nexus', name: 'Nexus' }],
+      rows: [{ kind: 'bookingAgency', nativeId: 'nexus', name: 'Nexus' }],
       pick: {
         pickNativeId: 'nexus',
-        kind: 'agency',
+        kind: 'bookingAgency',
         confidence: 'high',
         reason: 'The domain matches.',
         alternatives: [],
@@ -503,10 +503,10 @@ describe('PARTY MATCH V2 binding', () => {
   it('fails closed when confidence is not high, a row fails token claims, or HMS rows were truncated', () => {
     const input = {
       candidates: [candidate('Purple Surgical')],
-      rows: [{ kind: 'company' as const, nativeId: '1', name: 'Purple Surgical' }],
+      rows: [{ kind: 'organization' as const, nativeId: '1', name: 'Purple Surgical' }],
       pick: {
         pickNativeId: '1',
-        kind: 'company' as const,
+        kind: 'organization' as const,
         confidence: 'medium' as const,
         reason: 'Maybe',
         alternatives: [],
@@ -521,7 +521,7 @@ describe('PARTY MATCH V2 binding', () => {
     expect(
       applyPartyBindRule({
         ...input,
-        rows: [{ kind: 'company', nativeId: '1', name: 'Purple Restaurants' }],
+        rows: [{ kind: 'organization', nativeId: '1', name: 'Purple Restaurants' }],
         pick: { ...input.pick, confidence: 'high' },
       }).boundParty,
     ).toBeNull();
@@ -529,7 +529,7 @@ describe('PARTY MATCH V2 binding', () => {
     const overCapRows = [
       input.rows[0]!,
       ...Array.from({ length: 25 }, (_, index) => ({
-        kind: 'company' as const,
+        kind: 'organization' as const,
         nativeId: `other-${index}`,
         name: `Unrelated ${index}`,
       })),
@@ -551,7 +551,7 @@ describe('PARTY MATCH V2 structured Luna pick', () => {
         modelId: input.modelId,
         output: {
           pickNativeId: 'nexus',
-          kind: 'company',
+          kind: 'organization',
           confidence: 'high',
           reason: 'The exact organisation name is present.',
           alternatives: [],
@@ -569,7 +569,7 @@ describe('PARTY MATCH V2 structured Luna pick', () => {
     const result = await pickPartyMatch({
       adapter,
       candidates: [candidate('Nexus Travel')],
-      rows: [{ kind: 'company', nativeId: 'nexus', name: 'Nexus Travel' }],
+      rows: [{ kind: 'organization', nativeId: 'nexus', name: 'Nexus Travel' }],
       context: {
         fromAddress: 'agent@nexustravel.co.za',
         displayName: 'Nexus Travel Agent',
@@ -589,7 +589,7 @@ describe('PARTY MATCH V2 structured Luna pick', () => {
     const result = await pickPartyMatch({
       adapter: null,
       candidates: [candidate('Amicis Health (Pty) Ltd')],
-      rows: [{ kind: 'company', nativeId: '1', name: 'AMICIS HEALTH LIMITED' }],
+      rows: [{ kind: 'organization', nativeId: '1', name: 'AMICIS HEALTH LIMITED' }],
       context: {
         fromAddress: null,
         displayName: null,
@@ -604,13 +604,13 @@ describe('PARTY MATCH V2 structured Luna pick', () => {
 
   it('does not let no-model fallback bind an exact candidate that is also a guest person name', async () => {
     const context = partyMatchEmailContext({
-      payload: { endClient: 'karen vickers' },
+      payload: { organization: 'karen vickers' },
       guestNames: ['Karen Vickers'],
     });
     const result = await pickPartyMatch({
       adapter: null,
       candidates: [candidate('karen vickers')],
-      rows: [{ kind: 'company', nativeId: 'guest', name: 'karen vickers' }],
+      rows: [{ kind: 'organization', nativeId: 'guest', name: 'karen vickers' }],
       context,
     });
 
@@ -666,7 +666,7 @@ describe('PARTY MATCH V2 structured Luna pick', () => {
     const result = await pickPartyMatch({
       adapter,
       candidates: [candidate('Northwind Mining')],
-      rows: [{ kind: 'company', nativeId: 'candidate-1', name: 'Northwind Mining' }],
+      rows: [{ kind: 'organization', nativeId: 'candidate-1', name: 'Northwind Mining' }],
       context: {
         fromAddress: null,
         displayName: null,

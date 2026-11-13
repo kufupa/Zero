@@ -76,15 +76,15 @@ describe('Cloud saved-stay projection', () => {
       outcome: 'ok', shallow: { confirmation: '123456-1', searchResults: { complete: true } },
       record: { details: { fields: visible }, nativePreimage: observed },
     });
-    expect(read(native).commercial).toEqual(native.commercial);
-    const namesOnly = { company: { name: 'Test Company' }, agency: { name: 'Test Agency' } };
+    expect(read(native).commercial).toEqual({ organization: native.commercial.company, bookingAgency: native.commercial.agency });
+    const namesOnly = { organization: { name: 'Test Company' }, bookingAgency: { name: 'Test Agency' } };
     expect(read({ ...native, propertyCode: 'HRDAV' }).commercial).toEqual(namesOnly);
     expect(read({ ...native, confirmation: '999999-1' }).commercial).toEqual(namesOnly);
     expect(read({ ...native, guestId: '44' }).commercial).toEqual(namesOnly);
     expect(read({ ...native, commercial: { company: { name: 'Other Company', nativeId: '0042' } } }).commercial).toEqual(namesOnly);
     expect(read({ ...native, commercial: { company: { name: 'Test Company', nativeId: '0' } } }).commercial).toEqual(namesOnly);
     expect(read({ ...native, commercial: { company: { name: 'Test Company', nativeId: 'x42' } } }).commercial).toEqual(namesOnly);
-    expect(read(native, [...fields, { name: 'company', value: 'Other Company' }]).commercial).toEqual({ agency: native.commercial.agency });
+    expect(read(native, [...fields, { name: 'company', value: 'Other Company' }]).commercial).toEqual({ bookingAgency: native.commercial.agency });
   });
 
   it('accepts exact adult labels only when the visible and native counts agree', () => {
@@ -186,7 +186,7 @@ describe('Cloud saved-stay projection', () => {
       depositReceived: '', bookingAgency: 'Test Agency', organization: 'Test Organization',
     }));
     expect(result.commercial).toEqual({
-      company: { name: 'Test Organization' }, agency: { name: 'Test Agency' },
+      organization: { name: 'Test Organization' }, bookingAgency: { name: 'Test Agency' },
     });
     expect(result.financialObservations).toEqual({
       averageRate: { amount: { state: 'observed', value: '1250.00' }, currency: { state: 'observed', value: 'ZAR' } },
@@ -206,6 +206,7 @@ describe('Cloud saved-stay projection', () => {
       arAccountName: { state: 'observed', value: 'Test Account' },
       bookerName: { state: 'observed', value: 'Test Booker' },
       bookerContact: { state: 'observed', value: 'Reservations Desk' },
+      reservationNote: { state: 'unknown', value: null, source: 'unavailable', confirmation: null },
     });
     expect(JSON.stringify(result)).not.toContain('guest@example.test');
     expect(projectCloudStayFind(savedStayRequest, {

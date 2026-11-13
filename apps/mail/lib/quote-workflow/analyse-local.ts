@@ -71,7 +71,7 @@ export function analyseLocalEmail(input: LocalAnalyseInput): QuoteAnalysis {
     roomPreference: undefined,
     adults: /\b(\d+)\s+adult/i.test(admittedText) ? Number(admittedText.match(/\b(\d+)\s+adult/i)?.[1]) : undefined,
     childrenAges: [],
-    board: alternatives.includes('RO') && !alternatives.includes('BB') ? 'room_only' : alternatives.includes('BB') ? 'bb' : 'unknown',
+    mealPlan: alternatives.includes('RO') && !alternatives.includes('BB') ? 'room_only' : alternatives.includes('BB') ? 'bb' : 'unknown',
     specialRequests: [],
     fields: {
       arrivalDate: arrivalDate ? 'extracted' : 'missing',

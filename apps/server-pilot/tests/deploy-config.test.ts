@@ -5909,6 +5909,11 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         'HMS_AVAILABILITY_PER_HOUR',
         'HMS_QUOTE_PREPARE',
         'HMS_QUOTE_PREPARE_PER_HOUR',
+        'HMS_MEMORY_PMS_PATH',
+        'HMS_MEMORY_OUTBOUND_PATH',
+        'HMS_MEMORY_DATA_DIR',
+        'HMS_NATIVE_CATALOG_PATH',
+        'HMS_MEMORY_OBSERVATIONS_PATH',
         'HMS_STAGEHAND_CDP_URL_DAVINCI',
       ]);
       expect(keys.filter((key) => key.startsWith('PANE_WRITE_'))).toEqual([

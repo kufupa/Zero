@@ -52,7 +52,7 @@ function mockPage({ paused = null } = {}) {
 const config = (gate, stage, save) => ({ timeoutMs: 500, prepareOnly: true,
   prepare: async () => ({ frame, save, childStageGate: gate }), stage, matches: () => true, validate: async () => true });
 
-test('one fence passes the exact read and validation, then refuses a late request and every Save', async () => {
+test('Prepare passes the exact read but refuses validation, late requests and Save', async () => {
   const fake = mockPage(); await installReadOnlyGuard(fake.context);
   const gate = createSavedChildStageRequestGate(target());
   let clicks = 0;
@@ -62,8 +62,8 @@ test('one fence passes the exact read and validation, then refuses a late reques
     assert.equal(gate.markReadVerified(), true); assert.equal(gate.armValidation(), true); await fake.visit(validate());
     return {};
   }, save));
-  assert.equal(result.issue, 'PREPARE_ONLY'); assert.equal(result.blockedRequests, 0); assert.equal(clicks, 0);
-  assert.deepEqual(fake.calls, ['continue', 'continue']);
+  assert.equal(result.issue, 'AMEND_DRAFT_CHANGED'); assert.equal(result.blockedRequests, 1); assert.equal(clicks, 0);
+  assert.deepEqual(fake.calls, ['continue', 'abort']);
   await fake.visit(read());
   assert.equal(fake.calls.at(-1), 'abort');
   await fake.visit(makeRequest('/web/base/OSRESV.HDR?pageaction=SAVE', {}));
@@ -133,6 +133,7 @@ test('child staging and upstream dispatch wrapper share one fence without wideni
   let staging = true, armed = false, dispatched = 0;
   const chain = await installLabtestSaveRouteChain(fake.page, {
     frame, fence, scope, childStageGate:gate, isChildStageActive:() => staging,
+    canDispatchChild:() => true, dispatchChildCandidate:async (_request, proceed) => { await proceed(); },
     isArmed:() => armed, matches:(request) => request.url().endsWith('/web/base/OSRESV.HDR?pageaction=SAVE'),
     dispatchCandidate:async (_request, proceed) => { wrapper.push('enter'); await proceed(); wrapper.push('exit'); },
     onDispatch:() => { dispatched += 1; },

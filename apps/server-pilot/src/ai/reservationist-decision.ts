@@ -166,7 +166,7 @@ const lunaGroupSchema = z.object({
     .array(z.number().int())
     .nullable()
     .describe('Actual ages, [] only for an affirmed no-children/zero-children request, or null when child presence, count or ages are unknown.'),
-  board: z.enum(['room_only', 'bb', 'dbb', 'half_board']).nullable(),
+  mealPlan: z.enum(['room_only', 'bb', 'dbb', 'half_board']).nullable(),
   roomPreference: z.string().nullable(),
   guestNames: z.array(z.string()),
 });
@@ -188,7 +188,7 @@ export const lunaAnalysisSchema = z.object({
   ),
   groups: z.array(lunaGroupSchema),
   party: z.object({
-    kind: z.enum(['agency', 'organization', 'government', 'private']).nullable(),
+    kind: z.enum(['bookingAgency', 'organization', 'government', 'private']).nullable(),
     name: z
       .string()
       .nullable()

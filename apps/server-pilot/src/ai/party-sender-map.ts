@@ -5,7 +5,7 @@ import type { DB } from '../db/client.js';
 export type LearnedSenderRow = {
   propertyCode?: string;
   host: string;
-  kind: 'company' | 'agency';
+  kind: 'organization' | 'bookingAgency';
   name: string;
   nativeId?: string | null;
   iata?: string | null;
@@ -18,8 +18,14 @@ type StoredLearnedSenderRow = LearnedSenderRow & {
   iata: string | null;
 };
 
+function partyKindFromStored(kind: string): LearnedSenderRow['kind'] | null {
+  if (kind === 'company') return 'organization';
+  if (kind === 'agency') return 'bookingAgency';
+  return null;
+}
+
 export type LearnedSenderHistory = {
-  kind: 'company' | 'agency';
+  kind: 'organization' | 'bookingAgency';
   name: string;
   nativeId: string | null;
   iata: string | null;
@@ -29,7 +35,7 @@ export type LearnedSenderHistory = {
 export type RecordSenderPartyInput = {
   propertyCode: string;
   host: string;
-  kind: 'company' | 'agency';
+  kind: 'organization' | 'bookingAgency';
   name: string;
   nativeId: string | null;
   iata: string | null;
@@ -93,7 +99,7 @@ function rowOf(r: LearnedSenderRow, fallbackProperty?: string | null): StoredLea
     !host ||
     FREEMAIL.has(host) ||
     !name ||
-    (r.kind !== 'company' && r.kind !== 'agency')
+    (r.kind !== 'organization' && r.kind !== 'bookingAgency')
   ) {
     return null;
   }
@@ -153,7 +159,7 @@ export function replaceLearnedSenderMapForTests(next: LearnedSenderRow[] | null)
 export function lookupLearnedSenderParty(
   host: string,
   propertyCode?: string | null,
-): { kind: 'company' | 'agency'; name: string } | null {
+): { kind: 'organization' | 'bookingAgency'; name: string } | null {
   const history = lookupLearnedSenderHistory(host, propertyCode);
   return history ? { kind: history.kind, name: history.name } : null;
 }
@@ -198,7 +204,7 @@ export async function recordSenderParty(
     !host ||
     senderHostExcluded(host) ||
     !name ||
-    (input.kind !== 'company' && input.kind !== 'agency')
+    (input.kind !== 'organization' && input.kind !== 'bookingAgency')
   ) {
     return null;
   }
@@ -214,7 +220,7 @@ export async function recordSenderParty(
   )`;
   const [saved] = await db
     .insert(partySenderMap)
-    .values({ propertyCode, host, kind: input.kind, name, nativeId, iata, support: 1 })
+    .values({ propertyCode, host, kind: input.kind === 'organization' ? 'company' : 'agency', name, nativeId, iata, support: 1 })
     .onConflictDoUpdate({
       target: [partySenderMap.propertyCode, partySenderMap.host],
       set: {
@@ -227,10 +233,12 @@ export async function recordSenderParty(
     })
     .returning();
   if (!saved) return null;
+  const kind = partyKindFromStored(saved.kind);
+  if (!kind) return null;
   const stored = rowOf({
     propertyCode: saved.propertyCode,
     host: saved.host,
-    kind: saved.kind as StoredLearnedSenderRow['kind'],
+    kind,
     name: saved.name,
     nativeId: saved.nativeId,
     iata: saved.iata,
@@ -250,15 +258,19 @@ export async function recordSenderParty(
 export async function refreshLearnedSenderMap(db: DB): Promise<number> {
   const found = await db.select().from(partySenderMap);
   rows = take(
-    found.map((row) => ({
-      propertyCode: row.propertyCode,
-      host: row.host,
-      kind: row.kind as LearnedSenderRow['kind'],
-      name: row.name,
-      nativeId: row.nativeId,
-      iata: row.iata,
-      support: row.support,
-    })),
+    found.flatMap((row) => {
+      const kind = partyKindFromStored(row.kind);
+      if (!kind) return [];
+      return [{
+        propertyCode: row.propertyCode,
+        host: row.host,
+        kind,
+        name: row.name,
+        nativeId: row.nativeId,
+        iata: row.iata,
+        support: row.support,
+      }];
+    }),
   );
   loadedAt = Date.now();
   return rows.length;

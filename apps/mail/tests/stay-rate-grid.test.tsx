@@ -25,8 +25,8 @@ describe('StayRateGrid', () => {
         roomLabel: 'Standard Twin',
         rateCode: 'RATE-1',
         rateLabel: 'Flexible',
-        board: 'bb',
-        boardLabel: 'Bed & breakfast',
+        mealPlan: 'bb',
+        mealPlanLabel: 'Bed & breakfast',
         nightlyPriceMinor: 215_000,
         roomsLeft: 5,
       },
@@ -36,8 +36,8 @@ describe('StayRateGrid', () => {
         roomLabel: 'Standard Twin',
         rateCode: 'RATE-2',
         rateLabel: 'Flexible',
-        board: 'bb',
-        boardLabel: 'Bed & breakfast',
+        mealPlan: 'bb',
+        mealPlanLabel: 'Bed & breakfast',
         nightlyPriceMinor: 197_500,
         roomsLeft: 2,
       },
@@ -47,8 +47,8 @@ describe('StayRateGrid', () => {
         roomLabel: 'Standard Twin',
         rateCode: 'RATE-2',
         rateLabel: 'Flexible',
-        board: 'bb',
-        boardLabel: 'Bed & breakfast',
+        mealPlan: 'bb',
+        mealPlanLabel: 'Bed & breakfast',
         nightlyPriceMinor: 180_000,
         roomsLeft: 1,
       },
@@ -64,12 +64,12 @@ describe('StayRateGrid', () => {
       />,
     );
 
-    const grid = screen.getByRole('group', { name: 'Room, rate and board choices' });
+    const grid = screen.getByRole('group', { name: 'Room, rate and meal plan choices' });
     const selectedCell = within(grid).getByRole('button', { name: /RATE-2/ });
     fireEvent.click(selectedCell);
 
     expect(onSelect).toHaveBeenCalledTimes(1);
-    expect(onSelect).toHaveBeenCalledWith({ roomCode: 'STWN', rateCode: 'RATE-2', board: 'bb' });
+    expect(onSelect).toHaveBeenCalledWith({ roomCode: 'STWN', rateCode: 'RATE-2', mealPlan: 'bb' });
     expect(selectedCell.textContent).toContain(draftMoney(197_500));
     expect(within(selectedCell).getByText('Rooms left: 2')).toBeDefined();
     expect(screen.getByText(/reference only/i)).toBeDefined();
@@ -85,8 +85,8 @@ describe('StayRateGrid', () => {
         roomLabel: 'Room One',
         rateCode: 'BAR',
         rateLabel: 'Best Available Rate',
-        board: 'bb',
-        boardLabel: 'Bed & breakfast',
+        mealPlan: 'bb',
+        mealPlanLabel: 'Bed & breakfast',
         nightlyPriceMinor: null,
         roomsLeft: null,
         rateScope: 'public',
@@ -97,8 +97,8 @@ describe('StayRateGrid', () => {
         roomLabel: 'Room One',
         rateCode: 'GOV1',
         rateLabel: 'Government plan',
-        board: 'bb',
-        boardLabel: 'Bed & breakfast',
+        mealPlan: 'bb',
+        mealPlanLabel: 'Bed & breakfast',
         nightlyPriceMinor: null,
         roomsLeft: null,
         rateScope: 'unknown',
@@ -109,8 +109,8 @@ describe('StayRateGrid', () => {
         roomLabel: 'Room One',
         rateCode: 'CON1',
         rateLabel: 'PRESET plan',
-        board: 'bb',
-        boardLabel: 'Bed & breakfast',
+        mealPlan: 'bb',
+        mealPlanLabel: 'Bed & breakfast',
         nightlyPriceMinor: null,
         roomsLeft: null,
         rateScope: 'contextual',
@@ -120,7 +120,7 @@ describe('StayRateGrid', () => {
       {
         code: 'GOV1',
         name: 'Government plan',
-        board: 'bed_breakfast',
+        mealPlan: 'bed_breakfast',
         government: true,
         category: 'government',
         readByNava: true,
@@ -128,7 +128,7 @@ describe('StayRateGrid', () => {
       {
         code: 'CON1',
         name: 'PRESET plan',
-        board: 'bed_breakfast',
+        mealPlan: 'bed_breakfast',
         contract: true,
         category: 'contract',
         readByNava: true,
@@ -143,7 +143,7 @@ describe('StayRateGrid', () => {
         onSelect={onSelect}
       />,
     );
-    const grid = screen.getByRole('group', { name: 'Room, rate and board choices' });
+    const grid = screen.getByRole('group', { name: 'Room, rate and meal plan choices' });
 
     expect(screen.getByText('Public rates — contract not checked')).toBeDefined();
     expect(within(grid).getByText('Public')).toBeDefined();
@@ -161,7 +161,7 @@ describe('StayRateGrid', () => {
     );
 
     expect(screen.queryByText('Public rates — contract not checked')).toBeNull();
-    const checkedGrid = screen.getByRole('group', { name: 'Room, rate and board choices' });
+    const checkedGrid = screen.getByRole('group', { name: 'Room, rate and meal plan choices' });
     expect(within(checkedGrid).getByText('Contract')).toBeDefined();
   });
 });
@@ -173,7 +173,7 @@ const GRID_STAY: StayGroupRequirement = {
   quantity: 1,
   adults: 2,
   childrenAges: [],
-  board: 'bb',
+  mealPlan: 'bb',
   specialRequests: [],
   fields: {},
 };
@@ -218,8 +218,8 @@ function gridPickSession(): QuoteSession {
         roomLabel: 'Standard Twin',
         rateCode: 'FLEX',
         rateLabel: 'Flexible',
-        board: 'Bed & Breakfast R',
-        boardLabel: 'Bed and breakfast',
+        mealPlan: 'Bed & Breakfast R',
+        mealPlanLabel: 'Bed and breakfast',
         nightlyPriceMinor: 120_000,
         roomsLeft: 3,
       },
@@ -266,11 +266,11 @@ describe('StayRateGrid in the quote panel', () => {
     fireEvent.click(screen.getByRole('button', { name: /Select Standard Twin \(STWN\), Flexible \(FLEX\)/ }));
 
     await waitFor(() => expect(onRunStep).toHaveBeenCalledWith(`quote-stay-${stayKey}`));
-    expect(seen.session?.groups[0]).toMatchObject({ roomCodes: ['STWN'], rateCode: 'FLEX', board: 'bb' });
-    expect(seen.session?.roomRateBoardSelections?.[initial.groups[0]!.id]).toEqual({
+    expect(seen.session?.groups[0]).toMatchObject({ roomCodes: ['STWN'], rateCode: 'FLEX', mealPlan: 'bb' });
+    expect(seen.session?.roomRateMealPlanSelections?.[initial.groups[0]!.id]).toEqual({
       roomCode: 'STWN',
       rateCode: 'FLEX',
-      board: 'Bed & Breakfast R',
+      mealPlan: 'Bed & Breakfast R',
     });
   });
 });

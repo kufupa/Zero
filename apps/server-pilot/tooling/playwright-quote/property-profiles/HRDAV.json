@@ -29,11 +29,11 @@
     "STWN": { "label": "Standard Twin" }
   },
   "ratePlans": {
-    "BAR": { "label": "Best Available Rate", "board": "bb" },
-    "BARRO": { "label": "Room Only BAR", "board": "room_only" },
-    "BLRB": { "label": "Lifestyle Rewards Programme Rate", "board": "unknown" },
-    "BARDIS": { "label": "BAR Discount", "board": "unknown" },
-    "DEF": { "label": "Default", "board": "unknown" }
+    "BAR": { "label": "Best Available Rate", "mealPlan": "bb" },
+    "BARRO": { "label": "Room Only BAR", "mealPlan": "room_only" },
+    "BLRB": { "label": "Lifestyle Rewards Programme Rate", "mealPlan": "unknown" },
+    "BARDIS": { "label": "BAR Discount", "mealPlan": "unknown" },
+    "DEF": { "label": "Default", "mealPlan": "unknown" }
   },
   "boardLabels": ["Bed & Breakfast R", "Bed & Breakfast NR"],
   "boardCodes": [],

@@ -273,10 +273,10 @@ it('rejects conflicting yearContext when only the arrival omits its year', () =>
 
 it('preserves legacy global board and strict explicit group board values',()=>{
  const text='Group A: Room Only R',original={...source,pages:[text]},span={attachmentId:'a',sourceHash:source.sourceHash,page:1,quote:text,start:0,end:text.length};
- const fact=(value:any)=>({id:'board',kind:'board',value,disclosure:'guest',source:span});
- expect(validateDocumentPlan({facts:[fact({board:'Room Only R',roomRef:'A'})],tasks:[],unresolvedAsks:[]},[original]).facts[0].value).toEqual({board:'Room Only R',roomRef:'A'});
+ const fact=(value:any)=>({id:'board',kind:'mealPlan',value,disclosure:'guest',source:span});
+ expect(validateDocumentPlan({facts:[fact({mealPlan:'Room Only R',roomRef:'A'})],tasks:[],unresolvedAsks:[]},[original]).facts[0].value).toEqual({mealPlan:'Room Only R',roomRef:'A'});
  expect(validateDocumentPlan({facts:[fact('Room Only R')],tasks:[],unresolvedAsks:[]},[original]).facts[0].value).toBe('Room Only R');
- for(const value of [{board:'Room Only R'},{roomRef:'A'},{board:'Room Only R',roomRef:'A',authority:true}])expect(()=>validateDocumentPlan({facts:[fact(value)],tasks:[],unresolvedAsks:[]},[original])).toThrow();
+ for(const value of [{mealPlan:'Room Only R'},{roomRef:'A'},{mealPlan:'Room Only R',roomRef:'A',authority:true}])expect(()=>validateDocumentPlan({facts:[fact(value)],tasks:[],unresolvedAsks:[]},[original])).toThrow();
 });
 
 it('retains an explicit channel system-sync request as its own sourced task', () => {

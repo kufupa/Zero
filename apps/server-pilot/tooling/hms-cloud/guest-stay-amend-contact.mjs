@@ -30,11 +30,15 @@ const PRESERVED_BUSINESS_FIELDS = ['status', 'firstname', 'lastname', 'arrivalda
 export async function stageSavedGuestFieldsForComposition(context, changes) {
   if (!isLabtestAmendStageContext(context) || !context.isActive()) throw new Error('AMEND_STAGE_NOT_ACTIVE');
   const specs = { firstName: 'firstname', lastName: 'lastname', guestEmail: 'emailaddress',
-    bookerName: 'caller', bookerContact: 'udfchar06', cmsMessageId: 'udfchar09', cmsRecipient: 'udfchar13' };
+    bookerName: 'caller', bookerContact: 'udfchar06', reservationNote: 'reservationnote', billingReference: 'billingreference',
+    cmsMessageId: 'udfchar09', cmsRecipient: 'udfchar13' };
   for (const [key, name] of Object.entries(specs)) {
     if (!Object.hasOwn(changes, key)) continue;
     const value = changes[key];
-    if (typeof value !== 'string' || value.length > 1000 || /[\p{Cc}]/u.test(value)) throw new Error('CONTACT_VALUE_INVALID');
+    if (typeof value !== 'string' || value.length > (key === 'reservationNote' ? 2000 : 1000) ||
+        [...value].some((char) => (char.charCodeAt(0) < 32 && !(key === 'reservationNote' && char === '\n')) || char.charCodeAt(0) === 127)) {
+      throw new Error('CONTACT_VALUE_INVALID');
+    }
     const control = context.frame.locator(`input[name="${name}"]:visible,textarea[name="${name}"]:visible`);
     if (await control.count() !== 1) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
     const changed = await control.evaluate((element, next) => {
@@ -44,7 +48,8 @@ export async function stageSavedGuestFieldsForComposition(context, changes) {
       const panel = guests.length === 1 ? globalThis.Ext?.getCmp?.(guests[0].id.replace(/-inputEl$/, ''))?.up?.('form') : null;
       if (!panel?.el?.dom?.contains(element) || cmp?.up?.('form') !== panel || !cmp?.getValue) return false;
       if (String(cmp.getValue() ?? '') === next && element.value === next) return true;
-      if (!cmp.setValue || element.disabled || element.readOnly || cmp.readOnly || cmp.isDisabled?.()) return false;
+      if (!cmp.setValue || element.disabled || element.readOnly || cmp.readOnly || cmp.isDisabled?.() ||
+          (Number.isInteger(element.maxLength) && element.maxLength >= 0 && next.length > element.maxLength)) return false;
       cmp.setValue(next);
       cmp.fireEvent?.('blur', cmp);
       return String(cmp.getValue() ?? '') === next && element.value === next;
@@ -61,6 +66,25 @@ export async function stageSavedGuestFieldsForComposition(context, changes) {
     if (before !== changes.cmsSend) await control.click({ timeout: 5000 });
     const after = await control.evaluate((element) => globalThis.Ext?.getCmp?.(element.id.replace(/-inputEl$/, ''))?.getValue?.());
     if (after !== changes.cmsSend || !context.isActive()) throw new Error('CMS_EDIT_UNVERIFIED');
+  }
+  if (Object.hasOwn(changes, 'guestOptIn')) {
+    if (changes.guestOptIn !== false) throw new Error('GUEST_OPT_IN_INVALID');
+    const control = context.frame.locator('input[name="guestoptin4"]:visible');
+    if (await control.count() !== 1) throw new Error('GUEST_OPT_IN_CONTROL_UNAVAILABLE');
+    const before = await control.evaluate(element => {
+      const cmp = globalThis.Ext?.getCmp?.(element.id.replace(/-inputEl$/, ''));
+      const guests = [...document.querySelectorAll('input[name="guestid"]')].filter(node =>
+        (node.offsetWidth || node.offsetHeight) && getComputedStyle(node).visibility !== 'hidden' && !node.closest('.x-window'));
+      const form = guests.length === 1 ? globalThis.Ext?.getCmp?.(guests[0].id.replace(/-inputEl$/, ''))?.up?.('form') : null;
+      if (!form?.el?.dom?.contains(element) || cmp?.up?.('form') !== form || typeof cmp.getValue !== 'function') return null;
+      const value = cmp.getValue();
+      if (typeof value !== 'boolean' || (value && (element.disabled || element.readOnly || cmp.readOnly || cmp.isDisabled?.()))) return null;
+      return value;
+    });
+    if (typeof before !== 'boolean') throw new Error('GUEST_OPT_IN_PREIMAGE_UNVERIFIED');
+    if (before) await control.click({ timeout: 5000 });
+    const after = await control.evaluate(element => globalThis.Ext?.getCmp?.(element.id.replace(/-inputEl$/, ''))?.getValue?.());
+    if (after !== false || !context.isActive()) throw new Error('GUEST_OPT_IN_EDIT_UNVERIFIED');
   }
   const synced = await context.frame.evaluate(() => {
     const guests = [...document.querySelectorAll('input[name="guestid"]')].filter((node) =>

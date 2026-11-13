@@ -90,8 +90,8 @@ async function addDaVinciMailboxes(db: DB) {
 function payload(dates: { stayOneArrival?: string; stayTwoArrival?: string } = {}): MailExtractionPayload {
   return {
     contact: { name: null, email: null, phone: null },
-    agency: 'Horizon Trail Tours',
-    endClient: null,
+    bookingAgency: 'Horizon Trail Tours',
+    organization: null,
     confirmationNumbers: [],
     stays: [
       {
@@ -101,8 +101,8 @@ function payload(dates: { stayOneArrival?: string; stayTwoArrival?: string } = {
         booked: null,
         totalRooms: null,
         rows: [
-          { id: ROW_SINGLE, roomType: 'Single', rooms: 2, adultsPerRoom: 1, childAges: [], board: null },
-          { id: ROW_TWIN, roomType: 'Double/Twin', rooms: 3, adultsPerRoom: 2, childAges: [], board: 'bb' },
+          { id: ROW_SINGLE, roomType: 'Single', rooms: 2, adultsPerRoom: 1, childAges: [], mealPlan: null },
+          { id: ROW_TWIN, roomType: 'Double/Twin', rooms: 3, adultsPerRoom: 2, childAges: [], mealPlan: 'bb' },
         ],
       },
       {
@@ -111,7 +111,7 @@ function payload(dates: { stayOneArrival?: string; stayTwoArrival?: string } = {
         requested: { arrival: dates.stayTwoArrival ?? '2027-11-17', departure: '2027-11-19' },
         booked: null,
         totalRooms: null,
-        rows: [{ id: ROW_STAY_TWO, roomType: 'Double/Twin', rooms: 4, adultsPerRoom: 2, childAges: [], board: null }],
+        rows: [{ id: ROW_STAY_TWO, roomType: 'Double/Twin', rooms: 4, adultsPerRoom: 2, childAges: [], mealPlan: null }],
       },
     ],
     missing: [{ field: 'rooms', question: 'How many single rooms?' }],
@@ -234,12 +234,12 @@ describe('stored read for the pane', () => {
         adults: 1,
         roomPreference: 'Single',
         organisation: 'Horizon Trail Tours',
-        board: 'bb',
+        mealPlan: 'bb',
       });
       expect(work.analysis.groups[0]!.fields).toMatchObject({
         arrivalDate: 'extracted',
         quantity: 'extracted',
-        board: 'defaulted',
+        mealPlan: 'defaulted',
       });
       expect(work.analysis.groups[2]!.arrivalDate).toBe('2027-11-17');
       expect(work.refs[ROW_TWIN]).toEqual({ stayId: STAY_ONE, rowId: ROW_TWIN });
@@ -667,15 +667,15 @@ describe('stored read for the pane: contact and translation', () => {
         payload: {
           ...payload(),
           contact: { name: 'Priya Naidoo', email: 'priya@example.com', phone: null },
-          endClient: 'Tailormade Africa',
+          organization: 'Tailormade Africa',
         },
       });
 
       const work = await readyWork(db, 'c1');
       expect(work.contact).toEqual({
         name: 'Priya Naidoo',
-        company: 'Horizon Trail Tours',
-        endClient: 'Tailormade Africa',
+        bookingAgency: 'Horizon Trail Tours',
+        organization: 'Tailormade Africa',
         email: 'priya@example.com',
         phone: null,
       });
@@ -773,7 +773,7 @@ describe('work item upsert', () => {
       const old = await insertRead(db, messageId, {
         version: 'extract-v1',
         kind: 'other',
-        payload: { ...payload(), agency: 'Grand Hotel Group' },
+        payload: { ...payload(), bookingAgency: 'Grand Hotel Group' },
       });
       await db
         .update(mailExtraction)
@@ -993,7 +993,7 @@ describe('corrections carry to a re-read', () => {
           requested: { arrival: '2027-12-01', departure: '2027-12-03' },
           booked: null,
           totalRooms: null,
-          rows: [{ id: 'r_dec_new', roomType: 'Double/Twin', rooms: 4, adultsPerRoom: 2, childAges: [], board: null }],
+          rows: [{ id: 'r_dec_new', roomType: 'Double/Twin', rooms: 4, adultsPerRoom: 2, childAges: [], mealPlan: null }],
         },
       ],
     };
@@ -1008,7 +1008,7 @@ describe('corrections carry to a re-read', () => {
       ...after.stays[0]!,
       rows: [
         after.stays[0]!.rows[0]!,
-        { id: 'r_family_new', roomType: 'Family', rooms: 1, adultsPerRoom: 3, childAges: [], board: 'bb' },
+        { id: 'r_family_new', roomType: 'Family', rooms: 1, adultsPerRoom: 3, childAges: [], mealPlan: 'bb' },
       ],
     };
     const state = { [`stays[${STAY_ONE}].rows[${ROW_TWIN}].adults`]: 3 };
@@ -1029,7 +1029,7 @@ describe('corrections carry to a re-read', () => {
             booked: null,
             totalRooms: null,
             rows: [
-              { id: 'r_dec_reused', roomType: 'Double/Twin', rooms: 4, adultsPerRoom: 2, childAges: [], board: null },
+              { id: 'r_dec_reused', roomType: 'Double/Twin', rooms: 4, adultsPerRoom: 2, childAges: [], mealPlan: null },
             ],
           },
         ],
@@ -1072,7 +1072,7 @@ describe('field events', () => {
       if (opened.status !== 'ready' || !opened.workItemId) throw new Error('expected an open work item');
       const workItemId = opened.workItemId;
       expect(opened).toMatchObject({ revision: 0, revisionHead: 0, revisionSeq: 0, workItemExtractionId: first });
-      const base = { workItemId, fieldPath: 'contact.company' };
+      const base = { workItemId, fieldPath: 'contact.bookingAgency' };
       expect(await caller.workItems.recordEvent({ ...base, type: 'field.edit', value: 'Edited' })).toEqual({
         aiValue: 'Horizon Trail Tours', value: 'Edited', previousSeq: 0, seq: 1,
         revision: 1, revisionHead: 1, workItemExtractionId: first,
@@ -1087,13 +1087,13 @@ describe('field events', () => {
       });
       expect(await caller.workItems.getByMessage(lookup)).toMatchObject({
         revision: 3, revisionHead: 3, revisionSeq: 3, workItemExtractionId: first,
-        contact: { company: 'Rejected' },
+        contact: { bookingAgency: 'Rejected' },
       });
       await caller.workItems.undoRevision({ workItemId, expectedSeq: 3 });
       await caller.workItems.undoRevision({ workItemId, expectedSeq: 4 });
       expect(await caller.workItems.getByMessage(lookup)).toMatchObject({
         revision: 1, revisionHead: 3, revisionSeq: 5, workItemExtractionId: first,
-        contact: { company: 'Edited' },
+        contact: { bookingAgency: 'Edited' },
       });
       expect(await caller.workItems.recordEvent({ ...base, type: 'field.edit', value: 'New branch' })).toEqual({
         aiValue: 'Horizon Trail Tours', value: 'New branch', previousSeq: 5, seq: 6,
@@ -1104,7 +1104,7 @@ describe('field events', () => {
       await db.update(mailExtraction).set({ createdAt: new Date(Date.now() + 5000) }).where(eq(mailExtraction.id, second));
       expect(await caller.workItems.open(lookup)).toMatchObject({
         revision: 2, revisionHead: 2, revisionSeq: 7, workItemExtractionId: second,
-        contact: { company: 'New branch' },
+        contact: { bookingAgency: 'New branch' },
       });
       expect(await caller.workItems.recordEvent({ ...base, type: 'field.edit', value: 'Relinked' })).toEqual({
         aiValue: 'Horizon Trail Tours', value: 'Relinked', previousSeq: 7, seq: 8,
@@ -1117,7 +1117,7 @@ describe('field events', () => {
       });
       expect(await caller.workItems.getByMessage(lookup)).toMatchObject({
         revision: 4, revisionHead: 4, revisionSeq: 9, workItemExtractionId: null,
-        extractionId: second, contact: { company: 'Unlinked' },
+        extractionId: second, contact: { bookingAgency: 'Unlinked' },
       });
     }));
 
@@ -1130,7 +1130,7 @@ describe('field events', () => {
       const opened = await caller.workItems.open(lookup);
       if (opened.status !== 'ready' || !opened.workItemId) throw new Error('expected an open work item');
       const workItemId = opened.workItemId;
-      await caller.workItems.recordEvent({ workItemId, type: 'field.edit', fieldPath: 'contact.company', value: 'First' });
+      await caller.workItems.recordEvent({ workItemId, type: 'field.edit', fieldPath: 'contact.bookingAgency', value: 'First' });
       await caller.workItems.undoRevision({ workItemId, expectedSeq: 1, expectedExtractionId: first });
       const second = await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
       await db.update(mailExtraction).set({ createdAt: new Date(Date.now() + 5000) }).where(eq(mailExtraction.id, second));
@@ -1152,7 +1152,7 @@ describe('field events', () => {
       });
       expect((await eventsFor(db, workItemId)).filter((event) => event.type === 'history.undo')).toHaveLength(1);
       expect((await eventsFor(db, workItemId)).filter((event) => event.type === 'history.redo')).toHaveLength(0);
-      await caller.workItems.recordEvent({ workItemId, type: 'field.edit', fieldPath: 'contact.company', value: 'Second' });
+      await caller.workItems.recordEvent({ workItemId, type: 'field.edit', fieldPath: 'contact.bookingAgency', value: 'Second' });
       // Legacy caller omits the new guard; it can still undo the new extraction's edit.
       await expect(caller.workItems.undoRevision({ workItemId, expectedSeq: 4 })).resolves.toMatchObject({
         revision: 0, revisionHead: 1, seq: 5,
@@ -1442,18 +1442,18 @@ describe('cleared values on reopen', () => {
       const messageId = await seedMail(db, 'b1');
       await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
       const work = await readyWork(db, 'b1');
-      expect(work.analysis.groups[1]!.board).toBe('bb');
+      expect(work.analysis.groups[1]!.mealPlan).toBe('bb');
       await recordFieldEvent(db, {
         transportId: CENTURION,
         workItemId: work.workItemId,
         userId: USER,
         type: 'field.edit',
-        fieldPath: `stays[${STAY_ONE}].rows[${ROW_TWIN}].board`,
+        fieldPath: `stays[${STAY_ONE}].rows[${ROW_TWIN}].mealPlan`,
         value: null,
       });
       const after = await readyWork(db, 'b1');
-      expect(after.analysis.groups[1]!.board).toBe('unknown');
-      expect(after.analysis.groups[1]!.fields.board).toBe('staff_corrected');
+      expect(after.analysis.groups[1]!.mealPlan).toBe('unknown');
+      expect(after.analysis.groups[1]!.fields.mealPlan).toBe('staff_corrected');
     }));
 });
 
@@ -1499,7 +1499,7 @@ describe('contact edits', () => {
           workItemId: work.workItemId,
           userId: USER,
           type: 'field.edit',
-          fieldPath: 'contact.company',
+          fieldPath: 'contact.bookingAgency',
           value: 'New Frontiers Tours',
         }),
       ).toMatchObject({ status: 'recorded', aiValue: 'Horizon Trail Tours', value: 'New Frontiers Tours' });
@@ -1509,11 +1509,11 @@ describe('contact edits', () => {
           workItemId: work.workItemId,
           userId: USER,
           type: 'field.edit',
-          fieldPath: 'contact.company',
+          fieldPath: 'contact.bookingAgency',
           value: null,
         }),
       ).toMatchObject({ status: 'recorded', aiValue: 'Horizon Trail Tours', value: null });
-      expect((await readyWork(db, 'k2')).contact.company).toBeNull();
+      expect((await readyWork(db, 'k2')).contact.bookingAgency).toBeNull();
     }));
 
   it('keeps her contact value through a re-extraction, and takes the read value for a field she did not edit', () =>
@@ -1538,8 +1538,8 @@ describe('contact edits', () => {
       expect(after.workItemId).toBe(before.workItemId);
       expect(after.contact).toEqual({
         name: 'Priya Naidoo',
-        company: 'Horizon Trail Tours',
-        endClient: null,
+        bookingAgency: 'Horizon Trail Tours',
+        organization: null,
         email: 'buyer@example.com',
         phone: '+27 11 000 0000',
       });
@@ -1584,15 +1584,15 @@ describe('section reset', () => {
       if (opened.status !== 'ready' || !opened.workItemId) throw new Error('expected an open work item');
       await recordFieldEvent(db, {
         transportId: CENTURION, workItemId: opened.workItemId, userId: USER,
-        type: 'field.edit', fieldPath: 'contact.company', value: 'Saved company',
+        type: 'field.edit', fieldPath: 'contact.bookingAgency', value: 'Saved company',
       });
       const [row] = await db.select({
         state: workItem.state, revision: workItem.revision, revisionHead: workItem.revisionHead,
         revisionSeq: workItem.revisionSeq, extractionId: workItem.extractionId,
       }).from(workItem).where(eq(workItem.id, opened.workItemId));
-      expect(row?.state['contact.company']).toBe('Saved company');
+      expect(row?.state['contact.bookingAgency']).toBe('Saved company');
       const expected = {
-        contact: { company: 'Saved company' },
+        contact: { bookingAgency: 'Saved company' },
         revision: row?.revision,
         revisionHead: row?.revisionHead,
         revisionSeq: row?.revisionSeq,
@@ -1616,10 +1616,10 @@ describe('section reset', () => {
       const work = await readyWork(db, 'reset1');
       const arrival = `stays[${STAY_ONE}].requested.arrival`;
       const count = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].count`;
-      const noAiValue = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].board`;
+      const noAiValue = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].mealPlan`;
       const otherStay = `stays[${STAY_TWO}].requested.arrival`;
       const addedRow = `stays[${STAY_ONE}].rows[r_user01].count`;
-      const company = 'contact.company';
+      const company = 'contact.bookingAgency';
       const edits: Array<[string, string | number]> = [
         [arrival, '2027-10-25'],
         [count, 5],
@@ -1731,10 +1731,10 @@ describe('field paths and values', () => {
       rowId: null,
       field: 'arrival',
     });
-    expect(parseFieldPath(`stays[${STAY_ONE}].rows[${ROW_TWIN}].board`)).toEqual({
+    expect(parseFieldPath(`stays[${STAY_ONE}].rows[${ROW_TWIN}].mealPlan`)).toEqual({
       stayId: STAY_ONE,
       rowId: ROW_TWIN,
-      field: 'board',
+      field: 'mealPlan',
     });
     expect(parseFieldPath(`stays[${STAY_ONE}].removed`)).toEqual({ stayId: STAY_ONE, rowId: null, field: 'removed' });
     expect(parseFieldPath(`stays[${STAY_ONE}].rows[${ROW_TWIN}].removed`)).toEqual({
@@ -1760,8 +1760,8 @@ describe('field paths and values', () => {
     expect(validFieldValue('adults', 10)).toBe(false);
     expect(validFieldValue('childAges', [3, 17])).toBe(true);
     expect(validFieldValue('childAges', [18])).toBe(false);
-    expect(validFieldValue('board', 'dbb')).toBe(true);
-    expect(validFieldValue('board', 'dinner_bb')).toBe(false);
+    expect(validFieldValue('mealPlan', 'dbb')).toBe(true);
+    expect(validFieldValue('mealPlan', 'dinner_bb')).toBe(false);
     expect(validFieldValue('arrival', '2027-02-30')).toBe(false);
     expect(validFieldValue('arrival', '2027-02-28')).toBe(true);
     expect(validFieldValue('departure', null)).toBe(true);
@@ -4555,7 +4555,7 @@ describe('pane revision undo/redo', () => {
             booked: null,
             totalRooms: null,
             rows: [
-              { id: 'r_dec_reused', roomType: 'Double/Twin', rooms: 4, adultsPerRoom: 2, childAges: [], board: null },
+              { id: 'r_dec_reused', roomType: 'Double/Twin', rooms: 4, adultsPerRoom: 2, childAges: [], mealPlan: null },
             ],
           },
         ],
@@ -4612,7 +4612,7 @@ describe('pane revision undo/redo', () => {
       const messageId = await seedMail(db, 'rev-reset-1');
       await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
       const work = await readyWork(db, 'rev-reset-1');
-      const company = 'contact.company';
+      const company = 'contact.bookingAgency';
       const arrival = `stays[${STAY_ONE}].requested.arrival`;
 
       expect(
@@ -4634,7 +4634,7 @@ describe('pane revision undo/redo', () => {
           section: { type: 'contact' },
         }),
       ).toEqual({ status: 'recorded', reset: 1 });
-      expect((await readyWork(db, 'rev-reset-1')).contact.company).toBe('Horizon Trail Tours');
+      expect((await readyWork(db, 'rev-reset-1')).contact.bookingAgency).toBe('Horizon Trail Tours');
 
       expect(
         await recordFieldEvent(db, {
@@ -4656,7 +4656,7 @@ describe('pane revision undo/redo', () => {
       expect(undoneStay).toMatchObject({ status: 'applied', revision: 2, revisionHead: 3, seq: 4 });
       const afterStayUndo = await readyWork(db, 'rev-reset-1');
       expect(afterStayUndo.analysis.groups[0]!.arrivalDate).toBe('2027-10-26');
-      expect(afterStayUndo.contact.company).toBe('Horizon Trail Tours');
+      expect(afterStayUndo.contact.bookingAgency).toBe('Horizon Trail Tours');
 
       const undoneReset = await undoWorkItemRevision(db, {
         transportId: CENTURION,
@@ -4665,6 +4665,6 @@ describe('pane revision undo/redo', () => {
         expectedSeq: 4,
       });
       expect(undoneReset).toMatchObject({ status: 'applied', revision: 1, revisionHead: 3, seq: 5 });
-      expect((await readyWork(db, 'rev-reset-1')).contact.company).toBe('New Frontiers Tours');
+      expect((await readyWork(db, 'rev-reset-1')).contact.bookingAgency).toBe('New Frontiers Tours');
     }));
 });

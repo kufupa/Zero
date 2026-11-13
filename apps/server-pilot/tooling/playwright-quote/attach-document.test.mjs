@@ -17,6 +17,7 @@ import { identityCheck } from './cancel-stay-rules.mjs';
 
 const ORIGIN = 'https://hms.example.invalid';
 const VALID_ARGV = [
+  '--property', 'HRCEN',
   '--confirmation', '57291630-1',
   '--arrival', '2027-09-14',
   '--file', '/tmp/attach-document-test/upload.pdf',
@@ -39,10 +40,10 @@ test('parseAttachArgs accepts a full set and normalizes the confirmation and arr
 });
 
 test('parseAttachArgs takes --property from the profile registry and refuses unknown before spawn', () => {
-  const dav = parseAttachArgs([...VALID_ARGV, '--property', 'HRDAV']);
+  const dav = parseAttachArgs(VALID_ARGV.map((value, index) => VALID_ARGV[index - 1] === '--property' ? 'HRDAV' : value));
   assert.equal(dav.ok, true);
   assert.equal(dav.args.property, 'HRDAV');
-  const unknown = parseAttachArgs([...VALID_ARGV, '--property', 'OTHER']);
+  const unknown = parseAttachArgs(VALID_ARGV.map((value, index) => VALID_ARGV[index - 1] === '--property' ? 'OTHER' : value));
   assert.equal(unknown.ok, false);
   assert.equal(unknown.error, 'PROPERTY_UNKNOWN');
 });

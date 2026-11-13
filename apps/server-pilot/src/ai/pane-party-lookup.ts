@@ -34,8 +34,7 @@ const PARTY_LOOKUP = fileURLToPath(
 const PARTY_LOOKUP_KIND_TIMEOUT_MS = 150_000;
 export const PANE_PARTY_CANDIDATE_CAP = 20;
 
-/** The pane's words for a party. The HMS kinds are organization (company) and bookingAgency (agency). */
-export type PanePartyKind = 'agency' | 'company';
+export type PanePartyKind = 'organization' | 'bookingAgency';
 
 export type PanePartyCandidate = {
   kind: PanePartyKind;
@@ -92,12 +91,7 @@ export type PanePartyFindResult = PanePartyLookupCore & {
 };
 
 // Companies first, then agencies. Each kind has its own HMS window, so each is one lookup run.
-const PARTY_KINDS: readonly PanePartyKind[] = ['company', 'agency'];
-
-const HMS_KIND: Record<PanePartyKind, 'organization' | 'bookingAgency'> = {
-  company: 'organization',
-  agency: 'bookingAgency',
-};
+const PARTY_KINDS: readonly PanePartyKind[] = ['organization', 'bookingAgency'];
 
 const CLI_OUTCOMES: ReadonlySet<string> = new Set([
   'resolved',
@@ -150,7 +144,7 @@ export function panePartyCandidates(kind: PanePartyKind, raw: unknown): PanePart
       country?: unknown;
       externalId?: unknown;
     };
-    if (candidate.kind !== HMS_KIND[kind]) continue;
+    if (candidate.kind !== kind) continue;
     if (typeof candidate.nativeId !== 'string' || !candidate.nativeId.trim()) continue;
     if (typeof candidate.displayName !== 'string' || !candidate.displayName.trim()) continue;
     const extra: Partial<Pick<PanePartyCandidate, (typeof OPTIONAL_PARTY_COLUMNS)[number]>> = {};
@@ -252,7 +246,7 @@ export function mergePartyKindResults(
 }
 
 function hmsQueryForKind(kind: PanePartyKind, name: string): Record<string, string> {
-  return kind === 'company' ? { organizationName: name } : { bookingAgencyName: name };
+  return kind === 'organization' ? { organizationName: name } : { bookingAgencyName: name };
 }
 
 function plannedSearchesOf(input: PanePartySpawnInput): PanePartySearchInput[] {
@@ -268,10 +262,10 @@ function partyLookupRequestBody(input: PanePartySpawnInput): unknown {
   const propertyCode = spawnPropertyCode(input.target);
   if (planned.length === 1 && !input.stopOnFirstHit) {
     const one = planned[0];
-    return { kind: HMS_KIND[one.kind], query: hmsQueryForKind(one.kind, one.name), propertyCode };
+    return { kind: one.kind, query: hmsQueryForKind(one.kind, one.name), propertyCode };
   }
   return {
-    searches: planned.map((item) => ({ kind: HMS_KIND[item.kind], name: item.name })),
+    searches: planned.map((item) => ({ kind: item.kind, name: item.name })),
     ...(input.stopOnFirstHit ? { stopOnFirstHit: true } : {}),
     propertyCode,
   };
@@ -390,6 +384,7 @@ async function rememberedPartyJobName(
   db: DB = getDb(),
 ): Promise<string | null> {
   const normalized = name.replace(/\s+/g, ' ').trim().toLowerCase();
+  const legacyKind = pick.kind === 'organization' ? 'company' : 'agency';
   const rows = await db
     .select({ readRequest: aiWorkflowRun.readRequest, readResult: aiWorkflowRun.readResult })
     .from(aiWorkflowRun)
@@ -410,7 +405,7 @@ async function rememberedPartyJobName(
               else '[]'::jsonb
             end
           ) as candidate(value)
-          where candidate.value->>'kind' = ${pick.kind}
+          where candidate.value->>'kind' in (${pick.kind}, ${legacyKind})
             and candidate.value->>'nativeId' = ${pick.nativeId}
             and lower(
               btrim(
@@ -429,13 +424,13 @@ async function rememberedPartyJobName(
     .limit(1);
   for (const row of rows) {
     const request = objectRecord(row.readRequest);
-    if (request.partyKind && request.partyKind !== pick.kind) continue;
+    if (request.partyKind && request.partyKind !== pick.kind && request.partyKind !== legacyKind) continue;
     const result = objectRecord(row.readResult);
     if (!Array.isArray(result.results)) continue;
     for (const candidateValue of result.results) {
       const candidate = objectRecord(candidateValue);
       if (
-        candidate.kind === pick.kind &&
+        (candidate.kind === pick.kind || candidate.kind === legacyKind) &&
         candidate.nativeId === pick.nativeId &&
         typeof candidate.name === 'string' &&
         sameHmsName(candidate.name, name)
@@ -539,20 +534,6 @@ async function spawnUnderOneLock(
       },
     };
   }
-}
-
-/** One runner run for one kind and HMS text, under the property lock. A refusal or failure comes back in the core shape. */
-async function lookupKind(
-  kind: PanePartyKind,
-  term: string,
-  lock: PaneStayLock,
-  spawn: (input: PanePartySpawnInput) => Promise<unknown>,
-  acquisition?: PropertyReadLockAcquisitionOptions,
-  target?: HmsReadTarget | null,
-): Promise<PanePartyLookupCore> {
-  const run = await spawnUnderOneLock({ kind, name: term, target }, lock, spawn, acquisition);
-  if (!run.ok) return run.core;
-  return panePartyFindResultFromCli(kind, run.raw);
 }
 
 /**

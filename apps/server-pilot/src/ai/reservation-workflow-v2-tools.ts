@@ -51,6 +51,10 @@ import { lockCreateActorSession } from './pane-create-actor-lock.js';
 import { stayCommitsOf } from './work-items.js';
 import { sameGuestName } from './guest-name-match.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
+import { boardsFor, norm } from './rate-options.js';
+import { partyMatchSearchTerms } from './party-match-v2.js';
+import { reservationEntityKey } from './reservation-workflow-v2-native-leads.js';
+import { formatBookerContact } from './reservation-workflow-v2-booker-contact.js';
 import type { ReservationWorkflowV2SystemReadContext } from './reservation-workflow-v2-system-read-context.js';
 
 type V2StateContext = ReservationWorkflowV2Context;
@@ -72,6 +76,8 @@ const text = (value: unknown): string | null => typeof value === 'string' && val
 const sameName = (left: unknown, right: unknown): boolean => typeof left === 'string' && typeof right === 'string' &&
   left.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() ===
   right.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
+const samePhone = (left: unknown, right: unknown): boolean => typeof left === 'string' && typeof right === 'string' &&
+  Boolean(left.replace(/\D/g, '')) && left.replace(/\D/g, '') === right.replace(/\D/g, '');
 const sha256 = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
   const date = new Date(`${value}T00:00:00.000Z`);
@@ -234,7 +240,7 @@ type CreateCompileIssueDetail = { path: string; code: string; expected?: number;
   allocationIds?: string[]; unresolvedAllocationIds?: string[] };
 type CreateCompile = { outcome: 'ok'; nativeInput: Record<string, unknown>; expectedGuest: { firstName: string; lastName: string };
   target: HmsDispatchTarget; reviewPaths: string[]; partySelectionPaths: Record<string, string>;
-  semanticDigest: string; preparedBinding: Record<string, unknown> | null } |
+  semanticDigest: string; requestedMealPlan: string | null; mealPlan: string | null; preparedBinding: Record<string, unknown> | null } |
   { outcome: 'needs_input' | 'needs_review' | 'unsupported'; issue: string; fields?: string[]; details?: CreateCompileIssueDetail[] };
 
 type CreateRequestBody = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'create' }>['body'];
@@ -434,6 +440,13 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
       }
     }
   }
+  const requestedMealPlan = readValue('requestedMealPlan');
+  const mealPlan = readValue('mealPlan');
+  for (const [field, value] of [['requestedMealPlan', requestedMealPlan], ['mealPlan', mealPlan]] as const) {
+    if (value != null && (typeof value !== 'string' || !value.trim() || value.length > 120 || /[\p{Cc}]/u.test(value))) {
+      issues.push(`${field}:invalid_value`);
+    }
+  }
   const roomTypeForCharge = readValue('roomTypeForCharge');
   if (roomTypeForCharge != null && (typeof roomTypeForCharge !== 'string' || !/^[A-Z0-9]{1,12}$/.test(roomTypeForCharge))) {
     issues.push('roomTypeForCharge:invalid_code');
@@ -485,7 +498,8 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     guestCandidate = candidateFromObservation(draft, 'guest_candidate', selectedGuestRef, `${firstName} ${lastName}`,
       undefined, requestId, allocationId, guestRefPath);
     if (guestCandidate && (!sameGuestName(guestCandidate.firstName, firstName) || !sameGuestName(guestCandidate.lastName, lastName) ||
-        (text(guest.email) && !sameName(guestCandidate.email, guest.email)) || !text(guestCandidate.nativeId))) guestCandidate = null;
+        (text(guest.email) && !sameName(guestCandidate.email, guest.email)) ||
+        (text(guest.mobile) && !samePhone(guestCandidate.phoneNumber, guest.mobile)) || !text(guestCandidate.nativeId))) guestCandidate = null;
   } else if (mode !== 'lookup') issues.push(`${guestPath}:existing_profile_selection_required`);
   if (!guestCandidate && mode !== 'lookup') issues.push(`${guestPath}:native_profile_unverified`);
   const selectedGuestRefValue = typeof selectedGuestRef === 'string' ? selectedGuestRef : null;
@@ -500,7 +514,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   const parties: Record<string, ResolvedParty> = {};
   const partyInputs: Record<string, Record<string, unknown> | null> = {};
   const partySelectionPaths: Record<string, string> = {};
-  for (const [field, role] of [['bookingAgency', 'agency'], ['organization', 'organization'], ['arAccount', 'ar_account']] as const) {
+  for (const [field, role] of [['bookingAgency', 'bookingAgency'], ['organization', 'organization'], ['arAccount', 'ar_account']] as const) {
     const resolved = valueAt(field);
     if ('issue' in resolved) { issues.push(`${field}:${resolved.issue}`); continue; }
     const raw = resolved.value;
@@ -524,13 +538,13 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     parties[field] = party.value;
   }
 
-  const optionalFields = ['sourceOfBusiness', 'reasonForStay', 'billingReference', 'track', 'guestOptIn', 'bookerName',
-    'bookerContact', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient'] as const;
+  const optionalFields = ['sourceOfBusiness', 'reasonForStay', 'billingReference', 'track', 'taCommission', 'guestOptIn', 'bookerName',
+    'bookerEmail', 'bookerMobile', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient'] as const;
   const optional = Object.fromEntries(optionalFields.map((field) => [field, readValue(field)]));
   if (mode !== 'lookup') {
     const nativeTextFields = [
       ['reasonForStay', optional.reasonForStay, 100], ['bookerName', optional.bookerName, 50],
-      ['bookerContact', optional.bookerContact, 80], ['cmsMessageId', optional.cmsMessageId, 100],
+      ['bookerEmail', optional.bookerEmail, 320], ['bookerMobile', optional.bookerMobile, 120], ['cmsMessageId', optional.cmsMessageId, 100],
       ['cmsRecipient', optional.cmsRecipient, 255],
     ] as const;
     for (const [field, value, max] of nativeTextFields) {
@@ -541,6 +555,12 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     }
     if (optional.cmsRecipient != null && (typeof optional.cmsRecipient !== 'string' ||
         !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(optional.cmsRecipient))) issues.push('cmsRecipient:invalid_email');
+    if (optional.bookerEmail != null && (typeof optional.bookerEmail !== 'string' ||
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(optional.bookerEmail))) issues.push('bookerEmail:invalid_email');
+    if ((optional.bookerEmail != null || optional.bookerMobile != null) &&
+        formatBookerContact(text(optional.bookerEmail), text(optional.bookerMobile)) === null) {
+      issues.push('bookerContact:native_text_limit');
+    }
     if (optional.reservationNote != null && (typeof optional.reservationNote !== 'string' || optional.reservationNote.length > 2_000 ||
         [...optional.reservationNote].some((char) => (char.charCodeAt(0) < 32 && char !== '\n') || char.charCodeAt(0) === 127))) {
       issues.push('reservationNote:native_note_limit');
@@ -554,6 +574,12 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   }
   if (mode !== 'lookup' && !text(optional.sourceOfBusiness)) issues.push('sourceOfBusiness:native_required');
   if (optional.guestOptIn === true) issues.push('guestOptIn:true_not_supported');
+  if (mode !== 'lookup' && optional.taCommission != null && (typeof optional.taCommission !== 'number' ||
+      !Number.isFinite(optional.taCommission) || optional.taCommission < 0 || optional.taCommission > 100)) {
+    issues.push('taCommission:percent_invalid');
+  }
+  if (mode !== 'lookup' && optional.taCommission != null && !parties.bookingAgency) issues.push('taCommission:booking_agency_required');
+  if (mode !== 'lookup' && optional.billingReference != null && !parties.arAccount) issues.push('billingReference:ar_account_required');
   const supportedGuarantee = new Set(['AVOUCH', 'CNFREC', 'DEPREQ', 'GRPDEF', 'GTDAGT', 'GTDCMP', 'GTDCC', 'GTDDEP', 'NGG', 'NGI']);
   if (typeof arrival !== 'string' || !isoDate.safeParse(arrival).success || typeof departure !== 'string' ||
       !isoDate.safeParse(departure).success || arrival >= departure) issues.push('stay:date_range_invalid');
@@ -589,11 +615,13 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     ...(Object.keys(nativeParties).length ? { parties: nativeParties } : {}),
     note: optional.reservationNote ?? '',
     ...(optional.billingReference != null ? { billingReference: optional.billingReference } : {}),
+    ...(optional.taCommission != null ? { taCommission: optional.taCommission } : {}),
     ...(optional.track != null ? { track: optional.track } : {}),
     ...(optional.guestOptIn === false ? { guestoptin4: false } : {}),
-    ...(optional.bookerName != null || optional.bookerContact != null ? { booker: {
+    ...(optional.bookerName != null || optional.bookerEmail != null || optional.bookerMobile != null ? { booker: {
       ...(optional.bookerName != null ? { name: optional.bookerName } : {}),
-      ...(optional.bookerContact != null ? { contact: optional.bookerContact } : {}),
+      ...(optional.bookerEmail != null || optional.bookerMobile != null
+        ? { contact: formatBookerContact(text(optional.bookerEmail), text(optional.bookerMobile)) } : {}),
     } } : {}),
     ...(optional.cmsSend !== undefined || optional.cmsMessageId != null || optional.cmsRecipient != null ? { cms: {
       ...(optional.cmsSend !== undefined ? { send: optional.cmsSend } : { send: false }),
@@ -611,7 +639,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   const targetParsed = hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'create',
     firstName: expectedGuest.firstName, lastName: expectedGuest.lastName, arrival });
   if (!targetParsed.success || targetParsed.data.kind !== 'create') return { outcome: 'needs_input', issue: 'invalid_create_target' };
-  const semanticDigest = sha256({ nativeInput, guestName });
+  const semanticDigest = sha256({ nativeInput, guestName, requestedMealPlan: requestedMealPlan ?? null, mealPlan: mealPlan ?? null });
   if (mode === 'execute') {
     const priceComparison = reservationWorkflowV2CreatePriceComparison(draft, requestId, allocationId, propertyCode);
     if (priceComparison.blocksGo) return { outcome: 'needs_input',
@@ -621,13 +649,34 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   // The exact binding is only available after HMS has staged and read back the fields.
   return { outcome: 'ok', nativeInput, expectedGuest, target: targetParsed.data,
     reviewPaths: [...reviewPaths], partySelectionPaths,
-    semanticDigest, preparedBinding: null };
+    semanticDigest, requestedMealPlan: typeof requestedMealPlan === 'string' ? requestedMealPlan : null,
+    mealPlan: typeof mealPlan === 'string' ? mealPlan : null, preparedBinding: null };
 }
 
 /** Reuse the same Create field compiler when a service preview needs its owning unsaved stay. */
 export function compileReservationWorkflowV2Create(draft: ReservationWorkflowV2Draft, requestId: string,
   allocationId: string, propertyCode: string): CreateCompile {
   return compileCreate(draft, requestId, allocationId, propertyCode, 'prepare');
+}
+
+export function reservationWorkflowV2MealPlanMatches(expected: string | null, observed: unknown, propertyCode: string): boolean {
+  if (expected === null) return true;
+  if (typeof observed !== 'string') return false;
+  const aliases = boardsFor(propertyCode);
+  const mealCode = (value: string) => {
+    const normalized = norm(value);
+    return aliases[normalized === 'dinner_bb' ? 'dinner_bed_breakfast' : normalized];
+  };
+  const expectedCode = mealCode(expected), observedCode = mealCode(observed);
+  return expectedCode !== undefined && expectedCode === observedCode;
+}
+
+/** A requested cue is compared to a current, actually observed native value. */
+export function reservationWorkflowV2CreateMealPlanMatches(requested: string | null, desiredActual: string | null,
+  observed: unknown, propertyCode: string): boolean {
+  return typeof observed === 'string' && Boolean(observed.trim()) && observed.length <= 120 && !/[\p{Cc}]/u.test(observed) &&
+    reservationWorkflowV2MealPlanMatches(requested, observed, propertyCode) &&
+    reservationWorkflowV2MealPlanMatches(desiredActual, observed, propertyCode);
 }
 
 function mapNativeOutcome(native: NativeCreate): Outcome {
@@ -646,7 +695,8 @@ function validPrice(value: unknown): { averageRate: string; totalRate: string; c
 
 function operationObservation(draft: ReservationWorkflowV2Draft, requestId: string, allocationId: string,
   input: unknown, native: NativeCreate, price: { averageRate: string; totalRate: string; currency: string } | null,
-  status: 'complete' | 'partial' | 'failed', prepareShot: unknown, semanticDigest: string): ReservationWorkflowV2Observation {
+  status: 'complete' | 'partial' | 'failed', prepareShot: unknown, semanticDigest: string,
+  requestedMealPlan: string | null, validationIssue?: string): ReservationWorkflowV2Observation {
   const binding = record(native.requestBinding);
   return {
     ref: randomUUID(), generationId: draft.generationId, kind: 'rate_availability', status, observedAt: new Date().toISOString(),
@@ -654,10 +704,10 @@ function operationObservation(draft: ReservationWorkflowV2Draft, requestId: stri
     criteria: { workflow: 'create', requestId, allocationId, draftRevision: draft.revision,
       inputDigest: sha256(input), semanticDigest,
       ...(typeof binding?.digest === 'string' ? { requestDigest: binding.digest } : {}) },
-    coverage: { complete: status === 'complete', notes: status === 'complete' ? [] : [native.issue ?? native.outcome ?? 'native_create_prepare_incomplete'] },
+    coverage: { complete: status === 'complete', notes: status === 'complete' ? [] : [validationIssue ?? native.issue ?? native.outcome ?? 'native_create_prepare_incomplete'] },
     result: { ...(binding ? { requestBinding: binding } : {}), ...(price ? { ratePlanAvailability: price } : {}),
       ...(prepareShot ? { prepareShot } : {}),
-      applied: native.applied ?? {}, unsupportedFields: native.unsupportedFields ?? [], missing: native.missing ?? [],
+      requestedMealPlan, applied: native.applied ?? {}, unsupportedFields: native.unsupportedFields ?? [], missing: native.missing ?? [],
       nativeOutcome: native.outcome ?? 'unknown', semanticInput: input },
   };
 }
@@ -737,7 +787,7 @@ function effectivePartyLookup(draft: ReservationWorkflowV2Draft, requestPath: st
   return { outcome: 'not_requested' };
 }
 
-function verifiedNativeFields(result: unknown): string[] {
+export function verifiedNativeFields(result: unknown): string[] {
   const correlation = record(record(result)?.correlation);
   const fields = correlation?.verifiedFields;
   return Array.isArray(fields) ? fields.filter((field: unknown): field is string => typeof field === 'string') : [];
@@ -756,7 +806,7 @@ function guestCandidateViews(candidates: unknown, verifiedFields: string[]) {
       ...(verified.has('country') && text(candidate.country) ? { country: text(candidate.country) } : {}) })) };
 }
 
-function partyCandidateViews(candidates: unknown, role: 'agency' | 'organization' | 'ar_account', verifiedFields: string[]) {
+export function partyCandidateViews(candidates: unknown, role: 'agency' | 'organization' | 'ar_account', verifiedFields: string[]) {
   const verified = new Set(verifiedFields);
   const rows = Array.isArray(candidates) ? candidates.map(record) : [];
   const valid = rows.every((candidate) => candidate && /^\d{1,30}$/.test(String(candidate.nativeId ?? '')) &&
@@ -912,7 +962,7 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
   let field = relative.at(-1) ?? '';
   const kinds: Record<string, string> = { roomType: 'room_type', roomTypeForCharge: 'room_type_for_charge',
     roomCodes: 'room_type', ratePlan: 'rate_plan', reasonForStay: 'reason_for_stay', guaranteeType: 'guarantee',
-    cmsMessageId: 'cms_message', sourceOfBusiness: 'source_of_business' };
+    cmsMessageId: 'cms_message', sourceOfBusiness: 'source_of_business', track: 'track' };
   const rows = (key: string) => Array.isArray(body?.[key]) ? body[key] as unknown[] : [];
   const validIndex = (key: string) => /^\d+$/.test(relative[1] ?? '') && record(rows(key)[Number(relative[1])]) !== null;
   let scopeValid = request.kind === 'quote'
@@ -929,18 +979,37 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
     const change = record(changes[changeIndex]);
     scopeValid = (relative.length === 3 && relative[0] === 'sharedChanges' ||
       relative.length === 5 && relative[0] === 'perTarget' && relative[2] === 'changes' && perTarget !== null) &&
-      relative.at(-1) === 'value' && change?.op === 'set' && ['roomType', 'ratePlan'].includes(String(change.field));
+      relative.at(-1) === 'value' && change?.op === 'set' &&
+      ['roomType', 'roomTypeForCharge', 'ratePlan', 'guaranteeType', 'cmsMessageId', 'track'].includes(String(change.field));
     field = scopeValid ? String(change?.field) : '';
   }
   const kind = kinds[field];
   if (!scopeValid || !kind) return { status: 'needs_input', issue: 'native_choice_field_not_supported' };
   const tool = await import(new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url).href) as {
-    withBookingLookupSession: (operation: (session: { runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
+    withBookingLookupSession: (operation: (session: { page: unknown; runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
       Promise<unknown>, options?: Record<string, unknown>) => Promise<unknown>;
   };
   let read: Record<string, unknown> | null;
-  try {
-    read = record(await tool.withBookingLookupSession(async ({ runTool }) => {
+  if (request.kind === 'amend' && field === 'track') {
+    const amend = await import('./reservation-workflow-v2-amend.js');
+    const scoped = await amend.readAmendTrackChoices(ctx, loaded.draft, request.id, path);
+    if (scoped.status !== 'ok') return scoped;
+    read = { candidates: scoped.candidates, complete: true, clean: true,
+      selectedTargets: scoped.selectedTargets, nativeCoverage: scoped.nativeCoverage };
+  } else try {
+    read = record(await tool.withBookingLookupSession(async ({ page, runTool }) => {
+      if (field === 'track') {
+        const tracks = await import(new URL('../../tooling/hms-cloud/guest-stay-track-catalog.mjs', import.meta.url).href) as {
+          listTrackSubSegments: (page: unknown, options: { propertyCode: string }) => Promise<Record<string, unknown>>;
+        };
+        const listed = await tracks.listTrackSubSegments(page, { propertyCode: ctx.property.propertyCode });
+        const candidates = (Array.isArray(listed.candidates) ? listed.candidates : []).flatMap(raw => {
+          const row = record(raw), code = text(row?.code), label = text(row?.description);
+          return code && label ? [{ code, label }] : [];
+        });
+        return { candidates, complete: record(listed.coverage)?.complete === true,
+          clean: listed.outcome === 'ok', issue: listed.issue, nativeCoverage: listed.coverage };
+      }
       if (['room_type', 'room_type_for_charge', 'rate_plan'].includes(kind)) {
         const catalogue = await readCreateCatalogue(runTool, kind === 'room_type' ? 'searchRoomTypes' :
           kind === 'room_type_for_charge' ? 'searchRoomTypesForCharge' : 'searchRatePlans', kind as CreateCatalogueKind);
@@ -998,7 +1067,8 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
     kind: 'rate_availability', status: 'complete', observedAt: new Date().toISOString(), propertyCode: loaded.draft.propertyCode,
     sourceMessageId: loaded.draft.source.messageId, sourceRefs: [],
     criteria: { workflow: `${request.kind}_catalogue`, kind: 'native_catalogue', catalogueKind: kind, requestId: request.id,
-      sourceHash: loaded.draft.source.sourceHash, fieldPaths: [path], nativeCriteria: read.nativeCriteria, nativeCoverage: read.nativeCoverage },
+      sourceHash: loaded.draft.source.sourceHash, fieldPaths: [path], nativeCriteria: read.nativeCriteria, nativeCoverage: read.nativeCoverage,
+      ...(Array.isArray(read.selectedTargets) ? { selectedTargets: read.selectedTargets } : {}) },
     coverage: { complete: read.complete === true, notes: read.complete === true ? [] : ['native_choice_coverage_incomplete'] },
     result: { candidates, closeOutcome: 'closed_unsaved' } };
   const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), { workItemId: input.workItemId,
@@ -1082,7 +1152,7 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
     }
   }
   const partySpecs = [
-    { key: 'agency', field: 'bookingAgency', role: 'agency', tool: 'searchPrimaryBookingAgency', idField: 'travelagencyid', nameField: 'travelagencyname' },
+    { key: 'bookingAgency', field: 'bookingAgency', role: 'agency', tool: 'searchPrimaryBookingAgency', idField: 'travelagencyid', nameField: 'travelagencyname' },
     { key: 'organization', field: 'organization', role: 'organization', tool: 'searchOrganization', idField: 'companyid', nameField: 'companyname' },
     { key: 'arAccount', field: 'arAccount', role: 'ar_account', tool: 'searchArAccount', idField: 'araccountid', nameField: 'araccountname' },
   ] as const;
@@ -1123,6 +1193,8 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
             ['allocations', allocationIndex, 'guest', 'lastName']);
           const email = effectiveLookupText(loaded.draft!, request.body, requestPath,
             ['allocations', allocationIndex, 'guest', 'email']);
+          const mobile = effectiveLookupText(loaded.draft!, request.body, requestPath,
+            ['allocations', allocationIndex, 'guest', 'mobile']);
           const guestSearch: Outcome = intent.outcome === 'value' && intent.value === 'requested_new'
             ? { status: 'unsupported', issue: 'requested_new_guest_profile_unsupported' }
             : intent.outcome !== 'value' || intent.value !== 'existing_or_unknown'
@@ -1152,29 +1224,39 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
             }
             const close = await runTool({ tool: 'closeGuestProfilePicker' });
             const verifiedFields = verifiedNativeFields(found);
-            const requiredFields = ['guestid', 'firstname', 'lastname', ...(email.outcome === 'value' ? ['emailaddress'] : [])];
+            const requiredFields = ['guestid', 'firstname', 'lastname', ...(email.outcome === 'value' ? ['emailaddress'] : []),
+              ...(mobile.outcome === 'value' ? ['phonenumber'] : [])];
             const projected = guestCandidateViews(candidates, verifiedFields);
+            const ranked = projected.rows.sort((a, b) => {
+              const score = (row: Record<string, unknown>) =>
+                (sameGuestName(row.firstName, first.value) ? 2 : 0) + (sameGuestName(row.lastName, last.value) ? 2 : 0) +
+                (email.outcome === 'value' && sameName(row.email, email.value) ? 3 : 0) +
+                (mobile.outcome === 'value' && samePhone(row.phoneNumber, mobile.value) ? 3 : 0);
+              return score(b) - score(a);
+            }).slice(0, 3);
             const criteria = record(found.criteria);
             const complete = Boolean(['matches', 'no_match'].includes(String(found.outcome)) && found.searchId &&
               criteria?.field === 'lastName' && criteria.query === last.value &&
               coverage?.possiblyTruncated === false && loadedCount !== null && candidates.length === loadedCount &&
               enumerationComplete && requiredFields.every((field) => verifiedFields.includes(field)) && projected.valid &&
-              close.outcome === 'closed_unsaved' && email.outcome !== 'unknown');
+              close.outcome === 'closed_unsaved' && email.outcome !== 'unknown' && mobile.outcome !== 'unknown');
             guestInfo = { outcome: complete ? found.outcome : 'partial', searchOutcome: found.outcome,
-              criteria, coverage, correlation: { verifiedFields }, candidates: projected.rows,
+              criteria, coverage, correlation: { verifiedFields }, candidates: ranked,
               query: { field: 'lastName', value: last.value, firstName: first.value,
-                ...(email.outcome === 'value' ? { email: email.value } : {}) }, closeOutcome: close.outcome };
+                ...(email.outcome === 'value' ? { email: email.value } : {}),
+                ...(mobile.outcome === 'value' ? { mobile: mobile.value } : {}) }, closeOutcome: close.outcome };
             if (found.searchId && ['matches', 'no_match'].includes(String(found.outcome))) {
               const suggestedPath = appendPtr(guestPath, 'suggestedRef');
               const selectionPath = appendPtr(guestPath, 'nativeSelectionRef');
-              const candidatesForObservation = projected.rows.length ? projected.rows : [null];
+              const candidatesForObservation = ranked.length ? ranked : [null];
               for (const [candidateIndex, candidate] of candidatesForObservation.entries()) {
                 nativeObservations.push({ ref: randomUUID(), generationId: loaded.draft!.generationId, kind: 'guest_candidate',
                   status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
                   propertyCode: loaded.draft!.propertyCode, sourceMessageId: loaded.draft!.source.messageId, sourceRefs: [],
                   criteria: { workflow: 'create', kind: 'guest_profile', requestId: request.id, allocationId,
                     fieldPaths: [suggestedPath, selectionPath], query: { field: 'lastName', value: last.value,
-                      firstName: first.value, ...(email.outcome === 'value' ? { email: email.value } : {}) },
+                      firstName: first.value, ...(email.outcome === 'value' ? { email: email.value } : {}),
+                      ...(mobile.outcome === 'value' ? { mobile: mobile.value } : {}) },
                     candidateIndex, coverage, correlation: { verifiedFields } },
                   coverage: { complete: Boolean(complete), notes: complete ? [] : ['native_guest_profile_lookup_incomplete'] },
                   result: { outcome: found.outcome, criteria: record(found.criteria), coverage,
@@ -1213,20 +1295,33 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
               if (allocationStatus === 'ok' || allocationStatus === 'matches' || allocationStatus === 'no_match') allocationStatus = 'partial';
               continue;
             }
-            const found = await runTool({ tool: spec.tool, query: party.name });
+            let nativeQuery = party.name;
+            let found = await runTool({ tool: spec.tool, query: nativeQuery });
+            const searchesTried = [{ query: nativeQuery, outcome: found.outcome }];
+            if (found.outcome === 'no_match') {
+              const fallbacks = partyMatchSearchTerms(party.name).filter(term => term !== party.name).slice(0, 2);
+              for (const term of fallbacks) {
+                nativeQuery = term;
+                found = await runTool({ tool: spec.tool, query: nativeQuery });
+                searchesTried.push({ query: nativeQuery, outcome: found.outcome });
+                if (found.outcome !== 'no_match') break;
+              }
+            }
             const closed = await runTool({ tool: 'closeGuestStayPartyPicker', propertyCode: ctx.property.propertyCode });
             const coverage = record(found.coverage), verifiedFields = verifiedNativeFields(found);
             const candidates = Array.isArray(found.candidates) ? found.candidates.map(record).filter(Boolean) : [];
             const projected = partyCandidateViews(candidates, spec.role, verifiedFields);
             const criteria = record(found.criteria);
             const complete = ['matches', 'no_match'].includes(String(found.outcome)) && typeof found.searchId === 'string' &&
-              criteria?.query === party.name && coverage?.possiblyTruncated === false &&
+              criteria?.query === nativeQuery && coverage?.possiblyTruncated === false &&
               typeof coverage.loaded === 'number' && Number.isInteger(coverage.loaded) && candidates.length === coverage.loaded &&
               verifiedFields.includes(spec.idField) && verifiedFields.includes(spec.nameField) && projected.valid &&
               closed.outcome === 'closed_unsaved';
+            projected.rows.sort((left, right) => Number(reservationEntityKey(String(right.name), spec.role) === reservationEntityKey(party.name, spec.role)) -
+              Number(reservationEntityKey(String(left.name), spec.role) === reservationEntityKey(party.name, spec.role)));
             const info = { outcome: complete ? found.outcome : 'partial', searchOutcome: found.outcome,
               query: party.name, searchId: typeof found.searchId === 'string' ? found.searchId : null,
-              criteria, coverage, correlation: { verifiedFields }, candidates: projected.rows,
+              criteria, coverage, correlation: { verifiedFields }, candidates: projected.rows, nativeQuery, searchesTried,
               closeOutcome: closed.outcome };
             partySearches[spec.key] = info;
             if (found.searchId && ['matches', 'no_match'].includes(String(found.outcome))) {
@@ -1236,7 +1331,8 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
                   kind: 'party_candidate', status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
                   propertyCode: loaded.draft!.propertyCode, sourceMessageId: loaded.draft!.source.messageId, sourceRefs: [],
                   criteria: { workflow: 'create', kind: 'party_name', requestId: request.id, allocationId,
-                    role: spec.role, fieldPaths: [party.selectionPath], query: party.name, candidateIndex, coverage,
+                    role: spec.role === 'agency' ? 'bookingAgency' : spec.role, fieldPaths: [party.selectionPath], query: party.name, nativeQuery, searchesTried,
+                    candidateIndex, coverage,
                     correlation: { verifiedFields } },
                   coverage: { complete: Boolean(complete), notes: complete ? [] : ['native_party_lookup_incomplete'] },
                   result: { outcome: found.outcome, criteria: record(found.criteria), coverage,
@@ -1381,13 +1477,23 @@ export async function reservationWorkflowV2Prepare(ctx: ReadContext,
         session.withBookingLookupSession(callback, { ...options, signal: ctx.nativeBatch!.signal }) } : {}) });
     ctx.nativeBatch?.signal.throwIfAborted();
     const mapped = mapNativeOutcome(native), price = validPrice(native.ratePlanAvailability);
+    const nativeMeal = native.applied?.mealPlan;
+    const bindingRoom = record(record(native.requestBinding?.request)?.room);
+    const mealPlanMatches = mapped.status !== 'prepared' || (nativeMeal === bindingRoom?.mealPlan &&
+      reservationWorkflowV2CreateMealPlanMatches(compiled.requestedMealPlan, compiled.mealPlan, nativeMeal, ctx.property.propertyCode));
     const prepareShot = await persistPreparedScreenshot(ctx, input.workItemId, native.screenshots?.filled);
-    const status = mapped.status === 'prepared' && price && prepareShot ? 'complete' : native.outcome === 'needs_input' ? 'partial' : 'failed';
+    const status = mapped.status === 'prepared' && price && prepareShot && mealPlanMatches ? 'complete'
+      : native.outcome === 'needs_input' || !mealPlanMatches ? 'partial' : 'failed';
     const observation = operationObservation(loaded.draft, input.requestId, input.allocationId, compiled.nativeInput,
-      native, price, status, prepareShot, compiled.semanticDigest);
+      native, price, status, prepareShot, compiled.semanticDigest, compiled.requestedMealPlan,
+      !mealPlanMatches ? 'native_meal_plan_mismatch_or_unknown' : undefined);
     const recorded = await recordNativeObservation(ctx, input, observation,
-      status === 'complete' ? 'prepared' : 'failed', status === 'complete' ? 'HMS unsaved form and current rate availability verified' : mapped.issue ?? 'native prepare incomplete');
+      status === 'complete' ? 'prepared' : 'failed', status === 'complete' ? 'HMS unsaved form and current rate availability verified' :
+        !mealPlanMatches ? 'Requested meal plan differs from the current native rate' : mapped.issue ?? 'native prepare incomplete');
     if (recorded.status !== 'ok') return recorded;
+    if (!mealPlanMatches) return { status: 'needs_input', issue: 'native_meal_plan_mismatch_or_unknown',
+      fields: [compiled.requestedMealPlan !== null ? 'requestedMealPlan' : compiled.mealPlan !== null ? 'mealPlan' : 'ratePlan'],
+      observationRef: observation.ref, applied: native.applied ?? {} };
     if (mapped.status !== 'prepared' || !price || !prepareShot) return { status: mapped.status === 'prepared' ? 'failed' : mapped.status,
       issue: prepareShot ? mapped.issue : 'prepare_screenshot_not_persisted', observationRef: observation.ref,
       ratePlanIssue: native.ratePlanIssue };
@@ -1822,7 +1928,8 @@ function stayExpected(compiled: Extract<CreateCompile, { outcome: 'ok' }>, bindi
     stay.arrival === expectedStay.arrival && stay.departure === expectedStay.departure && stay.adults === expectedStay.adults &&
     canonicalJson(stay.childAges) === canonicalJson(expectedStay.childAges) &&
     room.roomType === expectedRoom.roomType && room.ratePlan === expectedRoom.ratePlan &&
-    room.roomTypeForCharge === expectedRoom.roomTypeForCharge;
+    room.roomTypeForCharge === expectedRoom.roomTypeForCharge &&
+    reservationWorkflowV2CreateMealPlanMatches(compiled.requestedMealPlan, compiled.mealPlan, room.mealPlan, String(nativeInput.propertyCode));
 }
 
 function nativeObservation(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2ExecuteInput,
@@ -1948,7 +2055,8 @@ async function authorizeCurrentCreate(tx: Parameters<Parameters<DB['transaction'
     (result.status === 'succeeded' || result.status === 'unknown'));
   if (!thread || !access || !source || source.sourceProvenance?.attention != null || current !== input.source.sourceHash ||
       compiled.outcome !== 'ok' || !admission?.allowed || competingOperation ||
-      compiled.semanticDigest !== semanticDigest || !prepared || prepared.digest !== expectedDigest || operation ||
+      compiled.semanticDigest !== semanticDigest || !prepared || prepared.digest !== expectedDigest ||
+      !nativeInputMatchesBinding(compiled, prepared.request) || operation ||
       draft.observations.some((entry) => entry.ref === attempt.ref)) {
     throw new Error('reservation_workflow_v2_create_source_changed');
   }
@@ -1996,6 +2104,7 @@ function nativeInputMatchesBinding(compiled: Extract<CreateCompile, { outcome: '
       ((input.sourceOfBusiness === undefined && bound.sourceOfBusiness != null) ||
        (input.reasonForStay === undefined && bound.reasonForStay != null) ||
        (input.billingReference === undefined && bound.billingReference != null) ||
+       (input.taCommission === undefined && bound.nativeCommissionPercent != null) ||
        (input.track === undefined && bound.track != null) ||
        (input.guestoptin4 === undefined && bound.guestOptIn != null) ||
        (input.cms === undefined && (bound.cmsMessageId != null || bound.cmsRecipient != null)))) return false;
@@ -2016,6 +2125,7 @@ function nativeInputMatchesBinding(compiled: Extract<CreateCompile, { outcome: '
       sameName(record(bound.reasonForStay)?.display, input.reasonForStay)) &&
     (input.note === undefined || bound.note === input.note) &&
     (input.billingReference === undefined || bound.billingReference === input.billingReference) &&
+    (input.taCommission === undefined ? bound.nativeCommissionPercent == null : bound.nativeCommissionPercent === input.taCommission) &&
     (input.track === undefined || input.track === record(bound.track)?.lookupCode || input.track === record(bound.track)?.display) &&
     (input.guestoptin4 !== false || bound.guestOptIn === false) &&
     (options.ignoreBookerContact
@@ -2306,7 +2416,8 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
       const livePrepared = live.outcome === 'ok' && preparedFor(current.draft, input.requestId,
         input.allocationId!, live.semanticDigest);
       return live.outcome === 'ok' && liveAdmission?.allowed === true && live.semanticDigest === compiled.semanticDigest &&
-        Boolean(livePrepared && livePrepared.digest === prepared.digest && priceMatches(livePrepared.price, prepared.price));
+        Boolean(livePrepared && livePrepared.digest === prepared.digest && priceMatches(livePrepared.price, prepared.price) &&
+          nativeInputMatchesBinding(live, livePrepared.request));
     },
     dispatchCandidate: async (request: unknown, next: NativeContinuation, evidence: unknown) => {
       const requestDigest = nativeCreateSaveDigest(request);
@@ -2397,13 +2508,18 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
   const confirmation = typeof native.confirmation === 'string' ? native.confirmation : '';
   const fields = native.readback?.fields;
   const savedPrice = nativeReadbackPrice(fields);
+  const mealFields = Array.isArray(fields) ? fields.filter(field => record(field)?.name === 'mealplan') : [];
+  const savedMeal = mealFields.length === 1 ? record(mealFields[0])?.value : null;
+  const preparedMeal = record(record(prepared.request)?.room)?.mealPlan;
+  const mealReadbackMatched = typeof preparedMeal === 'string' && savedMeal === preparedMeal &&
+    reservationWorkflowV2CreateMealPlanMatches(compiled.requestedMealPlan, compiled.mealPlan, savedMeal, ctx.property.propertyCode);
   const partiesRequested = Object.keys(record(nativeInput.parties) ?? {}).length > 0;
   const billingRequested = typeof nativeInput.billingReference === 'string';
   const success = native.outcome === 'saved' && native.writerSessionClosed === true &&
     native.save?.dispatchCallbacksDrained === true && /^\d{6,10}-\d{1,2}$/.test(confirmation) &&
     Array.isArray(fields) && Array.isArray(native.readback?.mismatches) && native.readback.mismatches.length === 0 &&
     (!partiesRequested || record(native.readback?.partyProof)?.outcome === 'verified') &&
-    (!billingRequested || native.save?.billingReferenceStaged === true) && priceMatches(savedPrice, prepared.price);
+    (!billingRequested || native.save?.billingReferenceStaged === true) && mealReadbackMatched && priceMatches(savedPrice, prepared.price);
   if (!success) {
     const uncertain = nativeObservation(loaded.draft, input, native, 'partial', {
       dispatchHoldId: activeDispatch.holdId, confirmation: confirmation || null, nativeOutcome: native.outcome ?? 'unknown',

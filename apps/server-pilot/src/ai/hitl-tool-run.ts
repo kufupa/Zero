@@ -537,25 +537,20 @@ export function toolInputDigest(value: Record<string, unknown>): string {
   return createHash('sha256').update(canonical).digest('hex');
 }
 
-/** The party the staff picked for the quote. Carried in the quote input once the party picker adds it. */
-type QuotePartyInput = { party?: { kind: string; nativeId: string; name: string } };
-
 /**
- * The approved quote input as the ledger keeps it. Business names (company, agency, party) stay: the party picker is
+ * The approved quote input as the ledger keeps it. Business names and selected parties stay: the party picker is
  * evaluated against them. Contact details, the attention line, notes and free-text labels stay out.
  */
-export function ledgerQuoteInput(input: StaffQuoteInput & QuotePartyInput): Record<string, unknown> {
+export function ledgerQuoteInput(input: StaffQuoteInput): Record<string, unknown> {
   return {
     messageId: input.messageId,
     sourceHash: input.sourceHash,
     selectionEpoch: input.selectionEpoch,
     inputRevision: input.inputRevision,
     salesStrategy: input.salesStrategy,
-    company: input.company,
-    agency: input.agency,
-    party: input.party
-      ? { kind: input.party.kind, nativeId: input.party.nativeId, name: input.party.name }
-      : undefined,
+    organization: input.organization,
+    bookingAgency: input.bookingAgency,
+    parties: input.parties,
     groups: input.groups,
     dinnerAllowanceMinor: input.dinnerAllowanceMinor,
     dinnerAllowanceUnit: input.dinnerAllowanceUnit,

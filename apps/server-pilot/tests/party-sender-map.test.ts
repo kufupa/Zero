@@ -41,7 +41,7 @@ describe('learned sender history', () => {
     replaceLearnedSenderMapForTests([
       {
         host: 'agency.example.test',
-        kind: 'agency',
+        kind: 'bookingAgency',
         name: 'Harbor Travel',
         nativeId: 'AG-7',
         iata: 'CPT',
@@ -50,7 +50,7 @@ describe('learned sender history', () => {
     ]);
 
     expect(lookupLearnedSenderHistory('agency.example.test')).toEqual({
-      kind: 'agency',
+      kind: 'bookingAgency',
       name: 'Harbor Travel',
       nativeId: 'AG-7',
       iata: 'CPT',
@@ -69,7 +69,7 @@ describe('learned sender history', () => {
     replaceLearnedSenderMapForTests([
       {
         host: 'agency.example.test',
-        kind: 'agency',
+        kind: 'bookingAgency',
         name: 'Harbor Travel',
         nativeId: 'AG-7',
         iata: 'CPT',
@@ -78,7 +78,7 @@ describe('learned sender history', () => {
     ]);
     expect(partyHistoryBindEnabled()).toBe(false);
     expect(lookupLearnedSenderHistory('agency.example.test')).toMatchObject({
-      kind: 'agency',
+      kind: 'bookingAgency',
       name: 'Harbor Travel',
       nativeId: 'AG-7',
     });
@@ -91,7 +91,7 @@ describe('learned sender history', () => {
     replaceLearnedSenderMapForTests([
       {
         host: storedHost,
-        kind: 'agency',
+        kind: 'bookingAgency',
         name: 'Internal Party',
         nativeId: 'AG-99',
         iata: null,
@@ -108,7 +108,7 @@ describe('learned sender history', () => {
       {
         propertyCode: 'HRCEN',
         host: 'agency.example.test',
-        kind: 'agency',
+        kind: 'bookingAgency',
         name: 'Centurion Agency',
         nativeId: 'AG-CEN',
         iata: 'CPT',
@@ -117,7 +117,7 @@ describe('learned sender history', () => {
       {
         propertyCode: 'HRDAV',
         host: 'agency.example.test',
-        kind: 'agency',
+        kind: 'bookingAgency',
         name: 'Da Vinci Agency',
         nativeId: 'AG-DAV',
         iata: 'JNB',
@@ -144,7 +144,7 @@ describe('learned sender history', () => {
       {
         propertyCode: 'HRCEN',
         host: 'agency.example.test',
-        kind: 'agency',
+        kind: 'bookingAgency',
         name: 'Centurion Agency',
         nativeId: 'AG-CEN',
         support: 3,
@@ -152,7 +152,7 @@ describe('learned sender history', () => {
       {
         propertyCode: 'HRDAV',
         host: 'agency.example.test',
-        kind: 'agency',
+        kind: 'bookingAgency',
         name: 'Da Vinci Agency',
         nativeId: 'AG-DAV',
         support: 2,
@@ -170,17 +170,17 @@ describe('learned sender history', () => {
         recordSenderParty(db, {
           propertyCode: 'HRCEN',
           host,
-          kind: 'agency',
+          kind: 'bookingAgency',
           name: 'Harbor Travel',
           nativeId: 'AG-7',
           iata: 'CPT',
         }),
-      ).resolves.toMatchObject({ kind: 'agency', nativeId: 'AG-7', support: 1 });
+      ).resolves.toMatchObject({ kind: 'bookingAgency', nativeId: 'AG-7', support: 1 });
       await expect(
         recordSenderParty(db, {
           propertyCode: 'HRCEN',
           host,
-          kind: 'agency',
+          kind: 'bookingAgency',
           name: 'Harbor Travel Group',
           nativeId: 'AG-7',
           iata: 'CPT',
@@ -190,17 +190,17 @@ describe('learned sender history', () => {
         recordSenderParty(db, {
           propertyCode: 'HRCEN',
           host,
-          kind: 'company',
+          kind: 'organization',
           name: 'Northstar Group',
           nativeId: 'CO-2',
           iata: null,
         }),
-      ).resolves.toMatchObject({ kind: 'company', nativeId: 'CO-2', support: 1 });
+      ).resolves.toMatchObject({ kind: 'organization', nativeId: 'CO-2', support: 1 });
       await expect(
         recordSenderParty(db, {
           propertyCode: 'HRCEN',
           host: 'sub.gmail.com',
-          kind: 'agency',
+          kind: 'bookingAgency',
           name: 'Ignored Freemail',
           nativeId: 'AG-8',
           iata: null,
@@ -210,7 +210,7 @@ describe('learned sender history', () => {
         recordSenderParty(db, {
           propertyCode: 'HRCEN',
           host: 'centurion.legacyhotels.co.za',
-          kind: 'company',
+          kind: 'organization',
           name: 'Ignored Internal',
           nativeId: 'CO-3',
           iata: null,
@@ -237,7 +237,7 @@ describe('learned sender history', () => {
         recordSenderParty(db, {
           propertyCode: 'HRCEN',
           host,
-          kind: 'agency',
+          kind: 'bookingAgency',
           name: 'Centurion Agency',
           nativeId: 'AG-CEN',
           iata: null,
@@ -247,7 +247,7 @@ describe('learned sender history', () => {
         recordSenderParty(db, {
           propertyCode: 'HRDAV',
           host,
-          kind: 'agency',
+          kind: 'bookingAgency',
           name: 'Da Vinci Agency',
           nativeId: 'AG-DAV',
           iata: null,

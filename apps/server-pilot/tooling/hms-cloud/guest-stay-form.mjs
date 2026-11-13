@@ -4,6 +4,7 @@ import { installPageRequestFence } from './page-request-fence.mjs';
 import { isVerifiedArSelectionCurrent, verifiedArSelectionToken } from './lookup.mjs';
 import { currentVerifiedLabtestProfileToken, isVerifiedLabtestProfile, isVerifiedLabtestProfileCurrent, verifiedLabtestProfileToken } from './guest-profile.mjs';
 import { isLabtestGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
+import { parseResponse as parsePickerResponse } from './guest-stay-room-rate.mjs';
 
 const CLOUD_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const TEXT_FIELDS = {
@@ -106,6 +107,9 @@ function allowedPost(request, origin, propertyCode, kind, expectedAges) {
     return Object.entries({ GRID_NAME: 'LVUDFCD', GRID_TYPE: 'LOV', LOV_TAGNAME: 'udfchar09',
       USER_FUNCTION_NAME: 'OSRESV', REQUEST_TYPE: 'LOV.HEAD_DATA.STORED' })
       .every(([key, value]) => body.getAll(key).length === 1 && body.get(key) === value);
+  }
+  if (kind === 'cms' && url.pathname === '/web/base/GETCACHE') {
+    return body.getAll('GRID_NAME').length === 1 && body.get('GRID_NAME') === 'LVUDFCD';
   }
   if (kind !== 'ages' || !['/web/base/OSRESV.HDR.getChildAges', '/web/base/OSRESV.HDR.validateChildAgeDetails'].includes(url.pathname)) return false;
   try {
@@ -472,9 +476,18 @@ export async function listGuestStayDropdown(page, { propertyCode, field } = {}) 
     await check(); mark();
     await openCombo(page, input);
     const options = await comboOptions(input);
+    const info = await input.evaluate(el => {
+      const store = Ext.getCmp(el.id.replace(/-inputEl$/, ''))?.getStore?.();
+      const proxy = store?.getProxy?.();
+      const total = store?.getTotalCount?.();
+      return { total: Number.isInteger(total) && total >= 0 ? total : null,
+        local: proxy?.type === 'memory' || proxy?.getType?.() === 'memory', loading: Boolean(store?.isLoading?.()) };
+    });
     await page.keyboard.press('Escape');
     await check();
-    return { outcome: 'ok', field, options, coverage: { loaded: options.length, total: null, complete: null } };
+    const complete = !info.loading && info.local && info.total === options.length ? true : null;
+    return { outcome: 'ok', field, options, criteria: { propertyCode, scope: 'unfiltered' },
+      coverage: { loaded: options.length, total: info.total, complete, possiblyTruncated: complete !== true } };
   });
 }
 
@@ -676,9 +689,42 @@ async function cmsGrid(win) {
   });
 }
 
+function cmsResponse(text) {
+  const data = parsePickerResponse(text);
+  const grid = data.grid?.GRIDRESULT?.GRID;
+  if (!Array.isArray(grid?.DATA) || grid.METADATA?.GRIDNAME !== 'LVUDFCD' ||
+      grid.DATA.some(row => !Object.hasOwn(row, 'userdefinedfieldvalue') || !Object.hasOwn(row, 'description'))) {
+    throw new Error('CMS_RESPONSE_INVALID');
+  }
+  return grid;
+}
+
+function cmsCoverage(metadata, loaded) {
+  const marker = String(metadata?.MORERECORDPRESENT ?? '').trim();
+  const serverMoreRecords = marker === '+' ? true : marker === '-' ? false : null;
+  const reportedTotal = metadata?.RECORDS ?? null;
+  const count = /^\d+$/.test(String(reportedTotal)) ? Number(reportedTotal) : null;
+  const pageSize = /^\d+$/.test(String(metadata?.CLIENTROWS)) ? Number(metadata.CLIENTROWS) : null;
+  const total = count != null && count >= loaded && !(serverMoreRecords && count === loaded) ? count : null;
+  const complete = count != null && count < loaded ? null : serverMoreRecords === false &&
+    ((total != null && total === loaded) || (pageSize != null && loaded < pageSize)) ? true :
+      serverMoreRecords === true || (total != null && total > loaded) ? false : null;
+  return { loaded, total, reportedTotal, pageSize, serverMoreRecords, complete, possiblyTruncated: complete !== true };
+}
+
+async function waitForCmsRows(page, windowId, expected) {
+  const handle = await page.waitForFunction(({ id, expected }) => {
+    const records = Ext.getCmp(id)?.query('grid,readonlygrid')?.[0]?.getStore?.()?.getRange?.().map(({ data }) => data);
+    const key = row => JSON.stringify(['userdefinedfieldvalue', 'description'].map(name => String(row[name] ?? '').trim()));
+    return records && JSON.stringify(records.map(key).sort()) === JSON.stringify(expected.map(key).sort());
+  }, { id: windowId, expected }, { timeout: 10000 });
+  await handle.dispose();
+}
+
 export async function listCmsMessageIds(page, { propertyCode } = {}) {
   return run(page, propertyCode, { allowed: 'cms', post: 'cms' }, async ({ check, mark }) => {
     cmsSearches.delete(page);
+    let native = null, unfilteredRequest = false;
     let win = page.locator('.x-window:visible:not(.x-menu)').filter({ hasText: 'CMS Message Id' });
     if (!await win.count()) {
       const input = await uniqueInput(page, 'udfchar09');
@@ -689,19 +735,63 @@ export async function listCmsMessageIds(page, { propertyCode } = {}) {
       mark();
       const [reply] = await Promise.all([response, trigger.click({ timeout: 5000 })]);
       if (!reply.ok()) throw new Error('CMS_LOOKUP_FAILED');
+      const params = new URLSearchParams(reply.request().postData() || '');
+      unfilteredRequest = ![...params].some(([key, value]) => key.startsWith('MADDON_FILTER_') && value.trim());
+      try { native = cmsResponse(await bounded(reply.text(), 10000, 'CMS_RESPONSE_TIMEOUT')); } catch { /* Coverage remains unknown. */ }
       win = page.locator('.x-window:visible:not(.x-menu)').filter({ hasText: 'CMS Message Id' });
       await win.waitFor({ timeout: 10000 });
     }
     await check();
     if (await win.count() !== 1) throw new Error('CMS_LOOKUP_NOT_UNIQUE');
+    const windowId = await win.getAttribute('id');
+    if (!windowId) throw new Error('CMS_LOOKUP_NOT_UNIQUE');
+    const firstMetadata = native?.METADATA;
+    const nativeRows = native?.DATA;
+    if (nativeRows) {
+      await waitForCmsRows(page, windowId, nativeRows);
+      for (let pageNumber = 1; pageNumber < 200 && cmsCoverage(native.METADATA, nativeRows.length).serverMoreRecords === true; pageNumber += 1) {
+        const pending = page.waitForResponse(response => {
+          const request = response.request(), params = new URLSearchParams(request.postData() || '');
+          const target = new URL(request.url());
+          return request.method() === 'POST' && target.origin === CLOUD_ORIGIN && target.pathname === '/web/base/GETCACHE' &&
+            params.get('GRID_NAME') === 'LVUDFCD';
+        }, { timeout: 8000 }).catch(() => null);
+        await win.locator('.x-grid-view:visible').last().evaluate(element => { element.scrollTop = element.scrollHeight; });
+        const reply = await pending;
+        if (!reply) break;
+        if (!reply.ok()) throw new Error('CMS_PAGE_UNVERIFIED');
+        const next = cmsResponse(await bounded(reply.text(), 10000, 'CMS_RESPONSE_TIMEOUT'));
+        if (!next.DATA.length || ['GRIDID', 'GRIDNAME', 'DATASPYID'].some(key =>
+          String(next.METADATA[key] ?? '') !== String(firstMetadata[key] ?? ''))) throw new Error('CMS_PAGE_UNVERIFIED');
+        nativeRows.push(...next.DATA);
+        native = next;
+        await waitForCmsRows(page, windowId, nativeRows);
+        await check();
+      }
+    }
     const records = await cmsGrid(win);
+    const info = await win.evaluate(el => {
+      const footer = el.innerText.match(/Records:\s*(\d+)\s+of\s+(\d+)/i);
+      const controls = [...el.querySelectorAll('input')].filter(input =>
+        input.name === 'selfiltervaluectrl' || input.name.startsWith('ff_'));
+      return { footer: footer ? { loaded: Number(footer[1]), total: Number(footer[2]) } : null,
+        filtersClear: controls.length > 0 && controls.every(input => !input.value.trim()),
+        filterValuesClear: controls.every(input => !input.value.trim()) };
+    });
     const rows = win.locator('.x-grid-view .x-grid-row:visible, .x-grid-view .x-grid-data-row:visible');
-    if (!records.length || await rows.count() !== records.length) throw new Error('CMS_GRID_INCOMPLETE');
+    if (!records.length || (!nativeRows && await rows.count() !== records.length)) throw new Error('CMS_GRID_INCOMPLETE');
     const searchId = randomUUID();
-    cmsSearches.set(page, { propertyCode, searchId, windowId: await win.getAttribute('id'), records: JSON.stringify(records) });
-    return { outcome: 'ok', searchId, candidates: records.map((record) => ({
+    cmsSearches.set(page, { propertyCode, searchId, windowId, records: JSON.stringify(records) });
+    const unfiltered = unfilteredRequest && info.filterValuesClear;
+    const coverage = nativeRows ? cmsCoverage(native.METADATA, records.length) : {
+      loaded: records.length, total: info.footer?.total ?? null,
+      complete: info.filtersClear && info.footer?.loaded === records.length && info.footer.total === records.length ? true
+        : info.footer && info.footer.total > records.length ? false : null,
+      possiblyTruncated: !(info.filtersClear && info.footer?.loaded === records.length && info.footer.total === records.length),
+    };
+    return { outcome: 'ok', searchId, criteria: { propertyCode, scope: unfiltered || info.filtersClear ? 'unfiltered' : 'filtered_or_unknown' }, candidates: records.map((record) => ({
       code: record.userdefinedfieldvalue ?? null, description: record.description ?? null, nativeData: record,
-    })), coverage: { loaded: records.length, total: null, complete: null } };
+    })), coverage };
   });
 }
 

@@ -92,8 +92,8 @@ const EMPTY_OUTPUT = {
   actionEvidence: '',
   actionConfidence: 'high',
   contact: { name: null, email: null, phone: null },
-  agency: null,
-  endClient: null,
+  bookingAgency: null,
+  organization: null,
   confirmationNumbers: [],
   stays: [],
   missing: [],
@@ -101,8 +101,8 @@ const EMPTY_OUTPUT = {
 
 /** A stay total with no split: the rows keep their room types and leave rooms null. */
 const ROWS_UNSPLIT = [
-  { roomType: 'Single', rooms: null, adultsPerRoom: 1, childAges: [], board: null },
-  { roomType: 'Double/Twin', rooms: null, adultsPerRoom: 2, childAges: [], board: null },
+  { roomType: 'Single', rooms: null, adultsPerRoom: 1, childAges: [], mealPlan: null },
+  { roomType: 'Double/Twin', rooms: null, adultsPerRoom: 2, childAges: [], mealPlan: null },
 ];
 
 /** The correct read: the sender's organisation is the agency, the client in the subject is the end client. */
@@ -110,8 +110,8 @@ export const AE1_OUTPUT = {
   ...EMPTY_OUTPUT,
   sourceLanguage: 'en',
   kind: 'quote',
-  agency: 'Horizon Trail Tours',
-  endClient: 'Summit Africa',
+  bookingAgency: 'Horizon Trail Tours',
+  organization: 'Summit Africa',
   contact: {
     name: 'Priya Naidoo',
     email: 'priya@horizontrailtours.example',
@@ -197,7 +197,7 @@ export const CHANNEL_BOOKING_OUTPUT = {
       requested: { arrival: '2026-11-20', departure: '2026-11-22' },
       booked: null,
       totalRooms: 1,
-      rows: [{ roomType: 'Double', rooms: 1, adultsPerRoom: 2, childAges: [], board: null }],
+      rows: [{ roomType: 'Double', rooms: 1, adultsPerRoom: 2, childAges: [], mealPlan: null }],
     },
   ],
 };

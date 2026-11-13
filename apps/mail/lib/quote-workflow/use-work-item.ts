@@ -245,10 +245,10 @@ function fieldPathInSection(path: string, section: WorkItemSection): boolean {
 }
 
 /** The pane's board as the extraction names it. Unknown is no board stated. */
-function extractionBoard(board: QuoteBoard): string | null {
-  if (board === 'dinner_bb') return 'dbb';
-  if (board === 'unknown') return null;
-  return board;
+function extractionBoard(mealPlan: QuoteBoard): string | null {
+  if (mealPlan === 'dinner_bb') return 'dbb';
+  if (mealPlan === 'unknown') return null;
+  return mealPlan;
 }
 
 /** Ids the server takes in a field path. The pane's own date-made stay ids ("d:…") are not stable ids. */
@@ -281,7 +281,7 @@ function rowFieldsAt(row: string, group: StayGroupRequirement): FieldEvent[] {
     { path: `${row}.adults`, value: group.adults ?? null },
     { path: `${row}.roomType`, value: group.roomPreference || null },
     { path: `${row}.childAges`, value: group.childrenAges },
-    { path: `${row}.board`, value: extractionBoard(group.board) },
+    { path: `${row}.mealPlan`, value: extractionBoard(group.mealPlan) },
   ];
 }
 
@@ -293,7 +293,7 @@ export function stayRowId(stayId: string): string {
   return `${stayId}_row`;
 }
 
-const CONTACT_PATHS = ['name', 'company', 'endClient', 'email', 'phone'].map((field) => `contact.${field}`);
+const CONTACT_PATHS = ['name', 'bookingAgency', 'organization', 'email', 'phone'].map((field) => `contact.${field}`);
 
 /**
  * The extraction field paths the pane shows for these groups and the contact block. A group with no stored ref (a row

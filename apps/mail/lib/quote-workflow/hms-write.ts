@@ -370,7 +370,7 @@ const LEAF_LABELS: Record<string, string> = {
   roomType: 'Room type',
   ratePlan: 'Rate plan',
   retainRates: 'Retain current rates',
-  board: 'Board',
+  mealPlan: 'Board',
   removed: 'Removed',
   confirmation: 'Booking',
   firstName: 'Guest first name',
@@ -413,7 +413,7 @@ function valueText(key: string, value: unknown): string {
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   if (Array.isArray(value)) return value.length > 0 ? value.map(scalarText).join(', ') : NONE;
   const text = scalarText(value);
-  if (leafName(key) === 'board') return BOARD_LABELS[text] ?? text;
+  if (leafName(key) === 'mealPlan') return BOARD_LABELS[text] ?? text;
   if (leafName(key) === 'retainRates' && (text === 'yes' || text === 'no')) return text === 'yes' ? 'Yes' : 'No';
   return ISO_DAY.test(text) ? formatStayDate(text) : text;
 }
@@ -486,10 +486,10 @@ export function cloudAmendApprovalHasPrices(form: Record<string, unknown>): bool
 /** The saved-record form also carries these unchanged values; show them before Go. */
 function preservedAmendRows(form: Record<string, unknown>): WriteRow[] {
   const value = record(record(form.cloudAmend)?.preserved);
-  if (!value || !(value.agency === null || typeof value.agency === 'string') ||
+  if (!value || !(value.bookingAgency === null || typeof value.bookingAgency === 'string') ||
       !(value.organization === null || typeof value.organization === 'string')) return [];
   return [
-    ['agency', 'Travel agency', value.agency || NONE],
+    ['bookingAgency', 'Travel agency', value.bookingAgency || NONE],
     ['organization', 'Company', value.organization || NONE],
   ].map(([key, label, text]) => ({ key: `cloudAmend.preserved.${key}`, label, before: text, after: text, displayOnly: true }));
 }

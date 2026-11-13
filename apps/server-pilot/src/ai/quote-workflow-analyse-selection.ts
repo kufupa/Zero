@@ -271,7 +271,7 @@ function fallbackLunaCarrier(treatAs: QuoteTreatAs, analysis: QuoteWorkflowAnaly
       rooms: group.quantity ?? null,
       adultsPerRoom: group.adults ?? null,
       childAges: group.fields.childAges === 'missing' ? null : [...group.childrenAges],
-      board: group.board === 'unknown' ? null : group.board === 'dinner_bb' ? 'dbb' : group.board,
+      mealPlan: group.mealPlan === 'unknown' ? null : group.mealPlan === 'dinner_bb' ? 'dbb' : group.mealPlan,
       roomPreference: null,
       guestNames: [],
     })),
@@ -503,9 +503,9 @@ export async function hmsTodoCardFromLuna(
             guestName: group.guestNames?.[index] ?? null,
           })),
         ),
-        boardText: groups[0]?.board ?? null,
+        mealPlanText: groups[0]?.mealPlan ?? null,
         rateText: null,
-        agencyName: party?.kind === 'agency' ? (party.name ?? null) : null,
+        bookingAgencyName: party?.kind === 'bookingAgency' ? (party.name ?? null) : null,
         organizationName:
           party?.kind === 'organization' || party?.kind === 'government' ? (party.name ?? null) : null,
         voucherNumber: null,
@@ -514,11 +514,11 @@ export async function hmsTodoCardFromLuna(
         billingReference: party?.reference ?? null,
         paidBy: null,
         partyKind:
-          party?.kind === 'agency' || party?.kind === 'organization' || party?.kind === 'government'
+          party?.kind === 'bookingAgency' || party?.kind === 'organization' || party?.kind === 'government'
             ? party.kind
             : null,
         defaults:
-          party?.kind === 'agency' || party?.kind === 'organization' || party?.kind === 'government'
+          party?.kind === 'bookingAgency' || party?.kind === 'organization' || party?.kind === 'government'
             ? { track: null, sourceOfBusiness: null, guaranteeType: null }
             : { ...DIRECT_BOOKING_DEFAULTS },
         ...(propertyCode ? { propertyCode } : {}),

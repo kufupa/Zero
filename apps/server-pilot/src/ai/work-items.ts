@@ -33,6 +33,8 @@ import {
   workItem,
 } from '../db/schema/work.js';
 import type { AttachmentRead } from './extraction/extract.js';
+import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
+import { hydrateStoredFieldPath, hydrateStoredWorkState, storedFieldPathAliases } from './stored-work-state.js';
 import {
   rowContentKey,
   stayContentKey,
@@ -99,11 +101,10 @@ import type { CloudCreateHoldProjection } from './pane-cloud-preview.js';
  * extraction does not have is a stay or row the person added, and `stays[s_x].removed` / `...rows[r_y].removed`
  * (true) is one she deleted. Both come back on reopen.
  *
- * The contact block (U16) uses `contact.name`, `contact.company`, `contact.endClient`, `contact.email` and
- * `contact.phone`. `contact.company` reads the extraction's agency. The other fields read their extraction values.
+ * The contact block uses `contact.name`, `contact.bookingAgency`, `contact.organization`, `contact.email` and `contact.phone`.
  */
 
-export const ROW_FIELDS = ['count', 'adults', 'roomType', 'childAges', 'board'] as const;
+export const ROW_FIELDS = ['count', 'adults', 'roomType', 'childAges', 'mealPlan'] as const;
 export type RowField = (typeof ROW_FIELDS)[number];
 export type FieldPath =
   | { stayId: string; rowId: null; field: 'arrival' | 'departure' | 'totalAdults' | 'totalChildren' | 'removed' }
@@ -120,7 +121,7 @@ const ROW_KEYS = {
   adults: 'adultsPerRoom',
   roomType: 'roomType',
   childAges: 'childAges',
-  board: 'board',
+  mealPlan: 'mealPlan',
 } as const;
 const BOARDS = new Set(['room_only', 'bb', 'dbb']);
 
@@ -415,10 +416,9 @@ function stayIdFromCommitKey(key: string): string {
 }
 
 /**
- * The contact block's fields (U16). Paths are `contact.<field>`. `company` is the sender's organisation, which the
- * extraction calls the agency, so its AI value is `agency`.
+ * The contact block's fields (U16). Paths are `contact.<field>`.
  */
-export const CONTACT_FIELDS = ['name', 'company', 'endClient', 'email', 'phone'] as const;
+export const CONTACT_FIELDS = ['name', 'bookingAgency', 'organization', 'email', 'phone'] as const;
 export type ContactField = (typeof CONTACT_FIELDS)[number];
 export type StoredContact = Record<ContactField, string | null>;
 const CONTACT_PATH = new RegExp(`^contact\\.(${CONTACT_FIELDS.join('|')})$`);
@@ -433,10 +433,10 @@ function contactAiValue(payload: MailExtractionPayload | null | undefined, field
   switch (field) {
     case 'name':
       return payload.contact.name;
-    case 'company':
-      return payload.agency;
-    case 'endClient':
-      return payload.endClient;
+    case 'bookingAgency':
+      return payload.bookingAgency;
+    case 'organization':
+      return payload.organization;
     case 'email':
       return payload.contact.email;
     case 'phone':
@@ -457,8 +457,8 @@ export function storedContact(payload: MailExtractionPayload, state: WorkState):
   };
   return {
     name: valueOf('name'),
-    company: valueOf('company'),
-    endClient: valueOf('endClient'),
+    bookingAgency: valueOf('bookingAgency'),
+    organization: valueOf('organization'),
     email: valueOf('email'),
     phone: valueOf('phone'),
   };
@@ -486,7 +486,7 @@ export function validFieldValue(field: FieldPath['field'], value: unknown): bool
       return typeof value === 'string' && value.length > 0 && value.length <= 120;
     case 'childAges':
       return Array.isArray(value) && value.length <= 9 && value.every((age) => isInt(age, 0, 17));
-    case 'board':
+    case 'mealPlan':
       return typeof value === 'string' && BOARDS.has(value);
     case 'removed':
       return value === true;
@@ -531,7 +531,7 @@ export function formStays(payload: MailExtractionPayload, state: WorkState): For
       stays.push(stay);
     }
     if (path.rowId !== null && !stay.rows.some((row) => row.id === path.rowId)) {
-      stay.rows.push({ id: path.rowId, roomType: null, rooms: null, adultsPerRoom: null, childAges: null, board: null });
+      stay.rows.push({ id: path.rowId, roomType: null, rooms: null, adultsPerRoom: null, childAges: null, mealPlan: null });
     }
     if (path.field === 'removed' && state[key] === true) removed.add(path.rowId ?? path.stayId);
   }
@@ -791,7 +791,7 @@ export function storedAnalysis(
         adultsPerRoom: null,
         ...(stay.totalChildren !== undefined ? { childrenTotal: stay.totalChildren } : {}),
         childAges: null,
-        board: null,
+        mealPlan: null,
         roomPreference: null,
         guestNames,
         stayId: stay.id,
@@ -822,7 +822,7 @@ export function storedAnalysis(
         adultsPerRoom: pick(at('adults'), row.adultsPerRoom),
         ...(stay.totalChildren !== undefined ? { childrenTotal: stay.totalChildren } : {}),
         childAges: unresolvedLegacyEmptyAges ? null : childAges,
-        board: pick(at('board'), row.board),
+        mealPlan: pick(at('mealPlan'), row.mealPlan),
         roomPreference: pick(at('roomType'), row.roomType),
         guestNames: rowNames,
         stayId: stay.id,
@@ -839,8 +839,8 @@ export function storedAnalysis(
     flags,
     groups,
     party: {
-      kind: payload.agency ? 'agency' : payload.endClient ? 'organization' : null,
-      name: payload.agency ?? payload.endClient,
+      kind: payload.bookingAgency ? 'bookingAgency' : payload.organization ? 'organization' : null,
+      name: payload.bookingAgency ?? payload.organization,
       reference: null,
     },
     rateClaims: [],
@@ -915,10 +915,10 @@ export function storedAnalysis(
         ['quantity', `${rowPath}.count`],
         ['adults', `${rowPath}.adults`],
         ['childAges', `${rowPath}.childAges`],
-        ['board', `${rowPath}.board`],
+        ['mealPlan', `${rowPath}.mealPlan`],
       );
       // "Not stated yet" saves null. Mapping fills a null board with the default, so her cleared choice is put back.
-      if (Object.hasOwn(state, `${rowPath}.board`) && state[`${rowPath}.board`] === null) group.board = 'unknown';
+      if (Object.hasOwn(state, `${rowPath}.mealPlan`) && state[`${rowPath}.mealPlan`] === null) group.mealPlan = 'unknown';
     }
     for (const [key, path] of corrected) {
       if (!Object.hasOwn(state, path) || (key === 'quantity' && state[path] === null) || (key === 'childAges' && !Array.isArray(state[path])) || (key === 'adults' && typeof state[path] !== 'number')) continue;
@@ -1039,7 +1039,9 @@ async function shouldRelink(db: WorkTx, fromId: string | null, nextId: string, s
   if (!from) return true;
   if (next.createdAt < from.createdAt) return false;
   if (!from.payload || !next.payload) return true;
-  return correctionsCarryTo(from.payload as MailExtractionPayload, next.payload as MailExtractionPayload, state);
+  const previous = safeParseStoredMailExtraction(from.payload);
+  const upcoming = safeParseStoredMailExtraction(next.payload);
+  return previous.success && upcoming.success && correctionsCarryTo(previous.data, upcoming.data, state);
 }
 
 /**
@@ -1096,7 +1098,7 @@ export async function ensureWorkItem(
     const [row] = await select(tx).for('update');
     if (!row) throw new Error('work item missing after upsert');
     if (row.extractionId === input.extractionId) return row;
-    if (!(await shouldRelink(tx, row.extractionId, input.extractionId, row.state))) return row;
+    if (!(await shouldRelink(tx, row.extractionId, input.extractionId, hydrateStoredWorkState(row.state)))) return row;
     await tx
       .update(workItem)
       .set({ extractionId: input.extractionId, revisionSeq: row.revisionSeq + 1, updatedAt: new Date() })
@@ -1156,11 +1158,13 @@ async function succeededRead(db: DB, messageId: string, id?: string) {
     .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
     .limit(1);
   if (!row?.kind || !row.payload) return null;
+  const payload = safeParseStoredMailExtraction(row.payload);
+  if (!payload.success) return null;
   return {
     id: row.id,
     createdAt: row.createdAt,
     kind: row.kind as MailKind,
-    payload: row.payload as MailExtractionPayload,
+    payload: payload.data,
     attachments: row.attachments as AttachmentRead[] | null,
     language: row.language,
     translation: row.translation,
@@ -1637,8 +1641,10 @@ export async function planThreadWork(
     const at = arrivedAt(source);
     const currentKind = !latestKindBySource.has(source.id) || latestKindBySource.get(source.id) === item.kind;
     const handled = handledRequestKeys(requestStates.get(source.id));
+    const parsedPayload = safeParseStoredMailExtraction(item.extractionPayload);
+    const payload = parsedPayload.success ? parsedPayload.data : null;
     const files = source.direction === 'inbound' && !source.historyOnly
-      ? voucherReviewFiles(input.transportId, kind, item.extractionPayload as MailExtractionPayload | null, source, voucherFiles) : [];
+      ? voucherReviewFiles(input.transportId, kind, payload, source, voucherFiles) : [];
     const confirmed = currentKind && files.some(file => !handled.has(file.key))
       ? await confirmedVoucherKey(db, { transportId: input.transportId, workItemId: item.id,
         source: { threadId: input.threadId, messageId: source.id, sourceHash: staffQuoteSourceHash(source) },
@@ -1648,7 +1654,6 @@ export async function planThreadWork(
       .map(run => ({ id: run.id, result: run.metrics?.reservationistResult, source: run.metrics?.reservationistDraftSource })), requestStates.get(source.id)));
     const untouched = !outstanding && !item.touched && Object.keys(item.state ?? {}).length === 0;
     const humanWritten = item.origin !== 'system_notice';
-    const payload = item.extractionPayload as MailExtractionPayload | null;
     const separateAsk = currentKind && isSelfSentPreStayInformationMail({
       fromAddress: source.fromAddress, mailboxAddress: mailboxEmail, subject: source.subject,
       confirmationNumbers: Array.isArray(payload?.confirmationNumbers) ? payload.confirmationNumbers : [],
@@ -2049,7 +2054,7 @@ async function latestFieldProvenance(
 ): Promise<FieldProvenance> {
   if (!input.workItemId) return {};
   const events = await db
-    .selectDistinctOn([workEvent.fieldPath], {
+    .select({
       actorKind: workEvent.actorKind,
       type: workEvent.type,
       fieldPath: workEvent.fieldPath,
@@ -2066,11 +2071,12 @@ async function latestFieldProvenance(
         inArray(workEvent.type, FIELD_PROVENANCE_EVENT_TYPES),
       ),
     )
-    .orderBy(asc(workEvent.fieldPath), desc(workEvent.at), desc(workEvent.id));
+    .orderBy(desc(workEvent.at), desc(workEvent.id));
   const provenance: FieldProvenance = {};
   for (const event of events) {
     if (event.fieldPath === null) continue;
-    provenance[event.fieldPath] = { source: fieldProvenanceSource(event), value: event.value };
+    const path = hydrateStoredFieldPath(event.fieldPath);
+    if (!Object.hasOwn(provenance, path)) provenance[path] = { source: fieldProvenanceSource(event), value: event.value };
   }
   return provenance;
 }
@@ -2106,7 +2112,7 @@ async function readyView(
   });
   const separateAsk = existingStayInformation ? separatePreStayAsk(read.kind, read.payload, msg.textBody, msg.htmlBody) : null;
   const paneItem = existingStayInformation && !separateAsk ? null : item;
-  const state = paneItem?.state ?? {};
+  const state = hydrateStoredWorkState(paneItem?.state ?? {});
   const selectedConfirmation = confirmationNumbers[0] ?? '';
   const synced = existingStayInformation
     ? null
@@ -2156,7 +2162,7 @@ async function readyView(
         adultsPerRoom: value(`stays[${stay.id}].rows[${row.id}].adults`, row.adultsPerRoom),
         roomType: value(`stays[${stay.id}].rows[${row.id}].roomType`, row.roomType),
         childAges: value(`stays[${stay.id}].rows[${row.id}].childAges`, row.childAges),
-        board: value(`stays[${stay.id}].rows[${row.id}].board`, row.board),
+        mealPlan: value(`stays[${stay.id}].rows[${row.id}].mealPlan`, row.mealPlan),
       })),
     };
   }) : undefined;
@@ -2391,7 +2397,9 @@ export async function recordFieldEvent(
           .where(eq(mailExtraction.id, item.extractionId))
           .limit(1)
       : [];
-    let payload = read?.payload as MailExtractionPayload | null | undefined;
+    const parsedPayload = safeParseStoredMailExtraction(read?.payload);
+    let payload = parsedPayload.success ? parsedPayload.data : null;
+    item.state = hydrateStoredWorkState(item.state);
     const isManual = Object.hasOwn(item.state, MANUAL_CREATE_KEY);
     if (request || input.source || input.expectedSeq !== undefined || isManual) {
       if (!input.source || ((request || isManual) && input.expectedSeq === undefined) ||
@@ -2566,7 +2574,7 @@ export async function recordStayCommit(
     }
     const existing = stayCommitOf(item.state, input.stayId);
     if (existing?.confirmationNumber) return { status: 'already_booked' as const };
-    const state = withStayCommit(item.state, input.stayId, input.record);
+    const state = withStayCommit(hydrateStoredWorkState(item.state), input.stayId, input.record);
     await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
     return { status: 'recorded' as const };
   });
@@ -2592,7 +2600,7 @@ export async function recordStayActionResult(
       .for('update');
     if (!item) return { status: 'not_found' as const };
     await assertNoCreateDispatchFence(tx, input);
-    const state = withStayActionResult(item.state, input.stayId, {
+    const state = withStayActionResult(hydrateStoredWorkState(item.state), input.stayId, {
       confirmationNumber: input.confirmationNumber,
       screenshotRef: input.screenshotRef,
     });
@@ -2636,6 +2644,7 @@ export async function acceptUneditedFields(
       (path) => !path.endsWith('.removed') && (contactFieldOf(path) !== null || parseFieldPath(path) !== null),
     );
     if (!paths.length) return { status: 'recorded' as const, accepted: 0 };
+    const storedPaths = paths.flatMap(storedFieldPathAliases);
     const seen = await tx
       .select({ path: workEvent.fieldPath })
       .from(workEvent)
@@ -2643,10 +2652,10 @@ export async function acceptUneditedFields(
         and(
           eq(workEvent.workItemId, input.workItemId),
           inArray(workEvent.type, ['field.edit', 'field.reject', 'field.accept', 'field.reset']),
-          inArray(workEvent.fieldPath, paths),
+          inArray(workEvent.fieldPath, storedPaths),
         ),
       );
-    const touched = new Set(seen.map((row) => row.path));
+    const touched = new Set(seen.flatMap((row) => row.path === null ? [] : [hydrateStoredFieldPath(row.path)]));
     const [read] = item.extractionId
       ? await tx
           .select({ payload: mailExtraction.payload, version: mailExtraction.extractorVersion })
@@ -2654,11 +2663,13 @@ export async function acceptUneditedFields(
           .where(eq(mailExtraction.id, item.extractionId))
           .limit(1)
       : [];
+    const parsedPayload = safeParseStoredMailExtraction(read?.payload);
+    const payload = parsedPayload.success ? parsedPayload.data : null;
     const accepts = paths
       .filter((path) => !touched.has(path))
       .map((path) => ({
         path,
-        aiValue: aiValueAt(read?.payload as MailExtractionPayload | null | undefined, path),
+        aiValue: aiValueAt(payload, path),
       }))
       .filter((accept) => accept.aiValue !== null && accept.aiValue !== undefined);
     if (!accepts.length) return { status: 'recorded' as const, accepted: 0 };
@@ -2840,7 +2851,8 @@ export async function listWorkItems(
             ? confirmationNumbers.filter((value): value is string => typeof value === 'string')
             : [],
         });
-        const payload = extractionPayload as MailExtractionPayload | null;
+        const parsedPayload = safeParseStoredMailExtraction(extractionPayload);
+        const payload = parsedPayload.success ? parsedPayload.data : null;
         const separateAsk = isPreStay && separatePreStayAsk(row.kind, payload, sourceBody, sourceHtml);
         if (isPreStay ? !separateAsk : row.kind === 'other') return null;
         return { ...row, kind: separateAsk ? 'other_actionable' : row.kind, chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you' };
@@ -2894,6 +2906,7 @@ export async function resetWorkSection(
       ({ status: 'recorded' as const, reset, ...(input.expectedSeq !== undefined
         ? { revision, revisionHead, seq, extractionId: item.extractionId } : {}) });
 
+    item.state = hydrateStoredWorkState(item.state);
     const paths = Object.keys(item.state).filter((fieldPath) => {
       if (input.section.type === 'contact') return contactFieldOf(fieldPath) !== null;
       return parseFieldPath(fieldPath)?.stayId === input.section.stayId;
@@ -2913,15 +2926,16 @@ export async function resetWorkSection(
           .where(eq(mailExtraction.id, item.extractionId))
           .limit(1)
       : [];
+    const parsedPayload = safeParseStoredMailExtraction(read?.payload);
+    const payload = parsedPayload.success ? parsedPayload.data : null;
     const resets = paths
       .map((fieldPath) => ({
         fieldPath,
-        aiValue: aiValueAt(read?.payload as MailExtractionPayload | null | undefined, fieldPath),
+        aiValue: aiValueAt(payload, fieldPath),
       }))
       .filter((field) => field.aiValue !== null && field.aiValue !== undefined);
     if (input.section.type === 'stay' && requestPaths.length && read?.status === 'succeeded' &&
         read.messageId === item.sourceMessageId && read.kind === item.kind && item.threadId && item.sourceMessageId) {
-      const payload = read.payload as MailExtractionPayload | null;
       const stayId = input.section.stayId;
       const stay = payload?.stays.find((candidate) => candidate.id === stayId);
       const action = stay?.action ?? (payload?.stays.length === 1 ? payload.action : null) ??

@@ -24,7 +24,7 @@ export type BookingDraftRoom = {
   /** One-based within this group; the group and index together identify the room. */
   roomIndex: number;
   /** The board the approved quote uses, so staff copy the meal plan that matches the rate. */
-  board: QuotedBoard;
+  mealPlan: QuotedBoard;
   request: Record<string, unknown>;
   schemaErrors: string[];
 };
@@ -51,23 +51,23 @@ export function isUnquotedSingleStayNewBooking(analysis: {
   return keys.size === 1;
 }
 
-export function prefillBoardFromLuna(board: string | null | undefined): QuotedBoard {
-  if (board === 'room_only' || board === 'bb') return board;
-  return board === 'dbb' || board === 'dinner_bb' ? 'dinner_bb' : 'unknown';
+export function prefillBoardFromLuna(mealPlan: string | null | undefined): QuotedBoard {
+  if (mealPlan === 'room_only' || mealPlan === 'bb') return mealPlan;
+  return mealPlan === 'dbb' || mealPlan === 'dinner_bb' ? 'dinner_bb' : 'unknown';
 }
 
 export function bookingDraftFromPrefill(input: {
   requests: Record<string, unknown>[];
   missing: BookingDraftMissing[];
   schemaErrors: string[][];
-  board?: QuotedBoard;
+  mealPlan?: QuotedBoard;
   roomIdentity?: Array<{ groupId: string; roomIndex: number }>;
 }): BookingDraft {
   return {
     rooms: input.requests.map((request, index) => ({
       groupId: input.roomIdentity?.[index]?.groupId ?? `${typeof request.arrival === 'string' ? request.arrival : 'unknown'}:${typeof request.departure === 'string' ? request.departure : 'unknown'}`,
       roomIndex: input.roomIdentity?.[index]?.roomIndex ?? index + 1,
-      board: input.board ?? 'unknown',
+      mealPlan: input.mealPlan ?? 'unknown',
       request,
       schemaErrors: (input.schemaErrors[index] ?? []).filter((error) => !/ratePlan/i.test(error)),
     })),
@@ -97,10 +97,10 @@ function guestQuestion(roomIndex?: number): string {
 
 function partyFromContext(
   context: Record<string, unknown>,
-): { kind: 'agency' | 'organization'; name: string } | null {
-  const agency = context.agency as { name?: string } | undefined;
+): { kind: 'bookingAgency' | 'organization'; name: string } | null {
+  const agency = context.bookingAgency as { name?: string } | undefined;
   if (typeof agency?.name === 'string' && agency.name.trim()) {
-    return { kind: 'agency', name: agency.name };
+    return { kind: 'bookingAgency', name: agency.name };
   }
   const organization = context.organization as { name?: string } | undefined;
   if (typeof organization?.name === 'string' && organization.name.trim()) {
@@ -116,7 +116,7 @@ export function requestFromQuotedRoom(input: {
   childAges: number[];
   roomCode: string;
   rateCode: string;
-  party: { kind: 'agency' | 'organization'; name: string } | null;
+  party: { kind: 'bookingAgency' | 'organization'; name: string } | null;
   guestName: string | null;
   defaults: BookingDraftDefaults;
   roomIndex?: number;
@@ -160,10 +160,10 @@ function normalizeClaimAmount(raw: string): { amount: string; precision: number 
   return { amount, precision: fraction?.length ?? 0 };
 }
 
-function quotedBoard(board: Board): QuotedBoard {
-  if (board === 'room_only') return 'room_only';
-  if (board === 'breakfast') return 'bb';
-  if (board === 'dinner_bed_breakfast') return 'dinner_bb';
+function quotedBoard(mealPlan: Board): QuotedBoard {
+  if (mealPlan === 'room_only') return 'room_only';
+  if (mealPlan === 'breakfast') return 'bb';
+  if (mealPlan === 'dinner_bed_breakfast') return 'dinner_bb';
   return 'unknown';
 }
 
@@ -259,8 +259,10 @@ async function defaultValidateCreate(
       schema: unknown,
     ): { ok: boolean; errors: unknown[] };
   };
+  const { bookingAgency, ...fields } = request;
+  const nativeRequest = bookingAgency === undefined ? fields : { ...fields, agency: bookingAgency };
   return mod.validateCreateRequest(
-    mod.normalizeCreateLabels(request),
+    mod.normalizeCreateLabels(nativeRequest),
     await mod.loadCreateToolSchema(),
   );
 }
@@ -273,7 +275,7 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
   ratePlans: string[];
   requiredCreateFields: string[];
   cmsMessageIds?: Array<{ code: string; label: string }>;
-  cmsDefaults?: { agency: string; guest: string };
+  cmsDefaults?: { bookingAgency: string; guest: string };
 } {
   const property = getPropertyRegistration(propertyCode);
   if (!property) throw new Error('hms_property_unknown');
@@ -344,7 +346,7 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
     requiredCreateFields: [...new Set([...(profile.requiredCreateFields ?? []), ...requiredBookNativeFields({ createForm: profile.createForm })])],
     ...(validCms ? {
       cmsMessageIds: cmsRows,
-      cmsDefaults: { agency: cms.defaultAgency!, guest: cms.defaultGuest! },
+      cmsDefaults: { bookingAgency: cms.defaultAgency!, guest: cms.defaultGuest! },
     } : {}),
   };
 }
@@ -425,7 +427,7 @@ export async function buildBookingDrafts(input: {
       rooms.push({
         groupId: group.id,
         roomIndex,
-        board: quotedBoard(group.board),
+        mealPlan: quotedBoard(group.mealPlan),
         request: built.request,
         schemaErrors: result.ok ? [] : result.errors.map((error) => String(error)),
       });

@@ -6,7 +6,7 @@
   "preferences": {
     "room": "Standard",
     "bed": "Double",
-    "board": "Breakfast",
+    "mealPlan": "Breakfast",
     "flexibility": "Flexible cancellation and/or date modification",
     "paymentQuestion": "Advance payment by bank transfer possible?"
   },

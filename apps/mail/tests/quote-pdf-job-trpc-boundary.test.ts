@@ -56,10 +56,10 @@ describe('quotePdfJob tRPC wire contract', () => {
         workItemId: '00000000-0000-4000-8000-000000000041',
         revisionRef: 'revision-wire',
         attention: '',
-        company: '',
+        organization: '',
         clientEmail: '',
         clientTelephone: '',
-        agency: 'Example Agency',
+        bookingAgency: 'Example Agency',
       }),
     ).resolves.toEqual({ runId: 'pdf-job-wire', state: 'succeeded', result: artifact });
     expect(select).toHaveBeenCalledTimes(1);

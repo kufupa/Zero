@@ -53,8 +53,8 @@ function LongPane() {
               name: 'David Miller',
               email: 'david.miller@example.test',
               phone: '+27 11 555 0100',
-              company: 'A long but ordinary travel company name',
-              endClient: 'A separate client organisation',
+              bookingAgency: 'A long but ordinary travel company name',
+              organization: 'A separate client organisation',
             }}
             onEdit={() => undefined}
           />

@@ -3,19 +3,19 @@
 import type { WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { effectiveAt, record, requestPath, text, valueAt } from '@/lib/reservation-workflow/views';
 import { Field, Section } from '../shared/stay-fields';
-import { TargetSearch } from './amend-editor';
+import { isExactConfirmation, TargetSearch } from './amend-editor';
 import styles from './other-editors.module.css';
 
 type Editor = WorkbenchEditorProps;
 type SavedTarget = { kind: 'saved_target'; requestId: string; hintId: string };
 const serviceFields = [
-  ['quantity', 'Quantity', 'text'], ['startDate', 'Start date', 'date'], ['endDate', 'End date', 'date'],
-  ['unitPrice', 'Unit price', 'text'], ['frequency', 'Frequency', 'text'], ['pricingControl', 'Pricing basis', 'text'],
-  ['folio', 'Folio', 'text'], ['comment', 'Comment', 'text'],
+  ['quantity', 'Quantity', 'text', 55], ['startDate', 'Start date', 'date', undefined], ['endDate', 'End date', 'date', undefined],
+  ['frequency', 'Frequency', 'text', undefined], ['pricingControl', 'Pricing Control', 'text', undefined], ['unitPrice', 'Unit price', 'text', 55],
+  ['folio', 'Folio', 'text', undefined], ['comment', 'Comment', 'text', 255],
 ] as const;
 const nativeFields = [
   ['code', 'Item'], ['name', 'Description'], ['quantity', 'Quantity'], ['startDate', 'Start'], ['endDate', 'End'],
-  ['unitPrice', 'Unit price'], ['frequency', 'Frequency'], ['pricingControl', 'Pricing basis'], ['folio', 'Folio'],
+  ['unitPrice', 'Unit price'], ['frequency', 'Frequency'], ['pricingControl', 'Pricing Control'], ['folio', 'Folio'],
   ['comment', 'Comment'], ['averageDaily', 'Native average'],
 ] as const;
 
@@ -57,8 +57,8 @@ function excludedScopeIssue(stay: Record<string, unknown> | null, exclusions: un
   };
   for (const value of exclusions) {
     const hint = record(value), excludedConfirmation = text(hint.confirmation);
-    if (excludedConfirmation && /^\d{6,10}-\d{1,2}$/.test(excludedConfirmation)) {
-      if (excludedConfirmation === confirmation) return 'overlap';
+    if (isExactConfirmation(excludedConfirmation) && isExactConfirmation(confirmation)) {
+      if (excludedConfirmation.trim() === confirmation.trim()) return 'overlap';
       continue;
     }
     const guestName = text(hint.guestName), arrival = hint.bookedArrival, departure = hint.bookedDeparture;
@@ -320,6 +320,15 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
   const previewCurrent = Boolean(latest && selectedCandidateCurrent && (allocation ? createCurrent : savedTargetCurrent && amendmentCurrent)
     && servicePreviewMatches(editor, service, serviceRoot, targetRoot, operation, preview, Boolean(savedTarget)));
   const capability = record(preview.capability);
+  const serviceDate = (field: 'startDate' | 'endDate') => {
+    const path = `${targetRoot}/fields/${field}`, override = draft.fieldOverrides[path];
+    const local = valueAt(editor.snapshot, path);
+    if (override?.state === 'inherit') return text(valueAt(editor.snapshot, `${serviceRoot}/sharedFields/${field}`));
+    if ((override && ['none', 'clear', 'unknown'].includes(override.state)) || record(local).kind === 'none') return '';
+    return text(local || valueAt(editor.snapshot, `${serviceRoot}/sharedFields/${field}`));
+  };
+  const startDate = serviceDate('startDate'), endDate = serviceDate('endDate');
+  const reversedDates = operation !== 'remove' && /^\d{4}-\d{2}-\d{2}$/.test(startDate) && /^\d{4}-\d{2}-\d{2}$/.test(endDate) && startDate > endDate;
   const fresh = latest?.criteria.kind === 'saved_addon_fresh_prepare';
   const previous = record(preview.previouslyApprovedNative);
   const reviewNote = savedTarget && latest ? `services_saved:${savedTarget.requestId}:${savedTarget.hintId}:${service.id}:${latest.ref}` : '';
@@ -397,8 +406,14 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
           </option>)}
         </select>
       </label>
-      {operation !== 'remove' && <div className={styles.grid}>{serviceFields.map(([field, label, type]) => {
+      {operation !== 'remove' && <div className={styles.grid}>{serviceFields.map(([field, label, type, maxLength]) => {
+        const path = `${targetRoot}/fields/${field}`;
+        const local = valueAt(editor.snapshot, path), override = draft.fieldOverrides[path];
         const shared = valueAt(editor.snapshot, `${serviceRoot}/sharedFields/${field}`);
+        const explicitlyEmpty = override && ['none', 'clear', 'unknown'].includes(override.state) || record(local).kind === 'none' ||
+          operation === 'edit' && field === 'comment' && override?.state === 'set' && override.value === '';
+        const effective = explicitlyEmpty ? null : override?.state === 'inherit' ? shared : text(local).trim() ? local : shared;
+        const overLimit = maxLength !== undefined && typeof effective === 'string' && effective.length > maxLength;
         const isChoice = field === 'frequency' || field === 'pricingControl' || field === 'folio';
         const control = isChoice ? controls.map(source => record(source[field])).find(source => Object.keys(source).length > 0) : undefined;
         const options = control ? nativeOptions(control) : [];
@@ -410,14 +425,17 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
           : options.length ? 'Infor choices; check again after changes.' : 'Check the Add-On to load Infor choices.' : '';
         const priceHint = field === 'unitPrice' ? 'Enter source price or an explicit staff price; zero is allowed. Infor calculates the total.' : '';
         const sharedHint = shared != null && text(shared) ? `Shared value: ${text(shared)}; a room value overrides it.` : operation === 'edit' ? 'Leave unmentioned values unchanged.' : '';
-        return <Field key={field} editor={editor} path={`${targetRoot}/fields/${field}`} label={label} type={type} review
+        return <Field key={field} editor={editor} path={path} label={label} type={type} maxLength={maxLength} review
           options={options.length ? options : undefined} disabled={editor.view.busy || control?.editable === false}
           unmatchedOptionLabel={options.length ? 'Not returned by Infor' : undefined}
-          hint={[sharedHint, nativeHint, choiceHint, priceHint].filter(Boolean).join(' ') || undefined} />;
+          hint={[sharedHint, nativeHint, choiceHint, priceHint, overLimit ? `This value exceeds Infor's ${maxLength}-character limit. Edit it before checking.` : ''].filter(Boolean).join(' ') || undefined} />;
       })}</div>
       }
+      {operation !== 'remove' && <small className={reversedDates ? styles.warning : styles.hint}>
+        {reversedDates ? 'End date must be on or after the start date.' : 'Start and end dates may be the same day.'}
+      </small>}
       <div className={styles.hint}>{operation === 'add' ? 'A nonnegative explicit unit price and positive quantity are required. ' : operation === 'remove' ? 'Removing an item does not establish a refund. ' : ''}Infor returns actual service dates and total.</div>
-      <div className={styles.row}><button type="button" disabled={editor.view.busy || !argument || !catalogue.some(row => row.observation.ref === selectedItem)}
+      <div className={styles.row}><button type="button" disabled={editor.view.busy || reversedDates || !argument || !catalogue.some(row => row.observation.ref === selectedItem)}
         onClick={() => { if (argument) void editor.commands.previewServices(argument, service.id).catch(() => {}); }}>Check Add-On</button></div>
     </>}
     {latest && <div className={styles.stack}>

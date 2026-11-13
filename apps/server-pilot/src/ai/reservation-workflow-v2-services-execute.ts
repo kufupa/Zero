@@ -4,6 +4,7 @@ import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { mailboxAccess, mailThread, message } from '../db/schema/mail.js';
 import { workEvent, workItem } from '../db/schema/work.js';
+import { hydrateStoredReservationWorkflowV2 } from './reservation-workflow-v2-stored-draft.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { canonicalJson } from './draft-approval.js';
 import { lockCreateActorSession, lockCreateActorAccess } from './pane-create-actor-lock.js';
@@ -344,7 +345,7 @@ async function currentDraftTx(tx: DispatchTx, ctx: ReservationWorkflowV2ServerCo
     revisionHead: workItem.revisionHead, revisionSeq: workItem.revisionSeq, sourceMessageId: workItem.sourceMessageId,
     threadId: workItem.threadId }).from(workItem)
     .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1).for('update');
-  const draft = item && reservationWorkflowV2DraftSchema.safeParse((item.state as Record<string, unknown>)[RESERVATION_WORKFLOW_V2_STATE_KEY]);
+  const draft = item && reservationWorkflowV2DraftSchema.safeParse(hydrateStoredReservationWorkflowV2((item.state as Record<string, unknown>)[RESERVATION_WORKFLOW_V2_STATE_KEY]));
   if (!item || !draft?.success || !sourceContextMatches(draft.data, ctx, input) || item.sourceMessageId !== input.source.messageId ||
       item.threadId !== input.source.threadId || draft.data.revision !== item.revision ||
       (exactCursor && (item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq))) {
@@ -629,7 +630,7 @@ async function persistResolvedServiceTx(tx: DispatchTx, ctx: ReservationWorkflow
   const [item] = await tx.select({ state: workItem.state, revision: workItem.revision, revisionSeq: workItem.revisionSeq })
     .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id)))
     .limit(1).for('update');
-  const parsed = item && reservationWorkflowV2DraftSchema.safeParse((item.state as Record<string, unknown>)[RESERVATION_WORKFLOW_V2_STATE_KEY]);
+  const parsed = item && reservationWorkflowV2DraftSchema.safeParse(hydrateStoredReservationWorkflowV2((item.state as Record<string, unknown>)[RESERVATION_WORKFLOW_V2_STATE_KEY]));
   if (!item || !parsed?.success || !sourceContextMatches(parsed.data, ctx, input) ||
       parsed.data.generationId !== intent.generationId ||
       intent.workItemId !== input.workItemId || intent.transportId !== ctx.transport.id ||
@@ -1329,7 +1330,7 @@ async function persistSavedServiceTx(tx: DispatchTx, ctx: ReservationWorkflowV2S
   input: ServicesSourceInput, intent: SavedIntent, nativeReadback: Record<string, unknown>, readbackDigest: string) {
   const [item] = await tx.select({ state: workItem.state }).from(workItem)
     .where(and(eq(workItem.id, intent.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1).for('update');
-  const parsed = item && reservationWorkflowV2DraftSchema.safeParse((item.state as Record<string, unknown>)[RESERVATION_WORKFLOW_V2_STATE_KEY]);
+  const parsed = item && reservationWorkflowV2DraftSchema.safeParse(hydrateStoredReservationWorkflowV2((item.state as Record<string, unknown>)[RESERVATION_WORKFLOW_V2_STATE_KEY]));
   if (!item || !parsed?.success || !sourceContextMatches(parsed.data, ctx, input) || parsed.data.generationId !== intent.generationId) {
     throw new Error('saved_service_receipt_scope_changed');
   }

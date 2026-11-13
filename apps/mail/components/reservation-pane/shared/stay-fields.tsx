@@ -86,30 +86,46 @@ export function FieldReview({ editor, path, label, onPendingChange, requireRevie
   </span>;
 }
 
-export function Field({ label, path, editor, type = 'text', options, disabled, hint, defaultValue, emptyState, resolvedValue, compact = false, review = false, requireReview = false, unmatchedOptionLabel, maxLength }: {
+export function Field({ label, path, editor, type = 'text', options, disabled, hint, defaultValue, emptyState, resolvedValue, compact = false, review = false, requireReview = false, unmatchedOptionLabel, maxLength, nativeMaxLength }: {
   label: string; path: string; editor: WorkbenchEditorProps; type?: string;
-  options?: { value: string; label: string }[]; disabled?: boolean; hint?: string; defaultValue?: string; emptyState?: 'inherit'; resolvedValue?: unknown; compact?: boolean; review?: boolean; requireReview?: boolean; unmatchedOptionLabel?: string; maxLength?: number;
+  options?: { value: string; label: string }[]; disabled?: boolean; hint?: string; defaultValue?: string; emptyState?: 'inherit' | 'none'; resolvedValue?: unknown; compact?: boolean; review?: boolean; requireReview?: boolean; unmatchedOptionLabel?: string; maxLength?: number; nativeMaxLength?: number;
 }) {
   const id = useId();
   const saved = resolvedValue === undefined ? valueAt(editor.snapshot, path) : resolvedValue;
-  const [local, setLocal] = useState(text(saved));
+  const savedText = type === 'string-list' && Array.isArray(saved)
+    ? saved.filter((item): item is string => typeof item === 'string').join('\n') : text(saved);
+  const [local, setLocal] = useState(savedText);
+  const exceedsNativeLimit = nativeMaxLength !== undefined && local.length > nativeMaxLength;
   const [dirty, setDirty] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const version = useRef(0);
-  useEffect(() => { if (!dirty) setLocal(text(saved)); }, [saved, dirty]);
+  const percentage = type === 'percentage';
+  const percentValid = (value: string) => value === '' || (/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) &&
+    Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 100);
+  const invalidPercent = percentage && !percentValid(local);
+  const unconfirmedPercent = percentage && !dirty && typeof saved === 'string';
+  useEffect(() => { if (!dirty) setLocal(savedText); }, [savedText, dirty]);
+  useEffect(() => {
+    if (!percentage) return;
+    editor.commands.setUncommitted(path, invalidPercent || unconfirmedPercent || dirty);
+    return () => editor.commands.setUncommitted(path, false);
+  }, [path, percentage, invalidPercent, unconfirmedPercent, dirty]);
   const clearedCreateOptional = (value: unknown) => editor.request.kind === 'create' && value === ''
-    && /\/(?:bookerName|bookerContact|billingReference|reservationNote|cmsRecipient)$/.test(path);
-  const parsedValue = (value: string) => type === 'number' ? value === '' ? null : Number(value)
+    && /\/(?:bookerName|bookerEmail|bookerMobile|billingReference|reservationNote|cmsRecipient)$/.test(path);
+  const parsedValue = (value: string) => type === 'string-list' ? value.split(/[\n,]/u).map(item => item.trim()).filter(Boolean)
+    : type === 'number' ? value === '' ? null : Number(value)
+    : percentage ? value === '' ? null : percentValid(value) ? Number(value) : value
     : value === '' && defaultValue ? defaultValue : value;
   const stateFor = (raw: string, value: unknown) => raw === '' && emptyState ? emptyState
     : clearedCreateOptional(value) ? 'none' as const : 'set' as const;
   const save = async () => {
-    if (!dirty) return;
+    if ((!dirty && !unconfirmedPercent) || invalidPercent) return;
     const value = parsedValue(local), before = version.current;
-    try { await editor.commands.edit(path, value, stateFor(local, value)); if (version.current === before) setDirty(false); } catch { /* keep unsaved input */ }
+    try { await editor.commands.edit(path, value, stateFor(local, value)); if (version.current === before) { setDirty(false); if (percentage) editor.commands.setUncommitted(path, false); } } catch { /* keep unsaved input */ }
   };
   const onChange = (value: string) => {
     version.current += 1; setLocal(value); setDirty(true); const parsed = parsedValue(value);
+    if (percentage) editor.commands.setUncommitted(path, true);
     editor.commands.stageEdit(path, parsed, stateFor(value, parsed));
   };
   return <div data-field-path={path} className={`${styles.field} ${compact ? styles.compactField : ''}`}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label>{!compact && (review ? <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} requireReview={requireReview} disabled={disabled} /> : <FieldSource editor={editor} path={path} label={label} />)}</div>
@@ -118,9 +134,13 @@ export function Field({ label, path, editor, type = 'text', options, disabled, h
       onChange={event => { void editor.commands.edit(path, event.target.checked).catch(() => {}); }} />
       : options ? <select id={id} value={local} disabled={disabled || reviewing} onChange={event => { const value = event.target.value; setLocal(value); void editor.commands.edit(path, value).catch(() => setDirty(true)); }}>
         <option value="">Choose…</option>{local && !options.some(option => option.value === local) && <option value={local} disabled={Boolean(unmatchedOptionLabel)}>{local}{unmatchedOptionLabel ? ` · ${unmatchedOptionLabel}` : ''}</option>}{options.filter(option => option.value).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
-      : type === 'textarea' ? <textarea id={id} value={local} maxLength={maxLength} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} />
-      : <input id={id} type={type} value={local} maxLength={maxLength} placeholder={defaultValue} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); } }} />}
-    {dirty && <span className={styles.small}>Unsaved</span>}{hint && <small>{hint}</small>}</div>
+      : type === 'textarea' || type === 'string-list' ? <textarea id={id} value={local} maxLength={maxLength} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} />
+      : <input id={id} type={percentage ? 'text' : type} inputMode={percentage ? 'decimal' : undefined} value={local} maxLength={maxLength} aria-invalid={exceedsNativeLimit || invalidPercent || unconfirmedPercent || undefined} placeholder={defaultValue} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); } }} />}
+    {type === 'date' && local && !/^\d{4}-\d{2}-\d{2}$/.test(local) && <small>Requested: {local}. Choose the full date above.</small>}
+    {dirty && <span className={styles.small}>Unsaved</span>}{hint && <small>{hint}</small>}
+    {exceedsNativeLimit && <small role="alert" className={styles.validation}>Infor accepts at most {nativeMaxLength} characters. Shorten this value before saving.</small>}
+    {invalidPercent && <small role="alert" className={styles.validation}>Enter a number from 0 to 100 before continuing.</small>}
+    {unconfirmedPercent && !invalidPercent && <small role="alert" className={styles.validation}>Check this percentage, then move to another field.</small>}</div>
     {compact && <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} requireReview={requireReview} disabled={disabled} />}
   </div>;
 }

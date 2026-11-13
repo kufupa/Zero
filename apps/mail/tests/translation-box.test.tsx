@@ -184,7 +184,7 @@ const FAILED_READ: StoredWork = {
   extractionId: 'ex-fr',
   refs: {},
   analysis: { intent: 'quote', groups: [], secondaryAsks: [], alternatives: [] } as never,
-  contact: { name: null, company: null, endClient: null, email: null, phone: null },
+  contact: { name: null, bookingAgency: null, organization: null, email: null, phone: null },
   language: 'fr',
   translation: { status: 'failed' },
 };

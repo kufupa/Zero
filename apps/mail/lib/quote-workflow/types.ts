@@ -27,11 +27,11 @@ export type HrdavRoomCode = keyof typeof HRDAV_ROOM_NAMES;
 
 /** Observed HRDAV rate plans. Board is known only when the D0 rows established it. */
 export const HRDAV_RATE_PLANS = {
-  BAR: { name: 'Best Available Rate', board: 'bb' as QuoteBoard },
-  BARRO: { name: 'Room Only BAR', board: 'room_only' as QuoteBoard },
-  BLRB: { name: 'Lifestyle Rewards Programme Rate', board: 'unknown' as QuoteBoard },
-  BARDIS: { name: 'BAR Discount', board: 'unknown' as QuoteBoard },
-  DEF: { name: 'Default', board: 'unknown' as QuoteBoard },
+  BAR: { name: 'Best Available Rate', mealPlan: 'bb' as QuoteBoard },
+  BARRO: { name: 'Room Only BAR', mealPlan: 'room_only' as QuoteBoard },
+  BLRB: { name: 'Lifestyle Rewards Programme Rate', mealPlan: 'unknown' as QuoteBoard },
+  BARDIS: { name: 'BAR Discount', mealPlan: 'unknown' as QuoteBoard },
+  DEF: { name: 'Default', mealPlan: 'unknown' as QuoteBoard },
 } as const;
 
 const HRDAV_BB_LABELS = new Set(['bed & breakfast r']);
@@ -102,7 +102,7 @@ export type StayGroupRequirement = {
   /** Stay-wide total, kept separate from per-room counts; null means unknown and zero is explicit. */
   childrenTotal?: number | null;
   childrenAges: number[];
-  board: QuoteBoard;
+  mealPlan: QuoteBoard;
   organisation?: string;
   specialRequests: string[];
   fields: Record<string, FactProvenance>;
@@ -225,14 +225,14 @@ export type LunaAnalysisWire = {
     adultsPerRoom: number | null;
     childrenTotal?: number | null;
     childAges: number[] | null;
-    board: 'room_only' | 'bb' | 'dbb' | 'half_board' | null;
+    mealPlan: 'room_only' | 'bb' | 'dbb' | 'half_board' | null;
     roomPreference: string | null;
     guestNames: string[];
     /** Stay this row belongs to. Overlay matches staff rows by this id when present. */
     stayId?: string;
   }>;
   party: {
-    kind: 'agency' | 'organization' | 'government' | 'private' | null;
+    kind: 'bookingAgency' | 'organization' | 'government' | 'private' | null;
     name: string | null;
     reference: string | null;
   };
@@ -307,7 +307,7 @@ export type RatePlanBoard = 'room_only' | 'bed_breakfast' | 'dinner_bed_breakfas
 export type RatePlanCatalogueEntry = {
   code: string;
   name: string;
-  board: RatePlanBoard;
+  mealPlan: RatePlanBoard;
   contract?: boolean;
   government?: boolean;
   event?: boolean;
@@ -334,7 +334,7 @@ export type QuotePaneConfig = {
   propertyCode: HmsQuotePropertyCode;
   roomTypes: QuotePaneRoomType[];
   ratePlans: RatePlanCatalogueEntry[];
-  boards: QuotePaneBoard[];
+  mealPlans: QuotePaneBoard[];
   salesStrategies: QuoteSalesStrategy[];
   overrideRateCodes: string[];
   eventRateCodes: string[];
@@ -351,8 +351,8 @@ export type StaffQuoteSource = {
 export type RateOption = {
   id: string;
   groupId: string;
-  board: 'room_only' | 'bb' | 'dinner_bb';
-  boardLabel: string;
+  mealPlan: 'room_only' | 'bb' | 'dinner_bb';
+  mealPlanLabel: string;
   rateCode: string;
   rateLabel: string;
   roomCode: string;
@@ -383,8 +383,8 @@ export type AvailabilityBoardRow = {
   roomLabel: string;
   rateCode: string;
   rateLabel: string;
-  board: string;
-  boardLabel: string;
+  mealPlan: string;
+  mealPlanLabel: string;
   nightlyPriceMinor: number | null;
   roomsLeft: number | null;
   /** Reader fact only. Contract tags must not be invented from a public code. */
@@ -392,7 +392,7 @@ export type AvailabilityBoardRow = {
 };
 
 /** Staff's exact grid choice. It carries no price, availability, or quote-validity evidence. */
-export type QuoteRoomRateBoardSelection = Pick<AvailabilityBoardRow, 'roomCode' | 'rateCode' | 'board'>;
+export type QuoteRoomRateMealPlanSelection = Pick<AvailabilityBoardRow, 'roomCode' | 'rateCode' | 'mealPlan'>;
 
 /** What one row was charged on its last run: HMS's nightly rates, the rates charged, and for an override its HMS comment. */
 export type StaffRowRate = {
@@ -434,8 +434,8 @@ export type StaffQuoteAllocation = {
   };
   approvedHeader: {
     salesStrategy: 'BAR' | 'Government';
-    company: string;
-    agency: string;
+    organization: string;
+    bookingAgency: string;
     attention: string;
     clientEmail: string;
     clientTelephone: string;
@@ -459,21 +459,21 @@ export type StaffQuoteAllocation = {
 
 /** The HMS company or agency staff picked with Find in HMS. nativeId is HMS's id; the server re-checks it before any rate. */
 export type StaffQuoteParty = {
-  kind: 'agency' | 'company';
+  kind: 'bookingAgency' | 'organization';
   nativeId: string;
   name: string;
 };
 
 /** The company and the agency staff picked, one of each at most. Either may be absent. */
 export type StaffQuoteParties = {
-  company?: StaffQuoteParty;
-  agency?: StaffQuoteParty;
+  organization?: StaffQuoteParty;
+  bookingAgency?: StaffQuoteParty;
 };
 
 export type StaffQuoteHeader = {
   salesStrategy: 'BAR' | 'Government';
-  company: string;
-  agency: string;
+  organization: string;
+  bookingAgency: string;
   attention: string;
   clientEmail: string;
   clientTelephone: string;
@@ -623,8 +623,8 @@ export type StaffQuoteOtherCharge = {
 export function emptyStaffQuoteHeader(): StaffQuoteHeader {
   return {
     salesStrategy: 'BAR',
-    company: '',
-    agency: '',
+    organization: '',
+    bookingAgency: '',
     attention: '',
     clientEmail: '',
     clientTelephone: '',
@@ -661,7 +661,7 @@ export type QuoteOffer = {
   kind: QuoteOfferKind;
   roomCode: string;
   roomLabel: string;
-  board: string;
+  mealPlan: string;
   rateCode: string;
   currency: 'ZAR';
   nightly: QuoteNight[];
@@ -693,7 +693,7 @@ export type QuoteStrategyRow =
   | {
       status: 'ready';
       roomLabels: string[];
-      boardLabels: string[];
+      mealPlanLabels: string[];
       nightlyMinor: number[];
       totalMinor: number;
     };
@@ -724,7 +724,7 @@ export type ApprovedStayGroup = {
   roomPreference?: string;
   adults?: number;
   childrenAges: number[];
-  board: QuoteBoard;
+  mealPlan: QuoteBoard;
   organisation?: string;
   specialRequests: string[];
 };
@@ -779,7 +779,7 @@ export type BookingDraftRoom = {
   groupId: string;
   roomIndex: number;
   /** The board the approved quote uses. Absent on older payloads, which then copy nothing. */
-  board?: QuoteBoard;
+  mealPlan?: QuoteBoard;
   request: Record<string, unknown>;
   schemaErrors: string[];
 };
@@ -855,7 +855,7 @@ export type QuoteSession = {
   /** Rate cards for the latest run of each room group. Kept while a pinned re-run is pending. */
   rateOptions?: RateOption[];
   /** Staff's exact room/rate/board choice, keyed by room-group id. Optional for older saved sessions. */
-  roomRateBoardSelections?: Record<string, QuoteRoomRateBoardSelection>;
+  roomRateMealPlanSelections?: Record<string, QuoteRoomRateMealPlanSelection>;
   /** U8 booking cards, one per stay whose matching prepareBookingDraft result has arrived. */
   bookingDrafts: Record<string, BookingDraftReady>;
   /** Staff override that re-runs analyseSelection as quote or booking. */
@@ -926,7 +926,7 @@ export type QuoteSessionAction =
   | { type: 'patch_staff_header'; header: Partial<StaffQuoteHeader> }
   | { type: 'patch_staff_stay_extras'; stayKey: string; extras: Partial<StaffStayExtras> }
   | { type: 'party_lookup_pending'; kind: StaffQuoteParty['kind']; pending: boolean }
-  | { type: 'room_rate_board_selected'; groupId: string; selection: QuoteRoomRateBoardSelection }
+  | { type: 'room_rate_meal_plan_selected'; groupId: string; selection: QuoteRoomRateMealPlanSelection }
   | { type: 'select_stay_key'; stayKey: string }
   | {
       type: 'staff_quote_ready';
@@ -993,4 +993,4 @@ export type QuoteSessionAction =
 /** Actions emitted by controls nested in the Stay step, including an exact grid tuple choice. */
 export type QuoteStayAction =
   | StayEditAction
-  | Extract<QuoteSessionAction, { type: 'room_rate_board_selected' }>;
+  | Extract<QuoteSessionAction, { type: 'room_rate_meal_plan_selected' }>;

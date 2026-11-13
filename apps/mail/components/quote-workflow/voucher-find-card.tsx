@@ -1113,8 +1113,8 @@ function MatchedBooking({
     ? `${formatStayDate(row.arrival)}${row.departure ? ` – ${formatStayDate(row.departure)}` : ''}`
     : 'Dates not shown';
   const commercial = detailRun?.kind === 'found' ? detailRun.commercial : undefined;
-  const company = stayText(commercial?.company?.name) ?? stayText(commercial?.company?.nativeId);
-  const agency = stayText(commercial?.agency?.name) ?? stayText(commercial?.agency?.nativeId);
+  const company = stayText(commercial?.organization?.name) ?? stayText(commercial?.organization?.nativeId);
+  const agency = stayText(commercial?.bookingAgency?.name) ?? stayText(commercial?.bookingAgency?.nativeId);
   return (
     <div
       data-testid="voucher-matched-booking"

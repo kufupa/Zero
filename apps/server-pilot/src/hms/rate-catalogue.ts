@@ -14,7 +14,7 @@ export type CenturionRateBoard =
 
 export type CenturionRatePlan = {
   name: string;
-  board: CenturionRateBoard;
+  mealPlan: CenturionRateBoard;
   contract?: boolean;
   government?: boolean;
   /** Known event rates, shown separately from public/contract/government plans. */
@@ -30,22 +30,22 @@ export type CenturionRatePlan = {
  * native code token, not a confirmed label or board. The live quote's own label and negotiated flag remain authoritative.
  */
 export const CENTURION_RATE_CATALOGUE = {
-  BAR: { name: 'Best Available Rate', board: 'bed_breakfast' },
-  BARRO: { name: 'BAR Room Only', board: 'room_only' },
-  DBB: { name: 'Dinner, Bed & Breakfast', board: 'dinner_bed_breakfast' },
-  DBBX: { name: 'DBBX', board: 'unknown' },
-  NCOR1B: { name: 'Corporate Negotiated', board: 'unknown', contract: true },
-  NCOR2B: { name: 'Negotiated Contracted Rate 2', board: 'unknown', contract: true },
-  GNC3B: { name: 'GNC3B', board: 'unknown', event: true },
-  GNC4B: { name: 'GNC4B', board: 'unknown', event: true },
-  BCO1B: { name: 'BCO1B', board: 'unknown', contract: true },
-  BCO2B: { name: 'BCO2B', board: 'unknown', contract: true },
-  BBP: { name: 'BBP', board: 'unknown' },
-  BWKPB: { name: 'Weekend Promo Rate', board: 'unknown' },
-  NGOVB: { name: 'NGOVB', board: 'unknown', government: true },
+  BAR: { name: 'Best Available Rate', mealPlan: 'bed_breakfast' },
+  BARRO: { name: 'BAR Room Only', mealPlan: 'room_only' },
+  DBB: { name: 'Dinner, Bed & Breakfast', mealPlan: 'dinner_bed_breakfast' },
+  DBBX: { name: 'DBBX', mealPlan: 'unknown' },
+  NCOR1B: { name: 'Corporate Negotiated', mealPlan: 'unknown', contract: true },
+  NCOR2B: { name: 'Negotiated Contracted Rate 2', mealPlan: 'unknown', contract: true },
+  GNC3B: { name: 'GNC3B', mealPlan: 'unknown', event: true },
+  GNC4B: { name: 'GNC4B', mealPlan: 'unknown', event: true },
+  BCO1B: { name: 'BCO1B', mealPlan: 'unknown', contract: true },
+  BCO2B: { name: 'BCO2B', mealPlan: 'unknown', contract: true },
+  BBP: { name: 'BBP', mealPlan: 'unknown' },
+  BWKPB: { name: 'Weekend Promo Rate', mealPlan: 'unknown' },
+  NGOVB: { name: 'NGOVB', mealPlan: 'unknown', government: true },
   // Observed stay codes only; native lookup supplies meaning, board and eligibility.
-  NGOVDB: { name: 'NGOVDB', board: 'unknown' },
-  BOTAB: { name: 'BOTAB', board: 'unknown' },
+  NGOVDB: { name: 'NGOVDB', mealPlan: 'unknown' },
+  BOTAB: { name: 'BOTAB', mealPlan: 'unknown' },
 } as const satisfies Record<string, CenturionRatePlan>;
 
 export type CenturionRateCode = keyof typeof CENTURION_RATE_CATALOGUE;
@@ -80,7 +80,7 @@ export type PropertyQuotePaneConfig = {
   propertyCode: HmsPropertyCode;
   roomTypes: Array<{ code: string; label: string }>;
   ratePlans: PropertyRatePlan[];
-  boards: QuotePaneBoard[];
+  mealPlans: QuotePaneBoard[];
   salesStrategies: QuoteSalesStrategy[];
   overrideRateCodes: string[];
   eventRateCodes: string[];
@@ -142,7 +142,7 @@ function ratePlanBoard(board: string): CenturionRateBoard {
 }
 
 function boardsForPlans(plans: readonly PropertyRatePlan[]): QuotePaneBoard[] {
-  const known = new Set(plans.map((plan) => boardForCatalogue(plan.board)).filter(Boolean));
+  const known = new Set(plans.map((plan) => boardForCatalogue(plan.mealPlan)).filter(Boolean));
   return PANE_BOARD_ORDER.filter((board) => known.has(board));
 }
 
@@ -157,7 +157,7 @@ export async function quotePaneConfigForProperty(
       propertyCode,
       roomTypes: Object.entries(ROOM_TYPE_NAMES).map(([code, label]) => ({ code, label })),
       ratePlans: CENTURION_RATE_PLANS,
-      boards: boardsForPlans(CENTURION_RATE_PLANS),
+      mealPlans: boardsForPlans(CENTURION_RATE_PLANS),
       salesStrategies: quoteSalesStrategiesFromRegistry(propertyCode, null),
       overrideRateCodes: [...CENTURION_OVERRIDE_RATE_CODES],
       eventRateCodes: [...CENTURION_EVENT_RATE_CODES],
@@ -170,7 +170,7 @@ export async function quotePaneConfigForProperty(
   const ratePlans: PropertyRatePlan[] = Object.entries(profile.ratePlans).map(([code, plan]) => ({
     code,
     name: plan.label,
-    board: ratePlanBoard(plan.board),
+    mealPlan: ratePlanBoard(plan.mealPlan),
     ...(plan.contract ? { contract: true } : {}),
     ...(plan.government ? { government: true } : {}),
     ...(plan.event ? { event: true } : {}),
@@ -180,7 +180,7 @@ export async function quotePaneConfigForProperty(
     propertyCode,
     roomTypes: Object.entries(profile.rooms).map(([code, room]) => ({ code, label: room.label })),
     ratePlans,
-    boards: boardsForPlans(ratePlans),
+    mealPlans: boardsForPlans(ratePlans),
     salesStrategies: quoteSalesStrategiesFromRegistry(propertyCode, profile.salesStrategies),
     overrideRateCodes: ratePlans.map(({ code }) => code),
     eventRateCodes: ratePlans.filter(({ event }) => event).map(({ code }) => code),

@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NavaPane } from '../components/nava-pane/nava-pane';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
@@ -9,7 +9,7 @@ import type { PartySuggestion } from '../lib/quote-workflow/party-lookup';
 
 const SENDER_HINT: PartySuggestion = {
   source: 'sender',
-  kind: 'agency',
+  kind: 'bookingAgency',
   name: 'Example Travel Agency',
   nativeId: null,
   idStatus: 'unverified',
@@ -104,7 +104,7 @@ vi.mock('../providers/query-provider', () => ({
       screenshot: { query: async () => null },
     },
     panePartyLookup: {
-      findParty: { mutate: (input: { name: string; kind?: 'company' | 'agency' }) => findPartyMutation(input) },
+      findParty: { mutate: (input: { name: string; kind?: 'organization' | 'bookingAgency' }) => findPartyMutation(input) },
       suggest: { query: (input: { sender: string; body: string }) => suggestQuery(input) },
     },
     workItems: {
@@ -112,6 +112,7 @@ vi.mock('../providers/query-provider', () => ({
       dismiss: { mutate: async () => ({ status: 'ok' }) },
     },
     quoteWorkflow: {
+      rateCatalogue: { query: async () => ({ transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [], mealPlans: [], overrideRateCodes: [], eventRateCodes: [] }) },
       voucherFind: { query: async () => ({ status: 'not_voucher' }) },
       analyseSelection: {
         mutate: async () => ({
@@ -121,7 +122,7 @@ vi.mock('../providers/query-provider', () => ({
             {
               id: 'g1',
               childrenAges: [],
-              board: 'unknown' as const,
+              mealPlan: 'unknown' as const,
               quantity: 1,
               specialRequests: [],
               fields: {
@@ -179,8 +180,8 @@ describe('NavaPane mail-derived party hints', () => {
     cleanup();
   });
 
-  it('preselects the sender party once HMS returns it', async () => {
-    const agency = { kind: 'agency' as const, nativeId: '77', name: 'Example Travel Agency' };
+  it('offers the sender party from HMS for staff confirmation', async () => {
+    const agency = { kind: 'bookingAgency' as const, nativeId: '77', name: 'Example Travel Agency' };
     findPartyMutation.mockResolvedValue({
       outcome: 'resolved',
       results: [agency],
@@ -189,9 +190,12 @@ describe('NavaPane mail-derived party hints', () => {
       searchedFor: 'Example Travel Agency',
     });
     render(<NavaPane bridge={fakeBridge} preview />);
-    await waitFor(() => expect(screen.getByText('✓ Example Travel Agency (#77)')).toBeTruthy(), {
-      timeout: 4000,
-    });
+    const match = await screen.findByRole('button', { name: 'Confirm Example Travel Agency' }, { timeout: 4000 });
+    expect(screen.queryByRole('button', { name: 'Edit Booking Agency' })).toBeNull();
+    fireEvent.click(match);
+    expect(screen.getByRole('combobox', { name: 'Booking Agency from HMS' })).toHaveProperty('value', 'bookingAgency:77');
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Booking Agency' }));
+    expect(screen.getByRole('button', { name: 'Edit Booking Agency' })).toBeTruthy();
     expect(suggestQuery).toHaveBeenCalledWith({
       sender: 'ops@example-agency.test',
       body: fakeBridge.activeEmail!.bodyText.slice(0, BODY_LIMIT),
@@ -204,7 +208,7 @@ describe('NavaPane mail-derived party hints', () => {
   it('swallows a failed suggest and shows no hints', async () => {
     suggestQuery.mockRejectedValue(new Error('suggest unavailable'));
     render(<NavaPane bridge={fakeBridge} preview />);
-    expect(await screen.findByRole('group', { name: 'Agency lookup in HMS' })).toBeTruthy();
+    expect(await screen.findByRole('group', { name: 'Booking Agency lookup in HMS' })).toBeTruthy();
     await waitFor(() => expect(suggestQuery).toHaveBeenCalled());
     expect(screen.queryByText(/not confirmed in HMS/)).toBeNull();
     expect(screen.queryByText('Example Travel Agency')).toBeNull();

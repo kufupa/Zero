@@ -1,3 +1,4 @@
+import { hydrateStoredMailExtraction } from '../src/ai/extraction/stored-mail-extraction.js';
 import { corpusTextBody } from '../src/ai/agent-decision-to-ops.js';
 import {
   applyPartyBindRule,
@@ -199,7 +200,7 @@ function isFoundTruth(row: JsonRecord): boolean {
 }
 
 function partyName(commercial: JsonRecord, kind: PartyMatchKind): string | null {
-  return cleanText(asRecord(commercial[kind]).name);
+  return cleanText(asRecord(commercial[kind] ?? commercial[kind === 'organization' ? 'company' : 'agency']).name);
 }
 
 function addNameTally(tallies: Map<string, NameTally>, name: string): void {
@@ -284,8 +285,8 @@ export function buildDomainTruth(
     };
     value.n += 1;
     const commercial = asRecord(row.commercial);
-    const agency = partyName(commercial, 'agency');
-    const company = partyName(commercial, 'company');
+    const agency = partyName(commercial, 'bookingAgency');
+    const company = partyName(commercial, 'organization');
     if (agency) addNameTally(value.agencies, agency);
     if (company) addNameTally(value.companies, company);
     grouped.set(domain, value);
@@ -317,7 +318,7 @@ function buildUniverse(truthRows: readonly JsonRecord[]): PartyMatchRow[] {
   for (const row of truthRows) {
     if (!isFoundTruth(row)) continue;
     const commercial = asRecord(row.commercial);
-    for (const kind of ['agency', 'company'] as const) {
+    for (const kind of ['bookingAgency', 'organization'] as const) {
       const name = partyName(commercial, kind);
       if (!name) continue;
       const normalizedName = normalisePartyName(name) || name.toLowerCase();
@@ -401,9 +402,9 @@ function selectTestEmails(input: {
       domain,
       extractionKind: kind,
       receivedAt: cleanText(message.received_at) ?? cleanText(message.sent_at) ?? '',
-      expected: { kind: 'agency', name: truth.dominantAgency!.name },
+      expected: { kind: 'bookingAgency', name: truth.dominantAgency!.name },
       emailInput: {
-        payload: extraction.payload,
+        payload: hydrateStoredMailExtraction(extraction.payload),
         fromAddress: cleanText(message.from_address),
         subject: cleanText(message.subject),
         body: corpusTextBody(message),
@@ -931,8 +932,8 @@ export async function runPartyV2OfflineScore(args = process.argv.slice(2)): Prom
     maxPerDomain: options.maxPerDomain,
   });
   const universeByKind = new Map<PartyMatchKind, PartyMatchRow[]>([
-    ['agency', universe.filter((row) => row.kind === 'agency')],
-    ['company', universe.filter((row) => row.kind === 'company')],
+    ['bookingAgency', universe.filter((row) => row.kind === 'bookingAgency')],
+    ['organization', universe.filter((row) => row.kind === 'organization')],
   ]);
   let liveAdapter: ModelAdapter | null = null;
   if (options.livePicker) {

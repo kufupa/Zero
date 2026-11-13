@@ -77,7 +77,7 @@ function normalizeConfirmation(input) {
 export function normalizeCloudCreateRequest(input) {
   const issue = objectKeys(input,
     ['version', 'propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sourceOfBusiness', 'reasonForStay',
-      'parties', 'note', 'billingReference', 'cmsMessageId', 'cmsRecipient', 'booker', 'track', 'guestOptIn', 'sendHmsConfirmation'],
+      'parties', 'note', 'billingReference', 'nativeCommissionPercent', 'cmsMessageId', 'cmsRecipient', 'booker', 'track', 'guestOptIn', 'sendHmsConfirmation'],
     ['propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sendHmsConfirmation'], '');
   if (issue) return issue;
   const canonical = Object.hasOwn(input, 'version');
@@ -101,11 +101,12 @@ export function normalizeCloudCreateRequest(input) {
     return fail('CREATE_STAY_INVALID', 'stay');
   }
 
-  const roomIssue = objectKeys(input.room, ['roomType', 'ratePlan', 'roomTypeForCharge'], ['roomType', 'ratePlan'], 'room');
+  const roomIssue = objectKeys(input.room, ['roomType', 'ratePlan', 'roomTypeForCharge', 'mealPlan'], ['roomType', 'ratePlan'], 'room');
   if (roomIssue) return roomIssue;
   if (typeof input.room.roomType !== 'string' || !/^[A-Z0-9]{1,12}$/.test(input.room.roomType) ||
       typeof input.room.ratePlan !== 'string' || !/^[A-Z0-9]{1,12}$/.test(input.room.ratePlan) ||
-      (input.room.roomTypeForCharge !== undefined && (typeof input.room.roomTypeForCharge !== 'string' || !/^[A-Z0-9]{1,12}$/.test(input.room.roomTypeForCharge)))) {
+      (input.room.roomTypeForCharge !== undefined && (typeof input.room.roomTypeForCharge !== 'string' || !/^[A-Z0-9]{1,12}$/.test(input.room.roomTypeForCharge))) ||
+      (input.room.mealPlan !== undefined && !exactText(input.room.mealPlan, { max: 120 }))) {
     return fail('CREATE_ROOM_INVALID', 'room');
   }
   if (typeof input.guaranteeType !== 'string' || !/^[A-Z0-9]{1,12}$/.test(input.guaranteeType)) {
@@ -140,6 +141,9 @@ export function normalizeCloudCreateRequest(input) {
       (!exactText(input.billingReference, { max: 4000 }) || !parties.value.arAccount)) {
     return fail('CREATE_BILLING_REFERENCE_INVALID', 'billingReference');
   }
+  if (input.nativeCommissionPercent !== undefined && (typeof input.nativeCommissionPercent !== 'number' ||
+      !Number.isFinite(input.nativeCommissionPercent) || input.nativeCommissionPercent < 0 || input.nativeCommissionPercent > 100 ||
+      !parties.value.bookingAgency)) return fail('CREATE_COMMISSION_INVALID', 'nativeCommissionPercent');
   if (input.cmsMessageId !== undefined && !exactText(input.cmsMessageId, { max: 100 })) {
     return fail('CREATE_CMS_MESSAGE_INVALID', 'cmsMessageId');
   }
@@ -173,13 +177,15 @@ export function normalizeCloudCreateRequest(input) {
     stay: { arrival: input.stay.arrival, departure: input.stay.departure, adults: input.stay.adults,
       childAges: [...input.stay.childAges] },
     room: { roomType: input.room.roomType, ratePlan: input.room.ratePlan,
-      ...(input.room.roomTypeForCharge !== undefined ? { roomTypeForCharge: input.room.roomTypeForCharge } : {}) },
+      ...(input.room.roomTypeForCharge !== undefined ? { roomTypeForCharge: input.room.roomTypeForCharge } : {}),
+      ...(input.room.mealPlan !== undefined ? { mealPlan: input.room.mealPlan } : {}) },
     guaranteeType: input.guaranteeType,
     ...(sourceOfBusiness ? { sourceOfBusiness } : {}),
     ...(reasonForStay ? { reasonForStay } : {}),
     ...(Object.keys(parties.value).length ? { parties: parties.value } : {}),
     ...(input.note !== undefined ? { note: input.note } : {}),
     ...(input.billingReference !== undefined ? { billingReference: input.billingReference } : {}),
+    ...(input.nativeCommissionPercent !== undefined ? { nativeCommissionPercent: input.nativeCommissionPercent } : {}),
     ...(input.cmsMessageId !== undefined ? { cmsMessageId: input.cmsMessageId } : {}),
     ...(input.cmsRecipient !== undefined ? { cmsRecipient: input.cmsRecipient } : {}),
     ...(input.booker !== undefined ? { booker: { ...input.booker } } : {}),

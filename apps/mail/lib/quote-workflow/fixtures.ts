@@ -50,7 +50,7 @@ function group(
     roomPreference: 'standard king',
     adults: 1,
     childrenAges: [],
-    board: 'bb',
+    mealPlan: 'bb',
     specialRequests: [],
     fields: {
       arrivalDate: 'extracted',
@@ -65,7 +65,7 @@ function offer(over: Partial<QuoteOffer> & Pick<QuoteOffer, 'id' | 'kind' | 'sta
   return {
     roomCode: 'SKNG',
     roomLabel: 'Standard King',
-    board: 'bb',
+    mealPlan: 'bb',
     rateCode: 'BAR',
     currency: 'ZAR',
     nightly: [{ date: '2026-11-12', amountMinor: over.stayTotalMinor }],
@@ -109,7 +109,7 @@ const FIXTURES: Record<QuoteFixtureId, QuoteFixture> = {
       group('g1', '2026-11-12', '2026-11-14', {
         organisation: 'Provincial Treasury',
         adults: 1,
-        board: 'dinner_bb',
+        mealPlan: 'dinner_bb',
       }),
     ],
     offers: [
@@ -118,7 +118,7 @@ const FIXTURES: Record<QuoteFixtureId, QuoteFixture> = {
         kind: 'allocation',
         stayTotalMinor: 850000,
         rateCode: 'NGOVDB',
-        board: 'dinner_bb',
+        mealPlan: 'dinner_bb',
         quoteRequestKey: '2026-11-12:2026-11-14',
         coversGroupIds: ['g1'],
         quantity: 1,
@@ -236,7 +236,7 @@ const FIXTURES: Record<QuoteFixtureId, QuoteFixture> = {
         id: 'bb-1',
         kind: 'allocation',
         stayTotalMinor: 214000,
-        board: 'bb',
+        mealPlan: 'bb',
         quoteRequestKey: '2026-11-12:2026-11-13',
         coversGroupIds: ['g1'],
         quantity: 1,
@@ -246,7 +246,7 @@ const FIXTURES: Record<QuoteFixtureId, QuoteFixture> = {
         id: 'ro-1',
         kind: 'alternative',
         stayTotalMinor: 190000,
-        board: 'room_only',
+        mealPlan: 'room_only',
         rateCode: 'BARRO',
         combinable: false,
         quoteRequestKey: '2026-11-12:2026-11-13',
@@ -380,8 +380,8 @@ export function pickFixtureForSession(groups: StayGroupRequirement[]): QuoteFixt
     const same = groups.every((group) => `${group.arrivalDate ?? ''}:${group.departureDate ?? ''}` === first);
     return same ? 'mixed-same-dates' : 'staggered-dates';
   }
-  if (groups.some((group) => group.board === 'room_only') || groups.some((group) => group.board === 'bb')) {
-    if (groups.length === 1 && groups[0]?.board === 'room_only') return 'ro-vs-bb';
+  if (groups.some((group) => group.mealPlan === 'room_only') || groups.some((group) => group.mealPlan === 'bb')) {
+    if (groups.length === 1 && groups[0]?.mealPlan === 'room_only') return 'ro-vs-bb';
   }
   return 'public-single';
 }

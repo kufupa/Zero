@@ -20,7 +20,9 @@ import { assertNoCreateDispatchFence, type CreateFenceTransaction } from './pane
 import { lockCreateSource, withLockedCreateSource, type LockedCreateSource } from './pane-create-source-loader.js';
 import { paneStayClock, paneWriteMode, registerPaneRun } from './pane-stay-save.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
-import { mailExtractionPayloadSchema, type MailKind } from './extraction/schema.js';
+import type { MailKind } from './extraction/schema.js';
+import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
+import { hydrateStoredWorkState } from './stored-work-state.js';
 import type { AttachmentRead } from './extraction/extract.js';
 import { projectCancelRequests } from './pane-cancel-draft.js';
 import type { PaneStayCancelResult } from './pane-stay-cancel.js';
@@ -107,9 +109,9 @@ export function selectedEffectiveCancel(input: { source: z.infer<typeof cancelSe
   payload: unknown; state: Record<string, unknown>; ownerAction: unknown; kind: MailKind;
   attachments: AttachmentRead[] | null; requestId: string; confirmation: string; arrival: string;
   proposalDigest?: string }) {
-  const payload = mailExtractionPayloadSchema.safeParse(input.payload);
+  const payload = safeParseStoredMailExtraction(input.payload);
   if (!payload.success) return null;
-  const request = projectCancelRequests(input.source, payload.data, input.state,
+  const request = projectCancelRequests(input.source, payload.data, hydrateStoredWorkState(input.state),
     input.ownerAction, input.kind).requests.find((entry) => entry.requestId === input.requestId);
   if (!request || request.action !== 'cancel' || request.workflow !== 'cancel' || request.status !== 'pending' ||
       request.fields?.kind !== 'cancel' || (input.proposalDigest && input.proposalDigest !== request.proposalDigest)) return null;

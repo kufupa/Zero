@@ -28,7 +28,7 @@ const batchRoomSchema = z.object({
   stay: z.object({ arrival: date, departure: date, adults: z.number().int().min(1).max(16),
     childAges: z.array(z.number().int().min(0).max(17)).max(16) }).strict(),
   roomType: text, ratePlan: text, amount,
-  agency: party.nullable(), organization: party.nullable(),
+  bookingAgency: party.nullable(), organization: party.nullable(),
   guaranteeType: text, sourceOfBusiness: text.nullable(), note: z.string().max(200).nullable(),
   track: text.nullable(), marketSegment: text.nullable(), guestOptIn: z.boolean(),
   booker: z.object({ name: text.nullable(), email: text.nullable() }).strict().nullable(),

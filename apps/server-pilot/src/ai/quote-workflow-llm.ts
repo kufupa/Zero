@@ -48,7 +48,7 @@ export const K2_MAPPING = [
   'text; if no exact span exists, omit the claim.',
   'Never paraphrase, tidy, complete, or invent a quoted amount.',
   'Extras (shuttle, dinner, transfers) become missing questions, not invented prices.',
-  'Keep the requested dinner board in groups[].board: use "dbb" for DBB/dinner with breakfast and "half_board" for half-board; the server converts either to B&B and adds dinner separately.',
+  'Keep the requested dinner board in groups[].mealPlan: use "dbb" for DBB/dinner with breakfast and "half_board" for half-board; the server converts either to B&B and adds dinner separately.',
   'adultsPerRoom is adults in EACH room, never a stay total divided by rooms. If only a stay-wide total is known for multiple rooms, set adultsPerRoom=null; do not divide, round, or copy the total into each room.',
   'Preserve adultsTotal and childrenTotal only when explicitly stated as stay-wide totals; never infer them from per-room counts.',
   'childAges contains real stated ages only. Use [] when zero children are affirmed or a property-specific quote convention in the hotel rules applies; use null when child presence, count, or ages are unknown. Never invent age 0.',
@@ -167,7 +167,7 @@ export type MappedQuoteDecision = {
     adultsTotal?: number | null;
     childrenTotal?: number | null;
     childrenAges: number[];
-    board: 'dinner_bb' | 'bb' | 'room_only' | 'unknown';
+    mealPlan: 'dinner_bb' | 'bb' | 'room_only' | 'unknown';
     roomPreference?: string;
     organisation?: string;
     specialRequests: string[];
@@ -314,21 +314,21 @@ function normalizeStayTotal(value: number | null | undefined): number | null | u
 }
 
 function hotelDefaultedQuestion(field: string): boolean {
-  return /^(roomType|roomPreference|room_type|board)$/i.test(field);
+  return /^(roomType|roomPreference|room_type|mealPlan)$/i.test(field);
 }
 
 function defaultBoard(
   partyKind: LunaAnalysis['party']['kind'],
-): MappedQuoteDecision['groups'][number]['board'] {
+): MappedQuoteDecision['groups'][number]['mealPlan'] {
   return partyKind === 'government' ? 'dinner_bb' : 'bb';
 }
 
 function mapStatedOrDefaultBoard(
-  board: LunaAnalysis['groups'][number]['board'],
+  mealPlan: LunaAnalysis['groups'][number]['mealPlan'],
   partyKind: LunaAnalysis['party']['kind'],
-): MappedQuoteDecision['groups'][number]['board'] {
-  if (board === null) return defaultBoard(partyKind);
-  return board === 'dbb' || board === 'half_board' ? 'dinner_bb' : board;
+): MappedQuoteDecision['groups'][number]['mealPlan'] {
+  if (mealPlan === null) return defaultBoard(partyKind);
+  return mealPlan === 'dbb' || mealPlan === 'half_board' ? 'dinner_bb' : mealPlan;
 }
 
 function missingQuoteReplyFields(
@@ -340,7 +340,7 @@ function missingQuoteReplyFields(
     : [{
         id: 'g1',
         childrenAges: [],
-        board: 'unknown' as const,
+        mealPlan: 'unknown' as const,
         specialRequests: [],
         fields: {},
       }];
@@ -660,9 +660,9 @@ export function mapLlmDecision(
     const roomPreference = group.roomPreference?.trim() || undefined;
     const roomMatch = roomPreference ? matchRoomType(roomPreference, options?.propertyCode) : null;
     const roomPreferenceDefaulted = quoteDefaults && !roomMatch?.code;
-    const boardDefaulted = group.board === null;
-    const board: MappedQuoteDecision['groups'][number]['board'] = mapStatedOrDefaultBoard(
-      group.board,
+    const boardDefaulted = group.mealPlan === null;
+    const mealPlan: MappedQuoteDecision['groups'][number]['mealPlan'] = mapStatedOrDefaultBoard(
+      group.mealPlan,
       analysis.party.kind,
     );
     if (unknownChildAges && (hasMultipleKnownStays || !analysis.missing.some((item) => item.field === 'childAges'))) {
@@ -680,7 +680,7 @@ export function mapLlmDecision(
       ...(adultsTotal !== undefined ? { adultsTotal } : {}),
       ...(childrenTotal !== undefined ? { childrenTotal } : {}),
       childrenAges: childAges,
-      board,
+      mealPlan,
       ...(roomPreference ? { roomPreference } : {}),
       ...(analysis.party.name ? { organisation: analysis.party.name } : {}),
       specialRequests: [] as string[],
@@ -703,7 +703,7 @@ export function mapLlmDecision(
                 : fieldState(roomPreference),
             }
           : {}),
-        board: boardDefaulted ? ('defaulted' as const) : fieldState(group.board),
+        mealPlan: boardDefaulted ? ('defaulted' as const) : fieldState(group.mealPlan),
       },
     };
   });
@@ -711,14 +711,14 @@ export function mapLlmDecision(
     groups.push({
       id: 'g1',
       childrenAges: [],
-      board: defaultBoard(analysis.party.kind),
+      mealPlan: defaultBoard(analysis.party.kind),
       specialRequests: [],
       fields: {
         arrivalDate: 'missing',
         departureDate: 'missing',
         quantity: 'missing',
         adults: 'missing',
-        board: 'defaulted',
+        mealPlan: 'defaulted',
       },
     });
     missing.push({

@@ -185,12 +185,12 @@ function wireValueAtPath(draft: ReservationWorkflowV2Draft, path: string): unkno
   return value;
 }
 
-const reviewedAggregateArrays = new Set(['childAges', 'roomCodes', 'artifacts']);
+const reviewedAggregateArrays = new Set(['childAges', 'roomCodes', 'artifacts', 'guestNames']);
 const nonReviewMetadata = new Set(['requestText', 'title', 'dateSectionId', 'requestedRooms', 'unassignedGuestNames',
   'requestedTotals', 'scope', 'profileIntent', 'candidateRefs', 'suggestedRef', 'sourceRefs', 'serviceRefs', 'documentRefs', 'targetRefs',
   'priceObservationRefs', 'lookupResultRefs', 'evidenceRefs', 'ownerRequestId', 'uploadArtifactRef', 'id', 'kind']);
 const nonReviewSubtrees = new Set(['requestedTotals', 'unassignedGuestNames']);
-const partyFieldNames = new Set(['bookingAgency', 'organization', 'arAccount', 'agency', 'company']);
+const partyFieldNames = new Set(['bookingAgency', 'organization', 'arAccount']);
 
 function isFilingDocumentKindPath(path: string): boolean {
   const parts = path.split('/').slice(1).map((part) => {
@@ -224,7 +224,7 @@ function shouldReviewPath(draft: ReservationWorkflowV2Draft, path: string, value
     if (override && ['none', 'clear', 'unknown'].includes(override.state)) return false;
   }
   if (leaf === 'name' && parts[2] === 'requests' && parts[4] === 'body' && parts[5] === 'parties'
-      && ['agency', 'company'].includes(parts[6] ?? '')) {
+      && ['bookingAgency', 'organization'].includes(parts[6] ?? '')) {
     const request = draft.proposal.content.requests.find((item, index) => item.id === parts[3] || String(index) === parts[3]);
     if (request?.kind === 'quote') return true;
   }
@@ -236,7 +236,7 @@ function shouldReviewPath(draft: ReservationWorkflowV2Draft, path: string, value
   if (Array.isArray(value)) return reviewedAggregateArrays.has(leaf);
   if (isRecord(value) && Array.isArray(value.candidateRefs)) return partyFieldNames.has(leaf);
 
-  // Candidate-bearing values are human review units themselves (payer/company
+  // Candidate-bearing values are human review units themselves (payer/organization
   // selections), but their display-only source members are not separate inputs.
   for (let length = parts.length - 1; length >= 0; length -= 1) {
     const ancestorPath = `/${parts.slice(0, length).map(encodeURIComponent).join('/')}`;
@@ -452,9 +452,9 @@ export function inputFieldLabel(value: string): string {
   const labels: Record<string, string> = {
     scope: 'occupancy per room', known_child_count: 'number of children and their ages',
     childCount: 'number of children', childAges: 'children’s ages', adults: 'adults per room',
-    agency_selection_required: 'select the Infor agency', company_selection_required: 'select the Infor company',
+    agency_selection_required: 'select the Infor agency', company_selection_required: 'select the Infor Organization',
     arrival: 'arrival date', departure: 'departure date', quantity: 'quantity', roomCodes: 'room type',
-    roomType: 'room type', ratePlan: 'rate plan', board: 'meal plan', guaranteeType: 'guarantee',
+    roomType: 'room type', ratePlan: 'rate plan', rateHandling: 'rate handling', mealPlan: 'meal plan', requestedMealPlan: 'requested meal plan', guaranteeType: 'guarantee',
     sourceOfBusiness: 'source of business', firstName: 'guest first name', lastName: 'guest last name',
     guestOptIn: 'guest opt-in', unitPrice: 'unit price', currency: 'currency', requestedRooms: 'number of rooms',
     requestedTotals: 'requested occupancy totals', nativeSelectionRef: 'confirmed Infor selection',
@@ -510,6 +510,11 @@ function nativeIssueText(issue: unknown): string | null {
   if (issue === 'existing_confirmation_requires_lookup') return 'A confirmation in this request may identify an existing booking. Find and verify that stay before creating a new reservation';
   if (issue === 'confirmation_claim_capacity_exceeded') return 'This request has too many confirmation references to check safely. Review the original email and PDF, and split it into explicit booking actions before proceeding';
   if (issue === 'create_requested_totals_conflict') return 'The rooms or occupants do not match the requested totals. Review each room and the group totals';
+  if (issue === 'amend_room_count_requires_separate_reservations') return 'Choose the rooms to add or cancel as separate reservations';
+  if (issue === 'amend_track_target_selection_required') return 'Find and select each saved stay in Infor before loading Track choices';
+  if (issue === 'retained_rate_not_supported_for_priced_amendment') return 'Choose Reprice in Infor, or split these changes in Infor to keep the current rate';
+  if (issue === 'amend_applied_price_requires_second_go') return 'Details may already have changed in Infor. Review the new price before saving';
+  if (issue === 'native_meal_plan_mismatch_or_unknown') return 'Infor could not match the requested Meal Plan. Choose a matching Rate Plan or update the request';
   if (issue === 'native_quote_no_matching_rate') {
     return 'No offer matches the requested room, rate and meal plan. Review available alternatives';
   }
@@ -611,12 +616,12 @@ function quoteOperationNotice(result: unknown, success: string[], action: string
     : result.status === 'needs_reconcile' || result.status === 'unknown'
       ? 'The result is uncertain. Check the recorded result before trying again' : null;
   const labels: Record<string, string> = {
-    arrival: 'arrival date', departure: 'departure date', quantity: 'number of rooms', board: 'meal plan',
+    arrival: 'arrival date', departure: 'departure date', quantity: 'number of rooms', mealPlan: 'meal plan', requestedMealPlan: 'requested meal plan',
     scope: 'occupancy per room', occupancy: 'number of children and their ages', adults: 'adults per room',
     childCount: 'number of children', childAges: 'children’s ages', roomCodes: 'room type', ratePlan: 'rate plan',
     salesStrategy: 'sales strategy', email: 'recipient email', attention: 'contact name', telephone: 'contact number',
     artifacts: 'quote outputs', provisionalBookingRequested: 'quote-only choice', requestedMoney: 'extra charges',
-    agency_selection_required: 'Infor agency', company_selection_required: 'Infor company',
+    agency_selection_required: 'Infor agency', company_selection_required: 'Infor Organization',
   };
   const fields = Array.isArray(result.fields) ? [...new Set(result.fields.filter(isString).map((field) => {
     const [path, reason] = field.split(':');

@@ -4,7 +4,7 @@ import type { useAmendWorkItem } from './use-amend-work-item';
 
 type RateCandidate = {
   id: string; rateCode: string; rateLabel: string | null; roomCode: string; roomLabel: string | null;
-  boardLabel: string | null; state: 'available' | 'unavailable' | 'restricted' | 'unchecked' | 'failed';
+  mealPlanLabel: string | null; state: 'available' | 'unavailable' | 'restricted' | 'unchecked' | 'failed';
   reasons: string[]; minRoomsAvailable: number | null;
   coverage: { nightsExpected: number; nightsObserved: number; eligibilityVerified: boolean; nativePartyIdsMatched: boolean };
   price: { currency: string; averagePerNightMinor: number | null; totalMinor: number | null;

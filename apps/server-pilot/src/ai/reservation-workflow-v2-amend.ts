@@ -45,6 +45,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { persistHmsShots, verifyStoredHmsShot } from './hms-shots-store.js';
 import { lockCreateActorSession } from './pane-create-actor-lock.js';
+import { formatBookerContact, parseBookerContact } from './reservation-workflow-v2-booker-contact.js';
+import { partyCandidateViews, verifiedNativeFields, reservationWorkflowV2MealPlanMatches } from './reservation-workflow-v2-tools.js';
+import { partyMatchSearchTerms } from './party-match-v2.js';
+import { loadReservationAmendBaselineAutoTransferLeads, reservationEntityKey } from './reservation-workflow-v2-native-leads.js';
 
 export type ReservationWorkflowV2AmendContext = {
   db: DB;
@@ -59,10 +63,12 @@ type ReadContext = ReservationWorkflowV2AmendContext | ReservationWorkflowV2Syst
 type Input = ReservationWorkflowV2LookupInput | ReservationWorkflowV2PrepareInput |
   ReservationWorkflowV2ExecuteInput | ReservationWorkflowV2ReconcileInput;
 type Outcome = { status: string; issue?: string; [key: string]: unknown };
+type AmendRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'amend' }>;
 type Amendment = {
   arrival?: string; departure?: string; adults?: number; children?: number; childAges?: number[];
-  roomType?: string; ratePlan: string; retainRates: 'yes' | 'no'; firstName?: string; lastName?: string;
-  guestEmail?: string; bookerName?: string; bookerContact?: string;
+  roomType?: string; roomTypeForCharge?: string; ratePlan: string; retainRates: 'yes' | 'no'; firstName?: string; lastName?: string;
+  guestEmail?: string; bookerName?: string; bookerContact?: string; billingReference?: string; taCommission?: number; guestOptIn?: false;
+  track?: { lookupCode: string; display: string }; guaranteeType?: string;
   cmsSend: boolean; cmsMessageId: string; cmsRecipient: string;
 };
 type Compile = { outcome: 'ok'; requestId: string; hintId: string; selectionPath: string; selectedRef: string;
@@ -135,6 +141,40 @@ function effectiveTree(draft: ReservationWorkflowV2Draft, path: string, source: 
       [key, effectiveTree(draft, `${path}/${encodeURIComponent(key)}`, sourceRecord[key], unknownPaths)]));
   }
   return resolved;
+}
+
+function effectiveRefList(draft: ReservationWorkflowV2Draft, path: string, source: unknown): unknown {
+  const root = effectiveLeaf(draft, path, source);
+  if (!Array.isArray(root)) return root;
+  let length = root.length;
+  const prefix = `${path}/`;
+  for (const key of Object.keys(draft.fieldOverrides)) {
+    if (!key.startsWith(prefix)) continue;
+    const part = key.slice(prefix.length).split('/')[0];
+    if (/^(?:0|[1-9]\d*)$/.test(part ?? '')) length = Math.max(length, Number(part) + 1);
+  }
+  if (length > 100) return UNKNOWN;
+  const values = Array.from({ length }, (_, index) => effectiveLeaf(draft, `${path}/${index}`, root[index]));
+  return values.some(value => value === undefined) ? UNKNOWN : values;
+}
+
+function amendDigestBody(draft: ReservationWorkflowV2Draft, requestId: string, requestPath: string,
+  body: Record<string, unknown>): Record<string, unknown> {
+  const reviews = new Set(draft.operationResults.filter(operation => operation.workflow === 'amend' &&
+    operation.requestId === requestId && operation.generationId === draft.generationId && operation.status === 'prepared')
+    .flatMap(operation => operation.observationRefs.filter(ref => draft.observations.some(observation =>
+      observation.ref === ref && observation.kind === 'rate_availability' && observation.status === 'complete' &&
+      observation.generationId === draft.generationId && observation.propertyCode === draft.propertyCode &&
+      observation.sourceMessageId === draft.source.messageId && observation.criteria.workflow === 'amend' &&
+      observation.criteria.stage === 'callback_price_review' && observation.criteria.requestId === requestId &&
+      observation.criteria.hintId === operation.allocationId))));
+  if (!Array.isArray(body.perTarget)) return body;
+  return { ...body, perTarget: body.perTarget.map((value, index) => {
+    const row = record(value);
+    if (!row) return value;
+    const refs = effectiveRefList(draft, `${requestPath}/perTarget/${index}/currentObservationRefs`, row.currentObservationRefs);
+    return Array.isArray(refs) ? { ...row, currentObservationRefs: refs.filter(ref => typeof ref !== 'string' || !reviews.has(ref)) } : row;
+  }) };
 }
 
 function accepted(draft: ReservationWorkflowV2Draft, path: string): boolean {
@@ -281,12 +321,13 @@ function validateHintAgainstNative(hint: Record<string, unknown>, native: HmsClo
 
 function observationForStay(draft: ReservationWorkflowV2Draft, requestId: string, hintId: string,
   selectionPath: string, query: Record<string, unknown>, native: HmsCloudNativePreimage,
-  status: 'complete' | 'partial' = 'complete', note?: string): ReservationWorkflowV2Observation {
+  reservationObservations: unknown, status: 'complete' | 'partial' = 'complete', note?: string): ReservationWorkflowV2Observation {
   return { ref: randomUUID(), generationId: draft.generationId, kind: 'stay_candidate', status,
     observedAt: new Date().toISOString(), propertyCode: 'HRCEN', sourceMessageId: draft.source.messageId, sourceRefs: [],
     criteria: { workflow: 'amend', kind: 'saved_target', requestId, hintId, selectionPath, query },
     coverage: { complete: status === 'complete', notes: note ? [note] : [] },
-    result: { candidate: native, nativeStayId: native.reservationStayId, confirmation: native.confirmation } };
+    result: { candidate: native, nativeStayId: native.reservationStayId, confirmation: native.confirmation,
+      reservationObservations } };
 }
 
 function failedStayObservation(draft: ReservationWorkflowV2Draft, requestId: string, hintId: string,
@@ -343,7 +384,8 @@ async function lookupHint(draft: ReservationWorkflowV2Draft,
     if (!validNative(native) || mismatch || found?.outcome !== 'found') {
       return { rows, observation: failedStayObservation(draft, requestId, hintId, selectionPath, query, mismatch ?? 'native_stay_unverified') };
     }
-    return { rows: [{ observation: observationForStay(draft, requestId, hintId, selectionPath, query, native), native }] };
+    return { rows: [{ observation: observationForStay(draft, requestId, hintId, selectionPath, query, native,
+      found.reservationObservations), native }] };
   }
   const name = text(hint.guestName), arrival = hint.bookedArrival, departure = hint.bookedDeparture;
   if (signal) return { rows, observation: failedStayObservation(draft, requestId, hintId, selectionPath, query,
@@ -369,7 +411,8 @@ async function lookupHint(draft: ReservationWorkflowV2Draft,
     const native = record(found)?.nativePreimage;
     const mismatch = validNative(native) ? validateHintAgainstNative(hint, native) : 'native_stay_unverified';
     if (!validNative(native) || mismatch || found?.outcome !== 'found') continue;
-    rows.push({ observation: observationForStay(draft, requestId, hintId, selectionPath, query, native), native });
+    rows.push({ observation: observationForStay(draft, requestId, hintId, selectionPath, query, native,
+      found.reservationObservations), native });
   }
   if (!rows.length) return { rows, observation: failedStayObservation(draft, requestId, hintId, selectionPath, query,
     'no_verified_native_stay_matches_original_hints') };
@@ -400,10 +443,16 @@ function selectedStay(draft: ReservationWorkflowV2Draft, requestId: string, hint
 }
 
 function fieldChanged(current: Record<string, unknown>, field: string, value: unknown) {
-  const baselineField = field === 'childCount' ? 'children' : field;
+  const baselineField = field === 'childCount' ? 'children' : field === 'guaranteeType' ? 'guaranteeCode' : field;
   const before = current[baselineField];
   if (field === 'childAges') return canonicalJson(before) !== canonicalJson(value);
   return before !== value;
+}
+
+function sameChildAges(left: unknown, right: unknown) {
+  if (!Array.isArray(left) || !Array.isArray(right)) return left === right;
+  return canonicalJson([...left].sort((a, b) => Number(a) - Number(b))) ===
+    canonicalJson([...right].sort((a, b) => Number(a) - Number(b)));
 }
 
 function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintId: string,
@@ -460,6 +509,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
   const values: Record<string, unknown> = {};
   const errors: string[] = [];
   const unsupported = new Set<string>();
+  const roomCountPaths: string[] = [];
   const applyChange = (change: unknown, changePath: string) => {
     const item = record(change);
     if (!item) { errors.push(`${changePath}:change_invalid`); return; }
@@ -480,13 +530,14 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     }
     const field = effectiveLeaf(draft, fieldPath, item.field);
     if (field === UNKNOWN || typeof field !== 'string') { errors.push(`${changePath}:change_unknown`); return; }
-    if (['roomTypeForCharge', 'reservationNote'].includes(field)) { unsupported.add(field); return; }
-    const supported = new Set(['arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'ratePlan',
-      'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
+    if (field === 'roomCount') { roomCountPaths.push(changePath); return; }
+    const supported = new Set(['arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'roomTypeForCharge', 'ratePlan',
+      'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'taCommission', 'guestOptIn', 'track', 'guaranteeType', 'cmsSend', 'cmsMessageId', 'cmsRecipient',
+      'bookingAgency', 'organization', 'arAccount', 'requestedMealPlan']);
     if (!supported.has(field)) { unsupported.add(field); return; }
     if (op === 'clear') {
-      if (['guestEmail', 'bookerName', 'bookerContact'].includes(field)) values[field] = '';
-      else if (field === 'cmsSend') values.cmsSend = false;
+      if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'roomTypeForCharge'].includes(field)) values[field] = '';
+      else if (field === 'cmsSend' || field === 'guestOptIn') values[field] = false;
       else if (field === 'cmsMessageId' || field === 'cmsRecipient') values[field] = '';
       else errors.push(`${changePath}:field_cannot_be_cleared`);
       reviewPaths.add(valuePath);
@@ -495,9 +546,35 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     if (op !== 'set') { errors.push(`${opPath}:operation_unsupported`); return; }
     const rawValue = effectiveLeaf(draft, valuePath, item.value);
     if (rawValue === UNKNOWN) { errors.push(`${valuePath}:value_unknown`); return; }
+    if (field === 'bookingAgency' || field === 'organization' || field === 'arAccount') {
+      const party = record(rawValue), name = text(effectiveLeaf(draft, `${valuePath}/name`, party?.name));
+      const selectionPath = `${valuePath}/nativeSelectionRef`;
+      const ref = effectiveLeaf(draft, selectionPath, party?.suggestedRef);
+      const rows = typeof ref === 'string' ? draft.observations.filter(observation => observation.ref === ref) : [];
+      const observation = rows.length === 1 ? rows[0] : null;
+      const role = field === 'bookingAgency' ? 'bookingAgency' : field === 'organization' ? 'organization' : 'ar_account';
+      const candidates = Array.isArray(observation?.result.candidates) ? observation.result.candidates : [];
+      const candidate = candidates.length === 1 ? record(candidates[0]) : null;
+      if (!name || !observation || observation.kind !== 'party_candidate' || observation.status !== 'complete' ||
+          !observation.coverage.complete || observation.generationId !== draft.generationId ||
+          observation.propertyCode !== draft.propertyCode || observation.sourceMessageId !== draft.source.messageId ||
+          observation.criteria.workflow !== 'amend' || observation.criteria.kind !== 'party_name' ||
+          observation.criteria.requestId !== requestId || observation.criteria.role !== role ||
+          observation.criteria.query !== name || !Array.isArray(observation.criteria.fieldPaths) ||
+          !observation.criteria.fieldPaths.includes(selectionPath) || !candidate ||
+          !/^\d{1,30}$/.test(String(candidate.nativeId ?? '')) || !text(candidate.name) ||
+          String(candidate.name).length > 200 || /[\p{Cc}]/u.test(String(candidate.name))) {
+        errors.push(`${selectionPath}:party_candidate_unverified`); return;
+      }
+      values[field] = { nativeId: String(candidate.nativeId), name: String(candidate.name), query: String(candidate.name),
+        selectedRef: ref, selectionPath };
+      reviewPaths.add(valuePath);
+      reviewPaths.add(selectionPath);
+      return;
+    }
     if (rawValue === NONE) {
-      if (['guestEmail', 'bookerName', 'bookerContact'].includes(field)) values[field] = '';
-      else if (field === 'cmsSend') values.cmsSend = false;
+      if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'roomTypeForCharge'].includes(field)) values[field] = '';
+      else if (field === 'cmsSend' || field === 'guestOptIn') values[field] = false;
       else errors.push(`${valuePath}:explicit_none_not_supported`);
       reviewPaths.add(valuePath);
       return;
@@ -506,7 +583,17 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
       field === 'adults' ? Number.isInteger(rawValue) && Number(rawValue) >= 1 && Number(rawValue) <= 16 :
       field === 'childCount' ? Number.isInteger(rawValue) && Number(rawValue) >= 0 && Number(rawValue) <= 9 :
       field === 'childAges' ? Array.isArray(rawValue) && rawValue.length <= 9 && rawValue.every((age) => Number.isInteger(age) && age >= 0 && age <= 17) :
-      field === 'roomType' || field === 'ratePlan' ? code(rawValue) :
+      field === 'roomType' || field === 'roomTypeForCharge' || field === 'ratePlan' ? code(rawValue) :
+      field === 'reservationNote' ? typeof rawValue === 'string' && rawValue.length <= 2000 &&
+        ![...rawValue].some((char) => (char.charCodeAt(0) < 32 && char !== '\n') || char.charCodeAt(0) === 127) :
+      field === 'track' ? (() => { const track = record(rawValue); return Boolean(track && Object.keys(track).length === 2 &&
+        typeof track.lookupCode === 'string' && /^[A-Z0-9]{1,12}$/.test(track.lookupCode) && typeof track.display === 'string' &&
+        track.display.length > 0 && track.display.length <= 200 && track.display.trim() === track.display && !/[\p{Cc}]/u.test(track.display)); })() :
+      field === 'requestedMealPlan' ? typeof rawValue === 'string' && Boolean(rawValue.trim()) && rawValue.length <= 120 && !/[\p{Cc}]/u.test(rawValue) :
+      field === 'billingReference' ? typeof rawValue === 'string' && rawValue.length <= 4000 && !/[\p{Cc}]/u.test(rawValue) :
+      field === 'taCommission' ? typeof rawValue === 'number' && Number.isFinite(rawValue) && rawValue >= 0 && rawValue <= 100 :
+      field === 'guestOptIn' ? rawValue === false :
+      field === 'guaranteeType' ? typeof rawValue === 'string' && /^[A-Z0-9]{1,20}$/.test(rawValue) :
       field === 'cmsSend' ? typeof rawValue === 'boolean' : typeof rawValue === 'string' && rawValue.length <= 1000 && !/[\p{Cc}]/u.test(rawValue);
     if (!valid) { errors.push(`${valuePath}:value_invalid`); return; }
     values[field] = rawValue;
@@ -523,8 +610,38 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
   if (effectiveChanges === UNKNOWN) return { outcome: 'needs_input', issue: 'amend_target_changes_unknown', fields: [changesPath] };
   if (!Array.isArray(effectiveChanges)) return { outcome: 'needs_input', issue: 'amend_target_changes_required', fields: [changesPath] };
   effectiveChanges.forEach((change, index) => applyChange(change, `${changesPath}/${index}`));
+  if (roomCountPaths.length) return { outcome: 'needs_input', issue: 'amend_room_count_requires_separate_reservations', fields: roomCountPaths };
   if (unsupported.size) return { outcome: 'unsupported', issue: 'amend_contains_native_unsupported_field', fields: [...unsupported] };
   if (errors.length) return { outcome: 'needs_input', issue: 'amend_changes_invalid_or_unknown', fields: errors };
+  if (typeof values.billingReference === 'string' && values.billingReference.length > 50) {
+    return { outcome: 'needs_input', issue: 'native_billing_reference_max_50', fields: ['billingReference'] };
+  }
+  const observationRefs = effectiveRefList(draft, `${perPath}/currentObservationRefs`, record(perRows[perIndex])?.currentObservationRefs);
+  if (Object.hasOwn(values, 'reservationNote') && (observationRefs === UNKNOWN || observationRefs === NONE ||
+      (observationRefs != null && (!Array.isArray(observationRefs) || observationRefs.some(ref =>
+        typeof ref !== 'string' || draft.observations.filter(item => item.ref === ref).length !== 1))))) {
+    return { outcome: 'needs_input', issue: 'amend_note_baseline_unavailable', fields: [`${perPath}/currentObservationRefs`] };
+  }
+  const noteBaselines = Array.isArray(observationRefs) ? observationRefs.flatMap(ref => {
+    const observation = draft.observations.find(item => item.ref === ref && item.kind === 'stay_candidate' &&
+      item.criteria.kind === 'prefill_saved_note_baseline');
+    return observation ? [observation] : [];
+  }) : [];
+  if (Object.hasOwn(values, 'reservationNote') && noteBaselines.length) {
+    const baseline = noteBaselines[0], selectedObservation = draft.observations.find(item => item.ref === chosen.ref);
+    const note = record(record(record(baseline?.result)?.reservationObservations)?.reservationNote);
+    const selectedNote = record(record(record(selectedObservation?.result)?.reservationObservations)?.reservationNote);
+    if (noteBaselines.length !== 1 || baseline?.status !== 'complete' || !baseline.coverage.complete ||
+        baseline.generationId !== draft.generationId || baseline.propertyCode !== draft.propertyCode ||
+        baseline.sourceMessageId !== draft.source.messageId || baseline.criteria.requestId !== requestId || !note || !selectedNote ||
+        !['observed', 'blank'].includes(String(note.state)) || note.source !== 'record_view_raw_value' ||
+        note.confirmation !== chosen.selected.confirmation || typeof note.value !== 'string' ||
+        selectedNote.source !== note.source || selectedNote.state !== note.state ||
+        selectedNote.confirmation !== note.confirmation || selectedNote.value !== note.value) {
+      return { outcome: 'needs_input', issue: 'amend_note_baseline_does_not_match_selected_stay',
+        fields: [`${perPath}/currentObservationRefs`] };
+    }
+  }
   if (mode === 'execute') {
     const pending = [...reviewPaths].filter((path) => !accepted(draft, path));
     if (pending.length) return { outcome: 'needs_review', issue: 'amend_requires_staff_acceptance', fields: pending };
@@ -555,9 +672,14 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
   if (typeof next.roomType !== 'string' || !code(next.roomType) || typeof next.ratePlan !== 'string' || !code(next.ratePlan)) {
     return { outcome: 'needs_input', issue: 'native_room_or_rate_baseline_invalid', fields: ['roomType', 'ratePlan'] };
   }
-  const pricingChanged = ['arrival', 'departure', 'adults', 'children', 'childAges', 'roomType', 'ratePlan']
-    .some((field) => fieldChanged(current, field, next[field]));
-  if (rateValue === 'retain' && pricingChanged) {
+  const pricingChanged = ['arrival', 'departure', 'adults', 'roomType', 'roomTypeForCharge', 'ratePlan']
+    .some((field) => Object.hasOwn(baseChanges, field) && fieldChanged(current, field, baseChanges[field]));
+  const knownChildAgesChanged = Array.isArray(baseChanges.childAges) && Array.isArray(current.childAges) &&
+    !sameChildAges(baseChanges.childAges, current.childAges);
+  const knownCallbackChanged = (typeof baseChanges.children === 'number' && baseChanges.children !== current.children) ||
+    knownChildAgesChanged || (typeof baseChanges.guaranteeType === 'string' && typeof current.guaranteeCode === 'string' &&
+      baseChanges.guaranteeType !== current.guaranteeCode);
+  if (rateValue === 'retain' && (pricingChanged || knownCallbackChanged)) {
     return { outcome: 'unsupported', issue: 'retained_rate_not_supported_for_priced_amendment', fields: ['rateHandling'] };
   }
   const target = { confirmation: current.confirmation, nativeStayId: current.reservationStayId,
@@ -565,10 +687,12 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     adults: next.adults, children: next.children, childAges: next.childAges,
     firstName: next.firstName, lastName: next.lastName };
   const baseDigest = sha256({ requestId, hintId, selectedRef: chosen.ref, selected: chosen.selected,
-    scope: { mode: scope.mode, exclude: targetExclusions.rows.map(({ hint: excluded }) => ({ id: excluded.id ?? null,
+    body: amendDigestBody(draft, requestId, requestPath, bodyValue),
+    scope: { mode: scope.mode, include: scope.include, exclude: targetExclusions.rows.map(({ hint: excluded }) => ({ id: excluded.id ?? null,
       confirmation: excluded.confirmation ?? null, guestName: excluded.guestName ?? null,
       bookedArrival: excluded.bookedArrival ?? null, bookedDeparture: excluded.bookedDeparture ?? null })) },
-    rateHandling: rateValue, changes: baseChanges, reviewPaths: [...reviewPaths].sort() });
+    rateHandling: rateValue, changes: baseChanges, noteBaselineRefs: noteBaselines.map(item => item.ref),
+    reviewPaths: [...reviewPaths].sort() });
   return { outcome: 'ok', requestId, hintId, selectionPath: chosen.path, selectedRef: chosen.ref,
     selected: chosen.selected, baseChanges, rateHandling: rateValue as 'retain' | 'reprice',
     reviewPaths: [...reviewPaths], baseDigest, target, requestPath };
@@ -579,19 +703,39 @@ function nativePrice(value: unknown): Record<string, unknown> | null {
   if (!row || row.version !== 2 || typeof row.currency !== 'string' || !/^[A-Z]{3}$/.test(row.currency) ||
       typeof row.totalCents !== 'string' || !/^\d+$/.test(row.totalCents) ||
       row.averageCents !== null && (typeof row.averageCents !== 'string' || !/^\d+$/.test(row.averageCents))) return null;
+  if (row.componentsTenThousandths !== undefined) {
+    const components = record(row.componentsTenThousandths);
+    const allowed = new Set(['grandtotal', 'averagenightly', 'averagerate', 'totalrate', 'totalratewithtax',
+      'enhancedexptotal', 'guesttotal', 'guesttax', 'guesttotalwithtax', 'tax', 'totalresortfee', 'ratetax']);
+    if (!components || Object.entries(components).some(([key, value]) => !allowed.has(key) ||
+        typeof value !== 'string' || !/^\d+$/.test(value))) return null;
+  }
   return row;
 }
 
-function normalizedChanges(base: Compile & { outcome: 'ok' }, preserved: Record<string, unknown>): Amendment | null {
+function normalizedChanges(base: Compile & { outcome: 'ok' }, preserved: Record<string, unknown>,
+  baseline: Record<string, unknown>): Amendment | null {
   if (typeof preserved.cmsSend !== 'boolean' || typeof preserved.cmsRecipient !== 'string') return null;
   const cmsSend = typeof base.baseChanges.cmsSend === 'boolean' ? base.baseChanges.cmsSend : preserved.cmsSend;
   const cmsRecipient = typeof base.baseChanges.cmsRecipient === 'string' ? base.baseChanges.cmsRecipient : preserved.cmsRecipient;
   const cmsMessageId = typeof base.baseChanges.cmsMessageId === 'string'
     ? base.baseChanges.cmsMessageId : typeof preserved.cmsMessageId === 'string' ? preserved.cmsMessageId : '';
-  if (!cmsSend && ((base.baseChanges.cmsRecipient !== undefined && base.baseChanges.cmsRecipient !== preserved.cmsRecipient) ||
-      (base.baseChanges.cmsMessageId !== undefined && base.baseChanges.cmsMessageId !== preserved.cmsMessageId)) ||
+  if (typeof preserved.cmsMessageId !== 'string' ||
       cmsSend && (!cmsMessageId.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cmsRecipient))) return null;
-  return { ...base.baseChanges, ratePlan: String(base.baseChanges.ratePlan ?? base.selected.ratePlan),
+  const { bookerEmail, bookerMobile, requestedMealPlan: _requestedMealPlan, ...nativeChanges } = base.baseChanges;
+  if (bookerEmail !== undefined || bookerMobile !== undefined) {
+    const previous = typeof baseline.beforeBookerContact === 'string' ? parseBookerContact(baseline.beforeBookerContact) : null;
+    if ((!previous && (bookerEmail === undefined || bookerMobile === undefined)) ||
+        (bookerEmail !== undefined && typeof bookerEmail !== 'string') ||
+        (bookerMobile !== undefined && typeof bookerMobile !== 'string')) return null;
+    const email = typeof bookerEmail === 'string' ? bookerEmail || null : previous?.email ?? null;
+    const mobile = typeof bookerMobile === 'string' ? bookerMobile || null : previous?.mobile ?? null;
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return null;
+    const contact = formatBookerContact(email, mobile);
+    if (contact === null) return null;
+    nativeChanges.bookerContact = contact;
+  }
+  return { ...nativeChanges, ratePlan: String(base.baseChanges.ratePlan ?? base.selected.ratePlan),
     retainRates: base.rateHandling === 'retain' ? 'yes' : 'no', cmsSend, cmsMessageId, cmsRecipient } as Amendment;
 }
 
@@ -599,6 +743,12 @@ function nativeModule() {
   const url = new URL('../../tooling/hms-cloud/pane-amend-session.mjs', import.meta.url);
   return import(url.href) as Promise<{
     prepareCloudPaneAmend(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    readCloudSavedChildAges(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    previewCloudPaneAmendChildren(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    inspectCloudPaneAmendParties(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    reviewCloudPaneAmendCallbacks(input: Record<string, unknown>, authorization: Record<string, unknown>): Promise<Record<string, unknown>>;
+    readCloudCallbackReviewState(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    commitCloudPaneAmendReviewed(input: Record<string, unknown>, authorization: Record<string, unknown>): Promise<Record<string, unknown>>;
     commitCloudPaneAmend(input: Record<string, unknown>, authorization: Record<string, unknown>): Promise<Record<string, unknown>>;
   }>;
 }
@@ -627,9 +777,116 @@ function targetWriteLock(ctx: ReadContext, selected: HmsCloudNativePreimage) {
     lock: paneStayCloudTargetLock(target, targetRef.data, { kind: 'independent_cloud' }) };
 }
 
+/** Read the current Track picker for every selected reservation in this change's scope. */
+export async function readAmendTrackChoices(ctx: ReadContext, draft: ReservationWorkflowV2Draft,
+  requestId: string, fieldPath: string): Promise<Outcome> {
+  if (!paneStayLookupEnabled()) return { status: 'needs_input', issue: 'stay_lookup_disabled' };
+  const found = requestBody(draft, requestId);
+  if (!found) return { status: 'needs_input', issue: 'amend_track_target_selection_required' };
+  const unknown = new Set<string>(), targetsPath = `${found.path}/targets`;
+  const targets = record(effectiveTree(draft, targetsPath, found.request.body.targets, unknown));
+  if (!targets || targets.mode !== 'explicit' || !Array.isArray(targets.include) || !targets.include.length ||
+      !Array.isArray(targets.exclude) || unknown.size) return { status: 'needs_input', issue: 'amend_track_target_selection_required' };
+  const exclusionPath = `${targetsPath}/exclude`;
+  const exclusions = resolveTargetExclusions(draft, exclusionPath, targets.exclude, unknown);
+  if (exclusions.issue) return { status: 'needs_input', issue: 'amend_track_target_selection_required' };
+  const relative = fieldPath.startsWith(`${found.path}/`) ? fieldPath.slice(found.path.length + 1).split('/') : [];
+  let targetHint: string | null = null;
+  if (relative[0] === 'perTarget' && /^\d+$/.test(relative[1] ?? '')) {
+    const index = Number(relative[1]), root = `${found.path}/perTarget`;
+    const rows = effectiveLeaf(draft, root, found.request.body.perTarget);
+    const row = Array.isArray(rows) ? record(effectiveLeaf(draft, `${root}/${index}`, rows[index])) : null;
+    const value = effectiveLeaf(draft, `${root}/${index}/hintId`, row?.hintId);
+    targetHint = text(value);
+    if (!targetHint) return { status: 'needs_input', issue: 'amend_track_target_selection_required' };
+  } else if (relative[0] !== 'sharedChanges') return { status: 'needs_input', issue: 'amend_track_target_selection_required' };
+  const selected: Array<{ hintId: string; ref: string; native: HmsCloudNativePreimage }> = [];
+  const ids = new Set<string>();
+  for (const [index, value] of targets.include.entries()) {
+    const hint = record(value), hintId = text(hint?.id);
+    if (!hint || !hintId || ids.has(hintId)) return { status: 'needs_input', issue: 'amend_track_target_selection_required' };
+    ids.add(hintId);
+    if (targets.exclude.some(value => record(value)?.id === hintId) || (targetHint && hintId !== targetHint)) continue;
+    const chosen = selectedStay(draft, requestId, hintId, normalizedTargetHint(hint), index);
+    if ('issue' in chosen || auditTargetExclusions(chosen.selected as unknown as Record<string, unknown>, exclusions, exclusionPath)) {
+      return { status: 'needs_input', issue: 'amend_track_target_selection_required' };
+    }
+    selected.push({ hintId, ref: chosen.ref, native: chosen.selected });
+  }
+  if (!selected.length || (targetHint && selected.length !== 1)) return { status: 'needs_input', issue: 'amend_track_target_selection_required' };
+  const native = await import(new URL('../../tooling/hms-cloud/pane-amend-session.mjs', import.meta.url).href) as {
+    listCloudPaneAmendTrackChoices: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  };
+  let intersection: Array<{ code: string; label: string }> | null = null;
+  for (const item of selected) {
+    const locked = targetWriteLock(ctx, item.native);
+    if (!locked?.lock) return { status: 'failed', issue: 'amend_track_choices_unavailable' };
+    let result: Record<string, unknown>;
+    try {
+      result = await locked.lock.withLock(() => native.listCloudPaneAmendTrackChoices({ target: locked.target,
+        selected: item.native, confirmation: item.native.confirmation, arrival: item.native.arrival, allowRealGuest: true,
+        cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget), signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) }),
+      { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch?.signal });
+    } catch { return { status: 'failed', issue: 'amend_track_choices_unavailable' }; }
+    const coverage = record(result.coverage), rows = Array.isArray(result.candidates) ? result.candidates : null;
+    if (result.outcome !== 'ok' || coverage?.complete !== true || coverage.nativeResponseCorrelated !== true || !rows) {
+      return { status: 'failed', issue: 'amend_track_choices_unavailable' };
+    }
+    const choices: Array<{ code: string; label: string }> = [];
+    for (const value of rows) {
+      const row = record(value), code = text(row?.code), label = text(row?.label);
+      if (!code || !label || choices.some(choice => choice.code === code)) return { status: 'failed', issue: 'amend_track_choices_unavailable' };
+      choices.push({ code, label });
+    }
+    intersection = intersection === null ? choices : intersection.filter(choice =>
+      choices.some(other => other.code === choice.code && other.label === choice.label));
+  }
+  return { status: 'ok', candidates: intersection ?? [], selectedTargets: selected.map(({ hintId, ref }) => ({ hintId, ref })),
+    nativeCoverage: { complete: true, nativeResponseCorrelated: true, selectedStayCount: selected.length } };
+}
+
+const nativePartySchema = z.discriminatedUnion('state', [z.object({ state: z.literal('unknown') }).strict(),
+  z.object({ state: z.literal('blank') }).strict(),
+  z.object({ state: z.literal('selected'), nativeId: z.string().regex(/^[1-9]\d{0,29}$/),
+    name: z.string().min(1).max(300).refine(value => Boolean(value.trim()) && !/[\p{Cc}]/u.test(value)) }).strict()]);
+const nativePartyBaselineSchema = z.object({ organization: nativePartySchema, arAccount: nativePartySchema }).strict();
+
+function appliedMealPlan(native: Record<string, unknown> | null): string | null {
+  const value = record(native?.applied)?.mealPlan;
+  return typeof value === 'string' && Boolean(value.trim()) && value.length <= 120 && !/[\p{Cc}]/u.test(value) ? value : null;
+}
+
+function mealPlanVerified(draft: ReservationWorkflowV2Draft, compiled: CompiledAmend, native: Record<string, unknown>): boolean {
+  const actual = appliedMealPlan(native), baseline = record(native.recoveryBaseline)?.beforeMealPlan;
+  const requested = typeof compiled.baseChanges.requestedMealPlan === 'string' ? compiled.baseChanges.requestedMealPlan : null;
+  return actual !== null && typeof baseline === 'string' && Boolean(baseline.trim()) &&
+    reservationWorkflowV2MealPlanMatches(requested === 'dinner_bb' ? 'dinner_bed_breakfast' : requested, actual, draft.propertyCode);
+}
+
+function mealMismatchObservation(draft: ReservationWorkflowV2Draft, compiled: CompiledAmend,
+  native: Record<string, unknown>): ReservationWorkflowV2Observation {
+  return { ref: randomUUID(), generationId: draft.generationId, kind: 'rate_availability', status: 'partial',
+    observedAt: new Date().toISOString(), propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId, sourceRefs: [],
+    criteria: { workflow: 'amend', stage: 'prepare', requestId: compiled.requestId, hintId: compiled.hintId, selectedRef: compiled.selectedRef,
+      draftRevision: draft.revision, baseDigest: compiled.baseDigest },
+    coverage: { complete: false, notes: ['native_meal_plan_mismatch_or_unknown'] },
+    result: { outcome: 'meal_plan_mismatch_or_unknown', before: compiled.selected, target: compiled.target,
+      requestedMealPlan: compiled.baseChanges.requestedMealPlan ?? null, applied: { mealPlan: appliedMealPlan(native) } } };
+}
+
+async function recordMealMismatch(ctx: ReadContext, input: ReservationWorkflowV2PrepareInput, compiled: CompiledAmend,
+  observation: ReservationWorkflowV2Observation): Promise<Outcome> {
+  const recorded = await recordObservation(ctx, input, observation, 'failed',
+    'Requested meal plan needs a matching native rate', randomUUID(), compiled.hintId);
+  if (recorded.status !== 'ok') return recorded;
+  return { status: 'needs_input', issue: 'native_meal_plan_mismatch_or_unknown', fields: ['requestedMealPlan'],
+    observationRef: observation.ref, applied: observation.result.applied };
+}
+
 function preparationObservation(draft: ReservationWorkflowV2Draft, compiled: Compile & { outcome: 'ok' },
   native: Record<string, unknown>, changes: Amendment, preserved: Record<string, unknown>, price: Record<string, unknown>,
   recoveryBaseline: Record<string, unknown>, semanticDigest: string): ReservationWorkflowV2Observation {
+  const baseline = nativePartyBaselineSchema.safeParse(native.nativePartyBaseline);
   return { ref: randomUUID(), generationId: draft.generationId, kind: 'rate_availability', status: 'complete',
     observedAt: new Date().toISOString(), propertyCode: 'HRCEN', sourceMessageId: draft.source.messageId, sourceRefs: [],
     criteria: { workflow: 'amend', requestId: compiled.requestId, hintId: compiled.hintId, selectedRef: compiled.selectedRef,
@@ -637,7 +894,9 @@ function preparationObservation(draft: ReservationWorkflowV2Draft, compiled: Com
       nativeDigest: native.nativeDigest },
     coverage: { complete: true, notes: [] },
     result: { outcome: 'prepared', before: compiled.selected, target: compiled.target, nativeChanges: changes,
+      requestedMealPlan: compiled.baseChanges.requestedMealPlan ?? null, applied: { mealPlan: appliedMealPlan(native) },
       nativeDigest: native.nativeDigest, approvedPrices: price, preserved, recoveryBaseline,
+      ...(baseline.success ? { nativePartyBaseline: baseline.data } : {}),
       semanticInput: { requestId: compiled.requestId, hintId: compiled.hintId, selectedRef: compiled.selectedRef,
         selected: compiled.selected, baseChanges: compiled.baseChanges, rateHandling: compiled.rateHandling,
         changes, target: compiled.target } } };
@@ -656,12 +915,117 @@ async function recordObservation(ctx: ReadContext, input: Input,
   } });
 }
 
+async function appendSavedBaselineHints(ctx: ReadContext, input: ReservationWorkflowV2PrepareInput,
+  compiled: Compile & { outcome: 'ok' }, prepareRef: string, recorded: Awaited<ReturnType<typeof recordObservation>>) {
+  if (recorded.status !== 'ok' || recorded.revision !== input.expectedRevision || recorded.seq !== input.expectedSeq) return;
+  const draft = recorded.draft;
+  const live = compileBase(draft, compiled.requestId, compiled.hintId, 'prepare');
+  if (live.outcome !== 'ok' || live.baseDigest !== compiled.baseDigest || live.selectedRef !== compiled.selectedRef) return;
+  const prepare = draft.observations.find(row => row.ref === prepareRef);
+  const target = draft.observations.find(row => row.ref === compiled.selectedRef);
+  if (!prepare || !target || prepare.criteria.baseDigest !== compiled.baseDigest ||
+      prepare.criteria.selectedRef !== compiled.selectedRef || prepare.criteria.draftRevision !== draft.revision ||
+      !draft.operationResults.some(row => row.workflow === 'amend' && row.status === 'prepared' &&
+        row.requestId === compiled.requestId && row.allocationId === compiled.hintId && row.observationRefs.includes(prepareRef))) return;
+  const signal = ctx.nativeBatch?.signal ?? AbortSignal.timeout(30_000);
+  try {
+    const hints = await loadReservationAmendBaselineAutoTransferLeads({ propertyCode: draft.propertyCode,
+      source: draft.source, generationId: draft.generationId, proposal: draft.proposal, db: ctx.db,
+      transportId: ctx.transport.id, signal, prepareObservation: prepare, targetObservation: target });
+    for (const observation of hints) {
+      const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), {
+        workItemId: input.workItemId, source: input.source, observation,
+        ...(!ctx.nativeBatch ? { fence: { expectedRevision: input.expectedRevision, expectedSeq: input.expectedSeq,
+          generationId: draft.generationId, signal } } : {}),
+      });
+      if (appended.status !== 'ok') break;
+    }
+  } catch { /* Historical guidance is optional; Prepare remains valid. */ }
+}
+
 function preparedObservation(draft: ReservationWorkflowV2Draft, compiled: Compile & { outcome: 'ok' }) {
   const rows = draft.observations.filter((observation) => observation.kind === 'rate_availability' &&
     observation.status === 'complete' && observation.generationId === draft.generationId && observation.criteria.workflow === 'amend' &&
+    observation.criteria.stage !== 'callback_price_review' && observation.criteria.stage !== 'retain_callback_unsupported' &&
     observation.criteria.requestId === compiled.requestId && observation.criteria.hintId === compiled.hintId &&
     observation.criteria.selectedRef === compiled.selectedRef && observation.criteria.baseDigest === compiled.baseDigest);
   return rows.at(-1) ?? null;
+}
+
+async function lookupAmendParties(draft: ReservationWorkflowV2Draft,
+  requests: AmendRequest[], signal?: AbortSignal) {
+  const specs = {
+    bookingAgency: { role: 'agency', tool: 'searchPrimaryBookingAgency', id: 'travelagencyid', name: 'travelagencyname' },
+    organization: { role: 'organization', tool: 'searchOrganization', id: 'companyid', name: 'companyname' },
+    arAccount: { role: 'ar_account', tool: 'searchArAccount', id: 'araccountid', name: 'araccountname' },
+  } as const;
+  const queries: Array<{ requestId: string; path: string; name: string; spec: typeof specs[keyof typeof specs] }> = [];
+  for (const request of requests) {
+    const root = ptr('proposal', 'content', 'requests', request.id, 'body');
+    const sharedPath = `${root}/sharedChanges`, perPath = `${root}/perTarget`;
+    const shared = effectiveLeaf(draft, sharedPath, request.body.sharedChanges);
+    const perTarget = effectiveLeaf(draft, perPath, request.body.perTarget);
+    const collect = (rows: unknown, path: string) => {
+      if (!Array.isArray(rows)) return;
+      rows.forEach((entry, index) => {
+        const changePath = `${path}/${index}`, item = record(effectiveLeaf(draft, changePath, entry));
+        if (!item || effectiveLeaf(draft, `${changePath}/op`, item.op) !== 'set') return;
+        const field = effectiveLeaf(draft, `${changePath}/field`, item.field);
+        if (typeof field !== 'string' || !Object.hasOwn(specs, field)) return;
+        const valuePath = `${changePath}/value`, value = record(effectiveLeaf(draft, valuePath, item.value));
+        const name = text(effectiveLeaf(draft, `${valuePath}/name`, value?.name));
+        if (name) queries.push({ requestId: request.id, path: `${valuePath}/nativeSelectionRef`, name,
+          spec: specs[field as keyof typeof specs] });
+      });
+    };
+    collect(shared, sharedPath);
+    if (Array.isArray(perTarget)) perTarget.forEach((entry, index) => {
+      const path = `${perPath}/${index}`, row = record(effectiveLeaf(draft, path, entry));
+      if (row) collect(effectiveLeaf(draft, `${path}/changes`, row.changes), `${path}/changes`);
+    });
+  }
+  if (!queries.length) return { observations: [] as ReservationWorkflowV2Observation[], lookups: [] as Record<string, unknown>[] };
+  const tool = await import(new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url).href) as {
+    withBookingLookupSession: (operation: (session: { runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
+      Promise<unknown>, options?: Record<string, unknown>) => Promise<unknown>;
+  };
+  return await tool.withBookingLookupSession(async ({ runTool }) => {
+    const observations: ReservationWorkflowV2Observation[] = [], lookups: Record<string, unknown>[] = [];
+    for (const query of queries) {
+      let nativeQuery = query.name, found = await runTool({ tool: query.spec.tool, query: nativeQuery });
+      const searchesTried = [{ query: nativeQuery, outcome: found.outcome }];
+      if (found.outcome === 'no_match') for (const term of partyMatchSearchTerms(query.name).filter(term => term !== query.name).slice(0, 2)) {
+        nativeQuery = term;
+        found = await runTool({ tool: query.spec.tool, query: nativeQuery });
+        searchesTried.push({ query: nativeQuery, outcome: found.outcome });
+        if (found.outcome !== 'no_match') break;
+      }
+      const closed = await runTool({ tool: 'closeGuestStayPartyPicker', propertyCode: draft.propertyCode });
+      if (closed.outcome !== 'closed_unsaved') throw new Error('PARTY_PICKER_CLOSE_UNVERIFIED');
+      const coverage = record(found.coverage), verifiedFields = verifiedNativeFields(found), criteria = record(found.criteria);
+      const candidates = Array.isArray(found.candidates) ? found.candidates.map(record).filter(Boolean) : [];
+      const projected = partyCandidateViews(candidates, query.spec.role, verifiedFields);
+      const complete = ['matches', 'no_match'].includes(String(found.outcome)) && typeof found.searchId === 'string' &&
+        criteria?.query === nativeQuery && coverage?.possiblyTruncated === false && typeof coverage.loaded === 'number' && Number.isInteger(coverage.loaded) &&
+        candidates.length === coverage.loaded && verifiedFields.includes(query.spec.id) && verifiedFields.includes(query.spec.name) && projected.valid;
+      projected.rows.sort((left, right) => Number(reservationEntityKey(String(right.name), query.spec.role) === reservationEntityKey(query.name, query.spec.role)) -
+        Number(reservationEntityKey(String(left.name), query.spec.role) === reservationEntityKey(query.name, query.spec.role)));
+      const entries = projected.rows.length ? projected.rows : [null];
+      if (typeof found.searchId === 'string' && ['matches', 'no_match'].includes(String(found.outcome))) {
+        entries.forEach((candidate, candidateIndex) => observations.push({ ref: randomUUID(), generationId: draft.generationId,
+          kind: 'party_candidate', status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
+          propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId, sourceRefs: [],
+          criteria: { workflow: 'amend', kind: 'party_name', requestId: query.requestId,
+            role: query.spec.role === 'agency' ? 'bookingAgency' : query.spec.role,
+            fieldPaths: [query.path], query: query.name, nativeQuery, searchesTried, candidateIndex, coverage,
+            correlation: { verifiedFields } }, coverage: { complete, notes: complete ? [] : ['native_party_lookup_incomplete'] },
+          result: { outcome: found.outcome, criteria, coverage, correlation: { verifiedFields }, candidates: candidate ? [candidate] : [] } }));
+      }
+      lookups.push({ requestId: query.requestId, selectionPath: query.path, status: complete ? found.outcome : 'partial',
+        candidates: projected.rows });
+    }
+    return { observations, lookups };
+  }, { memory: null, blockServiceWorkers: true, signal }) as { observations: ReservationWorkflowV2Observation[]; lookups: Record<string, unknown>[] };
 }
 
 export async function reservationWorkflowV2AmendLookup(ctx: ReadContext,
@@ -670,7 +1034,7 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReadContext,
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;
   if (ctx.property.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'property_not_supported' };
-  const requests = loaded.draft.proposal.content.requests.filter((request) =>
+  const requests = loaded.draft.proposal.content.requests.filter((request): request is AmendRequest =>
     request.kind === 'amend' && (!input.requestId || request.id === input.requestId));
   if (input.requestId && !requests.length) return { status: 'not_found' };
   if (!requests.length) return { status: 'unsupported', issue: 'amend_lookup_not_applicable' };
@@ -758,6 +1122,13 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReadContext,
           roomType: native.roomType, ratePlan: native.ratePlan })) });
     }
   }
+  try {
+    const parties = await lookupAmendParties(loaded.draft, requests, ctx.nativeBatch?.signal);
+    observations.push(...parties.observations);
+    lookups.push(...parties.lookups);
+  } catch {
+    return { status: 'failed', issue: 'native_amend_party_lookup_failed', lookups };
+  }
   const fresh = await currentDraft(ctx, input);
   if (!fresh.draft) return fresh.result;
   for (const observation of observations) {
@@ -770,6 +1141,281 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReadContext,
     operationResults: fresh.draft.operationResults };
 }
 
+type CompiledAmend = Extract<Compile, { outcome: 'ok' }>;
+const partyOrder = ['organization', 'bookingAgency', 'arAccount'] as const;
+function callbackRequested(compiled: CompiledAmend) {
+  return partyOrder.some(field => Object.hasOwn(compiled.baseChanges, field)) ||
+    (typeof compiled.baseChanges.guaranteeType === 'string' && compiled.baseChanges.guaranteeType !== compiled.selected.guaranteeCode) ||
+    (Object.hasOwn(compiled.baseChanges, 'children') && (compiled.target.children !== compiled.selected.children ||
+      !sameChildAges(compiled.target.childAges, compiled.selected.childAges)));
+}
+
+function portablePartyImage(value: unknown): Record<string, unknown> | null {
+  const image = record(value), data = record(image?.data), values = record(image?.values);
+  if (!data || !values) return null;
+  return { data: Object.fromEntries(Object.entries(data).filter(([key]) => key !== 'bookingsessionid')),
+    values: Object.fromEntries(Object.entries(values).filter(([key]) => key !== 'bookingsessionid')) };
+}
+
+/** Read the prospective native controls without dispatching any saved-stay callback. */
+async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflowV2PrepareInput,
+  draft: ReservationWorkflowV2Draft, compiled: CompiledAmend): Promise<Outcome> {
+  const locked = targetWriteLock(ctx, compiled.selected);
+  if (!locked?.lock) return { status: 'unsupported', issue: 'amend_target_lock_unavailable' };
+  const native = await nativeModule(), dispatchKey = hmsDispatchTargetKey(locked.dispatchTarget);
+  try {
+    const prepared = await locked.lock.withLock(async () => {
+      const common = { target: locked.target, selected: compiled.selected, confirmation: compiled.selected.confirmation,
+        arrival: compiled.selected.arrival, allowRealGuest: true, cloudTargetKey: dispatchKey,
+        signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000), capturePriceComponents: true, captureMealPlan: true };
+      const read = await native.readCloudSavedChildAges(common);
+      if (read.outcome !== 'ok' || !Array.isArray(read.ages) || read.ages.length !== compiled.selected.children ||
+          read.ages.some(age => !Number.isInteger(age) || age < 0 || age > 17)) return { issue: 'amend_child_age_baseline_unavailable' };
+      const beforeAges = read.ages as number[];
+      if (Array.isArray(compiled.selected.childAges) &&
+          canonicalJson([...compiled.selected.childAges].sort((a, b) => a - b)) !== canonicalJson([...beforeAges].sort((a, b) => a - b))) {
+        return { issue: 'amend_child_age_baseline_changed' };
+      }
+      if (compiled.target.childAges === 'unknown') compiled.target.childAges = beforeAges;
+      const safeBase = Object.fromEntries(Object.entries(compiled.baseChanges).filter(([field]) =>
+        !['children', 'childAges', 'bookingAgency', 'organization', 'arAccount', 'guaranteeType',
+          ...(Object.hasOwn(compiled.baseChanges, 'bookingAgency') ? ['taCommission'] : []),
+          ...(Object.hasOwn(compiled.baseChanges, 'arAccount') ? ['billingReference'] : [])].includes(field)));
+      const discoveryBase = Object.fromEntries(Object.entries(safeBase).filter(([field]) =>
+        !['bookerEmail', 'bookerMobile', 'taCommission', 'guestOptIn', 'requestedMealPlan'].includes(field)));
+      const discoveryChanges = { ...discoveryBase, ratePlan: String(safeBase.ratePlan ?? compiled.selected.ratePlan),
+        retainRates: compiled.rateHandling === 'retain' ? 'yes' : 'no', cmsSend: false, cmsMessageId: '', cmsRecipient: '' };
+      const guaranteeCode = typeof compiled.baseChanges.guaranteeType === 'string'
+        ? compiled.baseChanges.guaranteeType : compiled.selected.guaranteeCode;
+      if (typeof guaranteeCode !== 'string') return { issue: 'amend_guarantee_baseline_unavailable' };
+      const discovery = await native.prepareCloudPaneAmend({ ...common, childAgePreimage: beforeAges,
+        changes: discoveryChanges, discoveryOnly: true, guaranteeChoiceCode: guaranteeCode,
+        captureCommissionBaseline: Object.hasOwn(safeBase, 'taCommission'),
+        captureGuestOptInBaseline: Object.hasOwn(safeBase, 'guestOptIn') });
+      const baseline = record(discovery.recoveryBaseline), preserved = record(discovery.preserved);
+      if (discovery.outcome !== 'prepared' || !baseline || !preserved || typeof baseline.beforeNote !== 'string' ||
+          typeof baseline.beforeGuaranteeCode !== 'string' || typeof baseline.beforeGuaranteeDisplay !== 'string' ||
+          (typeof compiled.baseChanges.guaranteeType === 'string' && typeof baseline.requestedGuaranteeDisplay !== 'string')) {
+        return { issue: 'native_amend_baseline_unavailable' };
+      }
+      if (Object.hasOwn(compiled.baseChanges, 'reservationNote')) {
+        const observation = draft.observations.find(item => item.ref === compiled.selectedRef);
+        const note = record(record(record(observation?.result)?.reservationObservations)?.reservationNote);
+        if (!note || !['observed', 'blank'].includes(String(note.state)) || note.source !== 'record_view_raw_value' ||
+            note.confirmation !== compiled.selected.confirmation || note.value !== baseline.beforeNote) {
+          return { issue: 'native_amend_reservation_note_changed_or_unavailable' };
+        }
+      }
+      const childrenChanged = Object.hasOwn(compiled.baseChanges, 'children') &&
+        (compiled.target.children !== compiled.selected.children || !sameChildAges(compiled.target.childAges, beforeAges));
+      const guaranteeChanged = typeof compiled.baseChanges.guaranteeType === 'string' &&
+        compiled.baseChanges.guaranteeType !== baseline.beforeGuaranteeCode;
+      if (compiled.rateHandling === 'retain' && (childrenChanged || guaranteeChanged)) {
+        return { issue: 'retained_rate_not_supported_for_priced_amendment', retainCallback: true };
+      }
+      const safeCompiled = { ...compiled, baseChanges: safeBase }, safeChanges = normalizedChanges(safeCompiled, preserved, baseline);
+      const allChanges = normalizedChanges(compiled, preserved, baseline);
+      if (!safeChanges || !allChanges) return { issue: 'native_amend_contact_or_cms_baseline_unavailable' };
+      const staged = await native.prepareCloudPaneAmend({ ...common, childAgePreimage: beforeAges, changes: safeChanges,
+        captureCommissionBaseline: Object.hasOwn(safeBase, 'taCommission'),
+        captureGuestOptInBaseline: Object.hasOwn(safeBase, 'guestOptIn') });
+      const price = nativePrice(staged.approvedPrices), stagedBaseline = record(staged.recoveryBaseline), stagedPreserved = record(staged.preserved);
+      if (staged.outcome !== 'prepared' || !price || !stagedBaseline || !stagedPreserved ||
+          typeof staged.nativeDigest !== 'string' || !/^[a-f0-9]{64}$/.test(staged.nativeDigest) ||
+          canonicalJson(Object.fromEntries(Object.entries(stagedPreserved).filter(([key]) =>
+            key !== 'bookerContact' || Object.hasOwn(preserved, key)))) !== canonicalJson(preserved) ||
+          stagedBaseline.beforeNote !== baseline.beforeNote || stagedBaseline.beforeGuaranteeCode !== baseline.beforeGuaranteeCode ||
+          canonicalJson(stagedBaseline.beforeParties) !== canonicalJson(baseline.beforeParties)) {
+        return { issue: 'native_amend_prepare_unverified' };
+      }
+      const nextAges = childrenChanged && Array.isArray(compiled.target.childAges) ? compiled.target.childAges as number[] : null;
+      if (childrenChanged) {
+        if (!nextAges) return { issue: 'child_ages_required_for_occupancy_change' };
+        const preview = await native.previewCloudPaneAmendChildren({ ...common, beforeChildAges: beforeAges, childAges: nextAges });
+        if (preview.outcome !== 'ok' || canonicalJson(record(preview.before)?.ages) !== canonicalJson(beforeAges) ||
+            canonicalJson(record(preview.requested)?.childAges) !== canonicalJson(nextAges)) {
+          return { issue: 'native_child_age_preview_unavailable' };
+        }
+      }
+      const requestedParties = partyOrder.flatMap(kind => {
+        const item = record(compiled.baseChanges[kind]);
+        return item ? [{ kind, nativeId: String(item.nativeId), name: String(item.name), query: String(item.query) }] : [];
+      });
+      let beforeImage: Record<string, unknown> | null = null;
+      const parties: Array<Record<string, unknown>> = [];
+      if (requestedParties.length) {
+        const found = await native.inspectCloudPaneAmendParties({ ...common,
+          queries: requestedParties.map(({ kind, query }) => ({ kind, query })) });
+        if (found.outcome !== 'ok' || !Array.isArray(found.observations) || found.observations.length !== requestedParties.length) {
+          return { issue: 'native_amend_party_preview_unavailable' };
+        }
+        for (const wanted of requestedParties) {
+          const matches = found.observations.map(record).filter(item => item?.kind === wanted.kind && item.query === wanted.query);
+          const observed = matches.length === 1 ? matches[0] : null, coverage = record(observed?.coverage);
+          const choices = Array.isArray(observed?.candidates) ? observed.candidates.map(record).filter(item =>
+            item?.nativeId === wanted.nativeId && item.name === wanted.name) : [];
+          const image = portablePartyImage(observed?.beforeImage);
+          if (!observed || coverage?.complete !== true || coverage.nativeResponseCorrelated !== true || choices.length !== 1 ||
+              !image || (beforeImage && canonicalJson(beforeImage) !== canonicalJson(image))) {
+            return { issue: 'native_amend_party_candidate_unavailable' };
+          }
+          beforeImage ??= image;
+          const beforeParties = record(baseline.beforeParties);
+          const fields = wanted.kind === 'organization' ? ['companyid', 'company'] : wanted.kind === 'bookingAgency'
+            ? ['taid1', 'ta1'] : ['araccountid', 'araccountname'];
+          if (beforeParties?.[fields[0]!] === wanted.nativeId && beforeParties[fields[1]!] === wanted.name) continue;
+          const choice = choices[0]!;
+          let expectedEffects: Record<string, string> | undefined;
+          if (wanted.kind === 'bookingAgency' && choice.payCommissionFlag === '-1') {
+            const percent = choice.commissionPercentage;
+            if (typeof percent !== 'string' || !/^(?:0|[1-9]\d?)(?:\.\d+)?$|^100(?:\.0+)?$/.test(percent)) {
+              return { issue: 'native_agency_commission_default_unverified' };
+            }
+            expectedEffects = { ta1commission: percent };
+          }
+          parties.push({ ...wanted, ...(expectedEffects ? { expectedEffects } : {}) });
+        }
+      }
+      const guarantee = typeof compiled.baseChanges.guaranteeType === 'string' &&
+        compiled.baseChanges.guaranteeType !== baseline.beforeGuaranteeCode ? { code: compiled.baseChanges.guaranteeType,
+          display: baseline.requestedGuaranteeDisplay, before: { code: baseline.beforeGuaranteeCode, display: baseline.beforeGuaranteeDisplay } } : null;
+      const expected = { confirmation: compiled.selected.confirmation, guestId: compiled.selected.guestId,
+        reservationStayId: compiled.selected.reservationStayId, reservationId: compiled.selected.reservationId,
+        recordId: compiled.selected.recordId, firstName: compiled.selected.firstName, lastName: compiled.selected.lastName,
+        arrival: compiled.selected.arrival, departure: compiled.selected.departure, roomType: compiled.selected.roomType,
+        ratePlan: compiled.selected.ratePlan, note: baseline.beforeNote, adults: compiled.selected.adults,
+        childCount: compiled.selected.children, childAges: beforeAges,
+        expectedGuarantee: { code: baseline.beforeGuaranteeCode, display: baseline.beforeGuaranteeDisplay } };
+      const plan = { selected: compiled.selected, expected, guarantee, parties,
+        children: nextAges ? { beforeAges, nextAges } : null, beforeImage: parties.length ? beforeImage : null };
+      if (!guarantee && parties.length === 0 && !nextAges) {
+        const ordinaryBase = Object.fromEntries(Object.entries(compiled.baseChanges).filter(([field]) =>
+          !['children', 'childAges', 'bookingAgency', 'organization', 'arAccount', 'guaranteeType'].includes(field)));
+        const ordinaryChanges = normalizedChanges({ ...compiled, baseChanges: ordinaryBase }, preserved, baseline);
+        if (!ordinaryChanges) return { issue: 'native_amend_contact_or_cms_baseline_unavailable' };
+        const ordinary = await native.prepareCloudPaneAmend({ ...common, childAgePreimage: beforeAges, changes: ordinaryChanges,
+          captureCommissionBaseline: Object.hasOwn(ordinaryBase, 'taCommission'),
+          captureGuestOptInBaseline: Object.hasOwn(ordinaryBase, 'guestOptIn') });
+        const ordinaryPrice = nativePrice(ordinary.approvedPrices), ordinaryBaseline = record(ordinary.recoveryBaseline),
+          ordinaryPreserved = record(ordinary.preserved);
+        if (ordinary.outcome !== 'prepared' || !ordinaryPrice || !ordinaryBaseline || !ordinaryPreserved ||
+            typeof ordinary.nativeDigest !== 'string' || !/^[a-f0-9]{64}$/.test(ordinary.nativeDigest) ||
+            ordinaryBaseline.beforeNote !== baseline.beforeNote || ordinaryBaseline.beforeGuaranteeCode !== baseline.beforeGuaranteeCode ||
+            canonicalJson(ordinaryBaseline.beforeParties) !== canonicalJson(baseline.beforeParties) ||
+            canonicalJson(Object.fromEntries(Object.entries(ordinaryPreserved).filter(([key]) =>
+              key !== 'bookerContact' || Object.hasOwn(preserved, key)))) !== canonicalJson(preserved) ||
+            (Object.hasOwn(ordinaryChanges, 'taCommission') && (typeof ordinaryBaseline.beforeCommission !== 'number' ||
+              !Number.isFinite(ordinaryBaseline.beforeCommission) || !record(ordinaryPreserved.bookingAgency)?.nativeId)) ||
+            (Object.hasOwn(ordinaryChanges, 'guestOptIn') && typeof ordinaryBaseline.beforeGuestOptIn !== 'boolean')) {
+          return { issue: 'native_amend_prepare_unverified' };
+        }
+        if (!mealPlanVerified(draft, compiled, ordinary)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(draft, compiled, ordinary) };
+        const recoveryBaseline = { ...ordinaryBaseline, beforeChildAges: beforeAges };
+        const semanticDigest = sha256({ baseDigest: compiled.baseDigest, selectedRef: compiled.selectedRef,
+          selected: compiled.selected, target: compiled.target, changes: ordinaryChanges, preserved: ordinaryPreserved,
+          recoveryBaseline, nativeDigest: ordinary.nativeDigest, price: ordinaryPrice, appliedMealPlan: appliedMealPlan(ordinary) });
+        const observation = preparationObservation(draft, compiled, ordinary, ordinaryChanges, ordinaryPreserved, ordinaryPrice, recoveryBaseline, semanticDigest);
+        observation.result = { ...observation.result, callbackNoop: true };
+        return { observation, price: ordinaryPrice, plan: null, semanticDigest, noop: true };
+      }
+      if (compiled.rateHandling === 'retain') return { issue: 'retained_rate_not_supported_for_priced_amendment', retainCallback: true };
+      if (!mealPlanVerified(draft, compiled, staged)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(draft, compiled, staged) };
+      const planDigest = sha256(plan);
+      const recoveryBaseline = { ...stagedBaseline, beforeChildAges: beforeAges,
+        beforeGuaranteeDisplay: baseline.beforeGuaranteeDisplay, beforeGuaranteePrice: baseline.beforeGuaranteePrice,
+        ...(typeof baseline.requestedGuaranteeDisplay === 'string' ? { requestedGuaranteeDisplay: baseline.requestedGuaranteeDisplay } : {}) };
+      const semanticDigest = sha256({ baseDigest: compiled.baseDigest, selectedRef: compiled.selectedRef,
+        selected: compiled.selected, target: compiled.target, changes: allChanges, safeChanges,
+        preserved: stagedPreserved, recoveryBaseline, nativeDigest: staged.nativeDigest, price, planDigest, appliedMealPlan: appliedMealPlan(staged) });
+      const observation = preparationObservation(draft, compiled, staged, allChanges, stagedPreserved, price, recoveryBaseline, semanticDigest);
+      observation.result = { ...observation.result, callbackPriceReviewRequired: true, priceKind: 'indicative',
+        callbackPlan: plan, callbackPlanDigest: planDigest, safeChanges };
+      return { observation, price, plan, semanticDigest, noop: false };
+    }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch?.signal });
+    if ('issue' in prepared) {
+      if ('mealObservation' in prepared && prepared.mealObservation) return recordMealMismatch(ctx, input, compiled, prepared.mealObservation);
+      if ('retainCallback' in prepared && prepared.retainCallback === true) {
+        const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: draft.generationId,
+          kind: 'rate_availability', status: 'complete', observedAt: new Date().toISOString(), propertyCode: 'HRCEN',
+          sourceMessageId: draft.source.messageId, sourceRefs: [], coverage: { complete: true, notes: [] },
+          criteria: { workflow: 'amend', stage: 'retain_callback_unsupported', requestId: compiled.requestId,
+            hintId: compiled.hintId, selectedRef: compiled.selectedRef, baseDigest: compiled.baseDigest },
+          result: { outcome: 'retain_callback_unsupported' } };
+        const recorded = await recordObservation(ctx, input, observation, 'failed',
+          'Retaining rates is unavailable for this native amendment', randomUUID(), compiled.hintId);
+        if (recorded.status !== 'ok') return recorded;
+        return { status: 'unsupported', issue: prepared.issue, fields: ['rateHandling'] };
+      }
+      return { status: 'failed', issue: prepared.issue };
+    }
+    const recorded = await recordObservation(ctx, input, prepared.observation, 'prepared',
+      prepared.noop ? 'HMS amendment staged unsaved; native price and baseline observed' :
+        'Native controls checked; the first Go may apply details before price review', randomUUID(), compiled.hintId);
+    if (recorded.status !== 'ok') return recorded;
+    await appendSavedBaselineHints(ctx, input, compiled, prepared.observation.ref, recorded);
+    if (prepared.noop) return { status: 'prepared', requestId: input.requestId, allocationId: compiled.hintId,
+      observationRef: prepared.observation.ref, target: compiled.target, before: compiled.selected,
+      price: prepared.price, semanticDigest: prepared.semanticDigest };
+    return { status: 'prepared', requestId: input.requestId, allocationId: compiled.hintId,
+      observationRef: prepared.observation.ref, target: compiled.target, before: compiled.selected,
+      price: prepared.price, priceKind: 'indicative', callbackPriceReviewRequired: true,
+      callbackPlan: prepared.plan, semanticDigest: prepared.semanticDigest };
+  } catch (error) {
+    return { status: 'failed', issue: isPropertyReadLockDeadline(error) ? 'amend_lock_busy' : 'native_amend_prepare_failed' };
+  }
+}
+
+function callbackReviewState(draft: ReservationWorkflowV2Draft, compiled: CompiledAmend): Outcome | null {
+  const reviewOperations = draft.operationResults.filter(operation => operation.workflow === 'amend' && operation.status === 'prepared' &&
+    operation.generationId === draft.generationId && operation.requestId === compiled.requestId && operation.allocationId === compiled.hintId &&
+    operation.summary === 'Native details may have changed; review the refreshed price before Save');
+  const entries = reviewOperations
+    .flatMap(operation => operation.observationRefs.flatMap(ref => {
+      const observation = draft.observations.find(item => item.ref === ref && item.kind === 'rate_availability' &&
+        item.criteria.workflow === 'amend' && item.criteria.stage === 'callback_price_review');
+      return observation ? [{ operation, observation }] : [];
+    }));
+  if (!entries.length) return reviewOperations.length ? { status: 'needs_reconcile', operationId: reviewOperations[0]!.id,
+    issue: 'amend_callback_review_unavailable' } : null;
+  if (entries.length !== 1) return { status: 'needs_reconcile', issue: 'amend_multiple_callback_reviews' };
+  const { operation, observation } = entries[0]!, result = record(observation.result), price = nativePrice(result?.price);
+  if (observation.status !== 'complete' || !observation.coverage.complete || observation.generationId !== draft.generationId ||
+      observation.propertyCode !== draft.propertyCode || observation.sourceMessageId !== draft.source.messageId ||
+      observation.criteria.requestId !== compiled.requestId || observation.criteria.hintId !== compiled.hintId ||
+      observation.criteria.selectedRef !== compiled.selectedRef || observation.criteria.baseDigest !== compiled.baseDigest ||
+      result?.outcome !== 'callback_price_review' || result.ready !== true || !price || !appliedMealPlan(result) ||
+      result.requestedMealPlan !== (compiled.baseChanges.requestedMealPlan ?? null) ||
+      typeof result.approvalDigest !== 'string' || !/^[a-f0-9]{64}$/.test(result.approvalDigest) ||
+      !record(result.callbackState) || !record(result.target) || !record(result.before) ||
+      result.approvalDigest !== sha256({ stage: 'callback_price_review', requestId: compiled.requestId, hintId: compiled.hintId,
+        selectedRef: compiled.selectedRef, baseDigest: compiled.baseDigest, semanticDigest: observation.criteria.semanticDigest,
+        price, applied: result.applied, requestedMealPlan: result.requestedMealPlan, callbackState: result.callbackState, before: result.before, target: result.target,
+        callbackPlanDigest: result.callbackPlanDigest, prepareObservationRef: result.prepareObservationRef,
+        freshReadback: result.freshReadback })) {
+    return { status: 'needs_reconcile', operationId: operation.id, issue: 'amend_callback_review_stale' };
+  }
+  const request = requestBody(draft, compiled.requestId)?.request;
+  const perPath = `${compiled.requestPath}/perTarget`, rows = effectiveLeaf(draft, perPath, request?.body.perTarget);
+  if (!Array.isArray(rows)) return { status: 'needs_reconcile', operationId: operation.id, issue: 'amend_callback_review_target_changed' };
+  const index = rows.findIndex(row => record(row)?.hintId === compiled.hintId);
+  if (index < 0) return { status: 'needs_reconcile', operationId: operation.id, issue: 'amend_callback_review_target_changed' };
+  const refsPath = `${perPath}/${index}/currentObservationRefs`, row = record(rows[index]);
+  const refs = effectiveRefList(draft, refsPath, row?.currentObservationRefs);
+  if (!Array.isArray(refs) || refs.some(ref => typeof ref !== 'string')) {
+    return { status: 'needs_reconcile', operationId: operation.id, issue: 'amend_callback_review_binding_invalid' };
+  }
+  const indexes = refs.flatMap((ref, i) => ref === observation.ref ? [i] : []);
+  if (indexes.length > 1) return { status: 'needs_reconcile', operationId: operation.id, issue: 'amend_callback_review_binding_invalid' };
+  const reviewFieldPath = `${refsPath}/${indexes[0] ?? refs.length}`;
+  const reviewNote = `amend-price:${observation.ref}:${result.approvalDigest}`;
+  const review = draft.staffReviews[reviewFieldPath];
+  const accepted = indexes.length === 1 && review?.status === 'accepted' && review.note === reviewNote;
+  return { status: 'needs_review', issue: 'amend_applied_price_requires_second_go', operationId: operation.id,
+    requestId: compiled.requestId, allocationId: compiled.hintId, confirmation: compiled.selected.confirmation,
+    price, callbackState: result.callbackState, financialReview: { required: true, accepted, observationRef: observation.ref,
+      approvalDigest: result.approvalDigest, reviewFieldPath, reviewNote }, observation };
+}
+
 export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
   input: ReservationWorkflowV2PrepareInput): Promise<Outcome> {
   if (!paneStayLookupEnabled()) return { status: 'needs_input', issue: 'stay_lookup_disabled' };
@@ -778,31 +1424,75 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
   if (!loaded.draft) return loaded.result;
   const compiled = compileBase(loaded.draft, input.requestId, input.allocationId, 'prepare');
   if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [] };
-  if (typeof compiled.target.children === 'number' && compiled.target.children > 0 &&
-      !Array.isArray(compiled.target.childAges)) {
-    return { status: 'needs_input', issue: 'amend_child_age_baseline_unavailable', fields: ['childAges'] };
-  }
+  const pending = callbackReviewState(loaded.draft, compiled);
+  if (pending) return pending;
+  const unresolved = loaded.draft.operationResults.find(item => item.workflow === 'amend' && item.requestId === compiled.requestId &&
+    item.allocationId === compiled.hintId && item.status === 'unknown');
+  if (unresolved) return { status: 'needs_reconcile', operationId: unresolved.id };
+  if (callbackRequested(compiled)) return prepareCallbackAmend(ctx, input, loaded.draft, compiled);
   const locked = targetWriteLock(ctx, compiled.selected);
   if (!locked?.lock) return { status: 'unsupported', issue: 'amend_target_lock_unavailable' };
   const module = await nativeModule();
   const dispatchKey = hmsDispatchTargetKey(locked.dispatchTarget);
-  const discoveryChanges = { ...compiled.baseChanges, ratePlan: String(compiled.baseChanges.ratePlan ?? compiled.selected.ratePlan),
+  const discoveryBase = Object.fromEntries(Object.entries(compiled.baseChanges)
+    .filter(([field]) => !['bookerEmail', 'bookerMobile', 'taCommission', 'guestOptIn', 'guaranteeType', 'requestedMealPlan'].includes(field)));
+  const discoveryChanges = { ...discoveryBase, ratePlan: String(compiled.baseChanges.ratePlan ?? compiled.selected.ratePlan),
     retainRates: compiled.rateHandling === 'retain' ? 'yes' : 'no', cmsSend: false, cmsMessageId: '', cmsRecipient: '' };
   try {
     const prepared = await locked.lock.withLock(async () => {
       ctx.nativeBatch?.signal.throwIfAborted();
+      let childAgePreimage: number[] | undefined;
+      {
+        const read = await module.readCloudSavedChildAges({ target: locked.target, selected: compiled.selected,
+          confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, allowRealGuest: true,
+          cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
+        if (read.outcome !== 'ok' || !Array.isArray(read.ages) || read.ages.length !== compiled.selected.children ||
+            read.ages.some(age => !Number.isInteger(age) || age < 0 || age > 17)) return { issue: 'amend_child_age_baseline_unavailable' };
+        childAgePreimage = read.ages as number[];
+        if (Array.isArray(compiled.selected.childAges) &&
+            canonicalJson([...compiled.selected.childAges].sort((a, b) => a - b)) !==
+              canonicalJson([...childAgePreimage].sort((a, b) => a - b))) return { issue: 'amend_child_age_baseline_changed' };
+        if (compiled.target.childAges === 'unknown') compiled.target.childAges = childAgePreimage;
+      }
       const discovery = await module.prepareCloudPaneAmend({ target: locked.target, selected: compiled.selected,
+        ...(childAgePreimage ? { childAgePreimage } : {}),
         confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, changes: discoveryChanges,
+        discoveryOnly: true, ...(typeof compiled.baseChanges.guaranteeType === 'string'
+          ? { guaranteeChoiceCode: compiled.baseChanges.guaranteeType } : {}),
+        captureMealPlan: true, captureCommissionBaseline: Object.hasOwn(compiled.baseChanges, 'taCommission'),
+        captureGuestOptInBaseline: Object.hasOwn(compiled.baseChanges, 'guestOptIn'),
         allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
       const discoveryBaseline = record(discovery.recoveryBaseline);
       if (discovery.outcome !== 'prepared' || !record(discovery.preserved) || !discoveryBaseline) {
-        return { issue: 'native_amend_baseline_unavailable' };
+        return { issue: discovery.issue === 'BILLING_REFERENCE_REQUIRES_VERIFIED_AR'
+          ? 'billing_reference_requires_verified_ar' : 'native_amend_baseline_unavailable' };
       }
-      const preserved = record(discovery.preserved)!;
-      const changes = normalizedChanges(compiled, preserved);
-      if (!changes) return { issue: 'native_amend_cms_baseline_unavailable' };
+      if (Object.hasOwn(compiled.baseChanges, 'reservationNote')) {
+        const selectedObservation = loaded.draft!.observations.find(item => item.ref === compiled.selectedRef);
+        const note = record(record(record(selectedObservation?.result)?.reservationObservations)?.reservationNote);
+        if (!note || !['observed', 'blank'].includes(String(note.state)) ||
+            note.source !== 'record_view_raw_value' || note.confirmation !== compiled.selected.confirmation ||
+            typeof note.value !== 'string' || note.value !== discoveryBaseline.beforeNote) {
+          return { issue: 'native_amend_reservation_note_changed_or_unavailable' };
+        }
+      }
+      const discoveryPreserved = record(discovery.preserved)!;
+      const changes = normalizedChanges(compiled, discoveryPreserved, discoveryBaseline);
+      if (!changes) return { issue: 'native_amend_contact_or_cms_baseline_unavailable' };
+      if (childAgePreimage) {
+        const current = await module.readCloudSavedChildAges({ target: locked.target, selected: compiled.selected,
+          confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, allowRealGuest: true,
+          cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
+        if (current.outcome !== 'ok' || !Array.isArray(current.ages) ||
+            canonicalJson([...current.ages].sort((a, b) => Number(a) - Number(b))) !==
+              canonicalJson([...childAgePreimage].sort((a, b) => a - b))) return { issue: 'amend_child_age_baseline_changed' };
+      }
       const native = await module.prepareCloudPaneAmend({ target: locked.target, selected: compiled.selected,
+        ...(childAgePreimage ? { childAgePreimage } : {}),
+        ...(typeof compiled.baseChanges.guaranteeType === 'string' ? { guaranteeChoiceCode: compiled.baseChanges.guaranteeType } : {}),
         confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, changes,
+        captureMealPlan: true, captureCommissionBaseline: Object.hasOwn(compiled.baseChanges, 'taCommission'),
+        captureGuestOptInBaseline: Object.hasOwn(compiled.baseChanges, 'guestOptIn'),
         allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
       const price = nativePrice(native.approvedPrices), afterPreserved = record(native.preserved),
         recoveryBaseline = record(native.recoveryBaseline);
@@ -817,21 +1507,33 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
           (!Object.hasOwn(changes, 'bookerName') && typeof recoveryBaseline.beforeBookerName !== 'string') ||
           (!Object.hasOwn(changes, 'bookerContact') && typeof recoveryBaseline.beforeBookerContact !== 'string') ||
           (!changes.cmsSend && typeof afterPreserved.cmsMessageId !== 'string') ||
+          (Object.hasOwn(changes, 'guaranteeType') && (typeof recoveryBaseline.beforeGuaranteeDisplay !== 'string' ||
+            typeof recoveryBaseline.requestedGuaranteeDisplay !== 'string' || !nativePrice(recoveryBaseline.beforeGuaranteePrice))) ||
+          (Object.hasOwn(changes, 'guestOptIn') && typeof recoveryBaseline.beforeGuestOptIn !== 'boolean') ||
+          (Object.hasOwn(changes, 'taCommission') && (typeof recoveryBaseline.beforeCommission !== 'number' ||
+            !Number.isFinite(recoveryBaseline.beforeCommission) || !record(afterPreserved.bookingAgency)?.nativeId)) ||
           typeof recoveryBaseline.beforeGuaranteeCode !== 'string' ||
           !/^[A-Z0-9]{1,40}$/.test(recoveryBaseline.beforeGuaranteeCode) ||
           !(recoveryBaseline.beforeSavedRates === null || record(recoveryBaseline.beforeSavedRates)) ||
-          canonicalJson(afterPreserved) !== canonicalJson(preserved) ||
+          canonicalJson(Object.fromEntries(Object.entries(afterPreserved).filter(([key]) =>
+            key !== 'bookerContact' || Object.hasOwn(discoveryPreserved, key)))) !== canonicalJson(discoveryPreserved) ||
           canonicalJson(recoveryBaseline) !== canonicalJson(discoveryBaseline)) return { issue: 'native_amend_prepare_unverified' };
+      if (!mealPlanVerified(loaded.draft!, compiled, native)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(loaded.draft!, compiled, native) };
+      const preserved = afterPreserved;
       const semanticDigest = sha256({ baseDigest: compiled.baseDigest, selectedRef: compiled.selectedRef,
         selected: compiled.selected, target: compiled.target, changes, preserved, recoveryBaseline,
-        nativeDigest: native.nativeDigest, price });
+        nativeDigest: native.nativeDigest, price, appliedMealPlan: appliedMealPlan(native) });
       return { observation: preparationObservation(loaded.draft!, compiled, native, changes, preserved, price,
         recoveryBaseline, semanticDigest), changes, preserved, price, recoveryBaseline, semanticDigest, nativeDigest: native.nativeDigest };
     }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch?.signal });
-    if ('issue' in prepared) return { status: 'failed', issue: prepared.issue };
+    if ('issue' in prepared) {
+      if ('mealObservation' in prepared && prepared.mealObservation) return recordMealMismatch(ctx, input, compiled, prepared.mealObservation);
+      return { status: 'failed', issue: prepared.issue };
+    }
     const recorded = await recordObservation(ctx, input, prepared.observation, 'prepared',
       'HMS amendment staged unsaved; native price and baseline observed', randomUUID(), compiled.hintId);
     if (recorded.status !== 'ok') return recorded;
+    await appendSavedBaselineHints(ctx, input, compiled, prepared.observation.ref, recorded);
     return { status: 'prepared', requestId: input.requestId, allocationId: compiled.hintId,
       observationRef: prepared.observation.ref, target: compiled.target, before: compiled.selected,
       price: prepared.price, changes: prepared.changes, semanticDigest: prepared.semanticDigest };
@@ -851,7 +1553,7 @@ function observationForWrite(draft: ReservationWorkflowV2Draft, input: Reservati
 }
 
 async function persistResolvedResult(tx: WriteTx, ctx: ReservationWorkflowV2AmendContext, input: ReservationWorkflowV2ExecuteInput,
-  hintId: string, observation: ReservationWorkflowV2Observation, summary: string) {
+  hintId: string, observation: ReservationWorkflowV2Observation, summary: string, status: 'prepared' | 'succeeded' = 'succeeded') {
   const [item] = await tx.select({ state: workItem.state, revision: workItem.revision, revisionSeq: workItem.revisionSeq })
     .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1).for('update');
   const draft = item && reservationWorkflowV2DraftOf(item.state as Record<string, unknown>);
@@ -861,7 +1563,7 @@ async function persistResolvedResult(tx: WriteTx, ctx: ReservationWorkflowV2Amen
       draft.propertyCode !== 'HRCEN' || draft.transportId !== ctx.transport.id) throw new Error('reservation_workflow_v2_amend_result_scope_changed');
   const observations = draft.observations.some((row) => row.ref === observation.ref) ? draft.observations : [...draft.observations, observation];
   const nextResult = { id: input.idempotencyKey, requestId: input.requestId, allocationId: hintId,
-    generationId: draft.generationId, workflow: 'amend' as const, status: 'succeeded' as const,
+    generationId: draft.generationId, workflow: 'amend' as const, status,
     draftRevision: draft.revision, observationRefs: [observation.ref], updatedAt: new Date().toISOString(), summary };
   const operationResults = [...draft.operationResults.filter((row) => row.id !== input.idempotencyKey), nextResult];
   const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft, observations, operationResults });
@@ -870,13 +1572,26 @@ async function persistResolvedResult(tx: WriteTx, ctx: ReservationWorkflowV2Amen
   await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
     fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:operationResults:${nextResult.id}`,
     value: { id: nextResult.id, requestId: nextResult.requestId, allocationId: hintId, workflow: 'amend',
-      status: 'succeeded', observationRefs: nextResult.observationRefs },
+      status, observationRefs: nextResult.observationRefs },
     evidence: { sourceHash: input.source.sourceHash, seq: input.expectedSeq, summary } });
+}
+
+async function recordCallbackPartial(ctx: ReservationWorkflowV2AmendContext, input: ReservationWorkflowV2ExecuteInput,
+  hintId: string, phase: 'first_go' | 'final_go', result: Record<string, unknown>) {
+  try {
+    await ctx.db.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
+      fieldPath: 'nava.hms.amend.callback-partial.v1', value: { operationId: input.idempotencyKey, requestId: input.requestId,
+        hintId, phase, sourceDigest: input.source.sourceHash, issue: text(result.issue),
+        effects: Array.isArray(result.callbackEffects) ? result.callbackEffects : [],
+        callbackTaskDrained: result.callbackTaskDrained === true }, evidence: { sourceHash: input.source.sourceHash } });
+    return true;
+  } catch { return false; }
 }
 
 async function authorizeCurrentAmend(tx: WriteTx, ctx: ReservationWorkflowV2AmendContext,
   input: ReservationWorkflowV2ExecuteInput, compiled: Compile & { outcome: 'ok' }, prepared: ReservationWorkflowV2Observation,
-  approvedDigest: string, attempt: ReservationWorkflowV2Observation) {
+  approvedDigest: string, attempt: ReservationWorkflowV2Observation,
+  expectedReview?: { operationId: string; observation: ReservationWorkflowV2Observation; approvalDigest: string }) {
   const [item] = await tx.select({ state: workItem.state, revision: workItem.revision, revisionSeq: workItem.revisionSeq,
     sourceMessageId: workItem.sourceMessageId, threadId: workItem.threadId })
     .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1).for('update');
@@ -909,6 +1624,20 @@ async function authorizeCurrentAmend(tx: WriteTx, ctx: ReservationWorkflowV2Amen
   const live = compileBase(draft, input.requestId, compiled.hintId, 'execute');
   const livePrepared = preparedObservation(draft, compiled);
   const attemptResult = record(attempt.result);
+  if (expectedReview) {
+    const currentReview = live.outcome === 'ok' ? callbackReviewState(draft, live) : null;
+    const financial = record(currentReview?.financialReview);
+    const receipts = await tx.select({ value: workEvent.value }).from(workEvent).where(and(
+      eq(workEvent.workItemId, input.workItemId), eq(workEvent.type, 'write.evidence'),
+      eq(workEvent.fieldPath, 'nava.hms.amend.callback-review.v1'))).limit(2000);
+    const matching = receipts.map(row => record(row.value)).filter(value => value?.operationId === expectedReview.operationId &&
+      value.sourceDigest === input.source.sourceHash && canonicalJson(value.observation) === canonicalJson(expectedReview.observation));
+    if (currentReview?.status !== 'needs_review' || currentReview.operationId !== expectedReview.operationId ||
+        financial?.accepted !== true || financial.observationRef !== expectedReview.observation.ref ||
+        financial.approvalDigest !== expectedReview.approvalDigest || matching.length !== 1) {
+      throw new Error('reservation_workflow_v2_amend_review_stale');
+    }
+  }
   if (!access || !source || source.sourceProvenance?.attention != null || current !== input.source.sourceHash ||
       existing.length > 1 || (existing.length === 1 && !retryableFailure) || competingOperation ||
       live.outcome !== 'ok' || live.baseDigest !== compiled.baseDigest || !livePrepared || livePrepared.ref !== prepared.ref ||
@@ -953,21 +1682,413 @@ function readbackMatches(readback: unknown, prepared: Record<string, unknown>): 
       actual.roomType !== target.roomType || actual.ratePlan !== target.ratePlan || actual.adults !== target.adults ||
       actual.children !== target.children || actual.firstName !== target.firstName || actual.lastName !== target.lastName ||
       actual.cmsSend !== changes.cmsSend || !actualPrice || !approvedPrice ||
+      !appliedMealPlan(prepared) || actual.mealPlan !== appliedMealPlan(prepared) ||
       actualPrice.version !== approvedPrice.version || actualPrice.currency !== approvedPrice.currency ||
       actualPrice.totalCents !== approvedPrice.totalCents || actualPrice.averageCents !== approvedPrice.averageCents) return null;
   if (Array.isArray(target.childAges) && (!Array.isArray(actual.childAges) ||
       canonicalJson([...actual.childAges].sort((a: number, b: number) => a - b) as unknown) !==
       canonicalJson([...target.childAges].sort((a: number, b: number) => a - b)))) return null;
-  const beforeKeys = { guestEmail: 'beforeGuestEmail', bookerName: 'beforeBookerName', bookerContact: 'beforeBookerContact' } as const;
-  for (const key of ['guestEmail', 'bookerName', 'bookerContact'] as const) {
+  const beforeKeys = { guestEmail: 'beforeGuestEmail', bookerName: 'beforeBookerName', bookerContact: 'beforeBookerContact',
+    billingReference: 'beforeBillingReference' } as const;
+  if (actual.reservationNote !== (changes.reservationNote ?? baseline.beforeNote) ||
+      (typeof (changes.roomTypeForCharge ?? baseline.beforeRoomTypeForCharge) === 'string' &&
+        actual.roomTypeForCharge !== (changes.roomTypeForCharge ?? baseline.beforeRoomTypeForCharge))) return null;
+  if (Object.hasOwn(changes, 'taCommission') && actual.taCommission !== changes.taCommission) return null;
+  if (typeof prepared.expectedFinalCommission === 'number' && actual.taCommission !== prepared.expectedFinalCommission) return null;
+  if (Object.hasOwn(changes, 'guestOptIn') && actual.guestOptIn !== false) return null;
+  if (Object.hasOwn(changes, 'guaranteeType') && actual.guaranteeType !== changes.guaranteeType) return null;
+  const track = record(changes.track);
+  if ((track && actual.track !== track.display) ||
+      (!track && typeof baseline.beforeTrack === 'string' && actual.track !== baseline.beforeTrack)) return null;
+  for (const key of ['guestEmail', 'bookerName', 'bookerContact', 'billingReference'] as const) {
     if (Object.hasOwn(changes, key) && actual[key] !== changes[key]) return null;
-    if (!Object.hasOwn(changes, key) && (typeof baseline[beforeKeys[key]] !== 'string' ||
+    if (!Object.hasOwn(changes, key) && (key !== 'billingReference' || typeof baseline[beforeKeys[key]] === 'string') &&
+        (typeof baseline[beforeKeys[key]] !== 'string' ||
         actual[key] !== baseline[beforeKeys[key]])) return null;
   }
-  if (changes.cmsSend === true && (actual.cmsMessageId !== changes.cmsMessageId || actual.cmsRecipient !== changes.cmsRecipient)) return null;
-  if (changes.cmsSend === false && (actual.cmsRecipient !== preserved.cmsRecipient ||
-      (Object.hasOwn(preserved, 'cmsMessageId') && actual.cmsMessageId !== preserved.cmsMessageId))) return null;
+  if (actual.cmsMessageId !== changes.cmsMessageId || actual.cmsRecipient !== changes.cmsRecipient) return null;
   return actual;
+}
+
+/** Claim the first Go before any callback, then record a fresh reviewed-price candidate. */
+async function executeCallbackFirst(ctx: ReservationWorkflowV2AmendContext, input: ReservationWorkflowV2ExecuteInput,
+  draft: ReservationWorkflowV2Draft, compiled: CompiledAmend): Promise<Outcome> {
+  const prepared = preparedObservation(draft, compiled), result = record(prepared?.result);
+  const changes = record(result?.nativeChanges), safeChanges = record(result?.safeChanges), preserved = record(result?.preserved),
+    baseline = record(result?.recoveryBaseline), plan = record(result?.callbackPlan), indicativePrice = nativePrice(result?.approvedPrices);
+  const planDigest = typeof result?.callbackPlanDigest === 'string' ? result.callbackPlanDigest : null;
+  const semantic = prepared && result && planDigest ? sha256({ baseDigest: compiled.baseDigest,
+    selectedRef: compiled.selectedRef, selected: compiled.selected, target: result.target, changes, safeChanges, preserved,
+    recoveryBaseline: baseline, nativeDigest: result.nativeDigest, price: indicativePrice, planDigest, appliedMealPlan: appliedMealPlan(result) }) : null;
+  if (!prepared || result?.callbackPriceReviewRequired !== true || !changes || !safeChanges || !preserved || !baseline || !plan ||
+      !indicativePrice || !mealPlanVerified(draft, compiled, result) || !nativePrice(baseline.beforeGuaranteePrice) || !planDigest || planDigest !== sha256(plan) ||
+      prepared.criteria.semanticDigest !== semantic || typeof result.nativeDigest !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(result.nativeDigest) || !Array.isArray(baseline.beforeChildAges)) {
+    return { status: 'needs_prepare', issue: 'prepared_amend_or_price_is_stale' };
+  }
+  if (!ctx.user.sessionId || !ctx.user.sessionProfile) return { status: 'refused', issue: 'authenticated_staff_session_required' };
+  if (!labtestAmendWorkerEnabled()) return { status: 'refused', issue: 'amend_save_unavailable' };
+  const locked = targetWriteLock(ctx, compiled.selected);
+  if (!locked?.lock) return { status: 'needs_reconcile', issue: 'amend_target_lock_unavailable' };
+  let epoch: string;
+  try { epoch = await captureHmsLabtestDispatchEpoch(ctx.db, locked.dispatchTarget, input.workItemId); }
+  catch { return { status: 'needs_reconcile', issue: 'amend_dispatch_history_unavailable' }; }
+  const native = await nativeModule(), targetDigest = sha256(locked.dispatchTarget), work = await mkdtemp(join(tmpdir(), 'reservation-v2-callback-'));
+  const beforeScreenshot = join(work, 'before.png'), afterScreenshot = join(work, 'after.png'), runId = randomUUID();
+  const state: { beforeEvidence: { eventId: string; sha256: string } | null; beforeShot: { runId: string; sha256: string } | null;
+    afterShot: { runId: string; sha256: string } | null; handle: HmsLabtestWriteHandle | null; claimAttempted: boolean } = {
+    beforeEvidence: null, beforeShot: null, afterShot: null, handle: null, claimAttempted: false };
+  const approvedDigest = prepared.criteria.semanticDigest as string;
+  const callbackRecovery = structuredClone({ selected: compiled.selected, confirmation: compiled.selected.confirmation,
+      reservationStayId: compiled.selected.reservationStayId, reservationId: compiled.selected.reservationId,
+      recordId: compiled.selected.recordId, approved: changes, indicativePrice, preserved, recoveryBaseline: baseline,
+      nativeDigest: result.nativeDigest, prepareObservationRef: prepared.ref, approvedAfter: result.target,
+      callbackPlan: plan, callbackPlanDigest: planDigest, firstGo: true,
+      requestId: input.requestId, hintId: compiled.hintId, operationId: input.idempotencyKey, draftRevision: input.expectedRevision });
+  const claimBase = { workItemId: input.workItemId, transportId: ctx.transport.id, actorUserId: ctx.user.id,
+    grantId: input.idempotencyKey, propertyCode: 'HRCEN' as const, firstName: compiled.selected.firstName,
+    lastName: compiled.selected.lastName, nativeGuestId: compiled.selected.guestId, operation: 'amend' as const,
+    sourceDigest: input.source.sourceHash, approvedDigest, target: locked.dispatchTarget,
+    recovery: { confirmation: compiled.selected.confirmation, reservationStayId: compiled.selected.reservationStayId,
+      prepareObservationRef: prepared.ref, requestId: input.requestId, hintId: compiled.hintId,
+      operationId: input.idempotencyKey, draftRevision: input.expectedRevision, firstGo: true,
+      recoveryEvidenceDigest: sha256(callbackRecovery) } };
+  let approvedClaim = '';
+  const authorizeFirst = async (raw: unknown) => {
+    const step = record(raw);
+    if (state.claimAttempted || !step || step.operationDigest !== approvedDigest || step.sourceDigest !== input.source.sourceHash ||
+        step.targetDigest !== targetDigest || step.approvedPlanDigest !== planDigest ||
+        !['amend.guarantee', 'amend.party.organization', 'amend.party.bookingAgency', 'amend.party.arAccount',
+          'amend.children', 'amend.availability'].includes(String(step.phase)) ||
+        typeof step.requestDigest !== 'string' || !/^[a-f0-9]{64}$/.test(step.requestDigest) || !state.beforeEvidence) {
+      throw new Error('AMEND_CALLBACK_APPROVAL_INVALID');
+    }
+    const claim = { ...claimBase, requestDigest: step.requestDigest,
+      recovery: { ...claimBase.recovery, firstPhase: step.phase, runId, beforeShot: state.beforeShot } };
+    approvedClaim = canonicalJson(claim);
+    if (Buffer.byteLength(approvedClaim) > 16_384) throw new Error('AMEND_CALLBACK_CLAIM_TOO_LARGE');
+    state.claimAttempted = true;
+    const attempt = observationForWrite(draft, input, compiled.hintId, 'partial', { outcome: 'dispatch_pending',
+      requestDigest: step.requestDigest, approvedDigest, prepareObservationRef: prepared.ref,
+      target: result.target, before: compiled.selected, approvedPrices: indicativePrice,
+      beforeShot: state.beforeShot, semanticInput: result.semanticInput });
+    state.handle = await claimHmsLabtestDispatch(ctx.db, claim, async tx => {
+      await authorizeCurrentAmend(tx, ctx, input, compiled, prepared, approvedDigest, attempt);
+      await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
+        fieldPath: 'nava.hms.amend.callback-recovery.v1', value: { operationId: input.idempotencyKey,
+          sourceDigest: input.source.sourceHash, recovery: callbackRecovery }, evidence: { sourceHash: input.source.sourceHash } });
+    }, epoch);
+    return state.handle;
+  };
+  const sealBeforeEvidence = async () => {
+    state.beforeShot = await persistAmendShot(ctx, input.workItemId, runId, beforeScreenshot, 'before.png');
+    if (!state.beforeShot) throw new Error('AMEND_EVIDENCE_REQUIRED');
+    state.beforeEvidence = { eventId: randomUUID(), sha256: state.beforeShot.sha256 };
+    return state.beforeEvidence;
+  };
+  let staged: Record<string, unknown> = {}, fresh: Record<string, unknown> = {};
+  try {
+    try {
+      const checked = await locked.lock.withLock(async () => {
+        const current = await native.readCloudSavedChildAges({ target: locked.target, selected: compiled.selected,
+          confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, allowRealGuest: true,
+          cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget), signal: AbortSignal.timeout(8 * 60_000) });
+        if (current.outcome !== 'ok' || !Array.isArray(current.ages) ||
+            canonicalJson([...current.ages].sort((a, b) => Number(a) - Number(b))) !==
+              canonicalJson([...(baseline.beforeChildAges as number[])].sort((a, b) => a - b))) {
+          return { staged: { outcome: 'not_dispatched', issue: 'AMEND_CHILD_PREIMAGE_CHANGED' }, fresh: {} };
+        }
+        const nativeInput = { target: locked.target, selected: compiled.selected, confirmation: compiled.selected.confirmation,
+          arrival: compiled.selected.arrival, childAgePreimage: baseline.beforeChildAges, changes,
+          callbackPlan: plan, callbackPlanDigest: planDigest, callbackBindingChanges: safeChanges,
+          sourceDigest: input.source.sourceHash, targetDigest, nativeDigest: result.nativeDigest,
+          approvedPrices: indicativePrice, approvedBeforeCallbackPrice: baseline.beforeGuaranteePrice, preserved,
+          ...(typeof changes.guaranteeType === 'string' ? { guaranteeChoiceCode: changes.guaranteeType } : {}),
+          capturePriceComponents: true, captureMealPlan: true, approvedMealPlan: appliedMealPlan(result),
+          approvedBeforeMealPlan: baseline.beforeMealPlan, captureCommissionBaseline: Object.hasOwn(changes, 'taCommission'),
+          captureGuestOptInBaseline: Object.hasOwn(safeChanges, 'guestOptIn'),
+          allowRealGuest: process.env.PANE_WRITE_AMEND === 'on', allowChangedLabGuarantee: true,
+          cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget),
+          beforeScreenshot, afterScreenshot, signal: AbortSignal.timeout(20 * 60_000) };
+        const staged = await native.reviewCloudPaneAmendCallbacks(nativeInput, { operationDigest: approvedDigest,
+          authorizeFirst, sealBeforeEvidence, isEnabled: () => labtestAmendWorkerEnabled() &&
+            ['lab', 'on'].includes(process.env.PANE_WRITE_AMEND ?? '') });
+        if (staged.outcome !== 'callback_review_ready' || staged.writerSessionClosed !== true ||
+            staged.dispatchCallbacksDrained !== true || staged.callbackTaskDrained !== true || !record(staged.before) ||
+            !Array.isArray(staged.callbackEffects)) return { staged, fresh: {} };
+        const fresh = await native.readCloudCallbackReviewState({ ...nativeInput, before: staged.before,
+          callbackEffects: staged.callbackEffects });
+        return { staged, fresh };
+      }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+      staged = checked.staged; fresh = checked.fresh;
+    } catch (error) { staged = { outcome: 'uncertain', issue: isPropertyReadLockDeadline(error) ? 'amend_lock_busy' : 'callback_invocation_failed' }; }
+    try { state.afterShot = await persistAmendShot(ctx, input.workItemId, runId, afterScreenshot, 'saved.png'); }
+    catch { /* A positive review requires durable screenshot evidence. */ }
+  } finally { await rm(work, { recursive: true, force: true }).catch(() => {}); }
+  if (!state.handle) return state.claimAttempted ? { status: 'needs_reconcile', operationId: input.idempotencyKey,
+    issue: 'amend_dispatch_claim_unconfirmed' } : { status: 'failed', issue: text(staged.issue) ?? 'amend_callback_not_dispatched' };
+  const reviewPrice = nativePrice(staged.approvedPrices), callbackState = record(fresh.callbackState), savedPrice = nativePrice(fresh.savedPrice);
+  if (staged.outcome !== 'callback_review_ready' || fresh.outcome !== 'matched' || !reviewPrice || !record(reviewPrice.componentsTenThousandths) ||
+      !savedPrice || !callbackState || !state.beforeShot || !state.afterShot || fresh.confirmation !== compiled.selected.confirmation ||
+      fresh.nativeStayId !== compiled.selected.reservationStayId || reviewPrice.currency !== savedPrice.currency ||
+      appliedMealPlan(staged) !== appliedMealPlan(result)) {
+    const partialEvidenceRecorded = await recordCallbackPartial(ctx, input, compiled.hintId, 'first_go', staged);
+    return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: state.handle.holdId,
+      issue: 'amend_callback_readback_or_price_unverified', partialEffect: 'possible', partialEvidenceRecorded };
+  }
+  const approval = sha256({ stage: 'callback_price_review', requestId: compiled.requestId, hintId: compiled.hintId,
+    selectedRef: compiled.selectedRef, baseDigest: compiled.baseDigest, semanticDigest: approvedDigest,
+    price: reviewPrice, applied: { mealPlan: appliedMealPlan(staged) }, requestedMealPlan: compiled.baseChanges.requestedMealPlan ?? null,
+    callbackState, before: compiled.selected, target: result.target,
+    callbackPlanDigest: planDigest, prepareObservationRef: prepared.ref, freshReadback: fresh });
+  const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: draft.generationId,
+    kind: 'rate_availability', status: 'complete', observedAt: new Date().toISOString(), propertyCode: 'HRCEN',
+    sourceMessageId: draft.source.messageId, sourceRefs: [], coverage: { complete: true, notes: [] },
+    criteria: { workflow: 'amend', stage: 'callback_price_review', requestId: compiled.requestId, hintId: compiled.hintId,
+      selectedRef: compiled.selectedRef, baseDigest: compiled.baseDigest, semanticDigest: approvedDigest },
+    result: { outcome: 'callback_price_review', ready: true, approvalDigest: approval, price: reviewPrice, callbackState,
+      applied: { mealPlan: appliedMealPlan(staged) }, requestedMealPlan: compiled.baseChanges.requestedMealPlan ?? null,
+      before: compiled.selected, target: result.target, callbackPlanDigest: planDigest, prepareObservationRef: prepared.ref,
+      freshReadback: fresh, callbackEffects: staged.callbackEffects, beforeShot: state.beforeShot, reviewShot: state.afterShot } };
+  try {
+    const owner = `${ctx.user.id}:${ctx.transport.id}`;
+    if (!await verifyStoredHmsShot({ ...state.beforeShot, name: 'before.png', owner, propertyCode: 'HRCEN',
+      workItemId: input.workItemId }, 'before.png') ||
+        !await verifyStoredHmsShot({ ...state.afterShot, name: 'saved.png', owner, propertyCode: 'HRCEN',
+          workItemId: input.workItemId }, 'saved.png')) throw new Error('reservation_v2_amend_screenshot_unverified');
+    // The full readback is stored atomically in the review observation below.
+    // Keep the dispatch receipt bounded while binding it to that exact evidence.
+    const callbackReadback = { confirmation: compiled.selected.confirmation, nativeStayId: compiled.selected.reservationStayId,
+      operationPhase: 'callback_review', finalSave: false, callbackReviewDigest: approval, freshReadbackDigest: sha256(fresh) };
+    await resolveHmsLabtestDispatch(ctx.db, state.handle, { operation: 'amend', confirmation: compiled.selected.confirmation,
+      nativeStayId: compiled.selected.reservationStayId, nativeReadback: callbackReadback,
+      readbackDigest: sha256(callbackReadback), savedShot: state.afterShot },
+    async (tx, intent) => {
+      const { version: _version, kind: _kind, holdId: _holdId, ownerDigest: _ownerDigest, ...claimed } = intent;
+      if (!approvedClaim || canonicalJson(claimed) !== approvedClaim) throw new Error('reservation_v2_amend_intent_changed');
+      await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
+        fieldPath: 'nava.hms.amend.callback-review.v1', value: { operationId: input.idempotencyKey,
+          sourceDigest: input.source.sourceHash, observation }, evidence: { sourceHash: input.source.sourceHash } });
+      await persistResolvedResult(tx, ctx, input, compiled.hintId, observation,
+        'Native details may have changed; review the refreshed price before Save', 'prepared');
+    });
+  } catch {
+    const partialEvidenceRecorded = await recordCallbackPartial(ctx, input, compiled.hintId, 'first_go', staged);
+    return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: state.handle.holdId,
+      issue: 'amend_callback_durable_resolution_unconfirmed', partialEffect: 'possible', partialEvidenceRecorded };
+  }
+  const latest = await getReservationWorkflowV2Draft(stateContext(ctx), input);
+  if (latest.status !== 'ok') return { status: 'needs_reconcile', operationId: input.idempotencyKey,
+    issue: 'amend_callback_review_unavailable' };
+  return callbackReviewState(latest.draft, compiled) ?? { status: 'needs_reconcile', operationId: input.idempotencyKey,
+    issue: 'amend_callback_review_unavailable' };
+}
+
+/** Reconcile the first Go, replay only missing effects, and Save the exact accepted price. */
+async function executeCallbackSecond(ctx: ReservationWorkflowV2AmendContext, input: ReservationWorkflowV2ExecuteInput,
+  draft: ReservationWorkflowV2Draft, compiled: CompiledAmend, pending: Outcome): Promise<Outcome> {
+  const financial = record(pending.financialReview), reviewRef = text(financial?.observationRef), reviewDigest = text(financial?.approvalDigest);
+  const review = draft.observations.find(item => item.ref === reviewRef && item.kind === 'rate_availability');
+  const reviewResult = record(review?.result), recordedFresh = record(reviewResult?.freshReadback);
+  const prepared = preparedObservation(draft, compiled), original = record(prepared?.result), plan = record(original?.callbackPlan);
+  const baseline = record(original?.recoveryBaseline), preserved = record(original?.preserved), changes = record(original?.nativeChanges),
+    safeChanges = record(original?.safeChanges), price = nativePrice(reviewResult?.price);
+  const firstOperationId = text(pending.operationId), originalDigest = text(prepared?.criteria.semanticDigest);
+  const originalExpected = record(plan?.expected);
+  if (financial?.accepted !== true || !review || !reviewDigest || !firstOperationId || !prepared || !originalDigest ||
+      !reviewResult || !original || reviewResult.prepareObservationRef !== prepared.ref ||
+      reviewResult.callbackPlanDigest !== original.callbackPlanDigest ||
+      !plan || !baseline || !preserved || !changes || !safeChanges || !price || !record(price.componentsTenThousandths) ||
+      !recordedFresh || !Array.isArray(reviewResult.callbackEffects) || !Array.isArray(plan.parties) ||
+      !originalExpected || changes.retainRates !== 'no') return { status: 'needs_reconcile', issue: 'amend_callback_review_unverified' };
+  const originalParties = plan.parties;
+  const agency = originalParties.map(record).find(item => item?.kind === 'bookingAgency');
+  const commissionEffect = record(agency?.expectedEffects)?.ta1commission;
+  if (commissionEffect !== undefined && (typeof commissionEffect !== 'string' ||
+      !/^(?:0|[1-9]\d?)(?:\.\d+)?$|^100(?:\.0+)?$/.test(commissionEffect))) {
+    return { status: 'needs_reconcile', issue: 'amend_callback_commission_unverified' };
+  }
+  const expectedFinalCommission = typeof changes.taCommission === 'number' ? changes.taCommission :
+    typeof commissionEffect === 'string' ? Number(commissionEffect) : null;
+  const indicativePrice = nativePrice(original.approvedPrices);
+  if (!indicativePrice || !mealPlanVerified(draft, compiled, original) || appliedMealPlan(reviewResult) !== appliedMealPlan(original) || original.callbackPlanDigest !== sha256(plan) || originalDigest !== sha256({
+    baseDigest: compiled.baseDigest, selectedRef: compiled.selectedRef, selected: compiled.selected, target: original.target,
+    changes, safeChanges, preserved, recoveryBaseline: baseline, nativeDigest: original.nativeDigest,
+    price: indicativePrice, planDigest: original.callbackPlanDigest, appliedMealPlan: appliedMealPlan(original) })) {
+    return { status: 'needs_reconcile', issue: 'amend_callback_review_unverified' };
+  }
+  if (input.idempotencyKey === firstOperationId) return { ...pending, issue: 'amend_second_go_requires_new_operation' };
+  if (!ctx.user.sessionId || !ctx.user.sessionProfile) return { status: 'refused', issue: 'authenticated_staff_session_required' };
+  if (!labtestAmendWorkerEnabled()) return { status: 'refused', issue: 'amend_save_unavailable' };
+  const receipts = await ctx.db.select({ value: workEvent.value }).from(workEvent).where(and(
+    eq(workEvent.workItemId, input.workItemId), eq(workEvent.type, 'write.evidence'),
+    eq(workEvent.fieldPath, 'nava.hms.amend.callback-review.v1'))).limit(2000);
+  if (receipts.map(row => record(row.value)).filter(value => value?.operationId === firstOperationId &&
+      value.sourceDigest === input.source.sourceHash && value.observation &&
+      canonicalJson(value.observation) === canonicalJson(review)).length !== 1) {
+    return { status: 'needs_reconcile', issue: 'amend_callback_receipt_unverified' };
+  }
+  const locked = targetWriteLock(ctx, compiled.selected);
+  if (!locked?.lock) return { status: 'needs_reconcile', issue: 'amend_target_lock_unavailable' };
+  let epoch: string;
+  try { epoch = await captureHmsLabtestDispatchEpoch(ctx.db, locked.dispatchTarget, input.workItemId); }
+  catch { return { status: 'needs_reconcile', issue: 'amend_dispatch_history_unavailable' }; }
+  const native = await nativeModule(), work = await mkdtemp(join(tmpdir(), 'reservation-v2-final-')),
+    beforeScreenshot = join(work, 'before.png'), afterScreenshot = join(work, 'after.png'), runId = randomUUID();
+  const state: { beforeShot: { runId: string; sha256: string } | null; afterShot: { runId: string; sha256: string } | null;
+    beforeEvidence: { eventId: string; sha256: string } | null; handle: HmsLabtestWriteHandle | null; claimAttempted: boolean } = {
+    beforeShot: null, afterShot: null, beforeEvidence: null, handle: null, claimAttempted: false };
+  let approvedClaim = '', result: Record<string, unknown> = {}, finalBaseline: Record<string, unknown> | null = null;
+  try {
+    try {
+      result = await locked.lock.withLock(async () => {
+        const common = { target: locked.target, selected: compiled.selected, confirmation: compiled.selected.confirmation,
+          arrival: compiled.selected.arrival, allowRealGuest: true, cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget),
+          capturePriceComponents: true, captureMealPlan: true, signal: AbortSignal.timeout(20 * 60_000) };
+        const current = await native.readCloudCallbackReviewState({ ...common, callbackPlan: plan, before: baseline, changes,
+          preserved, callbackEffects: reviewResult.callbackEffects });
+        if (current.outcome !== 'matched' || canonicalJson(current) !== canonicalJson(recordedFresh) || !validNative(current.native) ||
+            !Array.isArray(current.childAges) || !record(current.partyImage) || !record(current.guarantee) || !nativePrice(current.savedPrice)) {
+          return { outcome: 'not_dispatched', issue: 'AMEND_CALLBACK_STATE_CHANGED' };
+        }
+        const effects = record(current.callbackState)?.effects;
+        if (!Array.isArray(effects)) return { outcome: 'not_dispatched', issue: 'AMEND_CALLBACK_STATE_UNVERIFIED' };
+        const statusFor = (field: string) => {
+          const matching = effects.map(record).filter(effect => effect?.field === field);
+          return matching.length === 1 && ['confirmed', 'not_observed'].includes(String(matching[0]?.persistence))
+            ? matching[0]?.persistence : null;
+        };
+        const originalGuarantee = record(plan.guarantee), originalChildren = record(plan.children);
+        if ((originalGuarantee && !statusFor('guaranteeType')) || (originalChildren && !statusFor('childAges')) ||
+            originalParties.some(item => !record(item) || !statusFor(String(record(item)?.kind)))) {
+          return { outcome: 'not_dispatched', issue: 'AMEND_CALLBACK_STATE_UNVERIFIED' };
+        }
+        const selected = current.native, guaranteeBefore = record(current.guarantee)!;
+        const parties = originalParties.filter(item => statusFor(String(record(item)?.kind)) === 'not_observed');
+        const guarantee = originalGuarantee && statusFor('guaranteeType') === 'not_observed'
+          ? { ...originalGuarantee, before: guaranteeBefore } : null;
+        const children = originalChildren && statusFor('childAges') === 'not_observed'
+          ? { beforeAges: current.childAges, nextAges: originalChildren.nextAges } : null;
+        const expected = { ...originalExpected, confirmation: selected.confirmation, guestId: selected.guestId,
+          reservationStayId: selected.reservationStayId, reservationId: selected.reservationId, recordId: selected.recordId,
+          firstName: selected.firstName, lastName: selected.lastName, arrival: selected.arrival, departure: selected.departure,
+          roomType: selected.roomType, ratePlan: selected.ratePlan, adults: selected.adults, childCount: selected.children,
+          childAges: current.childAges, expectedGuarantee: guaranteeBefore, note: baseline.beforeNote };
+        const nextPlan = { selected, expected, guarantee, parties, children, beforeImage: parties.length ? current.partyImage : null };
+        const planDigest = sha256(nextPlan), targetDigest = sha256(locked.dispatchTarget);
+        const nextCommon = { ...common, selected, arrival: selected.arrival, childAgePreimage: current.childAges };
+        const preflight = await native.prepareCloudPaneAmend({ ...nextCommon, changes: safeChanges, captureBusinessImage: true,
+          captureCommissionBaseline: Object.hasOwn(safeChanges, 'taCommission'),
+          captureGuestOptInBaseline: Object.hasOwn(safeChanges, 'guestOptIn') });
+        const preflightBaseline = record(preflight.recoveryBaseline), nextPreserved = record(preflight.preserved);
+        if (preflight.outcome !== 'prepared' || !preflightBaseline || !nextPreserved || !record(preflight.sourceBusinessImage) ||
+            appliedMealPlan(preflight) !== appliedMealPlan(reviewResult) || typeof preflightBaseline.beforeMealPlan !== 'string' ||
+            typeof preflight.nativeDigest !== 'string' || !/^[a-f0-9]{64}$/.test(preflight.nativeDigest) ||
+            preflightBaseline.beforeNote !== baseline.beforeNote ||
+            canonicalJson(preflightBaseline.beforeParties) !== canonicalJson(current.partyPreimage) ||
+            canonicalJson(preflight.sourceBusinessImage) !== canonicalJson(current.partyImage)) {
+          return { outcome: 'not_dispatched', issue: 'AMEND_CALLBACK_PREFLIGHT_CHANGED' };
+        }
+        finalBaseline = preflightBaseline;
+        const callbackRecovery = structuredClone({ selected, confirmation: selected.confirmation, reservationStayId: selected.reservationStayId,
+            reservationId: selected.reservationId, recordId: selected.recordId, approved: changes, approvedPrices: price,
+            preserved: nextPreserved, recoveryBaseline: preflightBaseline, nativeDigest: preflight.nativeDigest,
+            prepareObservationRef: prepared.ref, approvedAfter: original.target, callbackPlan: nextPlan,
+            callbackPlanDigest: planDigest, reviewObservationRef: review.ref, reviewDigest, firstGoOperationId: firstOperationId,
+            requestId: input.requestId, hintId: compiled.hintId, operationId: input.idempotencyKey, draftRevision: input.expectedRevision });
+        const claimBase = { workItemId: input.workItemId, transportId: ctx.transport.id, actorUserId: ctx.user.id,
+          grantId: input.idempotencyKey, propertyCode: 'HRCEN' as const, firstName: compiled.selected.firstName,
+          lastName: compiled.selected.lastName, nativeGuestId: compiled.selected.guestId, operation: 'amend' as const,
+          sourceDigest: input.source.sourceHash, approvedDigest: reviewDigest, target: locked.dispatchTarget,
+          recovery: { confirmation: selected.confirmation, reservationStayId: selected.reservationStayId,
+            prepareObservationRef: prepared.ref, reviewDigest, requestId: input.requestId, hintId: compiled.hintId,
+            operationId: input.idempotencyKey, draftRevision: input.expectedRevision,
+            recoveryEvidenceDigest: sha256(callbackRecovery) } };
+        const authorizeFirst = async (raw: unknown) => {
+          const step = record(raw);
+          if (state.claimAttempted || !step || step.operationDigest !== reviewDigest || step.sourceDigest !== input.source.sourceHash ||
+              step.targetDigest !== targetDigest || step.approvedPlanDigest !== planDigest || step.reviewDigest !== reviewDigest ||
+              !['amend.guarantee', 'amend.party.organization', 'amend.party.bookingAgency', 'amend.party.arAccount',
+                'amend.children', 'amend.availability'].includes(String(step.phase)) ||
+              typeof step.requestDigest !== 'string' || !/^[a-f0-9]{64}$/.test(step.requestDigest) || !state.beforeEvidence) {
+            throw new Error('AMEND_FINAL_APPROVAL_INVALID');
+          }
+          const claim = { ...claimBase, requestDigest: step.requestDigest,
+            recovery: { ...claimBase.recovery, firstPhase: step.phase, runId, beforeShot: state.beforeShot } };
+          approvedClaim = canonicalJson(claim);
+          if (Buffer.byteLength(approvedClaim) > 16_384) throw new Error('AMEND_CALLBACK_CLAIM_TOO_LARGE');
+          state.claimAttempted = true;
+          const attempt = observationForWrite(draft, input, compiled.hintId, 'partial', { outcome: 'dispatch_pending',
+            requestDigest: step.requestDigest, approvedDigest: originalDigest, prepareObservationRef: prepared.ref,
+            target: original.target, before: compiled.selected, approvedPrices: price, beforeShot: state.beforeShot,
+            reviewObservationRef: review.ref, reviewDigest });
+          state.handle = await claimHmsLabtestDispatch(ctx.db, claim, async tx => {
+            await authorizeCurrentAmend(tx, ctx, input, compiled, prepared, originalDigest, attempt,
+              { operationId: firstOperationId, observation: review, approvalDigest: reviewDigest });
+            await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
+              fieldPath: 'nava.hms.amend.callback-recovery.v1', value: { operationId: input.idempotencyKey,
+                sourceDigest: input.source.sourceHash, recovery: callbackRecovery }, evidence: { sourceHash: input.source.sourceHash } });
+          }, epoch);
+          return state.handle;
+        };
+        const sealBeforeEvidence = async () => {
+          state.beforeShot = await persistAmendShot(ctx, input.workItemId, runId, beforeScreenshot, 'before.png');
+          if (!state.beforeShot) throw new Error('AMEND_EVIDENCE_REQUIRED');
+          state.beforeEvidence = { eventId: randomUUID(), sha256: state.beforeShot.sha256 };
+          return state.beforeEvidence;
+        };
+        return native.commitCloudPaneAmendReviewed({ ...nextCommon, changes, callbackPlan: nextPlan, callbackPlanDigest: planDigest,
+          callbackBindingChanges: safeChanges, approvedBusinessImage: current.partyImage,
+          approvedMealPlan: appliedMealPlan(reviewResult), approvedBeforeMealPlan: preflightBaseline.beforeMealPlan,
+          ...(expectedFinalCommission !== null ? { expectedFinalCommission } : {}),
+          sourceDigest: input.source.sourceHash, targetDigest, reviewDigest,
+          nativeDigest: preflight.nativeDigest, approvedPrices: price, approvedBeforeCallbackPrice: current.savedPrice,
+          preserved: nextPreserved, ...(typeof changes.guaranteeType === 'string' ? { guaranteeChoiceCode: changes.guaranteeType } : {}),
+          captureCommissionBaseline: Object.hasOwn(changes, 'taCommission'), captureGuestOptInBaseline: Object.hasOwn(changes, 'guestOptIn'),
+          allowRealGuest: process.env.PANE_WRITE_AMEND === 'on', allowChangedLabGuarantee: true, beforeScreenshot, afterScreenshot },
+        { operationDigest: reviewDigest, authorizeFirst, sealBeforeEvidence,
+          isEnabled: () => labtestAmendWorkerEnabled() && ['lab', 'on'].includes(process.env.PANE_WRITE_AMEND ?? '') });
+      }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+    } catch (error) { result = { outcome: 'uncertain', issue: isPropertyReadLockDeadline(error) ? 'amend_lock_busy' : 'native_amend_invocation_failed' }; }
+    try { state.afterShot = await persistAmendShot(ctx, input.workItemId, runId, afterScreenshot, 'saved.png'); }
+    catch { /* No positive completion without durable readback evidence. */ }
+  } finally { await rm(work, { recursive: true, force: true }).catch(() => {}); }
+  if (!state.handle) return state.claimAttempted ? { status: 'needs_reconcile', operationId: input.idempotencyKey,
+    issue: 'amend_dispatch_claim_unconfirmed' } : { status: 'failed', issue: text(result.issue) ?? 'amend_not_dispatched' };
+  const actual = result.outcome === 'amended' && result.writerSessionClosed === true && result.dispatchCallbacksDrained === true &&
+    result.businessFieldsMatched === true && finalBaseline ? readbackMatches(result.readback,
+      { ...original, recoveryBaseline: finalBaseline, approvedPrices: price, expectedFinalCommission }) : null;
+  if (!actual || !state.beforeShot || !state.afterShot || !state.beforeEvidence) {
+    const partialEvidenceRecorded = await recordCallbackPartial(ctx, input, compiled.hintId, 'final_go', result);
+    return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: state.handle.holdId,
+      issue: 'amend_readback_or_durable_receipt_unverified', partialEffect: 'possible', partialEvidenceRecorded };
+  }
+  const success = observationForWrite(draft, input, compiled.hintId, 'complete', { nativeOutcome: result.outcome,
+    target: original.target, before: compiled.selected, nativeReadback: actual, approvedPrices: price,
+    prepareObservationRef: prepared.ref, reviewObservationRef: review.ref, reviewDigest,
+    dispatchHoldId: state.handle.holdId, beforeShot: state.beforeShot, savedShot: state.afterShot });
+  try {
+    const owner = `${ctx.user.id}:${ctx.transport.id}`;
+    if (!await verifyStoredHmsShot({ ...state.beforeShot, name: 'before.png', owner, propertyCode: 'HRCEN',
+      workItemId: input.workItemId }, 'before.png') || !await verifyStoredHmsShot({ ...state.afterShot, name: 'saved.png', owner,
+      propertyCode: 'HRCEN', workItemId: input.workItemId }, 'saved.png')) throw new Error('reservation_v2_amend_screenshot_unverified');
+    const finalReceipt = { confirmation: actual.confirmation, nativeStayId: actual.nativeStayId,
+      operationPhase: 'final_save', finalSave: true, freshReadbackDigest: sha256(actual) };
+    await resolveHmsLabtestDispatch(ctx.db, state.handle, { operation: 'amend', confirmation: String(actual.confirmation),
+      nativeStayId: String(actual.nativeStayId), nativeReadback: finalReceipt, readbackDigest: sha256(finalReceipt), savedShot: state.afterShot },
+    async (tx, intent) => {
+      const { version: _version, kind: _kind, holdId: _holdId, ownerDigest: _ownerDigest, ...claimed } = intent;
+      if (!approvedClaim || canonicalJson(claimed) !== approvedClaim) throw new Error('reservation_v2_amend_intent_changed');
+      await persistResolvedResult(tx, ctx, input, compiled.hintId, success,
+        `Amended ${actual.confirmation}; HMS fresh readback matched`);
+    });
+  } catch {
+    const partialEvidenceRecorded = await recordCallbackPartial(ctx, input, compiled.hintId, 'final_go', result);
+    return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: state.handle.holdId,
+      issue: 'amend_durable_resolution_unconfirmed', partialEffect: 'possible', partialEvidenceRecorded };
+  }
+  return { status: 'succeeded', operationId: input.idempotencyKey, requestId: input.requestId,
+    allocationId: compiled.hintId, confirmation: actual.confirmation, price: actual.price, observationRef: success.ref };
 }
 
 export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflowV2AmendContext,
@@ -990,6 +2111,32 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
   if (prior?.status === 'unknown' || targetResult?.status === 'unknown') return { status: 'needs_reconcile', operationId: targetResult?.id ?? prior!.id };
   const compiled = compileBase(loaded.draft, input.requestId, input.allocationId, 'execute');
   if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [] };
+  const pendingReview = callbackReviewState(loaded.draft, compiled);
+  if (pendingReview) {
+    if (pendingReview.status === 'needs_review' && record(pendingReview.financialReview)?.accepted === true) {
+      return executeCallbackSecond(ctx, input, loaded.draft, compiled, pendingReview);
+    }
+    return pendingReview;
+  }
+  const candidate = preparedObservation(loaded.draft, compiled);
+  if (compiled.rateHandling === 'retain' && callbackRequested(compiled)) {
+    const finding = loaded.draft.observations.findLast(observation => observation.kind === 'rate_availability' &&
+      observation.status === 'complete' && observation.coverage.complete && observation.generationId === loaded.draft!.generationId &&
+      observation.propertyCode === 'HRCEN' && observation.sourceMessageId === loaded.draft!.source.messageId &&
+      observation.criteria.workflow === 'amend' && observation.criteria.stage === 'retain_callback_unsupported' &&
+      observation.criteria.requestId === compiled.requestId && observation.criteria.hintId === compiled.hintId &&
+      observation.criteria.selectedRef === compiled.selectedRef && observation.criteria.baseDigest === compiled.baseDigest &&
+      observation.result.outcome === 'retain_callback_unsupported');
+    if (finding && (!candidate || loaded.draft.observations.indexOf(finding) > loaded.draft.observations.indexOf(candidate))) {
+      return { status: 'unsupported', issue: 'retained_rate_not_supported_for_priced_amendment', fields: ['rateHandling'] };
+    }
+    if (record(candidate?.result)?.callbackNoop !== true) {
+      return { status: 'needs_prepare', issue: 'prepared_amend_or_price_is_stale' };
+    }
+  }
+  if (callbackRequested(compiled) && record(candidate?.result)?.callbackNoop !== true) {
+    return executeCallbackFirst(ctx, input, loaded.draft, compiled);
+  }
   if (!ctx.user.sessionId || !ctx.user.sessionProfile) {
     return { status: 'refused', issue: 'authenticated_staff_session_required' };
   }
@@ -999,10 +2146,11 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
   const expectedSemantic = preparedResult && prepared ? sha256({ baseDigest: compiled.baseDigest,
     selectedRef: compiled.selectedRef, selected: compiled.selected, target: preparedResult.target,
     changes: nativeChanges, preserved, recoveryBaseline: preparedResult.recoveryBaseline,
-    nativeDigest: preparedResult.nativeDigest, price }) : null;
+    nativeDigest: preparedResult.nativeDigest, price, appliedMealPlan: appliedMealPlan(preparedResult) }) : null;
   if (!prepared || !preparedResult || !record(preparedResult.recoveryBaseline) ||
       typeof prepared.criteria.draftRevision !== 'number' || prepared.criteria.draftRevision > input.expectedRevision ||
       prepared.criteria.semanticDigest !== expectedSemantic || !nativeChanges || !preserved || !price ||
+      !mealPlanVerified(loaded.draft, compiled, preparedResult) ||
       typeof preparedResult.nativeDigest !== 'string' || !/^[a-f0-9]{64}$/.test(preparedResult.nativeDigest)) {
     return { status: 'needs_prepare', issue: 'prepared_amend_or_price_is_stale' };
   }
@@ -1021,45 +2169,49 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
     handle: HmsLabtestWriteHandle | null; claimAttempted: boolean } = {
     beforeEvidence: null, beforeShot: null, afterShot: null, handle: null, claimAttempted: false };
   let result: Record<string, unknown>;
+  const ordinaryRecovery = structuredClone({ selected: compiled.selected, confirmation: compiled.selected.confirmation,
+    reservationStayId: compiled.selected.reservationStayId, reservationId: compiled.selected.reservationId,
+    recordId: compiled.selected.recordId, approved: nativeChanges, approvedPrices: price, preserved,
+    nativeDigest: preparedResult.nativeDigest, prepareObservationRef: prepared.ref, approvedAfter: preparedResult.target,
+    recoveryBaseline: preparedResult.recoveryBaseline, requestId: input.requestId, hintId: compiled.hintId,
+    operationId: input.idempotencyKey, draftRevision: input.expectedRevision });
   const claimInputBase = {
     workItemId: input.workItemId, transportId: ctx.transport.id, actorUserId: ctx.user.id,
     grantId: input.idempotencyKey, propertyCode: 'HRCEN' as const,
     firstName: compiled.selected.firstName, lastName: compiled.selected.lastName,
     nativeGuestId: compiled.selected.guestId, operation: 'amend' as const,
     sourceDigest: input.source.sourceHash, approvedDigest: prepared.criteria.semanticDigest as string,
-    recovery: { selected: compiled.selected, confirmation: compiled.selected.confirmation,
-      reservationStayId: compiled.selected.reservationStayId, reservationId: compiled.selected.reservationId,
-      recordId: compiled.selected.recordId, approved: nativeChanges,
-      approvedPrices: price, preserved, nativeDigest: preparedResult.nativeDigest,
-      prepareObservationRef: prepared.ref,
-      approvedAfter: preparedResult.target, recoveryBaseline: preparedResult.recoveryBaseline,
-      requestId: input.requestId, hintId: compiled.hintId, operationId: input.idempotencyKey,
-      draftRevision: input.expectedRevision },
+    recovery: { confirmation: compiled.selected.confirmation, reservationStayId: compiled.selected.reservationStayId,
+      prepareObservationRef: prepared.ref, requestId: input.requestId, hintId: compiled.hintId,
+      operationId: input.idempotencyKey, draftRevision: input.expectedRevision, recoveryEvidenceDigest: sha256(ordinaryRecovery) },
     target: locked.dispatchTarget,
   };
   let approvedClaim = '';
   const authorizeFirst = async (stepValue: unknown) => {
     const step = record(stepValue);
     if (dispatchState.claimAttempted || !step || step.operationDigest !== prepared.criteria.semanticDigest ||
-        !['amend.availability', 'amend.save'].includes(String(step.phase)) ||
+        !['amend.guarantee', 'amend.children', 'amend.availability', 'amend.save'].includes(String(step.phase)) ||
         typeof step.requestDigest !== 'string' || !/^[a-f0-9]{64}$/.test(step.requestDigest) || !dispatchState.beforeEvidence) {
       throw new Error('AMEND_APPROVAL_INVALID');
     }
-    dispatchState.claimAttempted = true;
     const claimInput = { ...claimInputBase, requestDigest: step.requestDigest,
       recovery: { ...claimInputBase.recovery, firstPhase: step.phase,
         runId, beforeShot: dispatchState.beforeShot } };
     approvedClaim = canonicalJson(claimInput);
+    if (Buffer.byteLength(approvedClaim) > 16_384) throw new Error('AMEND_CLAIM_TOO_LARGE');
+    dispatchState.claimAttempted = true;
     const attempt = observationForWrite(loaded.draft!, input, compiled.hintId, 'partial', {
       outcome: 'dispatch_pending', requestDigest: step.requestDigest,
       approvedDigest: prepared.criteria.semanticDigest, prepareObservationRef: prepared.ref,
       target: preparedResult.target, before: compiled.selected, approvedPrices: price,
       beforeShot: dispatchState.beforeShot, semanticInput: preparedResult.semanticInput,
     });
-    dispatchState.handle = await claimHmsLabtestDispatch(ctx.db, claimInput,
-      async (tx) => authorizeCurrentAmend(tx, ctx, input, compiled, prepared,
-        prepared.criteria.semanticDigest as string, attempt),
-      expectedEpoch);
+    dispatchState.handle = await claimHmsLabtestDispatch(ctx.db, claimInput, async tx => {
+      await authorizeCurrentAmend(tx, ctx, input, compiled, prepared, prepared.criteria.semanticDigest as string, attempt);
+      await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
+        fieldPath: 'nava.hms.amend.recovery.v1', value: { operationId: input.idempotencyKey,
+          sourceDigest: input.source.sourceHash, recovery: ordinaryRecovery }, evidence: { sourceHash: input.source.sourceHash } });
+    }, expectedEpoch);
     return dispatchState.handle;
   };
   const sealBeforeEvidence = async () => {
@@ -1073,14 +2225,34 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
   };
   try {
     try {
-      result = await locked.lock.withLock(() => native.commitCloudPaneAmend({ target: locked.target,
+      result = await locked.lock.withLock(async () => {
+        const childAgePreimage = record(preparedResult.recoveryBaseline)?.beforeChildAges;
+        if (Array.isArray(childAgePreimage)) {
+          const current = await native.readCloudSavedChildAges({ target: locked.target, selected: compiled.selected,
+            confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, allowRealGuest: true,
+            cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget), signal: AbortSignal.timeout(8 * 60_000) });
+          if (current.outcome !== 'ok' || !Array.isArray(current.ages) ||
+              canonicalJson([...current.ages].sort((a, b) => Number(a) - Number(b))) !==
+                canonicalJson([...childAgePreimage].sort((a, b) => Number(a) - Number(b)))) {
+            return { outcome: 'not_dispatched', issue: 'AMEND_CHILD_PREIMAGE_CHANGED' };
+          }
+        }
+        return native.commitCloudPaneAmend({ target: locked.target,
         selected: compiled.selected, confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival,
-        changes: nativeChanges, nativeDigest: preparedResult.nativeDigest, approvedPrices: price, preserved,
+        ...(Array.isArray(childAgePreimage) ? { childAgePreimage } : {}), changes: nativeChanges,
+        ...(typeof nativeChanges.guaranteeType === 'string' ? { guaranteeChoiceCode: nativeChanges.guaranteeType,
+          approvedGuaranteeDisplay: record(preparedResult.recoveryBaseline)?.requestedGuaranteeDisplay,
+          approvedBeforeGuaranteeDisplay: record(preparedResult.recoveryBaseline)?.beforeGuaranteeDisplay,
+          approvedBeforeGuaranteePrice: record(preparedResult.recoveryBaseline)?.beforeGuaranteePrice } : {}), nativeDigest: preparedResult.nativeDigest, approvedPrices: price, preserved,
+        captureMealPlan: true, approvedMealPlan: appliedMealPlan(preparedResult),
+        approvedBeforeMealPlan: record(preparedResult.recoveryBaseline)?.beforeMealPlan,
+        captureCommissionBaseline: Object.hasOwn(nativeChanges, 'taCommission'),
+        captureGuestOptInBaseline: Object.hasOwn(nativeChanges, 'guestOptIn'),
         allowRealGuest: process.env.PANE_WRITE_AMEND === 'on', cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget),
         beforeScreenshot, afterScreenshot, signal: AbortSignal.timeout(20 * 60_000) },
       { operationDigest: prepared.criteria.semanticDigest as string, authorizeFirst, sealBeforeEvidence,
-        isEnabled: () => labtestAmendWorkerEnabled() && ['lab', 'on'].includes(process.env.PANE_WRITE_AMEND ?? '') }),
-      acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+        isEnabled: () => labtestAmendWorkerEnabled() && ['lab', 'on'].includes(process.env.PANE_WRITE_AMEND ?? '') });
+      }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
     } catch (error) {
       result = { outcome: 'uncertain', issue: isPropertyReadLockDeadline(error) ? 'amend_lock_busy' : 'native_amend_invocation_failed' };
     }
@@ -1126,9 +2298,11 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
       workItemId: input.workItemId }, 'before.png') ||
       !await verifyStoredHmsShot({ ...afterShot, name: 'saved.png', owner, propertyCode: 'HRCEN',
         workItemId: input.workItemId }, 'saved.png')) throw new Error('reservation_v2_amend_screenshot_unverified');
+    const finalReceipt = { confirmation: readback.confirmation, nativeStayId: readback.nativeStayId,
+      operationPhase: 'final_save', finalSave: true, freshReadbackDigest: sha256(readback) };
     await resolveHmsLabtestDispatch(ctx.db, handle, { operation: 'amend', confirmation: String(readback.confirmation),
-      nativeStayId: String(readback.nativeStayId), nativeReadback: readback,
-      readbackDigest: sha256(readback), savedShot: afterShot }, async (tx, durableIntent) => {
+      nativeStayId: String(readback.nativeStayId), nativeReadback: finalReceipt,
+      readbackDigest: sha256(finalReceipt), savedShot: afterShot }, async (tx, durableIntent) => {
       const { version: _version, kind: _kind, holdId: _holdId, ownerDigest: _ownerDigest, ...claimed } = durableIntent;
       if (!approvedClaim || canonicalJson(claimed) !== approvedClaim) throw new Error('reservation_v2_amend_intent_changed');
       await persistResolvedResult(tx, ctx, input, compiled.hintId, success,
@@ -1179,7 +2353,7 @@ export async function reservationWorkflowV2AmendReconcile(ctx: ReservationWorkfl
   const intent = intents.find((row) => {
     const recovery = record(row.recovery), target = hmsDispatchTargetSchema.safeParse(row.target);
     if (row.workItemId !== input.workItemId || row.transportId !== ctx.transport.id || row.propertyCode !== 'HRCEN' ||
-        row.sourceDigest !== input.source.sourceHash || row.approvedDigest !== attemptResult?.approvedDigest ||
+        row.sourceDigest !== input.source.sourceHash || row.approvedDigest !== (attemptResult?.reviewDigest ?? attemptResult?.approvedDigest) ||
         recovery?.requestId !== operation.requestId || recovery.hintId !== operation.allocationId ||
         recovery.operationId !== operation.id || recovery.prepareObservationRef !== prepareObservationRef ||
         recovery.draftRevision !== operation.draftRevision || !expectedTarget?.success || !target.success) return false;
@@ -1187,6 +2361,44 @@ export async function reservationWorkflowV2AmendReconcile(ctx: ReservationWorkfl
   });
   if (!intent || typeof intent.holdId !== 'string' || !z.string().uuid().safeParse(intent.holdId).success) {
     return { status: 'needs_reconcile', operationId: input.operationId, issue: 'amend_dispatch_intent_scope_unverified' };
+  }
+  if (record(intent.recovery)?.firstGo === true || typeof record(intent.recovery)?.reviewDigest === 'string') {
+    const claimRecovery = record(intent.recovery)!;
+    const recoveryRows = await ctx.db.select({ value: workEvent.value }).from(workEvent).where(and(
+      eq(workEvent.workItemId, input.workItemId), eq(workEvent.type, 'write.evidence'),
+      eq(workEvent.fieldPath, 'nava.hms.amend.callback-recovery.v1'))).limit(2000);
+    const matches = recoveryRows.map(row => record(row.value)).filter(row => row?.operationId === input.operationId &&
+      row.sourceDigest === input.source.sourceHash && record(row.recovery) &&
+      sha256(row.recovery) === claimRecovery.recoveryEvidenceDigest);
+    const recovery = matches.length === 1 ? record(matches[0]?.recovery) : null;
+    if (!recovery) return { status: 'needs_reconcile', operationId: input.operationId, dispatchHoldId: intent.holdId,
+      issue: 'amend_callback_recovery_evidence_unavailable', partialEffect: 'possible',
+      message: 'Details may have changed in HMS. Check the reservation and resolve this operation before retrying.' };
+    const selected = recovery.selected, plan = record(recovery.callbackPlan),
+      baseline = record(recovery.recoveryBaseline), preserved = record(recovery.preserved), changes = record(recovery.approved);
+    let nativeState: Record<string, unknown> | null = null;
+    if (validNative(selected) && plan && baseline && preserved && changes) {
+      try {
+        const partials = await ctx.db.select({ value: workEvent.value }).from(workEvent).where(and(
+          eq(workEvent.workItemId, input.workItemId), eq(workEvent.type, 'write.evidence'),
+          eq(workEvent.fieldPath, 'nava.hms.amend.callback-partial.v1'))).limit(2000);
+        const matching = partials.map(row => record(row.value)).filter(row => row?.operationId === input.operationId &&
+          row.sourceDigest === input.source.sourceHash);
+        const callbackEffects = matching.length === 1 && Array.isArray(matching[0]?.effects) ? matching[0]?.effects : [];
+        const locked = targetWriteLock(ctx, selected), native = await nativeModule();
+        if (locked?.lock) {
+          const fresh = await locked.lock.withLock(() => native.readCloudCallbackReviewState({ target: locked.target, selected,
+            confirmation: selected.confirmation, arrival: selected.arrival, allowRealGuest: true,
+            cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget), callbackPlan: plan, before: baseline,
+            preserved, changes, callbackEffects, capturePriceComponents: true, signal: AbortSignal.timeout(8 * 60_000) }),
+          acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+          if (fresh.outcome === 'matched') nativeState = { callbackState: fresh.callbackState, savedPrice: fresh.savedPrice };
+        }
+      } catch { /* Keep the hold and report that fresh readback is unavailable. */ }
+    }
+    return { status: 'needs_reconcile', operationId: input.operationId, dispatchHoldId: intent.holdId,
+      issue: 'amend_callback_partial_reconciliation_required', partialEffect: 'possible', nativeState,
+      message: 'Details may have changed in HMS. Check the reservation and resolve this operation before retrying.' };
   }
   // The durable Amend hold deliberately remains active without positive evidence.
   // Recovery is wired through the existing dispatch protocol when its Amend driver is available.

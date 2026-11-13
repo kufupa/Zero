@@ -7,7 +7,7 @@ import {
   staffStayExtrasFor,
   type AvailabilityBoardRow,
   type DinnerAddOnUnit,
-  type QuoteRoomRateBoardSelection,
+  type QuoteRoomRateMealPlanSelection,
   type QuoteSession,
   type RowPriceChoice,
   type StaffQuoteOtherUnit,
@@ -23,7 +23,7 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 export type ReservationNoteInput = {
   propertyCode: string | null | undefined;
   stay: Pick<StayGroupRequirement, 'arrivalDate' | 'departureDate' | 'quantity'>;
-  selection: QuoteRoomRateBoardSelection;
+  selection: QuoteRoomRateMealPlanSelection;
   availability: AvailabilityBoardRow;
   chargedRate: StaffRowRate;
   rowPrice?: RowPriceChoice;
@@ -119,7 +119,7 @@ export function formatReservationNote(input: ReservationNoteInput): string | nul
   if (
     !selection.roomCode.trim() ||
     !selection.rateCode.trim() ||
-    (selection.board !== 'room_only' && selection.board !== 'bb' && selection.board !== 'dinner_bb')
+    (selection.mealPlan !== 'room_only' && selection.mealPlan !== 'bb' && selection.mealPlan !== 'dinner_bb')
   ) return null;
   const arrival = validDate(stay.arrivalDate);
   const departure = validDate(stay.departureDate);
@@ -132,11 +132,11 @@ export function formatReservationNote(input: ReservationNoteInput): string | nul
     availability.groupId !== chargedRate.groupId ||
     availability.roomCode !== selection.roomCode ||
     availability.rateCode !== selection.rateCode ||
-    availability.board !== selection.board ||
+    availability.mealPlan !== selection.mealPlan ||
     !positiveMinor(availability.nightlyPriceMinor ?? undefined) ||
     !availability.roomLabel.trim() ||
     !availability.rateLabel.trim() ||
-    !availability.boardLabel.trim()
+    !availability.mealPlanLabel.trim()
   ) return null;
   if (
     !validMinorList(chargedRate.hmsNightlyMinor, nights) ||
@@ -161,7 +161,7 @@ export function formatReservationNote(input: ReservationNoteInput): string | nul
   const roomName = availability.roomLabel.trim();
   const roomCode = selection.roomCode.trim();
   const rateName = availability.rateLabel.trim();
-  const boardName = availability.boardLabel.trim();
+  const boardName = availability.mealPlanLabel.trim();
   const chargedByNight = chargedRate.nightlyMinor;
   const uniquePrice = chargedByNight.every((amount) => amount === chargedByNight[0]);
   const lines = [
@@ -191,11 +191,11 @@ export function formatReservationNote(input: ReservationNoteInput): string | nul
   return note.length <= PANE_RESERVATION_NOTE_MAX ? note : null;
 }
 
-function selectedRateForGroup(group: StayGroupRequirement): QuoteRoomRateBoardSelection | null {
+function selectedRateForGroup(group: StayGroupRequirement): QuoteRoomRateMealPlanSelection | null {
   const roomCode = group.roomCodes?.length === 1 ? group.roomCodes[0]?.trim() : '';
   const rateCode = group.rateCode?.trim();
-  if (!roomCode || !rateCode || group.board === 'unknown') return null;
-  return { roomCode, rateCode, board: group.board };
+  if (!roomCode || !rateCode || group.mealPlan === 'unknown') return null;
+  return { roomCode, rateCode, mealPlan: group.mealPlan };
 }
 
 /** Build from this group's current run only; a missing or stale value leaves the existing manual note path intact. */
@@ -210,11 +210,11 @@ export function reservationNoteForGroup(
   const run = currentStayRun(session, stayKey);
   const selection = selectedRateForGroup(group);
   if (!run || !selection || staffHeaderFieldProblem(session.staffHeader, stayKey)) return null;
-  const matches = (row: { groupId: string; roomCode: string; rateCode: string; board: string }) =>
+  const matches = (row: { groupId: string; roomCode: string; rateCode: string; mealPlan: string }) =>
     row.groupId === groupId &&
     row.roomCode === selection.roomCode &&
     row.rateCode === selection.rateCode &&
-    row.board === selection.board;
+    row.mealPlan === selection.mealPlan;
   const available = run.availabilityBoard?.filter(matches) ?? [];
   const charged = run.rowRates?.filter((row) => row.groupId === groupId) ?? [];
   if (available.length !== 1 || charged.length !== 1) return null;

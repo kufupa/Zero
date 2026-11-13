@@ -16,7 +16,7 @@ export function nativePartyLabelMatches(query:string,label:string):boolean{
  return (suffix?.[1]??suffix?.[2])===query.trim();
 }
 /** Bind original customer facts to independently authorized selected scope; this grants no authority. */
-export function assertRevisionSourceFacts(facts: readonly ValidatedDocumentFact[], revision: QuoteRevision, rooms?: readonly BookingRoomInput[], originalGuestFacts: BookingEvidence['guestFacts'] = [], quotationAddressee?:{company:string;agency:string}): void {
+export function assertRevisionSourceFacts(facts: readonly ValidatedDocumentFact[], revision: QuoteRevision, rooms?: readonly BookingRoomInput[], originalGuestFacts: BookingEvidence['guestFacts'] = [], quotationAddressee?:{organization:string;bookingAgency:string}): void {
   for (const fact of facts) {
     if (fact.verification !== 'text_verified') fail('missing', 'verification');
     if (fact.kind === 'dates') {
@@ -29,15 +29,15 @@ export function assertRevisionSourceFacts(facts: readonly ValidatedDocumentFact[
       const groups = revision.groups.filter(group => group.id === fact.value.roomRef || group.roomCode === fact.value.roomRef);
       if (!groups.length) fail('mismatch', 'room');
       if (groups.some(group => group.adults !== fact.value.adults || quoteDigest(group.childAges) !== quoteDigest(fact.value.childAges) || fact.value.quantity !== undefined && group.quantity !== fact.value.quantity)) fail('mismatch', 'room');
-    } else if (fact.kind === 'board') {
-      const value=typeof fact.value==='string'?fact.value:fact.value.board;
+    } else if (fact.kind === 'mealPlan') {
+      const value=typeof fact.value==='string'?fact.value:fact.value.mealPlan;
       const board = boardLabels[value.toLowerCase().replace(/\s+/g, ' ').trim()];
       if (!board) fail('missing', 'board');
       const target=typeof fact.value==='string'?undefined:fact.value.roomRef;
       const groups=target===undefined?revision.groups:revision.groups.filter(group=>group.id===target||group.roomCode===target);
-      if (!groups.length || groups.some(group => group.board !== board)) fail('mismatch', 'board');
+      if (!groups.length || groups.some(group => group.mealPlan !== board)) fail('mismatch', 'board');
     } else if (fact.kind === 'party') {
-      if (!revision.groups.some(group => Object.values(group.context).some(context => (context as {name?:string}).name === fact.value || rooms===undefined&&typeof (context as {name?:string}).name==='string'&&nativePartyLabelMatches(fact.value,(context as {name:string}).name))) && !(rooms===undefined&&revision.groups.every(group=>Object.keys(group.context).length===0)&&quotationAddressee&&[quotationAddressee.company,quotationAddressee.agency].includes(fact.value))) fail('mismatch', 'party');
+      if (!revision.groups.some(group => Object.values(group.context).some(context => (context as {name?:string}).name === fact.value || rooms===undefined&&typeof (context as {name?:string}).name==='string'&&nativePartyLabelMatches(fact.value,(context as {name:string}).name))) && !(rooms===undefined&&revision.groups.every(group=>Object.keys(group.context).length===0)&&quotationAddressee&&[quotationAddressee.organization,quotationAddressee.bookingAgency].includes(fact.value))) fail('mismatch', 'party');
     } else if (fact.kind === 'guest' && rooms !== undefined) {
       if (fact.value.roomRef === undefined || fact.value.roomIndex === undefined) fail('missing', 'guest_assignment');
       const groups = revision.groups.filter(group => group.id === fact.value.roomRef || group.roomCode === fact.value.roomRef);

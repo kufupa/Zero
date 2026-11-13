@@ -76,11 +76,11 @@ function cliForGrid(
 }
 
 function cliForPaneKind(
-  kind: 'company' | 'agency',
+  kind: 'organization' | 'bookingAgency',
   name: string,
   grids: { organization?: typeof HMS_COMPANIES; bookingAgency?: typeof HMS_AGENCIES; loaded?: number } = {},
 ) {
-  if (kind === 'company') {
+  if (kind === 'organization') {
     return {
       kind: 'organization' as const,
       name,
@@ -99,9 +99,9 @@ function fixtureSpawn(
   grids: { organization?: typeof HMS_COMPANIES; bookingAgency?: typeof HMS_AGENCIES; loaded?: number } = {},
 ) {
   return vi.fn(async (input: {
-    kind: 'company' | 'agency';
+    kind: 'organization' | 'bookingAgency';
     name: string;
-    searches?: Array<{ kind: 'company' | 'agency'; name: string }>;
+    searches?: Array<{ kind: 'organization' | 'bookingAgency'; name: string }>;
   }) => {
     const items = input.searches?.length ? input.searches : [{ kind: input.kind, name: input.name }];
     const searches = items.map(({ kind, name }) => cliForPaneKind(kind, name, grids));
@@ -220,16 +220,16 @@ describe('findParty: one search over companies and agencies', () => {
     panePartyLookupLoaders.spawn = spawn;
     await expect(findParty({ name: ' Tourvest ' })).resolves.toEqual({
       outcome: 'resolved',
-      results: [{ kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' }],
+      results: [{ kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' }],
       truncated: false,
-      best: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' },
+      best: { kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' },
       searchedFor: 'Tourvest',
     });
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(spawn.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
       searches: [
-        { kind: 'company', name: 'Tourvest' },
-        { kind: 'agency', name: 'Tourvest' },
+        { kind: 'organization', name: 'Tourvest' },
+        { kind: 'bookingAgency', name: 'Tourvest' },
       ],
     }));
     expect(seen).toEqual(['lock']);
@@ -240,9 +240,9 @@ describe('findParty: one search over companies and agencies', () => {
     panePartyLookupLoaders.spawn = fixtureSpawn();
     await expect(findParty({ name: '360' })).resolves.toEqual({
       outcome: 'resolved',
-      results: [{ kind: 'agency', nativeId: '113', name: '360 degrees Travel' }],
+      results: [{ kind: 'bookingAgency', nativeId: '113', name: '360 degrees Travel' }],
       truncated: false,
-      best: { kind: 'agency', nativeId: '113', name: '360 degrees Travel' },
+      best: { kind: 'bookingAgency', nativeId: '113', name: '360 degrees Travel' },
       searchedFor: '360',
     });
   });
@@ -255,8 +255,8 @@ describe('findParty: one search over companies and agencies', () => {
     const found = await findParty({ name: 'Tourvest' });
     expect(found.outcome).toBe('ambiguous');
     expect(found.results).toEqual([
-      { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' },
-      { kind: 'agency', nativeId: '999', name: 'Tourvest Travel Agency' },
+      { kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' },
+      { kind: 'bookingAgency', nativeId: '999', name: 'Tourvest Travel Agency' },
     ]);
   });
 
@@ -293,12 +293,12 @@ describe('findParty: one search over companies and agencies', () => {
     panePartyLookupLoaders.spawn = vi.fn(async (input: {
       kind: string;
       name: string;
-      searches?: Array<{ kind: 'company' | 'agency'; name: string }>;
+      searches?: Array<{ kind: 'organization' | 'bookingAgency'; name: string }>;
     }) => {
       const items = input.searches?.length ? input.searches : [{ kind: input.kind, name: input.name }];
       return {
         searches: items.map(({ kind, name }) =>
-          kind === 'company'
+          kind === 'organization'
             ? { kind: 'organization', name, ...cliForGrid('organization', name, HMS_COMPANIES) }
             : { kind: 'bookingAgency', name, outcome: 'external_system_unavailable', candidates: [] },
         ),
@@ -389,7 +389,7 @@ describe('findParty: the 50-row load and the cap', () => {
       {
         outcome: 'ambiguous',
         results: Array.from({ length: 15 }, (_, i) => ({
-          kind: 'company' as const,
+          kind: 'organization' as const,
           nativeId: String(i),
           name: `C${i}`,
         })),
@@ -398,7 +398,7 @@ describe('findParty: the 50-row load and the cap', () => {
       {
         outcome: 'ambiguous',
         results: Array.from({ length: 15 }, (_, i) => ({
-          kind: 'agency' as const,
+          kind: 'bookingAgency' as const,
           nativeId: `A${i}`,
           name: `A${i}`,
         })),
@@ -415,7 +415,7 @@ describe('findParty: the 50-row load and the cap', () => {
 describe('panePartyLookup.suggest rank', () => {
   it('returns body mention before learned sender history before domain, and domain stays unverified', async () => {
     replaceLearnedSenderMapForTests([
-      { host: 'renniesbcdtravel.com', kind: 'agency', name: 'Harbor Travel', support: 4 },
+      { host: 'renniesbcdtravel.com', kind: 'bookingAgency', name: 'Harbor Travel', support: 4 },
     ]);
     await expect(
       mailboxCaller().panePartyLookup.suggest({
@@ -426,21 +426,21 @@ describe('panePartyLookup.suggest rank', () => {
       suggestions: [
         {
           source: 'body',
-          kind: 'agency',
+          kind: 'bookingAgency',
           name: 'Northstar Group',
           nativeId: null,
           idStatus: 'unverified',
         },
         {
           source: 'sender',
-          kind: 'agency',
+          kind: 'bookingAgency',
           name: 'Harbor Travel',
           nativeId: null,
           idStatus: 'unverified',
         },
         {
           source: 'sender',
-          kind: 'agency',
+          kind: 'bookingAgency',
           name: 'Rennies Travel',
           nativeId: null,
           idStatus: 'unverified',
@@ -454,14 +454,14 @@ describe('panePartyLookup.suggest rank', () => {
       {
         propertyCode: CENTURION_HMS_READ_TARGET.propertyCode,
         host: 'agency.example',
-        kind: 'agency',
+        kind: 'bookingAgency',
         name: 'First property agency',
         support: 4,
       },
       {
         propertyCode: DAVINCI_HMS_READ_TARGET.propertyCode,
         host: 'agency.example',
-        kind: 'agency',
+        kind: 'bookingAgency',
         name: 'Second property agency',
         support: 4,
       },
@@ -474,15 +474,15 @@ describe('panePartyLookup.suggest rank', () => {
       }),
     ).resolves.toEqual({
       suggestions: [
-        { source: 'sender', kind: 'agency', name: 'Second property agency', nativeId: null, idStatus: 'unverified' },
+        { source: 'sender', kind: 'bookingAgency', name: 'Second property agency', nativeId: null, idStatus: 'unverified' },
       ],
     });
   });
 });
 
 describe('merged list: exact and prefix matches first, one row per HMS id, each kind capped', () => {
-  const companyRow = (nativeId: string, name: string) => ({ kind: 'company' as const, nativeId, name });
-  const agencyRow = (nativeId: string, name: string) => ({ kind: 'agency' as const, nativeId, name });
+  const companyRow = (nativeId: string, name: string) => ({ kind: 'organization' as const, nativeId, name });
+  const agencyRow = (nativeId: string, name: string) => ({ kind: 'bookingAgency' as const, nativeId, name });
 
   it('puts the exact name first, then names that start with it, and caps companies so agencies still show', () => {
     const companies = [
@@ -501,8 +501,8 @@ describe('merged list: exact and prefix matches first, one row per HMS id, each 
     );
     expect(PANE_PARTY_PER_KIND_CAP).toBe(10);
     expect(merged.results.slice(0, 3).map((row) => row.nativeId)).toEqual(['901', '902', '900']);
-    expect(merged.results.filter((row) => row.kind === 'company')).toHaveLength(PANE_PARTY_PER_KIND_CAP);
-    expect(merged.results.filter((row) => row.kind === 'agency').map((row) => row.nativeId)).toEqual(['A1', 'A2', 'A3']);
+    expect(merged.results.filter((row) => row.kind === 'organization')).toHaveLength(PANE_PARTY_PER_KIND_CAP);
+    expect(merged.results.filter((row) => row.kind === 'bookingAgency').map((row) => row.nativeId)).toEqual(['A1', 'A2', 'A3']);
     expect(merged.truncated).toBe(true);
     expect(merged.outcome).toBe('ambiguous');
   });
@@ -519,7 +519,7 @@ describe('merged list: exact and prefix matches first, one row per HMS id, each 
 
 describe('panePartyFindResultFromCli and panePartyCandidates', () => {
   it('maps an ambiguous CLI grid to the pane shape with name, and keeps the runner truncation flag', () => {
-    const result = panePartyFindResultFromCli('company', {
+    const result = panePartyFindResultFromCli('organization', {
       outcome: 'ambiguous',
       candidates: [company(1), company(2)].map((c) => ({ ...c, kind: 'organization' })),
       truncated: true,
@@ -527,15 +527,15 @@ describe('panePartyFindResultFromCli and panePartyCandidates', () => {
     expect(result).toEqual({
       outcome: 'ambiguous',
       results: [
-        { kind: 'company', nativeId: '4001', name: 'ABC Travel 1' },
-        { kind: 'company', nativeId: '4002', name: 'ABC Travel 2' },
+        { kind: 'organization', nativeId: '4001', name: 'ABC Travel 1' },
+        { kind: 'organization', nativeId: '4002', name: 'ABC Travel 2' },
       ],
       truncated: true,
     });
   });
 
   it('keeps optional HMS grid columns on each candidate', () => {
-    const kept = panePartyCandidates('agency', [
+    const kept = panePartyCandidates('bookingAgency', [
       {
         nativeId: '280',
         displayName: 'Tourvest Travel Services',
@@ -549,7 +549,7 @@ describe('panePartyFindResultFromCli and panePartyCandidates', () => {
     ]);
     expect(kept).toEqual([
       {
-        kind: 'agency',
+        kind: 'bookingAgency',
         nativeId: '280',
         name: 'Tourvest Travel Services',
         iata: '12345',
@@ -562,7 +562,7 @@ describe('panePartyFindResultFromCli and panePartyCandidates', () => {
   });
 
   it('drops candidates of the other HMS kind, or with no id or name', () => {
-    const kept = panePartyCandidates('company', [
+    const kept = panePartyCandidates('organization', [
       { ...company(1), kind: 'organization' },
       { nativeId: 'TA-1', displayName: 'Agency', kind: 'bookingAgency' },
       { nativeId: '', displayName: 'No id', kind: 'organization' },
@@ -570,21 +570,21 @@ describe('panePartyFindResultFromCli and panePartyCandidates', () => {
       'not an object',
       null,
     ]);
-    expect(kept).toEqual([{ kind: 'company', nativeId: '4001', name: 'ABC Travel 1' }]);
+    expect(kept).toEqual([{ kind: 'organization', nativeId: '4001', name: 'ABC Travel 1' }]);
   });
 
   it('turns a resolved or ambiguous CLI result with no usable candidate into no_match, and an unknown outcome into execution_failure', () => {
-    expect(panePartyFindResultFromCli('agency', { outcome: 'resolved', candidates: [] })).toEqual({
+    expect(panePartyFindResultFromCli('bookingAgency', { outcome: 'resolved', candidates: [] })).toEqual({
       outcome: 'no_match',
       results: [],
       truncated: false,
     });
-    expect(panePartyFindResultFromCli('agency', { outcome: 'made_up', candidates: [] })).toEqual({
+    expect(panePartyFindResultFromCli('bookingAgency', { outcome: 'made_up', candidates: [] })).toEqual({
       outcome: 'execution_failure',
       results: [],
       truncated: false,
     });
-    expect(panePartyFindResultFromCli('agency', undefined)).toEqual({
+    expect(panePartyFindResultFromCli('bookingAgency', undefined)).toEqual({
       outcome: 'execution_failure',
       results: [],
       truncated: false,
@@ -630,7 +630,7 @@ describe('panePartyLookup router origin guard', () => {
       mailboxCaller().panePartyLookup.findParty({ name: 'Tourvest', threadId: 'thread-cen' }),
     ).resolves.toMatchObject({
       outcome: 'resolved',
-      best: { kind: 'company', nativeId: '206' },
+      best: { kind: 'organization', nativeId: '206' },
     });
   });
 
@@ -644,7 +644,7 @@ describe('panePartyLookup router origin guard', () => {
     panePartyLookupLoaders.spawn = fixtureSpawn();
     await expect(mailboxCaller().panePartyLookup.findParty({ name: 'Tourvest' })).resolves.toMatchObject({
       outcome: 'resolved',
-      best: { kind: 'company', nativeId: '206' },
+      best: { kind: 'organization', nativeId: '206' },
     });
     expect(loadThreadOrigin).not.toHaveBeenCalled();
   });
@@ -688,7 +688,7 @@ describe('panePartyLookup router origin guard', () => {
       mailboxCaller().panePartyLookup.findParty({ name: 'Tourvest', threadId: 'thread-dv' }),
     ).resolves.toMatchObject({
       outcome: 'resolved',
-      best: { kind: 'company', nativeId: '206' },
+      best: { kind: 'organization', nativeId: '206' },
     });
     expect(spawn).toHaveBeenCalled();
     expect(spawn.mock.calls[0]?.[0]).toMatchObject({ target: DAVINCI_HMS_READ_TARGET });
@@ -710,9 +710,9 @@ describe('panePartyLookup router', () => {
     panePartyLookupLoaders.spawn = fixtureSpawn();
     await expect(mailboxCaller().panePartyLookup.findParty({ name: '360' })).resolves.toEqual({
       outcome: 'resolved',
-      results: [{ kind: 'agency', nativeId: '113', name: '360 degrees Travel' }],
+      results: [{ kind: 'bookingAgency', nativeId: '113', name: '360 degrees Travel' }],
       truncated: false,
-      best: { kind: 'agency', nativeId: '113', name: '360 degrees Travel' },
+      best: { kind: 'bookingAgency', nativeId: '113', name: '360 degrees Travel' },
       searchedFor: '360',
     });
     await expect(
@@ -759,9 +759,9 @@ describe('findParty with a kind', () => {
       ],
       truncated: false,
     }));
-    const found = await findParty({ name: 'Tourvest', kind: 'company' });
+    const found = await findParty({ name: 'Tourvest', kind: 'organization' });
     expect(found.results[0]).toEqual({
-      kind: 'company',
+      kind: 'organization',
       nativeId: '206',
       name: 'Tourvest Test Profile',
       city: 'Cape Town',
@@ -776,13 +776,13 @@ describe('findParty with a kind', () => {
     panePartyLookupLoaders.lock = passingLock();
     const spawn = fixtureSpawn();
     panePartyLookupLoaders.spawn = spawn;
-    const found = await findParty({ name: 'Tourvest', kind: 'company' });
+    const found = await findParty({ name: 'Tourvest', kind: 'organization' });
     expect(spawn.mock.calls.map(([input]) => ({ kind: input.kind, name: input.name }))).toEqual([
-      { kind: 'company', name: 'Tourvest' },
+      { kind: 'organization', name: 'Tourvest' },
     ]);
     expect(found).toMatchObject({
       outcome: 'resolved',
-      best: { kind: 'company', nativeId: '206' },
+      best: { kind: 'organization', nativeId: '206' },
       searchedFor: 'Tourvest',
     });
   });
@@ -797,7 +797,7 @@ describe('findParty with a kind', () => {
     }) => {
       const items = input.searches?.length ? input.searches : [{ kind: input.kind, name: input.name }];
       return {
-        searches: items.map(({ kind, name }) =>
+        searches: items.map(({ name }) =>
           name === 'Foschini'
             ? {
                 kind: 'organization',
@@ -811,12 +811,12 @@ describe('findParty with a kind', () => {
       };
     });
     panePartyLookupLoaders.spawn = spawn;
-    const found = await findParty({ name: 'Foschini Retail Group (pty) Ltd', kind: 'company' });
+    const found = await findParty({ name: 'Foschini Retail Group (pty) Ltd', kind: 'organization' });
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(spawn.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
       searches: [
-        { kind: 'company', name: 'Foschini Retail Group' },
-        { kind: 'company', name: 'Foschini' },
+        { kind: 'organization', name: 'Foschini Retail Group' },
+        { kind: 'organization', name: 'Foschini' },
       ],
       stopOnFirstHit: true,
     }));
@@ -833,8 +833,8 @@ describe('findParty with a kind', () => {
       ],
       truncated: false,
     }));
-    const found = await findParty({ name: 'Foschini Retail Group (pty) Ltd', kind: 'company' });
-    expect(found.best).toEqual({ kind: 'company', nativeId: '2', name: 'FOSCHINI RETAIL GROUP (PTY) LTD' });
+    const found = await findParty({ name: 'Foschini Retail Group (pty) Ltd', kind: 'organization' });
+    expect(found.best).toEqual({ kind: 'organization', nativeId: '2', name: 'FOSCHINI RETAIL GROUP (PTY) LTD' });
     expect(found.results.map((row) => row.nativeId)).toEqual(['2', '1']);
     expect(found.outcome).toBe('ambiguous');
   });
@@ -847,14 +847,14 @@ describe('findPartyJob: V2 planned terms in one spawn', () => {
     panePartyLookupLoaders.lock = passingLock(seen);
     panePartyLookupLoaders.spawn = spawn;
     const found = await findPartyJob([
-      { kind: 'company', name: 'Tourvest' },
-      { kind: 'agency', name: '360' },
+      { kind: 'organization', name: 'Tourvest' },
+      { kind: 'bookingAgency', name: '360' },
     ]);
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(spawn.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
       searches: [
-        { kind: 'company', name: 'Tourvest' },
-        { kind: 'agency', name: '360' },
+        { kind: 'organization', name: 'Tourvest' },
+        { kind: 'bookingAgency', name: '360' },
       ],
     }));
     expect(seen).toEqual(['lock']);
@@ -873,7 +873,7 @@ describe('verifyPartyPick property cache', () => {
     });
     await expect(
       verifyPartyPick({
-        kind: 'company',
+        kind: 'organization',
         nativeId: '206',
         name: 'Tourvest Test Profile',
         target: DAVINCI_HMS_READ_TARGET,
@@ -881,10 +881,10 @@ describe('verifyPartyPick property cache', () => {
     ).resolves.toEqual({ ok: false, reason: 'unverified' });
     panePartyLookupLoaders.spawn = fixtureSpawn();
     await expect(
-      verifyPartyPick({ kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' }),
+      verifyPartyPick({ kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' }),
     ).resolves.toEqual({
       ok: true,
-      party: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' },
+      party: { kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' },
     });
   });
 });
@@ -897,11 +897,11 @@ describe('verifyPartyPick and the remembered rows', () => {
     panePartyLookupLoaders.lock = passingLock();
     const spawn = fixtureSpawn();
     panePartyLookupLoaders.spawn = spawn;
-    await findParty({ name: 'Tourvest', kind: 'company' });
+    await findParty({ name: 'Tourvest', kind: 'organization' });
     expect(spawn).toHaveBeenCalledTimes(1);
-    await expect(verifyPartyPick({ kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' })).resolves.toEqual({
+    await expect(verifyPartyPick({ kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' })).resolves.toEqual({
       ok: true,
-      party: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' },
+      party: { kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' },
     });
     expect(spawn).toHaveBeenCalledTimes(1);
   });
@@ -910,8 +910,8 @@ describe('verifyPartyPick and the remembered rows', () => {
     panePartyLookupLoaders.lock = passingLock();
     const spawn = fixtureSpawn();
     panePartyLookupLoaders.spawn = spawn;
-    await findParty({ name: 'Tourvest', kind: 'company' });
-    await expect(verifyPartyPick({ kind: 'company', nativeId: '206', name: 'Some Other Name' })).resolves.toEqual({
+    await findParty({ name: 'Tourvest', kind: 'organization' });
+    await expect(verifyPartyPick({ kind: 'organization', nativeId: '206', name: 'Some Other Name' })).resolves.toEqual({
       ok: false,
       reason: 'not_found',
     });
@@ -925,12 +925,12 @@ describe('verifyPartyPick and the remembered rows', () => {
     panePartyLookupLoaders.lock = passingLock();
     const spawn = fixtureSpawn();
     panePartyLookupLoaders.spawn = spawn;
-    await findParty({ name: 'Tourvest', kind: 'company' });
+    await findParty({ name: 'Tourvest', kind: 'organization' });
     vi.setSystemTime(start + PARTY_ROW_CACHE_TTL_MS - 1);
-    await verifyPartyPick({ kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' });
+    await verifyPartyPick({ kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' });
     expect(spawn).toHaveBeenCalledTimes(1);
     vi.setSystemTime(start + PARTY_ROW_CACHE_TTL_MS);
-    await verifyPartyPick({ kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' });
+    await verifyPartyPick({ kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' });
     expect(spawn).toHaveBeenCalledTimes(2);
   });
 });
@@ -950,9 +950,9 @@ describe('one name normalization for the runner and the server', () => {
         {
           outcome: 'ambiguous',
           results: [
-            { kind: 'company', nativeId: '31', name: 'Pick ’n Pay Hypermarket' },
-            { kind: 'company', nativeId: '32', name: 'Société Générale' },
-            { kind: 'company', nativeId: '33', name: 'Unrelated Company' },
+            { kind: 'organization', nativeId: '31', name: 'Pick ’n Pay Hypermarket' },
+            { kind: 'organization', nativeId: '32', name: 'Société Générale' },
+            { kind: 'organization', nativeId: '33', name: 'Unrelated Company' },
           ],
           truncated: false,
         },
@@ -961,7 +961,7 @@ describe('one name normalization for the runner and the server', () => {
     );
     expect(merged.results[0]?.nativeId).toBe('31');
     const societe = mergePartyKindResults(
-      [{ outcome: 'resolved', results: [{ kind: 'company', nativeId: '32', name: 'Société Générale' }], truncated: false }],
+      [{ outcome: 'resolved', results: [{ kind: 'organization', nativeId: '32', name: 'Société Générale' }], truncated: false }],
       'Societe',
     );
     expect(societe.results.map((row) => row.nativeId)).toEqual(['32']);

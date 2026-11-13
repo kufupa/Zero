@@ -320,7 +320,9 @@ describe('availability for a verified saved Labtest stay', () => {
   const baseline = () => {
     const result = structuredClone(before);
     for (const part of [result.values, result.data]) Object.assign(part, { adults: '2', children: '2', child1: '0', child2: '2', child3: '0' });
-    Object.assign(result.data, { childages: '8,12' });
+    Object.assign(result.data, { childages: '8,12',
+      child1label: 'Child 0 - 02', child2label: 'Child 03 - 12', child3label: 'Child 13 - 17',
+      child1status: 'ACTIVE', child2status: 'ACTIVE', child3status: 'ACTIVE' });
     return result;
   };
   const setup = () => {

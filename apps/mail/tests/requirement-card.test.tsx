@@ -25,7 +25,7 @@ function stay(overrides: Partial<StayGroupRequirement> = {}): StayGroupRequireme
     quantity: 1,
     adults: 2,
     childrenAges: [],
-    board: 'bb',
+    mealPlan: 'bb',
     specialRequests: [],
     fields: {},
     roomPreference: 'STQN',
@@ -177,14 +177,14 @@ describe('StayCard rooms', () => {
   });
 
   it('renders one optional meal-plan display filter per stay without patching the HMS room rows', () => {
-    const { onPatch, onMealPlanChange } = renderStay([stay({ board: 'bb' }), stay({ id: 'g2', board: 'bb' })]);
+    const { onPatch, onMealPlanChange } = renderStay([stay({ mealPlan: 'bb' }), stay({ id: 'g2', mealPlan: 'bb' })]);
     const meal = selectByLabel('Meal plan');
     expect(meal.tagName).toBe('SELECT');
     expect(meal.value).toBe('bb');
     expect(screen.getByText('Meal plan').parentElement?.textContent).not.toContain('*');
     fireEvent.change(meal, { target: { value: 'dinner_bb' } });
     expect(onMealPlanChange).toHaveBeenLastCalledWith('dinner_bb');
-    expect(onPatch).not.toHaveBeenCalledWith('g1', { board: 'dinner_bb' });
+    expect(onPatch).not.toHaveBeenCalledWith('g1', { mealPlan: 'dinner_bb' });
     expect(screen.getAllByLabelText('Meal plan')).toHaveLength(1);
     expect(screen.getByText(/display filter does not change or send the HMS search/i)).toBeTruthy();
   });
@@ -224,7 +224,7 @@ describe('StayCard rooms', () => {
   });
 
   it('marks values read from the email and defaulted meal plans', () => {
-    renderStay([stay({ fields: { arrivalDate: 'extracted', adults: 'extracted', board: 'defaulted' } })]);
+    renderStay([stay({ fields: { arrivalDate: 'extracted', adults: 'extracted', mealPlan: 'defaulted' } })]);
     expect(screen.getAllByText('from email').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('Default')).toBeTruthy();
   });
@@ -292,7 +292,7 @@ describe('StayCard rooms', () => {
         index={0}
         stayCount={1}
         roomTypes={roomTypes}
-        boards={['bb']}
+        mealPlans={['bb']}
       />,
     );
 
@@ -366,7 +366,7 @@ describe('StayCard rooms', () => {
         { code: 'STKNG', label: 'Standard King' },
         { code: 'STWN', label: 'Standard Twin' },
       ],
-      boards: ['room_only', 'bb'],
+      mealPlans: ['room_only', 'bb'],
     };
     render(<StayCard {...props} />);
 
@@ -395,7 +395,7 @@ describe('StayCard rooms', () => {
       stayCount: 1,
       propertyCode: HRDAV_PROPERTY_CODE,
       roomTypes,
-      boards: ['room_only', 'bb'],
+      mealPlans: ['room_only', 'bb'],
     };
 
     render(<StayCard {...props} />);

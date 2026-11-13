@@ -80,9 +80,9 @@ const UPLOAD_CHECK_PATH = '/web/base/BSUPLD.checkfile';
 
 // A file name HMS takes here: a .pdf with no path separator and no control character.
 export function isPdfDocumentName(name) {
-  if (typeof name !== 'string' || name.length === 0 || name.length > 120) return false;
+  if (typeof name !== 'string' || name.length === 0 || name.length > 150) return false;
   if (/[\\/]/.test(name) || !/\.pdf$/i.test(name)) return false;
-  return [...name].every((char) => char.charCodeAt(0) >= 0x20);
+  return !/[\p{Cc}]/u.test(name);
 }
 
 function refuse(error) {

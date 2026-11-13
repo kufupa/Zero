@@ -48,7 +48,7 @@ const groupSchema = z
     quantity: z.number().int().min(1).max(100),
     adults: z.number().int().min(1).max(6),
     childrenAges: z.array(z.number().int().min(0).max(17)).max(6).default([]),
-    board: z.enum(['room_only', 'bb', 'dinner_bb']),
+    mealPlan: z.enum(['room_only', 'bb', 'dinner_bb']),
     roomCodes: z
       .array(z.string().regex(/^[A-Z0-9_-]{1,16}$/))
       .min(1)
@@ -90,18 +90,18 @@ export type StaffRowPriceInput = z.infer<typeof staffRowPriceInput>;
 /** Prices, native party IDs and qualification flags are deliberately not client inputs. */
 /** The HMS id a picked party carries: plain characters, as HMS shows them. */
 const partyNativeId = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/);
-const pickedCompany = z
-  .object({ kind: z.literal('company'), nativeId: partyNativeId, name: z.string().min(1).max(256) })
+const pickedOrganization = z
+  .object({ kind: z.literal('organization'), nativeId: partyNativeId, name: z.string().min(1).max(256) })
   .strict();
-const pickedAgency = z
-  .object({ kind: z.literal('agency'), nativeId: partyNativeId, name: z.string().min(1).max(256) })
+const pickedBookingAgency = z
+  .object({ kind: z.literal('bookingAgency'), nativeId: partyNativeId, name: z.string().min(1).max(256) })
   .strict();
 /**
  * The company and agency staff picked with Find in HMS. Both may be picked on one quote. The server re-checks each
  * one in HMS before any rate is bound to it (verifyPartyPick), so a client-sent id is never trusted on its own.
  */
 export const staffQuoteParties = z
-  .object({ company: pickedCompany.optional(), agency: pickedAgency.optional() })
+  .object({ organization: pickedOrganization.optional(), bookingAgency: pickedBookingAgency.optional() })
   .strict();
 export type StaffQuoteParties = z.infer<typeof staffQuoteParties>;
 
@@ -113,8 +113,8 @@ export const staffQuoteInput = z
     inputRevision: z.number().int().nonnegative(),
     groups: z.array(groupSchema).min(1).max(8),
     salesStrategy: z.enum(['BAR', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR', 'DOML', 'OTHER', 'Government']).default('BAR'),
-    company: z.string().max(256).default(''),
-    agency: z.string().max(256).default(''),
+    organization: z.string().max(256).default(''),
+    bookingAgency: z.string().max(256).default(''),
     attention: z.string().max(256).default(''),
     clientEmail: z.string().max(256).default(''),
     clientTelephone: z.string().max(128).default(''),
@@ -171,7 +171,7 @@ export function staffQuoteDinnerFallback(
   if (input.salesStrategy !== 'BAR' && input.salesStrategy !== 'Government') return null;
   const requested = requestedGroupIds === undefined ? null : new Set(requestedGroupIds);
   const groupIds = input.groups
-    .filter((group) => group.board === 'dinner_bb' && (!requested || requested.has(group.id)))
+    .filter((group) => group.mealPlan === 'dinner_bb' && (!requested || requested.has(group.id)))
     .map((group) => group.id);
   if (!groupIds.length) return null;
   const selected = new Set(groupIds);
@@ -181,7 +181,7 @@ export function staffQuoteDinnerFallback(
       ...input,
       groups: input.groups.map((group) => {
         if (!selected.has(group.id)) return { ...group };
-        const fallbackGroup = { ...group, board: 'bb' as const };
+        const fallbackGroup = { ...group, mealPlan: 'bb' as const };
         delete fallbackGroup.rateCode;
         return fallbackGroup;
       }),
@@ -204,7 +204,7 @@ export function staffQuoteDinnerNoMatchFallback(
 
 /** Staff note for a successful Government Dinner B&B quote. */
 export function staffQuoteGovernmentDinnerNote(input: StaffQuoteInput): string | null {
-  return governmentStrategy(input.salesStrategy) && input.groups.some((group) => group.board === 'dinner_bb')
+  return governmentStrategy(input.salesStrategy) && input.groups.some((group) => group.mealPlan === 'dinner_bb')
     ? 'Priced on the Government Dinner B&B rate because the guest asked for dinner. ' +
       'Choose All public rates (BAR) if the guest is not entitled.'
     : null;
@@ -212,7 +212,7 @@ export function staffQuoteGovernmentDinnerNote(input: StaffQuoteInput): string |
 
 export type StaffQuoteRates = 'party' | 'public';
 export type PartyRateRef = { nativeId: string; name: string };
-export type PartyRateContext = { organization?: PartyRateRef; agency?: PartyRateRef };
+export type PartyRateContext = { organization?: PartyRateRef; bookingAgency?: PartyRateRef };
 
 /**
  * The rate context for picked parties. A company is the organization, an agency is the agency: both when both were
@@ -220,13 +220,13 @@ export type PartyRateContext = { organization?: PartyRateRef; agency?: PartyRate
  */
 export function partyRateContext(parties: StaffQuoteParties | undefined): PartyRateContext | undefined {
   const context: PartyRateContext = {};
-  if (parties?.company) context.organization = { nativeId: parties.company.nativeId, name: parties.company.name };
-  if (parties?.agency) context.agency = { nativeId: parties.agency.nativeId, name: parties.agency.name };
+  if (parties?.organization) context.organization = { nativeId: parties.organization.nativeId, name: parties.organization.name };
+  if (parties?.bookingAgency) context.bookingAgency = { nativeId: parties.bookingAgency.nativeId, name: parties.bookingAgency.name };
   return Object.keys(context).length ? context : undefined;
 }
 
 export function partyNames(parties: StaffQuoteParties | undefined): string[] {
-  return [parties?.company?.name, parties?.agency?.name].filter((name): name is string => Boolean(name));
+  return [parties?.organization?.name, parties?.bookingAgency?.name].filter((name): name is string => Boolean(name));
 }
 
 /** The public rate codes. Any other row is a contract row only when HMS flags it as negotiated; its name never decides. */
@@ -258,7 +258,7 @@ export function staffQuoteDinnerGroupIdsToRetryAsBb(
   rateOptions: readonly { groupId: string; selected: boolean; contract: boolean; rateCode: string }[],
 ): string[] {
   if (input.salesStrategy !== 'BAR') return [];
-  const dinnerGroupIds = input.groups.filter((group) => group.board === 'dinner_bb').map((group) => group.id);
+  const dinnerGroupIds = input.groups.filter((group) => group.mealPlan === 'dinner_bb').map((group) => group.id);
   if (!input.parties) return dinnerGroupIds;
   const verifiedContractGroupIds = new Set(
     rateOptions.filter((option) => option.selected && option.contract).map((option) => option.groupId),
@@ -333,7 +333,7 @@ export type StaffQuoteAttestation = {
   inputDigest: string;
   authorizationId: string;
   revisionIds: string[];
-  header: Pick<RevisionProposalHeader, 'company' | 'agency'>;
+  header: Pick<RevisionProposalHeader, 'organization' | 'bookingAgency'>;
   /** Staff note approved with the quote; the PDF prints this stored copy, never a later client value. */
   notes?: string;
   /** Row prices approved with the quote, snapshotted when it ran. Old quotes keep these even after a rate is archived. */
@@ -398,10 +398,10 @@ export function prepareStaffQuote(
         children: g.childrenAges.length,
         childAges: g.childrenAges,
         required: {
-          boardBases: [
-            g.board === 'bb'
+          mealPlanBases: [
+            g.mealPlan === 'bb'
               ? 'breakfast'
-              : g.board === 'dinner_bb'
+              : g.mealPlan === 'dinner_bb'
                 ? 'dinner_bed_breakfast'
                 : 'room_only',
           ],
@@ -475,8 +475,8 @@ export function prepareStaffQuote(
   };
   const header: RevisionProposalHeader = {
     attention: input.attention,
-    company: input.company,
-    agency: input.agency,
+    organization: input.organization,
+    bookingAgency: input.bookingAgency,
     clientEmail: input.clientEmail,
     clientTelephone: input.clientTelephone,
     ...signer,
@@ -770,6 +770,22 @@ export async function executeStaffQuote(
   await guard();
   return revision;
 }
+
+/** Interpret old stored header names for comparison without changing the approved attestation. */
+function storedPartyHeaderForComparison(header: unknown) {
+  if (!header || typeof header !== 'object' || Array.isArray(header)) return null;
+  const field = (canonical: string, legacy: string): unknown =>
+    Object.hasOwn(header, canonical)
+      ? Reflect.get(header, canonical)
+      : Object.hasOwn(header, legacy)
+        ? Reflect.get(header, legacy)
+        : undefined;
+  return {
+    organization: field('organization', 'company'),
+    bookingAgency: field('bookingAgency', 'agency'),
+  };
+}
+
 /**
  * Why a staff-approved quote can no longer be exported, or null while it is still the current approval.
  * Pure: the caller reads the latest generation and the current message from the database.
@@ -783,7 +799,7 @@ export function staffQuoteCurrencyProblem(args: {
     | null
     | undefined;
   userId: string;
-  party: { company: string; agency: string };
+  party: { organization: string; bookingAgency: string };
 }): string | null {
   if (args.latestGenerationId !== args.runGenerationId)
     return 'Newer stay inputs were approved; use the current quote';
@@ -795,10 +811,11 @@ export function staffQuoteCurrencyProblem(args: {
     args.staff.sourceHash !== staffQuoteSourceHash(current)
   )
     return 'Selected email changed; rerun the approved quote';
+  const header = storedPartyHeaderForComparison(args.staff.header);
   if (
-    !args.staff.header ||
-    args.party.company !== args.staff.header.company ||
-    args.party.agency !== args.staff.header.agency
+    !header ||
+    args.party.organization !== header.organization ||
+    args.party.bookingAgency !== header.bookingAgency
   )
     return 'Party identity changed; rerun the approved quote';
   return null;
@@ -856,7 +873,7 @@ export function attestStaffQuote(
     inputDigest: prepared.inputDigest,
     authorizationId: prepared.authorizationId,
     revisionIds: [revision.id],
-    header: { company: prepared.header.company, agency: prepared.header.agency },
+    header: { organization: prepared.header.organization, bookingAgency: prepared.header.bookingAgency },
     ...(input.notes ? { notes: input.notes } : {}),
     ...(rowPrices.length ? { rowPrices } : {}),
     ...(options.dinnerAddOnRequired ? { dinnerAddOnRequired: true } : {}),

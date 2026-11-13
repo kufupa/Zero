@@ -31,11 +31,15 @@ function exactParams(body, expected, numeric = []) {
     numeric.every((key) => /^\d+$/.test(body.get(key) || ''));
 }
 
-function matchesRequest(request, kind, query = '') {
+function matchesRequest(request, kind, query = '', metadata = null) {
   try {
     const url = new URL(request.url());
     if (request.method() !== 'POST' || url.origin !== ORIGIN || url.search || url.hash) return false;
     const body = new URLSearchParams(request.postData() || '');
+    if (kind === 'page') return url.pathname === '/web/base/GETCACHE' &&
+      body.get('GRID_NAME') === COMMON.GRID_NAME && metadata &&
+      (!body.has('GRID_ID') || body.get('GRID_ID') === String(metadata.GRIDID)) &&
+      (!body.has('DATASPY_ID') || body.get('DATASPY_ID') === String(metadata.DATASPYID));
     if (kind === 'popup') {
       const filter = query ? { filterfields: 'description', filteroperator: 'CONTAINS', filtervalue: query } : {};
       return url.pathname === '/web/base/LOVPOP' && exactParams(body, {
@@ -75,7 +79,7 @@ async function guardPage(page) {
   scope.guard = async (route) => {
     const request = route.request();
     const expected = scope.expected;
-    if (expected && !expected.used && matchesRequest(request, expected.kind, expected.query)) {
+    if (expected && !expected.used && matchesRequest(request, expected.kind, expected.query, expected.metadata)) {
       expected.used = true;
       return route.fallback(); // The context read-only guard still gets the request.
     }
@@ -165,7 +169,7 @@ async function controls(win) {
   }))), 15000, 'SOURCE_CONTROLS_TIMEOUT');
 }
 
-function parseResponse(text) {
+function parseResponse(text, { page = false } = {}) {
   const json = text.replace(/("(?:\\.|[^"\\])*")|([,{]\s*)([A-Za-z_$][\w$]*)\s*:/g,
     (match, quoted, prefix, key) => quoted || `${prefix}"${key}":`);
   const payload = JSON.parse(json), data = payload?.pageData;
@@ -174,7 +178,7 @@ function parseResponse(text) {
       content(part.error) || content(part.errors))) || content(data.messages)) throw new Error('SOURCE_RESPONSE_INVALID');
   const result = data.grid?.GRIDRESULT?.GRID;
   if (!Array.isArray(result?.DATA) || !result.METADATA || result.METADATA.GRIDNAME !== 'LVCODEVALUE' ||
-      result.METADATA.REQUEST_TYPE_META !== 'LOV.DATA_ONLY.STORED') throw new Error('SOURCE_RESPONSE_INVALID');
+      (!page && result.METADATA.REQUEST_TYPE_META !== 'LOV.DATA_ONLY.STORED')) throw new Error('SOURCE_RESPONSE_INVALID');
   return result;
 }
 
@@ -274,7 +278,8 @@ export async function searchGuestStaySourceBusiness(page, input = {}, options = 
     if (!received || received.status() !== 200 || !scope.expected.used || scope.blockedWrites !== blocked) throw new Error('SOURCE_RUN_UNVERIFIED');
     scope.expected = null;
     stage = 'reading_results';
-    const { DATA: rows, METADATA: metadata } = parseResponse(await bounded(received.text(), timeout(options), 'SOURCE_RESPONSE_TIMEOUT'));
+    const { DATA: rows, METADATA: firstMetadata } = parseResponse(await bounded(received.text(), timeout(options), 'SOURCE_RESPONSE_TIMEOUT'));
+    let metadata = firstMetadata;
     const requestBody = new URLSearchParams(received.request().postData() || '');
     if (String(metadata.GRIDID ?? '') !== requestBody.get('GRID_ID') ||
         String(metadata.DATASPYID ?? '') !== requestBody.get('DATASPY_ID')) throw new Error('SOURCE_GRID_SCOPE_UNVERIFIED');
@@ -288,7 +293,30 @@ export async function searchGuestStaySourceBusiness(page, input = {}, options = 
     }, { id: windowId, expected: rows }, { timeout: timeout(options) });
     await match.dispose();
     await checkDialogs(page, scope);
-    const grid = await readGrid(page, windowId), form = await readForm(page, scope);
+    let grid = await readGrid(page, windowId);
+    for (let pageNumber = 1; pageNumber < 20 && coverage(metadata, rows.length).serverMoreRecords === true; pageNumber += 1) {
+      scope.expected = { kind: 'page', metadata: firstMetadata, used: false };
+      const pending = page.waitForResponse((r) => matchesRequest(r.request(), 'page', '', firstMetadata),
+        { timeout: timeout(options) }).catch(() => null);
+      await win.locator('.x-grid-view:visible').last().evaluate(element => { element.scrollTop = element.scrollHeight; });
+      const next = await pending;
+      if (!next) { scope.expected = null; break; }
+      if (next.status() !== 200 || !scope.expected.used || scope.blockedWrites !== blocked) throw new Error('SOURCE_PAGE_UNVERIFIED');
+      scope.expected = null;
+      const nextData = parseResponse(await bounded(next.text(), timeout(options), 'SOURCE_RESPONSE_TIMEOUT'), { page: true });
+      if (!nextData.DATA.length || ['GRIDID', 'GRIDNAME', 'DATASPYID'].some(key =>
+        String(nextData.METADATA[key] ?? '') !== String(firstMetadata[key] ?? ''))) throw new Error('SOURCE_PAGE_UNVERIFIED');
+      rows.push(...nextData.DATA);
+      metadata = nextData.METADATA;
+      const pageMatch = await page.waitForFunction(({ id, expected }) => {
+        const records = Ext.getCmp(id)?.query('grid,readonlygrid')?.[0]?.getStore?.()?.getRange?.().map(({ data }) => data);
+        const key = row => JSON.stringify(['id', 'codevalue', 'description'].map(name => row[name] == null || String(row[name]).trim() === '' ? null : String(row[name]).trim()));
+        return records && JSON.stringify(records.map(key).sort()) === JSON.stringify(expected.map(key).sort());
+      }, { id: windowId, expected: rows }, { timeout: timeout(options) });
+      await pageMatch.dispose();
+      grid = await readGrid(page, windowId);
+    }
+    const form = await readForm(page, scope);
     if (signature(grid.records) !== signature(rows) || JSON.stringify(await controls(win)) !== JSON.stringify(criteria) ||
         JSON.stringify(form) !== JSON.stringify(initialForm) || scope.blockedWrites !== blocked) {
       throw new Error('SOURCE_RESULTS_UNVERIFIED');

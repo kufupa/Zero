@@ -34,6 +34,7 @@ export type HmsCloudReservationObservations = {
   guestEmail: HmsCloudFieldObservation;
   bookerName: HmsCloudFieldObservation;
   bookerContact: HmsCloudFieldObservation;
+  reservationNote: HmsCloudFieldObservation & { source: 'record_view_raw_value' | 'unavailable'; confirmation: string | null };
 };
 
 /** Observation from one clean, identity-matched Record View, not a write grant. */
@@ -50,7 +51,7 @@ export type HmsCloudRateLookup = {
   native: HmsCloudNativePreimage;
   observedAt: string | null;
   currency: string | null;
-  parties: Record<'organization' | 'agency', {
+  parties: Record<'organization' | 'bookingAgency', {
     state: 'selected' | 'blank' | 'unknown'; nativeId: string | null; name: string | null;
   }>;
   group: HmsCloudFieldObservation;
@@ -220,7 +221,11 @@ function financialObservations(fields: Array<RecordValue>): HmsCloudFinancialObs
   };
 }
 
-function reservationObservations(fields: Array<RecordValue>): HmsCloudReservationObservations {
+function reservationObservations(fields: Array<RecordValue>, native: HmsCloudNativePreimage | null): HmsCloudReservationObservations {
+  const note = matchingField(fields, ['reservationnote']);
+  const raw = note?.rawValue;
+  const valid = native !== null && typeof raw === 'string' && raw.length <= 2000 &&
+    ![...raw].some((char) => (char.charCodeAt(0) < 32 && char !== '\n') || char.charCodeAt(0) === 127);
   return {
     groupName: fieldObservation(fields, ['groupname']),
     promotionCode: fieldObservation(fields, ['promotioncode']),
@@ -228,6 +233,9 @@ function reservationObservations(fields: Array<RecordValue>): HmsCloudReservatio
     guestEmail: fieldObservation(fields, ['emailaddress']),
     bookerName: fieldObservation(fields, ['caller']),
     bookerContact: fieldObservation(fields, ['udfchar06']),
+    reservationNote: valid ? { state: raw === '' ? 'blank' : 'observed', value: raw,
+      source: 'record_view_raw_value', confirmation: native.confirmation } :
+      { state: 'unknown', value: null, source: 'unavailable', confirmation: null },
   };
 }
 
@@ -292,8 +300,8 @@ function paneStayCommercial(stay: PaneStayFields, rawNative: unknown, verifiedNa
       ? { name, nativeId } : { name };
   };
   const commercial: PaneStayCommercial = {};
-  if (company) commercial.company = party(company, observed?.company);
-  if (agency) commercial.agency = party(agency, observed?.agency);
+  if (company) commercial.organization = party(company, observed?.company);
+  if (agency) commercial.bookingAgency = party(agency, observed?.agency);
   return Object.keys(commercial).length ? commercial : undefined;
 }
 
@@ -319,7 +327,7 @@ export function projectCloudStayFind(request: PaneStayFindInput, raw: unknown): 
       fieldText(fields, ['guestfullname', 'guestname'], ['guest name', 'name']);
     const verifiedNative = nativePreimage(details?.nativePreimage, stay, fields);
     const commercial = paneStayCommercial(stay, details?.nativePreimage, verifiedNative);
-    const partyObservation = (names: string[], selected: PaneStayCommercial['company']) => {
+    const partyObservation = (names: string[], selected: PaneStayCommercial['organization']) => {
       const visible = fieldObservation(fields, names);
       if (visible.state === 'blank') return { state: 'blank' as const, nativeId: null, name: null };
       if (visible.state === 'observed' && selected?.nativeId && selected.name === visible.value) {
@@ -333,15 +341,15 @@ export function projectCloudStayFind(request: PaneStayFindInput, raw: unknown): 
       ...(verifiedNative ? { rateLookup: {
         native: verifiedNative, observedAt: observationTimestamp(root.observedAt),
         currency: financialObservations(fields).averageRate.currency.value,
-        parties: { organization: partyObservation(['company', 'organization'], commercial?.company),
-          agency: partyObservation(['ta1', 'bookingagency'], commercial?.agency) },
+        parties: { organization: partyObservation(['company', 'organization'], commercial?.organization),
+          bookingAgency: partyObservation(['ta1', 'bookingagency'], commercial?.bookingAgency) },
         group: fieldObservation(fields, ['groupname']), promotion: fieldObservation(fields, ['promotioncode']),
         arAccount: fieldObservation(fields, ['araccountname']),
         sourceOfBusiness: fieldObservation(fields, ['sourceofbusinessdesc']),
         track: fieldObservation(fields, ['track']),
       } } : {}),
       financialObservations: financialObservations(fields),
-      reservationObservations: reservationObservations(fields),
+      reservationObservations: reservationObservations(fields, verifiedNative),
       arrivalMismatch: Boolean(request.arrival && stay.arrival && request.arrival !== stay.arrival),
       requestedArrival: request.arrival ?? null, hmsArrival: stay.arrival,
       screenshots: [], runId: null, source: 'hms_cloud_saved_stay', guestName,
