@@ -140,7 +140,19 @@ function displaySnapshot(snapshot: ReservationPaneSnapshot | null, pending: Map<
         }
       }
     }
-    for (const path of selections) if (!pending.has(path)) fieldOverrides[path] = { state: 'unknown', updatedAt: new Date().toISOString() };
+    const partyName = (value: unknown) => text(value && typeof value === 'object' && !Array.isArray(value)
+      ? record(value).name : value).normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+    const unchangedPartyName = Boolean(party || amendParty && ['bookingAgency', 'organization', 'arAccount'].includes(text(amendField))) &&
+      edit.state === 'set' && Boolean(partyName(valueAt(snapshot, edit.path))) &&
+      partyName(valueAt(snapshot, edit.path)) === partyName(edit.value);
+    for (const path of selections) if (!pending.has(path)) {
+      if (unchangedPartyName) {
+        const override = snapshot.session.draft.fieldOverrides[path];
+        const selected = valueAt(snapshot, path) ?? (override && override.state !== 'inherit' ? null
+          : valueAt(snapshot, `${path.slice(0, -'/nativeSelectionRef'.length)}/suggestedRef`));
+        if (typeof selected === 'string') fieldOverrides[path] = { state: 'set', value: selected, updatedAt: new Date().toISOString() };
+      } else fieldOverrides[path] = { state: 'unknown', updatedAt: new Date().toISOString() };
+    }
   }
   return { ...snapshot, session: { ...snapshot.session, draft: { ...snapshot.session.draft, fieldOverrides } } };
 }
@@ -336,7 +348,8 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     },
     createGuestProfile(allocationId, confirmDuplicateName = false) {
       if (preview) return Promise.reject(new Error('Preview only. Profile creation is disabled.'));
-      if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before creating a profile.'));
+      if (liveInputs.current.key === key && [...liveInputs.current.uncommitted].some(hold =>
+        !hold.startsWith('service-candidate:/proposal/content/services/'))) return Promise.reject(new Error('Apply changed fields before creating a profile.'));
       const requestId = requireRequest();
       const inFlightKey = guestAttemptKey(source, requestId, allocationId);
       if (guestCreatesInFlight.has(inFlightKey)) return Promise.reject(new Error('Profile creation is already in progress.'));
@@ -450,8 +463,8 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     }); },
     configureFiling(attachmentId, target, kind) { return run(context => client.configureFiling({ ...context, requestId: requireRequest(), attachmentId, ...(typeof target === 'string' ? { confirmation: target } : target), kind })); },
     lookupServices(target, serviceId) { return run(context => client.lookupServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
-    previewServices(target, serviceId) { return run(context => client.previewServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
-    executeServices(target, serviceId, reviewedPrepareRef) { if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.executeServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId, reviewedPrepareRef, idempotencyKey: crypto.randomUUID() }), true); },
+    previewServices(target, serviceId) { if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before checking Infor.')); return run(context => client.previewServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
+    executeServices(target, serviceId, reviewedPrepareRef) { if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before saving.')); if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.executeServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId, reviewedPrepareRef, idempotencyKey: crypto.randomUUID() }), true); },
   };
   const initialLookup = useRef(new Set<string>());
   const prefill = current?.session.draft.prefill;

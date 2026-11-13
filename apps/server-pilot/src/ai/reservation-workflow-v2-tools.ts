@@ -513,7 +513,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
       undefined, requestId, allocationId, guestRefPath);
     if (guestCandidate && (!sameGuestName(guestCandidate.firstName, firstName) || !sameGuestName(guestCandidate.lastName, lastName) ||
         (text(guest.email) && !sameName(guestCandidate.email, guest.email)) ||
-        (text(guest.mobile) && !samePhone(guestCandidate.phoneNumber, guest.mobile)) || !text(guestCandidate.nativeId))) guestCandidate = null;
+        (text(guest.mobile) && !samePhone(guestCandidate.phoneNumber ?? guestCandidate.mobile, guest.mobile)) || !text(guestCandidate.nativeId))) guestCandidate = null;
   } else if (mode !== 'lookup') issues.push(`${guestPath}:existing_profile_selection_required`);
   if (!guestCandidate && mode !== 'lookup') issues.push(`${guestPath}:native_profile_unverified`);
   const selectedGuestRefValue = typeof selectedGuestRef === 'string' ? selectedGuestRef : null;

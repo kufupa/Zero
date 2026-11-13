@@ -97,6 +97,101 @@ export function effectiveAt(snapshot: ReservationPaneSnapshot, path: string): un
   return raw;
 }
 export type NativeChoice = { ref: string; label: string; value: string; detail?: string };
+type ServiceCatalogueScope = { kind: 'allocation'; allocationId: string } |
+  { kind: 'saved_target'; requestId: string; hintId: string; observationRef: string };
+type ServiceCatalogueRow = { observation: ReservationPaneSnapshot['session']['draft']['observations'][number]; candidate: Record<string, unknown> };
+const savedServiceFields = ['code', 'name', 'itemId', 'quantity', 'startDate', 'endDate', 'unitPrice', 'frequency',
+  'pricingControl', 'folio', 'comment', 'currency', 'averageDaily', 'totalCost', 'status'];
+function stableServiceJson(value: unknown): string | undefined {
+  const ordered = (item: unknown): unknown => Array.isArray(item) ? item.map(ordered)
+    : item && typeof item === 'object' ? Object.fromEntries(Object.entries(record(item)).sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entry]) => [key, ordered(entry)])) : item;
+  return JSON.stringify(ordered(value));
+}
+
+export function createServiceCatalogueContext(snapshot: ReservationPaneSnapshot, requestId: string, allocationId: string): unknown {
+  const draft = snapshot.session.draft;
+  const request = draft.proposal.content.requests.find(row => row.id === requestId && row.kind === 'create');
+  if (!request || request.kind !== 'create') return null;
+  const root = `${requestPath(requestId)}/body`;
+  const allocationsPath = `${root}/allocations`;
+  const allocations = effectiveAt(snapshot, allocationsPath);
+  if (!Array.isArray(allocations)) return null;
+  const index = allocations.findIndex(row => record(row).id === allocationId);
+  if (index < 0) return null;
+  const arrayOverride = draft.fieldOverrides[allocationsPath];
+  const baseAllocations = arrayOverride?.state === 'set' && Array.isArray(arrayOverride.value)
+    ? arrayOverride.value : request.body.allocations;
+  const allocationPath = `${root}/allocations/${index}`;
+  const overrides = Object.entries(draft.fieldOverrides).filter(([path]) => path !== allocationsPath && (path === root ||
+    path.startsWith(`${root}/`) && (!path.startsWith(`${root}/allocations/`) ||
+      path === allocationPath || path.startsWith(`${allocationPath}/`))))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([path, override]) => [path, override.state, override.state === 'set' ? override.value : null]);
+  const allocationStructure = allocations.map(row => ({ id: record(row).id, dateSectionId: record(row).dateSectionId }));
+  return { body: { ...request.body, allocations: [baseAllocations[index] ?? null] }, allocationIndex: index, allocationStructure, overrides };
+}
+
+export function currentServiceCatalogue(snapshot: ReservationPaneSnapshot, input: { requestId: string; serviceId: string;
+  fieldPath: string; operation: string; selectedRef: unknown; scope: ServiceCatalogueScope | null }):
+  { rows: ServiceCatalogueRow[]; history: ServiceCatalogueRow[]; hasCompleteBatch: boolean } {
+  const draft = snapshot.session.draft, expectedKind = input.operation === 'add' ? 'catalogue_candidate' : 'saved_row_candidate';
+  const matches = (observation: ReservationPaneSnapshot['session']['draft']['observations'][number]) => {
+    const c = record(observation.criteria), target = record(c.targetRef);
+    return observation.kind === 'service_preview' && observation.status === 'complete' && observation.coverage.complete &&
+      observation.generationId === draft.generationId && observation.propertyCode === draft.propertyCode &&
+      observation.sourceMessageId === draft.source.messageId && (c.sourceHash === undefined || c.sourceHash === draft.source.sourceHash) &&
+      c.workflow === 'services' && c.requestId === input.requestId && c.serviceId === input.serviceId && c.fieldPath === input.fieldPath &&
+      (input.scope?.kind === 'allocation' ? c.sourceAllocationId === input.scope.allocationId && c.targetRef === undefined
+        : input.scope?.kind === 'saved_target' && c.sourceAllocationId === undefined && target.kind === 'saved_target' &&
+          target.requestId === input.scope.requestId && target.hintId === input.scope.hintId && c.targetObservationRef === input.scope.observationRef);
+  };
+  const history = draft.observations.flatMap(observation => {
+    if (!matches(observation) || observation.criteria.kind !== expectedKind) return [];
+    const candidate = record(record(observation.result).candidate);
+    return Object.keys(candidate).length ? [{ observation, candidate }] : [];
+  });
+  const markers = draft.observations.filter(observation => {
+    const c = record(observation.criteria), refs = record(observation.result).candidateRefs;
+    return matches(observation) && c.kind === 'catalogue_batch' && c.catalogueKind === expectedKind &&
+      c.sourceHash === draft.source.sourceHash && typeof c.batchId === 'string' && Array.isArray(refs);
+  });
+  const marker = markers.at(-1);
+  const markerValid = (observation: ReservationPaneSnapshot['session']['draft']['observations'][number]) => {
+    const refs = record(observation.result).candidateRefs;
+    return Array.isArray(refs) && new Set(refs).size === refs.length && refs.every(ref => typeof ref === 'string' &&
+      history.some(row => row.observation.ref === ref && row.observation.criteria.batchId === observation.criteria.batchId));
+  };
+  if (marker && !markerValid(marker)) return { rows: [], history, hasCompleteBatch: true };
+  if (marker && input.scope?.kind === 'allocation' && marker.criteria.createContext !== undefined &&
+      stableServiceJson(marker.criteria.createContext) !== stableServiceJson(createServiceCatalogueContext(snapshot, input.requestId, input.scope.allocationId)))
+    return { rows: [], history, hasCompleteBatch: true };
+  const refs = marker ? record(marker.result).candidateRefs : [];
+  const legacy = history.filter(row => row.observation.criteria.batchId === undefined);
+  const legacyDigest = input.scope?.kind === 'allocation' ? legacy.at(-1)?.observation.criteria.createRequestDigest : undefined;
+  const candidates = marker && Array.isArray(refs) ? history.filter(row => refs.includes(row.observation.ref))
+    : legacy.filter(row => input.scope?.kind !== 'allocation' || row.observation.criteria.createRequestDigest === legacyDigest);
+  const selected = history.find(row => row.observation.ref === input.selectedRef &&
+    (row.observation.criteria.batchId === undefined || markers.some(batch => markerValid(batch) &&
+      batch.criteria.batchId === row.observation.criteria.batchId && Array.isArray(batch.result.candidateRefs) &&
+      batch.result.candidateRefs.includes(row.observation.ref))));
+  const equivalent = (left: ServiceCatalogueRow, right: ServiceCatalogueRow) => {
+    if (input.scope?.kind === 'allocation' && left.observation.criteria.createRequestDigest !== right.observation.criteria.createRequestDigest) return false;
+    if (input.operation === 'add') return text(left.candidate.itemId) === text(right.candidate.itemId) &&
+      Boolean(text(left.candidate.itemId)) && text(left.candidate.code) === text(right.candidate.code);
+    const leftFields = record(left.candidate.fields), rightFields = record(right.candidate.fields);
+    return Boolean(text(left.candidate.nativeId)) && text(left.candidate.nativeId) === text(right.candidate.nativeId) &&
+      savedServiceFields.every(key => Object.hasOwn(leftFields, key) && Object.hasOwn(rightFields, key) &&
+        JSON.stringify(leftFields[key]) === JSON.stringify(rightFields[key]));
+  };
+  const latest = new Map<string, ServiceCatalogueRow>();
+  for (const row of candidates) {
+    const identity = text(input.operation === 'add' ? row.candidate.itemId : row.candidate.nativeId).trim();
+    const key = identity ? `native:${identity}` : `observation:${row.observation.ref}`;
+    latest.delete(key); latest.set(key, selected && equivalent(selected, row) ? selected : row);
+  }
+  return { rows: [...latest.values()], history, hasCompleteBatch: Boolean(marker) };
+}
 export type NativeRecommendationLead = { ref: string; value: string; label: string;
   basis: 'exact_sender' | 'normalized_entity'; support: number;
   stock?: { status: 'available_each_night' | 'sold_or_restricted' | 'unknown'; observedAt: string } };
@@ -292,14 +387,17 @@ function amendPartyRole(snapshot: ReservationPaneSnapshot, requestId: string, ow
 }
 function currentIdentityRow(snapshot: ReservationPaneSnapshot, path: string, observation: ReservationPaneSnapshot['session']['draft']['observations'][number], verified: boolean): boolean {
   const criteria = record(observation.criteria), result = record(observation.result);
+  if (criteria.sourceHash !== undefined && criteria.sourceHash !== snapshot.session.draft.source.sourceHash) return false;
   if (verified && (record(result.rowVerification).status !== 'verified' || criteria.fieldPath !== path ||
       !Array.isArray(criteria.fieldPaths) || !criteria.fieldPaths.includes(path))) return false;
   if (criteria.fieldPath !== path && (!Array.isArray(criteria.fieldPaths) || !criteria.fieldPaths.includes(path))) return false;
   const parts = path.split('/'), requestId = decodeURIComponent(parts[4] ?? '');
   const request = snapshot.session.draft.proposal.content.requests.find(row => row.id === requestId);
+  const guest = observation.kind === 'guest_candidate';
+  const createdProfile = guest && request?.kind === 'create' && criteria.workflow === 'guest_profile_create';
   if (!request || (request.kind !== 'create' && request.kind !== 'quote' && request.kind !== 'amend') ||
-      criteria.workflow !== request.kind || criteria.requestId !== request.id) return false;
-  const owner = path.replace(/\/nativeSelectionRef$/, ''), guest = observation.kind === 'guest_candidate';
+      criteria.workflow !== request.kind && !createdProfile || criteria.requestId !== request.id) return false;
+  const owner = path.replace(/\/nativeSelectionRef$/, '');
   const role = request.kind === 'amend' ? amendPartyRole(snapshot, request.id, owner) : guest ? 'guest' : owner.endsWith('/bookingAgency') ? 'bookingAgency'
     : owner.endsWith('/arAccount') ? 'ar_account' : 'organization';
   if (!role || !guest && criteria.role !== role || guest && request.kind !== 'create' ||
@@ -316,23 +414,110 @@ function currentIdentityRow(snapshot: ReservationPaneSnapshot, path: string, obs
       if (!section || !allocations.some(row => row.id === criteria.allocationId && row.dateSectionId === section.id)) return false;
     } else if (!allocations.some(row => row.id === criteria.allocationId)) return false;
   }
-  const selected = snapshot.session.draft.fieldOverrides[path];
-  if (verified && selected?.state === 'set' && selected.value === observation.ref) return true;
-  if (!verified && guest && valueAt(snapshot, `${owner}/profileIntent`) !== 'existing_or_unknown') return false;
+  if (guest && valueAt(snapshot, `${owner}/profileIntent`) !== 'existing_or_unknown') return false;
   const normal = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  const selected = snapshot.session.draft.fieldOverrides[path];
+  const selectedRef = selected && selected.state !== 'inherit' ? valueAt(snapshot, path)
+    : valueAt(snapshot, path) ?? valueAt(snapshot, `${owner}/suggestedRef`);
+  const candidates = Array.isArray(result.candidates) ? result.candidates : [result];
+  const candidate = candidates.length === 1 ? record(candidates[0]) : {};
+  if (createdProfile) {
+    const attemptId = criteria.attemptId;
+    return criteria.fieldPath === path && typeof attemptId === 'string' && Boolean(attemptId) &&
+      observation.ref === `guest-created-${attemptId}` && selectedRef === observation.ref && result.outcome === 'created' &&
+      typeof candidate.nativeId === 'string' && /^\d{1,30}$/.test(candidate.nativeId) &&
+      Boolean(normal(candidate.firstName)) && Boolean(normal(candidate.lastName)) &&
+      normal(candidate.firstName) === normal(valueAt(snapshot, `${owner}/firstName`)) &&
+      normal(candidate.lastName) === normal(valueAt(snapshot, `${owner}/lastName`)) &&
+      snapshot.session.draft.operationResults.some(operation => operation.id === attemptId &&
+        operation.generationId === snapshot.session.draft.generationId && operation.workflow === 'guest_profile' &&
+        operation.status === 'succeeded' && operation.requestId === request.id &&
+        operation.allocationId === criteria.allocationId && operation.observationRefs.includes(observation.ref));
+  }
+  if (observation.status === 'complete' && selectedRef === observation.ref && (guest
+    ? normal(candidate.firstName) === normal(valueAt(snapshot, `${owner}/firstName`)) &&
+      normal(candidate.lastName) === normal(valueAt(snapshot, `${owner}/lastName`))
+    : normal(candidate.name) && normal(candidate.name) === normal(valueAt(snapshot, `${owner}/name`)))) return true;
   if (guest) {
     const query = record(criteria.query);
+    if (criteria.kind !== 'guest_profile' && criteria.kind !== 'verified_native_row' && typeof criteria.candidateNativeId === 'string') {
+      const guestName = (value: unknown) => {
+        let name = text(value);
+        const parts = name.split(',');
+        if (parts.length === 2 && parts.every(part => part.trim())) name = `${parts[1]!.trim()} ${parts[0]!.trim()}`;
+        return name.trim().replace(/^(?:(?:mr|mrs|ms|miss|dr|prof|professor)\.?\s+)+/i, '')
+          .normalize('NFKC').toLocaleLowerCase('en-US').replace(/[\u2018\u2019\u02bc]/g, "'")
+          .replace(/\s+/gu, ' ').replace(/(^|\s)((?:[a-z]\.\s*)+[a-z]\.?)(?=\s|$)/g,
+            (_match, prefix: string, initials: string) => prefix + initials.replace(/[.\s]/g, ''))
+          .replace(/\b([a-z])\.(?=\s|$)/g, '$1').replace(/\b(?:[a-z]\s+)+[a-z]\b/g, initials => initials.replace(/\s+/g, ''));
+      };
+      const currentName = [text(valueAt(snapshot, `${owner}/firstName`)), text(valueAt(snapshot, `${owner}/lastName`))].filter(Boolean).join(' ');
+      const phone = (value: unknown) => text(value).replace(/\D/g, '');
+      return Boolean(guestName(criteria.name) || normal(criteria.email) || phone(criteria.mobile)) &&
+        guestName(criteria.name) === guestName(currentName) &&
+        normal(criteria.email) === normal(valueAt(snapshot, `${owner}/email`)) &&
+        phone(criteria.mobile) === phone(valueAt(snapshot, `${owner}/mobile`));
+    }
     return query.field === 'lastName' && Boolean(normal(query.value)) &&
       normal(query.value) === normal(valueAt(snapshot, `${owner}/lastName`)) &&
       normal(query.firstName) === normal(valueAt(snapshot, `${owner}/firstName`)) &&
       normal(query.email) === normal(valueAt(snapshot, `${owner}/email`)) &&
       normal(query.mobile) === normal(valueAt(snapshot, `${owner}/mobile`));
   }
-  const search = typeof criteria.query === 'string' ? criteria.query : criteria.searchName;
+  const search = typeof criteria.query === 'string' ? criteria.query : criteria.searchName ?? criteria.name ??
+    (criteria.kind === 'historical_party_native_confirmation' ? candidate.name : undefined);
   return typeof search === 'string' && Boolean(normal(search)) && normal(search) === normal(valueAt(snapshot, `${owner}/name`));
 }
+function nativeCatalogueScope(snapshot: ReservationPaneSnapshot, path: string, kind: string | undefined,
+  observation: ReservationPaneSnapshot['session']['draft']['observations'][number]): boolean {
+  const draft = snapshot.session.draft, criteria = record(observation.criteria);
+  const requestId = decodeURIComponent(path.split('/')[4] ?? '');
+  const request = draft.proposal.content.requests.find(row => row.id === requestId);
+  if (!request || criteria.kind !== 'native_catalogue' || criteria.requestId !== requestId ||
+      criteria.workflow !== `${request.kind}_catalogue` && !(request.kind === 'create' && criteria.workflow === 'create') ||
+      kind && criteria.catalogueKind !== kind || observation.generationId !== draft.generationId ||
+      observation.propertyCode !== draft.propertyCode || observation.sourceMessageId !== draft.source.messageId ||
+      criteria.sourceHash !== undefined && criteria.sourceHash !== draft.source.sourceHash ||
+      !Array.isArray(criteria.fieldPaths)) return false;
+  if (criteria.workflow === 'create') {
+    const body = record(effectiveAt(snapshot, `${requestPath(requestId)}/body`));
+    const allocations = Array.isArray(body.allocations) ? body.allocations.map(record) : [];
+    const sections = Array.isArray(body.dateSections) ? body.dateSections.map(record) : [];
+    const sourcePath = criteria.fieldPaths.find(value => typeof value === 'string');
+    const sourceParts = typeof sourcePath === 'string' ? sourcePath.split('/') : [];
+    const sourceIndex = sourceParts.indexOf('allocations');
+    if (sourceIndex < 0 || allocations[Number(sourceParts[sourceIndex + 1])]?.id !== criteria.allocationId) return false;
+    if (!criteria.fieldPaths.includes(path)) {
+      const parts = path.split('/'), allocationIndex = parts.indexOf('allocations'), sectionIndex = parts.indexOf('dateSections');
+      const expected = allocationIndex >= 0 ? allocations[Number(parts[allocationIndex + 1])]
+        : sectionIndex >= 0 ? allocations.find(row => row.dateSectionId === sections[Number(parts[sectionIndex + 1])]?.id)
+        : allocations[0];
+      if (!expected || expected.id !== criteria.allocationId || sourceParts.at(-1) !== parts.at(-1)) return false;
+    }
+  } else if (!criteria.fieldPaths.includes(path)) return false;
+  return observation.status === 'complete' || observation.status === 'partial' &&
+    record(observation.result).closeOutcome === 'closed_unsaved';
+}
+
+function nativeCatalogueContext(observation: ReservationPaneSnapshot['session']['draft']['observations'][number]): string {
+  const criteria = record(observation.criteria), native = record(criteria.nativeCriteria);
+  if (criteria.catalogueKind === 'rate_plan') return JSON.stringify(['rate', native.rateShopControls ?? null]);
+  if (criteria.catalogueKind === 'room_type' || criteria.catalogueKind === 'room_type_for_charge')
+    return JSON.stringify(['room', native.nativeFilters ?? null]);
+  return '';
+}
+
+export function hasCompleteNativeCatalogue(snapshot: ReservationPaneSnapshot, path: string, kind?: string): boolean {
+  const requestId = decodeURIComponent(path.split('/')[4] ?? '');
+  if (kind === 'track' && snapshot.session.draft.proposal.content.requests.some(row => row.id === requestId && row.kind === 'amend')) return false;
+  const exact = snapshot.session.draft.observations.filter(observation => nativeCatalogueScope(snapshot, path, kind, observation) &&
+    Array.isArray(observation.criteria.fieldPaths) && observation.criteria.fieldPaths.includes(path));
+  const last = exact.at(-1);
+  return Boolean(last && exact.some(observation => nativeCatalogueContext(observation) === nativeCatalogueContext(last) &&
+    observation.status === 'complete' && observation.coverage.complete === true));
+}
+
 export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, kind?: string): NativeChoice[] {
-  const field = path.split('/').at(-1);
   const requestId = decodeURIComponent(path.split('/')[4] ?? '');
   const draft = snapshot.session.draft;
   const request = draft.proposal.content.requests.find(row => row.id === requestId);
@@ -366,23 +551,32 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
       validTrackScope && JSON.stringify(selectedKeys) === JSON.stringify(targetKeys) &&
       record(observation.coverage).complete === true && record(criteria.nativeCoverage).nativeResponseCorrelated === true;
   })?.ref : undefined;
-  const choices = draft.observations.flatMap(observation => {
+  const exactCatalogue = draft.observations.some(observation => nativeCatalogueScope(snapshot, path, kind, observation) &&
+    Array.isArray(observation.criteria.fieldPaths) && observation.criteria.fieldPaths.includes(path));
+  const compatibleCatalogue = (observation: ReservationPaneSnapshot['session']['draft']['observations'][number]) =>
+    nativeCatalogueScope(snapshot, path, kind, observation) && (!exactCatalogue ||
+      Array.isArray(observation.criteria.fieldPaths) && observation.criteria.fieldPaths.includes(path));
+  const lastCatalogue = draft.observations.findLast(observation => (!amendTrack || observation.ref === latestTrackRef) && compatibleCatalogue(observation));
+  const currentCatalogue = (observation: ReservationPaneSnapshot['session']['draft']['observations'][number]) =>
+    compatibleCatalogue(observation) && (lastCatalogue ? nativeCatalogueContext(observation) === nativeCatalogueContext(lastCatalogue) : false);
+  const lastCompleteCatalogue = draft.observations.findLastIndex(observation =>
+    (!amendTrack || observation.ref === latestTrackRef) && currentCatalogue(observation) &&
+    observation.status === 'complete' && observation.coverage.complete === true);
+  const choices = draft.observations.flatMap((observation, observationIndex) => {
     const criteria = record(observation.criteria);
     const catalogue = criteria.kind === 'native_catalogue';
     if (amendTrack && (!latestTrackRef || observation.ref !== latestTrackRef)) return [];
     // Catalogue entries are individually observed even when the full list is incomplete.
     // Identity matches, however, require a complete search before they can be selected.
-    if (observation.status !== 'complete' || (!catalogue && record(observation.coverage).complete !== true) ||
+    if (catalogue ? !currentCatalogue(observation) || observationIndex < lastCompleteCatalogue
+      : observation.status !== 'complete' || record(observation.coverage).complete !== true ||
         observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
         observation.sourceMessageId !== draft.source.messageId ||
-        (catalogue && criteria.sourceHash !== undefined && criteria.sourceHash !== draft.source.sourceHash) ||
         (kind && observation.kind !== kind && observation.criteria.catalogueKind !== kind)) return [];
-    if (criteria.kind === 'verified_native_row' && !currentIdentityRow(snapshot, path, observation, true) ||
-        criteria.kind === 'guest_profile' && observation.kind === 'guest_candidate' && !currentIdentityRow(snapshot, path, observation, false) ||
-        request?.kind === 'amend' && observation.kind === 'party_candidate' &&
-        !currentIdentityRow(snapshot, path, observation, false)) return [];
+    if ((observation.kind === 'guest_candidate' || observation.kind === 'party_candidate') &&
+        !currentIdentityRow(snapshot, path, observation, criteria.kind === 'verified_native_row')) return [];
     const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
-    const matches = paths.includes(path) || catalogue && criteria.requestId === requestId && paths.some(p => typeof p === 'string' && p.split('/').at(-1) === field);
+    const matches = catalogue || paths.includes(path);
     if (!matches) return [];
     const result = record(observation.result);
     const candidates = Array.isArray(result.candidates) ? result.candidates : Array.isArray(result.options) ? result.options : [result];
@@ -390,18 +584,32 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
     if (!catalogue && candidates.length > 1) return [];
     const rows = candidates.map(raw => { const row = record(raw); const code = text(row.code ?? row.nativeCode ?? row.name ?? [row.firstName, row.lastName].filter(Boolean).join(' '));
       const label = amendTrack ? typeof row.label === 'string' ? row.label : '' : text(row.label ?? row.name) || code;
-      return { ref: observation.ref, value: code, label, detail: [row.meaning ?? row.description, row.nativeId, row.email].filter(Boolean).join(' · ') }; }).filter(row => row.value);
-    return amendTrack ? rows.filter(row => /^[A-Z0-9]{1,12}$/.test(row.value) && row.label.trim() &&
-      row.label.length <= 200 && ![...row.label].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) &&
-      rows.filter(other => other.value === row.value).length === 1) : rows;
+      return { choice: { ref: observation.ref, value: code, label, detail: [row.meaning ?? row.description, row.nativeId, row.email].filter(Boolean).join(' · ') },
+        candidate: row,
+        nativeId: typeof row.nativeId === 'string' && row.nativeId.trim() ? row.nativeId : null }; }).filter(row => row.choice.value);
+    return amendTrack ? rows.filter(({ choice }) => /^[A-Z0-9]{1,12}$/.test(choice.value) && choice.label.trim() &&
+      choice.label.length <= 200 && ![...choice.label].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) &&
+      rows.filter(other => other.choice.value === choice.value).length === 1) : rows;
   });
   const identities = kind === 'guest_candidate' || kind === 'party_candidate';
-  const latest = new Map<string, NativeChoice>();
-  for (const row of choices) {
-    const key = identities ? JSON.stringify([row.ref, row.value]) : row.value;
-    latest.delete(key); latest.set(key, row);
+  const selected = draft.fieldOverrides[path];
+  const selectedRef = selected && selected.state !== 'inherit' ? valueAt(snapshot, path)
+    : valueAt(snapshot, path) ?? valueAt(snapshot, `${path.replace(/\/nativeSelectionRef$/, '')}/suggestedRef`);
+  const normal = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  const equivalent = (left: Record<string, unknown>, right: Record<string, unknown>) => {
+    const fields = kind === 'guest_candidate' ? ['firstName', 'lastName', 'email', 'city', 'country'] : ['name'];
+    const phone = (row: Record<string, unknown>) => text(row.phoneNumber ?? row.mobile).replace(/\D/g, '');
+    return fields.every(field => normal(left[field]) === normal(right[field])) &&
+      (kind !== 'guest_candidate' || phone(left) === phone(right));
+  };
+  const latest = new Map<string, { choice: NativeChoice; candidate: Record<string, unknown> }>();
+  for (const { choice, candidate, nativeId } of choices) {
+    const key = identities ? JSON.stringify(nativeId ? ['nativeId', nativeId] : ['ref', choice.ref]) : choice.value;
+    const previous = latest.get(key);
+    if (identities && selectedRef != null && previous?.choice.ref === selectedRef && equivalent(previous.candidate, candidate)) continue;
+    latest.delete(key); latest.set(key, { choice, candidate });
   }
-  return [...latest.values()];
+  return [...latest.values()].map(row => row.choice);
 }
 
 /** Incomplete native searches are useful leads, never selectable identities. */
@@ -435,8 +643,7 @@ export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: stri
         observation.sourceMessageId !== draft.source.messageId) return [];
     const criteria = record(observation.criteria), query = record(criteria.query);
     const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
-    if ((request?.kind === 'amend' || criteria.kind === 'guest_profile' && guest) &&
-        !currentIdentityRow(snapshot, path, observation, false)) return [];
+    if (!currentIdentityRow(snapshot, path, observation, false)) return [];
     if (criteria.kind === 'source_bound_display_lead') {
       if (observation.coverage.complete !== false || !request || (request.kind !== 'create' && request.kind !== 'quote') ||
           criteria.workflow !== request.kind || criteria.requestId !== request.id || criteria.role !== role ||

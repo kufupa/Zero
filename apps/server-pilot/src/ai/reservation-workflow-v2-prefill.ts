@@ -1660,6 +1660,20 @@ function projectPartyFact(target: Record<string, unknown>, field: string,
     suggestedRef: sameName && typeof existing.suggestedRef === 'string' ? existing.suggestedRef : null };
 }
 
+function appendProjectedSource(proposal: ReservationWorkflowV2Proposal, path: string,
+  claim: { raw: string; sourceRefs: string[] } | undefined, currentRefs: Set<string>): void {
+  if (!claim) return;
+  const displayedPath = path.startsWith('/requests/') ? `/proposal/content${path}` : path;
+  const sourceRefs = [...new Set(claim.sourceRefs.filter(ref => currentRefs.has(ref)))].slice(0, 100);
+  if (!sourceRefs.length) return;
+  if (proposal.sourceClaims.length < MAX_PROPOSAL_SOURCE_CLAIMS && !proposal.sourceClaims.some(row =>
+      row.path === displayedPath && row.raw === claim.raw && sourceRefs.every(ref => row.sourceRefs.includes(ref))))
+    proposal.sourceClaims.push({ path: displayedPath, raw: claim.raw.slice(0, 2000), sourceRefs });
+  if (proposal.annotations.length < 2000 && !proposal.annotations.some(row => row.path === displayedPath && row.basis === 'source' &&
+      sourceRefs.every(ref => row.evidenceRefs.includes(ref))))
+    proposal.annotations.push({ path: displayedPath, basis: 'source', evidenceRefs: sourceRefs });
+}
+
 function addProjectionIssue(proposal: ReservationWorkflowV2Proposal, path: string, kind: string,
   explanation: string, evidenceRefs: string[]): void;
 function addProjectionIssue(proposal: ReservationWorkflowV2Proposal, input: {
@@ -1695,6 +1709,7 @@ function projectLimitedText(input: { proposal: ReservationWorkflowV2Proposal; ta
     return;
   }
   input.target[input.field] = typeof claim.value === 'string' ? claim.value : null;
+  appendProjectedSource(input.proposal, input.path, claim, input.currentRefs);
 }
 
 /** Keep source-attributed booker contact separate from the guest and CMS delivery address. */
@@ -2111,15 +2126,20 @@ function projectPartyRole(input: { proposal: ReservationWorkflowV2Proposal;
         "The cited party name exceeds this destination's 300-character limit; its raw claim remains available for staff review.", fact.sourceRefs);
       return;
     }
-    for (const slot of input.slots) projectPartyFact(slot.target, slot.field, fact, input.currentRefs);
+    for (const slot of input.slots) {
+      projectPartyFact(slot.target, slot.field, fact, input.currentRefs);
+      appendProjectedSource(input.proposal, slot.path, fact, input.currentRefs);
+    }
     return;
   }
   for (const slot of input.slots) {
     const existing = slot.target[slot.field];
     const name = isRecord(existing) ? existing.name : null;
     const matching = unique.get(normalizedFact(name));
-    if (matching && (typeof matching.value !== 'string' || matching.value.length <= 300))
+    if (matching && (typeof matching.value !== 'string' || matching.value.length <= 300)) {
       projectPartyFact(slot.target, slot.field, matching, input.currentRefs);
+      appendProjectedSource(input.proposal, slot.path, matching, input.currentRefs);
+    }
     else if (existing !== undefined) slot.target[slot.field] = { name: null, candidateRefs: [], suggestedRef: null };
   }
   addProjectionIssue(input.proposal, input.slots[0]?.path ?? '/', 'ambiguous_party_role_source',
@@ -3846,7 +3866,7 @@ function projectCurrentExtraction(input: {
             'The billing reference could not be found verbatim in the current source. Enter or confirm it before continuing.', request.sourceRefs.filter((ref) => currentRefs.has(ref)));
         }
       }
-      for (const allocation of request.body.allocations) {
+      for (const [allocationIndex, allocation] of request.body.allocations.entries()) {
         const guest = allocation.guest;
         const fullName = [guest.firstName, guest.lastName].filter(Boolean).join(' ');
         const sourceGuests = extracted.guests.filter((item) => item.role === 'guest' &&
@@ -3857,6 +3877,20 @@ function projectCurrentExtraction(input: {
         const mobile = normalizedPhone(guest.mobile);
         if (mobile.length < 7 || !sourceGuests.some((item) =>
           normalizedPhone(currentClaim(item.mobile, currentRefs)?.value) === mobile)) guest.mobile = null;
+        const guestRoot = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/allocations/${allocationIndex}/guest`;
+        const matchingNames = sourceGuests.flatMap(item => currentClaim(item.name, currentRefs) ?? [])
+          .filter(claim => typeof claim.value === 'string' && sameGuestName(fullName, claim.value));
+        if (new Set(matchingNames.map(claim => normalizedFact(claim.value))).size === 1) {
+          if (guest.firstName) appendProjectedSource(proposal, `${guestRoot}/firstName`, matchingNames[0], currentRefs);
+          if (guest.lastName) appendProjectedSource(proposal, `${guestRoot}/lastName`, matchingNames[0], currentRefs);
+        }
+        for (const field of ['email', 'mobile'] as const) if (guest[field]) {
+          const normalize = field === 'email' ? normalizedFact : normalizedPhone;
+          for (const item of sourceGuests) {
+            const claim = currentClaim(item[field], currentRefs);
+            if (claim && normalize(claim.value) === normalize(guest[field])) appendProjectedSource(proposal, `${guestRoot}/${field}`, claim, currentRefs);
+          }
+        }
       }
       const dateLinks = matchDateProjectionTargets({ targets: request.body.dateSections, dates: projectedDates, currentRefs });
       for (const [dateIndex, sectionIndex] of dateLinks.targetsByDate) {
@@ -3883,14 +3917,15 @@ function projectCurrentExtraction(input: {
         `/requests/${request.id}/body/dateSections`, 'synthesized_date_without_source',
         'A synthesized date section had no unique current source date; its dates were cleared while allocation associations were retained for staff review.',
         request.sourceRefs.filter((ref) => knownRefs.has(ref)));
-      const bookingFields = [request.body.shared as Record<string, unknown>,
-        ...request.body.dateSections.map((row) => row.defaults as Record<string, unknown>),
-        ...request.body.allocations.map((row) => row.overrides as Record<string, unknown>)];
+      const bookingRoot = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
+      const bookingFields = [{ target: request.body.shared as Record<string, unknown>, path: `${bookingRoot}/shared` },
+        ...request.body.dateSections.map((row, index) => ({ target: row.defaults as Record<string, unknown>, path: `${bookingRoot}/dateSections/${index}/defaults` })),
+        ...request.body.allocations.map((row, index) => ({ target: row.overrides as Record<string, unknown>, path: `${bookingRoot}/allocations/${index}/overrides` }))];
       for (const [role, field] of [['bookingAgency', 'bookingAgency'], ['organization', 'organization'], ['ar_account', 'arAccount']] as const) {
-        const present = bookingFields.filter((fields) => fields[field] !== undefined);
-        const targets = present.length ? present : [request.body.shared as Record<string, unknown>];
+        const present = bookingFields.filter(({ target }) => target[field] !== undefined);
+        const targets = present.length ? present : [bookingFields[0]!];
         projectPartyRole({ proposal, parties: extracted.parties, role, currentRefs,
-          slots: targets.map((target, index) => ({ target, field, path: `/requests/${request.id}/body/party/${role}/${index}` })) });
+          slots: targets.map(({ target, path }) => ({ target, field, path: `${path}/${field}` })) });
       }
       const occupancyEmpty = { adults: null, childCount: null, childAges: null };
       request.body.dateSections.forEach((section) => { section.requestedTotals = { ...occupancyEmpty }; });
@@ -3900,16 +3935,23 @@ function projectCurrentExtraction(input: {
       if (request.body.dateSections.length === 1) {
         const section = request.body.dateSections[0]!;
         const roomCount = currentClaim(extracted.roomCount, currentRefs);
-        if (roomCount) section.requestedRooms = citedInteger(roomCount) ?? null;
+        if (roomCount) {
+          section.requestedRooms = citedInteger(roomCount) ?? null;
+          appendProjectedSource(proposal, `${bookingRoot}/dateSections/0/requestedRooms`, roomCount, currentRefs);
+        }
         if (projectedDates.filter((date) => currentClaim(date.arrival, currentRefs) || currentClaim(date.departure, currentRefs)).length <= 1 &&
             extracted.occupancy.length === 1) {
           const occupancyRow = extracted.occupancy[0]!;
           const quantity = citedInteger(currentClaim(extracted.roomCount, currentRefs));
           const canUseTotals = occupancyRow.scope === 'whole_group' || quantity === 1;
           const occupancy = fallbackQuoteOccupancy(extracted, currentRefs);
-          if (canUseTotals && occupancy.sourceRefs.length) section.requestedTotals = {
+          if (canUseTotals && occupancy.sourceRefs.length) {
+            section.requestedTotals = {
             adults: occupancy.occupancy.adults, childCount: occupancy.occupancy.childCount,
             childAges: occupancy.occupancy.childAges };
+            for (const field of ['adults', 'childCount'] as const) if (section.requestedTotals[field] !== null)
+              appendProjectedSource(proposal, `${bookingRoot}/dateSections/0/requestedTotals/${field}`, occupancyRow[field], currentRefs);
+          }
         }
         const knownGuestNames = new Set(request.body.allocations.map((allocation) =>
           normalizedFact([allocation.guest.firstName, allocation.guest.lastName].filter(Boolean).join(' '))).filter(Boolean));
@@ -3939,9 +3981,15 @@ function projectCurrentExtraction(input: {
           request.body.allocations.every((allocation) => allocation.dateSectionId === section.id) &&
           dateLinks.unlinkedDates.length === 0 && [...dateLinks.targetsByDate.values()].includes(0) &&
           datePairKey(section.arrival, section.departure) === currentDatePair);
-        if (exactPerRoomScope) request.body.allocations.forEach((allocation) => {
+        if (exactPerRoomScope) request.body.allocations.forEach((allocation, index) => {
           allocation.occupancy = { adults: occupancy.occupancy.adults, childCount: occupancy.occupancy.childCount,
             childAges: occupancy.occupancy.childAges };
+          for (const field of ['adults', 'childCount'] as const) if (allocation.occupancy[field] !== null)
+            appendProjectedSource(proposal, `${bookingRoot}/allocations/${index}/occupancy/${field}`, sourceOccupancyRow?.[field], currentRefs);
+          sourceOccupancyRow?.childAges?.filter(claim => currentClaim(claim, currentRefs)).forEach((claim, age) => {
+            if (allocation.occupancy.childAges?.[age] != null)
+              appendProjectedSource(proposal, `${bookingRoot}/allocations/${index}/occupancy/childAges/${age}`, claim, currentRefs);
+          });
         });
         else if (currentOccupancyRefs.length || synthesizedAllocationOccupancy) {
           addProjectionIssue(proposal, `/requests/${request.id}/body/allocations`, 'create_occupancy_scope_ambiguous',
