@@ -2222,7 +2222,8 @@ function recoverSourceIntent(input: {
     addIssue({ explanation: 'A prior hotel acknowledgement says this booking was already cancelled. Review its current native status; no duplicate cancellation was proposed.',
       sourceRefs: [...new Set([...request.requestText.sourceRefs, ...priorHotel.map((row) => row.ref)])].slice(0, 20) });
   }
-  const message = input.evidence.find((row) => row.relation === 'current_message');
+  const message = input.evidence.find((row) => row.relation === 'current_message' &&
+    row.messageId === input.source.messageId && row.threadId === input.source.threadId);
   if (!message) return extraction;
   const subject = input.selection.subject ?? '';
   const submission = /\b(?:attached|attachment|herewith|proof\s+of\s+payment|payment\s+proof|remittance|POP)\b/i.test(currentBody) ||
@@ -2240,10 +2241,21 @@ function recoverSourceIntent(input: {
   const eligible = extraction.requests.filter((request) => ['other', 'filing', 'create'].includes(request.kind) &&
     currentClaim(request.requestText, currentRefs));
   if (eligible.length > 1 || extraction.requests.some((request) => !eligible.includes(request))) return extraction;
-  const documentEvidenceRefs = new Set(documents.flatMap(({ pdf }) => pdf.sourceRefs));
+  // Confirmations can be cited from a scanned attachment even when its text
+  // cannot classify it as a filing document. Keep all selected current-file
+  // evidence for conflict detection, with the physical attachment identity bound.
+  const attachmentEvidenceRefs = new Set(input.selection.attachments.flatMap((attachment) => {
+    if (attachment.messageId && attachment.messageId !== input.source.messageId) return [];
+    const textRef = evidenceRef(input.source, 'attachment_text', attachment.id);
+    return input.evidence.filter((row) => row.relation === 'attachment' &&
+      row.messageId === input.source.messageId && row.threadId === input.source.threadId &&
+      (row.kind === 'attachment_text' && row.ref === textRef || row.kind === 'attachment_vision' &&
+        row.ref === evidenceRef(input.source, 'attachment_vision', `${attachment.id}:${row.page ?? 1}`)))
+      .map((row) => row.ref);
+  }));
   const typedCurrentClaims = (eligible[0]?.confirmationHints ?? []).filter((claim) =>
-    claim.sourceRefs.every((ref) => currentRefs.has(ref)) &&
-    claim.sourceRefs.some((ref) => ref === message.ref || documentEvidenceRefs.has(ref)));
+    claim.sourceRefs.every((ref) => ref === message.ref || attachmentEvidenceRefs.has(ref)) &&
+    claim.sourceRefs.some((ref) => ref === message.ref || attachmentEvidenceRefs.has(ref)));
   const attachmentConfirmations = documents.flatMap(({ text, pdf }) => (text.match(/\b\d{6,10}-\d{1,2}\b/g) ?? [])
     .map((value) => ({ raw: value, value, sourceRefs: [pdf.documentRef] })));
   const currentConfirmations = (`${subject}\n${currentBody}`.match(/\b\d{6,10}-\d{1,2}\b/g) ?? [])
