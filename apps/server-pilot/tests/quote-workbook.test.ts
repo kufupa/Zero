@@ -25,13 +25,13 @@ import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 const SOURCE_HASH = 'a'.repeat(64);
 const header = {
   attention: 'David Miller',
-  company: 'CIDB',
+  organization: 'CIDB',
   clientEmail: 'guest@example.com',
   clientTelephone: '',
   signerName: 'R Opperman',
   signerEmail: 'ropperman@legacyhotels.co.za',
 };
-const pdfHeader = { ...header, agency: 'CIDB', signerTelephone: '0126433600' };
+const pdfHeader = { ...header, bookingAgency: 'CIDB', signerTelephone: '0126433600' };
 
 function baseInput(overrides: Partial<StaffQuoteInput> = {}): StaffQuoteInput {
   return staffQuoteInput.parse({
@@ -47,7 +47,7 @@ function baseInput(overrides: Partial<StaffQuoteInput> = {}): StaffQuoteInput {
         quantity: 1,
         adults: 2,
         childrenAges: [],
-        board: 'bb',
+        mealPlan: 'bb',
       },
     ],
     ...overrides,
@@ -402,7 +402,7 @@ describe('quote workbook authority', () => {
       userId: 'user-1',
       threadId: 'thread-1',
       sourceHash: staffQuoteSourceHash(current),
-      header: { company: 'CIDB', agency: 'CIDB' },
+      header: { organization: 'CIDB', bookingAgency: 'CIDB' },
     };
     const base = {
       staff,
@@ -410,7 +410,7 @@ describe('quote workbook authority', () => {
       latestGenerationId: 'gen-2',
       currentMessage: current,
       userId: 'user-1',
-      party: { company: 'CIDB', agency: 'CIDB' },
+      party: { organization: 'CIDB', bookingAgency: 'CIDB' },
     };
     expect(staffQuoteCurrencyProblem(base)).toBeNull();
     expect(staffQuoteCurrencyProblem({ ...base, latestGenerationId: 'gen-3' })).toMatch(/Newer stay inputs/);
@@ -419,7 +419,7 @@ describe('quote workbook authority', () => {
     );
     expect(staffQuoteCurrencyProblem({ ...base, currentMessage: undefined })).toMatch(/Selected email changed/);
     expect(staffQuoteCurrencyProblem({ ...base, userId: 'user-2' })).toMatch(/Selected email changed/);
-    expect(staffQuoteCurrencyProblem({ ...base, party: { company: 'Other', agency: 'CIDB' } })).toMatch(
+    expect(staffQuoteCurrencyProblem({ ...base, party: { organization: 'Other', bookingAgency: 'CIDB' } })).toMatch(
       /Party identity changed/,
     );
   });

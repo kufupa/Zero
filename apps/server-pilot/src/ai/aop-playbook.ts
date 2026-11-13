@@ -47,7 +47,7 @@ export const AOP_QUOTE_SPINE: AopQuoteSpine = {
 };
 
 export type AopPartyHint = {
-  kind: 'agency' | 'organization' | 'government' | 'private' | null;
+  kind: 'bookingAgency' | 'organization' | 'government' | 'private' | null;
   name: string | null;
 };
 

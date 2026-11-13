@@ -142,7 +142,7 @@ export function createInstalledReservationistProvider(
     });
     const factory = createReservationistDependencies({
       adapter: textOnlyAdapter, admissions,
-      header: { attention: '', company: '', clientEmail: '', clientTelephone: '', agency: '', signerName: '', signerEmail: '' },
+      header: { attention: '', organization: '', clientEmail: '', clientTelephone: '', bookingAgency: '', signerName: '', signerEmail: '' },
       converter: { url: process.env.GOTENBERG_URL ?? '' }, services,
     });
     const addVisualWarnings = (existing: RuntimeSourceRecovery[] = []) => [...existing, ...visualRecoveries];

@@ -116,7 +116,7 @@ describe('agentDecisionToLunaAnalysis', () => {
         rooms: 2,
         adultsPerRoom: null,
         childAges: [],
-        board: null,
+        mealPlan: null,
         roomPreference: null,
         guestNames: [],
       },

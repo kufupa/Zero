@@ -585,8 +585,8 @@ export function quoteWorkbookForRevision(args: {
 }
 
 /** "Quote - <Company or Guest> <stay span>.xlsx" with path-unsafe characters removed. */
-export function quoteWorkbookFileName(company: string, arrivalDate: string, departureDate = arrivalDate): string {
-  const label = Array.from(company)
+export function quoteWorkbookFileName(partyName: string, arrivalDate: string, departureDate = arrivalDate): string {
+  const label = Array.from(partyName)
     .filter((ch) => ch >= ' ' && !'\\/:*?"<>|'.includes(ch))
     .join('')
     .replace(/\s+/g, ' ')

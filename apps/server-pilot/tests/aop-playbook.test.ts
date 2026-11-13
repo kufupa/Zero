@@ -30,7 +30,7 @@ const selection: SyncedQuoteSelection = {
 };
 
 function quoteAnalysis(party: {
-  kind: 'agency' | 'organization' | 'government' | 'private' | null;
+  kind: 'bookingAgency' | 'organization' | 'government' | 'private' | null;
   name: string | null;
 }) {
   return lunaAnalysisSchema.parse({
@@ -44,7 +44,7 @@ function quoteAnalysis(party: {
         rooms: 1,
         adultsPerRoom: 1,
         childAges: [],
-        board: 'bb',
+        mealPlan: 'bb',
         roomPreference: null,
         guestNames: [],
       },
@@ -220,8 +220,8 @@ function analyseOptions() {
 function storedQuoteRead(): MailExtractionPayload {
   return {
     contact: { name: null, email: null, phone: null },
-    agency: 'Acme Mining',
-    endClient: null,
+    bookingAgency: 'Acme Mining',
+    organization: null,
     confirmationNumbers: [],
     stays: [
       {
@@ -237,7 +237,7 @@ function storedQuoteRead(): MailExtractionPayload {
             rooms: 1,
             adultsPerRoom: 2,
             childAges: [],
-            board: 'bb',
+            mealPlan: 'bb',
           },
         ],
       },
