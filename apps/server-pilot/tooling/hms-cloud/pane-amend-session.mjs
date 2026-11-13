@@ -84,6 +84,49 @@ export function cloudAmendPreserved(state, baseline, changes = {}) {
   } catch { return null; }
 }
 
+// Historical hints may use only a party actually linked on this saved record.
+// A missing model, submitted value or visible name is unknown, not an empty link.
+export function cloudAmendNativePartyBaseline(state, snapshot) {
+  const unknown = () => ({ state: 'unknown' });
+  if (!cleanLabtestRecord(snapshot) || !state?.partyPreimage || !snapshot?.data || !snapshot?.values ||
+      !Array.isArray(snapshot.partyControls)) return { organization: unknown(), arAccount: unknown() };
+  const field = (source, key) => {
+    const matches = Object.keys(source).filter(name => name.toLowerCase() === key);
+    if (matches.length !== 1 || matches[0] !== key) return null;
+    const value = source[key];
+    return value === null || typeof value === 'string' || typeof value === 'number' && Number.isFinite(value)
+      ? String(value ?? '') : null;
+  };
+  const selected = (idKey, nameKeys) => {
+    const id = field(snapshot.data, idKey);
+    if (id === null || state.partyPreimage[idKey] !== id) return unknown();
+    const names = [];
+    let visibleName = false, observedName = false;
+    for (const key of [idKey, ...nameKeys]) {
+      const value = field(snapshot.data, key);
+      const formNames = Object.keys(snapshot.values).filter(name => name.toLowerCase() === key);
+      const controls = snapshot.partyControls.filter(control => typeof control?.name === 'string' && control.name.toLowerCase() === key);
+      if (formNames.length > 1 || formNames.some(name => name !== key) || controls.length > 1 ||
+          controls.some(control => control.name !== key || typeof control.value !== 'string')) return unknown();
+      if (value !== null && state.partyPreimage[key] !== value) return unknown();
+      if (formNames.length && (value === null || field(snapshot.values, key) !== value)) return unknown();
+      if (controls.length && (value === null || controls[0].value !== value ||
+          (key !== idKey && (!formNames.length || field(snapshot.values, key) !== controls[0].value)))) return unknown();
+      if (key !== idKey && controls.length) observedName = true;
+      if (key !== idKey && value?.trim()) {
+        names.push(value);
+        if (controls.length) visibleName = true;
+      }
+    }
+    if (!id && !names.length) return observedName ? { state: 'blank' } : unknown();
+    if (!/^[1-9]\d{0,29}$/.test(id) || !visibleName || !names.length ||
+        names.some(name => name !== names[0] || name.length > 300 || /[\p{Cc}]/u.test(name))) return unknown();
+    return { state: 'selected', nativeId: id, name: names[0] };
+  };
+  return { organization: selected('companyid', ['company', 'companyname']),
+    arAccount: selected('araccountid', ['araccountname']) };
+}
+
 // Install the exact-confirmation read fence before any page or login request.
 // A session that skips the pre-login hook is unusable even for a rehearsal.
 function guardedSession(input, guard, timeoutMs = 5 * 60_000) {
@@ -299,7 +342,8 @@ export async function prepareCloudPaneAmend(input, { openSession = withCenturion
       if (result.issue === 'PREPARE_ONLY' && result.nativeDigest && result.approvedPrices && result.preserved) {
         return { outcome: 'prepared', nativeDigest: result.nativeDigest,
           approvedPrices: result.approvedPrices, preserved: result.preserved,
-          recoveryBaseline: result.recoveryBaseline, ...(input.captureBusinessImage ? { sourceBusinessImage: result.sourceBusinessImage } : {}) };
+          recoveryBaseline: result.recoveryBaseline, nativePartyBaseline: result.nativePartyBaseline,
+          ...(input.captureBusinessImage ? { sourceBusinessImage: result.sourceBusinessImage } : {}) };
       }
       return { outcome: 'refused', issue: result.issue || 'AMEND_PREPARE_UNVERIFIED' };
     }, protectedSession.options);
@@ -962,6 +1006,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       }
       if (callbackMode) assertApprovedAmendPrice(baseline, selected, input.approvedBeforeCallbackPrice, { requireAverage: false });
       preparedState = { frame: state.frame, state, baseline, save, childStageGate, roomStageGate, rateStageGate, guaranteeStageGate, partyStageGate,
+        nativePartyBaseline: prepareOnly ? cloudAmendNativePartyBaseline(state, baseline) : null,
         savedRateDigest: savedRates?.digest ?? null, recoveryBaseline,
         enableComposedStage: true, allowRealGuest: nativeReal };
       return preparedState;
@@ -1063,7 +1108,8 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       ...(callbackFinal ? { finalParties: preparedState?.state?.partyPreimage ?? null,
         finalBeforeCommission: preparedState?.recoveryBaseline?.beforeCommission ?? null } : {}),
       ...(prepareOnly && input.captureBusinessImage ? { sourceBusinessImage: portableBusinessImage(preparedState?.baseline) } : {}),
-      ...(prepareOnly ? { recoveryBaseline: preparedState?.recoveryBaseline ?? null } : {}) }),
+      ...(prepareOnly ? { recoveryBaseline: preparedState?.recoveryBaseline ?? null,
+        nativePartyBaseline: preparedState?.nativePartyBaseline ?? null } : {}) }),
     ...(availability ? { availability } : {}),
     beforeSave: async (bounded, prepared, staged, scope) => {
       rateScope = scope;

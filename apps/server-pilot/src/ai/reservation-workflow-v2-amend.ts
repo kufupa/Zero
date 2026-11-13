@@ -48,7 +48,7 @@ import { lockCreateActorSession } from './pane-create-actor-lock.js';
 import { formatBookerContact, parseBookerContact } from './reservation-workflow-v2-booker-contact.js';
 import { partyCandidateViews, verifiedNativeFields } from './reservation-workflow-v2-tools.js';
 import { partyMatchSearchTerms } from './party-match-v2.js';
-import { reservationEntityKey } from './reservation-workflow-v2-native-leads.js';
+import { loadReservationAmendBaselineAutoTransferLeads, reservationEntityKey } from './reservation-workflow-v2-native-leads.js';
 
 export type ReservationWorkflowV2AmendContext = {
   db: DB;
@@ -844,9 +844,16 @@ export async function readAmendTrackChoices(ctx: ReadContext, draft: Reservation
     nativeCoverage: { complete: true, nativeResponseCorrelated: true, selectedStayCount: selected.length } };
 }
 
+const nativePartySchema = z.discriminatedUnion('state', [z.object({ state: z.literal('unknown') }).strict(),
+  z.object({ state: z.literal('blank') }).strict(),
+  z.object({ state: z.literal('selected'), nativeId: z.string().regex(/^[1-9]\d{0,29}$/),
+    name: z.string().min(1).max(300).refine(value => Boolean(value.trim()) && !/[\p{Cc}]/u.test(value)) }).strict()]);
+const nativePartyBaselineSchema = z.object({ organization: nativePartySchema, arAccount: nativePartySchema }).strict();
+
 function preparationObservation(draft: ReservationWorkflowV2Draft, compiled: Compile & { outcome: 'ok' },
   native: Record<string, unknown>, changes: Amendment, preserved: Record<string, unknown>, price: Record<string, unknown>,
   recoveryBaseline: Record<string, unknown>, semanticDigest: string): ReservationWorkflowV2Observation {
+  const baseline = nativePartyBaselineSchema.safeParse(native.nativePartyBaseline);
   return { ref: randomUUID(), generationId: draft.generationId, kind: 'rate_availability', status: 'complete',
     observedAt: new Date().toISOString(), propertyCode: 'HRCEN', sourceMessageId: draft.source.messageId, sourceRefs: [],
     criteria: { workflow: 'amend', requestId: compiled.requestId, hintId: compiled.hintId, selectedRef: compiled.selectedRef,
@@ -855,6 +862,7 @@ function preparationObservation(draft: ReservationWorkflowV2Draft, compiled: Com
     coverage: { complete: true, notes: [] },
     result: { outcome: 'prepared', before: compiled.selected, target: compiled.target, nativeChanges: changes,
       nativeDigest: native.nativeDigest, approvedPrices: price, preserved, recoveryBaseline,
+      ...(baseline.success ? { nativePartyBaseline: baseline.data } : {}),
       semanticInput: { requestId: compiled.requestId, hintId: compiled.hintId, selectedRef: compiled.selectedRef,
         selected: compiled.selected, baseChanges: compiled.baseChanges, rateHandling: compiled.rateHandling,
         changes, target: compiled.target } } };
@@ -871,6 +879,34 @@ async function recordObservation(ctx: ReadContext, input: Input,
     allocationId: hintId, workflow: 'amend', status, draftRevision: input.expectedRevision,
     observationRefs: [observation.ref], updatedAt: new Date().toISOString(), summary,
   } });
+}
+
+async function appendSavedBaselineHints(ctx: ReadContext, input: ReservationWorkflowV2PrepareInput,
+  compiled: Compile & { outcome: 'ok' }, prepareRef: string, recorded: Awaited<ReturnType<typeof recordObservation>>) {
+  if (recorded.status !== 'ok' || recorded.revision !== input.expectedRevision || recorded.seq !== input.expectedSeq) return;
+  const draft = recorded.draft;
+  const live = compileBase(draft, compiled.requestId, compiled.hintId, 'prepare');
+  if (live.outcome !== 'ok' || live.baseDigest !== compiled.baseDigest || live.selectedRef !== compiled.selectedRef) return;
+  const prepare = draft.observations.find(row => row.ref === prepareRef);
+  const target = draft.observations.find(row => row.ref === compiled.selectedRef);
+  if (!prepare || !target || prepare.criteria.baseDigest !== compiled.baseDigest ||
+      prepare.criteria.selectedRef !== compiled.selectedRef || prepare.criteria.draftRevision !== draft.revision ||
+      !draft.operationResults.some(row => row.workflow === 'amend' && row.status === 'prepared' &&
+        row.requestId === compiled.requestId && row.allocationId === compiled.hintId && row.observationRefs.includes(prepareRef))) return;
+  const signal = ctx.nativeBatch?.signal ?? AbortSignal.timeout(30_000);
+  try {
+    const hints = await loadReservationAmendBaselineAutoTransferLeads({ propertyCode: draft.propertyCode,
+      source: draft.source, generationId: draft.generationId, proposal: draft.proposal, db: ctx.db,
+      transportId: ctx.transport.id, signal, prepareObservation: prepare, targetObservation: target });
+    for (const observation of hints) {
+      const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), {
+        workItemId: input.workItemId, source: input.source, observation,
+        ...(!ctx.nativeBatch ? { fence: { expectedRevision: input.expectedRevision, expectedSeq: input.expectedSeq,
+          generationId: draft.generationId, signal } } : {}),
+      });
+      if (appended.status !== 'ok') break;
+    }
+  } catch { /* Historical guidance is optional; Prepare remains valid. */ }
 }
 
 function preparedObservation(draft: ReservationWorkflowV2Draft, compiled: Compile & { outcome: 'ok' }) {
@@ -1279,6 +1315,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
       prepared.noop ? 'HMS amendment staged unsaved; native price and baseline observed' :
         'Native controls checked; the first Go may apply details before price review', randomUUID(), compiled.hintId);
     if (recorded.status !== 'ok') return recorded;
+    await appendSavedBaselineHints(ctx, input, compiled, prepared.observation.ref, recorded);
     if (prepared.noop) return { status: 'prepared', requestId: input.requestId, allocationId: compiled.hintId,
       observationRef: prepared.observation.ref, target: compiled.target, before: compiled.selected,
       price: prepared.price, semanticDigest: prepared.semanticDigest };
@@ -1454,6 +1491,7 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
     const recorded = await recordObservation(ctx, input, prepared.observation, 'prepared',
       'HMS amendment staged unsaved; native price and baseline observed', randomUUID(), compiled.hintId);
     if (recorded.status !== 'ok') return recorded;
+    await appendSavedBaselineHints(ctx, input, compiled, prepared.observation.ref, recorded);
     return { status: 'prepared', requestId: input.requestId, allocationId: compiled.hintId,
       observationRef: prepared.observation.ref, target: compiled.target, before: compiled.selected,
       price: prepared.price, changes: prepared.changes, semanticDigest: prepared.semanticDigest };

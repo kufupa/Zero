@@ -1750,6 +1750,27 @@ async function bufferedNativeResult(ctx: Context, input: { workItemId: string; s
       ...batch.results] }) };
 }
 
+// Callback claims/results do not advance the editable draft revision. Recheck
+// these hints under the same row lock as persistence, including batch commits.
+function currentSavedAmendBaselineHint(draft: ReservationWorkflowV2Draft, hint: ReservationWorkflowV2Observation): boolean {
+  if (hint.criteria.binding !== 'saved_amend_baseline') return true;
+  const prepare = draft.observations.find(row => row.ref === hint.criteria.prepareRef);
+  const target = draft.observations.find(row => row.ref === hint.criteria.selectedRef);
+  const preparedAt = prepare ? Date.parse(prepare.observedAt) : NaN;
+  if (!prepare || !target || !Number.isFinite(preparedAt) || hint.criteria.draftRevision !== draft.revision ||
+      prepare.kind !== 'rate_availability' || prepare.status !== 'complete' || !prepare.coverage.complete ||
+      prepare.result.outcome !== 'prepared' || prepare.generationId !== draft.generationId ||
+      prepare.criteria.selectedRef !== target.ref || prepare.criteria.requestId !== hint.criteria.requestId ||
+      prepare.criteria.hintId !== hint.criteria.hintId || prepare.criteria.draftRevision !== draft.revision ||
+      target.kind !== 'stay_candidate' || target.status !== 'complete' || target.generationId !== draft.generationId ||
+      !draft.operationResults.some(row => row.workflow === 'amend' && row.status === 'prepared' &&
+        row.requestId === hint.criteria.requestId && row.allocationId === hint.criteria.hintId && row.observationRefs.includes(prepare.ref))) return false;
+  return !draft.operationResults.some(row => row.workflow === 'amend' && row.generationId === draft.generationId &&
+    (row.status === 'unknown' || (row.status === 'prepared' &&
+      row.summary === 'Native details may have changed; review the refreshed price before Save') ||
+      (row.status === 'succeeded' && Date.parse(row.updatedAt) >= preparedAt)));
+}
+
 /** Commit one completed native check and its evidence as a single fenced transaction. */
 export async function commitReservationNativeCheck(ctx: Context, input: {
   workItemId: string; source: ReservationWorkflowV2SourceInput; batch: ReservationNativeCheckBatch;
@@ -1791,6 +1812,8 @@ export async function commitReservationNativeCheck(ctx: Context, input: {
           parsed.data.propertyCode !== ctx.propertyCode || parsed.data.sourceMessageId !== input.source.messageId ||
           observations.some((entry) => entry.ref === parsed.data.ref) ||
           parsed.data.sourceRefs.some((ref) => !observations.some((entry) => entry.ref === ref))) return { status: 'invalid_value' as const };
+      if (!currentSavedAmendBaselineHint({ ...current.draft, observations,
+        operationResults: [...current.draft.operationResults, ...input.batch.results] }, parsed.data)) continue;
       observations.push(parsed.data);
     }
     const results = [...current.draft.operationResults];
@@ -1813,7 +1836,8 @@ export async function commitReservationNativeCheck(ctx: Context, input: {
     if (!next.success) return { status: 'invalid_value' as const };
     input.batch.signal.throwIfAborted();
     if (input.check) await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'system', type: 'hms.lookup.finished',
-      value: { check: input.check.key, status: input.check.status, observations: input.batch.observations.map((entry) => entry.ref),
+      value: { check: input.check.key, status: input.check.status, observations: input.batch.observations
+        .filter(entry => observations.some(row => row.ref === entry.ref)).map(entry => entry.ref),
         results: input.batch.results.map((entry) => entry.id) },
       evidence: { sourceHash: input.source.sourceHash, generationId: current.draft.generationId } });
     input.batch.signal.throwIfAborted();
@@ -1838,7 +1862,8 @@ export async function appendReservationWorkflowV2Observation(ctx: Context, input
     if (current.status !== 'ok') return current;
     if (parsed.data.generationId !== current.draft.generationId || parsed.data.sourceMessageId !== input.source.messageId ||
         current.draft.observations.some((entry) => entry.ref === parsed.data.ref) ||
-        parsed.data.sourceRefs.some((ref) => !current.draft.observations.some((entry) => entry.ref === ref))) return { status: 'invalid_value' };
+        parsed.data.sourceRefs.some((ref) => !current.draft.observations.some((entry) => entry.ref === ref)) ||
+        !currentSavedAmendBaselineHint(current.draft, parsed.data)) return { status: 'invalid_value' };
     ctx.nativeBatch.observations.push(parsed.data);
     return bufferedNativeResult(ctx, input);
   }
@@ -1859,7 +1884,8 @@ export async function appendReservationWorkflowV2Observation(ctx: Context, input
     const existingRefs = new Set(current.draft.observations.map((entry) => entry.ref));
     if (parsed.data.generationId !== current.draft.generationId ||
         (input.fence && parsed.data.sourceMessageId !== input.source.messageId) ||
-        parsed.data.sourceRefs.some((ref) => !existingRefs.has(ref)) || existingRefs.has(parsed.data.ref)) {
+        parsed.data.sourceRefs.some((ref) => !existingRefs.has(ref)) || existingRefs.has(parsed.data.ref) ||
+        !currentSavedAmendBaselineHint(current.draft, parsed.data)) {
       return { status: 'invalid_value' as const };
     }
     const next = reservationWorkflowV2DraftSchema.parse({ ...current.draft, observations: [...current.draft.observations, parsed.data] });
