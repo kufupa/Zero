@@ -10,7 +10,7 @@ const PARTY_PATHS = Object.freeze({
   arAccount: '/web/base/OSRESV.HDR.araccountchange',
 });
 
-function partyDigest(request, kind) {
+export function callbackPartyRequestDigest(request, kind) {
   try {
     const url = new URL(request.url()), contentType = request.headers()['content-type'];
     const body = request.postDataBuffer();
@@ -54,7 +54,7 @@ export function createFirstGoCallbackAuthority({ operationDigest, sourceDigest, 
   if (JSON.stringify(planPhases) !== JSON.stringify(planned)) throw new Error('AMEND_CALLBACK_AUTHORITY_INVALID');
   let next = 0, handle = null, busy = false, closed = false, possiblyPersisted = false;
   const active = () => !closed && isEnabled();
-  const digest = (request, phase) => Object.hasOwn(PARTY_PATHS, phase) ? partyDigest(request, phase) : amendNativeRequestDigest(request, phase);
+  const digest = (request, phase) => Object.hasOwn(PARTY_PATHS, phase) ? callbackPartyRequestDigest(request, phase) : amendNativeRequestDigest(request, phase);
   const eligible = (request, phase) => active() && !busy && planned[next] === phase && digest(request, phase);
   const dispatch = async (phase, request, proceed) => {
     const requestDigest = eligible(request, phase);
