@@ -111,9 +111,8 @@ export function labtestCombinedAmendPreimageBinding(expected, state, snapshot, c
     if (prior.childAges === null) {
       // Unknown is not []. Do not bind a populated form value the model cannot verify.
       if (formAges.present && formAges.value !== '' && formAges.value !== null) return null;
-    } else if (!same(actual.bands, prior.derivedBands) || (formAges.present &&
-        !((prior.childCount === 0 && formAges.value === '') ||
-          (typeof formAges.value === 'string' && formAges.value === prior.childAges.join(','))))) return null;
+    } else if (formAges.present && !((prior.childCount === 0 && formAges.value === '') ||
+        (typeof formAges.value === 'string' && formAges.value === prior.childAges.join(',')))) return null;
     const identity = { propertycode:'HRCEN', status:'Reserved', firstname:firstName, lastname:lastName,
       confirmationnumber:expected.confirmation, guestid:expected.guestId, arrivaldate:date(expected.arrival),
       departuredate:date(expected.departure), roomtype:expected.roomType, rateplan:expected.ratePlan, reservationnote:expected.note };

@@ -660,6 +660,7 @@ function nativeModule() {
   const url = new URL('../../tooling/hms-cloud/pane-amend-session.mjs', import.meta.url);
   return import(url.href) as Promise<{
     prepareCloudPaneAmend(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+    readCloudSavedChildAges(input: Record<string, unknown>): Promise<Record<string, unknown>>;
     commitCloudPaneAmend(input: Record<string, unknown>, authorization: Record<string, unknown>): Promise<Record<string, unknown>>;
   }>;
 }
@@ -993,10 +994,6 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
       canonicalJson(compiled.target.childAges) !== canonicalJson(compiled.selected.childAges))) {
     return { status: 'needs_input', issue: 'amend_child_age_go_authorization_required', fields: ['childCount', 'childAges'] };
   }
-  if (typeof compiled.target.children === 'number' && compiled.target.children > 0 &&
-      !Array.isArray(compiled.target.childAges)) {
-    return { status: 'needs_input', issue: 'amend_child_age_baseline_unavailable', fields: ['childAges'] };
-  }
   const locked = targetWriteLock(ctx, compiled.selected);
   if (!locked?.lock) return { status: 'unsupported', issue: 'amend_target_lock_unavailable' };
   const module = await nativeModule();
@@ -1008,7 +1005,18 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
   try {
     const prepared = await locked.lock.withLock(async () => {
       ctx.nativeBatch?.signal.throwIfAborted();
+      let childAgePreimage: number[] | undefined;
+      if (compiled.selected.childAges === 'unknown') {
+        const read = await module.readCloudSavedChildAges({ target: locked.target, selected: compiled.selected,
+          confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, allowRealGuest: true,
+          cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
+        if (read.outcome !== 'ok' || !Array.isArray(read.ages) || read.ages.length !== compiled.selected.children ||
+            read.ages.some(age => !Number.isInteger(age) || age < 0 || age > 17)) return { issue: 'amend_child_age_baseline_unavailable' };
+        childAgePreimage = read.ages as number[];
+        compiled.target.childAges = childAgePreimage;
+      }
       const discovery = await module.prepareCloudPaneAmend({ target: locked.target, selected: compiled.selected,
+        ...(childAgePreimage ? { childAgePreimage } : {}),
         confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, changes: discoveryChanges,
         discoveryOnly: true, captureCommissionBaseline: Object.hasOwn(compiled.baseChanges, 'taCommission'),
         allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
@@ -1029,7 +1037,16 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
       const discoveryPreserved = record(discovery.preserved)!;
       const changes = normalizedChanges(compiled, discoveryPreserved, discoveryBaseline);
       if (!changes) return { issue: 'native_amend_contact_or_cms_baseline_unavailable' };
+      if (childAgePreimage) {
+        const current = await module.readCloudSavedChildAges({ target: locked.target, selected: compiled.selected,
+          confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, allowRealGuest: true,
+          cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
+        if (current.outcome !== 'ok' || !Array.isArray(current.ages) ||
+            canonicalJson([...current.ages].sort((a, b) => Number(a) - Number(b))) !==
+              canonicalJson([...childAgePreimage].sort((a, b) => a - b))) return { issue: 'amend_child_age_baseline_changed' };
+      }
       const native = await module.prepareCloudPaneAmend({ target: locked.target, selected: compiled.selected,
+        ...(childAgePreimage ? { childAgePreimage } : {}),
         confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, changes,
         captureCommissionBaseline: Object.hasOwn(compiled.baseChanges, 'taCommission'),
         allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
@@ -1317,15 +1334,27 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
   };
   try {
     try {
-      result = await locked.lock.withLock(() => native.commitCloudPaneAmend({ target: locked.target,
+      result = await locked.lock.withLock(async () => {
+        const childAgePreimage = record(preparedResult.recoveryBaseline)?.beforeChildAges;
+        if (Array.isArray(childAgePreimage)) {
+          const current = await native.readCloudSavedChildAges({ target: locked.target, selected: compiled.selected,
+            confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, allowRealGuest: true,
+            cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget), signal: AbortSignal.timeout(8 * 60_000) });
+          if (current.outcome !== 'ok' || !Array.isArray(current.ages) ||
+              canonicalJson([...current.ages].sort((a, b) => Number(a) - Number(b))) !==
+                canonicalJson([...childAgePreimage].sort((a, b) => Number(a) - Number(b)))) {
+            return { outcome: 'not_dispatched', issue: 'AMEND_CHILD_PREIMAGE_CHANGED' };
+          }
+        }
+        return native.commitCloudPaneAmend({ target: locked.target,
         selected: compiled.selected, confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival,
-        changes: nativeChanges, nativeDigest: preparedResult.nativeDigest, approvedPrices: price, preserved,
+        ...(Array.isArray(childAgePreimage) ? { childAgePreimage } : {}), changes: nativeChanges, nativeDigest: preparedResult.nativeDigest, approvedPrices: price, preserved,
         captureCommissionBaseline: Object.hasOwn(nativeChanges, 'taCommission'),
         allowRealGuest: process.env.PANE_WRITE_AMEND === 'on', cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget),
         beforeScreenshot, afterScreenshot, signal: AbortSignal.timeout(20 * 60_000) },
       { operationDigest: prepared.criteria.semanticDigest as string, authorizeFirst, sealBeforeEvidence,
-        isEnabled: () => labtestAmendWorkerEnabled() && ['lab', 'on'].includes(process.env.PANE_WRITE_AMEND ?? '') }),
-      acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+        isEnabled: () => labtestAmendWorkerEnabled() && ['lab', 'on'].includes(process.env.PANE_WRITE_AMEND ?? '') });
+      }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
     } catch (error) {
       result = { outcome: 'uncertain', issue: isPropertyReadLockDeadline(error) ? 'amend_lock_busy' : 'native_amend_invocation_failed' };
     }

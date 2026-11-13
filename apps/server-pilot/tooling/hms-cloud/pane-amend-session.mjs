@@ -4,7 +4,7 @@ import { installSavedStayReadGuard } from './saved-stay-read-guard.mjs';
 import { readShallow, readRecord } from './hms-readers.mjs';
 import { cleanLabtestRecord, currentLabtestRecord, snapshotLabtestRecord,
   unchangedLabtestBusinessParties } from './labtest-record.mjs';
-import { savedChildOccupancy, sameChildAgeMultiset, stageSavedChildrenForComposition } from './guest-stay-amend-children.mjs';
+import { readSavedChildAgesForComposition, savedChildOccupancy, sameChildAgeMultiset, stageSavedChildrenForComposition } from './guest-stay-amend-children.mjs';
 import { createSavedChildStageRequestGate } from './saved-stay-child-request-gate.mjs';
 import { createSavedRoomStageRequestGate } from './saved-stay-room-stage-gate.mjs';
 import { createSavedRateStageRequestGate } from './saved-stay-rate-stage-gate.mjs';
@@ -171,7 +171,7 @@ function matchesAmendBusiness(snapshot, selected, changes, baseline, state) {
   const children = savedChildOccupancy(snapshot);
   if (!children.valid || children.count !== target.children) return false;
   if (Array.isArray(target.childAges)) {
-    const ages = children.ages ?? (children.count === 0 ? [] : null);
+    const ages = children.ages;
     if (!sameChildAgeMultiset(ages, target.childAges)) return false;
   }
   return true;
@@ -280,6 +280,49 @@ export async function prepareCloudPaneAmend(input, { openSession = withCenturion
   } catch {
     return { outcome: 'refused', issue: 'NATIVE_READ_UNAVAILABLE' };
   }
+}
+
+/** Resolve unknown saved ages in a separate, read-only native session. */
+export async function readCloudSavedChildAges(input, { openSession = withCenturionStay360Page,
+  guard = installSavedStayReadGuard, shallow = readShallow, read = readRecord,
+  current = currentLabtestRecord, snapshot = snapshotLabtestRecord } = {}) {
+  const selected = input?.selected;
+  if (!validTarget(input?.target) || !selected || selected.confirmation !== input.confirmation ||
+      selected.arrival !== input.arrival || !amendTarget(selected, { retainRates: 'no', cmsSend: false, cmsMessageId: '', cmsRecipient: '' },
+        { allowRealGuest: input.allowRealGuest === true })) return { outcome: 'refused', issue: 'AMEND_INPUT_INVALID' };
+  try {
+    const protectedSession = guardedSession(input, guard);
+    return await openSession(async page => {
+      if (!protectedSession.hasGuard(page.context())) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
+      await shallow(page, input.confirmation, searchHints(selected, input.arrival));
+      const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
+      const expected = expectedLabtestAmendRecord(record, selected, { allowRealGuest: input.allowRealGuest === true });
+      if (!expected) return { outcome: 'refused', issue: 'APPROVED_STAY_MISMATCH' };
+      const result = await runLabtestAmendSave(page, {
+        timeoutMs: 120_000, signal: protectedSession.options.signal, prepareOnly: true,
+        prepare: async bounded => {
+          const state = await bounded(current(page, expected, nativeOptions(input, record)));
+          const baseline = await bounded(snapshot(state.frame)), occupancy = savedChildOccupancy(baseline);
+          const raw = occupancy.fields?.childages?.model;
+          const save = state.frame.locator('[data-qtip="Save Record (Ctrl+S)"]:visible');
+          if (!baseline || !occupancy.valid || !raw?.present || (occupancy.ages === null && raw.value !== '') ||
+              await bounded(save.count()) !== 1) throw new Error('CHILD_PREIMAGE_UNVERIFIED');
+          return { frame: state.frame, save, baseline, enableComposedStage: true, allowRealGuest: input.allowRealGuest === true,
+            expected: { ...expected, reservationStayId: selected.reservationStayId, expectedGuarantee: state.expectedGuarantee },
+            childStageGate: createSavedChildStageRequestGate({ frame: state.frame, stayId: selected.reservationStayId,
+              adults: expected.adults, priorAges: occupancy.ages, priorBands: occupancy.bands,
+              readAges: occupancy.ages ?? [], readOnly: true, deadlineAt: performance.now() + 120_000 }) };
+        },
+        stage: async (bounded, prepared, context) => bounded(readSavedChildAgesForComposition(context, prepared.expected)),
+        validate: async (_bounded, _prepared, staged) => Array.isArray(staged?.ages) && staged.ages.length === expected.childCount,
+        matches: () => false,
+        stageDetails: staged => ({ ages: staged?.ages, bands: staged?.bands }),
+      });
+      return result.issue === 'PREPARE_ONLY' && result.blockedRequests === 0 && Array.isArray(result.ages)
+        ? { outcome: 'ok', ages: result.ages, bands: result.bands }
+        : { outcome: 'refused', issue: result.issue || 'SAVED_AGES_UNVERIFIED' };
+    }, protectedSession.options);
+  } catch { return { outcome: 'refused', issue: 'SAVED_AGES_UNVERIFIED' }; }
 }
 
 /** Read the selected reservation's Track choices with Save permanently disarmed. */
@@ -473,6 +516,10 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
   };
   input = { ...structuredClone({ ...input, signal: undefined }), signal: input?.signal };
   const selected = input?.selected, changes = input?.changes;
+  if (input?.childAgePreimage !== undefined && (!Array.isArray(input.childAgePreimage) ||
+      input.childAgePreimage.length !== selected?.children || input.childAgePreimage.some(age => !Number.isInteger(age) || age < 0 || age > 17))) {
+    throw new Error('CHILD_PREIMAGE_INVALID');
+  }
   const target = amendTarget(selected, changes, { allowRealGuest: input.allowRealGuest === true });
   if (!page || !expected || !validTarget(input?.target) || !target || selected.confirmation !== input.confirmation ||
       selected.arrival !== input.arrival || (!prepareOnly && (!/^[a-f0-9]{64}$/.test(input.nativeDigest || '') ||
@@ -638,6 +685,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         beforeBillingReference: typeof baseline?.data?.billingreference === 'string' &&
           baseline.data.billingreference === baseline?.values?.billingreference ? baseline.data.billingreference : null,
         beforeTrack: typeof baseline?.data?.track === 'string' && baseline.data.track === baseline?.values?.track ? baseline.data.track : null,
+        ...(Array.isArray(input.childAgePreimage) ? { beforeChildAges: [...input.childAgePreimage] } : {}),
         ...(input.captureCommissionBaseline ? { beforeCommission:
           percent(baseline?.data?.ta1commission) !== null && percent(baseline?.data?.ta1commission) === percent(baseline?.values?.ta1commission)
             ? percent(baseline.data.ta1commission) : null } : {}),
@@ -658,7 +706,8 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         }
       }
       if (prepareOnly) {
-        try { quoted = await bounded(quote(input, state)); } catch { quoted = null; }
+        try { quoted = await bounded(quote(Array.isArray(input.childAgePreimage)
+          ? { ...input, selected: { ...input.selected, childAges: input.childAgePreimage } } : input, state)); } catch { quoted = null; }
       } else {
         if (changes.retainRates === 'yes') {
           assertApprovedAmendPrice(baseline, selected, input.approvedPrices, { requireAverage: false });
@@ -676,6 +725,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           beforeBookerContact: recoveryBaseline.beforeBookerContact,
           beforeBillingReference: recoveryBaseline.beforeBillingReference,
           beforeTrack: recoveryBaseline.beforeTrack,
+          ...(Array.isArray(input.childAgePreimage) ? { beforeChildAges: recoveryBaseline.beforeChildAges } : {}),
           ...(input.captureCommissionBaseline ? { beforeCommission: recoveryBaseline.beforeCommission } : {}),
           beforeRoomTypeForCharge: recoveryBaseline.beforeRoomTypeForCharge,
           beforeGuaranteeCode: recoveryBaseline.beforeGuaranteeCode,
@@ -830,9 +880,10 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
   const target = amendTarget(selected, changes, { allowRealGuest: input?.allowRealGuest === true });
   if (!validTarget(input?.target) || !target || typeof input.beforeNote !== 'string' ||
       !input.beforeParties || !input.afterScreenshot) return { outcome: 'unverified' };
+  let savedNative = null;
   try {
     const protectedSession = guardedSession(input, guard);
-    return await openSession(async (page) => {
+    const result = await openSession(async (page) => {
       if (!protectedSession.hasGuard(page.context())) return { outcome: 'unverified' };
       await shallow(page, target.confirmation, searchHints(target, target.arrival));
       const record = await read(page, target.confirmation, { nativePropertyCode: 'HRCEN' });
@@ -845,12 +896,13 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
           native.guaranteeCode !== input.beforeGuaranteeCode) return { outcome: 'unverified' };
       const expected = expectedLabtestAmendRecord(record, native, { allowRealGuest: input.allowRealGuest === true });
       if (!expected || expected.note !== (changes.reservationNote ?? input.beforeNote)) return { outcome: 'unverified' };
+      savedNative = native;
       const state = await current(page, expected, nativeOptions(input, record));
       const saved = await snapshot(state.frame), data = saved?.data;
       if (!data || !cleanLabtestRecord(saved) || !unchangedLabtestBusinessParties(input.beforeParties, saved,
           { allowModelOnlyPrimaryPartyIds: true, allowRealGuest: input.allowRealGuest === true })) return { outcome: 'unverified' };
       const occupancy = savedChildOccupancy(saved);
-      const ages = occupancy.ages ?? (occupancy.count === 0 ? [] : 'unknown');
+      const ages = occupancy.ages ?? 'unknown';
       if (!occupancy.valid || occupancy.count !== target.children ||
           (Array.isArray(target.childAges) && !sameChildAgeMultiset(ages, target.childAges))) return { outcome: 'unverified' };
       const chargeRoom = Object.hasOwn(changes, 'roomTypeForCharge') ? changes.roomTypeForCharge : input.beforeRoomTypeForCharge;
@@ -912,5 +964,12 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
         cmsSend: state.cmsSend, cmsMessageId, cmsRecipient,
         price: observedAmendPrice(saved, target, null) } };
     }, protectedSession.options);
+    if (result.outcome === 'matched' && Array.isArray(input.beforeChildAges)) {
+      const childRead = await readCloudSavedChildAges({ ...input, selected: savedNative,
+        confirmation: savedNative.confirmation, arrival: savedNative.arrival });
+      if (childRead.outcome !== 'ok' || !sameChildAgeMultiset(childRead.ages, input.beforeChildAges)) return { outcome: 'unverified' };
+      result.readback.childAges = childRead.ages;
+    }
+    return result;
   } catch { return { outcome: 'unverified' }; }
 }

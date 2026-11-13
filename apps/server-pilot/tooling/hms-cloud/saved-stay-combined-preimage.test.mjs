@@ -12,7 +12,9 @@ function fixture() {
   const data = { ...parties, ...native, propertycode:'HRCEN', status:'Reserved', firstname:'Proof', lastname:'Labtest',
     confirmationnumber:expected.confirmation, guestid:expected.guestId, arrivaldate:'10/12/2027', departuredate:'10/13/2027',
     roomtype:'STQN', rateplan:'BAR', reservationnote:'', adults:'1', children:'1', child1:'0', child2:'1', child3:'0',
-    childages:'8', guaranteetype:'NGI', udfchkbox04:'0', udfchar13:'', emailaddress:'',
+    childages:'8', child1label:'Child 0-02', child2label:'Child 03-12', child3label:'Child 13-17',
+    child1status:'ACTIVE', child2status:'ACTIVE', child3status:'ACTIVE',
+    guaranteetype:'NGI', udfchkbox04:'0', udfchar13:'', emailaddress:'',
     sessionID:{sessionID:'abc'}, extId:'11', unrelated:'kept' };
   const values = { confirmationnumber:expected.confirmation, guestid:expected.guestId, status:'Reserved',
     firstname:'Proof', lastname:'Labtest', arrivaldate:'12-OCT-2027', departuredate:'13-OCT-2027',

@@ -197,7 +197,7 @@ export async function readSavedStayNightlyRates(page, state, expected, { mode = 
 export function projectAmendNightlyQuote(raw, { selected, changes, partyPreimage }) {
   const dates = nativeNightDates(changes.arrival ?? selected.arrival, changes.departure ?? selected.departure);
   const requested = raw?.requestedCriteria, applied = raw?.appliedCriteria, availability = raw?.response?.availabilitydata;
-  const childAges = changes.childAges ?? (selected.children === 0 ? [] : selected.childAges);
+  const childAges = changes.childAges ?? selected.childAges;
   const roomType = changes.roomType ?? selected.roomType, ratePlan = changes.ratePlan ?? selected.ratePlan;
   if (!dates || raw.outcome !== 'ok' || !object(requested) || !object(applied) || !Array.isArray(childAges) ||
       requested.propertyCode !== 'HRCEN' || requested.arrivalDate !== dates[0] || requested.departureDate !== (changes.departure ?? selected.departure) ||
@@ -238,7 +238,7 @@ export function projectAmendNightlyQuote(raw, { selected, changes, partyPreimage
 /** Rate Shop options for the requested room and occupancy, as returned by HMS. */
 export function projectAmendRateOptions(raw, { selected, changes, partyPreimage }) {
   const dates = nativeNightDates(changes.arrival ?? selected.arrival, changes.departure ?? selected.departure);
-  const childAges = changes.childAges ?? (selected.children === 0 ? [] : selected.childAges);
+  const childAges = changes.childAges ?? selected.childAges;
   const roomType = changes.roomType ?? selected.roomType;
   const requested = raw?.requestedCriteria, applied = raw?.appliedCriteria, availability = raw?.response?.availabilitydata;
   if (!dates || raw?.outcome !== 'ok' || !Array.isArray(childAges) || !object(requested) || !object(applied) ||
@@ -273,7 +273,7 @@ export function projectAmendRateOptions(raw, { selected, changes, partyPreimage 
 
 export async function readAmendNightlyQuote(input, state, { openSession = withCenturionStay360Page } = {}) {
   const { selected, changes } = input, party = state.partyPreimage;
-  const childAges = changes.childAges ?? (selected.children === 0 ? [] : selected.childAges);
+  const childAges = changes.childAges ?? selected.childAges;
   if (!Array.isArray(childAges)) throw new Error('NATIVE_QUOTE_OCCUPANCY_UNVERIFIED');
   // This host's /tmp may itself be a worktree. readQuote still verifies that
   // this private directory and every ancestor are outside Git before writing.
