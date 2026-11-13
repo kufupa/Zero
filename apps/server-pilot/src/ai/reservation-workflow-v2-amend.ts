@@ -1115,6 +1115,13 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
           return { issue: 'native_amend_reservation_note_changed_or_unavailable' };
         }
       }
+      const childrenChanged = Object.hasOwn(compiled.baseChanges, 'children') &&
+        (compiled.target.children !== compiled.selected.children || !sameChildAges(compiled.target.childAges, beforeAges));
+      const guaranteeChanged = typeof compiled.baseChanges.guaranteeType === 'string' &&
+        compiled.baseChanges.guaranteeType !== baseline.beforeGuaranteeCode;
+      if (compiled.rateHandling === 'retain' && (childrenChanged || guaranteeChanged)) {
+        return { issue: 'retained_rate_not_supported_for_priced_amendment', retainCallback: true };
+      }
       const safeCompiled = { ...compiled, baseChanges: safeBase }, safeChanges = normalizedChanges(safeCompiled, preserved, baseline);
       const allChanges = normalizedChanges(compiled, preserved, baseline);
       if (!safeChanges || !allChanges) return { issue: 'native_amend_contact_or_cms_baseline_unavailable' };
@@ -1130,9 +1137,6 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
           canonicalJson(stagedBaseline.beforeParties) !== canonicalJson(baseline.beforeParties)) {
         return { issue: 'native_amend_prepare_unverified' };
       }
-      const childrenChanged = Object.hasOwn(compiled.baseChanges, 'children') &&
-        (compiled.target.children !== compiled.selected.children ||
-          !sameChildAges(compiled.target.childAges, beforeAges));
       const nextAges = childrenChanged && Array.isArray(compiled.target.childAges) ? compiled.target.childAges as number[] : null;
       if (childrenChanged) {
         if (!nextAges) return { issue: 'child_ages_required_for_occupancy_change' };
