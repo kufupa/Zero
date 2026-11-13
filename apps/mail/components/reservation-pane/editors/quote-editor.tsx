@@ -1,5 +1,6 @@
 'use client';
 
+import { separatedQuoteMoneyLinked } from '../../../../server-pilot/src/ai/reservation-workflow-v2-contract';
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { effectiveAt, nativeChoices, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { Count, Field, FieldReview, Section } from '../shared/stay-fields';
@@ -125,12 +126,8 @@ function availabilityMessage(result: Record<string, unknown>): string | null {
 
 function hasSavedSeparateOther(editor: Editor, requestId: string, moneyId: string): boolean {
   if (!moneyId) return false;
-  const requests = editor.snapshot.session.draft.proposal.content.requests as unknown as Array<Record<string, unknown>>;
-  return requests.some((request) => {
-    if (request.kind !== 'other') return false;
-    const separatedFrom = record(record(request.body).separatedFrom);
-    return separatedFrom?.requestId === requestId && separatedFrom.moneyId === moneyId;
-  });
+  return editor.snapshot.session.draft.proposal.content.requests.some(request => request.kind === 'other' &&
+    separatedQuoteMoneyLinked(request.body.separatedFrom, requestId, moneyId));
 }
 
 function RoomCode({ editor, path, options }: { editor: Editor; path: string; options: Record<string, unknown>[] }) {

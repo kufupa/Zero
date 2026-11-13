@@ -14,6 +14,7 @@ import { recoverReservationWorkflowV2SourceFields } from './reservation-workflow
 import { advancePaneRevision, redoWorkItemRevision, undoWorkItemRevision,
   rebaseReservationV2Path, rebaseReservationV2Observations, nativeStructureIsSafe } from './work-item-revision.js';
 import {
+  separatedQuoteMoneyLinked,
   RESERVATION_PREFILL_SCHEMA_VERSION,
   RESERVATION_WORKFLOW_V2_VERSION,
   reservationWorkflowV2DraftSchema,
@@ -1558,7 +1559,7 @@ function updateSeparatedQuoteMoney(current: ReservationWorkflowV2Draft, next: Re
     claimIndexes = request.body.requestedMoney.map((_, index) => index);
   } else if (parts.length === 6 && parts[4] === 'body' && parts[5] === 'requestedMoney') {
     if (request.body.requestedMoney.some(claim => current.proposal.content.requests.some(row => row.kind === 'other' &&
-        row.body.separatedFrom?.requestId === request.id && row.body.separatedFrom.moneyId === claim.id))) return null;
+        separatedQuoteMoneyLinked(row.body.separatedFrom, request.id, claim.id)))) return null;
     return next;
   } else if (parts[4] === 'body' && parts[5] === 'requestedMoney') {
     const claimIndex = /^\d+$/.test(parts[6] ?? '') ? Number(parts[6])
@@ -1574,13 +1575,13 @@ function updateSeparatedQuoteMoney(current: ReservationWorkflowV2Draft, next: Re
   const indexedRoot = `/proposal/content/requests/${indexedRequest}`;
   const requestText = effectiveDraftPath(next, `${stableRoot}/requestText`, `${indexedRoot}/requestText`);
   const requestSummary = typeof requestText === 'string' ? requestText : request.requestText;
-  let result = next;
+  let result = { ...next };
   for (const claimIndex of claimIndexes) {
     const claim = request.body.requestedMoney[claimIndex]!;
     const moneyStable = `${stableRoot}/body/requestedMoney/${claimIndex}`;
     const moneyIndexed = `${indexedRoot}/body/requestedMoney/${claimIndex}`;
     const link = current.proposal.content.requests.filter((row): row is Extract<typeof row, { kind: 'other' }> => row.kind === 'other' &&
-      row.body.separatedFrom?.requestId === request.id && row.body.separatedFrom.moneyId === claim.id);
+      separatedQuoteMoneyLinked(row.body.separatedFrom, request.id, claim.id));
     if (!link.length) continue;
     const kind = effectiveDraftPath(result, `${moneyStable}/staffAllowanceType`, `${moneyIndexed}/staffAllowanceType`);
     if (['dinner', 'lunch', 'airport_transfer', 'office_transfer'].includes(String(kind))) {
@@ -1596,6 +1597,26 @@ function updateSeparatedQuoteMoney(current: ReservationWorkflowV2Draft, next: Re
           .some(path => path === prefix || path.startsWith(`${prefix}/`)) ||
           Object.keys(result.staffReviews).some(path => path === prefix || path.startsWith(`${prefix}/`)));
         if (hasHistory || hasChildren || hasStaffText) return null;
+        const allowance = other.body.separatedFrom?.allowance;
+        const remaining = allowance?.quoteRequestIds.filter(id => id !== request.id && result.proposal.content.requests.some(quote => {
+          if (quote.kind !== 'quote' || quote.id !== id) return false;
+          const index = quote.body.requestedMoney.findIndex(money => money.id === claim.id);
+          if (index < 0) return false;
+          const quoteIndex = result.proposal.content.requests.indexOf(quote);
+          return effectiveDraftPath(result, `/proposal/content/requests/${encodeURIComponent(id)}/body/requestedMoney/${index}/staffAllowanceType`,
+            `/proposal/content/requests/${quoteIndex}/body/requestedMoney/${index}/staffAllowanceType`) === 'unsupported';
+        })) ?? [];
+        if (allowance && remaining.length) {
+          const proposal = structuredClone(result.proposal);
+          const retained = proposal.content.requests.find(row => row.id === other.id);
+          if (!retained || retained.kind !== 'other' || !retained.body.separatedFrom?.allowance) return null;
+          const groupIds = new Set(proposal.content.requests.flatMap(quote => quote.kind === 'quote' && remaining.includes(quote.id)
+            ? quote.body.groups.map(group => group.id) : []));
+          retained.body.separatedFrom.allowance = { ...allowance, quoteRequestIds: remaining,
+            groupIds: allowance.groupIds.filter(id => groupIds.has(id)) };
+          result.proposal = proposal;
+          continue;
+        }
         const removed = rebaseDraftAfterRequestRemoval(result, other.id);
         if (!removed) return null;
         result = removed;

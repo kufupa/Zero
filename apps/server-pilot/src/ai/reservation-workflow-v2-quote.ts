@@ -1,3 +1,4 @@
+import { separatedQuoteMoneyLinked } from './reservation-workflow-v2-contract.js';
 import { normalizeRequestedMealPlan } from './reservation-workflow-v2-meal-plan.js';
 import type { ReservationWorkflowV2SystemReadContext } from './reservation-workflow-v2-system-read-context.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -612,6 +613,8 @@ function compileQuote(
   }
 
   const extras: NonNullable<z.infer<typeof staffQuoteInput>['extras']> = [];
+  const lunchClaimGroupIds = new Set<string>();
+  const separatedLunchGroupIds = new Set<string>();
   let dinner: Pick<z.infer<typeof staffQuoteInput>, 'dinnerAllowanceMinor' | 'dinnerAllowanceUnit' | 'dinnerAllowanceGroupIds'> = {};
   for (const [index, claim] of request.body.requestedMoney.entries()) {
     const base = path('requestedMoney', index);
@@ -639,13 +642,18 @@ function compileQuote(
       !('issue' in currency) && typeof currency.value === 'string' && currency.value.trim().toUpperCase() === 'ZAR' &&
       amountMinor > 0 && Number.isSafeInteger(amountMinor) && unitAllowed && groupIds.length > 0 &&
       (selectedKind !== 'dinner' || dinner.dinnerAllowanceMinor === undefined && unitValue !== 'per_trip' && unitValue !== 'item');
-    const separatedOther = draft.proposal.content.requests.some((candidate) => {
-      if (candidate.kind !== 'other') return false;
-      const otherBody = record(candidate.body);
-      const separatedFrom = record(otherBody?.separatedFrom);
-      return separatedFrom?.requestId === request.id && separatedFrom.moneyId === claim.id;
-    });
-    const explicitlySeparated = selectedKind === 'unsupported' && separatedOther;
+    const separatedOther = draft.proposal.content.requests.find(candidate => candidate.kind === 'other' &&
+      separatedQuoteMoneyLinked(candidate.body.separatedFrom, request.id, claim.id));
+    const explicitlySeparated = selectedKind === 'unsupported' && separatedOther?.kind === 'other';
+    if (selectedKind === 'lunch') groupIds.forEach(id => lunchClaimGroupIds.add(id));
+    if (explicitlySeparated && separatedOther.kind === 'other') {
+      const allowance = separatedOther.body.separatedFrom?.allowance;
+      const kind = allowance?.kind ?? claim.staffAllowanceType;
+      if (kind === 'lunch') {
+        const covered = allowance ? groupIds.filter(id => allowance.groupIds.includes(id)) : groupIds;
+        covered.forEach(id => { lunchClaimGroupIds.add(id); separatedLunchGroupIds.add(id); });
+      }
+    }
     if (!supported && !explicitlySeparated) {
       // Background HMS room prices remain useful while the unpriced request stays visible.
       if (execute) issues.push(`${base}:allowance_requires_supported_staff_choice`);
@@ -698,23 +706,18 @@ function compileQuote(
   const notesPath = path('notes');
   const notesResult = resolved(notesPath, request.body.notes);
   const sourceNotes = notesResult && !('issue' in notesResult) ? cleanText(notesResult.value) ?? undefined : undefined;
-  const lunchRequested = request.body.groups.some((group, index) => {
+  const lunchRequestedGroupIds = new Set(lunchClaimGroupIds);
+  request.body.groups.forEach((group, index) => {
     const requested = resolvedLeaf(draft, path('groups', index, 'requestedMealPlan'), group.requestedMealPlan);
-    return !('issue' in requested) && normalizeRequestedMealPlan(requested.value).lunchRequested;
-  }) || extras.some(extra => extra.service === 'lunch_allowance') || request.body.requestedMoney.some((claim, index) => {
-    const kind = resolvedLeaf(draft, path('requestedMoney', index, 'staffAllowanceType'), claim.staffAllowanceType);
-    return !('issue' in kind) && kind.value === 'lunch';
+    if (!('issue' in requested) && normalizeRequestedMealPlan(requested.value).lunchRequested) lunchRequestedGroupIds.add(group.id);
   });
-  const lunchSeparated = request.body.requestedMoney.some((claim, index) => {
-    const kind = resolvedLeaf(draft, path('requestedMoney', index, 'staffAllowanceType'), claim.staffAllowanceType);
-    return claim.staffAllowanceType === 'lunch' && !('issue' in kind) && kind.value === 'unsupported' &&
-      draft.proposal.content.requests.some(other => other.kind === 'other' &&
-        other.body.separatedFrom?.requestId === request.id && other.body.separatedFrom.moneyId === claim.id);
-  });
+  const pricedLunchGroupIds = new Set(extras.filter(extra => extra.service === 'lunch_allowance').flatMap(extra => extra.groupIds));
+  const lunchSeparated = separatedLunchGroupIds.size > 0;
+  const lunchRequested = lunchRequestedGroupIds.size > 0;
   const lunchNotice = lunchSeparated ? 'Centurion meal plans do not include lunch. The separate lunch request is not included in this room quote.'
     : lunchRequested ? 'Centurion meal plans do not include lunch. Lunch is quoted as a separate extra.' : undefined;
   const notes = [sourceNotes, lunchNotice].filter(Boolean).join('\n') || undefined;
-  if (execute && lunchRequested && !lunchSeparated && !extras.some(extra => extra.service === 'lunch_allowance')) {
+  if (execute && [...lunchRequestedGroupIds].some(id => !separatedLunchGroupIds.has(id) && !pricedLunchGroupIds.has(id))) {
     issues.push(`${path('requestedMoney')}:lunch_extra_price_required`);
   }
   if (notes && notes.length > 1000) issues.push(`${notesPath}:native_note_limit`);

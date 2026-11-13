@@ -309,7 +309,10 @@ const requestSchema = z.discriminatedUnion('kind', [
   z.object({ id: idSchema, requestText: z.string().max(2000), sourceRefs: z.array(refSchema).max(100),
     serviceRefs: z.array(refSchema).max(100), documentRefs: z.array(refSchema).max(100), kind: z.literal('other'),
     body: z.object({ requestedText: z.string().max(2000), supported: z.literal(false),
-      separatedFrom: z.object({ requestId: idSchema, moneyId: idSchema }).strict().optional() }).strict() }).strict(),
+      separatedFrom: z.object({ requestId: idSchema, moneyId: idSchema,
+        allowance: z.object({ kind: z.enum(['dinner', 'lunch', 'airport_transfer', 'office_transfer']),
+          groupIds: z.array(idSchema).max(100), quoteRequestIds: z.array(idSchema).max(200) }).strict().optional(),
+      }).strict().optional() }).strict() }).strict(),
 ]);
 
 export const reservationWorkflowV2ProposalSchema = z.object({
@@ -327,6 +330,15 @@ export const reservationWorkflowV2ProposalSchema = z.object({
 }).strict();
 
 export type ReservationWorkflowV2Proposal = z.infer<typeof reservationWorkflowV2ProposalSchema>;
+
+export function separatedQuoteMoneyLinked(
+  link: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'other' }>['body']['separatedFrom'],
+  requestId: string, moneyId: string,
+): boolean {
+  return link?.moneyId === moneyId && (link.allowance
+    ? link.allowance.quoteRequestIds.includes(requestId) : link.requestId === requestId);
+}
+
 
 // Existing drafts may contain notes accepted before the native limit was fixed.
 // New/model proposals still use the strict 2,000-character schema above.
@@ -450,7 +462,11 @@ const modelQuoteBodySchema = quoteBodySchema.extend({ groups: z.array(modelQuote
 const modelServiceRequestSchema = serviceRequestSchema.extend({ requestedMoney: z.array(modelMoneyRequestSchema).max(100) });
 const modelRequestSchema = z.discriminatedUnion('kind', [requestSchema.options[0].extend({ body: modelQuoteBodySchema }),
   requestSchema.options[1].extend({ body: modelCreateBodySchema }), requestSchema.options[2],
-  requestSchema.options[3], requestSchema.options[4], requestSchema.options[5], requestSchema.options[6]]);
+  requestSchema.options[3], requestSchema.options[4], requestSchema.options[5], requestSchema.options[6].extend({
+    body: requestSchema.options[6].shape.body.extend({
+      separatedFrom: z.object({ requestId: idSchema, moneyId: idSchema }).strict().optional(),
+    }),
+  })]);
 const modelProposalSchema = reservationWorkflowV2ProposalSchema.extend({
   content: reservationWorkflowV2ProposalSchema.shape.content.extend({ requests: z.array(modelRequestSchema).max(200),
     services: z.array(modelServiceRequestSchema).max(200) }),
