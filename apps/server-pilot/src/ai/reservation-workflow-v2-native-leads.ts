@@ -238,17 +238,17 @@ export async function loadReservationMemoryGuidance(input: { propertyCode: strin
       row.historicalIdentity.nativeConfirmation === 'matched' && !excluded.has(row.confirmationKey));
     const organizations = new Set(eligible.filter(row => domainKeys.has(row.confirmationKey)).flatMap(row => row.outcomes.flatMap(outcome => {
       const name = outcome.combination.organization;
-      return name && !outcome.conflictingFields.includes('organization') ? [reservationEntityKey(name, 'organization')] : [];
+      return name && !outcome.conflictingFields.includes('organization') ? [normalizedPartyName(name)] : [];
     })));
     const multiClientDomain = organizations.size > 1;
     const hasEntity = Boolean(input.agencyName || input.organizationName);
     if (!hasEntity && !senderKeys.size) return { status: 'unavailable', issue: 'booking_memory_identity_unavailable' };
     if (!hasEntity && multiClientDomain) return { status: 'unavailable', issue: 'multiple_client_domain' };
     const rows = eligible.filter(row => (!senderKeys.size || senderKeys.has(row.confirmationKey)) && row.outcomes.some(outcome => {
-      const matches = (field: 'bookingAgency' | 'organization', role: PartyRole, name?: string | null) => !name ||
+      const matches = (field: 'bookingAgency' | 'organization', name?: string | null) => !name ||
         Boolean(outcome.combination[field] && !outcome.conflictingFields.includes(field) &&
-          reservationEntityKey(outcome.combination[field], role) === reservationEntityKey(name, role));
-      return matches('bookingAgency', 'agency', input.agencyName) && matches('organization', 'organization', input.organizationName);
+          normalizedPartyName(outcome.combination[field]) === normalizedPartyName(name));
+      return matches('bookingAgency', input.agencyName) && matches('organization', input.organizationName);
     }));
     const grouped = new Map<string, typeof rows>();
     for (const row of rows) grouped.set(row.confirmationKey, [...(grouped.get(row.confirmationKey) ?? []), row]);
@@ -335,7 +335,7 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
       .filter(row => row !== null) : [];
     const organizations = new Set(domainResults.flatMap(result => result.candidates.flatMap(candidate => {
       const value = candidate.combination.organization;
-      return value && !candidate.conflictingFields.includes('organization') ? [reservationEntityKey(value, 'organization')] : [];
+      return value && !candidate.conflictingFields.includes('organization') ? [normalizedPartyName(value)] : [];
     })));
     const multiClientDomain = organizations.size > 1 || domainResults.some(result => result.candidatesTruncated || result.conflictsTruncated);
     const observations: ReservationWorkflowV2Observation[] = [];
@@ -433,7 +433,7 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
         const add = (value: string, basis: Lead['basis'], confirmations: Array<string | null>) => {
           const ids = confirmations.filter((id): id is string => Boolean(id));
           if (!value.trim() || !ids.length || (role === 'ar_account' && /^refund\s+account\b/i.test(value.trim()))) return;
-          const key = role === 'rate_plan' || role === 'room_type' ? value.toUpperCase() : reservationEntityKey(value, role);
+          const key = role === 'rate_plan' || role === 'room_type' ? value.toUpperCase() : normalizedPartyName(value);
           if (!key) return;
           const prior = leads.get(key);
           if (prior?.basis === 'exact_sender' && basis === 'normalized_entity') return;
@@ -446,7 +446,7 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
           const relatedField = partyFields.find(spec => spec.role === relatedRole)?.field;
           const sourceMatches = (candidate: z.infer<typeof querySchema>['candidates'][number]) => !name || !relatedRole || !relatedField ||
             Boolean(candidate.combination[relatedField] && !candidate.conflictingFields.includes(relatedField) &&
-              reservationEntityKey(candidate.combination[relatedField], relatedRole) === reservationEntityKey(name, relatedRole));
+              normalizedPartyName(candidate.combination[relatedField]) === normalizedPartyName(name));
           const ids = (candidate: z.infer<typeof querySchema>['candidates'][number]) => candidate.evidence.confirmationRecords
             .map(row => row.confirmationNumber).filter((id): id is string => Boolean(id) && !conflicts.has(id ?? ''));
           const denominator = denominators.get(basis) ?? new Set<string>();
@@ -457,7 +457,7 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
             const matching = name && relatedRole && relatedField ? new Set(result.candidates.flatMap(candidate => {
               const value = candidate.combination[relatedField];
               return value && !candidate.conflictingFields.includes(relatedField) &&
-                reservationEntityKey(value, relatedRole) === reservationEntityKey(name, relatedRole)
+                normalizedPartyName(value) === normalizedPartyName(name)
                 ? candidate.evidence.confirmationRecords.map(row => row.confirmationNumber) : [];
             })) : null;
             for (const hint of result.historicalHints[role === 'rate_plan' ? 'ratePlan' : 'roomType'].values) {
