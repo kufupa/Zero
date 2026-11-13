@@ -13,8 +13,13 @@ import {
   amendFieldMatches,
   applyComboSelect,
   applyComboSetValue,
+  applyDateChange,
+  applyDateSetValue,
   comboReadValue,
+  commitAmendFieldValue,
+  nightsBetween,
   owningAmendForm,
+  syncDateBoundRecord,
   syncComboBoundRecord,
   comboStoreRecord,
   comboUnsupportedFieldReason,
@@ -352,6 +357,53 @@ test('combo select plus updateRecord copies occupancy onto the bound form record
   assert.equal(record.get('adults'), '2');
 });
 
+test('date setValue plus change copies departure onto the bound form record', () => {
+  const record = {
+    data: { departuredate: '07/25/2027', nights: '1' },
+    get: (field) => record.data[field],
+    set: (field, value) => {
+      record.data[field] = value;
+    },
+  };
+  const events = [];
+  let dateValue = new Date(2027, 6, 25);
+  const form = {
+    getRecord: () => record,
+    updateRecord: () => {},
+  };
+  const cmp = {
+    name: 'departuredate',
+    setValue: (v) => {
+      dateValue = v;
+    },
+    getValue: () => dateValue,
+    fireEvent: (...args) => events.push(args),
+    up: (xtype) => (xtype === 'form' || xtype === 'recordview' ? form : null),
+  };
+  const date = applyDateSetValue(cmp, '2027-07-26');
+  assert.equal(date.getFullYear(), 2027);
+  assert.equal(date.getMonth(), 6);
+  assert.equal(date.getDate(), 26);
+  assert.equal(applyDateChange(cmp, date), true);
+  assert.equal(events[0][0], 'change');
+  assert.equal(events[1][0], 'select');
+  assert.equal(record.get('departuredate'), '07/25/2027');
+  const synced = syncDateBoundRecord(cmp, date);
+  assert.equal(synced instanceof Date ? synced.getDate() : synced, 26);
+  const stored = record.get('departuredate');
+  assert.equal(stored instanceof Date ? stored.getDate() : Number(String(stored).split(/[/-]/)[1] ?? stored), 26);
+  cmp.originalValue = new Date(2027, 6, 25);
+  assert.equal(commitAmendFieldValue(cmp), true);
+  assert.equal(cmp.originalValue, dateValue);
+});
+
+test('nightsBetween is exclusive departure minus arrival', () => {
+  assert.equal(nightsBetween('2027-07-24', '2027-07-26'), 2);
+  assert.equal(nightsBetween('2027-07-24', '2027-07-25'), 1);
+  assert.equal(nightsBetween('2027-07-24', '2027-07-24'), null);
+  assert.equal(nightsBetween('bad', '2027-07-26'), null);
+});
+
 test('amend-stay occupancy fill fires select and updates the bound record', async () => {
   const source = await readFile(new URL('./amend-stay.mjs', import.meta.url), 'utf8');
   const at = source.indexOf('async function fillOneField');
@@ -366,6 +418,24 @@ test('amend-stay occupancy fill fires select and updates the bound record', asyn
   const availAt = source.indexOf('await checkAvailability(ctx.page)');
   assert.ok(previewAt > 0 && availAt > previewAt);
   assert.equal(/request\.fields\.arrival/.test(source.slice(previewAt, availAt)), false);
+});
+
+test('amend-stay date fill fires change and copies date plus nights onto the bound record', async () => {
+  const source = await readFile(new URL('./amend-stay.mjs', import.meta.url), 'utf8');
+  const at = source.indexOf('async function fillOneField');
+  assert.ok(at > 0);
+  const body = source.slice(at, source.indexOf('async function blurOneField'));
+  const isoAt = body.indexOf('payload.iso');
+  assert.ok(isoAt > 0);
+  const isoBody = body.slice(isoAt);
+  assert.match(isoBody, /setValue\(new Date/);
+  assert.match(isoBody, /fireEvent\('change'/);
+  assert.match(isoBody, /fireEvent\('select'/);
+  assert.match(isoBody, /updateRecord/);
+  assert.match(isoBody, /rec\.set/);
+  assert.match(isoBody, /nights/);
+  assert.match(isoBody, /resetOriginalValue/);
+  assert.ok(isoBody.indexOf("fireEvent('change'") > isoBody.indexOf('setValue(new Date'));
 });
 
 test('occupancy that never blurs keeps the old count and fails closed', async () => {

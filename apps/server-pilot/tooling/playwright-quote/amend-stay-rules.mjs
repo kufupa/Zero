@@ -270,6 +270,60 @@ export function comboReadValue(cmp, fallback) {
   }
   return got;
 }
+
+/** Exclusive nights: 24→26 = 2. Null when either date is missing or departure is not after arrival. */
+export function nightsBetween(arrivalIso, departureIso) {
+  if (!realDate(arrivalIso) || !realDate(departureIso)) return null;
+  const start = Date.parse(`${arrivalIso}T00:00:00Z`);
+  const end = Date.parse(`${departureIso}T00:00:00Z`);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  return Math.round((end - start) / 86_400_000);
+}
+
+export function applyDateSetValue(cmp, iso) {
+  if (!cmp || typeof cmp.setValue !== 'function' || !realDate(iso)) return null;
+  const [year, month, day] = iso.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  cmp.setValue(date);
+  return date;
+}
+
+/** Datefields persist after change/select, same class as combo select. */
+export function applyDateChange(cmp, date) {
+  if (!cmp || typeof cmp.fireEvent !== 'function') return false;
+  cmp.fireEvent('change', cmp, date);
+  cmp.fireEvent('select', cmp, date);
+  return true;
+}
+
+export function syncDateBoundRecord(cmp, date) {
+  const form = owningAmendForm(cmp);
+  const rec = form && typeof form.getRecord === 'function' ? form.getRecord() : null;
+  const name = cmp?.name;
+  const value = typeof cmp?.getValue === 'function' ? cmp.getValue() : date;
+  if (form && typeof form.updateRecord === 'function') {
+    if (rec) form.updateRecord(rec);
+    else form.updateRecord();
+  }
+  if (rec && name && typeof rec.set === 'function' && value != null) {
+    rec.set(name, value);
+  }
+  return rec && name && typeof rec.get === 'function' ? rec.get(name) : null;
+}
+
+/** Dirty uxdate/uxnumber keep originalValue; HMS Save then persists the old stay. Mark the widget committed. */
+export function commitAmendFieldValue(cmp) {
+  if (!cmp) return false;
+  if (typeof cmp.resetOriginalValue === 'function') {
+    cmp.resetOriginalValue();
+    return true;
+  }
+  if (typeof cmp.getValue === 'function') {
+    cmp.originalValue = cmp.getValue();
+    return true;
+  }
+  return false;
+}
 export const dangerousDialogKind = (text) =>
   /\bpenalt(?:y|ies)\b/i.test(text) ? 'penalty' : /\bcharge(?:s)?\b/i.test(text) ? 'charge' : /\brate\b/i.test(text) ? 'rate' : null;
 const HMS_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
