@@ -9,8 +9,11 @@ export type ReservationistDocumentPurpose=z.infer<typeof purposeSchema>;
 const purposeKinds={tax_certificate:'supplier_compliance',receipt:'other_existing',tax_invoice:'tax_invoice',reservation_confirmation:'reservation_confirmation',pro_forma:'pro_forma',folio:'folio',statement:'statement',contract:'contract',existing_quote:'pro_forma',property_information:'property_information'} as const;
 const purposePatterns={tax_certificate:/\btax certificates?\b/i,receipt:/\breceipts?\b/i,tax_invoice:/\b(?:tax )?invoices?\b/i,reservation_confirmation:/\b(?:reservation |booking )?confirmations?\b/i,pro_forma:/\bpro[ -]?formas?\b/i,folio:/\bfolios?\b/i,statement:/\bstatements?\b/i,contract:/\bcontracts?\b/i,existing_quote:/\b(?:quotes?|quotations?|proposals?)\b/i,property_information:/\bproperty information\b/i};
 const scopedPurposes=new Set<ReservationistDocumentPurpose>(['receipt','tax_invoice','reservation_confirmation','pro_forma','folio','statement','existing_quote']);
+export function reservationistDocumentPurposes(text:string):ReservationistDocumentPurpose[]{
+ return (Object.keys(purposePatterns) as ReservationistDocumentPurpose[]).filter(purpose=>purposePatterns[purpose].test(purpose==='tax_invoice'?text.replace(/\bpro[ -]?formas?\s+invoices?\b/gi,''):text)&&(purpose!=='existing_quote'||/\b(?:resend|re[ -]?send|copy|attach|existing|previous|prior|original)\b/i.test(text)&&!/\bnew\s+(?:quote|quotation|proposal)\b/i.test(text)));
+}
 export function deriveReservationistDocumentPurpose(text:string):ReservationistDocumentPurpose{
- const matches=(Object.keys(purposePatterns) as ReservationistDocumentPurpose[]).filter(purpose=>purposePatterns[purpose].test(purpose==='tax_invoice'?text.replace(/\bpro[ -]?formas?\s+invoices?\b/gi,''):text)&&(purpose!=='existing_quote'||/\b(?:resend|re[ -]?send|copy|attach|existing|previous|prior|original)\b/i.test(text)&&!/\bnew\s+(?:quote|quotation|proposal)\b/i.test(text)));
+ const matches=reservationistDocumentPurposes(text);
  if(matches.length!==1)throw new Error('existing_document_purpose_unavailable');return matches[0];
 }
 const sourceSchema=z.object({sourceRef:readRefSchema,sourceHash:readDigestSchema,page:z.number().int().positive(),quote:z.string().min(1).max(4096),start:z.number().int().nonnegative(),end:z.number().int().positive()}).strict();

@@ -120,6 +120,33 @@ it('runs the installed quote service only while the property lock and source gra
   expect(result.tasks[0]?.status).toBe('needs_clarification');
 });
 
+it('does not read a cancellation refused by the opposite authored message view', async () => {
+  vi.stubEnv('DATABASE_URL', 'synthetic-only');
+  vi.stubEnv('PANE_STAY_TENANT_ID', 'tenant');
+  state.quoteConfigAvailable = false;
+  const plain = 'Please cancel reservation 12345678.', html = 'Do not cancel reservation 12345678.';
+  const separator = '\n\n[HTML alternative of the same message]\n', text = `${plain}${separator}${html}`;
+  const value = input(text), hash = createHash('sha256').update(text).digest('hex');
+  value.messages[0]!.sourceViews = [
+    { name: 'plain', start: 0, end: plain.length },
+    { name: 'html', start: plain.length + separator.length, end: text.length },
+  ];
+  const start = text.indexOf('12345678'), taskSource = { attachmentId: 'message:message', sourceHash: hash,
+    page: 1, quote: plain, start: 0, end: plain.length };
+  const model = { invoke: vi.fn(async (_request: ModelInvokeInput) => ({
+    ...response(), output: { facts: [{ id: 'ref', kind: 'reservation_reference', value: '12345678', source: {
+      attachmentId: 'message:message', sourceHash: hash, page: 1, quote: '12345678', start, end: start + 8,
+    }, disclosure: 'guest' }], tasks: [{ id: 'cancel', kind: 'cancel_request', factIds: ['ref'], source: taskSource }], unresolvedAsks: [] },
+  })) };
+  const provider = await createInstalledReservationistProvider(model)(context(value));
+  const result = await runReservationistRuntime(value, provider.dependencies);
+
+  expect(result.readiness).toBe('needs_clarification');
+  expect(result.packets).toEqual([]);
+  expect(state.cancellationCalls).toEqual([]);
+  expect(state.locked).toBe(false);
+});
+
 it.each(['Reserved', 'Cancelled'] as const)('prepares cancellation only for a reserved stay (%s)', async (status) => {
   vi.stubEnv('DATABASE_URL', 'synthetic-only');
   vi.stubEnv('PANE_STAY_TENANT_ID', 'tenant');

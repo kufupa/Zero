@@ -1,14 +1,113 @@
 import {createHash} from 'node:crypto';
 import type {ModelInvokeResult} from '../src/ai/bedrock/adapter.js';
 import {describe,it,expect,vi} from 'vitest';
-import {createReservationistDependencies,deriveRequestedArrivalAcknowledgement,ReservationistTaskEvidenceUnavailable,type PaymentTargetBinding} from '../src/ai/reservationist-execution.js';
+import {createReservationistDependencies,currentAuthoredGuestRequest,deriveRequestedArrivalAcknowledgement,ReservationistTaskEvidenceUnavailable,type PaymentTargetBinding} from '../src/ai/reservationist-execution.js';
 import {runReservationistRuntime} from '../src/ai/reservationist-runtime.js';
 import {AMBIGUOUS_NUMBER_GROUPS} from '../src/ai/card-mask.js';
 import {syntheticReservationistDocumentFixture} from './helpers/synthetic-reservationist-document.js';
 import {syntheticRevision} from './helpers/synthetic-quote-revision.js';
 const input={version:1 as const,requestId:'test',authorizationScope:{ownerRef:'transport',threadId:'thread'},propertyCode:'HRCEN',trigger:{id:'message',at:'2026-10-04T10:00:00Z'},messages:[{id:'message',at:'2026-10-04T10:00:00Z',direction:'inbound' as const,text:'Please quote and answer the parking question.'}],authorizedArtifacts:[],clock:{causalAt:'2026-10-04T10:00:00Z',sourceAt:'2026-10-04T09:00:00Z',deadlineAt:Date.now()+60000},capabilities:{pmsWrite:false as const,emailSend:false as const}};
+it('checks a cited HTML request only against its own authored alternative',()=>{
+ const plain='No invoice is required',html='Please send the tax certificate.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end:text.length}]}]},task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(true);
+ expect(currentAuthoredGuestRequest(task as any,{...scoped,messages:[{...scoped.messages[0]!,sourceViews:[{name:'plain',start:0,end:plain.length},{name:'html',start:0,end:text.length}]}]})).toBe(false);
+});
+it.each([
+ ['Do not send the tax certificate',false],
+ ['The tax certificate is not required',false],
+ ['The tax certificate is no longer required',false],
+ ['The tax certificate has not arrived',true],
+ ['We have not received the tax certificate',true],
+ ['The tax certificate has not yet been sent',true],
+ ['The tax certificate was not sent',true],
+ ['The tax certificate should not be sent',false],
+ ['Do not send the invoice or tax certificate',false],
+ ['Do not send the invoice',true],
+ ['No invoice is required, please send the tax certificate',true],
+ ['No invoice is required\nPlease send the tax certificate',true],
+ ['Do not send\nthe tax certificate',false],
+ ['We do not have the tax certificate',true],
+ ['Please send the tax certificate but not the invoice',true],
+ ['Please send the tax certificate, not the invoice',true],
+ ['Do not send the invoice, tax certificate',false],
+ ['Do not send the invoice and send the tax certificate',true],
+ ['Do not download and send the tax certificate',false],
+ ['Do not download and send the invoice and please send the tax certificate',true],
+ ['Do not download and send the tax certificate and please send the invoice',false],
+ ['Please send the invoice and do not send the tax certificate',false],
+] as const)('compares the same document request across alternatives: %s',(plain,expected)=>{
+ const html='Please send the tax certificate.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end}]}]},task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
+});
+it.each([
+ ['Do not send the invoice for reservation 12345678.',true],
+ ['Do not send the invoice for reservation 87654321.',false],
+ ['Do not send the invoice.',false],
+] as const)('scopes an invoice refusal to its cited reservation: %s',(plain,expected)=>{
+ const html='Please send the invoice for reservation 87654321.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end}]}]},task={id:'invoice',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
+});
+it.each([
+ ['Do not cancel reservation 12345678.',false],
+ ['Do not cancel reservation 87654321.',true],
+ ['Do not send the invoice.',true],
+] as const)('compares a cancellation request with the opposite authored view: %s',(html,expected)=>{
+ const plain='Please cancel reservation 12345678.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,hash=createHash('sha256').update(text).digest('hex'),task={id:'cancel',kind:'cancel_request',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:plain,start:0,end:plain.length}},scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:plain.length+'\n\n[HTML alternative of the same message]\n'.length,end:text.length}]}]};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
+});
+it('keeps a separate cancellation actionable when the other view refuses a different stay',()=>{
+ const plain='Please cancel reservation 87654321.',html='Do not cancel reservation 12345678 and please cancel reservation 87654321.',separator='\n\n[HTML alternative of the same message]\n',text=`${plain}${separator}${html}`,hash=createHash('sha256').update(text).digest('hex'),task={id:'cancel',kind:'cancel_request',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:plain,start:0,end:plain.length}},scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:plain.length+separator.length,end:text.length}]}]};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(true);
+});
+it.each([['Do not cancel reservation 12345678.',true],['Do not cancel reservation 87654321.',false],['Do not cancel.',false]] as const)('checks a narrowly cited cancellation reference against the other view: %s',(html,expected)=>{
+ const plain='Please cancel reservation 87654321.',separator='\n\n[HTML alternative of the same message]\n',text=`${plain}${separator}${html}`,quote='87654321',start=plain.indexOf(quote),hash=createHash('sha256').update(text).digest('hex'),task={id:'cancel',kind:'cancel_request',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote,start,end:start+quote.length}},scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start:plain.length+separator.length,end:text.length}]}]};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
+});
+it.each([
+ ['Do not send the quote.','Please send me the existing quote.',false],
+ ['Do not send the quote reference Q-123.','Please resend the quote reference Q-123.',false],
+ ['Do not send the quote reference Q-456.','Please resend the quote reference Q-123.',true],
+] as const)('matches an existing-quote refusal only to its requested document: %s',(plain,html,expected)=>{
+ const text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),task={id:'quote',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}},scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end:text.length}]}]};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
+});
+it.each([
+ ['Please send the invoice, but no tax certificate.',false],
+ ['No tax certificate should be sent.',false],
+ ['Please send the invoice, but no tax certificate has been sent.',true],
+] as const)('recognizes a bare opposite-view document refusal without erasing a status update: %s',(plain,expected)=>{
+ const html='Please send the tax certificate.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}},scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end:text.length}]}]};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
+});
+it.each([
+ ['Do not send invoices for booking 12345678 or 87654321.','Please send the invoice for booking 87654321.',false],
+ ['Do not send invoices for booking 12345678.','Please send the invoice for booking 87654321.',true],
+ ['Do not send any invoices for my stay from December 2, 2027.','Please send the invoice for booking 87654321.',false],
+ ['Do not send invoices for booking ABC123.','Please send the invoice for booking abc123.',false],
+ ['Do not send invoices for booking 12345678 because I sent the dates, and ABC123 is only a tracking code.','Please send the invoice for booking ABC123.',true],
+] as const)('compares every explicit booking reference in a document refusal: %s',(plain,html,expected)=>{
+ const text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),task={id:'invoice',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end}},scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end:text.length}]}]};
+ expect(currentAuthoredGuestRequest(task as any,scoped)).toBe(expected);
+});
+it('keeps an urgent document request with “without delay”',()=>{
+ const text='Please send the tax certificate without delay.',hash=createHash('sha256').update(text).digest('hex'),task={id:'certificate',kind:'existing_document',factIds:[],source:{attachmentId:'message:message',sourceHash:hash,page:1,quote:text,start:0,end:text.length}};
+ expect(currentAuthoredGuestRequest(task as any,{...input,messages:[{...input.messages[0],text}]})).toBe(true);
+});
 const adapter=(tasks:any[])=>({invoke:vi.fn(async():Promise<ModelInvokeResult>=>({modelId:'gpt-6-luna',output:{facts:[],tasks:tasks.map((task,i)=>({...task,source:{attachmentId:'message:message',sourceHash:createHash('sha256').update(input.messages[0].text).digest('hex'),page:1,quote:input.messages[0].text.slice(i,i+Math.max(1,input.messages[0].text.length-i)),start:i,end:input.messages[0].text.length}})),unresolvedAsks:[]},usage:{inputTokens:1,outputTokens:1,totalTokens:2,latencyMs:1,estimatedCostUsd:0,rateTableVersion:'test'}}))});
 const header={attention:'Synthetic',company:'Test',clientEmail:'test@example.invalid',clientTelephone:'',agency:'Test',signerName:'Test',signerEmail:'test@example.invalid'};
+it('does not resolve a document rejected in the other authored alternative',async()=>{
+ const plain='Do not send the tax certificate',html='Please send the tax certificate.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),source={attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end},model=adapter([]),resolve=vi.fn(async()=>{throw new Error('unexpected document resolver');});
+ model.invoke.mockResolvedValue({modelId:'gpt-6-luna',output:{facts:[],tasks:[{id:'certificate',kind:'existing_document',factIds:[],source}],unresolvedAsks:[]},usage:{inputTokens:1,outputTokens:1,totalTokens:2,latencyMs:1,estimatedCostUsd:0,rateTableVersion:'test'}} as any);
+ const factory=createReservationistDependencies({adapter:model,admissions:[],header,converter:{url:'unused'},services:{resolveExistingDocument:resolve,authorizeExistingDocument:async()=>null}}),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end}]}]};
+ const result=await runReservationistRuntime(scoped,factory.dependencies);
+ expect(result.tasks[0].status).toBe('blocked');expect(result.artifacts).toEqual([]);expect(resolve).not.toHaveBeenCalled();
+});
+it('does not fetch an existing quote refused in the opposite authored alternative',async()=>{
+ const plain='Do not send the quote.',html='Please send me the existing quote.',text=`${plain}\n\n[HTML alternative of the same message]\n${html}`,start=text.indexOf(html),end=start+html.length,hash=createHash('sha256').update(text).digest('hex'),source={attachmentId:'message:message',sourceHash:hash,page:1,quote:html,start,end},model=adapter([]),resolve=vi.fn(async()=>{throw new Error('opposite-view refusal must stop document lookup');});
+ model.invoke.mockResolvedValue({modelId:'gpt-6-luna',output:{facts:[],tasks:[{id:'quote',kind:'existing_document',factIds:[],source}],unresolvedAsks:[]},usage:{inputTokens:1,outputTokens:1,totalTokens:2,latencyMs:1,estimatedCostUsd:0,rateTableVersion:'test'}} as any);
+ const factory=createReservationistDependencies({adapter:model,admissions:[],header,converter:{url:'unused'},services:{resolveExistingDocument:resolve,authorizeExistingDocument:async()=>null}}),scoped={...input,messages:[{...input.messages[0],text,sourceViews:[{name:'plain' as const,start:0,end:plain.length},{name:'html' as const,start,end:text.length}]}]},result=await runReservationistRuntime(scoped,factory.dependencies);
+ expect(result.readiness).toBe('blocked');expect(result.tasks[0].status).toBe('blocked');expect(resolve).not.toHaveBeenCalled();
+});
 function expectTaskMappingBlocked(result:any,id:string){expect(result.readiness).toBe('blocked');expect(result.tasks.find((t:any)=>t.id===id)?.status).toBe('blocked');expect(result.errors).toContain(`${id}:fact_task_mismatch`);expect(result.readRecoveries).toContainEqual({taskId:id,codes:expect.arrayContaining(['fact_task_mismatch'])});}
 const voucherReviewRequest='Please review attached hotel voucher for guest A, then check enclosed hotel voucher for guest B.';
 function voucherReviewAdapter(mode:'combined'|'task_first',tasks:any[]){let call=0;return{reserveCalls:vi.fn(async()=>{}),invoke:vi.fn(async():Promise<ModelInvokeResult>=>{const index=call++,selectionTasks=mode==='task_first'?tasks.map(task=>({...task,source:{attachmentId:task.source.attachmentId,sourceHash:task.source.sourceHash,page:task.source.page,quote:task.source.quote}})):tasks,output=mode==='task_first'&&index>0?{facts:[],assignments:tasks.map(task=>({taskId:task.id,factIds:[]})),unresolvedAsks:[]}:{facts:[],tasks:selectionTasks,unresolvedAsks:[]};return{modelId:'gpt-6-luna',output,usage:{inputTokens:1,outputTokens:1,totalTokens:2,latencyMs:1,estimatedCostUsd:0,rateTableVersion:'test'}};})};}

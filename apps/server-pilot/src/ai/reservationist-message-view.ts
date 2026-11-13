@@ -1,3 +1,4 @@
+/** An empty HTML range shares the plain authored body but has its own quoted history. */
 export type ReservationistMessageView = { name: 'plain' | 'html'; start: number; end: number; quoted?: { start: number; end: number } };
 export const HTML_ALTERNATIVE_MARKER = '[HTML alternative of the same message]\n';
 const HTML_CONTEXT_SEPARATOR = '\n\n[HTML alternative context]\n';

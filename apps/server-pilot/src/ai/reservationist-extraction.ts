@@ -9,6 +9,7 @@ import {isReservationistXlsxMimeType} from './reservationist-xlsx.js';
 import {xlsxRowContext,xlsxRowEntails} from './reservationist-xlsx-facts.js';
 import {boards,norm} from './rate-options.js';
 import { documentPlanSchema, normalizedDate, normalizeDocumentDecimal, validateDocumentPlan, type DocumentSource, type ValidatedDocumentPlan, type ValidatedDocumentFact } from './reservationist-document-facts.js';
+import { validReservationistMessageViews, type ReservationistMessageView } from './reservationist-message-view.js';
 export const RESERVATIONIST_EXTRACTION_VERSION = 'reservationist-extraction-v75-distinct-stay-task-selection';
 const STAFF_QUOTE_CONVENTIONS = 'When the current quote explicitly renews exactly one original quoted customer accommodation request, that original request supplies its independently printed stay, meal and named-adult facts. In that uniquely activated request, one bedroom for one source-verified named Mr/Mrs/Ms/Miss adult supports quantity:1, adults:1 and childAges:[] with local roomRef:"1"; do not ask for adult occupancy or hypothetical children absent any child evidence. This explicit renewal is the sole exception to the quoted-history restriction for staff occupancy conventions; never infer child absence from a child or family request. Preserve the exact original quoted bedroom/name span and printed years, never invent guest physical assignments. Different, ambiguous, withdrawn or conflicting requests and staff offers remain context. Staff quote conventions take precedence over the generic missing-room-ID and printed-year restrictions when their original source conditions hold. Do not use the mere absence of a printed year or room/group ID as unresolved when the source-bound convention applies. A sole source-verified named adult in a hotel quotation supports 1 room for 1 adult, even without an independently counted room noun; retain the exact original request/name span and never invent physical guest assignments. For quote tasks only, apply existing Centurion staff conventions to unambiguous authored inbound email accommodation requests: one independently source-verified named adult or a/one room/bedroom means 1 adult in 1 room; two named adults, an explicit Mr and Mrs shared-surname pair or explicit two people without a different room count means 2 adults in 1 room; N independently verified named adults in exactly N rooms means single occupancy per room; an explicitly counted single-room request supports that quantity with 1 adult per room. An explicit N pax/people/persons accommodation request quoted single supports N rooms of single occupancy in that original accommodation scope; unrelated event attendance counts and dates do not supply overnight room facts. Use local allocation roomRef:"1", explicit convention quantity/adults and childAges:[], never native IDs or guest ages. Quote pricing does not require unprinted guest given names, profile IDs or physical create assignments: do not add unresolved asks for these booking-only fields to a quote task. An explicit Mr and Mrs shared-surname pair supports adult occupancy without inventing given names. Keep guests unassigned unless a physical room association is independently explicit; never assign N names to room indices by list order. These conventions do not apply to children, students, ambiguous counts, named groups, contradictions, negation, unactivated quoted history or attachments. For an affirmative yearless paired stay in an authored inbound email quote request, return the unchanged printed day-month tokens without yearContext or invented ISO year. For a single dated accommodation request with an explicit printed number of nights in the same original span, return arrival as the printed day-month token and departure as the exact printed night-duration token. The server alone derives checkout and the causal next-occurrence year with convention provenance; never calculate or print a model checkout date. This quote-only convention requires original accommodation, date and duration evidence; missing duration, contradictory checkout/date, children, event-only, negated or quoted requests remain unresolved. A compact original day-month token may be represented as day plus the same printed month in arrival while the source quote stays unchanged. The server derives each next occurrence from that original causal email timestamp in Africa/Johannesburg and records convention provenance; it never uses the runtime clock. Both endpoints and their labels or shared range must be in the exact original source span. A paired arrival/check-in day and departure/check-out day may share a final printed month in that same span; preserve those original day/month tokens and never borrow a shuttle or event date. When one final printed month applies to both labeled endpoints in that exact original span, repeat that printed month in both date values as day plus month; omit yearContext and invented years when no year is printed. Do not return a day alone or add connecting words such as of to a date value. The source quote stays unchanged and must include both endpoint labels or the shared range and its printed month. Printed years remain binding; missing month, conflicting ranges and excluded or quoted stays remain unresolved.';
 const MONETARY_TOKEN_INSTRUCTIONS = 'For embedded rate_claim and payment_claim, ZAR or R must precede the amount. A single ordinary ASCII space may group thousands; nonbreaking/thin grouping spaces and suffix currency tokens are unsupported. Never rewrite these unsupported original tokens into canonical money facts. Omit their monetary facts, preserve the current requested task and record its unresolved monetary context.';
@@ -134,8 +135,47 @@ function bindRequestCandidates(output:unknown,candidates:readonly RequestCandida
  if(Array.isArray(plan.tasks))for(const task of plan.tasks){if(!task||!Object.hasOwn(task,'sourceCandidateId'))continue;if(Object.hasOwn(task,'source')||typeof task.sourceCandidateId!=='string')throw new Error('Invalid original request candidate');const candidate=candidates.find(c=>c.id===task.sourceCandidateId);if(!candidate)throw new Error('Unbound original request candidate');if(!candidate.allowedKinds.includes(task.kind))throw new Error('Original request candidate kind not entailed');task.source=structuredClone(candidate.source);delete task.sourceCandidateId;}
  return plan;
 }
+function authoredQuoteOffsets(page:string,quote:string,views:readonly ReservationistMessageView[]|undefined):[number,number]|undefined{
+ if(!views||views.length!==2)return;
+ const hits=views.map(view=>{
+  const first=page.indexOf(quote,view.start),next=page.indexOf(quote,first+1);
+  return first>=view.start&&first+quote.length<=view.end&&(next<0||next+quote.length>view.end)?first:-1;
+ });
+ if(hits.some(hit=>hit<0))return;
+ return [hits[0]!,hits[1]!];
+}
+/** Matching evidence in both authored alternatives can share the original plain span. */
+function equivalentAuthoredOffset(page:string,quote:string,views:readonly ReservationistMessageView[]|undefined,isFact:boolean,allowHistory=false):number|undefined{
+ const hits=authoredQuoteOffsets(page,quote,views);
+ if(!hits||!views)return;
+ if(!allowHistory&&page.indexOf(quote,page.indexOf(quote,page.indexOf(quote)+1)+1)>=0)return;
+ const clean=(text:string)=>text.replace(/\s+/g,' ').trim();
+ const before=views.map((view,index)=>clean(page.slice(view.start,hits[index])));
+ const after=views.map((view,index)=>/[.!?]\s*$/.test(quote)?'':clean(page.slice(hits[index]!+quote.length,view.end).split(/[.!?\n]/,1)[0]!));
+ // Compare relevant corrections or withdrawals, while retaining independent asks.
+ const words=new Set((quote.toLowerCase().match(/[a-z]{4,}/g)??[]).filter(word=>!['please','kindly','could','would','should','their','there','this','that','with','have','from','send'].includes(word)));
+ const correction=/\b(?:correction|corrected|instead|amend(?:ed)?|disregard|withdraw(?:n)?|revised)\b|\b(?:make|set|increase|reduce)\s+(?:it|this|that|them)\s+(?:to\s+)?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b/i;
+ const negative=/\b(?:no|not|never|without|excluding|exclude[ds]?|remove[ds]?|cancel(?:led|ed)?|no longer|do not|don['’]t)\b/i;
+ const explicitScopes=(text:string)=>new Set([...text.matchAll(/\bgroup\s+([\p{L}\p{N}_-]+)\b|\broom\s+(?:#\s*)?(\d+)\b/giu)].map(match=>match[1]?`group:${match[1].toLowerCase()}`:`room:${match[2]}`)),quoteScopes=explicitScopes(quote);
+ const relevant=(part:string,previous:string|undefined)=>{
+  const modifying=correction.test(part)||negative.test(part),shared=(part.toLowerCase().match(/[a-z]{4,}/g)??[]).some(word=>words.has(word));
+  const countOfOtherQuestion=/\b(?:make|set|increase|reduce)\s+(?:it|this|that|them)\s+(?:to\s+)?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b/i.test(part)&&previous?.trim().endsWith('?')&&/\b(?:arrange|book|reserve|order|organi[sz]e|schedule|add|request)\s+(?:us\s+)?(?:a|an|one|two|\d+)\s+\w+/i.test(previous)&&!(previous.toLowerCase().match(/[a-z]{4,}/g)??[]).some(word=>words.has(word));
+  const referent=/\b(?:it|this|that|these|those|them)\b/i.test(part.replace(/\b(?:is|was|will|would|can|could|should|might)\s+it(?:\s+be)?\s+(?:possible|feasible)\b/gi,''));
+  const partScopes=explicitScopes(part);
+  const boardCorrection=modifying&&
+    /\b(?:room[\s-]*only|breakfast|dinner|meals?|board)\b/i.test(part)&&
+    /\b(?:use|apply)\b[^.!?;\n]{0,80}\b(?:plan|board|meal|option|it|that|this)\b[^.!?;\n]{0,40}\b(?:instead|here|for\s+(?:this|group|room|us))\b/i.test(part);
+  const otherScope=quoteScopes.size===1&&partScopes.size===1&&![...partScopes].some(scope=>quoteScopes.has(scope))&&!boardCorrection;
+  const relevantReferent=referent&&/\b(?:include|exclude|remove|book|reserve|quote|add|apply|provide|offer|serve|need|want|require|use|send|attach|select|change|amend|cancel|withdraw|delete|drop|reschedule|shorten|extend|replace)\b|\bleave\s+(?:it|this|that|them)\s+out\b/i.test(part);
+  return !otherScope&&(isFact?(!part.trim().endsWith('?')||modifying)&&(shared||correction.test(part)&&!countOfOtherQuestion||modifying&&relevantReferent):
+   modifying&&(shared||correction.test(part)&&!countOfOtherQuestion||relevantReferent));
+ };
+ const tail=views.map((view,index)=>clean(page.slice(hits[index]!+quote.length,view.end).split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.split(/(?<=[.!?])\s+|\n+/).filter((part,i,parts)=>relevant(part,parts[i-1])).join(' ')));
+ if(tail[0]!==tail[1])return;
+ return before[0]===before[1]&&after[0]===after[1]?hits[0]:undefined;
+}
 /** Bind original text and restore uniquely evidenced guest spelling; source bytes never change. */
-function bindUniqueTextOffsets(output:unknown,sources:readonly {attachmentId:string;sourceHash:string;pages:readonly string[]|null}[]):unknown{
+function bindUniqueTextOffsets(output:unknown,sources:readonly {attachmentId:string;sourceHash:string;pages:readonly string[]|null;sourceViews?:readonly ReservationistMessageView[]}[]):unknown{
  if(!output||typeof output!=='object'||Array.isArray(output))return output;
  const candidate=structuredClone(output) as Record<string,unknown>;
  for(const list of [candidate.facts,candidate.tasks]){
@@ -144,6 +184,9 @@ function bindUniqueTextOffsets(output:unknown,sources:readonly {attachmentId:str
    const span=item?.source;if(!span||typeof span!=='object'||span.region!==undefined||typeof span.quote!=='string'||!span.quote.length||!Number.isInteger(span.page))continue;
    const source=sources.find(s=>s.attachmentId===span.attachmentId&&s.sourceHash===span.sourceHash),page=source?.pages?.[span.page-1];
    if(page===undefined)continue;
+   const views=source?.sourceViews,isFact=list===candidate.facts,hits=authoredQuoteOffsets(page,span.quote,views);
+   if(hits&&views&&page.slice(views[0]!.start,hits[0]).replace(/\s+/g,' ').trim()===page.slice(views[1]!.start,hits[1]).replace(/\s+/g,' ').trim()&&
+     equivalentAuthoredOffset(page,span.quote,views,isFact,true)===undefined)throw new Error('Ambiguous original text span');
    if(span.start===undefined&&span.end===undefined){
     let start=page.indexOf(span.quote);
     if(start<0){
@@ -153,7 +196,11 @@ function bindUniqueTextOffsets(output:unknown,sources:readonly {attachmentId:str
      if(hits.length>1)throw new Error('Ambiguous original text span');
      if(!hits.length)continue;
      start=hits[0]!.index!;span.quote=page.slice(start,start+span.quote.length);
-    }else if(page.indexOf(span.quote,start+1)!==-1)throw new Error('Ambiguous original text span');
+    }else if(page.indexOf(span.quote,start+1)!==-1){
+     const equivalent=equivalentAuthoredOffset(page,span.quote,source?.sourceViews,list===candidate.facts);
+     if(equivalent===undefined)throw new Error('Ambiguous original text span');
+     start=equivalent;
+    }
     span.start=start;span.end=start+span.quote.length;
    }
    // Explicit invalid offsets still fail the unchanged source validator. Only
@@ -302,9 +349,24 @@ function currentNumberedRoomRow(fact:ValidatedDocumentFact,row:string,sources:re
  return fact.source.end!==undefined&&(history<0||fact.source.end<=history)&&!/^\s*>/.test(row)&&!/\b(?:not|never|no|without|excluded|removed|cancelled|canceled|previous|former|historical|either|or)\b/i.test(row);
 }
 /** Existing staff occupancy conventions apply only to one unambiguous authored accommodation scope. */
-function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentId:string;pages:readonly string[]|null;causalMessage?:{at:string;direction:'inbound'|'outbound'}}[],facts:readonly ValidatedDocumentFact[],tasks:readonly ValidatedDocumentPlan['tasks'][number][]):{quantity:number;adults:number;at:string}|undefined{
- const source=sources.find(s=>s.attachmentId===fact.source.attachmentId),page=source?.pages?.[fact.source.page-1];
+function staffOccupancy(fact:ValidatedDocumentFact,sources:readonly {attachmentId:string;pages:readonly string[]|null;sourceViews?:readonly ReservationistMessageView[];causalMessage?:{at:string;direction:'inbound'|'outbound'}}[],facts:readonly ValidatedDocumentFact[],tasks:readonly ValidatedDocumentPlan['tasks'][number][]):{quantity:number;adults:number;at:string}|undefined{
+ const source=sources.find(s=>s.attachmentId===fact.source.attachmentId);let page=source?.pages?.[fact.source.page-1];
  if(!page||source?.causalMessage?.direction!=='inbound'||!Number.isFinite(Date.parse(source.causalMessage.at)))return;
+ const view=source.sourceViews?.find(v=>fact.source.start!==undefined&&fact.source.end!==undefined&&fact.source.start>=v.start&&fact.source.end<=v.end);
+ if(view){
+  // An identical authored request may be followed by an unrelated question in another view.
+  const comparable=(text:string)=>text.split(/\n\s*(?:Regards|Kind regards|Warm regards|Thank you|Yours sincerely)\b/i)[0]!.replace(/\s+/g,' ').trim().toLowerCase();
+  const own=comparable(page.slice(view.start,view.end));
+  if(source.sourceViews!.some(v=>{
+   if(v===view)return false;
+   let other=comparable(page!.slice(v.start,v.end));
+   if(!other)return false;
+   const shared=own&&other.includes(own)?own:other&&own.includes(other)?other:'';
+   if(shared)other=own.replace(shared,'')+' '+other.replace(shared,'');
+   return /\b(?:quotes?|quotation|rates?|rooms?|bedrooms?|adults?|children|child|kids?|infants?|minors?|students?|family|occupancy|accommodation|people|persons?|pax|guests?|beds?|single|double|twin|stay(?:ing)?|not|never|no|without|cancel|instead|correction|amend|change|exclude|remove|disregard)\b/i.test(other);
+  }))return;
+  page=' '.repeat(view.start)+page.slice(view.start,view.end);
+ }
  const authored=page.split(/^(?:\s*>?\s*(?:From:|Sent:|Subject:|On .{1,250}wrote:)|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]!;
  const requested=fact.source.quote??'';
  // An explicit per-person single allocation has its own accommodation scope;
@@ -496,10 +558,10 @@ function unreadSourcesIndependentOfNoAction(input:{messages:readonly {id:string;
  });
 }
 export type ExtractionUnresolvedDiagnostic={phase:'task_selection';reason:string}|({phase:'fact_enrichment'}&import('./reservationist-runtime.js').FactRecoveryProvenance);
-export async function extractReservationistPlan(input: { adapter: ModelAdapter; mode?:'combined'|'task_first'; factEnrichmentMode?:'source_batches'; messageBatching?:'per_source'; triggerMessageId?:string; requiredTaskKinds?:readonly string[]; requiredAskSpans?:readonly {sourceId:string;start:number;end:number;text:string}[]; messages: readonly { id: string; at: string; text: string; subject?:string; direction?:'inbound'|'outbound'; disclosure?:'guest'|'staff_only' }[]; causalAt: string; admissions: readonly AttachmentAdmission[]; signal: AbortSignal; deadlineAt?: number }): Promise<ValidatedDocumentPlan & { noActionSelectionCompleted?:true; sourceReviewSelectionCompleted?:true; version: string; manualRequired: string[];unresolvedDiagnostics?:ExtractionUnresolvedDiagnostic[];sourceIncomplete?:{attachmentId:string;sourceHash:string;reason:string}[];sourceContinuations?:DocumentRequestContinuation[];extractionDiagnostics?:{mode:'source_batches';plannedPhysicalCalls:number;actualInvokedCalls:number;taskSelection:'completed';batches:{index:number;kind:'messages'|'pdf'|'raster';sources:{attachmentId:string;sourceHash:string}[];status:'completed'|'failed'|'not_attempted'}[]} }> {
+export async function extractReservationistPlan(input: { adapter: ModelAdapter; mode?:'combined'|'task_first'; factEnrichmentMode?:'source_batches'; messageBatching?:'per_source'; triggerMessageId?:string; requiredTaskKinds?:readonly string[]; requiredAskSpans?:readonly {sourceId:string;start:number;end:number;text:string}[]; messages: readonly { id: string; at: string; text: string; subject?:string; direction?:'inbound'|'outbound'; disclosure?:'guest'|'staff_only'; sourceViews?:readonly ReservationistMessageView[] }[]; causalAt: string; admissions: readonly AttachmentAdmission[]; signal: AbortSignal; deadlineAt?: number }): Promise<ValidatedDocumentPlan & { noActionSelectionCompleted?:true; sourceReviewSelectionCompleted?:true; version: string; manualRequired: string[];unresolvedDiagnostics?:ExtractionUnresolvedDiagnostic[];sourceIncomplete?:{attachmentId:string;sourceHash:string;reason:string}[];sourceContinuations?:DocumentRequestContinuation[];extractionDiagnostics?:{mode:'source_batches';plannedPhysicalCalls:number;actualInvokedCalls:number;taskSelection:'completed';batches:{index:number;kind:'messages'|'pdf'|'raster';sources:{attachmentId:string;sourceHash:string}[];status:'completed'|'failed'|'not_attempted'}[]} }> {
   input.signal.throwIfAborted();
   const causal = Date.parse(input.causalAt);
-  if (!Number.isFinite(causal) || input.messages.length > 64 || input.messages.reduce((sum, m) => sum + m.text.length+(m.subject?.length??0), 0) > 1280000 || input.messages.some(m => !Number.isFinite(Date.parse(m.at)) || Date.parse(m.at) > causal || m.text.length > 40000 || m.subject!==undefined&&(typeof m.subject!=='string'||m.subject.length>4096))) throw new Error('Invalid bounded causal extraction input');
+  if (!Number.isFinite(causal) || input.messages.length > 64 || input.messages.reduce((sum, m) => sum + m.text.length+(m.subject?.length??0), 0) > 1280000 || input.messages.some(m => !Number.isFinite(Date.parse(m.at)) || Date.parse(m.at) > causal || m.text.length > 40000 || m.subject!==undefined&&(typeof m.subject!=='string'||m.subject.length>4096) || m.sourceViews!==undefined&&!validReservationistMessageViews(m.text,m.sourceViews))) throw new Error('Invalid bounded causal extraction input');
   // Reuse the worker's coverage contract; it supplies no facts or execution authority.
   const obligationMessage=input.messages.find(m=>m.id===input.triggerMessageId);
   const authoredEnd=obligationMessage?.text.search(/^[\t ]*(?:From:\s|Sent:\s|Subject:\s|On [^\r\n]{1,250}(?:\r?\n[^\r\n]{0,250}){0,2}wrote:|Begin forwarded message:|Forwarded message:|-{2,}\s*(?:Original Message|Forwarded message)|>|--[\t ]*(?:\r?$)|(?:thank\s+you\s+and\s+)?(?:kind|warm|best)\s+regards[^\p{L}\p{N}\r\n]*$|regards[^\p{L}\p{N}\r\n]*$)/imu)??-1;
@@ -556,7 +618,7 @@ export async function extractReservationistPlan(input: { adapter: ModelAdapter; 
     return {filename:`${a.source!.attachmentId}.${a.metadata.mimeType.split('/')[1]}`,mediaType:a.metadata.mimeType as 'image/png'|'image/jpeg'|'image/webp',data:a.bytes.body};
   });
   if(new Set(input.messages.map(message=>message.id)).size!==input.messages.length)throw new Error('Duplicate causal message source');
-  const messageSources=input.messages.map(message=>({attachmentId:`message:${message.id}`,sourceHash:createHash('sha256').update(message.text).digest('hex'),disclosure:message.disclosure??'guest',pages:[message.text],pageCount:1,...(message.direction?{causalMessage:{at:message.at,direction:message.direction}}:{})}));
+  const messageSources=input.messages.map(message=>({attachmentId:`message:${message.id}`,sourceHash:createHash('sha256').update(message.text).digest('hex'),disclosure:message.disclosure??'guest',pages:[message.text],pageCount:1,...(message.direction?{causalMessage:{at:message.at,direction:message.direction}}:{}),...(message.sourceViews?{sourceViews:message.sourceViews}:{})}));
   const subjectSources=input.messages.filter(message=>message.id===(input.triggerMessageId??input.messages.at(-1)?.id)&&message.direction==='inbound'&&message.at===input.causalAt&&message.disclosure!=='staff_only'&&typeof message.subject==='string'&&message.subject.length>0&&isReservationistSubjectSourceEligible(message.subject)).map(message=>({attachmentId:`message-subject:${message.id}`,sourceHash:createHash('sha256').update(message.subject!).digest('hex'),disclosure:message.disclosure??'guest',pages:[message.subject!],pageCount:1}));
   const sources = [...admitted.map(a => a.source!),...messageSources,...subjectSources];
   const xlsxIds=new Set(admitted.filter(a=>isReservationistXlsxMimeType(a.metadata.mimeType)).map(a=>a.metadata.attachmentId));
