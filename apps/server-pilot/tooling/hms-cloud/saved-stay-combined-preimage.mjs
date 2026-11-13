@@ -6,7 +6,7 @@ import { planSavedChildOccupancy, savedChildOccupancy } from './guest-stay-amend
 const identityFields = ['confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note', 'adults', 'childCount', 'childAges'];
 const optionalIdentityFields = ['firstName', 'lastName'];
 const changeFields = ['arrival', 'departure', 'adults', 'children', 'childCount', 'childAges', 'roomType', 'ratePlan', 'retainRates',
-  'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'cmsSend', 'cmsMessageId', 'cmsRecipient'];
+  'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient'];
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const only = (v, keys) => object(v) && Object.keys(v).every((key) => keys.includes(key));
@@ -53,6 +53,8 @@ function validChanges(expected, changes, minimumArrival) {
       (['roomType', 'ratePlan'].some((key) => Object.hasOwn(changes, key) &&
         (typeof changes[key] !== 'string' || !/^[A-Z0-9]{1,12}$/.test(changes[key])))) ||
       (Object.hasOwn(changes, 'cmsSend') && typeof changes.cmsSend !== 'boolean') ||
+      (Object.hasOwn(changes, 'reservationNote') && (typeof changes.reservationNote !== 'string' || changes.reservationNote.length > 2000 ||
+        [...changes.reservationNote].some((char) => (char.charCodeAt(0) < 32 && char !== '\n') || char.charCodeAt(0) === 127))) ||
       ['firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'cmsMessageId', 'cmsRecipient'].some((key) =>
         Object.hasOwn(changes, key) && (typeof changes[key] !== 'string' || changes[key].length > 1000 || /[\p{Cc}]/u.test(changes[key]))) ||
       (Object.hasOwn(changes, 'retainRates') && !['yes', 'no'].includes(changes.retainRates))) return false;

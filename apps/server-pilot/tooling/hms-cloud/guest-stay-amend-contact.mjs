@@ -30,11 +30,14 @@ const PRESERVED_BUSINESS_FIELDS = ['status', 'firstname', 'lastname', 'arrivalda
 export async function stageSavedGuestFieldsForComposition(context, changes) {
   if (!isLabtestAmendStageContext(context) || !context.isActive()) throw new Error('AMEND_STAGE_NOT_ACTIVE');
   const specs = { firstName: 'firstname', lastName: 'lastname', guestEmail: 'emailaddress',
-    bookerName: 'caller', bookerContact: 'udfchar06', cmsMessageId: 'udfchar09', cmsRecipient: 'udfchar13' };
+    bookerName: 'caller', bookerContact: 'udfchar06', reservationNote: 'reservationnote', cmsMessageId: 'udfchar09', cmsRecipient: 'udfchar13' };
   for (const [key, name] of Object.entries(specs)) {
     if (!Object.hasOwn(changes, key)) continue;
     const value = changes[key];
-    if (typeof value !== 'string' || value.length > 1000 || /[\p{Cc}]/u.test(value)) throw new Error('CONTACT_VALUE_INVALID');
+    if (typeof value !== 'string' || value.length > (key === 'reservationNote' ? 2000 : 1000) ||
+        [...value].some((char) => (char.charCodeAt(0) < 32 && !(key === 'reservationNote' && char === '\n')) || char.charCodeAt(0) === 127)) {
+      throw new Error('CONTACT_VALUE_INVALID');
+    }
     const control = context.frame.locator(`input[name="${name}"]:visible,textarea[name="${name}"]:visible`);
     if (await control.count() !== 1) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
     const changed = await control.evaluate((element, next) => {

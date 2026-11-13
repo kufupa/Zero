@@ -281,12 +281,13 @@ function validateHintAgainstNative(hint: Record<string, unknown>, native: HmsClo
 
 function observationForStay(draft: ReservationWorkflowV2Draft, requestId: string, hintId: string,
   selectionPath: string, query: Record<string, unknown>, native: HmsCloudNativePreimage,
-  status: 'complete' | 'partial' = 'complete', note?: string): ReservationWorkflowV2Observation {
+  reservationObservations: unknown, status: 'complete' | 'partial' = 'complete', note?: string): ReservationWorkflowV2Observation {
   return { ref: randomUUID(), generationId: draft.generationId, kind: 'stay_candidate', status,
     observedAt: new Date().toISOString(), propertyCode: 'HRCEN', sourceMessageId: draft.source.messageId, sourceRefs: [],
     criteria: { workflow: 'amend', kind: 'saved_target', requestId, hintId, selectionPath, query },
     coverage: { complete: status === 'complete', notes: note ? [note] : [] },
-    result: { candidate: native, nativeStayId: native.reservationStayId, confirmation: native.confirmation } };
+    result: { candidate: native, nativeStayId: native.reservationStayId, confirmation: native.confirmation,
+      reservationObservations } };
 }
 
 function failedStayObservation(draft: ReservationWorkflowV2Draft, requestId: string, hintId: string,
@@ -343,7 +344,8 @@ async function lookupHint(draft: ReservationWorkflowV2Draft,
     if (!validNative(native) || mismatch || found?.outcome !== 'found') {
       return { rows, observation: failedStayObservation(draft, requestId, hintId, selectionPath, query, mismatch ?? 'native_stay_unverified') };
     }
-    return { rows: [{ observation: observationForStay(draft, requestId, hintId, selectionPath, query, native), native }] };
+    return { rows: [{ observation: observationForStay(draft, requestId, hintId, selectionPath, query, native,
+      found.reservationObservations), native }] };
   }
   const name = text(hint.guestName), arrival = hint.bookedArrival, departure = hint.bookedDeparture;
   if (signal) return { rows, observation: failedStayObservation(draft, requestId, hintId, selectionPath, query,
@@ -369,7 +371,8 @@ async function lookupHint(draft: ReservationWorkflowV2Draft,
     const native = record(found)?.nativePreimage;
     const mismatch = validNative(native) ? validateHintAgainstNative(hint, native) : 'native_stay_unverified';
     if (!validNative(native) || mismatch || found?.outcome !== 'found') continue;
-    rows.push({ observation: observationForStay(draft, requestId, hintId, selectionPath, query, native), native });
+    rows.push({ observation: observationForStay(draft, requestId, hintId, selectionPath, query, native,
+      found.reservationObservations), native });
   }
   if (!rows.length) return { rows, observation: failedStayObservation(draft, requestId, hintId, selectionPath, query,
     'no_verified_native_stay_matches_original_hints') };
@@ -480,12 +483,12 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     }
     const field = effectiveLeaf(draft, fieldPath, item.field);
     if (field === UNKNOWN || typeof field !== 'string') { errors.push(`${changePath}:change_unknown`); return; }
-    if (['roomTypeForCharge', 'reservationNote'].includes(field)) { unsupported.add(field); return; }
+    if (field === 'roomTypeForCharge') { unsupported.add(field); return; }
     const supported = new Set(['arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'ratePlan',
-      'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
+      'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
     if (!supported.has(field)) { unsupported.add(field); return; }
     if (op === 'clear') {
-      if (['guestEmail', 'bookerName', 'bookerContact'].includes(field)) values[field] = '';
+      if (['guestEmail', 'bookerName', 'bookerContact', 'reservationNote'].includes(field)) values[field] = '';
       else if (field === 'cmsSend') values.cmsSend = false;
       else if (field === 'cmsMessageId' || field === 'cmsRecipient') values[field] = '';
       else errors.push(`${changePath}:field_cannot_be_cleared`);
@@ -496,7 +499,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     const rawValue = effectiveLeaf(draft, valuePath, item.value);
     if (rawValue === UNKNOWN) { errors.push(`${valuePath}:value_unknown`); return; }
     if (rawValue === NONE) {
-      if (['guestEmail', 'bookerName', 'bookerContact'].includes(field)) values[field] = '';
+      if (['guestEmail', 'bookerName', 'bookerContact', 'reservationNote'].includes(field)) values[field] = '';
       else if (field === 'cmsSend') values.cmsSend = false;
       else errors.push(`${valuePath}:explicit_none_not_supported`);
       reviewPaths.add(valuePath);
@@ -507,6 +510,8 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
       field === 'childCount' ? Number.isInteger(rawValue) && Number(rawValue) >= 0 && Number(rawValue) <= 9 :
       field === 'childAges' ? Array.isArray(rawValue) && rawValue.length <= 9 && rawValue.every((age) => Number.isInteger(age) && age >= 0 && age <= 17) :
       field === 'roomType' || field === 'ratePlan' ? code(rawValue) :
+      field === 'reservationNote' ? typeof rawValue === 'string' && rawValue.length <= 2000 &&
+        ![...rawValue].some((char) => (char.charCodeAt(0) < 32 && char !== '\n') || char.charCodeAt(0) === 127) :
       field === 'cmsSend' ? typeof rawValue === 'boolean' : typeof rawValue === 'string' && rawValue.length <= 1000 && !/[\p{Cc}]/u.test(rawValue);
     if (!valid) { errors.push(`${valuePath}:value_invalid`); return; }
     values[field] = rawValue;
@@ -525,6 +530,27 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
   effectiveChanges.forEach((change, index) => applyChange(change, `${changesPath}/${index}`));
   if (unsupported.size) return { outcome: 'unsupported', issue: 'amend_contains_native_unsupported_field', fields: [...unsupported] };
   if (errors.length) return { outcome: 'needs_input', issue: 'amend_changes_invalid_or_unknown', fields: errors };
+  const observationRefs = record(perRows[perIndex])?.currentObservationRefs;
+  const noteBaselines = Array.isArray(observationRefs) ? observationRefs.flatMap(ref => {
+    const observation = draft.observations.find(item => item.ref === ref && item.kind === 'stay_candidate' &&
+      item.criteria.kind === 'prefill_saved_note_baseline');
+    return observation ? [observation] : [];
+  }) : [];
+  if (Object.hasOwn(values, 'reservationNote') && noteBaselines.length) {
+    const baseline = noteBaselines[0], selectedObservation = draft.observations.find(item => item.ref === chosen.ref);
+    const note = record(record(record(baseline?.result)?.reservationObservations)?.reservationNote);
+    const selectedNote = record(record(record(selectedObservation?.result)?.reservationObservations)?.reservationNote);
+    if (noteBaselines.length !== 1 || baseline?.status !== 'complete' || !baseline.coverage.complete ||
+        baseline.generationId !== draft.generationId || baseline.propertyCode !== draft.propertyCode ||
+        baseline.criteria.requestId !== requestId || !note || !selectedNote ||
+        !['observed', 'blank'].includes(String(note.state)) || note.source !== 'record_view_raw_value' ||
+        note.confirmation !== chosen.selected.confirmation || typeof note.value !== 'string' ||
+        selectedNote.source !== note.source || selectedNote.state !== note.state ||
+        selectedNote.confirmation !== note.confirmation || selectedNote.value !== note.value) {
+      return { outcome: 'needs_input', issue: 'amend_note_baseline_does_not_match_selected_stay',
+        fields: [`${perPath}/currentObservationRefs`] };
+    }
+  }
   if (mode === 'execute') {
     const pending = [...reviewPaths].filter((path) => !accepted(draft, path));
     if (pending.length) return { outcome: 'needs_review', issue: 'amend_requires_staff_acceptance', fields: pending };
@@ -568,7 +594,8 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     scope: { mode: scope.mode, exclude: targetExclusions.rows.map(({ hint: excluded }) => ({ id: excluded.id ?? null,
       confirmation: excluded.confirmation ?? null, guestName: excluded.guestName ?? null,
       bookedArrival: excluded.bookedArrival ?? null, bookedDeparture: excluded.bookedDeparture ?? null })) },
-    rateHandling: rateValue, changes: baseChanges, reviewPaths: [...reviewPaths].sort() });
+    rateHandling: rateValue, changes: baseChanges, noteBaselineRefs: noteBaselines.map(item => item.ref),
+    reviewPaths: [...reviewPaths].sort() });
   return { outcome: 'ok', requestId, hintId, selectionPath: chosen.path, selectedRef: chosen.ref,
     selected: chosen.selected, baseChanges, rateHandling: rateValue as 'retain' | 'reprice',
     reviewPaths: [...reviewPaths], baseDigest, target, requestPath };
@@ -798,6 +825,15 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
       if (discovery.outcome !== 'prepared' || !record(discovery.preserved) || !discoveryBaseline) {
         return { issue: 'native_amend_baseline_unavailable' };
       }
+      if (Object.hasOwn(compiled.baseChanges, 'reservationNote')) {
+        const selectedObservation = loaded.draft!.observations.find(item => item.ref === compiled.selectedRef);
+        const note = record(record(record(selectedObservation?.result)?.reservationObservations)?.reservationNote);
+        if (!note || !['observed', 'blank'].includes(String(note.state)) ||
+            note.source !== 'record_view_raw_value' || note.confirmation !== compiled.selected.confirmation ||
+            typeof note.value !== 'string' || note.value !== discoveryBaseline.beforeNote) {
+          return { issue: 'native_amend_reservation_note_changed_or_unavailable' };
+        }
+      }
       const preserved = record(discovery.preserved)!;
       const changes = normalizedChanges(compiled, preserved);
       if (!changes) return { issue: 'native_amend_cms_baseline_unavailable' };
@@ -959,6 +995,7 @@ function readbackMatches(readback: unknown, prepared: Record<string, unknown>): 
       canonicalJson([...actual.childAges].sort((a: number, b: number) => a - b) as unknown) !==
       canonicalJson([...target.childAges].sort((a: number, b: number) => a - b)))) return null;
   const beforeKeys = { guestEmail: 'beforeGuestEmail', bookerName: 'beforeBookerName', bookerContact: 'beforeBookerContact' } as const;
+  if (actual.reservationNote !== (changes.reservationNote ?? baseline.beforeNote)) return null;
   for (const key of ['guestEmail', 'bookerName', 'bookerContact'] as const) {
     if (Object.hasOwn(changes, key) && actual[key] !== changes[key]) return null;
     if (!Object.hasOwn(changes, key) && (typeof baseline[beforeKeys[key]] !== 'string' ||

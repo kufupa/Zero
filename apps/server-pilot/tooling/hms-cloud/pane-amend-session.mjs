@@ -131,12 +131,13 @@ function matchesAmendBusiness(snapshot, selected, changes, baseline, state) {
     recordid: target.recordId, firstname: target.firstName, lastname: target.lastName,
     arrivaldate: wireDate(target.arrival), departuredate: wireDate(target.departure), roomtype: target.roomType,
     rateplan: target.ratePlan, adults: String(target.adults), guaranteetype: state.expectedGuarantee?.code ?? 'NGI',
-    reservationnote: String(baseline.data.reservationnote ?? '') };
+    reservationnote: Object.hasOwn(changes, 'reservationNote') ? changes.reservationNote : String(baseline.data.reservationnote ?? '') };
   if (!Object.entries(required).every(([key, value]) => Object.hasOwn(data, key) && String(data[key] ?? '') === value)) return false;
   const displayed = { confirmationnumber: target.confirmation, guestid: target.guestId, status: 'Reserved',
     firstname: target.firstName, lastname: target.lastName, arrivaldate: displayDate(target.arrival),
     departuredate: displayDate(target.departure), roomtype: target.roomType, rateplan: target.ratePlan,
     adults: String(target.adults) };
+  displayed.reservationnote = required.reservationnote;
   if (!Object.entries(displayed).every(([key, value]) => Object.hasOwn(values, key) && String(values[key] ?? '') === value)) return false;
   const contact = { emailaddress: 'guestEmail', caller: 'bookerName', udfchar06: 'bookerContact' };
   for (const [name, key] of Object.entries(contact)) {
@@ -608,7 +609,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       if (currentRate !== target.ratePlan) {
         draft = await bounded(stageOption(context, 'ratePlan', currentRate, target.ratePlan));
       }
-      const fields = Object.fromEntries(['firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact']
+      const fields = Object.fromEntries(['firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote']
         .filter((key) => Object.hasOwn(changes, key)).map((key) => [key, changes[key]]));
       fields.cmsSend = changes.cmsSend;
       if (changes.cmsSend) { fields.cmsMessageId = changes.cmsMessageId; fields.cmsRecipient = changes.cmsRecipient; }
@@ -736,7 +737,7 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
           native.ratePlan !== target.ratePlan || native.adults !== target.adults || native.children !== target.children ||
           native.guaranteeCode !== input.beforeGuaranteeCode) return { outcome: 'unverified' };
       const expected = expectedLabtestAmendRecord(record, native, { allowRealGuest: input.allowRealGuest === true });
-      if (!expected || expected.note !== input.beforeNote) return { outcome: 'unverified' };
+      if (!expected || expected.note !== (changes.reservationNote ?? input.beforeNote)) return { outcome: 'unverified' };
       const state = await current(page, expected, nativeOptions(input, record));
       const saved = await snapshot(state.frame), data = saved?.data;
       if (!data || !cleanLabtestRecord(saved) || !unchangedLabtestBusinessParties(input.beforeParties, saved,
@@ -779,7 +780,7 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
       return { outcome: 'matched', readback: { confirmation: native.confirmation, nativeStayId: native.reservationStayId,
         arrival: native.arrival, departure: native.departure, roomType: native.roomType, ratePlan: native.ratePlan,
         adults: native.adults, children: native.children, childAges: ages, firstName: native.firstName, lastName: native.lastName,
-        guestEmail, bookerName, bookerContact, cmsSend: state.cmsSend, cmsMessageId, cmsRecipient,
+        guestEmail, bookerName, bookerContact, reservationNote: expected.note, cmsSend: state.cmsSend, cmsMessageId, cmsRecipient,
         price: observedAmendPrice(saved, target, null) } };
     }, protectedSession.options);
   } catch { return { outcome: 'unverified' }; }
