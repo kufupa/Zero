@@ -4,7 +4,7 @@ import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationRequ
 type BasicRowChange = { requestId: string; parentId?: string; entityId?: string; childIds?: string[] };
 export type RowChange =
   | (BasicRowChange & { kind: 'move_allocation' | 'add_allocation' | 'remove_allocation' | 'add_date_section' | 'remove_date_section'
-      | 'add_quote_group' | 'remove_quote_group' | 'add_target' | 'remove_target' | 'add_service' | 'remove_service'
+      | 'add_quote_group' | 'remove_quote_group' | 'add_quote_extra' | 'remove_quote_extra' | 'add_target' | 'remove_target' | 'add_service' | 'remove_service'
       | 'add_document' | 'remove_document' | 'remove_action' | 'separate_quote_money' | 'split_quote_dates' })
   | (BasicRowChange & { kind: 'separate_cancel_target' })
   | { kind: 'separate_filing_target'; requestId: string; documentId: string; targetHintId: string;

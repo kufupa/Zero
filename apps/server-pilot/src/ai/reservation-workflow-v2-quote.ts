@@ -705,9 +705,16 @@ function compileQuote(
     const kind = resolvedLeaf(draft, path('requestedMoney', index, 'staffAllowanceType'), claim.staffAllowanceType);
     return !('issue' in kind) && kind.value === 'lunch';
   });
-  const lunchNotice = lunchRequested ? 'Centurion meal plans do not include lunch. Lunch is quoted as a separate extra.' : undefined;
+  const lunchSeparated = request.body.requestedMoney.some((claim, index) => {
+    const kind = resolvedLeaf(draft, path('requestedMoney', index, 'staffAllowanceType'), claim.staffAllowanceType);
+    return claim.staffAllowanceType === 'lunch' && !('issue' in kind) && kind.value === 'unsupported' &&
+      draft.proposal.content.requests.some(other => other.kind === 'other' &&
+        other.body.separatedFrom?.requestId === request.id && other.body.separatedFrom.moneyId === claim.id);
+  });
+  const lunchNotice = lunchSeparated ? 'Centurion meal plans do not include lunch. The separate lunch request is not included in this room quote.'
+    : lunchRequested ? 'Centurion meal plans do not include lunch. Lunch is quoted as a separate extra.' : undefined;
   const notes = [sourceNotes, lunchNotice].filter(Boolean).join('\n') || undefined;
-  if (execute && lunchRequested && !extras.some(extra => extra.service === 'lunch_allowance')) {
+  if (execute && lunchRequested && !lunchSeparated && !extras.some(extra => extra.service === 'lunch_allowance')) {
     issues.push(`${path('requestedMoney')}:lunch_extra_price_required`);
   }
   if (notes && notes.length > 1000) issues.push(`${notesPath}:native_note_limit`);

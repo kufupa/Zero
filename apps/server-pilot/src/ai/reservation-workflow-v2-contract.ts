@@ -480,7 +480,7 @@ export const reservationWorkflowV2AddActionInputSchema = reservationWorkflowV2It
 }).strict();
 export const reservationWorkflowV2ChangeRowsInputSchema = reservationWorkflowV2ItemInputSchema.extend({
   kind: z.enum(['add_allocation', 'remove_allocation', 'move_allocation', 'add_date_section', 'remove_date_section',
-    'add_quote_group', 'remove_quote_group', 'add_target', 'remove_target', 'add_service', 'remove_service',
+    'add_quote_group', 'remove_quote_group', 'add_quote_extra', 'remove_quote_extra', 'add_target', 'remove_target', 'add_service', 'remove_service',
     'add_document', 'remove_document', 'remove_action', 'separate_quote_money', 'split_quote_dates',
     'separate_filing_target', 'separate_cancel_target', 'link_created_addon_target']),
   requestId: idSchema, parentId: idSchema.optional(), entityId: idSchema.optional(), childIds: z.array(idSchema).max(200).optional(),

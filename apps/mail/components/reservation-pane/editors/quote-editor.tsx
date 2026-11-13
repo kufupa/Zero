@@ -265,20 +265,12 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
   return <Section title="Extras">
     <p className={styles.note}>Centurion meal plans do not include lunch. Add lunch and transfers as separate lines.</p>
     <div className={styles.inlineButtons}>{[
-      { kind: 'lunch', label: 'Lunch', unit: 'per_person_per_night' },
-      { kind: 'airport_transfer', label: 'Airport Transfer / Shuttle', unit: 'per_trip' },
-      { kind: 'office_transfer', label: 'Office Transfer', unit: 'per_person_per_night' },
-      { kind: 'dinner', label: 'Dinner', unit: 'per_person_per_night' },
+      { kind: 'lunch', label: 'Lunch' },
+      { kind: 'airport_transfer', label: 'Airport Transfer / Shuttle' },
+      { kind: 'office_transfer', label: 'Office Transfer' },
+      { kind: 'dinner', label: 'Dinner' },
     ].map(extra => <button type="button" key={extra.kind} className={styles.linkButton} disabled={editor.view.busy || rows.length >= 100}
-      onClick={() => {
-        const index = rows.length;
-        editor.commands.setUncommitted(`${bodyPath}/requestedMoney`, true);
-        void (async () => {
-          await editor.commands.edit(`${bodyPath}/requestedMoney`, [...rows, { id: `extra_${crypto.randomUUID().replaceAll('-', '')}`,
-            amount: null, currency: 'ZAR', unit: extra.unit, scope: 'overall', targetRefs: [], sourceRefs: [] }]);
-          await editor.commands.edit(`${bodyPath}/requestedMoney/${index}/staffAllowanceType`, extra.kind);
-        })().finally(() => editor.commands.setUncommitted(`${bodyPath}/requestedMoney`, false)).catch(() => {});
-      }}>+ {extra.label}</button>)}</div>
+      onClick={() => void editor.commands.changeRows({ kind: 'add_quote_extra', requestId: editor.request.id, entityId: extra.kind })}>+ {extra.label}</button>)}</div>
     <p className={styles.note}>Customer amounts are separate from Infor room rates. They never replace a native rate.</p>
     {rows.map((row, index) => {
       const path = `${bodyPath}/requestedMoney/${index}`;
@@ -341,7 +333,7 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
             ? <p className={styles.notice}>The separate follow-up is not saved yet. Save it as an Other request before generating this quote.</p>
             : !['dinner', 'lunch', 'airport_transfer', 'office_transfer'].includes(kind) && <p className={styles.notice}>Choose the extra to include in this quote, or save it as a separate Other request.</p>}
         {kind !== 'unsupported' && <button type="button" className={styles.linkButton} disabled={editor.view.busy}
-          onClick={() => void editor.commands.edit(`${bodyPath}/requestedMoney`, rows.filter((_, rowIndex) => rowIndex !== index))}>Remove extra</button>}
+          onClick={() => void editor.commands.changeRows({ kind: 'remove_quote_extra', requestId: editor.request.id, entityId: moneyId })}>Remove extra</button>}
       </div>;
     })}
   </Section>;

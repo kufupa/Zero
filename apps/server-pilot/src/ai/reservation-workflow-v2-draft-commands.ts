@@ -220,6 +220,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
         : input.kind.includes('allocation') ? [`${root}/body/allocations`]
         : input.kind.includes('date_section') ? [`${root}/body/dateSections`, `${root}/body/allocations`]
         : input.kind.includes('quote_group') ? [`${root}/body/groups`]
+        : input.kind.includes('quote_extra') ? [`${root}/body/requestedMoney`]
         : input.kind.includes('target') ? [includeRoot, ...(request.kind === 'amend' ? [`${root}/body/perTarget`] : [])]
         : input.kind.includes('service') ? ['/proposal/content/services', `${root}/serviceRefs`]
         : input.kind.includes('document') ? ['/proposal/content/documents', `${root}/documentRefs`]
@@ -429,6 +430,21 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           draft.fieldOverrides[path] = { state: 'set', value: 'unsupported', updatedAt: new Date().toISOString() };
           draft.staffReviews[path] = { status: 'accepted', at: new Date().toISOString(), note: 'Staff retained this request as a separate task.' };
           break;
+        }
+        case 'add_quote_extra': {
+          if (request.kind !== 'quote' || request.body.requestedMoney.length >= 100) return null;
+          const kind = input.entityId;
+          if (kind !== 'dinner' && kind !== 'lunch' && kind !== 'airport_transfer' && kind !== 'office_transfer') return null;
+          const row = { id: id(), amount: null, currency: 'ZAR',
+            unit: kind === 'airport_transfer' ? 'per_trip' : 'per_person_per_night',
+            scope: 'overall' as const, targetRefs: [], sourceRefs: [], staffAllowanceType: kind };
+          request.body.requestedMoney.push(row); createdId = row.id;
+          changedRoots.push(`${root}/body/requestedMoney`); break;
+        }
+        case 'remove_quote_extra': {
+          if (request.kind !== 'quote' || !request.body.requestedMoney.some(row => row.id === input.entityId)) return null;
+          request.body.requestedMoney = request.body.requestedMoney.filter(row => row.id !== input.entityId);
+          changedRoots.push(`${root}/body/requestedMoney`); break;
         }
         case 'add_quote_group': {
           if (request.kind !== 'quote' || request.body.groups.length >= 100) return null;
