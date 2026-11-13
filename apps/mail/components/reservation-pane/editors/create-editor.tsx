@@ -388,8 +388,11 @@ export function CreateEditor(editor: Editor) {
   const [commissionOpen, setCommissionOpen] = useState(commissionNeedsAttention);
   useEffect(() => { if (commissionNeedsAttention) setCommissionOpen(true); }, [commissionNeedsAttention]);
   const sharedBooking = [stayFields.find(field => field.key === 'guaranteeType')!, ...roomFields];
+  const lunchRequested = [valueAt(snapshot, `${shared}/requestedMealPlan`), ...sections.map(section => record(section.defaults).requestedMealPlan),
+    ...allocations.map(allocation => record(allocation.overrides).requestedMealPlan)].some(value => /\blunch\b/i.test(text(value)));
   const extraStay = [...stayFields.filter(field => field.key !== 'guaranteeType'), trackField];
   return <div className={`${styles.editor} ${styles.compactCreate}`}>
+    {lunchRequested && <p className={styles.notice} role="note">Centurion Meal Plans do not include lunch. Arrange lunch as a separate extra.</p>}
     {hasCompleted && <p className={styles.notice}>Saved rooms keep their confirmed details. Changes to shared values and dates apply to remaining rooms only.</p>}
     <Section title="Commercial">
       <fieldset disabled={allCompleted} className={styles.plainFieldset}>

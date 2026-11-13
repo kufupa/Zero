@@ -52,4 +52,3 @@ export const CENTURION_RATE_PLANS: CenturionRateCatalogueEntry[] = Object.keys(
 
 export const CENTURION_OVERRIDE_RATE_CODES = ['NCOR1B', 'NCOR2B', 'BAR', 'GNC3B', 'GNC4B'] as const;
 export const CENTURION_EVENT_RATE_CODES = ['GNC3B', 'GNC4B'] as const;
-
