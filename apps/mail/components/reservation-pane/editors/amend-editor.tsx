@@ -24,8 +24,9 @@ const fields = [
   ['reservationNote', 'Reservation Note', 'note'], ['cmsSend', 'CMS Send Mail', 'boolean'],
   ['cmsMessageId', 'CMS Message Id', 'code'], ['cmsRecipient', 'CMS Booker Email', 'email'],
 ] as const;
-const clearable = new Set(['guestEmail', 'bookingAgency', 'organization', 'arAccount', 'billingReference', 'taCommission',
-  'track', 'guaranteeType', 'bookerName', 'bookerEmail', 'bookerMobile', 'guestOptIn', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
+const clearable = new Set(['guestEmail', 'billingReference',
+  'bookerName', 'bookerEmail', 'bookerMobile', 'guestOptIn', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
+const unsupportedClears = new Set(['bookingAgency', 'organization', 'arAccount', 'taCommission', 'track', 'guaranteeType']);
 const priceFields = new Set(['arrival', 'departure', 'roomType', 'roomTypeForCharge', 'ratePlan', 'mealPlan', 'roomCount', 'adults', 'childCount', 'childAges']);
 const unsupportedFieldLabels: Record<string, string> = {};
 const rows = (value: unknown) => Array.isArray(value) ? value.map(record) : [];
@@ -299,6 +300,8 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
   const kept = editor.snapshot.session.draft.fieldOverrides[`${path}/op`]?.state === 'none';
   const originalOp = text(original.op);
   const op = text(change.op) || originalOp, field = text(change.field), spec = fields.find(item => item[0] === field);
+  const unsupportedClear = !kept && op === 'clear' && unsupportedClears.has(field);
+  const sourceClear = originalOp === 'clear' && unsupportedClears.has(field);
   const known = Boolean(spec || op === 'shift_dates' || op === 'shift_departure');
   const setOp = (next: string) => void editor.commands.edit(`${path}/op`, next === 'keep' ? null : next, next === 'keep' ? 'none' : 'set');
   const valuePath = `${path}/value`;
@@ -314,17 +317,23 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
         {field === 'guestOptIn' ? <option value={op === 'clear' ? 'clear' : 'set'}>Clear setting</option>
           : op === 'shift_dates' || op === 'shift_departure' ? <option value={op}>Apply shift</option> : known ? <>
           <option value="set">Set</option>{clearable.has(field) && <option value="clear">Clear</option>}
+          {unsupportedClear && <option value="clear" disabled>Requested clear</option>}
         </> : <option value={op}>Requested</option>}
       </select></div>
     {field === 'roomCount' && <span className={styles.hint}>Add or cancel rooms as separate reservations.{!kept && ' Select Keep current to save other changes.'}</span>}
     {kept && field === 'roomCount' && original.value != null && <span className={styles.hint}>Requested rooms: {text(original.value)}</span>}
     {unsupportedValue !== null && <small className={styles.hint}>Requested: {unsupportedValue}</small>}
-    {kept ? <span className={styles.hint}>{known ? 'Original request can be restored here.'
+    {sourceClear && !unsupportedClear && <span className={styles.hint}>Original request: clear this field. {kept ? 'Infor will keep the current value.' : 'Enter or select a replacement.'}</span>}
+    {!kept && field === 'taCommission' && op === 'set' && typeof original.value === 'string' && <span className={styles.hint}>
+      Requested commission: {original.value}.{typeof valueAt(editor.snapshot, valuePath) === 'string' && ' Enter the percentage as a number.'}
+    </span>}
+    {kept ? sourceClear ? null : <span className={styles.hint}>{known ? 'Original request can be restored here.'
       : 'Infor will leave this field unchanged. Handle the displayed request manually if it is still essential.'}</span> : !known ? <div className={styles.warning}>
         Nava cannot apply this additional requested change in Amend. Keep the saved stay unchanged here and handle the request manually in Infor if it remains essential.
       </div> :
       op === 'shift_dates' || op === 'shift_departure' ? <Field label="Days to shift" path={`${path}/days`} type="number" editor={editor} compact hint="Each stay uses its own original dates." /> : <>
-        {op === 'clear' ? <span className={styles.hint}>Clear this field on the selected stay.</span> : spec?.[2] === 'ages' ? <AgeInput editor={editor} path={valuePath} /> :
+        {unsupportedClear ? <div className={styles.warning} role="alert">This request asks to clear {title}. It cannot be cleared here. Choose Keep current to save other changes, or Set to choose a replacement.</div> :
+          op === 'clear' ? <span className={styles.hint}>Clear this field on the selected stay.</span> : spec?.[2] === 'ages' ? <AgeInput editor={editor} path={valuePath} /> :
           spec?.[2] === 'count' ? <Count label={spec[1]} path={valuePath} editor={editor} min={field === 'adults' || field === 'roomCount' ? 1 : 0} max={field === 'adults' ? 16 : field === 'roomCount' ? 8 : 9} /> :
           spec?.[2] === 'note' ? <ReservationNote path={valuePath} editor={editor} /> :
           spec?.[2] === 'terms' ? valueAt(editor.snapshot, valuePath) === false
@@ -337,7 +346,7 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
             <option value="true">Yes</option><option value="false">No</option></select></label> :
           spec?.[2] === 'code' ? <NativePicker label={spec[1]} path={valuePath} editor={editor}
             kind={field === 'roomType' ? 'room_type' : field === 'roomTypeForCharge' ? 'room_type_for_charge' : field === 'cmsMessageId' ? 'cms_message' : field === 'guaranteeType' ? 'guarantee' : field === 'track' ? 'track' : 'rate_plan'} compact /> :
-          <Field label={spec?.[1] || 'Value'} path={valuePath} editor={editor} compact type={spec?.[2] === 'date' ? 'date' : spec?.[2] === 'email' ? 'email' : 'text'} maxLength={field === 'billingReference' ? 4000 : undefined} nativeMaxLength={field === 'billingReference' ? 50 : undefined} hint={field === 'billingReference' ? 'Select an A/R Account. Infor accepts at most 50 characters.' : field === 'guestEmail' ? 'Use the guest’s own email only when explicitly stated.' : undefined} />}
+          <Field label={spec?.[1] || 'Value'} path={valuePath} editor={editor} compact type={spec?.[2] === 'date' ? 'date' : spec?.[2] === 'email' ? 'email' : field === 'taCommission' ? 'number' : 'text'} maxLength={field === 'billingReference' ? 4000 : undefined} nativeMaxLength={field === 'billingReference' ? 50 : undefined} hint={field === 'billingReference' ? 'Select an A/R Account. Infor accepts at most 50 characters.' : field === 'guestEmail' ? 'Use the guest’s own email only when explicitly stated.' : field === 'taCommission' ? 'Enter a percentage from 0 to 100.' : undefined} />}
       </>}
   </div>;
 }
