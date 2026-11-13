@@ -12,14 +12,20 @@ const ALLOWED_LATER = new Set([SAVE_PATH.toLowerCase(), AVAILABILITY_PATH.toLowe
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const BUSINESS = ['propertycode', 'PKID', 'status', 'confirmationnumber', 'bookingsessionid',
   'reservationid', 'reservationstayid', 'recordid', 'guestid', 'firstname', 'lastname',
-  'arrivaldate', 'departuredate', 'adults', 'children', 'child1', 'child2', 'child3', 'childages',
-  'roomtype', 'roomtypecharge', 'rateplan', 'mealplan', 'track', 'guaranteetype',
-  'taid1', 'ta1', 'companyid', 'company', 'companyname', 'groupid', 'groupname',
+  'arrivaldate', 'departuredate', 'nights', 'adults', 'children', 'child1', 'child2', 'child3', 'childages',
+  'roomtype', 'roomtypecharge', 'rateplan', 'mealplan', 'promotioncode', 'track', 'trackcode', 'guaranteetype', 'reasonforstay',
+  'taid1', 'ta1', 'companyid', 'company', 'companyname', 'groupid', 'groupname', 'groupcompanyid',
+  'grouptaid', 'groupta2id', 'groupta3id', 'bookingagency2id', 'bookingagency3id', 'bookingagency2name',
+  'bookingagency3name', 'bookingagency2percent', 'bookingagency2amount', 'bookingagency3percent', 'bookingagency3amount',
   'bookingagencycontractid', 'bacontract', 'bookingagency1iatanumber',
-  'araccountid', 'araccountname', 'arprofileid', 'billingreference', 'sourceofbus',
+  'bookingagency2iatanumber', 'bookingagency3iatanumber', 'bookingagency1commissionable',
+  'bookingagencycommissionpricing', 'bookingagencycommissiontype',
+  'araccountid', 'araccountname', 'arprofileid', 'guaranteecreditcardid', 'leaseguaranteecreditcardid',
+  'billingreference', 'sourceofbus',
   'sourceofbusinessdesc', 'reservationnote', 'emailaddress', 'caller', 'udfchar06',
-  'guestoptin4', 'udfchkbox04', 'udfchar09', 'udfchar13', 'averagerate', 'totalrate',
-  'grandtotal', 'currency', 'grandtotalcurr'];
+  'guestoptin4', 'udfchkbox04', 'udfchar09', 'udfchar13', 'averagerate', 'averageratecurr',
+  'averagenightly', 'averagenightlycurr', 'totalrate', 'totalratecurr', 'totalratewithtax',
+  'totalratewithtaxcurr', 'grandtotal', 'currency', 'grandtotalcurr'];
 const SAVED_IDENTITY = ['propertycode', 'PKID', 'status', 'confirmationnumber', 'guestid',
   'reservationid', 'reservationstayid', 'recordid'];
 const busy = new WeakSet();
@@ -195,23 +201,29 @@ async function inspect(surface, expected, target, edit) {
           field.getAttribute('aria-invalid') === 'true' || (Array.isArray(errors) && errors.length)) {
         throw new Error('COMMISSION_CONTROL_NOT_EDITABLE');
       }
-      const controls = [...panel.el.dom.querySelectorAll('input,textarea,select')].filter((el) =>
-        visible(el) && !['hidden', 'password'].includes(el.type) && el !== field).map((el) => ({
-        id: el.id, name: el.name, value: ['checkbox', 'radio'].includes(el.type) ? el.checked : el.value,
-        disabled: Boolean(el.disabled), readOnly: Boolean(el.readOnly),
-      }));
+      const names = new Set(business.map((name) => name.toLowerCase()));
+      const controls = {};
+      for (const el of panel.el.dom.querySelectorAll('input,textarea,select')) {
+        const name = el.name?.toLowerCase();
+        if (!name || !names.has(name) || !visible(el) || ['hidden', 'password'].includes(el.type)) continue;
+        (controls[name] ||= []).push(['checkbox', 'radio'].includes(el.type) ? el.checked : el.value);
+      }
+      const orderedControls = Object.fromEntries(Object.keys(controls).sort().map((name) => [name, controls[name]]));
       const model = {};
-      for (const name of new Set([...business, ...controls.map((el) => el.name).filter(Boolean)])) {
+      const otherValues = {};
+      for (const name of business) {
         const found = Object.keys(data).filter((key) => key.toLowerCase() === name.toLowerCase());
         if (found.length > 1) throw new Error('COMMISSION_MODEL_AMBIGUOUS');
-        if (found.length && found[0].toLowerCase() !== 'ta1commission') {
+        if (found.length) {
           const value = JSON.stringify(data[found[0]] ?? null);
           if (value === undefined) throw new Error('COMMISSION_MODEL_UNVERIFIED');
           model[found[0]] = value;
         }
+        const formKeys = Object.keys(values).filter((key) => key.toLowerCase() === name.toLowerCase());
+        if (formKeys.length > 1) throw new Error('COMMISSION_FORM_AMBIGUOUS');
+        if (formKeys.length) otherValues[name.toLowerCase()] = values[formKeys[0]];
       }
-      const otherValues = { ...values }; delete otherValues.ta1commission;
-      return { actual: normalized[0], empty, controls, values: otherValues, model,
+      return { actual: normalized[0], empty, controls: orderedControls, values: otherValues, model,
         session: read('bookingsessionid'), guestId: read('guestid') };
     };
     const before = snapshot();
@@ -226,17 +238,31 @@ async function inspect(surface, expected, target, edit) {
   }, { origin: ORIGIN, expected, target, edit, business: BUSINESS });
 }
 
-function sameOtherFields(left, right) {
-  return Boolean(left && right && left.session === right.session && left.guestId === right.guestId &&
-    JSON.stringify(left.controls) === JSON.stringify(right.controls) &&
-    JSON.stringify(left.values) === JSON.stringify(right.values) && JSON.stringify(left.model) === JSON.stringify(right.model));
+function sameOtherFields(left, right, allowModelSync = false) {
+  if (!left || !right || left.session !== right.session || left.guestId !== right.guestId ||
+      JSON.stringify(left.controls) !== JSON.stringify(right.controls) ||
+      JSON.stringify(left.values) !== JSON.stringify(right.values)) return false;
+  return [...new Set([...Object.keys(left.model), ...Object.keys(right.model)])].every((name) => {
+    if (left.model[name] === right.model[name]) return true;
+    const field = name.toLowerCase();
+    // updateRecord may synchronize a previously staged form value into the model.
+    return allowModelSync && Object.hasOwn(left.values, field) && Object.hasOwn(right.model, name) &&
+      JSON.stringify(left.values[field] ?? null) === right.model[name];
+  });
 }
 
 function sameSnapshot(proof, snapshot) {
   if (!proof || !snapshot?.values || !snapshot.data) return false;
-  const values = { ...snapshot.values }; delete values.ta1commission;
-  return JSON.stringify(values) === JSON.stringify(proof.values) && Object.entries(proof.model).every(([name, value]) =>
-    Object.hasOwn(snapshot.data, name) && JSON.stringify(snapshot.data[name] ?? null) === value);
+  const values = {}, model = {};
+  for (const name of BUSINESS) {
+    const keys = Object.keys(snapshot.values).filter((key) => key.toLowerCase() === name.toLowerCase());
+    if (keys.length > 1) return false;
+    if (keys.length) values[name.toLowerCase()] = snapshot.values[keys[0]];
+    const modelKeys = Object.keys(snapshot.data).filter((key) => key.toLowerCase() === name.toLowerCase());
+    if (modelKeys.length > 1) return false;
+    if (modelKeys.length) model[modelKeys[0]] = JSON.stringify(snapshot.data[modelKeys[0]] ?? null);
+  }
+  return JSON.stringify(values) === JSON.stringify(proof.values) && JSON.stringify(model) === JSON.stringify(proof.model);
 }
 
 async function stage(page, frame, expected, percent, stopOwner) {
@@ -277,7 +303,7 @@ async function stage(page, frame, expected, percent, stopOwner) {
     const edited = await inspect(frame, browserExpected, target, true);
     checkActive();
     if (!sameOtherFields(pre.before, edited.before) || pre.before.actual !== edited.before.actual ||
-        pre.before.empty !== edited.before.empty || !sameOtherFields(edited.before, edited.after)) {
+        pre.before.empty !== edited.before.empty || !sameOtherFields(edited.before, edited.after, true)) {
       throw new Error('COMMISSION_OTHER_FIELDS_CHANGED');
     }
     await frame.waitForFunction(() => {
