@@ -6,7 +6,7 @@ import { planSavedChildOccupancy, savedChildOccupancy } from './guest-stay-amend
 const identityFields = ['confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note', 'adults', 'childCount', 'childAges'];
 const optionalIdentityFields = ['firstName', 'lastName'];
 const changeFields = ['arrival', 'departure', 'adults', 'children', 'childCount', 'childAges', 'roomType', 'ratePlan', 'retainRates',
-  'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'billingReference', 'roomTypeForCharge', 'track', 'cmsSend', 'cmsMessageId', 'cmsRecipient'];
+  'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'billingReference', 'roomTypeForCharge', 'taCommission', 'track', 'cmsSend', 'cmsMessageId', 'cmsRecipient'];
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const only = (v, keys) => object(v) && Object.keys(v).every((key) => keys.includes(key));
@@ -56,6 +56,8 @@ function validChanges(expected, changes, minimumArrival) {
         !/^(?:[A-Z0-9]{1,12})?$/.test(changes.roomTypeForCharge))) ||
       (Object.hasOwn(changes, 'billingReference') && (typeof changes.billingReference !== 'string' ||
         changes.billingReference.length > 50 || /[\p{Cc}]/u.test(changes.billingReference))) ||
+      (Object.hasOwn(changes, 'taCommission') && (typeof changes.taCommission !== 'number' ||
+        !Number.isFinite(changes.taCommission) || changes.taCommission < 0 || changes.taCommission > 100)) ||
       (Object.hasOwn(changes, 'track') && (!only(changes.track, ['lookupCode', 'display']) ||
         Object.keys(changes.track).length !== 2 || !/^[A-Z0-9]{1,12}$/.test(changes.track.lookupCode || '') ||
         typeof changes.track.display !== 'string' || !changes.track.display || changes.track.display.length > 200 ||
@@ -135,7 +137,8 @@ export function labtestCombinedAmendPreimageBinding(expected, state, snapshot, c
         (typeof state.guestEmail === 'string' && state.guestEmail !== String(snapshot.data.emailaddress ?? ''))) return null;
     // Bind the selected stay and its business preimage, not HMS's entire changing form.
     const business = ['reservationid', 'reservationstayid', 'recordid', 'guaranteetype', 'roomtypecharge', 'billingreference', 'track', 'caller', 'udfchar06',
-      'emailaddress', 'udfchkbox04', 'udfchar09', 'udfchar13'];
+      'emailaddress', 'udfchkbox04', 'udfchar09', 'udfchar13',
+      ...(Object.hasOwn(changes, 'taCommission') ? ['ta1commission'] : [])];
     const fields = Object.fromEntries(business.filter((key) => Object.hasOwn(snapshot.data, key))
       .map((key) => [key, snapshot.data[key] ?? '']));
     const payload = { version:1, expected, changes, fields, parties:state.partyPreimage };

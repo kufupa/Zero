@@ -11,6 +11,7 @@ import { createSavedRateStageRequestGate } from './saved-stay-rate-stage-gate.mj
 import { stageSavedGuestFieldsForComposition } from './guest-stay-amend-contact.mjs';
 import { stageSavedChargeRoomForComposition } from './guest-stay-amend-charge-room.mjs';
 import { listSavedTrackChoices, stageSavedTrackForComposition } from './guest-stay-amend-track.mjs';
+import { stageSavedStayCommission } from './guest-stay-commission.mjs';
 import { labtestCombinedAmendPreimageBinding } from './saved-stay-combined-preimage.mjs';
 import { nativeCmsSendValue, runLabtestAmendSave } from './labtest-amend-save.mjs';
 import { createLabtestAmendDispatch } from './labtest-amend-dispatch.mjs';
@@ -23,6 +24,8 @@ const identityKeys = ['source', 'propertyCode', 'confirmation', 'reservationStay
   'recordId', 'guestId', 'status', 'firstName', 'lastName', 'arrival', 'departure', 'roomType',
   'ratePlan', 'adults', 'children', 'childAges'];
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const percent = value => value !== null && value !== undefined && String(value).trim() !== '' &&
+  Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 100 ? Number(value) : null;
 const validTarget = (target) => target?.propertyCode === 'HRCEN' && target.browserSlot === 'centurion' &&
   target.origin === 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const searchHints = (selected, arrivalDate) => {
@@ -157,6 +160,8 @@ function matchesAmendBusiness(snapshot, selected, changes, baseline, state) {
     if (!Object.hasOwn(data, name) || String(data[name] ?? '') !== expected ||
         (Object.hasOwn(values, name) && String(values[name] ?? '') !== expected)) return false;
   }
+  if (Object.hasOwn(changes, 'taCommission') && (percent(data.ta1commission) !== changes.taCommission ||
+      percent(values.ta1commission) !== changes.taCommission)) return false;
   const recipient = changes.cmsRecipient, message = changes.cmsMessageId;
   const formCms = !Object.hasOwn(values, 'udfchkbox04') || values.udfchkbox04 === ''
     ? false : nativeCmsSendValue(values.udfchkbox04);
@@ -198,6 +203,10 @@ export function matchesCloudPaneAmendSave(request, frame, snapshot,
     if (Object.hasOwn(data, 'track')) required.track = String(data.track ?? '');
     if (Object.hasOwn(changes, 'childAges')) {
       for (const name of ['childages', 'child1', 'child2', 'child3']) required[name] = String(data[name] ?? '');
+    }
+    if (Object.hasOwn(changes, 'taCommission')) {
+      const fields = [...body].filter(([name]) => name.toLowerCase() === 'ta1commission');
+      if (fields.length !== 1 || fields[0][0] !== 'ta1commission' || percent(fields[0][1]) !== changes.taCommission) return false;
     }
     for (const [key, name] of Object.entries({ bookerName: 'caller', bookerContact: 'udfchar06',
       billingReference: 'billingreference', cmsMessageId: 'udfchar09' })) {
@@ -629,10 +638,17 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         beforeBillingReference: typeof baseline?.data?.billingreference === 'string' &&
           baseline.data.billingreference === baseline?.values?.billingreference ? baseline.data.billingreference : null,
         beforeTrack: typeof baseline?.data?.track === 'string' && baseline.data.track === baseline?.values?.track ? baseline.data.track : null,
+        ...(input.captureCommissionBaseline ? { beforeCommission:
+          percent(baseline?.data?.ta1commission) !== null && percent(baseline?.data?.ta1commission) === percent(baseline?.values?.ta1commission)
+            ? percent(baseline.data.ta1commission) : null } : {}),
         beforeRoomTypeForCharge: typeof baseline?.data?.roomtypecharge === 'string' &&
           baseline.data.roomtypecharge === baseline?.values?.roomtypecharge ? baseline.data.roomtypecharge : null,
         beforeGuaranteeCode: state.expectedGuarantee?.code ?? 'NGI',
         beforeSavedRates: savedRates ? structuredClone(savedRates) : null };
+      if (input.captureCommissionBaseline && (recoveryBaseline.beforeCommission === null ||
+          !/^\d{1,30}$/.test(state.partyPreimage?.taid1 || '') || !state.partyPreimage?.ta1?.trim())) {
+        throw new Error('COMMISSION_AGENCY_OR_PREIMAGE_UNVERIFIED');
+      }
       if (Object.hasOwn(changes, 'billingReference')) {
         const party = state.partyPreimage;
         if (typeof recoveryBaseline.beforeBillingReference !== 'string' ||
@@ -660,6 +676,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           beforeBookerContact: recoveryBaseline.beforeBookerContact,
           beforeBillingReference: recoveryBaseline.beforeBillingReference,
           beforeTrack: recoveryBaseline.beforeTrack,
+          ...(input.captureCommissionBaseline ? { beforeCommission: recoveryBaseline.beforeCommission } : {}),
           beforeRoomTypeForCharge: recoveryBaseline.beforeRoomTypeForCharge,
           beforeGuaranteeCode: recoveryBaseline.beforeGuaranteeCode,
           beforeSavedRates: savedRates ? structuredClone(savedRates) : null,
@@ -700,6 +717,10 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         if (changes.cmsRecipient !== String(prepared.baseline.data.udfchar13 ?? '')) fields.cmsRecipient = changes.cmsRecipient;
       }
       draft = await bounded(stageGuest(context, fields));
+      if (Object.hasOwn(changes, 'taCommission')) {
+        draft = await bounded(stageSavedStayCommission(context, { expectedAgencyId: prepared.state.partyPreimage.taid1,
+          percent: changes.taCommission }));
+      }
       draft = await bounded(snapshot(prepared.frame));
       if (!context.isActive() || !valid(draft, prepared)) throw new Error('AMEND_DRAFT_CHANGED');
       return { draft, approvedPrices: needsAvailability ? null : approvalPrice(draft, prepared) };
@@ -843,6 +864,11 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
         String(data.billingreference ?? '') === String(saved.values.billingreference ?? '') ? String(data.billingreference ?? '') : null;
       if ((Object.hasOwn(changes, 'billingReference') || typeof input.beforeBillingReference === 'string') &&
           billingReference !== (changes.billingReference ?? input.beforeBillingReference)) return { outcome: 'unverified' };
+      const commission = percent(data.ta1commission);
+      if (Object.hasOwn(changes, 'taCommission') && (commission !== changes.taCommission ||
+          percent(saved.values?.ta1commission) !== changes.taCommission || typeof input.beforeCommission !== 'number')) {
+        return { outcome: 'unverified' };
+      }
       const track = Object.hasOwn(data, 'track') && Object.hasOwn(saved.values ?? {}, 'track') &&
         String(data.track ?? '') === String(saved.values.track ?? '') ? String(data.track ?? '') : null;
       if ((changes.track || typeof input.beforeTrack === 'string') && track !== (changes.track?.display ?? input.beforeTrack)) {
@@ -881,6 +907,7 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
         guestEmail, bookerName, bookerContact, reservationNote: expected.note,
         ...(billingReference === null ? {} : { billingReference }),
         ...(track === null ? {} : { track }),
+        ...(Object.hasOwn(changes, 'taCommission') ? { taCommission: commission } : {}),
         ...(typeof chargeRoom === 'string' ? { roomTypeForCharge: chargeRoom } : {}),
         cmsSend: state.cmsSend, cmsMessageId, cmsRecipient,
         price: observedAmendPrice(saved, target, null) } };
