@@ -1393,11 +1393,14 @@ function updateDraft(current: ReservationWorkflowV2Draft, input: {
       }
     }
     // Retyping a native identity or saved-stay query removes the old selection atomically.
-    const guest = input.fieldPath.match(/^(.*\/guest)\/(?:firstName|lastName|email)$/);
+    const guest = input.fieldPath.match(/^(.*\/guest)\/(?:firstName|lastName|email|mobile)$/);
     const party = input.fieldPath.match(/^(.*\/(?:bookingAgency|organization|arAccount))(?:\/name)?$/);
+    const amendValue = input.fieldPath.match(/^(\/proposal\/content\/requests\/[^/]+\/body\/(?:sharedChanges\/\d+|perTarget\/\d+\/changes\/\d+)\/value)(?:\/name)?$/);
+    const amendField = amendValue ? effectiveDraftPath(current, `${amendValue[1]!.slice(0, -'/value'.length)}/field`) : null;
+    const amendParty = ['bookingAgency', 'organization', 'arAccount'].includes(String(amendField)) ? amendValue : null;
     const target = input.fieldPath.match(/^(.*\/targets\/(?:include|exclude)\/[^/]+)\/(?:confirmation|guestName|bookedArrival|bookedDeparture)$/);
     const service = input.fieldPath.match(/^(\/proposal\/content\/services\/[^/]+)\/code$/);
-    const selection = guest ? `${guest[1]}/nativeSelectionRef` : party ? `${party[1]}/nativeSelectionRef` :
+    const selection = guest ? `${guest[1]}/nativeSelectionRef` : party ? `${party[1]}/nativeSelectionRef` : amendParty ? `${amendParty[1]}/nativeSelectionRef` :
       target ? `${target[1]}/suggestedRef` : service ? `${service[1]}/itemCandidateRef` : null;
     const selections = new Set(selection ? [selection] : []);
     if (target) {
@@ -1418,6 +1421,14 @@ function updateDraft(current: ReservationWorkflowV2Draft, input: {
     for (const path of selections) {
       fieldOverrides[path] = { state: 'unknown', updatedAt: input.override.updatedAt };
       delete staffReviews[path];
+    }
+    const quoteRate = input.fieldPath.match(/^(\/proposal\/content\/requests\/[^/]+\/body\/groups\/[^/]+)\/ratePlan$/);
+    const quoteParts = quoteRate && pathParts(input.fieldPath);
+    const quoteRequest = quoteParts && current.proposal.content.requests.find(row => row.id === quoteParts[3]);
+    if (quoteRate && quoteRequest?.kind === 'quote') {
+      const mealPlan = `${quoteRate[1]}/mealPlan`;
+      fieldOverrides[mealPlan] = { state: 'unknown', updatedAt: input.override.updatedAt };
+      delete staffReviews[mealPlan];
     }
     // A review belongs to the displayed value and scope; replacing a parent also replaces its child values.
     for (const path of Object.keys(staffReviews)) {
