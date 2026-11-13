@@ -32,7 +32,9 @@ async function gridRows(win, spec, kind) {
     return grids[0].getStore().getRange().map(({ data }) => ({
       nativeId: read(data, spec.id), name: read(data, spec.name),
       ...(kind === 'arAccount' ? { profileId: read(data, 'profileid'), arProfileId: read(data, 'arprofileid'), accountNumber: read(data, 'araccountnumber') }
-        : kind === 'bookingAgency' ? { referenceNumber: read(data, 'iatanumber') }
+        : kind === 'bookingAgency' ? { referenceNumber: read(data, 'iatanumber'),
+          commissionPercentage: read(data, 'commissionpercentage'), payCommissionFlag: read(data, 'paycommissionflag'),
+          commissionFlatAmount: read(data, 'commissionflatamount') }
           : { corporateAccountNumber: read(data, 'corporateaccountnumber') }),
     }));
   }, { spec, kind });
@@ -100,7 +102,9 @@ async function picker(context, { kind, query }) {
     const rows = grids[0].getStore().getRange().map(({ data }) => ({
       nativeId: read(data, spec.id), name: read(data, spec.name),
       ...(kind === 'arAccount' ? { profileId: read(data, 'profileid'), arProfileId: read(data, 'arprofileid'), accountNumber: read(data, 'araccountnumber') }
-        : kind === 'bookingAgency' ? { referenceNumber: read(data, 'iatanumber') }
+        : kind === 'bookingAgency' ? { referenceNumber: read(data, 'iatanumber'),
+          commissionPercentage: read(data, 'commissionpercentage'), payCommissionFlag: read(data, 'paycommissionflag'),
+          commissionFlatAmount: read(data, 'commissionflatamount') }
           : { corporateAccountNumber: read(data, 'corporateaccountnumber') }),
     }));
     return JSON.stringify(rows) === JSON.stringify(expected);
@@ -154,14 +158,15 @@ export async function applySavedPartyOnGo(context, input, authority = {}) {
   try {
     if (!input || !input.expected || !input.candidate || typeof authority.authorizeCandidate !== 'function' ||
         typeof authority.dispatchCandidate !== 'function') throw new Error('PARTY_GO_INPUT_INVALID');
-    const opened = await picker(context, { kind: input.kind, query: input.candidate.query });
+    const kind = input.kind, candidate = structuredClone(input.candidate), expected = structuredClone(input.expected);
+    const opened = await picker(context, { kind, query: candidate.query });
     const { result, before, win, spec, filter, textFilter, filterName } = opened, gate = context.partyStageGate;
     beforeImage = result.beforeImage;
-    if (!isDeepStrictEqual(input.expected, result.beforeImage) || input.candidate.kind !== input.kind ||
-        input.candidate.sourceField !== spec.field || !result.coverage.complete) throw new Error('PARTY_GO_PREIMAGE_CHANGED');
-    const row = result.candidates.filter(item => item.nativeId === input.candidate.nativeId && item.name === input.candidate.name);
-    if (row.length !== 1 || result.candidates.filter(item => item.nativeId === input.candidate.nativeId).length !== 1 ||
-        !isDeepStrictEqual(row[0], input.candidate.row)) throw new Error('PARTY_CANDIDATE_STALE');
+    if (!isDeepStrictEqual(expected, result.beforeImage) || candidate.kind !== kind ||
+        candidate.sourceField !== spec.field || !result.coverage.complete) throw new Error('PARTY_GO_PREIMAGE_CHANGED');
+    const row = result.candidates.filter(item => item.nativeId === candidate.nativeId && item.name === candidate.name);
+    if (row.length !== 1 || result.candidates.filter(item => item.nativeId === candidate.nativeId).length !== 1 ||
+        !isDeepStrictEqual(row[0], candidate.row)) throw new Error('PARTY_CANDIDATE_STALE');
     const rows = win.locator('.x-grid-view .x-grid-row,.x-grid-view .x-grid-data-row');
     const indexes = await rows.evaluateAll((elements, wanted) => elements.flatMap((element, index) => {
       const grid = (globalThis.Ext?.ComponentQuery?.query('grid,readonlygrid') || [])
@@ -177,13 +182,13 @@ export async function applySavedPartyOnGo(context, input, authority = {}) {
     });
     if (selected?.length !== 1 || String(selected[0][spec.id] ?? '') !== row[0].nativeId ||
         String(selected[0][spec.name] ?? '') !== row[0].name ||
-        !isDeepStrictEqual(await gridRows(win, spec, input.kind), result.candidates) ||
-        await textFilter.inputValue() !== input.candidate.query || (await filter.inputValue()).trim() !== filterName) {
+        !isDeepStrictEqual(await gridRows(win, spec, kind), result.candidates) ||
+        await textFilter.inputValue() !== candidate.query || (await filter.inputValue()).trim() !== filterName) {
       throw new Error('PARTY_SELECTION_UNVERIFIED');
     }
     const fresh = await snapshotLabtestRecord(context.frame);
     active(context);
-    if (!gate.armCandidate(fresh, input.candidate, authority)) throw new Error('PARTY_GO_PREIMAGE_CHANGED');
+    if (!gate.armCandidate(fresh, candidate, authority)) throw new Error('PARTY_GO_PREIMAGE_CHANGED');
     const ok = win.locator('a.x-btn:visible').filter({ hasText: /^\s*OK\s*$/ });
     if (await ok.count() !== 1) throw new Error('PARTY_SELECT_CONTROL_UNAVAILABLE');
     const responseWait = context.page.waitForResponse(response => gate.isRequest('candidate', response.request()),
@@ -202,7 +207,7 @@ export async function applySavedPartyOnGo(context, input, authority = {}) {
     const values = payload?.values;
     if (!response.ok() || !values || String(values[spec.link] ?? '') !== row[0].nativeId ||
         String(values.confirmationnumber ?? '') !== String(before.data.confirmationnumber) ||
-        (input.kind === 'arAccount' && String(values.arprofileid ?? '') !== row[0].profileId)) {
+        (kind === 'arAccount' && String(values.arprofileid ?? '') !== row[0].profileId)) {
       throw new Error('PARTY_CALLBACK_RESPONSE_UNVERIFIED');
     }
     await win.waitFor({ state: 'hidden', timeout: remaining(context) });
@@ -216,16 +221,25 @@ export async function applySavedPartyOnGo(context, input, authority = {}) {
     if (String(snapshot.data?.[spec.link] ?? '') !== row[0].nativeId ||
         String(snapshot.data?.[spec.display] ?? '') !== row[0].name ||
         String(snapshot.values?.[spec.display] ?? '') !== row[0].name ||
-        (input.kind === 'arAccount' && String(snapshot.data?.arprofileid ?? '') !== row[0].profileId)) {
+        (kind === 'arAccount' && String(snapshot.data?.arprofileid ?? '') !== row[0].profileId)) {
       throw new Error('PARTY_CALLBACK_READBACK_UNVERIFIED');
     }
     afterImage = savedPartyBeforeImage(snapshot);
-    const exemption = new Set([spec.link, spec.display, ...(input.kind === 'arAccount' ? ['arprofileid'] : [])]);
+    if (candidate.expectedEffects &&
+        [snapshot.data?.ta1commission, snapshot.values?.ta1commission].some(value =>
+          value == null || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(String(value)) ||
+          Number(value) !== Number(candidate.expectedEffects.ta1commission))) {
+      throw new Error('PARTY_COMMISSION_READBACK_UNVERIFIED');
+    }
+    const exemption = new Set([spec.link, spec.display, ...(kind === 'arAccount' ? ['arprofileid'] : []),
+      ...(candidate.expectedEffects ? ['ta1commission'] : [])]);
     changedFields = changed(result.beforeImage, afterImage, exemption);
     if (changedFields.length) throw new Error('PARTY_CALLBACK_OTHER_FIELDS_CHANGED');
     if (!gate.finishCandidate()) throw new Error('PARTY_CALLBACK_STATE_UNVERIFIED');
     return { outcome: 'applied', snapshot, beforeImage: result.beforeImage, afterImage,
-      partialEffect: 'possible', needsRecovery: true, pricing: 'recheck_required' };
+      partialEffect: 'possible', needsRecovery: true, pricing: 'recheck_required',
+      ...(candidate.expectedEffects ? { nativeEffects: { ta1commission: {
+        before: result.beforeImage.data.ta1commission, after: afterImage.data.ta1commission } } } : {}) };
   } catch (error) {
     context?.stop?.(issue(error));
     if (attempted) return { outcome: 'uncertain', issue: issue(error), partialEffect: 'possible',

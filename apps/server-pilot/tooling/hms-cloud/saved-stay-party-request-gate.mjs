@@ -83,7 +83,9 @@ function modelRow(row, spec, kind) {
   const nativeId = value(row, spec.id), name = value(row, spec.name);
   if (!validId(nativeId) || !validText(name)) return null;
   const details = kind === 'arAccount' ? { profileId: value(row, 'profileid'), arProfileId: value(row, 'arprofileid'), accountNumber: value(row, 'araccountnumber') }
-    : kind === 'bookingAgency' ? { referenceNumber: value(row, 'iatanumber') }
+    : kind === 'bookingAgency' ? { referenceNumber: value(row, 'iatanumber'),
+      commissionPercentage: value(row, 'commissionpercentage'), payCommissionFlag: value(row, 'paycommissionflag'),
+      commissionFlatAmount: value(row, 'commissionflatamount') }
       : { corporateAccountNumber: value(row, 'corporateaccountnumber') };
   return { nativeId, name, ...details };
 }
@@ -114,7 +116,8 @@ export function createSavedPartyStageRequestGate({ frame, selected, deadlineAt }
       !['guestId', 'reservationStayId', 'reservationId', 'recordId'].every(key => validId(selected[key])) ||
       !validText(selected.firstName) || !validText(selected.lastName) ||
       !Number.isFinite(deadlineAt) || deadlineAt <= performance.now()) throw new Error('PARTY_STAGE_GATE_INPUT_INVALID');
-  let state = 'ready', spec, kind, query, image, snapshot, gridIds, candidates, rowsCoverage, chosen, callbacks;
+  selected = structuredClone(selected);
+  let state = 'ready', spec, kind, query, image, snapshot, gridIds, candidates, rowsCoverage, chosen, callbacks, expectedEffects;
   let authorizedRequest = null, authorizationPending = false, dispatchPending = false, dispatchTask = null;
   const requests = new Map();
   const active = () => { if (performance.now() >= deadlineAt) state = 'closed'; return state !== 'closed'; };
@@ -126,7 +129,7 @@ export function createSavedPartyStageRequestGate({ frame, selected, deadlineAt }
     return { GRID_NAME: spec.grid, GRID_TYPE: 'LOV', LOV_TAGNAME: spec.field,
       USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR', ...aliases };
   };
-  const clear = () => { spec = kind = query = image = snapshot = gridIds = candidates = rowsCoverage = chosen = callbacks = null;
+  const clear = () => { spec = kind = query = image = snapshot = gridIds = candidates = rowsCoverage = chosen = callbacks = expectedEffects = null;
     authorizedRequest = null; authorizationPending = false; dispatchPending = false; dispatchTask = null; requests.clear(); };
   const gate = Object.freeze({
     armRead(next, input) {
@@ -181,13 +184,24 @@ export function createSavedPartyStageRequestGate({ frame, selected, deadlineAt }
       if (matches.length !== 1 || candidates.filter(row => row.nativeId === candidate.nativeId).length !== 1 ||
           !isDeepStrictEqual(matches[0], candidate.row) ||
           (kind === 'arAccount' && !validId(matches[0].profileId))) return false;
-      chosen = matches[0]; callbacks = authority; state = 'candidate_armed'; return true;
+      const effects = candidate.expectedEffects;
+      if (effects !== undefined) {
+        if (kind !== 'bookingAgency' || !effects || typeof effects !== 'object' || Array.isArray(effects) ||
+            Object.keys(effects).length !== 1 || !Object.hasOwn(effects, 'ta1commission') ||
+            typeof effects.ta1commission !== 'string' || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(effects.ta1commission) ||
+            Number(effects.ta1commission) > 100 || effects.ta1commission !== matches[0].commissionPercentage ||
+            matches[0].payCommissionFlag !== '-1') return false;
+      }
+      chosen = matches[0]; expectedEffects = effects ? structuredClone(effects) : null;
+      callbacks = { authorizeCandidate: authority.authorizeCandidate, dispatchCandidate: authority.dispatchCandidate };
+      state = 'candidate_armed'; return true;
     },
     matchesCandidate(request) {
       if (!active() || state !== 'candidate_armed') return false;
       const wanted = Object.fromEntries(requestFields.map(key => [key, value(snapshot.data, key)]));
       wanted[spec.link] = chosen.nativeId; wanted[spec.display] = chosen.name;
       if (kind === 'arAccount') wanted.arprofileid = chosen.profileId;
+      if (expectedEffects) wanted.ta1commission = expectedEffects.ta1commission;
       wanted.ONLY_DATA_REQUIRED = 'true';
       try {
         const url = new URL(request.url()), body = new URLSearchParams(request.postData() || '');
