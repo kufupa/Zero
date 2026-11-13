@@ -106,6 +106,8 @@ function harness(options = {}) {
     }
   };
   return { calls, get freshReads() { return freshReads; }, get censuses() { return censuses; }, get sessionOptions() { return sessionOptions; }, options: {
+    listTrack: async () => ({ outcome: 'ok', coverage: { complete: true, nativeResponseCorrelated: true, loaded: 2 },
+      candidates: [{ code: 'BAR', description: 'Best Available' }, { code: 'COR', description: 'Corporate Rate' }] }),
     stageBookerBilling: async (_page, request, identity) => {
       calls.push({ tool: 'stageBookerBilling', ...request, identity });
       const value = request.billingReference;

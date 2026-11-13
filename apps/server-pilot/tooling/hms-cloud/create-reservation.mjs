@@ -8,7 +8,6 @@ import { readLabtestCreate, reconcileLabtestCreate } from './labtest-create-read
 import { readCreateParties } from './create-party-readback.mjs';
 import { isSupportedLabtestGuarantee, validCreateBillingReference } from './guest-stay-save.mjs';
 import { digestCloudCreateRequest, validCreateNote } from './create-request-binding.mjs';
-import { normalizeCreateTrack } from '../playwright-quote/create-request.mjs';
 import { fillTrackBeforeGuarantee } from '../playwright-quote/create-lab-stay.mjs';
 import { stageGuestStayBookerBilling } from './guest-stay-booker-billing.mjs';
 import { CREATE_GUARANTEES, createCloudTargetKey, isLabtestGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
@@ -42,7 +41,9 @@ function validate(input, allowRealGuest = false) {
   if (input.cms?.send === true && (!allowRealGuest || !input.cms?.messageId || !input.cms?.recipient)) {
     fidelity.unsupported.push({ field: 'cms.send', issue: 'confirmation_details_or_real_guest_required' });
   }
-  if (input.track != null && !normalizeCreateTrack(input.track)) fidelity.unsupported.push({ field: 'track', issue: 'track_not_supported' });
+  if (input.track != null && (typeof input.track !== 'string' || !/^[A-Z0-9]{1,12}$/.test(input.track))) {
+    fidelity.invalid.push('track');
+  }
   if (input.guestoptin4 === true) fidelity.unsupported.push({ field: 'guestoptin4', issue: 'opt_in_not_supported' });
   if (input.guestoptin4 != null && typeof input.guestoptin4 !== 'boolean') fidelity.invalid.push('guestoptin4');
   if (input.cms?.send != null && typeof input.cms.send !== 'boolean') fidelity.invalid.push('cms.send');
@@ -382,6 +383,7 @@ export async function createReservation(input, { withSession = withBookingLookup
   expectedRateAvailability,
   allowCommitOnlyBillingReference = false,
   capturePrepareScreenshot = false, requireExplicitGuestSelection = false, selectTrack = fillTrackBeforeGuarantee,
+  listTrack = async (page, options) => (await import('./guest-stay-track-catalog.mjs')).listTrackSubSegments(page, options),
   stageBookerBilling = stageGuestStayBookerBilling,
   verifyLabtestMatches, allowRealGuest = false, expectedGuest, cloudTargetKey } = {}) {
   if ((authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
@@ -419,6 +421,18 @@ export async function createReservation(input, { withSession = withBookingLookup
       state.preimage = labtestPreimage;
       state.rateAvailabilityRequired = typeof createAuthority?.withM1CreateRateAvailability === 'function';
       const propertyCode = input.propertyCode;
+      if (input.track != null) {
+        const listed = await listTrack(page, { propertyCode });
+        const rows = Array.isArray(listed?.candidates) ? listed.candidates : [];
+        const matches = rows.filter(row => row?.code === input.track && typeof row.description === 'string' &&
+          row.description.trim() === row.description && row.description.length > 0 && row.description.length <= 200 &&
+          !/[\p{Cc}]/u.test(row.description));
+        if (listed?.outcome !== 'ok' || listed.coverage?.complete !== true ||
+            listed.coverage?.nativeResponseCorrelated !== true || listed.coverage.loaded !== rows.length || matches.length !== 1) {
+          stop('needs_input', 'native_track_not_unique_or_unavailable', { field: 'track' });
+        }
+        state.track = { lookupCode: matches[0].code, display: matches[0].description };
+      }
       if (commit) {
         state.guest = await selectGuest(runTool, input.guest, true, false, allowRealGuest, expectedGuest);
         // The Labtest note must have been prepared and reviewed already.
@@ -457,7 +471,6 @@ export async function createReservation(input, { withSession = withBookingLookup
         if (selected.selectedField?.value !== room.roomType) stop('uncertain', 'requested_field_not_staged', { field: 'room.roomType' });
         output.applied.roomType = selected.selectedField.value;
       }
-      state.track = input.track != null ? normalizeCreateTrack(input.track) : null;
       if (state.track && formValue((await call(runTool, 'readGuestStayForm', { propertyCode })).fields, 'track') !== state.track.display) {
         await selectTrack(page, state.track.lookupCode);
       }
