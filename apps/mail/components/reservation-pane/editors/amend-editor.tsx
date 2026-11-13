@@ -409,6 +409,28 @@ export function AmendEditor(editor: Editor) {
       const pricing = [...shared, ...changes].some(row => row.op === 'shift_dates' || row.op === 'shift_departure' || row.op === 'set' && priceFields.has(text(row.field)));
       const selected = valueAt(editor.snapshot, `${body}/targets/include/${i}/suggestedRef`);
       const draft = editor.snapshot.session.draft;
+      const noteChanges = [...shared, ...changes].filter(change => change.field === 'reservationNote' && (change.op === 'set' || change.op === 'clear'));
+      const noteChange = noteChanges.at(-1);
+      const desiredNote = noteChange?.op === 'clear' ? '' : noteChange?.value;
+      const refs = perIndex < 0 ? [] : effectiveAt(editor.snapshot, `${root}/currentObservationRefs`);
+      const baselines = Array.isArray(refs) ? draft.observations.filter(o => refs.includes(o.ref) &&
+        o.kind === 'stay_candidate' && o.criteria.kind === 'prefill_saved_note_baseline' && o.criteria.requestId === editor.request.id &&
+        o.status === 'complete' && o.coverage.complete && o.generationId === draft.generationId &&
+        o.propertyCode === draft.propertyCode && o.sourceMessageId === draft.source.messageId) : [];
+      const selectedObservation = draft.observations.find(o => o.ref === selected && o.kind === 'stay_candidate' &&
+        o.status === 'complete' && o.coverage.complete && o.generationId === draft.generationId &&
+        o.propertyCode === draft.propertyCode && o.sourceMessageId === draft.source.messageId &&
+        o.criteria.workflow === 'amend' && o.criteria.kind === 'saved_target' && o.criteria.requestId === editor.request.id &&
+        o.criteria.hintId === hintId && o.criteria.selectionPath === `${body}/targets/include/${i}/suggestedRef`);
+      const previousNote = record(record(baselines[0]?.result.reservationObservations).reservationNote);
+      const currentNote = record(record(selectedObservation?.result.reservationObservations).reservationNote);
+      const selectedStay = record(selectedObservation?.result.candidate);
+      const noteRefresh = baselines.length === 1 && noteChanges.length === 1 && typeof desiredNote === 'string' &&
+        typeof selected === 'string' && previousNote.source === 'record_view_raw_value' &&
+        currentNote.source === 'record_view_raw_value' && ['observed', 'blank'].includes(text(previousNote.state)) &&
+        ['observed', 'blank'].includes(text(currentNote.state)) && previousNote.confirmation === selectedStay.confirmation &&
+        currentNote.confirmation === selectedStay.confirmation && isExactConfirmation(selectedStay.confirmation) && typeof previousNote.value === 'string' &&
+        typeof currentNote.value === 'string' && (previousNote.value !== currentNote.value || previousNote.state !== currentNote.state);
       const callbackStarted = lockedTarget(editor, hintId) || draft.operationResults.some(operation =>
         operation.workflow === 'amend' && operation.requestId === editor.request.id &&
         (!operation.allocationId || operation.allocationId === hintId) && operation.status === 'prepared' &&
@@ -433,6 +455,20 @@ export function AmendEditor(editor: Editor) {
           <button type="button" disabled={editor.view.busy || scopeLocked || !hintId} onClick={() => void editor.commands.changeRows({
             kind: 'add_target', requestId: editor.request.id, entityId: hintId,
           })}>Add changes for this stay</button></div> : <div className={styles.stack}>
+          {noteRefresh && <div className={styles.warning}>
+            <strong>The Infor note changed since this action was created.</strong>
+            <p>Current Infor note:</p><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{text(currentNote.value) || '(empty)'}</pre>
+            <p>Proposed replacement:</p><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{typeof desiredNote === 'string' && desiredNote ? desiredNote : '(empty)'}</pre>
+            <p>Update the proposed note if needed. Confirm only after reviewing both, then check Infor again.</p>
+            <button type="button" disabled={editor.view.busy || editor.view.saving || editor.view.blocked || editor.snapshot.session.sourceChanged || callbackStarted}
+              onClick={() => void (async () => {
+                const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([selected, desiredNote])));
+                const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+                await editor.commands.acceptServiceReview(`${root}/currentObservationRefs`, `amend-note:${hash}`, {
+                  path: body, value: effectiveAt(editor.snapshot, body), generationId: draft.generationId,
+                });
+              })().catch(() => {})}>I reviewed the current and proposed notes</button>
+          </div>}
           <ChangeList editor={editor} path={`${root}/changes`} label="Only this stay" />
           <Field label="Rate handling" path={`${root}/rateHandling`} editor={editor} compact options={[{ value: 'retain', label: 'Keep current rate' }, { value: 'reprice', label: 'Reprice in Infor' }]} />
           {pricing && valueAt(editor.snapshot, `${root}/rateHandling`) !== 'reprice' && <div className={styles.warning}>Date, occupancy, room or rate changes require repricing.</div>}

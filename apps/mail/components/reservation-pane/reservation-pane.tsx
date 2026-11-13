@@ -4,7 +4,7 @@
 import { useRef, useState } from 'react';
 import { inputFieldLabel } from '@/lib/reservation-workflow/client';
 import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationWorkflowClient, ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
-import { effectiveAt, guestProfileReceipt, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { effectiveAt, guestProfileReceipt, nativeChoices, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { QuoteOutputPanel, type SaveQuoteOutput } from './quote-output-panel';
 import { useReservationWorkbench } from './use-reservation-workbench';
 import { CreateEditor, resolveCreateCmsRecipientDefault } from './editors/create-editor';
@@ -52,6 +52,68 @@ function issueBelongsToRequest(snapshot: ReservationPaneSnapshot, requestId: str
     return Boolean(document && (document.ownerRequestId === requestId || request.documentRefs.includes(document.id)));
   }
   return false;
+}
+
+function resolvedSourceIssue(snapshot: ReservationPaneSnapshot, issue: ReservationPaneSnapshot['issues'][number]): boolean {
+  if (!issue.path) return false;
+  const path = issue.path.startsWith('/proposal/content/') ? issue.path : `/proposal/content${issue.path}`;
+  const parts = path.split('/');
+  if (parts[3] !== 'requests') return false;
+  let key: string;
+  try { key = decodeURIComponent(parts[4] ?? ''); } catch { return false; }
+  const requests = snapshot.session.draft.proposal.content.requests;
+  const request = requests.find(row => row.id === key) ?? (/^\d+$/.test(key) ? requests[Number(key)] : undefined);
+  if (!request) return false;
+  const root = `${requestPath(request.id)}/body`;
+  const edited = (target: string) => Object.entries(snapshot.session.draft.fieldOverrides).some(([key, value]) =>
+    value.state === 'set' && (key === target || key.startsWith(`${target}/`) || target.startsWith(`${key}/`)));
+  if (request.kind === 'quote' && ['quote_room_code_not_projected', 'quote_room_code_scope_ambiguous', 'quote_occupancy_scope_ambiguous'].includes(issue.kind)) {
+    const groups = effectiveAt(snapshot, `${root}/groups`);
+    if (!Array.isArray(groups) || !groups.length) return false;
+    return groups.every((entry, index) => {
+      const group = record(entry), groupPath = `${root}/groups/${index}`;
+      if (issue.kind !== 'quote_occupancy_scope_ambiguous') {
+        const roomPath = `${groupPath}/roomCodes`, codes = group.roomCodes;
+        const available = new Set(nativeChoices(snapshot, roomPath, 'room_type').map(choice => choice.value));
+        return edited(roomPath) && Array.isArray(codes) && codes.length > 0 &&
+          codes.every(code => typeof code === 'string' && available.has(code));
+      }
+      const occupancy = record(group.occupancy), ages = occupancy.childAges;
+      return edited(`${groupPath}/occupancy`) && occupancy.scope === 'per_room' &&
+        Number.isInteger(occupancy.adults) && Number(occupancy.adults) >= 1 && Number(occupancy.adults) <= 6 &&
+        Number.isInteger(occupancy.childCount) && Number(occupancy.childCount) >= 0 && Number(occupancy.childCount) <= 6 &&
+        Array.isArray(ages) && ages.length === occupancy.childCount && ages.every(age => Number.isInteger(age) && age >= 0 && age <= 17);
+    });
+  }
+  if (issue.kind === 'booker_contact_ambiguous' || issue.kind === 'source_value_not_projected') {
+    const normalized = path.replace(`/requests/${parts[4]}`, `/requests/${encodeURIComponent(request.id)}`);
+    const value = effectiveAt(snapshot, normalized);
+    const field = normalized.split('/').at(-1);
+    const limit = field === 'bookerName' ? 50 : field === 'telephone' || field === 'bookerMobile' ? 120 : field === 'attention' ? 300 : 320;
+    return ['attention', 'email', 'telephone', 'bookerName', 'bookerEmail', 'bookerMobile'].includes(field ?? '') &&
+      edited(normalized) && typeof value === 'string' && Boolean(value.trim()) && value.length <= limit &&
+      (!['email', 'bookerEmail'].includes(field ?? '') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value));
+  }
+  if (issue.kind === 'ambiguous_party_role_source') {
+    const normalized = path.replace(`/requests/${parts[4]}`, `/requests/${encodeURIComponent(request.id)}`);
+    const selectionPath = `${normalized}/nativeSelectionRef`, selected = valueAt(snapshot, selectionPath);
+    return typeof selected === 'string' && edited(selectionPath) &&
+      nativeChoices(snapshot, selectionPath, 'party_candidate').some(choice => choice.ref === selected);
+  }
+  return false;
+}
+
+function actionLabel(snapshot: ReservationPaneSnapshot, request: ReservationPaneSnapshot['requests'][number]): string {
+  if (request.kind !== 'quote') return labels[request.kind];
+  const quotes = snapshot.requests.filter(row => row.kind === 'quote');
+  if (quotes.length < 2) return labels.quote;
+  const groups = effectiveAt(snapshot, `${requestPath(request.id)}/body/groups`);
+  const rows = Array.isArray(groups) ? groups.map(record) : [];
+  const dates = [...new Set(rows.map(row => [text(row.arrival), text(row.departure)].filter(Boolean).join('–')).filter(Boolean))];
+  const total = rows.length && rows.every(row => Number.isInteger(row.quantity) && Number(row.quantity) > 0)
+    ? rows.reduce((sum, row) => sum + Number(row.quantity), 0) : null;
+  const detail = [dates.slice(0, 2).join(', ') + (dates.length > 2 ? '…' : ''), total ? `${total} ${total === 1 ? 'room' : 'rooms'}` : ''].filter(Boolean).join(' · ');
+  return `Quote ${quotes.findIndex(row => row.id === request.id) + 1}${detail ? ` · ${detail}` : ''}`;
 }
 
 export function ReservationPane(props: ReservationPaneProps) {
@@ -414,7 +476,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     (!request || issueBelongsToRequest(snapshot, request.id, issue.path))) ?? [];
   const allRoomsSaved = request?.kind === 'create' && ids.length > 0 && ids.every(id => snapshot?.operationResults.some(row =>
     row.workflow === 'create' && row.requestId === request.id && row.allocationId === id && row.status === 'succeeded'));
-  const isEarlierIssue = (issue: typeof scopedIssues[number]) => !issue.path || issue.path === '/' || Boolean(allRoomsSaved &&
+  const isEarlierIssue = (issue: typeof scopedIssues[number]) => !issue.path || issue.path === '/' || Boolean(snapshot && resolvedSourceIssue(snapshot, issue)) || Boolean(allRoomsSaved &&
     ['ambiguous_guest_profile', 'rate_availability_unavailable', 'mail_candidate_read_failed'].includes(issue.kind));
   const earlierIssues = scopedIssues.filter(isEarlierIssue);
   const currentIssues = scopedIssues.filter(issue => !isEarlierIssue(issue));
@@ -424,7 +486,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     </header>
     <nav className={styles.actionNav} aria-label="Reservation actions"><div className={styles.actionBar}><div className={styles.tabs}>
       {snapshot?.requests.filter(row => !source.selfPreStay || row.kind !== 'create').map(row => <span className={styles.tabGroup} key={row.id}>
-        <button type="button" className={row.id === request?.id ? styles.activeTab : ''} onClick={() => { workbench.setActiveId(row.id); setChecked(null); setActionMenu(null); setConfirmRemove(false); }}>{labels[row.kind]}</button>
+        <button type="button" className={row.id === request?.id ? styles.activeTab : ''} onClick={() => { workbench.setActiveId(row.id); setChecked(null); setActionMenu(null); setConfirmRemove(false); }}>{actionLabel(snapshot, row)}</button>
         {row.id === request?.id && <button type="button" className={styles.tabChevron} aria-label={`Options for ${labels[row.kind]}`} aria-expanded={actionMenu === row.id}
           onClick={() => { setActionMenu(current => current === row.id ? null : row.id); setConfirmRemove(false); }}>▾</button>}
       </span>)}
@@ -532,7 +594,7 @@ export function ReservationPane(props: ReservationPaneProps) {
       {prefill?.status === 'failed' && <p className={styles.small}>Prefill did not finish. Your form still works. {(prefill.phase === 'native_checks' || prefill.attemptCount < 2) && <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button>}</p>}
       {currentIssues.map((issue, index) => <p className={styles.notice} key={index}>{issueText(issue.explanation)}</p>)}
       {earlierIssues.length > 0 && <details className={styles.earlierChecks}>
-        <summary>Earlier email checks · {earlierIssues.length} {allRoomsSaved ? 'notices' : 'incomplete'}</summary>
+        <summary>Earlier email checks · {earlierIssues.length} notices</summary>
         {earlierIssues.map((issue, index) => <p className={styles.notice} key={index}>{issueText(issue.explanation)}</p>)}
       </details>}
     </main>

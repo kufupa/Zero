@@ -630,13 +630,19 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     const baseline = noteBaselines[0], selectedObservation = draft.observations.find(item => item.ref === chosen.ref);
     const note = record(record(record(baseline?.result)?.reservationObservations)?.reservationNote);
     const selectedNote = record(record(record(selectedObservation?.result)?.reservationObservations)?.reservationNote);
+    const review = draft.staffReviews[`${perPath}/currentObservationRefs`];
+    const reviewedRefresh = review?.status === 'accepted' && review.note ===
+      `amend-note:${sha256([chosen.ref, values.reservationNote])}`;
     if (noteBaselines.length !== 1 || baseline?.status !== 'complete' || !baseline.coverage.complete ||
         baseline.generationId !== draft.generationId || baseline.propertyCode !== draft.propertyCode ||
         baseline.sourceMessageId !== draft.source.messageId || baseline.criteria.requestId !== requestId || !note || !selectedNote ||
         !['observed', 'blank'].includes(String(note.state)) || note.source !== 'record_view_raw_value' ||
         note.confirmation !== chosen.selected.confirmation || typeof note.value !== 'string' ||
-        selectedNote.source !== note.source || selectedNote.state !== note.state ||
-        selectedNote.confirmation !== note.confirmation || selectedNote.value !== note.value) {
+        selectedObservation?.status !== 'complete' || !selectedObservation.coverage.complete ||
+        selectedObservation.sourceMessageId !== draft.source.messageId ||
+        !['observed', 'blank'].includes(String(selectedNote.state)) || selectedNote.source !== note.source ||
+        selectedNote.confirmation !== note.confirmation || typeof selectedNote.value !== 'string' ||
+        (!reviewedRefresh && (selectedNote.state !== note.state || selectedNote.value !== note.value))) {
       return { outcome: 'needs_input', issue: 'amend_note_baseline_does_not_match_selected_stay',
         fields: [`${perPath}/currentObservationRefs`] };
     }
