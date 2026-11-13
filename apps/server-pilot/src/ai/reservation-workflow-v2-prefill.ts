@@ -4210,6 +4210,7 @@ function addCreateExistingReferenceGuard(input: {
 }
 
 function applyDefaultCmsSendPolicy(
+  sourceComplete: boolean,
   proposalInput: ReservationWorkflowV2Proposal,
   propertyCode: string,
   extraction: ReservationWorkflowV2Extraction,
@@ -4222,7 +4223,7 @@ function applyDefaultCmsSendPolicy(
       const source = extractionRequestForProposal(request, proposal.content.requests, extraction, extractionIds);
       const conflict = proposal.issues.some(issue => issue.kind.includes('occupancy') &&
         (issue.path.includes(`/requests/${request.id}/`) || issue.path.includes(`/requests/${encodeURIComponent(request.id)}/`)));
-      if (source && !conflict && !source.occupancy.some(row => row.adults || row.childCount || row.childAges?.length)) {
+      if (sourceComplete && source && !conflict && !source.occupancy.some(row => row.adults || row.childCount || row.childAges?.length)) {
         for (const [index, group] of request.body.groups.entries()) {
           const occupancy = group.occupancy;
           if (occupancy.scope === 'unresolved' && occupancy.adults === null && occupancy.childCount === null && occupancy.childAges === null) {
@@ -5523,7 +5524,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     extractionIdByProposalRequestId: boundProjection.extractionIdByProposalRequestId,
     currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence }) : null;
   const guardedProposal = referenceSafety?.proposal ?? (finalParsed?.success ? finalParsed.data.proposal : null);
-  let finalProposal = guardedProposal ? applyDefaultCmsSendPolicy(guardedProposal, input.propertyCode,
+  let finalProposal = guardedProposal ? applyDefaultCmsSendPolicy(observations[0]?.coverage.complete === true, guardedProposal, input.propertyCode,
     currentActions, boundProjection?.extractionIdByProposalRequestId) : null;
   let amendNoteRequirements: ReservationWorkflowV2Draft['fieldReviewRequirements'] = {};
   if (finalProposal) {
@@ -5619,7 +5620,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     const fallbackSafety = addRequestConfirmationSafety({ proposal: fallbackProjection.proposal, extraction: currentActions,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
       currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence });
-    const trackResult = await applyRateTrackMemory({ proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, input.propertyCode,
+    const trackResult = await applyRateTrackMemory({ proposal: applyDefaultCmsSendPolicy(observations[0]?.coverage.complete === true, fallbackSafety.proposal, input.propertyCode,
       currentActions, fallbackProjection.extractionIdByProposalRequestId), source: input.source,
       propertyCode: input.propertyCode, generationId, env });
     const noteResult = await applyNoteMemory({ proposal: trackResult.proposal, source: input.source, propertyCode: input.propertyCode,
