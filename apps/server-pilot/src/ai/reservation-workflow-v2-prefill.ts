@@ -3907,6 +3907,7 @@ function projectCurrentExtraction(input: {
       if (datedRows.some(({ date, inferred }) => currentClaim(date.roomCount, currentRefs) || inferred)) {
         const previous = request.body.groups;
         const usedIds = new Set<string>();
+        const matchedBoard = (value: unknown) => normalizeRequestedMealPlan(value).mealPlan ?? boardMeaning(value);
         const projectedGroupRows: Array<{ date: typeof extracted.dates[number]; inferred: boolean; category: boolean }> = [];
         request.body.groups = datedRows.flatMap(({ date, index, arrival, departure, quantity, inferred }) => {
           const board = safeCurrentText(date.mealPlan, currentRefs, 120) ??
@@ -3914,7 +3915,7 @@ function projectCurrentExtraction(input: {
           const dateMatches = originalDateGroups.filter(group => !usedIds.has(group.id) &&
             arrival && departure && group.arrival === arrival && group.departure === departure);
           const boardMatches = board ? dateMatches.filter(group =>
-            boardMeaning(group.requestedMealPlan ?? group.mealPlan) === boardMeaning(board)) : dateMatches;
+            matchedBoard(group.requestedMealPlan ?? group.mealPlan) === matchedBoard(board)) : dateMatches;
           const matches = boardMatches.length ? boardMatches : dateMatches.filter(group => !group.requestedMealPlan && !group.mealPlan);
           const categories = previous.filter(group => !usedIds.has(group.id) &&
             sourceRoomByGroupId.has(group.id) && group.arrival === arrival && group.departure === departure);
