@@ -532,7 +532,7 @@ export async function finishReservationWorkflowV2Prefill(ctx: Context, input: Mu
     await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'ai', type: 'field.seed',
       fieldPath: RESERVATION_WORKFLOW_V2_STATE_KEY, value: { generationId: next.generationId, status: next.status },
       aiSource: RESERVATION_PREFILL_SCHEMA_VERSION, evidence: advanced.evidence });
-    await tx.update(workItem).set({ state: nextState, revision: advanced.revision, revisionHead: advanced.revisionHead,
+    await tx.update(workItem).set({ state: nextState, kind: initialKind(install), revision: advanced.revision, revisionHead: advanced.revisionHead,
       revisionSeq: item.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, item.id));
     return { status: 'ok' as const, draft: next, revision: advanced.revision,
       revisionHead: advanced.revisionHead, seq: item.revisionSeq + 1 };
@@ -1168,7 +1168,7 @@ function validStructuredEdit(draft: ReservationWorkflowV2Draft, path: string, ov
     if (!unchanged(override.value, stable, indexed)) return false;
   }
   if (/\/requestedMoney\/\d+\/staffAllowanceType$/.test(path))
-    return override.state === 'set' && (override.value === 'dinner' || override.value === 'unsupported');
+    return override.state === 'set' && ['dinner', 'lunch', 'airport_transfer', 'office_transfer', 'unsupported'].includes(String(override.value));
   if (!/\/(?:occupancy|requestedTotals)$/.test(path) || override.state !== 'set') return true;
   const value = override.value;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -1574,7 +1574,7 @@ function updateSeparatedQuoteMoney(current: ReservationWorkflowV2Draft, next: Re
       row.body.separatedFrom?.requestId === request.id && row.body.separatedFrom.moneyId === claim.id);
     if (!link.length) continue;
     const kind = effectiveDraftPath(result, `${moneyStable}/staffAllowanceType`, `${moneyIndexed}/staffAllowanceType`);
-    if (kind === 'dinner') {
+    if (['dinner', 'lunch', 'airport_transfer', 'office_transfer'].includes(String(kind))) {
       for (const other of link) {
         const root = `/proposal/content/requests/${encodeURIComponent(other.id)}`;
         const index = result.proposal.content.requests.findIndex(row => row.id === other.id);
