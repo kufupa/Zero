@@ -4484,12 +4484,19 @@ function applyDefaultCmsSendPolicy(
         const currentRefs = new Set(input.evidence.filter(row => row.relation !== 'prior_thread').map(row => row.ref));
         const addExtra = (type: 'lunch' | 'airport_transfer' | 'office_transfer', claim: { raw: string; sourceRefs: string[] }, targetRefs: string[] = [], scope: 'known' | 'unresolved' = 'known') => {
           const existing = request.body.requestedMoney.filter(money => money.staffAllowanceType === type);
-          if (existing.some(money => money.scope === 'overall')) return;
+          const transfer = type !== 'lunch';
+          const desiredScope = scope === 'unresolved' ? 'unresolved' : targetRefs.length ? 'per_target' : 'overall';
+          if (transfer && request.body.requestedMoney.some((money, index) => money.staffAllowanceType === type &&
+              money.scope === desiredScope && money.targetRefs.length === targetRefs.length &&
+              targetRefs.every(ref => money.targetRefs.includes(ref)) && proposal.sourceClaims.some(sourceClaim =>
+                sourceClaim.path === `/proposal/content/requests/${encodeURIComponent(request.id)}/body/requestedMoney/${index}` &&
+                sourceClaim.raw === claim.raw && claim.sourceRefs.every(ref => sourceClaim.sourceRefs.includes(ref))))) return true;
+          if (!transfer && existing.some(money => money.scope === 'overall')) return true;
           const wanted = targetRefs.length ? targetRefs : request.body.groups.map(group => group.id);
           const covered = new Set(existing.filter(money => money.scope === 'per_target').flatMap(money => money.targetRefs));
           const uncovered = wanted.filter(ref => !covered.has(ref));
-          if (!uncovered.length && scope !== 'unresolved') return;
-          const scopedTargets = targetRefs.length || existing.length ? uncovered : [];
+          if (!transfer && !uncovered.length && scope !== 'unresolved') return true;
+          const scopedTargets = transfer ? targetRefs : targetRefs.length || existing.length ? uncovered : [];
           if (request.body.requestedMoney.length >= 100 || proposal.sourceClaims.length >= MAX_PROPOSAL_SOURCE_CLAIMS || proposal.annotations.length >= 2000) return;
           const sourceRefs = claim.sourceRefs.filter(ref => currentRefs.has(ref));
           if (!sourceRefs.length) return;
@@ -4501,6 +4508,13 @@ function applyDefaultCmsSendPolicy(
           const path = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/requestedMoney/${index}`;
           proposal.sourceClaims.push({ path, raw: claim.raw, sourceRefs });
           proposal.annotations.push({ path, basis: 'source', evidenceRefs: sourceRefs });
+          return true;
+        };
+        const movedTransferServiceIds = new Set<string>();
+        const transferType = (text: string) => {
+          if (/\b(?:airport|flight)\b/iu.test(text) && /\b(?:transfer|shuttle|transport|pickup|pick.?up)\b/iu.test(text)) return 'airport_transfer' as const;
+          if (/\b(?:office|work|university|campus)\b/iu.test(text) && /\b(?:transfer|shuttle|transport|pickup|pick.?up)\b/iu.test(text)) return 'office_transfer' as const;
+          return null;
         };
         for (const group of request.body.groups) {
           const normalized = normalizeRequestedMealPlan(group.requestedMealPlan);
@@ -4513,23 +4527,44 @@ function applyDefaultCmsSendPolicy(
         }
         for (const hint of source.serviceHints) {
           const text = `${hint.raw} ${typeof hint.value === 'string' ? hint.value : ''}`;
-          if (/\blunch\b/iu.test(text)) {
+          if (normalizeRequestedMealPlan(hint.raw).lunchRequested) {
             const scope = quoteLunchHintScope({ hint, mealHints: [...source.mealPlanHints,
               ...source.dates.flatMap(date => date.mealPlan ? [date.mealPlan] : [])], groupCount: request.body.groups.length });
             const alreadyRepresented = request.body.requestedMoney.some(money => money.staffAllowanceType === 'lunch');
             if (scope !== 'repeated_meal_plan' || !alreadyRepresented)
               addExtra('lunch', hint, [], scope === 'overall' ? 'known' : 'unresolved');
           }
-          if (/\b(?:airport|flight)\b/iu.test(text) && /\b(?:transfer|shuttle|transport|pickup|pick.?up)\b/iu.test(text)) addExtra('airport_transfer', hint);
-          else if (/\b(?:office|work|university|campus)\b/iu.test(text) && /\b(?:transfer|shuttle|transport|pickup|pick.?up)\b/iu.test(text)) addExtra('office_transfer', hint);
+          const type = transferType(text);
+          if (!type) continue;
+          const linkedServices = proposal.content.services.filter(service => service.ownerRequestId === request.id &&
+            service.operation === 'add' && transferType(service.requestedText) === type &&
+            [hint.raw, typeof hint.value === 'string' ? hint.value : ''].some(raw =>
+              normalizedFact(raw) === normalizedFact(service.requestedText)) &&
+            service.sourceRefs.some(ref => currentRefs.has(ref) && hint.sourceRefs.includes(ref)));
+          if (linkedServices.length) {
+            for (const service of linkedServices) {
+              const targetRefs = service.targets.flatMap(({ target }) => target.kind === 'quote_group' &&
+                target.requestId === request.id && request.body.groups.some(group => group.id === target.groupId) ? [target.groupId] : []);
+              const completeTargets = targetRefs.length > 0 && targetRefs.length === service.targets.length;
+              const overall = !service.targets.length && (request.body.groups.length === 1 ||
+                /\b(?:all|each|every|both)\s+(?:(?:the|of the)\s+)?(?:guests?|rooms?|groups?|people)\b|\beveryone\b/iu.test(service.requestedText));
+              const moved = addExtra(type, { raw: service.requestedText, sourceRefs: service.sourceRefs },
+                completeTargets ? [...new Set(targetRefs)] : [], completeTargets || overall ? 'known' : 'unresolved');
+              if (moved && !service.requestedMoney.length && service.quantityRequest.value === null &&
+                  !service.code && !service.itemCandidateRef && !Object.values(service.sharedFields).some(value => value != null) &&
+                  service.targets.every(target => !Object.values(target.fields).some(value => value != null))) movedTransferServiceIds.add(service.id);
+            }
+          } else {
+            const overall = request.body.groups.length === 1 ||
+              /\b(?:all|each|every|both)\s+(?:(?:the|of the)\s+)?(?:guests?|rooms?|groups?|people)\b|\beveryone\b/iu.test(text);
+            addExtra(type, hint, [], overall ? 'known' : 'unresolved');
+          }
         }
         const extraTypes = new Set(request.body.requestedMoney.map(money => money.staffAllowanceType));
         const movedServiceIds = new Set(proposal.content.services.filter(service => {
           if (service.ownerRequestId !== request.id || service.operation !== 'add') return false;
           const text = service.requestedText;
-          return /\blunch\b/iu.test(text) && extraTypes.has('lunch') ||
-            /\b(?:airport|flight)\b/iu.test(text) && extraTypes.has('airport_transfer') ||
-            /\b(?:office|work|university|campus)\b/iu.test(text) && extraTypes.has('office_transfer');
+          return normalizeRequestedMealPlan(text).lunchRequested && extraTypes.has('lunch') || movedTransferServiceIds.has(service.id);
         }).map(service => service.id));
         proposal.content.services = proposal.content.services.filter(service => !movedServiceIds.has(service.id));
         request.serviceRefs = request.serviceRefs.filter(ref => !movedServiceIds.has(ref));
