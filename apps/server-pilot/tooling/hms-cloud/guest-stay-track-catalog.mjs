@@ -1,5 +1,5 @@
-import { parseTrackLookupText } from '../playwright-quote/create-request.mjs';
 import { readGuestStayForm } from './guest-stay-form.mjs';
+import { parseResponse as parsePickerResponse } from './guest-stay-room-rate.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 
@@ -34,9 +34,13 @@ export async function listTrackSubSegments(page, { propertyCode } = {}) {
     const count = await win.count();
     if (count > 1) return false;
     if (count === 1) {
+      const title = (await win.locator('.x-window-header-text:visible').allTextContents()).map(value => value.trim());
+      if (title.length !== 1 || title[0] !== 'Track Code') return false;
       const cancel = win.locator('a.x-btn:visible').filter({ hasText: /^\s*Cancel\s*$/ });
-      if (await cancel.count() !== 1) return false;
-      await cancel.click({ timeout: 5000 });
+      const close = win.locator('.x-tool-close:visible');
+      if (await cancel.count() === 1) await cancel.click({ timeout: 5000 });
+      else if (await close.count() === 1) await close.click({ timeout: 5000 });
+      else return false;
       await win.waitFor({ state: 'hidden', timeout: 10000 });
     } else {
       await page.keyboard.press('Escape');
@@ -61,11 +65,31 @@ export async function listTrackSubSegments(page, { propertyCode } = {}) {
     await trigger.click({ timeout: 10000 });
     const reply = await response;
     if (!reply?.ok()) throw new Error('TRACK_LOOKUP_UNVERIFIED');
-    const win = page.locator('.x-window:visible:not(.x-menu)');
+    const win = page.locator('.x-window:visible:not(.x-menu)').filter({
+      has: page.locator('.x-window-header-text').filter({ hasText: /^Track Code$/ }),
+    });
     await win.first().waitFor({ timeout: 10000 });
-    if (await win.count() !== 1 || nativeDialog || blocked) throw new Error('TRACK_PICKER_UNVERIFIED');
-    const rows = win.locator('.x-grid-row:visible, .x-grid-data-row:visible');
-    await rows.first().waitFor({ timeout: 10000 });
+    if (await win.count() !== 1 || await page.locator('.x-window:visible:not(.x-menu)').count() !== 1 || nativeDialog || blocked) {
+      throw new Error('TRACK_PICKER_UNVERIFIED');
+    }
+    const windowId = await win.getAttribute('id');
+    if (!windowId) throw new Error('TRACK_PICKER_UNVERIFIED');
+    const ready = await page.waitForFunction(id => {
+      const grids = globalThis.Ext?.getCmp?.(id)?.query?.('grid,readonlygrid') || [];
+      const store = grids.length === 1 ? grids[0].getStore?.() : null;
+      return Boolean(store && typeof store.isLoading === 'function' && !store.isLoading() && store.getCount() > 0);
+    }, windowId, { timeout: 20000 });
+    await ready.dispose();
+    let nativeGrid = null;
+    try {
+      let timer;
+      const text = await Promise.race([reply.text(), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('TRACK_RESPONSE_TIMEOUT')), 10000);
+      })]).finally(() => clearTimeout(timer));
+      const grid = parsePickerResponse(text)?.grid?.GRIDRESULT?.GRID;
+      if (Array.isArray(grid?.DATA) && grid.METADATA?.GRIDNAME === 'LVTRACKCODE' &&
+          grid.DATA.every(row => Object.hasOwn(row, 'trackcode') && Object.hasOwn(row, 'tcddesc'))) nativeGrid = grid;
+    } catch { /* Coverage remains unknown without a verified native response. */ }
     let footer = null;
     if (await win.count() === 1) {
       for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -85,10 +109,29 @@ export async function listTrackSubSegments(page, { propertyCode } = {}) {
         await page.waitForTimeout(200);
       }
     }
-    const texts = await rows.allTextContents();
-    const candidates = texts.map(text => parseTrackLookupText(text)).filter(Boolean);
-    const complete = footer && footer.loaded === footer.total && candidates.length === footer.total ? true
-      : footer && footer.loaded < footer.total ? false : null;
+    const candidates = await win.evaluate(element => {
+      const grids = globalThis.Ext?.getCmp?.(element.id)?.query?.('grid,readonlygrid') || [];
+      if (grids.length !== 1) return null;
+      const grid = grids[0], store = grid.getStore?.(), view = grid.getView?.();
+      if (!store || store.isLoading?.() || !view?.getRecord) return null;
+      const rows = [...element.querySelectorAll('.x-grid-view .x-grid-row,.x-grid-view .x-grid-data-row')];
+      return rows.flatMap(row => {
+        const data = view.getRecord(row)?.data;
+        const code = typeof data?.trackcode === 'string' ? data.trackcode.trim() : '';
+        const description = typeof data?.tcddesc === 'string' ? data.tcddesc.trim() : '';
+        return /^[A-Z0-9]{1,12}$/.test(code) && description && description.length <= 200 && !/[\p{Cc}]/u.test(description)
+          ? [{ code, description }] : [];
+      });
+    });
+    if (!Array.isArray(candidates) || !candidates.length || new Set(candidates.map(row => row.code)).size !== candidates.length) {
+      throw new Error('TRACK_ROWS_UNVERIFIED');
+    }
+    const key = row => JSON.stringify([String(row.trackcode ?? row.code ?? '').trim(), String(row.tcddesc ?? row.description ?? '').trim()]);
+    const correlated = nativeGrid && JSON.stringify(nativeGrid.DATA.map(key).sort()) === JSON.stringify(candidates.map(key).sort());
+    const marker = String(nativeGrid?.METADATA?.MORERECORDPRESENT ?? '').trim();
+    const total = /^\d+$/.test(String(nativeGrid?.METADATA?.RECORDS)) ? Number(nativeGrid.METADATA.RECORDS) : null;
+    const complete = correlated && marker === '-' && total === candidates.length ? true
+      : marker === '+' || (total != null && total > candidates.length) ? false : null;
     if (!await closePicker()) throw new Error('TRACK_CANCEL_UNAVAILABLE');
     await page.unroute('**/*', guard);
     const after = await readGuestStayForm(page, { propertyCode });
@@ -101,7 +144,8 @@ export async function listTrackSubSegments(page, { propertyCode } = {}) {
       throw new Error('TRACK_FORM_CHANGED');
     }
     return { outcome: 'ok', observedAt: new Date().toISOString(), criteria: { propertyCode, scope: 'unfiltered' },
-      coverage: { loaded: candidates.length, total: footer?.total ?? null, complete, possiblyTruncated: complete !== true }, candidates };
+      coverage: { loaded: candidates.length, total: total != null && total >= candidates.length ? total : footer?.total ?? null,
+        complete, possiblyTruncated: complete !== true, nativeResponseCorrelated: Boolean(correlated) }, candidates };
   } catch (error) {
     const cleanup = await closePicker().catch(() => false);
     return { outcome: 'execution_failure', issue: /^[A-Z][A-Z0-9_]+$/.test(error?.message || '') ? error.message : 'TRACK_READ_FAILED',
