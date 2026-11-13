@@ -180,6 +180,11 @@ const STAFF_QUOTE_NON_PRICE_FIELDS = new Set(
   'messageId sourceHash selectionEpoch inputRevision company agency attention clientEmail clientTelephone dinnerAllowanceLabel lunchAllowanceLabel notes maxOptionsPerGroup'.split(' '),
 );
 
+const STAFF_QUOTE_DISPLAY_FIELDS = [
+  'company', 'agency', 'attention', 'clientEmail', 'clientTelephone',
+  'dinnerAllowanceLabel', 'lunchAllowanceLabel', 'notes', 'maxOptionsPerGroup',
+] as const;
+
 function staffQuoteRequestMatches(
   request: StaffQuoteJobView['request'],
   expected: ExecuteStaffQuoteInput,
@@ -229,7 +234,7 @@ type StaffQuoteCallOptions = {
 };
 
 export type StaffQuoteJobQuery = (
-  input: { runId: string } | { input: ExecuteStaffQuoteInput },
+  input: { runId: string; messageId: string } | { input: ExecuteStaffQuoteInput },
   options?: StaffQuoteCallOptions,
 ) => Promise<StaffQuoteJobView | null>;
 
@@ -1307,6 +1312,7 @@ function waitForStaffQuotePoll(ms: number, signal: AbortSignal): Promise<boolean
 async function pollStaffQuoteJob(
   query: StaffQuoteJobQuery,
   initial: StaffQuoteJobView,
+  messageId: string,
   signal?: AbortSignal,
 ): Promise<StaffQuoteJobView> {
   let view = initial;
@@ -1330,7 +1336,7 @@ async function pollStaffQuoteJob(
       if (Date.now() - startedAt >= STAFF_QUOTE_POLL_MAX_MS) {
         return { kind: 'settled', view: { ...view, status: 'failed', failureClass: 'POLL_LOST' } };
       }
-      const next = await query({ runId: view.runId }, { signal: controller.signal }).catch(() => null);
+      const next = await query({ runId: view.runId, messageId }, { signal: controller.signal }).catch(() => null);
       if (controller.signal.aborted) break;
       if (Date.now() - startedAt >= STAFF_QUOTE_POLL_MAX_MS) {
         return { kind: 'settled', view: { ...view, status: 'failed', failureClass: 'POLL_LOST' } };
@@ -1445,13 +1451,13 @@ export async function bindExecuteStaffQuote(
               'The queued quote status is not connected to this pane. Refresh the pane and try again.',
           };
         }
-        const first = await args.staffQuoteJob({ runId: queued.runId });
+        const first = await args.staffQuoteJob({ runId: queued.runId, messageId: built.input.messageId });
         if (!first)
           return {
             status: 'unavailable',
             reason: 'Nava could not read the queued quote. Try again in a minute.',
           };
-        return boundStaffQuoteJob(await pollStaffQuoteJob(args.staffQuoteJob, first), args, built);
+        return boundStaffQuoteJob(await pollStaffQuoteJob(args.staffQuoteJob, first, built.input.messageId), args, built);
       }
       if (queued?.runId !== null) {
         return { status: 'unavailable', reason: 'Nava did not return a queued quote. Try again.' };
@@ -1490,19 +1496,26 @@ export async function bindAutoStartStaffQuote(
         reason: 'The queued quote status is not connected to this pane. Refresh the pane and try again.',
       };
     }
-    const first = await args.staffQuoteJob({ runId: queued.runId });
+    const first = await args.staffQuoteJob({ runId: queued.runId, messageId: built.input.messageId });
     if (!first) {
       return { status: 'unavailable', reason: 'Nava could not read the queued quote. Try again in a minute.' };
     }
-    const settled = await pollStaffQuoteJob(args.staffQuoteJob, first);
-    // The queue route returns a prepared run only after its server-side price-shape match. Its extracted display header
-    // can legitimately differ from the pane's edited header, so rebase counters for that same source as well.
-    const preparedForSource =
-      settled.prefetch &&
-      settled.request?.kind === 'staff_quote' &&
-      settled.request.input.messageId === built.input.messageId &&
-      settled.request.input.sourceHash === built.input.sourceHash;
-    const rebased = (preparedForSource || staffQuoteRequestMatches(settled.request, built.input)) && settled.result
+    const settled = await pollStaffQuoteJob(args.staffQuoteJob, first, built.input.messageId);
+    // Prepared quotes may have an older display header, but their source and price terms must still match.
+    // A staff-started run must also match the submitted header before its pane counters can be rebased.
+    const requestMatches = staffQuoteRequestMatches(settled.request, built.input, settled.prefetch === true) &&
+      staffQuoteStayTermsMatch(settled.request, built.input) &&
+      (settled.prefetch === true || (
+        settled.request?.kind === 'staff_quote' &&
+        STAFF_QUOTE_DISPLAY_FIELDS.every((key) =>
+          stableJson(settled.request?.kind === 'staff_quote' ? settled.request.input[key] : null) ===
+          stableJson(built.input[key]),
+        )
+      ));
+    if (settled.request && !requestMatches) {
+      return { status: 'unavailable', reason: 'The quote is out of date because the stay details changed. Run it again.' };
+    }
+    const rebased = requestMatches && settled.result
       ? {
           ...settled,
           result: {
@@ -1545,7 +1558,7 @@ export async function bindReadBackStaffQuote(
     ) {
       return null;
     }
-    const settled = await pollStaffQuoteJob(args.query, first, args.signal);
+    const settled = await pollStaffQuoteJob(args.query, first, built.input.messageId, args.signal);
     if (args.signal?.aborted) return null;
     if (settled.request && !staffQuoteRequestMatches(settled.request, built.input, settled.prefetch === true)) return null;
     const rebased = settled.result

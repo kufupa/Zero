@@ -294,6 +294,22 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+it('accepts a selected message on quote status polling without requiring a database', async () => {
+  vi.stubEnv('HMS_JOB_QUEUE', 'off');
+  const api = appRouter.createCaller({
+    auth: null as never,
+    reqHeaders: new Headers(),
+    sessionUser: { id: 'staff-1', email: 'staff@example.invalid', name: 'Synthetic Staff' },
+    activeTransportId: 'transport-centurion',
+    accessRole: 'owner',
+  } as never);
+  const runId = randomUUID();
+
+  await expect(api.workstation.staffQuoteJob({ runId, messageId: 'selected-message' })).resolves.toBeNull();
+  await expect(api.workstation.staffQuoteJob({ runId })).resolves.toBeNull();
+  await expect(api.workstation.staffQuoteJob({ runId, messageId: '' })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+});
+
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'staff quote route approval ledger (disposable DB, no HMS)',
   () => {
@@ -338,6 +354,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           request: { kind: 'staff_quote', input: request.input },
         });
         await expect(api.workstation.staffQuoteJob({ runId: queued.runId! })).resolves.toMatchObject({
+          runId: queued.runId,
+          status: 'queued',
+        });
+        await expect(api.workstation.staffQuoteJob({ runId: queued.runId!, messageId: request.input.messageId })).resolves.toMatchObject({
           runId: queued.runId,
           status: 'queued',
         });

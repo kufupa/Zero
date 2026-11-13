@@ -113,6 +113,8 @@ describe('staff quote HMS job binding', () => {
     const result = await pending;
 
     expect(result).toMatchObject({ status: 'ok' });
+    expect(staffQuoteJob.mock.calls[0]?.[0]).toEqual({ runId: 'staff-job-1', messageId: source.messageId });
+    expect(staffQuoteJob.mock.calls[1]?.[0]).toEqual({ runId: 'staff-job-1', messageId: source.messageId });
     expect(queue.mock.calls[0]?.[1]).toEqual({ context: { activeTransportId: 'transport-a' } });
     expect(staffQuoteJob.mock.calls[0]?.[1]).toEqual({ context: { activeTransportId: 'transport-a' } });
     expect(staffQuoteJob.mock.calls[1]?.[1]).toMatchObject({
@@ -148,6 +150,7 @@ describe('staff quote HMS job binding', () => {
       input: expect.objectContaining({ messageId: source.messageId, sourceHash: source.sourceHash }),
     });
     expect(staffQuoteJob.mock.calls[0]?.[1]).toEqual({ context: { activeTransportId: 'transport-a' } });
+    expect(staffQuoteJob.mock.calls[1]?.[0]).toEqual({ runId: 'staff-job-1', messageId: source.messageId });
     expect(staffQuoteJob.mock.calls[1]?.[1]).toMatchObject({
       context: { activeTransportId: 'transport-a' },
       signal: expect.any(AbortSignal),
@@ -163,6 +166,7 @@ describe('staff quote HMS job binding', () => {
     const staffQuoteJob = vi.fn(async (_input: unknown) => view('done', READY, undefined, true));
 
     const result = await bindReadBackStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       query: staffQuoteJob,
       source: selectedSource,
       selectionEpoch: 3,
@@ -214,8 +218,8 @@ describe('staff quote HMS job binding', () => {
       groups: [{ id: 'single', arrivalDate: '2026-11-12', roomCodes: ['SKNG'] }],
     });
     expect(staffQuoteJob.mock.calls.map(([input]) => input)).toEqual([
-      { runId: 'staff-job-1' },
-      { runId: 'staff-job-1' },
+      { runId: 'staff-job-1', messageId: source.messageId },
+      { runId: 'staff-job-1', messageId: source.messageId },
     ]);
     expect(mutate).not.toHaveBeenCalled();
     expect(result).toMatchObject({ status: 'ok', staffQuote: { workflowRunId: 'workflow-1' } });
@@ -494,7 +498,7 @@ describe('staff quote HMS job binding', () => {
 
     expect(result).toMatchObject({ status: 'ok', staffQuote: { workflowRunId: 'workflow-1' } });
     expect(queue).toHaveBeenCalledTimes(1);
-    expect(staffQuoteJob).toHaveBeenCalledWith({ runId: 'staff-job-1' });
+    expect(staffQuoteJob).toHaveBeenCalledWith({ runId: 'staff-job-1', messageId: source.messageId });
     expect(mutate).not.toHaveBeenCalled();
   });
 
@@ -577,6 +581,29 @@ describe('staff quote HMS job binding', () => {
     });
   });
 
+  it('rejects a prepared quote for different child ages even when pane counters match', async () => {
+    const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'prepared-job' }));
+    const staffQuoteJob = vi.fn(async () => ({
+      ...view('done', READY, undefined, true),
+      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], {
+        groups: [{ ...queue.mock.calls[0]![0].groups[0]!, childrenAges: [4] }],
+      }),
+    }));
+    const result = await bindAutoStartStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
+      queue,
+      staffQuoteJob,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(result).toMatchObject({
+      status: 'unavailable', reason: 'The quote is out of date because the stay details changed. Run it again.',
+    });
+  });
+
   it('does not rebase a reused auto-start result for a different stored request', async () => {
     const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'staff-job-reused' }));
     const staffQuoteJob = vi.fn(async () => ({
@@ -639,7 +666,7 @@ describe('staff quote HMS job binding', () => {
 
     expect(query.mock.calls.map(([input]) => input)).toEqual([
       { input: expect.objectContaining({ messageId: source.messageId }) },
-      { runId: 'staff-job-1' },
+      { runId: 'staff-job-1', messageId: source.messageId },
     ]);
     expect(result).toMatchObject({
       status: 'ok',

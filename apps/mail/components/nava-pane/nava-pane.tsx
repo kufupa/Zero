@@ -2044,7 +2044,7 @@ export function NavaPane({
       const retryRun = lostRunId && originalStaffQuoteJob
         ? bindReadBackStaffQuote({
             query: (input, options) =>
-              originalStaffQuoteJob('input' in input ? { runId: lostRunId } : input, options),
+              originalStaffQuoteJob('input' in input ? { runId: lostRunId, messageId: source.messageId } : input, options),
             source,
             selectionEpoch,
             inputRevision,

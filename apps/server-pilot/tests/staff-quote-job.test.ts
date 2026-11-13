@@ -140,7 +140,7 @@ function fixture(metrics: Record<string, unknown> = { userId: user.id, staffQuot
   const request = { kind: 'staff_quote', input: STAFF_QUOTE_INPUT };
   const run = {
     id: 'job-1',
-    transportId: 'transport-1',
+    transportId: TRANSPORT_ID,
     threadId: 'thread-1',
     runKind: 'read_tool',
     promptVersion: HMS_JOB_PROMPT_VERSION,
@@ -168,6 +168,7 @@ function preparedFixture() {
 }
 
 beforeEach(async () => {
+  vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', 'synthetic');
   jobMocks.markSucceeded.mockReset().mockResolvedValue({ id: 'job-1' });
   jobMocks.markRetry.mockReset().mockResolvedValue({ id: 'job-1' });
   jobMocks.markDeadLetter.mockReset().mockResolvedValue({ id: 'job-1' });
@@ -339,7 +340,7 @@ async function provisionalWorkerQuote(
   onError?: (error: unknown) => void,
   inputOverrides: Partial<StaffQuoteInput> = {},
   prepared = false,
-  transportId = 'transport-1',
+  transportId = TRANSPORT_ID,
 ) {
   const actualRun = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
     '../src/ai/staff-quote-run.js',
@@ -530,11 +531,12 @@ describe('staff_quote HMS job execution', () => {
       });
       return syntheticRevision(
         ['600.00', '600.00'],
-        'Dinner, Bed and Breakfast R',
+        'Dinner, Bed & Breakfast R',
         'SKNG',
         undefined,
         '2026-11-12',
         prepared.authorizationId,
+        { id: 'single', quantity: 1, adults: 2, children: 0, childAges: [] },
       );
     });
 
@@ -591,11 +593,12 @@ describe('staff_quote HMS job execution', () => {
       });
       return syntheticRevision(
         ['600.00', '600.00'],
-        requests.length === 1 ? 'Dinner, Bed and Breakfast R' : 'Bed & Breakfast R',
+        requests.length === 1 ? 'Dinner, Bed & Breakfast R' : 'Bed & Breakfast R',
         'SKNG',
         undefined,
         '2026-11-12',
         prepared.authorizationId,
+        { id: 'single', quantity: 1, adults: 2, children: 0, childAges: [] },
       );
     });
 
@@ -666,6 +669,7 @@ describe('staff_quote HMS job execution', () => {
         undefined,
         '2026-11-12',
         prepared.authorizationId,
+        { id: 'single', quantity: 1, adults: 2, children: 0, childAges: [] },
       );
     });
 
@@ -911,7 +915,7 @@ describe('staff_quote HMS job execution', () => {
   it('keeps the worker deadline-bounded approval context and retries an unknown reader failure', async () => {
     const mail = {
       id: STAFF_QUOTE_INPUT.messageId,
-      transportId: 'transport-1',
+      transportId: TRANSPORT_ID,
       threadId: 'thread-1',
       direction: 'inbound',
       subject: 'Accommodation enquiry',
