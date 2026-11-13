@@ -18,7 +18,7 @@ export async function listTrackSubSegments(page, { propertyCode } = {}) {
     const request = route.request(), target = new URL(request.url());
     const body = new URLSearchParams(request.postData() || '');
     const popup = request.method() === 'POST' && target.origin === ORIGIN && target.pathname === '/web/base/LOVPOP' &&
-      body.get('LOV_TAGNAME') === 'track' && !target.search && !target.hash;
+      body.get('LOV_TAGNAME') === 'track' && body.get('GRID_NAME') === 'LVTRACKCODE' && !target.search && !target.hash;
     const pageRead = request.method() === 'POST' && target.origin === ORIGIN && target.pathname === '/web/base/GETCACHE' &&
       gridName && body.get('GRID_NAME') === gridName && !target.search && !target.hash;
     if (popup) gridName = body.get('GRID_NAME');
@@ -52,12 +52,20 @@ export async function listTrackSubSegments(page, { propertyCode } = {}) {
     const trigger = input.locator('xpath=ancestor::*[contains(@class,"x-form-item") or contains(@class,"x-field")][1]')
       .locator('.x-form-lov-trigger:visible, .x-form-search-trigger:visible, .x-form-trigger:visible').first();
     if (!await trigger.count()) throw new Error('TRACK_TRIGGER_UNAVAILABLE');
+    const response = page.waitForResponse(res => {
+      const request = res.request(), target = new URL(request.url()), body = new URLSearchParams(request.postData() || '');
+      return request.method() === 'POST' && target.origin === ORIGIN && target.pathname === '/web/base/LOVPOP' &&
+        body.get('LOV_TAGNAME') === 'track' && body.get('GRID_NAME') === 'LVTRACKCODE';
+    }, { timeout: 10000 }).catch(() => null);
     opened = true;
     await trigger.click({ timeout: 10000 });
-    const rows = page.locator('.x-boundlist:visible .x-boundlist-item:visible, .x-window:visible .x-grid-row:visible, .x-window:visible .x-grid-data-row:visible');
-    await rows.first().waitFor({ timeout: 10000 });
+    const reply = await response;
+    if (!reply?.ok()) throw new Error('TRACK_LOOKUP_UNVERIFIED');
     const win = page.locator('.x-window:visible:not(.x-menu)');
-    if (await win.count() > 1 || nativeDialog || blocked) throw new Error('TRACK_PICKER_UNVERIFIED');
+    await win.first().waitFor({ timeout: 10000 });
+    if (await win.count() !== 1 || nativeDialog || blocked) throw new Error('TRACK_PICKER_UNVERIFIED');
+    const rows = win.locator('.x-grid-row:visible, .x-grid-data-row:visible');
+    await rows.first().waitFor({ timeout: 10000 });
     let footer = null;
     if (await win.count() === 1) {
       for (let attempt = 0; attempt < 20; attempt += 1) {
