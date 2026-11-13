@@ -66,7 +66,7 @@ type Outcome = { status: string; issue?: string; [key: string]: unknown };
 type AmendRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'amend' }>;
 type Amendment = {
   arrival?: string; departure?: string; adults?: number; children?: number; childAges?: number[];
-  roomType?: string; ratePlan: string; retainRates: 'yes' | 'no'; firstName?: string; lastName?: string;
+  roomType?: string; roomTypeForCharge?: string; ratePlan: string; retainRates: 'yes' | 'no'; firstName?: string; lastName?: string;
   guestEmail?: string; bookerName?: string; bookerContact?: string;
   cmsSend: boolean; cmsMessageId: string; cmsRecipient: string;
 };
@@ -488,12 +488,11 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     }
     const field = effectiveLeaf(draft, fieldPath, item.field);
     if (field === UNKNOWN || typeof field !== 'string') { errors.push(`${changePath}:change_unknown`); return; }
-    if (field === 'roomTypeForCharge') { unsupported.add(field); return; }
-    const supported = new Set(['arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'ratePlan',
+    const supported = new Set(['arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'roomTypeForCharge', 'ratePlan',
       'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
     if (!supported.has(field)) { unsupported.add(field); return; }
     if (op === 'clear') {
-      if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote'].includes(field)) values[field] = '';
+      if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'roomTypeForCharge'].includes(field)) values[field] = '';
       else if (field === 'cmsSend') values.cmsSend = false;
       else if (field === 'cmsMessageId' || field === 'cmsRecipient') values[field] = '';
       else errors.push(`${changePath}:field_cannot_be_cleared`);
@@ -504,7 +503,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     const rawValue = effectiveLeaf(draft, valuePath, item.value);
     if (rawValue === UNKNOWN) { errors.push(`${valuePath}:value_unknown`); return; }
     if (rawValue === NONE) {
-      if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote'].includes(field)) values[field] = '';
+      if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'roomTypeForCharge'].includes(field)) values[field] = '';
       else if (field === 'cmsSend') values.cmsSend = false;
       else errors.push(`${valuePath}:explicit_none_not_supported`);
       reviewPaths.add(valuePath);
@@ -514,7 +513,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
       field === 'adults' ? Number.isInteger(rawValue) && Number(rawValue) >= 1 && Number(rawValue) <= 16 :
       field === 'childCount' ? Number.isInteger(rawValue) && Number(rawValue) >= 0 && Number(rawValue) <= 9 :
       field === 'childAges' ? Array.isArray(rawValue) && rawValue.length <= 9 && rawValue.every((age) => Number.isInteger(age) && age >= 0 && age <= 17) :
-      field === 'roomType' || field === 'ratePlan' ? code(rawValue) :
+      field === 'roomType' || field === 'roomTypeForCharge' || field === 'ratePlan' ? code(rawValue) :
       field === 'reservationNote' ? typeof rawValue === 'string' && rawValue.length <= 2000 &&
         ![...rawValue].some((char) => (char.charCodeAt(0) < 32 && char !== '\n') || char.charCodeAt(0) === 127) :
       field === 'cmsSend' ? typeof rawValue === 'boolean' : typeof rawValue === 'string' && rawValue.length <= 1000 && !/[\p{Cc}]/u.test(rawValue);
@@ -1104,7 +1103,9 @@ function readbackMatches(readback: unknown, prepared: Record<string, unknown>): 
       canonicalJson([...actual.childAges].sort((a: number, b: number) => a - b) as unknown) !==
       canonicalJson([...target.childAges].sort((a: number, b: number) => a - b)))) return null;
   const beforeKeys = { guestEmail: 'beforeGuestEmail', bookerName: 'beforeBookerName', bookerContact: 'beforeBookerContact' } as const;
-  if (actual.reservationNote !== (changes.reservationNote ?? baseline.beforeNote)) return null;
+  if (actual.reservationNote !== (changes.reservationNote ?? baseline.beforeNote) ||
+      (typeof (changes.roomTypeForCharge ?? baseline.beforeRoomTypeForCharge) === 'string' &&
+        actual.roomTypeForCharge !== (changes.roomTypeForCharge ?? baseline.beforeRoomTypeForCharge))) return null;
   for (const key of ['guestEmail', 'bookerName', 'bookerContact'] as const) {
     if (Object.hasOwn(changes, key) && actual[key] !== changes[key]) return null;
     if (!Object.hasOwn(changes, key) && (typeof baseline[beforeKeys[key]] !== 'string' ||

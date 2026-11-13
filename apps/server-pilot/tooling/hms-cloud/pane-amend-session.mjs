@@ -9,6 +9,7 @@ import { createSavedChildStageRequestGate } from './saved-stay-child-request-gat
 import { createSavedRoomStageRequestGate } from './saved-stay-room-stage-gate.mjs';
 import { createSavedRateStageRequestGate } from './saved-stay-rate-stage-gate.mjs';
 import { stageSavedGuestFieldsForComposition } from './guest-stay-amend-contact.mjs';
+import { stageSavedChargeRoomForComposition } from './guest-stay-amend-charge-room.mjs';
 import { labtestCombinedAmendPreimageBinding } from './saved-stay-combined-preimage.mjs';
 import { nativeCmsSendValue, runLabtestAmendSave } from './labtest-amend-save.mjs';
 import { createLabtestAmendDispatch } from './labtest-amend-dispatch.mjs';
@@ -132,12 +133,17 @@ function matchesAmendBusiness(snapshot, selected, changes, baseline, state) {
     arrivaldate: wireDate(target.arrival), departuredate: wireDate(target.departure), roomtype: target.roomType,
     rateplan: target.ratePlan, adults: String(target.adults), guaranteetype: state.expectedGuarantee?.code ?? 'NGI',
     reservationnote: Object.hasOwn(changes, 'reservationNote') ? changes.reservationNote : String(baseline.data.reservationnote ?? '') };
+  if (Object.hasOwn(changes, 'roomTypeForCharge') || Object.hasOwn(baseline.data, 'roomtypecharge')) {
+    required.roomtypecharge = Object.hasOwn(changes, 'roomTypeForCharge')
+      ? changes.roomTypeForCharge : String(baseline.data.roomtypecharge ?? '');
+  }
   if (!Object.entries(required).every(([key, value]) => Object.hasOwn(data, key) && String(data[key] ?? '') === value)) return false;
   const displayed = { confirmationnumber: target.confirmation, guestid: target.guestId, status: 'Reserved',
     firstname: target.firstName, lastname: target.lastName, arrivaldate: displayDate(target.arrival),
     departuredate: displayDate(target.departure), roomtype: target.roomType, rateplan: target.ratePlan,
     adults: String(target.adults) };
   displayed.reservationnote = required.reservationnote;
+  if (Object.hasOwn(required, 'roomtypecharge')) displayed.roomtypecharge = required.roomtypecharge;
   if (!Object.entries(displayed).every(([key, value]) => Object.hasOwn(values, key) && String(values[key] ?? '') === value)) return false;
   const contact = { emailaddress: 'guestEmail', caller: 'bookerName', udfchar06: 'bookerContact' };
   for (const [name, key] of Object.entries(contact)) {
@@ -183,6 +189,7 @@ export function matchesCloudPaneAmendSave(request, frame, snapshot,
     const cmsFields = [...body].filter(([name]) => name.toLowerCase() === 'udfchkbox04');
     if (cmsFields.length !== 1 || cmsFields[0][0] !== 'udfchkbox04' ||
         nativeCmsSendValue(cmsFields[0][1]) !== changes.cmsSend) return false;
+    if (Object.hasOwn(data, 'roomtypecharge')) required.roomtypecharge = String(data.roomtypecharge ?? '');
     if (Object.hasOwn(changes, 'childAges')) {
       for (const name of ['childages', 'child1', 'child2', 'child3']) required[name] = String(data[name] ?? '');
     }
@@ -384,7 +391,8 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
   current = currentLabtestRecord, snapshot = snapshotLabtestRecord, bind = labtestCombinedAmendPreimageBinding,
   stageAdults = stageSavedAdultForComposition, stageDates = stageSavedDatesForComposition,
   stageChildren = stageSavedChildrenForComposition, stageOption = stageSavedRoomRateForComposition,
-  stageGuest = stageSavedGuestFieldsForComposition, syncRecord = syncAmendRecordAfterAvailability,
+  stageGuest = stageSavedGuestFieldsForComposition, stageCharge = stageSavedChargeRoomForComposition,
+  syncRecord = syncAmendRecordAfterAvailability,
   quote = readAmendNightlyQuote, readRates = readSavedStayNightlyRates, recordOptions = amendRecordOptions,
 } = {}) {
   const readSnapshot = snapshot;
@@ -420,7 +428,8 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
   const childChanged = Object.hasOwn(changes, 'children') && (changes.children !== selected.children ||
     !same(changes.childAges, selected.childAges));
   const roomChanged = target.roomType !== selected.roomType, rateChanged = target.ratePlan !== selected.ratePlan;
-  const needsAvailability = dateChanged || Object.hasOwn(proposed, 'adults') || childChanged || roomChanged || rateChanged;
+  const chargeChanged = Object.hasOwn(changes, 'roomTypeForCharge');
+  const needsAvailability = dateChanged || Object.hasOwn(proposed, 'adults') || childChanged || roomChanged || rateChanged || chargeChanged;
   // The retained baseline is not the final price when availability changes.
   if (changes.retainRates === 'yes' && needsAvailability) throw new Error('AMEND_PRICE_UNVERIFIED');
   const allowsExtendOverrideRate = changes.retainRates === 'yes' &&
@@ -565,6 +574,8 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           baseline.data.caller === baseline.values.caller ? baseline.data.caller : null,
         beforeBookerContact: typeof baseline?.data?.udfchar06 === 'string' && typeof baseline?.values?.udfchar06 === 'string' &&
           baseline.data.udfchar06 === baseline.values.udfchar06 ? baseline.data.udfchar06 : null,
+        beforeRoomTypeForCharge: typeof baseline?.data?.roomtypecharge === 'string' &&
+          baseline.data.roomtypecharge === baseline?.values?.roomtypecharge ? baseline.data.roomtypecharge : null,
         beforeGuaranteeCode: state.expectedGuarantee?.code ?? 'NGI',
         beforeSavedRates: savedRates ? structuredClone(savedRates) : null };
       if (prepareOnly) {
@@ -584,6 +595,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           beforeGuestEmail: recoveryBaseline.beforeGuestEmail,
           beforeBookerName: recoveryBaseline.beforeBookerName,
           beforeBookerContact: recoveryBaseline.beforeBookerContact,
+          beforeRoomTypeForCharge: recoveryBaseline.beforeRoomTypeForCharge,
           beforeGuaranteeCode: recoveryBaseline.beforeGuaranteeCode,
           beforeSavedRates: savedRates ? structuredClone(savedRates) : null,
           beforeEvidence: { eventId: evidence.eventId, sha256: evidence.sha256 } });
@@ -602,10 +614,11 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         reservationStayId: selected.reservationStayId, adults: target.adults }, changes.childAges));
       // Picker refreshes are unsaved; keep HMS mail off until the final requested
       // form is staged so an intermediate native action cannot send a message.
-      if ((roomChanged || String(draft.data?.rateplan ?? selected.ratePlan) !== target.ratePlan) && prepared.state.cmsSend === true) {
+      if ((roomChanged || chargeChanged || String(draft.data?.rateplan ?? selected.ratePlan) !== target.ratePlan) && prepared.state.cmsSend === true) {
         draft = await bounded(stageGuest(context, { cmsSend: false }));
       }
       if (roomChanged) draft = await bounded(stageOption(context, 'roomType', selected.roomType, target.roomType));
+      if (chargeChanged) draft = await bounded(stageCharge(context, changes.roomTypeForCharge));
       const currentRate = String(draft.data?.rateplan ?? selected.ratePlan);
       if (currentRate !== target.ratePlan) {
         draft = await bounded(stageOption(context, 'ratePlan', currentRate, target.ratePlan));
@@ -750,6 +763,10 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
       const ages = occupancy.ages ?? (occupancy.count === 0 ? [] : 'unknown');
       if (!occupancy.valid || occupancy.count !== target.children ||
           (Array.isArray(target.childAges) && !sameChildAgeMultiset(ages, target.childAges))) return { outcome: 'unverified' };
+      const chargeRoom = Object.hasOwn(changes, 'roomTypeForCharge') ? changes.roomTypeForCharge : input.beforeRoomTypeForCharge;
+      if (typeof chargeRoom === 'string' && (!Object.hasOwn(data, 'roomtypecharge') ||
+          !Object.hasOwn(saved.values ?? {}, 'roomtypecharge') || String(data.roomtypecharge ?? '') !== chargeRoom ||
+          String(saved.values.roomtypecharge ?? '') !== chargeRoom)) return { outcome: 'unverified' };
       const guestEmail = String(data.emailaddress ?? ''), bookerName = String(data.caller ?? ''),
         bookerContact = String(data.udfchar06 ?? ''), cmsRecipient = String(data.udfchar13 ?? ''),
         cmsMessageId = String(data.udfchar09 ?? '');
@@ -783,7 +800,9 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
       return { outcome: 'matched', readback: { confirmation: native.confirmation, nativeStayId: native.reservationStayId,
         arrival: native.arrival, departure: native.departure, roomType: native.roomType, ratePlan: native.ratePlan,
         adults: native.adults, children: native.children, childAges: ages, firstName: native.firstName, lastName: native.lastName,
-        guestEmail, bookerName, bookerContact, reservationNote: expected.note, cmsSend: state.cmsSend, cmsMessageId, cmsRecipient,
+        guestEmail, bookerName, bookerContact, reservationNote: expected.note,
+        ...(typeof chargeRoom === 'string' ? { roomTypeForCharge: chargeRoom } : {}),
+        cmsSend: state.cmsSend, cmsMessageId, cmsRecipient,
         price: observedAmendPrice(saved, target, null) } };
     }, protectedSession.options);
   } catch { return { outcome: 'unverified' }; }
