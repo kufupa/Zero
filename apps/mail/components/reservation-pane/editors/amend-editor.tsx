@@ -2,10 +2,11 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
-import { effectiveAt, record, requestPath, savedTargetOperationLocks, text, valueAt } from '@/lib/reservation-workflow/views';
+import { effectiveAt, record, requestPath, savedAutoTransferHistory, savedTargetOperationLocks, text, valueAt } from '@/lib/reservation-workflow/views';
 import { Field, Count, Section } from '../shared/stay-fields';
 import { NativePicker } from '../shared/native-pickers';
 import { ReservationNote } from '../shared/reservation-note';
+import paneStyles from '../reservation-pane.module.css';
 import styles from './other-editors.module.css';
 
 type Editor = WorkbenchEditorProps;
@@ -410,6 +411,10 @@ export function AmendEditor(editor: Editor) {
         && o.criteria.workflow === 'amend' && o.criteria.requestId === editor.request.id && o.criteria.hintId === hintId
         && o.criteria.selectedRef === selected && record(o.result).outcome === 'prepared');
       const result = record(latest?.result), before = record(result.before), target = record(result.target);
+      const histories = editor.view.busy || editor.view.saving ? [] : (['organization', 'arAccount'] as const).flatMap(partyKind => {
+        const history = savedAutoTransferHistory(editor.snapshot, editor.request.id, hintId, partyKind);
+        return history ? [{ ...history, partyKind }] : [];
+      });
       return <Section key={hintId || i} title={`Changes for ${text(hint.confirmation) || text(hint.guestName) || `stay ${i + 1}`}`}>
         {perIndex < 0 ? <div className={styles.warning}>Add this stay’s change and rate handling before checking.
           <button type="button" disabled={editor.view.busy || scopeLocked || !hintId} onClick={() => void editor.commands.changeRows({
@@ -423,6 +428,9 @@ export function AmendEditor(editor: Editor) {
             <span>Requested: {text(target.arrival)} → {text(target.departure)} · {text(target.roomType)} / {text(target.ratePlan)}</span>
             <span>{result.callbackPriceReviewRequired === true ? 'Indicative total' : 'New total'}: {displayPrice(result.approvedPrices)}</span>
             <small className={styles.hint}>{result.callbackPriceReviewRequired === true ? 'Infor will return the current price after applying the requested details.' : 'Check again after changing inputs.'}</small>
+            {histories.map(history => <small role="note" className={paneStyles.memoryBadge} key={history.partyKind}>
+              History: Auto Transfer was recorded on {history.support} of {history.denominator} earlier stays for {history.partyKind === 'organization' ? 'organization' : 'A/R account'} {history.name}. Check the current Infor setting.
+            </small>)}
           </div>}
         </div>}
       </Section>;

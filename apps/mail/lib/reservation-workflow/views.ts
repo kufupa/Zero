@@ -103,6 +103,7 @@ export type NativeRecommendationLead = { ref: string; value: string; label: stri
 
 export function autoTransferHistory(snapshot: ReservationPaneSnapshot, path: string): { support: number; denominator: number; partyKind: 'organization' | 'arAccount' } | null {
   const draft = snapshot.session.draft;
+  if (snapshot.session.sourceChanged) return null;
   const requestId = decodeURIComponent(path.split('/')[4] ?? '');
   const request = draft.proposal.content.requests.find(row => row.id === requestId);
   if (!request || request.kind !== 'create' && request.kind !== 'amend') return null;
@@ -133,6 +134,82 @@ export function autoTransferHistory(snapshot: ReservationPaneSnapshot, path: str
   const result = record(observation.result);
   return typeof result.support === 'number' && typeof result.denominator === 'number'
     ? { support: result.support, denominator: result.denominator, partyKind } : null;
+}
+
+export function savedAutoTransferHistory(snapshot: ReservationPaneSnapshot, requestId: string, hintId: string,
+  partyKind: 'organization' | 'arAccount'): { name: string; support: number; denominator: number } | null {
+  const draft = snapshot.session.draft;
+  if (snapshot.session.sourceChanged) return null;
+  const request = draft.proposal.content.requests.find(row => row.id === requestId && row.kind === 'amend');
+  if (!request) return null;
+  const root = `${requestPath(requestId)}/body`, body = record(effectiveAt(snapshot, root)), scope = record(body.targets);
+  if (scope.mode !== 'explicit' || !Array.isArray(scope.include) || !Array.isArray(scope.exclude) ||
+      !Array.isArray(body.sharedChanges) || !Array.isArray(body.perTarget)) return null;
+  const targets = scope.include.map(record), indices = targets.flatMap((row, index) => row.id === hintId ? [index] : []);
+  if (indices.length !== 1 || scope.exclude.map(record).some(row => row.id === hintId)) return null;
+  const perTarget = body.perTarget.map(record).filter(row => row.hintId === hintId);
+  const targetChanges = perTarget.length === 1 ? perTarget[0]?.changes : null;
+  if (!Array.isArray(targetChanges)) return null;
+  const changes = [...body.sharedChanges, ...targetChanges].map(record);
+  if (changes.some(change => change.op != null && (change.field === partyKind || typeof change.field !== 'string'))) return null;
+  if (draft.operationResults.some(operation => operation.workflow === 'amend' && operation.requestId === requestId &&
+      (!operation.allocationId || operation.allocationId === hintId) && (operation.status === 'succeeded' || operation.status === 'unknown' ||
+      operation.status === 'failed' && (!operation.observationRefs.length || !operation.observationRefs.every(ref =>
+        draft.observations.some(row => row.ref === ref && row.criteria.workflow === 'amend' &&
+          ['prepare', 'retain_callback_unsupported'].includes(text(row.criteria.stage))))) ||
+      operation.status === 'prepared' && operation.observationRefs.some(ref =>
+        draft.observations.some(row => row.ref === ref && row.criteria.stage === 'callback_price_review'))))) return null;
+  const index = indices[0]!, target = targets[index]!, selectionPath = `${root}/targets/include/${index}/suggestedRef`;
+  const selectedRef = valueAt(snapshot, selectionPath);
+  if (typeof selectedRef !== 'string' || !selectedRef) return null;
+  const bound = (row: ReservationPaneSnapshot['session']['draft']['observations'][number]) =>
+    row.generationId === draft.generationId && row.propertyCode === draft.propertyCode && row.sourceMessageId === draft.source.messageId;
+  const selectedRows = draft.observations.filter(row => row.ref === selectedRef && row.kind === 'stay_candidate' &&
+    row.status === 'complete' && row.coverage.complete === true && bound(row) && row.criteria.workflow === 'amend' &&
+    row.criteria.kind === 'saved_target' && row.criteria.requestId === requestId && row.criteria.hintId === hintId &&
+    row.criteria.selectionPath === selectionPath);
+  if (selectedRows.length !== 1) return null;
+  const selected = selectedRows[0]!, query = record(selected.criteria.query), candidate = record(selected.result.candidate);
+  const normalized = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : null;
+  if (!['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].every(key => normalized(query[key]) === normalized(target[key])) ||
+      typeof candidate.confirmation !== 'string' || !/^\d{6,10}-\d{1,2}$/.test(candidate.confirmation.trim()) ||
+      normalized(target.confirmation) && normalized(candidate.confirmation) !== normalized(target.confirmation)) return null;
+  const prepare = draft.observations.findLast(row => row.kind === 'rate_availability' && row.status === 'complete' &&
+    row.coverage.complete === true && bound(row) && row.criteria.workflow === 'amend' && row.criteria.requestId === requestId &&
+    row.criteria.hintId === hintId && row.criteria.selectedRef === selectedRef && row.result.outcome === 'prepared');
+  if (!prepare || prepare.criteria.draftRevision !== draft.revision) return null;
+  const beforeStay = record(prepare.result.before), identity = ['confirmation', 'reservationStayId', 'reservationId', 'recordId', 'guestId'];
+  if (candidate.source !== 'record_view_ext_model' || beforeStay.source !== candidate.source ||
+      identity.some(key => typeof candidate[key] !== 'string' || !candidate[key] || candidate[key] !== beforeStay[key])) return null;
+  const baseChanges = record(prepare.result.semanticInput).baseChanges;
+  if (!baseChanges || typeof baseChanges !== 'object' || Array.isArray(baseChanges) || Object.hasOwn(baseChanges, partyKind)) return null;
+  const baseline = record(prepare.result.nativePartyBaseline), party = record(baseline[partyKind]);
+  const before = record(record(prepare.result.recoveryBaseline).beforeParties);
+  const idField = partyKind === 'organization' ? 'companyid' : 'araccountid';
+  const nameFields = partyKind === 'organization' ? ['company', 'companyname'] : ['araccountname'];
+  const names = nameFields.map(key => before[key]).filter(value => value !== null && value !== undefined && value !== '');
+  const normalizeName = (value: string) => value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase('en-US');
+  const partyName = typeof party.name === 'string' ? party.name : '';
+  if (party.state !== 'selected' || typeof party.nativeId !== 'string' || !/^[1-9]\d*$/.test(party.nativeId) ||
+      !partyName.trim() || String(before[idField] ?? '').trim() !== party.nativeId || !names.length ||
+      names.some(name => typeof name !== 'string' || normalizeName(name) !== normalizeName(partyName))) return null;
+  const hint = draft.observations.findLast(row => {
+    const criteria = record(row.criteria), result = record(row.result);
+    return row.kind === 'stay_candidate' && row.status === 'partial' && row.coverage.complete === false && bound(row) &&
+      criteria.kind === 'historical_auto_transfer_hint' && criteria.binding === 'saved_amend_baseline' &&
+      criteria.workflow === 'amend' && criteria.requestId === requestId && criteria.hintId === hintId &&
+      criteria.sourceHash === draft.source.sourceHash && criteria.fieldPath === selectionPath && criteria.selectionPath === selectionPath &&
+      criteria.selectedRef === selectedRef && criteria.prepareRef === prepare.ref && criteria.draftRevision === draft.revision &&
+      criteria.partyKind === partyKind && criteria.partyNativeId === party.nativeId && criteria.partyQuery === partyName &&
+      result.value === true && result.evidence === 'stay360_auto_transfer_card_row' &&
+      typeof result.support === 'number' && Number.isSafeInteger(result.support) && result.support > 0 &&
+      typeof result.denominator === 'number' && Number.isSafeInteger(result.denominator) && result.denominator >= result.support &&
+      typeof result.confidence === 'number' && result.confidence >= 0.8 && result.confidence <= 1 && result.support / result.denominator >= 0.8;
+  });
+  if (!hint) return null;
+  const result = record(hint.result);
+  return typeof result.support === 'number' && typeof result.denominator === 'number'
+    ? { name: partyName, support: result.support, denominator: result.denominator } : null;
 }
 
 function currentRoomStock(snapshot: ReservationPaneSnapshot, requestId: string, raw: unknown): NativeRecommendationLead['stock'] {
