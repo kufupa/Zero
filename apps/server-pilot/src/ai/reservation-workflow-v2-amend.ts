@@ -468,6 +468,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
   const values: Record<string, unknown> = {};
   const errors: string[] = [];
   const unsupported = new Set<string>();
+  const roomCountPaths: string[] = [];
   const applyChange = (change: unknown, changePath: string) => {
     const item = record(change);
     if (!item) { errors.push(`${changePath}:change_invalid`); return; }
@@ -488,6 +489,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     }
     const field = effectiveLeaf(draft, fieldPath, item.field);
     if (field === UNKNOWN || typeof field !== 'string') { errors.push(`${changePath}:change_unknown`); return; }
+    if (field === 'roomCount') { roomCountPaths.push(changePath); return; }
     const supported = new Set(['arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'roomTypeForCharge', 'ratePlan',
       'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
     if (!supported.has(field)) { unsupported.add(field); return; }
@@ -533,6 +535,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
   if (effectiveChanges === UNKNOWN) return { outcome: 'needs_input', issue: 'amend_target_changes_unknown', fields: [changesPath] };
   if (!Array.isArray(effectiveChanges)) return { outcome: 'needs_input', issue: 'amend_target_changes_required', fields: [changesPath] };
   effectiveChanges.forEach((change, index) => applyChange(change, `${changesPath}/${index}`));
+  if (roomCountPaths.length) return { outcome: 'needs_input', issue: 'amend_room_count_requires_separate_reservations', fields: roomCountPaths };
   if (unsupported.size) return { outcome: 'unsupported', issue: 'amend_contains_native_unsupported_field', fields: [...unsupported] };
   if (errors.length) return { outcome: 'needs_input', issue: 'amend_changes_invalid_or_unknown', fields: errors };
   if (typeof values.billingReference === 'string' && values.billingReference.length > 50) {
