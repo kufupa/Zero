@@ -3912,11 +3912,18 @@ function projectCurrentExtraction(input: {
         request.body.groups = datedRows.flatMap(({ date, index, arrival, departure, quantity, inferred }) => {
           const board = safeCurrentText(date.mealPlan, currentRefs, 120) ??
             (boardsByValue.size === 1 ? boardValue([...boardsByValue.values()][0]!.value) : null);
-          const dateMatches = originalDateGroups.filter(group => !usedIds.has(group.id) &&
+          const dateMatches = previous.filter(group => !usedIds.has(group.id) &&
             arrival && departure && group.arrival === arrival && group.departure === departure);
           const boardMatches = board ? dateMatches.filter(group =>
             matchedBoard(group.requestedMealPlan ?? group.mealPlan) === matchedBoard(board)) : dateMatches;
-          const matches = boardMatches.length ? boardMatches : dateMatches.filter(group => !group.requestedMealPlan && !group.mealPlan);
+          const priorBoardMatches = board ? dateMatches.filter(group => {
+            const prior = originalDateGroups.find(original => original.id === group.id);
+            return prior && matchedBoard(prior.requestedMealPlan ?? prior.mealPlan) === matchedBoard(board);
+          }) : [];
+          const quantityMatches = quantity === null ? [] : dateMatches.filter(group => group.quantity === quantity);
+          const unboardedMatches = dateMatches.filter(group => !group.requestedMealPlan && !group.mealPlan);
+          const matches = [dateMatches, boardMatches, priorBoardMatches, quantityMatches, unboardedMatches]
+            .find(candidates => candidates.length === 1) ?? [];
           const categories = previous.filter(group => !usedIds.has(group.id) &&
             sourceRoomByGroupId.has(group.id) && group.arrival === arrival && group.departure === departure);
           if (categories.length > 1 && quantity !== null &&
@@ -3928,8 +3935,7 @@ function projectCurrentExtraction(input: {
                 requestedMealPlan: safeCurrentText(date.mealPlan, currentRefs, 120) ?? group.requestedMealPlan };
             });
           }
-          const originalMatch = matches.length === 1 ? matches[0] : undefined;
-          const original = originalMatch ? previous.find(group => group.id === originalMatch.id) : undefined;
+          const original = matches[0];
           if (original) usedIds.add(original.id);
           projectedGroupRows.push({ date, inferred, category: false });
           return [{ ...(original ?? { roomCodes: roomCodes.codes.length === 1 ? roomCodes.codes : [], ratePlan: null,
