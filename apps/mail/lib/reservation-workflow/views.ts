@@ -172,7 +172,7 @@ export function nativeRecommendationLeads(snapshot: ReservationPaneSnapshot, pat
   const request = draft.proposal.content.requests.find(row => row.id === requestId);
   if (!request || !['create', 'quote'].includes(request.kind)) return [];
   const owner = path.replace(/\/nativeSelectionRef$/, '');
-  const role = kind === 'rate_plan' ? 'rate_plan' : kind === 'room_type' ? 'room_type' : owner.endsWith('/bookingAgency') ? (request.kind === 'quote' ? 'bookingAgency' : 'agency')
+  const role = kind === 'rate_plan' ? 'rate_plan' : kind === 'room_type' ? 'room_type' : owner.endsWith('/bookingAgency') ? 'bookingAgency'
     : owner.endsWith('/arAccount') ? 'ar_account' : 'organization';
   const queryPath = kind === 'rate_plan' || kind === 'room_type' ? path : `${owner}/name`;
   const normalize = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
@@ -210,7 +210,7 @@ function amendPartyRole(snapshot: ReservationPaneSnapshot, requestId: string, ow
   if (!owner.startsWith(root) || !/^(?:sharedChanges\/\d+|perTarget\/\d+\/changes\/\d+)\/value$/.test(owner.slice(root.length))) return null;
   const change = record(effectiveAt(snapshot, owner.slice(0, -'/value'.length)));
   if (change.op !== 'set') return null;
-  return change.field === 'bookingAgency' ? 'agency' : change.field === 'organization' ? 'organization'
+  return change.field === 'bookingAgency' ? 'bookingAgency' : change.field === 'organization' ? 'organization'
     : change.field === 'arAccount' ? 'ar_account' : null;
 }
 function currentIdentityRow(snapshot: ReservationPaneSnapshot, path: string, observation: ReservationPaneSnapshot['session']['draft']['observations'][number], verified: boolean): boolean {
@@ -223,7 +223,7 @@ function currentIdentityRow(snapshot: ReservationPaneSnapshot, path: string, obs
   if (!request || (request.kind !== 'create' && request.kind !== 'quote' && request.kind !== 'amend') ||
       criteria.workflow !== request.kind || criteria.requestId !== request.id) return false;
   const owner = path.replace(/\/nativeSelectionRef$/, ''), guest = observation.kind === 'guest_candidate';
-  const role = request.kind === 'amend' ? amendPartyRole(snapshot, request.id, owner) : guest ? 'guest' : owner.endsWith('/bookingAgency') ? 'agency'
+  const role = request.kind === 'amend' ? amendPartyRole(snapshot, request.id, owner) : guest ? 'guest' : owner.endsWith('/bookingAgency') ? 'bookingAgency'
     : owner.endsWith('/arAccount') ? 'ar_account' : 'organization';
   if (!role || !guest && criteria.role !== role || guest && request.kind !== 'create' ||
       request.kind === 'amend' && (guest || criteria.kind !== 'party_name')) return false;
@@ -350,7 +350,7 @@ export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: stri
   const expectedAllocation = allocationIndex >= 0 ? allocation : sectionIndex >= 0
     ? record(allocations.find(row => record(row).dateSectionId === section.id)) : record(allocations[0]);
   const request = draft.proposal.content.requests.find(row => row.id === decodeURIComponent(requestId ?? ''));
-  const role = guest ? 'guest' : ownerPath.endsWith('/bookingAgency') ? 'agency'
+  const role = guest ? 'guest' : ownerPath.endsWith('/bookingAgency') ? 'bookingAgency'
     : ownerPath.endsWith('/arAccount') ? 'ar_account' : 'organization';
   const leads = draft.observations.flatMap(observation => {
     if (observation.kind !== kind || observation.status !== 'partial' ||
