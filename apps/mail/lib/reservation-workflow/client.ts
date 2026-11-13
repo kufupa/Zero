@@ -512,6 +512,7 @@ function nativeIssueText(issue: unknown): string | null {
   if (issue === 'create_requested_totals_conflict') return 'The rooms or occupants do not match the requested totals. Review each room and the group totals';
   if (issue === 'amend_room_count_requires_separate_reservations') return 'Choose the rooms to add or cancel as separate reservations';
   if (issue === 'amend_track_target_selection_required') return 'Find and select each saved stay in Infor before loading Track choices';
+  if (issue === 'amend_applied_price_requires_second_go') return 'Details may already have changed in Infor. Review the new price before saving';
   if (issue === 'native_meal_plan_mismatch_or_unknown') return 'The Meal Plan does not match Infor. Review the Infor Meal Plan shown for the room and update the choice';
   if (issue === 'native_quote_no_matching_rate') {
     return 'No offer matches the requested room, rate and meal plan. Review available alternatives';

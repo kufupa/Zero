@@ -412,7 +412,8 @@ export function AmendEditor(editor: Editor) {
           {latest && <div className={styles.card}><strong>Last Infor check</strong>
             <span>{text(before.arrival)} → {text(before.departure)} · {text(before.roomType)} / {text(before.ratePlan)}</span>
             <span>Requested: {text(target.arrival)} → {text(target.departure)} · {text(target.roomType)} / {text(target.ratePlan)}</span>
-            <span>New total: {displayPrice(result.approvedPrices)}</span><small className={styles.hint}>Check again after changing inputs.</small>
+            <span>{result.callbackPriceReviewRequired === true ? 'Indicative total' : 'New total'}: {displayPrice(result.approvedPrices)}</span>
+            <small className={styles.hint}>{result.callbackPriceReviewRequired === true ? 'Infor will return the current price after applying the requested details.' : 'Check again after changing inputs.'}</small>
           </div>}
         </div>}
       </Section>;
