@@ -77,10 +77,12 @@ export function resolveSourceStayDate(text: string, receivedAt: string, rollover
   const monthIndex = MONTHS.findIndex((name) => new RegExp(`^${name}$`, 'i').test(match[2]!));
   const receipt = receivedDateAtHotel(receivedAt);
   if (monthIndex < 0 || (!match[3] && !receipt)) return null;
-  const year = Number(match[3] ?? receipt!.slice(0, 4));
+  const nextYear = RELATIVE_NEXT_YEAR.test(text);
+  if (match[3] && nextYear) return null;
+  const year = Number(match[3] ?? receipt!.slice(0, 4)) + (nextYear ? 1 : 0);
   const value = `${year}-${String(monthIndex + 1).padStart(2, '0')}-${match[1]!.padStart(2, '0')}`;
   if (!validDay(value)) return null;
-  return !match[3] && rollover && receipt ? nextOccurrence(value, receipt) : value;
+  return !match[3] && !nextYear && rollover && receipt ? nextOccurrence(value, receipt) : value;
 }
 
 /** Text used to verify date evidence from the selected message and its attachments only. */

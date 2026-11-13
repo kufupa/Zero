@@ -2133,8 +2133,16 @@ function recoverSourceIntent(input: {
         [...statedReferences].every((value) => references.includes(value));
       const nativeThreadReferences = new Set(input.evidence.filter((entry) => entry.relation === 'prior_thread')
         .flatMap((entry) => entry.text.match(/\b\d{6,10}-\d{1,2}\b/g) ?? []));
+      const datedStay = request.dates.length === 1 ? request.dates[0] : undefined;
+      const dates = [datedStay?.arrival, datedStay?.departure];
+      const priorText = normalizedFact(`${subject}\n${body}`);
+      const sameDates = dates.every((claim) => claim && claim.raw.length >= 5 &&
+        /\b(?:19|20)\d{2}\b/u.test(claim.raw) && claim.sourceRefs.some((ref) => input.evidence.some((evidence) =>
+          evidence.ref === ref && evidence.relation !== 'prior_thread' && evidence.text.includes(claim.raw))) &&
+        /\b\d{1,2}(?:st|nd|rd|th)?\s*(?:[-–—]\s*\d{1,2}(?:st|nd|rd|th)?)?\s+[a-z]+\b|\b[a-z]+\s+\d{1,2}(?:st|nd|rd|th)?\b|\b\d{4}-\d{2}-\d{2}\b/i.test(claim.raw) &&
+        priorText.includes(normalizedFact(claim.raw)));
       return statedReferences.size === 0 && extraction.requests.length === 1 && nativeThreadReferences.size <= 1 && guestNames.length === 1 &&
-        normalizedFact(subject).includes(normalizedFact(guestNames[0]));
+        sameDates && normalizedFact(subject).includes(normalizedFact(guestNames[0]));
     };
     const priorHotel = input.evidence.filter((row) => row.kind === 'message' && row.relation === 'prior_thread' &&
       /^From:\s*outbound\b/im.test(row.text) && /\b(?:booking|reservation)\b[^.!?\n]{0,40}\b(?:has\s+been|was|is|already)\s+cancel{1,2}ed\b/i.test(row.text) &&
@@ -2218,9 +2226,20 @@ function anchorCurrentExtractionDates(input: { extraction: ReservationWorkflowV2
         const claim = date[key];
         if (!claim || !claim.sourceRefs.some((ref) => input.evidence.some((row) => row.ref === ref &&
             row.relation !== 'prior_thread' && row.text.includes(claim.raw)))) continue;
-        if (!rollover && !/\b(?:19|20)\d{2}\b/u.test(claim.raw)) continue;
-        const resolved = resolveSourceStayDate(claim.raw, input.source.arrivedAt, rollover);
+        const relativeNextYear = /\bnext\s+year\b/i.test(claim.raw);
+        if (!rollover && !relativeNextYear && !/\b(?:19|20)\d{2}\b/u.test(claim.raw)) continue;
+        const ranges = [...claim.raw.matchAll(/\b(\d{1,2})(?:st|nd|rd|th)?\s*[-–—]\s*(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)(?:\s*,?\s*((?:19|20)\d{2}))?\b/gi)];
+        if (ranges.length && (ranges.length !== 1 || date.arrival?.raw !== claim.raw || date.departure?.raw !== claim.raw ||
+            ![date.arrival, date.departure].every((part) => part && part.sourceRefs.some((ref) => input.evidence.some((row) =>
+              row.ref === ref && row.relation !== 'prior_thread' && row.text.includes(part.raw)))))) {
+          claim.value = null;
+          continue;
+        }
+        const range = ranges[0];
+        const phrase = range ? `${key === 'arrival' ? range[1] : range[2]} ${range[3]} ${range[4] ?? ''}${relativeNextYear ? ' next year' : ''}` : claim.raw;
+        const resolved = resolveSourceStayDate(phrase, input.source.arrivedAt, rollover);
         if (resolved) claim.value = resolved;
+        else if (ranges.length || relativeNextYear) claim.value = null;
       }
       const arrival = date.arrival?.value, departure = date.departure?.value;
       if (rollover && isoDay(arrival) && isoDay(departure) && arrival.slice(5, 7) === '12' &&
@@ -4312,20 +4331,38 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
   const proposal = structuredClone(input.proposal);
   const observations: ReservationWorkflowV2Observation[] = [];
   const requirements: ReservationWorkflowV2Draft['fieldReviewRequirements'] = {};
-  const sourceNotes = input.extraction.requests.length === 1 ? operationalSourceNote(input).filter((clause) =>
-    input.evidence.some((row) => row.relation === 'current_message' && row.text.includes(clause))) : [];
-  const sourceRefs = input.evidence.filter((row) => row.relation === 'current_message' &&
-    sourceNotes.some((clause) => row.text.includes(clause))).map((row) => row.ref).slice(0, 99);
   for (const request of proposal.content.requests) {
     if (request.kind !== 'amend') continue;
+    const target = request.body.targets.mode !== 'scoped_all' && request.body.targets.include.length === 1 && request.body.targets.exclude.length === 0
+      ? request.body.targets.include[0] : undefined;
+    const sourceNotes = input.extraction.requests.length === 1 ? operationalSourceNote(input).filter((clause) =>
+      input.evidence.some((row) => row.relation === 'current_message' && row.text.includes(clause))) : [];
     let removedModelNote = false;
+    let foreignTargetNote = false;
+    let unverifiedNoteInstruction = false;
     const removeUnboundNotes = (changes: typeof request.body.sharedChanges) => changes.filter((change) => {
       if (change.op !== 'set' || change.field !== 'reservationNote') return true;
       removedModelNote = true;
+      const note = change.value;
+      if (input.extraction.requests.length === 1 && typeof note === 'string' && note.trim()) {
+        const cited = input.evidence.filter((row) => change.sourceRefs.includes(row.ref) &&
+          row.relation === 'current_message' && row.text.includes(note));
+        const lines = cited.flatMap((row) => row.text.split(/\r?\n|(?<=[.!?])\s+/u).filter((line) => line.includes(note)));
+        if (cited.length && !sourceNotes.some((clause) => clause.includes(note))) sourceNotes.push(note);
+        if (!lines.some((line) => /\b(?:note|instruction)\b/i.test(line) &&
+          !/\b(?:not|never|do\s+not|don['’]t|without)\b/i.test(line))) unverifiedNoteInstruction = true;
+      }
       return false;
     });
     request.body.sharedChanges = removeUnboundNotes(request.body.sharedChanges);
-    for (const row of request.body.perTarget) row.changes = removeUnboundNotes(row.changes);
+    for (const row of request.body.perTarget) {
+      if (row.hintId !== target?.id && row.changes.some((change) => change.op === 'set' && change.field === 'reservationNote')) foreignTargetNote = true;
+      row.changes = removeUnboundNotes(row.changes);
+    }
+    const uniqueSourceNotes = [...new Set(sourceNotes)];
+    sourceNotes.splice(0, sourceNotes.length, ...uniqueSourceNotes);
+    const sourceRefs = input.evidence.filter((row) => row.relation === 'current_message' &&
+      sourceNotes.some((clause) => row.text.includes(clause))).map((row) => row.ref).slice(0, 99);
     if (!sourceNotes.length && !removedModelNote) continue;
     const path = `/proposal/content/requests/${request.id}/body`;
     for (const clause of sourceNotes) for (let offset = 0; offset < clause.length; offset += 2000) {
@@ -4334,8 +4371,6 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
           !proposal.sourceClaims.some((claim) => claim.path === `${path}/reservationNote` && claim.raw === raw))
         proposal.sourceClaims.push({ path: `${path}/reservationNote`, raw, sourceRefs });
     }
-    const target = request.body.targets.mode !== 'scoped_all' && request.body.targets.include.length === 1 && request.body.targets.exclude.length === 0
-      ? request.body.targets.include[0] : undefined;
     const confirmation = target?.confirmation?.trim();
     const extractionId = input.extractionIdByProposalRequestId.get(request.id);
     const extracted = input.extraction.requests.find((row) => row.id === extractionId && row.kind === 'amend');
@@ -4349,7 +4384,7 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
       confirmations.length === 1 && confirmations[0] === confirmation;
     const uniqueRequest = extractionId && proposal.content.requests.filter((row) => row.kind === 'amend' &&
       input.extractionIdByProposalRequestId.get(row.id) === extractionId).length === 1;
-    const matches = currentConfirmation && uniqueRequest ? input.observations.filter((row) =>
+    const matches = currentConfirmation && uniqueRequest && !foreignTargetNote && !unverifiedNoteInstruction ? input.observations.filter((row) =>
       row.kind === 'stay_candidate' && row.status === 'complete' && row.coverage.complete &&
       row.sourceMessageId === input.source.messageId && row.criteria.kind === 'prefill_saved_note_baseline' &&
       row.criteria.requestId === extractionId && row.criteria.confirmationOrGuestText === confirmation && row.result.outcome === 'found' &&
