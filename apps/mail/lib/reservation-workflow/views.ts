@@ -177,7 +177,8 @@ function currentIdentityRow(snapshot: ReservationPaneSnapshot, path: string, obs
     return query.field === 'lastName' && Boolean(normal(query.value)) &&
       normal(query.value) === normal(valueAt(snapshot, `${owner}/lastName`)) &&
       normal(query.firstName) === normal(valueAt(snapshot, `${owner}/firstName`)) &&
-      normal(query.email) === normal(valueAt(snapshot, `${owner}/email`));
+      normal(query.email) === normal(valueAt(snapshot, `${owner}/email`)) &&
+      normal(query.mobile) === normal(valueAt(snapshot, `${owner}/mobile`));
   }
   const search = typeof criteria.query === 'string' ? criteria.query : criteria.searchName;
   return typeof search === 'string' && Boolean(normal(search)) && normal(search) === normal(valueAt(snapshot, `${owner}/name`));
@@ -198,6 +199,7 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
         (catalogue && criteria.sourceHash !== undefined && criteria.sourceHash !== draft.source.sourceHash) ||
         (kind && observation.kind !== kind && observation.criteria.catalogueKind !== kind)) return [];
     if (criteria.kind === 'verified_native_row' && !currentIdentityRow(snapshot, path, observation, true) ||
+        criteria.kind === 'guest_profile' && observation.kind === 'guest_candidate' && !currentIdentityRow(snapshot, path, observation, false) ||
         request?.kind === 'amend' && observation.kind === 'party_candidate' &&
         !currentIdentityRow(snapshot, path, observation, false)) return [];
     const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
@@ -229,6 +231,7 @@ export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: stri
   const name = normal(valueAt(snapshot, guest ? `${ownerPath}/lastName` : `${ownerPath}/name`));
   const first = normal(valueAt(snapshot, `${ownerPath}/firstName`));
   const email = normal(valueAt(snapshot, `${ownerPath}/email`));
+  const mobile = normal(valueAt(snapshot, `${ownerPath}/mobile`));
   if (!name) return [];
   const parts = path.split('/'), requestId = parts[4];
   const allocationIndex = parts.indexOf('allocations');
@@ -249,18 +252,19 @@ export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: stri
         observation.sourceMessageId !== draft.source.messageId) return [];
     const criteria = record(observation.criteria), query = record(criteria.query);
     const paths = Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : [criteria.fieldPath];
-    if (request?.kind === 'amend' && !currentIdentityRow(snapshot, path, observation, false)) return [];
+    if ((request?.kind === 'amend' || criteria.kind === 'guest_profile' && guest) &&
+        !currentIdentityRow(snapshot, path, observation, false)) return [];
     if (criteria.kind === 'source_bound_display_lead') {
       if (observation.coverage.complete !== false || !request || (request.kind !== 'create' && request.kind !== 'quote') ||
           criteria.workflow !== request.kind || criteria.requestId !== request.id || criteria.role !== role ||
           criteria.fieldPath !== path || paths.length !== 1 || paths[0] !== path ||
           request.kind === 'create' && (!expectedAllocation.id || criteria.allocationId !== expectedAllocation.id) ||
-          guest && (query.field !== 'lastName' || normal(query.value) !== name || normal(query.firstName) !== first || normal(query.email) !== email) ||
+          guest && (query.field !== 'lastName' || normal(query.value) !== name || normal(query.firstName) !== first || normal(query.email) !== email || normal(query.mobile) !== mobile) ||
           !guest && (typeof criteria.query !== 'string' || normal(criteria.query) !== name)) return [];
     } else if (!paths.includes(path)) return [];
     const search = normal(typeof criteria.query === 'string' ? criteria.query : query.value ?? criteria.searchName);
     if (search && search !== name || normal(query.firstName) && normal(query.firstName) !== first ||
-        normal(query.email) && normal(query.email) !== email) return [];
+        normal(query.email) && normal(query.email) !== email || normal(query.mobile) && normal(query.mobile) !== mobile) return [];
     const result = record(observation.result);
     const coverage = record(guest ? result.coverage : result.nativeCoverage ?? result.coverage);
     const detail = coverage.truncated === true || coverage.serverMoreRecords === true ? 'Search truncated; more matches may exist.'
