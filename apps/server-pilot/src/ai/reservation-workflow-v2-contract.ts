@@ -217,7 +217,7 @@ const quoteBodySchema = z.object({
 const amendFieldSchema = z.enum([
   'arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'roomTypeForCharge', 'ratePlan',
   'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'cmsSend',
-  'mealPlan', 'roomCount', 'bookingAgency', 'organization', 'arAccount', 'billingReference', 'taCommission', 'track', 'guaranteeType',
+  'requestedMealPlan', 'roomCount', 'bookingAgency', 'organization', 'arAccount', 'billingReference', 'taCommission', 'track', 'guaranteeType',
   'cmsMessageId', 'cmsRecipient', 'guestOptIn',
 ]);
 export const reservationWorkflowV2TrackSchema = z.object({

@@ -50,13 +50,18 @@ export function hydrateStoredReservationWorkflowV2(value: unknown): unknown {
   const legacyGroups = new Map<string, boolean>();
   const quotePrefixes = new Set<string>();
   const quotePrefixAliases = new Map<string, string[]>();
+  const amendPrefixes = new Set<string>();
   const proposal = object(root.proposal), content = object(proposal?.content);
   if (Array.isArray(content?.requests)) content.requests.forEach((entry, requestIndex) => {
     const request = object(entry), body = object(request?.body);
-    if (request?.kind !== 'quote' || !Array.isArray(body?.groups)) return;
-    const id = request.id;
+    const id = request?.id;
     const prefixes = [`/proposal/content/requests/${requestIndex}`, `/requests/${requestIndex}`,
       ...(typeof id === 'string' ? [`/proposal/content/requests/${encodeURIComponent(id)}`, `/requests/${id}`] : [])];
+    if (request?.kind === 'amend') {
+      prefixes.forEach(prefix => amendPrefixes.add(`${prefix}/body`));
+      return;
+    }
+    if (request?.kind !== 'quote' || !Array.isArray(body?.groups)) return;
     const groupPrefixes = prefixes.map(prefix => `${prefix}/body/groups/`);
     groupPrefixes.forEach(prefix => { quotePrefixes.add(prefix); quotePrefixAliases.set(prefix, groupPrefixes); });
     body.groups.forEach((entry, index) => {
@@ -124,6 +129,26 @@ export function hydrateStoredReservationWorkflowV2(value: unknown): unknown {
       const party = object(entry);
       if (party?.role === 'agency') party.role = 'bookingAgency';
     }
+  }
+  const hydrateAmendMeals = (value: unknown, path: string): void => {
+    if (Array.isArray(value)) { value.forEach((entry, index) => hydrateAmendMeals(entry, `${path}/${index}`)); return; }
+    const row = object(value);
+    if (!row) return;
+    if ([...amendPrefixes].some(prefix => path.startsWith(`${prefix}/`)) &&
+        /\/(?:sharedChanges\/\d+|perTarget\/\d+\/changes\/\d+)$/.test(path) && row.field === 'mealPlan') {
+      row.field = 'requestedMealPlan';
+    }
+    for (const [key, child] of Object.entries(row)) hydrateAmendMeals(child, `${path}/${key}`);
+  };
+  if (Array.isArray(content?.requests)) content.requests.forEach((entry, index) =>
+    hydrateAmendMeals(entry, `/proposal/content/requests/${index}`));
+  if (overrides) for (const [path, entry] of Object.entries(overrides)) {
+    const override = object(entry);
+    if (override?.state !== 'set') continue;
+    const isAmend = [...amendPrefixes].some(prefix => path.startsWith(`${prefix}/`));
+    if (isAmend && /\/(?:sharedChanges\/\d+|perTarget\/\d+\/changes\/\d+)\/field$/.test(path) &&
+        override.value === 'mealPlan') override.value = 'requestedMealPlan';
+    hydrateAmendMeals(override.value, path);
   }
   hydrateValue(root.proposal, '/proposal', resolvePath);
   for (const name of ['fieldOverrides', 'staffReviews', 'fieldReviewRequirements']) {

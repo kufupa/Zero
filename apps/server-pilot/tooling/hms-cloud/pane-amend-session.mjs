@@ -342,6 +342,7 @@ export async function prepareCloudPaneAmend(input, { openSession = withCenturion
       if (result.issue === 'PREPARE_ONLY' && result.nativeDigest && result.approvedPrices && result.preserved) {
         return { outcome: 'prepared', nativeDigest: result.nativeDigest,
           approvedPrices: result.approvedPrices, preserved: result.preserved,
+          ...(input.captureMealPlan ? { applied: result.applied } : {}),
           recoveryBaseline: result.recoveryBaseline, nativePartyBaseline: result.nativePartyBaseline,
           ...(input.captureBusinessImage ? { sourceBusinessImage: result.sourceBusinessImage } : {}) };
       }
@@ -642,6 +643,12 @@ function observedAmendPrice(snapshot, target, quote, { includeComponents = false
   return { version: 2, currency, totalCents, averageCents, options, ...(includeComponents ? { componentsTenThousandths: components } : {}) };
 }
 
+function observedAmendMealPlan(snapshot) {
+  const model = snapshot?.data?.mealplan, form = snapshot?.values?.mealplan;
+  return typeof model === 'string' && model === form && model.trim() && model.length <= 120 &&
+    !/[\p{Cc}]/u.test(model) ? model : null;
+}
+
 function assertAmendPriceFields(entries, approved) {
   for (const [name, expected, parse] of [
     ['currency', approved.currency, (value) => value],
@@ -792,6 +799,17 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       }
     }
   };
+  const checkMealPlan = (draft, request) => {
+    if (!input.captureMealPlan || prepareOnly) return;
+    if (typeof input.approvedMealPlan !== 'string' || observedAmendMealPlan(draft) !== input.approvedMealPlan) {
+      throw new Error('AMEND_MEAL_PLAN_CHANGED');
+    }
+    if (request) {
+      const entries = [...new URLSearchParams(request.postData() || '')].filter(([name]) => name.toLowerCase() === 'mealplan');
+      if (entries.length > 1 || (entries.length === 1 &&
+          (entries[0][0] !== 'mealplan' || entries[0][1] !== input.approvedMealPlan))) throw new Error('AMEND_MEAL_PLAN_CHANGED');
+    }
+  };
   const effectiveCmsChanges = (prepared) => input.discoveryOnly === true ? { ...changes,
     cmsMessageId: String(prepared.baseline.data.udfchar09 ?? ''), cmsRecipient: String(prepared.baseline.data.udfchar13 ?? '') } : changes;
   const valid = (value, prepared) => matchesAmendBusiness(value, selected, effectiveCmsChanges(prepared), prepared.baseline, prepared.state) &&
@@ -811,6 +829,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       if (!valid(latest, preparedState) || !matchesCloudPaneAmendSave(request, preparedState.frame, latest,
         saveOptions(preparedState, phase))) throw new Error('AMEND_DRAFT_CHANGED');
       checkPrice(latest, preparedState, request);
+      checkMealPlan(latest, request);
     };
     try {
       await check();
@@ -831,7 +850,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
   if (callbackFinal) registerFinalChecks({
     verifyFinal: (latest, prepared) => {
       if (!valid(latest, prepared)) return false;
-      try { checkPrice(latest, prepared); return true; } catch { return false; }
+      try { checkPrice(latest, prepared); checkMealPlan(latest); return true; } catch { return false; }
     },
     verifyDispatch: async (phase, request) => {
       if (!preparedState) return false;
@@ -840,6 +859,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       if (!valid(latest, preparedState) || !matchesCloudPaneAmendSave(request, preparedState.frame, latest,
         saveOptions(preparedState, phase))) return false;
       checkPrice(latest, preparedState, request);
+      checkMealPlan(latest, request);
       return true;
     },
   });
@@ -868,6 +888,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       await syncRecord(prepared.frame, refreshed, bounded);
       const after = await bounded(snapshot(prepared.frame));
       if (!valid(after, prepared)) return { ok: false, issue: 'AMEND_DRAFT_CHANGED' };
+      checkMealPlan(after);
       staged.draft = after;
       staged.approvedPrices = approvalPrice(after, prepared);
       if (callbackReviewOnly && staged.approvedPrices) {
@@ -886,6 +907,8 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       const state = await bounded(current(page, expected, recordOptions));
       if (Array.isArray(input.childAgePreimage)) state.verifiedChildAges = [...input.childAgePreimage];
       const baseline = await bounded(snapshot(state.frame));
+      if (input.captureMealPlan && !prepareOnly && (typeof input.approvedBeforeMealPlan !== 'string' ||
+          observedAmendMealPlan(baseline) !== input.approvedBeforeMealPlan)) throw new Error('AMEND_MEAL_PREIMAGE_CHANGED');
       if (callbackFinal && (!input.approvedBusinessImage || !portableBusinessImage(baseline) ||
           nativePriceDigest(portableBusinessImage(baseline)) !== nativePriceDigest(input.approvedBusinessImage))) {
         throw new Error('AMEND_CALLBACK_PREIMAGE_CHANGED');
@@ -937,6 +960,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         if (!prepareOnly && !callbackMode) assertApprovedAmendPrice(baseline, selected, input.approvedBeforeGuaranteePrice, { requireAverage: false });
       }
       const recoveryBaseline = { beforeNote: expected.note, beforeParties: structuredClone(state.partyPreimage),
+        ...(input.captureMealPlan ? { beforeMealPlan: observedAmendMealPlan(baseline) } : {}),
         beforeRecipient: preserved.cmsRecipient,
         beforeGuestEmail: preserved.guestEmail !== undefined ? preserved.guestEmail :
           typeof baseline?.data?.emailaddress === 'string' && typeof baseline?.values?.emailaddress === 'string' &&
@@ -990,6 +1014,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           throw new Error('AMEND_EVIDENCE_REQUIRED');
         }
       captureBefore({ beforeNote: expected.note, beforeParties: structuredClone(state.partyPreimage),
+          ...(input.captureMealPlan ? { beforeMealPlan: recoveryBaseline.beforeMealPlan } : {}),
           beforeRecipient: recoveryBaseline.beforeRecipient,
           beforeGuestEmail: recoveryBaseline.beforeGuestEmail,
           beforeBookerName: recoveryBaseline.beforeBookerName,
@@ -1099,11 +1124,13 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       }
       draft = await bounded(snapshot(prepared.frame));
       if (!context.isActive() || !valid(draft, prepared)) throw new Error('AMEND_DRAFT_CHANGED');
+      if (!needsAvailability) checkMealPlan(draft);
       return { draft, approvedPrices: needsAvailability ? null : approvalPrice(draft, prepared) };
     },
     validate: async (_bounded, prepared, staged) => Boolean(staged?.draft && valid(staged.draft, prepared) &&
       (needsAvailability || staged.approvedPrices)),
     stageDetails: (staged) => ({ nativeDigest, preserved, approvedPrices: staged?.approvedPrices ?? null,
+      ...(input.captureMealPlan ? { applied: { mealPlan: observedAmendMealPlan(staged?.draft) } } : {}),
       ...(callbackMode ? { callbackEffects } : {}),
       ...(callbackFinal ? { finalParties: preparedState?.state?.partyPreimage ?? null,
         finalBeforeCommission: preparedState?.recoveryBaseline?.beforeCommission ?? null } : {}),
@@ -1121,6 +1148,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       firstSnapshot = await bounded(snapshot(prepared.frame));
       if (!valid(firstSnapshot, prepared)) throw new Error('AMEND_DRAFT_CHANGED');
       checkPrice(firstSnapshot, prepared);
+      checkMealPlan(firstSnapshot);
       if (callbackFinal) authorizeCallbackSave(firstSnapshot, prepared);
       staged.draft = firstSnapshot;
     },
@@ -1133,6 +1161,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         questionSnapshot = await bounded(snapshot(prepared.frame));
         if (!valid(questionSnapshot, prepared)) throw new Error('AMEND_DRAFT_CHANGED');
         checkPrice(questionSnapshot, prepared);
+        checkMealPlan(questionSnapshot);
         return questionSnapshot;
       },
       matches: (request, frame, prepared, _staged, observed) =>
@@ -1144,6 +1173,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         extendSnapshot = await bounded(snapshot(prepared.frame));
         if (!valid(extendSnapshot, prepared)) throw new Error('AMEND_DRAFT_CHANGED');
         checkPrice(extendSnapshot, prepared);
+        checkMealPlan(extendSnapshot);
         return extendSnapshot;
       },
       matches: (request, frame, prepared, _staged, observed) =>
@@ -1222,6 +1252,7 @@ export async function reviewCloudPaneAmendCallbacks(input, authorization) {
         callbackEffects: staged.callbackEffects ?? callbackOutcome?.effects, callbackTaskDrained: callbackDrained };
     }
     return { outcome: 'callback_review_ready', approvedPrices: staged.approvedPrices,
+      ...(input.captureMealPlan ? { applied: staged.applied } : {}),
       callbackEffects: staged.callbackEffects, before, writerSessionClosed: true,
       dispatchCallbacksDrained: true, callbackTaskDrained: true };
   } catch {
@@ -1329,6 +1360,8 @@ export async function readCloudCallbackReviewState(input) {
           (typeof input.preserved?.cmsMessageId === 'string' && state.cmsMessageId !== input.preserved.cmsMessageId) ||
           (!agencyDefault && typeof before.beforeCommission === 'number' && percent(snapshot.data?.ta1commission) !== before.beforeCommission) ||
           (typeof before.beforeGuestOptIn === 'boolean' && nativeCmsSendValue(snapshot.data?.guestoptin4) !== before.beforeGuestOptIn)) return null;
+      const savedMealPlan = observedAmendMealPlan(snapshot);
+      if (input.captureMealPlan && (typeof before.beforeMealPlan !== 'string' || savedMealPlan !== before.beforeMealPlan)) return null;
       const permitted = new Set();
       for (const item of plan.parties) {
         if (item.kind === 'organization') ['companyid', 'company'].forEach(name => permitted.add(name));
@@ -1387,7 +1420,7 @@ export async function readCloudCallbackReviewState(input) {
       const price = observedAmendPrice(snapshot, native, null, { includeComponents: true });
       if (!price) return null;
       const partyImage = portableBusinessImage(snapshot);
-      return { native, effects, price, partyPreimage: state.partyPreimage, partyImage, guarantee };
+      return { native, effects, price, partyPreimage: state.partyPreimage, partyImage, guarantee, savedMealPlan };
     }, protectedSession.options);
     if (!result) return { outcome: 'unverified' };
     const child = await readCloudSavedChildAges({ ...readInput, selected: result.native, arrival: result.native.arrival });
@@ -1401,7 +1434,8 @@ export async function readCloudCallbackReviewState(input) {
     } else if (!sameChildAgeMultiset(child.ages, plan.expected.childAges)) return { outcome: 'unverified' };
     return { outcome: 'matched', confirmation: selected.confirmation, nativeStayId: selected.reservationStayId,
       callbackState: { effects: result.effects }, native: result.native, childAges: child.ages,
-      partyPreimage: result.partyPreimage, partyImage: result.partyImage, guarantee: result.guarantee, savedPrice: result.price };
+      partyPreimage: result.partyPreimage, partyImage: result.partyImage, guarantee: result.guarantee, savedPrice: result.price,
+      ...(input.captureMealPlan ? { savedMealPlan: result.savedMealPlan } : {}) };
   } catch { return { outcome: 'unverified' }; }
 }
 
@@ -1462,6 +1496,10 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
       const saved = await snapshot(state.frame), data = saved?.data;
       if (!data || !cleanLabtestRecord(saved) || !unchangedLabtestBusinessParties(input.beforeParties, saved,
           { allowModelOnlyPrimaryPartyIds: true, allowRealGuest: input.allowRealGuest === true || approvedLab })) return { outcome: 'unverified' };
+      const mealPlan = observedAmendMealPlan(saved);
+      if (input.captureMealPlan && (typeof input.approvedMealPlan !== 'string' || mealPlan !== input.approvedMealPlan)) {
+        return { outcome: 'unverified' };
+      }
       const occupancy = savedChildOccupancy(saved);
       const ages = occupancy.ages ?? 'unknown';
       if (!occupancy.valid || occupancy.count !== target.children ||
@@ -1535,6 +1573,7 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
         arrival: native.arrival, departure: native.departure, roomType: native.roomType, ratePlan: native.ratePlan,
         adults: native.adults, children: native.children, childAges: ages, firstName: native.firstName, lastName: native.lastName,
         guestEmail, bookerName, bookerContact, reservationNote: expected.note, guaranteeType: native.guaranteeCode,
+        ...(input.captureMealPlan ? { mealPlan } : {}),
         ...(billingReference === null ? {} : { billingReference }),
         ...(track === null ? {} : { track }),
         ...(Object.hasOwn(changes, 'taCommission') || input.expectedFinalCommission !== undefined ? { taCommission: commission } : {}),

@@ -46,7 +46,7 @@ import { join } from 'node:path';
 import { persistHmsShots, verifyStoredHmsShot } from './hms-shots-store.js';
 import { lockCreateActorSession } from './pane-create-actor-lock.js';
 import { formatBookerContact, parseBookerContact } from './reservation-workflow-v2-booker-contact.js';
-import { partyCandidateViews, verifiedNativeFields } from './reservation-workflow-v2-tools.js';
+import { partyCandidateViews, verifiedNativeFields, reservationWorkflowV2MealPlanMatches } from './reservation-workflow-v2-tools.js';
 import { partyMatchSearchTerms } from './party-match-v2.js';
 import { loadReservationAmendBaselineAutoTransferLeads, reservationEntityKey } from './reservation-workflow-v2-native-leads.js';
 
@@ -533,7 +533,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     if (field === 'roomCount') { roomCountPaths.push(changePath); return; }
     const supported = new Set(['arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'roomTypeForCharge', 'ratePlan',
       'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'taCommission', 'guestOptIn', 'track', 'guaranteeType', 'cmsSend', 'cmsMessageId', 'cmsRecipient',
-      'bookingAgency', 'organization', 'arAccount']);
+      'bookingAgency', 'organization', 'arAccount', 'requestedMealPlan']);
     if (!supported.has(field)) { unsupported.add(field); return; }
     if (op === 'clear') {
       if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'roomTypeForCharge'].includes(field)) values[field] = '';
@@ -589,6 +589,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
       field === 'track' ? (() => { const track = record(rawValue); return Boolean(track && Object.keys(track).length === 2 &&
         typeof track.lookupCode === 'string' && /^[A-Z0-9]{1,12}$/.test(track.lookupCode) && typeof track.display === 'string' &&
         track.display.length > 0 && track.display.length <= 200 && track.display.trim() === track.display && !/[\p{Cc}]/u.test(track.display)); })() :
+      field === 'requestedMealPlan' ? typeof rawValue === 'string' && Boolean(rawValue.trim()) && rawValue.length <= 120 && !/[\p{Cc}]/u.test(rawValue) :
       field === 'billingReference' ? typeof rawValue === 'string' && rawValue.length <= 4000 && !/[\p{Cc}]/u.test(rawValue) :
       field === 'taCommission' ? typeof rawValue === 'number' && Number.isFinite(rawValue) && rawValue >= 0 && rawValue <= 100 :
       field === 'guestOptIn' ? rawValue === false :
@@ -721,7 +722,7 @@ function normalizedChanges(base: Compile & { outcome: 'ok' }, preserved: Record<
     ? base.baseChanges.cmsMessageId : typeof preserved.cmsMessageId === 'string' ? preserved.cmsMessageId : '';
   if (typeof preserved.cmsMessageId !== 'string' ||
       cmsSend && (!cmsMessageId.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cmsRecipient))) return null;
-  const { bookerEmail, bookerMobile, ...nativeChanges } = base.baseChanges;
+  const { bookerEmail, bookerMobile, requestedMealPlan: _requestedMealPlan, ...nativeChanges } = base.baseChanges;
   if (bookerEmail !== undefined || bookerMobile !== undefined) {
     const previous = typeof baseline.beforeBookerContact === 'string' ? parseBookerContact(baseline.beforeBookerContact) : null;
     if ((!previous && (bookerEmail === undefined || bookerMobile === undefined)) ||
@@ -850,6 +851,38 @@ const nativePartySchema = z.discriminatedUnion('state', [z.object({ state: z.lit
     name: z.string().min(1).max(300).refine(value => Boolean(value.trim()) && !/[\p{Cc}]/u.test(value)) }).strict()]);
 const nativePartyBaselineSchema = z.object({ organization: nativePartySchema, arAccount: nativePartySchema }).strict();
 
+function appliedMealPlan(native: Record<string, unknown> | null): string | null {
+  const value = record(native?.applied)?.mealPlan;
+  return typeof value === 'string' && Boolean(value.trim()) && value.length <= 120 && !/[\p{Cc}]/u.test(value) ? value : null;
+}
+
+function mealPlanVerified(draft: ReservationWorkflowV2Draft, compiled: CompiledAmend, native: Record<string, unknown>): boolean {
+  const actual = appliedMealPlan(native), baseline = record(native.recoveryBaseline)?.beforeMealPlan;
+  const requested = typeof compiled.baseChanges.requestedMealPlan === 'string' ? compiled.baseChanges.requestedMealPlan : null;
+  return actual !== null && typeof baseline === 'string' && Boolean(baseline.trim()) &&
+    reservationWorkflowV2MealPlanMatches(requested === 'dinner_bb' ? 'dinner_bed_breakfast' : requested, actual, draft.propertyCode);
+}
+
+function mealMismatchObservation(draft: ReservationWorkflowV2Draft, compiled: CompiledAmend,
+  native: Record<string, unknown>): ReservationWorkflowV2Observation {
+  return { ref: randomUUID(), generationId: draft.generationId, kind: 'rate_availability', status: 'partial',
+    observedAt: new Date().toISOString(), propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId, sourceRefs: [],
+    criteria: { workflow: 'amend', stage: 'prepare', requestId: compiled.requestId, hintId: compiled.hintId, selectedRef: compiled.selectedRef,
+      draftRevision: draft.revision, baseDigest: compiled.baseDigest },
+    coverage: { complete: false, notes: ['native_meal_plan_mismatch_or_unknown'] },
+    result: { outcome: 'meal_plan_mismatch_or_unknown', before: compiled.selected, target: compiled.target,
+      requestedMealPlan: compiled.baseChanges.requestedMealPlan ?? null, applied: { mealPlan: appliedMealPlan(native) } } };
+}
+
+async function recordMealMismatch(ctx: ReadContext, input: ReservationWorkflowV2PrepareInput, compiled: CompiledAmend,
+  observation: ReservationWorkflowV2Observation): Promise<Outcome> {
+  const recorded = await recordObservation(ctx, input, observation, 'failed',
+    'Requested meal plan needs a matching native rate', randomUUID(), compiled.hintId);
+  if (recorded.status !== 'ok') return recorded;
+  return { status: 'needs_input', issue: 'native_meal_plan_mismatch_or_unknown', fields: ['requestedMealPlan'],
+    observationRef: observation.ref, applied: observation.result.applied };
+}
+
 function preparationObservation(draft: ReservationWorkflowV2Draft, compiled: Compile & { outcome: 'ok' },
   native: Record<string, unknown>, changes: Amendment, preserved: Record<string, unknown>, price: Record<string, unknown>,
   recoveryBaseline: Record<string, unknown>, semanticDigest: string): ReservationWorkflowV2Observation {
@@ -861,6 +894,7 @@ function preparationObservation(draft: ReservationWorkflowV2Draft, compiled: Com
       nativeDigest: native.nativeDigest },
     coverage: { complete: true, notes: [] },
     result: { outcome: 'prepared', before: compiled.selected, target: compiled.target, nativeChanges: changes,
+      requestedMealPlan: compiled.baseChanges.requestedMealPlan ?? null, applied: { mealPlan: appliedMealPlan(native) },
       nativeDigest: native.nativeDigest, approvedPrices: price, preserved, recoveryBaseline,
       ...(baseline.success ? { nativePartyBaseline: baseline.data } : {}),
       semanticInput: { requestId: compiled.requestId, hintId: compiled.hintId, selectedRef: compiled.selectedRef,
@@ -1133,7 +1167,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
     const prepared = await locked.lock.withLock(async () => {
       const common = { target: locked.target, selected: compiled.selected, confirmation: compiled.selected.confirmation,
         arrival: compiled.selected.arrival, allowRealGuest: true, cloudTargetKey: dispatchKey,
-        signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000), capturePriceComponents: true };
+        signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000), capturePriceComponents: true, captureMealPlan: true };
       const read = await native.readCloudSavedChildAges(common);
       if (read.outcome !== 'ok' || !Array.isArray(read.ages) || read.ages.length !== compiled.selected.children ||
           read.ages.some(age => !Number.isInteger(age) || age < 0 || age > 17)) return { issue: 'amend_child_age_baseline_unavailable' };
@@ -1148,7 +1182,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
           ...(Object.hasOwn(compiled.baseChanges, 'bookingAgency') ? ['taCommission'] : []),
           ...(Object.hasOwn(compiled.baseChanges, 'arAccount') ? ['billingReference'] : [])].includes(field)));
       const discoveryBase = Object.fromEntries(Object.entries(safeBase).filter(([field]) =>
-        !['bookerEmail', 'bookerMobile', 'taCommission', 'guestOptIn'].includes(field)));
+        !['bookerEmail', 'bookerMobile', 'taCommission', 'guestOptIn', 'requestedMealPlan'].includes(field)));
       const discoveryChanges = { ...discoveryBase, ratePlan: String(safeBase.ratePlan ?? compiled.selected.ratePlan),
         retainRates: compiled.rateHandling === 'retain' ? 'yes' : 'no', cmsSend: false, cmsMessageId: '', cmsRecipient: '' };
       const guaranteeCode = typeof compiled.baseChanges.guaranteeType === 'string'
@@ -1194,6 +1228,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
           canonicalJson(stagedBaseline.beforeParties) !== canonicalJson(baseline.beforeParties)) {
         return { issue: 'native_amend_prepare_unverified' };
       }
+      if (!mealPlanVerified(draft, compiled, staged)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(draft, compiled, staged) };
       const nextAges = childrenChanged && Array.isArray(compiled.target.childAges) ? compiled.target.childAges as number[] : null;
       if (childrenChanged) {
         if (!nextAges) return { issue: 'child_ages_required_for_occupancy_change' };
@@ -1275,10 +1310,11 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
             (Object.hasOwn(ordinaryChanges, 'guestOptIn') && typeof ordinaryBaseline.beforeGuestOptIn !== 'boolean')) {
           return { issue: 'native_amend_prepare_unverified' };
         }
+        if (!mealPlanVerified(draft, compiled, ordinary)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(draft, compiled, ordinary) };
         const recoveryBaseline = { ...ordinaryBaseline, beforeChildAges: beforeAges };
         const semanticDigest = sha256({ baseDigest: compiled.baseDigest, selectedRef: compiled.selectedRef,
           selected: compiled.selected, target: compiled.target, changes: ordinaryChanges, preserved: ordinaryPreserved,
-          recoveryBaseline, nativeDigest: ordinary.nativeDigest, price: ordinaryPrice });
+          recoveryBaseline, nativeDigest: ordinary.nativeDigest, price: ordinaryPrice, appliedMealPlan: appliedMealPlan(ordinary) });
         const observation = preparationObservation(draft, compiled, ordinary, ordinaryChanges, ordinaryPreserved, ordinaryPrice, recoveryBaseline, semanticDigest);
         observation.result = { ...observation.result, callbackNoop: true };
         return { observation, price: ordinaryPrice, plan: null, semanticDigest, noop: true };
@@ -1290,13 +1326,14 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
         ...(typeof baseline.requestedGuaranteeDisplay === 'string' ? { requestedGuaranteeDisplay: baseline.requestedGuaranteeDisplay } : {}) };
       const semanticDigest = sha256({ baseDigest: compiled.baseDigest, selectedRef: compiled.selectedRef,
         selected: compiled.selected, target: compiled.target, changes: allChanges, safeChanges,
-        preserved: stagedPreserved, recoveryBaseline, nativeDigest: staged.nativeDigest, price, planDigest });
+        preserved: stagedPreserved, recoveryBaseline, nativeDigest: staged.nativeDigest, price, planDigest, appliedMealPlan: appliedMealPlan(staged) });
       const observation = preparationObservation(draft, compiled, staged, allChanges, stagedPreserved, price, recoveryBaseline, semanticDigest);
       observation.result = { ...observation.result, callbackPriceReviewRequired: true, priceKind: 'indicative',
         callbackPlan: plan, callbackPlanDigest: planDigest, safeChanges };
       return { observation, price, plan, semanticDigest, noop: false };
     }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch?.signal });
     if ('issue' in prepared) {
+      if ('mealObservation' in prepared && prepared.mealObservation) return recordMealMismatch(ctx, input, compiled, prepared.mealObservation);
       if ('retainCallback' in prepared && prepared.retainCallback === true) {
         const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: draft.generationId,
           kind: 'rate_availability', status: 'complete', observedAt: new Date().toISOString(), propertyCode: 'HRCEN',
@@ -1346,12 +1383,13 @@ function callbackReviewState(draft: ReservationWorkflowV2Draft, compiled: Compil
       observation.propertyCode !== draft.propertyCode || observation.sourceMessageId !== draft.source.messageId ||
       observation.criteria.requestId !== compiled.requestId || observation.criteria.hintId !== compiled.hintId ||
       observation.criteria.selectedRef !== compiled.selectedRef || observation.criteria.baseDigest !== compiled.baseDigest ||
-      result?.outcome !== 'callback_price_review' || result.ready !== true || !price ||
+      result?.outcome !== 'callback_price_review' || result.ready !== true || !price || !appliedMealPlan(result) ||
+      result.requestedMealPlan !== (compiled.baseChanges.requestedMealPlan ?? null) ||
       typeof result.approvalDigest !== 'string' || !/^[a-f0-9]{64}$/.test(result.approvalDigest) ||
       !record(result.callbackState) || !record(result.target) || !record(result.before) ||
       result.approvalDigest !== sha256({ stage: 'callback_price_review', requestId: compiled.requestId, hintId: compiled.hintId,
         selectedRef: compiled.selectedRef, baseDigest: compiled.baseDigest, semanticDigest: observation.criteria.semanticDigest,
-        price, callbackState: result.callbackState, before: result.before, target: result.target,
+        price, applied: result.applied, requestedMealPlan: result.requestedMealPlan, callbackState: result.callbackState, before: result.before, target: result.target,
         callbackPlanDigest: result.callbackPlanDigest, prepareObservationRef: result.prepareObservationRef,
         freshReadback: result.freshReadback })) {
     return { status: 'needs_reconcile', operationId: operation.id, issue: 'amend_callback_review_stale' };
@@ -1397,7 +1435,7 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
   const module = await nativeModule();
   const dispatchKey = hmsDispatchTargetKey(locked.dispatchTarget);
   const discoveryBase = Object.fromEntries(Object.entries(compiled.baseChanges)
-    .filter(([field]) => field !== 'bookerEmail' && field !== 'bookerMobile' && field !== 'taCommission' && field !== 'guestOptIn' && field !== 'guaranteeType'));
+    .filter(([field]) => !['bookerEmail', 'bookerMobile', 'taCommission', 'guestOptIn', 'guaranteeType', 'requestedMealPlan'].includes(field)));
   const discoveryChanges = { ...discoveryBase, ratePlan: String(compiled.baseChanges.ratePlan ?? compiled.selected.ratePlan),
     retainRates: compiled.rateHandling === 'retain' ? 'yes' : 'no', cmsSend: false, cmsMessageId: '', cmsRecipient: '' };
   try {
@@ -1421,7 +1459,7 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
         confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, changes: discoveryChanges,
         discoveryOnly: true, ...(typeof compiled.baseChanges.guaranteeType === 'string'
           ? { guaranteeChoiceCode: compiled.baseChanges.guaranteeType } : {}),
-        captureCommissionBaseline: Object.hasOwn(compiled.baseChanges, 'taCommission'),
+        captureMealPlan: true, captureCommissionBaseline: Object.hasOwn(compiled.baseChanges, 'taCommission'),
         captureGuestOptInBaseline: Object.hasOwn(compiled.baseChanges, 'guestOptIn'),
         allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
       const discoveryBaseline = record(discovery.recoveryBaseline);
@@ -1453,7 +1491,7 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
         ...(childAgePreimage ? { childAgePreimage } : {}),
         ...(typeof compiled.baseChanges.guaranteeType === 'string' ? { guaranteeChoiceCode: compiled.baseChanges.guaranteeType } : {}),
         confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, changes,
-        captureCommissionBaseline: Object.hasOwn(compiled.baseChanges, 'taCommission'),
+        captureMealPlan: true, captureCommissionBaseline: Object.hasOwn(compiled.baseChanges, 'taCommission'),
         captureGuestOptInBaseline: Object.hasOwn(compiled.baseChanges, 'guestOptIn'),
         allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
       const price = nativePrice(native.approvedPrices), afterPreserved = record(native.preserved),
@@ -1480,14 +1518,18 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
           canonicalJson(Object.fromEntries(Object.entries(afterPreserved).filter(([key]) =>
             key !== 'bookerContact' || Object.hasOwn(discoveryPreserved, key)))) !== canonicalJson(discoveryPreserved) ||
           canonicalJson(recoveryBaseline) !== canonicalJson(discoveryBaseline)) return { issue: 'native_amend_prepare_unverified' };
+      if (!mealPlanVerified(loaded.draft!, compiled, native)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(loaded.draft!, compiled, native) };
       const preserved = afterPreserved;
       const semanticDigest = sha256({ baseDigest: compiled.baseDigest, selectedRef: compiled.selectedRef,
         selected: compiled.selected, target: compiled.target, changes, preserved, recoveryBaseline,
-        nativeDigest: native.nativeDigest, price });
+        nativeDigest: native.nativeDigest, price, appliedMealPlan: appliedMealPlan(native) });
       return { observation: preparationObservation(loaded.draft!, compiled, native, changes, preserved, price,
         recoveryBaseline, semanticDigest), changes, preserved, price, recoveryBaseline, semanticDigest, nativeDigest: native.nativeDigest };
     }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch?.signal });
-    if ('issue' in prepared) return { status: 'failed', issue: prepared.issue };
+    if ('issue' in prepared) {
+      if ('mealObservation' in prepared && prepared.mealObservation) return recordMealMismatch(ctx, input, compiled, prepared.mealObservation);
+      return { status: 'failed', issue: prepared.issue };
+    }
     const recorded = await recordObservation(ctx, input, prepared.observation, 'prepared',
       'HMS amendment staged unsaved; native price and baseline observed', randomUUID(), compiled.hintId);
     if (recorded.status !== 'ok') return recorded;
@@ -1640,6 +1682,7 @@ function readbackMatches(readback: unknown, prepared: Record<string, unknown>): 
       actual.roomType !== target.roomType || actual.ratePlan !== target.ratePlan || actual.adults !== target.adults ||
       actual.children !== target.children || actual.firstName !== target.firstName || actual.lastName !== target.lastName ||
       actual.cmsSend !== changes.cmsSend || !actualPrice || !approvedPrice ||
+      !appliedMealPlan(prepared) || actual.mealPlan !== appliedMealPlan(prepared) ||
       actualPrice.version !== approvedPrice.version || actualPrice.currency !== approvedPrice.currency ||
       actualPrice.totalCents !== approvedPrice.totalCents || actualPrice.averageCents !== approvedPrice.averageCents) return null;
   if (Array.isArray(target.childAges) && (!Array.isArray(actual.childAges) ||
@@ -1676,9 +1719,9 @@ async function executeCallbackFirst(ctx: ReservationWorkflowV2AmendContext, inpu
   const planDigest = typeof result?.callbackPlanDigest === 'string' ? result.callbackPlanDigest : null;
   const semantic = prepared && result && planDigest ? sha256({ baseDigest: compiled.baseDigest,
     selectedRef: compiled.selectedRef, selected: compiled.selected, target: result.target, changes, safeChanges, preserved,
-    recoveryBaseline: baseline, nativeDigest: result.nativeDigest, price: indicativePrice, planDigest }) : null;
+    recoveryBaseline: baseline, nativeDigest: result.nativeDigest, price: indicativePrice, planDigest, appliedMealPlan: appliedMealPlan(result) }) : null;
   if (!prepared || result?.callbackPriceReviewRequired !== true || !changes || !safeChanges || !preserved || !baseline || !plan ||
-      !indicativePrice || !nativePrice(baseline.beforeGuaranteePrice) || !planDigest || planDigest !== sha256(plan) ||
+      !indicativePrice || !mealPlanVerified(draft, compiled, result) || !nativePrice(baseline.beforeGuaranteePrice) || !planDigest || planDigest !== sha256(plan) ||
       prepared.criteria.semanticDigest !== semantic || typeof result.nativeDigest !== 'string' ||
       !/^[a-f0-9]{64}$/.test(result.nativeDigest) || !Array.isArray(baseline.beforeChildAges)) {
     return { status: 'needs_prepare', issue: 'prepared_amend_or_price_is_stale' };
@@ -1761,7 +1804,8 @@ async function executeCallbackFirst(ctx: ReservationWorkflowV2AmendContext, inpu
           sourceDigest: input.source.sourceHash, targetDigest, nativeDigest: result.nativeDigest,
           approvedPrices: indicativePrice, approvedBeforeCallbackPrice: baseline.beforeGuaranteePrice, preserved,
           ...(typeof changes.guaranteeType === 'string' ? { guaranteeChoiceCode: changes.guaranteeType } : {}),
-          capturePriceComponents: true, captureCommissionBaseline: Object.hasOwn(changes, 'taCommission'),
+          capturePriceComponents: true, captureMealPlan: true, approvedMealPlan: appliedMealPlan(result),
+          approvedBeforeMealPlan: baseline.beforeMealPlan, captureCommissionBaseline: Object.hasOwn(changes, 'taCommission'),
           captureGuestOptInBaseline: Object.hasOwn(safeChanges, 'guestOptIn'),
           allowRealGuest: process.env.PANE_WRITE_AMEND === 'on', allowChangedLabGuarantee: true,
           cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget),
@@ -1786,14 +1830,16 @@ async function executeCallbackFirst(ctx: ReservationWorkflowV2AmendContext, inpu
   const reviewPrice = nativePrice(staged.approvedPrices), callbackState = record(fresh.callbackState), savedPrice = nativePrice(fresh.savedPrice);
   if (staged.outcome !== 'callback_review_ready' || fresh.outcome !== 'matched' || !reviewPrice || !record(reviewPrice.componentsTenThousandths) ||
       !savedPrice || !callbackState || !state.beforeShot || !state.afterShot || fresh.confirmation !== compiled.selected.confirmation ||
-      fresh.nativeStayId !== compiled.selected.reservationStayId || reviewPrice.currency !== savedPrice.currency) {
+      fresh.nativeStayId !== compiled.selected.reservationStayId || reviewPrice.currency !== savedPrice.currency ||
+      appliedMealPlan(staged) !== appliedMealPlan(result)) {
     const partialEvidenceRecorded = await recordCallbackPartial(ctx, input, compiled.hintId, 'first_go', staged);
     return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: state.handle.holdId,
       issue: 'amend_callback_readback_or_price_unverified', partialEffect: 'possible', partialEvidenceRecorded };
   }
   const approval = sha256({ stage: 'callback_price_review', requestId: compiled.requestId, hintId: compiled.hintId,
     selectedRef: compiled.selectedRef, baseDigest: compiled.baseDigest, semanticDigest: approvedDigest,
-    price: reviewPrice, callbackState, before: compiled.selected, target: result.target,
+    price: reviewPrice, applied: { mealPlan: appliedMealPlan(staged) }, requestedMealPlan: compiled.baseChanges.requestedMealPlan ?? null,
+    callbackState, before: compiled.selected, target: result.target,
     callbackPlanDigest: planDigest, prepareObservationRef: prepared.ref, freshReadback: fresh });
   const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: draft.generationId,
     kind: 'rate_availability', status: 'complete', observedAt: new Date().toISOString(), propertyCode: 'HRCEN',
@@ -1801,6 +1847,7 @@ async function executeCallbackFirst(ctx: ReservationWorkflowV2AmendContext, inpu
     criteria: { workflow: 'amend', stage: 'callback_price_review', requestId: compiled.requestId, hintId: compiled.hintId,
       selectedRef: compiled.selectedRef, baseDigest: compiled.baseDigest, semanticDigest: approvedDigest },
     result: { outcome: 'callback_price_review', ready: true, approvalDigest: approval, price: reviewPrice, callbackState,
+      applied: { mealPlan: appliedMealPlan(staged) }, requestedMealPlan: compiled.baseChanges.requestedMealPlan ?? null,
       before: compiled.selected, target: result.target, callbackPlanDigest: planDigest, prepareObservationRef: prepared.ref,
       freshReadback: fresh, callbackEffects: staged.callbackEffects, beforeShot: state.beforeShot, reviewShot: state.afterShot } };
   try {
@@ -1864,10 +1911,10 @@ async function executeCallbackSecond(ctx: ReservationWorkflowV2AmendContext, inp
   const expectedFinalCommission = typeof changes.taCommission === 'number' ? changes.taCommission :
     typeof commissionEffect === 'string' ? Number(commissionEffect) : null;
   const indicativePrice = nativePrice(original.approvedPrices);
-  if (!indicativePrice || original.callbackPlanDigest !== sha256(plan) || originalDigest !== sha256({
+  if (!indicativePrice || !mealPlanVerified(draft, compiled, original) || appliedMealPlan(reviewResult) !== appliedMealPlan(original) || original.callbackPlanDigest !== sha256(plan) || originalDigest !== sha256({
     baseDigest: compiled.baseDigest, selectedRef: compiled.selectedRef, selected: compiled.selected, target: original.target,
     changes, safeChanges, preserved, recoveryBaseline: baseline, nativeDigest: original.nativeDigest,
-    price: indicativePrice, planDigest: original.callbackPlanDigest })) {
+    price: indicativePrice, planDigest: original.callbackPlanDigest, appliedMealPlan: appliedMealPlan(original) })) {
     return { status: 'needs_reconcile', issue: 'amend_callback_review_unverified' };
   }
   if (input.idempotencyKey === firstOperationId) return { ...pending, issue: 'amend_second_go_requires_new_operation' };
@@ -1897,7 +1944,7 @@ async function executeCallbackSecond(ctx: ReservationWorkflowV2AmendContext, inp
       result = await locked.lock.withLock(async () => {
         const common = { target: locked.target, selected: compiled.selected, confirmation: compiled.selected.confirmation,
           arrival: compiled.selected.arrival, allowRealGuest: true, cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget),
-          capturePriceComponents: true, signal: AbortSignal.timeout(20 * 60_000) };
+          capturePriceComponents: true, captureMealPlan: true, signal: AbortSignal.timeout(20 * 60_000) };
         const current = await native.readCloudCallbackReviewState({ ...common, callbackPlan: plan, before: baseline, changes,
           preserved, callbackEffects: reviewResult.callbackEffects });
         if (current.outcome !== 'matched' || canonicalJson(current) !== canonicalJson(recordedFresh) || !validNative(current.native) ||
@@ -1935,6 +1982,7 @@ async function executeCallbackSecond(ctx: ReservationWorkflowV2AmendContext, inp
           captureGuestOptInBaseline: Object.hasOwn(safeChanges, 'guestOptIn') });
         const preflightBaseline = record(preflight.recoveryBaseline), nextPreserved = record(preflight.preserved);
         if (preflight.outcome !== 'prepared' || !preflightBaseline || !nextPreserved || !record(preflight.sourceBusinessImage) ||
+            appliedMealPlan(preflight) !== appliedMealPlan(reviewResult) || typeof preflightBaseline.beforeMealPlan !== 'string' ||
             typeof preflight.nativeDigest !== 'string' || !/^[a-f0-9]{64}$/.test(preflight.nativeDigest) ||
             preflightBaseline.beforeNote !== baseline.beforeNote ||
             canonicalJson(preflightBaseline.beforeParties) !== canonicalJson(current.partyPreimage) ||
@@ -1991,6 +2039,7 @@ async function executeCallbackSecond(ctx: ReservationWorkflowV2AmendContext, inp
         };
         return native.commitCloudPaneAmendReviewed({ ...nextCommon, changes, callbackPlan: nextPlan, callbackPlanDigest: planDigest,
           callbackBindingChanges: safeChanges, approvedBusinessImage: current.partyImage,
+          approvedMealPlan: appliedMealPlan(reviewResult), approvedBeforeMealPlan: preflightBaseline.beforeMealPlan,
           ...(expectedFinalCommission !== null ? { expectedFinalCommission } : {}),
           sourceDigest: input.source.sourceHash, targetDigest, reviewDigest,
           nativeDigest: preflight.nativeDigest, approvedPrices: price, approvedBeforeCallbackPrice: current.savedPrice,
@@ -2097,10 +2146,11 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
   const expectedSemantic = preparedResult && prepared ? sha256({ baseDigest: compiled.baseDigest,
     selectedRef: compiled.selectedRef, selected: compiled.selected, target: preparedResult.target,
     changes: nativeChanges, preserved, recoveryBaseline: preparedResult.recoveryBaseline,
-    nativeDigest: preparedResult.nativeDigest, price }) : null;
+    nativeDigest: preparedResult.nativeDigest, price, appliedMealPlan: appliedMealPlan(preparedResult) }) : null;
   if (!prepared || !preparedResult || !record(preparedResult.recoveryBaseline) ||
       typeof prepared.criteria.draftRevision !== 'number' || prepared.criteria.draftRevision > input.expectedRevision ||
       prepared.criteria.semanticDigest !== expectedSemantic || !nativeChanges || !preserved || !price ||
+      !mealPlanVerified(loaded.draft, compiled, preparedResult) ||
       typeof preparedResult.nativeDigest !== 'string' || !/^[a-f0-9]{64}$/.test(preparedResult.nativeDigest)) {
     return { status: 'needs_prepare', issue: 'prepared_amend_or_price_is_stale' };
   }
@@ -2194,6 +2244,8 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
           approvedGuaranteeDisplay: record(preparedResult.recoveryBaseline)?.requestedGuaranteeDisplay,
           approvedBeforeGuaranteeDisplay: record(preparedResult.recoveryBaseline)?.beforeGuaranteeDisplay,
           approvedBeforeGuaranteePrice: record(preparedResult.recoveryBaseline)?.beforeGuaranteePrice } : {}), nativeDigest: preparedResult.nativeDigest, approvedPrices: price, preserved,
+        captureMealPlan: true, approvedMealPlan: appliedMealPlan(preparedResult),
+        approvedBeforeMealPlan: record(preparedResult.recoveryBaseline)?.beforeMealPlan,
         captureCommissionBaseline: Object.hasOwn(nativeChanges, 'taCommission'),
         captureGuestOptInBaseline: Object.hasOwn(nativeChanges, 'guestOptIn'),
         allowRealGuest: process.env.PANE_WRITE_AMEND === 'on', cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget),
