@@ -18,6 +18,7 @@ import { appendReservationWorkflowV2Observation, getReservationWorkflowV2Draft,
   recordReservationWorkflowV2Result, reservationWorkflowV2DraftOf,
   type ReservationWorkflowV2Context } from './reservation-workflow-v2-state.js';
 import { canonicalJson } from './draft-approval.js';
+import { sameGuestName } from './guest-name-match.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { isSelectedHmsInboundMessage } from './hms-jobs.js';
 import { bindAttachDocumentForm, paneHmsWriteMode, parseHmsWriteForm, prepareHmsWriteSnapshot,
@@ -387,7 +388,7 @@ export function isVerifiedCreateFilingCandidate(draft: ReservationWorkflowV2Draf
     linkedCreateObservationMatches(draft, dependency.target, observation, observation.criteria.confirmation);
 }
 
-function findTargetHint(draft: ReservationWorkflowV2Draft, request: FilingRequest, document: FilingDocument) {
+function findTargetHint(draft: ReservationWorkflowV2Draft, request: FilingRequest, document: FilingDocument, ignoreGuestName = false) {
   const scope = filingTargets(draft, request);
   if (!scope || scope.mode !== 'explicit' || scope.include.length !== 1 || scope.exclude.length) return null;
   const hint = scope.include[0]!;
@@ -417,7 +418,7 @@ function findTargetHint(draft: ReservationWorkflowV2Draft, request: FilingReques
       (hint.confirmation && hint.confirmation !== confirmation) ||
       (hint.bookedArrival && hint.bookedArrival !== arrival) ||
       (hint.bookedDeparture && hint.bookedDeparture !== departure) ||
-      (hint.guestName && hint.guestName.trim().replace(/\s+/g, ' ').toLocaleLowerCase() !== `${firstName} ${lastName}`.replace(/\s+/g, ' ').toLocaleLowerCase())) return null;
+      (!ignoreGuestName && hint.guestName && !sameGuestName(hint.guestName, `${firstName} ${lastName}`))) return null;
   return { targetPath, targetObservation, stay, confirmation, arrival, lastName, firstName, status, departure };
 }
 
@@ -728,7 +729,14 @@ export async function reservationWorkflowV2FilingPrepare(ctx: ReservationWorkflo
   if (!loaded.draft) return loaded.result;
   if (ctx.property.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'filing_property_unavailable' };
   const selection = await selectionFor(ctx, loaded.draft, input.requestId, true);
-  if (!selection) return { status: 'needs_input', issue: 'review_one_source_pdf_and_one_saved_stay' };
+  if (!selection) {
+    const pair = filingRequestAndDocument(loaded.draft, input.requestId);
+    const document = pair && effectiveFilingDocument(loaded.draft, pair.document);
+    const target = pair && document && findTargetHint(loaded.draft, pair.request, document, true);
+    if (pair && document && target && !findTargetHint(loaded.draft, pair.request, document))
+      return { status: 'needs_input', issue: 'guest_name_hint_mismatch', fields: [target.targetPath.replace(/\/suggestedRef$/, '/guestName')] };
+    return { status: 'needs_input', issue: 'review_one_source_pdf_and_one_saved_stay' };
+  }
   const preview = await runPreview(ctx, input, selection);
   if (preview.status !== 'ready') return { status: preview.status, issue: preview.reason };
   const selected = await selectedSource(ctx, input.source);

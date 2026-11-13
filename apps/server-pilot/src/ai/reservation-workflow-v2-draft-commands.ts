@@ -1078,8 +1078,7 @@ function reviewedFilingSelection(draft: ReservationWorkflowV2Draft, requestId: s
       }) || !isoDay(arrival) || !isoDay(departure) || departure <= arrival ||
       (hint.confirmation && hint.confirmation !== stay.confirmation.trim()) || (hint.bookedArrival && hint.bookedArrival !== arrival) ||
       (hint.bookedDeparture && hint.bookedDeparture !== departure)) return null;
-  const name = (value: string) => value.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
-  if (hint.guestName && (typeof hint.guestName !== 'string' || name(hint.guestName) !== name(`${stay.firstName} ${stay.lastName}`))) return null;
+  if (hint.guestName && !sameGuestName(hint.guestName, `${stay.firstName} ${stay.lastName}`)) return null;
   return path;
 }
 

@@ -50,6 +50,7 @@ import { createCloudTargetKey, isLabtestGuest } from '../../tooling/hms-cloud/cl
 import { lockCreateActorSession } from './pane-create-actor-lock.js';
 import { stayCommitsOf } from './work-items.js';
 import { sameGuestName } from './guest-name-match.js';
+import { extractionRequestForProposal } from './reservation-workflow-v2-source-match.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
 import { boardsFor, norm } from './rate-options.js';
 import { partyMatchSearchTerms } from './party-match-v2.js';
@@ -466,7 +467,17 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   const agesPath = ptr(...alloc.slice(1).split('/').map(decodeURIComponent), 'occupancy', 'childAges');
   const adults = allocation.occupancy.adults;
   const childCount = allocation.occupancy.childCount;
-  const childAges = allocation.occupancy.childAges;
+  const extracted = draft.extraction && extractionRequestForProposal(request, draft.proposal.content.requests, draft.extraction);
+  const requestIndex = draft.proposal.content.requests.indexOf(request);
+  const ageAlias = `/proposal/content/requests/${requestIndex}/body/allocations/${allocationIndex}/occupancy/childAges`;
+  const ageOverridden = Object.entries(draft.fieldOverrides).some(([path, override]) => override.state !== 'inherit' &&
+    [agesPath, ageAlias].some(target => path === target || target.startsWith(`${path}/`)));
+  const childEvidence = extracted?.occupancy.some(row => row.childCount && row.childCount.value !== 0 || row.childAges?.length);
+  const ageClaims = draft.proposal.sourceClaims?.some(claim => claim.path.includes('/occupancy/') && claim.path.includes('/childAges'));
+  const occupancyConflict = draft.proposal.issues?.some(issue => issue.kind.includes('occupancy') &&
+    (issue.path?.includes(`/requests/${requestId}/`) || issue.path?.includes(`/requests/${encodeURIComponent(requestId)}/`)));
+  const childAges = allocation.occupancy.childAges === null && childCount === 0 && !ageOverridden && !childEvidence &&
+    !occupancyConflict && !ageClaims && (!draft.extraction || extracted) ? [] : allocation.occupancy.childAges;
   for (const [path, value] of [[adultsPath, adults], [childrenPath, childCount], [agesPath, childAges]] as const) {
     if (value == null) issues.push(`${path}:required`);
     else if (!(path === agesPath && childCount === 0 && Array.isArray(childAges) && childAges.length === 0)) {

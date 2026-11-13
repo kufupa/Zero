@@ -104,15 +104,34 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
       return;
     }
     let live = true;
-    const timer = setTimeout(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = () => { timer = setTimeout(() => {
       if (++refreshCount.current > 900) { setLoadError('Prefill is still processing. Reopen this email to check progress; your draft is retained.'); return; }
       void client.get({ source, snapshot, backgroundPoll: true }).then(next => {
-        if (live && activeSource.current === key && snapshotMatchesSource(next, source))
-          setBoundSnapshot(bound => bound?.key === key && bound.value === snapshot ? { key, value: next } : bound);
+        if (!live || activeSource.current !== key) return;
+        if (snapshotMatchesSource(next, source)) {
+          setLoadError(null);
+          setBoundSnapshot(bound => {
+            if (bound?.key !== key || bound.value !== snapshot || next.session.seq < bound.value.session.seq ||
+                (next.session.seq === bound.value.session.seq && bound.value.session.sourceChanged && !next.session.sourceChanged)) return bound;
+            const rank = { idle: 0, queued: 1, running: 2, failed: 3, complete: 3, superseded: 4 } as const;
+            const oldMeta = bound.value.session.draft.prefill, newMeta = next.session.draft.prefill;
+            if (next.session.seq === bound.value.session.seq &&
+                ((newMeta?.attemptCount ?? 0) < (oldMeta?.attemptCount ?? 0) ||
+                 (newMeta?.attemptCount ?? 0) === (oldMeta?.attemptCount ?? 0) &&
+                 rank[newMeta?.status ?? 'idle'] < rank[oldMeta?.status ?? 'idle'])) return bound;
+            return { key, value: next };
+          });
+        }
+        poll();
       }).catch(() => {
-        if (live && activeSource.current === key) setLoadError('Could not refresh the email prefill. Reopen it to check progress; your draft is retained.');
+        if (live && activeSource.current === key) {
+          setLoadError('Could not refresh the email prefill. Retrying; your draft is retained.');
+          poll();
+        }
       });
-    }, 2000);
+    }, 2000); };
+    poll();
     return () => { live = false; clearTimeout(timer); };
   }, [client, key, snapshot, source]);
 

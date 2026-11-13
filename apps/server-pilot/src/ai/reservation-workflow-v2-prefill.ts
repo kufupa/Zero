@@ -33,6 +33,7 @@ import { resolveSourceStayDate } from './stay-date-anchoring.js';
 import { findStay, paneStayLookupEnabled, searchGuest, searchGuestCloudBatch, type GuestSearchQuery } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { normalizeGuestName, sameGuestName } from './guest-name-match.js';
+import { combineBookerPhones } from './reservation-workflow-v2-booker-contact.js';
 import { availabilityRequestSchema } from './hms-availability.js';
 import { probeCloudRateAvailability } from './hms-cloud-availability-reader.js';
 import {
@@ -1699,6 +1700,10 @@ function projectBookerContacts(input: { proposal: ReservationWorkflowV2Proposal;
     return known.length ? known : claims;
   };
   const name = facts('name'), email = facts('email'), mobile = facts('mobile');
+  const phone = combineBookerPhones(extracted.guests.filter(guest => guest.role === 'booker').map(guest => ({
+    name: currentClaim(guest.name, currentRefs), email: currentClaim(guest.email, currentRefs),
+    mobile: currentClaim(guest.mobile, currentRefs),
+  })));
   const target: Record<string, unknown> = request.kind === 'create' ? request.body.shared : request.body.client;
   const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/${request.kind === 'create' ? 'shared' : 'client'}`;
   const distinct = (claims: Claim[]) => new Set(claims.map((claim) => normalizedFact(claim.value))).size;
@@ -1725,11 +1730,11 @@ function projectBookerContacts(input: { proposal: ReservationWorkflowV2Proposal;
   if (request.kind === 'quote') {
     project('attention', name, 300);
     project('email', email, 320);
-    project('telephone', mobile, 120);
+    project('telephone', phone ? [phone] : mobile, 120);
   } else {
     project('bookerName', name, 50);
     project('bookerEmail', email, 320);
-    project('bookerMobile', mobile, 120);
+    project('bookerMobile', phone ? [phone] : mobile, 120);
     if (target.cmsRecipient === undefined || target.cmsRecipient === null || target.cmsRecipient === '')
       project('cmsRecipient', email, 255);
   }
@@ -4213,6 +4218,25 @@ function applyDefaultCmsSendPolicy(
   const proposal = structuredClone(proposalInput);
   if (propertyCode !== 'HRCEN') return proposal;
   for (const request of proposal.content.requests) {
+    if (request.kind === 'quote') {
+      const source = extractionRequestForProposal(request, proposal.content.requests, extraction, extractionIds);
+      const conflict = proposal.issues.some(issue => issue.kind.includes('occupancy') &&
+        (issue.path.includes(`/requests/${request.id}/`) || issue.path.includes(`/requests/${encodeURIComponent(request.id)}/`)));
+      if (source && !conflict && !source.occupancy.some(row => row.adults || row.childCount || row.childAges?.length)) {
+        for (const [index, group] of request.body.groups.entries()) {
+          const occupancy = group.occupancy;
+          if (occupancy.scope === 'unresolved' && occupancy.adults === null && occupancy.childCount === null && occupancy.childAges === null) {
+            group.occupancy = { scope: 'per_room', adults: 1, childCount: 0, childAges: [] };
+            for (const field of ['scope', 'adults', 'childCount', 'childAges']) {
+              const path = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/groups/${index}/occupancy/${field}`;
+              proposal.annotations = proposal.annotations.filter(annotation => annotation.path !== path);
+              if (proposal.annotations.length < 2000) proposal.annotations.push({ path, basis: 'policy', evidenceRefs: [] });
+            }
+          }
+        }
+      }
+      continue;
+    }
     if (request.kind !== 'create') continue;
     if (request.body.shared.cmsMessageId == null) request.body.shared.cmsMessageId = '03';
     const source = extractionRequestForProposal(request, proposal.content.requests, extraction, extractionIds);
@@ -4222,8 +4246,10 @@ function applyDefaultCmsSendPolicy(
       const totals = request.body.dateSections.find((section) => section.id === allocation.dateSectionId)?.requestedTotals;
       if (!hasAdults && allocation.occupancy.adults === null && totals?.adults == null) allocation.occupancy.adults = 1;
       if (!hasChildren && allocation.occupancy.childCount === null && totals?.childCount == null && !totals?.childAges?.length &&
-          !allocation.occupancy.childAges?.length)
+          !allocation.occupancy.childAges?.length) {
         allocation.occupancy.childCount = 0;
+        allocation.occupancy.childAges = [];
+      }
     }
     if (request.body.allocations.some(({ guest }) => /^proof$/i.test(guest.firstName?.trim() ?? '') &&
         /^labtest$/i.test(guest.lastName?.trim() ?? ''))) {

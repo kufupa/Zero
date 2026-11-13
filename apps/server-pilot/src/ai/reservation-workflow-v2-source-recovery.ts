@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Draft } from './reservation-workflow-v2-contract.js';
 import { extractionRequestForProposal } from './reservation-workflow-v2-source-match.js';
+import { combineBookerPhones } from './reservation-workflow-v2-booker-contact.js';
 
 const roomCandidateSchema = z.object({ code: z.string().regex(/^[A-Z0-9]{1,12}$/), label: z.string().min(1) });
 
@@ -29,6 +30,47 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
         (row.status !== 'prepared' || row.workflow !== request.kind))) continue;
     const extracted = links[requestIndex];
     if (!extracted || links.filter(link => link === extracted).length !== 1) continue;
+    const bodyRoot = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
+    const bodyAlias = `/proposal/content/requests/${requestIndex}/body`;
+    const hasOccupancy = extracted.occupancy.some(row => row.adults || row.childCount || row.childAges?.length);
+    const occupancyConflict = draft.proposal.issues.some(issue => issue.kind.includes('occupancy') &&
+      (issue.path.includes(`/requests/${request.id}/`) || issue.path.includes(`/requests/${encodeURIComponent(request.id)}/`)));
+    if (input.propertyCode === 'HRCEN' && sourceComplete && !occupancyConflict) {
+      if (request.kind === 'quote' && !hasOccupancy) {
+        for (const [index, group] of request.body.groups.entries()) {
+          const occupancy = group.occupancy;
+          if (occupancy.scope !== 'unresolved' && occupancy.scope !== 'per_room') continue;
+          const root = `${bodyRoot}/groups/${index}/occupancy`, alias = `${bodyAlias}/groups/${index}/occupancy`;
+          for (const [field, value] of [['scope', 'per_room'], ['adults', 1], ['childCount', 0], ['childAges', []]] as const) {
+            if ((field === 'childCount' || field === 'childAges') &&
+                (occupancy.childCount !== null && occupancy.childCount !== 0 || occupancy.childAges?.length ||
+                 covered(`${root}/childCount`, `${alias}/childCount`) || covered(`${root}/childAges`, `${alias}/childAges`))) continue;
+            if (draft.proposal.annotations.length < 2000 && (field === 'scope' ? occupancy.scope === 'unresolved' : occupancy[field] === null) &&
+                !covered(`${root}/${field}`, `${alias}/${field}`)) {
+              if (field === 'scope') occupancy.scope = value;
+              else if (field === 'adults') occupancy.adults = value;
+              else if (field === 'childCount') occupancy.childCount = value;
+              else occupancy.childAges = [];
+              draft.proposal.annotations = draft.proposal.annotations.filter(annotation => annotation.path !== `${root}/${field}`);
+              draft.proposal.annotations.push({ path: `${root}/${field}`, basis: 'policy', evidenceRefs: [] });
+              paths.push(`${root}/${field}`);
+            }
+          }
+        }
+      } else if (request.kind === 'create' && !extracted.occupancy.some(row =>
+        row.childCount && row.childCount.value !== 0 || row.childAges?.length)) {
+        for (const [index, allocation] of request.body.allocations.entries()) {
+          const root = `${bodyRoot}/allocations/${index}/occupancy`, alias = `${bodyAlias}/allocations/${index}/occupancy`;
+          const totals = request.body.dateSections.find(section => section.id === allocation.dateSectionId)?.requestedTotals;
+          if (allocation.occupancy.childCount === 0 && allocation.occupancy.childAges === null &&
+              (totals?.childCount == null || totals.childCount === 0) && !totals?.childAges?.length &&
+              !covered(`${root}/childAges`, `${alias}/childAges`)) {
+            allocation.occupancy.childAges = [];
+            paths.push(`${root}/childAges`);
+          }
+        }
+      }
+    }
     if (request.kind === 'create' && !draft.operationResults.some(row => row.requestId === request.id)) {
       const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
       const alias = `/proposal/content/requests/${requestIndex}/body`;
@@ -121,6 +163,11 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
           row.raw === claim.raw && row.sourceRefs.includes(currentRef)) ? [claim] : [];
     });
     const name = facts('name'), email = facts('email'), mobile = facts('mobile');
+    const phone = combineBookerPhones(extracted.guests.filter(guest => guest.role === 'booker').map(guest => ({
+      name: name.includes(guest.name!) ? guest.name : undefined,
+      email: email.includes(guest.email!) ? guest.email : undefined,
+      mobile: mobile.includes(guest.mobile!) ? guest.mobile : undefined,
+    })));
     const unique = (claims: typeof name) => new Set(claims.map(claim => normal(claim.value))).size;
     if (unique(name) > 1) continue;
     const target: Record<string, unknown> = request.kind === 'create' ? request.body.shared : request.body.client;
@@ -138,10 +185,11 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
       draft.proposal.annotations.push({ path, basis: 'source', evidenceRefs: [currentRef] });
       draft.proposal.sourceClaims.push({ path, raw: claim.raw, sourceRefs: [currentRef] });
       draft.fieldReviewRequirements[path] = { required: true, reasons: ['Recovered from this email; review before continuing.'], evidenceRefs: [currentRef] };
+      draft.proposal.issues = draft.proposal.issues.filter(issue => !(issue.kind === 'booker_contact_ambiguous' && issue.path === path));
       paths.push(path);
     };
-    if (request.kind === 'quote') { fill('attention', name, 300); fill('email', email, 320); fill('telephone', mobile, 120); }
-    else { fill('bookerName', name, 50); fill('bookerEmail', email, 320); fill('bookerMobile', mobile, 120); fill('cmsRecipient', email, 255); }
+    if (request.kind === 'quote') { fill('attention', name, 300); fill('email', email, 320); fill('telephone', phone ? [phone] : mobile, 120); }
+    else { fill('bookerName', name, 50); fill('bookerEmail', email, 320); fill('bookerMobile', phone ? [phone] : mobile, 120); fill('cmsRecipient', email, 255); }
   }
   if (!paths.length) return null;
   const parsed = reservationWorkflowV2DraftSchema.safeParse(draft);
