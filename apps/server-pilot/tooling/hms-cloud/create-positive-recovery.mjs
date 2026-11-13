@@ -119,6 +119,7 @@ export async function provePositiveCreateRecovery(intent, { census = censusDefau
       cmsSend: request.sendHmsConfirmation.kind === 'send',
       ...(request.cmsMessageId !== undefined ? { cmsMessageId: request.cmsMessageId } : {}),
       ...(request.track ? { track: request.track.display } : {}),
+    ...(request.nativeCommissionPercent !== undefined ? { nativeCommissionPercent: request.nativeCommissionPercent } : {}),
       ...(request.guestOptIn === false ? { guestOptIn: false } : {}),
       ...(request.booker ? { booker: request.booker } : {}),
       ...(request.cmsRecipient !== undefined ? { cmsRecipient: request.cmsRecipient } : {}) };

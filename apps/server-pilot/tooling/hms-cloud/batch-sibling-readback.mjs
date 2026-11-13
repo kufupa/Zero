@@ -49,6 +49,7 @@ export async function verifyBatchSiblings(census, siblings, {
         ...(request.cmsMessageId !== undefined ? { cmsMessageId: request.cmsMessageId } : {}),
         ...(request.cmsRecipient !== undefined ? { cmsRecipient: request.cmsRecipient } : {}),
         ...(request.track ? { track: request.track.display } : {}),
+        ...(request.nativeCommissionPercent !== undefined ? { nativeCommissionPercent: request.nativeCommissionPercent } : {}),
         ...(request.booker ? { booker: request.booker } : {}),
         ...(request.guestOptIn === false ? { guestOptIn: false } : {}) };
       const proof = await read({ confirmation, stay: request.stay, expected }, { cloudTargetKey: browserKey });

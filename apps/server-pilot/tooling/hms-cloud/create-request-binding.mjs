@@ -77,7 +77,7 @@ function normalizeConfirmation(input) {
 export function normalizeCloudCreateRequest(input) {
   const issue = objectKeys(input,
     ['version', 'propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sourceOfBusiness', 'reasonForStay',
-      'parties', 'note', 'billingReference', 'cmsMessageId', 'cmsRecipient', 'booker', 'track', 'guestOptIn', 'sendHmsConfirmation'],
+      'parties', 'note', 'billingReference', 'nativeCommissionPercent', 'cmsMessageId', 'cmsRecipient', 'booker', 'track', 'guestOptIn', 'sendHmsConfirmation'],
     ['propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sendHmsConfirmation'], '');
   if (issue) return issue;
   const canonical = Object.hasOwn(input, 'version');
@@ -141,6 +141,9 @@ export function normalizeCloudCreateRequest(input) {
       (!exactText(input.billingReference, { max: 4000 }) || !parties.value.arAccount)) {
     return fail('CREATE_BILLING_REFERENCE_INVALID', 'billingReference');
   }
+  if (input.nativeCommissionPercent !== undefined && (typeof input.nativeCommissionPercent !== 'number' ||
+      !Number.isFinite(input.nativeCommissionPercent) || input.nativeCommissionPercent < 0 || input.nativeCommissionPercent > 100 ||
+      !parties.value.bookingAgency)) return fail('CREATE_COMMISSION_INVALID', 'nativeCommissionPercent');
   if (input.cmsMessageId !== undefined && !exactText(input.cmsMessageId, { max: 100 })) {
     return fail('CREATE_CMS_MESSAGE_INVALID', 'cmsMessageId');
   }
@@ -182,6 +185,7 @@ export function normalizeCloudCreateRequest(input) {
     ...(Object.keys(parties.value).length ? { parties: parties.value } : {}),
     ...(input.note !== undefined ? { note: input.note } : {}),
     ...(input.billingReference !== undefined ? { billingReference: input.billingReference } : {}),
+    ...(input.nativeCommissionPercent !== undefined ? { nativeCommissionPercent: input.nativeCommissionPercent } : {}),
     ...(input.cmsMessageId !== undefined ? { cmsMessageId: input.cmsMessageId } : {}),
     ...(input.cmsRecipient !== undefined ? { cmsRecipient: input.cmsRecipient } : {}),
     ...(input.booker !== undefined ? { booker: { ...input.booker } } : {}),

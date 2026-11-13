@@ -257,7 +257,8 @@ async function draft(page, expected) {
       ...(expected.guestOptIn === false ? ['guestoptin4'] : []),
       ...(expected.booker?.name !== undefined ? ['caller'] : []),
       ...(expected.booker?.contact !== undefined ? ['udfchar06'] : []),
-      ...(expected.billingPhase ? ['billingreference'] : [])];
+      ...(expected.billingPhase ? ['billingreference'] : []),
+      ...(expected.nativeCommissionPercent !== undefined ? ['ta1commission'] : [])];
     const fields = Object.fromEntries(names.map((name) => [name, [...document.querySelectorAll('input,textarea,select')]
       .filter((el) => el.name === name && visible(el))]));
     if (names.some((name) => fields[name].length !== 1)) return 'DRAFT_VISIBLE_FIELDS';
@@ -348,6 +349,19 @@ async function draft(page, expected) {
         return [input.value, component.getValue(), submitted[submittedKeys[0]]].every((item) => String(item ?? '') === value)
           ? current : null;
       };
+      if (expected.nativeCommissionPercent !== undefined) {
+        const name = 'ta1commission', input = fields[name][0], component = cmp(name);
+        const current = currentFormValue(name), submitted = component?.getSubmitData?.();
+        const submittedKeys = Object.keys(submitted || {}).filter(key => key.toLowerCase() === name);
+        const number = value => value !== null && value !== undefined && String(value).trim() !== ''
+          ? Number(value) : NaN;
+        if (!current.found || !input || component?.up?.('form') !== form ||
+            component.disabled || component.isDisabled?.() || component.readOnly || input.disabled || input.readOnly ||
+            submittedKeys.length !== 1 || submittedKeys[0] !== name || typeof component.getValue !== 'function' ||
+            [current.value, input.value, component.getValue(), submitted[name], data[name]].some(
+              value => number(value) !== expected.nativeCommissionPercent) ||
+            !copyCurrentFormValue(name, current)) return 'DRAFT_AGENCY_COMMISSION_VALUE';
+      }
       if (expected.billingPhase) {
         const input = fields.billingreference[0], component = cmp('billingreference');
         const current = nativeFormValue('billingreference'), submitted = component?.getSubmitData?.();
@@ -568,6 +582,12 @@ function matchesSave(page, request, expected) {
       Object.entries(required).every(([key, value]) => body.getAll(key).length === 1 && body.get(key) === value &&
         keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1);
     if (!matchesRequest) return false;
+    if (expected.nativeCommissionPercent !== undefined) {
+      const commissionKeys = keys.filter(name => name.toLowerCase() === 'ta1commission');
+      const raw = body.get('ta1commission');
+      if (commissionKeys.length !== 1 || commissionKeys[0] !== 'ta1commission' || raw === null || !raw.trim() ||
+          Number(raw) !== expected.nativeCommissionPercent) return false;
+    }
     const chargeKeys = keys.filter(name => name.toLowerCase() === 'roomtypecharge');
     if (expected.roomTypeForCharge === undefined && (chargeKeys.length > 1 ||
         chargeKeys.some(name => name !== 'roomtypecharge' || clean(body.get(name))))) return false;
@@ -619,7 +639,7 @@ export async function finishLabtestCreateFence(result, routeChain, fence) {
 /** The page is sealed after this action. Use a fresh guarded session for reconciliation. */
 export async function saveNewLabtestStay(page, {
   preimageId, arrival, departure, guestId, roomType, roomTypeForCharge, ratePlan, guaranteeType, note, guaranteeSelection,
-  createFieldProof, agencySelection, organizationSelection, arSelection, billingReference, track, guestOptIn, booker, cmsRecipient, cmsSend = false,
+  createFieldProof, agencySelection, organizationSelection, arSelection, billingReference, nativeCommissionPercent, track, guestOptIn, booker, cmsRecipient, cmsSend = false,
 } = {}, { timeoutMs = 20_000, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate,
   allowRealGuest = false, expectedGuest } = {}) {
   const guest = allowRealGuest ? expectedGuest : { firstName: 'Proof', lastName: 'Labtest' };
@@ -652,6 +672,10 @@ export async function saveNewLabtestStay(page, {
   const agencySelectionProvided = agencySelection !== undefined && agencySelection !== null;
   const agency = agencySelectionProvided ? normalizeAgencySelection(agencySelection) : null;
   if (agencySelectionProvided && !agency) return { outcome: 'input_gap', issue: 'AGENCY_SELECTION_UNVERIFIED' };
+  if (nativeCommissionPercent !== undefined && (!agency || typeof nativeCommissionPercent !== 'number' ||
+      !Number.isFinite(nativeCommissionPercent) || nativeCommissionPercent < 0 || nativeCommissionPercent > 100)) {
+    return { outcome: 'input_gap', issue: 'AGENCY_COMMISSION_INVALID' };
+  }
   const organizationSelectionProvided = organizationSelection !== undefined && organizationSelection !== null;
   const organization = organizationSelectionProvided ? normalizeOrganizationSelection(organizationSelection) : null;
   if (organizationSelectionProvided && !organization) return { outcome: 'input_gap', issue: 'ORGANIZATION_SELECTION_UNVERIFIED' };
@@ -671,7 +695,7 @@ export async function saveNewLabtestStay(page, {
     return { outcome: 'input_gap', issue: 'SAVE_GUARD_CALLBACKS_INVALID' };
   }
   const strictCreateProof = Boolean(createFields || agency || organization || ar || authorizeCandidate || requireGuaranteeSelection || roomTypeForCharge !== undefined ||
-    track !== undefined || guestOptIn !== undefined || booker !== undefined || cmsRecipient !== undefined);
+    track !== undefined || guestOptIn !== undefined || booker !== undefined || cmsRecipient !== undefined || nativeCommissionPercent !== undefined);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return { outcome: 'input_gap', issue: 'INVALID_TIMEOUT' };
   if (!safeCreateContext(page)) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED' };
@@ -714,6 +738,7 @@ export async function saveNewLabtestStay(page, {
       ...(booker !== undefined ? { booker } : {}), ...(cmsRecipient !== undefined ? { cmsRecipient } : {}), cmsSend,
       ...(createFields ? { createFieldProof: createFields } : {}),
       ...(agency ? { agencySelection: agency } : {}), ...(organization ? { organizationSelection: organization } : {}),
+      ...(nativeCommissionPercent !== undefined ? { nativeCommissionPercent } : {}),
       ...(ar ? { arSelection: ar } : {}), ...(hasBillingReference ? { billingReference, billingPhase: 'before' } : {}),
       strictCreateProof, partyValues };
     let state = await bounded(draft(page, expected));

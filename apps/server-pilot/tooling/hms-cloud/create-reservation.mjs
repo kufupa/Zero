@@ -38,6 +38,11 @@ function validate(input, allowRealGuest = false) {
       (input.booker.name != null && !code(input.booker.name, 50)) ||
       (input.booker.contact != null && !code(input.booker.contact, 80)))) fidelity.invalid.push('booker');
   if (input.reasonForStay != null && !code(input.reasonForStay, 100)) fidelity.invalid.push('reasonForStay');
+  if (input.taCommission != null && (typeof input.taCommission !== 'number' || !Number.isFinite(input.taCommission) ||
+      input.taCommission < 0 || input.taCommission > 100)) fidelity.invalid.push('taCommission');
+  if (input.taCommission != null && (input.parties?.agencyId == null || !text(input.parties?.agencyName))) {
+    fidelity.invalid.push('taCommission.bookingAgency');
+  }
   if (input.cms?.send === true && (!allowRealGuest || !input.cms?.messageId || !input.cms?.recipient)) {
     fidelity.unsupported.push({ field: 'cms.send', issue: 'confirmation_details_or_real_guest_required' });
   }
@@ -106,7 +111,7 @@ function validate(input, allowRealGuest = false) {
 // Only these request keys are understood by this wrapper. Presence is significant:
 // an explicit null is not the same request as an omitted optional field.
 const requestShape = {
-  '': ['mode', 'propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sourceOfBusiness', 'reasonForStay', 'parties', 'note', 'booker', 'cms', 'billingReference', 'price', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient'],
+  '': ['mode', 'propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sourceOfBusiness', 'reasonForStay', 'parties', 'note', 'booker', 'cms', 'billingReference', 'taCommission', 'price', 'track', 'marketSegment', 'guestoptin4', 'confirmationRecipient'],
   guest: ['profileId', 'search'], 'guest.search': ['lastName', 'firstName', 'email'],
   stay: ['arrival', 'departure', 'adults', 'childAges', 'childCount'],
   room: ['roomType', 'ratePlan', 'roomTypeForCharge'], parties: ['agencyId', 'agencyName', 'organizationId', 'organizationName', 'arAccountId', 'arAccountName'],
@@ -116,7 +121,7 @@ const unsupportedPaths = new Set(['price', 'marketSegment', 'confirmationRecipie
 const optionalNoClear = new Set(['billingReference', 'sourceOfBusiness', 'reasonForStay', 'note', 'stay.childCount', 'guest.profileId', 'guest.search.firstName',
   'guest.search.email', 'parties.organizationId', 'parties.organizationName', 'parties.agencyId', 'parties.agencyName',
   'parties.arAccountId', 'parties.arAccountName', 'cms.send', 'cms.messageId', 'cms.recipient',
-  'booker', 'booker.name', 'booker.contact', 'track', 'guestoptin4']);
+  'booker', 'booker.name', 'booker.contact', 'track', 'taCommission', 'guestoptin4']);
 
 function inspectRequest(input) {
   const unsupported = [], invalid = [];
@@ -363,6 +368,7 @@ function draftRequestBinding(input, state, output, formFields) {
     ...(state.reason ? { reasonForStay: { value: String(state.reason.actual.value), display: state.reason.actual.display } } : {}),
     ...(Object.keys(parties).length ? { parties } : {}),
     ...(input.billingReference != null ? { billingReference: input.billingReference } : {}),
+    ...(state.commission !== undefined ? { nativeCommissionPercent: state.commission } : {}),
     ...(Object.hasOwn(output.applied, 'note') ? { note: output.applied.note } : {}),
     ...(state.cms ? { cmsMessageId: state.cms.actual } : {}),
     ...(state.cmsRecipient !== undefined ? { cmsRecipient: state.cmsRecipient } : {}),
@@ -384,6 +390,7 @@ export async function createReservation(input, { withSession = withBookingLookup
   allowCommitOnlyBillingReference = false,
   capturePrepareScreenshot = false, requireExplicitGuestSelection = false, selectTrack = fillTrackBeforeGuarantee,
   listTrack = async (page, options) => (await import('./guest-stay-track-catalog.mjs')).listTrackSubSegments(page, options),
+  stageCommission = async (page, options) => (await import('./guest-stay-commission.mjs')).stageNewStayCommission(page, options),
   stageBookerBilling = stageGuestStayBookerBilling,
   verifyLabtestMatches, allowRealGuest = false, expectedGuest, cloudTargetKey } = {}) {
   if ((authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
@@ -696,6 +703,17 @@ export async function createReservation(input, { withSession = withBookingLookup
       if (!commit && input.billingReference != null && !Object.hasOwn(output.applied, 'billingReference')) {
         missing.push('billingReference.staging');
       }
+      if (input.taCommission != null) {
+        if (!state.guest || !state.agency || missing.length) stop('needs_input', 'commission_agency_or_guest_unverified', { field: 'taCommission' });
+        const staged = await stageCommission(page, { propertyCode, expectedGuest: state.guest.guest,
+          expectedGuestId: String(state.guest.selected.nativeId), expectedAgencyId: String(state.agency.nativeId), percent: input.taCommission });
+        if (!['updated_unsaved', 'unchanged_unsaved'].includes(staged?.outcome) || staged.actual !== input.taCommission) {
+          stop('needs_input', 'commission_prepare_unverified', { field: 'taCommission' });
+        }
+        state.commission = staged.actual;
+        output.applied.taCommission = staged.actual;
+        form = await call(runTool, 'readGuestStayForm', { propertyCode });
+      }
       output.appliedVerification = { visibleFields: true, ...(state.children ? { childAges: 'at_selection_only' } : {}),
         ...(state.organization ? { organizationId: 'at_selection_only' } : {}),
         ...(state.agency ? { agencyId: 'at_selection_only' } : {}), ...(state.arAccount ? { arAccountId: 'at_selection_only' } : {}) };
@@ -765,6 +783,7 @@ export async function createReservation(input, { withSession = withBookingLookup
           ...(state.organization ? { organizationSelection: state.organization } : {}),
           ...(state.agency ? { agencySelection: state.agency } : {}),
           ...(state.arAccount ? { arSelection: state.arAccount } : {}),
+          ...(state.commission !== undefined ? { nativeCommissionPercent: state.commission } : {}),
           ...(input.billingReference != null ? { billingReference: input.billingReference } : {}) });
       } catch { state.save = { outcome: 'uncertain', issue: 'SAVE_TOOL_FAILED' }; }
       if (state.save.billingReferenceStaged === true) output.applied.billingReference = input.billingReference;
@@ -798,6 +817,7 @@ export async function createReservation(input, { withSession = withBookingLookup
     ...(allowRealGuest ? { allowRealGuest: true } : {}), source: state.source?.candidate.description,
     organization: state.organization?.displayedOrganization ?? '', guarantee: state.guarantee?.actual.display,
     ...(state.track ? { track: state.track.display } : {}),
+    ...(state.commission !== undefined ? { nativeCommissionPercent: state.commission } : {}),
     ...(output.applied.mealPlan ? { mealPlan: output.applied.mealPlan } : {}),
     ...(input.guestoptin4 === false ? { guestOptIn: false } : {}),
     ...(state.booker ? { booker: state.booker } : {}),

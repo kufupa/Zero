@@ -574,7 +574,11 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   }
   if (mode !== 'lookup' && !text(optional.sourceOfBusiness)) issues.push('sourceOfBusiness:native_required');
   if (optional.guestOptIn === true) issues.push('guestOptIn:true_not_supported');
-  if (mode !== 'lookup' && optional.taCommission != null) issues.push('taCommission:not_supported');
+  if (mode !== 'lookup' && optional.taCommission != null && (typeof optional.taCommission !== 'number' ||
+      !Number.isFinite(optional.taCommission) || optional.taCommission < 0 || optional.taCommission > 100)) {
+    issues.push('taCommission:percent_invalid');
+  }
+  if (mode !== 'lookup' && optional.taCommission != null && !parties.bookingAgency) issues.push('taCommission:booking_agency_required');
   if (mode !== 'lookup' && optional.billingReference != null && !parties.arAccount) issues.push('billingReference:ar_account_required');
   const supportedGuarantee = new Set(['AVOUCH', 'CNFREC', 'DEPREQ', 'GRPDEF', 'GTDAGT', 'GTDCMP', 'GTDCC', 'GTDDEP', 'NGG', 'NGI']);
   if (typeof arrival !== 'string' || !isoDate.safeParse(arrival).success || typeof departure !== 'string' ||
@@ -611,6 +615,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     ...(Object.keys(nativeParties).length ? { parties: nativeParties } : {}),
     note: optional.reservationNote ?? '',
     ...(optional.billingReference != null ? { billingReference: optional.billingReference } : {}),
+    ...(optional.taCommission != null ? { taCommission: optional.taCommission } : {}),
     ...(optional.track != null ? { track: optional.track } : {}),
     ...(optional.guestOptIn === false ? { guestoptin4: false } : {}),
     ...(optional.bookerName != null || optional.bookerEmail != null || optional.bookerMobile != null ? { booker: {
@@ -2070,6 +2075,7 @@ function nativeInputMatchesBinding(compiled: Extract<CreateCompile, { outcome: '
       ((input.sourceOfBusiness === undefined && bound.sourceOfBusiness != null) ||
        (input.reasonForStay === undefined && bound.reasonForStay != null) ||
        (input.billingReference === undefined && bound.billingReference != null) ||
+       (input.taCommission === undefined && bound.nativeCommissionPercent != null) ||
        (input.track === undefined && bound.track != null) ||
        (input.guestoptin4 === undefined && bound.guestOptIn != null) ||
        (input.cms === undefined && (bound.cmsMessageId != null || bound.cmsRecipient != null)))) return false;
@@ -2090,6 +2096,7 @@ function nativeInputMatchesBinding(compiled: Extract<CreateCompile, { outcome: '
       sameName(record(bound.reasonForStay)?.display, input.reasonForStay)) &&
     (input.note === undefined || bound.note === input.note) &&
     (input.billingReference === undefined || bound.billingReference === input.billingReference) &&
+    (input.taCommission === undefined ? bound.nativeCommissionPercent == null : bound.nativeCommissionPercent === input.taCommission) &&
     (input.track === undefined || input.track === record(bound.track)?.lookupCode || input.track === record(bound.track)?.display) &&
     (input.guestoptin4 !== false || bound.guestOptIn === false) &&
     (options.ignoreBookerContact

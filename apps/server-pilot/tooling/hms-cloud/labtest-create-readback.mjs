@@ -59,6 +59,13 @@ function compareRecord(fields, expected) {
       mismatches.push({ field, expected: wanted, actual, ...(actual == null ? { issue: 'not_visible_or_ambiguous' } : {}) });
     }
   }
+  if (expected.nativeCommissionPercent !== undefined) {
+    const value = uniqueValue(fields, 'ta1commission');
+    if ((typeof value !== 'string' && typeof value !== 'number') || !String(value).trim() ||
+        !Number.isFinite(Number(value)) || Number(value) !== expected.nativeCommissionPercent) {
+      mismatches.push({ field: 'taCommission', expected: expected.nativeCommissionPercent, actual: value });
+    }
+  }
   return mismatches;
 }
 
