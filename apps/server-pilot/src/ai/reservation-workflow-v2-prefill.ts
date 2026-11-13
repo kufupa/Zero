@@ -4234,16 +4234,25 @@ function applyDefaultCmsSendPolicy(
     row.messageId === input.source.messageId && row.threadId === input.source.threadId);
   const currentBody = maskCardNumbers(input.selection.currentBodyText ?? input.selection.bodyText)
     .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
-  const cmsInstructions = message ? currentBody.split(/\r?\n|(?<=[.!?])\s+|;/u).map((part) => part.trim())
-    .filter((part) => /\bCMS\s+Send\b/iu.test(part) && message.text.includes(part))
+  const cmsParts = message ? currentBody.split(/\r?\n|(?<=[.!?])\s+|;/u).map((part) => part.trim())
+    .filter((part) => message.text.includes(part)) : [];
+  const cmsInstructions = cmsParts.filter((part) => /\bCMS\s+Send\b/iu.test(part))
     .map((raw) => {
       const match = /^CMS\s+Send\s*(?::|=|is)\s*(on|off)\s*[.!?]?$/iu.exec(raw) ??
-        /^(?:please\s+)?(?:keep|leave)\s+CMS\s+Send\s+(on|off)\s*[.!?]?$/iu.exec(raw);
+        /^(?:please\s+)?(?:keep|leave|turn)\s+CMS\s+Send\s+(on|off)\s*[.!?]?$/iu.exec(raw);
       return { raw, value: match ? match[1]!.toLowerCase() === 'on' : null };
-    }) : [];
+    });
+  const cmsTemplates = cmsParts.filter((part) => /\bCMS\s+message\b/iu.test(part)).map((raw) => {
+    const match = /^CMS\s+message\s*(?::|=|is)\s*([\w-]+)\s*[.!?]?$/iu.exec(raw);
+    return { raw, value: match?.[1] ?? null };
+  });
   const createRequests = proposal.content.requests.filter((request) => request.kind === 'create');
-  if (createRequests.length) proposal.issues = proposal.issues.filter((issue) =>
-    !/^CMS message [\w-]+ and CMS Send (?:ON|OFF) are retained as source claims, but are not represented as native Create fields here\.?$/iu.test(issue.explanation));
+  if (createRequests.length && message) proposal.issues = proposal.issues.filter((issue) => {
+    const match = /^CMS message ([\w-]+) and CMS Send (ON|OFF) are retained as source claims, but are not represented as native Create fields here\.?$/iu.exec(issue.explanation);
+    return !match || !issue.evidenceRefs.every((ref) => ref === message.ref) ||
+      !cmsTemplates.some((template) => template.value === match[1]) ||
+      !cmsInstructions.some((instruction) => instruction.value === (match[2]!.toLowerCase() === 'on'));
+  });
   for (const request of proposal.content.requests) {
     if (request.kind === 'quote') {
       const source = extractionRequestForProposal(request, proposal.content.requests, extraction, extractionIds);
@@ -4285,16 +4294,56 @@ function applyDefaultCmsSendPolicy(
       request.body.shared.cmsSend = false;
     }
     const cmsSend = request.body.shared.cmsSend;
+    const roomCount = citedInteger(source?.roomCount);
+    const bound = message && extraction.requests.length === 1 && createRequests.length === 1 && source?.kind === 'create' &&
+      source.requestText.sourceRefs.includes(message.ref) && message.text.includes(source.requestText.raw) &&
+      source.dates.length <= 1 && request.body.dateSections.length <= 1 && request.body.allocations.length <= 1 &&
+      !(typeof roomCount === 'number' && roomCount > 1);
+    if (cmsTemplates.length && message) {
+      const values = new Set(cmsTemplates.map((template) => template.value));
+      const templateBound = bound && source && cmsTemplates.every((template) => source.requestText.raw.includes(template.raw));
+      const section = request.body.dateSections[0];
+      const allocation = request.body.allocations[0];
+      const selected = allocation?.overrides.cmsMessageId ?? section?.defaults.cmsMessageId ?? request.body.shared.cmsMessageId;
+      const resolved = templateBound && values.size === 1 && !values.has(null) && typeof selected === 'string' && values.has(selected);
+      const root = `/proposal/content/requests/${request.id}/body`;
+      const templatePath = templateBound && allocation?.overrides.cmsMessageId != null ? `${root}/allocations/0/overrides/cmsMessageId`
+        : templateBound && section?.defaults.cmsMessageId != null ? `${root}/dateSections/0/defaults/cmsMessageId` : `${root}/shared/cmsMessageId`;
+      if (templateBound) for (const template of cmsTemplates) {
+        if (template.raw.length > 2000 || proposal.sourceClaims.length >= MAX_PROPOSAL_SOURCE_CLAIMS || proposal.sourceClaims.some((claim) =>
+          claim.path === templatePath && claim.raw === template.raw && claim.sourceRefs.includes(message.ref))) continue;
+        proposal.sourceClaims.push({ path: templatePath, raw: template.raw, sourceRefs: [message.ref] });
+      }
+      if (!resolved) {
+        const sendPath = `${root}/shared/cmsSend`;
+        const changedSendPaths: string[] = [];
+        if (!(isRecord(cmsSend) && cmsSend.kind === 'none')) request.body.shared.cmsSend = false;
+        if (!(isRecord(cmsSend) && cmsSend.kind === 'none')) changedSendPaths.push(sendPath);
+        request.body.dateSections.forEach((row, index) => { if (row.defaults.cmsSend === true) {
+          row.defaults.cmsSend = false; changedSendPaths.push(`${root}/dateSections/${index}/defaults/cmsSend`);
+        } });
+        request.body.allocations.forEach((row, index) => { if (row.overrides.cmsSend === true) {
+          row.overrides.cmsSend = false; changedSendPaths.push(`${root}/allocations/${index}/overrides/cmsSend`);
+        } });
+        proposal.annotations = proposal.annotations.filter((annotation) => !changedSendPaths.includes(annotation.path));
+        for (const path of changedSendPaths) if (proposal.annotations.length < 2000)
+          proposal.annotations.push({ path, basis: 'policy', evidenceRefs: [] });
+        if (bound && source) for (const instruction of cmsInstructions) {
+          if (!source.requestText.raw.includes(instruction.raw) || instruction.raw.length > 2000 ||
+            proposal.sourceClaims.length >= MAX_PROPOSAL_SOURCE_CLAIMS || proposal.sourceClaims.some((claim) =>
+              claim.path === sendPath && claim.raw === instruction.raw && claim.sourceRefs.includes(message.ref))) continue;
+          proposal.sourceClaims.push({ path: sendPath, raw: instruction.raw, sourceRefs: [message.ref] });
+        }
+        addProjectionIssue(proposal, templatePath, 'cms_template_unresolved',
+          'The source CMS message template is not resolved to the current selection. Initial Send is off; review the template and effective Send choice.', [message.ref]);
+        continue;
+      }
+    }
     if (cmsInstructions.length && message) {
       const values = new Set(cmsInstructions.map((instruction) => instruction.value));
-      const roomCount = citedInteger(source?.roomCount);
-      const bound = extraction.requests.length === 1 && createRequests.length === 1 && source?.kind === 'create' &&
-        source.requestText.sourceRefs.includes(message.ref) && message.text.includes(source.requestText.raw) &&
-        cmsInstructions.every((instruction) => source.requestText.raw.includes(instruction.raw)) &&
-        source.dates.length <= 1 && request.body.dateSections.length <= 1 && request.body.allocations.length <= 1 &&
-        !(typeof roomCount === 'number' && roomCount > 1);
+      const instructionsBound = bound && source && cmsInstructions.every((instruction) => source.requestText.raw.includes(instruction.raw));
       const path = `/proposal/content/requests/${request.id}/body/shared/cmsSend`;
-      const unambiguous = bound && values.size === 1 && !values.has(null);
+      const unambiguous = instructionsBound && values.size === 1 && !values.has(null);
       if (labtest || isRecord(cmsSend) && cmsSend.kind === 'none') {
         if (!unambiguous) addProjectionIssue(proposal, path, 'cms_send_scope_ambiguous',
           'The source has conflicting or unscoped CMS Send instructions. The initial setting is off; review the correct choice.', [message.ref]);
