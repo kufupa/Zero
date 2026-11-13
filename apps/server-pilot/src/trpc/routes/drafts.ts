@@ -30,7 +30,7 @@ import {
   mailDraftRevision,
   message,
 } from '../../db/schema/mail.js';
-import { workItem } from '../../db/schema/work.js';
+import { workEvent, workItem } from '../../db/schema/work.js';
 import { handledRequestKeys, handledRequestStates, requestHistory, outstandingSourceRecoveries, requestCompletionKeys, setRequestHandled, setVoucherReviewHandled, voucherReviewCompletionKeys } from '../../ai/reservationist-task-completion.js';
 import { refreshThreadWork } from '../../ai/work-items.js';
 import { recordFinalQuoteOutcome, type QuoteOutcomePreparedRef, type QuoteReplyKind } from '../../ai/quote-outcomes.js';
@@ -228,9 +228,10 @@ async function recordSavedQuoteReply(db: DB, input: {
 }): Promise<void> {
   if (input.replyKind !== 'quote' || !input.preparedVersions.length ||
     !input.attachments.some(({ file, body }) => file.type === 'application/pdf' && body.length > 0)) return;
-  const [item] = await db.select({ id: workItem.id }).from(workItem).where(and(
-    eq(workItem.transportId, input.transportId), eq(workItem.kind, 'quote'), eq(workItem.sourceMessageId, input.sourceMessageId),
-  )).limit(1);
+  const [item] = await db.select({ id: workItem.id }).from(workItem)
+    .innerJoin(workEvent, and(eq(workEvent.workItemId, workItem.id), eq(workEvent.type, 'quote.prepared')))
+    .where(and(eq(workItem.transportId, input.transportId), eq(workItem.sourceMessageId, input.sourceMessageId)))
+    .orderBy(desc(workEvent.at), desc(workEvent.id)).limit(1);
   if (item) await recordFinalQuoteOutcome(db, { workItemId: item.id, sourceMessageId: input.sourceMessageId,
     userId: input.userId, preparedVersions: input.preparedVersions,
     output: { replyHtml: input.html, insertedAt: new Date().toISOString(),
