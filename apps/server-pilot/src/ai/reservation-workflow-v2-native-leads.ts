@@ -9,8 +9,11 @@ import type { ReservationWorkflowV2Observation, ReservationWorkflowV2Proposal,
 import { partyMatchSearchTerms } from './party-match-v2.js';
 
 type PartyRole = 'agency' | 'organization' | 'ar_account';
+type SourceParty = { role: 'bookingAgency' | 'organization' | 'arAccount'; name: string;
+  fieldPath: string; suggestedRef: string | null };
 type Lead = { value: string; label: string; basis: 'exact_sender' | 'normalized_entity';
-  support: number; confirmations: string[]; denominator: number; confidence: number | null; autoSelectable: boolean };
+  sourceParty: SourceParty | null; sourceSender: string | null; support: number; confirmations: string[];
+  denominator: number; confidence: number | null; autoSelectable: boolean };
 const partyFields = [
   { role: 'agency', field: 'bookingAgency' },
   { role: 'organization', field: 'organization' },
@@ -408,98 +411,116 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
     for (const request of input.proposal.content.requests) {
       if (request.kind !== 'create' && request.kind !== 'quote') continue;
       const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
-      const slots = request.kind === 'create'
-        ? [{ path: `${root}/shared`, fields: request.body.shared },
-          ...request.body.dateSections.map((section, index) => ({ path: `${root}/dateSections/${index}/defaults`, fields: section.defaults })),
-          ...request.body.allocations.map((allocation, index) => ({ path: `${root}/allocations/${index}/overrides`, fields: allocation.overrides }))]
-        : [{ path: `${root}/parties`, fields: { bookingAgency: request.body.parties.bookingAgency, organization: request.body.parties.organization } }];
-      const names = new Map<PartyRole, string[]>();
-      for (const spec of partyFields) names.set(spec.role, slots.flatMap(slot => {
-        const party = spec.field === 'bookingAgency' ? slot.fields.bookingAgency : spec.field === 'organization'
-          ? slot.fields.organization : 'arAccount' in slot.fields ? slot.fields.arAccount : undefined;
-        return party && typeof party === 'object' && 'name' in party && party.name ? [party.name] : [];
-      }).slice(0, 2));
-      const related = [...names].flatMap(([role, values]) => values.flatMap(name =>
-        partyMatchSearchTerms(name).slice(0, 2).flatMap(term => {
-          const result = query({ name: term });
-          return result ? [{ role, name, result }] : [];
-        })));
-      for (const role of [...partyFields.map(spec => spec.role), 'rate_plan', 'room_type'] satisfies Array<PartyRole | 'rate_plan' | 'room_type'>) {
-        const field = role === 'rate_plan' ? 'ratePlan' : role === 'room_type' ? 'roomType' : partyFields.find(spec => spec.role === role)?.field;
-        if (!field) continue;
-        const leads = new Map<string, Lead>();
-        const denominators = new Map<Lead['basis'], Set<string>>();
-        const incomplete = new Set<Lead['basis']>();
-        const add = (value: string, basis: Lead['basis'], confirmations: Array<string | null>) => {
-          const ids = confirmations.filter((id): id is string => Boolean(id));
-          if (!value.trim() || !ids.length || (role === 'ar_account' && /^refund\s+account\b/i.test(value.trim()))) return;
-          const key = role === 'rate_plan' || role === 'room_type' ? value.toUpperCase() : normalizedPartyName(value);
-          if (!key) return;
-          const prior = leads.get(key);
-          if (prior?.basis === 'exact_sender' && basis === 'normalized_entity') return;
-          const combined = [...new Set([...(prior?.basis === basis ? prior.confirmations : []), ...ids])];
-          leads.set(key, { value, label: value, basis,
-            support: combined.length, confirmations: combined, denominator: 0, confidence: null, autoSelectable: false });
-        };
-        const accept = (result: z.infer<typeof querySchema>, basis: Lead['basis'], name?: string, relatedRole?: PartyRole) => {
-          const conflicts = new Set(result.conflicts.flatMap(conflict => conflict.evidence.confirmationNumber ? [conflict.evidence.confirmationNumber] : []));
-          const relatedField = partyFields.find(spec => spec.role === relatedRole)?.field;
-          const sourceMatches = (candidate: z.infer<typeof querySchema>['candidates'][number]) => !name || !relatedRole || !relatedField ||
-            Boolean(candidate.combination[relatedField] && !candidate.conflictingFields.includes(relatedField) &&
-              normalizedPartyName(candidate.combination[relatedField]) === normalizedPartyName(name));
-          const ids = (candidate: z.infer<typeof querySchema>['candidates'][number]) => candidate.evidence.confirmationRecords
-            .map(row => row.confirmationNumber).filter((id): id is string => Boolean(id) && !conflicts.has(id ?? ''));
-          const denominator = denominators.get(basis) ?? new Set<string>();
-          for (const candidate of result.candidates.filter(sourceMatches)) for (const id of ids(candidate)) denominator.add(id);
-          denominators.set(basis, denominator);
-          if (result.candidatesTruncated || result.conflictsTruncated || result.candidates.some(candidate => candidate.evidence.truncated)) incomplete.add(basis);
-          if (role === 'rate_plan' || role === 'room_type') {
-            const matching = name && relatedRole && relatedField ? new Set(result.candidates.flatMap(candidate => {
-              const value = candidate.combination[relatedField];
-              return value && !candidate.conflictingFields.includes(relatedField) &&
-                normalizedPartyName(value) === normalizedPartyName(name)
-                ? candidate.evidence.confirmationRecords.map(row => row.confirmationNumber) : [];
-            })) : null;
-            for (const hint of result.historicalHints[role === 'rate_plan' ? 'ratePlan' : 'roomType'].values) {
-              if (hint.evidence.truncated) incomplete.add(basis);
-              if (!hint.valueTruncated && /^[A-Z0-9]{1,12}$/.test(hint.value)) {
-                add(hint.value, basis, hint.evidence.confirmationRecords.map(row => row.confirmationNumber)
-                  .filter((id): id is string => Boolean(id) && denominator.has(id ?? '') && (!matching || matching.has(id))));
+      type Fields = { bookingAgency?: unknown; organization?: unknown; arAccount?: unknown; ratePlan?: unknown; roomType?: unknown };
+      type Slot = { path: string; fields: Fields; scopeKind: 'shared' | 'date_section' | 'allocation' | 'quote_parties' | 'quote_group';
+        dateSectionId: string | null; allocationId: string | null; groupId: string | null; parents: Array<{ path: string; fields: Fields }> };
+      let slots: Slot[];
+      if (request.kind === 'create') {
+        const shared = { path: `${root}/shared`, fields: request.body.shared };
+        const sections = request.body.dateSections.map((section, index) => ({ id: section.id,
+          path: `${root}/dateSections/${index}/defaults`, fields: section.defaults }));
+        slots = [{ ...shared, scopeKind: 'shared', dateSectionId: null, allocationId: null, groupId: null, parents: [] },
+          ...sections.map(section => ({ ...section, scopeKind: 'date_section' as const, dateSectionId: section.id,
+            allocationId: null, groupId: null, parents: [shared] })),
+          ...request.body.allocations.map((allocation, index) => {
+            const section = sections.find(row => row.id === allocation.dateSectionId);
+            return { path: `${root}/allocations/${index}/overrides`, fields: allocation.overrides, scopeKind: 'allocation' as const,
+              dateSectionId: allocation.dateSectionId, allocationId: allocation.id, groupId: null,
+              parents: section ? [section, shared] : [shared] };
+          })];
+      } else {
+        const parties = { path: `${root}/parties`, fields: request.body.parties };
+        slots = [{ ...parties, scopeKind: 'quote_parties', dateSectionId: null, allocationId: null, groupId: null, parents: [] },
+          ...request.body.groups.map((group, index) => ({ path: `${root}/groups/${index}`, fields: group,
+            scopeKind: 'quote_group' as const, dateSectionId: null, allocationId: null, groupId: group.id, parents: [parties] }))];
+      }
+      const relatedCache = new Map<string, z.infer<typeof querySchema> | null>();
+      for (const slot of slots) {
+        const related = partyFields.flatMap(spec => {
+          const owner = [slot, ...slot.parents].find(candidate => candidate.fields[spec.field] !== null &&
+            candidate.fields[spec.field] !== undefined);
+          const party = owner?.fields[spec.field];
+          if (!owner || !party || typeof party !== 'object' || !('name' in party) || typeof party.name !== 'string' || !party.name.trim()) return [];
+          const sourceParty: SourceParty = { role: spec.field, name: party.name, fieldPath: `${owner.path}/${spec.field}`,
+            suggestedRef: 'suggestedRef' in party && typeof party.suggestedRef === 'string' ? party.suggestedRef : null };
+          return partyMatchSearchTerms(party.name).slice(0, 2).flatMap(term => {
+            if (!relatedCache.has(term)) relatedCache.set(term, query({ name: term }));
+            const result = relatedCache.get(term);
+            return result ? [{ role: spec.role, sourceParty, result }] : [];
+          });
+        });
+        const roles = slot.scopeKind === 'quote_parties' ? ['agency', 'organization'] as const
+          : slot.scopeKind === 'quote_group' ? ['rate_plan'] as const
+          : [...partyFields.map(spec => spec.role), 'rate_plan', 'room_type'] satisfies Array<PartyRole | 'rate_plan' | 'room_type'>;
+        for (const role of roles) {
+          const field = role === 'rate_plan' ? 'ratePlan' : role === 'room_type' ? 'roomType' : partyFields.find(spec => spec.role === role)?.field;
+          if (!field) continue;
+          const leads = new Map<string, Lead>();
+          const denominators = new Map<string, Set<string>>();
+          const incomplete = new Set<string>();
+          const bindingKey = (sourceParty: SourceParty | null) => sourceParty ? JSON.stringify(sourceParty) : 'exact_sender';
+          const add = (value: string, basis: Lead['basis'], sourceParty: SourceParty | null, confirmations: Array<string | null>) => {
+            const ids = confirmations.filter((id): id is string => Boolean(id));
+            if (!value.trim() || !ids.length || (role === 'ar_account' && /^refund\s+account\b/i.test(value.trim()))) return;
+            const nameKey = role === 'rate_plan' || role === 'room_type' ? value.toUpperCase() : normalizedPartyName(value);
+            if (!nameKey) return;
+            const key = JSON.stringify([nameKey, bindingKey(sourceParty)]);
+            const prior = leads.get(key);
+            const combined = [...new Set([...(prior?.basis === basis ? prior.confirmations : []), ...ids])];
+            leads.set(key, { value, label: value, basis, sourceParty, sourceSender: basis === 'exact_sender' ? email : null,
+              support: combined.length, confirmations: combined, denominator: 0, confidence: null, autoSelectable: false });
+          };
+          const accept = (result: z.infer<typeof querySchema>, basis: Lead['basis'], sourceParty: SourceParty | null) => {
+            const conflicts = new Set(result.conflicts.flatMap(conflict => conflict.evidence.confirmationNumber ? [conflict.evidence.confirmationNumber] : []));
+            const relatedField = sourceParty?.role;
+            const sourceMatches = (candidate: z.infer<typeof querySchema>['candidates'][number]) => !sourceParty || !relatedField ||
+              Boolean(candidate.combination[relatedField] && !candidate.conflictingFields.includes(relatedField) &&
+                normalizedPartyName(candidate.combination[relatedField]) === normalizedPartyName(sourceParty.name));
+            const ids = (candidate: z.infer<typeof querySchema>['candidates'][number]) => candidate.evidence.confirmationRecords
+              .map(row => row.confirmationNumber).filter((id): id is string => Boolean(id) && !conflicts.has(id ?? ''));
+            const sourceKey = bindingKey(sourceParty), denominator = denominators.get(sourceKey) ?? new Set<string>();
+            for (const candidate of result.candidates.filter(sourceMatches)) for (const id of ids(candidate)) denominator.add(id);
+            denominators.set(sourceKey, denominator);
+            if (result.candidatesTruncated || result.conflictsTruncated || result.candidates.some(candidate => candidate.evidence.truncated)) incomplete.add(sourceKey);
+            if (role === 'rate_plan' || role === 'room_type') {
+              const matching = sourceParty && relatedField ? new Set(result.candidates.flatMap(candidate => {
+                const value = candidate.combination[relatedField];
+                return value && !candidate.conflictingFields.includes(relatedField) &&
+                  normalizedPartyName(value) === normalizedPartyName(sourceParty.name)
+                  ? candidate.evidence.confirmationRecords.map(row => row.confirmationNumber) : [];
+              })) : null;
+              for (const hint of result.historicalHints[role === 'rate_plan' ? 'ratePlan' : 'roomType'].values) {
+                if (hint.evidence.truncated) incomplete.add(sourceKey);
+                if (!hint.valueTruncated && /^[A-Z0-9]{1,12}$/.test(hint.value)) {
+                  add(hint.value, basis, sourceParty, hint.evidence.confirmationRecords.map(row => row.confirmationNumber)
+                    .filter((id): id is string => Boolean(id) && denominator.has(id ?? '') && (!matching || matching.has(id))));
+                }
               }
+            } else for (const candidate of result.candidates) {
+              const value = candidate.combination[field];
+              if (value && !candidate.conflictingFields.includes(field) && sourceMatches(candidate))
+                add(value, basis, sourceParty, ids(candidate));
             }
-          } else for (const candidate of result.candidates) {
-            const value = candidate.combination[field];
-            if (value && !candidate.conflictingFields.includes(field) && sourceMatches(candidate))
-              add(value, basis, ids(candidate));
+          };
+          for (const result of sender) accept(result, 'exact_sender', null);
+          for (const item of related) if (role === 'rate_plan' || role === 'room_type' || item.role === role ||
+            (role === 'ar_account' && (item.role === 'agency' || item.role === 'organization')))
+            accept(item.result, 'normalized_entity', item.sourceParty);
+          for (const lead of leads.values()) {
+            const sourceKey = bindingKey(lead.sourceParty);
+            lead.denominator = denominators.get(sourceKey)?.size ?? 0;
+            lead.confidence = lead.denominator && !incomplete.has(sourceKey) ? lead.support / lead.denominator : null;
+            lead.autoSelectable = lead.confidence !== null && lead.confidence >= 0.8 &&
+              (lead.basis === 'exact_sender' && (role === 'agency' || role === 'organization' && !multiClientDomain) ||
+                role === 'agency' && lead.sourceParty?.role === 'bookingAgency' && Boolean(lead.sourceParty.suggestedRef));
           }
-        };
-        for (const result of sender) accept(result, 'exact_sender');
-        for (const item of related) if (role === 'rate_plan' || role === 'room_type' || item.role === role ||
-          (role === 'ar_account' && (item.role === 'agency' || item.role === 'organization')))
-          accept(item.result, 'normalized_entity', item.name, item.role);
-        for (const lead of leads.values()) {
-          lead.denominator = denominators.get(lead.basis)?.size ?? 0;
-          lead.confidence = lead.denominator && !incomplete.has(lead.basis) ? lead.support / lead.denominator : null;
-          lead.autoSelectable = lead.confidence !== null && lead.confidence >= 0.8 &&
-            (role === 'agency' || (role === 'organization' && lead.basis === 'exact_sender' && !multiClientDomain));
-        }
-        const ranked = [...leads.values()].sort((a, b) => Number(b.basis === 'exact_sender') - Number(a.basis === 'exact_sender') ||
-          b.support - a.support || a.value.localeCompare(b.value)).slice(0, 3);
-        if (!ranked.length) continue;
-        const actualField = field;
-        const fieldPaths = role === 'room_type' && request.kind === 'quote' ? [] : role === 'rate_plan' && request.kind === 'quote'
-          ? request.body.groups.map((_, index) => `${root}/groups/${index}/ratePlan`)
-          : role === 'ar_account' && request.kind === 'quote' ? [] : slots.map(slot => `${slot.path}/${actualField}/nativeSelectionRef`);
-        if ((role === 'rate_plan' || role === 'room_type') && request.kind === 'create') fieldPaths.splice(0, fieldPaths.length, ...slots.map(slot => `${slot.path}/${field}`));
-        if (!fieldPaths.length) continue;
-        for (const fieldPath of fieldPaths) {
-          const slot = slots.find(row => fieldPath === `${row.path}/${actualField}/nativeSelectionRef` ||
-            fieldPath === `${row.path}/${field}`);
-          const party = slot ? role === 'agency' ? slot.fields.bookingAgency : role === 'organization'
-            ? slot.fields.organization : 'arAccount' in slot.fields ? slot.fields.arAccount : undefined : undefined;
-          const code = request.kind === 'quote' ? request.body.groups.find((_, index) => fieldPath === `${root}/groups/${index}/ratePlan`)?.ratePlan
-            : role === 'room_type' && slot && 'roomType' in slot.fields ? slot.fields.roomType
-              : slot && 'ratePlan' in slot.fields ? slot.fields.ratePlan : undefined;
+          const ranked = [...leads.values()].sort((a, b) => (role === 'ar_account' ? -1 : 1) *
+            (Number(b.basis === 'exact_sender') - Number(a.basis === 'exact_sender')) ||
+            b.support - a.support || a.value.localeCompare(b.value)).slice(0, 3);
+          if (!ranked.length) continue;
+          const fieldPath = `${slot.path}/${field}${role === 'rate_plan' || role === 'room_type' ? '' : '/nativeSelectionRef'}`;
+          const party = slot.fields[field];
+          const code = role === 'rate_plan' ? slot.fields.ratePlan : slot.fields.roomType;
           const sourceQuery = role === 'rate_plan' || role === 'room_type' ? typeof code === 'string' ? code : null
             : party && typeof party === 'object' && 'name' in party ? party.name : null;
           observations.push({ ref: randomUUID(), generationId: input.generationId,
@@ -507,6 +528,8 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
             observedAt: new Date().toISOString(), propertyCode: input.propertyCode, sourceMessageId: input.source.messageId,
             sourceRefs: [], criteria: { kind: 'historical_lookup_leads', workflow: request.kind, requestId: request.id,
               sourceHash: input.source.sourceHash, role: role === 'agency' ? 'bookingAgency' : role,
+              slotPath: slot.path, scopeKind: slot.scopeKind, dateSectionId: slot.dateSectionId,
+              allocationId: slot.allocationId, groupId: slot.groupId,
               query: sourceQuery, fieldPath, fieldPaths: [fieldPath], rankBasis: ['exact_sender', 'normalized_entity'],
               multiClientDomain, snapshotTimes: [...snapshotTimes.values()] },
             coverage: { complete: false, notes: ['Historical names/codes require a current Infor search and staff selection.',
