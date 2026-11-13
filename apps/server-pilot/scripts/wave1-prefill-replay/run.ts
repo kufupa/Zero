@@ -342,7 +342,7 @@ function serializeArtifact(value: unknown): string {
     if (typeof item === 'string') {
       let safe = item;
       for (const secret of secrets) safe = safe.replaceAll(secret, '[redacted]');
-      return safe.replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, 'Bearer [redacted]')
+      return safe.replace(/Bearer\s+[A-Za-z0-9._~+\x2f-]+/gi, 'Bearer [redacted]')
         .replace(/([?&](?:token|password|signature|sig|access_token)=)[^&\s"<>]+/gi, '$1[redacted]')
         .replace(/(postgres(?:ql)?:\/\/[^:\s/@]+:)[^@\s]+@/gi, '$1[redacted]@');
     }
