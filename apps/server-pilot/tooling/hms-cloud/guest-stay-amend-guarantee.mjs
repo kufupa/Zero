@@ -2,7 +2,7 @@ import { isLabtestAmendStageContext } from './labtest-amend-save.mjs';
 import { cleanLabtestRecord, snapshotLabtestRecord } from './labtest-record.mjs';
 import { parseSavedStayNativeResponse } from './saved-stay-native-response.mjs';
 import { isSavedGuaranteeRequestGate, matchesSavedGuaranteeBefore,
-  sameSavedGuaranteePreimage } from './saved-stay-guarantee-request-gate.mjs';
+  sameSavedGuaranteePreimage, savedGuaranteePriceEffects } from './saved-stay-guarantee-request-gate.mjs';
 
 const codeValid = value => typeof value === 'string' && /^[A-Z0-9]{1,20}$/.test(value);
 const displayValid = value => typeof value === 'string' && value.length > 0 && value.length <= 200 &&
@@ -71,10 +71,10 @@ function responseMatches(raw, baseline, desired) {
       Object.keys(values).filter(name => name.toLowerCase() === key.toLowerCase()).length === 1;
     if (!required.every(key => unique(key) && String(values[key] ?? '') === String(baseline.data[key] ?? '')) ||
         !unique('guaranteetype') || String(values.guaranteetype) !== desired) return false;
-    // The native client applies all returned fields to the form; check any returned
-    // business or pricing value against its clean preimage before trusting it.
+    // The native client applies all returned fields to the form. Only the
+    // explicitly listed native amounts may change before price review.
     return sameSavedGuaranteePreimage(baseline, { data: { ...baseline.data, ...values }, values: baseline.values },
-      { allowGuaranteeChange: true });
+      { allowGuaranteeChange: true, allowAmountChanges: true });
   } catch { return false; }
 }
 
@@ -180,8 +180,9 @@ export async function applySavedGuaranteeOnGo(context, { expected, code, display
       typeof callbacks.authorizeCandidate !== 'function' || typeof callbacks.dispatchCandidate !== 'function') {
     return { outcome: 'not_dispatched', issue: 'GUARANTEE_INPUT_INVALID', partialEffect: 'none' };
   }
+  let initial = null, postSnapshot = null;
   try {
-    const initial = await inspectSavedGuaranteeForComposition(context);
+    initial = await inspectSavedGuaranteeForComposition(context);
     if (!matchesSavedGuaranteeBefore(initial.snapshot, context.baseline, expected, initial.before) || !initial.enabled ||
         initial.candidates.filter(item => item.code === code && item.label === display).length !== 1 ||
         initial.candidates.filter(item => item.code === code || item.label === display).length !== 1) {
@@ -225,20 +226,24 @@ export async function applySavedGuaranteeOnGo(context, { expected, code, display
     }
     await context.frame.waitForFunction(() => globalThis.Ext?.Ajax && !globalThis.Ext.Ajax.isLoading(), null,
       { timeout: Math.min(10_000, context.remainingMs()) });
-    const after = await snapshotLabtestRecord(context.frame), observation = await controlObservation(context.frame);
+    const after = await snapshotLabtestRecord(context.frame);
+    postSnapshot = after;
+    const observation = await controlObservation(context.frame);
     if (!usable(context) || !validObservation(observation, { allowFiltered: true }) ||
         JSON.stringify(observation.options) !== JSON.stringify(initial.candidates) || observation.before.code !== code ||
-        observation.before.display !== display || !sameSavedGuaranteePreimage(initial.snapshot, after, { allowGuaranteeChange: true }) ||
+        observation.before.display !== display || !sameSavedGuaranteePreimage(initial.snapshot, after,
+          { allowGuaranteeChange: true, allowAmountChanges: true }) ||
         after.data?.guaranteetype !== code || await context.frame.locator('.x-window:visible:not(.x-menu)').count() !== 0) {
       throw new Error('GUARANTEE_RESULT_UNVERIFIED');
     }
     return { outcome: 'applied', snapshot: after, before: initial.before, actual: { code, display },
-      partialEffect: 'possible', requiresReconciliation: true };
+      priceEffects: savedGuaranteePriceEffects(initial.snapshot, after), partialEffect: 'possible', requiresReconciliation: true };
   } catch (error) {
     const possiblyDispatched = gate.status().possiblyDispatched;
     context.stop?.('GUARANTEE_UNCERTAIN');
     const issue = /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'GUARANTEE_UNVERIFIED';
     return { outcome: possiblyDispatched ? 'uncertain' : 'not_dispatched', issue,
-      partialEffect: possiblyDispatched ? 'possible' : 'none', requiresReconciliation: possiblyDispatched };
+      partialEffect: possiblyDispatched ? 'possible' : 'none', requiresReconciliation: possiblyDispatched,
+      ...(initial && possiblyDispatched ? { priceEffects: savedGuaranteePriceEffects(initial.snapshot, postSnapshot) } : {}) };
   } finally { gate.close(); }
 }

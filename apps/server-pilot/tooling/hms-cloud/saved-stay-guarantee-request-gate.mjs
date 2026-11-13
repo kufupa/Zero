@@ -10,12 +10,25 @@ const business = new Set([...blankSavedPartyFields, 'propertycode', 'confirmatio
   'arrivaldate', 'departuredate', 'nights', 'roomtype', 'roomtypecharge', 'rateplan', 'mealplan', 'marketsegment',
   'track', 'adults', 'children', 'child1', 'child2', 'child3', 'childages', 'guaranteetype', 'reservationnote', 'emailaddress',
   'caller', 'udfchar06', 'billingreference', 'ta1commission', 'udfchkbox04', 'udfchar09', 'udfchar13',
+  'sourceofbus', 'sourceofbusid', 'sourceofbusiness', 'sourceofbusinessid', 'sourceofbusinessdesc',
+  'secondarysourceofbus', 'secondarysourceofbusdesc',
+  'currentroomtype', 'roomtypeid', 'roomtypecode', 'rateplanid', 'rateplancode', 'mealplanid', 'mealplancode',
+  'marketsegment_display', 'trackcode', 'currency_display', 'currencycode', 'currency_code', 'currencyid',
+  'guesttotalresortfee',
   'newprofileclick', 'createinactiveprofileflag', 'reqguestprofilelookup', 'linkprofileflag', 'linkedprofileflag',
   'savecctoprofile', 'savesettlementcctoprofile']);
+export const SAVED_GUARANTEE_MUTABLE_AMOUNTS = Object.freeze([
+  'grandtotal', 'averagenightly', 'averagerate', 'totalrate', 'totalratewithtax', 'enhancedexptotal',
+  'guesttotal', 'guesttax', 'guesttotalwithtax', 'tax', 'totalresortfee', 'ratetax',
+]);
+const mutableAmounts = new Set(SAVED_GUARANTEE_MUTABLE_AMOUNTS);
 const price = /(?:price|tax|total|amount|averagenightly|averagerate|currency|curr)$/i;
 const own = (value) => value && typeof value === 'object' && !Array.isArray(value);
-const relevant = (name) => business.has(name.toLowerCase()) || price.test(name);
+const relevant = (name) => business.has(name.toLowerCase()) || mutableAmounts.has(name.toLowerCase()) ||
+  price.test(name) || /commission/i.test(name);
 const scalar = (value) => value === null || ['string', 'number', 'boolean'].includes(typeof value);
+const nativeAmount = value => value === null || (typeof value === 'number' && Number.isFinite(value)) ||
+  (typeof value === 'string' && value.length <= 256 && !/[\p{Cc}]/u.test(value));
 const validCode = (value) => typeof value === 'string' && /^[A-Z0-9]{1,20}$/.test(value);
 const validDisplay = (value) => typeof value === 'string' && value.length > 0 && value.length <= 200 &&
   value === value.trim() && !/[\p{Cc}]/u.test(value);
@@ -25,14 +38,46 @@ const uniqueKey = (object, key) => own(object) && Object.hasOwn(object, key) &&
 export const isSavedGuaranteeRequestGate = gate => Boolean(gate && issued.has(gate));
 
 /** Compare only known business and price preimages, allowing unrelated native form drift. */
-export function sameSavedGuaranteePreimage(before, after, { allowGuaranteeChange = false } = {}) {
+export function sameSavedGuaranteePreimage(before, after, { allowGuaranteeChange = false, allowAmountChanges = false } = {}) {
   return ['data', 'values'].every(part => {
     const a = before?.[part], b = after?.[part];
     if (!own(a) || !own(b)) return false;
     return [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(key => relevant(key) &&
-      !(allowGuaranteeChange && key.toLowerCase() === 'guaranteetype')).every(key =>
-      uniqueKey(a, key) && uniqueKey(b, key) && isDeepStrictEqual(a[key], b[key]));
+      !(allowGuaranteeChange && key.toLowerCase() === 'guaranteetype')).every(key => {
+      if (allowAmountChanges && mutableAmounts.has(key)) {
+        return [a, b].every(source => {
+          const keys = Object.keys(source).filter(name => name.toLowerCase() === key);
+          return keys.length === 0 || (keys.length === 1 && keys[0] === key && nativeAmount(source[key]));
+        });
+      }
+      return uniqueKey(a, key) && uniqueKey(b, key) && isDeepStrictEqual(a[key], b[key]);
+    });
   });
+}
+
+/** Raw observations, including missing versus blank, for later native price review. */
+export function savedGuaranteePriceEffects(before, after) {
+  const result = {};
+  for (const part of ['data', 'values']) {
+    const a = before?.[part], b = after?.[part];
+    if (!own(a)) return null;
+    const names = new Set([...SAVED_GUARANTEE_MUTABLE_AMOUNTS,
+      ...[...Object.keys(a), ...(own(b) ? Object.keys(b) : [])].filter(name =>
+        ['currency', 'currency_display', 'currencycode', 'currency_code', 'currencyid'].includes(name) ||
+        /curr(?:ency)?$/i.test(name))]);
+    const observe = (source, name) => {
+      if (!own(source)) return { state: 'unobserved' };
+      const matches = Object.keys(source).filter(key => key.toLowerCase() === name.toLowerCase());
+      if (!matches.length) return { state: 'absent' };
+      if (matches.length !== 1 || matches[0] !== name) return { state: 'ambiguous' };
+      return scalar(source[name]) && (typeof source[name] !== 'number' || Number.isFinite(source[name]))
+        ? { state: 'present', value: source[name] } : { state: 'unavailable' };
+    };
+    result[part] = Object.fromEntries([...names].sort().map(name => [name, {
+      before: observe(a, name), after: observe(b, name),
+    }]));
+  }
+  return result;
 }
 
 function wireDate(value) {
