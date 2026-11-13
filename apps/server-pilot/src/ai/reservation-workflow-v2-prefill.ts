@@ -4102,7 +4102,7 @@ function applyDefaultCmsSendPolicy(
 }
 
 function dinnerAmount(text: string): string | null {
-  const clauses = text.split(/[;\n.!?]/u).filter((clause) => /\bdinner\b/i.test(clause) &&
+  const clauses = text.split(/[;\n!?]|\.(?!\d)/u).filter((clause) => /\bdinner\b/i.test(clause) &&
     !/\b(?:rate|quoted|quotation|total|package|accommodation|nightly|per\s+night|price)\b/i.test(clause));
   const amounts = [...new Set(clauses.flatMap((clause) => [...clause.matchAll(/\b(?:R|ZAR)\s*(\d+(?:[.,]\d{1,2})?)\b/giu)]
     .map((match) => match[1]!.replace(',', '.'))))];
@@ -4167,10 +4167,21 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
     const presetId = payer?.[0] === 'direct' ? 'settle-direct' : ['bb', 'dinner_bb'].includes(meal) && payer
       ? `${meal === 'dinner_bb' ? 'dbb' : 'bb'}-${payer[0]}` : null;
     const preset = RESERVATION_NOTE_PRESETS.find((row) => row.id === presetId);
-    const cap = meal === 'dinner_bb' ? dinnerAmount(currentText) ?? rememberedCap?.[0] ?? null : null;
+    const explicitCap = meal === 'dinner_bb' ? dinnerAmount(currentText) : null;
+    const cap = meal === 'dinner_bb' ? explicitCap ?? rememberedCap?.[0] ?? null : null;
     if (!preset && !cap && !guaranteeCode) continue;
     const existing = typeof request.body.shared.reservationNote === 'string' ? request.body.shared.reservationNote : '';
-    const parts = [preset?.text, cap && !dinnerAmount(existing) ? `Dinner allowance R${cap}` : null, existing]
+    const noteExisting = explicitCap ? existing.split(/([;\n!?]|\.(?!\d))/u).map((clause) => {
+      const previousCap = dinnerAmount(clause);
+      if (!previousCap || previousCap === explicitCap) return clause;
+      return clause.replace(/(\b(?:R|ZAR)\s*)(\d+(?:[.,]\d{1,2})?)\b/giu, (match, prefix: string, amount: string) =>
+        amount.replace(',', '.') === previousCap ? `${prefix}${explicitCap}` : match);
+    }).join('') : existing;
+    const containsCap = cap && noteExisting.split(/[;\n!?]|\.(?!\d)/u).some((clause) => {
+      const present = dinnerAmount(clause);
+      return explicitCap ? present === cap : present !== null;
+    });
+    const parts = [preset?.text, cap && !containsCap ? `Dinner allowance R${cap}` : null, noteExisting]
       .filter((part): part is string => Boolean(part));
     const note = parts.filter((part, index) => !parts.slice(index + 1).some((other) => normalizedFact(other).includes(normalizedFact(part)))).join('\n');
     const path = `/proposal/content/requests/${request.id}/body/shared/reservationNote`;
