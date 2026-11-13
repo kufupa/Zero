@@ -4425,7 +4425,8 @@ function rankHistoricalRoomLeads(input: { proposal: ReservationWorkflowV2Proposa
       row.sourceMessageId === lead.sourceMessageId && row.criteria.requestId === sourceRequestId &&
       Array.isArray(row.criteria.dates) && row.criteria.dates.some((date) => isRecord(date) &&
         date.arrival === section.arrival && date.departure === section.departure) &&
-      row.result.outcome === 'read' && row.result.roomScope === 'all_room_types' && typeof row.result.observedAt === 'string' &&
+      row.result.outcome === 'read' && row.result.source === 'hms_cloud_hotel_availability' &&
+      row.result.roomScope === 'all_room_types' && typeof row.result.observedAt === 'string' &&
       Array.isArray(row.result.groups) && row.result.groups.length === 1 && isRecord(row.result.groups[0]) &&
       row.result.groups[0].outcome === 'observed' && Array.isArray(row.result.groups[0].options));
     if (reads.length !== 1) return lead;
@@ -4443,7 +4444,8 @@ function rankHistoricalRoomLeads(input: { proposal: ReservationWorkflowV2Proposa
       const matching = options.filter((option) => isRecord(option.room) && normalizedFact(option.room.code) === normalizedFact(item.value));
       const results = matching.map((option) => {
         const nights = Array.isArray(option.nightly) ? option.nightly.filter(isRecord) : [];
-        if (dates.some((date) => nights.filter((night) => night.date === date && night.requestedCount === requestedCount).length !== 1)) return 'unknown';
+        if (dates.some((date) => nights.filter((night) => night.date === date).length !== 1 ||
+          nights.find((night) => night.date === date)?.requestedCount !== requestedCount)) return 'unknown';
         const statuses = dates.map((date) => nights.find((night) => night.date === date)?.stockStatus);
         return statuses.every((status) => status === 'available') ? 'available_each_night' :
           statuses.some((status) => status === 'sold' || status === 'restricted') ? 'sold_or_restricted' : 'unknown';
