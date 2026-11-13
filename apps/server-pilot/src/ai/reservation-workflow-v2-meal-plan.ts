@@ -13,3 +13,21 @@ export function normalizeRequestedMealPlan(value: unknown): {
   if (['bb', 'b b'].includes(board) || /\bbreakfast\b/u.test(board)) return { mealPlan: 'bb', lunchRequested };
   return { mealPlan: null, lunchRequested };
 }
+
+export function quoteLunchHintScope(input: {
+  hint: { raw: string; value: unknown };
+  mealHints: Array<{ raw: string; value: unknown }>;
+  groupCount: number;
+}): 'repeated_meal_plan' | 'overall' | 'unresolved' {
+  const key = (value: string) => value.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  const keys = (claim: { raw: string; value: unknown }) => [claim.raw, typeof claim.value === 'string' ? claim.value : '']
+    .map(key).filter(Boolean);
+  const hintKeys = keys(input.hint);
+  const hintRaw = key(input.hint.raw);
+  const meal = normalizeRequestedMealPlan(input.hint.raw);
+  if (meal.lunchRequested && meal.mealPlan && input.mealHints.some(claim => key(claim.raw) === hintRaw))
+    return 'repeated_meal_plan';
+  const text = hintKeys.join(' ');
+  return input.groupCount === 1 || /\b(?:all|each|every|both)\s+(?:(?:the|of the)\s+)?(?:guests?|rooms?|groups?|participants?|people)\b|\beveryone\b/u.test(text)
+    ? 'overall' : 'unresolved';
+}

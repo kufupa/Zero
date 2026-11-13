@@ -1,4 +1,4 @@
-import { normalizeRequestedMealPlan } from './reservation-workflow-v2-meal-plan.js';
+import { normalizeRequestedMealPlan, quoteLunchHintScope } from './reservation-workflow-v2-meal-plan.js';
 import { extractionRefsForRequest, extractionRequestForProposal, requestTextKey } from './reservation-workflow-v2-source-match.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { profileCms, profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
@@ -4403,13 +4403,13 @@ function applyDefaultCmsSendPolicy(
       }
       if (source) {
         const currentRefs = new Set(input.evidence.filter(row => row.relation !== 'prior_thread').map(row => row.ref));
-        const addExtra = (type: 'lunch' | 'airport_transfer' | 'office_transfer', claim: { raw: string; sourceRefs: string[] }, targetRefs: string[] = []) => {
+        const addExtra = (type: 'lunch' | 'airport_transfer' | 'office_transfer', claim: { raw: string; sourceRefs: string[] }, targetRefs: string[] = [], scope: 'known' | 'unresolved' = 'known') => {
           const existing = request.body.requestedMoney.filter(money => money.staffAllowanceType === type);
           if (existing.some(money => money.scope === 'overall')) return;
           const wanted = targetRefs.length ? targetRefs : request.body.groups.map(group => group.id);
           const covered = new Set(existing.filter(money => money.scope === 'per_target').flatMap(money => money.targetRefs));
           const uncovered = wanted.filter(ref => !covered.has(ref));
-          if (!uncovered.length) return;
+          if (!uncovered.length && scope !== 'unresolved') return;
           const scopedTargets = targetRefs.length || existing.length ? uncovered : [];
           if (request.body.requestedMoney.length >= 100 || proposal.sourceClaims.length >= MAX_PROPOSAL_SOURCE_CLAIMS || proposal.annotations.length >= 2000) return;
           const sourceRefs = claim.sourceRefs.filter(ref => currentRefs.has(ref));
@@ -4417,7 +4417,8 @@ function applyDefaultCmsSendPolicy(
           const index = request.body.requestedMoney.length;
           request.body.requestedMoney.push({ id: stableId(request.id, 'source_extra', type, String(index)),
             amount: null, currency: 'ZAR', unit: type === 'airport_transfer' ? 'per_trip' : 'per_person_per_night',
-            scope: scopedTargets.length ? 'per_target' : 'overall', targetRefs: scopedTargets, sourceRefs, staffAllowanceType: type });
+            scope: scope === 'unresolved' ? 'unresolved' : scopedTargets.length ? 'per_target' : 'overall',
+            targetRefs: scope === 'unresolved' ? [] : scopedTargets, sourceRefs, staffAllowanceType: type });
           const path = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/requestedMoney/${index}`;
           proposal.sourceClaims.push({ path, raw: claim.raw, sourceRefs });
           proposal.annotations.push({ path, basis: 'source', evidenceRefs: sourceRefs });
@@ -4434,9 +4435,11 @@ function applyDefaultCmsSendPolicy(
         for (const hint of source.serviceHints) {
           const text = `${hint.raw} ${typeof hint.value === 'string' ? hint.value : ''}`;
           if (/\blunch\b/iu.test(text)) {
-            const scopedLunchGroups = request.body.requestedMoney.filter(money => money.staffAllowanceType === 'lunch' &&
-              money.scope === 'per_target').flatMap(money => money.targetRefs);
-            addExtra('lunch', hint, [...new Set(scopedLunchGroups)]);
+            const scope = quoteLunchHintScope({ hint, mealHints: [...source.mealPlanHints,
+              ...source.dates.flatMap(date => date.mealPlan ? [date.mealPlan] : [])], groupCount: request.body.groups.length });
+            const alreadyRepresented = request.body.requestedMoney.some(money => money.staffAllowanceType === 'lunch');
+            if (scope !== 'repeated_meal_plan' || !alreadyRepresented)
+              addExtra('lunch', hint, [], scope === 'overall' ? 'known' : 'unresolved');
           }
           if (/\b(?:airport|flight)\b/iu.test(text) && /\b(?:transfer|shuttle|transport|pickup|pick.?up)\b/iu.test(text)) addExtra('airport_transfer', hint);
           else if (/\b(?:office|work|university|campus)\b/iu.test(text) && /\b(?:transfer|shuttle|transport|pickup|pick.?up)\b/iu.test(text)) addExtra('office_transfer', hint);

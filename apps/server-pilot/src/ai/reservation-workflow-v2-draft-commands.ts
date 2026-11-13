@@ -348,20 +348,22 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
             ...effectiveTree(draft, `${root}/body/requestedMoney/${index}`, claim) as typeof claim,
             staffAllowanceType: valueAt(draft, `${root}/body/requestedMoney/${index}/staffAllowanceType`) as typeof claim.staffAllowanceType,
           }));
-          const splitMoney = (rows: typeof groups, first: boolean) => moneyRows.flatMap(claim => {
+          const splitMoney = (rows: typeof groups, bucketIndex: number) => moneyRows.flatMap(claim => {
             const separated = claim.staffAllowanceType === 'unsupported' && proposal.content.requests.some(other =>
               other.kind === 'other' && other.body.separatedFrom?.requestId === request.id && other.body.separatedFrom.moneyId === claim.id);
-            if (separated) return first ? [{ ...claim }] : [];
+            if (separated) return bucketIndex === 0 ? [{ ...claim }] : [];
             const groupIds = new Set(rows.map(row => row.id));
+            const repeats = ['per_person_per_night', 'per_person_night', 'per_room_per_night', 'per_person'].includes(claim.unit ?? '');
             if (claim.scope === 'per_target') {
               const targetRefs = claim.targetRefs.filter(ref => groupIds.has(ref));
+              const ownerIndex = dateGroups.findIndex(bucket => bucket.some(group => claim.targetRefs.includes(group.id)));
+              if (!repeats && bucketIndex !== ownerIndex) return [];
               return targetRefs.length ? [{ ...claim, targetRefs }] : [];
             }
-            const repeats = ['per_person_per_night', 'per_person_night', 'per_room_per_night', 'per_person'].includes(claim.unit ?? '');
-            return first || repeats && claim.staffAllowanceType !== 'unsupported' ? [{ ...claim }] : [];
+            return bucketIndex === 0 || repeats && claim.staffAllowanceType !== 'unsupported' ? [{ ...claim }] : [];
           });
-          request.body = { ...effectiveBody, groups: dateGroups[0]!, requestedMoney: splitMoney(dateGroups[0]!, true) };
-          dateGroups.slice(1).forEach(rows => {
+          request.body = { ...effectiveBody, groups: dateGroups[0]!, requestedMoney: splitMoney(dateGroups[0]!, 0) };
+          dateGroups.slice(1).forEach((rows, index) => {
             const requestId = id(); createdId ??= requestId;
             const splitBody = structuredClone(effectiveBody);
             for (const role of ['organization', 'bookingAgency'] as const) {
@@ -372,7 +374,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
               }
             }
             const splitRequest = { ...structuredClone(request), id: requestId, documentRefs: [] as string[],
-              body: { ...splitBody, groups: rows, requestedMoney: splitMoney(rows, false) } };
+              body: { ...splitBody, groups: rows, requestedMoney: splitMoney(rows, index + 1) } };
             for (const sourceDocument of contextDocuments) {
               const documentId = id();
               proposal.content.documents.push({ ...structuredClone(sourceDocument), id: documentId, ownerRequestId: requestId });
