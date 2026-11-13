@@ -37,11 +37,16 @@ export function hydrateStoredReservationWorkflowV2(value: unknown): unknown {
   const draft = structuredClone(value);
   const root = object(draft)!;
   const contacts = new Map<string, unknown>();
+  const canonicalContacts = new Set<string>();
   const collect = (entry: unknown, path: string): void => {
     if (Array.isArray(entry)) { entry.forEach((row, index) => collect(row, `${path}/${index}`)); return; }
     const row = object(entry);
     if (!row) return;
-    if (Object.hasOwn(row, 'bookerContact')) contacts.set(`${path}/bookerContact`, row.bookerContact);
+    if (Object.hasOwn(row, 'bookerContact')) {
+      const legacyPath = `${path}/bookerContact`;
+      contacts.set(legacyPath, row.bookerContact);
+      if (Object.hasOwn(row, contactField(row.bookerContact))) canonicalContacts.add(legacyPath);
+    }
     for (const [key, child] of Object.entries(row)) collect(child, `${path}/${key}`);
   };
   const proposal = object(root.proposal), content = object(proposal?.content);
@@ -73,7 +78,17 @@ export function hydrateStoredReservationWorkflowV2(value: unknown): unknown {
     for (const [path, entry] of Object.entries(original)) {
       const renamed = resolvePath(path, object(entry)?.value);
       if (!Object.hasOwn(converted, renamed)) converted[renamed] = entry;
-      if (name === 'fieldOverrides') hydrateValue(object(entry)?.value, renamed, resolvePath);
+      if (name === 'fieldOverrides') {
+        const override = object(entry), source = contacts.get(path);
+        if (path.endsWith('/bookerContact') && typeof source === 'string' && source &&
+            override?.state === 'set' && typeof override.value === 'string' && override.value &&
+            contactField(source) !== contactField(override.value) && !canonicalContacts.has(path)) {
+          const oldPath = canonicalPath(path, source);
+          if (!Object.hasOwn(original, oldPath) && !Object.hasOwn(converted, oldPath))
+            converted[oldPath] = { state: 'none', updatedAt: override.updatedAt };
+        }
+        hydrateValue(override?.value, renamed, resolvePath);
+      }
     }
     root[name] = converted;
   }
