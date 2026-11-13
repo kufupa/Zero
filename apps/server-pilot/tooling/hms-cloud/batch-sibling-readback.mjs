@@ -20,8 +20,9 @@ export async function verifyBatchSiblings(census, siblings, {
       sameCreateGuest(request?.guest, target) && request?.stay?.arrival === census.arrival);
     if (census.sameArrival.length !== matching.length) return false;
     for (const sibling of siblings) {
-      const { confirmation, approvedRequest: request, requestDigest } = sibling;
-      const binding = digestCloudCreateRequest(request);
+      const { confirmation, approvedRequest, requestDigest } = sibling;
+      const binding = digestCloudCreateRequest(approvedRequest);
+      const request = binding.request;
       const row = census.sameArrival.find((item) => item.confirmation === confirmation);
       const sameTarget = matching.includes(sibling);
       if (binding.outcome !== 'ok' || binding.normalizedRequestDigest !== requestDigest ||
