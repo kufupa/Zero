@@ -3539,8 +3539,10 @@ function projectCurrentExtraction(input: {
       ? { ...claim, value: claim.raw.trim() } : claim;
     const projectedDates = extracted.dates.map((date) => ({ ...date, arrival: editableDate(date.arrival), departure: editableDate(date.departure) }));
     if (request.kind === 'quote') {
+      const originalDateGroups = structuredClone(request.body.groups);
       for (const group of request.body.groups) { group.mealPlan = null; group.requestedMealPlan = null; }
-      const sourceRooms = countedSourceQuoteRooms(extracted, input.evidence, currentRefs, currentExtraction.requests.length === 1);
+      const sourceRooms = extracted.dates.some(date => currentClaim(date.roomCount, currentRefs)) ? [] :
+        countedSourceQuoteRooms(extracted, input.evidence, currentRefs, currentExtraction.requests.length === 1);
       const sourceRoomByGroupId = new Map<string, typeof sourceRooms[number]>();
       if (sourceRooms.length && singleCurrentDatePair(projectedDates, currentRefs)) {
         const originalGroups = request.body.groups;
@@ -3858,28 +3860,36 @@ function projectCurrentExtraction(input: {
         request.body.requestedMoney.push({ id, amount, currency: null, unit: null,
           scope: 'unresolved', targetRefs: [], sourceRefs });
       }
-      const datedRows = extracted.dates.flatMap((date, index) => {
-        const arrival = currentClaim(date.arrival, currentRefs), departure = currentClaim(date.departure, currentRefs);
+      const datedRows = extracted.dates.map((date, index) => {
+        const arrivalClaim = currentClaim(date.arrival, currentRefs), departureClaim = currentClaim(date.departure, currentRefs);
         const quantity = citedInteger(currentClaim(date.roomCount, currentRefs));
-        return isoDay(arrival?.value) && isoDay(departure?.value) && arrival.value < departure.value &&
-          typeof quantity === 'number' && quantity >= 1 && quantity <= 100
-          ? [{ date, index, arrival: arrival.value, departure: departure.value, quantity }] : [];
+        const arrival = isoDay(arrivalClaim?.value) ? arrivalClaim.value : null;
+        const departure = isoDay(departureClaim?.value) ? departureClaim.value : null;
+        return { date, index, arrival, departure: arrival && departure && arrival >= departure ? null : departure,
+          quantity: typeof quantity === 'number' && quantity >= 1 && quantity <= 100 ? quantity : null };
       });
-      if (datedRows.length && datedRows.length === extracted.dates.length) {
+      if (datedRows.some(({ date }) => currentClaim(date.roomCount, currentRefs))) {
         const previous = request.body.groups;
+        const usedIds = new Set<string>();
         request.body.groups = datedRows.map(({ date, index, arrival, departure, quantity }) => {
-          const matches = previous.filter(group => group.arrival === arrival && group.departure === departure);
-          const original = matches.length === 1 ? matches[0] : undefined;
           const board = safeCurrentText(date.mealPlan, currentRefs, 120) ??
             (boardsByValue.size === 1 ? boardValue([...boardsByValue.values()][0]!.value) : null);
+          const dateMatches = originalDateGroups.filter(group => !usedIds.has(group.id) &&
+            arrival && departure && group.arrival === arrival && group.departure === departure);
+          const boardMatches = board ? dateMatches.filter(group =>
+            boardMeaning(group.requestedMealPlan ?? group.mealPlan) === boardMeaning(board)) : dateMatches;
+          const matches = boardMatches.length ? boardMatches : dateMatches.filter(group => !group.requestedMealPlan && !group.mealPlan);
+          const original = matches.length === 1 ? matches[0] : undefined;
+          if (original) usedIds.add(original.id);
           return { ...(original ?? { roomCodes: roomCodes.codes.length === 1 ? roomCodes.codes : [], ratePlan: null,
             occupancy: fallbackQuoteOccupancy(extracted, currentRefs).occupancy, priceObservationRefs: [] }),
-            id: stableId(request.id, 'dated_room_row', String(index)), arrival, departure, quantity,
+            id: original?.id ?? stableId(request.id, 'dated_room_row', String(index)), arrival, departure, quantity,
             mealPlan: null, requestedMealPlan: board,
             guestNames: date.guestNames?.flatMap(claim => safeCurrentText(claim, currentRefs, 300)
-              ? [safeCurrentText(claim, currentRefs, 300)!] : []) ?? [] };
+              ? [safeCurrentText(claim, currentRefs, 300)!] : []) ?? original?.guestNames ?? [] };
         });
-        const removedIds = new Set(previous.map(group => group.id));
+        const retainedIds = new Set(request.body.groups.map(group => group.id));
+        const removedIds = new Set(previous.map(group => group.id).filter(id => !retainedIds.has(id)));
         for (const service of proposal.content.services) service.targets = service.targets.filter(({ target }) =>
           target.kind !== 'quote_group' || target.requestId !== request.id || !removedIds.has(target.groupId));
         for (const money of request.body.requestedMoney) {
@@ -4394,15 +4404,20 @@ function applyDefaultCmsSendPolicy(
       if (source) {
         const currentRefs = new Set(input.evidence.filter(row => row.relation !== 'prior_thread').map(row => row.ref));
         const addExtra = (type: 'lunch' | 'airport_transfer' | 'office_transfer', claim: { raw: string; sourceRefs: string[] }, targetRefs: string[] = []) => {
-          if (request.body.requestedMoney.some(money => money.staffAllowanceType === type &&
-            (money.scope === 'overall' || targetRefs.length && targetRefs.every(ref => money.targetRefs.includes(ref))))) return;
+          const existing = request.body.requestedMoney.filter(money => money.staffAllowanceType === type);
+          if (existing.some(money => money.scope === 'overall')) return;
+          const wanted = targetRefs.length ? targetRefs : request.body.groups.map(group => group.id);
+          const covered = new Set(existing.filter(money => money.scope === 'per_target').flatMap(money => money.targetRefs));
+          const uncovered = wanted.filter(ref => !covered.has(ref));
+          if (!uncovered.length) return;
+          const scopedTargets = targetRefs.length || existing.length ? uncovered : [];
           if (request.body.requestedMoney.length >= 100 || proposal.sourceClaims.length >= MAX_PROPOSAL_SOURCE_CLAIMS || proposal.annotations.length >= 2000) return;
           const sourceRefs = claim.sourceRefs.filter(ref => currentRefs.has(ref));
           if (!sourceRefs.length) return;
           const index = request.body.requestedMoney.length;
           request.body.requestedMoney.push({ id: stableId(request.id, 'source_extra', type, String(index)),
             amount: null, currency: 'ZAR', unit: type === 'airport_transfer' ? 'per_trip' : 'per_person_per_night',
-            scope: targetRefs.length ? 'per_target' : 'overall', targetRefs, sourceRefs, staffAllowanceType: type });
+            scope: scopedTargets.length ? 'per_target' : 'overall', targetRefs: scopedTargets, sourceRefs, staffAllowanceType: type });
           const path = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/requestedMoney/${index}`;
           proposal.sourceClaims.push({ path, raw: claim.raw, sourceRefs });
           proposal.annotations.push({ path, basis: 'source', evidenceRefs: sourceRefs });
@@ -5897,11 +5912,20 @@ export async function runReservationWorkflowV2Prefill(input: {
       if (!rows || fallbackProposal.sourceClaims.length + rows.length > MAX_PROPOSAL_SOURCE_CLAIMS ||
           fallbackProposal.annotations.length + rows.length > 2000) continue;
       const originalGroups = request.body.groups;
-      const board = originalGroups[0]?.requestedMealPlan ?? null;
-      request.body.groups = rows.map((row, index) => ({ ...originalGroups.find(group => group.arrival === row.arrival && group.departure === row.departure), id: stableId(request.id, 'source-room', String(index)),
-        arrival: row.arrival, departure: row.departure, quantity: row.quantity, mealPlan: null, requestedMealPlan: board,
-        roomCodes: originalGroups.find(group => group.arrival === row.arrival && group.departure === row.departure)?.roomCodes ?? [],
-        ratePlan: null, occupancy: { scope: 'unresolved', adults: null, childCount: null, childAges: null }, priceObservationRefs: [] }));
+      const usedIds = new Set<string>();
+      request.body.groups = rows.map((row, index) => {
+        const dateMatches = originalGroups.filter(group => group.arrival === row.arrival && group.departure === row.departure);
+        const quantityMatches = dateMatches.filter(group => group.quantity === row.quantity);
+        const matches = quantityMatches.length ? quantityMatches : dateMatches;
+        const original = matches.length === 1 ? matches[0] : undefined;
+        const id = original && !usedIds.has(original.id) ? original.id : stableId(request.id, 'source-room', String(index));
+        usedIds.add(id);
+        return { ...original, id, arrival: row.arrival, departure: row.departure, quantity: row.quantity,
+          mealPlan: null, requestedMealPlan: original?.requestedMealPlan ?? null,
+          roomCodes: original?.roomCodes ?? [], ratePlan: original?.ratePlan ?? null,
+          occupancy: original?.occupancy ?? { scope: 'unresolved', adults: null, childCount: null, childAges: null },
+          priceObservationRefs: original?.priceObservationRefs ?? [] };
+      });
       rows.forEach((row, index) => {
         const path = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/groups/${index}/quantity`;
         fallbackProposal.sourceClaims.push({ path, raw: row.raw, sourceRefs: [row.sourceRef] });
