@@ -203,10 +203,10 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** A .pdf name with no path separator and no control character. Matches attach-document.mjs. */
 function isPdfDocumentName(name: string): boolean {
-  if (name.length === 0 || name.length > 120 || /[\\/]/.test(name) || !/\.pdf$/i.test(name)) {
+  if (name.length === 0 || name.length > 150 || /[\\/]/.test(name) || !/\.pdf$/i.test(name)) {
     return false;
   }
-  return [...name].every((char) => char.charCodeAt(0) >= 0x20);
+  return !/[\p{Cc}]/u.test(name);
 }
 
 const PDF_SHA256 = /^[a-f0-9]{64}$/;
@@ -218,8 +218,10 @@ const attachFormSchema = z.object({
   arrival: z.string().regex(ISO_DATE),
   lastName: z.string().trim().min(1).max(200),
   attachmentId: z.string().min(1).max(200),
-  documentName: z.string().max(120).refine(isPdfDocumentName),
-  sourceDocumentName: z.string().max(120).refine(isPdfDocumentName).optional(),
+  documentName: z.string().max(150).refine(isPdfDocumentName),
+  sourceDocumentName: z.string().max(150).refine(isPdfDocumentName).optional(),
+  requestedDocumentName: z.string().max(150).refine(isPdfDocumentName).optional(),
+  documentDescription: z.string().min(1).max(200).refine((value) => value === value.trim() && !/[\p{Cc}]/u.test(value)).optional(),
   /** Digest of the PDF staff approved. A later change of the stored bytes is refused before upload. */
   pdfSha256: z.string().regex(PDF_SHA256).optional(),
   sourceMessageId: z.string().min(1).max(512).optional(),
@@ -236,10 +238,10 @@ export const boundFilingFormSchema = attachFormSchema.extend({
   sourceInternetMessageId: z.string().min(1).max(998), sourceSnapshotDigest: z.string().regex(PDF_SHA256),
   sourceThreadId: z.string().min(1).max(512), sourceHash: z.string().regex(PDF_SHA256),
   documentCode: z.string().regex(FILING_DOCUMENT_CODE), filingStateDigest: z.string().regex(PDF_SHA256),
-  sourceDocumentName: z.string().max(120).refine(isPdfDocumentName),
+  sourceDocumentName: z.string().max(150).refine(isPdfDocumentName),
 }).superRefine((form, context) => {
   let expected: string;
-  try { expected = nativeFilingDocumentName(form.sourceDocumentName, form.confirmation, form.pdfSha256); }
+  try { expected = form.requestedDocumentName ?? nativeFilingDocumentName(form.sourceDocumentName, form.confirmation, form.pdfSha256); }
   catch {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['documentName'], message: 'native filing name is invalid' });
     return;
@@ -399,6 +401,8 @@ export async function bindAttachDocumentForm(input: {
   actorUserId?: string;
   selectedSource?: HmsSelectedSource;
   documentSource?: { sha256: string; snapshotDigest: string };
+  requestedDocumentName?: string;
+  documentDescription?: string;
   revisionSeq?: number;
   expectedStay?: { firstName: string; status: string; departure: string };
   env?: NodeJS.Dict<string>;
@@ -412,6 +416,8 @@ export async function bindAttachDocumentForm(input: {
     'attachmentId',
     'documentName',
     'sourceDocumentName',
+    'requestedDocumentName',
+    'documentDescription',
     'pdfSha256',
     'sourceMessageId',
     'sourceInternetMessageId',
@@ -472,12 +478,13 @@ export async function bindAttachDocumentForm(input: {
     if (source.source.filename !== source.source.filename.replace(/\s+/g, ' ').trim()) {
       return { status: 'refused', reason: 'form_invalid' };
     }
-    const nativeDocumentName = nativeFilingDocumentName(source.source.filename, input.confirmation, source.source.sha256);
+    const nativeDocumentName = input.requestedDocumentName ?? nativeFilingDocumentName(source.source.filename, input.confirmation, source.source.sha256);
     const form: BoundFilingForm & { sourceThreadId: string; sourceHash: string } = {
       action: 'attach_document', confirmation: input.confirmation, arrival: input.arrival,
       lastName: squash(input.lastName), sourceMessageId: input.sourceMessageId, sourceInternetMessageId: selected,
       attachmentId: input.attachmentId, sourceDocumentName: source.source.filename,
-      documentName: nativeDocumentName, pdfSha256: source.source.sha256,
+      documentName: nativeDocumentName, ...(input.requestedDocumentName ? { requestedDocumentName: input.requestedDocumentName } : {}),
+      ...(input.documentDescription ? { documentDescription: input.documentDescription } : {}), pdfSha256: source.source.sha256,
       sourceSnapshotDigest: source.source.snapshotDigest, sourceThreadId: selectedSource.threadId, sourceHash: selectedSource.sourceHash };
     if (!attachFormSchema.safeParse(form).success || formRefusal(form, { allowRealGuest: true }) || pdfRefusal(source.bytes)) {
       return { status: 'refused', reason: 'form_invalid' };
@@ -495,6 +502,7 @@ export async function bindAttachDocumentForm(input: {
             cloud.stay.departure !== expectedStay.data.departure) return null;
         const result = await (paneHmsWriteLoaders.prepareCloudAttach ?? prepareCloudAttach)({
           confirmation: form.confirmation, arrival: form.arrival, documentName: form.documentName,
+          ...(form.documentDescription ? { documentDescription: form.documentDescription } : {}),
           bytes: source.bytes, pdfSha256: form.pdfSha256, target: target.target,
           guestName: `${cloud.stay.firstName} ${cloud.stay.lastName}`,
           approvedStay: { ...cloud.stay, nativeGuestId: cloud.nativeGuestId, nativeStayId: cloud.nativeStayId, allowRealGuest: true },
@@ -758,6 +766,7 @@ export type PaneAttachSpawnInput = {
   arrival: string;
   file: string;
   documentName: string;
+  documentDescription?: string;
   /** On-mode only. The CLI never reads this from the environment. */
   allowRealGuest?: boolean;
   target?: HmsReadTarget;
@@ -1194,6 +1203,7 @@ async function saveAttach(
     arrival: form.arrival,
     file,
     documentName: form.documentName,
+    ...(form.documentDescription ? { documentDescription: form.documentDescription } : {}),
     ...(target.propertyCode === 'HRCEN' ? { documentCode: form.documentCode } : {}),
     allowRealGuest,
     target,
@@ -1444,6 +1454,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
         const sessionId = consumed.sessionId, sessionProfile = consumed.sessionProfile;
         const recovery = { confirmation: filing.confirmation, arrival: filing.arrival, departure: dispatch.stay.departure,
           documentCode: code, documentName: filing.documentName, pdfSha256: filing.pdfSha256,
+          ...(filing.documentDescription ? { documentDescription: filing.documentDescription } : {}),
           nativeStayId, guestName: `${dispatch.stay.firstName} ${dispatch.stay.lastName}`,
           cmsSend: dispatch.filingSnapshot.cmsSend,
           allowRealGuest: input.allowRealGuest, ...(cloudTargetKey ? { cloudTargetKey } : {}),

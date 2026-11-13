@@ -188,9 +188,9 @@ function formOf(state: Record<string, unknown>): Record<string, unknown> {
 
 /** Stable HMS upload name for one original attachment, stay confirmation, and PDF digest. */
 export function nativeFilingDocumentName(sourceDocumentName: string, confirmation: string, pdfSha256: string): string {
-  if (typeof sourceDocumentName !== 'string' || sourceDocumentName.length === 0 || sourceDocumentName.length > 120 ||
+  if (typeof sourceDocumentName !== 'string' || sourceDocumentName.length === 0 || sourceDocumentName.length > 150 ||
       /[\\/]/.test(sourceDocumentName) || !/\.pdf$/i.test(sourceDocumentName) ||
-      ![...sourceDocumentName].every((char) => char.charCodeAt(0) >= 0x20) ||
+      /[\p{Cc}]/u.test(sourceDocumentName) ||
       !/^\d+-\d+$/.test(confirmation) || !/^[a-f0-9]{64}$/.test(pdfSha256)) {
     throw new Error('filing_native_document_name_input_invalid');
   }
@@ -213,7 +213,8 @@ function isBoundLabtestAttachment(state: Record<string, unknown>, sourceMessageI
   try {
     if (typeof state.sourceDocumentName === 'string' && typeof state.confirmation === 'string' &&
         typeof state.pdfSha256 === 'string') {
-      expectedDocumentName = nativeFilingDocumentName(state.sourceDocumentName, state.confirmation, state.pdfSha256);
+      const generatedName = nativeFilingDocumentName(state.sourceDocumentName, state.confirmation, state.pdfSha256);
+      expectedDocumentName = typeof state.requestedDocumentName === 'string' ? state.requestedDocumentName : generatedName;
     }
   } catch { /* Historical/unbound names are not admitted for a live Labtest write. */ }
   return state.action === 'attach_document' && !!sourceMessageId && state.sourceMessageId === sourceMessageId &&
@@ -225,6 +226,13 @@ function isBoundLabtestAttachment(state: Record<string, unknown>, sourceMessageI
     typeof state.confirmation === 'string' && /^\d+-\d+$/.test(state.confirmation) &&
     typeof state.attachmentId === 'string' && state.attachmentId.length > 0 &&
     typeof state.documentName === 'string' && state.documentName === expectedDocumentName &&
+    (state.requestedDocumentName === undefined || (typeof state.requestedDocumentName === 'string' &&
+      state.requestedDocumentName.length <= 150 && /\.pdf$/i.test(state.requestedDocumentName) &&
+      state.requestedDocumentName === state.requestedDocumentName.replace(/\s+/g, ' ').trim() &&
+      !/[\\/\p{Cc}]/u.test(state.requestedDocumentName))) &&
+    (state.documentDescription === undefined || (typeof state.documentDescription === 'string' &&
+      state.documentDescription.length > 0 && state.documentDescription.length <= 200 &&
+      state.documentDescription === state.documentDescription.trim() && !/[\p{Cc}]/u.test(state.documentDescription))) &&
     typeof state.pdfSha256 === 'string' && /^[a-f0-9]{64}$/.test(state.pdfSha256) &&
     typeof state.sourceSnapshotDigest === 'string' && /^[a-f0-9]{64}$/.test(state.sourceSnapshotDigest) &&
     typeof state.sourceThreadId === 'string' && state.sourceThreadId.length > 0 &&

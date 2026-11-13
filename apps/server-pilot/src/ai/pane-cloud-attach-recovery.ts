@@ -21,11 +21,12 @@ const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const receipt = z.object({ eventId: z.string().uuid(), sha256: digest }).strict();
 const readbackSchema = z.object({ confirmation: z.string(), nativeStayId: z.string().regex(/^\d{1,100}$/),
   nativeGuestId: z.string(), documentCode: z.string(),
-  documentName: z.string(), uniqueFreshListing: z.literal(true) }).strict();
+  documentName: z.string(), documentDescription: z.string().optional(), uniqueFreshListing: z.literal(true) }).strict();
 const recoverySchema = z.object({
   confirmation: z.string().regex(/^\d+-\d+$/), arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   departure: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), documentCode: z.string().regex(/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/),
-  documentName: z.string().max(120).refine((s) => /\.pdf$/i.test(s) && !/[\\/\p{Cc}]/u.test(s) && s === s.replace(/\s+/g, ' ').trim()),
+  documentName: z.string().max(150).refine((s) => /\.pdf$/i.test(s) && !/[\\/\p{Cc}]/u.test(s) && s === s.replace(/\s+/g, ' ').trim()),
+  documentDescription: z.string().min(1).max(200).optional(),
   pdfSha256: digest, runId: z.string().uuid(), claimDigest: digest, before: receipt, writer: z.unknown().optional(),
   nativeStayId: z.string().regex(/^\d{1,100}$/).optional(), guestName: z.string().min(1).max(401).optional(),
   allowRealGuest: z.boolean().optional(), cmsSend: z.boolean().optional(), cloudTargetKey: z.string().max(1024).optional(),
@@ -131,6 +132,7 @@ export async function proveAttachRecovery(db: DB, intent: HmsLabtestIntent): Pro
       readback.data.confirmation !== recovery.confirmation || readback.data.nativeGuestId !== intent.nativeGuestId ||
       (recovery.nativeStayId !== undefined && readback.data.nativeStayId !== recovery.nativeStayId) ||
       readback.data.documentCode !== recovery.documentCode || readback.data.documentName !== recovery.documentName ||
+      (recovery.documentDescription && readback.data.documentDescription !== recovery.documentDescription) ||
       !Buffer.isBuffer(observed.screenshot)) throw new Error('filing_recovery_readback_unavailable');
   const name = `recovery-${randomBytes(8).toString('hex')}.png`;
   const sealed = await recordHmsWriteEvidence({ db, transportId: intent.transportId, workItemId: intent.workItemId,
@@ -149,6 +151,7 @@ export async function proveAttachRecovery(db: DB, intent: HmsLabtestIntent): Pro
 export async function recordRecoveredAttach(tx: CreateFenceTransaction, intent: HmsLabtestIntent, proof: AttachRecoveryProof) {
   const parsed = recoverySchema.safeParse(intent.recovery);
   if (!parsed.success || intent.operation !== 'attach_document' || proof.confirmation !== parsed.data.confirmation ||
+      (parsed.data.documentDescription && proof.nativeReadback.documentDescription !== parsed.data.documentDescription) ||
       proof.savedShot.runId !== parsed.data.runId || proof.savedShot.sha256 !== proof.screenshot.sha256) {
     throw new Error('filing_recovery_scope_changed');
   }

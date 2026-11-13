@@ -66,13 +66,13 @@ type FilingSelection = {
 };
 type TargetReadback = {
   confirmation: string; nativeStayId: string; nativeGuestId: string; documentCode: string;
-  documentName: string; uniqueFreshListing: true;
+  documentName: string; documentDescription?: string; uniqueFreshListing: true;
 };
 type V2FilingRecovery = {
   version: 1; workItemId: string; operationId: string; requestId: string; documentId: string;
   documentSourceRef: string; source: ReservationWorkflowV2Source; attachmentId: string;
   sourceSnapshotDigest: string; pdfSha256: string; semanticDigest: string; documentName: string;
-  sourceDocumentName?: string; documentCode: string;
+  sourceDocumentName?: string; documentDescription?: string; documentCode: string;
   confirmation: string; arrival: string; departure: string; nativeStayId: string; nativeGuestId: string;
   firstName: string; lastName: string; status: string; cmsSend: boolean; allowRealGuest: boolean;
   targetObservationRef: string; prepareObservationRef: string; targetSnapshotDigest: string;
@@ -155,7 +155,8 @@ function staffAccepted(draft: ReservationWorkflowV2Draft, path: string): boolean
 }
 
 function acceptedWhenRequested(draft: ReservationWorkflowV2Draft, path: string, value: string | null): boolean {
-  return value === null || staffAccepted(draft, path);
+  return value === null || (draft.staffReviews[path]?.status !== 'flagged' &&
+    (draft.fieldOverrides[path]?.state === 'set' || staffAccepted(draft, path)));
 }
 
 function effectiveValue(draft: ReservationWorkflowV2Draft, path: string, source: unknown): unknown {
@@ -165,7 +166,7 @@ function effectiveValue(draft: ReservationWorkflowV2Draft, path: string, source:
 }
 
 function exactPdfName(value: string): boolean {
-  return value.length > 0 && value.length <= 120 && /\.pdf$/i.test(value) && value === value.replace(/\s+/g, ' ').trim() &&
+  return value.length > 0 && value.length <= 150 && /\.pdf$/i.test(value) && value === value.replace(/\s+/g, ' ').trim() &&
     !/[\\/\p{Cc}]/u.test(value);
 }
 
@@ -424,8 +425,16 @@ function effectiveFilingDocument(draft: ReservationWorkflowV2Draft, source: Fili
   const root = ptr('proposal', 'content', 'documents', source.id);
   const kind = effectiveValue(draft, `${root}/kind`, source.kind);
   const handling = effectiveValue(draft, `${root}/handling`, source.handling);
+  const namePath = `${root}/requestedName`, descriptionPath = `${root}/requestedDescription`;
+  if (draft.fieldOverrides[namePath]?.state === 'unknown' || draft.fieldOverrides[descriptionPath]?.state === 'unknown') return null;
+  const rawName = effectiveValue(draft, namePath, source.requestedName);
+  const rawDescription = effectiveValue(draft, descriptionPath, source.requestedDescription);
+  if (rawName != null && typeof rawName !== 'string' || rawDescription != null && typeof rawDescription !== 'string') return null;
+  const requestedName = text(rawName), requestedDescription = text(rawDescription);
   if ((kind !== 'voucher' && kind !== 'payment_proof') || handling !== 'filing_requested') return null;
-  return { ...source, kind, handling };
+  if ((requestedName && !exactPdfName(requestedName)) || (requestedDescription &&
+      (requestedDescription.length > 200 || /[\p{Cc}]/u.test(requestedDescription)))) return null;
+  return { ...source, kind, handling, requestedName, requestedDescription };
 }
 
 async function selectionFor(ctx: ReservationWorkflowV2FilingContext, draft: ReservationWorkflowV2Draft,
@@ -512,6 +521,7 @@ async function recordFilingOperation(ctx: ReservationWorkflowV2FilingContext,
 function targetReadback(value: unknown): TargetReadback | null {
   const parsed = z.object({ confirmation: z.string(), nativeStayId: z.string().regex(/^\d{1,100}$/),
     nativeGuestId: z.string().regex(/^\d{1,30}$/), documentCode: z.string(), documentName: z.string(),
+    documentDescription: z.string().optional(),
     uniqueFreshListing: z.literal(true) }).strict().safeParse(value);
   return parsed.success ? parsed.data : null;
 }
@@ -721,13 +731,6 @@ export async function reservationWorkflowV2FilingPrepare(ctx: ReservationWorkflo
   if (!selection) return { status: 'needs_input', issue: 'review_one_source_pdf_and_one_saved_stay' };
   const preview = await runPreview(ctx, input, selection);
   if (preview.status !== 'ready') return { status: preview.status, issue: preview.reason };
-  if (preview.documentName !== selection.document.requestedName && selection.document.requestedName !== null) {
-    return { status: 'unsupported', issue: 'requested_document_name_not_supported_by_bound_source' };
-  }
-  const requestedDescription = selection.document.requestedDescription;
-  if (requestedDescription !== null && requestedDescription !== preview.documentName) {
-    return { status: 'unsupported', issue: 'requested_document_description_not_supported' };
-  }
   const selected = await selectedSource(ctx, input.source);
   if (!selected) return { status: 'refused', issue: 'source_mail_changed' };
   const expectedStay = { firstName: selection.firstName, status: selection.status, departure: selection.departure };
@@ -735,6 +738,8 @@ export async function reservationWorkflowV2FilingPrepare(ctx: ReservationWorkflo
     confirmation: selection.confirmation, arrival: selection.arrival, lastName: selection.lastName,
     attachmentId: selection.attachmentId, sourceMessageId: input.source.messageId,
     internetMessageId: selected.internetMessageId, actorUserId: ctx.user.id,
+    ...(selection.document.requestedName ? { requestedDocumentName: selection.document.requestedName } : {}),
+    ...(selection.document.requestedDescription ? { documentDescription: selection.document.requestedDescription } : {}),
     selectedSource: { threadId: input.source.threadId, messageId: input.source.messageId, sourceHash: input.source.sourceHash },
     documentSource: preview.documentSource, revisionSeq: input.expectedSeq, expectedStay });
   if (bound.status !== 'bound' || !bound.formDigest) return { status: bound.status, issue: bound.status === 'refused' ? bound.reason : 'filing_bind_failed' };
@@ -754,6 +759,7 @@ export async function reservationWorkflowV2FilingPrepare(ctx: ReservationWorkflo
   const semanticDigest = selectionDigest(selection, preview);
   const observation = filingObservation(loaded.draft, { requestId: input.requestId }, selection, 'complete', {
     outcome: 'prepared', documentId: selection.document.id, documentName: bound.form.documentName,
+    ...(bound.form.documentDescription ? { documentDescription: bound.form.documentDescription } : {}),
     sourceDocumentName: preview.documentName,
     mimeType: 'application/pdf', sha256: preview.documentSource.sha256,
     sourceSnapshotDigest: preview.documentSource.snapshotDigest, semanticDigest,
@@ -768,6 +774,7 @@ export async function reservationWorkflowV2FilingPrepare(ctx: ReservationWorkflo
   return { status: 'prepared', requestId: input.requestId, documentId: selection.document.id,
     observationRef: observation.ref, documentName: preview.documentName, sourceDocumentName: preview.documentName,
     nativeDocumentName: bound.form.documentName, sha256: preview.documentSource.sha256,
+    documentDescription: bound.form.documentDescription ?? bound.form.documentName,
     documentCode: bound.form.documentCode, target: observation.result.target, hmsReadAt: snapshot.readAt };
 }
 
@@ -809,6 +816,7 @@ function recoveryMatchesDraft(draft: ReservationWorkflowV2Draft, recovery: V2Fil
     preparedResult?.semanticDigest === recovery.semanticDigest && preparedResult.sha256 === recovery.pdfSha256 &&
     preparedResult.sourceSnapshotDigest === recovery.sourceSnapshotDigest &&
     preparedResult.documentName === recovery.documentName &&
+    (preparedResult.documentDescription ?? null) === (recovery.documentDescription ?? null) &&
     (preparedResult.sourceDocumentName ?? preparedResult.documentName) ===
       (recovery.sourceDocumentName ?? recovery.documentName) && preparedResult.documentCode === recovery.documentCode &&
     preparedResult.filingStateDigest === recovery.targetSnapshotDigest &&
@@ -862,6 +870,7 @@ async function authorizeCurrentFiling(tx: WorkTransaction, ctx: ReservationWorkf
       draft.source.messageId !== input.source.messageId || draft.source.sourceHash !== input.source.sourceHash ||
       draft.source.arrivedAt !== input.source.arrivedAt || document.id !== selection.document.id ||
       document.documentSourceRef !== selection.document.documentSourceRef || document.kind !== selection.document.kind ||
+      document.requestedName !== selection.document.requestedName || document.requestedDescription !== selection.document.requestedDescription ||
       document.handling !== selection.document.handling || target.targetPath !== selection.targetPath ||
       target.targetObservation.ref !== selection.targetObservation.ref ||
       draft.observations.some((entry) => entry.ref === attempt.ref) ||
@@ -932,7 +941,7 @@ async function persistNeverDispatchedFiling(tx: WorkTransaction, ctx: Reservatio
 
 function formDigestForStoredForm(state: Record<string, unknown>): string {
   const values = ['action', 'confirmation', 'arrival', 'lastName', 'attachmentId', 'documentName', 'pdfSha256',
-    'sourceDocumentName', 'sourceMessageId', 'sourceInternetMessageId', 'sourceSnapshotDigest', 'sourceThreadId', 'sourceHash',
+    'sourceDocumentName', 'requestedDocumentName', 'documentDescription', 'sourceMessageId', 'sourceInternetMessageId', 'sourceSnapshotDigest', 'sourceThreadId', 'sourceHash',
     'documentCode', 'filingStateDigest'];
   return digestJson(Object.fromEntries(values.map((key) => [key, state[key]])));
 }
@@ -940,6 +949,7 @@ function formDigestForStoredForm(state: Record<string, unknown>): string {
 function approvedDigestForForm(form: AttachForm): string {
   return digestJson({ action: form.action, confirmation: form.confirmation, arrival: form.arrival, lastName: form.lastName,
     attachmentId: form.attachmentId, documentName: form.documentName, sourceDocumentName: form.sourceDocumentName,
+    requestedDocumentName: form.requestedDocumentName, documentDescription: form.documentDescription,
     pdfSha256: form.pdfSha256,
     sourceMessageId: form.sourceMessageId, sourceInternetMessageId: form.sourceInternetMessageId,
     sourceSnapshotDigest: form.sourceSnapshotDigest, sourceThreadId: form.sourceThreadId, sourceHash: form.sourceHash,
@@ -969,12 +979,10 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
   const preview = await runPreview(ctx, input, selection);
   if (preview.status !== 'ready') return { status: 'needs_prepare', issue: preview.reason };
   const sourceDocumentName = preview.documentName;
-  const name = nativeFilingDocumentName(sourceDocumentName, selection.confirmation, preview.documentSource.sha256);
+  const name = selection.document.requestedName ?? nativeFilingDocumentName(sourceDocumentName, selection.confirmation, preview.documentSource.sha256);
   const semanticDigest = selectionDigest(selection, preview);
   if (semanticDigest !== prepared.result.semanticDigest || preview.documentSource.sha256 !== prepared.result.sha256 ||
-      preview.documentSource.snapshotDigest !== prepared.result.sourceSnapshotDigest ||
-      selection.document.requestedName !== null && selection.document.requestedName !== sourceDocumentName ||
-      selection.document.requestedDescription !== null && selection.document.requestedDescription !== sourceDocumentName) {
+      preview.documentSource.snapshotDigest !== prepared.result.sourceSnapshotDigest) {
     return { status: 'needs_prepare', issue: 'filing_source_or_target_changed' };
   }
   const [item] = await ctx.db.select({ state: workItem.state, status: workItem.status }).from(workItem)
@@ -986,6 +994,8 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
       form.sourceThreadId !== input.source.threadId || form.sourceHash !== input.source.sourceHash ||
       form.pdfSha256 !== preview.documentSource.sha256 || form.sourceSnapshotDigest !== preview.documentSource.snapshotDigest ||
       form.documentName !== name || (form.sourceDocumentName ?? form.documentName) !== sourceDocumentName ||
+      (form.requestedDocumentName ?? null) !== selection.document.requestedName ||
+      (form.documentDescription ?? null) !== selection.document.requestedDescription ||
       form.documentCode !== prepared.result.documentCode) {
     return { status: 'needs_prepare', issue: 'filing_binding_changed' };
   }
@@ -1031,6 +1041,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
     };
     const runInput: Record<string, unknown> = {
       confirmation: selection.confirmation, arrival: selection.arrival, file: sourcePath, documentName: name,
+      ...(form.documentDescription ? { documentDescription: form.documentDescription } : {}),
       pdfSha256: pdfSha256, documentCode: form.documentCode, target: hmsTarget.target,
       guestName: `${cloud.stay.firstName} ${cloud.stay.lastName}`, allowRealGuest,
       approvedStay: approvedStay(cloud, allowRealGuest), approvedSnapshot: cloud.filingSnapshot,
@@ -1081,6 +1092,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
           documentSourceRef: selection.document.documentSourceRef, source: input.source,
           attachmentId: selection.attachmentId, sourceSnapshotDigest: sourceSnapshotDigest,
           pdfSha256: pdfSha256, semanticDigest, documentName: name, sourceDocumentName,
+          ...(form.documentDescription ? { documentDescription: form.documentDescription } : {}),
           documentCode: form.documentCode,
           confirmation: selection.confirmation, arrival: selection.arrival, departure: cloud.stay.departure!,
           nativeStayId: cloud.nativeStayId, nativeGuestId: cloud.nativeGuestId,
@@ -1141,7 +1153,8 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
       native.dispatchCallbacksDrained === true && native.writerSessionClosed === true && native.documentCode === form.documentCode &&
       nativeTarget && nativeTarget.confirmation === selection.confirmation && nativeTarget.nativeStayId === cloud.nativeStayId &&
       nativeTarget.nativeGuestId === cloud.nativeGuestId && nativeTarget.documentCode === form.documentCode &&
-      nativeTarget.documentName === name && beforePath && afterPath);
+      nativeTarget.documentName === name &&
+      (!form.documentDescription || nativeTarget.documentDescription === form.documentDescription) && beforePath && afterPath);
     if (!activeDispatch) {
       return { status: provedNoDispatch ? 'failed' : 'refused', operationId,
         issue: String(native.issue ?? native.outcome ?? 'filing_not_dispatched'),
@@ -1353,7 +1366,8 @@ export async function proveReservationWorkflowV2AttachRecovery(db: DB, intent: H
       arrivedAt: z.string().datetime({ offset: true }), }).strict(), attachmentId: z.string(),
     sourceSnapshotDigest: z.string().regex(/^[a-f0-9]{64}$/), pdfSha256: z.string().regex(/^[a-f0-9]{64}$/),
     semanticDigest: z.string().regex(/^[a-f0-9]{64}$/),
-    documentName: z.string(), sourceDocumentName: z.string().max(120).refine(exactPdfName).optional(), documentCode: z.string(),
+    documentName: z.string(), sourceDocumentName: z.string().max(150).refine(exactPdfName).optional(),
+    documentDescription: z.string().min(1).max(200).optional(), documentCode: z.string(),
     confirmation: z.string(), arrival: z.string(), departure: z.string(),
     nativeStayId: z.string(), nativeGuestId: z.string(), firstName: z.string(), lastName: z.string(), status: z.string(),
     cmsSend: z.boolean(), allowRealGuest: z.boolean(), targetObservationRef: z.string(), prepareObservationRef: z.string(),
@@ -1421,7 +1435,9 @@ export async function recordReservationWorkflowV2AttachRecovery(tx: WorkTransact
   const recovery = record(intent.recovery) as unknown as V2FilingRecovery | null;
   if (!recovery || recovery.operationId !== intent.grantId || proof.confirmation !== recovery.confirmation ||
       proof.nativeStayId !== recovery.nativeStayId || proof.nativeReadback.documentCode !== recovery.documentCode ||
-      proof.nativeReadback.documentName !== recovery.documentName || proof.savedShot.runId !== recovery.operationId) {
+      proof.nativeReadback.documentName !== recovery.documentName ||
+      (recovery.documentDescription && proof.nativeReadback.documentDescription !== recovery.documentDescription) ||
+      proof.savedShot.runId !== recovery.operationId) {
     throw new Error('filing_recovery_scope_changed');
   }
   const [item] = await tx.select({ id: workItem.id, state: workItem.state, transportId: workItem.transportId,
