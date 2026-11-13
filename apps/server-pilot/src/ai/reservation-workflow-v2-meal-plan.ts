@@ -10,10 +10,11 @@ export function normalizeRequestedMealPlan(value: unknown): {
       for (const meal of clause.match(/\b(?:breakfast|lunch|dinner|meals?)\b/gu) ?? []) exclusions.add(meal);
       return ' ';
     });
-  if (/\b(?:no|not|without|excluding|exclude|except)\b/u.test(positive)) return { mealPlan: null, lunchRequested: false };
   const normalized = positive.replace(/\b(?:and|for all)\b/gu, '').replace(/\s+/gu, ' ').trim();
   const allMealsExcluded = exclusions.has('meal') || exclusions.has('meals');
-  const lunchRequested = /\blunch\b/u.test(normalized) && !exclusions.has('lunch') && !allMealsExcluded;
+  const lunchDeclined = /\blunch\s+(?:(?:is|was|will be)\s+)?not\s+(?:required|needed|wanted|requested|included|provided)\b|\b(?:not|never)\s+(?:require|need|want|request|include|provide|have)\s+lunch\b/u.test(normalized);
+  const lunchRequested = /\blunch\b/u.test(normalized) && !exclusions.has('lunch') && !allMealsExcluded && !lunchDeclined;
+  if (/\b(?:no|not|without|excluding|exclude|except)\b/u.test(positive)) return { mealPlan: null, lunchRequested };
   const board = normalized.replace(/\b(?:lunch|with|plus|including)\b/gu, '').replace(/\s+/gu, ' ').trim();
   const breakfast = /\b(?:breakfast|bb|b b|dbb)\b/u.test(board), dinner = /\b(?:dinner|dbb)\b/u.test(board);
   if ((allMealsExcluded || exclusions.has('breakfast')) && breakfast || (allMealsExcluded || exclusions.has('dinner')) && dinner)
