@@ -144,7 +144,8 @@ export async function listTrackSubSegments(page, { propertyCode } = {}) {
       throw new Error('TRACK_FORM_CHANGED');
     }
     return { outcome: 'ok', observedAt: new Date().toISOString(), criteria: { propertyCode, scope: 'unfiltered' },
-      coverage: { loaded: candidates.length, total: total != null && total >= candidates.length ? total : footer?.total ?? null,
+      coverage: { loaded: candidates.length, total: total != null && total >= candidates.length ? total
+        : footer && footer.total >= candidates.length ? footer.total : null,
         complete, possiblyTruncated: complete !== true, nativeResponseCorrelated: Boolean(correlated) }, candidates };
   } catch (error) {
     const cleanup = await closePicker().catch(() => false);
