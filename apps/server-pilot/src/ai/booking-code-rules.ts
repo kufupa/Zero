@@ -176,7 +176,8 @@ const rateMealCatalogSchema = z.object({ capturedAt: z.string().datetime({ offse
   ratePlans: z.object({ records: z.array(z.object({ code: z.string().nullable(), mealPlan: z.string().nullable(),
     capturedAt: z.string().datetime({ offset: true }),
     mealPlanEvidence: z.object({ basis: z.literal('validated_unsaved_rate_and_native_meal_readback'),
-      numerator: z.number().int().positive(), denominator: z.number().int().positive() }).nullable() })) }),
+      numerator: z.number().int().positive(), denominator: z.number().int().positive(),
+      capturedAt: z.string().datetime({ offset: true }).optional() }).nullable() })) }),
 }) });
 
 /** Confirm the current native Rate Plan/Meal Plan mapping separately from historical stay evidence. */
@@ -195,7 +196,8 @@ export async function loadNativeRateMealPlan(input: { propertyCode: string; rate
       rows[0].mealPlanEvidence.numerator !== rows[0].mealPlanEvidence.denominator) {
     return { status: 'not_found', issue: 'rate_meal_unverified' };
   }
-  return { status: 'verified', mealPlan: rows[0].mealPlan, capturedAt: rows[0].capturedAt };
+  return { status: 'verified', mealPlan: rows[0].mealPlan,
+    capturedAt: rows[0].mealPlanEvidence.capturedAt ?? rows[0].capturedAt };
 }
 
 const nativeCodeCatalogSchema = z.object({ capturedAt: z.string().datetime({ offset: true }), catalogs: z.record(z.object({

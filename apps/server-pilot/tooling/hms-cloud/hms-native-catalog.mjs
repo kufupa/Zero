@@ -28,15 +28,15 @@ export function validateAgencyCommissionMapping(samples = []) {
 }
 
 /** Confirm a rate/meal pair from a selected unsaved native form, not from a code prefix. */
-export function validateRateMealReadback({ propertyCode, selection, form } = {}) {
+export function validateRateMealReadback({ propertyCode, selection, form, observedAt = new Date().toISOString() } = {}) {
   if (selection?.outcome !== 'selected_unsaved' || selection.propertyCode !== propertyCode ||
       !['validated_row_and_existing_draft', 'validated_row_and_draft_change_response'].includes(selection.nativeCodeEvidence) ||
-      form?.outcome !== 'ok' || !Array.isArray(form.fields)) return null;
+      form?.outcome !== 'ok' || !Array.isArray(form.fields) || !Number.isFinite(Date.parse(observedAt))) return null;
   const values = name => form.fields.filter(field => field.name === name).map(field => clean(field.value));
   const rates = values('rateplan'), meals = values('mealplan');
   const code = clean(selection.code);
   if (!code || rates.length !== 1 || rates[0] !== code || meals.length !== 1 || !meals[0]) return null;
-  return { ratePlan: code, mealPlan: meals[0], propertyCode,
+  return { ratePlan: code, mealPlan: meals[0], propertyCode, observedAt: new Date(observedAt).toISOString(),
     basis: 'validated_unsaved_rate_and_native_meal_readback' };
 }
 
@@ -86,8 +86,12 @@ export function normalizeHmsNativeCatalog({ propertyCode, capturedAt, source, ca
         const observedMeals = [...new Set(matched.map(item => item.mealPlan))];
         const directMeal = nativeMeal && nativeMeal === gridMeal ? nativeMeal : null;
         const mealPlan = observedMeals.length === 1 && (!directMeal || directMeal === observedMeals[0]) ? observedMeals[0] : null;
+        const readTimes = matched.map(item => Date.parse(item.observedAt));
+        const mealCapturedAt = readTimes.length && readTimes.every(Number.isFinite)
+          ? new Date(readTimes.reduce((earliest, value) => Math.min(earliest, value), Infinity)).toISOString() : time;
         return [{ ...base, mealPlan, mealPlanEvidence: mealPlan ? {
           basis: 'validated_unsaved_rate_and_native_meal_readback', numerator: matched.length, denominator: matched.length,
+          capturedAt: mealCapturedAt,
         } : null }];
       }
       return [base];
