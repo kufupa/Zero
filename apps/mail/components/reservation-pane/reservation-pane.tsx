@@ -72,7 +72,7 @@ export function ReservationPane(props: ReservationPaneProps) {
   const directPrefillAbandoned = prefill?.status === 'running' && !prefill.jobRunId && prefill.startedAt
     && Date.now() - Date.parse(prefill.startedAt) >= 12 * 60_000;
   const editor: WorkbenchEditorProps | null = snapshot && request ? { source, snapshot, request,
-    view: { busy, error: workbench.error, preview, saving: workbench.saving }, commands, onOpenEvidence: props.onOpenEvidence } : null;
+    view: { busy, error: workbench.error, preview, saving: workbench.saving, blocked: workbench.blocked }, commands, onOpenEvidence: props.onOpenEvidence } : null;
   const body = snapshot && request ? record(effectiveAt(snapshot, `${requestPath(request.id)}/body`)) : {};
   const ids = request?.kind === 'create' ? (Array.isArray(body.allocations) ? body.allocations.map(row => text(record(row).id)) : [])
     : request?.kind === 'amend' || request?.kind === 'cancel' ? (Array.isArray(record(body.targets).include) ? (record(body.targets).include as unknown[]).map(row => text(record(row).id)) : []) : [];
@@ -179,7 +179,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         }) ?? choices[0]!;
       }
     }
-    if (request.kind === 'amend' && (path === 'arrival' || path === 'departure')) {
+    if (request.kind === 'amend' && (path === 'arrival' || path === 'departure' || path === 'requestedMealPlan')) {
       const root = `${requestPath(request.id)}/body`;
       const latest = workbench.latestSnapshot();
       if (!latest) return;
@@ -191,8 +191,8 @@ export function ReservationPane(props: ReservationPaneProps) {
       const changes = [...changeRows(currentBody.sharedChanges, `${root}/sharedChanges`),
         ...changeRows(per[index]?.changes, `${root}/perTarget/${index}/changes`)].reverse();
       const changed = changes.find(row => row.change.op === 'set' && row.change.field === path)
-        ?? changes.find(row => row.change.op === 'set' && ['arrival', 'departure'].includes(text(row.change.field)))
-        ?? changes.find(row => row.change.op === 'shift_dates' || row.change.op === 'shift_departure');
+        ?? (path !== 'requestedMealPlan' ? changes.find(row => row.change.op === 'set' && ['arrival', 'departure'].includes(text(row.change.field)))
+          ?? changes.find(row => row.change.op === 'shift_dates' || row.change.op === 'shift_departure') : undefined);
       if (changed) path = `${changed.path}/${changed.change.op === 'set' ? 'value' : 'days'}`;
     }
     const candidates = Array.from(pane.querySelectorAll<HTMLElement>('[data-field-path]'));
@@ -490,6 +490,10 @@ export function ReservationPane(props: ReservationPaneProps) {
             const requested = Array.isArray(effect.requested) ? effect.requested.map(text).join(', ') : text(effect.requested);
             return label ? <p key={label}>Requested {label}: {requested || 'See change above'}</p> : null;
           })}
+          {!needsCheck() && !disabled && !workbench.saving && <>
+            {typeof review.result.requestedMealPlan === 'string' && review.result.requestedMealPlan.trim() && <p>Requested Meal Plan: {review.result.requestedMealPlan}</p>}
+            {Object.hasOwn(record(review.result.applied), 'mealPlan') && <p>Infor Meal Plan: {text(record(review.result.applied).mealPlan) || 'Not returned'}</p>}
+          </>}
           <div className={styles.price}><span>Current Infor total</span><strong>{text(review.price.currency)} {total.slice(0, -2)}.{total.slice(-2)}</strong></div>
           {review.price.averageCents != null && <small className={styles.small}>Infor average: {text(review.price.currency)} {average.slice(0, -2)}.{average.slice(-2)}</small>}
           {changed && <p className={styles.notice}>Infor total changed from {text(review.price.currency)} {oldTotal.slice(0, -2)}.{oldTotal.slice(-2)}.</p>}

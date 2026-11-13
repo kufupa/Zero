@@ -454,7 +454,7 @@ export function inputFieldLabel(value: string): string {
     childCount: 'number of children', childAges: 'children’s ages', adults: 'adults per room',
     agency_selection_required: 'select the Infor agency', company_selection_required: 'select the Infor Organization',
     arrival: 'arrival date', departure: 'departure date', quantity: 'quantity', roomCodes: 'room type',
-    roomType: 'room type', ratePlan: 'rate plan', rateHandling: 'rate handling', mealPlan: 'meal plan', guaranteeType: 'guarantee',
+    roomType: 'room type', ratePlan: 'rate plan', rateHandling: 'rate handling', mealPlan: 'meal plan', requestedMealPlan: 'requested meal plan', guaranteeType: 'guarantee',
     sourceOfBusiness: 'source of business', firstName: 'guest first name', lastName: 'guest last name',
     guestOptIn: 'guest opt-in', unitPrice: 'unit price', currency: 'currency', requestedRooms: 'number of rooms',
     requestedTotals: 'requested occupancy totals', nativeSelectionRef: 'confirmed Infor selection',
@@ -514,7 +514,7 @@ function nativeIssueText(issue: unknown): string | null {
   if (issue === 'amend_track_target_selection_required') return 'Find and select each saved stay in Infor before loading Track choices';
   if (issue === 'retained_rate_not_supported_for_priced_amendment') return 'Choose Reprice in Infor, or split these changes in Infor to keep the current rate';
   if (issue === 'amend_applied_price_requires_second_go') return 'Details may already have changed in Infor. Review the new price before saving';
-  if (issue === 'native_meal_plan_mismatch_or_unknown') return 'The Meal Plan does not match Infor. Review the Infor Meal Plan shown for the room and update the choice';
+  if (issue === 'native_meal_plan_mismatch_or_unknown') return 'Infor could not match the requested Meal Plan. Choose a matching Rate Plan or update the request';
   if (issue === 'native_quote_no_matching_rate') {
     return 'No offer matches the requested room, rate and meal plan. Review available alternatives';
   }
@@ -616,7 +616,7 @@ function quoteOperationNotice(result: unknown, success: string[], action: string
     : result.status === 'needs_reconcile' || result.status === 'unknown'
       ? 'The result is uncertain. Check the recorded result before trying again' : null;
   const labels: Record<string, string> = {
-    arrival: 'arrival date', departure: 'departure date', quantity: 'number of rooms', mealPlan: 'meal plan',
+    arrival: 'arrival date', departure: 'departure date', quantity: 'number of rooms', mealPlan: 'meal plan', requestedMealPlan: 'requested meal plan',
     scope: 'occupancy per room', occupancy: 'number of children and their ages', adults: 'adults per room',
     childCount: 'number of children', childAges: 'children’s ages', roomCodes: 'room type', ratePlan: 'rate plan',
     salesStrategy: 'sales strategy', email: 'recipient email', attention: 'contact name', telephone: 'contact number',

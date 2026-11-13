@@ -49,7 +49,7 @@ export type WorkbenchEditorProps = {
   source: ReservationSourceContext;
   snapshot: ReservationPaneSnapshot;
   request: ReservationRequestProjection;
-  view: { busy: boolean; error: string | null; preview: boolean; saving: boolean };
+  view: { busy: boolean; error: string | null; preview: boolean; saving: boolean; blocked?: boolean };
   commands: WorkbenchCommands;
   onOpenEvidence?: (ref: string) => void;
 };

@@ -13,7 +13,7 @@ type Editor = WorkbenchEditorProps;
 const fields = [
   ['arrival', 'Arrival Date', 'date'], ['departure', 'Departure Date', 'date'],
   ['roomType', 'Room Type', 'code'], ['roomTypeForCharge', 'Room Type for Charge', 'code'],
-  ['ratePlan', 'Rate Plan', 'code'], ['mealPlan', 'Meal Plan', 'text'],
+  ['ratePlan', 'Rate Plan', 'code'], ['requestedMealPlan', 'Requested Meal Plan', 'text'],
   ['roomCount', 'Rooms', 'count'], ['adults', 'Adults', 'count'], ['childCount', 'Children', 'count'],
   ['childAges', 'Child ages', 'ages'], ['firstName', 'First Name', 'text'], ['lastName', 'Last Name', 'text'],
   ['guestEmail', 'E-mail Address', 'email'], ['bookingAgency', 'Primary Booking Agency', 'party'],
@@ -28,7 +28,7 @@ const fields = [
 const clearable = new Set(['guestEmail', 'billingReference',
   'bookerName', 'bookerEmail', 'bookerMobile', 'guestOptIn', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
 const unsupportedClears = new Set(['bookingAgency', 'organization', 'arAccount', 'taCommission', 'track', 'guaranteeType']);
-const priceFields = new Set(['arrival', 'departure', 'roomType', 'roomTypeForCharge', 'ratePlan', 'mealPlan', 'roomCount', 'adults', 'childCount', 'childAges']);
+const priceFields = new Set(['arrival', 'departure', 'roomType', 'roomTypeForCharge', 'ratePlan', 'roomCount', 'adults', 'childCount', 'childAges']);
 const unsupportedFieldLabels: Record<string, string> = {};
 const rows = (value: unknown) => Array.isArray(value) ? value.map(record) : [];
 
@@ -323,6 +323,7 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
       </select></div>
     {field === 'roomCount' && <span className={styles.hint}>Add or cancel rooms as separate reservations.{!kept && ' Select Keep current to save other changes.'}</span>}
     {kept && field === 'roomCount' && original.value != null && <span className={styles.hint}>Requested rooms: {text(original.value)}</span>}
+    {kept && field === 'requestedMealPlan' && original.value != null && <span className={styles.hint}>Original requested Meal Plan: {text(original.value)}</span>}
     {unsupportedValue !== null && <small className={styles.hint}>Requested: {unsupportedValue}</small>}
     {sourceClear && !unsupportedClear && <span className={styles.hint}>Original request: clear this field. {kept ? 'Infor will keep the current value.' : 'Enter or select a replacement.'}</span>}
     {!kept && field === 'taCommission' && op === 'set' && typeof original.value === 'string' && <span className={styles.hint}>
@@ -347,7 +348,7 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
             <option value="true">Yes</option><option value="false">No</option></select></label> :
           spec?.[2] === 'code' ? <NativePicker label={spec[1]} path={valuePath} editor={editor}
             kind={field === 'roomType' ? 'room_type' : field === 'roomTypeForCharge' ? 'room_type_for_charge' : field === 'cmsMessageId' ? 'cms_message' : field === 'guaranteeType' ? 'guarantee' : field === 'track' ? 'track' : 'rate_plan'} compact /> :
-          <Field label={spec?.[1] || 'Value'} path={valuePath} editor={editor} compact type={spec?.[2] === 'date' ? 'date' : spec?.[2] === 'email' ? 'email' : field === 'taCommission' ? 'number' : 'text'} maxLength={field === 'billingReference' ? 4000 : undefined} nativeMaxLength={field === 'billingReference' ? 50 : undefined} hint={field === 'billingReference' ? 'Select an A/R Account. Infor accepts at most 50 characters.' : field === 'guestEmail' ? 'Use the guest’s own email only when explicitly stated.' : field === 'taCommission' ? 'Enter a percentage from 0 to 100.' : undefined} />}
+          <Field label={spec?.[1] || 'Value'} path={valuePath} editor={editor} compact type={spec?.[2] === 'date' ? 'date' : spec?.[2] === 'email' ? 'email' : field === 'taCommission' ? 'number' : 'text'} maxLength={field === 'billingReference' ? 4000 : field === 'requestedMealPlan' ? 120 : undefined} nativeMaxLength={field === 'billingReference' ? 50 : undefined} hint={field === 'billingReference' ? 'Select an A/R Account. Infor accepts at most 50 characters.' : field === 'guestEmail' ? 'Use the guest’s own email only when explicitly stated.' : field === 'taCommission' ? 'Enter a percentage from 0 to 100.' : field === 'requestedMealPlan' ? 'Choose a Rate Plan that matches this request. Infor checks the Meal Plan.' : undefined} />}
       </>}
   </div>;
 }
@@ -407,9 +408,21 @@ export function AmendEditor(editor: Editor) {
       const root = `${perPath}/${perIndex}`; const changes = perIndex < 0 ? [] : rows(effectiveAt(editor.snapshot, `${root}/changes`));
       const pricing = [...shared, ...changes].some(row => row.op === 'shift_dates' || row.op === 'shift_departure' || row.op === 'set' && priceFields.has(text(row.field)));
       const selected = valueAt(editor.snapshot, `${body}/targets/include/${i}/suggestedRef`);
-      const latest = [...editor.snapshot.session.draft.observations].reverse().find(o => o.kind === 'rate_availability' && o.status === 'complete'
-        && o.criteria.workflow === 'amend' && o.criteria.requestId === editor.request.id && o.criteria.hintId === hintId
-        && o.criteria.selectedRef === selected && record(o.result).outcome === 'prepared');
+      const draft = editor.snapshot.session.draft;
+      const callbackStarted = lockedTarget(editor, hintId) || draft.operationResults.some(operation =>
+        operation.workflow === 'amend' && operation.requestId === editor.request.id &&
+        (!operation.allocationId || operation.allocationId === hintId) && operation.status === 'prepared' &&
+        operation.observationRefs.some(ref => draft.observations.some(observation =>
+          observation.ref === ref && observation.criteria.stage === 'callback_price_review')));
+      const latest = editor.view.busy || editor.view.saving || editor.view.blocked || editor.snapshot.session.sourceChanged ||
+        draft.source.sourceHash !== editor.source.sourceHash || callbackStarted || typeof selected !== 'string' || !selected ? undefined :
+        [...draft.observations].reverse().find(o => o.kind === 'rate_availability' && o.generationId === draft.generationId &&
+          o.propertyCode === draft.propertyCode && o.sourceMessageId === draft.source.messageId &&
+          o.criteria.workflow === 'amend' && o.criteria.requestId === editor.request.id && o.criteria.hintId === hintId &&
+          o.criteria.selectedRef === selected && o.criteria.draftRevision === draft.revision &&
+          /^[a-f0-9]{64}$/.test(text(o.criteria.baseDigest)) &&
+          (o.status === 'complete' && o.coverage.complete === true && record(o.result).outcome === 'prepared' ||
+            o.status === 'partial' && o.coverage.complete === false && record(o.result).outcome === 'meal_plan_mismatch_or_unknown'));
       const result = record(latest?.result), before = record(result.before), target = record(result.target);
       const histories = editor.view.busy || editor.view.saving ? [] : (['organization', 'arAccount'] as const).flatMap(partyKind => {
         const history = savedAutoTransferHistory(editor.snapshot, editor.request.id, hintId, partyKind);
@@ -426,8 +439,14 @@ export function AmendEditor(editor: Editor) {
           {latest && <div className={styles.card}><strong>Last Infor check</strong>
             <span>{text(before.arrival)} → {text(before.departure)} · {text(before.roomType)} / {text(before.ratePlan)}</span>
             <span>Requested: {text(target.arrival)} → {text(target.departure)} · {text(target.roomType)} / {text(target.ratePlan)}</span>
-            <span>{result.callbackPriceReviewRequired === true ? 'Indicative total' : 'New total'}: {displayPrice(result.approvedPrices)}</span>
-            <small className={styles.hint}>{result.callbackPriceReviewRequired === true ? 'Infor will return the current price after applying the requested details.' : 'Check again after changing inputs.'}</small>
+            {typeof result.requestedMealPlan === 'string' && result.requestedMealPlan.trim() && <span>Requested Meal Plan: {result.requestedMealPlan}</span>}
+            {Object.hasOwn(record(result.applied), 'mealPlan') && <span>Infor Meal Plan: {text(record(result.applied).mealPlan) || 'Not returned'}</span>}
+            {result.outcome === 'meal_plan_mismatch_or_unknown' ? <div className={styles.warning} role="alert">{text(record(result.applied).mealPlan)
+              ? 'Infor could not match the requested Meal Plan. Choose a matching Rate Plan or update the request, then check again.'
+              : 'Infor did not return a verified Meal Plan. Check the Rate Plan or update the request, then check again.'}</div> : <>
+              <span>{result.callbackPriceReviewRequired === true ? 'Indicative total' : 'New total'}: {displayPrice(result.approvedPrices)}</span>
+              <small className={styles.hint}>{result.callbackPriceReviewRequired === true ? 'Infor will return the current price after applying the requested details.' : 'Check again after changing inputs.'}</small>
+            </>}
             {histories.map(history => <small role="note" className={paneStyles.memoryBadge} key={history.partyKind}>
               History: Auto Transfer was recorded on {history.support} of {history.denominator} earlier stays for {history.partyKind === 'organization' ? 'organization' : 'A/R account'} {history.name}. Check the current Infor setting.
             </small>)}
