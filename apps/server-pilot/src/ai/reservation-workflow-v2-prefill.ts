@@ -988,7 +988,8 @@ export function createReservationWorkflowV2CandidateReader(input: {
         return lookupNativeParty({ role, name, target, signal: input.signal });
       }
       if (role === 'ar_account') return unavailable('A/R account search is not exposed by the existing party lookup.');
-      const kind = role === 'agency' ? 'agency' : 'company';
+      if (role !== 'agency' && role !== 'organization') return unavailable('Native party role is not supported.');
+      const kind = role === 'agency' ? 'bookingAgency' : 'organization';
       const found = await findParty({ name, kind }, { target, exactTerm: true, resultCap: 20 });
       const status = completeNativeRead(found.outcome);
       return { status: found.truncated ? 'partial' : status,

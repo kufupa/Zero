@@ -194,7 +194,7 @@ export function boundAmendRateRequest(input: {
 }): { request: AvailabilityRequest; selectedCode: string | null; explicitCode: string | null; unchangedCode: string; draftContextKey: string } |
   { reason: string } {
   const { lookup, fields, state } = input;
-  if (!lookup?.native || !lookup.parties?.agency || !lookup.parties.organization || !lookup.group ||
+  if (!lookup?.native || !lookup.parties?.bookingAgency || !lookup.parties.organization || !lookup.group ||
       !lookup.promotion || !lookup.arAccount || !lookup.sourceOfBusiness || !lookup.track) return { reason: 'SAVED_CONTEXT_READ_REQUIRED' };
   const native = lookup.native;
   const target = fields.target as { confirmation?: unknown; arrival?: unknown } | null;
@@ -230,12 +230,12 @@ export function boundAmendRateRequest(input: {
   const retainRates = resolved('retainRates', 'no');
   const stableLookup = { ...lookup, observedAt: null };
   const rateParties = Object.fromEntries(Object.entries(lookup.parties).flatMap(([kind, party]) =>
-    party.state === 'selected' ? [[kind === 'agency' ? 'bookingAgency' : kind, { nativeId: party.nativeId, name: party.name }]] : []));
+    party.state === 'selected' ? [[kind, { nativeId: party.nativeId, name: party.name }]] : []));
   const parsed = availabilityJobRequestSchema.safeParse({ kind: 'availability', arrival, departure,
     rooms: [{ roomType: roomCode, quantity: 1, adults, childAges }], rateParties,
     rateContext: { propertyCode: input.propertyCode, workflow: 'amend', arrival, departure, roomCode,
       quantity: 1, adults, childAges, mealPlan: null, currency: lookup.currency,
-      bookingAgencyId: lookup.parties.agency.nativeId, organizationId: lookup.parties.organization.nativeId,
+      bookingAgencyId: lookup.parties.bookingAgency.nativeId, organizationId: lookup.parties.organization.nativeId,
       guestProfileId: native.guestId,
       sourceOfBusiness: lookup.sourceOfBusiness.state === 'observed' ? lookup.sourceOfBusiness.value : null,
       track: lookup.track.state === 'observed' ? lookup.track.value : null,

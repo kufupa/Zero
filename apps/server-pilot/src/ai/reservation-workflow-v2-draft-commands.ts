@@ -30,7 +30,7 @@ const section = () => ({ id: id(), arrival: null, departure: null, requestedRoom
 const allocation = (dateSectionId: string) => ({ id: id(), dateSectionId, overrides: {},
   guest: { firstName: null, lastName: null, email: null, mobile: null, profileIntent: 'existing_or_unknown' as const,
     candidateRefs: [], suggestedRef: null }, occupancy: occupancy(), priceObservationRefs: [] });
-const group = () => ({ id: id(), arrival: null, departure: null, quantity: null, mealPlan: null, roomCodes: [],
+const group = () => ({ id: id(), arrival: null, departure: null, quantity: null, mealPlan: null, requestedMealPlan: null, roomCodes: [],
   ratePlan: null, occupancy: { ...occupancy(), scope: 'unresolved' as const }, priceObservationRefs: [] });
 const service = (requestId: string) => ({ id: id(), ownerRequestId: requestId, operation: 'add' as const,
   requestedText: '', code: null, itemCandidateRef: null, sharedFields: {}, requestedMoney: [], targets: [],
