@@ -679,16 +679,30 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
 
 /** Apply child ages to the already guarded, unsaved saved-stay draft. */
 export async function stageSavedChildrenForComposition(context, expected, childAges) {
+  return runSavedChildEditor(context, expected, childAges, false);
+}
+
+/** Verify the requested editor values and cancel without applying them. */
+export async function previewSavedChildrenForComposition(context, expected, childAges) {
+  return runSavedChildEditor(context, expected, childAges, true);
+}
+
+async function runSavedChildEditor(context, expected, childAges, preview) {
   const { page, frame, childStageGate: gate } = context ?? {};
   const requested = planSavedChildOccupancy({ childCount: childAges?.length, childAges });
+  let popup = null, closed = false, completed = false;
   const active = () => {
     if (!page || !frame || !gate || !context.isActive() || context.remainingMs() <= 0) throw new Error('CHILD_STAGE_GUARD_STOPPED');
   };
+  try {
   active();
-  if (requested.outcome !== 'planned' || requested.childAges === null) throw new Error('CHILD_AGES_INVALID');
+  if (requested.outcome !== 'planned' || requested.childAges === null ||
+      typeof gate.isReadOnly !== 'function' || gate.isReadOnly() !== preview) throw new Error('CHILD_AGES_INVALID');
   const before = await snapshotLabtestRecord(frame), occupancy = savedChildOccupancy(before);
   if (!occupancy.valid || occupancy.count !== expected.childCount || !agesValid(expected.childAges) ||
       expected.childAges.length !== occupancy.count || !currentChildCategories(before, expected.childAges, occupancy.bands) ||
+      exactField(before.data, 'propertycode').value !== 'HRCEN' ||
+      String(exactField(before.data, 'guestid').value ?? '') !== expected.guestId ||
       String(before.data.reservationstayid ?? '') !== expected.reservationStayId ||
       String(before.data.confirmationnumber ?? '') !== expected.confirmation) throw new Error('CHILD_PREIMAGE_UNVERIFIED');
   const raw = occupancy.fields.childages.model;
@@ -700,17 +714,21 @@ export async function stageSavedChildrenForComposition(context, expected, childA
   }
   const trigger = frame.locator('[data-qtip="Enter Child Ages"]:visible');
   if (await trigger.count() !== 1 || !gate.armRead()) throw new Error('AGE_EDITOR_UNAVAILABLE');
-  const read = page.waitForResponse((response) => gate.isReadRequest(response.request()), { timeout: Math.min(context.remainingMs(), 20000) });
-  await trigger.click({ timeout: 5000, noWaitAfter: true });
-  const readResponse = await read, native = await readResponse.json();
+  const read = page.waitForResponse((response) => gate.isReadRequest(response.request()),
+    { timeout: Math.min(context.remainingMs(), 20000) }).catch(() => null);
   active();
-  if (!readResponse.ok() || native?.propertyCode !== 'HRCEN' || native?.reservationStayId !== expected.reservationStayId ||
+  await trigger.click({ timeout: 5000, noWaitAfter: true });
+  const readResponse = await read;
+  if (!readResponse?.ok()) throw new Error('AGE_READ_FAILED');
+  const native = await readResponse.json();
+  active();
+  if (native?.propertyCode !== 'HRCEN' || native?.reservationStayId !== expected.reservationStayId ||
       !agesValid(native.childAges) || native.childAges.length !== occupancy.count ||
       !sameChildAgeMultiset(native.childAges, expected.childAges) || native.activeChildCategories !== 3 ||
       native.updateChildCategories !== false || native.confirmChildCategory !== false) {
     throw new Error('SAVED_AGE_READBACK_UNVERIFIED');
   }
-  const popup = frame.locator('.x-window[id^="childagespopup"]:visible');
+  popup = frame.locator('.x-window[id^="childagespopup"]:visible');
   await popup.waitFor({ timeout: Math.min(context.remainingMs(), 20000) });
   if (await popup.count() !== 1) throw new Error('AGE_EDITOR_NOT_UNIQUE');
   const count = popup.locator('input[name="children"]');
@@ -750,6 +768,7 @@ export async function stageSavedChildrenForComposition(context, expected, childA
   if (await toggle.count() !== 1) throw new Error('AGE_EDITOR_UNAVAILABLE');
   const checked = await toggle.evaluate((el) => globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''))?.getValue?.());
   if (checked !== false) throw new Error('AGE_EDITOR_TOGGLE_UNVERIFIED');
+  active();
   await toggle.click({ timeout: 5000, noWaitAfter: true });
   if (await toggle.evaluate((el) => globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''))?.getValue?.()) !== true) {
     throw new Error('AGE_EDITOR_TOGGLE_UNVERIFIED');
@@ -780,12 +799,14 @@ export async function stageSavedChildrenForComposition(context, expected, childA
     const row = label.locator('xpath=ancestor::table[contains(@class,"x-form-item")][1]');
     const input = row.locator('input:visible');
     if (await input.count() !== 1) throw new Error('AGE_EDITOR_UNAVAILABLE');
+    active();
     await row.locator('.x-form-arrow-trigger:visible').click({ timeout: 5000, noWaitAfter: true });
     const items = frame.locator('.x-boundlist:visible').last().locator('.x-boundlist-item:visible');
     await items.first().waitFor({ timeout: Math.min(context.remainingMs(), 20000) });
     const matches = await items.evaluateAll((nodes, age) => nodes.flatMap((node, i) =>
       node.textContent.trim() === String(age) ? [i] : []), requested.childAges[index]);
     if (matches.length !== 1) throw new Error('AGE_OPTION_NOT_UNIQUE');
+    active();
     await items.nth(matches[0]).click({ timeout: 5000, noWaitAfter: true });
     await exact(input, requested.childAges[index]);
   }
@@ -797,10 +818,33 @@ export async function stageSavedChildrenForComposition(context, expected, childA
     throw new Error('AGE_EDITOR_READBACK_MISMATCH');
   }
   active();
+  if (preview) {
+    gate.close();
+    const cancel = popup.locator('a.x-btn:visible').filter({ hasText: /^\s*Cancel\s*$/ });
+    if (await cancel.count() !== 1) throw new Error('AGE_EDITOR_CANCEL_UNAVAILABLE');
+    active();
+    await cancel.click({ timeout: Math.min(context.remainingMs(), 5000), noWaitAfter: true });
+    await popup.waitFor({ state: 'hidden', timeout: Math.min(context.remainingMs(), 20000) });
+    closed = true;
+    const after = await snapshotLabtestRecord(frame);
+    active();
+    const sorted = (values) => Array.isArray(values) ? [...values].sort() : null;
+    const modified = (values) => Array.isArray(values) ? values.filter((name) =>
+      !['successmessages', 'activechildcategories'].includes(name)).sort() : null;
+    if (!preservedChildBusinessFields(before, after, READ_CHILD_BUSINESS_FIELDS) ||
+        before.formDirty !== after.formDirty || !same(sorted(before.dirtyFields), sorted(after.dirtyFields)) ||
+        !same(modified(before.modifiedFields), modified(after.modifiedFields)) ||
+        !visibleMatches(await visibleChildFields(frame), occupancy)) throw new Error('CHILD_PREVIEW_SIDE_EFFECT_UNVERIFIED');
+    active();
+    completed = true;
+    return { requested: { childCount: requested.childCount, childAges: [...requested.childAges] },
+      before: { ages: [...native.childAges], bands: { ...occupancy.bands } } };
+  }
   const apply = popup.locator('a.x-btn:visible').filter({ hasText: /^\s*Apply\s*$/ });
   if (await apply.count() !== 1 || !gate.armValidation()) throw new Error('AGE_APPLY_UNVERIFIED');
   const validated = page.waitForResponse((response) => gate.isValidationRequest(response.request()),
     { timeout: Math.min(context.remainingMs(), 20000) });
+  active();
   await apply.click({ timeout: 5000, noWaitAfter: true });
   const response = await validated, result = await response.json();
   active();
@@ -840,4 +884,20 @@ export async function stageSavedChildrenForComposition(context, expected, childA
     throw new Error('CHILD_DRAFT_SIDE_EFFECT_UNVERIFIED');
   }
   return after;
+  } finally {
+    if (preview) {
+      gate?.close();
+      if (!closed && context?.isActive?.() && context.remainingMs() > 0) {
+        try {
+          popup ??= frame.locator('.x-window[id^="childagespopup"]:visible');
+          const cancel = popup.locator('a.x-btn:visible').filter({ hasText: /^\s*Cancel\s*$/ });
+          if (await popup.count() === 1 && await cancel.count() === 1 && context.isActive() && context.remainingMs() > 0) {
+            await cancel.click({ timeout: Math.min(context.remainingMs(), 5000), noWaitAfter: true });
+            await popup.waitFor({ state: 'hidden', timeout: Math.min(context.remainingMs(), 5000) });
+          }
+        } catch { /* The owning context is stopped below. */ }
+      }
+      if (!completed) context?.stop?.('CHILD_PREVIEW_INCOMPLETE');
+    }
+  }
 }
