@@ -17,8 +17,8 @@ function rename(row: Record<string, unknown>, from: string, to: string): void {
   delete row[from];
 }
 
-function hydrateValue(value: unknown, path: string): void {
-  if (Array.isArray(value)) { value.forEach((entry, index) => hydrateValue(entry, `${path}/${index}`)); return; }
+function hydrateValue(value: unknown, path: string, resolvePath: (path: string) => string = canonicalPath): void {
+  if (Array.isArray(value)) { value.forEach((entry, index) => hydrateValue(entry, `${path}/${index}`, resolvePath)); return; }
   const row = object(value);
   if (!row) return;
   if (path.endsWith('/parties')) { rename(row, 'company', 'organization'); rename(row, 'agency', 'bookingAgency'); }
@@ -27,8 +27,8 @@ function hydrateValue(value: unknown, path: string): void {
   if (Object.hasOwn(row, 'bookerContact')) rename(row, 'bookerContact', contactField(row.bookerContact));
   if (row.field === 'bookerContact') row.field = contactField(row.value);
   for (const [key, entry] of Object.entries(row)) {
-    if (key === 'path' && typeof entry === 'string') row[key] = canonicalPath(entry);
-    else hydrateValue(entry, `${path}/${key}`);
+    if (key === 'path' && typeof entry === 'string') row[key] = resolvePath(entry);
+    else hydrateValue(entry, `${path}/${key}`, resolvePath);
   }
 }
 
@@ -36,33 +36,52 @@ export function hydrateStoredReservationWorkflowV2(value: unknown): unknown {
   if (!object(value)) return value;
   const draft = structuredClone(value);
   const root = object(draft)!;
+  const contacts = new Map<string, unknown>();
+  const collect = (entry: unknown, path: string): void => {
+    if (Array.isArray(entry)) { entry.forEach((row, index) => collect(row, `${path}/${index}`)); return; }
+    const row = object(entry);
+    if (!row) return;
+    if (Object.hasOwn(row, 'bookerContact')) contacts.set(`${path}/bookerContact`, row.bookerContact);
+    for (const [key, child] of Object.entries(row)) collect(child, `${path}/${key}`);
+  };
+  const proposal = object(root.proposal), content = object(proposal?.content);
+  if (Array.isArray(content?.requests)) content.requests.forEach((entry, index) => {
+    const id = object(entry)?.id;
+    for (const prefix of [`/proposal/content/requests/${index}`, `/requests/${index}`,
+      ...(typeof id === 'string' ? [`/proposal/content/requests/${encodeURIComponent(id)}`, `/requests/${id}`] : [])])
+      collect(entry, prefix);
+  });
+  const resolvePath = (path: string, value?: unknown): string => {
+    const legacy = path.match(/^.*\/bookerContact(?=\/|$)/)?.[0];
+    return canonicalPath(path, value ?? (legacy ? contacts.get(legacy) : undefined));
+  };
   const extraction = object(root.extraction);
   if (Array.isArray(extraction?.requests)) for (const entry of extraction.requests) {
     const request = object(entry);
     if (request) rename(request, 'boardHints', 'mealPlanHints');
   }
-  hydrateValue(root.proposal, '/proposal');
+  hydrateValue(root.proposal, '/proposal', resolvePath);
   for (const name of ['fieldOverrides', 'staffReviews', 'fieldReviewRequirements']) {
     const original = object(root[name]);
     if (!original) continue;
     const converted: Record<string, unknown> = {};
     // Existing canonical entries take precedence, independent of insertion order.
     for (const [path, entry] of Object.entries(original)) {
-      const renamed = canonicalPath(path, object(entry)?.value);
+      const renamed = resolvePath(path, object(entry)?.value);
       if (renamed === path) converted[path] = entry;
     }
     for (const [path, entry] of Object.entries(original)) {
-      const renamed = canonicalPath(path, object(entry)?.value);
+      const renamed = resolvePath(path, object(entry)?.value);
       if (!Object.hasOwn(converted, renamed)) converted[renamed] = entry;
-      if (name === 'fieldOverrides') hydrateValue(object(entry)?.value, renamed);
+      if (name === 'fieldOverrides') hydrateValue(object(entry)?.value, renamed, resolvePath);
     }
     root[name] = converted;
   }
   if (Array.isArray(root.observations)) for (const observation of root.observations) {
     const row = object(observation), criteria = object(row?.criteria), result = object(row?.result);
     if (!criteria) continue;
-    for (const key of ['fieldPath', 'selectionPath']) if (typeof criteria[key] === 'string') criteria[key] = canonicalPath(criteria[key]);
-    if (Array.isArray(criteria.fieldPaths)) criteria.fieldPaths = criteria.fieldPaths.map(path => typeof path === 'string' ? canonicalPath(path) : path);
+    for (const key of ['fieldPath', 'selectionPath']) if (typeof criteria[key] === 'string') criteria[key] = resolvePath(criteria[key]);
+    if (Array.isArray(criteria.fieldPaths)) criteria.fieldPaths = criteria.fieldPaths.map(path => typeof path === 'string' ? resolvePath(path) : path);
     if (criteria.workflow === 'quote') {
       if (criteria.role === 'company') criteria.role = 'organization';
       if (criteria.role === 'agency') criteria.role = 'bookingAgency';
