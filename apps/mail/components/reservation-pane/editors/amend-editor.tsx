@@ -20,7 +20,7 @@ const fields = [
   ['billingReference', 'Billing Reference', 'text'], ['taCommission', 'TA Commission (%)', 'text'],
   ['guaranteeType', 'Guarantee Type', 'code'], ['track', 'Track / Sub Segment', 'code'],
   ['bookerName', 'Booker name', 'text'], ['bookerEmail', 'Booker email', 'email'], ['bookerMobile', 'Booker mobile', 'text'],
-  ['guestOptIn', 'Terms and Conditions / Infor handling', 'terms'],
+  ['guestOptIn', 'Terms and Conditions', 'terms'],
   ['reservationNote', 'Reservation Note', 'note'], ['cmsSend', 'CMS Send Mail', 'boolean'],
   ['cmsMessageId', 'CMS Message Id', 'code'], ['cmsRecipient', 'CMS Booker Email', 'email'],
 ] as const;
