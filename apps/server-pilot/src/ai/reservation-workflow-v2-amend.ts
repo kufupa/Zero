@@ -535,7 +535,12 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
   effectiveChanges.forEach((change, index) => applyChange(change, `${changesPath}/${index}`));
   if (unsupported.size) return { outcome: 'unsupported', issue: 'amend_contains_native_unsupported_field', fields: [...unsupported] };
   if (errors.length) return { outcome: 'needs_input', issue: 'amend_changes_invalid_or_unknown', fields: errors };
-  const observationRefs = record(perRows[perIndex])?.currentObservationRefs;
+  const observationRefs = effectiveLeaf(draft, `${perPath}/currentObservationRefs`, record(perRows[perIndex])?.currentObservationRefs);
+  if (Object.hasOwn(values, 'reservationNote') && (observationRefs === UNKNOWN || observationRefs === NONE ||
+      (observationRefs != null && (!Array.isArray(observationRefs) || observationRefs.some(ref =>
+        typeof ref !== 'string' || draft.observations.filter(item => item.ref === ref).length !== 1))))) {
+    return { outcome: 'needs_input', issue: 'amend_note_baseline_unavailable', fields: [`${perPath}/currentObservationRefs`] };
+  }
   const noteBaselines = Array.isArray(observationRefs) ? observationRefs.flatMap(ref => {
     const observation = draft.observations.find(item => item.ref === ref && item.kind === 'stay_candidate' &&
       item.criteria.kind === 'prefill_saved_note_baseline');
@@ -547,7 +552,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     const selectedNote = record(record(record(selectedObservation?.result)?.reservationObservations)?.reservationNote);
     if (noteBaselines.length !== 1 || baseline?.status !== 'complete' || !baseline.coverage.complete ||
         baseline.generationId !== draft.generationId || baseline.propertyCode !== draft.propertyCode ||
-        baseline.criteria.requestId !== requestId || !note || !selectedNote ||
+        baseline.sourceMessageId !== draft.source.messageId || baseline.criteria.requestId !== requestId || !note || !selectedNote ||
         !['observed', 'blank'].includes(String(note.state)) || note.source !== 'record_view_raw_value' ||
         note.confirmation !== chosen.selected.confirmation || typeof note.value !== 'string' ||
         selectedNote.source !== note.source || selectedNote.state !== note.state ||
