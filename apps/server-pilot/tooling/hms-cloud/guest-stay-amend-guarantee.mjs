@@ -31,10 +31,10 @@ async function controlObservation(frame) {
   });
 }
 
-function validObservation(observation) {
+function validObservation(observation, { allowFiltered = false } = {}) {
   if (!observation || !codeValid(observation.before?.code) || !displayValid(observation.before?.display) ||
       observation.submitted !== observation.before.code || observation.model !== observation.before.code ||
-      !observation.local || observation.loading || observation.filtered || !Array.isArray(observation.options) ||
+      !observation.local || observation.loading || (!allowFiltered && observation.filtered) || !Array.isArray(observation.options) ||
       observation.options.length === 0 || observation.count !== observation.options.length ||
       observation.total !== observation.options.length ||
       observation.options.some(item => !codeValid(item.code) || !displayValid(item.label))) return false;
@@ -100,6 +100,79 @@ async function waitForDispatch(gate, context) {
   } finally { clearTimeout(timer); }
 }
 
+async function clickVerifiedChoice(frame, item, snapshot, before, desired, candidates, timeout) {
+  const names = ['propertycode', 'confirmationnumber', 'guestid', 'PKID', 'reservationid', 'reservationstayid',
+    'recordid', 'bookingsessionid', 'status', 'firstname', 'lastname', 'arrivaldate', 'departuredate'];
+  const identity = Object.fromEntries(names.map(name => [name, snapshot.data[name]]));
+  const installed = await frame.evaluate(({ identity, before, desired, candidates }) => {
+    const key = '__navaSavedGuaranteeClickGuard';
+    if (Object.hasOwn(window, key)) return false;
+    const state = { result: 'pending', pointerDown: false, mouseDown: false, handler: null };
+    state.handler = event => {
+      let allowed = false;
+      try {
+        if (!['pointerdown', 'mousedown'].includes(event.type)) {
+          allowed = state.result === 'allowed' && state.pointerDown && state.mouseDown && event.isTrusted;
+        } else {
+          const visible = el => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+          const inputs = name => [...document.querySelectorAll(`input[name="${name}"]`)].filter(visible);
+          const guarantees = inputs('guaranteetype'), guests = inputs('guestid');
+          const el = guarantees.length === 1 ? guarantees[0] : null;
+          const cmp = el && globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
+          const guest = guests.length === 1 && globalThis.Ext?.getCmp?.(guests[0].id.replace(/-inputEl$/, ''));
+          const form = guest?.up?.('form'), data = form?.getRecord?.()?.data, store = cmp?.getStore?.();
+          const picker = cmp?.getPicker?.(), target = event.target instanceof Element && event.target.closest('.x-boundlist-item');
+          const rows = store?.getRange?.() || [], valueField = cmp?.valueField, displayField = cmp?.displayField;
+          const codes = rows.filter(row => row.data?.[valueField] === desired.code);
+          const labels = rows.filter(row => row.data?.[displayField] === desired.display);
+          const keys = data ? Object.keys(data) : [];
+          const sameIdentity = data && Object.entries(identity).every(([name, value]) => Object.hasOwn(data, name) &&
+            keys.filter(keyName => keyName.toLowerCase() === name.toLowerCase()).length === 1 && data[name] === value);
+          allowed = Boolean(state.result !== 'blocked' && event.isTrusted &&
+            (event.type !== 'mousedown' || state.pointerDown) && el && form?.el?.dom?.contains(el) && cmp?.up?.('form') === form &&
+            !el.disabled && !el.readOnly && cmp.readOnly !== true && !cmp.isDisabled?.() && sameIdentity &&
+            keys.filter(keyName => keyName.toLowerCase() === 'guaranteetype').length === 1 &&
+            data.guaranteetype === before.code && cmp.getValue?.() === before.code &&
+            cmp.getSubmitData?.()?.guaranteetype === before.code && el.value === before.display &&
+            store && !store.isLoading?.() && rows.length === candidates.length &&
+            rows.every((row, index) => row.data?.[valueField] === candidates[index].code &&
+              row.data?.[displayField] === candidates[index].label) &&
+            (store.getProxy?.()?.type === 'memory' || store.getProxy?.()?.getType?.() === 'memory') &&
+            store.getCount?.() === rows.length && store.getTotalCount?.() === rows.length &&
+            codes.length === 1 && labels.length === 1 && codes[0] === labels[0] &&
+            target && picker?.el?.dom?.contains(target) && target.textContent.trim() === desired.display);
+          if (allowed && event.type === 'pointerdown') state.pointerDown = true;
+          if (allowed && event.type === 'mousedown') state.mouseDown = true;
+        }
+      } catch { /* An unreadable click is denied. */ }
+      state.result = allowed ? 'allowed' : 'blocked';
+      if (!allowed) { event.preventDefault(); event.stopImmediatePropagation(); }
+    };
+    window[key] = state;
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      window.addEventListener(type, state.handler, true);
+    }
+    return true;
+  }, { identity, before, desired, candidates });
+  if (!installed) throw new Error('GUARANTEE_CLICK_GUARD_UNAVAILABLE');
+  try {
+    await item.click({ timeout });
+    if (await frame.evaluate(() => window.__navaSavedGuaranteeClickGuard?.result) !== 'allowed') {
+      throw new Error('GUARANTEE_CLICK_UNVERIFIED');
+    }
+  } finally {
+    await frame.evaluate(() => {
+      const key = '__navaSavedGuaranteeClickGuard', state = window[key];
+      if (state) {
+        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+          window.removeEventListener(type, state.handler, true);
+        }
+        delete window[key];
+      }
+    });
+  }
+}
+
 /** Only the caller's Go route can authorize and dispatch the saved guarantee callback. */
 export async function applySavedGuaranteeOnGo(context, { expected, code, display } = {}, callbacks = {}) {
   const gate = context?.guaranteeStageGate;
@@ -127,11 +200,11 @@ export async function applySavedGuaranteeOnGo(context, { expected, code, display
     await trigger.click({ timeout: Math.min(5_000, context.remainingMs()) });
     const list = context.frame.locator('.x-boundlist:visible').last();
     await list.waitFor({ timeout: Math.min(5_000, context.remainingMs()) });
-    const again = await inspectSavedGuaranteeForComposition(context);
-    if (!matchesSavedGuaranteeBefore(again.snapshot, context.baseline, expected, again.before) ||
+    const again = await controlObservation(context.frame), current = await snapshotLabtestRecord(context.frame);
+    if (!validObservation(again, { allowFiltered: true }) ||
+        !matchesSavedGuaranteeBefore(current, context.baseline, expected, again.before) ||
         again.before.code !== initial.before.code || again.before.display !== initial.before.display ||
-        again.candidates.filter(item => item.code === code || item.label === display).length !== 1 ||
-        !again.candidates.some(item => item.code === code && item.label === display) || !usable(context)) {
+        JSON.stringify(again.options) !== JSON.stringify(initial.candidates) || !usable(context)) {
       throw new Error('GUARANTEE_CHOICE_UNVERIFIED');
     }
     const items = list.locator('.x-boundlist-item:visible');
@@ -142,7 +215,8 @@ export async function applySavedGuaranteeOnGo(context, { expected, code, display
       { timeout: Math.min(15_000, context.remainingMs()) });
     // Drain a rejected listener if the click itself fails.
     void responsePromise.catch(() => {});
-    await items.nth(indexes[0]).click({ timeout: Math.min(15_000, context.remainingMs()) });
+    await clickVerifiedChoice(context.frame, items.nth(indexes[0]), initial.snapshot, initial.before,
+      { code, display }, initial.candidates, Math.min(15_000, context.remainingMs()));
     const response = await responsePromise;
     await waitForDispatch(gate, context);
     if (gate.status().phase !== 'dispatched' || !gate.status().possiblyDispatched || !gate.status().continued || !response || response.status() !== 200 ||
@@ -152,7 +226,8 @@ export async function applySavedGuaranteeOnGo(context, { expected, code, display
     await context.frame.waitForFunction(() => globalThis.Ext?.Ajax && !globalThis.Ext.Ajax.isLoading(), null,
       { timeout: Math.min(10_000, context.remainingMs()) });
     const after = await snapshotLabtestRecord(context.frame), observation = await controlObservation(context.frame);
-    if (!usable(context) || !validObservation(observation) || observation.before.code !== code ||
+    if (!usable(context) || !validObservation(observation, { allowFiltered: true }) ||
+        JSON.stringify(observation.options) !== JSON.stringify(initial.candidates) || observation.before.code !== code ||
         observation.before.display !== display || !sameSavedGuaranteePreimage(initial.snapshot, after, { allowGuaranteeChange: true }) ||
         after.data?.guaranteetype !== code || await context.frame.locator('.x-window:visible:not(.x-menu)').count() !== 0) {
       throw new Error('GUARANTEE_RESULT_UNVERIFIED');
