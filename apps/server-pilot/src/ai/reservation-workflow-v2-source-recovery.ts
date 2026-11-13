@@ -37,13 +37,15 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
     const hasOccupancy = extracted.occupancy.some(row => row.adults || row.childCount || row.childAges?.length);
     const occupancyConflict = draft.proposal.issues.some(issue => issue.kind.includes('occupancy') &&
       (issue.path.includes(`/requests/${request.id}/`) || issue.path.includes(`/requests/${encodeURIComponent(request.id)}/`)));
-    if (input.propertyCode === 'HRCEN' && occupancySourceComplete && !occupancyConflict) {
-      if (request.kind === 'quote' && !hasOccupancy) {
+    if (input.propertyCode === 'HRCEN' && occupancySourceComplete) {
+      if (request.kind === 'quote') {
         for (const [index, group] of request.body.groups.entries()) {
           const occupancy = group.occupancy;
-          if (occupancy.scope !== 'unresolved' && occupancy.scope !== 'per_room') continue;
+          const hasChildren = extracted.occupancy.some(row => Boolean(row.childCount || row.childAges?.length));
           const root = `${bodyRoot}/groups/${index}/occupancy`, alias = `${bodyAlias}/groups/${index}/occupancy`;
           for (const [field, value] of [['scope', 'per_room'], ['adults', 1], ['childCount', 0], ['childAges', []]] as const) {
+            if ((field === 'scope' || field === 'adults') && (occupancyConflict || hasOccupancy || occupancy.scope !== 'unresolved' && occupancy.scope !== 'per_room')) continue;
+            if ((field === 'childCount' || field === 'childAges') && hasChildren) continue;
             if ((field === 'childCount' || field === 'childAges') &&
                 (occupancy.childCount !== null && occupancy.childCount !== 0 || occupancy.childAges?.length ||
                  covered(`${root}/childCount`, `${alias}/childCount`) || covered(`${root}/childAges`, `${alias}/childAges`))) continue;

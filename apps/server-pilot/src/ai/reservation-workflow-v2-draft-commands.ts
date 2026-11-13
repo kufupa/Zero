@@ -3,7 +3,7 @@ import { isVerifiedCreateFilingCandidate, verifyCreateAllocationDependency } fro
 import { readResolvedHmsLabtestCreates } from './hms-labtest-dispatch.js';
 import type { z } from 'zod';
 import type { ReservationWorkflowV2Draft, ReservationWorkflowV2Proposal } from './reservation-workflow-v2-contract.js';
-import { reservationWorkflowV2DraftSchema, type reservationWorkflowV2AddActionInputSchema,
+import { separatedQuoteMoneyLinked, reservationWorkflowV2DraftSchema, type reservationWorkflowV2AddActionInputSchema,
   type reservationWorkflowV2ChangeRowsInputSchema, type reservationWorkflowV2SelectNativeInputSchema,
   type reservationWorkflowV2ReviewScopeInputSchema } from './reservation-workflow-v2-contract.js';
 import { withLockedV2DraftMutation, reservationWorkflowV2SavedTargetLocked, reservationWorkflowV2SavedTargetOperationLocks,
@@ -23,6 +23,21 @@ type FilingTargetHint = NonNullable<FilingRequest['body']['targets']>['include']
 type CancelRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'cancel' }>;
 type QuoteRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'quote' }>;
 type QuoteDocument = ReservationWorkflowV2Proposal['content']['documents'][number];
+type OtherRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'other' }>;
+function separatedAllowance(draft: ReservationWorkflowV2Draft, request: QuoteRequest, moneyIndex: number,
+  previous?: NonNullable<OtherRequest['body']['separatedFrom']>['allowance']): NonNullable<OtherRequest['body']['separatedFrom']>['allowance'] {
+  const claim = request.body.requestedMoney[moneyIndex];
+  if (!claim) return undefined;
+  const root = `${ptr('proposal', 'content', 'requests', request.id)}/body/requestedMoney/${moneyIndex}`;
+  const effectiveKind = valueAt(draft, `${root}/staffAllowanceType`);
+  const kind = effectiveKind === 'unsupported' ? previous?.kind ?? claim.staffAllowanceType : effectiveKind;
+  if (kind !== 'dinner' && kind !== 'lunch' && kind !== 'airport_transfer' && kind !== 'office_transfer') return undefined;
+  const scope = valueAt(draft, `${root}/scope`), refs = valueAt(draft, `${root}/targetRefs`);
+  const ids = request.body.groups.map(group => group.id);
+  const groupIds = scope === 'overall' && Array.isArray(refs) && !refs.length ? ids
+    : scope === 'per_target' && Array.isArray(refs) ? ids.filter(id => refs.includes(id)) : [];
+  return { kind, groupIds: [...new Set([...(previous?.groupIds ?? []).filter(id => !ids.includes(id)), ...groupIds])], quoteRequestIds: [...new Set([request.id, ...(previous?.quoteRequestIds ?? [])])] };
+}
 const occupancy = () => ({ adults: null, childCount: null, childAges: null });
 const hint = () => ({ id: id(), candidateRefs: [], suggestedRef: null, sourceRefs: [] });
 const scope = () => ({ mode: 'explicit' as const, include: [hint()], exclude: [], sourceRefs: [] });
@@ -32,7 +47,7 @@ const allocation = (dateSectionId: string) => ({ id: id(), dateSectionId, overri
   guest: { firstName: null, lastName: null, email: null, mobile: null, profileIntent: 'existing_or_unknown' as const,
     candidateRefs: [], suggestedRef: null }, occupancy: occupancy(), priceObservationRefs: [] });
 const group = () => ({ id: id(), arrival: null, departure: null, quantity: null, mealPlan: null, requestedMealPlan: null, roomCodes: [],
-  ratePlan: null, occupancy: { ...occupancy(), scope: 'unresolved' as const }, priceObservationRefs: [] });
+  ratePlan: null, occupancy: { ...occupancy(), childCount: 0, childAges: [], scope: 'unresolved' as const }, priceObservationRefs: [] });
 const service = (requestId: string) => ({ id: id(), ownerRequestId: requestId, operation: 'add' as const,
   requestedText: '', code: null, itemCandidateRef: null, sharedFields: {}, requestedMoney: [], targets: [],
   quantityRequest: { value: null, scope: 'unresolved' as const, sourceRefs: [] }, sourceRefs: [] });
@@ -220,6 +235,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
         : input.kind.includes('allocation') ? [`${root}/body/allocations`]
         : input.kind.includes('date_section') ? [`${root}/body/dateSections`, `${root}/body/allocations`]
         : input.kind.includes('quote_group') ? [`${root}/body/groups`]
+        : input.kind.includes('quote_extra') ? [`${root}/body/requestedMoney`]
         : input.kind.includes('target') ? [includeRoot, ...(request.kind === 'amend' ? [`${root}/body/perTarget`] : [])]
         : input.kind.includes('service') ? ['/proposal/content/services', `${root}/serviceRefs`]
         : input.kind.includes('document') ? ['/proposal/content/documents', `${root}/documentRefs`]
@@ -325,8 +341,6 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
               draft.operationResults.some(row => row.requestId === request.id && ['succeeded', 'unknown'].includes(row.status))) return null;
           const contextDocuments = quoteSplitContextDocuments(draft, proposal, request);
           if (!contextDocuments) return null;
-          if (request.body.requestedMoney.some((claim, index) => valueAt(draft, `${root}/body/requestedMoney/${index}/staffAllowanceType`) !== 'unsupported' || !proposal.content.requests.some(row => row.kind === 'other' &&
-              row.body.separatedFrom?.requestId === request.id && row.body.separatedFrom.moneyId === claim.id))) return null;
           const groups = request.body.groups.map((row, index) => effectiveTree(draft, `${root}/body/groups/${index}`, row) as typeof row);
           const buckets = new Map<string, typeof groups>();
           for (const row of groups) {
@@ -345,8 +359,36 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
             if (party && typeof party === 'object') delete party.nativeSelectionRef;
           }
           const dateGroups = [...buckets.values()];
-          request.body = { ...effectiveBody, groups: dateGroups[0]! };
-          dateGroups.slice(1).forEach(rows => {
+          for (const other of proposal.content.requests) {
+            if (other.kind !== 'other' || other.body.separatedFrom?.requestId !== request.id) continue;
+            const moneyIndex = request.body.requestedMoney.findIndex(claim => claim.id === other.body.separatedFrom?.moneyId);
+            other.body.separatedFrom.allowance ??= separatedAllowance(draft, request, moneyIndex);
+          }
+          const moneyRows = request.body.requestedMoney.map((claim, index) => ({
+            ...effectiveTree(draft, `${root}/body/requestedMoney/${index}`, claim) as typeof claim,
+            staffAllowanceType: valueAt(draft, `${root}/body/requestedMoney/${index}/staffAllowanceType`) as typeof claim.staffAllowanceType,
+          }));
+          const splitMoney = (rows: typeof groups, bucketIndex: number) => moneyRows.flatMap(claim => {
+            const separated = claim.staffAllowanceType === 'unsupported' ? proposal.content.requests.find(other =>
+              other.kind === 'other' && separatedQuoteMoneyLinked(other.body.separatedFrom, request.id, claim.id)) : undefined;
+            if (separated?.kind === 'other') {
+              const coverage = separated.body.separatedFrom?.allowance?.groupIds;
+              if (!coverage) return bucketIndex === 0 ? [{ ...claim }] : [];
+              const targetRefs = rows.filter(row => coverage.includes(row.id)).map(row => row.id);
+              return targetRefs.length ? [{ ...claim, scope: 'per_target' as const, targetRefs }] : [];
+            }
+            const groupIds = new Set(rows.map(row => row.id));
+            const repeats = ['per_person_per_night', 'per_person_night', 'per_room_per_night', 'per_person'].includes(claim.unit ?? '');
+            if (claim.scope === 'per_target') {
+              const targetRefs = claim.targetRefs.filter(ref => groupIds.has(ref));
+              const ownerIndex = dateGroups.findIndex(bucket => bucket.some(group => claim.targetRefs.includes(group.id)));
+              if (!repeats && bucketIndex !== ownerIndex) return [];
+              return targetRefs.length ? [{ ...claim, targetRefs }] : [];
+            }
+            return bucketIndex === 0 || repeats && claim.staffAllowanceType !== 'unsupported' ? [{ ...claim }] : [];
+          });
+          request.body = { ...effectiveBody, groups: dateGroups[0]!, requestedMoney: splitMoney(dateGroups[0]!, 0) };
+          dateGroups.slice(1).forEach((rows, index) => {
             const requestId = id(); createdId ??= requestId;
             const splitBody = structuredClone(effectiveBody);
             for (const role of ['organization', 'bookingAgency'] as const) {
@@ -357,7 +399,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
               }
             }
             const splitRequest = { ...structuredClone(request), id: requestId, documentRefs: [] as string[],
-              body: { ...splitBody, groups: rows, requestedMoney: [] } };
+              body: { ...splitBody, groups: rows, requestedMoney: splitMoney(rows, index + 1) } };
             for (const sourceDocument of contextDocuments) {
               const documentId = id();
               proposal.content.documents.push({ ...structuredClone(sourceDocument), id: documentId, ownerRequestId: requestId });
@@ -365,10 +407,25 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
               copiedQuoteDocumentIds.push({ fromId: sourceDocument.id, toId: documentId });
             }
             proposal.content.requests.push(splitRequest);
+            for (const other of proposal.content.requests) {
+              if (other.kind !== 'other' || !other.body.separatedFrom?.allowance) continue;
+              const separated = other.body.separatedFrom;
+              const allowance = other.body.separatedFrom.allowance;
+              if (allowance.quoteRequestIds.includes(request.id) && splitRequest.body.requestedMoney.some(claim =>
+                claim.id === separated.moneyId && claim.staffAllowanceType === 'unsupported')) {
+                allowance.quoteRequestIds = [...new Set([...allowance.quoteRequestIds, requestId])];
+              }
+            }
             const nextRoot = ptr('proposal', 'content', 'requests', requestId);
             const groupIds = new Set(rows.map(row => row.id));
             const remap = (path: string): string | null => {
-              if (!path.startsWith(`${root}/`) || path.startsWith(`${root}/body/requestedMoney/`)) return null;
+              if (!path.startsWith(`${root}/`)) return null;
+              const moneyMatch = /\/requestedMoney\/(\d+)(?:\/|$)/.exec(path);
+              if (moneyMatch) {
+                const moneyId = moneyRows[Number(moneyMatch[1])]?.id;
+                const nextIndex = splitRequest.body.requestedMoney.findIndex(claim => claim.id === moneyId);
+                return nextIndex < 0 ? null : path.replace(root, nextRoot).replace(`/requestedMoney/${moneyMatch[1]}`, `/requestedMoney/${nextIndex}`);
+              }
               const match = /\/groups\/(\d+)(?:\/|$)/.exec(path);
               if (!match) return path.replace(root, nextRoot);
               const groupId = groups[Number(match[1])]?.id;
@@ -381,9 +438,9 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
             }
           });
           // The materialized bodies now own the staff values; old checks and reviews are invalidated.
-          changedRoots.push(`${root}/body/groups`);
+          changedRoots.push(`${root}/body/groups`, `${root}/body/requestedMoney`);
           for (const path of Object.keys(draft.fieldOverrides)) if (path.startsWith(`${root}/body/`) &&
-              !path.endsWith('/staffAllowanceType') && !/^\/proposal\/content\/requests\/[^/]+\/body\/parties\/(?:organization|bookingAgency)\/nativeSelectionRef$/.test(path)) {
+              !/^\/proposal\/content\/requests\/[^/]+\/body\/parties\/(?:organization|bookingAgency)\/nativeSelectionRef$/.test(path)) {
             delete draft.fieldOverrides[path];
           }
           break;
@@ -396,22 +453,40 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           const amount = valueAt(draft, `${base}/amount`), currency = valueAt(draft, `${base}/currency`),
             unit = valueAt(draft, `${base}/unit`);
           const existing = proposal.content.requests.find(row => row.kind === 'other' &&
-            row.body.separatedFrom?.requestId === request.id && row.body.separatedFrom.moneyId === claim.id);
+            separatedQuoteMoneyLinked(row.body.separatedFrom, request.id, claim.id));
+          const previousAllowance = existing?.kind === 'other' ? existing.body.separatedFrom?.allowance : undefined;
+          const allowance = separatedAllowance(draft, request, index, previousAllowance);
           if (!existing) {
             if (proposal.content.requests.length >= 200) return null;
             createdId = id();
             proposal.content.requests.push({ id: createdId, kind: 'other', requestText: request.requestText,
               sourceRefs: [...new Set([...request.sourceRefs, ...claim.sourceRefs])], serviceRefs: [], documentRefs: [],
-              body: { supported: false, separatedFrom: { requestId: request.id, moneyId: claim.id },
+              body: { supported: false, separatedFrom: { requestId: request.id, moneyId: claim.id, ...(allowance ? { allowance } : {}) },
                 requestedText: `Handle separately from the room quote: ${[currency, amount, unit].filter(v => v != null && typeof v !== 'object').join(' ')}. ${request.requestText}`.slice(0, 2000) } });
           } else {
             createdId = existing.id;
+            if (existing.kind === 'other' && existing.body.separatedFrom) existing.body.separatedFrom.allowance = allowance;
             if (existing.kind === 'other') existing.body.requestedText = `Handle separately from the room quote: ${[currency, amount, unit].filter(v => v != null && typeof v !== 'object').join(' ')}. ${request.requestText}`.slice(0, 2000);
           }
           const path = `${base}/staffAllowanceType`;
           draft.fieldOverrides[path] = { state: 'set', value: 'unsupported', updatedAt: new Date().toISOString() };
           draft.staffReviews[path] = { status: 'accepted', at: new Date().toISOString(), note: 'Staff retained this request as a separate task.' };
           break;
+        }
+        case 'add_quote_extra': {
+          if (request.kind !== 'quote' || request.body.requestedMoney.length >= 100) return null;
+          const kind = input.entityId;
+          if (kind !== 'dinner' && kind !== 'lunch' && kind !== 'airport_transfer' && kind !== 'office_transfer') return null;
+          const row: QuoteRequest['body']['requestedMoney'][number] = { id: id(), amount: null, currency: 'ZAR',
+            unit: kind === 'airport_transfer' ? 'per_trip' : 'per_person_per_night',
+            scope: 'overall' as const, targetRefs: [], sourceRefs: [], staffAllowanceType: kind };
+          request.body.requestedMoney.push(row); createdId = row.id;
+          changedRoots.push(`${root}/body/requestedMoney`); break;
+        }
+        case 'remove_quote_extra': {
+          if (request.kind !== 'quote' || !request.body.requestedMoney.some(row => row.id === input.entityId)) return null;
+          request.body.requestedMoney = request.body.requestedMoney.filter(row => row.id !== input.entityId);
+          changedRoots.push(`${root}/body/requestedMoney`); break;
         }
         case 'add_quote_group': {
           if (request.kind !== 'quote' || request.body.groups.length >= 100) return null;

@@ -9,6 +9,7 @@ import {
   SyncIngestionGap,
   type SyncIngestionStorage,
 } from './ingest.js';
+import { mailboxTransport } from '../db/schema/mail.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { markObservationIngested, refreshSourceSummary } from './ledger.js';
 import { persistOutlookHistory } from '../mail/ingest/outlook-history.js';
@@ -59,7 +60,8 @@ export async function claimSyncIngestion(db: DB, owner: string): Promise<SyncDra
       .where(
         and(
           eq(observationTable.exportState, 'retained'),
-          sql`${observationTable.ingestionState} in ('pending','processing')`,
+          sql`(${observationTable.ingestionState} in ('pending','processing') or
+            (${observationTable.ingestionState} = 'attention' and ${observationTable.errorCode} = 'UNKNOWN_DIRECTION'))`,
           sql`(${observationTable.drainExpiresAt} is null or ${observationTable.drainExpiresAt} <= clock_timestamp())`,
           sql`(${observationTable.drainNextAttemptAt} is null or ${observationTable.drainNextAttemptAt} <= clock_timestamp())`,
         ),
@@ -141,6 +143,8 @@ export async function ingestClaimedObservation(
     .from(sourceTable)
     .where(eq(sourceTable.id, observation.sourceId));
   if (!source?.captureStartedAt) throw new SyncIngestionGap('SOURCE_CUTOVER_MISSING');
+  const [mailbox] = await db.select({ email: mailboxTransport.email, sendFromConfig: mailboxTransport.sendFromConfig })
+    .from(mailboxTransport).where(eq(mailboxTransport.id, source.transportId));
   const origin = await artifactOrigin(db, observation);
   const artifacts = await db
     .select()
@@ -155,7 +159,7 @@ export async function ingestClaimedObservation(
   timer.unref();
   let prepared: Awaited<ReturnType<typeof buildOutlookHistoryInput>>;
   try {
-    prepared = await buildOutlookHistoryInput(storage, source, observation, artifacts, origin);
+    prepared = await buildOutlookHistoryInput(storage, source, observation, artifacts, origin, mailbox);
   } finally {
     clearInterval(timer);
   }
@@ -200,7 +204,7 @@ export async function ingestClaimedObservation(
     )
       throw new SyncIngestionGap('ARTIFACT_CHANGED');
     const currentEvidence = syncObservationV1.parse(current.evidence);
-    const { event: _beforeEvent, ...beforeEvidence } = prepared.evidence;
+    const { event: _beforeEvent, ...beforeEvidence } = syncObservationV1.parse(observation.evidence);
     const { event: _currentEvent, ...currentBody } = currentEvidence;
     if (stableJson(beforeEvidence) !== stableJson(currentBody))
       throw new SyncIngestionGap('OBSERVATION_CHANGED');
@@ -214,7 +218,7 @@ export async function ingestClaimedObservation(
           sourceReceiptId: current.id,
           cutover: source.captureStartedAt!,
           observation: {
-            direction: currentEvidence.direction,
+            direction: prepared.evidence.direction,
             receivedAt: currentEvidence.timestamps.receivedAt,
             sentAt: currentEvidence.timestamps.sentAt,
             event: currentEvidence.event,
@@ -225,6 +229,7 @@ export async function ingestClaimedObservation(
     await t
       .update(observationTable)
       .set({
+        direction: prepared.evidence.direction,
         ingestionState: result.attention ? 'attention' : 'committed',
         drainOwner: null,
         drainExpiresAt: null,
@@ -245,17 +250,18 @@ async function recordFailure(db: DB, claim: SyncDrainClaim, error: unknown) {
     // Attachment repair can change the evidence while the drain verifies it.
     // The old snapshot must be discarded, then the new one claimed normally.
     const retryableGaps = new Set(['MISSING_REQUIRED_ARTIFACT', 'ARTIFACT_CHANGED',
-      'ARTIFACT_ORIGIN_CHANGED', 'OBSERVATION_CHANGED']);
-    const attention = error instanceof SyncIngestionGap && !retryableGaps.has(error.code);
+      'ARTIFACT_ORIGIN_CHANGED', 'OBSERVATION_CHANGED', 'UNKNOWN_DIRECTION']);
     const now = await databaseNow(t),
       retries = row.retryCount + 1,
       delay = Math.min(60_000, 1000 * 2 ** Math.min(6, retries - 1));
+    const unresolvedDirection = error instanceof SyncIngestionGap && error.code === 'UNKNOWN_DIRECTION' && retries >= 3;
+    const attention = error instanceof SyncIngestionGap && (!retryableGaps.has(error.code) || unresolvedDirection);
     await t
       .update(observationTable)
       .set({
         ingestionState: attention ? 'attention' : 'pending',
         retryCount: retries,
-        errorCode: attention ? error.code : 'INGESTION_RETRY',
+        errorCode: unresolvedDirection ? 'UNKNOWN_DIRECTION_UNRESOLVED' : attention ? error.code : 'INGESTION_RETRY',
         drainOwner: null,
         drainExpiresAt: null,
         drainNextAttemptAt: attention ? null : new Date(now.getTime() + delay),

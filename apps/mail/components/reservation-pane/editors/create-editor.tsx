@@ -10,7 +10,6 @@ import styles from './create-quote-editor.module.css';
 type Editor = WorkbenchEditorProps;
 type BookingField = { key: string; label: string; picker?: string; party?: boolean; type?: string; hint?: string; maxLength?: number };
 const roomFields: BookingField[] = [
-  { key: 'requestedRoomDescription', label: 'Requested room', maxLength: 1000, hint: 'Customer room description. Choose the Infor category below.' },
   { key: 'requestedMealPlan', label: 'Requested Meal Plan', maxLength: 120, hint: 'Customer meal plan request. Confirm it against the Infor rate.' },
   { key: 'roomType', label: 'Room Type', picker: 'room_type' },
   { key: 'roomTypeForCharge', label: 'Room Type for Charge', picker: 'room_type_for_charge', hint: 'Blank uses the Infor default. Infor checks the price for the selected category.' },
@@ -389,8 +388,11 @@ export function CreateEditor(editor: Editor) {
   const [commissionOpen, setCommissionOpen] = useState(commissionNeedsAttention);
   useEffect(() => { if (commissionNeedsAttention) setCommissionOpen(true); }, [commissionNeedsAttention]);
   const sharedBooking = [stayFields.find(field => field.key === 'guaranteeType')!, ...roomFields];
+  const lunchRequested = [valueAt(snapshot, `${shared}/requestedMealPlan`), ...sections.map(section => record(section.defaults).requestedMealPlan),
+    ...allocations.map(allocation => record(allocation.overrides).requestedMealPlan)].some(value => /\blunch\b/i.test(text(value)));
   const extraStay = [...stayFields.filter(field => field.key !== 'guaranteeType'), trackField];
   return <div className={`${styles.editor} ${styles.compactCreate}`}>
+    {lunchRequested && <p className={styles.notice} role="note">Centurion Meal Plans do not include lunch. Arrange lunch as a separate extra.</p>}
     {hasCompleted && <p className={styles.notice}>Saved rooms keep their confirmed details. Changes to shared values and dates apply to remaining rooms only.</p>}
     <Section title="Commercial">
       <fieldset disabled={allCompleted} className={styles.plainFieldset}>

@@ -1,3 +1,4 @@
+import { isLunchOnlyMealRequest, normalizeRequestedMealPlan } from './reservation-workflow-v2-meal-plan.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -676,12 +677,16 @@ export function compileReservationWorkflowV2Create(draft: ReservationWorkflowV2D
 export function reservationWorkflowV2MealPlanMatches(expected: string | null, observed: unknown, propertyCode: string): boolean {
   if (expected === null) return true;
   if (typeof observed !== 'string') return false;
+  const requested = normalizeRequestedMealPlan(expected);
   const aliases = boardsFor(propertyCode);
   const mealCode = (value: string) => {
     const normalized = norm(value);
-    return aliases[normalized === 'dinner_bb' ? 'dinner_bed_breakfast' : normalized];
+    const mealPlan = normalizeRequestedMealPlan(value).mealPlan;
+    const key = mealPlan === 'dinner_bb' ? 'dinner_bed_breakfast' : mealPlan;
+    return aliases[normalized] ?? (key ? aliases[key] : undefined);
   };
   const expectedCode = mealCode(expected), observedCode = mealCode(observed);
+  if (requested.lunchRequested && requested.mealPlan === null && isLunchOnlyMealRequest(expected)) return observedCode !== undefined;
   return expectedCode !== undefined && expectedCode === observedCode;
 }
 
@@ -999,6 +1004,27 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
   }
   const kind = kinds[field];
   if (!scopeValid || !kind) return { status: 'needs_input', issue: 'native_choice_field_not_supported' };
+  if (kind === 'rate_plan' || kind === 'room_type' || kind === 'room_type_for_charge') {
+    const sharedKind = kind;
+    const cached = [...loaded.draft.observations].reverse().find(observation => {
+      const criteria = record(observation.criteria), result = record(observation.result);
+      const observedAt = Date.parse(observation.observedAt);
+      const catalogueKind = criteria?.catalogueKind;
+      return observation.generationId === loaded.draft.generationId && observation.propertyCode === ctx.property.propertyCode &&
+        observation.sourceMessageId === loaded.draft.source.messageId && criteria?.sourceHash === loaded.draft.source.sourceHash &&
+        criteria.kind === 'native_catalogue' && catalogueKind === sharedKind && observation.status === 'complete' &&
+        observation.coverage.complete && Number.isFinite(observedAt) && Date.now() - observedAt < 30 * 60_000 &&
+        result?.closeOutcome === 'closed_unsaved' && Array.isArray(result.candidates);
+    });
+    if (cached) {
+      const observation = { ...cached, ref: randomUUID(), criteria: { ...cached.criteria,
+        workflow: `${request.kind}_catalogue`, requestId: request.id, catalogueKind: kind, fieldPaths: [path] } };
+      const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), { workItemId: input.workItemId,
+        source: input.source, observation });
+      return appended.status === 'ok' ? { status: 'ok', candidates: observation.result.candidates,
+        observationRef: observation.ref } : appended;
+    }
+  }
   const tool = await import(new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url).href) as {
     withBookingLookupSession: (operation: (session: { page: unknown; runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
       Promise<unknown>, options?: Record<string, unknown>) => Promise<unknown>;

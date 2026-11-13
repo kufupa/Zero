@@ -215,14 +215,14 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
         if (!alive || currentOwner.current !== owner || epoch.current.value !== selectedEpoch) return;
         if (result.status !== 'ok') {
           const elapsedMs = Date.now() - startedAt;
-          setSourceRetryable(result.status === 'source_unavailable');
+          setSourceRetryable(result.status === 'source_unavailable' && result.reason !== 'ambiguous');
           const message = result.status === 'wrong_property'
             ? result.message : result.reason === 'ambiguous'
-              ? 'Nava found more than one matching email. Reopen the selected email after copying finishes.'
+              ? 'Nava found more than one matching email. Check sync details or contact support to resolve this copy.'
               : result.reason === 'content_mismatch'
                 ? 'The selected email differs from Nava’s copy. Retry after Outlook finishes copying it.'
               : result.reason === 'attention'
-                ? 'This email copy needs checking before Nava can open it. Retry after copying finishes.'
+                ? 'This email copy needs attention before Nava can open it. Open sync details and choose Retry missing.'
                 : elapsedMs >= 110_000
                   ? 'Nava could not open this email copy yet. Retry opening it, or reconnect Outlook if copying has stopped.'
                   : elapsedMs >= 30_000
@@ -276,7 +276,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
   if (reloading) return <p className="p-4 text-sm text-slate-600">Loading the latest Nava pane…</p>;
   const currentEvidencePreview = sourceEvidencePreview?.owner === owner ? sourceEvidencePreview : null;
   return (
-    <div className={`flex ${preview ? 'h-full' : 'h-screen'} min-h-0 flex-col overflow-hidden bg-slate-50 text-slate-800`}>
+    <div className={`flex w-full flex-1 min-w-0 ${preview ? 'h-full' : 'h-screen'} min-h-0 flex-col overflow-hidden bg-slate-50 text-slate-800`}>
       <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-white p-3">
         <div className="min-w-0"><strong className="text-base">Nava</strong>
           <p className="truncate text-xs text-slate-500">{connection?.email || 'Select a mailbox'}</p></div>

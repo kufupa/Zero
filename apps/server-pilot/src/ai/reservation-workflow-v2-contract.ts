@@ -36,7 +36,7 @@ const moneyRequestSchema = z.object({
   scope: z.enum(['overall', 'per_target', 'unresolved']),
   targetRefs: z.array(refSchema).max(100),
   sourceRefs: z.array(refSchema).max(100),
-  staffAllowanceType: z.enum(['dinner', 'unsupported']).optional(),
+  staffAllowanceType: z.enum(['dinner', 'lunch', 'airport_transfer', 'office_transfer', 'unsupported']).optional(),
 }).strict();
 const partySchema = z.object({
   name: z.string().max(300).nullable(),
@@ -92,7 +92,9 @@ const prefillRequestFactsSchema = z.object({
   id: idSchema,
   kind: z.enum(['quote', 'create', 'amend', 'cancel', 'services', 'filing', 'other']),
   requestText: extractedClaimSchema,
-  dates: z.array(z.object({ arrival: extractedClaimSchema.optional(), departure: extractedClaimSchema.optional() }).strict()).max(100).default([]),
+  dates: z.array(z.object({ arrival: extractedClaimSchema.optional(), departure: extractedClaimSchema.optional(),
+    roomCount: extractedClaimSchema.optional(), guestNames: z.array(extractedClaimSchema).max(200).optional(),
+    mealPlan: extractedClaimSchema.optional() }).strict()).max(100).default([]),
   roomCount: extractedClaimSchema.optional(),
   requestedPrice: z.object({ nightlyRate: extractedClaimSchema.optional(), total: extractedClaimSchema.optional(),
     currency: extractedClaimSchema.optional(), scope: z.enum(['per_room', 'whole_group', 'unknown']),
@@ -307,7 +309,10 @@ const requestSchema = z.discriminatedUnion('kind', [
   z.object({ id: idSchema, requestText: z.string().max(2000), sourceRefs: z.array(refSchema).max(100),
     serviceRefs: z.array(refSchema).max(100), documentRefs: z.array(refSchema).max(100), kind: z.literal('other'),
     body: z.object({ requestedText: z.string().max(2000), supported: z.literal(false),
-      separatedFrom: z.object({ requestId: idSchema, moneyId: idSchema }).strict().optional() }).strict() }).strict(),
+      separatedFrom: z.object({ requestId: idSchema, moneyId: idSchema,
+        allowance: z.object({ kind: z.enum(['dinner', 'lunch', 'airport_transfer', 'office_transfer']),
+          groupIds: z.array(idSchema).max(100), quoteRequestIds: z.array(idSchema).max(200) }).strict().optional(),
+      }).strict().optional() }).strict() }).strict(),
 ]);
 
 export const reservationWorkflowV2ProposalSchema = z.object({
@@ -325,6 +330,15 @@ export const reservationWorkflowV2ProposalSchema = z.object({
 }).strict();
 
 export type ReservationWorkflowV2Proposal = z.infer<typeof reservationWorkflowV2ProposalSchema>;
+
+export function separatedQuoteMoneyLinked(
+  link: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'other' }>['body']['separatedFrom'],
+  requestId: string, moneyId: string,
+): boolean {
+  return link?.moneyId === moneyId && (link.allowance
+    ? link.allowance.quoteRequestIds.includes(requestId) : link.requestId === requestId);
+}
+
 
 // Existing drafts may contain notes accepted before the native limit was fixed.
 // New/model proposals still use the strict 2,000-character schema above.
@@ -448,7 +462,11 @@ const modelQuoteBodySchema = quoteBodySchema.extend({ groups: z.array(modelQuote
 const modelServiceRequestSchema = serviceRequestSchema.extend({ requestedMoney: z.array(modelMoneyRequestSchema).max(100) });
 const modelRequestSchema = z.discriminatedUnion('kind', [requestSchema.options[0].extend({ body: modelQuoteBodySchema }),
   requestSchema.options[1].extend({ body: modelCreateBodySchema }), requestSchema.options[2],
-  requestSchema.options[3], requestSchema.options[4], requestSchema.options[5], requestSchema.options[6]]);
+  requestSchema.options[3], requestSchema.options[4], requestSchema.options[5], requestSchema.options[6].extend({
+    body: requestSchema.options[6].shape.body.extend({
+      separatedFrom: z.object({ requestId: idSchema, moneyId: idSchema }).strict().optional(),
+    }),
+  })]);
 const modelProposalSchema = reservationWorkflowV2ProposalSchema.extend({
   content: reservationWorkflowV2ProposalSchema.shape.content.extend({ requests: z.array(modelRequestSchema).max(200),
     services: z.array(modelServiceRequestSchema).max(200) }),
@@ -478,7 +496,7 @@ export const reservationWorkflowV2AddActionInputSchema = reservationWorkflowV2It
 }).strict();
 export const reservationWorkflowV2ChangeRowsInputSchema = reservationWorkflowV2ItemInputSchema.extend({
   kind: z.enum(['add_allocation', 'remove_allocation', 'move_allocation', 'add_date_section', 'remove_date_section',
-    'add_quote_group', 'remove_quote_group', 'add_target', 'remove_target', 'add_service', 'remove_service',
+    'add_quote_group', 'remove_quote_group', 'add_quote_extra', 'remove_quote_extra', 'add_target', 'remove_target', 'add_service', 'remove_service',
     'add_document', 'remove_document', 'remove_action', 'separate_quote_money', 'split_quote_dates',
     'separate_filing_target', 'separate_cancel_target', 'link_created_addon_target']),
   requestId: idSchema, parentId: idSchema.optional(), entityId: idSchema.optional(), childIds: z.array(idSchema).max(200).optional(),

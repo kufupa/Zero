@@ -1,5 +1,6 @@
 import { hydrateStoredMailExtraction } from './extraction/stored-mail-extraction.js';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, or, sql } from 'drizzle-orm';
+import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { createHash } from 'node:crypto';
 import type { DB } from '../db/client.js';
 import { mailExtraction } from '../db/schema/work.js';
@@ -148,27 +149,31 @@ export async function ensureQuoteOutcomeWorkItem(
   db: DB,
   scope: { transportId: string; threadId: string; sourceMessageId: string },
 ): Promise<string> {
-  const find = () => db.select({ id: workItem.id }).from(workItem).where(and(
-    eq(workItem.transportId, scope.transportId),
-    eq(workItem.threadId, scope.threadId),
-    eq(workItem.kind, 'quote'),
-    eq(workItem.sourceMessageId, scope.sourceMessageId),
-  )).limit(1);
-  const [existing] = await find();
-  if (existing) return existing.id;
-  const [extraction] = await db.select({ id: mailExtraction.id }).from(mailExtraction)
-    .where(and(eq(mailExtraction.messageId, scope.sourceMessageId), eq(mailExtraction.status, 'succeeded')))
-    .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id)).limit(1);
-  await db.insert(workItem).values({
-    transportId: scope.transportId,
-    threadId: scope.threadId,
-    sourceMessageId: scope.sourceMessageId,
-    kind: 'quote',
-    extractionId: extraction?.id ?? null,
-  }).onConflictDoNothing({ target: [workItem.threadId, workItem.kind, workItem.sourceMessageId] });
-  const [created] = await find();
-  if (!created) throw new Error('quote_work_item_missing');
-  return created.id;
+  return db.transaction(async (tx) => {
+    await lockCanonicalMailbox(tx as unknown as DB, scope.transportId);
+    const pane = sql`${workItem.state} ? 'reservationWorkflowV2'`;
+    const find = () => tx.select({ id: workItem.id }).from(workItem).where(and(
+      eq(workItem.transportId, scope.transportId),
+      eq(workItem.threadId, scope.threadId),
+      or(eq(workItem.kind, 'quote'), pane),
+      eq(workItem.sourceMessageId, scope.sourceMessageId),
+    )).orderBy(desc(pane), desc(workItem.updatedAt), desc(workItem.id)).limit(1);
+    const [existing] = await find();
+    if (existing) return existing.id;
+    const [extraction] = await tx.select({ id: mailExtraction.id }).from(mailExtraction)
+      .where(and(eq(mailExtraction.messageId, scope.sourceMessageId), eq(mailExtraction.status, 'succeeded')))
+      .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id)).limit(1);
+    await tx.insert(workItem).values({
+      transportId: scope.transportId,
+      threadId: scope.threadId,
+      sourceMessageId: scope.sourceMessageId,
+      kind: 'quote',
+      extractionId: extraction?.id ?? null,
+    }).onConflictDoNothing({ target: [workItem.threadId, workItem.kind, workItem.sourceMessageId] });
+    const [created] = await find();
+    if (!created) throw new Error('quote_work_item_missing');
+    return created.id;
+  });
 }
 
 /** Append one Nava prepared version and its human-accepted pricing version. */

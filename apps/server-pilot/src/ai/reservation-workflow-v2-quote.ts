@@ -1,3 +1,5 @@
+import { separatedQuoteMoneyLinked } from './reservation-workflow-v2-contract.js';
+import { normalizeRequestedMealPlan } from './reservation-workflow-v2-meal-plan.js';
 import type { ReservationWorkflowV2SystemReadContext } from './reservation-workflow-v2-system-read-context.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
@@ -19,7 +21,7 @@ import type {
 import { findParty } from './pane-party-lookup.js';
 import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
 import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
-import { staffQuoteInput } from './staff-quote-workflow.js';
+import { buildStaffProposalFacts, staffQuoteInput } from './staff-quote-workflow.js';
 import { runStaffQuote, staffQuoteCauseSummary } from './staff-quote-run.js';
 import { buildStaysProposalPdf } from '../quote-proposal/proposal-pdf.js';
 import { quotePropertyIdentity } from '../quote-proposal/filename.js';
@@ -89,7 +91,7 @@ type QuoteArtifactGeneration = {
   workflowRunId: string | null;
   claims: Array<Record<string, unknown>>;
   unavailableInventory?: Record<string, unknown>;
-  companyShownInCover: false;
+  companyShownInCover: boolean;
 };
 
 const record = (value: unknown): Record<string, unknown> | null =>
@@ -178,6 +180,8 @@ function reviewAccepted(draft: ReservationWorkflowV2Draft, path: string): boolea
 
 function boardCode(value: unknown, propertyCode?: string): 'room_only' | 'bb' | 'dinner_bb' | null {
   if (typeof value !== 'string') return null;
+  const normalizedRequest = normalizeRequestedMealPlan(value).mealPlan;
+  if (normalizedRequest) return normalizedRequest;
   const board = value.trim().toLocaleLowerCase().replace(/[,\s&-]+/gu, '_').replace(/_for_all$/u, '');
   if (['room_only', 'roomonly', 'ro'].includes(board)) return 'room_only';
   if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast', 'bed_breakfast'].includes(board)) return 'bb';
@@ -333,6 +337,20 @@ function preparedQuoteMatches(
     try {
       if (!deriveAuthorizedExtraLines(revision as unknown as QuoteRevision,
         facts as unknown as AuthorizedProposalFacts).some((line) => line.service === 'dinner_add_on' && line.totalMinor > 0)) return false;
+    } catch { return false; }
+  }
+  if (input.extras?.length) {
+    const facts = record(factsValue);
+    if (!facts || facts.revisionId !== revision.id || facts.authorizationId !== revision.authorizationId || facts.sourceHash !== input.sourceHash) return false;
+    try {
+      const expectedFacts = buildStaffProposalFacts({ ...input, dinnerAllowanceMinor: undefined, dinnerAllowanceUnit: undefined,
+        dinnerAllowanceLabel: undefined, dinnerAllowanceGroupIds: undefined }, { messageId: input.messageId, sourceHash: input.sourceHash },
+        { authorizationId: String(revision.authorizationId) }, revision as unknown as QuoteRevision).facts;
+      const expectedExtras = expectedFacts?.extras ?? [];
+      const actualExtras = Array.isArray(facts.extras) ? facts.extras : [];
+      if (!expectedExtras.length || expectedExtras.some(expected =>
+        !actualExtras.some(actual => hash(actual) === hash(expected)))) return false;
+      deriveAuthorizedExtraLines(revision as unknown as QuoteRevision, facts as unknown as AuthorizedProposalFacts);
     } catch { return false; }
   }
   for (const expected of input.groups) {
@@ -563,7 +581,7 @@ function compileQuote(
       childrenAges = ages as number[];
     }
     if (exceedsChildLimit) issues.push(`${base}/occupancy/childCount:native_quote_max_six_children_per_room`);
-    else if (childrenAges === null) issues.push(`${base}/occupancy:known_child_count_and_ages_required`);
+    else if (childrenAges === null) issues.push(`${base}/occupancy/${Number.isInteger(count) && Number(count) > 0 ? 'childAges' : 'childCount'}:known_child_count_and_ages_required`);
 
     const roomCodesResult = resolved(path('groups', groupIndex, 'roomCodes'), group.roomCodes);
     const rawRoomCodes = roomCodesResult && !('issue' in roomCodesResult) ? roomCodesResult.value : null;
@@ -594,8 +612,9 @@ function compileQuote(
     issues.push(`${path('groups')}:duplicate_group_id`);
   }
 
-  // A source amount alone never identifies the charge. Staff must classify dinner explicitly, choose
-  // its unit and group scope, and review it before it can enter a generated quote.
+  const extras: NonNullable<z.infer<typeof staffQuoteInput>['extras']> = [];
+  const lunchClaimGroupIds = new Set<string>();
+  const separatedLunchGroupIds = new Set<string>();
   let dinner: Pick<z.infer<typeof staffQuoteInput>, 'dinnerAllowanceMinor' | 'dinnerAllowanceUnit' | 'dinnerAllowanceGroupIds'> = {};
   for (const [index, claim] of request.body.requestedMoney.entries()) {
     const base = path('requestedMoney', index);
@@ -611,32 +630,43 @@ function compileQuote(
     const amountMinor = match ? Number(match[1]) * 100 + Number((match[2] ?? '').padEnd(2, '0')) : 0;
     const rawUnit = !('issue' in unit) ? unit.value : undefined;
     const unitValue = rawUnit === 'per_person_night' ? 'per_person_per_night' : rawUnit;
-    const unitAllowed = unitValue === 'per_person_per_night' || unitValue === 'per_room_per_night' || unitValue === 'per_person';
+    const unitAllowed = unitValue === 'per_person_per_night' || unitValue === 'per_room_per_night' || unitValue === 'per_person' || unitValue === 'per_trip' || unitValue === 'item';
     const scopeValue = !('issue' in scope) ? scope.value : undefined;
     const targetValues = !('issue' in targets) && Array.isArray(targets.value) ? targets.value : [];
     const allIds = nativeGroups.map((group) => group.id);
     const groupIds = scopeValue === 'overall' && targetValues.length === 0 ? allIds
       : scopeValue === 'per_target' && targetValues.length > 0 && targetValues.every((id) => typeof id === 'string' && allIds.includes(id)) &&
           new Set(targetValues).size === targetValues.length ? targetValues as string[] : [];
-    const supported = selectedKind === 'dinner' && !values.some((item) => 'issue' in item) &&
+    const supportedKind = selectedKind === 'dinner' || selectedKind === 'lunch' || selectedKind === 'airport_transfer' || selectedKind === 'office_transfer';
+    const supported = supportedKind && !values.some((item) => 'issue' in item) &&
       !('issue' in currency) && typeof currency.value === 'string' && currency.value.trim().toUpperCase() === 'ZAR' &&
       amountMinor > 0 && Number.isSafeInteger(amountMinor) && unitAllowed && groupIds.length > 0 &&
-      dinner.dinnerAllowanceMinor === undefined;
-    const separatedOther = draft.proposal.content.requests.some((candidate) => {
-      if (candidate.kind !== 'other') return false;
-      const otherBody = record(candidate.body);
-      const separatedFrom = record(otherBody?.separatedFrom);
-      return separatedFrom?.requestId === request.id && separatedFrom.moneyId === claim.id;
-    });
-    const explicitlySeparated = selectedKind === 'unsupported' && separatedOther;
+      (selectedKind !== 'dinner' || dinner.dinnerAllowanceMinor === undefined && unitValue !== 'per_trip' && unitValue !== 'item');
+    const separatedOther = draft.proposal.content.requests.find(candidate => candidate.kind === 'other' &&
+      separatedQuoteMoneyLinked(candidate.body.separatedFrom, request.id, claim.id));
+    const explicitlySeparated = selectedKind === 'unsupported' && separatedOther?.kind === 'other';
+    if (selectedKind === 'lunch') groupIds.forEach(id => lunchClaimGroupIds.add(id));
+    if (explicitlySeparated && separatedOther.kind === 'other') {
+      const allowance = separatedOther.body.separatedFrom?.allowance;
+      const kind = allowance?.kind ?? claim.staffAllowanceType;
+      if (kind === 'lunch') {
+        const covered = allowance ? groupIds.filter(id => allowance.groupIds.includes(id)) : groupIds;
+        covered.forEach(id => { lunchClaimGroupIds.add(id); separatedLunchGroupIds.add(id); });
+      }
+    }
     if (!supported && !explicitlySeparated) {
       // Background HMS room prices remain useful while the unpriced request stays visible.
-      // Generation stays blocked until staff choose dinner or save a linked Other task.
       if (execute) issues.push(`${base}:allowance_requires_supported_staff_choice`);
       continue;
     }
     if (supported) {
-      dinner = { dinnerAllowanceMinor: amountMinor,
+      if (selectedKind !== 'dinner') {
+        const service = selectedKind === 'lunch' ? 'lunch_allowance' : selectedKind === 'airport_transfer' ? 'shuttle' : 'office_transfer';
+        const extraUnit = unitValue === 'per_person_per_night' ? 'per_person_night' : unitValue;
+        if (extraUnit === 'per_person_night' || extraUnit === 'per_person' || extraUnit === 'per_room_per_night' || extraUnit === 'per_trip' || extraUnit === 'item') {
+          extras.push({ id: claim.id, service, amountMinor, unit: extraUnit, groupIds });
+        }
+      } else dinner = { dinnerAllowanceMinor: amountMinor,
         dinnerAllowanceUnit: unitValue as 'per_person_per_night' | 'per_room_per_night' | 'per_person',
         dinnerAllowanceGroupIds: groupIds };
       if (execute) for (const key of ['staffAllowanceType', 'amount', 'currency', 'unit', 'scope', 'targetRefs']) {
@@ -675,7 +705,21 @@ function compileQuote(
   const clientTelephone = phoneResult && !('issue' in phoneResult) ? cleanText(phoneResult.value) ?? '' : '';
   const notesPath = path('notes');
   const notesResult = resolved(notesPath, request.body.notes);
-  const notes = notesResult && !('issue' in notesResult) ? cleanText(notesResult.value) ?? undefined : undefined;
+  const sourceNotes = notesResult && !('issue' in notesResult) ? cleanText(notesResult.value) ?? undefined : undefined;
+  const lunchRequestedGroupIds = new Set(lunchClaimGroupIds);
+  request.body.groups.forEach((group, index) => {
+    const requested = resolvedLeaf(draft, path('groups', index, 'requestedMealPlan'), group.requestedMealPlan);
+    if (!('issue' in requested) && normalizeRequestedMealPlan(requested.value).lunchRequested) lunchRequestedGroupIds.add(group.id);
+  });
+  const pricedLunchGroupIds = new Set(extras.filter(extra => extra.service === 'lunch_allowance').flatMap(extra => extra.groupIds));
+  const lunchSeparated = separatedLunchGroupIds.size > 0;
+  const lunchRequested = lunchRequestedGroupIds.size > 0;
+  const lunchNotice = lunchSeparated ? 'Centurion meal plans do not include lunch. The separate lunch request is not included in this room quote.'
+    : lunchRequested ? 'Centurion meal plans do not include lunch. Lunch is quoted as a separate extra.' : undefined;
+  const notes = [sourceNotes, lunchNotice].filter(Boolean).join('\n') || undefined;
+  if (execute && [...lunchRequestedGroupIds].some(id => !separatedLunchGroupIds.has(id) && !pricedLunchGroupIds.has(id))) {
+    issues.push(`${path('requestedMoney')}:lunch_extra_price_required`);
+  }
   if (notes && notes.length > 1000) issues.push(`${notesPath}:native_note_limit`);
   const outputPath = path('outputIntent', 'artifacts');
   const outputResult = execute ? resolved(outputPath, request.body.outputIntent.artifacts)
@@ -721,6 +765,7 @@ function compileQuote(
     ...(notes ? { notes } : {}),
     ...(Object.keys(parties).length ? { parties } : {}),
     ...dinner,
+    ...(extras.length ? { extras } : {}),
   };
   const parsedInput = staffQuoteInput.safeParse(nativeInput);
   if (!parsedInput.success) {
@@ -1314,6 +1359,7 @@ function makeCoverEmail(
     body: [
       `Good day${compiled.input.attention ? ` ${compiled.input.attention}` : ''},`,
       `Please find your quotation${hotelName ? ` for ${hotelName}` : ''} below.`,
+      ...(compiled.input.organization ? [`Organization: ${compiled.input.organization}`] : []),
       ...lines,
       ...extras,
       `Total: ${money(total)}`,
@@ -1350,8 +1396,7 @@ async function quoteArtifacts(
   }
   const header = {
     attention: compiled.input.attention,
-    // HMS party still scopes the native rate; the client company is deliberately omitted from quote covers.
-    organization: '',
+    organization: compiled.input.organization,
     clientEmail: compiled.input.clientEmail,
     clientTelephone: compiled.input.clientTelephone,
     signerName: actor?.name ?? '',
@@ -1402,7 +1447,7 @@ async function quoteArtifacts(
     claims: compiled.input.groups.map((entry) => ({ groupId: entry.id, arrivalDate: entry.arrivalDate,
       departureDate: entry.departureDate, quantity: entry.quantity, mealPlan: entry.mealPlan, adultsPerRoom: entry.adults,
       childAgesPerRoom: entry.childrenAges })),
-    companyShownInCover: false as const };
+    companyShownInCover: Boolean(compiled.input.organization) };
 }
 
 function unavailableQuoteReply(

@@ -14,6 +14,7 @@ import { recoverReservationWorkflowV2SourceFields } from './reservation-workflow
 import { advancePaneRevision, redoWorkItemRevision, undoWorkItemRevision,
   rebaseReservationV2Path, rebaseReservationV2Observations, nativeStructureIsSafe } from './work-item-revision.js';
 import {
+  separatedQuoteMoneyLinked,
   RESERVATION_PREFILL_SCHEMA_VERSION,
   RESERVATION_WORKFLOW_V2_VERSION,
   reservationWorkflowV2DraftSchema,
@@ -494,7 +495,7 @@ export async function finishReservationWorkflowV2Prefill(ctx: Context, input: Mu
   failure?: ReservationWorkflowV2Draft['errors'][number];
 }): Promise<ReservationWorkflowV2StateResult> {
   return ctx.db.transaction(async (tx) => {
-    if (input.jobFence) await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
+    await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
     await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
     if (input.jobFence && !(await currentPrefillJob(tx, input.jobFence, input.source.messageId))) return { status: 'stale_revision' as const };
     const item = await loadItem(tx, ctx, input.workItemId, true);
@@ -522,17 +523,26 @@ export async function finishReservationWorkflowV2Prefill(ctx: Context, input: Mu
         fieldReviewRequirements: install.fieldReviewRequirements ?? {}, errors: install.errors ?? [], revision: item.revision + 1 }
         : !superseded && input.failed ? { status: 'prefill_failed', errors: [input.failure ?? { stage: 'extract', code: 'prefill_unavailable',
           message: 'Prefill could not finish. You can enter the request manually or retry.' }] } : {}) });
-    const nextState = { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next };
+    const nextState: State = { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next };
     if (!install) {
       await tx.update(workItem).set({ state: nextState, updatedAt: new Date() }).where(eq(workItem.id, item.id));
       return { ...current, draft: next };
     }
+    const classifiedKind = initialKind(install);
+    const [kindConflict] = classifiedKind === item.kind ? [] : await tx.select({ id: workItem.id }).from(workItem)
+      .where(and(eq(workItem.transportId, ctx.transportId), eq(workItem.threadId, input.source.threadId),
+        eq(workItem.sourceMessageId, input.source.messageId), eq(workItem.kind, classifiedKind), ne(workItem.id, item.id)))
+      .limit(1).for('update');
+    if (kindConflict) nextState.reservationWorkflowV2Classification = { kind: classifiedKind,
+      conflictingWorkItemId: kindConflict.id };
+    else delete nextState.reservationWorkflowV2Classification;
     const advanced = advancePaneRevision({ revision: item.revision, revisionHead: item.revisionHead,
       seq: item.revisionSeq, previousState: item.state, nextState, extractionId: item.extractionId });
     await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'ai', type: 'field.seed',
-      fieldPath: RESERVATION_WORKFLOW_V2_STATE_KEY, value: { generationId: next.generationId, status: next.status },
+      fieldPath: RESERVATION_WORKFLOW_V2_STATE_KEY, value: { generationId: next.generationId, status: next.status, kind: classifiedKind,
+        ...(kindConflict ? { classificationConflictWorkItemId: kindConflict.id } : {}) },
       aiSource: RESERVATION_PREFILL_SCHEMA_VERSION, evidence: advanced.evidence });
-    await tx.update(workItem).set({ state: nextState, revision: advanced.revision, revisionHead: advanced.revisionHead,
+    await tx.update(workItem).set({ state: nextState, kind: kindConflict ? item.kind : classifiedKind, revision: advanced.revision, revisionHead: advanced.revisionHead,
       revisionSeq: item.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, item.id));
     return { status: 'ok' as const, draft: next, revision: advanced.revision,
       revisionHead: advanced.revisionHead, seq: item.revisionSeq + 1 };
@@ -1168,7 +1178,7 @@ function validStructuredEdit(draft: ReservationWorkflowV2Draft, path: string, ov
     if (!unchanged(override.value, stable, indexed)) return false;
   }
   if (/\/requestedMoney\/\d+\/staffAllowanceType$/.test(path))
-    return override.state === 'set' && (override.value === 'dinner' || override.value === 'unsupported');
+    return override.state === 'set' && ['dinner', 'lunch', 'airport_transfer', 'office_transfer', 'unsupported'].includes(String(override.value));
   if (!/\/(?:occupancy|requestedTotals)$/.test(path) || override.state !== 'set') return true;
   const value = override.value;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -1549,7 +1559,7 @@ function updateSeparatedQuoteMoney(current: ReservationWorkflowV2Draft, next: Re
     claimIndexes = request.body.requestedMoney.map((_, index) => index);
   } else if (parts.length === 6 && parts[4] === 'body' && parts[5] === 'requestedMoney') {
     if (request.body.requestedMoney.some(claim => current.proposal.content.requests.some(row => row.kind === 'other' &&
-        row.body.separatedFrom?.requestId === request.id && row.body.separatedFrom.moneyId === claim.id))) return null;
+        separatedQuoteMoneyLinked(row.body.separatedFrom, request.id, claim.id)))) return null;
     return next;
   } else if (parts[4] === 'body' && parts[5] === 'requestedMoney') {
     const claimIndex = /^\d+$/.test(parts[6] ?? '') ? Number(parts[6])
@@ -1565,16 +1575,16 @@ function updateSeparatedQuoteMoney(current: ReservationWorkflowV2Draft, next: Re
   const indexedRoot = `/proposal/content/requests/${indexedRequest}`;
   const requestText = effectiveDraftPath(next, `${stableRoot}/requestText`, `${indexedRoot}/requestText`);
   const requestSummary = typeof requestText === 'string' ? requestText : request.requestText;
-  let result = next;
+  let result = { ...next };
   for (const claimIndex of claimIndexes) {
     const claim = request.body.requestedMoney[claimIndex]!;
     const moneyStable = `${stableRoot}/body/requestedMoney/${claimIndex}`;
     const moneyIndexed = `${indexedRoot}/body/requestedMoney/${claimIndex}`;
     const link = current.proposal.content.requests.filter((row): row is Extract<typeof row, { kind: 'other' }> => row.kind === 'other' &&
-      row.body.separatedFrom?.requestId === request.id && row.body.separatedFrom.moneyId === claim.id);
+      separatedQuoteMoneyLinked(row.body.separatedFrom, request.id, claim.id));
     if (!link.length) continue;
     const kind = effectiveDraftPath(result, `${moneyStable}/staffAllowanceType`, `${moneyIndexed}/staffAllowanceType`);
-    if (kind === 'dinner') {
+    if (['dinner', 'lunch', 'airport_transfer', 'office_transfer'].includes(String(kind))) {
       for (const other of link) {
         const root = `/proposal/content/requests/${encodeURIComponent(other.id)}`;
         const index = result.proposal.content.requests.findIndex(row => row.id === other.id);
@@ -1587,6 +1597,26 @@ function updateSeparatedQuoteMoney(current: ReservationWorkflowV2Draft, next: Re
           .some(path => path === prefix || path.startsWith(`${prefix}/`)) ||
           Object.keys(result.staffReviews).some(path => path === prefix || path.startsWith(`${prefix}/`)));
         if (hasHistory || hasChildren || hasStaffText) return null;
+        const allowance = other.body.separatedFrom?.allowance;
+        const remaining = allowance?.quoteRequestIds.filter(id => id !== request.id && result.proposal.content.requests.some(quote => {
+          if (quote.kind !== 'quote' || quote.id !== id) return false;
+          const index = quote.body.requestedMoney.findIndex(money => money.id === claim.id);
+          if (index < 0) return false;
+          const quoteIndex = result.proposal.content.requests.indexOf(quote);
+          return effectiveDraftPath(result, `/proposal/content/requests/${encodeURIComponent(id)}/body/requestedMoney/${index}/staffAllowanceType`,
+            `/proposal/content/requests/${quoteIndex}/body/requestedMoney/${index}/staffAllowanceType`) === 'unsupported';
+        })) ?? [];
+        if (allowance && remaining.length) {
+          const proposal = structuredClone(result.proposal);
+          const retained = proposal.content.requests.find(row => row.id === other.id);
+          if (!retained || retained.kind !== 'other' || !retained.body.separatedFrom?.allowance) return null;
+          const groupIds = new Set(proposal.content.requests.flatMap(quote => quote.kind === 'quote' && remaining.includes(quote.id)
+            ? quote.body.groups.map(group => group.id) : []));
+          retained.body.separatedFrom.allowance = { ...allowance, quoteRequestIds: remaining,
+            groupIds: allowance.groupIds.filter(id => groupIds.has(id)) };
+          result.proposal = proposal;
+          continue;
+        }
         const removed = rebaseDraftAfterRequestRemoval(result, other.id);
         if (!removed) return null;
         result = removed;
@@ -1619,6 +1649,14 @@ function updateSeparatedQuoteMoney(current: ReservationWorkflowV2Draft, next: Re
       const target = proposal.content.requests.find(row => row.id === other.id);
       if (!target || target.kind !== 'other') return null;
       target.body.requestedText = generated;
+      const allowance = target.body.separatedFrom?.allowance;
+      if (allowance && kind === 'unsupported') {
+        const ids = new Set(request.body.groups.map(group => group.id));
+        const scope = readMoney('scope', claim.scope), refs = readMoney('targetRefs', claim.targetRefs);
+        const selected = scope === 'overall' && Array.isArray(refs) && !refs.length ? [...ids]
+          : scope === 'per_target' && Array.isArray(refs) ? [...ids].filter(id => refs.includes(id)) : [];
+        allowance.groupIds = [...new Set([...allowance.groupIds.filter(id => !ids.has(id)), ...selected])];
+      }
       const fieldOverrides = { ...result.fieldOverrides };
       for (const path of [textPath, indexedTextPath]) if (fieldOverrides[path]?.state === 'set') {
         fieldOverrides[path] = { ...fieldOverrides[path]!, value: generated, updatedAt: new Date().toISOString() };

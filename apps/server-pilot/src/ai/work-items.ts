@@ -1059,18 +1059,27 @@ export async function ensureWorkItem(
     extractionId: string;
   },
 ): Promise<WorkItemSnapshot> {
-  await db
-    .insert(workItem)
-    .values({
-      transportId: input.transportId,
-      threadId: input.threadId,
-      sourceMessageId: input.messageId,
-      kind: input.kind,
-      extractionId: input.extractionId,
-    })
-    .onConflictDoNothing({ target: [workItem.threadId, workItem.kind, workItem.sourceMessageId] });
-  const select = (tx: WorkTx) =>
-    tx
+  return db.transaction(async (tx) => {
+    const transaction = tx as unknown as DB;
+    await lockCanonicalMailbox(transaction, input.transportId);
+    const [pane] = await tx.select({ id: workItem.id, status: workItem.status, state: workItem.state,
+      extractionId: workItem.extractionId, revision: workItem.revision, revisionHead: workItem.revisionHead,
+      revisionSeq: workItem.revisionSeq }).from(workItem)
+      .where(and(eq(workItem.transportId, input.transportId), eq(workItem.threadId, input.threadId),
+        eq(workItem.sourceMessageId, input.messageId), sql`${workItem.state} ? 'reservationWorkflowV2'`))
+      .orderBy(desc(workItem.updatedAt), desc(workItem.id)).limit(1).for('update');
+    if (pane) return pane;
+    await tx
+      .insert(workItem)
+      .values({
+        transportId: input.transportId,
+        threadId: input.threadId,
+        sourceMessageId: input.messageId,
+        kind: input.kind,
+        extractionId: input.extractionId,
+      })
+      .onConflictDoNothing({ target: [workItem.threadId, workItem.kind, workItem.sourceMessageId] });
+    const [row] = await tx
       .select({
         id: workItem.id,
         status: workItem.status,
@@ -1081,23 +1090,13 @@ export async function ensureWorkItem(
         revisionSeq: workItem.revisionSeq,
       })
       .from(workItem)
-      .where(
-        and(
-          eq(workItem.threadId, input.threadId),
-          eq(workItem.kind, input.kind),
-          eq(workItem.sourceMessageId, input.messageId),
-        ),
-      )
-      .limit(1);
-  const [current] = await select(db);
-  if (!current) throw new Error('work item missing after upsert');
-  if (current.extractionId === input.extractionId) return current;
-  // The row lock holds off a field save (recordFieldEvent locks the same row) between the check and the move, so a
-  // value she saves meanwhile is never carried onto a read it was not checked against.
-  return db.transaction(async (tx) => {
-    const [row] = await select(tx).for('update');
+      .where(and(eq(workItem.transportId, input.transportId), eq(workItem.threadId, input.threadId),
+        eq(workItem.kind, input.kind), eq(workItem.sourceMessageId, input.messageId)))
+      .limit(1).for('update');
     if (!row) throw new Error('work item missing after upsert');
     if (row.extractionId === input.extractionId) return row;
+    // The row lock holds off a field save (recordFieldEvent locks the same row) between the check and the move, so a
+    // value she saves meanwhile is never carried onto a read it was not checked against.
     if (!(await shouldRelink(tx, row.extractionId, input.extractionId, hydrateStoredWorkState(row.state)))) return row;
     await tx
       .update(workItem)

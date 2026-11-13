@@ -4,6 +4,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb } from '../../db/client.js';
 import { aiWorkflowRun, attachment, mailThread, message } from '../../db/schema/mail.js';
+import { outlookSyncObservation, outlookSyncSource } from '../../db/schema/outlook-sync.js';
 import { workItem } from '../../db/schema/work.js';
 import { MESSAGE_ARRIVED_AT } from '../../ai/message-arrival-time.js';
 import { staffQuoteSourceHash } from '../../ai/staff-quote-workflow.js';
@@ -249,8 +250,27 @@ export const reservationWorkflowV2Router = router({
       logPaneSourceResolution({ ...diagnostic, matches: 1, result: 'content_mismatch' });
       return { status: 'source_unavailable' as const, reason: 'content_mismatch' as const };
     }
+    if (!selected && rows.length === 0 && input.selection.kind === 'outlook') {
+      const selection = input.selection;
+      const observations = await scoped.db.select({ state: outlookSyncObservation.ingestionState,
+        errorCode: outlookSyncObservation.errorCode })
+        .from(outlookSyncObservation).innerJoin(outlookSyncSource,
+          eq(outlookSyncSource.id, outlookSyncObservation.sourceId))
+        .where(and(eq(outlookSyncSource.transportId, scoped.transportId),
+          eq(outlookSyncSource.userId, scoped.userId), eq(outlookSyncSource.storeId, selection.storeId),
+          sql`${outlookSyncObservation.evidence} #>> '{locator,entryId}' = ${selection.entryId}`,
+          selection.folderEntryId !== undefined
+            ? sql`${outlookSyncObservation.evidence} #>> '{locator,folderEntryId}' = ${selection.folderEntryId}` : undefined))
+        .orderBy(sql`${outlookSyncObservation.semanticVersion} desc`).limit(1);
+      const observation = observations[0];
+      if (observation?.state === 'attention') {
+        const reason = observation.errorCode === 'AMBIGUOUS_IDENTITY' ? 'ambiguous' as const : 'attention' as const;
+        logPaneSourceResolution({ ...diagnostic, matches: 0, result: reason });
+        return { status: 'source_unavailable' as const, reason };
+      }
+    }
     if (!selected || selected.sourceProvenance?.attention != null || !selected.arrivedAt) {
-      const reason = rows.length > 1 ? 'ambiguous' as const : !selected ? 'not_found' as const
+      const reason = rows.length > 1 || selected?.sourceProvenance?.attention === 'AMBIGUOUS_IDENTITY' ? 'ambiguous' as const : !selected ? 'not_found' as const
         : selected.sourceProvenance?.attention != null ? 'attention' as const : 'missing_arrival' as const;
       logPaneSourceResolution({ ...diagnostic, matches: rows.length, result: reason });
       return { status: 'source_unavailable' as const, reason };

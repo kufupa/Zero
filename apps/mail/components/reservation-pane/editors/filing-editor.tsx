@@ -263,9 +263,9 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
           : <label className={styles.label}>Existing Infor confirmation
           <input value={confirmation} disabled={editor.view.busy} onChange={event => setConfirmation(event.target.value)} placeholder="12345678-1" />
         </label>}
-        <label className={styles.label}>Document kind
+        <label className={styles.label}>Attachment category
           <select value={kind} disabled={editor.view.busy} onChange={event => setKind(event.target.value === 'voucher' || event.target.value === 'payment_proof' ? event.target.value : '')}>
-            <option value="">Choose kind</option><option value="voucher">Voucher</option><option value="payment_proof">Payment proof</option>
+            <option value="">Choose category</option><option value="voucher">Voucher</option><option value="payment_proof">Payment proof</option>
           </select>
         </label>
       </div>

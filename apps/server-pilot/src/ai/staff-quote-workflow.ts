@@ -124,6 +124,13 @@ export const staffQuoteInput = z
     dinnerAllowanceUnit: z.enum(['per_person_per_night', 'per_room_per_night', 'per_person']).optional(),
     // Staff-approved dinner charge scope. Omitted on a manual dinner charge means every group.
     dinnerAllowanceGroupIds: z.array(z.string().min(1).max(64)).max(8).optional(),
+    extras: z.array(z.object({
+      id: z.string().min(1).max(80),
+      service: z.enum(['lunch_allowance', 'shuttle', 'office_transfer']),
+      amountMinor: extraAmount,
+      unit: z.enum(['per_person_night', 'per_person', 'per_room_per_night', 'per_trip', 'item']),
+      groupIds: z.array(z.string().min(1).max(64)).min(1).max(8),
+    }).strict()).max(100).optional(),
     lunchAllowanceMinor: extraAmount.optional(),
     lunchAllowanceLabel: staffLabel.optional(),
     officeTransferMinor: extraAmount.optional(),
@@ -719,6 +726,32 @@ export function buildStaffProposalFacts(
         dates: [first.arrivalDate],
         chargeUnit: unit,
       });
+    }
+  }
+  for (const charge of input.extras ?? []) {
+    const selected = input.groups.filter(group => charge.groupIds.includes(group.id));
+    if (selected.length !== charge.groupIds.length || new Set(charge.groupIds).size !== charge.groupIds.length) {
+      throw new Error('staff_quote_extra_groups_invalid');
+    }
+    const label = { lunch_allowance: 'Lunch', shuttle: 'Airport Transfer / Shuttle', office_transfer: 'Office Transfer' }[charge.service];
+    if (charge.unit === 'per_trip' || charge.unit === 'item') {
+      extras.push({ id: charge.id, label, quantity: 1, units: 1,
+        unitKind: charge.unit === 'per_trip' ? 'trip' : 'item', unitMinor: charge.amountMinor,
+        service: charge.service, persons: [], dates: [selected[0]!.arrivalDate], chargeUnit: charge.unit,
+        groupIds: charge.groupIds });
+      continue;
+    }
+    for (const group of selected) {
+      const dates = charge.unit === 'per_person' ? [group.arrivalDate] : occupiedDates(group.arrivalDate, group.departureDate);
+      const id = `${charge.id}-${group.id}`;
+      if (charge.unit === 'per_room_per_night') {
+        extras.push({ id, label, quantity: group.quantity, units: dates.length, unitKind: 'item',
+          unitMinor: charge.amountMinor, service: charge.service, persons: [], dates,
+          chargeUnit: charge.unit, groupIds: [group.id] });
+      } else {
+        personService(id, label, charge.service, charge.amountMinor, buildStayPersons({ ...input, groups: [group] }), dates,
+          { chargeUnit: charge.unit, groupIds: [group.id] });
+      }
     }
   }
   if (!extras.length) {
