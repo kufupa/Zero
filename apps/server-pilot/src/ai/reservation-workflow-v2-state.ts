@@ -494,7 +494,7 @@ export async function finishReservationWorkflowV2Prefill(ctx: Context, input: Mu
   failure?: ReservationWorkflowV2Draft['errors'][number];
 }): Promise<ReservationWorkflowV2StateResult> {
   return ctx.db.transaction(async (tx) => {
-    if (input.jobFence) await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
+    await lockCanonicalMailbox(tx as unknown as DB, ctx.transportId);
     await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
     if (input.jobFence && !(await currentPrefillJob(tx, input.jobFence, input.source.messageId))) return { status: 'stale_revision' as const };
     const item = await loadItem(tx, ctx, input.workItemId, true);
@@ -522,17 +522,26 @@ export async function finishReservationWorkflowV2Prefill(ctx: Context, input: Mu
         fieldReviewRequirements: install.fieldReviewRequirements ?? {}, errors: install.errors ?? [], revision: item.revision + 1 }
         : !superseded && input.failed ? { status: 'prefill_failed', errors: [input.failure ?? { stage: 'extract', code: 'prefill_unavailable',
           message: 'Prefill could not finish. You can enter the request manually or retry.' }] } : {}) });
-    const nextState = { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next };
+    const nextState: State = { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next };
     if (!install) {
       await tx.update(workItem).set({ state: nextState, updatedAt: new Date() }).where(eq(workItem.id, item.id));
       return { ...current, draft: next };
     }
+    const classifiedKind = initialKind(install);
+    const [kindConflict] = classifiedKind === item.kind ? [] : await tx.select({ id: workItem.id }).from(workItem)
+      .where(and(eq(workItem.transportId, ctx.transportId), eq(workItem.threadId, input.source.threadId),
+        eq(workItem.sourceMessageId, input.source.messageId), eq(workItem.kind, classifiedKind), ne(workItem.id, item.id)))
+      .limit(1).for('update');
+    if (kindConflict) nextState.reservationWorkflowV2Classification = { kind: classifiedKind,
+      conflictingWorkItemId: kindConflict.id };
+    else delete nextState.reservationWorkflowV2Classification;
     const advanced = advancePaneRevision({ revision: item.revision, revisionHead: item.revisionHead,
       seq: item.revisionSeq, previousState: item.state, nextState, extractionId: item.extractionId });
     await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'ai', type: 'field.seed',
-      fieldPath: RESERVATION_WORKFLOW_V2_STATE_KEY, value: { generationId: next.generationId, status: next.status },
+      fieldPath: RESERVATION_WORKFLOW_V2_STATE_KEY, value: { generationId: next.generationId, status: next.status, kind: classifiedKind,
+        ...(kindConflict ? { classificationConflictWorkItemId: kindConflict.id } : {}) },
       aiSource: RESERVATION_PREFILL_SCHEMA_VERSION, evidence: advanced.evidence });
-    await tx.update(workItem).set({ state: nextState, kind: initialKind(install), revision: advanced.revision, revisionHead: advanced.revisionHead,
+    await tx.update(workItem).set({ state: nextState, kind: kindConflict ? item.kind : classifiedKind, revision: advanced.revision, revisionHead: advanced.revisionHead,
       revisionSeq: item.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, item.id));
     return { status: 'ok' as const, draft: next, revision: advanced.revision,
       revisionHead: advanced.revisionHead, seq: item.revisionSeq + 1 };
