@@ -235,17 +235,18 @@ export function hydrateStoredReservationWorkflowV2(value: unknown): unknown {
         pathIdentity(candidate) === `${key}${suffix ? `/${suffix}` : ''}`)?.[1];
       const fieldOverride = object(entryFor('field'));
       const opOverride = object(entryFor('op'));
-      amendContactOps.set(key, opOverride?.state === 'set' ? opOverride.value :
-        !opOverride || opOverride.state === 'inherit' ? change.op : undefined);
       const rowOverride = object(entryFor(''));
       const overrideRow = rowOverride?.state === 'set' ? object(rowOverride.value) : null;
+      amendContactOps.set(key, opOverride?.state === 'set' ? opOverride.value :
+        !opOverride || opOverride.state === 'inherit' ? overrideRow?.op ?? change.op : undefined);
       const base = change.op === 'clear' ? { bookerEmail: null, bookerMobile: null } : contactParts(change.value);
       const canonical = new Set(changes.map(row => object(row)?.field).filter(field => contactFields.includes(field as ContactField)));
       // The legacy Amend field replaced the complete native contact, so an omitted
       // component must be cleared rather than inherited from the saved stay.
       const fields = contactFields.filter(field => !canonical.has(field));
-      const repurposed = fieldOverride?.state === 'set' && fieldOverride.value !== 'bookerContact' ||
-        Boolean(overrideRow && overrideRow.field !== 'bookerContact');
+      const effectiveField = fieldOverride?.state === 'set' ? fieldOverride.value :
+        !fieldOverride || fieldOverride.state === 'inherit' ? overrideRow?.field ?? change.field : undefined;
+      const repurposed = effectiveField !== undefined && effectiveField !== 'bookerContact';
       if (repurposed) {
         fields.splice(0, fields.length, contactField(change.value));
         repurposedAmendContacts.add(key);
