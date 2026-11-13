@@ -4295,8 +4295,8 @@ function applyDefaultCmsSendPolicy(
     const hasChildren = !source || source.occupancy.some((row) => Boolean(row.childCount || row.childAges?.length));
     for (const allocation of request.body.allocations) {
       const totals = request.body.dateSections.find((section) => section.id === allocation.dateSectionId)?.requestedTotals;
-      if (!hasAdults && allocation.occupancy.adults === null && totals?.adults == null) allocation.occupancy.adults = 1;
-      if (!hasChildren && allocation.occupancy.childCount === null && totals?.childCount == null && !totals?.childAges?.length &&
+      if (extraction.sourceReadComplete && !hasAdults && allocation.occupancy.adults === null && totals?.adults == null) allocation.occupancy.adults = 1;
+      if (extraction.sourceReadComplete && !hasChildren && allocation.occupancy.childCount === null && totals?.childCount == null && !totals?.childAges?.length &&
           !allocation.occupancy.childAges?.length) {
         allocation.occupancy.childCount = 0;
         allocation.occupancy.childAges = [];
