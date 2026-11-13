@@ -435,7 +435,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           if (request.kind !== 'quote' || request.body.requestedMoney.length >= 100) return null;
           const kind = input.entityId;
           if (kind !== 'dinner' && kind !== 'lunch' && kind !== 'airport_transfer' && kind !== 'office_transfer') return null;
-          const row = { id: id(), amount: null, currency: 'ZAR',
+          const row: QuoteRequest['body']['requestedMoney'][number] = { id: id(), amount: null, currency: 'ZAR',
             unit: kind === 'airport_transfer' ? 'per_trip' : 'per_person_per_night',
             scope: 'overall' as const, targetRefs: [], sourceRefs: [], staffAllowanceType: kind };
           request.body.requestedMoney.push(row); createdId = row.id;
