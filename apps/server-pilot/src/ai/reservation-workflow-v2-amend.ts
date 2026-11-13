@@ -552,7 +552,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
       const ref = effectiveLeaf(draft, selectionPath, party?.suggestedRef);
       const rows = typeof ref === 'string' ? draft.observations.filter(observation => observation.ref === ref) : [];
       const observation = rows.length === 1 ? rows[0] : null;
-      const role = field === 'bookingAgency' ? 'agency' : field === 'organization' ? 'organization' : 'ar_account';
+      const role = field === 'bookingAgency' ? 'bookingAgency' : field === 'organization' ? 'organization' : 'ar_account';
       const candidates = Array.isArray(observation?.result.candidates) ? observation.result.candidates : [];
       const candidate = candidates.length === 1 ? record(candidates[0]) : null;
       if (!name || !observation || observation.kind !== 'party_candidate' || observation.status !== 'complete' ||
@@ -945,7 +945,8 @@ async function lookupAmendParties(draft: ReservationWorkflowV2Draft,
         entries.forEach((candidate, candidateIndex) => observations.push({ ref: randomUUID(), generationId: draft.generationId,
           kind: 'party_candidate', status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
           propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId, sourceRefs: [],
-          criteria: { workflow: 'amend', kind: 'party_name', requestId: query.requestId, role: query.spec.role,
+          criteria: { workflow: 'amend', kind: 'party_name', requestId: query.requestId,
+            role: query.spec.role === 'agency' ? 'bookingAgency' : query.spec.role,
             fieldPaths: [query.path], query: query.name, nativeQuery, searchesTried, candidateIndex, coverage,
             correlation: { verifiedFields } }, coverage: { complete, notes: complete ? [] : ['native_party_lookup_incomplete'] },
           result: { outcome: found.outcome, criteria, coverage, correlation: { verifiedFields }, candidates: candidate ? [candidate] : [] } }));

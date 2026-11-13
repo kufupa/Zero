@@ -922,7 +922,7 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
         const parent = input.fieldPath.slice(0, -'/nativeSelectionRef'.length);
         const amendPath = request.kind === 'amend' && /\/body\/(?:sharedChanges\/\d+|perTarget\/\d+\/changes\/\d+)\/value$/.test(parent);
         const field = amendPath ? valueAt(draft, `${parent.slice(0, -'/value'.length)}/field`) : parent.split('/').at(-1);
-        const roles: Record<string, string> = { bookingAgency: request.kind === 'quote' ? 'bookingAgency' : 'agency',
+        const roles: Record<string, string> = { bookingAgency: 'bookingAgency',
           organization: 'organization', arAccount: 'ar_account' };
         if (typeof field !== 'string' || !roles[field] || observation.criteria.role !== roles[field] ||
             !((request.kind === 'create' && /\/body\/(shared|dateSections\/\d+\/defaults|allocations\/\d+\/overrides)\//.test(parent)) ||
@@ -1211,7 +1211,7 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
         const all = request.body.allocations;
         const parties: Array<{ path: string; role: string; allocations: Set<string> }> = [];
         const add = (base: string, allocations: Set<string>) => {
-          for (const [key, role] of [['bookingAgency', 'agency'], ['organization', 'organization'], ['arAccount', 'ar_account']] as const)
+          for (const [key, role] of [['bookingAgency', 'bookingAgency'], ['organization', 'organization'], ['arAccount', 'ar_account']] as const)
             parties.push({ path: `${base}/${key}`, role, allocations });
         };
         add(`${root}/body/shared`, new Set(all.map((row) => row.id)));

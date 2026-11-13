@@ -52,8 +52,8 @@ export function currentLead(draft: ReservationWorkflowV2Draft, input: Input) {
   } else if (request.kind === 'create') {
     const match = tail.match(/^\/(shared|dateSections\/\d+\/defaults|allocations\/\d+\/overrides)\/(bookingAgency|organization|arAccount)\/nativeSelectionRef$/);
     if (!match) return null;
-    role = ({ bookingAgency: 'agency', organization: 'organization', arAccount: 'ar_account' } as const)[match[2] as 'bookingAgency' | 'organization' | 'arAccount'];
-    kind = role as NativeLeadKind;
+    role = ({ bookingAgency: 'bookingAgency', organization: 'organization', arAccount: 'ar_account' } as const)[match[2] as 'bookingAgency' | 'organization' | 'arAccount'];
+    kind = role === 'bookingAgency' ? 'agency' : role as NativeLeadKind;
     const parts = match[1]!.split('/');
     let owner: Record<string, unknown>;
     if (parts[0] === 'shared') {

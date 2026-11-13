@@ -86,7 +86,7 @@ const extractedClaimSchema = z.object({
 }).strict();
 const guestHintSchema = z.object({ role: z.enum(['guest', 'booker']), name: extractedClaimSchema.optional(),
   email: extractedClaimSchema.optional(), mobile: extractedClaimSchema.optional() }).strict();
-const partyHintSchema = z.object({ role: z.enum(['agency', 'organization', 'ar_account']),
+const partyHintSchema = z.object({ role: z.enum(['bookingAgency', 'organization', 'ar_account']),
   name: extractedClaimSchema }).strict();
 const prefillRequestFactsSchema = z.object({
   id: idSchema,

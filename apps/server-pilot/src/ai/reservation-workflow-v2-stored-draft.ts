@@ -6,6 +6,8 @@ const contactField = (value: unknown) => typeof value === 'string' && value.incl
 function canonicalPath(path: string, contact?: unknown): string {
   return path.replace(/\/parties\/company(?=\/|$)/g, '/parties/organization')
     .replace(/\/parties\/agency(?=\/|$)/g, '/parties/bookingAgency')
+    .replace(/(\/extraction\/requests\/[^/]+\/parties\/\d+)\/agency(?=\/|$)/g, '$1/bookingAgency')
+    .replace(/\/body\/party\/agency(?=\/|$)/g, '/body/party/bookingAgency')
     .replace(/\/groups\/([^/]+)\/board(?=\/|$)/g, '/groups/$1/requestedMealPlan')
     .replace(/\/requestedBoard(?=\/|$)/g, '/requestedMealPlan')
     .replace(/\/boardHints(?=\/|$)/g, '/mealPlanHints')
@@ -116,7 +118,12 @@ export function hydrateStoredReservationWorkflowV2(value: unknown): unknown {
   const extraction = object(root.extraction);
   if (Array.isArray(extraction?.requests)) for (const entry of extraction.requests) {
     const request = object(entry);
-    if (request) rename(request, 'boardHints', 'mealPlanHints');
+    if (!request) continue;
+    rename(request, 'boardHints', 'mealPlanHints');
+    if (Array.isArray(request.parties)) for (const entry of request.parties) {
+      const party = object(entry);
+      if (party?.role === 'agency') party.role = 'bookingAgency';
+    }
   }
   hydrateValue(root.proposal, '/proposal', resolvePath);
   for (const name of ['fieldOverrides', 'staffReviews', 'fieldReviewRequirements']) {
@@ -152,7 +159,7 @@ export function hydrateStoredReservationWorkflowV2(value: unknown): unknown {
     if (!criteria) continue;
     for (const key of ['fieldPath', 'selectionPath']) if (typeof criteria[key] === 'string') criteria[key] = resolvePath(criteria[key]);
     if (Array.isArray(criteria.fieldPaths)) criteria.fieldPaths = criteria.fieldPaths.map(path => typeof path === 'string' ? resolvePath(path) : path);
-    if (criteria.workflow === 'quote') {
+    if (criteria.workflow === 'quote' || row?.kind === 'party_candidate') {
       if (criteria.role === 'company') criteria.role = 'organization';
       if (criteria.role === 'agency') criteria.role = 'bookingAgency';
       if (result?.kind === 'company') result.kind = 'organization';

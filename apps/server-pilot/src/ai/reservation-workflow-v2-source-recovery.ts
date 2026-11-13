@@ -57,7 +57,7 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
       const invalidateReviews = (path: string, alias: string) => {
         for (const key of Object.keys(draft.staffReviews)) if (overlaps(key, path, alias)) delete draft.staffReviews[key];
       };
-      const agencyClaims = extracted.parties.filter(row => row.role === 'agency' && row.name.sourceRefs.includes(currentRef));
+      const agencyClaims = extracted.parties.filter(row => row.role === 'bookingAgency' && row.name.sourceRefs.includes(currentRef));
       const organizationClaims = extracted.parties.filter(row => row.role === 'organization' && row.name.sourceRefs.some(ref => admittedRefs.has(ref)));
       for (const slot of bookingSlots) {
         const organization = slot.target.organization;

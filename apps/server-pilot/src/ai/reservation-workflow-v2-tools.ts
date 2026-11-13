@@ -514,7 +514,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   const parties: Record<string, ResolvedParty> = {};
   const partyInputs: Record<string, Record<string, unknown> | null> = {};
   const partySelectionPaths: Record<string, string> = {};
-  for (const [field, role] of [['bookingAgency', 'agency'], ['organization', 'organization'], ['arAccount', 'ar_account']] as const) {
+  for (const [field, role] of [['bookingAgency', 'bookingAgency'], ['organization', 'organization'], ['arAccount', 'ar_account']] as const) {
     const resolved = valueAt(field);
     if ('issue' in resolved) { issues.push(`${field}:${resolved.issue}`); continue; }
     const raw = resolved.value;
@@ -1137,7 +1137,7 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
     }
   }
   const partySpecs = [
-    { key: 'agency', field: 'bookingAgency', role: 'agency', tool: 'searchPrimaryBookingAgency', idField: 'travelagencyid', nameField: 'travelagencyname' },
+    { key: 'bookingAgency', field: 'bookingAgency', role: 'agency', tool: 'searchPrimaryBookingAgency', idField: 'travelagencyid', nameField: 'travelagencyname' },
     { key: 'organization', field: 'organization', role: 'organization', tool: 'searchOrganization', idField: 'companyid', nameField: 'companyname' },
     { key: 'arAccount', field: 'arAccount', role: 'ar_account', tool: 'searchArAccount', idField: 'araccountid', nameField: 'araccountname' },
   ] as const;
@@ -1316,7 +1316,7 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
                   kind: 'party_candidate', status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
                   propertyCode: loaded.draft!.propertyCode, sourceMessageId: loaded.draft!.source.messageId, sourceRefs: [],
                   criteria: { workflow: 'create', kind: 'party_name', requestId: request.id, allocationId,
-                    role: spec.role, fieldPaths: [party.selectionPath], query: party.name, nativeQuery, searchesTried,
+                    role: spec.role === 'agency' ? 'bookingAgency' : spec.role, fieldPaths: [party.selectionPath], query: party.name, nativeQuery, searchesTried,
                     candidateIndex, coverage,
                     correlation: { verifiedFields } },
                   coverage: { complete: Boolean(complete), notes: complete ? [] : ['native_party_lookup_incomplete'] },
