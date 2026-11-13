@@ -30,7 +30,7 @@ const unsupportedFieldLabels: Record<string, string> = {};
 const rows = (value: unknown) => Array.isArray(value) ? value.map(record) : [];
 
 export function isExactConfirmation(value: unknown): boolean {
-  return /^\d{6,10}-\d{1,2}$/.test(text(value).trim());
+  return typeof value === 'string' && /^\d{6,10}-\d{1,2}$/.test(value.trim());
 }
 
 function exactConfirmation(hint: Record<string, unknown>) {
