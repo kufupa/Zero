@@ -26,7 +26,11 @@ import { PANE_PROPERTY_LOCK_WAIT_MS, acquisitionWithin } from '../hms/property-r
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { findParty } from './pane-party-lookup.js';
 import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
-import { loadReservationNativeLeads } from './reservation-workflow-v2-native-leads.js';
+import { loadReservationMemoryGuidance, loadReservationNativeLeads, loadReservationRateMealMapping,
+  reservationEntityKey } from './reservation-workflow-v2-native-leads.js';
+import { loadAgencyCommission, loadNativeRateMealPlan } from './booking-code-rules.js';
+import { RESERVATION_NOTE_MAX, RESERVATION_NOTE_PRESETS } from './reservation-note-presets.js';
+import { resolveSourceStayDate } from './stay-date-anchoring.js';
 import { findStay, paneStayLookupEnabled, searchGuest, searchGuestCloudBatch, type GuestSearchQuery } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { normalizeGuestName, sameGuestName } from './guest-name-match.js';
@@ -189,9 +193,14 @@ function recoverExtractionFacts(value: unknown, input: {
       if (!issue) break;
       const [field, rowIndex, child] = issue.path;
       let removed = false;
-      if (issue.code === 'unrecognized_keys' && issue.path.length === 0) {
-        for (const key of issue.keys) delete request[key];
-        removed = true;
+      if (issue.code === 'unrecognized_keys') {
+        let container: unknown = request;
+        for (const part of issue.path) container = Array.isArray(container) && typeof part === 'number' ? container[part] :
+          isRecord(container) ? container[String(part)] : undefined;
+        if (isRecord(container)) {
+          for (const key of issue.keys) delete container[key];
+          removed = true;
+        }
       } else if (typeof field === 'string' && arrays.has(field)) {
         const rows = request[field];
         if (Array.isArray(rows) && typeof rowIndex === 'number') {
@@ -231,7 +240,12 @@ function recoverSynthesisEntities(value: unknown): unknown {
     if (!Array.isArray(entries)) continue;
     const schema = fields.content.shape[key].element;
     content[key] = entries.flatMap((entry, index) => {
-      let parsed = schema.safeParse(entry);
+      const quote = key === 'requests' && isRecord(entry) && entry.kind === 'quote' && isRecord(entry.body) &&
+        Array.isArray(entry.body.groups);
+      const hostEntry = quote && isRecord(entry) && isRecord(entry.body) && Array.isArray(entry.body.groups)
+        ? { ...entry, body: { ...entry.body, groups: entry.body.groups.map((group) =>
+          isRecord(group) ? { ...group, mealPlan: null } : group) } } : entry;
+      let parsed = schema.safeParse(hostEntry);
       if (key === 'requests' && isRecord(entry) && entry.kind === 'create' && isRecord(entry.body)) {
         const body = entry.body;
         if (Array.isArray(body.dateSections)) for (const section of body.dateSections) {
@@ -262,7 +276,7 @@ function recoverSynthesisEntities(value: unknown): unknown {
           parsed = schema.safeParse(entry);
         }
       }
-      if (parsed.success) return [parsed.data];
+      if (parsed.success) return [quote ? entry : parsed.data];
       dropped.push(`${key}[${index}]: ${summarizeSchemaIssues(parsed.error)}`);
       return [];
     });
@@ -409,6 +423,15 @@ function normalizeSynthesisOutput(value: unknown, evidence: ReservationWorkflowV
       if (!isRecord(entry) || !isRecord(entry.body)) return entry;
       const body = { ...entry.body };
       let normalizedEntry: Record<string, unknown> = entry;
+      if (entry.kind === 'quote' && Array.isArray(body.groups)) {
+        body.groups = body.groups.map((group) => {
+          if (!isRecord(group) || !Object.hasOwn(group, 'mealPlan')) return group;
+          const copy = { ...group };
+          delete copy.mealPlan;
+          return copy;
+        });
+        normalizedEntry = { ...entry, body };
+      }
       if (entry.kind === 'create') {
         let changed = false;
         // Guest suggestions are host-bound below, never model authority. A missing or
@@ -628,8 +651,8 @@ export function buildReservationWorkflowV2CandidateReadPlan(input: {
     for (const guest of request.guests) {
       if (guest.role === 'guest' && (guest.name || guest.email)) add('guest_candidate', request.id,
         guest.name?.raw ?? guest.email?.raw ?? 'guest', { requestId: request.id, role: guest.role,
-          name: guest.name?.value ?? null, email: guest.email?.value ?? null,
-        }, [...(guest.name?.sourceRefs ?? []), ...(guest.email?.sourceRefs ?? [])]);
+          name: guest.name?.value ?? null, email: guest.email?.value ?? null, mobile: guest.mobile?.value ?? null,
+        }, [...(guest.name?.sourceRefs ?? []), ...(guest.email?.sourceRefs ?? []), ...(guest.mobile?.sourceRefs ?? [])]);
     }
     for (const party of request.parties) add('party_candidate', request.id, `${party.role}:${party.name.raw}`, {
       role: party.role, name: party.name.value, raw: party.name.raw,
@@ -1239,9 +1262,9 @@ function buildFallbackProposal(input: {
         arrival: currentClaim(date.arrival, currentRefs) && typeof date.arrival?.value === 'string' && date.arrival.value.length <= 40 ? date.arrival.value : null,
         departure: currentClaim(date.departure, currentRefs) && typeof date.departure?.value === 'string' && date.departure.value.length <= 40 ? date.departure.value : null,
         quantity: citedInteger(currentClaim(request.roomCount, currentRefs)) ?? null,
-        mealPlan: board ?? null, roomCodes: [], ratePlan: null,
+        mealPlan: null, requestedMealPlan: board ?? null, roomCodes: [], ratePlan: null,
         occupancy: fallbackQuoteOccupancy(request, currentRefs).occupancy, priceObservationRefs: [],
-      })) : [{ id: stableId(id, 'date', '0'), arrival: null, departure: null, quantity: null, mealPlan: null,
+      })) : [{ id: stableId(id, 'date', '0'), arrival: null, departure: null, quantity: null, mealPlan: null, requestedMealPlan: null,
         roomCodes: [], ratePlan: null, occupancy: fallbackQuoteOccupancy(request, currentRefs).occupancy, priceObservationRefs: [] }],
       parties: {}, salesStrategy: null, client: { attention: null, email: null, telephone: null }, requestedMoney: [], notes: null,
       outputIntent: { artifacts: ['email_quote', 'pdf_quote', 'xlsx_quote'], evidenceRefs: refs }, provisionalBookingRequested: null,
@@ -1765,7 +1788,10 @@ function countedSourceQuoteRooms(request: ReservationWorkflowV2Extraction['reque
         const meals = [...fragment.matchAll(/\b(?:dinner|breakfast|dbb|b&b)\b/giu)];
         return meals.flatMap((meal, index) => {
           if (!pattern.test(meal[0])) return [];
-          const before = fragment.slice(index ? meals[index - 1]!.index + meals[index - 1]![0].length : 0, meal.index);
+          const preceding = fragment.slice(index ? meals[index - 1]!.index + meals[index - 1]![0].length : 0, meal.index);
+          // A predicate after the previous meal belongs to that meal. Preserve
+          // a new negation before this meal, such as "and no breakfast".
+          const before = index ? preceding.replace(/^\s*(?:(?:is|are|was|were)\s+)?(?:not\s+(?:required|needed|included|wanted)|(?:isn|aren)['’]t\s+(?:required|needed|included|wanted)|declined|excluded|unwanted)\s+(?:and|but|then)\s*/iu, '') : preceding;
           const after = fragment.slice(meal.index + meal[0].length, meals[index + 1]?.index ?? fragment.length);
           const negated = /\b(?:no|not|without|declin(?:e|ed|ing)|exclud(?:e|ed|ing)|(?:don|isn|aren|won|needn)['’]t|unwanted)\b/iu.test(before) ||
             /^\s*(?:(?:is|are|was|were)\s+)?(?:not\s+(?:required|needed|included|wanted)|(?:isn|aren)['’]t\s+(?:required|needed|included|wanted)|declined|excluded|unwanted|elsewhere|offsite)\b/iu.test(after);
@@ -1784,7 +1810,8 @@ function operationalSourceNote(input: { selection: SyncedQuoteSelection }): stri
   const body = (input.selection.currentBodyText ?? input.selection.bodyText)
     .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
   const clauses = body.split(/\r?\n|(?<=[.!?])\s+/u).map((line) => line.trim()).filter((line) =>
-    /\b(?:passport|firearms?|safe\s+storage|parking|shuttle|airport\s+transfer)\b/i.test(line) &&
+    (/\b(?:passport|firearms?|safe\s+storage|parking|shuttle|transfer|halaal|halal|kosher|wheelchair|water|dietary|allerg(?:y|ies)|special\s+requests?)\b/i.test(line) ||
+      Boolean(dinnerAmount(line))) &&
     line.length > 3 && !/https?:\/\/|www\./i.test(line));
   return [...new Set(clauses)];
 }
@@ -2040,6 +2067,13 @@ function currentPdfEvidence(input: {
   return result;
 }
 
+function isPartialStayCancellation(text: string): boolean {
+  return [...text.matchAll(/\bcancel\s+(?:(?:only|just)\s+)?(?:the\s+)?(?:last|final)\s+(?:day|night)\b/giu)].some((match) => {
+    const prefix = text.slice(0, match.index).split(/[;,.!?\n]|\b(?:but|and)\b/iu).at(-1) ?? '';
+    return !/\b(?:not|never|no|don['’]t|do\s+not|must\s+not|should\s+not)\b(?:\s+\w+){0,4}\s*$/iu.test(prefix);
+  });
+}
+
 function recoverSourceIntent(input: {
   extraction: ReservationWorkflowV2Extraction; source: ReservationWorkflowV2Source;
   selection: SyncedQuoteSelection; evidence: ReservationWorkflowV2Evidence[];
@@ -2053,22 +2087,22 @@ function recoverSourceIntent(input: {
     .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
   for (const request of extraction.requests) {
     const text = currentClaim(request.requestText, currentRefs)?.raw ?? '';
-    const partialStayCancellation = /\bcancel\s+(?:(?:only|just)\s+)?(?:the\s+)?(?:last|final)\s+(?:day|night)\b/i.test(text);
+    const partialStayCancellation = isPartialStayCancellation(text);
     if (request.kind === 'cancel' && partialStayCancellation) {
       request.kind = 'amend';
       addIssue({ explanation: 'Canceling only the last day/night is a departure amendment; the existing stay remains the target.', sourceRefs: request.requestText.sourceRefs });
     }
     if (request.kind !== 'cancel') continue;
-    const references = request.confirmationHints.flatMap((claim) => typeof claim.value === 'string' ? [claim.value.trim()] : []);
+    const references = request.confirmationHints.flatMap((claim) => typeof claim.value === 'string' && claim.value.trim() ? [claim.value.trim()] : []);
     const nativeReferences = references.filter((value) => /^\d{6,10}-\d{1,2}$/u.test(value));
     const guestNames = request.guests.filter((guest) => guest.role === 'guest').flatMap((guest) =>
-      typeof guest.name?.value === 'string' ? [guest.name.value] : []);
+      typeof guest.name?.value === 'string' && guest.name.value.trim() ? [guest.name.value.trim()] : []);
     const sameBooking = (row: ReservationWorkflowV2Evidence) => {
       const subject = /^Subject:\s*(.+)$/im.exec(row.text)?.[1] ?? '';
       const headerEnd = row.text.indexOf('\n\n');
       const body = row.text.slice(headerEnd < 0 ? 0 : headerEnd + 2)
         .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
-      const statements = body.split(/[.!?\n]/u).filter((statement) =>
+      const statements = body.split(/[;.!?\n]|\b(?:and|but)\b/iu).filter((statement) =>
         /\b(?:booking|reservation)\b[^.!?\n]{0,40}\b(?:has\s+been|was|is|already)\s+cancel{1,2}ed\b/i.test(statement) &&
         !/\b(?:no|not|never|unless|if|whether)\b/i.test(statement));
       if (!statements.length) return false;
@@ -2078,13 +2112,19 @@ function recoverSourceIntent(input: {
           .map((match) => match[1]!).filter((value) => /\d/u.test(value)),
       ]));
       const rowNativeReferences = new Set(row.text.match(/\b\d{6,10}-\d{1,2}\b/g) ?? []);
+      const currentGuestNames = request.guests.filter((guest) => guest.role === 'guest' && currentClaim(guest.name, currentRefs))
+        .flatMap((guest) => typeof guest.name?.value === 'string' && guest.name.value.trim() ? [guest.name.value.trim()] : []);
+      const statementMatchesIdentity = statements.some((statement) => nativeReferences.length
+        ? nativeReferences.some((value) => statement.includes(value))
+        : references.some((value) => statement.includes(value)) ||
+          currentGuestNames.length === 1 && normalizedFact(statement).includes(normalizedFact(currentGuestNames[0])));
+      if (!statementMatchesIdentity) return false;
       // An explicit confirmation outranks guest-name overlap. A guest can have
       // several bookings in this thread, including an earlier cancelled stay.
       if (nativeReferences.length) return new Set(nativeReferences).size === 1 &&
-        [...rowNativeReferences, ...statedReferences].every((value) => nativeReferences.includes(value)) &&
-        nativeReferences.some((value) => subject.includes(value));
+        [...rowNativeReferences, ...statedReferences].every((value) => nativeReferences.includes(value));
       if (references.length) return rowNativeReferences.size === 0 &&
-        [...statedReferences].every((value) => references.includes(value)) && references.some((value) => subject.includes(value));
+        [...statedReferences].every((value) => references.includes(value));
       const nativeThreadReferences = new Set(input.evidence.filter((entry) => entry.relation === 'prior_thread')
         .flatMap((entry) => entry.text.match(/\b\d{6,10}-\d{1,2}\b/g) ?? []));
       return statedReferences.size === 0 && extraction.requests.length === 1 && nativeThreadReferences.size <= 1 && guestNames.length === 1 &&
@@ -2159,6 +2199,31 @@ function recoverSourceIntent(input: {
   addIssue({ explanation: 'The current message submits an incoming voucher/payment document for one source-identified existing stay. Filing was recovered with an unresolved source confirmation; native identity and document handling still require review.',
     sourceRefs: [message.ref, ...documents.map(({ pdf }) => pdf.documentRef)].slice(0, 20) });
   extraction.issues = extraction.issues.slice(0, 200);
+  return extraction;
+}
+
+function anchorCurrentExtractionDates(input: { extraction: ReservationWorkflowV2Extraction;
+  source: ReservationWorkflowV2Source; evidence: ReservationWorkflowV2Evidence[] }): ReservationWorkflowV2Extraction {
+  const extraction = structuredClone(input.extraction);
+  for (const request of extraction.requests) {
+    const rollover = request.kind === 'create' || request.kind === 'quote';
+    for (const date of request.dates) {
+      for (const key of ['arrival', 'departure'] as const) {
+        const claim = date[key];
+        if (!claim || !claim.sourceRefs.some((ref) => input.evidence.some((row) => row.ref === ref &&
+            row.relation !== 'prior_thread' && row.text.includes(claim.raw)))) continue;
+        const resolved = resolveSourceStayDate(claim.raw, input.source.arrivedAt, rollover);
+        if (resolved) claim.value = resolved;
+      }
+      const arrival = date.arrival?.value, departure = date.departure?.value;
+      if (rollover && isoDay(arrival) && isoDay(departure) && arrival.slice(5, 7) === '12' &&
+          departure.slice(5, 7) === '01' && departure <= arrival && date.departure &&
+          !/\b(?:19|20)\d{2}\b/u.test(date.departure.raw)) {
+        const nextYear = `${Number(arrival.slice(0, 4)) + 1}${departure.slice(4)}`;
+        if (isoDay(nextYear)) date.departure.value = nextYear;
+      }
+    }
+  }
   return extraction;
 }
 
@@ -3113,37 +3178,30 @@ function projectCurrentExtraction(input: {
     const sourceNotes = currentExtraction.requests.length === 1 ? operationalSourceNote(input) : [];
     if (request.kind === 'create' || request.kind === 'quote') {
       const existing = request.kind === 'create' ? request.body.shared.reservationNote : request.body.notes;
-      const limit = request.kind === 'create' ? 2000 : 1000;
-      const existingOverflow = typeof existing === 'string' && existing.length > limit;
-      const noteParts: string[] = [];
-      for (const clause of sourceNotes) {
-        if ([...noteParts, clause].join('\n').length > limit) break;
-        noteParts.push(clause);
-      }
+      const limit = request.kind === 'create' ? 2000 : 4000;
       const path = `/proposal/content/requests/${request.id}/body/${request.kind === 'create' ? 'shared/reservationNote' : 'notes'}`;
       const sourceRefs = input.evidence.filter((row) => row.relation === 'current_message').map((row) => row.ref);
-      if (existingOverflow || sourceNotes.length && (existing === null || existing === undefined || existing === '')) {
-        const note = noteParts.length ? noteParts.join('\n') : null;
-        if (request.kind === 'create') request.body.shared.reservationNote = note;
-        else request.body.notes = note;
-        if (note) proposal.annotations.push({ path, basis: 'source', evidenceRefs: sourceRefs });
+      const existingText = typeof existing === 'string' ? existing : '';
+      const additions = sourceNotes.filter((clause) => !normalizedFact(existingText).includes(normalizedFact(clause)));
+      const fullNote = [existingText, ...additions].filter(Boolean).join('\n');
+      if (fullNote.length <= limit && additions.length) {
+        if (request.kind === 'create') request.body.shared.reservationNote = fullNote;
+        else request.body.notes = fullNote;
+        proposal.annotations.push({ path, basis: 'source', evidenceRefs: sourceRefs });
       }
-      const sourceOverflow = sourceNotes.join('\n').length > limit;
-      if (sourceOverflow || existingOverflow) {
-        const sourceBackedExisting = typeof existing === 'string' && existingOverflow && input.evidence.some((row) =>
-          row.relation === 'current_message' && normalizedFact(row.text).includes(normalizedFact(existing)));
-        const retainedClauses = sourceBackedExisting && typeof existing === 'string' ? [...sourceNotes, existing] : sourceNotes;
-        for (const clause of retainedClauses) for (let offset = 0; offset < clause.length; offset += 2000) {
+      if (fullNote.length > limit) {
+        for (const clause of sourceNotes) for (let offset = 0; offset < clause.length; offset += 2000) {
           if (proposal.sourceClaims.length >= MAX_PROPOSAL_SOURCE_CLAIMS) break;
           const raw = clause.slice(offset, offset + 2000);
           if (!proposal.sourceClaims.some((claim) => claim.path === path && claim.raw === raw)) proposal.sourceClaims.push({ path, raw, sourceRefs });
         }
         addProjectionIssue(proposal, path, 'source_note_exceeds_native_limit',
-          `This note exceeds HMS's ${limit}-character limit. Only complete source clauses that fit were projected; overflow remains in source claims where capacity permits and in the selected email for staff review.`, sourceRefs);
-        if (existingOverflow && !sourceBackedExisting && typeof existing === 'string') for (let offset = 0; offset < existing.length; offset += 1500)
-          addProjectionIssue(proposal, path, 'withheld_oversized_note',
-            `Oversized synthesized note was withheld; verify this text against the selected email (part ${offset / 1500 + 1}): ${existing.slice(offset, offset + 1500)}`, []);
+          `This note exceeds HMS's ${limit}-character limit. Review and shorten it before saving; the source remains available in the selected email.`, sourceRefs);
       }
+      if (fullNote.length <= limit) proposal.issues = proposal.issues.filter((issue) => {
+        const description = normalizedFact(issue.explanation).replace(/^special request(?:ed)?\s*:?\s*/u, '');
+        return !sourceNotes.some((clause) => normalizedFact(clause) === description);
+      });
     }
     if (request.kind === 'create' && extracted.requestedPrice) {
       const priceRefs = [extracted.requestedPrice.nightlyRate, extracted.requestedPrice.total, extracted.requestedPrice.currency]
@@ -3216,7 +3274,7 @@ function projectCurrentExtraction(input: {
         clearedPriorRefs.push(...priorRoomCountRefs);
       }
       if (priorBoardRefs.length) {
-        request.body.groups.forEach((group) => { group.mealPlan = null; });
+        request.body.groups.forEach((group) => { group.requestedMealPlan = null; });
         clearedPriorRefs.push(...priorBoardRefs);
       }
       if (priorRoomCodeRefs.length) {
@@ -3272,6 +3330,7 @@ function projectCurrentExtraction(input: {
       ? { ...claim, value: claim.raw.trim() } : claim;
     const projectedDates = extracted.dates.map((date) => ({ arrival: editableDate(date.arrival), departure: editableDate(date.departure) }));
     if (request.kind === 'quote') {
+      for (const group of request.body.groups) { group.mealPlan = null; group.requestedMealPlan = null; }
       const sourceRooms = countedSourceQuoteRooms(extracted, input.evidence, currentRefs);
       const sourceRoomByGroupId = new Map<string, typeof sourceRooms[number]>();
       if (sourceRooms.length && singleCurrentDatePair(projectedDates, currentRefs)) {
@@ -3284,9 +3343,9 @@ function projectCurrentExtraction(input: {
           if (original) linkedIds.add(original.id);
           const id = original?.id ?? stableId(request.id, 'source_room_group', String(index));
           sourceRoomByGroupId.set(id, row);
-          return { ...(original ?? { id, arrival: null, departure: null, mealPlan: null, roomCodes: [], ratePlan: null,
+          return { ...(original ?? { id, arrival: null, departure: null, mealPlan: null, requestedMealPlan: null, roomCodes: [], ratePlan: null,
             occupancy: { scope: 'unresolved' as const, adults: null, childCount: null, childAges: null }, priceObservationRefs: [] }),
-          id, quantity: row.quantity, requestedRoomDescription: row.description, mealPlan: row.board };
+          id, quantity: row.quantity, requestedRoomDescription: row.description, requestedMealPlan: row.board };
         });
         request.body.groups = groups;
         // A removed model group cannot lend its service/money target to a new source
@@ -3313,6 +3372,8 @@ function projectCurrentExtraction(input: {
         const date = projectedDates[dateIndex]!;
         for (const groupIndex of groupIndexes) {
           const group = request.body.groups[groupIndex]!;
+          if (!currentClaim(date.arrival, currentRefs)) group.arrival = null;
+          if (!currentClaim(date.departure, currentRefs)) group.departure = null;
           projectLimitedText({ proposal, target: group as unknown as Record<string, unknown>, field: 'arrival', claim: date.arrival, currentRefs, max: 40,
             path: `/requests/${request.id}/body/groups/${groupIndex}/arrival` });
           projectLimitedText({ proposal, target: group as unknown as Record<string, unknown>, field: 'departure', claim: date.departure, currentRefs, max: 40,
@@ -3374,13 +3435,13 @@ function projectCurrentExtraction(input: {
         for (const groupIndex of linkedQuoteGroups) {
           const group = request.body.groups[groupIndex]!;
           const sourceRoom = sourceRoomByGroupId.get(group.id);
-          if (sourceRoom && datePairKey(group.arrival, group.departure) === currentDatePair) group.mealPlan = sourceRoom.board;
+          if (sourceRoom && datePairKey(group.arrival, group.departure) === currentDatePair) group.requestedMealPlan = sourceRoom.board;
         }
         if (sourceRooms.some((row) => !row.board)) addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
           'Some room-specific board choices could not be bound to their counted source clause. Those boards remain unresolved; independently bound group boards were retained.',
           currentBoards.flatMap((claim) => claim.sourceRefs));
       } else if (sourceRooms.length) {
-        for (const group of request.body.groups) group.mealPlan = null;
+        for (const group of request.body.groups) group.requestedMealPlan = null;
         addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
           'Counted room clauses could not be bound to one current stay range and matching room groups. Their board claims remain available; no board was copied by group position.',
           currentBoards.flatMap((claim) => claim.sourceRefs));
@@ -3388,9 +3449,9 @@ function projectCurrentExtraction(input: {
         if (boardsByValue.size === 1) {
           const board = [...boardsByValue.values()][0]!;
           for (const groupIndex of linkedQuoteGroups) projectLimitedText({ proposal,
-            target: request.body.groups[groupIndex] as unknown as Record<string, unknown>, field: 'mealPlan',
+            target: request.body.groups[groupIndex] as unknown as Record<string, unknown>, field: 'requestedMealPlan',
             claim: { ...board, value: boardValue(board.value) },
-            currentRefs, max: 120, path: `/requests/${request.id}/body/groups/${groupIndex}/mealPlan` });
+            currentRefs, max: 120, path: `/requests/${request.id}/body/groups/${groupIndex}/requestedMealPlan` });
         } else {
           for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.mealPlan = null;
           addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
@@ -3398,7 +3459,7 @@ function projectCurrentExtraction(input: {
             [...new Set(currentBoards.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
         }
       } else if (currentBoards.length) {
-        for (const group of request.body.groups) group.mealPlan = null;
+        for (const group of request.body.groups) group.requestedMealPlan = null;
         addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
           'A current board choice could not be mapped to a source-linked date group. Group boards were cleared; the source claim remains available for staff review.',
           [...new Set(currentBoards.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
@@ -3591,9 +3652,30 @@ function projectCurrentExtraction(input: {
       if (!request.body.outputIntent.artifacts.length) request.body.outputIntent.artifacts = ['email_quote', 'pdf_quote', 'xlsx_quote'];
     }
     if (request.kind === 'create') {
+      const currentText = (input.selection.currentBodyText ?? input.selection.bodyText)
+        .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
+      if (!/\b(?:room\s+type\s+for\s+charge|charged\s+room\s+type)\b/i.test(currentText)) {
+        delete request.body.shared.roomTypeForCharge;
+        request.body.dateSections.forEach((section) => { delete section.defaults.roomTypeForCharge; });
+        request.body.allocations.forEach((allocation) => { delete allocation.overrides.roomTypeForCharge; });
+      }
+      for (const allocation of request.body.allocations) {
+        const guest = allocation.guest;
+        const fullName = [guest.firstName, guest.lastName].filter(Boolean).join(' ');
+        const sourceGuests = extracted.guests.filter((item) => item.role === 'guest' &&
+          (!fullName || typeof item.name?.value === 'string' && sameGuestName(fullName, item.name.value)));
+        const email = normalizedFact(guest.email);
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email) || !sourceGuests.some((item) =>
+          normalizedFact(currentClaim(item.email, currentRefs)?.value) === email)) guest.email = null;
+        const mobile = normalizedPhone(guest.mobile);
+        if (mobile.length < 7 || !sourceGuests.some((item) =>
+          normalizedPhone(currentClaim(item.mobile, currentRefs)?.value) === mobile)) guest.mobile = null;
+      }
       const dateLinks = matchDateProjectionTargets({ targets: request.body.dateSections, dates: projectedDates, currentRefs });
       for (const [dateIndex, sectionIndex] of dateLinks.targetsByDate) {
         const date = projectedDates[dateIndex]!, section = request.body.dateSections[sectionIndex]!;
+        if (!currentClaim(date.arrival, currentRefs)) section.arrival = null;
+        if (!currentClaim(date.departure, currentRefs)) section.departure = null;
         projectLimitedText({ proposal, target: section as unknown as Record<string, unknown>, field: 'arrival', claim: date.arrival, currentRefs, max: 40,
           path: `/requests/${request.id}/body/dateSections/${sectionIndex}/arrival` });
         projectLimitedText({ proposal, target: section as unknown as Record<string, unknown>, field: 'departure', claim: date.departure, currentRefs, max: 40,
@@ -3754,6 +3836,14 @@ function projectCurrentExtraction(input: {
     extractionIdByProposalRequestId });
   for (const request of proposal.content.requests) {
     if (request.kind !== 'amend') continue;
+    const extracted = extractionRequestForProposal(request, proposal.content.requests, currentExtraction, extractionIdByProposalRequestId);
+    const cancellation = extracted && currentClaim(extracted.requestText, currentRefs);
+    const allChanges = [...request.body.sharedChanges, ...request.body.perTarget.flatMap((row) => row.changes)];
+    if (cancellation && isPartialStayCancellation(cancellation.raw) && !allChanges.some((change) =>
+        change.op === 'shift_dates' || change.op === 'shift_departure' ||
+        (change.op === 'set' || change.op === 'clear') && change.field === 'departure')) {
+      request.body.sharedChanges.push({ op: 'shift_departure', days: -1, sourceRefs: cancellation.sourceRefs });
+    }
     for (const [index, target] of request.body.targets.include.entries()) {
       const path = `/proposal/content/requests/${request.id}/body/targets/include/${index}`;
       const reference = target.confirmation?.trim();
@@ -3934,11 +4024,29 @@ function addCreateExistingReferenceGuard(input: {
 function applyDefaultCmsSendPolicy(
   proposalInput: ReservationWorkflowV2Proposal,
   propertyCode: string,
+  extraction: ReservationWorkflowV2Extraction,
+  extractionIds: ReadonlyMap<string, string> | undefined,
 ): ReservationWorkflowV2Proposal {
   const proposal = structuredClone(proposalInput);
   if (propertyCode !== 'HRCEN') return proposal;
   for (const request of proposal.content.requests) {
     if (request.kind !== 'create') continue;
+    if (request.body.shared.cmsMessageId == null) request.body.shared.cmsMessageId = '03';
+    const source = extractionRequestForProposal(request, proposal.content.requests, extraction, extractionIds);
+    const hasAdults = !source || source.occupancy.some((row) => Boolean(row.adults));
+    const hasChildren = !source || source.occupancy.some((row) => Boolean(row.childCount || row.childAges?.length));
+    for (const allocation of request.body.allocations) {
+      const totals = request.body.dateSections.find((section) => section.id === allocation.dateSectionId)?.requestedTotals;
+      if (!hasAdults && allocation.occupancy.adults === null && totals?.adults == null) allocation.occupancy.adults = 1;
+      if (!hasChildren && allocation.occupancy.childCount === null && totals?.childCount == null && !totals?.childAges?.length &&
+          !allocation.occupancy.childAges?.length)
+        allocation.occupancy.childCount = 0;
+    }
+    if (request.body.allocations.some(({ guest }) => /^proof$/i.test(guest.firstName?.trim() ?? '') &&
+        /^labtest$/i.test(guest.lastName?.trim() ?? ''))) {
+      request.body.shared.cmsSend = false;
+      continue;
+    }
     const cmsSend = request.body.shared.cmsSend;
     if (cmsSend === false || isRecord(cmsSend) && cmsSend.kind === 'none') continue;
     if (cmsSend !== null && cmsSend !== undefined) continue;
@@ -3948,6 +4056,204 @@ function applyDefaultCmsSendPolicy(
     proposal.annotations.push({ path, basis: 'policy', evidenceRefs: [] });
   }
   return proposal;
+}
+
+function dinnerAmount(text: string): string | null {
+  const clauses = text.split(/[;\n.!?]/u).filter((clause) => /\bdinner\b/i.test(clause) &&
+    !/\b(?:rate|quoted|quotation|total|package|accommodation|nightly|per\s+night|price)\b/i.test(clause));
+  const amounts = [...new Set(clauses.flatMap((clause) => [...clause.matchAll(/\b(?:R|ZAR)\s*(\d+(?:[.,]\d{1,2})?)\b/giu)]
+    .map((match) => match[1]!.replace(',', '.'))))];
+  return amounts.length === 1 ? amounts[0]! : null;
+}
+
+async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal; source: ReservationWorkflowV2Source;
+  propertyCode: string; generationId: string; selection: SyncedQuoteSelection; evidence: ReservationWorkflowV2Evidence[];
+  db?: DB; transportId: string; env: NodeJS.ProcessEnv }): Promise<{ proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[] }> {
+  const proposal = structuredClone(input.proposal), observations: ReservationWorkflowV2Observation[] = [];
+  const currentText = (input.selection.currentBodyText ?? input.selection.bodyText)
+    .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
+  const sourceRefs = input.evidence.filter((row) => row.relation === 'current_message').map((row) => row.ref);
+  const excludedConfirmations = [...new Set(JSON.stringify(proposal).match(/\b\d{6,10}-\d{1,2}\b/g) ?? [])];
+  for (const request of proposal.content.requests) {
+    if (request.kind !== 'create') continue;
+    const name = (value: unknown) => isRecord(value) && typeof value.name === 'string' ? value.name : null;
+    const organizationName = name(request.body.shared.organization);
+    const memory = await loadReservationMemoryGuidance({ propertyCode: input.propertyCode, source: input.source,
+      fromAddress: input.selection.fromAddress, agencyName: name(request.body.shared.bookingAgency), organizationName,
+      excludedConfirmations, db: input.db, transportId: input.transportId,
+      sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []), env: input.env });
+    if (memory.status !== 'available' || !memory.complete || !memory.denominator || memory.multiClientDomain && !organizationName) continue;
+    const payerCounts = new Map<string, number>(), capCounts = new Map<string, number>();
+    for (const note of memory.notes) {
+      const payers = [
+        /\bto\s+agent\b/i.test(note.value) ? 'agent' : null,
+        /\bto\s+company\b/i.test(note.value) ? 'organization' : null,
+        /\bprepaid\b/i.test(note.value) ? 'prepaid' : null,
+        /\bsettle\s+direct\b/i.test(note.value) ? 'direct' : null,
+      ].filter((value): value is string => value !== null);
+      if (payers.length === 1) payerCounts.set(payers[0]!, (payerCounts.get(payers[0]!) ?? 0) + note.support);
+      const amount = dinnerAmount(note.value);
+      if (amount) capCounts.set(amount, (capCounts.get(amount) ?? 0) + note.support);
+    }
+    const leader = (counts: Map<string, number>) => {
+      const ranked = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      return ranked[0] && ranked[0][1] / memory.denominator >= 0.8 && (!ranked[1] || ranked[0][1] > ranked[1][1])
+        ? ranked[0] : null;
+    };
+    const payer = leader(payerCounts), rememberedCap = leader(capCounts);
+    const meal = boardMeaning(request.body.shared.requestedMealPlan);
+    const presetId = payer?.[0] === 'direct' ? 'settle-direct' : ['bb', 'dinner_bb'].includes(meal) && payer
+      ? `${meal === 'dinner_bb' ? 'dbb' : 'bb'}-${payer[0]}` : null;
+    const preset = RESERVATION_NOTE_PRESETS.find((row) => row.id === presetId);
+    const cap = meal === 'dinner_bb' ? dinnerAmount(currentText) ?? rememberedCap?.[0] ?? null : null;
+    if (!preset && !cap) continue;
+    const existing = typeof request.body.shared.reservationNote === 'string' ? request.body.shared.reservationNote : '';
+    const parts = [preset?.text, cap && !dinnerAmount(existing) ? `Dinner allowance R${cap}` : null, existing]
+      .filter((part): part is string => Boolean(part));
+    const note = parts.filter((part, index) => !parts.slice(index + 1).some((other) => normalizedFact(other).includes(normalizedFact(part)))).join('\n');
+    const path = `/proposal/content/requests/${request.id}/body/shared/reservationNote`;
+    if (note.length > RESERVATION_NOTE_MAX) {
+      addProjectionIssue(proposal, path, 'source_note_exceeds_native_limit',
+        `The composed note exceeds HMS's ${RESERVATION_NOTE_MAX}-character limit. Review and shorten it before saving.`, sourceRefs);
+      continue;
+    }
+    const ref = `obs_${randomUUID()}`;
+    observations.push({ ref, generationId: input.generationId, kind: 'source', status: 'complete',
+      observedAt: new Date().toISOString(), propertyCode: input.propertyCode, sourceMessageId: input.source.messageId,
+      sourceRefs: [], criteria: { kind: 'historical_note_guidance', requestId: request.id, sourceCutoff: input.source.arrivedAt },
+      coverage: { complete: true, notes: [] }, result: { denominator: memory.denominator,
+        payer: payer ? { value: payer[0], support: payer[1] } : null,
+        dinnerCap: rememberedCap ? { value: rememberedCap[0], support: rememberedCap[1] } : null } });
+    request.body.shared.reservationNote = note;
+    proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, ref])].slice(0, 1000);
+    proposal.annotations.push({ path, basis: 'native_read', evidenceRefs: [ref] });
+  }
+  return { proposal, observations };
+}
+
+async function applyRateMealMemory(input: { proposal: ReservationWorkflowV2Proposal; source: ReservationWorkflowV2Source;
+  propertyCode: string; generationId: string; env: NodeJS.ProcessEnv }): Promise<{
+    proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[] }> {
+  const proposal = structuredClone(input.proposal), observations: ReservationWorkflowV2Observation[] = [];
+  const memory = await loadReservationRateMealMapping({ propertyCode: input.propertyCode, arrivedAt: input.source.arrivedAt, env: input.env });
+  if (memory.status !== 'available') return { proposal, observations };
+  const cache = new Map<string, Awaited<ReturnType<typeof loadNativeRateMealPlan>>>();
+  const apply = async (fields: { ratePlan?: unknown; mealPlan?: unknown }, path: string) => {
+    if (typeof fields.ratePlan !== 'string' || fields.mealPlan != null) return;
+    const ratePlan = fields.ratePlan.trim();
+    const mapping = memory.mappings.find((row) => row.ratePlan.toUpperCase() === ratePlan.toUpperCase());
+    if (!mapping) return;
+    const ranked = [...mapping.candidates].sort((a, b) => b.support - a.support);
+    const leader = ranked[0];
+    if (!leader || leader.confidence < 0.8 || ranked[1] && ranked[1].support >= leader.support) return;
+    let current = cache.get(ratePlan);
+    if (!current) {
+      current = await loadNativeRateMealPlan({ propertyCode: input.propertyCode, ratePlan, env: input.env })
+        .catch(() => ({ status: 'unavailable' as const, issue: 'rate_catalog_unavailable' }));
+      cache.set(ratePlan, current);
+    }
+    if (current.status !== 'verified' || normalizedFact(current.mealPlan) !== normalizedFact(leader.mealPlan)) return;
+    fields.mealPlan = current.mealPlan;
+    const ref = `obs_${randomUUID()}`;
+    observations.push({ ref, generationId: input.generationId, kind: 'rate_availability', status: 'complete',
+      observedAt: new Date().toISOString(), propertyCode: input.propertyCode, sourceMessageId: input.source.messageId,
+      sourceRefs: [], criteria: { kind: 'rate_meal_memory', ratePlan, sourceCutoff: input.source.arrivedAt, fieldPath: path },
+      coverage: { complete: true, notes: [] }, result: { mealPlan: current.mealPlan, support: leader.support,
+        denominator: leader.denominator, confidence: leader.confidence, historicalCapturedThrough: mapping.capturedThrough,
+        nativeCapturedAt: current.capturedAt } });
+    proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, ref])].slice(0, 1000);
+    proposal.annotations.push({ path, basis: 'native_read', evidenceRefs: [ref] });
+  };
+  for (const request of proposal.content.requests) {
+    const root = `/proposal/content/requests/${request.id}/body`;
+    if (request.kind === 'create') {
+      await apply(request.body.shared, `${root}/shared/mealPlan`);
+      for (const [index, section] of request.body.dateSections.entries())
+        await apply(section.defaults, `${root}/dateSections/${index}/defaults/mealPlan`);
+      for (const [index, allocation] of request.body.allocations.entries())
+        await apply(allocation.overrides, `${root}/allocations/${index}/overrides/mealPlan`);
+    } else if (request.kind === 'quote') {
+      for (const [index, group] of request.body.groups.entries()) await apply(group, `${root}/groups/${index}/mealPlan`);
+    }
+  }
+  return { proposal, observations };
+}
+
+async function applyHistoricalPartySuggestions(input: { proposal: ReservationWorkflowV2Proposal;
+  observations: ReservationWorkflowV2Observation[]; leads: ReservationWorkflowV2Observation[];
+  source: ReservationWorkflowV2Source; propertyCode: string; generationId: string; env: NodeJS.ProcessEnv;
+  allowNativeRead: boolean; signal?: AbortSignal }): Promise<{ proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[] }> {
+  const proposal = structuredClone(input.proposal), added: ReservationWorkflowV2Observation[] = [];
+  for (const request of proposal.content.requests) {
+    if (request.kind !== 'create' && request.kind !== 'quote') continue;
+    const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
+    const fields: Record<string, unknown> = request.kind === 'create' ? request.body.shared : request.body.parties;
+    for (const role of ['agency', 'organization', 'ar_account'] as const) {
+      if (request.kind === 'quote' && role === 'ar_account') continue;
+      const field = role === 'agency' ? 'bookingAgency' : role === 'organization' ? 'organization' : 'arAccount';
+      const path = `${root}/${request.kind === 'create' ? 'shared' : 'parties'}/${field}/nativeSelectionRef`;
+      const leadObservation = input.leads.find((row) => row.criteria.fieldPath === path);
+      const leads = Array.isArray(leadObservation?.result.leads) ? leadObservation.result.leads.filter(isRecord) : [];
+      const relatedSelected = ['bookingAgency', 'organization'].some((key) => {
+        const party = fields[key];
+        return isRecord(party) && typeof party.suggestedRef === 'string';
+      });
+      const eligible = leads.filter((lead) => typeof lead.value === 'string' && typeof lead.confidence === 'number' &&
+        lead.confidence >= 0.8 && (role === 'ar_account' ? relatedSelected && lead.basis === 'normalized_entity' : lead.autoSelectable === true));
+      if (eligible.length !== 1) continue;
+      const leadName = String(eligible[0]!.value);
+      const fieldValue = fields[field];
+      const existing = isRecord(fieldValue) ? fieldValue : null;
+      if (existing && typeof existing.name === 'string' &&
+          reservationEntityKey(existing.name, role) !== reservationEntityKey(leadName, role)) continue;
+      const candidateRefs = existing && Array.isArray(existing.candidateRefs)
+        ? existing.candidateRefs.filter((ref): ref is string => typeof ref === 'string') : [];
+      const matching = candidateRefs.flatMap((ref) => [...input.observations, ...added].filter((row) => row.ref === ref &&
+        row.status === 'complete' && row.coverage.complete && Array.isArray(row.result.candidates) &&
+        row.result.candidates.some((candidate) => isRecord(candidate) && typeof candidate.name === 'string' &&
+          reservationEntityKey(candidate.name, role) === reservationEntityKey(leadName, role))));
+      let chosen = matching.length === 1 ? matching[0] : undefined;
+      if (!chosen && !matching.length && input.allowNativeRead && !input.signal?.aborted) {
+        let read: Awaited<ReturnType<typeof lookupNativeParty>> | null = null;
+        try { read = await lookupNativeParty({ role, name: leadName, target: hmsReadTargetForProperty(input.propertyCode), signal: input.signal }); }
+        catch { input.signal?.throwIfAborted(); }
+        const rows = read?.status === 'complete' && read.coverage.complete && Array.isArray(read.result.candidates)
+          ? read.result.candidates.filter(isRecord).filter((candidate) => typeof candidate.name === 'string' &&
+            reservationEntityKey(candidate.name, role) === reservationEntityKey(leadName, role)) : [];
+        if (rows.length === 1 && read) {
+          const ref = `obs_${randomUUID()}`;
+          chosen = { ref, generationId: input.generationId, kind: 'party_candidate', status: 'complete',
+            observedAt: new Date().toISOString(), propertyCode: input.propertyCode, sourceMessageId: input.source.messageId,
+            sourceRefs: [], criteria: { kind: 'historical_party_native_confirmation', workflow: request.kind, requestId: request.id,
+              role: request.kind === 'quote' && role === 'agency' ? 'bookingAgency' : role, fieldPath: path, fieldPaths: [path],
+              ...(request.kind === 'create' && request.body.allocations[0] ? { allocationId: request.body.allocations[0].id } : {}) },
+            coverage: read.coverage, result: { ...read.result, candidates: rows } };
+          added.push(chosen);
+        }
+      }
+      if (!chosen) continue;
+      fields[field] = { name: leadName, candidateRefs: [...new Set([chosen.ref, ...candidateRefs])].slice(0, 3), suggestedRef: chosen.ref };
+      proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, chosen.ref, leadObservation!.ref])].slice(0, 1000);
+      proposal.annotations.push({ path, basis: 'native_read', evidenceRefs: [chosen.ref, leadObservation!.ref] });
+      if (role === 'agency' && request.kind === 'create' && request.body.shared.taCommission == null) {
+        const candidate = Array.isArray(chosen.result.candidates) ? chosen.result.candidates.find(isRecord) : undefined;
+        if (candidate && typeof candidate.nativeId === 'string') {
+          const commission = await loadAgencyCommission({ propertyCode: input.propertyCode, nativeId: candidate.nativeId, env: input.env })
+            .catch(() => ({ status: 'unavailable' as const, issue: 'commission_catalog_unavailable' }));
+          if (commission.status === 'verified') {
+            request.body.shared.taCommission = commission.percent;
+            const commissionRef = `obs_${randomUUID()}`;
+            added.push({ ...chosen, ref: commissionRef, criteria: { kind: 'agency_commission', requestId: request.id,
+              nativeId: candidate.nativeId }, result: { percent: commission.percent, confidence: commission.confidence,
+              numerator: commission.numerator, denominator: commission.denominator, capturedAt: commission.capturedAt } });
+            proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, commissionRef])].slice(0, 1000);
+            proposal.annotations.push({ path: `${root}/shared/taCommission`, basis: 'native_read', evidenceRefs: [commissionRef] });
+          }
+        }
+      }
+    }
+  }
+  return { proposal, observations: added };
 }
 
 function addRequestConfirmationSafety(input: {
@@ -4050,7 +4356,8 @@ function addRequestConfirmationSafety(input: {
   return { proposal };
 }
 
-type BoundGuestCandidate = { read: ReservationWorkflowV2Observation; row: Record<string, unknown>; sourceRefs: Set<string>; exact: boolean };
+type BoundGuestCandidate = { read: ReservationWorkflowV2Observation; row: Record<string, unknown>; sourceRefs: Set<string>; exact: boolean; score: number };
+const normalizedPhone = (value: unknown) => typeof value === 'string' ? value.replace(/\D/gu, '') : '';
 function bindGuestProfileObservations(input: {
   proposal: ReservationWorkflowV2Proposal;
   extraction: ReservationWorkflowV2Extraction;
@@ -4075,15 +4382,18 @@ function bindGuestProfileObservations(input: {
       const originalRefs = [...new Set([...guest.candidateRefs, ...(guest.suggestedRef ? [guest.suggestedRef] : [])])];
       const fullName = [guest.firstName, guest.lastName].filter((part): part is string => typeof part === 'string' && part.trim().length > 0).join(' ');
       const email = typeof guest.email === 'string' ? guest.email.trim().toLocaleLowerCase('en-US') : '';
+      const mobile = normalizedPhone(guest.mobile);
       const sourceGuests = guest.profileIntent === 'requested_new' ? [] : extractedGuests.filter((sourceGuest) => {
         const sourceName = typeof sourceGuest.name?.value === 'string' ? sourceGuest.name.value : '';
         const sourceEmail = typeof sourceGuest.email?.value === 'string' ? sourceGuest.email.value.trim().toLocaleLowerCase('en-US') : '';
+        const sourceMobile = normalizedPhone(sourceGuest.mobile?.value);
         const nameMatches = Boolean(fullName && sourceName && sameGuestName(fullName, sourceName));
         const emailMatches = Boolean(email && sourceEmail && email === sourceEmail);
-        return (nameMatches || emailMatches) && (!fullName || nameMatches) && (!email || emailMatches);
+        const mobileMatches = Boolean(mobile && sourceMobile && mobile === sourceMobile);
+        return (nameMatches || emailMatches || mobileMatches) && (!fullName || nameMatches) && (!email || emailMatches) && (!mobile || mobileMatches);
       });
       const matchedGuestRefs = new Set(sourceGuests.flatMap((sourceGuest) => [
-        ...(sourceGuest.name?.sourceRefs ?? []), ...(sourceGuest.email?.sourceRefs ?? []),
+        ...(sourceGuest.name?.sourceRefs ?? []), ...(sourceGuest.email?.sourceRefs ?? []), ...(sourceGuest.mobile?.sourceRefs ?? []),
       ]));
       const reads = input.observations.filter((observation) => observation.kind === 'guest_candidate' &&
         observation.criteria.requestId === extractedRequest.id && observation.criteria.role === 'guest' &&
@@ -4105,7 +4415,7 @@ function bindGuestProfileObservations(input: {
         if (read.status === 'partial' && !read.coverage.complete) {
           const rows = Array.isArray(read.result.candidates) ? read.result.candidates.filter(isRecord) : [];
           for (const [candidateIndex, row] of rows.entries()) {
-            if (displayLeads >= 100 || totalDisplayLeads >= MAX_DISPLAY_LEADS) break;
+            if (displayLeads >= 3 || totalDisplayLeads >= MAX_DISPLAY_LEADS) break;
             if (![row.name, row.firstName, row.lastName].some((value) => typeof value === 'string' && value.trim())) continue;
             added.push({ ...read, ref: `obs_${stableId(read.ref, request.id, allocation.id, String(candidateIndex), 'guest-display-lead')}`,
               generationId: input.generationId, status: 'partial',
@@ -4128,20 +4438,27 @@ function bindGuestProfileObservations(input: {
         for (const row of rows) {
           if (typeof row.nativeId !== 'string' || !/^\d+$/.test(row.nativeId) ||
               typeof row.firstName !== 'string' || typeof row.lastName !== 'string') continue;
-          const exactSourceMatch = matchingSourceGuests.some((sourceGuest) => {
+          const matches = matchingSourceGuests.map((sourceGuest) => {
             const sourceName = typeof sourceGuest.name?.value === 'string' ? sourceGuest.name.value : '';
             const sourceEmail = typeof sourceGuest.email?.value === 'string' ? sourceGuest.email.value.trim().toLocaleLowerCase('en-US') : '';
+            const sourceMobile = normalizedPhone(sourceGuest.mobile?.value);
             const nameMatches = Boolean(sourceName && sameGuestName(`${row.firstName} ${row.lastName}`, sourceName));
             const emailMatches = Boolean(sourceEmail && verifiedFields.includes('emailaddress') && typeof row.email === 'string' &&
               row.email.trim().toLocaleLowerCase('en-US') === sourceEmail);
-            return sourceEmail ? emailMatches && (!sourceName || nameMatches) : nameMatches;
+            const mobileMatches = Boolean(sourceMobile && verifiedFields.includes('phonenumber') && normalizedPhone(row.phoneNumber) === sourceMobile);
+            return { score: Number(nameMatches) + Number(emailMatches) + Number(mobileMatches),
+              exact: Boolean((sourceName || sourceEmail || sourceMobile) && (!sourceName || nameMatches) &&
+                (!sourceEmail || emailMatches) && (!sourceMobile || mobileMatches)) };
           });
+          const score = Math.max(0, ...matches.map((match) => match.score));
+          const exactSourceMatch = matches.some((match) => match.exact);
           const current = eligibleByNativeId.get(row.nativeId);
-          if (current) { for (const ref of read.sourceRefs) current.sourceRefs.add(ref); current.exact ||= exactSourceMatch; }
-          else eligibleByNativeId.set(row.nativeId, { read, row, sourceRefs: new Set(read.sourceRefs), exact: exactSourceMatch });
+          if (current) { for (const ref of read.sourceRefs) current.sourceRefs.add(ref); current.exact ||= exactSourceMatch; current.score = Math.max(current.score, score); }
+          else eligibleByNativeId.set(row.nativeId, { read, row, sourceRefs: new Set(read.sourceRefs), exact: exactSourceMatch, score });
         }
       }
-      const bound = [...eligibleByNativeId.values()].slice(0, 100).map(({ read, row, sourceRefs }, candidateIndex) => {
+      const bound = [...eligibleByNativeId.values()].sort((a, b) => b.score - a.score || String(a.row.nativeId).localeCompare(String(b.row.nativeId)))
+        .slice(0, 3).map(({ read, row, sourceRefs }, candidateIndex) => {
         const ref = `obs_${stableId(read.ref, request.id, allocation.id, String(row.nativeId), 'guest-binding')}`;
         const observation: ReservationWorkflowV2Observation = { ...read, ref, generationId: input.generationId,
           sourceRefs: [...sourceRefs], criteria: { ...read.criteria, workflow: 'create', role: 'guest', requestId: request.id,
@@ -4172,7 +4489,7 @@ function bindGuestProfileObservations(input: {
         evidenceRefs: [...new Set([...matchedGuestRefs, ...reads.map((read) => read.ref)])].slice(0, 100) });
       if (eligibleByNativeId.size > bound.length) proposal.issues.push({
         path: `/requests/${request.id}/allocations/${allocation.id}/guest/candidateRefs`, kind: 'guest_profile_candidate_cap',
-        explanation: 'The native guest-profile result exceeded the per-allocation candidate cap; omitted candidates remain unavailable for selection.',
+        explanation: 'The top three native guest-profile matches are shown; other profiles remain available through search.',
         evidenceRefs: [...new Set([...matchedGuestRefs, ...reads.map((read) => read.ref)])].slice(0, 100) });
       if (!sourceGuests.length && (guest.firstName || guest.lastName || guest.email)) {
         const queryRefs = input.observations.filter((observation) => observation.kind === 'guest_candidate' &&
@@ -4259,9 +4576,10 @@ function bindPartyObservations(input: { proposal: ReservationWorkflowV2Proposal;
           result: { ...read.result, ...(request.kind === 'quote' ? { nativeId, name: raw.name } : {}), candidates: [raw] } };
         candidates.push(observation); added.push(observation);
       }
-      slot.party.candidateRefs = candidates.map((row) => row.ref);
-      const exact = candidates.filter((row) => norm((row.result.candidates as Array<Record<string, unknown>>)[0]?.name) === norm(slot.party.name));
-      slot.party.suggestedRef = exact.length === 1 ? exact[0]!.ref : null;
+      candidates.sort((a, b) => Number(norm((b.result.candidates as Array<Record<string, unknown>>)[0]?.name) === norm(slot.party.name)) -
+        Number(norm((a.result.candidates as Array<Record<string, unknown>>)[0]?.name) === norm(slot.party.name)));
+      slot.party.candidateRefs = candidates.slice(0, 3).map((row) => row.ref);
+      slot.party.suggestedRef = null;
     }
   }
   proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs,
@@ -4582,8 +4900,9 @@ export async function runReservationWorkflowV2Prefill(input: {
     const reason = `Typed extraction cited ${unknownRefs.length} evidence reference(s) outside the admitted source registry; source remains editable.`;
     return fallback(reason, { stage: 'extract', code: 'unknown_evidence_refs', message: reason });
   }
-  const extraction = selfPreStay ? parsedExtraction.data : recoverSourceIntent({ extraction: parsedExtraction.data,
+  const recoveredExtraction = selfPreStay ? parsedExtraction.data : recoverSourceIntent({ extraction: parsedExtraction.data,
     source: input.source, selection: input.selection, evidence });
+  const extraction = anchorCurrentExtractionDates({ extraction: recoveredExtraction, source: input.source, evidence });
   const currentRefs = new Set(evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
   const currentActions = currentRequestExtraction(extraction, currentRefs);
   const candidateExtraction = currentCandidateExtraction(extraction, currentRefs);
@@ -4680,14 +4999,23 @@ export async function runReservationWorkflowV2Prefill(input: {
     extraction: candidateExtraction, extractionIdByProposalRequestId: extractionProjection.extractionIdByProposalRequestId,
     observations, generationId }) : null;
   const partyBinding = guestBinding ? bindPartyObservations({ ...guestBinding, extraction: candidateExtraction, generationId }) : null;
-  const finalObservations = partyBinding?.observations ?? observations;
+  let finalObservations = partyBinding?.observations ?? observations;
   const boundProjection = partyBinding && extractionProjection && projectionInput ? localizeProposalValidation({ ...projectionInput,
     proposal: partyBinding.proposal, observations: finalObservations }, { ...extractionProjection, proposal: partyBinding.proposal }) : extractionProjection;
   const referenceSafety = boundProjection ? addRequestConfirmationSafety({ proposal: boundProjection.proposal, extraction: currentActions,
     extractionIdByProposalRequestId: boundProjection.extractionIdByProposalRequestId,
     currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence }) : null;
   const guardedProposal = referenceSafety?.proposal ?? (finalParsed?.success ? finalParsed.data.proposal : null);
-  const finalProposal = guardedProposal ? applyDefaultCmsSendPolicy(guardedProposal, input.propertyCode) : null;
+  let finalProposal = guardedProposal ? applyDefaultCmsSendPolicy(guardedProposal, input.propertyCode,
+    currentActions, boundProjection?.extractionIdByProposalRequestId) : null;
+  if (finalProposal) {
+    const noteResult = await applyNoteMemory({ proposal: finalProposal, source: input.source, propertyCode: input.propertyCode,
+      generationId, selection: input.selection, evidence, db: input.db, transportId: input.transportId, env });
+    const mealResult = await applyRateMealMemory({ proposal: noteResult.proposal, source: input.source,
+      propertyCode: input.propertyCode, generationId, env });
+    finalProposal = mealResult.proposal;
+    finalObservations = [...finalObservations, ...noteResult.observations, ...mealResult.observations];
+  }
   const admittedReviewRefs = new Set([...evidence.map((row) => row.ref), ...finalObservations.map((row) => row.ref)]);
   let unverifiedReviewEvidence = false;
   const finalReviewRequirements = Object.fromEntries(Object.entries(finalParsed?.success ? finalParsed.data.reviewRequirements ?? {} : {})
@@ -4720,9 +5048,9 @@ export async function runReservationWorkflowV2Prefill(input: {
       const rows = fallbackQuoteRoomRows({ request: extracted, evidence });
       if (!rows || fallbackProposal.sourceClaims.length + rows.length > MAX_PROPOSAL_SOURCE_CLAIMS ||
           fallbackProposal.annotations.length + rows.length > 2000) continue;
-      const board = request.body.groups[0]?.mealPlan ?? null;
+      const board = request.body.groups[0]?.requestedMealPlan ?? null;
       request.body.groups = rows.map((row, index) => ({ id: stableId(request.id, 'source-room', String(index)),
-        arrival: row.arrival, departure: row.departure, quantity: row.quantity, mealPlan: board,
+        arrival: row.arrival, departure: row.departure, quantity: row.quantity, mealPlan: null, requestedMealPlan: board,
         roomCodes: [], ratePlan: null, occupancy: { scope: 'unresolved', adults: null, childCount: null, childAges: null },
         priceObservationRefs: [] }));
       rows.forEach((row, index) => {
@@ -4768,23 +5096,36 @@ export async function runReservationWorkflowV2Prefill(input: {
     const fallbackSafety = addRequestConfirmationSafety({ proposal: fallbackProjection.proposal, extraction: currentActions,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
       currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence });
-    const proposal = applyDefaultCmsSendPolicy(fallbackSafety.proposal, input.propertyCode);
+    const noteResult = await applyNoteMemory({ proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, input.propertyCode,
+      currentActions, fallbackProjection.extractionIdByProposalRequestId),
+      source: input.source, propertyCode: input.propertyCode, generationId, selection: input.selection, evidence,
+      db: input.db, transportId: input.transportId, env });
+    const mealResult = await applyRateMealMemory({ proposal: noteResult.proposal, source: input.source,
+      propertyCode: input.propertyCode, generationId, env });
+    const proposal = mealResult.proposal;
+    finalObservations = [...finalObservations, ...noteResult.observations, ...mealResult.observations];
     const historicalLeads = await loadReservationNativeLeads({ propertyCode: input.propertyCode, source: input.source,
       generationId, proposal, fromAddress: input.selection.fromAddress ?? null, env, signal: input.signal,
       db: input.db, transportId: input.transportId,
       sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []) });
-    return { ...base, status: 'partial', observations: [...finalObservations, ...historicalLeads].slice(0, MAX_DRAFT_OBSERVATIONS),
-      proposal, fieldReviewRequirements: {},
+    const partyResult = await applyHistoricalPartySuggestions({ proposal, observations: finalObservations, leads: historicalLeads,
+      source: input.source, propertyCode: input.propertyCode, generationId, env, signal: input.signal,
+      allowNativeRead: Boolean(input.db && input.lookupFixtures === undefined && !input.readCandidate) });
+    return { ...base, status: 'partial', observations: [...finalObservations, ...historicalLeads, ...partyResult.observations].slice(0, MAX_DRAFT_OBSERVATIONS),
+      proposal: partyResult.proposal, fieldReviewRequirements: {},
       errors: [...readErrors, { stage: 'synthesis', ...error }] };
   }
   const historicalLeads = await loadReservationNativeLeads({ propertyCode: input.propertyCode, source: input.source,
     generationId, proposal: finalProposal!, fromAddress: input.selection.fromAddress ?? null, env, signal: input.signal,
     db: input.db, transportId: input.transportId,
     sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []) });
-  return { ...base, observations: [...finalObservations, ...historicalLeads].slice(0, MAX_DRAFT_OBSERVATIONS),
+  const partyResult = await applyHistoricalPartySuggestions({ proposal: finalProposal!, observations: finalObservations, leads: historicalLeads,
+    source: input.source, propertyCode: input.propertyCode, generationId, env, signal: input.signal,
+    allowNativeRead: Boolean(input.db && input.lookupFixtures === undefined && !input.readCandidate) });
+  return { ...base, observations: [...finalObservations, ...historicalLeads, ...partyResult.observations].slice(0, MAX_DRAFT_OBSERVATIONS),
     status: readErrors.length || finalObservations.some((row) => row.status !== 'complete') ||
       Boolean(extractionProjection?.addedRequests || extractionProjection?.addedIssues) ? 'partial' : 'ready',
-    proposal: finalProposal!, fieldReviewRequirements: finalReviewRequirements, errors: readErrors };
+    proposal: partyResult.proposal, fieldReviewRequirements: finalReviewRequirements, errors: readErrors };
 }
 
 /** Route-level ensure: existing drafts are reused, except for a bounded untouched-fallback retry. */

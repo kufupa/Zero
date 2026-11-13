@@ -148,7 +148,7 @@ const bookingFieldsSchema = z.object({
   bookerName: value(z.string().max(300)).optional(),
   bookerEmail: value(z.string().max(320)).optional(),
   bookerMobile: value(z.string().max(120)).optional(),
-  reservationNote: value(z.string().max(4000)).optional(),
+  reservationNote: value(z.string().max(2000)).optional(),
   cmsSend: value(z.boolean()).optional(),
   cmsMessageId: value(z.string().max(200)).optional(),
   cmsRecipient: value(z.string().max(500)).optional(),
@@ -194,6 +194,7 @@ const quoteBodySchema = z.object({
     departure: z.string().max(40).nullable(),
     quantity: z.number().int().nullable(),
     mealPlan: z.string().max(120).nullable(),
+    requestedMealPlan: z.string().max(120).nullable().default(null),
     requestedRoomDescription: z.string().max(1000).nullable().optional(),
     guestNames: z.array(z.string().max(300)).max(200).optional(),
     roomCodes: z.array(z.string().max(120)).max(100),
@@ -418,7 +419,10 @@ const modelCreateBodySchema = createBodySchema.extend({
   allocations: z.array(createBodySchema.shape.allocations.element.extend({ overrides: modelBookingFieldsSchema })).max(100),
 });
 const modelMoneyRequestSchema = moneyRequestSchema.omit({ staffAllowanceType: true });
-const modelQuoteBodySchema = quoteBodySchema.extend({ requestedMoney: z.array(modelMoneyRequestSchema).max(100) });
+const modelQuoteGroupSchema = quoteBodySchema.shape.groups.element.omit({ mealPlan: true })
+  .transform((group) => ({ ...group, mealPlan: null }));
+const modelQuoteBodySchema = quoteBodySchema.extend({ groups: z.array(modelQuoteGroupSchema).max(100),
+  requestedMoney: z.array(modelMoneyRequestSchema).max(100) });
 const modelServiceRequestSchema = serviceRequestSchema.extend({ requestedMoney: z.array(modelMoneyRequestSchema).max(100) });
 const modelRequestSchema = z.discriminatedUnion('kind', [requestSchema.options[0].extend({ body: modelQuoteBodySchema }),
   requestSchema.options[1].extend({ body: modelCreateBodySchema }), requestSchema.options[2],

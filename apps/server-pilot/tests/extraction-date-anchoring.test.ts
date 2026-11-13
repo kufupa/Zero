@@ -5,6 +5,10 @@ import { anchorStayDateRange, receivedDateAtHotel } from '../src/ai/stay-date-an
 import { buildPreparedStaffQuotePlan } from '../src/ai/quote-ready.js';
 import { AE1_OUTPUT, fakeModel, selectionFor } from './fixtures/inbound-extraction.js';
 
+const { agency, endClient, stays, ...fixture } = AE1_OUTPUT;
+const canonicalFixture = { ...fixture, bookingAgency: agency, organization: endClient,
+  stays: stays.map((stay) => ({ ...stay, rows: stay.rows.map(({ board, ...row }) => ({ ...row, mealPlan: board })) })) };
+
 async function extractRequestedDates(input: {
   bodyText: string;
   receivedAt: string;
@@ -24,11 +28,11 @@ async function extractRequestedDates(input: {
     preceding: input.preceding ?? baseSelection.preceding,
   };
   const model = fakeModel(() => ({
-    ...AE1_OUTPUT,
-    kind: input.kind ?? AE1_OUTPUT.kind,
+    ...canonicalFixture,
+    kind: input.kind ?? canonicalFixture.kind,
     stays: [
       {
-        ...AE1_OUTPUT.stays[0]!,
+        ...canonicalFixture.stays[0]!,
         requested: { arrival: input.arrival, departure: input.departure },
         requestedDateEvidence: input.dateEvidence === undefined ? input.bodyText : input.dateEvidence,
         ...(input.guests !== undefined ? { guests: input.guests } : {}),
@@ -60,9 +64,9 @@ async function extractRequestedDateSets(input: {
 }) {
   const selection = { ...selectionFor(input.bodyText), receivedAt: input.receivedAt };
   const model = fakeModel(() => ({
-    ...AE1_OUTPUT,
+    ...canonicalFixture,
     stays: input.stays.map((stay) => ({
-      ...AE1_OUTPUT.stays[0]!,
+      ...canonicalFixture.stays[0]!,
       requested: { arrival: stay.arrival, departure: stay.departure },
       requestedDateEvidence: stay.dateEvidence,
       ...(stay.guests !== undefined ? { guests: stay.guests } : {}),

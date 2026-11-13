@@ -16,7 +16,7 @@ import { anchorStayDateRange, type StayDateAnchorContext } from '../stay-date-an
 
 export type MailKind = (typeof MAIL_KINDS)[number];
 export type { MailAction };
-export type ExtractionBoard = 'room_only' | 'bb' | 'dbb';
+export type ExtractionMealPlan = 'room_only' | 'bb' | 'dbb';
 export type DateRange = { arrival: string | null; departure: string | null };
 export const ACTION_CONFIDENCE_LEVELS = ['high', 'medium', 'low'] as const;
 export type ActionConfidence = (typeof ACTION_CONFIDENCE_LEVELS)[number];
@@ -66,7 +66,8 @@ const amendProposalSchema = z.object({
   lastName: amendTextProposal('guest').optional(),
   guestEmail: amendTextProposal('guest').optional(),
   bookerName: amendTextProposal('booker').optional(),
-  bookerContact: amendTextProposal('booker').optional(),
+  bookerEmail: amendTextProposal('booker').optional(),
+  bookerMobile: amendTextProposal('booker').optional(),
   cmsSend: amendChoiceProposal(z.boolean()).optional(),
   cmsMessageId: amendTextProposal(null).optional(),
   cmsRecipient: amendProposalValue(z.string(), z.enum(['guest', 'booker'])).optional(),
@@ -80,6 +81,7 @@ const workflowProposalSchema = z.object({
   guestMobile: amendTextProposal('guest').optional(),
   bookerName: amendTextProposal('booker').optional(),
   bookerEmail: amendTextProposal('booker').optional(),
+  bookerMobile: amendTextProposal('booker').optional(),
   agencyName: amendProposalValue(z.string(), z.literal('agency')).optional(),
   organizationName: amendProposalValue(z.string(), z.literal('organization')).optional(),
   ratePlan: amendTextProposal(null).optional(),
@@ -109,10 +111,10 @@ const mailExtractionObjectSchema = z.object({
     .nullable()
     .optional()
     .describe('Person-authored email, system-generated channel/agent notice, or null when unclear.'),
-  agency: nullableText.describe(
+  bookingAgency: nullableText.describe(
     'The organisation of the sender (the From address), from the From domain, signature or letterhead. Null for a private sender.',
   ),
-  endClient: nullableText.describe(
+  organization: nullableText.describe(
     'The client the booking is for, e.g. "our client X" or a client named in the subject, only when it differs from the sender. Null if the same or not stated.',
   ),
   contact: z.object({
@@ -191,7 +193,7 @@ const mailExtractionObjectSchema = z.object({
             .array(z.number().int())
             .nullable()
             .describe('Actual ages in these rooms; [] for explicit zero children or the source-clear person-authored Centurion quote-only adult convention, never for booking, children/family or ambiguous requests; null when child count or ages remain unknown.'),
-          board: z.enum(['room_only', 'bb', 'dbb']).nullable(),
+          mealPlan: z.enum(['room_only', 'bb', 'dbb']).nullable(),
         }),
       ),
     }),
@@ -221,7 +223,7 @@ export type ExtractionRow = {
   rooms: number | null;
   adultsPerRoom: number | null;
   childAges: number[] | null;
-  board: ExtractionBoard | null;
+  mealPlan: ExtractionMealPlan | null;
 };
 export type ExtractionGuest = {
   name: string;
@@ -267,8 +269,8 @@ export const mailExtractionPayloadSchema = z.object({
     .optional()
     .describe('Person-authored email or a system-generated notice; absent in older stored payloads.'),
   contact: mailExtractionObjectSchema.shape.contact,
-  agency: mailExtractionObjectSchema.shape.agency,
-  endClient: mailExtractionObjectSchema.shape.endClient,
+  bookingAgency: mailExtractionObjectSchema.shape.bookingAgency,
+  organization: mailExtractionObjectSchema.shape.organization,
   confirmationNumbers: mailExtractionObjectSchema.shape.confirmationNumbers,
   stays: z.array(storedExtractionStaySchema),
   missing: z.array(z.object({ field: z.string(), question: z.string(), stayId: z.string().optional() })),
@@ -432,7 +434,8 @@ function sanitizeAmendProposal(
     ...(text(proposal.lastName, 1000) ? { lastName: text(proposal.lastName, 1000) } : {}),
     ...(text(proposal.guestEmail, 1000) ? { guestEmail: text(proposal.guestEmail, 1000) } : {}),
     ...(text(proposal.bookerName, 1000) ? { bookerName: text(proposal.bookerName, 1000) } : {}),
-    ...(text(proposal.bookerContact, 1000) ? { bookerContact: text(proposal.bookerContact, 1000) } : {}),
+    ...(text(proposal.bookerEmail, 320) ? { bookerEmail: text(proposal.bookerEmail, 320) } : {}),
+    ...(text(proposal.bookerMobile, 120) ? { bookerMobile: text(proposal.bookerMobile, 120) } : {}),
     ...(cmsSend ? { cmsSend } : {}),
     ...(messageId ? { cmsMessageId: messageId } : {}),
     ...(text(proposal.cmsRecipient, 255) ? { cmsRecipient: text(proposal.cmsRecipient, 255) } : {}),
@@ -482,7 +485,7 @@ function sanitizeWorkflowProposal(
   const subject = maskCardNumbers(currentMessageSubject);
   const limits: Record<keyof typeof proposal, number> = {
     firstName: 1000, lastName: 1000, guestEmail: 1000, guestMobile: 1000,
-    bookerName: 50, bookerEmail: 80, agencyName: 200, organizationName: 200, ratePlan: 12,
+    bookerName: 50, bookerEmail: 80, bookerMobile: 120, agencyName: 200, organizationName: 200, ratePlan: 12,
     sourceOfBusiness: 80, track: 80, guaranteeType: 80, reservationNote: 2000,
     cmsSend: 0, cmsMessageId: 8, cmsRecipient: 255, cancelNote: 200,
   };
@@ -609,7 +612,7 @@ export function sanitizeExtraction(
         childAges: row.childAges === null
           ? null
           : row.childAges.filter((age) => Number.isInteger(age) && age >= 0 && age <= 17).slice(0, 9),
-        board: row.board,
+        mealPlan: row.mealPlan,
       })),
       ...(guests !== undefined ? { guests } : {}),
       ...(stay.action !== undefined ? { action: stay.action } : {}),
@@ -683,8 +686,8 @@ export function sanitizeExtraction(
         email: email && sourceLower.includes(email.toLowerCase()) ? email : null,
         phone: cleanText(output.contact.phone),
       },
-      agency: cleanText(output.agency),
-      endClient: cleanText(output.endClient),
+      bookingAgency: cleanText(output.bookingAgency),
+      organization: cleanText(output.organization),
       confirmationNumbers,
       stays,
       missing,

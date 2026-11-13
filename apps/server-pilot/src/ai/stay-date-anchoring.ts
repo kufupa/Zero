@@ -67,6 +67,22 @@ export function receivedDateAtHotel(receivedAt: string | null | undefined): stri
   return `${value.year}-${value.month}-${value.day}`;
 }
 
+/** Resolve one source date phrase without borrowing a year from another stay. */
+export function resolveSourceStayDate(text: string, receivedAt: string, rollover: boolean): string | null {
+  const month = `(?:${MONTHS.join('|')})`;
+  const pattern = new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${month})(?:\\s*,?\\s*((?:19|20)\\d{2}))?\\b`, 'gi');
+  const matches = [...text.matchAll(pattern)];
+  if (matches.length !== 1) return null;
+  const match = matches[0]!;
+  const monthIndex = MONTHS.findIndex((name) => new RegExp(`^${name}$`, 'i').test(match[2]!));
+  const receipt = receivedDateAtHotel(receivedAt);
+  if (monthIndex < 0 || (!match[3] && !receipt)) return null;
+  const year = Number(match[3] ?? receipt!.slice(0, 4));
+  const value = `${year}-${String(monthIndex + 1).padStart(2, '0')}-${match[1]!.padStart(2, '0')}`;
+  if (!validDay(value)) return null;
+  return !match[3] && rollover && receipt ? nextOccurrence(value, receipt) : value;
+}
+
 /** Text used to verify date evidence from the selected message and its attachments only. */
 export function stayDateSourceText(selection: {
   subject?: string;
