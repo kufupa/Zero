@@ -9,6 +9,7 @@ import { paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
 import { paneStayCommitsOf, stayCommitsOf, withStayActionResult, withStayCommit } from '../src/ai/work-items.js';
 import { readResolvedHmsLabtestCreates, recoverHmsLabtestCreate } from '../src/ai/hms-labtest-dispatch.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
+import { RESERVATION_WORKFLOW_V2_STATE_KEY } from '../src/ai/reservation-workflow-v2-state.js';
 import { digestCloudCreateRequest } from '../tooling/hms-cloud/create-request-binding.mjs';
 import { CREATE_GUARANTEES, hrcenToday } from '../tooling/hms-cloud/cloud-create-policy.mjs';
 import { consumeNeverDispatchedCreateProof, installLabtestSaveRouteChain } from '../tooling/hms-cloud/saved-stay-save-route-chain.mjs';
@@ -141,6 +142,8 @@ function query(columns: Record<string, unknown>) {
     if ('direction' in columns) return [h.mail];
     if ('state' in columns) return [{ state: h.state }];
     if ('actorKind' in columns && 'value' in columns) return h.events.filter((event: any) => event.fieldPath === 'nava.hms.labtest.dispatch.v1');
+    if (Object.keys(columns).length === 1 && 'id' in columns)
+      return Object.hasOwn(h.state, RESERVATION_WORKFLOW_V2_STATE_KEY) ? [{ id: workItemId }] : [];
     throw new Error('unexpected query');
   };
   const chain = Object.assign(Promise.resolve().then(rows), {
