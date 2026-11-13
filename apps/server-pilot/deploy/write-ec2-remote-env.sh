@@ -67,6 +67,13 @@ REMOTE_COMMON_ALLOWLIST=(
   HMS_QUOTE_PREPARE
   HMS_QUOTE_PREPARE_PER_HOUR
   PARTY_MATCH_V2
+  HMS_MEMORY_PMS_PATH
+  HMS_MEMORY_OUTBOUND_PATH
+  HMS_MEMORY_DATA_DIR
+  HMS_NATIVE_CATALOG_PATH
+  HMS_MEMORY_OBSERVATIONS_PATH
+  PARTY_INDEX_PATH
+  PARTY_INDEX_PATH_HRDAV
   HMS_STAGEHAND_CDP_URL_DAVINCI
   RESERVATIONIST_STAFF_QUOTE_CONFIGURATION
   RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV
@@ -123,6 +130,13 @@ M1_ONLY_RUNTIME_DEPENDENCIES=(
   HMS_EXPECTED_TRANSPORT_ID
   HMS_CHROMIUM_EXECUTABLE_PATH
   PLAYWRIGHT_BROWSERS_PATH
+  HMS_MEMORY_PMS_PATH
+  HMS_MEMORY_OUTBOUND_PATH
+  HMS_MEMORY_DATA_DIR
+  HMS_NATIVE_CATALOG_PATH
+  HMS_MEMORY_OBSERVATIONS_PATH
+  PARTY_INDEX_PATH
+  PARTY_INDEX_PATH_HRDAV
 )
 M1_ONLY_ALLOWLIST=("${M1_ONLY_WRITE_CONTROLS[@]}" "${M1_ONLY_OPTIONAL_WRITE_CONTROLS[@]}"
   "${M1_ONLY_RUNTIME_DEPENDENCIES[@]}")
@@ -154,6 +168,8 @@ const common = new Set([
   "HMS_EXPECTED_TENANT", "HMS_EXPECTED_PROPERTY_CODE", "HMS_EXPECTED_TRANSPORT_ID", "HMS_JOB_QUEUE", "HMS_LANE_PAUSED",
   "HMS_PREFETCH_ENABLED", "HMS_PREFETCH_PER_HOUR", "HMS_GUEST_PREFETCH_PER_HOUR", "HMS_AVAILABILITY_PREFETCH",
   "HMS_AVAILABILITY_PER_HOUR", "HMS_QUOTE_PREPARE", "HMS_QUOTE_PREPARE_PER_HOUR", "PARTY_MATCH_V2", "HMS_STAGEHAND_CDP_URL_DAVINCI",
+  "HMS_MEMORY_PMS_PATH", "HMS_MEMORY_OUTBOUND_PATH", "HMS_MEMORY_DATA_DIR", "HMS_NATIVE_CATALOG_PATH",
+  "HMS_MEMORY_OBSERVATIONS_PATH", "PARTY_INDEX_PATH", "PARTY_INDEX_PATH_HRDAV",
   "RESERVATIONIST_STAFF_QUOTE_CONFIGURATION", "RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV",
   "INBOUND_EXTRACTION", "INBOUND_TRIAGE_CLASSIFIER", "LEGACY_INBOUND_TRIAGE_PIPELINE", "RESERVATION_V2_ARRIVAL_PREFILL", "PANE_STAY_LOOKUP", "QUOTE_RATE_CONTEXT", "NEEDS_YOU_SINCE",
   "PANE_WRITE_CREATE", "PANE_HMS_LAB_CREATE_WORKER", "PANE_CLOUD_CREATE_DISPATCH", "PANE_WRITE_AMEND", "PANE_HMS_LAB_AMEND_WORKER", "PANE_WRITE_AMEND_UNPAID", "PANE_WRITE_AMEND_PAID",
@@ -200,6 +216,10 @@ try {
       ["HMS_EXPECTED_PROPERTY_CODE", /^[A-Z][A-Z0-9]+$/],
       ["HMS_EXPECTED_TRANSPORT_ID", /^transport-[a-z0-9]+(?:-[a-z0-9]+)*$/]]) {
       if (values.has(key) && !pattern.test(values.get(key))) throw new Error("invalid");
+    }
+    for (const key of ["HMS_MEMORY_PMS_PATH", "HMS_MEMORY_OUTBOUND_PATH", "HMS_MEMORY_DATA_DIR",
+      "HMS_NATIVE_CATALOG_PATH", "HMS_MEMORY_OBSERVATIONS_PATH", "PARTY_INDEX_PATH", "PARTY_INDEX_PATH_HRDAV"]) {
+      if (values.has(key) && !/^\/[A-Za-z0-9._/-]+$/.test(values.get(key))) throw new Error("invalid");
     }
     if (values.has("GOTENBERG_URL")) {
       const url = new URL(values.get("GOTENBERG_URL"));
@@ -255,8 +275,28 @@ case "${1:-}" in
     exit 0
     ;;
   --m1-only)
-    [ "$#" -eq 1 ] || exit 2
     M1_ONLY=1
+    if [ "$#" -gt 1 ]; then
+      [ "$#" -ge 3 ] && [ "$2" = "--keys" ] || exit 2
+      shift 2
+      declare -A selected=()
+      for key in "$@"; do
+        [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] && [ -z "${selected[$key]:-}" ] || exit 2
+        selected[$key]=1
+      done
+      filter_m1_keys() {
+        local key
+        filtered=()
+        for key in "$@"; do
+          if [ -n "${selected[$key]:-}" ]; then filtered+=("$key"); unset 'selected[$key]'; fi
+        done
+      }
+      filter_m1_keys "${M1_ONLY_WRITE_CONTROLS[@]}"; M1_ONLY_WRITE_CONTROLS=("${filtered[@]}")
+      filter_m1_keys "${M1_ONLY_OPTIONAL_WRITE_CONTROLS[@]}"; M1_ONLY_OPTIONAL_WRITE_CONTROLS=("${filtered[@]}")
+      filter_m1_keys "${M1_ONLY_RUNTIME_DEPENDENCIES[@]}"; M1_ONLY_RUNTIME_DEPENDENCIES=("${filtered[@]}")
+      [ "${#selected[@]}" -eq 0 ] || { echo "unknown M1 key" >&2; exit 2; }
+      M1_ONLY_ALLOWLIST=("${M1_ONLY_WRITE_CONTROLS[@]}" "${M1_ONLY_OPTIONAL_WRITE_CONTROLS[@]}" "${M1_ONLY_RUNTIME_DEPENDENCIES[@]}")
+    fi
     ;;
   --ensure-model | --validate-model | --prepare-model)
     [ "$#" -eq 1 ] || exit 2
@@ -422,6 +462,8 @@ const keys = args.slice(3);
 const controlKeys = new Set(keys.slice(0, controlCount));
 const dependencyKeys = new Set(keys.slice(controlCount));
 const target = new Set(keys);
+const memoryPaths = new Set(["HMS_MEMORY_PMS_PATH", "HMS_MEMORY_OUTBOUND_PATH", "HMS_MEMORY_DATA_DIR",
+  "HMS_NATIVE_CATALOG_PATH", "HMS_MEMORY_OBSERVATIONS_PATH", "PARTY_INDEX_PATH", "PARTY_INDEX_PATH_HRDAV"]);
 const sourceAuthoritativeReadControls = new Set([
   "LEGACY_INBOUND_TRIAGE_PIPELINE", "RESERVATION_V2_ARRIVAL_PREFILL", "PANE_STAY_LOOKUP", "QUOTE_RATE_CONTEXT",
 ]);
@@ -446,7 +488,7 @@ try {
   const source = parse(sourcePath);
   for (const key of keys) {
     // The Centurion descriptor is optional on installations using only the HRDAV descriptor.
-    const required = (dependencyKeys.has(key) && key !== "RESERVATIONIST_STAFF_QUOTE_CONFIGURATION") || keys.indexOf(key) < requiredControlCount;
+    const required = (dependencyKeys.has(key) && key !== "RESERVATIONIST_STAFF_QUOTE_CONFIGURATION" && !memoryPaths.has(key)) || keys.indexOf(key) < requiredControlCount;
     if (!target.has(key) || (required && !source.has(key))) fail(`M1 durable key missing: ${key}`);
   }
   const installed = chunks(fs.readFileSync(installedPath, "utf8"));
@@ -463,6 +505,11 @@ try {
     if (!source.has(key)) {
       // Missing read flags use the application default in every process.
       if (!sourceAuthoritativeReadControls.has(key)) merged.push(line);
+      continue;
+    }
+    if (memoryPaths.has(key)) {
+      const ending = line.endsWith("\n") ? "\n" : "";
+      merged.push(body(source.get(key)) + ending);
       continue;
     }
     if (dependencyKeys.has(key)) {

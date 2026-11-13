@@ -49,6 +49,9 @@ function validateReleaseControl(key, value) {
     !['off', 'on'].includes(value.trim().toLowerCase())) throw new Error('invalid');
   if (['HMS_PREFETCH_PER_HOUR', 'HMS_GUEST_PREFETCH_PER_HOUR', 'HMS_AVAILABILITY_PER_HOUR',
     'HMS_QUOTE_PREPARE_PER_HOUR'].includes(key) && !/^\d{1,15}$/.test(value)) throw new Error('invalid');
+  if (['HMS_MEMORY_PMS_PATH', 'HMS_MEMORY_OUTBOUND_PATH', 'HMS_MEMORY_DATA_DIR',
+    'HMS_NATIVE_CATALOG_PATH', 'HMS_MEMORY_OBSERVATIONS_PATH', 'PARTY_INDEX_PATH', 'PARTY_INDEX_PATH_HRDAV'].includes(key) &&
+    !/^\/[A-Za-z0-9._/-]+$/.test(value)) throw new Error('invalid');
   const patterns = {
     HMS_EXPECTED_TENANT: /^[A-Z][A-Z0-9_]+$/,
     HMS_EXPECTED_PROPERTY_CODE: /^[A-Z][A-Z0-9]+$/,
