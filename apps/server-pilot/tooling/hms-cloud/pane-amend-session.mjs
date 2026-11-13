@@ -15,10 +15,13 @@ import { stageSavedStayCommission } from './guest-stay-commission.mjs';
 import { inspectSavedGuaranteeForComposition, applySavedGuaranteeOnGo } from './guest-stay-amend-guarantee.mjs';
 import { createSavedGuaranteeRequestGate } from './saved-stay-guarantee-request-gate.mjs';
 import { inspectSavedPartyForComposition } from './guest-stay-amend-party.mjs';
-import { createSavedPartyStageRequestGate } from './saved-stay-party-request-gate.mjs';
+import { createSavedPartyStageRequestGate, savedPartyBeforeImage } from './saved-stay-party-request-gate.mjs';
 import { labtestCombinedAmendPreimageBinding } from './saved-stay-combined-preimage.mjs';
 import { nativeCmsSendValue, runLabtestAmendSave } from './labtest-amend-save.mjs';
 import { createLabtestAmendDispatch } from './labtest-amend-dispatch.mjs';
+import { createFirstGoCallbackAuthority, isFirstGoCallbackAuthority } from './pane-amend-callback-authority.mjs';
+import { createFinalGoCallbackAuthority, isFinalGoCallbackAuthority } from './pane-amend-final-authority.mjs';
+import { runCloudPaneAmendCallbacks } from './pane-amend-callback-phase.mjs';
 import { nativeMoneyCents, nativeAverageCents, nativeMoneyTenThousandths, nativePriceDigest, parseNativePricingJson,
   readAmendNightlyQuote, readSavedStayNightlyRates } from './saved-stay-nightly-rates.mjs';
 import { stageSavedAdultForComposition } from './guest-stay-amend-adults.mjs';
@@ -28,6 +31,12 @@ const identityKeys = ['source', 'propertyCode', 'confirmation', 'reservationStay
   'recordId', 'guestId', 'status', 'firstName', 'lastName', 'arrival', 'departure', 'roomType',
   'ratePlan', 'adults', 'children', 'childAges'];
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const portableBusinessImage = snapshot => {
+  const image = savedPartyBeforeImage(snapshot);
+  if (!image?.data || !image?.values) return null;
+  return { data: Object.fromEntries(Object.entries(image.data).filter(([key]) => key !== 'bookingsessionid')),
+    values: Object.fromEntries(Object.entries(image.values).filter(([key]) => key !== 'bookingsessionid')) };
+};
 const percent = value => value !== null && value !== undefined && String(value).trim() !== '' &&
   Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 100 ? Number(value) : null;
 const validTarget = (target) => target?.propertyCode === 'HRCEN' && target.browserSlot === 'centurion' &&
@@ -39,7 +48,8 @@ const searchHints = (selected, arrivalDate) => {
 const amendRecordOptions = { allowBlankNote: true, allowUnchangedBusinessParties: true,
   preserveUnsentRecipient: true, allowModelOnlyPrimaryPartyIds: true };
 const nativeOptions = (input, record) => {
-  if (input.allowRealGuest !== true) return amendRecordOptions;
+  if (input.allowRealGuest !== true && !(input.allowChangedLabGuarantee === true && isLabtest(input.selected) &&
+      input.selected.arrival >= '2027-01-01')) return amendRecordOptions;
   const fields = record?.details?.fields?.filter((field) => field.name === 'guaranteetype');
   const code = record?.nativePreimage?.guaranteeCode, display = fields?.length === 1 ? fields[0].value : null;
   if (!/^[A-Z0-9]{1,20}$/.test(code || '') || typeof display !== 'string' || !display.trim()) throw new Error('NATIVE_GUARANTEE_UNVERIFIED');
@@ -289,7 +299,7 @@ export async function prepareCloudPaneAmend(input, { openSession = withCenturion
       if (result.issue === 'PREPARE_ONLY' && result.nativeDigest && result.approvedPrices && result.preserved) {
         return { outcome: 'prepared', nativeDigest: result.nativeDigest,
           approvedPrices: result.approvedPrices, preserved: result.preserved,
-          recoveryBaseline: result.recoveryBaseline };
+          recoveryBaseline: result.recoveryBaseline, ...(input.captureBusinessImage ? { sourceBusinessImage: result.sourceBusinessImage } : {}) };
       }
       return { outcome: 'refused', issue: result.issue || 'AMEND_PREPARE_UNVERIFIED' };
     }, protectedSession.options);
@@ -617,14 +627,15 @@ function assertApprovedAmendPrice(snapshot, target, approved, { requireAverage =
   }
   if (observed.currency !== approved.currency || observed.totalCents !== approved.totalCents ||
       observed.averageCents !== approved.averageCents || (approved.componentsTenThousandths &&
-        Object.entries(approved.componentsTenThousandths).some(([name, value]) => !nativePriceComponents.includes(name) ||
-          observed.componentsTenThousandths?.[name] !== value))) throw new Error('AMEND_PRICE_CHANGED');
+        (nativePriceDigest(observed.componentsTenThousandths) !== nativePriceDigest(approved.componentsTenThousandths) ||
+          Object.keys(approved.componentsTenThousandths).some(name => !nativePriceComponents.includes(name))))) throw new Error('AMEND_PRICE_CHANGED');
   assertAmendPriceFields(Object.entries(snapshot?.data ?? {}), approved);
   assertAmendPriceFields(Object.entries(snapshot?.values ?? {}), approved);
 }
 
 /** Compose one staged amendment. Preview cannot arm Save; Go uses the same business checks. */
-export function cloudPaneAmendRunOptions({ page, input, expected, authorization, captureBefore = () => {}, prepareOnly = false }, {
+export function cloudPaneAmendRunOptions({ page, input, expected, authorization, captureBefore = () => {}, prepareOnly = false,
+  callbackAuthority = null, authorizeCallbackSave = null, registerFinalChecks = () => {}, onCallbackTask = () => {} }, {
   current = currentLabtestRecord, snapshot = snapshotLabtestRecord, bind = labtestCombinedAmendPreimageBinding,
   stageAdults = stageSavedAdultForComposition, stageDates = stageSavedDatesForComposition,
   stageChildren = stageSavedChildrenForComposition, stageOption = stageSavedRoomRateForComposition,
@@ -660,6 +671,15 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
   };
   input = { ...structuredClone({ ...input, signal: undefined }), signal: input?.signal };
   const selected = input?.selected, changes = input?.changes;
+  const nativeReal = input.allowRealGuest === true || (input.allowChangedLabGuarantee === true &&
+    isLabtest(selected) && selected.arrival >= '2027-01-01');
+  const callbackReviewOnly = isFirstGoCallbackAuthority(callbackAuthority);
+  const callbackFinal = isFinalGoCallbackAuthority(callbackAuthority);
+  const callbackMode = callbackReviewOnly || callbackFinal;
+  const bindingChanges = callbackMode ? input?.callbackBindingChanges : changes;
+  if (callbackMode && (!input?.callbackPlan || !bindingChanges || prepareOnly ||
+      !callbackAuthority.matchesPlan(input.callbackPlan))) throw new Error('CALLBACK_PLAN_UNVERIFIED');
+  if (callbackFinal && typeof authorizeCallbackSave !== 'function') throw new Error('CALLBACK_SAVE_AUTHORITY_REQUIRED');
   if (input?.childAgePreimage !== undefined && (!Array.isArray(input.childAgePreimage) ||
       input.childAgePreimage.length !== selected?.children || input.childAgePreimage.some(age => !Number.isInteger(age) || age < 0 || age > 17))) {
     throw new Error('CHILD_PREIMAGE_INVALID');
@@ -681,13 +701,13 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
     Object.hasOwn(changes, key) && changes[key] !== selected[key]).map((key) => [key, changes[key]]));
   const dateChanged = Object.hasOwn(proposed, 'arrival') || Object.hasOwn(proposed, 'departure');
   const childChanged = Object.hasOwn(changes, 'children') && (changes.children !== selected.children ||
-    !same(changes.childAges, selected.childAges));
+    !sameChildAgeMultiset(changes.childAges, input.childAgePreimage ?? selected.childAges));
   // The native child validation callback may persist before Save. Keep it fenced
   // until explicit Go authorization and partial-effect recovery cover that callback.
-  if (childChanged) throw new Error('CHILD_AGE_GO_AUTHORIZATION_REQUIRED');
+  if (childChanged && !callbackMode) throw new Error('CHILD_AGE_GO_AUTHORIZATION_REQUIRED');
   const roomChanged = target.roomType !== selected.roomType, rateChanged = target.ratePlan !== selected.ratePlan;
   const chargeChanged = Object.hasOwn(changes, 'roomTypeForCharge'), trackChanged = Object.hasOwn(changes, 'track');
-  const needsAvailability = dateChanged || Object.hasOwn(proposed, 'adults') || childChanged || roomChanged || rateChanged || chargeChanged;
+  const needsAvailability = callbackMode || dateChanged || Object.hasOwn(proposed, 'adults') || childChanged || roomChanged || rateChanged || chargeChanged;
   // The retained baseline is not the final price when availability changes.
   if (changes.retainRates === 'yes' && needsAvailability) throw new Error('AMEND_PRICE_UNVERIFIED');
   const allowsExtendOverrideRate = changes.retainRates === 'yes' &&
@@ -695,7 +715,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
   let dispatch = null;
   let firstSnapshot = null, questionSnapshot = null, extendSnapshot = null;
   let preparedState = null, nativeDigest = null, preserved = null, quoted = null, stopOperation = null;
-  let rateScope = null, operationBounded = null;
+  let rateScope = null, operationBounded = null, callbackEffects = null;
   const rateTarget = { confirmation: selected.confirmation, nativeStayId: selected.reservationStayId,
     arrival: selected.arrival, departure: selected.departure };
   const readSavedBasis = (state, bounded, requestScope = null) => readRates(page, state, rateTarget,
@@ -734,7 +754,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
   const saveOptions = (prepared, phase) => ({ selected, changes, beforeNote: expected.note,
     beforeParties: prepared.state.partyPreimage, guaranteeCode: prepared.state.expectedGuarantee?.code ?? 'NGI',
     verifiedChildAges: prepared.state.verifiedChildAges,
-    allowRealGuest: input.allowRealGuest === true, baseline: prepared.baseline, phase });
+    allowRealGuest: nativeReal, baseline: prepared.baseline, phase });
   const dispatchSave = async (phase, request, proceed) => {
     const check = async () => {
       if (!preparedState) throw new Error('AMEND_DRAFT_CHANGED');
@@ -760,8 +780,23 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       throw error;
     }
   };
+  if (callbackFinal) registerFinalChecks({
+    verifyFinal: (latest, prepared) => {
+      if (!valid(latest, prepared)) return false;
+      try { checkPrice(latest, prepared); return true; } catch { return false; }
+    },
+    verifyDispatch: async (phase, request) => {
+      if (!preparedState) return false;
+      await assertSavedBasis(preparedState);
+      const latest = await snapshot(preparedState.frame);
+      if (!valid(latest, preparedState) || !matchesCloudPaneAmendSave(request, preparedState.frame, latest,
+        saveOptions(preparedState, phase))) return false;
+      checkPrice(latest, preparedState, request);
+      return true;
+    },
+  });
   const availability = needsAvailability ? {
-    recipient: '', guestEmail: '', cmsSend: changes.cmsSend, cmsMessageId: '', allowRealGuest: input.allowRealGuest === true,
+    recipient: '', guestEmail: '', cmsSend: changes.cmsSend, cmsMessageId: '', allowRealGuest: nativeReal,
     expected: null,
     snapshot: async (bounded, prepared) => {
       const before = await bounded(snapshot(prepared.frame));
@@ -775,7 +810,8 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       return before;
     },
     click: (bounded, prepared) => clickLabtestAmendAvailability(prepared.frame, bounded),
-    dispatchCandidate: (request, proceed) => prepareOnly ? proceed() : dispatch.availability(request, proceed),
+    dispatchCandidate: callbackMode ? callbackAuthority.dispatchAvailability :
+      (request, proceed) => prepareOnly ? proceed() : dispatch.availability(request, proceed),
     validate: async (bounded, prepared, staged, response) => {
       const body = parseNativePricingJson(await bounded(response.text()));
       if (body?.pageData?.success === false) return { ok: false, issue: 'AVAILABILITY_UNVERIFIED' };
@@ -786,18 +822,28 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       if (!valid(after, prepared)) return { ok: false, issue: 'AMEND_DRAFT_CHANGED' };
       staged.draft = after;
       staged.approvedPrices = approvalPrice(after, prepared);
+      if (callbackReviewOnly && staged.approvedPrices) {
+        if (!callbackAuthority.complete() || typeof input.afterScreenshot !== 'string') return { ok: false, issue: 'CALLBACK_REPRICE_UNVERIFIED' };
+        await bounded(page.screenshot({ path: input.afterScreenshot }));
+      }
       return staged.approvedPrices ? true : { ok: false, issue: 'AMEND_RATE_UNVERIFIED' };
     },
   } : undefined;
   return {
-    timeoutMs: 7 * 60_000, signal: input.signal, prepareOnly, reportDispatchDrain: !prepareOnly,
+    timeoutMs: 7 * 60_000, signal: input.signal, prepareOnly, callbackReviewOnly,
+    ...(callbackMode ? { callbackAuthority, dispatchChildCandidate: callbackAuthority.dispatchChildren,
+      partyStageActive: () => true } : {}), reportDispatchDrain: !prepareOnly,
     dispatchDrainTimeoutMs: 5_000, reportBlockedTargets: input.reportBlockedTargets === true,
     prepare: async (bounded) => {
       const state = await bounded(current(page, expected, recordOptions));
       if (Array.isArray(input.childAgePreimage)) state.verifiedChildAges = [...input.childAgePreimage];
       const baseline = await bounded(snapshot(state.frame));
-      const bound = bind(expected, state, baseline, changes);
-      preserved = cloudAmendPreserved(state, baseline, changes);
+      if (callbackFinal && (!input.approvedBusinessImage || !portableBusinessImage(baseline) ||
+          nativePriceDigest(portableBusinessImage(baseline)) !== nativePriceDigest(input.approvedBusinessImage))) {
+        throw new Error('AMEND_CALLBACK_PREIMAGE_CHANGED');
+      }
+      const bound = bind(expected, state, baseline, bindingChanges);
+      preserved = cloudAmendPreserved(state, baseline, bindingChanges);
       const savedRates = changes.retainRates === 'yes' ? await bounded(readSavedBasis(state, bounded)) : null;
       const savedPrice = changes.retainRates === 'yes' ? observedAmendPrice(baseline, selected, null) : null;
       if (changes.retainRates === 'yes' && (!savedRates || !/^[a-f0-9]{64}$/.test(savedRates.digest || '') ||
@@ -818,14 +864,19 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       }
       const beforeGuarantee = state.expectedGuarantee ?? { code: 'NGI', display: 'Non-Guaranteed Individual' };
       const guaranteeChanged = typeof changes.guaranteeType === 'string' && changes.guaranteeType !== beforeGuarantee.code;
-      if (!prepareOnly) dispatch = createLabtestAmendDispatch({ ...authorization,
+      if (!prepareOnly && !callbackMode) dispatch = createLabtestAmendDispatch({ ...authorization,
         requiresAvailability: needsAvailability, requiresGuarantee: guaranteeChanged, allowsExtendOverrideRate });
-      const guaranteeStageGate = !prepareOnly && guaranteeChanged ? createSavedGuaranteeRequestGate({
-        frame: state.frame, isActive: () => !input.signal?.aborted, deadlineAt: performance.now() + 6 * 60_000 }) : null;
+      const guaranteeStageGate = !prepareOnly && (callbackMode ? Boolean(input.callbackPlan.guarantee) : guaranteeChanged)
+        ? createSavedGuaranteeRequestGate({ frame: state.frame, isActive: () => !input.signal?.aborted,
+          deadlineAt: performance.now() + 6 * 60_000 }) : null;
       const occupancy = savedChildOccupancy(baseline);
       const childStageGate = childChanged ? createSavedChildStageRequestGate({ frame: state.frame,
-        stayId: selected.reservationStayId, adults: target.adults, priorAges: occupancy.ages,
-        priorBands: occupancy.bands, nextAges: changes.childAges, deadlineAt: performance.now() + 6 * 60_000 }) : null;
+        stayId: selected.reservationStayId, adults: callbackMode ? selected.adults : target.adults,
+        priorAges: callbackMode ? input.childAgePreimage : occupancy.ages,
+        readAges: occupancy.ages ?? [], priorBands: occupancy.bands, nextAges: changes.childAges,
+        deadlineAt: performance.now() + 6 * 60_000 }) : null;
+      const partyStageGate = callbackMode && input.callbackPlan.parties.length ? createSavedPartyStageRequestGate({
+        frame: state.frame, selected, deadlineAt: performance.now() + 6 * 60_000 }) : null;
       const roomStageGate = roomChanged ? createSavedRoomStageRequestGate({ frame: state.frame, selected,
         deadlineAt: performance.now() + 6 * 60_000 }) : null;
       const rateStageGate = needsAvailability || trackChanged ? createSavedRateStageRequestGate({ frame: state.frame, selected,
@@ -835,7 +886,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       if (input.guaranteeChoiceCode) {
         if (!guaranteePrice) throw new Error('AMEND_PRICE_UNVERIFIED');
         assertApprovedAmendPrice(baseline, selected, guaranteePrice, { requireAverage: false });
-        if (!prepareOnly) assertApprovedAmendPrice(baseline, selected, input.approvedBeforeGuaranteePrice, { requireAverage: false });
+        if (!prepareOnly && !callbackMode) assertApprovedAmendPrice(baseline, selected, input.approvedBeforeGuaranteePrice, { requireAverage: false });
       }
       const recoveryBaseline = { beforeNote: expected.note, beforeParties: structuredClone(state.partyPreimage),
         beforeRecipient: preserved.cmsRecipient,
@@ -863,11 +914,13 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       if (input.captureGuestOptInBaseline && typeof recoveryBaseline.beforeGuestOptIn !== 'boolean') {
         throw new Error('GUEST_OPT_IN_PREIMAGE_UNVERIFIED');
       }
-      if (input.captureCommissionBaseline && (recoveryBaseline.beforeCommission === null ||
+      const agencyPending = callbackMode && input.callbackPlan.parties.some(party => party.kind === 'bookingAgency');
+      if (input.captureCommissionBaseline && !agencyPending && (recoveryBaseline.beforeCommission === null ||
           !/^\d{1,30}$/.test(state.partyPreimage?.taid1 || '') || !state.partyPreimage?.ta1?.trim())) {
         throw new Error('COMMISSION_AGENCY_OR_PREIMAGE_UNVERIFIED');
       }
-      if (Object.hasOwn(changes, 'billingReference')) {
+      if (Object.hasOwn(changes, 'billingReference') && !(callbackMode &&
+          input.callbackPlan.parties.some(party => party.kind === 'arAccount'))) {
         const party = state.partyPreimage;
         if (typeof recoveryBaseline.beforeBillingReference !== 'string' ||
             (changes.billingReference && (!party.araccountname?.trim() ||
@@ -903,15 +956,42 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           beforeSavedRates: savedRates ? structuredClone(savedRates) : null,
           beforeEvidence: { eventId: evidence.eventId, sha256: evidence.sha256 } });
       }
-      preparedState = { frame: state.frame, state, baseline, save, childStageGate, roomStageGate, rateStageGate, guaranteeStageGate,
+      if (callbackMode) assertApprovedAmendPrice(baseline, selected, input.approvedBeforeCallbackPrice, { requireAverage: false });
+      preparedState = { frame: state.frame, state, baseline, save, childStageGate, roomStageGate, rateStageGate, guaranteeStageGate, partyStageGate,
         savedRateDigest: savedRates?.digest ?? null, recoveryBaseline,
-        enableComposedStage: true, allowRealGuest: input.allowRealGuest === true };
+        enableComposedStage: true, allowRealGuest: nativeReal };
       return preparedState;
     },
     stage: async (bounded, prepared, context) => {
       stopOperation = context.stop;
       let draft = prepared.baseline;
-      if (input.guaranteeChoiceCode) {
+      if (callbackMode) {
+        const task = runCloudPaneAmendCallbacks({ context, ...input.callbackPlan }, callbackAuthority);
+        onCallbackTask(task);
+        const applied = await bounded(task);
+        callbackEffects = applied.effects;
+        if (applied.outcome !== 'applied' || !applied.snapshot ||
+            (applied.partialEffect !== 'possible' && !(callbackFinal && applied.partialEffect === 'none'))) {
+          throw new Error(applied.issue || 'CALLBACK_PHASE_UNVERIFIED');
+        }
+        draft = applied.snapshot;
+        const updatedParties = Object.fromEntries(Object.keys(prepared.state.partyPreimage).map(key =>
+          [key, String(Object.hasOwn(draft.data, key) ? draft.data[key] ?? '' : draft.values?.[key] ?? '')]));
+        if (!unchangedLabtestBusinessParties(updatedParties, draft,
+          { allowModelOnlyPrimaryPartyIds: true, allowRealGuest: nativeReal })) {
+          throw new Error('CALLBACK_PARTY_READBACK_UNVERIFIED');
+        }
+        prepared.state.partyPreimage = updatedParties;
+        if (input.captureCommissionBaseline && input.callbackPlan.parties.some(party => party.kind === 'bookingAgency')) {
+          const observed = percent(draft.data?.ta1commission);
+          if (observed === null || observed !== percent(draft.values?.ta1commission)) throw new Error('COMMISSION_PREIMAGE_UNVERIFIED');
+          prepared.recoveryBaseline.beforeCommission = observed;
+        }
+        if (input.callbackPlan.guarantee) prepared.state.expectedGuarantee = {
+          code: input.callbackPlan.guarantee.code, display: input.callbackPlan.guarantee.display };
+        if (input.callbackPlan.children) prepared.state.verifiedChildAges = [...input.callbackPlan.children.nextAges];
+      }
+      if (input.guaranteeChoiceCode && !callbackMode) {
         const observation = await bounded(inspectSavedGuaranteeForComposition(context));
         const matches = observation.candidates.filter(item => item.code === input.guaranteeChoiceCode);
         const before = prepared.state.expectedGuarantee ?? { code: 'NGI', display: 'Non-Guaranteed Individual' };
@@ -938,7 +1018,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       }
       if (Object.hasOwn(proposed, 'adults')) draft = (await bounded(stageAdults(context, expected, proposed.adults))).snapshot;
       if (dateChanged) draft = await bounded(stageDates(context, expected, proposed, draft === prepared.baseline ? null : draft));
-      if (childChanged) draft = await bounded(stageChildren(context, { ...expected,
+      if (childChanged && !callbackMode) draft = await bounded(stageChildren(context, { ...expected,
         reservationStayId: selected.reservationStayId, adults: target.adults }, changes.childAges));
       // Picker refreshes are unsaved; keep HMS mail off until the final requested
       // form is staged so an intermediate native action cannot send a message.
@@ -975,6 +1055,10 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
     validate: async (_bounded, prepared, staged) => Boolean(staged?.draft && valid(staged.draft, prepared) &&
       (needsAvailability || staged.approvedPrices)),
     stageDetails: (staged) => ({ nativeDigest, preserved, approvedPrices: staged?.approvedPrices ?? null,
+      ...(callbackMode ? { callbackEffects } : {}),
+      ...(callbackFinal ? { finalParties: preparedState?.state?.partyPreimage ?? null,
+        finalBeforeCommission: preparedState?.recoveryBaseline?.beforeCommission ?? null } : {}),
+      ...(prepareOnly && input.captureBusinessImage ? { sourceBusinessImage: portableBusinessImage(preparedState?.baseline) } : {}),
       ...(prepareOnly ? { recoveryBaseline: preparedState?.recoveryBaseline ?? null } : {}) }),
     ...(availability ? { availability } : {}),
     beforeSave: async (bounded, prepared, staged, scope) => {
@@ -987,12 +1071,13 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       firstSnapshot = await bounded(snapshot(prepared.frame));
       if (!valid(firstSnapshot, prepared)) throw new Error('AMEND_DRAFT_CHANGED');
       checkPrice(firstSnapshot, prepared);
+      if (callbackFinal) authorizeCallbackSave(firstSnapshot, prepared);
       staged.draft = firstSnapshot;
     },
     matches: (request, frame, prepared) => firstSnapshot !== null &&
       matchesCloudPaneAmendSave(request, frame, firstSnapshot, saveOptions(prepared, 'save')),
-    dispatchCandidate: (request, proceed) => dispatchSave('save', request, proceed),
-    ...(!prepareOnly ? { retainRate: {
+    dispatchCandidate: callbackFinal ? callbackAuthority.dispatchSave : (request, proceed) => dispatchSave('save', request, proceed),
+    ...(!prepareOnly && !callbackReviewOnly ? { retainRate: {
       choice: changes.retainRates,
       snapshot: async (bounded, prepared) => {
         questionSnapshot = await bounded(snapshot(prepared.frame));
@@ -1002,9 +1087,9 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       },
       matches: (request, frame, prepared, _staged, observed) =>
         matchesCloudPaneAmendSave(request, frame, observed, saveOptions(prepared, 'retain')),
-      dispatchCandidate: (request, proceed) => dispatchSave('retain', request, proceed),
+      dispatchCandidate: callbackFinal ? callbackAuthority.dispatchRetain : (request, proceed) => dispatchSave('retain', request, proceed),
     } } : {}),
-    ...(!prepareOnly && allowsExtendOverrideRate ? { extendRate: {
+    ...(!prepareOnly && !callbackReviewOnly && allowsExtendOverrideRate ? { extendRate: {
       snapshot: async (bounded, prepared) => {
         extendSnapshot = await bounded(snapshot(prepared.frame));
         if (!valid(extendSnapshot, prepared)) throw new Error('AMEND_DRAFT_CHANGED');
@@ -1041,6 +1126,228 @@ export function admitsCloudPaneAmend(input, authorization) {
     /^[a-f0-9]{64}$/.test(authorization?.operationDigest || '') &&
     typeof authorization?.authorizeFirst === 'function' && typeof authorization?.sealBeforeEvidence === 'function' &&
     !input.signal?.aborted);
+}
+
+/** First Go applies only bound callbacks, reprices, and leaves Save permanently disarmed. */
+export async function reviewCloudPaneAmendCallbacks(input, authorization) {
+  if (!admitsCloudPaneAmend(input, authorization) || !input.callbackPlan || !input.callbackBindingChanges ||
+      !/^[a-f0-9]{64}$/.test(input.sourceDigest || '') || !/^[a-f0-9]{64}$/.test(input.targetDigest || '') ||
+      !/^[a-f0-9]{64}$/.test(input.callbackPlanDigest || '') || !input.approvedBeforeCallbackPrice) {
+    return { outcome: 'not_dispatched', issue: 'CALLBACK_INPUT_INVALID' };
+  }
+  const phases = [...(input.callbackPlan.guarantee ? ['guarantee'] : []),
+    ...(input.callbackPlan.parties ?? []).map(item => item.kind), ...(input.callbackPlan.children ? ['children'] : []), 'availability'];
+  let authority, callbackTask = null, callbackOutcome = null, before = null, attempted = false;
+  const drainTask = async () => {
+    if (!callbackTask) return true;
+    let timer;
+    return Promise.race([Promise.resolve(callbackTask).then(value => { callbackOutcome = value; return true; }, () => true),
+      new Promise(resolve => { timer = setTimeout(() => resolve(false), 5000); })]).finally(() => clearTimeout(timer));
+  };
+  try {
+    authority = createFirstGoCallbackAuthority({ operationDigest: authorization.operationDigest,
+      sourceDigest: input.sourceDigest, targetDigest: input.targetDigest, plan: input.callbackPlan,
+      approvedPlanDigest: input.callbackPlanDigest, phases, authorizeFirst: authorization.authorizeFirst,
+      isEnabled: authorization.isEnabled });
+    const protectedSession = guardedSession(input, installSavedStayReadGuard, 12 * 60_000);
+    const staged = await withCenturionStay360Page(async page => {
+      if (!protectedSession.hasGuard(page.context())) throw new Error('BROWSER_CONTEXT_UNSAFE');
+      await readShallow(page, input.confirmation, searchHints(input.selected, input.arrival));
+      const record = await readRecord(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
+      const approvedLab = input.allowChangedLabGuarantee === true && isLabtest(input.selected) && input.selected.arrival >= '2027-01-01';
+      const expected = expectedLabtestAmendRecord(record, input.selected, { allowRealGuest: input.allowRealGuest === true || approvedLab,
+        childAgePreimage: input.childAgePreimage });
+      if (!expected) throw new Error('APPROVED_STAY_MISMATCH');
+      attempted = true;
+      return runLabtestAmendSave(page, cloudPaneAmendRunOptions({ page,
+        input: { ...input, signal: protectedSession.options.signal }, expected, authorization, callbackAuthority: authority,
+        captureBefore: value => { before = value; }, onCallbackTask: task => { callbackTask = task; } },
+      { recordOptions: nativeOptions(input, record) }));
+    }, protectedSession.options);
+    const callbackDrained = await drainTask();
+    if (!callbackDrained || staged.dispatchCallbacksDrained !== true || staged.outcome !== 'callback_review_ready' ||
+        !authority.complete() || !before || !staged.approvedPrices || !Array.isArray(staged.callbackEffects)) {
+      return { outcome: authority.possiblyPersisted() ? 'uncertain' : 'not_dispatched',
+        issue: !callbackDrained ? 'CALLBACK_TASK_UNDRAINED' : staged.issue || 'CALLBACK_REPRICE_UNVERIFIED',
+        callbackEffects: staged.callbackEffects ?? callbackOutcome?.effects, callbackTaskDrained: callbackDrained };
+    }
+    return { outcome: 'callback_review_ready', approvedPrices: staged.approvedPrices,
+      callbackEffects: staged.callbackEffects, before, writerSessionClosed: true,
+      dispatchCallbacksDrained: true, callbackTaskDrained: true };
+  } catch {
+    const callbackDrained = await drainTask();
+    return { outcome: authority?.possiblyPersisted() || attempted ? 'uncertain' : 'not_dispatched',
+      issue: callbackDrained ? 'CALLBACK_REPRICE_UNVERIFIED' : 'CALLBACK_TASK_UNDRAINED',
+      callbackEffects: callbackOutcome?.effects, callbackTaskDrained: callbackDrained };
+  } finally { authority?.close(); }
+}
+
+/** A fresh second Go may replay only missing callbacks and Save the reviewed price. */
+export async function commitCloudPaneAmendReviewed(input, authorization) {
+  if (!admitsCloudPaneAmend(input, authorization) || !input.callbackPlan || !input.callbackBindingChanges ||
+      !/^[a-f0-9]{64}$/.test(input.sourceDigest || '') || !/^[a-f0-9]{64}$/.test(input.targetDigest || '') ||
+      !/^[a-f0-9]{64}$/.test(input.callbackPlanDigest || '') || !/^[a-f0-9]{64}$/.test(input.reviewDigest || '') ||
+      !input.approvedBeforeCallbackPrice || input.changes?.retainRates !== 'no') {
+    return { outcome: 'not_dispatched', issue: 'CALLBACK_FINAL_INPUT_INVALID' };
+  }
+  const phases = [...(input.callbackPlan.guarantee ? ['guarantee'] : []),
+    ...(input.callbackPlan.parties ?? []).map(item => item.kind), ...(input.callbackPlan.children ? ['children'] : []),
+    'availability', 'save', 'retain'];
+  let issued, callbackTask = null, callbackOutcome = null, checks = null, before = null, attempted = false;
+  const drainTask = async () => {
+    if (!callbackTask) return true;
+    let timer;
+    return Promise.race([Promise.resolve(callbackTask).then(value => { callbackOutcome = value; return true; }, () => true),
+      new Promise(resolve => { timer = setTimeout(() => resolve(false), 5000); })]).finally(() => clearTimeout(timer));
+  };
+  try {
+    issued = createFinalGoCallbackAuthority({ operationDigest: authorization.operationDigest,
+      sourceDigest: input.sourceDigest, targetDigest: input.targetDigest, reviewDigest: input.reviewDigest,
+      plan: input.callbackPlan, approvedPlanDigest: input.callbackPlanDigest, phases,
+      authorizeFirst: authorization.authorizeFirst, isEnabled: authorization.isEnabled,
+      verifyFinal: (...args) => checks?.verifyFinal(...args) === true,
+      verifyDispatch: (...args) => checks?.verifyDispatch(...args) ?? false });
+    const protectedSession = guardedSession(input, installSavedStayReadGuard, 12 * 60_000);
+    const saved = await withCenturionStay360Page(async page => {
+      if (!protectedSession.hasGuard(page.context())) throw new Error('BROWSER_CONTEXT_UNSAFE');
+      await readShallow(page, input.confirmation, searchHints(input.selected, input.arrival));
+      const record = await readRecord(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
+      const approvedLab = input.allowChangedLabGuarantee === true && isLabtest(input.selected) && input.selected.arrival >= '2027-01-01';
+      const expected = expectedLabtestAmendRecord(record, input.selected, { allowRealGuest: input.allowRealGuest === true || approvedLab,
+        childAgePreimage: input.childAgePreimage });
+      if (!expected) throw new Error('APPROVED_STAY_MISMATCH');
+      attempted = true;
+      return runLabtestAmendSave(page, cloudPaneAmendRunOptions({ page,
+        input: { ...input, signal: protectedSession.options.signal }, expected, authorization,
+        callbackAuthority: issued.authority, authorizeCallbackSave: issued.authorizeSave,
+        registerFinalChecks: value => { checks = value; }, captureBefore: value => { before = value; },
+        onCallbackTask: task => { callbackTask = task; } }, { recordOptions: nativeOptions(input, record) }));
+    }, protectedSession.options);
+    const callbackDrained = await drainTask();
+    if (!callbackDrained || saved.dispatchCallbacksDrained !== true || saved.outcome !== 'awaiting_readback' ||
+        !issued.authority.complete() || !before || !saved.finalParties) {
+      return { outcome: issued.authority.possiblyPersisted() || attempted ? 'uncertain' : 'not_dispatched',
+        issue: !callbackDrained ? 'CALLBACK_TASK_UNDRAINED' : saved.issue || 'CALLBACK_FINAL_UNVERIFIED',
+        callbackEffects: saved.callbackEffects ?? callbackOutcome?.effects, callbackTaskDrained: callbackDrained };
+    }
+    const fresh = await readCloudPaneAmend({ ...input, ...before, beforeParties: saved.finalParties,
+      ...(typeof saved.finalBeforeCommission === 'number' ? { beforeCommission: saved.finalBeforeCommission } : {}) });
+    return confirmedCloudAmendResult(saved, fresh, true);
+  } catch {
+    const callbackDrained = await drainTask();
+    return { outcome: issued?.authority.possiblyPersisted() || attempted ? 'uncertain' : 'not_dispatched',
+      issue: callbackDrained ? 'CALLBACK_FINAL_UNVERIFIED' : 'CALLBACK_TASK_UNDRAINED',
+      callbackEffects: callbackOutcome?.effects, callbackTaskDrained: callbackDrained };
+  } finally { issued?.authority.close(); }
+}
+
+/** Independently reopen the selected stay after callbacks; only approved effects may be present. */
+export async function readCloudCallbackReviewState(input) {
+  const selected = input?.selected, plan = input?.callbackPlan, before = input?.before;
+  if (!validTarget(input?.target) || !selected || !plan || !before?.beforeParties ||
+      typeof before.beforeNote !== 'string' || !Array.isArray(input.callbackEffects)) return { outcome: 'unverified' };
+  // This independent read may observe a changed guarantee on the approved Lab
+  // guest; it does not grant the writer permission to operate on a real guest.
+  if (input.allowRealGuest !== true && (selected.firstName !== 'Proof' || selected.lastName !== 'Labtest' ||
+      selected.arrival < '2027-01-01')) return { outcome: 'unverified' };
+  const readInput = { ...input, allowRealGuest: true };
+  try {
+    const protectedSession = guardedSession(input, installSavedStayReadGuard);
+    const result = await withCenturionStay360Page(async page => {
+      if (!protectedSession.hasGuard(page.context())) return null;
+      await readShallow(page, selected.confirmation, searchHints(selected, selected.arrival));
+      const record = await readRecord(page, selected.confirmation, { nativePropertyCode: 'HRCEN' });
+      const native = record?.nativePreimage;
+      if (!native || ['source', 'propertyCode', 'confirmation', 'reservationStayId', 'reservationId', 'recordId',
+        'guestId', 'status', 'firstName', 'lastName', 'arrival', 'departure', 'roomType', 'ratePlan', 'adults']
+        .some(key => native[key] !== selected[key])) return null;
+      const guarantee = nativeOptions(readInput, record).expectedGuarantee;
+      const requestedGuarantee = plan.guarantee;
+      if (!guarantee || (requestedGuarantee ? ![requestedGuarantee.before.code, requestedGuarantee.code].includes(guarantee.code) ||
+          (guarantee.code === requestedGuarantee.code && guarantee.display !== requestedGuarantee.display) ||
+          (guarantee.code === requestedGuarantee.before.code && guarantee.display !== requestedGuarantee.before.display)
+        : guarantee.code !== plan.expected.expectedGuarantee.code || guarantee.display !== plan.expected.expectedGuarantee.display)) return null;
+      const expected = expectedLabtestAmendRecord(record, native, { allowRealGuest: true });
+      if (!expected || expected.note !== before.beforeNote) return null;
+      const state = await currentLabtestRecord(page, expected, nativeOptions(readInput, record));
+      const snapshot = await snapshotLabtestRecord(state.frame), image = savedPartyBeforeImage(snapshot);
+      if (!snapshot || !cleanLabtestRecord(snapshot) || !image ||
+          !unchangedLabtestBusinessParties(state.partyPreimage, snapshot,
+            { allowModelOnlyPrimaryPartyIds: true, allowRealGuest: true }) ||
+          (typeof input.preserved?.cmsSend === 'boolean' && state.cmsSend !== input.preserved.cmsSend) ||
+          (typeof input.preserved?.cmsMessageId === 'string' && state.cmsMessageId !== input.preserved.cmsMessageId) ||
+          (typeof before.beforeCommission === 'number' && percent(snapshot.data?.ta1commission) !== before.beforeCommission) ||
+          (typeof before.beforeGuestOptIn === 'boolean' && nativeCmsSendValue(snapshot.data?.guestoptin4) !== before.beforeGuestOptIn)) return null;
+      const permitted = new Set();
+      for (const item of plan.parties) {
+        if (item.kind === 'organization') ['companyid', 'company'].forEach(name => permitted.add(name));
+        if (item.kind === 'bookingAgency') ['taid1', 'ta1'].forEach(name => permitted.add(name));
+        if (item.kind === 'arAccount') ['araccountid', 'araccountname', 'arprofileid'].forEach(name => permitted.add(name));
+      }
+      for (const [key, value] of Object.entries(before.beforeParties)) {
+        if (!permitted.has(key) && state.partyPreimage[key] !== value) return null;
+      }
+      const effects = [];
+      if (requestedGuarantee) effects.push({ field: 'guaranteeType', requested: requestedGuarantee.code,
+        persistence: guarantee.code === requestedGuarantee.code ? 'confirmed' : 'not_observed' });
+      const mapping = { organization: ['companyid', 'company'], bookingAgency: ['taid1', 'ta1'],
+        arAccount: ['araccountid', 'araccountname'] };
+      for (const item of plan.parties) {
+        const [idField, nameField] = mapping[item.kind] ?? [];
+        if (!idField || !nameField) return null;
+        const id = state.partyPreimage[idField], name = state.partyPreimage[nameField];
+        const confirmed = id === item.nativeId && name === item.name;
+        const unchanged = id === before.beforeParties[idField] && name === before.beforeParties[nameField];
+        if (!confirmed && !unchanged) return null;
+        if (item.kind === 'arAccount') {
+          const effect = input.callbackEffects.find(entry => entry?.kind === 'arAccount');
+          const expectedProfile = effect?.after?.data?.arprofileid;
+          const value = expectedProfile?.present ? String(expectedProfile.value ?? '') : null;
+          if (confirmed && (!value || state.partyPreimage.arprofileid !== value)) return null;
+          if (!confirmed && state.partyPreimage.arprofileid !== before.beforeParties.arprofileid) return null;
+        }
+        if (item.kind === 'bookingAgency' && item.expectedEffects && confirmed) {
+          const actual = percent(snapshot.data?.ta1commission), final = percent(input.changes?.taCommission);
+          if (actual === null || actual !== percent(snapshot.values?.ta1commission) ||
+              (actual !== Number(item.expectedEffects.ta1commission) && (final === null || actual !== final))) return null;
+        }
+        effects.push({ field: item.kind, requested: { nativeId: item.nativeId, name: item.name },
+          persistence: confirmed ? 'confirmed' : 'not_observed' });
+      }
+      const exempt = new Set([...permitted, ...nativePriceComponents,
+        ...(plan.guarantee ? ['guaranteetype'] : []),
+        ...(plan.children ? ['children', 'child1', 'child2', 'child3', 'childages'] : []),
+        ...(plan.parties.some(item => item.kind === 'bookingAgency' && item.expectedEffects) ? ['ta1commission'] : []),
+        'bookingsessionid']);
+      if (plan.beforeImage) for (const part of ['data', 'values']) {
+        for (const [key, value] of Object.entries(plan.beforeImage[part] ?? {})) {
+          if (!exempt.has(key) && !same(value, image[part]?.[key])) return null;
+        }
+      }
+      for (const [name, key] of Object.entries({ emailaddress: 'beforeGuestEmail', caller: 'beforeBookerName',
+        udfchar06: 'beforeBookerContact', billingreference: 'beforeBillingReference', track: 'beforeTrack',
+        roomtypecharge: 'beforeRoomTypeForCharge', udfchar13: 'beforeRecipient' })) {
+        if (typeof before[key] === 'string' && String(snapshot.data?.[name] ?? '') !== before[key]) return null;
+      }
+      const price = observedAmendPrice(snapshot, native, null, { includeComponents: true });
+      if (!price) return null;
+      const partyImage = portableBusinessImage(snapshot);
+      return { native, effects, price, partyPreimage: state.partyPreimage, partyImage, guarantee };
+    }, protectedSession.options);
+    if (!result) return { outcome: 'unverified' };
+    const child = await readCloudSavedChildAges({ ...readInput, selected: result.native, arrival: result.native.arrival });
+    if (child.outcome !== 'ok' || !Array.isArray(child.ages)) return { outcome: 'unverified' };
+    if (plan.children) {
+      const confirmed = sameChildAgeMultiset(child.ages, plan.children.nextAges);
+      const unchanged = sameChildAgeMultiset(child.ages, plan.children.beforeAges);
+      if (!confirmed && !unchanged) return { outcome: 'unverified' };
+      result.effects.push({ field: 'childAges', requested: plan.children.nextAges,
+        persistence: confirmed ? 'confirmed' : 'not_observed' });
+    } else if (!sameChildAgeMultiset(child.ages, plan.expected.childAges)) return { outcome: 'unverified' };
+    return { outcome: 'matched', confirmation: selected.confirmation, nativeStayId: selected.reservationStayId,
+      callbackState: { effects: result.effects }, native: result.native, childAges: child.ages,
+      partyPreimage: result.partyPreimage, partyImage: result.partyImage, guarantee: result.guarantee, savedPrice: result.price };
+  } catch { return { outcome: 'unverified' }; }
 }
 
 /** Staff Go's native entry point; failures after an effect retain UNKNOWN. */
@@ -1092,13 +1399,14 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
           native.arrival !== target.arrival || native.departure !== target.departure || native.roomType !== target.roomType ||
           native.ratePlan !== target.ratePlan || native.adults !== target.adults || native.children !== target.children ||
           native.guaranteeCode !== (changes.guaranteeType ?? input.beforeGuaranteeCode)) return { outcome: 'unverified' };
-      const expected = expectedLabtestAmendRecord(record, native, { allowRealGuest: input.allowRealGuest === true });
+      const approvedLab = input.allowChangedLabGuarantee === true && isLabtest(selected) && selected.arrival >= '2027-01-01';
+      const expected = expectedLabtestAmendRecord(record, native, { allowRealGuest: input.allowRealGuest === true || approvedLab });
       if (!expected || expected.note !== (changes.reservationNote ?? input.beforeNote)) return { outcome: 'unverified' };
       savedNative = native;
       const state = await current(page, expected, nativeOptions(input, record));
       const saved = await snapshot(state.frame), data = saved?.data;
       if (!data || !cleanLabtestRecord(saved) || !unchangedLabtestBusinessParties(input.beforeParties, saved,
-          { allowModelOnlyPrimaryPartyIds: true, allowRealGuest: input.allowRealGuest === true })) return { outcome: 'unverified' };
+          { allowModelOnlyPrimaryPartyIds: true, allowRealGuest: input.allowRealGuest === true || approvedLab })) return { outcome: 'unverified' };
       const occupancy = savedChildOccupancy(saved);
       const ages = occupancy.ages ?? 'unknown';
       if (!occupancy.valid || occupancy.count !== target.children ||
@@ -1173,12 +1481,14 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
         ...(Object.hasOwn(changes, 'guestOptIn') ? { guestOptIn: false } : {}),
         ...(typeof chargeRoom === 'string' ? { roomTypeForCharge: chargeRoom } : {}),
         cmsSend: state.cmsSend, cmsMessageId, cmsRecipient,
-        price: observedAmendPrice(saved, target, null) } };
+        price: observedAmendPrice(saved, target, null, { includeComponents: input.capturePriceComponents === true }) } };
     }, protectedSession.options);
     if (result.outcome === 'matched' && (Array.isArray(input.beforeChildAges) || result.readback.childAges === 'unknown')) {
-      const expectedAges = Array.isArray(input.beforeChildAges) ? input.beforeChildAges : target.childAges;
+      const expectedAges = Array.isArray(changes.childAges) ? changes.childAges :
+        Array.isArray(input.beforeChildAges) ? input.beforeChildAges : target.childAges;
       if (!Array.isArray(expectedAges)) return { outcome: 'unverified' };
-      const childRead = await readCloudSavedChildAges({ ...input, selected: savedNative,
+      const childRead = await readCloudSavedChildAges({ ...input, allowRealGuest: input.allowRealGuest === true ||
+        (input.allowChangedLabGuarantee === true && isLabtest(selected) && selected.arrival >= '2027-01-01'), selected: savedNative,
         confirmation: savedNative.confirmation, arrival: savedNative.arrival });
       if (childRead.outcome !== 'ok' || !sameChildAgeMultiset(childRead.ages, expectedAges)) return { outcome: 'unverified' };
       result.readback.childAges = childRead.ages;
