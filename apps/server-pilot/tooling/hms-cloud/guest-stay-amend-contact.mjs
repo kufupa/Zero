@@ -30,7 +30,8 @@ const PRESERVED_BUSINESS_FIELDS = ['status', 'firstname', 'lastname', 'arrivalda
 export async function stageSavedGuestFieldsForComposition(context, changes) {
   if (!isLabtestAmendStageContext(context) || !context.isActive()) throw new Error('AMEND_STAGE_NOT_ACTIVE');
   const specs = { firstName: 'firstname', lastName: 'lastname', guestEmail: 'emailaddress',
-    bookerName: 'caller', bookerContact: 'udfchar06', reservationNote: 'reservationnote', cmsMessageId: 'udfchar09', cmsRecipient: 'udfchar13' };
+    bookerName: 'caller', bookerContact: 'udfchar06', reservationNote: 'reservationnote', billingReference: 'billingreference',
+    cmsMessageId: 'udfchar09', cmsRecipient: 'udfchar13' };
   for (const [key, name] of Object.entries(specs)) {
     if (!Object.hasOwn(changes, key)) continue;
     const value = changes[key];
@@ -47,7 +48,8 @@ export async function stageSavedGuestFieldsForComposition(context, changes) {
       const panel = guests.length === 1 ? globalThis.Ext?.getCmp?.(guests[0].id.replace(/-inputEl$/, ''))?.up?.('form') : null;
       if (!panel?.el?.dom?.contains(element) || cmp?.up?.('form') !== panel || !cmp?.getValue) return false;
       if (String(cmp.getValue() ?? '') === next && element.value === next) return true;
-      if (!cmp.setValue || element.disabled || element.readOnly || cmp.readOnly || cmp.isDisabled?.()) return false;
+      if (!cmp.setValue || element.disabled || element.readOnly || cmp.readOnly || cmp.isDisabled?.() ||
+          (Number.isInteger(element.maxLength) && element.maxLength >= 0 && next.length > element.maxLength)) return false;
       cmp.setValue(next);
       cmp.fireEvent?.('blur', cmp);
       return String(cmp.getValue() ?? '') === next && element.value === next;

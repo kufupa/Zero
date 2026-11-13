@@ -145,7 +145,7 @@ function matchesAmendBusiness(snapshot, selected, changes, baseline, state) {
   displayed.reservationnote = required.reservationnote;
   if (Object.hasOwn(required, 'roomtypecharge')) displayed.roomtypecharge = required.roomtypecharge;
   if (!Object.entries(displayed).every(([key, value]) => Object.hasOwn(values, key) && String(values[key] ?? '') === value)) return false;
-  const contact = { emailaddress: 'guestEmail', caller: 'bookerName', udfchar06: 'bookerContact' };
+  const contact = { emailaddress: 'guestEmail', caller: 'bookerName', udfchar06: 'bookerContact', billingreference: 'billingReference' };
   for (const [name, key] of Object.entries(contact)) {
     if (!Object.hasOwn(baseline.data, name) && !Object.hasOwn(changes, key)) continue;
     const expected = Object.hasOwn(changes, key) ? changes[key] : String(baseline.data[name] ?? '');
@@ -193,8 +193,9 @@ export function matchesCloudPaneAmendSave(request, frame, snapshot,
     if (Object.hasOwn(changes, 'childAges')) {
       for (const name of ['childages', 'child1', 'child2', 'child3']) required[name] = String(data[name] ?? '');
     }
-    for (const [key, name] of Object.entries({ bookerName: 'caller', bookerContact: 'udfchar06', cmsMessageId: 'udfchar09' })) {
-      if (Object.hasOwn(changes, key)) required[name] = String(data[name] ?? '');
+    for (const [key, name] of Object.entries({ bookerName: 'caller', bookerContact: 'udfchar06',
+      billingReference: 'billingreference', cmsMessageId: 'udfchar09' })) {
+      if (Object.hasOwn(changes, key) || (key === 'billingReference' && Object.hasOwn(data, name))) required[name] = String(data[name] ?? '');
     }
     if (phase === 'retain' || phase === 'extend') {
       required.confirmretainrate = changes.retainRates === 'yes' ? 'confirmed' : 'not_needed';
@@ -574,10 +575,20 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           baseline.data.caller === baseline.values.caller ? baseline.data.caller : null,
         beforeBookerContact: typeof baseline?.data?.udfchar06 === 'string' && typeof baseline?.values?.udfchar06 === 'string' &&
           baseline.data.udfchar06 === baseline.values.udfchar06 ? baseline.data.udfchar06 : null,
+        beforeBillingReference: typeof baseline?.data?.billingreference === 'string' &&
+          baseline.data.billingreference === baseline?.values?.billingreference ? baseline.data.billingreference : null,
         beforeRoomTypeForCharge: typeof baseline?.data?.roomtypecharge === 'string' &&
           baseline.data.roomtypecharge === baseline?.values?.roomtypecharge ? baseline.data.roomtypecharge : null,
         beforeGuaranteeCode: state.expectedGuarantee?.code ?? 'NGI',
         beforeSavedRates: savedRates ? structuredClone(savedRates) : null };
+      if (Object.hasOwn(changes, 'billingReference')) {
+        const party = state.partyPreimage;
+        if (typeof recoveryBaseline.beforeBillingReference !== 'string' ||
+            (changes.billingReference && (!party.araccountname?.trim() ||
+              ![party.araccountid, party.arprofileid].some((id) => /^\d{1,30}$/.test(id || ''))))) {
+          throw new Error('BILLING_REFERENCE_REQUIRES_VERIFIED_AR');
+        }
+      }
       if (prepareOnly) {
         try { quoted = await bounded(quote(input, state)); } catch { quoted = null; }
       } else {
@@ -595,6 +606,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           beforeGuestEmail: recoveryBaseline.beforeGuestEmail,
           beforeBookerName: recoveryBaseline.beforeBookerName,
           beforeBookerContact: recoveryBaseline.beforeBookerContact,
+          beforeBillingReference: recoveryBaseline.beforeBillingReference,
           beforeRoomTypeForCharge: recoveryBaseline.beforeRoomTypeForCharge,
           beforeGuaranteeCode: recoveryBaseline.beforeGuaranteeCode,
           beforeSavedRates: savedRates ? structuredClone(savedRates) : null,
@@ -623,7 +635,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       if (currentRate !== target.ratePlan) {
         draft = await bounded(stageOption(context, 'ratePlan', currentRate, target.ratePlan));
       }
-      const fields = Object.fromEntries(['firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote']
+      const fields = Object.fromEntries(['firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'billingReference']
         .filter((key) => Object.hasOwn(changes, key)).map((key) => [key, changes[key]]));
       fields.cmsSend = changes.cmsSend;
       if (input.discoveryOnly !== true) {
@@ -770,6 +782,10 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
       const guestEmail = String(data.emailaddress ?? ''), bookerName = String(data.caller ?? ''),
         bookerContact = String(data.udfchar06 ?? ''), cmsRecipient = String(data.udfchar13 ?? ''),
         cmsMessageId = String(data.udfchar09 ?? '');
+      const billingReference = Object.hasOwn(data, 'billingreference') && Object.hasOwn(saved.values ?? {}, 'billingreference') &&
+        String(data.billingreference ?? '') === String(saved.values.billingreference ?? '') ? String(data.billingreference ?? '') : null;
+      if ((Object.hasOwn(changes, 'billingReference') || typeof input.beforeBillingReference === 'string') &&
+          billingReference !== (changes.billingReference ?? input.beforeBillingReference)) return { outcome: 'unverified' };
       for (const [name, actual] of Object.entries({ guestEmail, bookerName, bookerContact })) {
         if (Object.hasOwn(changes, name) && changes[name] !== actual) return { outcome: 'unverified' };
       }
@@ -801,6 +817,7 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
         arrival: native.arrival, departure: native.departure, roomType: native.roomType, ratePlan: native.ratePlan,
         adults: native.adults, children: native.children, childAges: ages, firstName: native.firstName, lastName: native.lastName,
         guestEmail, bookerName, bookerContact, reservationNote: expected.note,
+        ...(billingReference === null ? {} : { billingReference }),
         ...(typeof chargeRoom === 'string' ? { roomTypeForCharge: chargeRoom } : {}),
         cmsSend: state.cmsSend, cmsMessageId, cmsRecipient,
         price: observedAmendPrice(saved, target, null) } };

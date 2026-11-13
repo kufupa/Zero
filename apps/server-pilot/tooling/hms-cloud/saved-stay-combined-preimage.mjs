@@ -6,7 +6,7 @@ import { planSavedChildOccupancy, savedChildOccupancy } from './guest-stay-amend
 const identityFields = ['confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note', 'adults', 'childCount', 'childAges'];
 const optionalIdentityFields = ['firstName', 'lastName'];
 const changeFields = ['arrival', 'departure', 'adults', 'children', 'childCount', 'childAges', 'roomType', 'ratePlan', 'retainRates',
-  'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'roomTypeForCharge', 'cmsSend', 'cmsMessageId', 'cmsRecipient'];
+  'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'billingReference', 'roomTypeForCharge', 'cmsSend', 'cmsMessageId', 'cmsRecipient'];
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const only = (v, keys) => object(v) && Object.keys(v).every((key) => keys.includes(key));
@@ -54,6 +54,8 @@ function validChanges(expected, changes, minimumArrival) {
         (typeof changes[key] !== 'string' || !/^[A-Z0-9]{1,12}$/.test(changes[key])))) ||
       (Object.hasOwn(changes, 'roomTypeForCharge') && (typeof changes.roomTypeForCharge !== 'string' ||
         !/^(?:[A-Z0-9]{1,12})?$/.test(changes.roomTypeForCharge))) ||
+      (Object.hasOwn(changes, 'billingReference') && (typeof changes.billingReference !== 'string' ||
+        changes.billingReference.length > 50 || /[\p{Cc}]/u.test(changes.billingReference))) ||
       (Object.hasOwn(changes, 'cmsSend') && typeof changes.cmsSend !== 'boolean') ||
       (Object.hasOwn(changes, 'reservationNote') && (typeof changes.reservationNote !== 'string' || changes.reservationNote.length > 2000 ||
         [...changes.reservationNote].some((char) => (char.charCodeAt(0) < 32 && char !== '\n') || char.charCodeAt(0) === 127))) ||
@@ -117,7 +119,7 @@ export function labtestCombinedAmendPreimageBinding(expected, state, snapshot, c
         !['PKID', 'bookingsessionid', 'reservationid', 'reservationstayid', 'recordid'].every((key) =>
           typeof state.native[key] === 'string' && state.native[key] && exact(snapshot.data, key, state.native[key]))) return null;
     // Accept real CMS/email values, but do not bind conflicting model and form values.
-    for (const name of ['emailaddress', 'udfchar13', 'udfchar09', 'roomtypecharge']) {
+    for (const name of ['emailaddress', 'udfchar13', 'udfchar09', 'roomtypecharge', 'billingreference']) {
       if (Object.hasOwn(snapshot.data, name) && Object.hasOwn(snapshot.values, name) &&
           String(snapshot.data[name] ?? '') !== String(snapshot.values[name] ?? '')) return null;
     }
@@ -128,7 +130,7 @@ export function labtestCombinedAmendPreimageBinding(expected, state, snapshot, c
         (typeof state.cmsRecipient === 'string' && state.cmsRecipient !== String(snapshot.data.udfchar13 ?? '')) ||
         (typeof state.guestEmail === 'string' && state.guestEmail !== String(snapshot.data.emailaddress ?? ''))) return null;
     // Bind the selected stay and its business preimage, not HMS's entire changing form.
-    const business = ['reservationid', 'reservationstayid', 'recordid', 'guaranteetype', 'roomtypecharge', 'caller', 'udfchar06',
+    const business = ['reservationid', 'reservationstayid', 'recordid', 'guaranteetype', 'roomtypecharge', 'billingreference', 'caller', 'udfchar06',
       'emailaddress', 'udfchkbox04', 'udfchar09', 'udfchar13'];
     const fields = Object.fromEntries(business.filter((key) => Object.hasOwn(snapshot.data, key))
       .map((key) => [key, snapshot.data[key] ?? '']));

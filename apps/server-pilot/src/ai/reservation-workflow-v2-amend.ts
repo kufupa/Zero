@@ -67,7 +67,7 @@ type AmendRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['r
 type Amendment = {
   arrival?: string; departure?: string; adults?: number; children?: number; childAges?: number[];
   roomType?: string; roomTypeForCharge?: string; ratePlan: string; retainRates: 'yes' | 'no'; firstName?: string; lastName?: string;
-  guestEmail?: string; bookerName?: string; bookerContact?: string;
+  guestEmail?: string; bookerName?: string; bookerContact?: string; billingReference?: string;
   cmsSend: boolean; cmsMessageId: string; cmsRecipient: string;
 };
 type Compile = { outcome: 'ok'; requestId: string; hintId: string; selectionPath: string; selectedRef: string;
@@ -489,10 +489,10 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     const field = effectiveLeaf(draft, fieldPath, item.field);
     if (field === UNKNOWN || typeof field !== 'string') { errors.push(`${changePath}:change_unknown`); return; }
     const supported = new Set(['arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'roomTypeForCharge', 'ratePlan',
-      'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
+      'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
     if (!supported.has(field)) { unsupported.add(field); return; }
     if (op === 'clear') {
-      if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'roomTypeForCharge'].includes(field)) values[field] = '';
+      if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'roomTypeForCharge'].includes(field)) values[field] = '';
       else if (field === 'cmsSend') values.cmsSend = false;
       else if (field === 'cmsMessageId' || field === 'cmsRecipient') values[field] = '';
       else errors.push(`${changePath}:field_cannot_be_cleared`);
@@ -503,7 +503,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     const rawValue = effectiveLeaf(draft, valuePath, item.value);
     if (rawValue === UNKNOWN) { errors.push(`${valuePath}:value_unknown`); return; }
     if (rawValue === NONE) {
-      if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'roomTypeForCharge'].includes(field)) values[field] = '';
+      if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'roomTypeForCharge'].includes(field)) values[field] = '';
       else if (field === 'cmsSend') values.cmsSend = false;
       else errors.push(`${valuePath}:explicit_none_not_supported`);
       reviewPaths.add(valuePath);
@@ -516,6 +516,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
       field === 'roomType' || field === 'roomTypeForCharge' || field === 'ratePlan' ? code(rawValue) :
       field === 'reservationNote' ? typeof rawValue === 'string' && rawValue.length <= 2000 &&
         ![...rawValue].some((char) => (char.charCodeAt(0) < 32 && char !== '\n') || char.charCodeAt(0) === 127) :
+      field === 'billingReference' ? typeof rawValue === 'string' && rawValue.length <= 4000 && !/[\p{Cc}]/u.test(rawValue) :
       field === 'cmsSend' ? typeof rawValue === 'boolean' : typeof rawValue === 'string' && rawValue.length <= 1000 && !/[\p{Cc}]/u.test(rawValue);
     if (!valid) { errors.push(`${valuePath}:value_invalid`); return; }
     values[field] = rawValue;
@@ -534,6 +535,9 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
   effectiveChanges.forEach((change, index) => applyChange(change, `${changesPath}/${index}`));
   if (unsupported.size) return { outcome: 'unsupported', issue: 'amend_contains_native_unsupported_field', fields: [...unsupported] };
   if (errors.length) return { outcome: 'needs_input', issue: 'amend_changes_invalid_or_unknown', fields: errors };
+  if (typeof values.billingReference === 'string' && values.billingReference.length > 50) {
+    return { outcome: 'needs_input', issue: 'native_billing_reference_max_50', fields: ['billingReference'] };
+  }
   const observationRefs = effectiveLeaf(draft, `${perPath}/currentObservationRefs`, record(perRows[perIndex])?.currentObservationRefs);
   if (Object.hasOwn(values, 'reservationNote') && (observationRefs === UNKNOWN || observationRefs === NONE ||
       (observationRefs != null && (!Array.isArray(observationRefs) || observationRefs.some(ref =>
@@ -590,7 +594,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
   if (typeof next.roomType !== 'string' || !code(next.roomType) || typeof next.ratePlan !== 'string' || !code(next.ratePlan)) {
     return { outcome: 'needs_input', issue: 'native_room_or_rate_baseline_invalid', fields: ['roomType', 'ratePlan'] };
   }
-  const pricingChanged = ['arrival', 'departure', 'adults', 'children', 'childAges', 'roomType', 'ratePlan']
+  const pricingChanged = ['arrival', 'departure', 'adults', 'children', 'childAges', 'roomType', 'roomTypeForCharge', 'ratePlan']
     .some((field) => fieldChanged(current, field, next[field]));
   if (rateValue === 'retain' && pricingChanged) {
     return { outcome: 'unsupported', issue: 'retained_rate_not_supported_for_priced_amendment', fields: ['rateHandling'] };
@@ -929,7 +933,8 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
         discoveryOnly: true, allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
       const discoveryBaseline = record(discovery.recoveryBaseline);
       if (discovery.outcome !== 'prepared' || !record(discovery.preserved) || !discoveryBaseline) {
-        return { issue: 'native_amend_baseline_unavailable' };
+        return { issue: discovery.issue === 'BILLING_REFERENCE_REQUIRES_VERIFIED_AR'
+          ? 'billing_reference_requires_verified_ar' : 'native_amend_baseline_unavailable' };
       }
       if (Object.hasOwn(compiled.baseChanges, 'reservationNote')) {
         const selectedObservation = loaded.draft!.observations.find(item => item.ref === compiled.selectedRef);
@@ -1102,13 +1107,15 @@ function readbackMatches(readback: unknown, prepared: Record<string, unknown>): 
   if (Array.isArray(target.childAges) && (!Array.isArray(actual.childAges) ||
       canonicalJson([...actual.childAges].sort((a: number, b: number) => a - b) as unknown) !==
       canonicalJson([...target.childAges].sort((a: number, b: number) => a - b)))) return null;
-  const beforeKeys = { guestEmail: 'beforeGuestEmail', bookerName: 'beforeBookerName', bookerContact: 'beforeBookerContact' } as const;
+  const beforeKeys = { guestEmail: 'beforeGuestEmail', bookerName: 'beforeBookerName', bookerContact: 'beforeBookerContact',
+    billingReference: 'beforeBillingReference' } as const;
   if (actual.reservationNote !== (changes.reservationNote ?? baseline.beforeNote) ||
       (typeof (changes.roomTypeForCharge ?? baseline.beforeRoomTypeForCharge) === 'string' &&
         actual.roomTypeForCharge !== (changes.roomTypeForCharge ?? baseline.beforeRoomTypeForCharge))) return null;
-  for (const key of ['guestEmail', 'bookerName', 'bookerContact'] as const) {
+  for (const key of ['guestEmail', 'bookerName', 'bookerContact', 'billingReference'] as const) {
     if (Object.hasOwn(changes, key) && actual[key] !== changes[key]) return null;
-    if (!Object.hasOwn(changes, key) && (typeof baseline[beforeKeys[key]] !== 'string' ||
+    if (!Object.hasOwn(changes, key) && (key !== 'billingReference' || typeof baseline[beforeKeys[key]] === 'string') &&
+        (typeof baseline[beforeKeys[key]] !== 'string' ||
         actual[key] !== baseline[beforeKeys[key]])) return null;
   }
   if (actual.cmsMessageId !== changes.cmsMessageId || actual.cmsRecipient !== changes.cmsRecipient) return null;
