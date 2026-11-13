@@ -54,7 +54,7 @@ function partyIds(agency: unknown, company: unknown): OpaquePartyRef | null {
 }
 
 export function opaquePartyRef(parties: StaffQuoteParties | null | undefined): OpaquePartyRef | null {
-  return partyIds(parties?.agency?.nativeId, parties?.company?.nativeId);
+  return partyIds(parties?.bookingAgency?.nativeId, parties?.organization?.nativeId);
 }
 
 export function parseStaffRatePick(value: unknown): StaffRatePick | null {

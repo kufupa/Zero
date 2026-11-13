@@ -15,12 +15,12 @@ const cache = new Map<string, { stamp: string; value: Promise<{ aggregate: Aggre
 
 /** Exact native IDs for every selected party, distinct prepared quotes, actual native codes only. */
 function boundPartyCounts(context: RateContext, picks: LoggedStaffRatePick[], cutoff: number): Record<string, number> {
-  if (!context.agencyId && !context.organizationId) return {};
+  if (!context.bookingAgencyId && !context.organizationId) return {};
   const codes = new Map<string, Set<string>>();
   for (const pick of picks) {
     if (!(pick.at instanceof Date) || !Number.isFinite(pick.at.getTime()) || pick.at.getTime() >= cutoff ||
         pick.property !== context.propertyCode || !pick.preparationId ||
-        (pick.partyRef?.agencyNativeId ?? null) !== context.agencyId ||
+        (pick.partyRef?.agencyNativeId ?? null) !== context.bookingAgencyId ||
         (pick.partyRef?.companyNativeId ?? null) !== context.organizationId) continue;
     for (const code of pick.nativeRateCodes ?? []) {
       const ids = codes.get(code) ?? new Set<string>(); ids.add(pick.preparationId); codes.set(code, ids);
@@ -70,11 +70,11 @@ export async function loadPaneRateHistory(context: RateContext, db?: DB, arrived
     const code = (error as NodeJS.ErrnoException)?.code;
     history.issues.push(['ENOENT', 'EACCES', 'ENOTDIR'].includes(code ?? '') ? 'RATE_MEMORY_FILES_UNAVAILABLE' : 'RATE_MEMORY_INVALID');
   }
-  if (db && (context.agencyId || context.organizationId)) {
+  if (db && (context.bookingAgencyId || context.organizationId)) {
     try { history.boundParty = boundPartyCounts(context, await loadStaffRatePicks(db, context.propertyCode), cutoff); }
     catch { history.issues.push('PREPARED_PARTY_RATE_HISTORY_UNAVAILABLE'); }
   }
-  if ((context.agencyId || context.organizationId) && Object.keys(history.boundParty).length === 0) {
+  if ((context.bookingAgencyId || context.organizationId) && Object.keys(history.boundParty).length === 0) {
     // The PMS corpus retains historical party labels, not current native IDs. Do not join it by name.
     history.issues.push('NO_NATIVE_ID_BOUND_RATE_HISTORY');
   }
