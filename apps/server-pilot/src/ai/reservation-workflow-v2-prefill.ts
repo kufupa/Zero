@@ -2135,12 +2135,14 @@ function recoverSourceIntent(input: {
         .flatMap((entry) => entry.text.match(/\b\d{6,10}-\d{1,2}\b/g) ?? []));
       const datedStay = request.dates.length === 1 ? request.dates[0] : undefined;
       const dates = [datedStay?.arrival, datedStay?.departure];
-      const priorText = normalizedFact(`${subject}\n${body}`);
-      const sameDates = dates.every((claim) => claim && claim.raw.length >= 5 &&
+      const currentDates = dates.every((claim) => claim && claim.raw.length >= 5 &&
         /\b(?:19|20)\d{2}\b/u.test(claim.raw) && claim.sourceRefs.some((ref) => input.evidence.some((evidence) =>
           evidence.ref === ref && evidence.relation !== 'prior_thread' && evidence.text.includes(claim.raw))) &&
-        /\b\d{1,2}(?:st|nd|rd|th)?\s*(?:[-–—]\s*\d{1,2}(?:st|nd|rd|th)?)?\s+[a-z]+\b|\b[a-z]+\s+\d{1,2}(?:st|nd|rd|th)?\b|\b\d{4}-\d{2}-\d{2}\b/i.test(claim.raw) &&
-        priorText.includes(normalizedFact(claim.raw)));
+        /\b\d{1,2}(?:st|nd|rd|th)?\s*(?:[-–—]\s*\d{1,2}(?:st|nd|rd|th)?)?\s+[a-z]+\b|\b[a-z]+\s+\d{1,2}(?:st|nd|rd|th)?\b|\b\d{4}-\d{2}-\d{2}\b/i.test(claim.raw));
+      const sameDates = currentDates && statements.some((statement) =>
+        normalizedFact(statement).includes(normalizedFact(guestNames[0])) &&
+        !/\b(?:other|another|different|remaining)\s+(?:booking|reservation|room|stay)\b/i.test(statement) &&
+        dates.every((claim) => claim && normalizedFact(statement).includes(normalizedFact(claim.raw))));
       return statedReferences.size === 0 && extraction.requests.length === 1 && nativeThreadReferences.size <= 1 && guestNames.length === 1 &&
         sameDates && normalizedFact(subject).includes(normalizedFact(guestNames[0]));
     };
