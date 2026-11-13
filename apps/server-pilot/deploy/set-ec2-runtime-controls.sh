@@ -10,7 +10,8 @@ SERVER_PILOT="$REPO_ROOT/apps/server-pilot"
 ENV_FILE="${ENV_FILE:-$SERVER_PILOT/.env.production}"
 if [ ! -f "$ENV_FILE" ] && [ -f /home/ubuntu/.env.production ]; then ENV_FILE=/home/ubuntu/.env.production; fi
 COMMON="$SERVER_PILOT/.env.remote-common"
-for file in "$ENV_FILE" "$COMMON"; do
+ADMIN="$SERVER_PILOT/.env.remote-admin"
+for file in "$ENV_FILE" "$COMMON" "$ADMIN"; do
   [ -f "$file" ] && [ ! -L "$file" ] && [ "$(stat -c '%a:%U:%G' "$file")" = 600:ubuntu:ubuntu ] || {
     echo 'durable or common env missing or unsafe' >&2; exit 2;
   }
@@ -23,24 +24,43 @@ backup="$(mktemp "$SERVER_PILOT/.env.common-backup.XXXXXX")"
 cp -- "$COMMON" "$backup"
 source_sha="$(sha256sum "$ENV_FILE" | cut -d' ' -f1)"
 common_sha="$(sha256sum "$COMMON" | cut -d' ' -f1)"
+admin_sha="$(sha256sum "$ADMIN" | cut -d' ' -f1)"
 rendered_sha=""
+candidate_sha=""
+render_root=""
+armed=0
 committed=0
 cleanup() {
   rc=$?
-  if [ "$committed" = 0 ] && [ -n "$rendered_sha" ]; then
-    if [ "$(sha256sum "$COMMON" | cut -d' ' -f1)" = "$rendered_sha" ] &&
-       [ "$(sha256sum "$ENV_FILE" | cut -d' ' -f1)" = "$source_sha" ]; then
-      mv -f -- "$backup" "$COMMON"
+  preserve=0
+  if [ "$committed" = 0 ] && [ "$armed" = 1 ]; then
+    current_common="$(sha256sum "$COMMON" 2>/dev/null | cut -d' ' -f1 || true)"
+    current_source="$(sha256sum "$ENV_FILE" 2>/dev/null | cut -d' ' -f1 || true)"
+    if [ "$current_source" = "$candidate_sha" ] && [ "$current_common" = "$rendered_sha" ]; then
+      echo 'scoped update committed before interruption' >&2
+    elif [ "$current_source" = "$source_sha" ] && [ "$current_common" = "$common_sha" ]; then
+      :
+    elif [ "$current_source" = "$source_sha" ] && [ "$current_common" = "$rendered_sha" ]; then
+      if ! mv -f -- "$backup" "$COMMON"; then preserve=1; rc=20; fi
     else
-      echo 'scoped update interrupted; common or source changed, inspect before retry' >&2
+      preserve=1
       rc=20
     fi
   fi
-  rm -f -- "$candidate" "$backup"
+  if [ "$preserve" = 1 ]; then
+    echo "scoped update interrupted; preserve $backup and $candidate for inspection" >&2
+  else
+    rm -f -- "$candidate" "$backup"
+  fi
+  if [ -n "$render_root" ]; then
+    rm -f -- "$render_root/apps/server-pilot/.env.remote-common" "$render_root/apps/server-pilot/.env.remote-admin"
+    rmdir -- "$render_root/apps/server-pilot" "$render_root/apps" "$render_root" 2>/dev/null || true
+  fi
   exit "$rc"
 }
 trap cleanup EXIT
 trap 'exit 2' HUP INT TERM
+[ "$(sha256sum "$backup" | cut -d' ' -f1)" = "$common_sha" ] || { echo 'common env changed during backup' >&2; exit 2; }
 node - "$ENV_FILE" "$candidate" "$@" <<'NODE'
 const fs = require('fs');
 const [source, dest, ...args] = process.argv.slice(2);
@@ -81,9 +101,24 @@ NODE
   [ "$(sha256sum "$COMMON" | cut -d' ' -f1)" = "$common_sha" ] || { echo 'env changed during update' >&2; exit 2; }
 keys=()
 for assignment in "$@"; do keys+=("${assignment%%=*}"); done
-REPO_ROOT="$REPO_ROOT" ENV_FILE="$candidate" bash "$SCRIPT_DIR/write-ec2-remote-env.sh" --m1-only --keys "${keys[@]}"
-rendered_sha="$(sha256sum "$COMMON" | cut -d' ' -f1)"
-[ "$(sha256sum "$ENV_FILE" | cut -d' ' -f1)" = "$source_sha" ] || { echo 'durable env changed during update' >&2; exit 2; }
+candidate_sha="$(sha256sum "$candidate" | cut -d' ' -f1)"
+render_root="$(mktemp -d "$SERVER_PILOT/.env.scoped-render.XXXXXX")"
+mkdir -p -- "$render_root/apps/server-pilot"
+staged_common="$render_root/apps/server-pilot/.env.remote-common"
+cp -- "$COMMON" "$staged_common"
+cp -- "$ADMIN" "$render_root/apps/server-pilot/.env.remote-admin"
+live_sha="${NAVA_LIVE_SHA:-}"
+if [ -z "$live_sha" ] && [ -d "$REPO_ROOT/.git" ]; then
+  live_sha="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+fi
+REPO_ROOT="$render_root" ENV_FILE="$candidate" NAVA_LIVE_SHA="$live_sha" \
+  bash "$SCRIPT_DIR/write-ec2-remote-env.sh" --m1-only --keys "${keys[@]}"
+rendered_sha="$(sha256sum "$staged_common" | cut -d' ' -f1)"
+[ "$(sha256sum "$ENV_FILE" | cut -d' ' -f1)" = "$source_sha" ] &&
+  [ "$(sha256sum "$COMMON" | cut -d' ' -f1)" = "$common_sha" ] &&
+  [ "$(sha256sum "$ADMIN" | cut -d' ' -f1)" = "$admin_sha" ] || { echo 'env changed during update' >&2; exit 2; }
+armed=1
+mv -f -- "$staged_common" "$COMMON"
 mv -f -- "$candidate" "$ENV_FILE"
 committed=1
 node -e 'const fs=require("fs");const fd=fs.openSync(process.argv[1],"r");try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}' "$(dirname -- "$ENV_FILE")"
