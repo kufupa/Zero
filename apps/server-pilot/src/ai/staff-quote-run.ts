@@ -1,3 +1,4 @@
+import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
 import {
   attestStaffQuote,
@@ -1035,6 +1036,7 @@ export async function runStaffQuote(
         return Promise.resolve();
       }
       return db.transaction(async (tx) => {
+        await lockCanonicalMailbox(tx as unknown as DB, scope.transportId);
         if (!systemPrepared) {
           await tx
             .update(aiDraftGeneration)
