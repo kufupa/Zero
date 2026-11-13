@@ -28,16 +28,16 @@ export const buildCreatePrefillInputSchema = z.object({
   departure: z.string().nullable(),
   nights: z.number().int().nullable(),
   rooms: z.array(roomSchema),
-  boardText: z.string().nullable(),
+  mealPlanText: z.string().nullable(),
   rateText: z.string().nullable(),
-  agencyName: z.string().nullable(),
+  bookingAgencyName: z.string().nullable(),
   organizationName: z.string().nullable(),
   voucherNumber: z.string().nullable(),
   bookerName: z.string().nullable(),
   bookerEmail: z.string().nullable(),
   billingReference: z.string().nullable(),
-  paidBy: z.enum(['agency', 'guest', 'company']).nullable(),
-  partyKind: z.enum(['agency', 'organization', 'government']).nullable().optional(),
+  paidBy: z.enum(['bookingAgency', 'guest', 'organization']).nullable(),
+  partyKind: z.enum(['bookingAgency', 'organization', 'government']).nullable().optional(),
   defaults: z.object({
     track: z.string().nullable(),
     sourceOfBusiness: z.string().nullable(),
@@ -135,8 +135,10 @@ function loadCreateRequest(): Promise<CreateRequestMod> {
 
 async function validateCreate(request: Record<string, unknown>): Promise<string[]> {
   const mod = await loadCreateRequest();
+  const { bookingAgency, ...fields } = request;
+  const nativeRequest = bookingAgency === undefined ? fields : { ...fields, agency: bookingAgency };
   const result = mod.validateCreateRequest(
-    mod.normalizeCreateLabels(request),
+    mod.normalizeCreateLabels(nativeRequest),
     await mod.loadCreateToolSchema(),
   );
   return result.ok ? [] : result.errors.map((error) => String(error));
@@ -166,9 +168,9 @@ export async function buildCreatePrefill(
   if (!departure) missing.push({ field: 'departure', question: 'Departure date for this booking?' });
 
   const partySet = Boolean(
-    trimmed(parsed.agencyName) ||
+    trimmed(parsed.bookingAgencyName) ||
       trimmed(parsed.organizationName) ||
-      parsed.partyKind === 'agency' ||
+      parsed.partyKind === 'bookingAgency' ||
       parsed.partyKind === 'organization' ||
       parsed.partyKind === 'government',
   );
@@ -203,8 +205,8 @@ export async function buildCreatePrefill(
   if (guaranteeType) shared.guaranteeType = guaranteeType;
   if (ratePlan) shared.ratePlan = ratePlan;
 
-  const agency = trimmed(parsed.agencyName);
-  if (agency) shared.agency = agency;
+  const agency = trimmed(parsed.bookingAgencyName);
+  if (agency) shared.bookingAgency = agency;
   const organization = trimmed(parsed.organizationName);
   if (organization) shared.organization = organization;
 

@@ -1,6 +1,6 @@
 import { assertReservationistResultFreshForAction, DraftApprovalError } from './draft-approval.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
-import { occupiedDates, type Board, type QuoteRevision } from '../quote-proposal/quote-revision.js';
+import { hydrateStoredQuoteRevision, occupiedDates, type Board, type QuoteRevision } from '../quote-proposal/quote-revision.js';
 import {
   deriveAuthorizedExtraLines,
   pricedRoomTotal,
@@ -104,7 +104,7 @@ function revisionsFromRun(run: PriorQuoteRun): QuoteRevision[] {
     | undefined;
   const listed = result?.quoteRevisions?.length ? result.quoteRevisions : [];
   const ids = new Set(result?.quoteRevisionIds ?? listed.map((row) => row.id));
-  return listed.filter((row) => ids.has(row.id));
+  return listed.filter((row) => ids.has(row.id)).map(hydrateStoredQuoteRevision).filter((row): row is QuoteRevision => row !== null);
 }
 
 export function analysisMatchesQuotedStay(
@@ -325,6 +325,7 @@ export function priorStaffQuoteRequotePayload(
     return null;
   }
   const stay = revision.groups[0];
+  const storedHeader = staff.header as typeof staff.header & { company?: string; agency?: string };
   return {
     groups: revision.groups.map((group) => ({
       id: group.id,
@@ -337,8 +338,8 @@ export function priorStaffQuoteRequotePayload(
       ...(group.roomCode ? { roomCodes: [group.roomCode] } : {}),
     })),
     salesStrategy: staff.salesStrategy === 'Government' ? 'Government' : 'BAR',
-    organization: staff.header.organization ?? '',
-    bookingAgency: staff.header.bookingAgency ?? '',
+    organization: storedHeader.organization ?? storedHeader.company ?? '',
+    bookingAgency: storedHeader.bookingAgency ?? storedHeader.agency ?? '',
     ...extrasHeaderFromFacts(
       proposalFactsForRevision(run, revisionRef),
       stay ? occupiedDates(stay.arrivalDate, stay.departureDate).length : 0,

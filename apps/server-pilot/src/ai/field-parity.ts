@@ -212,17 +212,17 @@ export async function buildNavaPrefill(input: BuildInput): Promise<{ source: Fie
   const mail = input.emailText ?? '', ages = rooms.flatMap(({ row }) => Array.isArray(row.childAges) ? row.childAges.filter((v): v is number => Number.isInteger(v) && Number(v) >= 0 && Number(v) <= 17) : []);
   const kidsMentioned = ages.length > 0 || /\b(?:children|child|kids?)\b/i.test(mail), countMatch = /\b(\d{1,2})\s*(?:children|child|kids?)\b/i.exec(mail);
   const partyMatch = rec(input.partyMatch), bound = rec(partyMatch.boundParty ?? partyMatch.best), boundId = str(bound.nativeId ?? bound.ta1 ?? bound.id);
-  const agency = nameOf(payload.agency), organization = nameOf(payload.organization), kind = str(bound.kind) ?? (agency ? 'agency' : organization ? 'organization' : boundId ? 'agency' : null);
-  const defaults = boundId ? bookingCodeDefaults(kind === 'government' ? 'government' : kind === 'organization' ? 'organization' : 'agency') : DIRECT_BOOKING_DEFAULTS;
+  const agency = nameOf(payload.bookingAgency), organization = nameOf(payload.organization), kind = str(bound.kind) ?? (agency ? 'bookingAgency' : organization ? 'organization' : boundId ? 'bookingAgency' : null);
+  const defaults = boundId ? bookingCodeDefaults(kind === 'government' ? 'government' : kind === 'organization' ? 'organization' : 'bookingAgency') : DIRECT_BOOKING_DEFAULTS;
   const booker = rec(payload.booker), contact = rec(payload.contact), email = str(payload.bookerEmail ?? booker.email ?? contact.email);
   const rate = rateCode(input.preparedRateRun) ?? str(payload.ratePlan ?? payload.rateText), boardText = str(requested.mealPlan ?? stay.mealPlan ?? rows[0]?.mealPlan);
   const options = createRequestFieldOptions(input.propertyCode);
   const build = await buildCreatePrefill({
     arrival: str(requested.arrival) ?? '', departure: str(requested.departure), nights: Number.isInteger(requested.nights) ? Number(requested.nights) : null,
     rooms: rooms.map(({ row, guest }) => ({ adults: Number(row.adultsPerRoom) || 0, childAges: Array.isArray(row.childAges) ? row.childAges.filter((v): v is number => Number.isInteger(v) && Number(v) >= 0 && Number(v) <= 17) : [], roomTypeText: str(row.roomType), guestName: guest })),
-    boardText, rateText: rate, agencyName: agency, organizationName: organization, voucherNumber: null,
+    mealPlanText: boardText, rateText: rate, bookingAgencyName: agency, organizationName: organization, voucherNumber: null,
     bookerName: str(payload.bookerName ?? booker.name), bookerEmail: email, billingReference: str(payload.billingReference), paidBy: null,
-    partyKind: kind === 'agency' || kind === 'organization' || kind === 'government' ? kind : null,
+    partyKind: kind === 'bookingAgency' || kind === 'organization' || kind === 'government' ? kind : null,
     defaults: { track: str(payload.track) ?? defaults.track, sourceOfBusiness: str(payload.sourceOfBusiness) ?? defaults.sourceOfBusiness, guaranteeType: str(payload.guaranteeType) ?? defaults.guaranteeType },
     propertyCode: input.propertyCode,
   });

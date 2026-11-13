@@ -188,7 +188,7 @@ export const lunaAnalysisSchema = z.object({
   ),
   groups: z.array(lunaGroupSchema),
   party: z.object({
-    kind: z.enum(['agency', 'organization', 'government', 'private']).nullable(),
+    kind: z.enum(['bookingAgency', 'organization', 'government', 'private']).nullable(),
     name: z
       .string()
       .nullable()

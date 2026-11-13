@@ -259,8 +259,10 @@ async function defaultValidateCreate(
       schema: unknown,
     ): { ok: boolean; errors: unknown[] };
   };
+  const { bookingAgency, ...fields } = request;
+  const nativeRequest = bookingAgency === undefined ? fields : { ...fields, agency: bookingAgency };
   return mod.validateCreateRequest(
-    mod.normalizeCreateLabels(request),
+    mod.normalizeCreateLabels(nativeRequest),
     await mod.loadCreateToolSchema(),
   );
 }

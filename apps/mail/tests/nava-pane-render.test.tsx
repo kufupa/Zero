@@ -312,7 +312,7 @@ vi.mock('../providers/query-provider', () => ({
               {
                 id: 'g1',
                 childrenAges: [],
-                board: 'unknown' as const,
+                mealPlan: 'unknown' as const,
                 quantity: 1,
                 specialRequests: [],
                 fields: { arrivalDate: 'missing' as const, departureDate: 'missing' as const, adults: 'missing' as const },
@@ -419,7 +419,7 @@ function analysisForBookingVoucher() {
       {
         id: 'g1',
         childrenAges: [],
-        board: 'unknown',
+        mealPlan: 'unknown',
         quantity: 1,
         specialRequests: [],
         fields: { arrivalDate: 'missing', departureDate: 'missing', adults: 'missing' },
@@ -1003,7 +1003,7 @@ describe('NavaPane', () => {
           quantity: 2,
           adults: 2,
           childrenAges: [],
-          board: 'bb',
+          mealPlan: 'bb',
           specialRequests: [],
           fields: {},
         },
@@ -1107,8 +1107,8 @@ describe('NavaPane', () => {
       name: STORED_AMENDMENT_EXTRACTION.payload.contact.name,
       email: STORED_AMENDMENT_EXTRACTION.payload.contact.email,
       phone: null,
-      company: null,
-      endClient: null,
+      bookingAgency: null,
+      organization: null,
     },
     language: 'en',
     translation: null,
@@ -1329,7 +1329,7 @@ describe('NavaPane', () => {
         {
           id: 'g1',
           childrenAges: [],
-          board: 'unknown',
+          mealPlan: 'unknown',
           quantity: 1,
           specialRequests: [],
           fields: { arrivalDate: 'missing', departureDate: 'missing', adults: 'missing' },
@@ -1365,7 +1365,7 @@ describe('NavaPane', () => {
         {
           id: 'g1',
           childrenAges: [],
-          board: 'bb',
+          mealPlan: 'bb',
           quantity: null,
           specialRequests: [],
           fields: { arrivalDate: 'missing', departureDate: 'extracted', adults: 'missing' },
@@ -1415,7 +1415,7 @@ describe('NavaPane', () => {
           quantity: 1,
           adults: 2,
           childrenAges: [],
-          board: 'bb',
+          mealPlan: 'bb',
           specialRequests: [],
           fields: { arrivalDate: 'extracted', departureDate: 'missing', quantity: 'extracted', adults: 'extracted' },
         },
@@ -1426,7 +1426,7 @@ describe('NavaPane', () => {
           quantity: 1,
           adults: 2,
           childrenAges: [],
-          board: 'bb',
+          mealPlan: 'bb',
           specialRequests: [],
           fields: { arrivalDate: 'extracted', departureDate: 'missing', quantity: 'extracted', adults: 'extracted' },
         },
@@ -1479,7 +1479,7 @@ describe('NavaPane', () => {
           quantity: 1,
           adults: 2,
           childrenAges: [],
-          board: 'bb',
+          mealPlan: 'bb',
           specialRequests: [],
           fields: { arrivalDate: 'missing', departureDate: 'extracted', quantity: 'extracted', adults: 'extracted' },
         },
@@ -1514,7 +1514,7 @@ describe('NavaPane', () => {
           quantity: 1,
           adults: 2,
           childrenAges: [],
-          board: 'bb',
+          mealPlan: 'bb',
           specialRequests: [],
           fields: { arrivalDate: 'missing', departureDate: 'missing', quantity: 'extracted', adults: 'extracted' },
         },
@@ -1550,7 +1550,7 @@ describe('NavaPane', () => {
         {
           id: 'g1',
           childrenAges: [],
-          board: 'bb',
+          mealPlan: 'bb',
           quantity: null,
           specialRequests: [],
           fields: { arrivalDate: 'missing', departureDate: 'extracted', adults: 'missing' },
@@ -1622,7 +1622,7 @@ describe('NavaPane', () => {
         {
           id: 'g1',
           childrenAges: [],
-          board: 'bb',
+          mealPlan: 'bb',
           quantity: 1,
           specialRequests: [],
           fields: { arrivalDate: 'missing', departureDate: 'missing', adults: 'missing' },
@@ -1813,7 +1813,7 @@ describe('NavaPane', () => {
           rateOptions: [{
             id: `rate-${strategy}`,
             groupId: requestGroups[0]!.id,
-            board: 'bb',
+            mealPlan: 'bb',
             boardLabel: 'Bed & Breakfast',
             rateCode: `${strategy}-RATE`,
             rateLabel: `${strategy} test rate`,
@@ -1892,7 +1892,7 @@ describe('NavaPane', () => {
           rateOptions: [{
             id: `rate-${strategy}`,
             groupId: requestGroups[0]!.id,
-            board: 'bb',
+            mealPlan: 'bb',
             boardLabel: 'Bed & Breakfast',
             rateCode: `${strategy}-RATE`,
             rateLabel: `${strategy} test rate`,
@@ -2008,8 +2008,8 @@ describe('NavaPane', () => {
       ...STORED_READY,
       contact: {
         name: 'Stored Guest',
-        company: 'Stored Company',
-        endClient: null,
+        bookingAgency: 'Stored Company',
+        organization: null,
         email: 'stored@example.invalid',
         phone: '+27123456789',
       },
@@ -2048,8 +2048,8 @@ describe('NavaPane', () => {
       workItemId: 'wi-first-mailbox',
       contact: {
         name: 'First Mailbox Guest',
-        company: null,
-        endClient: null,
+        bookingAgency: null,
+        organization: null,
         email: 'first@example.invalid',
         phone: null,
       },
@@ -2066,8 +2066,8 @@ describe('NavaPane', () => {
       workItemId: 'wi-second-mailbox',
       contact: {
         name: 'Second Mailbox Guest',
-        company: null,
-        endClient: null,
+        bookingAgency: null,
+        organization: null,
         email: 'second@example.invalid',
         phone: null,
       },
@@ -2134,7 +2134,7 @@ describe('NavaPane', () => {
   it('stored: does not use sender fallback after extraction is ready, even when contact values are empty', async () => {
     bridgeMockState.storedWork = {
       ...STORED_READY,
-      contact: { name: null, company: null, endClient: null, email: null, phone: null },
+      contact: { name: null, bookingAgency: null, organization: null, email: null, phone: null },
     };
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
@@ -2419,7 +2419,7 @@ describe('NavaPane', () => {
       quantity: 2,
       adults: 2,
       childrenAges: [],
-      board: 'bb',
+      mealPlan: 'bb',
       specialRequests: [],
       fields: { arrivalDate: 'extracted', departureDate: 'missing' },
     } satisfies StayGroupRequirement;
@@ -2555,8 +2555,8 @@ describe('NavaPane', () => {
       ...STORED_READY,
       contact: {
         name: 'Guest Example',
-        company: 'Example Agency',
-        endClient: 'Example Company',
+        bookingAgency: 'Example Agency',
+        organization: 'Example Company',
         email: null,
         phone: null,
       },
@@ -2601,8 +2601,8 @@ describe('NavaPane', () => {
       messageId: 'mail-1',
       autoStart: true,
       salesStrategy: 'BAR',
-      agency: 'Example Agency',
-      company: 'Example Company',
+      bookingAgency: 'Example Agency',
+      organization: 'Example Company',
       groups: [expect.objectContaining({ arrivalDate: '2026-11-03', departureDate: '2026-11-05' })],
     });
     expect(bridgeMockState.lastStaffQuoteInput).not.toHaveProperty('parties');
@@ -2618,7 +2618,7 @@ describe('NavaPane', () => {
       ...STORED_READY,
       analysis: {
         ...STORED_READY.analysis,
-        groups: STORED_READY.analysis.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
+        groups: STORED_READY.analysis.groups.map((group) => ({ ...group, mealPlan: 'dinner_bb' as const })),
       },
     };
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
@@ -3021,8 +3021,8 @@ describe('NavaPane', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
     expect(bridgeMockState.lastStaffQuoteInput).toMatchObject({
-      agency: 'Edited Agency',
-      company: 'Edited Company',
+      bookingAgency: 'Edited Agency',
+      organization: 'Edited Company',
       salesStrategy: 'Government',
     });
     expect(bridgeMockState.lastStaffQuoteInput).not.toHaveProperty('autoStart');
@@ -3187,7 +3187,7 @@ describe('NavaPane', () => {
   it('HRCEN mounts the local amendment review from the selected email and HMS lookup', async () => {
     bridgeMockState.quotePaneConfig = {
       transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [],
-      ratePlans: [{ code: 'CORP', name: 'Corporate', board: 'bed_breakfast' }],
+      ratePlans: [{ code: 'CORP', name: 'Corporate', mealPlan: 'bed_breakfast' }],
       boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
     };
     bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');
@@ -3457,7 +3457,7 @@ describe('NavaPane contact and translation on both surfaces', () => {
           quantity: 3,
           adults: 2,
           childrenAges: [],
-          board: 'bb',
+          mealPlan: 'bb',
           specialRequests: [],
           fields: {},
         },
@@ -3467,7 +3467,7 @@ describe('NavaPane contact and translation on both surfaces', () => {
       source: 'luna',
       aiUnavailable: false,
     },
-    contact: { name: 'Marie Dupont', company: null, endClient: null, email: 'marie.dupont@example.fr', phone: null },
+    contact: { name: 'Marie Dupont', bookingAgency: null, organization: null, email: 'marie.dupont@example.fr', phone: null },
     language: 'fr',
     translation: FRENCH_TRANSLATION,
   };
@@ -3485,7 +3485,7 @@ describe('NavaPane contact and translation on both surfaces', () => {
       alternatives: [],
       luna: { workflow: 'other', flags: [] },
     },
-    contact: { name: null, company: null, endClient: null, email: null, phone: null },
+    contact: { name: null, bookingAgency: null, organization: null, email: null, phone: null },
     language: null,
     translation: null,
   });

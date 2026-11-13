@@ -10,7 +10,7 @@ import { z } from 'zod';
  * Ask staff which codes to prefill when mining yields fewer than 15 reads.
  */
 
-export const PARTY_CLASSES = ['agency', 'government', 'organization', 'private'] as const;
+export const PARTY_CLASSES = ['bookingAgency', 'government', 'organization', 'private'] as const;
 export type PartyClass = (typeof PARTY_CLASSES)[number];
 
 export type BookingCodeDefaults = {
@@ -29,7 +29,7 @@ export type CrosstabRow = {
 
 /** Frozen mining table: codes, counts, party class only. No names. */
 export const MINED_CROSSTAB: Readonly<Record<PartyClass, CrosstabRow>> = {
-  agency: {
+  bookingAgency: {
     n: 0,
     track: { value: null, support: 0 },
     sourceOfBusiness: { value: null, support: 0 },

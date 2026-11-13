@@ -232,7 +232,7 @@ export type LunaAnalysisWire = {
     stayId?: string;
   }>;
   party: {
-    kind: 'agency' | 'organization' | 'government' | 'private' | null;
+    kind: 'bookingAgency' | 'organization' | 'government' | 'private' | null;
     name: string | null;
     reference: string | null;
   };

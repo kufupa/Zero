@@ -360,6 +360,7 @@ type CompiledQuote = {
   sourceRefs: string[];
   outputKinds: Array<'email_quote' | 'pdf_quote' | 'xlsx_quote'>;
   strategyDefaulted: boolean;
+  mealPlanDefaultedGroupIds: string[];
 } | {
   status: 'needs_input' | 'needs_review' | 'unsupported';
   issue: string;
@@ -414,7 +415,7 @@ function unavailableInventoryProof(
   draft: ReservationWorkflowV2Draft,
   compiled: Extract<CompiledQuote, { status: 'ok' }>,
 ): UnavailableInventoryProof | null {
-  if (compiled.input.groups.length !== 1) return null;
+  if (compiled.input.groups.length !== 1 || compiled.mealPlanDefaultedGroupIds.length) return null;
   const group = compiled.input.groups[0];
   const roomCode = group?.roomCodes?.length === 1 ? group.roomCodes[0] : undefined;
   if (!group || !roomCode || !group.rateCode) return null;
@@ -505,6 +506,7 @@ function compileQuote(
     childrenAges: number[]; mealPlan: 'room_only' | 'bb' | 'dinner_bb'; roomCodes?: string[]; rateCode?: string;
   }> = [];
   const datePairs = new Set<string>();
+  const mealPlanDefaultedGroupIds: string[] = [];
   for (const [groupIndex, group] of request.body.groups.entries()) {
     const base = path('groups', groupIndex);
     if (group.id.length > 64) issues.push(`${base}/id:native_group_id_limit`);
@@ -525,8 +527,13 @@ function compileQuote(
     const quantity = quantityResult && !('issue' in quantityResult) ? quantityResult.value : null;
     if (!Number.isInteger(quantity) || Number(quantity) < 1 || Number(quantity) > 100) issues.push(`${base}/quantity:valid_room_count_required`);
 
-    const boardResult = resolved(path('groups', groupIndex, 'mealPlan'), group.mealPlan);
-    const board = boardResult && !('issue' in boardResult) ? boardCode(boardResult.value, draft.propertyCode) : null;
+    const boardResult = execute ? resolved(path('groups', groupIndex, 'mealPlan'), group.mealPlan)
+      : resolvedLeaf(draft, path('groups', groupIndex, 'mealPlan'), group.mealPlan);
+    const actual = boardResult && !('issue' in boardResult) ? boardCode(boardResult.value, draft.propertyCode) : null;
+    const requested = resolvedLeaf(draft, path('groups', groupIndex, 'requestedMealPlan'), group.requestedMealPlan);
+    const requestedBoard = !('issue' in requested) ? boardCode(requested.value, draft.propertyCode) : null;
+    const board = actual ?? (!execute ? requestedBoard ?? 'bb' : null);
+    if (!execute && !actual && !requestedBoard) mealPlanDefaultedGroupIds.push(group.id);
     if (!board) issues.push(`${base}/mealPlan:native_meal_plan_code_required`);
 
     // Occupancy may be edited atomically as a parent object to keep child count and age slots in one revision.
@@ -729,7 +736,7 @@ function compileQuote(
     // Staff acknowledgement advances pane revisions without changing quote scope.
     inputDigest: hash({ sourceHash: draft.source.sourceHash, requestId: request.id,
       input: { ...input, selectionEpoch: 0, inputRevision: 0 } }),
-    reviewPaths: [...reviewPaths], sourceRefs, outputKinds, strategyDefaulted,
+    reviewPaths: [...reviewPaths], sourceRefs, outputKinds, strategyDefaulted, mealPlanDefaultedGroupIds,
   };
 }
 
@@ -768,9 +775,11 @@ function quoteObservation(
     inputDigest,
     sourceHash: draft.source.sourceHash,
     searchContext: { salesStrategy: compiled.input.salesStrategy,
-      strategySource: compiled.strategyDefaulted ? 'discovery_default' : 'draft' },
+      strategySource: compiled.strategyDefaulted ? 'discovery_default' : 'draft',
+      mealPlanDefaultedGroupIds: compiled.mealPlanDefaultedGroupIds },
     nativeInputDigest: result.inputDigest ?? null,
     inputOverrides: quoteInputOverrides(draft, compiled.request.id),
+    requestedGroups: compiled.input.groups,
     observedAt: new Date().toISOString(),
     freshUntil: result.freshUntil ?? null,
     totalMinor: result.totalMinor ?? null,
@@ -988,7 +997,8 @@ async function priceQuote(
     const latest = [...diagnostics].reverse().find((diagnostic) => diagnostic.contextMatchesSelection);
     const failureDetails = {
       searchContext: { salesStrategy: compiled.input.salesStrategy,
-        strategySource: compiled.strategyDefaulted ? 'discovery_default' : 'draft' },
+        strategySource: compiled.strategyDefaulted ? 'discovery_default' : 'draft',
+      mealPlanDefaultedGroupIds: compiled.mealPlanDefaultedGroupIds },
       failureCode: cause.code,
       failurePhase: cause.phase ?? 'unknown',
       failureKind: cause.code === 'native_quote_no_matching_rate' ? 'requested_mismatch'

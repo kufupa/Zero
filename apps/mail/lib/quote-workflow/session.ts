@@ -1183,7 +1183,7 @@ function prefillStaffHeaderFromLuna(
   const party = analysis.luna?.party;
   const name = party?.name?.trim();
   if (party && name && !header.organization.trim() && !header.bookingAgency.trim()) {
-    if (party.kind === 'agency') next = { ...next, bookingAgency: name };
+    if (party.kind === 'bookingAgency') next = { ...next, bookingAgency: name };
     else if (party.kind === 'organization') next = { ...next, organization: name };
     else if (party.kind === 'government') {
       next = {

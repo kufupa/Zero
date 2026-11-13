@@ -1,4 +1,4 @@
-import { occupiedDates, quoteDigest, type QuoteRevision } from './quote-revision.js';
+import { occupiedDates, quoteRevisionIdentityValid, type QuoteRevision } from './quote-revision.js';
 export type QuoteDisplayLine = { nights:number;rateMinor:number;totalMinor:number;arrivalDate:string;departureDate:string;sourceRef:string;sourceHash:string;groupId:string;description:string;quantity:number };
 const meals = {room_only:'Room Only', breakfast:'Bed & Breakfast', dinner_bed_breakfast:'Dinner Bed & Breakfast'};
 /**
@@ -13,8 +13,7 @@ export type RowPrice =
 export function deriveQuoteLines(revision: QuoteRevision, rowPrices: readonly RowPrice[] = []): QuoteDisplayLine[] {
  const raw = revision as QuoteRevision & Record<string,unknown>;
  if ('extras' in raw || 'overrides' in raw || 'imported' in raw) throw new Error('unsupported_revision_facts');
- const {id,...data}=revision;
- if(id!==`quote:${quoteDigest(data)}`)throw new Error('revision_identity');
+ if(!quoteRevisionIdentityValid(revision))throw new Error('revision_identity');
  const priceByGroup=new Map<string,RowPrice>();
  for(const price of rowPrices){
   if(!revision.groups.some(group=>group.id===price.groupId)||priceByGroup.has(price.groupId))throw new Error('row_price_scope');

@@ -133,7 +133,7 @@ import {
   staffQuoteRoomAlternatives,
   type StaffQuoteRunIdentity,
 } from './staff-quote-run.js';
-import { PRICED_QUOTE_REUSE_MS, quoteDigest } from '../quote-proposal/quote-revision.js';
+import { hydrateStoredQuoteRevision, PRICED_QUOTE_REUSE_MS, quoteDigest } from '../quote-proposal/quote-revision.js';
 import {
   type AiFailureClass,
   type AiRunFence,
@@ -287,7 +287,7 @@ export const hmsJobRequestSchema = z.union([
   availabilityJobRequestSchema,
 ]);
 /** Adapt persisted jobs before parsing; enqueue remains strict on canonical fields. */
-function hydrateStoredHmsRequest(value: unknown): unknown {
+export function hydrateStoredHmsRequest(value: unknown): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const request = { ...(value as Record<string, unknown>) };
   const rename = (source: Record<string, unknown>, oldKey: string, newKey: string) => {
@@ -326,6 +326,75 @@ function hydrateStoredHmsRequest(value: unknown): unknown {
     request.input = input;
   }
   return request;
+}
+
+/** Present old job snapshots in the current API without altering their stored evidence. */
+function hydrateStoredHmsResult(value: Record<string, unknown>, kind: HmsJobRequest['kind'] | undefined): Record<string, unknown> {
+  const object = (input: unknown): Record<string, unknown> | null =>
+    input && typeof input === 'object' && !Array.isArray(input) ? { ...input as Record<string, unknown> } : null;
+  const rename = (row: Record<string, unknown>, oldKey: string, newKey: string) => {
+    if (!Object.hasOwn(row, newKey) && Object.hasOwn(row, oldKey)) row[newKey] = row[oldKey];
+    delete row[oldKey];
+  };
+  const mealRow = (input: unknown): unknown => {
+    const row = object(input);
+    if (!row) return input;
+    rename(row, 'board', 'mealPlan');
+    rename(row, 'boardLabel', 'mealPlanLabel');
+    return row;
+  };
+  const partyRow = (input: unknown): unknown => {
+    const row = object(input);
+    if (!row) return input;
+    if (row.kind === 'agency') row.kind = 'bookingAgency';
+    if (row.kind === 'company') row.kind = 'organization';
+    return row;
+  };
+  const result = { ...value };
+  if (kind === 'party') {
+    for (const key of ['results', 'suggestions', 'searchesTried']) {
+      if (Array.isArray(result[key])) result[key] = (result[key] as unknown[]).map(partyRow);
+    }
+    for (const key of ['best', 'boundParty']) result[key] = partyRow(result[key]);
+  }
+  if (kind === 'availability') {
+    const context = object(result.context);
+    if (context) {
+      rename(context, 'board', 'mealPlan');
+      rename(context, 'agencyId', 'bookingAgencyId');
+      result.context = context;
+    }
+    if (Array.isArray(result.rateCandidates)) result.rateCandidates = result.rateCandidates.map(mealRow);
+  }
+  if (kind === 'find' || kind === 'search_guest') {
+    const commercial = object(result.commercial);
+    if (commercial) {
+      rename(commercial, 'company', 'organization');
+      rename(commercial, 'agency', 'bookingAgency');
+      result.commercial = commercial;
+    }
+  }
+  if (kind === 'staff_quote') {
+    for (const key of ['rateOptions', 'availabilityBoard']) {
+      if (Array.isArray(result[key])) result[key] = (result[key] as unknown[]).map(mealRow);
+    }
+    if (Array.isArray(result.quoteDiagnostics)) result.quoteDiagnostics = result.quoteDiagnostics.map((value) => {
+      const row = object(value);
+      if (!row) return value;
+      for (const key of ['rateOptions', 'availabilityBoard']) {
+        if (Array.isArray(row[key])) row[key] = (row[key] as unknown[]).map(mealRow);
+      }
+      return row;
+    });
+    const prepared = object(result.preparedProposal);
+    if (prepared) {
+      const revision = hydrateStoredQuoteRevision(prepared.revision);
+      if (revision) prepared.revision = revision;
+      else delete prepared.revision;
+      result.preparedProposal = prepared;
+    }
+  }
+  return result;
 }
 
 export type HmsJobRequest = z.infer<typeof hmsJobRequestSchema>;
@@ -4373,7 +4442,9 @@ async function toView(
 ): Promise<HmsJobView> {
   const request = hmsJobRequestSchema.safeParse(hydrateStoredHmsRequest(run.readRequest));
   const status = STATUS_BY_STATE[run.state];
-  const result = run.state === 'succeeded' && run.readResult ? run.readResult : null;
+  const result = run.state === 'succeeded' && run.readResult
+    ? hydrateStoredHmsResult(run.readResult, request.success ? request.data.kind : undefined)
+    : null;
   return {
     runId: run.id,
     sourceMessageId: run.triggerMessageId,

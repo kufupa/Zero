@@ -148,6 +148,55 @@ export function quoteDigest(value: unknown): string {
     .update(JSON.stringify(stable(value)))
     .digest('hex');
 }
+
+/** Revisions written before the terminology migration retain their original content identity. */
+export function quoteRevisionIdentityValid(revision: QuoteRevision): boolean {
+  const { id, ...data } = revision;
+  if (id === `quote:${quoteDigest(data)}`) return true;
+  if (!Array.isArray(data.groups) || data.groups.some((group) =>
+    !group || typeof group !== 'object' || !group.context || typeof group.context !== 'object' ||
+    Array.isArray(group.context) || !group.mealPlan,
+  )) return false;
+  const groups = data.groups.map((group) => {
+    const { mealPlan, context, ...rest } = group;
+    const { bookingAgency, ...oldContext } = context;
+    return {
+      ...rest,
+      board: mealPlan,
+      context: bookingAgency === undefined ? oldContext : { ...oldContext, agency: bookingAgency },
+    };
+  });
+  return id === `quote:${quoteDigest({ ...data, groups })}`;
+}
+
+/** Read old persisted revisions only after verifying their original digest; never change their IDs. */
+export function hydrateStoredQuoteRevision(value: unknown): QuoteRevision | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const revision = value as QuoteRevision;
+  if (!Array.isArray(revision.groups) || revision.groups.some((group) =>
+    !group || typeof group !== 'object' || !group.context || typeof group.context !== 'object' || Array.isArray(group.context),
+  )) return null;
+  const needsHydration = revision.groups.some((group) =>
+    Object.hasOwn(group, 'board') || (group.context && Object.hasOwn(group.context, 'agency')),
+  );
+  if (!needsHydration) return revision;
+  const { id, ...stored } = revision;
+  if (id !== `quote:${quoteDigest(stored)}`) return null;
+  const groups = revision.groups.map((group) => {
+    const { board, ...rest } = group as SelectedQuoteGroup & { board?: Board };
+    const { agency, ...context } = group.context as Record<string, unknown>;
+    if ((board !== undefined && rest.mealPlan !== undefined) ||
+        (agency !== undefined && Object.hasOwn(context, 'bookingAgency'))) return null;
+    return {
+      ...rest,
+      mealPlan: rest.mealPlan ?? board,
+      context: agency === undefined ? context : { ...context, bookingAgency: agency },
+    };
+  });
+  if (groups.some((group) => !group)) return null;
+  const hydrated = { ...revision, groups } as QuoteRevision;
+  return quoteRevisionIdentityValid(hydrated) ? hydrated : null;
+}
 export function occupiedDates(arrival: string, departure: string): string[] {
   const parse = (s: string) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error('invalid_calendar');
@@ -508,8 +557,7 @@ export function assessQuoteAcceptance(input: {
     new Date(authored).toISOString().slice(0, 10) !== input.revision.authoredDate
   )
     return { status: 'invalid_time' };
-  const { id, ...revisionData } = input.revision;
-  if (id !== `quote:${quoteDigest(revisionData)}`) return { status: 'invalid_revision' };
+  if (!quoteRevisionIdentityValid(input.revision)) return { status: 'invalid_revision' };
   const time = Date.parse(input.acceptedAt);
   if (!Number.isFinite(time)) return { status: 'invalid_time' };
   const day = new Intl.DateTimeFormat('en-CA', {
@@ -674,8 +722,7 @@ export async function resolveApprovedOverride(input: {
     sourceRevision: QuoteRevision;
   }
 > {
-  const { id: revisionId, ...revisionData } = input.revision;
-  if (revisionId !== `quote:${quoteDigest(revisionData)}`) throw new Error('invalid_revision');
+  if (!quoteRevisionIdentityValid(input.revision)) throw new Error('invalid_revision');
   const approval = structuredClone(await input.resolveApproval(input.ref));
   const time = Date.parse(approval.approvedAt),
     evaluation = Date.parse(input.evaluationAt);

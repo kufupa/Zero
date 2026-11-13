@@ -669,7 +669,7 @@ export function QuoteWorkflowPanel({
     const partyName = party?.name?.trim();
     const bookingAgency = session.staffHeader.bookingAgency.trim();
     const organization = session.staffHeader.organization.trim();
-    const usesLunaAgency = party?.kind === 'agency' && bookingAgency === partyName;
+    const usesLunaAgency = party?.kind === 'bookingAgency' && bookingAgency === partyName;
     const usesLunaCompany =
       (party?.kind === 'organization' || party?.kind === 'government') && organization === partyName;
     const patch: Partial<StaffQuoteHeader> = {};

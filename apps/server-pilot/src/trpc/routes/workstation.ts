@@ -53,7 +53,7 @@ import {
 } from '../../outlook-security/authorization.js';
 import { buildQuoteProposalPdf, ProposalInputError } from '../../quote-proposal/proposal-pdf.js';
 import type { ImportedOffer, QuoteRevision } from '../../quote-proposal/quote-revision.js';
-import { PRICED_QUOTE_REUSE_MS, quoteDigest } from '../../quote-proposal/quote-revision.js';
+import { hydrateStoredQuoteRevision, PRICED_QUOTE_REUSE_MS, quoteDigest } from '../../quote-proposal/quote-revision.js';
 import {
   classifyBookingDraft,
   classifyPdf,
@@ -102,6 +102,7 @@ import {
   enqueueHmsJob,
   queueAutoStaffQuoteHmsJob,
   hmsJobQueueEnabled,
+  hydrateStoredHmsRequest,
   quotePreparationEnabled,
   HMS_JOB_PRIORITY_DEV,
   HMS_JOB_PRIORITY_USER,
@@ -221,7 +222,7 @@ function partyClassFromRevision(
   attestation: (StaffQuoteAttestation & { salesStrategy?: string }) | undefined,
 ): PartyClass {
   const context = revision.groups[0]?.context ?? {};
-  if ('agency' in context) return 'agency';
+  if ('bookingAgency' in context) return 'bookingAgency';
   if ('organization' in context) {
     return attestation?.salesStrategy === 'Government' ? 'government' : 'organization';
   }
@@ -299,7 +300,8 @@ export function resolveLedgerProposal(
   const matches = result.quoteRevisions?.filter((r) => r.id === scope.revisionRef) ?? [];
   if (matches.length !== 1 || !result.quoteRevisionIds?.includes(scope.revisionRef))
     throw new Error('revision_missing');
-  const revision = matches[0];
+  const revision = hydrateStoredQuoteRevision(matches[0]);
+  if (!revision) throw new Error('revision_missing');
   deriveQuoteLines(revision, storedRowPrices(run, revision.id));
   assertReservationistResultFreshForAction({ version: 1, quoteRevisions: [revision] }, new Date());
   const selectedBundles =
@@ -350,15 +352,16 @@ export function resolvePreparedLedgerProposal(
 ): { revision: QuoteRevision; facts?: AuthorizedProposalFacts; rowPrices: RowPrice[] } {
   const now = scope.now ?? new Date();
   const metrics = run.metrics ?? {};
-  const request = run.readRequest && typeof run.readRequest === 'object' && !Array.isArray(run.readRequest)
-    ? run.readRequest as Record<string, unknown>
+  const hydratedRequest = hydrateStoredHmsRequest(run.readRequest);
+  const request = hydratedRequest && typeof hydratedRequest === 'object' && !Array.isArray(hydratedRequest)
+    ? hydratedRequest as Record<string, unknown>
     : null;
   const parsedInput = staffQuoteInput.safeParse(request?.kind === 'staff_quote' ? request.input : null);
   const result = run.readResult;
   const prepared = result?.preparedProposal && typeof result.preparedProposal === 'object' && !Array.isArray(result.preparedProposal)
     ? result.preparedProposal as Record<string, unknown>
     : null;
-  const revision = prepared?.revision as QuoteRevision | undefined;
+  const revision = hydrateStoredQuoteRevision(prepared?.revision);
   const rowPrices = Array.isArray(prepared?.rowPrices) ? prepared.rowPrices as RowPrice[] : [];
   const facts = prepared?.facts as AuthorizedProposalFacts | undefined;
   const factRefs = Array.isArray(result?.factRefs) ? result.factRefs : null;
@@ -1102,8 +1105,8 @@ export const workstationRouter = router({
         const prefill = await buildCreatePrefill({
           arrival: group.arrival ?? null, departure: group.departure ?? null, nights: null,
           rooms: roomRows.map(({ adults, childAges, roomTypeText, guestName }) => ({ adults, childAges, roomTypeText, guestName })),
-          boardText: group.mealPlan ?? null, rateText: input.rateCode ?? null,
-          agencyName: party.kind === 'agency' ? party.name : null,
+          mealPlanText: group.mealPlan ?? null, rateText: input.rateCode ?? null,
+          bookingAgencyName: party.kind === 'bookingAgency' ? party.name : null,
           organizationName: party.kind === 'organization' || party.kind === 'government' ? party.name : null,
           voucherNumber: null, bookerName: null, bookerEmail: null, billingReference: party.reference,
           paidBy: null, defaults: { track: null, sourceOfBusiness: null, guaranteeType: null },
