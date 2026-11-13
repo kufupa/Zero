@@ -10,6 +10,7 @@ import { isSupportedLabtestGuarantee, validCreateBillingReference } from './gues
 import { digestCloudCreateRequest, validCreateNote } from './create-request-binding.mjs';
 import { normalizeCreateTrack } from '../playwright-quote/create-request.mjs';
 import { fillTrackBeforeGuarantee } from '../playwright-quote/create-lab-stay.mjs';
+import { stageGuestStayBookerBilling } from './guest-stay-booker-billing.mjs';
 import { CREATE_GUARANTEES, createCloudTargetKey, isLabtestGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 
 const text = (value) => typeof value === 'string' ? value.trim() : '';
@@ -24,17 +25,13 @@ const candidate = ({ nativeId, firstName, lastName, email, phoneNumber, city, co
 
 export const REAL_GUEST_CREATE_AUTHORIZATION_HOLD = 'trusted_staff_create_authorization_unavailable';
 
-function validate(input, allowRealGuest = false, allowCommitOnlyBillingReference = false) {
+function validate(input, allowRealGuest = false) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { outcome: 'needs_input', issue: 'invalid_input' };
   if (!['prepare', 'commit'].includes(input.mode)) return { outcome: 'needs_input', issue: 'mode_required' };
   if (input.propertyCode !== 'HRCEN') return { outcome: 'unsupported', issue: 'property_not_supported' };
   const fidelity = inspectRequest(input);
   if (Object.hasOwn(input, 'billingReference') && input.billingReference != null &&
       !validCreateBillingReference(input.billingReference)) fidelity.invalid.push('billingReference');
-  if (Object.hasOwn(input, 'billingReference') && input.mode === 'prepare' && input.billingReference != null &&
-      !allowCommitOnlyBillingReference) {
-    fidelity.unsupported.push({ field: 'billingReference', issue: 'commit_only' });
-  }
   if (input.cms?.messageId != null && !code(input.cms.messageId, 100)) fidelity.invalid.push('cms.messageId');
   if (input.cms?.recipient != null && (!code(input.cms.recipient, 255) ||
       !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.cms.recipient))) fidelity.invalid.push('cms.recipient');
@@ -90,11 +87,11 @@ function validate(input, allowRealGuest = false, allowCommitOnlyBillingReference
     if (input.parties?.[key] != null && !text(input.parties[key])) missing.push(`parties.${key}`);
   }
   if (input.note != null && !validCreateNote(input.note)) missing.push('note');
+  if (input.billingReference != null) {
+    if (input.parties?.arAccountId == null) missing.push('parties.arAccountId');
+    if (!text(input.parties?.arAccountName) && !missing.includes('parties.arAccountName')) missing.push('parties.arAccountName');
+  }
   if (input.mode === 'commit') {
-    if (input.billingReference != null) {
-      if (input.parties?.arAccountId == null) missing.push('parties.arAccountId');
-      if (!text(input.parties?.arAccountName) && !missing.includes('parties.arAccountName')) missing.push('parties.arAccountName');
-    }
     if ([room.roomType, room.ratePlan].some((value) => value && !/^[A-Z0-9]{1,12}$/.test(value))) return { outcome: 'refused', issue: 'native_code_not_supported_yet' };
     if (date(stay.arrival) && date(stay.departure) && !validCreateDates(stay.arrival, stay.departure, allowRealGuest)) {
       return { outcome: 'refused', issue: allowRealGuest ? 'current_or_future_arrival_required' : 'labtest_arrival_required' };
@@ -358,7 +355,8 @@ function draftRequestBinding(input, state, output, formFields) {
     stay: { arrival: input.stay.arrival, departure: input.stay.departure, adults: Number(state.adult.actual.value),
       childAges: [...state.children.actualChildAges] },
     room: { roomType: output.applied.roomType, ratePlan: output.applied.ratePlan,
-      ...(input.room.roomTypeForCharge !== undefined ? { roomTypeForCharge: output.applied.roomTypeForCharge } : {}) },
+      ...(input.room.roomTypeForCharge !== undefined ? { roomTypeForCharge: output.applied.roomTypeForCharge } : {}),
+      ...(output.applied.mealPlan ? { mealPlan: output.applied.mealPlan } : {}) },
     guaranteeType: String(state.guarantee.actual.value),
     ...(state.source ? { sourceOfBusiness: { nativeCode: state.source.nativeCode, description: state.source.candidate.description } } : {}),
     ...(state.reason ? { reasonForStay: { value: String(state.reason.actual.value), display: state.reason.actual.display } } : {}),
@@ -384,6 +382,7 @@ export async function createReservation(input, { withSession = withBookingLookup
   expectedRateAvailability,
   allowCommitOnlyBillingReference = false,
   capturePrepareScreenshot = false, requireExplicitGuestSelection = false, selectTrack = fillTrackBeforeGuarantee,
+  stageBookerBilling = stageGuestStayBookerBilling,
   verifyLabtestMatches, allowRealGuest = false, expectedGuest, cloudTargetKey } = {}) {
   if ((authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
       (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
@@ -406,12 +405,11 @@ export async function createReservation(input, { withSession = withBookingLookup
         cloudTargetKey !== createCloudTargetKey(expectedGuest, input?.stay?.arrival)))) {
     return { outcome: 'refused', issue: 'SAVE_GUARD_CALLBACKS_INVALID', approvalReady: false };
   }
-  const checked = validate(input, allowRealGuest, allowCommitOnlyBillingReference);
+  const checked = validate(input, allowRealGuest);
   if (checked.outcome) return { ...checked, approvalReady: false };
   const commit = input.mode === 'commit', missing = checked.missing;
   const output = { outcome: 'needs_input', approvalReady: false, applied: {}, appliedVerification: { visibleFields: false },
     warnings: [], suggestedCmsMessageId: '03', missing,
-    ...(allowCommitOnlyBillingReference && input.billingReference != null ? { commitOnlyFields: ['billingReference'] } : {}),
     ...(checked.unsupportedFields.length ? { unsupportedFields: checked.unsupportedFields } : {}) };
   if (commit && missing.length) return output;
   const stay = input.stay || {}, room = input.room || {}, state = {};
@@ -647,6 +645,8 @@ export async function createReservation(input, { withSession = withBookingLookup
       }
       if (state.guest) output.applied.guest = { nativeId: state.guest.selected.nativeId, firstName: formValue(form.fields, 'firstname'),
         lastName: formValue(form.fields, 'lastname'), email: formValue(form.fields, 'emailaddress') };
+      const nativeMealPlan = formValue(form.fields, 'mealplan');
+      if (typeof nativeMealPlan === 'string' && nativeMealPlan.trim()) output.applied.mealPlan = nativeMealPlan;
       if (input.track != null) {
         if (!state.track || formValue(form.fields, 'track') !== state.track.display) {
           stop('needs_input', 'requested_track_not_staged', { field: 'track' });
@@ -668,6 +668,21 @@ export async function createReservation(input, { withSession = withBookingLookup
         ...(state.booker?.contact !== undefined ? [['udfchar06', state.booker.contact]] : []),
         ...(state.cmsRecipient !== undefined ? [['udfchar13', state.cmsRecipient]] : []),
       ]) if (formValue(form.fields, field) !== expected) stop('uncertain', 'draft_readback_mismatch', { field });
+      if (!commit && input.billingReference != null && state.guest && state.arAccount && !missing.length) {
+        const staged = await stageBookerBilling(page, { propertyCode, serviceWorkersBlocked: true,
+          billingReference: input.billingReference }, { allowRealGuest: true, expectedGuest: state.guest.guest,
+          expectedGuestId: String(state.guest.selected.nativeId), expectedArId: String(state.arAccount.nativeId) });
+        if (!['updated_unsaved', 'unchanged_unsaved'].includes(staged.outcome) ||
+            staged.fields?.billingReference?.visible !== input.billingReference ||
+            staged.fields?.billingReference?.native !== input.billingReference ||
+            staged.fields?.billingReference?.submit !== input.billingReference) {
+          stop('needs_input', 'billing_reference_prepare_unverified', { field: 'billingReference', detail: staged });
+        }
+        output.applied.billingReference = input.billingReference;
+      }
+      if (!commit && input.billingReference != null && !Object.hasOwn(output.applied, 'billingReference')) {
+        missing.push('billingReference.staging');
+      }
       output.appliedVerification = { visibleFields: true, ...(state.children ? { childAges: 'at_selection_only' } : {}),
         ...(state.organization ? { organizationId: 'at_selection_only' } : {}),
         ...(state.agency ? { agencyId: 'at_selection_only' } : {}), ...(state.arAccount ? { arAccountId: 'at_selection_only' } : {}) };
@@ -770,6 +785,7 @@ export async function createReservation(input, { withSession = withBookingLookup
     ...(allowRealGuest ? { allowRealGuest: true } : {}), source: state.source?.candidate.description,
     organization: state.organization?.displayedOrganization ?? '', guarantee: state.guarantee?.actual.display,
     ...(state.track ? { track: state.track.display } : {}),
+    ...(output.applied.mealPlan ? { mealPlan: output.applied.mealPlan } : {}),
     ...(input.guestoptin4 === false ? { guestOptIn: false } : {}),
     ...(state.booker ? { booker: state.booker } : {}),
     cmsSend: input.cms?.send === true,

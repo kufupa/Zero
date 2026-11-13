@@ -22,6 +22,7 @@ import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
 import {
   compileReservationWorkflowV2Create,
+  reservationWorkflowV2MealPlanMatches,
   type ReservationWorkflowV2ServerContext,
 } from './reservation-workflow-v2-tools.js';
 
@@ -30,7 +31,7 @@ export type ReservationWorkflowV2ServicesInput = { workItemId: string; source: R
 type Input = ReservationWorkflowV2ServicesInput;
 type Result = { status: string; issue?: string; [key: string]: unknown };
 type NativeCreate = { outcome?: string; issue?: string; requestBinding?: { request?: unknown; digest?: unknown };
-  ratePlanAvailability?: unknown; commitOnlyFields?: string[] };
+  ratePlanAvailability?: unknown; applied?: Record<string, unknown>; commitOnlyFields?: string[] };
 type AddOnItem = { code: string; quantity?: string; startDate?: string; endDate?: string; unitPrice?: string;
   frequency?: string; pricingControl?: string; folio?: string; comment?: string };
 type Effective = { value: unknown; path: string; override?: boolean; none?: boolean } | { issue: string; path: string };
@@ -454,7 +455,8 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
     const preview = record(addon), nativeItems = Array.isArray(preview?.items) ? preview.items.map(record) : [];
     const capability = (await import('./reservation-workflow-v2-services-execute.js')).linkedServiceCapability(loaded.draft, input);
     const createBound = native.outcome === 'prepared' && typeof record(native.requestBinding)?.digest === 'string' &&
-      record(native.ratePlanAvailability) !== null;
+      record(native.ratePlanAvailability) !== null && reservationWorkflowV2MealPlanMatches(compiledCreate.mealPlan,
+        record(native.applied)?.mealPlan, ctx.property.propertyCode);
     const results: Result[] = [];
     for (const [index, plan] of plans.entries()) {
       const nativeItem = record(nativeItems[index]);

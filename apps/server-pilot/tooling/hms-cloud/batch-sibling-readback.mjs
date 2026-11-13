@@ -39,6 +39,7 @@ export async function verifyBatchSiblings(census, siblings, {
           child2: ages.filter((age) => age >= 3 && age <= 12).length,
           child3: ages.filter((age) => age >= 13).length },
         roomType: request.room.roomType, ratePlan: request.room.ratePlan, note: request.note,
+        ...(request.room.mealPlan ? { mealPlan: request.room.mealPlan } : {}),
         guestId: request.guest.nativeId, firstName: request.guest.firstName, lastName: request.guest.lastName,
         allowRealGuest: true,
         ...(request.sourceOfBusiness ? { source: request.sourceOfBusiness.description } : {}),

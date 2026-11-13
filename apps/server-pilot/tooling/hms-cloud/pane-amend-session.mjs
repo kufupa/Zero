@@ -57,11 +57,11 @@ export function cloudAmendPreserved(state, baseline, changes = {}) {
     return { nativeId: id, name };
   };
   try {
-    const agency = link(party.taid1, party.ta1);
+    const bookingAgency = link(party.taid1, party.ta1);
     const organization = link(party.companyid, party.company || party.companyname);
     return { cmsRecipient, ...(cmsMessageId === undefined ? {} : { cmsMessageId }),
       ...(typeof cmsSend === 'boolean' ? { cmsSend } : {}),
-      ...(guestEmail === undefined ? {} : { guestEmail }), ...details, agency, organization };
+      ...(guestEmail === undefined ? {} : { guestEmail }), ...details, bookingAgency, organization };
   } catch { return null; }
 }
 
@@ -146,13 +146,12 @@ function matchesAmendBusiness(snapshot, selected, changes, baseline, state) {
     if (!Object.hasOwn(data, name) || String(data[name] ?? '') !== expected ||
         (Object.hasOwn(values, name) && String(values[name] ?? '') !== expected)) return false;
   }
-  const recipient = changes.cmsSend ? changes.cmsRecipient : String(baseline.data.udfchar13 ?? '');
-  const message = changes.cmsSend ? changes.cmsMessageId : String(baseline.data.udfchar09 ?? '');
+  const recipient = changes.cmsRecipient, message = changes.cmsMessageId;
   const formCms = !Object.hasOwn(values, 'udfchkbox04') || values.udfchkbox04 === ''
     ? false : nativeCmsSendValue(values.udfchkbox04);
   if (snapshot.cmsSendControl !== changes.cmsSend || formCms !== changes.cmsSend ||
       String(data.udfchar13 ?? '') !== recipient ||
-      (message && String(data.udfchar09 ?? '') !== message)) return false;
+      String(data.udfchar09 ?? '') !== message) return false;
   const children = savedChildOccupancy(snapshot);
   if (!children.valid || children.count !== target.children) return false;
   if (Array.isArray(target.childAges)) {
@@ -188,7 +187,7 @@ export function matchesCloudPaneAmendSave(request, frame, snapshot,
       for (const name of ['childages', 'child1', 'child2', 'child3']) required[name] = String(data[name] ?? '');
     }
     for (const [key, name] of Object.entries({ bookerName: 'caller', bookerContact: 'udfchar06', cmsMessageId: 'udfchar09' })) {
-      if (Object.hasOwn(changes, key) && (key !== 'cmsMessageId' || changes.cmsSend)) required[name] = String(data[name] ?? '');
+      if (Object.hasOwn(changes, key)) required[name] = String(data[name] ?? '');
     }
     if (phase === 'retain' || phase === 'extend') {
       required.confirmretainrate = changes.retainRates === 'yes' ? 'confirmed' : 'not_needed';
@@ -463,7 +462,9 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       }
     }
   };
-  const valid = (value, prepared) => matchesAmendBusiness(value, selected, changes, prepared.baseline, prepared.state);
+  const effectiveCmsChanges = (prepared) => input.discoveryOnly === true ? { ...changes,
+    cmsMessageId: String(prepared.baseline.data.udfchar09 ?? ''), cmsRecipient: String(prepared.baseline.data.udfchar13 ?? '') } : changes;
+  const valid = (value, prepared) => matchesAmendBusiness(value, selected, effectiveCmsChanges(prepared), prepared.baseline, prepared.state);
   const saveOptions = (prepared, phase) => ({ selected, changes, beforeNote: expected.note,
     beforeParties: prepared.state.partyPreimage, guaranteeCode: prepared.state.expectedGuarantee?.code ?? 'NGI',
     allowRealGuest: input.allowRealGuest === true, baseline: prepared.baseline, phase });
@@ -612,7 +613,10 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       const fields = Object.fromEntries(['firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote']
         .filter((key) => Object.hasOwn(changes, key)).map((key) => [key, changes[key]]));
       fields.cmsSend = changes.cmsSend;
-      if (changes.cmsSend) { fields.cmsMessageId = changes.cmsMessageId; fields.cmsRecipient = changes.cmsRecipient; }
+      if (input.discoveryOnly !== true) {
+        if (changes.cmsMessageId !== String(prepared.baseline.data.udfchar09 ?? '')) fields.cmsMessageId = changes.cmsMessageId;
+        if (changes.cmsRecipient !== String(prepared.baseline.data.udfchar13 ?? '')) fields.cmsRecipient = changes.cmsRecipient;
+      }
       draft = await bounded(stageGuest(context, fields));
       draft = await bounded(snapshot(prepared.frame));
       if (!context.isActive() || !valid(draft, prepared)) throw new Error('AMEND_DRAFT_CHANGED');
@@ -673,7 +677,7 @@ export function bindCloudAmendWriter(_page, authorization) {
 /** Admit a bound native stay; all effects still require the paused-request claim. */
 export function admitsCloudPaneAmend(input, authorization) {
   const selected = input?.selected;
-  return Boolean(validTarget(input?.target) && amendTarget(selected, input?.changes, { allowRealGuest: input.allowRealGuest === true }) &&
+  return Boolean(input?.discoveryOnly !== true && validTarget(input?.target) && amendTarget(selected, input?.changes, { allowRealGuest: input.allowRealGuest === true }) &&
     selected?.source === 'record_view_ext_model' && selected.propertyCode === 'HRCEN' &&
     selected.firstName?.trim() && selected.lastName?.trim() &&
     (input.allowRealGuest === true || (selected.firstName === 'Proof' && selected.lastName === 'Labtest')) && selected.status === 'Reserved' &&
@@ -759,8 +763,7 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
           (!Object.hasOwn(changes, 'bookerContact') &&
             (typeof input.beforeBookerContact !== 'string' || bookerContact !== input.beforeBookerContact)) ||
           state.cmsSend !== changes.cmsSend ||
-          (changes.cmsSend && (cmsRecipient !== changes.cmsRecipient || cmsMessageId !== changes.cmsMessageId)) ||
-          (!changes.cmsSend && cmsRecipient !== input.beforeRecipient)) return { outcome: 'unverified' };
+          cmsRecipient !== changes.cmsRecipient || cmsMessageId !== changes.cmsMessageId) return { outcome: 'unverified' };
       if (changes.retainRates === 'no') {
         assertApprovedAmendPrice(saved, target, input.approvedPrices);
       } else {

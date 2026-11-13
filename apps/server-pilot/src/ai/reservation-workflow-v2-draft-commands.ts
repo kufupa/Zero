@@ -920,12 +920,21 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
         proposal = { ...draft.proposal, issues };
       } else if (observation.kind === 'party_candidate' && input.fieldPath.endsWith('/nativeSelectionRef')) {
         const parent = input.fieldPath.slice(0, -'/nativeSelectionRef'.length);
-        const field = parent.split('/').at(-1);
+        const amendPath = request.kind === 'amend' && /\/body\/(?:sharedChanges\/\d+|perTarget\/\d+\/changes\/\d+)\/value$/.test(parent);
+        const field = amendPath ? valueAt(draft, `${parent.slice(0, -'/value'.length)}/field`) : parent.split('/').at(-1);
         const roles: Record<string, string> = { bookingAgency: request.kind === 'quote' ? 'bookingAgency' : 'agency',
           organization: 'organization', arAccount: 'ar_account' };
-        if (!field || !roles[field] || observation.criteria.role !== roles[field] ||
+        if (typeof field !== 'string' || !roles[field] || observation.criteria.role !== roles[field] ||
             !((request.kind === 'create' && /\/body\/(shared|dateSections\/\d+\/defaults|allocations\/\d+\/overrides)\//.test(parent)) ||
-              (request.kind === 'quote' && /\/body\/parties\//.test(parent)))) return null;
+              (request.kind === 'quote' && /\/body\/parties\//.test(parent)) || amendPath) ||
+            observation.criteria.workflow !== request.kind) return null;
+        if (amendPath) {
+          const changePath = parent.slice(0, -'/value'.length), query = observation.criteria.query;
+          const name = valueAt(draft, `${parent}/name`);
+          const normalize = (value: unknown) => typeof value === 'string'
+            ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() : '';
+          if (valueAt(draft, `${changePath}/op`) !== 'set' || !normalize(name) || normalize(name) !== normalize(query)) return null;
+        }
         const rows = Array.isArray(observation.result.candidates) ? observation.result.candidates : [observation.result];
         if (rows.length !== 1) return null;
         const candidate = rec(rows[0]);
@@ -951,6 +960,7 @@ function reviewedGuestSelection(draft: ReservationWorkflowV2Draft, requestId: st
   if (typeof selected !== 'string' || valueAt(draft, `${guestPath}/profileIntent`) !== 'existing_or_unknown') return null;
   const firstName = valueAt(draft, `${guestPath}/firstName`), lastName = valueAt(draft, `${guestPath}/lastName`);
   const email = valueAt(draft, `${guestPath}/email`);
+  const mobile = valueAt(draft, `${guestPath}/mobile`);
   if (typeof firstName !== 'string' || !firstName.trim() || typeof lastName !== 'string' || !lastName.trim()) return null;
   const matches = draft.observations.filter((row) => row.ref === selected);
   if (matches.length !== 1) return null;
@@ -977,7 +987,9 @@ function reviewedGuestSelection(draft: ReservationWorkflowV2Draft, requestId: st
   const normalize = (value: string) => value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
   if (typeof candidate.nativeId !== 'string' || !sameGuestName(candidate.firstName, firstName) || !sameGuestName(candidate.lastName, lastName) ||
       !sameGuestName(candidate.name ?? `${candidate.firstName} ${candidate.lastName}`, `${firstName} ${lastName}`) ||
-      (typeof email === 'string' && email.trim() && (typeof candidate.email !== 'string' || normalize(candidate.email) !== normalize(email)))) return null;
+      (typeof email === 'string' && email.trim() && (typeof candidate.email !== 'string' || normalize(candidate.email) !== normalize(email))) ||
+      (typeof mobile === 'string' && mobile.trim() && (typeof candidate.phoneNumber !== 'string' ||
+        !mobile.replace(/\D/g, '') || candidate.phoneNumber.replace(/\D/g, '') !== mobile.replace(/\D/g, '')))) return null;
   return selectionPath;
 }
 

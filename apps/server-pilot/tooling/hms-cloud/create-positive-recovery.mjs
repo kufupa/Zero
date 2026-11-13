@@ -111,6 +111,7 @@ export async function provePositiveCreateRecovery(intent, { census = censusDefau
       childBands: { child1: ages.filter((age) => age <= 2).length,
         child2: ages.filter((age) => age >= 3 && age <= 12).length, child3: ages.filter((age) => age >= 13).length },
       roomType: room.roomType, ratePlan: room.ratePlan, note: request.note, guestId: guest.nativeId,
+      ...(room.mealPlan ? { mealPlan: room.mealPlan } : {}),
       firstName: guest.firstName, lastName: guest.lastName, allowRealGuest: true,
       ...(request.sourceOfBusiness ? { source: request.sourceOfBusiness.description } : {}),
       organization: request.parties?.organization?.name ?? '',

@@ -45,6 +45,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { persistHmsShots, verifyStoredHmsShot } from './hms-shots-store.js';
 import { lockCreateActorSession } from './pane-create-actor-lock.js';
+import { formatBookerContact, parseBookerContact } from './reservation-workflow-v2-booker-contact.js';
+import { partyCandidateViews, verifiedNativeFields } from './reservation-workflow-v2-tools.js';
+import { partyMatchSearchTerms } from './party-match-v2.js';
+import { reservationEntityKey } from './reservation-workflow-v2-native-leads.js';
 
 export type ReservationWorkflowV2AmendContext = {
   db: DB;
@@ -59,6 +63,7 @@ type ReadContext = ReservationWorkflowV2AmendContext | ReservationWorkflowV2Syst
 type Input = ReservationWorkflowV2LookupInput | ReservationWorkflowV2PrepareInput |
   ReservationWorkflowV2ExecuteInput | ReservationWorkflowV2ReconcileInput;
 type Outcome = { status: string; issue?: string; [key: string]: unknown };
+type AmendRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'amend' }>;
 type Amendment = {
   arrival?: string; departure?: string; adults?: number; children?: number; childAges?: number[];
   roomType?: string; ratePlan: string; retainRates: 'yes' | 'no'; firstName?: string; lastName?: string;
@@ -485,10 +490,10 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     if (field === UNKNOWN || typeof field !== 'string') { errors.push(`${changePath}:change_unknown`); return; }
     if (field === 'roomTypeForCharge') { unsupported.add(field); return; }
     const supported = new Set(['arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'ratePlan',
-      'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
+      'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
     if (!supported.has(field)) { unsupported.add(field); return; }
     if (op === 'clear') {
-      if (['guestEmail', 'bookerName', 'bookerContact', 'reservationNote'].includes(field)) values[field] = '';
+      if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote'].includes(field)) values[field] = '';
       else if (field === 'cmsSend') values.cmsSend = false;
       else if (field === 'cmsMessageId' || field === 'cmsRecipient') values[field] = '';
       else errors.push(`${changePath}:field_cannot_be_cleared`);
@@ -499,7 +504,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     const rawValue = effectiveLeaf(draft, valuePath, item.value);
     if (rawValue === UNKNOWN) { errors.push(`${valuePath}:value_unknown`); return; }
     if (rawValue === NONE) {
-      if (['guestEmail', 'bookerName', 'bookerContact', 'reservationNote'].includes(field)) values[field] = '';
+      if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote'].includes(field)) values[field] = '';
       else if (field === 'cmsSend') values.cmsSend = false;
       else errors.push(`${valuePath}:explicit_none_not_supported`);
       reviewPaths.add(valuePath);
@@ -609,16 +614,29 @@ function nativePrice(value: unknown): Record<string, unknown> | null {
   return row;
 }
 
-function normalizedChanges(base: Compile & { outcome: 'ok' }, preserved: Record<string, unknown>): Amendment | null {
+function normalizedChanges(base: Compile & { outcome: 'ok' }, preserved: Record<string, unknown>,
+  baseline: Record<string, unknown>): Amendment | null {
   if (typeof preserved.cmsSend !== 'boolean' || typeof preserved.cmsRecipient !== 'string') return null;
   const cmsSend = typeof base.baseChanges.cmsSend === 'boolean' ? base.baseChanges.cmsSend : preserved.cmsSend;
   const cmsRecipient = typeof base.baseChanges.cmsRecipient === 'string' ? base.baseChanges.cmsRecipient : preserved.cmsRecipient;
   const cmsMessageId = typeof base.baseChanges.cmsMessageId === 'string'
     ? base.baseChanges.cmsMessageId : typeof preserved.cmsMessageId === 'string' ? preserved.cmsMessageId : '';
-  if (!cmsSend && ((base.baseChanges.cmsRecipient !== undefined && base.baseChanges.cmsRecipient !== preserved.cmsRecipient) ||
-      (base.baseChanges.cmsMessageId !== undefined && base.baseChanges.cmsMessageId !== preserved.cmsMessageId)) ||
+  if (typeof preserved.cmsMessageId !== 'string' ||
       cmsSend && (!cmsMessageId.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cmsRecipient))) return null;
-  return { ...base.baseChanges, ratePlan: String(base.baseChanges.ratePlan ?? base.selected.ratePlan),
+  const { bookerEmail, bookerMobile, ...nativeChanges } = base.baseChanges;
+  if (bookerEmail !== undefined || bookerMobile !== undefined) {
+    const previous = typeof baseline.beforeBookerContact === 'string' ? parseBookerContact(baseline.beforeBookerContact) : null;
+    if ((!previous && (bookerEmail === undefined || bookerMobile === undefined)) ||
+        (bookerEmail !== undefined && typeof bookerEmail !== 'string') ||
+        (bookerMobile !== undefined && typeof bookerMobile !== 'string')) return null;
+    const email = typeof bookerEmail === 'string' ? bookerEmail || null : previous?.email ?? null;
+    const mobile = typeof bookerMobile === 'string' ? bookerMobile || null : previous?.mobile ?? null;
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return null;
+    const contact = formatBookerContact(email, mobile);
+    if (contact === null) return null;
+    nativeChanges.bookerContact = contact;
+  }
+  return { ...nativeChanges, ratePlan: String(base.baseChanges.ratePlan ?? base.selected.ratePlan),
     retainRates: base.rateHandling === 'retain' ? 'yes' : 'no', cmsSend, cmsMessageId, cmsRecipient } as Amendment;
 }
 
@@ -691,13 +709,88 @@ function preparedObservation(draft: ReservationWorkflowV2Draft, compiled: Compil
   return rows.at(-1) ?? null;
 }
 
+async function lookupAmendParties(draft: ReservationWorkflowV2Draft,
+  requests: AmendRequest[], signal?: AbortSignal) {
+  const specs = {
+    bookingAgency: { role: 'agency', tool: 'searchPrimaryBookingAgency', id: 'travelagencyid', name: 'travelagencyname' },
+    organization: { role: 'organization', tool: 'searchOrganization', id: 'companyid', name: 'companyname' },
+    arAccount: { role: 'ar_account', tool: 'searchArAccount', id: 'araccountid', name: 'araccountname' },
+  } as const;
+  const queries: Array<{ requestId: string; path: string; name: string; spec: typeof specs[keyof typeof specs] }> = [];
+  for (const request of requests) {
+    const root = ptr('proposal', 'content', 'requests', request.id, 'body');
+    const sharedPath = `${root}/sharedChanges`, perPath = `${root}/perTarget`;
+    const shared = effectiveLeaf(draft, sharedPath, request.body.sharedChanges);
+    const perTarget = effectiveLeaf(draft, perPath, request.body.perTarget);
+    const collect = (rows: unknown, path: string) => {
+      if (!Array.isArray(rows)) return;
+      rows.forEach((entry, index) => {
+        const changePath = `${path}/${index}`, item = record(effectiveLeaf(draft, changePath, entry));
+        if (!item || effectiveLeaf(draft, `${changePath}/op`, item.op) !== 'set') return;
+        const field = effectiveLeaf(draft, `${changePath}/field`, item.field);
+        if (typeof field !== 'string' || !Object.hasOwn(specs, field)) return;
+        const valuePath = `${changePath}/value`, value = record(effectiveLeaf(draft, valuePath, item.value));
+        const name = text(effectiveLeaf(draft, `${valuePath}/name`, value?.name));
+        if (name) queries.push({ requestId: request.id, path: `${valuePath}/nativeSelectionRef`, name,
+          spec: specs[field as keyof typeof specs] });
+      });
+    };
+    collect(shared, sharedPath);
+    if (Array.isArray(perTarget)) perTarget.forEach((entry, index) => {
+      const path = `${perPath}/${index}`, row = record(effectiveLeaf(draft, path, entry));
+      if (row) collect(effectiveLeaf(draft, `${path}/changes`, row.changes), `${path}/changes`);
+    });
+  }
+  if (!queries.length) return { observations: [] as ReservationWorkflowV2Observation[], lookups: [] as Record<string, unknown>[] };
+  const tool = await import(new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url).href) as {
+    withBookingLookupSession: (operation: (session: { runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
+      Promise<unknown>, options?: Record<string, unknown>) => Promise<unknown>;
+  };
+  return await tool.withBookingLookupSession(async ({ runTool }) => {
+    const observations: ReservationWorkflowV2Observation[] = [], lookups: Record<string, unknown>[] = [];
+    for (const query of queries) {
+      let nativeQuery = query.name, found = await runTool({ tool: query.spec.tool, query: nativeQuery });
+      const searchesTried = [{ query: nativeQuery, outcome: found.outcome }];
+      if (found.outcome === 'no_match') for (const term of partyMatchSearchTerms(query.name).filter(term => term !== query.name).slice(0, 2)) {
+        nativeQuery = term;
+        found = await runTool({ tool: query.spec.tool, query: nativeQuery });
+        searchesTried.push({ query: nativeQuery, outcome: found.outcome });
+        if (found.outcome !== 'no_match') break;
+      }
+      const closed = await runTool({ tool: 'closeGuestStayPartyPicker', propertyCode: draft.propertyCode });
+      if (closed.outcome !== 'closed_unsaved') throw new Error('PARTY_PICKER_CLOSE_UNVERIFIED');
+      const coverage = record(found.coverage), verifiedFields = verifiedNativeFields(found), criteria = record(found.criteria);
+      const candidates = Array.isArray(found.candidates) ? found.candidates.map(record).filter(Boolean) : [];
+      const projected = partyCandidateViews(candidates, query.spec.role, verifiedFields);
+      const complete = ['matches', 'no_match'].includes(String(found.outcome)) && typeof found.searchId === 'string' &&
+        criteria?.query === nativeQuery && coverage?.possiblyTruncated === false && typeof coverage.loaded === 'number' && Number.isInteger(coverage.loaded) &&
+        candidates.length === coverage.loaded && verifiedFields.includes(query.spec.id) && verifiedFields.includes(query.spec.name) && projected.valid;
+      projected.rows.sort((left, right) => Number(reservationEntityKey(String(right.name), query.spec.role) === reservationEntityKey(query.name, query.spec.role)) -
+        Number(reservationEntityKey(String(left.name), query.spec.role) === reservationEntityKey(query.name, query.spec.role)));
+      const entries = projected.rows.length ? projected.rows : [null];
+      if (typeof found.searchId === 'string' && ['matches', 'no_match'].includes(String(found.outcome))) {
+        entries.forEach((candidate, candidateIndex) => observations.push({ ref: randomUUID(), generationId: draft.generationId,
+          kind: 'party_candidate', status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
+          propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId, sourceRefs: [],
+          criteria: { workflow: 'amend', kind: 'party_name', requestId: query.requestId, role: query.spec.role,
+            fieldPaths: [query.path], query: query.name, nativeQuery, searchesTried, candidateIndex, coverage,
+            correlation: { verifiedFields } }, coverage: { complete, notes: complete ? [] : ['native_party_lookup_incomplete'] },
+          result: { outcome: found.outcome, criteria, coverage, correlation: { verifiedFields }, candidates: candidate ? [candidate] : [] } }));
+      }
+      lookups.push({ requestId: query.requestId, selectionPath: query.path, status: complete ? found.outcome : 'partial',
+        candidates: projected.rows });
+    }
+    return { observations, lookups };
+  }, { memory: null, blockServiceWorkers: true, signal }) as { observations: ReservationWorkflowV2Observation[]; lookups: Record<string, unknown>[] };
+}
+
 export async function reservationWorkflowV2AmendLookup(ctx: ReadContext,
   input: ReservationWorkflowV2LookupInput): Promise<Outcome> {
   if (!paneStayLookupEnabled()) return { status: 'needs_input', issue: 'stay_lookup_disabled' };
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;
   if (ctx.property.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'property_not_supported' };
-  const requests = loaded.draft.proposal.content.requests.filter((request) =>
+  const requests = loaded.draft.proposal.content.requests.filter((request): request is AmendRequest =>
     request.kind === 'amend' && (!input.requestId || request.id === input.requestId));
   if (input.requestId && !requests.length) return { status: 'not_found' };
   if (!requests.length) return { status: 'unsupported', issue: 'amend_lookup_not_applicable' };
@@ -785,6 +878,13 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReadContext,
           roomType: native.roomType, ratePlan: native.ratePlan })) });
     }
   }
+  try {
+    const parties = await lookupAmendParties(loaded.draft, requests, ctx.nativeBatch?.signal);
+    observations.push(...parties.observations);
+    lookups.push(...parties.lookups);
+  } catch {
+    return { status: 'failed', issue: 'native_amend_party_lookup_failed', lookups };
+  }
   const fresh = await currentDraft(ctx, input);
   if (!fresh.draft) return fresh.result;
   for (const observation of observations) {
@@ -813,14 +913,16 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
   if (!locked?.lock) return { status: 'unsupported', issue: 'amend_target_lock_unavailable' };
   const module = await nativeModule();
   const dispatchKey = hmsDispatchTargetKey(locked.dispatchTarget);
-  const discoveryChanges = { ...compiled.baseChanges, ratePlan: String(compiled.baseChanges.ratePlan ?? compiled.selected.ratePlan),
+  const discoveryBase = Object.fromEntries(Object.entries(compiled.baseChanges)
+    .filter(([field]) => field !== 'bookerEmail' && field !== 'bookerMobile'));
+  const discoveryChanges = { ...discoveryBase, ratePlan: String(compiled.baseChanges.ratePlan ?? compiled.selected.ratePlan),
     retainRates: compiled.rateHandling === 'retain' ? 'yes' : 'no', cmsSend: false, cmsMessageId: '', cmsRecipient: '' };
   try {
     const prepared = await locked.lock.withLock(async () => {
       ctx.nativeBatch?.signal.throwIfAborted();
       const discovery = await module.prepareCloudPaneAmend({ target: locked.target, selected: compiled.selected,
         confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, changes: discoveryChanges,
-        allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
+        discoveryOnly: true, allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
       const discoveryBaseline = record(discovery.recoveryBaseline);
       if (discovery.outcome !== 'prepared' || !record(discovery.preserved) || !discoveryBaseline) {
         return { issue: 'native_amend_baseline_unavailable' };
@@ -834,9 +936,9 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
           return { issue: 'native_amend_reservation_note_changed_or_unavailable' };
         }
       }
-      const preserved = record(discovery.preserved)!;
-      const changes = normalizedChanges(compiled, preserved);
-      if (!changes) return { issue: 'native_amend_cms_baseline_unavailable' };
+      const discoveryPreserved = record(discovery.preserved)!;
+      const changes = normalizedChanges(compiled, discoveryPreserved, discoveryBaseline);
+      if (!changes) return { issue: 'native_amend_contact_or_cms_baseline_unavailable' };
       const native = await module.prepareCloudPaneAmend({ target: locked.target, selected: compiled.selected,
         confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, changes,
         allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
@@ -856,8 +958,10 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
           typeof recoveryBaseline.beforeGuaranteeCode !== 'string' ||
           !/^[A-Z0-9]{1,40}$/.test(recoveryBaseline.beforeGuaranteeCode) ||
           !(recoveryBaseline.beforeSavedRates === null || record(recoveryBaseline.beforeSavedRates)) ||
-          canonicalJson(afterPreserved) !== canonicalJson(preserved) ||
+          canonicalJson(Object.fromEntries(Object.entries(afterPreserved).filter(([key]) =>
+            key !== 'bookerContact' || Object.hasOwn(discoveryPreserved, key)))) !== canonicalJson(discoveryPreserved) ||
           canonicalJson(recoveryBaseline) !== canonicalJson(discoveryBaseline)) return { issue: 'native_amend_prepare_unverified' };
+      const preserved = afterPreserved;
       const semanticDigest = sha256({ baseDigest: compiled.baseDigest, selectedRef: compiled.selectedRef,
         selected: compiled.selected, target: compiled.target, changes, preserved, recoveryBaseline,
         nativeDigest: native.nativeDigest, price });
@@ -1001,9 +1105,7 @@ function readbackMatches(readback: unknown, prepared: Record<string, unknown>): 
     if (!Object.hasOwn(changes, key) && (typeof baseline[beforeKeys[key]] !== 'string' ||
         actual[key] !== baseline[beforeKeys[key]])) return null;
   }
-  if (changes.cmsSend === true && (actual.cmsMessageId !== changes.cmsMessageId || actual.cmsRecipient !== changes.cmsRecipient)) return null;
-  if (changes.cmsSend === false && (actual.cmsRecipient !== preserved.cmsRecipient ||
-      (Object.hasOwn(preserved, 'cmsMessageId') && actual.cmsMessageId !== preserved.cmsMessageId))) return null;
+  if (actual.cmsMessageId !== changes.cmsMessageId || actual.cmsRecipient !== changes.cmsRecipient) return null;
   return actual;
 }
 
