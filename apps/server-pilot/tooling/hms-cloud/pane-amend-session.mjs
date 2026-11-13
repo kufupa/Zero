@@ -19,7 +19,7 @@ import { createSavedPartyStageRequestGate } from './saved-stay-party-request-gat
 import { labtestCombinedAmendPreimageBinding } from './saved-stay-combined-preimage.mjs';
 import { nativeCmsSendValue, runLabtestAmendSave } from './labtest-amend-save.mjs';
 import { createLabtestAmendDispatch } from './labtest-amend-dispatch.mjs';
-import { nativeMoneyCents, nativeAverageCents, nativePriceDigest, parseNativePricingJson,
+import { nativeMoneyCents, nativeAverageCents, nativeMoneyTenThousandths, nativePriceDigest, parseNativePricingJson,
   readAmendNightlyQuote, readSavedStayNightlyRates } from './saved-stay-nightly-rates.mjs';
 import { stageSavedAdultForComposition } from './guest-stay-amend-adults.mjs';
 import { stageSavedDatesForComposition, stageSavedRoomRateForComposition } from './guest-stay-amend-date-room-rate.mjs';
@@ -564,8 +564,11 @@ export async function clickLabtestAmendAvailability(frame, bounded) {
   await bounded(button.click({ timeout: 5_000, noWaitAfter: true }));
 }
 
+const nativePriceComponents = ['grandtotal', 'averagenightly', 'averagerate', 'totalrate', 'totalratewithtax',
+  'enhancedexptotal', 'guesttotal', 'guesttax', 'guesttotalwithtax', 'tax', 'totalresortfee', 'ratetax'];
+
 /** Current HMS totals and the independently read rate option shown to staff. */
-function observedAmendPrice(snapshot, target, quote) {
+function observedAmendPrice(snapshot, target, quote, { includeComponents = false } = {}) {
   const data = snapshot?.data ?? {}, values = snapshot?.values ?? {};
   const currency = values.grandtotalcurr || data.grandtotalcurr || values.currency || data.currency;
   const totalCents = nativeMoneyCents(values.grandtotal ?? data.grandtotal);
@@ -575,7 +578,14 @@ function observedAmendPrice(snapshot, target, quote) {
     roomType: target.roomType, ratePlan: target.ratePlan, currency: quote.currency,
     nightly: quote.nightly.map(({ date, quoteCents }) => ({ date, amountCents: quoteCents })),
   }] : [];
-  return { version: 2, currency, totalCents, averageCents, options };
+  const components = {};
+  if (includeComponents) for (const name of nativePriceComponents) {
+    const seen = [data, values].filter(source => Object.hasOwn(source, name) && String(source[name] ?? '').trim() !== '')
+      .map(source => nativeMoneyTenThousandths(source[name]));
+    if (seen.some(value => value === null) || (seen.length > 1 && seen.some(value => value !== seen[0]))) return null;
+    if (seen.length) components[name] = seen[0];
+  }
+  return { version: 2, currency, totalCents, averageCents, options, ...(includeComponents ? { componentsTenThousandths: components } : {}) };
 }
 
 function assertAmendPriceFields(entries, approved) {
@@ -598,7 +608,7 @@ function assertAmendPriceFields(entries, approved) {
 
 /** Compare native minor-unit observations, never a calculated extension total. */
 function assertApprovedAmendPrice(snapshot, target, approved, { requireAverage = true } = {}) {
-  const observed = observedAmendPrice(snapshot, target, null);
+  const observed = observedAmendPrice(snapshot, target, null, { includeComponents: Boolean(approved?.componentsTenThousandths) });
   if (!observed || approved?.version !== 2 || !/^[A-Z]{3}$/.test(approved.currency || '') ||
       !/^(?:0|[1-9]\d{0,13})$/.test(approved.totalCents || '') ||
       (approved.averageCents !== null && !/^(?:0|[1-9]\d{0,13})$/.test(approved.averageCents || '')) ||
@@ -606,7 +616,9 @@ function assertApprovedAmendPrice(snapshot, target, approved, { requireAverage =
     throw new Error('AMEND_PRICE_UNVERIFIED');
   }
   if (observed.currency !== approved.currency || observed.totalCents !== approved.totalCents ||
-      observed.averageCents !== approved.averageCents) throw new Error('AMEND_PRICE_CHANGED');
+      observed.averageCents !== approved.averageCents || (approved.componentsTenThousandths &&
+        Object.entries(approved.componentsTenThousandths).some(([name, value]) => !nativePriceComponents.includes(name) ||
+          observed.componentsTenThousandths?.[name] !== value))) throw new Error('AMEND_PRICE_CHANGED');
   assertAmendPriceFields(Object.entries(snapshot?.data ?? {}), approved);
   assertAmendPriceFields(Object.entries(snapshot?.values ?? {}), approved);
 }
@@ -698,7 +710,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
   // Availability can display a different proposed total; it is not an extension quote.
   const approvalPrice = (draft, prepared) => {
     const source = changes.retainRates === 'yes' ? prepared.baseline : draft;
-    const price = observedAmendPrice(source, target, quoted);
+    const price = observedAmendPrice(source, target, quoted, { includeComponents: input.capturePriceComponents === true });
     try {
       assertApprovedAmendPrice(source, target, price, { requireAverage: changes.retainRates === 'no' });
       return price;
@@ -818,7 +830,8 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         deadlineAt: performance.now() + 6 * 60_000 }) : null;
       const rateStageGate = needsAvailability || trackChanged ? createSavedRateStageRequestGate({ frame: state.frame, selected,
         deadlineAt: performance.now() + 6 * 60_000 }) : null;
-      const guaranteePrice = input.guaranteeChoiceCode ? observedAmendPrice(baseline, selected, null) : null;
+      const guaranteePrice = input.guaranteeChoiceCode ? observedAmendPrice(baseline, selected, null,
+        { includeComponents: input.capturePriceComponents === true }) : null;
       if (input.guaranteeChoiceCode) {
         if (!guaranteePrice) throw new Error('AMEND_PRICE_UNVERIFIED');
         assertApprovedAmendPrice(baseline, selected, guaranteePrice, { requireAverage: false });
