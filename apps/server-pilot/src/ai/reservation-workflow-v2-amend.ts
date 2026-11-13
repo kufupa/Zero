@@ -430,6 +430,12 @@ function fieldChanged(current: Record<string, unknown>, field: string, value: un
   return before !== value;
 }
 
+function sameChildAges(left: unknown, right: unknown) {
+  if (!Array.isArray(left) || !Array.isArray(right)) return left === right;
+  return canonicalJson([...left].sort((a, b) => Number(a) - Number(b))) ===
+    canonicalJson([...right].sort((a, b) => Number(a) - Number(b)));
+}
+
 function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintId: string,
   mode: 'prepare' | 'execute'): Compile {
   const found = requestBody(draft, requestId);
@@ -648,7 +654,12 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
   }
   const pricingChanged = ['arrival', 'departure', 'adults', 'roomType', 'roomTypeForCharge', 'ratePlan']
     .some((field) => Object.hasOwn(baseChanges, field) && fieldChanged(current, field, baseChanges[field]));
-  if (rateValue === 'retain' && pricingChanged) {
+  const knownChildAgesChanged = Array.isArray(baseChanges.childAges) && Array.isArray(current.childAges) &&
+    !sameChildAges(baseChanges.childAges, current.childAges);
+  const knownCallbackChanged = (typeof baseChanges.children === 'number' && baseChanges.children !== current.children) ||
+    knownChildAgesChanged || (typeof baseChanges.guaranteeType === 'string' && typeof current.guaranteeCode === 'string' &&
+      baseChanges.guaranteeType !== current.guaranteeCode);
+  if (rateValue === 'retain' && (pricingChanged || knownCallbackChanged)) {
     return { outcome: 'unsupported', issue: 'retained_rate_not_supported_for_priced_amendment', fields: ['rateHandling'] };
   }
   const target = { confirmation: current.confirmation, nativeStayId: current.reservationStayId,
@@ -845,7 +856,7 @@ async function recordObservation(ctx: ReadContext, input: Input,
 function preparedObservation(draft: ReservationWorkflowV2Draft, compiled: Compile & { outcome: 'ok' }) {
   const rows = draft.observations.filter((observation) => observation.kind === 'rate_availability' &&
     observation.status === 'complete' && observation.generationId === draft.generationId && observation.criteria.workflow === 'amend' &&
-    observation.criteria.stage !== 'callback_price_review' &&
+    observation.criteria.stage !== 'callback_price_review' && observation.criteria.stage !== 'retain_callback_unsupported' &&
     observation.criteria.requestId === compiled.requestId && observation.criteria.hintId === compiled.hintId &&
     observation.criteria.selectedRef === compiled.selectedRef && observation.criteria.baseDigest === compiled.baseDigest);
   return rows.at(-1) ?? null;
@@ -1045,7 +1056,7 @@ function callbackRequested(compiled: CompiledAmend) {
   return partyOrder.some(field => Object.hasOwn(compiled.baseChanges, field)) ||
     (typeof compiled.baseChanges.guaranteeType === 'string' && compiled.baseChanges.guaranteeType !== compiled.selected.guaranteeCode) ||
     (Object.hasOwn(compiled.baseChanges, 'children') && (compiled.target.children !== compiled.selected.children ||
-      canonicalJson(compiled.target.childAges) !== canonicalJson(compiled.selected.childAges)));
+      !sameChildAges(compiled.target.childAges, compiled.selected.childAges)));
 }
 
 function portablePartyImage(value: unknown): Record<string, unknown> | null {
@@ -1121,7 +1132,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
       }
       const childrenChanged = Object.hasOwn(compiled.baseChanges, 'children') &&
         (compiled.target.children !== compiled.selected.children ||
-          canonicalJson(compiled.target.childAges) !== canonicalJson(beforeAges));
+          !sameChildAges(compiled.target.childAges, beforeAges));
       const nextAges = childrenChanged && Array.isArray(compiled.target.childAges) ? compiled.target.childAges as number[] : null;
       if (childrenChanged) {
         if (!nextAges) return { issue: 'child_ages_required_for_occupancy_change' };
@@ -1211,7 +1222,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
         observation.result = { ...observation.result, callbackNoop: true };
         return { observation, price: ordinaryPrice, plan: null, semanticDigest, noop: true };
       }
-      if (compiled.rateHandling === 'retain') return { issue: 'retained_rate_not_supported_for_priced_amendment' };
+      if (compiled.rateHandling === 'retain') return { issue: 'retained_rate_not_supported_for_priced_amendment', retainCallback: true };
       const planDigest = sha256(plan);
       const recoveryBaseline = { ...stagedBaseline, beforeChildAges: beforeAges,
         beforeGuaranteeDisplay: baseline.beforeGuaranteeDisplay, beforeGuaranteePrice: baseline.beforeGuaranteePrice,
@@ -1224,7 +1235,21 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
         callbackPlan: plan, callbackPlanDigest: planDigest, safeChanges };
       return { observation, price, plan, semanticDigest, noop: false };
     }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch?.signal });
-    if ('issue' in prepared) return { status: 'failed', issue: prepared.issue };
+    if ('issue' in prepared) {
+      if ('retainCallback' in prepared && prepared.retainCallback === true) {
+        const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: draft.generationId,
+          kind: 'rate_availability', status: 'complete', observedAt: new Date().toISOString(), propertyCode: 'HRCEN',
+          sourceMessageId: draft.source.messageId, sourceRefs: [], coverage: { complete: true, notes: [] },
+          criteria: { workflow: 'amend', stage: 'retain_callback_unsupported', requestId: compiled.requestId,
+            hintId: compiled.hintId, selectedRef: compiled.selectedRef, baseDigest: compiled.baseDigest },
+          result: { outcome: 'retain_callback_unsupported' } };
+        const recorded = await recordObservation(ctx, input, observation, 'failed',
+          'Retaining rates is unavailable for this native amendment', randomUUID(), compiled.hintId);
+        if (recorded.status !== 'ok') return recorded;
+        return { status: 'unsupported', issue: prepared.issue, fields: ['rateHandling'] };
+      }
+      return { status: 'failed', issue: prepared.issue };
+    }
     const recorded = await recordObservation(ctx, input, prepared.observation, 'prepared',
       prepared.noop ? 'HMS amendment staged unsaved; native price and baseline observed' :
         'Native controls checked; the first Go may apply details before price review', randomUUID(), compiled.hintId);
@@ -1981,6 +2006,21 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
     return pendingReview;
   }
   const candidate = preparedObservation(loaded.draft, compiled);
+  if (compiled.rateHandling === 'retain' && callbackRequested(compiled)) {
+    const finding = loaded.draft.observations.findLast(observation => observation.kind === 'rate_availability' &&
+      observation.status === 'complete' && observation.coverage.complete && observation.generationId === loaded.draft!.generationId &&
+      observation.propertyCode === 'HRCEN' && observation.sourceMessageId === loaded.draft!.source.messageId &&
+      observation.criteria.workflow === 'amend' && observation.criteria.stage === 'retain_callback_unsupported' &&
+      observation.criteria.requestId === compiled.requestId && observation.criteria.hintId === compiled.hintId &&
+      observation.criteria.selectedRef === compiled.selectedRef && observation.criteria.baseDigest === compiled.baseDigest &&
+      observation.result.outcome === 'retain_callback_unsupported');
+    if (finding && (!candidate || loaded.draft.observations.indexOf(finding) > loaded.draft.observations.indexOf(candidate))) {
+      return { status: 'unsupported', issue: 'retained_rate_not_supported_for_priced_amendment', fields: ['rateHandling'] };
+    }
+    if (record(candidate?.result)?.callbackNoop !== true) {
+      return { status: 'needs_prepare', issue: 'prepared_amend_or_price_is_stale' };
+    }
+  }
   if (callbackRequested(compiled) && record(candidate?.result)?.callbackNoop !== true) {
     return executeCallbackFirst(ctx, input, loaded.draft, compiled);
   }
