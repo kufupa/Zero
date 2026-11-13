@@ -3969,6 +3969,7 @@ function projectCurrentExtraction(input: {
         const key = datePairKey(citedText(currentClaim(date.arrival, currentRefs)), citedText(currentClaim(date.departure, currentRefs)));
         const sameDates = projectedDates.filter((other, index) => index === dateIndex || key &&
           datePairKey(citedText(currentClaim(other.arrival, currentRefs)), citedText(currentClaim(other.departure, currentRefs))) === key);
+        if (sameDates.length !== 1) continue;
         const boards = new Map(sameDates.flatMap(row => {
           const board = safeCurrentText(row.mealPlan, currentRefs, 120);
           return board ? [[boardMeaning(board), row.mealPlan] as const] : [];
