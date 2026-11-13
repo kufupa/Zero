@@ -5,25 +5,36 @@ import type { WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { effectiveAt, record, requestPath, savedTargetOperationLocks, text, valueAt } from '@/lib/reservation-workflow/views';
 import { Field, Count, Section } from '../shared/stay-fields';
 import { NativePicker } from '../shared/native-pickers';
+import { ReservationNote } from '../shared/reservation-note';
 import styles from './other-editors.module.css';
 
 type Editor = WorkbenchEditorProps;
 const fields = [
-  ['arrival', 'Arrival Date', 'date'], ['departure', 'Departure Date', 'date'], ['roomType', 'Room Type', 'code'],
-  ['ratePlan', 'Rate Plan', 'code'], ['adults', 'Adults', 'count'], ['childCount', 'Children', 'count'],
+  ['arrival', 'Arrival Date', 'date'], ['departure', 'Departure Date', 'date'],
+  ['roomType', 'Room Type', 'code'], ['roomTypeForCharge', 'Room Type for Charge', 'code'],
+  ['ratePlan', 'Rate Plan', 'code'], ['mealPlan', 'Meal Plan', 'text'],
+  ['roomCount', 'Rooms', 'count'], ['adults', 'Adults', 'count'], ['childCount', 'Children', 'count'],
   ['childAges', 'Child ages', 'ages'], ['firstName', 'First Name', 'text'], ['lastName', 'Last Name', 'text'],
-  ['guestEmail', 'E-mail Address', 'email'], ['bookerName', 'Booker name', 'text'], ['bookerEmail', 'Booker email', 'email'], ['bookerMobile', 'Booker mobile', 'text'],
-  ['cmsSend', 'CMS Send Mail', 'boolean'], ['cmsMessageId', 'CMS Message Id', 'text'],
-  ['cmsRecipient', 'CMS Booker Email', 'email'],
+  ['guestEmail', 'E-mail Address', 'email'], ['bookingAgency', 'Primary Booking Agency', 'party'],
+  ['organization', 'Organization', 'party'], ['arAccount', 'A/R Account', 'party'],
+  ['billingReference', 'Billing Reference', 'text'], ['taCommission', 'TA Commission (%)', 'text'],
+  ['guaranteeType', 'Guarantee Type', 'code'], ['track', 'Track / Sub Segment', 'code'],
+  ['bookerName', 'Booker name', 'text'], ['bookerEmail', 'Booker email', 'email'], ['bookerMobile', 'Booker mobile', 'text'],
+  ['reservationNote', 'Reservation Note', 'note'], ['cmsSend', 'CMS Send Mail', 'boolean'],
+  ['cmsMessageId', 'CMS Message Id', 'code'], ['cmsRecipient', 'CMS Booker Email', 'email'],
 ] as const;
-const clearable = new Set(['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
-const priceFields = new Set(['arrival', 'departure', 'roomType', 'ratePlan', 'adults', 'childCount', 'childAges']);
-const unsupportedFieldLabels: Record<string, string> = { roomTypeForCharge: 'Room Type for Charge', reservationNote: 'Reservation note' };
+const clearable = new Set(['guestEmail', 'bookingAgency', 'organization', 'arAccount', 'billingReference', 'taCommission',
+  'track', 'guaranteeType', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
+const priceFields = new Set(['arrival', 'departure', 'roomType', 'roomTypeForCharge', 'ratePlan', 'mealPlan', 'roomCount', 'adults', 'childCount', 'childAges']);
+const unsupportedFieldLabels: Record<string, string> = {};
 const rows = (value: unknown) => Array.isArray(value) ? value.map(record) : [];
 
+export function isExactConfirmation(value: unknown): boolean {
+  return /^\d{6,10}-\d{1,2}$/.test(text(value).trim());
+}
+
 function exactConfirmation(hint: Record<string, unknown>) {
-  const confirmation = text(hint.confirmation).trim();
-  return /^\d{6,10}-\d{1,2}$/.test(confirmation) ? confirmation : '';
+  return isExactConfirmation(hint.confirmation) ? text(hint.confirmation).trim() : '';
 }
 
 function definitelyDistinct(left: Record<string, unknown>, right: Record<string, unknown>) {
@@ -115,11 +126,10 @@ export function TargetSearch({ editor, body, hint, index, workflow, locked = fal
   const root = `${body}/targets/include/${index}`;
   const path = `${root}/suggestedRef`;
   const selected = valueAt(editor.snapshot, path);
-  const normalized = (value: unknown) => (workflow === 'amend' ? text(value).trim() : text(value)) || null;
+  const normalized = (value: unknown) => text(value).trim() || null;
   const query = (key: string) => normalized(valueAt(editor.snapshot, `${root}/${key}`));
   const reference = query('confirmation');
-  const invalidReference = reference && !(workflow === 'amend' || workflow === 'filing'
-    ? /^\d{6,10}-\d{1,2}$/ : /^\d+-\d+$/).test(reference);
+  const invalidReference = reference && !isExactConfirmation(reference);
   const perTarget = rows(effectiveAt(editor.snapshot, `${body}/perTarget`)).find(row => row.hintId === hint.id);
   const changes = workflow === 'amend' ? [
     ...rows(effectiveAt(editor.snapshot, `${body}/sharedChanges`)), ...rows(perTarget?.changes),
@@ -167,6 +177,7 @@ export function TargetSearch({ editor, body, hint, index, workflow, locked = fal
       if (!queryMatches) return [];
     }
     const stay = record(workflow === 'cancel' ? result.preimage : workflow === 'filing' ? result.stay : result.candidate);
+    if (!isExactConfirmation(stay.confirmation) || reference && (!isExactConfirmation(reference) || normalized(stay.confirmation) !== reference)) return [];
     if (workflow === 'filing' && (normalized(c.confirmation) !== query('confirmation') ||
         normalized(c.bookedArrival) !== query('bookedArrival'))) return [];
     const candidateName = [text(stay.firstName), text(stay.lastName)].filter(Boolean).join(' ');
@@ -231,7 +242,7 @@ function ChangeList({ editor, path, label }: { editor: Editor; path: string; lab
   const add = (choice: string) => {
     if (!choice) return;
     const spec = fields.find(field => field[0] === choice);
-    const value = spec?.[2] === 'count' ? 0 : spec?.[2] === 'ages' ? [] : spec?.[2] === 'boolean' ? false : '';
+    const value = spec?.[2] === 'count' ? (choice === 'adults' || choice === 'roomCount' ? 1 : 0) : spec?.[2] === 'ages' ? [] : spec?.[2] === 'boolean' ? false : spec?.[2] === 'party' ? { name: null, candidateRefs: [], suggestedRef: null } : '';
     const change = choice === 'shift_dates' || choice === 'shift_departure'
       ? { op: choice, days: 0, sourceRefs: [] } : { op: 'set', field: choice, value, sourceRefs: [] };
     const raw = valueAt(editor.snapshot, path);
@@ -310,13 +321,15 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
       </div> :
       op === 'shift_dates' || op === 'shift_departure' ? <Field label="Days to shift" path={`${path}/days`} type="number" editor={editor} compact hint="Each stay uses its own original dates." /> : <>
         {op === 'clear' ? <span className={styles.hint}>Clear this field on the selected stay.</span> : spec?.[2] === 'ages' ? <AgeInput editor={editor} path={valuePath} /> :
-          spec?.[2] === 'count' ? <Count label={spec[1]} path={valuePath} editor={editor} min={field === 'adults' ? 1 : 0} max={field === 'adults' ? 16 : 9} /> :
+          spec?.[2] === 'count' ? <Count label={spec[1]} path={valuePath} editor={editor} min={field === 'adults' || field === 'roomCount' ? 1 : 0} max={field === 'adults' ? 16 : field === 'roomCount' ? 8 : 9} /> :
+          spec?.[2] === 'note' ? <ReservationNote path={valuePath} editor={editor} /> :
+          spec?.[2] === 'party' ? <NativePicker label={spec[1]} path={valuePath} editor={editor} partyRole compact /> :
           spec?.[2] === 'boolean' ? <label className={styles.label}>{spec[1]}<select disabled={editor.view.busy}
             value={String(valueAt(editor.snapshot, valuePath))} onChange={event => void editor.commands.edit(valuePath, event.target.value === 'true')}>
             <option value="true">Yes</option><option value="false">No</option></select></label> :
           spec?.[2] === 'code' ? <NativePicker label={spec[1]} path={valuePath} editor={editor}
-            kind={field === 'roomType' ? 'room_type' : 'rate_plan'} compact /> :
-          <Field label={spec?.[1] || 'Value'} path={valuePath} editor={editor} compact type={spec?.[2] === 'date' ? 'date' : spec?.[2] === 'email' ? 'email' : 'text'} />}
+            kind={field === 'roomType' ? 'room_type' : field === 'roomTypeForCharge' ? 'room_type_for_charge' : field === 'cmsMessageId' ? 'cms_message' : field === 'guaranteeType' ? 'guarantee' : field === 'track' ? 'track' : 'rate_plan'} compact /> :
+          <Field label={spec?.[1] || 'Value'} path={valuePath} editor={editor} compact type={spec?.[2] === 'date' ? 'date' : spec?.[2] === 'email' ? 'email' : 'text'} maxLength={field === 'billingReference' ? 4000 : undefined} hint={field === 'billingReference' ? 'Select an A/R Account when using a billing reference.' : field === 'guestEmail' ? 'Use the guest’s own email only when explicitly stated.' : undefined} />}
       </>}
   </div>;
 }

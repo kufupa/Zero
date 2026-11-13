@@ -102,15 +102,15 @@ export type NativeRecommendationLead = { ref: string; value: string; label: stri
 
 /** Historical names and codes are search suggestions, never native selections. */
 export function nativeRecommendationLeads(snapshot: ReservationPaneSnapshot, path: string, kind?: string): NativeRecommendationLead[] {
-  if (kind !== 'party_candidate' && kind !== 'rate_plan') return [];
+  if (kind !== 'party_candidate' && kind !== 'rate_plan' && kind !== 'room_type') return [];
   const draft = snapshot.session.draft;
   const requestId = decodeURIComponent(path.split('/')[4] ?? '');
   const request = draft.proposal.content.requests.find(row => row.id === requestId);
   if (!request || !['create', 'quote'].includes(request.kind)) return [];
   const owner = path.replace(/\/nativeSelectionRef$/, '');
-  const role = kind === 'rate_plan' ? 'rate_plan' : owner.endsWith('/bookingAgency') || owner.endsWith('/agency') ? 'agency'
-    : owner.endsWith('/arAccount') ? 'ar_account' : owner.endsWith('/company') ? 'company' : 'organization';
-  const queryPath = kind === 'rate_plan' ? path : `${owner}/name`;
+  const role = kind === 'rate_plan' ? 'rate_plan' : kind === 'room_type' ? 'room_type' : owner.endsWith('/bookingAgency') ? (request.kind === 'quote' ? 'bookingAgency' : 'agency')
+    : owner.endsWith('/arAccount') ? 'ar_account' : 'organization';
+  const queryPath = kind === 'rate_plan' || kind === 'room_type' ? path : `${owner}/name`;
   const normalize = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
   const currentQuery = normalize(valueAt(snapshot, queryPath));
   const leads = draft.observations.flatMap(observation => {
@@ -127,7 +127,8 @@ export function nativeRecommendationLeads(snapshot: ReservationPaneSnapshot, pat
       const row = record(raw);
       if (typeof row.value !== 'string' || !row.value.trim() || typeof row.label !== 'string' ||
           (row.basis !== 'exact_sender' && row.basis !== 'normalized_entity') ||
-          typeof row.support !== 'number' || !Number.isSafeInteger(row.support) || row.support < 1) return [];
+          typeof row.support !== 'number' || !Number.isSafeInteger(row.support) || row.support < 1 ||
+          kind === 'room_type' && (typeof row.confidence !== 'number' || row.confidence < 0.8)) return [];
       return [{ ref: observation.ref, value: row.value, label: row.label, basis: row.basis, support: row.support } satisfies NativeRecommendationLead];
     });
   });
@@ -143,8 +144,8 @@ function currentIdentityRow(snapshot: ReservationPaneSnapshot, path: string, obs
   if (!request || (request.kind !== 'create' && request.kind !== 'quote') ||
       criteria.workflow !== request.kind || criteria.requestId !== request.id) return false;
   const owner = path.replace(/\/nativeSelectionRef$/, ''), guest = observation.kind === 'guest_candidate';
-  const role = guest ? 'guest' : owner.endsWith('/bookingAgency') || owner.endsWith('/agency') ? 'agency'
-    : owner.endsWith('/arAccount') ? 'ar_account' : owner.endsWith('/company') ? 'company' : 'organization';
+  const role = guest ? 'guest' : owner.endsWith('/bookingAgency') ? 'agency'
+    : owner.endsWith('/arAccount') ? 'ar_account' : 'organization';
   if (!guest && criteria.role !== role || guest && request.kind !== 'create') return false;
   if (request.kind === 'create') {
     const body = record(effectiveAt(snapshot, `${requestPath(request.id)}/body`));
@@ -228,8 +229,8 @@ export function partialNativeLeads(snapshot: ReservationPaneSnapshot, path: stri
   const expectedAllocation = allocationIndex >= 0 ? allocation : sectionIndex >= 0
     ? record(allocations.find(row => record(row).dateSectionId === section.id)) : record(allocations[0]);
   const request = draft.proposal.content.requests.find(row => row.id === decodeURIComponent(requestId ?? ''));
-  const role = guest ? 'guest' : ownerPath.endsWith('/bookingAgency') || ownerPath.endsWith('/agency') ? 'agency'
-    : ownerPath.endsWith('/arAccount') ? 'ar_account' : ownerPath.endsWith('/company') ? 'company' : 'organization';
+  const role = guest ? 'guest' : ownerPath.endsWith('/bookingAgency') ? 'agency'
+    : ownerPath.endsWith('/arAccount') ? 'ar_account' : 'organization';
   const leads = draft.observations.flatMap(observation => {
     if (observation.kind !== kind || observation.status !== 'partial' ||
         observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||

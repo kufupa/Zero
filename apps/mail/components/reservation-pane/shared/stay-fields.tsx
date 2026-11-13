@@ -88,7 +88,7 @@ export function FieldReview({ editor, path, label, onPendingChange, requireRevie
 
 export function Field({ label, path, editor, type = 'text', options, disabled, hint, defaultValue, emptyState, resolvedValue, compact = false, review = false, requireReview = false, unmatchedOptionLabel, maxLength }: {
   label: string; path: string; editor: WorkbenchEditorProps; type?: string;
-  options?: { value: string; label: string }[]; disabled?: boolean; hint?: string; defaultValue?: string; emptyState?: 'inherit'; resolvedValue?: unknown; compact?: boolean; review?: boolean; requireReview?: boolean; unmatchedOptionLabel?: string; maxLength?: number;
+  options?: { value: string; label: string }[]; disabled?: boolean; hint?: string; defaultValue?: string; emptyState?: 'inherit' | 'none'; resolvedValue?: unknown; compact?: boolean; review?: boolean; requireReview?: boolean; unmatchedOptionLabel?: string; maxLength?: number;
 }) {
   const id = useId();
   const saved = resolvedValue === undefined ? valueAt(editor.snapshot, path) : resolvedValue;

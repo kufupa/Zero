@@ -112,7 +112,7 @@ function displaySnapshot(snapshot: ReservationPaneSnapshot | null, pending: Map<
     }
     fieldOverrides[edit.path] = { state: edit.state, ...(edit.state === 'set' ? { value: edit.value } : {}), updatedAt: new Date().toISOString() };
     // Match the server's atomic identity invalidation while the edit is pending.
-    const guest = edit.path.match(/^(.*\/guest)\/(?:firstName|lastName|email)$/);
+    const guest = edit.path.match(/^(.*\/guest)\/(?:firstName|lastName|email|mobile)$/);
     const party = edit.path.match(/^(.*\/(?:bookingAgency|organization|arAccount))(?:\/name)?$/);
     const target = edit.path.match(/^(.*\/targets\/include\/[^/]+)\/(?:confirmation|guestName|bookedArrival|bookedDeparture)$/);
     const service = edit.path.match(/^(\/proposal\/content\/services\/[^/]+)\/code$/);

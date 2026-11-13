@@ -190,7 +190,7 @@ const nonReviewMetadata = new Set(['requestText', 'title', 'dateSectionId', 'req
   'requestedTotals', 'scope', 'profileIntent', 'candidateRefs', 'suggestedRef', 'sourceRefs', 'serviceRefs', 'documentRefs', 'targetRefs',
   'priceObservationRefs', 'lookupResultRefs', 'evidenceRefs', 'ownerRequestId', 'uploadArtifactRef', 'id', 'kind']);
 const nonReviewSubtrees = new Set(['requestedTotals', 'unassignedGuestNames']);
-const partyFieldNames = new Set(['bookingAgency', 'organization', 'arAccount', 'agency', 'company']);
+const partyFieldNames = new Set(['bookingAgency', 'organization', 'arAccount']);
 
 function isFilingDocumentKindPath(path: string): boolean {
   const parts = path.split('/').slice(1).map((part) => {
@@ -224,7 +224,7 @@ function shouldReviewPath(draft: ReservationWorkflowV2Draft, path: string, value
     if (override && ['none', 'clear', 'unknown'].includes(override.state)) return false;
   }
   if (leaf === 'name' && parts[2] === 'requests' && parts[4] === 'body' && parts[5] === 'parties'
-      && ['agency', 'company'].includes(parts[6] ?? '')) {
+      && ['bookingAgency', 'organization'].includes(parts[6] ?? '')) {
     const request = draft.proposal.content.requests.find((item, index) => item.id === parts[3] || String(index) === parts[3]);
     if (request?.kind === 'quote') return true;
   }
@@ -236,7 +236,7 @@ function shouldReviewPath(draft: ReservationWorkflowV2Draft, path: string, value
   if (Array.isArray(value)) return reviewedAggregateArrays.has(leaf);
   if (isRecord(value) && Array.isArray(value.candidateRefs)) return partyFieldNames.has(leaf);
 
-  // Candidate-bearing values are human review units themselves (payer/company
+  // Candidate-bearing values are human review units themselves (payer/organization
   // selections), but their display-only source members are not separate inputs.
   for (let length = parts.length - 1; length >= 0; length -= 1) {
     const ancestorPath = `/${parts.slice(0, length).map(encodeURIComponent).join('/')}`;
@@ -452,7 +452,7 @@ export function inputFieldLabel(value: string): string {
   const labels: Record<string, string> = {
     scope: 'occupancy per room', known_child_count: 'number of children and their ages',
     childCount: 'number of children', childAges: 'children’s ages', adults: 'adults per room',
-    agency_selection_required: 'select the Infor agency', company_selection_required: 'select the Infor company',
+    agency_selection_required: 'select the Infor agency', company_selection_required: 'select the Infor Organization',
     arrival: 'arrival date', departure: 'departure date', quantity: 'quantity', roomCodes: 'room type',
     roomType: 'room type', ratePlan: 'rate plan', mealPlan: 'meal plan', guaranteeType: 'guarantee',
     sourceOfBusiness: 'source of business', firstName: 'guest first name', lastName: 'guest last name',
@@ -616,7 +616,7 @@ function quoteOperationNotice(result: unknown, success: string[], action: string
     childCount: 'number of children', childAges: 'children’s ages', roomCodes: 'room type', ratePlan: 'rate plan',
     salesStrategy: 'sales strategy', email: 'recipient email', attention: 'contact name', telephone: 'contact number',
     artifacts: 'quote outputs', provisionalBookingRequested: 'quote-only choice', requestedMoney: 'extra charges',
-    agency_selection_required: 'Infor agency', company_selection_required: 'Infor company',
+    agency_selection_required: 'Infor agency', company_selection_required: 'Infor Organization',
   };
   const fields = Array.isArray(result.fields) ? [...new Set(result.fields.filter(isString).map((field) => {
     const [path, reason] = field.split(':');

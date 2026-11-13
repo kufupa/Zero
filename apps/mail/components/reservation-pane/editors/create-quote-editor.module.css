@@ -68,3 +68,8 @@
 .compactQuote .quoteLine:has(.quoteReview > *) input { grid-column: 2; }
 .quoteReview { grid-column: 3; }
 .quoteReview:empty { display: none; }
+
+@container (max-width: 340px) {
+  .compactCreate .dateFields { grid-template-columns:minmax(0,1fr) 54px; }
+  .compactCreate .dateFields > :last-child { grid-column:1 / -1; }
+}

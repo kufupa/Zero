@@ -28,12 +28,12 @@ export function usePickerPosition(open: boolean, picker: RefObject<HTMLDivElemen
 }
 
 /** One editable code/identity search with persistent access to native alternatives. */
-export function NativePicker({ label, path, editor, kind, allowNone = false, compact = false, hint, disabled = false }: {
-  label: string; path: string; editor: WorkbenchEditorProps; kind?: string; allowNone?: boolean; compact?: boolean; hint?: string; disabled?: boolean;
+export function NativePicker({ label, path, editor, kind, allowNone = false, compact = false, hint, disabled = false, partyRole = false }: {
+  label: string; path: string; editor: WorkbenchEditorProps; kind?: string; allowNone?: boolean; compact?: boolean; hint?: string; disabled?: boolean; partyRole?: boolean;
 }) {
   const id = useId();
   const pickerRef = useRef<HTMLDivElement>(null);
-  const party = /\/(bookingAgency|organization|arAccount)$/.test(path);
+  const party = partyRole || /\/(bookingAgency|organization|arAccount)$/.test(path);
   const entity = party || path.endsWith('/nativeSelectionRef');
   const selectionPath = party ? `${path}/nativeSelectionRef` : path;
   const guestPath = !party && entity ? path.replace(/\/nativeSelectionRef$/, '') : null;
@@ -43,7 +43,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const saved = party ? text(valueAt(editor.snapshot, `${path}/name`)) : text(valueAt(editor.snapshot, inputPath));
   const choiceKind = kind ?? (party ? 'party_candidate' : undefined);
   const catalogueField = ['create', 'quote', 'amend'].includes(editor.request.kind) &&
-    ['room_type', 'room_type_for_charge', 'rate_plan', 'reason_for_stay', 'guarantee', 'cms_message', 'source_of_business'].includes(choiceKind ?? '');
+    ['room_type', 'room_type_for_charge', 'rate_plan', 'reason_for_stay', 'guarantee', 'cms_message', 'source_of_business', 'track'].includes(choiceKind ?? '');
   const observedChoices = nativeChoices(editor.snapshot, entity ? selectionPath : path, choiceKind);
   const availableChoices = choiceKind === 'reason_for_stay' ? observedChoices
     .filter(row => /^(business|leisure(?: guest)?)$/i.test(row.label))
@@ -66,13 +66,13 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       await saveSearch();
       if (catalogueField && editor.commands.lookupChoices) await editor.commands.lookupChoices(path);
       else await editor.commands.lookup();
-    } catch (error) { setLookupError(error instanceof Error ? error.message : 'Infor choices could not load. Try again.'); }
+    } catch { setLookupError('Infor choices could not load. Try again.'); }
     finally { loadingRef.current = false; setLoading(false); }
   };
   const openChoices = () => {
     if (!open) setCatalogueSearch(null);
     setOpen(true); setActiveIndex(-1);
-    if (!choices.length && !lookupError && (entity ? Boolean(query.trim()) : choiceKind !== 'track')) void loadChoices();
+    if (!choices.length && !lookupError && (entity ? Boolean(query.trim()) : true)) void loadChoices();
   };
   useEffect(() => {
     if (!open) return;
@@ -93,9 +93,12 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     const index = recommendations.findIndex(lead => normalized(lead.value) === normalized(value));
     return index < 0 ? recommendations.length : index;
   };
-  const choices = [...availableChoices].sort((left, right) => recommendationRank(left.value) - recommendationRank(right.value));
+  const candidateRefs = entity ? record(valueAt(editor.snapshot, party ? path : guestPath ?? '')).candidateRefs : null;
+  const rank = (ref: string) => Array.isArray(candidateRefs) && candidateRefs.includes(ref) ? candidateRefs.indexOf(ref) : Number.MAX_SAFE_INTEGER;
+  const ordered = [...availableChoices].sort((left, right) => rank(left.ref) - rank(right.ref) || recommendationRank(left.value) - recommendationRank(right.value));
+  const choices = guestPath ? ordered.slice(0, 3) : ordered;
   const leads = entity && (!dirty || normalized(query) === normalized(saved))
-    ? partialNativeLeads(editor.snapshot, selectionPath, choiceKind) : [];
+    ? partialNativeLeads(editor.snapshot, selectionPath, choiceKind).slice(0, 3) : [];
   useEffect(() => { if (!dirty) setQuery(saved); }, [saved, dirty]);
   const editValue = (value: string) => party ? { name: value, candidateRefs: [], suggestedRef: null } : value;
   const editPath = party ? path : inputPath;
@@ -131,7 +134,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       }
       if (catalogueField && editor.commands.lookupChoices) await editor.commands.lookupChoices(path);
       else await editor.commands.lookup();
-    } catch (error) { setLookupError(error instanceof Error ? error.message : 'Infor choices could not load. Try again.'); }
+    } catch { setLookupError('Infor choices could not load. Try again.'); }
     finally { loadingRef.current = false; setLoading(false); }
   };
   const search = catalogueSearch ?? (dirty || entity ? query : '');

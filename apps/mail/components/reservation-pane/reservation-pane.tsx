@@ -320,7 +320,7 @@ export function ReservationPane(props: ReservationPaneProps) {
           <div className={styles.price}><span>Room {ids.indexOf(view.allocationId) + 1} · Infor total</span><strong>{view.price ? [view.price.currency, view.price.totalRate].filter(value => value != null).join(' ') : 'Check price in Infor'}</strong></div>
           {view.price && <small className={styles.small}>{text(view.price.currency)} {text(view.price.averageRate)} per night{observedAt ? ` · Read ${new Date(observedAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : ''}</small>}
           {hasSourcePrice && <><div className={styles.price}><span>Voucher / customer price</span><strong>{[requested.currency, requested.nightlyRate != null ? `${text(requested.nightlyRate)} per night` : '', requested.total != null ? `total ${text(requested.total)}` : ''].filter(Boolean).join(' ') || 'Amount or currency unresolved'}</strong></div>
-            <p className={comparison.blocksGo === true ? styles.notice : styles.small}>{text(comparison.explanation)}</p></>}
+            <p className={comparison.status === 'mismatch' || comparison.blocksGo === true ? styles.notice : styles.small}>{comparison.status === 'mismatch' && text(requested.currency).toUpperCase() === 'ZAR' ? 'ZAR price differs. ' : ''}{text(comparison.explanation)}</p></>}
           <button type="button" disabled={disabled || preview} onClick={() => { setChecked(null); void commands.prepare(view.allocationId).catch(() => {}); }}>Refresh Infor price</button>
         </div>;
       })}

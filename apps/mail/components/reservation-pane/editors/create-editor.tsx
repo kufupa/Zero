@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { effectiveAt, guestProfileReceipt, record, requestPath, staffEnteredAt, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { Count, Field, FieldReview, Section } from '../shared/stay-fields';
 import { NativePicker } from '../shared/native-pickers';
+import { ReservationNote } from '../shared/reservation-note';
 import styles from './create-quote-editor.module.css';
 
 type Editor = WorkbenchEditorProps;
@@ -14,12 +15,14 @@ const roomFields: BookingField[] = [
   { key: 'roomType', label: 'Room Type', picker: 'room_type' },
   { key: 'roomTypeForCharge', label: 'Room Type for Charge', picker: 'room_type_for_charge', hint: 'Blank uses the Infor default. Infor checks the price for the selected category.' },
   { key: 'ratePlan', label: 'Rate Plan', picker: 'rate_plan' },
+  { key: 'mealPlan', label: 'Meal Plan', maxLength: 120, hint: 'Confirm against the selected Infor rate.' },
 ];
 const partyFields: BookingField[] = [
   { key: 'bookingAgency', label: 'Primary Booking Agency', party: true },
   { key: 'organization', label: 'Organization', party: true },
   { key: 'arAccount', label: 'A/R Account', party: true },
-  { key: 'billingReference', label: 'Billing Reference', maxLength: 4000, hint: 'Applied when the reservation is saved.' },
+  { key: 'billingReference', label: 'Billing Reference', maxLength: 4000, hint: 'Select an A/R Account when using a billing reference.' },
+  { key: 'taCommission', label: 'TA Commission (%)', maxLength: 40, hint: 'Enter a percentage from 0 to 100.' },
 ];
 const stayFields: BookingField[] = [
   { key: 'reasonForStay', label: 'Reason for Stay', picker: 'reason_for_stay' },
@@ -38,23 +41,31 @@ const otherFields: BookingField[] = [
 ];
 const allFields = [...partyFields, ...stayFields, ...roomFields, trackField, ...otherFields];
 
-export function resolveCreateCmsRecipientDefault(snapshot: Editor['snapshot'], requestId: string, sender: string): string {
+export function resolveCreateCmsRecipientDefault(snapshot: Editor['snapshot'], requestId: string, _sender: string): string {
   const email = (value: string) => {
     const candidate = value.trim();
     return candidate.length <= 255 && /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/.test(candidate) ? candidate : '';
   };
-  const booker = email(text(valueAt(snapshot, `${requestPath(requestId)}/body/shared/bookerEmail`)));
-  const displayAddress = /^[^<>]*<([^<>]+)>\s*$/.exec(sender.trim())?.[1];
-  return booker || email(displayAddress ?? sender);
+  const path = `${requestPath(requestId)}/body/shared/bookerEmail`;
+  if (!staffEnteredAt(snapshot, path) && snapshot.session.draft.staffReviews[path]?.status !== 'accepted') return '';
+  return email(text(valueAt(snapshot, path)));
 }
 
 function BookingControl({ field, path, editor, defaultValue, emptyState }: {
   field: BookingField; path: string; editor: Editor; defaultValue?: string; emptyState?: 'inherit';
 }) {
+  if (field.key === 'reservationNote') return <ReservationNote path={path} editor={editor} />;
   return field.picker || field.party
     ? <NativePicker label={field.label} path={path} editor={editor} kind={field.picker} allowNone={field.party || field.key === 'roomTypeForCharge'} hint={field.hint} compact />
     : <Field label={field.label} path={path} editor={editor} type={field.type} hint={field.hint} maxLength={field.maxLength}
       defaultValue={defaultValue} emptyState={emptyState} compact />;
+}
+
+function UnsupportedTerms({ editor, path }: { editor: Editor; path: string }) {
+  if (effectiveAt(editor.snapshot, path) !== true) return null;
+  return <div className={styles.notice}>Terms and Conditions: this stored setting cannot be applied in Infor.
+    <button type="button" disabled={editor.view.busy} onClick={() => void editor.commands.edit(path, false)}>Clear unsupported setting</button>
+  </div>;
 }
 
 function hasOwn(editor: Editor, path: string) {
@@ -284,7 +295,7 @@ function GuestDetails({ editor, allocationPath, allocationId, newProfile, disabl
     <Field label="Last Name" path={`${guestPath}/lastName`} editor={editor} disabled={disabled} compact requireReview={newProfile} />
     <Field label="First Name" path={`${guestPath}/firstName`} editor={editor} disabled={disabled} compact requireReview={newProfile} />
     {newProfile && <Field label="Mobile Number" path={`${guestPath}/mobile`} editor={editor} type="tel" disabled={disabled} compact requireReview hint="Required for a new profile." />}
-    <Field label="E-mail Address" path={`${guestPath}/email`} editor={editor} type="email" disabled={disabled} compact requireReview={newProfile} />
+    <Field label="E-mail Address" path={`${guestPath}/email`} editor={editor} type="email" disabled={disabled} compact requireReview={newProfile} hint="Use the guest’s own email only when explicitly stated." />
     {editor.snapshot.issues.filter((issue) => issue.kind === 'guest_email_conflict' && issue.path === `${allocationPath}/guest/email`)
       .map((issue, index) => <p className={styles.notice} key={index}>{issue.explanation}</p>)}
     <details className={styles.details} open={showMore || undefined}><summary>More guest details</summary>
@@ -293,7 +304,7 @@ function GuestDetails({ editor, allocationPath, allocationId, newProfile, disabl
         <ProfileChoice editor={editor} allocationId={allocationId} guestPath={guestPath} field="phoneTypeCode" label="Phone Type" optionField="phoneType" disabled={disabled} />
         <Field label="Phone Number" path={`${guestPath}/phoneNumber`} editor={editor} type="tel" disabled={disabled} compact requireReview />
         <ProfileChoice editor={editor} allocationId={allocationId} guestPath={guestPath} field="emailTypeCode" label="E-mail Type" optionField="emailType" disabled={disabled} />
-      </> : <><Field label="Mobile Number" path={`${guestPath}/mobile`} editor={editor} type="tel" disabled compact />
+      </> : <><Field label="Mobile Number" path={`${guestPath}/mobile`} editor={editor} type="tel" disabled={disabled} compact hint="Use the guest’s own mobile only when explicitly stated." />
         <p className={styles.note}>Matching details do not change the Infor profile.</p></>}
     </details>
   </div>;
@@ -369,6 +380,7 @@ export function CreateEditor(editor: Editor) {
     <Section title="Commercial">
       <fieldset disabled={allCompleted} className={styles.plainFieldset}>
         {partyFields.map(field => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
+        <UnsupportedTerms editor={editor} path={`${shared}/guestOptIn`} />
       </fieldset>
     </Section>
     {sections.map((section, sectionIndex) => {
@@ -431,10 +443,11 @@ export function CreateEditor(editor: Editor) {
       return <section className={styles.group} key={sectionId || sectionIndex}>
         <div className={styles.groupHeading}><strong>{sections.length > 1 ? `Guests · date range ${sectionIndex + 1}` : 'Guests'}</strong></div>
         {unassigned.length > 0 && <p className={styles.notice}>Guests to assign: {unassigned.join(', ')}</p>}
-        <details open={allFields.some(field => hasOwn(editor, `${sectionPath}/defaults/${field.key}`)) || undefined} className={styles.details}>
+        <details open={allFields.some(field => hasOwn(editor, `${sectionPath}/defaults/${field.key}`)) || effectiveAt(snapshot, `${sectionPath}/defaults/guestOptIn`) === true || undefined} className={styles.details}>
           <summary>Settings for these rooms{sectionHasCompleted ? ' · remaining rooms' : ''}</summary>
           <fieldset disabled={sectionAllCompleted} className={styles.plainFieldset}>{allFields.map(field => <ScopedField key={field.key} field={field} path={`${sectionPath}/defaults/${field.key}`}
-            parentPaths={[`${shared}/${field.key}`]} parentLabel="shared" editor={editor} />)}</fieldset>
+            parentPaths={[`${shared}/${field.key}`]} parentLabel="shared" editor={editor} />)}
+            <UnsupportedTerms editor={editor} path={`${sectionPath}/defaults/guestOptIn`} /></fieldset>
         </details>
         {rooms.map(({ allocation, index }) => {
           const allocationPath = `${bodyPath}/allocations/${index}`;
@@ -464,7 +477,7 @@ export function CreateEditor(editor: Editor) {
             </label>}
             <GuestProfile editor={editor} allocationPath={allocationPath} allocationId={allocationId} />
             <Price editor={editor} allocationId={allocationId} />
-            <details open={Boolean(exceptions) || undefined} className={styles.details}>
+            <details open={Boolean(exceptions) || effectiveAt(snapshot, `${overrides}/guestOptIn`) === true || undefined} className={styles.details}>
               <summary>Room exceptions{exceptions ? ` · ${exceptions}` : ''}</summary>
               <div className={styles.stack}>
                 <label className={styles.localField}>Stay dates
@@ -478,6 +491,7 @@ export function CreateEditor(editor: Editor) {
                 </label>
                 {allFields.map(field => <ScopedField key={field.key} field={field} path={`${overrides}/${field.key}`}
                   parentPaths={[`${dateDefaults}/${field.key}`, `${shared}/${field.key}`]} parentLabel="date/shared" editor={editor} />)}
+                <UnsupportedTerms editor={editor} path={`${overrides}/guestOptIn`} />
               </div>
             </details>
           </div>;
