@@ -22,7 +22,7 @@ const partyFields: BookingField[] = [
   { key: 'organization', label: 'Organization', party: true },
   { key: 'arAccount', label: 'A/R Account', party: true },
   { key: 'billingReference', label: 'Billing Reference', maxLength: 4000, hint: 'Select an A/R Account. Infor accepts at most 50 characters.' },
-  { key: 'taCommission', label: 'TA Commission (%)', maxLength: 40, hint: 'Enter a percentage from 0 to 100.' },
+  { key: 'taCommission', label: 'TA Commission (%)', type: 'percentage', maxLength: 40, hint: 'Enter a percentage from 0 to 100.' },
 ];
 const stayFields: BookingField[] = [
   { key: 'reasonForStay', label: 'Reason for Stay', picker: 'reason_for_stay' },
@@ -109,7 +109,7 @@ function ScopedField({ field, path, parentPaths, parentLabel, editor }: {
       <span><b>{field.label}</b><small>{parentLabel}: {label}</small></span>
       <button type="button" className={styles.linkButton} onClick={() => void editor.commands.edit(path,
         inherited === undefined || inherited === null ? (field.party ? { name: null, candidateRefs: [], suggestedRef: null }
-          : field.type === 'checkbox' ? false : '') : inherited)}>Set own</button>
+          : field.type === 'checkbox' ? false : field.key === 'taCommission' ? null : '') : inherited)}>Set own</button>
     </div>}
   </div>;
 }
