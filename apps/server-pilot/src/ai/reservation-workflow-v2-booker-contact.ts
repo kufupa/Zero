@@ -1,3 +1,32 @@
+type ContactClaim = { value: string | number | boolean | null; raw: string; sourceRefs: string[] };
+
+/** Combine numbers only when every number is attributable to the same identified booker. */
+export function combineBookerPhones(rows: Array<{ name?: ContactClaim; email?: ContactClaim; mobile?: ContactClaim }>): ContactClaim | null {
+  const norm = (value: unknown) => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US') : '';
+  const phones = rows.filter(row => norm(row.mobile?.value));
+  const distinct = (claims: Array<ContactClaim | undefined>) => new Set(claims.map(claim => norm(claim?.value)).filter(Boolean));
+  const numbers = distinct(phones.map(row => row.mobile));
+  if (numbers.size <= 1) return phones[0]?.mobile ?? null;
+  const names = distinct(rows.map(row => row.name)), emails = distinct(rows.map(row => row.email));
+  if (names.size > 1 || emails.size > 1 ||
+      !(phones.every(row => norm(row.name?.value)) || phones.every(row => norm(row.email?.value)))) return null;
+  const seen = new Set<string>();
+  const claims = phones.flatMap(row => {
+    const claim = row.mobile!, key = norm(claim.value);
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [claim];
+  });
+  const parts = claims.map(claim => {
+    const raw = claim.raw.trim();
+    const labelled = /^(?:tel(?:ephone)?|phone|mobile|cell)\s*:\s*(.+)$/iu.exec(raw);
+    return labelled && norm(labelled[1]) === norm(claim.value) ? raw : String(claim.value).trim();
+  });
+  const sourceRefs = [...new Set(claims.flatMap(claim => claim.sourceRefs))];
+  if (sourceRefs.length > 20) return null;
+  return { value: parts.join(' / '), raw: parts.join(' / '), sourceRefs };
+}
+
 /** HMS has one 80-character Booker Contact control. Keep both values explicit. */
 export function formatBookerContact(email: string | null, mobile: string | null): string | null {
   const parts = [email ? `Email: ${email}` : null, mobile ? `Mobile: ${mobile}` : null].filter(Boolean);

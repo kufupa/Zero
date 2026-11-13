@@ -11,6 +11,11 @@ export function normalizeGuestName(value: string | null | undefined): string {
 
 export function sameGuestName(left: unknown, right: unknown): boolean {
   if (typeof left !== 'string' || typeof right !== 'string') return false;
-  const name = normalizeGuestName(left);
-  return Boolean(name && name === normalizeGuestName(right));
+  const canonical = (value: string) => {
+    const parts = value.split(',');
+    if (parts.length === 2 && parts.every(part => part.trim())) value = `${parts[1]!.trim()} ${parts[0]!.trim()}`;
+    return normalizeGuestName(value);
+  };
+  const name = canonical(left);
+  return Boolean(name && name === canonical(right));
 }

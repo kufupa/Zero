@@ -14,6 +14,7 @@ import {
   recordReservationWorkflowV2Result,
 } from './reservation-workflow-v2-state.js';
 import { canonicalJson } from './draft-approval.js';
+import { sameGuestName } from './guest-name-match.js';
 import { findStay, paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { paneStayPropertyLock } from './pane-stay-save.js';
@@ -650,13 +651,11 @@ export function savedStayMatches(stay: Record<string, unknown>, hint: Record<str
   const name = text(hint.guestName);
   // Amend accepts a surname by itself, or the full first and last name.
   const amendName = !name || (typeof stay.firstName === 'string' && typeof stay.lastName === 'string' &&
-    name.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() ===
-      (name.includes(' ') ? `${stay.firstName} ${stay.lastName}` : stay.lastName)
-        .normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase());
+    (sameGuestName(name, `${stay.firstName} ${stay.lastName}`) || sameGuestName(name, stay.lastName)));
   return typeof stay.confirmation === 'string' && (hint.confirmation ? stay.confirmation === hint.confirmation : !requireConfirmation) && stay.status === 'Reserved'
     && typeof stay.firstName === 'string' && typeof stay.lastName === 'string' && typeof stay.arrival === 'string'
     && typeof stay.departure === 'string' && (requireConfirmation
-      ? !hint.guestName || samePerson(hint.guestName, `${stay.firstName} ${stay.lastName}`) : amendName)
+      ? !hint.guestName || sameGuestName(hint.guestName, `${stay.firstName} ${stay.lastName}`) : amendName)
     && (!hint.bookedArrival || hint.bookedArrival === stay.arrival) && (!hint.bookedDeparture || hint.bookedDeparture === stay.departure);
 }
 
@@ -752,7 +751,12 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
     const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), { workItemId: input.workItemId, source: input.source, observation });
     if (appended.status !== 'ok') return { ...appended };
   }
-  if (!complete || !stay) return { status: 'needs_input', issue: 'reserved_stay_not_verified' };
+  if (!complete || !stay) {
+    if (!amendSelection && result?.outcome === 'found' && !result.arrivalMismatch && stay && found.hint.guestName &&
+        savedStayMatches(stay, { ...found.hint, guestName: null }))
+      return { status: 'needs_input', issue: 'guest_name_hint_mismatch', fields: [found.selectionPath.replace(/\/suggestedRef$/, '/guestName')] };
+    return { status: 'needs_input', issue: 'reserved_stay_not_verified' };
+  }
   if (exclusionIssue) return { status: 'needs_input', issue: exclusionIssue, observationRef: observation?.ref };
   const selected = amendSelection ?? selectedSavedStay(draft, input, found);
   if (!selected || (amendSelection ? !sameSelected : canonicalJson(selected.stay) !== canonicalJson(stay)))

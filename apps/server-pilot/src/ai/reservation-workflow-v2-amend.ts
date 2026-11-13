@@ -26,6 +26,7 @@ import {
   type ReservationWorkflowV2Context,
 } from './reservation-workflow-v2-state.js';
 import { canonicalJson } from './draft-approval.js';
+import { sameGuestName } from './guest-name-match.js';
 import { savedTargetExclusionIssue } from './reservation-workflow-v2-services.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { paneStayCloudTargetLock, paneStayPropertyLock } from './pane-stay-save.js';
@@ -88,10 +89,6 @@ const ptr = (...parts: Array<string | number>) => `/${parts.map((part) => encode
 const code = (value: unknown) => typeof value === 'string' && /^[A-Z0-9]{1,12}$/.test(value);
 const realDate = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
   Number.isFinite(Date.parse(`${value}T00:00:00.000Z`)) && new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value;
-const sameName = (left: unknown, right: unknown) => typeof left === 'string' && typeof right === 'string' &&
-  left.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() ===
-  right.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
-
 function stateContext(ctx: ReadContext): V2StateContext {
   return { db: ctx.db, transportId: ctx.transport.id, userId: 'system' in ctx || ctx.nativeBatch ? null : ctx.user.id,
     propertyCode: ctx.property.propertyCode, nativeBatch: ctx.nativeBatch, recovery: ctx.recovery };
@@ -314,7 +311,7 @@ function validateHintAgainstNative(hint: Record<string, unknown>, native: HmsClo
   const name = text(hint.guestName);
   if (name) {
     const nativeName = `${native.firstName} ${native.lastName}`;
-    if (name.includes(' ') ? !sameName(name, nativeName) : !sameName(name, native.lastName)) return 'guest_name_hint_mismatch';
+    if (!sameGuestName(name, nativeName) && !sameGuestName(name, native.lastName)) return 'guest_name_hint_mismatch';
   }
   return null;
 }
@@ -436,7 +433,9 @@ function selectedStay(draft: ReservationWorkflowV2Draft, requestId: string, hint
     item.criteria.workflow === 'amend' && item.criteria.kind === 'saved_target' && item.criteria.requestId === requestId &&
     item.criteria.hintId === hintId && item.criteria.selectionPath === path);
   const native = record(observation?.result)?.candidate;
-  if (!validNative(native) || validateHintAgainstNative(hint, native)) {
+  const mismatch = validNative(native) ? validateHintAgainstNative(hint, native) : null;
+  if (mismatch === 'guest_name_hint_mismatch') return { issue: mismatch, fields: [path.replace(/\/suggestedRef$/, '/guestName')] };
+  if (!validNative(native) || mismatch) {
     return { issue: 'host_native_target_selection_unverified', fields: [path] };
   }
   return { selected: native, ref: resolved, path };
@@ -1115,6 +1114,7 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReadContext,
       if (result.observation) observations.push(result.observation);
       lookups.push({ requestId: request.id, hintId, status: safeRows.length ? 'matches' : 'partial',
         ...(result.observation ? { issue: result.observation.result.issue } : {}),
+        ...(result.observation?.result.issue === 'guest_name_hint_mismatch' ? { fields: [`${hintPath}/guestName`] } : {}),
         ...(blockedRows.length ? { excludedCandidateCount: blockedRows.length } : {}),
         selectionPath, candidates: safeRows.map(({ observation, native }) => ({ ref: observation.ref,
           confirmation: native.confirmation, guestName: `${native.firstName} ${native.lastName}`,
