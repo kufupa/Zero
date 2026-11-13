@@ -232,6 +232,7 @@ export async function runLabtestAmendSave(page, {
   reportDispatchDrain = false,
   dispatchDrainTimeoutMs = 5_000,
   prepareOnly = false,
+  callbackReviewOnly = false,
   partyStageActive = () => false,
   dispatchChildCandidate,
   prepare,
@@ -258,7 +259,8 @@ export async function runLabtestAmendSave(page, {
     return result('input_gap', { issue: 'INVALID_DRAIN_TIMEOUT' });
   }
   if (typeof partyStageActive !== 'function') return result('input_gap', { issue: 'AMEND_CALLBACKS_INVALID' });
-  if (typeof prepareOnly !== 'boolean') return result('input_gap', { issue: 'INVALID_PREPARE_ONLY' });
+  if (typeof prepareOnly !== 'boolean' || typeof callbackReviewOnly !== 'boolean' ||
+      (prepareOnly && callbackReviewOnly)) return result('input_gap', { issue: 'INVALID_PREPARE_ONLY' });
   if (!page || typeof page.route !== 'function' || typeof page.locator !== 'function' ||
       typeof page.on !== 'function' || typeof page.off !== 'function') {
     return result('input_gap', { issue: 'PAGE_REQUIRED' });
@@ -277,6 +279,9 @@ export async function runLabtestAmendSave(page, {
       (availability.recipient !== undefined && (typeof availability.recipient !== 'string' ||
         availability.recipient.length > 1000 || /[\p{Cc}]/u.test(availability.recipient))))) {
     return result('input_gap', { issue: 'AMEND_AVAILABILITY_CALLBACKS_INVALID' });
+  }
+  if (callbackReviewOnly && (!availability || retainRate !== undefined || extendRate !== undefined)) {
+    return result('input_gap', { issue: 'AMEND_CALLBACK_REVIEW_INVALID' });
   }
   if (retainRate !== undefined && (!retainRate || typeof retainRate !== 'object' || prepareOnly ||
       !['yes', 'no'].includes(retainRate.choice) || typeof dispatchCandidate !== 'function' ||
@@ -381,7 +386,7 @@ export async function runLabtestAmendSave(page, {
       frame: prepared.frame,
       fence,
       scope,
-      isArmed: () => !prepareOnly && armed && withinDeadline(),
+      isArmed: () => !prepareOnly && !callbackReviewOnly && armed && withinDeadline(),
       childStageGate, canDispatchChild: () => !prepareOnly && typeof dispatchChildCandidate === 'function',
       dispatchChildCandidate, onChildCandidate: () => { possiblyDispatched = true; },
       roomStageGate,
@@ -511,9 +516,13 @@ export async function runLabtestAmendSave(page, {
       }
     }
 
-    // Prepare may reprice but can never arm Save.
+    // Prepare may reprice but can never arm Save. Callback review also stops
+    // here: its potentially persistent callbacks have their own durable claim.
     if (prepareOnly) return result('not_dispatched', {
       issue: 'PREPARE_ONLY', ...diagnostics(), ...details(),
+    });
+    if (callbackReviewOnly) return result('callback_review_ready', {
+      ...diagnostics(), ...details(),
     });
 
     if (beforeSave) await bounded(beforeSave(bounded, prepared, staged, { fence, scope }));
