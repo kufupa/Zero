@@ -11,7 +11,7 @@ export type RowChange =
       targetDisposition: 'included' | 'excluded' }
   | { kind: 'link_created_addon_target'; requestId: string; allocationId: string; serviceId: string };
 export type WorkbenchCommands = {
-  stageEdit(path: string, value: unknown, state?: ReservationFieldOverride['state']): void;
+  stageEdit(path: string, value: unknown, state?: ReservationFieldOverride['state'], options?: { notify?: boolean }): void;
   setUncommitted(key: string, dirty: boolean): void;
   edit(path: string, value: unknown, state?: ReservationFieldOverride['state']): Promise<void>;
   changeRows(change: RowChange): Promise<void>;

@@ -210,8 +210,10 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       value={display} disabled={disabled || reviewing} onFocus={openChoices} onClick={openChoices} placeholder={guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
         editVersion.current += 1;
         const value = event.target.value; setCatalogueSearch(null); setQuery(value); setDirty(true); setOpen(true); setActiveIndex(-1);
-        if (catalogueField) editor.commands.setUncommitted(path, true);
-        else editor.commands.stageEdit(editPath, editValue(value));
+        if (catalogueField) {
+          editor.commands.setUncommitted(path, true);
+          if (!amendTrack) editor.commands.stageEdit(editPath, editValue(value), 'set', { notify: false });
+        } else editor.commands.stageEdit(editPath, editValue(value));
       }}
       onBlur={() => { void saveSearch().catch(() => {}); }} onKeyDown={event => {
         if (event.key === 'Escape') {

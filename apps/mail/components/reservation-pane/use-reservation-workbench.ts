@@ -285,12 +285,12 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     notify(buffer);
     return enqueue(buffer, execute).finally(() => { buffer.actionsPending--; notify(buffer); });
   };
-  const stageEdit = (path: string, value: unknown, state: ReservationFieldOverride['state'] = 'set') => {
+  const stageEdit = (path: string, value: unknown, state: ReservationFieldOverride['state'] = 'set', options?: { notify?: boolean }) => {
     if (!entry.pendingMutationHeld) { entry.pendingMutationHeld = true; beginMutation(); }
     const previous = entry.pending.get(path);
     entry.pending.set(path, { path, value, state, token: ++entry.token, generation: previous?.generation ?? entry.snapshot?.session.draft.generationId ?? null,
       rows: previous?.rows ?? captureRows(entry.snapshot, path) });
-    notify(entry);
+    if (options?.notify !== false) notify(entry);
   };
   const current = displaySnapshot(entry.snapshot ?? safeSnapshot, entry.pending);
   const pendingForCurrent = Array.from(entry.pending.values()).filter(edit => pendingMatches(entry.snapshot, edit));
