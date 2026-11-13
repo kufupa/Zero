@@ -76,7 +76,7 @@ const SYNTHESIS_SHAPE_RULES = `Use this schema-valid empty envelope as the exact
 {"proposal":{"schemaVersion":"reservation-prefill.v0.2","content":{"requests":[],"services":[],"documents":[]},"annotations":[],"issues":[],"sourceClaims":[],"lookupResultRefs":[]},"reviewRequirements":{}}
 Each request's sourceRefs, serviceRefs and documentRefs are required arrays, including when empty. Reuse extraction request IDs; host links a request to source facts only by exact ID or a unique one-to-one source/text match, and fails closed when ambiguous. For Amend and Cancel, preserve every source-cited exact confirmation as an include hint with confirmation, sourceRefs, candidateRefs:[], suggestedRef:null and mode:"unresolved" unless an exact admitted host observation supports a target. Do not fabricate a native target. For Create, reservationNote belongs in body.shared.reservationNote, never at body root. Do not emit global review keys such as humanReviewRequired or beforeExecution: reviewRequirements is keyed by field-path strings, and each value is exactly {"required":true,"reasons":["..."],"evidenceRefs":["admitted-ref"]}. Use {} when no additional review requirement is needed. Preserve every source-supported field in the schema; if a field cannot be represented confidently, retain sourceClaims and add a visible issue rather than dropping the request or inventing a value. An exact source confirmation linked to a Create means possible prior booking, not proof of a native stay. Keep it as a sourceClaim only; the host adds the existing_confirmation_requires_lookup issue at /proposal/content/requests/{finalRequestId}/confirmationReference and requires exact native lookup before Execute. Do not transform it into a native ID or claim that a stay exists; never copy it into a native-selection field.`;
 
-const CREATE_SYNTHESIS_SHAPE_RULES = `For Create, body contains shared, dateSections and allocations only. Every existing date section has defaults:{} when empty; every allocation has overrides:{} when empty. Each allocation guest has candidateRefs:[] and suggestedRef:null when no admitted profile observation supports a suggestion; suggestedRef is one exact observation ref string or null, never an object or list. Quote-only parties, salesStrategy, client, requestedMoney, notes, outputIntent and provisionalBookingRequested do not belong in a Create body. Keep services and documents in content.services and content.documents with their request links. Preserve source-supported unsupported price or other business asks in sourceClaims and visible issues rather than copying Quote fields or dropping their evidence.`;
+const CREATE_SYNTHESIS_SHAPE_RULES = `For Create, body contains shared, dateSections and allocations only. Every existing date section has defaults:{} when empty; every allocation has overrides:{} when empty. Each allocation guest has candidateRefs:[] and suggestedRef:null when no admitted profile observation supports a suggestion; suggestedRef is one exact observation ref string or null, never an object or list. The host supports Organization, Primary Booking Agency and A/R Account in Create and binds these fields from source claims and native observations after synthesis. Their omission from your output schema does not mean the fields are unsupported; do not assert otherwise or invent native selections. The Quote-only body.parties container, salesStrategy, client, requestedMoney, notes, outputIntent and provisionalBookingRequested do not belong in a Create body. Keep services and documents in content.services and content.documents with their request links. Preserve source-supported unsupported price or other business asks in sourceClaims and visible issues rather than copying Quote fields or dropping their evidence.`;
 const VOUCHER_SYNTHESIS_RULES = `Keep requestedPrice as cited source evidence. When a legacy rateHint exactly matches a typed requestedPrice claim by raw text, value and evidence refs, keep that typed booking-price claim out of Quote requestedMoney and service allowances; preserve it only as a source claim. Distinct explicit meal/dinner allowance claims remain separate. Never copy a voucher/customer amount into any native Create price, native rate code, or Prepare result. Do not invent a filing action from a contextual attachment. The host derives a dependent Filing request only for an explicitly extracted current agency Create linked to a same-file cited current PDF documentHints kind voucher; POP/payment-proof and existing-confirmation cases do not create new booking or duplicate filing actions. Do not fabricate or reposition Create allocations to make a document target.`;
 
 // PRODUCT.md describes the staff-controlled CMS capability; codes/labels come
@@ -1581,6 +1581,37 @@ function carryConfirmationClaimCapacityIssues(input: {
 
 function normalizedFact(value: unknown): string {
   return typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US') : '';
+}
+
+function mergeSourceNote(existing: string, sourceNotes: string[], evidence: ReservationWorkflowV2Evidence[]) {
+  const retained = existing.split('\n').filter((line) => {
+    const fragment = line.trim();
+    return !fragment || !evidence.some((row) => row.relation === 'current_message' && row.text.includes(fragment)) ||
+      sourceNotes.some((clause) => normalizedFact(clause) === normalizedFact(fragment)) ||
+      !sourceNotes.some((clause) => normalizedFact(clause).includes(normalizedFact(fragment)));
+  }).join('\n');
+  const additions = sourceNotes.filter((clause) => !normalizedFact(retained).includes(normalizedFact(clause)));
+  return { fullNote: [retained, ...additions].filter(Boolean).join('\n'), additions };
+}
+
+function correctCreatePartyCapabilityIssues(proposal: ReservationWorkflowV2Proposal): void {
+  const unsupported = /\b(?:the\s+)?(?:create(?:\s+body)?|proposal)\s+has\s+no\s+(?:(?:organization|primary\s+booking\s+agency|booking\s+agency|a\/r\s+account)\s+field|party\s+fields?)\b/giu;
+  for (const issue of proposal.issues) {
+    if (!['field_not_supported', 'unrepresentable_source_fields'].includes(issue.kind)) continue;
+    const request = proposal.content.requests.find((row) => row.kind === 'create' &&
+      issue.path.startsWith(`/proposal/content/requests/${row.id}/`));
+    if (!request || !unsupported.test(issue.explanation)) { unsupported.lastIndex = 0; continue; }
+    unsupported.lastIndex = 0;
+    issue.explanation = issue.explanation.replace(unsupported, 'Create supports parties')
+      .replace(/,\s*but\s+Create supports parties/giu, '; Create supports parties')
+      .replace(/\b(?:this\s+)?proposal cannot attach (?:it|them) to (?:a\s+)?Create field\b/giu,
+        'Create supports this selection')
+      .replace(/,\s*but\s+Create supports this selection/giu, '; Create supports this selection')
+      .replace(/\bno native (organization|booking agency|a\/r account) value is assigned\b/giu,
+        'review the $1 selection');
+    issue.kind = 'party_selection_requires_review';
+    issue.path = issue.path.replace(/\/parties\/(organization|bookingAgency|arAccount)$/, '/body/shared/$1');
+  }
 }
 
 function boardMeaning(value: unknown): string {
@@ -3230,8 +3261,7 @@ function projectCurrentExtraction(input: {
       const path = `/proposal/content/requests/${request.id}/body/${request.kind === 'create' ? 'shared/reservationNote' : 'notes'}`;
       const sourceRefs = input.evidence.filter((row) => row.relation === 'current_message').map((row) => row.ref);
       const existingText = typeof existing === 'string' ? existing : '';
-      const additions = sourceNotes.filter((clause) => !normalizedFact(existingText).includes(normalizedFact(clause)));
-      const fullNote = [existingText, ...additions].filter(Boolean).join('\n');
+      const { fullNote, additions } = mergeSourceNote(existingText, sourceNotes, input.evidence);
       if (fullNote.length <= limit && additions.length) {
         if (request.kind === 'create') request.body.shared.reservationNote = fullNote;
         else request.body.notes = fullNote;
@@ -3956,6 +3986,7 @@ function projectCurrentExtraction(input: {
       }
     }
   }
+  correctCreatePartyCapabilityIssues(proposal);
   compactProposalSourceClaims(proposal, currentRefs);
   const parsedProjection = reservationWorkflowV2ProposalSchema.safeParse(proposal);
   if (parsedProjection.success) return { proposal: parsedProjection.data, addedRequests,
