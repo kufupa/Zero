@@ -3,8 +3,9 @@
 import { useEffect, useState } from 'react';
 import type { WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { effectiveAt, record, requestPath, text, valueAt } from '@/lib/reservation-workflow/views';
+import { sameGuestName } from '../../../../server-pilot/src/ai/guest-name-match.js';
 import { Field, Section } from '../shared/stay-fields';
-import { isExactConfirmation, StayFacts } from './amend-editor';
+import { isExactConfirmation, latestStayCandidates, StayFacts } from './amend-editor';
 import styles from './other-editors.module.css';
 
 export function FilingEditor(editor: WorkbenchEditorProps) {
@@ -155,20 +156,39 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
   }, [dirty, editor.request.id]);
   const path = hint ? `${body}/targets/include/${encodeURIComponent(text(hint.id))}/suggestedRef` : '';
   const selected = path ? valueAt(editor.snapshot, path) : null;
-  const candidates = hint ? draft.observations.flatMap(observation => {
+  const candidates = hint ? latestStayCandidates(draft.observations.flatMap(observation => {
     const c = observation.criteria, result = record(observation.result), stay = record(result.stay);
+    const createOperation = createSuccesses.length === 1 ? createSuccesses[0] : undefined;
+    const createReceipt = createOperation?.observationRefs.length === 1
+      ? draft.observations.find(row => row.ref === createOperation.observationRefs[0]) : undefined;
+    const linkedReceiptMatches = Boolean(selectedAllocation && createStatus === 'succeeded' && createOperation && createReceipt &&
+      c.createRequestId === selectedAllocation.requestId && c.createAllocationId === selectedAllocation.allocationId &&
+      c.createOperationId === createOperation.id && c.createObservationRef === createReceipt.ref &&
+      c.createConfirmation === stay.confirmation && c.confirmation === stay.confirmation &&
+      createReceipt.kind === 'stay_candidate' && createReceipt.status === 'complete' && createReceipt.coverage.complete &&
+      createReceipt.generationId === draft.generationId && createReceipt.propertyCode === draft.propertyCode &&
+      createReceipt.sourceMessageId === draft.source.messageId && createReceipt.criteria.workflow === 'create' &&
+      createReceipt.criteria.requestId === selectedAllocation.requestId && createReceipt.criteria.allocationId === selectedAllocation.allocationId &&
+      createReceipt.criteria.draftRevision === createOperation.draftRevision && record(createReceipt.result).confirmation === stay.confirmation);
     if (observation.kind !== 'stay_candidate' || observation.status !== 'complete' || record(observation.coverage).complete !== true
       || observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode
       || observation.sourceMessageId !== draft.source.messageId || c.workflow !== 'filing' || c.requestId !== editor.request.id
-      || c.targetHintId !== hint.id || result.outcome !== 'found' || !Object.keys(stay).length
-      || (hasAllocationTarget && (!selectedAllocation || c.createRequestId !== selectedAllocation.requestId
-        || c.createAllocationId !== selectedAllocation.allocationId || c.createConfirmation !== stay.confirmation
-        || c.confirmation !== stay.confirmation))
-      || (hint.confirmation && hint.confirmation !== stay.confirmation)
-      || (hint.bookedArrival && hint.bookedArrival !== stay.arrival) || (hint.bookedDeparture && hint.bookedDeparture !== stay.departure)) return [];
-    return [{ observation, stay }];
-  }) : [];
-  const selectedStay = candidates.find(candidate => candidate.observation.ref === selected);
+      || c.targetHintId !== hint.id || c.sourceHash !== draft.source.sourceHash || result.outcome !== 'found' || !isExactConfirmation(stay.confirmation)
+      || (c.bookedArrival ?? null) !== (hint.bookedArrival || null)
+      || (hasAllocationTarget ? !linkedReceiptMatches : c.createRequestId != null || c.confirmation !== hint.confirmation)
+      || (hint.confirmation && hint.confirmation !== stay.confirmation)) return [];
+    const guestMismatch = Boolean(hint.guestName && !sameGuestName(hint.guestName, `${text(stay.firstName)} ${text(stay.lastName)}`));
+    const dateMismatch = Boolean(hint.bookedArrival && hint.bookedArrival !== stay.arrival ||
+      hint.bookedDeparture && hint.bookedDeparture !== stay.departure);
+    return [{ observation, stay, guestMismatch, dateMismatch }];
+  }), selected) : [];
+  const selectedStay = candidates.find(candidate => candidate.observation.ref === selected && !candidate.guestMismatch && !candidate.dateMismatch);
+  const selectionNeedsReview = !filingLocked && typeof selected === 'string' && !selectedStay;
+  useEffect(() => {
+    const key = `target-selection:${path}`;
+    editor.commands.setUncommitted(key, selectionNeedsReview);
+    return () => editor.commands.setUncommitted(key, false);
+  }, [path, selectionNeedsReview]);
   const proof = doc && selectedStay ? [...draft.observations].reverse().find(observation => observation.kind === 'document'
     && observation.status === 'complete' && record(observation.coverage).complete === true
     && observation.generationId === draft.generationId && observation.criteria.workflow === 'filing'
@@ -285,10 +305,14 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
       {doc && <small className={styles.hint}>Saved selection: {attachments.find(attachment => attachment.sourceRef === resolvedAttachment)?.name || 'Source attachment unavailable'} · {documentKind === 'payment_proof' ? 'Payment proof' : documentKind === 'voucher' ? 'Voucher' : documentKind} · {useCreateTarget ? selectedAllocation ? 'Create-linked target; actual confirmation verified on lookup' : 'Choose an exact Create allocation' : text(hint?.confirmation) || 'Destination missing'}</small>}
     </Section>
     <Section title="Exact destination and source bytes">
-      {candidates.map(({ observation, stay }) => <div className={styles.card} key={observation.ref}>
-        <StayFacts stay={stay} /><div className={styles.row}><button type="button" disabled={editor.view.busy || dirty}
+      {candidates.map(({ observation, stay, guestMismatch, dateMismatch }) => <div className={styles.card} key={observation.ref}>
+        <StayFacts stay={stay} />
+        {guestMismatch && <div className={styles.warning}>The guest name differs from the source. Update the guest name and find the stay again before filing.</div>}
+        {dateMismatch && <div className={styles.warning}>The stay dates differ from the source. Update the dates and find the stay again before filing.</div>}
+        <div className={styles.row}><button type="button" disabled={editor.view.busy || dirty || guestMismatch || dateMismatch}
           onClick={() => void editor.commands.selectNative(path, observation.ref)}>{selected === observation.ref ? 'Selected stay' : 'Select this stay'}</button></div>
       </div>)}
+      {selectionNeedsReview && <div className={styles.warning}>The selected stay needs review. Find and select the current Infor record before continuing.</div>}
       {!selectedStay && <span className={styles.hint}>Find and select the exact stay, then check the PDF again.</span>}
       {selectedStay && !proof && <div className={styles.warning}>PDF bytes have not been verified for this stay. Find the stay and check the PDF again.</div>}
       {proof && <div className={styles.hint}>Infor lookup verified the source PDF for this selected stay. Check before filing.</div>}

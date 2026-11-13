@@ -9,9 +9,10 @@ import { reservationWorkflowV2DraftSchema, type reservationWorkflowV2AddActionIn
 import { withLockedV2DraftMutation, reservationWorkflowV2SavedTargetLocked, reservationWorkflowV2SavedTargetOperationLocks,
   type ReservationWorkflowV2Context } from './reservation-workflow-v2-state.js';
 import { nativeStructureIsSafe, rebaseReservationV2Path, rebaseReservationV2Observations } from './work-item-revision.js';
-import { sameGuestName } from './guest-name-match.js';
+import { normalizeGuestName, sameGuestName } from './guest-name-match.js';
 import { canonicalJson } from './draft-approval.js';
 import { currentLead } from './reservation-workflow-v2-verify-lead.js';
+import { serviceCandidateInCurrentBatch } from './reservation-workflow-v2-services.js';
 
 const ptr = (...parts: (string | number)[]) => '/' + parts.map((part) => encodeURIComponent(String(part))).join('/');
 const rec = (value: unknown): Record<string, any> => value && typeof value === 'object' && !Array.isArray(value)
@@ -263,7 +264,6 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
             (!input.parentId && request.body.dateSections.length === 1 ? request.body.dateSections[0] : undefined);
           if (!date) return null;
           const row = allocation(date.id); request.body.allocations.push(row); createdId = row.id;
-          date.requestedRooms = request.body.allocations.filter((entry) => entry.dateSectionId === date.id).length;
           changedDateIds.add(date.id);
           changedRoots.push(`${root}/body/allocations`); break;
         }
@@ -272,8 +272,6 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           const row = request.body.allocations.find((entry) => entry.id === input.entityId);
           if (!row || request.body.allocations.filter((entry) => entry.dateSectionId === row.dateSectionId).length <= 1) return null;
           request.body.allocations = request.body.allocations.filter((entry) => entry.id !== row.id);
-          const date = request.body.dateSections.find((entry) => entry.id === row.dateSectionId);
-          if (date) date.requestedRooms = request.body.allocations.filter((entry) => entry.dateSectionId === date.id).length;
           changedDateIds.add(row.dateSectionId);
           removeLinked('allocation', row.id); changedRoots.push(`${root}/body/allocations`); break;
         }
@@ -483,8 +481,21 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
       if (request.kind === 'create' && ['add_allocation', 'remove_allocation', 'move_allocation', 'add_date_section', 'remove_date_section'].includes(input.kind)) {
         request.body.dateSections.forEach((date, index) => {
           if (!changedDateIds.has(date.id)) return;
-          date.requestedRooms = request.body.allocations.filter((row) => row.dateSectionId === date.id).length;
           const path = `${root}/body/dateSections/${index}/requestedRooms`;
+          const previousRequest = before.content.requests.find(row => row.id === request.id);
+          const previousIndex = previousRequest?.kind === 'create' ? previousRequest.body.dateSections.findIndex(row => row.id === date.id) : -1;
+          const previousPaths = [`${root}/body/dateSections/${previousIndex}/requestedRooms`,
+            `${root}/body/dateSections/${encodeURIComponent(date.id)}/requestedRooms`];
+          const extracted = draft.extractionGenerationId === draft.generationId ? draft.extraction?.requests
+            .find(row => row.id === request.id && row.kind === 'create') : undefined;
+          const extractedCount = previousRequest?.kind === 'create' && previousRequest.body.dateSections.length === 1 &&
+            extracted?.roomCount && extracted.roomCount.value === previousRequest.body.dateSections[previousIndex]?.requestedRooms;
+          const sourceCount = extractedCount || before.annotations.some(row => row.basis === 'source' && previousPaths.includes(row.path)) ||
+            before.sourceClaims.some(row => previousPaths.includes(row.path)) || previousPaths.some(path =>
+              draft.fieldOverrides[path] && draft.fieldOverrides[path]!.state !== 'inherit');
+          // Allocation edits change the working booking, not the cited request.
+          if (sourceCount) return;
+          date.requestedRooms = request.body.allocations.filter((row) => row.dateSectionId === date.id).length;
           delete next.fieldOverrides[path]; delete next.staffReviews[path];
         });
       }
@@ -817,6 +828,8 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
       if (!observation || observation.status !== 'complete' || !observation.coverage.complete ||
           observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
           observation.sourceMessageId !== draft.source.messageId || observation.criteria.requestId !== request.id) return null;
+      if (observation.kind === 'service_preview' && ['catalogue_candidate', 'saved_row_candidate'].includes(String(observation.criteria.kind)) &&
+          !serviceCandidateInCurrentBatch(draft, observation)) return null;
       if (observation.criteria.kind === 'verified_native_row') {
         const leadRef = observation.criteria.leadObservationRef;
         const current = typeof leadRef === 'string' ? currentLead(draft, { ...input, observationRef: leadRef }) : null;
@@ -907,6 +920,28 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
         const rows = Array.isArray(observation.result.candidates) ? observation.result.candidates : [observation.result];
         if (rows.length !== 1) return null;
         const candidate = rec(rows[0]);
+        const normalize = (value: unknown) => typeof value === 'string'
+          ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() : '';
+        const guestValue = (field: string) => valueAt(draft, `${parent}/${field}`);
+        if (guestValue('profileIntent') !== 'existing_or_unknown') return null;
+        const selectionOverride = draft.fieldOverrides[input.fieldPath];
+        const selected = valueAt(draft, input.fieldPath) ?? (selectionOverride && selectionOverride.state !== 'inherit'
+          ? null : guestValue('suggestedRef'));
+        const selectedMatches = selected === observation.ref && normalize(candidate.firstName) === normalize(guestValue('firstName')) &&
+          normalize(candidate.lastName) === normalize(guestValue('lastName'));
+        const query = rec(observation.criteria.query);
+        const sourceBound = observation.criteria.kind !== 'guest_profile' && observation.criteria.kind !== 'verified_native_row' &&
+          typeof observation.criteria.candidateNativeId === 'string';
+        const phone = (value: unknown) => typeof value === 'string' ? value.replace(/\D/g, '') : '';
+        const sourceName = normalizeGuestName(String(observation.criteria.name ?? ''));
+        const currentName = normalizeGuestName([guestValue('firstName'), guestValue('lastName')].filter(Boolean).join(' '));
+        const queryMatches = sourceBound ? Boolean(sourceName || normalize(observation.criteria.email) || phone(observation.criteria.mobile)) &&
+          sourceName === currentName && normalize(observation.criteria.email) === normalize(guestValue('email')) &&
+          phone(observation.criteria.mobile) === phone(guestValue('mobile'))
+          : query.field === 'lastName' && Boolean(normalize(query.value)) && normalize(query.value) === normalize(guestValue('lastName')) &&
+            normalize(query.firstName) === normalize(guestValue('firstName')) && normalize(query.email) === normalize(guestValue('email')) &&
+            normalize(query.mobile) === normalize(guestValue('mobile'));
+        if (!selectedMatches && !queryMatches) return null;
         if (!/^\d{1,30}$/.test(String(candidate.nativeId ?? '')) || typeof candidate.firstName !== 'string' ||
             typeof candidate.lastName !== 'string' || !candidate.firstName.trim() || !candidate.lastName.trim()) return null;
         set(`${parent}/firstName`, candidate.firstName); set(`${parent}/lastName`, candidate.lastName);
@@ -941,6 +976,17 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
         const nativeId = String(candidate.nativeId ?? '');
         if (!(request.kind === 'quote' ? /^[A-Za-z0-9._-]{1,64}$/ : /^\d{1,30}$/).test(nativeId) ||
             typeof candidate.name !== 'string' || !candidate.name.trim()) return null;
+        if (!amendPath) {
+          const normalize = (value: unknown) => typeof value === 'string'
+            ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() : '';
+          const name = normalize(valueAt(draft, `${parent}/name`));
+          const query = typeof observation.criteria.query === 'string' ? observation.criteria.query
+            : observation.criteria.searchName ?? observation.criteria.name ??
+              (observation.criteria.kind === 'historical_party_native_confirmation' ? candidate.name : undefined);
+          const override = draft.fieldOverrides[input.fieldPath];
+          const selected = valueAt(draft, input.fieldPath) ?? (override && override.state !== 'inherit' ? null : valueAt(draft, `${parent}/suggestedRef`));
+          if (!name || name !== normalize(query) && !(selected === observation.ref && name === normalize(candidate.name))) return null;
+        }
         for (const key of Object.keys(overrides)) if (key.startsWith(`${parent}/`)) delete overrides[key];
         set(parent, { name: candidate.name, candidateRefs: [], suggestedRef: null }); set(input.fieldPath, observation.ref);
       } else return null;

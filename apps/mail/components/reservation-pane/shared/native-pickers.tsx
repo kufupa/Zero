@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react';
-import { autoTransferHistory, effectiveAt, nativeChoices, nativeRecommendationLeads, partialNativeLeads, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { autoTransferHistory, effectiveAt, hasCompleteNativeCatalogue, nativeChoices, nativeRecommendationLeads, partialNativeLeads, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import styles from '../reservation-pane.module.css';
 import { FieldReview, FieldSource } from './stay-fields';
 
@@ -114,9 +114,9 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const trackScopeChanged = amendTrack && trackReady && trackLookupScope.current !== trackScope;
   const choices = amendTrack ? trackReady && !loading && !trackScopeChanged
     ? ordered.filter(row => !trackPreviousRefs.current.has(row.ref)) : []
-    : guestPath ? ordered.slice(0, 3) : ordered;
+    : ordered;
   const leads = entity && (!dirty || normalized(query) === normalized(saved))
-    ? partialNativeLeads(editor.snapshot, selectionPath, choiceKind).slice(0, 3) : [];
+    ? partialNativeLeads(editor.snapshot, selectionPath, choiceKind) : [];
   useEffect(() => { if (!dirty) setQuery(saved); }, [saved, dirty]);
   useEffect(() => () => { if (amendTrack) editor.commands.setUncommitted(path, false); }, [path, amendTrack]);
   const editValue = (value: string) => party ? { name: value, candidateRefs: [], suggestedRef: null } : value;
@@ -175,6 +175,15 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const selectedVerified = entity && editor.snapshot.session.draft.observations.find(observation => observation.ref === selectedRef &&
     record(observation.criteria).kind === 'verified_native_row' && choices.some(choice => choice.ref === observation.ref));
   const selectedChoice = choices.find(row => entity ? row.ref === selectedRef : row.value === saved);
+  const staleCode = Boolean(!entity && catalogueField && saved && !selectedChoice &&
+    hasCompleteNativeCatalogue(editor.snapshot, path, choiceKind));
+  const setCatalogueUncommitted = useRef(editor.commands.setUncommitted);
+  setCatalogueUncommitted.current = editor.commands.setUncommitted;
+  useEffect(() => {
+    const key = `catalogue-selection:${path}`;
+    setCatalogueUncommitted.current(key, staleCode);
+    return () => setCatalogueUncommitted.current(key, false);
+  }, [path, staleCode]);
   const display = open && catalogueSearch !== null ? catalogueSearch : dirty || open ? query : guestPath
     ? selectedChoice?.label || [text(valueAt(editor.snapshot, `${guestPath}/firstName`)), saved].filter(Boolean).join(' ')
     : amendTrack && trackDisplay && trackDisplay !== saved ? `${saved} — ${trackDisplay}`
@@ -255,7 +264,8 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       editVersion.current += 1; setQuery(saved); setDirty(false); setOpen(false); editor.commands.setUncommitted(path, false);
     }}>Cancel search</button></small> : <small>Unsaved search</small>
     : amendTrack && typeof savedValue === 'string' && saved ? <small>Select an Infor match for this requested Track.</small>
-    : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}{hint && <small>{hint}</small>}
+    : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}
+    {staleCode && <small role="alert">This code was not returned by the latest Infor choices. Choose a current code or refresh.</small>}{hint && <small>{hint}</small>}
     {autoTransfer && (!dirty || normalized(query) === normalized(saved)) && <small role="note" className={styles.memoryBadge}>History: Auto Transfer was recorded on {autoTransfer.support} of {autoTransfer.denominator} earlier stays for this {autoTransfer.partyKind === 'organization' ? 'organization' : 'A/R account'}. Check the current Infor setting.</small>}</div>
     {compact && <FieldReview editor={editor} path={path} label={label} disabled={amendTrack && dirty} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />}</div>;
 }

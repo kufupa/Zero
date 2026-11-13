@@ -18,7 +18,7 @@ const fields = [
   ['childAges', 'Child ages', 'ages'], ['firstName', 'First Name', 'text'], ['lastName', 'Last Name', 'text'],
   ['guestEmail', 'E-mail Address', 'email'], ['bookingAgency', 'Primary Booking Agency', 'party'],
   ['organization', 'Organization', 'party'], ['arAccount', 'A/R Account', 'party'],
-  ['billingReference', 'Billing Reference', 'text'], ['taCommission', 'TA Commission (%)', 'text'],
+  ['billingReference', 'Billing Reference', 'text'], ['taCommission', 'Travel agency commission (%)', 'text'],
   ['guaranteeType', 'Guarantee Type', 'code'], ['track', 'Track / Sub Segment', 'code'],
   ['bookerName', 'Booker name', 'text'], ['bookerEmail', 'Booker email', 'email'], ['bookerMobile', 'Booker mobile', 'text'],
   ['guestOptIn', 'Terms and Conditions', 'terms'],
@@ -31,6 +31,31 @@ const unsupportedClears = new Set(['bookingAgency', 'organization', 'arAccount',
 const priceFields = new Set(['arrival', 'departure', 'roomType', 'roomTypeForCharge', 'ratePlan', 'roomCount', 'adults', 'childCount', 'childAges']);
 const unsupportedFieldLabels: Record<string, string> = {};
 const rows = (value: unknown) => Array.isArray(value) ? value.map(record) : [];
+
+type StayCandidate = { observation: { ref: string; propertyCode: string; observedAt: string; result: unknown }; stay: Record<string, unknown> };
+
+function stableFacts(value: unknown): string {
+  return JSON.stringify(value, (key, item: unknown) => {
+    if (key === 'observedAt' || key === 'preflightObservedAt' || key === 'sourceRefs') return undefined;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+    return Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b)));
+  });
+}
+
+export function latestStayCandidates<T extends StayCandidate>(candidates: T[], selected: unknown): T[] {
+  const latest = new Map<string, T>();
+  for (const candidate of candidates) {
+    const key = JSON.stringify([candidate.observation.propertyCode, candidate.stay.confirmation]);
+    const previous = latest.get(key);
+    if (!previous || Date.parse(candidate.observation.observedAt) >= Date.parse(previous.observation.observedAt)) latest.set(key, candidate);
+  }
+  return [...latest.values()].map(candidate => {
+    const selectedCandidate = candidates.find(row => row.observation.ref === selected &&
+      row.observation.propertyCode === candidate.observation.propertyCode && row.stay.confirmation === candidate.stay.confirmation);
+    return selectedCandidate && stableFacts(selectedCandidate.observation.result) === stableFacts(candidate.observation.result)
+      ? { ...candidate, observation: selectedCandidate.observation } : candidate;
+  });
+}
 
 export function isExactConfirmation(value: unknown): boolean {
   return typeof value === 'string' && /^\d{6,10}-\d{1,2}$/.test(value.trim());
@@ -147,7 +172,9 @@ export function TargetSearch({ editor, body, hint, index, workflow, locked = fal
       right.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
   const currentLookup = workflow === 'cancel' ? [...draft.observations].reverse().find(observation => {
     const criteria = observation.criteria, q = record(criteria.query), result = record(observation.result);
-    return observation.kind === 'stay_candidate' && criteria.workflow === 'cancel' && criteria.stage === 'lookup' &&
+    return observation.kind === 'stay_candidate' && observation.generationId === draft.generationId &&
+      observation.propertyCode === draft.propertyCode && observation.sourceMessageId === draft.source.messageId &&
+      criteria.workflow === 'cancel' && criteria.stage === 'lookup' &&
       criteria.requestId === editor.request.id && criteria.hintId === hint.id &&
       normalized(q.confirmation) === query('confirmation') && normalized(q.guestName) === query('guestName') &&
       normalized(q.arrival) === query('bookedArrival') && normalized(q.departure) === query('bookedDeparture') &&
@@ -162,7 +189,7 @@ export function TargetSearch({ editor, body, hint, index, workflow, locked = fal
     query('bookedArrival') && query('bookedArrival') !== normalized(currentStay.arrival) ? 'bookedArrival' : null,
     query('bookedDeparture') && query('bookedDeparture') !== normalized(currentStay.departure) ? 'bookedDeparture' : null,
   ].filter((field): field is string => Boolean(field)) : [];
-  const candidates = editor.snapshot.session.draft.observations.flatMap(observation => {
+  const candidates = latestStayCandidates(editor.snapshot.session.draft.observations.flatMap(observation => {
     const c = observation.criteria, q = record(c.query), result = record(observation.result);
     if (observation.kind !== 'stay_candidate' || observation.status !== 'complete' || !record(observation.coverage).complete
       || observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode
@@ -195,7 +222,14 @@ export function TargetSearch({ editor, body, hint, index, workflow, locked = fal
         sourceMismatchFields.length > 0 && result.sourceHintMismatchReviewRequired !== true)) return [];
     return Object.keys(stay).length ? [{ observation, stay, sourceMismatchFields,
       selectable: workflow !== 'filing' || sourceMismatchFields.length === 0 }] : [];
-  });
+  }), selected);
+  const selectionNeedsReview = !locked && typeof selected === 'string' &&
+    !candidates.some(candidate => candidate.observation.ref === selected && candidate.selectable);
+  useEffect(() => {
+    const key = `target-selection:${path}`;
+    editor.commands.setUncommitted(key, selectionNeedsReview);
+    return () => editor.commands.setUncommitted(key, false);
+  }, [path, selectionNeedsReview]);
   return <div className={styles.stack}>
     <div className={styles.grid}>
       <Field label="Infor confirmation" path={`${root}/confirmation`} editor={editor} review disabled={locked} />
@@ -235,6 +269,7 @@ export function TargetSearch({ editor, body, hint, index, workflow, locked = fal
         {selected === observation.ref ? 'Selected stay' : workflow === 'cancel' && sourceMismatchFields.length ? 'Review and select this confirmation' : 'Select this stay'}
       </button></div>
     </div>)}
+    {selectionNeedsReview && <div className={styles.warning}>The selected stay needs review. Find and select the current Infor record before continuing.</div>}
     {!candidates.some(candidate => candidate.observation.ref === selected) && !currentStay &&
       <span className={styles.hint}>Find and select an exact Infor stay before checking changes.</span>}
   </div>;
@@ -348,7 +383,7 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
             <option value="true">Yes</option><option value="false">No</option></select></label> :
           spec?.[2] === 'code' ? <NativePicker label={spec[1]} path={valuePath} editor={editor}
             kind={field === 'roomType' ? 'room_type' : field === 'roomTypeForCharge' ? 'room_type_for_charge' : field === 'cmsMessageId' ? 'cms_message' : field === 'guaranteeType' ? 'guarantee' : field === 'track' ? 'track' : 'rate_plan'} compact /> :
-          <Field label={spec?.[1] || 'Value'} path={valuePath} editor={editor} compact type={spec?.[2] === 'date' ? 'date' : spec?.[2] === 'email' ? 'email' : field === 'taCommission' ? 'number' : 'text'} maxLength={field === 'billingReference' ? 4000 : field === 'requestedMealPlan' ? 120 : undefined} nativeMaxLength={field === 'billingReference' ? 50 : undefined} hint={field === 'billingReference' ? 'Select an A/R Account. Infor accepts at most 50 characters.' : field === 'guestEmail' ? 'Use the guest’s own email only when explicitly stated.' : field === 'taCommission' ? 'Enter a percentage from 0 to 100.' : field === 'requestedMealPlan' ? 'Choose a Rate Plan that matches this request. Infor checks the Meal Plan.' : undefined} />}
+          <Field label={spec?.[1] || 'Value'} path={valuePath} editor={editor} compact type={spec?.[2] === 'date' ? 'date' : spec?.[2] === 'email' ? 'email' : field === 'taCommission' ? 'percentage' : 'text'} emptyState={field === 'taCommission' ? 'unknown' : undefined} maxLength={field === 'billingReference' ? 4000 : field === 'requestedMealPlan' ? 120 : undefined} nativeMaxLength={field === 'billingReference' ? 50 : undefined} hint={field === 'billingReference' ? 'Select an A/R Account. Infor accepts at most 50 characters.' : field === 'guestEmail' ? 'Use the guest’s own email only when explicitly stated.' : field === 'taCommission' ? 'Enter a percentage from 0 to 100.' : field === 'requestedMealPlan' ? 'Choose a Rate Plan that matches this request. Infor checks the Meal Plan.' : undefined} />}
       </>}
   </div>;
 }

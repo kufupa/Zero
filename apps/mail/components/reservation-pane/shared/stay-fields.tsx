@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { effectiveAt, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { effectiveAt, record, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import styles from '../reservation-pane.module.css';
 
 function hasStaffOverride(editor: WorkbenchEditorProps, path: string) {
@@ -9,19 +9,43 @@ function hasStaffOverride(editor: WorkbenchEditorProps, path: string) {
     (path === key || path.startsWith(`${key}/`)) && value.state !== 'inherit');
 }
 
+function fieldEvidence(editor: WorkbenchEditorProps, path: string) {
+  const draft = editor.snapshot.session.draft;
+  const claim = draft.proposal.sourceClaims.find(row => row.path === path);
+  const requiredRefs = draft.fieldReviewRequirements[path]?.evidenceRefs;
+  const value = effectiveAt(editor.snapshot, path);
+  const annotation = value != null && value !== '' ? draft.proposal.annotations
+    .filter(row => row.basis === 'source' && (row.path === path || path.startsWith(`${row.path}/`)))
+    .sort((left, right) => right.path.length - left.path.length)[0] : undefined;
+  // Older drafts kept party evidence only in extraction. Recover it only for
+  // this request, generation, role and unchanged source name.
+  const field = path.split('/').at(-1);
+  const role = field === 'bookingAgency' ? 'bookingAgency' : field === 'arAccount' ? 'ar_account'
+    : field === 'organization' ? 'organization' : null;
+  const normal = (input: unknown) => text(input).normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  const name = normal(record(value).name);
+  const extracted = draft.extractionGenerationId === draft.generationId ? draft.extraction?.requests
+    .find(row => row.id === editor.request.id && row.kind === editor.request.kind) : undefined;
+  const partyClaims = role && name ? extracted?.parties.filter(row => row.role === role && normal(row.name?.value) === name)
+    .flatMap(row => row.name ? [row.name] : []) ?? [] : [];
+  const refs = [...new Set([...(claim?.sourceRefs ?? []), ...(requiredRefs ?? []), ...(annotation?.evidenceRefs ?? []),
+    ...partyClaims.flatMap(row => row.sourceRefs)])];
+  const reference = refs.find(ref => draft.observations.some(row => row.kind === 'source' &&
+    row.generationId === draft.generationId && row.propertyCode === draft.propertyCode &&
+    row.sourceMessageId === draft.source.messageId && row.sourceRefs.includes(ref)));
+  return { reference, excerpt: claim?.raw?.trim() ?? partyClaims[0]?.raw.trim() ?? '' };
+}
+
 export function Section({ title, children }: { title: string; children: ReactNode }) {
   return <section className={styles.section}><h3>{title}</h3>{children}</section>;
 }
 
 export function FieldSource({ editor, path, label }: { editor: WorkbenchEditorProps; path: string; label: string }) {
-  const draft = editor.snapshot.session.draft;
   if (!editor.onOpenEvidence || hasStaffOverride(editor, path)) return null;
-  const claim = draft.proposal.sourceClaims.find(row => row.path === path);
-  const refs = claim?.sourceRefs ?? draft.fieldReviewRequirements[path]?.evidenceRefs;
-  const reference = refs?.find(ref => draft.observations.some(row => row.kind === 'source' && row.sourceRefs.includes(ref)));
+  const { reference, excerpt } = fieldEvidence(editor, path);
   if (!reference) return null;
   return <button type="button" className={styles.fieldSource} aria-label={`View source for ${label}`}
-    title={claim?.raw || 'View source suggestion'} onClick={() => editor.onOpenEvidence?.(reference)}>✦</button>;
+    title={excerpt || 'View source suggestion'} onClick={() => editor.onOpenEvidence?.(reference)}>✦</button>;
 }
 
 /** Acknowledgement is stored against the displayed draft field, not local UI state. */
@@ -48,14 +72,11 @@ export function FieldReview({ editor, path, label, onPendingChange, requireRevie
     return () => { observer?.disconnect(); window.removeEventListener('resize', fit); };
   }, [peek]);
   const draft = editor.snapshot.session.draft;
-  const claim = draft.proposal.sourceClaims.find(row => row.path === path);
-  const refs = claim?.sourceRefs ?? draft.fieldReviewRequirements[path]?.evidenceRefs;
-  const reference = refs?.find(ref => draft.observations.some(row => row.kind === 'source' && row.sourceRefs.includes(ref)));
+  const { reference, excerpt } = fieldEvidence(editor, path);
   const value = effectiveAt(editor.snapshot, path);
   if (hasStaffOverride(editor, path)) return null;
   if (!reference && (!requireReview || value == null || value === '' || draft.fieldReviewRequirements[path]?.required === false)) return null;
   const accepted = draft.staffReviews[path]?.status === 'accepted' || draft.fieldReviewRequirements[path]?.required === false;
-  const excerpt = claim?.raw?.trim() ?? '';
   const showSource = async () => {
     try {
       const input = new TextEncoder().encode(`${editor.source.messageId}\u001fmessage\u001f${editor.source.messageId}`);
@@ -88,7 +109,7 @@ export function FieldReview({ editor, path, label, onPendingChange, requireRevie
 
 export function Field({ label, path, editor, type = 'text', options, disabled, hint, defaultValue, emptyState, resolvedValue, compact = false, review = false, requireReview = false, unmatchedOptionLabel, maxLength, nativeMaxLength }: {
   label: string; path: string; editor: WorkbenchEditorProps; type?: string;
-  options?: { value: string; label: string }[]; disabled?: boolean; hint?: string; defaultValue?: string; emptyState?: 'inherit' | 'none'; resolvedValue?: unknown; compact?: boolean; review?: boolean; requireReview?: boolean; unmatchedOptionLabel?: string; maxLength?: number; nativeMaxLength?: number;
+  options?: { value: string; label: string }[]; disabled?: boolean; hint?: string; defaultValue?: string; emptyState?: 'inherit' | 'none' | 'unknown'; resolvedValue?: unknown; compact?: boolean; review?: boolean; requireReview?: boolean; unmatchedOptionLabel?: string; maxLength?: number; nativeMaxLength?: number;
 }) {
   const id = useId();
   const saved = resolvedValue === undefined ? valueAt(editor.snapshot, path) : resolvedValue;
@@ -149,14 +170,16 @@ export function Count({ label, path, editor, min = 0, max = 12, review = false, 
   const [reviewing, setReviewing] = useState(false);
   const value = valueAt(editor.snapshot, path);
   const numeric = typeof value === 'number' ? value : null;
-  const change = (next: number) => { void editor.commands.edit(path, Math.max(min, Math.min(max, next))).catch(() => {}); };
+  const change = (next: number | null) => {
+    void editor.commands.edit(path, next === null ? null : Math.max(min, Math.min(max, next)), next === null ? 'unknown' : 'set').catch(() => {});
+  };
   return <div data-field-path={path} className={styles.field}><div className={styles.fieldLabel}><label>{label}</label>{review && <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} />}</div>{asSelect
-    ? <select aria-label={label} value={numeric ?? ''} disabled={reviewing || editor.view.busy} onChange={event => { if (event.target.value !== '') change(Number(event.target.value)); }}>
+    ? <select aria-label={label} value={numeric ?? ''} disabled={reviewing || editor.view.busy} onChange={event => change(event.target.value === '' ? null : Number(event.target.value))}>
       <option value="">Choose…</option>{numeric !== null && (numeric < min || numeric > max) && <option value={numeric}>{numeric}</option>}
       {Array.from({ length: max - min + 1 }, (_, i) => min + i).map(option => <option key={option} value={option}>{option}</option>)}
     </select> : <div className={styles.stepper}>
     <button type="button" aria-label={`Decrease ${label}`} disabled={reviewing || numeric === null || numeric <= min || editor.view.busy} onClick={() => change((numeric ?? min) - 1)}>−</button>
-    <input aria-label={label} type="number" min={min} max={max} value={numeric ?? ''} placeholder="?" disabled={reviewing} onChange={event => { const next = Number(event.target.value); if (event.target.value !== '' && Number.isInteger(next)) change(next); }} />
+    <input aria-label={label} type="number" min={min} max={max} value={numeric ?? ''} placeholder="?" disabled={reviewing} onChange={event => { const next = Number(event.target.value); if (event.target.value === '') change(null); else if (Number.isInteger(next)) change(next); }} />
     <button type="button" aria-label={`Increase ${label}`} disabled={reviewing || numeric !== null && numeric >= max || editor.view.busy} onClick={() => change((numeric ?? min - 1) + 1)}>+</button>
   </div>}</div>;
 }

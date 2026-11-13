@@ -1458,7 +1458,19 @@ function updateDraft(current: ReservationWorkflowV2Draft, input: {
         }
       }
     }
+    const oldPartyName = party || amendParty ? effectiveDraftPath(current, input.fieldPath) : undefined;
+    const partyName = (value: unknown) => String(value && typeof value === 'object' && 'name' in value
+      ? value.name ?? '' : value ?? '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+    const unchangedPartyName = Boolean(party || amendParty) && input.override.state === 'set' &&
+      Boolean(partyName(oldPartyName)) && partyName(oldPartyName) === partyName(input.override.value);
     for (const path of selections) {
+      if (unchangedPartyName) {
+        const override = current.fieldOverrides[path];
+        const selected = effectiveDraftPath(current, path) ?? (override && override.state !== 'inherit' ? null
+          : effectiveDraftPath(current, `${path.slice(0, -'/nativeSelectionRef'.length)}/suggestedRef`));
+        if (typeof selected === 'string') fieldOverrides[path] = { state: 'set', value: selected, updatedAt: input.override.updatedAt };
+        continue;
+      }
       fieldOverrides[path] = { state: 'unknown', updatedAt: input.override.updatedAt };
       delete staffReviews[path];
     }

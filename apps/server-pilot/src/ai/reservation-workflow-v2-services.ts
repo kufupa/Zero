@@ -23,6 +23,7 @@ import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
 import {
   compileReservationWorkflowV2Create,
+  effectiveSubtree,
   reservationWorkflowV2CreateMealPlanMatches,
   type ReservationWorkflowV2ServerContext,
 } from './reservation-workflow-v2-tools.js';
@@ -78,6 +79,21 @@ function stateContext(ctx: ReservationWorkflowV2ServerContext) {
 
 export function pointer(...parts: Array<string | number>): string {
   return `/${parts.map(part => encodeURIComponent(String(part))).join('/')}`;
+}
+
+export function createServiceCatalogueContext(draft: ReservationWorkflowV2Draft, requestId: string, allocationId: string): unknown {
+  const request = draft.proposal.content.requests.find(row => row.id === requestId && row.kind === 'create');
+  if (!request || request.kind !== 'create') return null;
+  const root = pointer('proposal', 'content', 'requests', requestId, 'body');
+  const effectiveAllocations = effectiveSubtree(draft, request.body.allocations, `${root}/allocations`);
+  const index = Array.isArray(effectiveAllocations) ? effectiveAllocations.findIndex(row => record(row)?.id === allocationId) : -1;
+  if (index < 0) return null;
+  const allocationPath = `${root}/allocations/${index}`;
+  const overrides = Object.entries(draft.fieldOverrides).filter(([path]) => path === root || path.startsWith(`${root}/`) &&
+    (!path.startsWith(`${root}/allocations/`) || path === allocationPath || path.startsWith(`${allocationPath}/`)))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([path, override]) => [path, override.state, override.state === 'set' ? override.value : null]);
+  return { body: { ...request.body, allocations: [request.body.allocations[index] ?? null] }, allocationIndex: index, overrides };
 }
 
 function effective(draft: ReservationWorkflowV2Draft, path: string, source: unknown): Effective {
@@ -187,15 +203,79 @@ function candidateFor(draft: ReservationWorkflowV2Draft, input: Input, row: Rese
   const candidateRef = valueAt(draft, path, service.itemCandidateRef);
   if ('issue' in candidateRef || typeof candidateRef.value !== 'string') return { issue: 'native_item_selection_required', path };
   const observation = draft.observations.find(item => item.ref === candidateRef.value && item.kind === 'service_preview' &&
-    item.status === 'complete' && item.propertyCode === draft.propertyCode && item.generationId === draft.generationId &&
+    item.status === 'complete' && item.coverage.complete && item.propertyCode === draft.propertyCode && item.generationId === draft.generationId &&
+    item.sourceMessageId === draft.source.messageId &&
     item.criteria.workflow === 'services' && item.criteria.kind === 'catalogue_candidate' &&
     item.criteria.serviceId === service.id && item.criteria.requestId === input.requestId &&
     item.criteria.sourceAllocationId === input.allocationId && item.criteria.fieldPath === path);
   const candidate = observation && record(observation.result)?.candidate;
-  if (!record(candidate) || !text(record(candidate)?.code) || !text(record(candidate)?.itemId)) {
+  if (!observation || !serviceCandidateInCurrentBatch(draft, observation) ||
+      !record(candidate) || !text(record(candidate)?.code) || !text(record(candidate)?.itemId)) {
     return { issue: 'host_catalogue_candidate_unverified', path };
   }
   return { candidate: record(candidate)!, path, observation: observation! };
+}
+
+/** A selected row remains current only if the latest complete read still contains its identity and business values. */
+export function serviceCandidateInCurrentBatch(draft: ReservationWorkflowV2Draft, candidate: ReservationWorkflowV2Observation): boolean {
+  const selected = record(candidate.criteria), selectedTarget = record(selected?.targetRef);
+  if (!selected || !['catalogue_candidate', 'saved_row_candidate'].includes(String(selected.kind))) return false;
+  const scopeMatches = (observation: ReservationWorkflowV2Observation) => {
+    const c = record(observation.criteria), target = record(c?.targetRef);
+    return c && observation.kind === 'service_preview' && observation.status === 'complete' && observation.coverage.complete &&
+      observation.generationId === draft.generationId && observation.propertyCode === draft.propertyCode &&
+      observation.sourceMessageId === draft.source.messageId && (c.sourceHash === undefined || c.sourceHash === draft.source.sourceHash) &&
+      c.workflow === 'services' && c.requestId === selected.requestId && c.serviceId === selected.serviceId && c.fieldPath === selected.fieldPath &&
+      (typeof selected.sourceAllocationId === 'string' ? c.sourceAllocationId === selected.sourceAllocationId && c.targetRef === undefined
+        : selectedTarget && target && c.sourceAllocationId === undefined && target.kind === 'saved_target' &&
+          target.requestId === selectedTarget.requestId && target.hintId === selectedTarget.hintId &&
+          c.targetObservationRef === selected.targetObservationRef);
+  };
+  if (!scopeMatches(candidate)) return false;
+  const history = draft.observations.filter(row => scopeMatches(row) && row.criteria.kind === selected.kind &&
+    record(record(row.result)?.candidate));
+  const markers = draft.observations.filter(row => {
+    const c = record(row.criteria), refs = record(row.result)?.candidateRefs;
+    return scopeMatches(row) && c?.kind === 'catalogue_batch' && c.catalogueKind === selected.kind &&
+      c.sourceHash === draft.source.sourceHash && typeof c.batchId === 'string' && Array.isArray(refs);
+  });
+  const markerValid = (marker: ReservationWorkflowV2Observation) => {
+    const refs = marker.result.candidateRefs;
+    return Array.isArray(refs) && new Set(refs).size === refs.length && refs.every(ref => typeof ref === 'string' &&
+      history.some(entry => entry.ref === ref && entry.criteria.batchId === marker.criteria.batchId));
+  };
+  if (selected.batchId !== undefined && !markers.some(marker => markerValid(marker) && marker.criteria.batchId === selected.batchId &&
+      Array.isArray(marker.result.candidateRefs) && marker.result.candidateRefs.includes(candidate.ref))) return false;
+  const latest = markers.at(-1);
+  if (!latest) {
+    if (selected.batchId !== undefined) return false;
+    const legacy = history.filter(row => row.criteria.batchId === undefined);
+    return typeof selected.sourceAllocationId !== 'string' || legacy.at(-1)?.criteria.createRequestDigest === selected.createRequestDigest;
+  }
+  if (!markerValid(latest)) return false;
+  if (typeof selected.sourceAllocationId === 'string') {
+    if (latest.criteria.createContext !== undefined && canonicalJson(latest.criteria.createContext) !==
+        canonicalJson(createServiceCatalogueContext(draft, String(selected.requestId), selected.sourceAllocationId))) return false;
+    if (typeof latest.criteria.createSemanticDigest === 'string') {
+      const compiled = compileReservationWorkflowV2Create(draft, String(selected.requestId), selected.sourceAllocationId, draft.propertyCode);
+      if (compiled.outcome !== 'ok' || compiled.semanticDigest !== latest.criteria.createSemanticDigest) return false;
+    }
+  }
+  const refs = latest.result.candidateRefs;
+  if (!Array.isArray(refs)) return false;
+  const old = record(record(candidate.result)?.candidate);
+  if (!old) return false;
+  return history.some(row => {
+    if (!refs.includes(row.ref)) return false;
+    const current = record(record(row.result)?.candidate);
+    if (!current || typeof selected.sourceAllocationId === 'string' &&
+        selected.createRequestDigest !== row.criteria.createRequestDigest) return false;
+    if (selected.kind === 'catalogue_candidate') return Boolean(text(old.itemId)) && text(old.itemId) === text(current.itemId) &&
+      Boolean(text(old.code)) && text(old.code) === text(current.code);
+    const oldBusiness = savedServiceBusiness(old.fields), currentBusiness = savedServiceBusiness(current.fields);
+    return Boolean(text(old.nativeId)) && text(old.nativeId) === text(current.nativeId) && Boolean(oldBusiness && currentBusiness) &&
+      canonicalJson(oldBusiness) === canonicalJson(currentBusiness);
+  });
 }
 
 export function reservationWorkflowV2CompileServiceItem(draft: ReservationWorkflowV2Draft, input: Input,
@@ -378,29 +458,43 @@ export async function reservationWorkflowV2LookupServices(ctx: ReservationWorkfl
     const coverage = record(listing?.coverage);
     const actualMeal = record(native.applied)?.mealPlan;
     const boundMeal = record(record(native.requestBinding?.request)?.room)?.mealPlan;
+    const validCandidates = Array.isArray(listing?.candidates) && candidates.length === listing.candidates.length &&
+      candidates.every(candidate => candidate && text(candidate.code) && text(candidate.itemId) && typeof candidate.name === 'string') &&
+      new Set(candidates.map(candidate => text(candidate?.itemId))).size === candidates.length;
     const complete = native.outcome === 'prepared' && typeof record(native.requestBinding)?.digest === 'string' &&
       record(native.ratePlanAvailability) !== null && actualMeal === boundMeal &&
       reservationWorkflowV2CreateMealPlanMatches(compiled.requestedMealPlan, compiled.mealPlan, actualMeal, ctx.property.propertyCode) &&
       listing?.outcome === 'ok' && listing.unsaved === true &&
-      listing.saved !== true && listing.propertyCode === 'HRCEN' && coverage?.complete === true;
+      listing.saved !== true && listing.propertyCode === 'HRCEN' && coverage?.complete === true && validCandidates;
     const observations: ReservationWorkflowV2Observation[] = [];
     const serviceRows = new Map(addRows.map(row => [row.service.id, row]));
     for (const row of serviceRows.values()) {
       const service = row.service as unknown as Record<string, unknown>;
       const path = pointer('proposal', 'content', 'services', row.serviceIndex, 'itemCandidateRef');
+      const batchId = randomUUID(), candidateRefs: string[] = [];
       for (const candidateValue of candidates) {
         const candidate = record(candidateValue)!;
         if (!text(candidate.code) || !text(candidate.itemId) || typeof candidate.name !== 'string') continue;
-        observations.push({ ref: randomUUID(), generationId: loaded.draft.generationId, kind: 'service_preview',
+        const ref = randomUUID(); candidateRefs.push(ref);
+        observations.push({ ref, generationId: loaded.draft.generationId, kind: 'service_preview',
           status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(), propertyCode: loaded.draft.propertyCode,
           sourceMessageId: loaded.draft.source.messageId, sourceRefs: [],
           criteria: { workflow: 'services', kind: 'catalogue_candidate', serviceId: service.id,
             requestId: input.requestId, sourceAllocationId: input.allocationId, fieldPath: path,
-            createRequestDigest: record(native.requestBinding)?.digest ?? null, coverage: coverage ?? null },
+            createRequestDigest: record(native.requestBinding)?.digest ?? null, sourceHash: loaded.draft.source.sourceHash, batchId, coverage: coverage ?? null },
           coverage: { complete, notes: complete ? [] : ['native_item_catalogue_incomplete_or_create_prepare_unverified'] },
           result: { candidate: { code: candidate.code, name: candidate.name, itemId: candidate.itemId },
             catalogCoverage: coverage ?? null, saved: false } });
       }
+      if (complete) observations.push({ ref: randomUUID(), generationId: loaded.draft.generationId, kind: 'service_preview',
+        status: 'complete', observedAt: new Date().toISOString(), propertyCode: loaded.draft.propertyCode,
+        sourceMessageId: loaded.draft.source.messageId, sourceRefs: [],
+        criteria: { workflow: 'services', kind: 'catalogue_batch', catalogueKind: 'catalogue_candidate', serviceId: service.id,
+          requestId: input.requestId, sourceAllocationId: input.allocationId, fieldPath: path, batchId,
+          sourceHash: loaded.draft.source.sourceHash, createRequestDigest: record(native.requestBinding)?.digest,
+          createSemanticDigest: compiled.semanticDigest,
+          createContext: createServiceCatalogueContext(loaded.draft, input.requestId, input.allocationId) },
+        coverage: { complete: true, notes: [] }, result: { candidateRefs, saved: false } });
     }
     if (!observations.length) {
       const detail = { status: text(listing?.outcome) ?? 'failed', issue: text(listing?.issue) ?? native.issue ?? 'native_item_catalogue_empty',
@@ -412,7 +506,8 @@ export async function reservationWorkflowV2LookupServices(ctx: ReservationWorkfl
       if (saved.status !== 'ok') return { ...saved };
     }
     return { status: unsupported.length ? 'partial' : 'ok', requestId: input.requestId, allocationId: input.allocationId,
-      candidates: observations.map(observation => ({ ref: observation.ref, ...(record(observation.result)?.candidate as object) })),
+      candidates: observations.flatMap(observation => observation.criteria.kind === 'catalogue_candidate'
+        ? [{ ref: observation.ref, ...(record(observation.result)?.candidate as object) }] : []),
       unsupportedServices: unsupported.map(row => ({ serviceId: row.service.id, operation: row.service.operation,
         targetRef: row.targetRef, issue: 'saved_addon_edit_remove_not_connected' })),
       coverage, observations, nativeCreate: { outcome: native.outcome, ratePlanAvailability: native.ratePlanAvailability,
@@ -796,19 +891,36 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
       const itemPath = pointer('proposal', 'content', 'services', row.serviceIndex, 'itemCandidateRef');
       const savedRowPath = pointer('proposal', 'content', 'services', row.serviceIndex, 'targets', row.targetIndex, 'savedRowCandidateRef');
       const options = operation === 'add' ? native.candidates : native.details;
+      if (!Array.isArray(options) || options.some(raw => {
+        const candidate = record(raw), fields = record(candidate?.fields);
+        return !candidate || (operation === 'add' ? !text(candidate.code) || !text(candidate.itemId) : !text(candidate.nativeId) || !fields);
+      })) return { status: 'needs_input', issue: 'saved_addon_read_incomplete' };
+      const ids = options.map(raw => text(record(raw)?.[operation === 'add' ? 'itemId' : 'nativeId']));
+      if (new Set(ids).size !== ids.length) return { status: 'needs_input', issue: 'saved_addon_read_incomplete' };
+      const batchId = randomUUID(), candidateRefs: string[] = [];
       for (const raw of options as unknown[]) {
         const candidate = record(raw), fields = record(candidate?.fields);
         if (!candidate || (operation === 'add' ? !text(candidate.code) || !text(candidate.itemId) : !text(candidate.nativeId) || !fields)) continue;
-        const item: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: draft.generationId, kind: 'service_preview',
+        const ref = randomUUID(); candidateRefs.push(ref);
+        const item: ReservationWorkflowV2Observation = { ref, generationId: draft.generationId, kind: 'service_preview',
           status: 'complete', observedAt: new Date().toISOString(), propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId,
           sourceRefs: [selected.observation.ref], criteria: { workflow: 'services', kind: operation === 'add' ? 'catalogue_candidate' : 'saved_row_candidate',
             requestId: input.requestId, serviceId: row.service.id, targetRef: input.targetRef, targetObservationRef: selected.observation.ref,
-            fieldPath: operation === 'add' ? itemPath : savedRowPath }, coverage: { complete: true, notes: [] },
+            fieldPath: operation === 'add' ? itemPath : savedRowPath, batchId, sourceHash: draft.source.sourceHash }, coverage: { complete: true, notes: [] },
           result: { candidate } };
         const saved = await appendReservationWorkflowV2Observation(stateContext(ctx), { workItemId: input.workItemId, source: input.source, observation: item });
         if (saved.status !== 'ok') return { ...saved };
         count += 1;
       }
+      const marker: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: draft.generationId, kind: 'service_preview',
+        status: 'complete', observedAt: new Date().toISOString(), propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId,
+        sourceRefs: [selected.observation.ref], criteria: { workflow: 'services', kind: 'catalogue_batch',
+          catalogueKind: operation === 'add' ? 'catalogue_candidate' : 'saved_row_candidate', requestId: input.requestId,
+          serviceId: row.service.id, targetRef: input.targetRef, targetObservationRef: selected.observation.ref,
+          fieldPath: operation === 'add' ? itemPath : savedRowPath, batchId, sourceHash: draft.source.sourceHash },
+        coverage: { complete: true, notes: [] }, result: { candidateRefs, saved: false } };
+      const saved = await appendReservationWorkflowV2Observation(stateContext(ctx), { workItemId: input.workItemId, source: input.source, observation: marker });
+      if (saved.status !== 'ok') return { ...saved };
     }
     return { status: 'ok', targetRef: input.targetRef, candidates: count, saved: false };
   } catch { return { status: 'failed', issue: 'saved_addon_read_failed', saved: false }; }
@@ -846,7 +958,7 @@ export function reservationWorkflowV2CompileSavedService(draft: ReservationWorkf
     && item.criteria.kind === (operation === 'add' ? 'catalogue_candidate' : 'saved_row_candidate'));
   const candidate = record(record(candidateObservation?.result)?.candidate);
   const prior = savedServiceBusiness(candidate?.fields), nativeId = text(candidate?.nativeId);
-  if (!candidateObservation || !candidate || (operation === 'add' ? !text(candidate.code) || !text(candidate.itemId)
+  if (!candidateObservation || !serviceCandidateInCurrentBatch(draft, candidateObservation) || !candidate || (operation === 'add' ? !text(candidate.code) || !text(candidate.itemId)
     : !nativeId || !/^\d+$/.test(nativeId) || !prior)) return { status: 'needs_input' as const, issue: operation === 'add' ? 'select_native_item' : 'select_exact_saved_addon_row' };
   const fields: Record<string, string> = {}, paths: Record<string, string> = {}, errors: string[] = [];
   if (operation !== 'remove') for (const field of ['quantity', 'startDate', 'endDate', 'unitPrice', 'frequency', 'pricingControl', 'folio', 'comment'] as const) {

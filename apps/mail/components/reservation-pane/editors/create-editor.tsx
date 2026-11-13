@@ -22,7 +22,7 @@ const partyFields: BookingField[] = [
   { key: 'organization', label: 'Organization', party: true },
   { key: 'arAccount', label: 'A/R Account', party: true },
   { key: 'billingReference', label: 'Billing Reference', maxLength: 4000, hint: 'Select an A/R Account. Infor accepts at most 50 characters.' },
-  { key: 'taCommission', label: 'TA Commission (%)', type: 'percentage', maxLength: 40, hint: 'Enter a percentage from 0 to 100.' },
+  { key: 'taCommission', label: 'Travel agency commission (%)', type: 'percentage', maxLength: 40, hint: 'Enter a percentage from 0 to 100.' },
 ];
 const stayFields: BookingField[] = [
   { key: 'reasonForStay', label: 'Reason for Stay', picker: 'reason_for_stay' },
@@ -175,8 +175,8 @@ export function ChildAges({ editor, path, max = 12 }: { editor: Editor; path: st
     <div className={styles.localField} data-field-path={countPath}>
       <div className={styles.countHeading}><label htmlFor={countId}>Children</label><FieldReview editor={editor} path={countPath} label="Children" onPendingChange={setReviewing} /></div>
       <div className={styles.countStepper}>
-        <button type="button" aria-label="Decrease Children" disabled={reviewing || count === '' || Number(count) <= 0 || editor.view.busy} onMouseDown={event => event.preventDefault()} onClick={() => step(-1)}>−</button>
-        <input id={countId} type="number" min="0" max={max} value={count} disabled={reviewing} onChange={event => updateCount(event.target.value)} onBlur={() => void commit('count').catch(() => {})} />
+        <button type="button" aria-label={count === '' ? 'Set Children to 0' : 'Decrease Children'} disabled={reviewing || count !== '' && Number(count) <= 0 || editor.view.busy} onMouseDown={event => event.preventDefault()} onClick={() => step(-1)}>−</button>
+        <input id={countId} type="number" min="0" max={max} value={count} placeholder="?" disabled={reviewing} onChange={event => updateCount(event.target.value)} onBlur={() => void commit('count').catch(() => {})} />
         <button type="button" aria-label="Increase Children" disabled={reviewing || Number(count) >= max || editor.view.busy} onMouseDown={event => event.preventDefault()} onClick={() => step(1)}>+</button>
       </div>
     </div>
@@ -379,13 +379,26 @@ export function CreateEditor(editor: Editor) {
   const defaultRecipient = resolveCreateCmsRecipientDefault(snapshot, request.id, editor.source.sender);
   const hasCompleted = allocations.some((allocation) => Boolean(completedRoom(editor, text(allocation.id))));
   const allCompleted = allocations.length > 0 && allocations.every((allocation) => Boolean(completedRoom(editor, text(allocation.id))));
+  const commission = partyFields.find(field => field.key === 'taCommission')!;
+  const commissionPath = `${shared}/taCommission`;
+  const commissionValue = valueAt(snapshot, commissionPath);
+  const commissionInvalid = commissionValue != null && (typeof commissionValue !== 'number' || !Number.isFinite(commissionValue) || commissionValue < 0 || commissionValue > 100);
+  const commissionNeedsAttention = commissionInvalid || snapshot.session.draft.fieldReviewRequirements[commissionPath]?.required === true ||
+    Boolean(snapshot.fields[commissionPath]?.issue) || snapshot.issues.some(issue => issue.path === commissionPath) ||
+    snapshot.preparationViews.some(item => item.requestId === request.id && item.fields?.some(field => field.includes('taCommission')));
+  const [commissionOpen, setCommissionOpen] = useState(commissionNeedsAttention);
+  useEffect(() => { if (commissionNeedsAttention) setCommissionOpen(true); }, [commissionNeedsAttention]);
   const sharedBooking = [stayFields.find(field => field.key === 'guaranteeType')!, ...roomFields];
   const extraStay = [...stayFields.filter(field => field.key !== 'guaranteeType'), trackField];
   return <div className={`${styles.editor} ${styles.compactCreate}`}>
     {hasCompleted && <p className={styles.notice}>Saved rooms keep their confirmed details. Changes to shared values and dates apply to remaining rooms only.</p>}
     <Section title="Commercial">
       <fieldset disabled={allCompleted} className={styles.plainFieldset}>
-        {partyFields.map(field => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
+        {partyFields.filter(field => field.key !== 'taCommission').map(field => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
+        <details className={styles.details} open={commissionOpen} onToggle={event => setCommissionOpen(event.currentTarget.open)}>
+          <summary>Travel agency commission{typeof commissionValue === 'number' && !commissionInvalid ? ` · ${commissionValue}%` : ''}</summary>
+          <BookingControl field={commission} path={commissionPath} editor={editor} />
+        </details>
         <UnsupportedTerms editor={editor} path={`${shared}/guestOptIn`} />
       </fieldset>
     </Section>
@@ -396,6 +409,19 @@ export function CreateEditor(editor: Editor) {
       const sectionHasCompleted = rooms.some(({ allocation }) => Boolean(completedRoom(editor, text(allocation.id))));
       const sectionAllCompleted = rooms.length > 0 && rooms.every(({ allocation }) => Boolean(completedRoom(editor, text(allocation.id))));
       const requested = valueAt(snapshot, `${sectionPath}/requestedRooms`);
+      const requestedTotals = record(effectiveAt(snapshot, `${sectionPath}/requestedTotals`));
+      const roomTotal = (field: 'adults' | 'childCount') => {
+        const values = rooms.map(({ allocation }) => record(allocation.occupancy)[field]);
+        if (!values.length || values.some(value => typeof value !== 'number' || !Number.isSafeInteger(value) || value < (field === 'adults' ? 1 : 0))) return null;
+        return values.reduce<number>((sum, value) => sum + Number(value), 0);
+      };
+      const adults = roomTotal('adults'), children = roomTotal('childCount');
+      const discrepancies = [
+        requested != null && requested !== rooms.length ? `rooms: requested ${text(requested)}, added ${rooms.length}` : '',
+        requestedTotals.adults != null && adults !== null && requestedTotals.adults !== adults ? `adults: requested ${text(requestedTotals.adults)}, assigned ${adults}` : '',
+        requestedTotals.childCount != null && children !== null && requestedTotals.childCount !== children ? `children: requested ${text(requestedTotals.childCount)}, assigned ${children}` : '',
+      ].filter(Boolean);
+      const unresolved = requestedTotals.adults != null && adults === null || requestedTotals.childCount != null && children === null;
       return <section className={styles.group} key={sectionId || sectionIndex}>
         <div className={styles.groupHeading}><strong>{sections.length > 1 ? `Date range ${sectionIndex + 1}` : 'Stay dates'}</strong>
           <button type="button" className={styles.linkButton} aria-label={`Add room to date range ${sectionIndex + 1}`} disabled={view.busy || allocations.length >= 8 || !sectionId}
@@ -406,14 +432,18 @@ export function CreateEditor(editor: Editor) {
           <Nights editor={editor} sectionPath={sectionPath} />
           <Field label="Departure Date" path={`${sectionPath}/departure`} editor={editor} type="date" disabled={sectionAllCompleted} review />
         </div>
-        <p className={styles.note}>{rooms.length} {rooms.length === 1 ? 'room' : 'rooms'} on these dates{requested != null && Number(requested) !== rooms.length ? ` · requested ${text(requested)}` : ''}</p>
-        {record(section.requestedTotals).adults != null && <p className={styles.note}>Requested group: {text(record(section.requestedTotals).adults)} adults{record(section.requestedTotals).childCount != null ? `, ${text(record(section.requestedTotals).childCount)} children` : ''}. Enter occupancy for each room.</p>}
-        <details className={styles.details}><summary>Requested room and group totals</summary><fieldset disabled={sectionHasCompleted} className={styles.plainFieldset}>
-          <Field label="Requested rooms" type="number" path={`${sectionPath}/requestedRooms`} editor={editor} review />
-          <Field label="Requested group adults" type="number" path={`${sectionPath}/requestedTotals/adults`} editor={editor} review />
-          <Field label="Requested group children" type="number" path={`${sectionPath}/requestedTotals/childCount`} editor={editor} review />
-          <small>Blank means unknown. Enter each room’s occupancy below; these totals must agree before saving.</small>
-        </fieldset></details>
+        <p className={styles.note}>{rooms.length} {rooms.length === 1 ? 'room' : 'rooms'} · {adults ?? 'unknown'} adults · {children ?? 'unknown'} children on these dates</p>
+        {discrepancies.length > 0 && <p className={styles.notice} role="alert">Requested totals differ from the rooms: {discrepancies.join('; ')}. Review the rooms or adjust the requested totals.</p>}
+        {unresolved && <p className={styles.note}>Enter occupancy for every room to compare with the requested totals.</p>}
+        <details className={styles.details}><summary>Review source request totals</summary>
+          <p className={styles.note}>Requested: {requested == null ? 'unknown' : text(requested)} rooms · {requestedTotals.adults == null ? 'unknown' : text(requestedTotals.adults)} adults · {requestedTotals.childCount == null ? 'unknown' : text(requestedTotals.childCount)} children.</p>
+          <details className={styles.details}><summary>Adjust requested totals</summary><fieldset disabled={sectionHasCompleted} className={styles.plainFieldset}>
+            <Field label="Requested rooms" type="number" path={`${sectionPath}/requestedRooms`} editor={editor} review />
+            <Field label="Requested adults" type="number" path={`${sectionPath}/requestedTotals/adults`} editor={editor} review />
+            <Field label="Requested children" type="number" path={`${sectionPath}/requestedTotals/childCount`} editor={editor} review />
+            <small>Blank means unknown. Known requested totals must match the rooms before saving.</small>
+          </fieldset></details>
+        </details>
         {rooms.map(({ allocation, index }) => completedRoom(editor, text(allocation.id)) ? null : <div className={styles.occupancyRow} key={text(allocation.id) || index}>
           <strong>Room {index + 1} occupancy</strong>
           <div className={styles.twoCol}>
