@@ -220,8 +220,15 @@ const amendFieldSchema = z.enum([
   'mealPlan', 'roomCount', 'bookingAgency', 'organization', 'arAccount', 'billingReference', 'taCommission', 'track', 'guaranteeType',
   'cmsMessageId', 'cmsRecipient',
 ]);
+export const reservationWorkflowV2TrackSchema = z.object({
+  lookupCode: z.string().regex(/^[A-Z0-9]{1,12}$/),
+  display: z.string().max(200).regex(/\S/u)
+    .refine((text) => ![...text].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)),
+}).strict();
+export type ReservationWorkflowV2Track = z.infer<typeof reservationWorkflowV2TrackSchema>;
 const amendScalarSchema = z.union([
   z.string().max(4000), z.number(), z.boolean(), z.array(z.number().int().nullable()).max(12), partySchema,
+  reservationWorkflowV2TrackSchema,
 ]);
 const changeSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('set'), field: amendFieldSchema, value: amendScalarSchema, sourceRefs: z.array(refSchema).max(100) }).strict(),
