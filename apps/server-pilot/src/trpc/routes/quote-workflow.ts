@@ -372,7 +372,7 @@ export const quoteWorkflowRouter = router({
     if (input.kind === 'read') return { status: 'ready' as const, reason: previous ? null : 'RATE_PARTY_SELECTION_REQUIRED',
       requestId: binding.request.requestId, seq: selected.item.revisionSeq, selection: previous?.selection ?? null };
     if (input.selection.kind === 'selected') {
-      for (const [kind, pick] of [['agency', input.selection.agency], ['company', input.selection.organization]] as const) {
+      for (const [kind, pick] of [['bookingAgency', input.selection.bookingAgency], ['organization', input.selection.organization]] as const) {
         if (!pick) continue;
         const job = await readHmsJobView({ transportId: ctx.activeTransportId, runId: pick.jobId,
           threadId: binding.source.threadId, messageId: binding.source.messageId, sourceHash: binding.source.sourceHash,

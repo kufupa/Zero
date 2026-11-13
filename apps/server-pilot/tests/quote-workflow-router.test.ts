@@ -50,7 +50,7 @@ const quoteGroup = {
   rooms: 1,
   adultsPerRoom: 2,
   childAges: [] as number[],
-  board: 'bb' as const,
+  mealPlan: 'bb' as const,
   roomPreference: null,
   guestNames: [] as string[],
 };
@@ -587,7 +587,7 @@ describe('quoteWorkflow.analyseSelection', () => {
       expect(result.source).toBe('luna');
       expect(result.aiUnavailable).toBe(false);
       expect(result.workflow).toBe('quote');
-      expect(result.groups[0]).toMatchObject({ quantity: 1, adults: 2, board: 'bb' });
+      expect(result.groups[0]).toMatchObject({ quantity: 1, adults: 2, mealPlan: 'bb' });
       expect(result.sourceRevision).toBe(4);
     }
   });
