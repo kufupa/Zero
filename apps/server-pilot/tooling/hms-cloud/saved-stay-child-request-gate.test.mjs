@@ -62,9 +62,10 @@ test('copies occupancy inputs and refuses contradictory, missing, or expired pre
   assert.equal(gate.consume(validate()), true);
   const unknownPrior = createSavedChildStageRequestGate({ ...input(), priorAges: null });
   assert.equal(unknownPrior.armRead(), true);
-  assert.equal(unknownPrior.consume(read()), true);
+  assert.equal(unknownPrior.consume(request('/web/base/OSRESV.HDR.getChildAges',
+    { propertyCode: 'HRCEN', reservationStayId: '5', childAges: [] })), true);
   for (const invalid of [{ ...input(), nextAges: [18] },
-    { ...input(), priorBands: { child1: 0, child2: 0, child3: 2 } },
+    { ...input(), priorBands: { child1: 0, child2: 0, child3: 3 } },
     { ...input(), stayId: '' }, { ...input(), deadlineAt: performance.now() - 1 }]) {
     assert.throws(() => createSavedChildStageRequestGate(invalid), /CHILD_STAGE_GATE_INPUT_INVALID/);
   }
