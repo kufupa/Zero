@@ -114,15 +114,22 @@ export function createServiceCatalogueContext(snapshot: ReservationPaneSnapshot,
   const request = draft.proposal.content.requests.find(row => row.id === requestId && row.kind === 'create');
   if (!request || request.kind !== 'create') return null;
   const root = `${requestPath(requestId)}/body`;
-  const allocations = effectiveAt(snapshot, `${root}/allocations`);
-  const index = Array.isArray(allocations) ? allocations.findIndex(row => record(row).id === allocationId) : -1;
+  const allocationsPath = `${root}/allocations`;
+  const allocations = effectiveAt(snapshot, allocationsPath);
+  if (!Array.isArray(allocations)) return null;
+  const index = allocations.findIndex(row => record(row).id === allocationId);
   if (index < 0) return null;
+  const arrayOverride = draft.fieldOverrides[allocationsPath];
+  const baseAllocations = arrayOverride?.state === 'set' && Array.isArray(arrayOverride.value)
+    ? arrayOverride.value : request.body.allocations;
   const allocationPath = `${root}/allocations/${index}`;
-  const overrides = Object.entries(draft.fieldOverrides).filter(([path]) => path === root || path.startsWith(`${root}/`) &&
-    (!path.startsWith(`${root}/allocations/`) || path === allocationPath || path.startsWith(`${allocationPath}/`)))
+  const overrides = Object.entries(draft.fieldOverrides).filter(([path]) => path !== allocationsPath && (path === root ||
+    path.startsWith(`${root}/`) && (!path.startsWith(`${root}/allocations/`) ||
+      path === allocationPath || path.startsWith(`${allocationPath}/`))))
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([path, override]) => [path, override.state, override.state === 'set' ? override.value : null]);
-  return { body: { ...request.body, allocations: [request.body.allocations[index] ?? null] }, allocationIndex: index, overrides };
+  const allocationStructure = allocations.map(row => ({ id: record(row).id, dateSectionId: record(row).dateSectionId }));
+  return { body: { ...request.body, allocations: [baseAllocations[index] ?? null] }, allocationIndex: index, allocationStructure, overrides };
 }
 
 export function currentServiceCatalogue(snapshot: ReservationPaneSnapshot, input: { requestId: string; serviceId: string;

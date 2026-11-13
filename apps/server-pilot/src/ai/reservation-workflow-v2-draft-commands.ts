@@ -248,6 +248,26 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
         const next = linkCreatedAddonTargetDraft(draft, input.requestId, input.allocationId, input.serviceId, resolution.proof);
         return next && safeStructure(original, next.draft) ? next : null;
       }
+      if (request.kind === 'create' && request.body.dateSections.length === 1 && draft.extractionGenerationId === draft.generationId) {
+        const claim = draft.extraction?.requests.find(row => row.id === request.id && row.kind === 'create')?.roomCount;
+        const count = typeof claim?.value === 'number' ? claim.value : typeof claim?.value === 'string' && /^\d{1,6}$/.test(claim.value.trim())
+          ? Number(claim.value.trim()) : null;
+        const path = `${root}/body/dateSections/0/requestedRooms`;
+        if (count !== null && Number.isSafeInteger(count) && count >= 1 && count <= 8 &&
+            request.body.dateSections[0]!.requestedRooms === count && claim?.sourceRefs.length &&
+            claim.sourceRefs.every(ref => request.sourceRefs.includes(ref)) &&
+            !proposal.annotations.some(row => row.path === path && row.basis === 'source')) {
+          // Bind legacy extraction-only totals before structure can make their original section ambiguous.
+          if (proposal.annotations.length < 2000) proposal.annotations.push({ path, basis: 'source', evidenceRefs: claim.sourceRefs });
+          else {
+            const existing = proposal.sourceClaims.find(row => row.path === `/extraction/requests/${request.id}/roomCount`);
+            if (existing) existing.path = path;
+            else if (proposal.sourceClaims.length < 1000 && !proposal.sourceClaims.some(row => row.path === path))
+              proposal.sourceClaims.push({ path, raw: claim.raw, sourceRefs: claim.sourceRefs });
+            else if (!proposal.sourceClaims.some(row => row.path === path)) return null;
+          }
+        }
+      }
       const before = structuredClone(proposal);
       let createdId: string | undefined;
       const changedDateIds = new Set<string>();
@@ -486,11 +506,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           const previousIndex = previousRequest?.kind === 'create' ? previousRequest.body.dateSections.findIndex(row => row.id === date.id) : -1;
           const previousPaths = [`${root}/body/dateSections/${previousIndex}/requestedRooms`,
             `${root}/body/dateSections/${encodeURIComponent(date.id)}/requestedRooms`];
-          const extracted = draft.extractionGenerationId === draft.generationId ? draft.extraction?.requests
-            .find(row => row.id === request.id && row.kind === 'create') : undefined;
-          const extractedCount = previousRequest?.kind === 'create' && previousRequest.body.dateSections.length === 1 &&
-            extracted?.roomCount && extracted.roomCount.value === previousRequest.body.dateSections[previousIndex]?.requestedRooms;
-          const sourceCount = extractedCount || before.annotations.some(row => row.basis === 'source' && previousPaths.includes(row.path)) ||
+          const sourceCount = before.annotations.some(row => row.basis === 'source' && previousPaths.includes(row.path)) ||
             before.sourceClaims.some(row => previousPaths.includes(row.path)) || previousPaths.some(path =>
               draft.fieldOverrides[path] && draft.fieldOverrides[path]!.state !== 'inherit');
           // Allocation edits change the working booking, not the cited request.
@@ -936,7 +952,7 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
         const sourceName = normalizeGuestName(String(observation.criteria.name ?? ''));
         const currentName = normalizeGuestName([guestValue('firstName'), guestValue('lastName')].filter(Boolean).join(' '));
         const queryMatches = sourceBound ? Boolean(sourceName || normalize(observation.criteria.email) || phone(observation.criteria.mobile)) &&
-          sourceName === currentName && normalize(observation.criteria.email) === normalize(guestValue('email')) &&
+          (sourceName === currentName || sameGuestName(observation.criteria.name, currentName)) && normalize(observation.criteria.email) === normalize(guestValue('email')) &&
           phone(observation.criteria.mobile) === phone(guestValue('mobile'))
           : query.field === 'lastName' && Boolean(normalize(query.value)) && normalize(query.value) === normalize(guestValue('lastName')) &&
             normalize(query.firstName) === normalize(guestValue('firstName')) && normalize(query.email) === normalize(guestValue('email')) &&
