@@ -2807,13 +2807,13 @@ describe('the Find in HMS picker in the quote header', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm Company' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Organization' }));
     expect(onPatchStaffHeader).toHaveBeenCalledWith(
       expect.objectContaining({ organization: 'Acme Travel', parties: { organization: ACME } }),
       { staffEdit: true },
     );
-    expect(screen.getByRole('button', { name: 'Edit Company' })).toBeTruthy();
-    expect(screen.queryByRole('combobox', { name: 'Company from HMS' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Edit Organization' })).toBeTruthy();
+    expect(screen.queryByRole('combobox', { name: 'Organization from HMS' })).toBeNull();
   });
 
   it('drops a pick only when its own field is edited away from its name', () => {
