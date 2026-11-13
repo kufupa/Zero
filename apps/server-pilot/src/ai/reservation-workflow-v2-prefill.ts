@@ -1790,7 +1790,7 @@ function quoteGroupsShareRoomScope(groups: Array<{ roomCodes: string[] }>): bool
 }
 
 function countedSourceQuoteRooms(request: ReservationWorkflowV2Extraction['requests'][number],
-  evidence: ReservationWorkflowV2Evidence[], currentRefs: Set<string>) {
+  evidence: ReservationWorkflowV2Evidence[], currentRefs: Set<string>, singleRequest: boolean) {
   const rows = request.roomTypeHints.flatMap((hint) => {
     const claim = currentClaim(hint, currentRefs);
     const match = claim ? /^\s*(\d{1,3})\s*(?:[x×]\s*)?(.+?\brooms?)\s*$/iu.exec(claim.raw) : null;
@@ -1815,11 +1815,7 @@ function countedSourceQuoteRooms(request: ReservationWorkflowV2Extraction['reque
   }));
   const text = normalizedFact(source ? bodyText(source) : '');
   const starts = rows.map((row) => text.indexOf(normalizedFact(row.claim.raw)));
-  return rows.map((row, index) => {
-    const start = starts[index] ?? -1;
-    const end = starts.filter((position) => position > start).sort((a, b) => a - b)[0] ?? text.length;
-    const clause = source && start >= 0 ? text.slice(start, Math.min(end, start + 500)).split(
-      /\b(?:check\s*-?\s*(?:in|out)|arrival|departure|regards|sincerely|thank\s+you|notes?|comments?|payment|I|we|please\s+note|however|also)\b/iu)[0] ?? '' : '';
+  const mealForClause = (clause: string) => {
     const affirmativeMeal = (pattern: RegExp) => {
       const mentions = clause.split(/[;,/.!?]|\bbut\b/iu).flatMap((fragment) => {
         const meals = [...fragment.matchAll(/\b(?:dinner|breakfast|dbb|b&b)\b/giu)];
@@ -1838,7 +1834,37 @@ function countedSourceQuoteRooms(request: ReservationWorkflowV2Extraction['reque
       return mentions.length > 0 && mentions.every(Boolean);
     };
     const dinner = affirmativeMeal(/\bdinner\b|\bdbb\b/iu), breakfast = affirmativeMeal(/\bbreakfast\b|\bb&b\b|\bdbb\b/iu);
-    const board = dinner && breakfast ? 'dinner_bb' : breakfast ? 'bb' : dinner ? 'Dinner' : null;
+    return dinner && breakfast ? 'dinner_bb' : breakfast ? 'bb' : dinner ? 'Dinner' : null;
+  };
+  const paragraphs = source && singleRequest ? bodyText(source).split(/\r?\n\s*\r?\n/u).filter((paragraph) =>
+    rows.every((row) => normalizedFact(paragraph).includes(normalizedFact(row.claim.raw)))) : [];
+  const paragraph = paragraphs.length === 1 ? normalizedFact(paragraphs[0]) : '';
+  const firstRoom = paragraph ? Math.min(...rows.map((row) => paragraph.indexOf(normalizedFact(row.claim.raw)))) : -1;
+  const header = firstRoom >= 0 ? paragraph.slice(0, firstRoom) : '';
+  const scopedHeaders = header.split(/[;.!?]/u).filter((clause) =>
+    /\b(?:all|each|every)\s+(?:the\s+)?(?:rooms?|guests?)\b/iu.test(clause) &&
+    /\b(?:dinner|breakfast|dbb|b&b)\b/iu.test(clause));
+  const outsideScope = scopedHeaders.length === 1 ? header.replace(scopedHeaders[0]!, '') : header;
+  const unresolvedException = /\b(?:except|excluding|other\s+than|apart\s+from|unless|but|not|no|without|declined|excluded|only)\b/iu.test(header);
+  const competingMeal = /\b(?:dinner|breakfast|dbb|b&b|room\s+only|meals?)\b/iu.test(outsideScope);
+  const mentions = scopedHeaders[0]?.replace(/\bdinner\s+and\s+breakfast(?:\s*\(\s*dbb\s*\))?/giu, 'DBB')
+    .match(/\b(?:dinner|breakfast|dbb|b&b)\b/giu) ?? [];
+  const sharedBoard = scopedHeaders.length === 1 && mentions.length === 1 && !unresolvedException && !competingMeal ? mealForClause(scopedHeaders[0]!) : null;
+  const orderedRows = rows.map((row, index) => ({ row, start: starts[index] ?? -1 })).sort((a, b) => a.start - b.start);
+  const ambiguousBetweenRooms = orderedRows.some(({ row, start }, index) => {
+    const next = orderedRows[index + 1];
+    if (start < 0 || !next || next.start < 0) return false;
+    const between = text.slice(start + normalizedFact(row.claim.raw).length, next.start);
+    return /\b(?:but|except|excluding|unless|however|instead)\b/iu.test(between) ||
+      (/\b(?:breakfast|dinner|dbb|b&b|meals?|room\s+only)\b/iu.test(between) && !/\b(?:and|&)\s*$/iu.test(between));
+  });
+  return rows.map((row, index) => {
+    const start = starts[index] ?? -1;
+    const end = starts.filter((position) => position > start).sort((a, b) => a - b)[0] ?? text.length;
+    const clause = source && start >= 0 ? text.slice(start, Math.min(end, start + 500)).split(
+      /\b(?:check\s*-?\s*(?:in|out)|arrival|departure|regards|sincerely|thank\s+you|notes?|comments?|payment|I|we|please\s+note|however|also)\b/iu)[0] ?? '' : '';
+    const specificMeal = /\b(?:dinner|breakfast|dbb|b&b|room\s+only|(?:no|without)\s+meals?)\b/iu.test(clause);
+    const board = ambiguousBetweenRooms ? null : specificMeal ? mealForClause(clause) : sharedBoard;
     return { ...row, board };
   });
 }
@@ -3409,7 +3435,7 @@ function projectCurrentExtraction(input: {
     const projectedDates = extracted.dates.map((date) => ({ arrival: editableDate(date.arrival), departure: editableDate(date.departure) }));
     if (request.kind === 'quote') {
       for (const group of request.body.groups) { group.mealPlan = null; group.requestedMealPlan = null; }
-      const sourceRooms = countedSourceQuoteRooms(extracted, input.evidence, currentRefs);
+      const sourceRooms = countedSourceQuoteRooms(extracted, input.evidence, currentRefs, currentExtraction.requests.length === 1);
       const sourceRoomByGroupId = new Map<string, typeof sourceRooms[number]>();
       if (sourceRooms.length && singleCurrentDatePair(projectedDates, currentRefs)) {
         const originalGroups = request.body.groups;
