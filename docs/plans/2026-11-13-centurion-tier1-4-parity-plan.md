@@ -49,7 +49,7 @@ For example, an agency email should suggest the guest, agency and eligible organ
 
 **D. Tier 2**
 
-- R12. Prefill A/R Account from verified cross-entity evidence and remove a guard only if it blocks a valid selected account. Never prefill Refund Account on a new stay. Extract Billing Reference verbatim, require selected A/R when present, use the verified 4,000-character cap, and support Amend.
+- R12. Prefill A/R Account from verified cross-entity evidence and remove a guard only if it blocks a valid selected account. Never prefill Refund Account on a new stay. Extract Billing Reference verbatim with a 4,000-character source contract and support Amend. Require selected A/R when present; the observed editable HMS field allows 50 characters, so preserve longer source values and show actionable validation before any write rather than truncating or bypassing the native limit.
 - R13. Default Guarantee Type from high-confidence memory or voucher/POP cues, and TA Commission from verified agency directory evidence `>=0.90`. Repair Track lookup, selection shape and server submit, with an eligible rate-plan/Track mapping.
 - R14. Preserve Booker Name, Email and Mobile separately in Create/Amend contracts and UI, and losslessly at the actual native booker controls/readback. Filter guest placeholder/shared-contact noise; copy booker details into guest fields only when the source explicitly identifies them as guest contacts.
 - R15. Default CMS Message to editable `'03'`, use confirmed booker email as the recipient hint and add the Amend picker. Show an informational Auto Transfer memory hint only; add no Auto-Transfer Playwright writer.
@@ -62,7 +62,7 @@ For example, an agency email should suggest the guest, agency and eligible organ
 - R19. Accept Add-Ons `startDate === endDate`, reject reversed dates, preserve service fields through projection, and align editor `maxLength` to verified native limits.
 - R20. Port and verify both identified cancellation semantics: last-day shortening is Amend, and an already-cancelled booking does not receive a duplicate Cancel. Bind completion evidence to the same booking; unrelated cancellation text cannot suppress a current request. Keep Cancel penalty's existing second-Go requirement.
 - R21. Remove the misleading marketing-opt-in control or expose the actual supported HMS Terms and Conditions behavior. `guestoptin4` is not marketing consent; its current native boundary accepts false only, so this work must not enable true writes.
-- R22. Never show `Luna` or other implementation/model names in staff-facing UI. Prove Organization/Agency-to-A/R, Rate Plan-to-Meal Plan, agency commission, Track, Billing Reference and both note layers on eligible wave1 replay evidence and on real backend Prepare mail received `>=2026-10-31`.
+- R22. Never show `Luna` or other implementation/model names in staff-facing UI. Prove Organization/Agency-to-A/R, Rate Plan-to-Meal Plan, agency commission, Track, Billing Reference and both note layers using authentic late-Oct real-email unsaved Prepare with original trusted receipt timestamps, static verified master catalogs and strictly prior observations. Separately prove the post-Oct-30 cutoff using an explicitly labelled Labtest/non-corpus input `arrivedAt >= 2026-10-31` and the final deployed Nov-13 Labtest Save/readback with runtime memory loading.
 
 **Acceptance examples**
 
@@ -70,7 +70,7 @@ For example, an agency email should suggest the guest, agency and eligible organ
 - AE2. A DBB note uses the eligible payer/default cap; explicit `R350` in current mail overrides the cap and a halaal/water/transfer request survives verbatim. Staff edits survive Prepare and readback; preset/prefix toggles do not erase them without an explicit replacement action.
 - AE3. A dated older message cannot learn a payer/cap from a later stay snapshot or outbound reply. A present-day catalog read can supply native identity/options but is not retroactive behavioral evidence.
 - AE4. `Cancel last day of accommodation` shortens departure; `has been cancelled` suppresses repeat Cancel only with same-booking identity evidence. These match corpus failures; the pause record does not prove they were the reviewer's two unnamed variants.
-- AE5. A same-day Add-On, a 301-4,000-character Billing Reference with selected A/R, both booker contacts and a custom Filing name/description survive the relevant backend Prepare and supported Labtest readback.
+- AE5. A same-day Add-On, both booker contacts, a native-valid Billing Reference with selected A/R, and a custom Filing name/description survive backend Prepare and supported Labtest readback. A 301-4,000-character source Billing Reference remains intact in the draft and produces explicit 50-character native validation; no shortened reference is written.
 
 ---
 
@@ -85,7 +85,7 @@ Relevant Quote/Add-On PRs remain open and some conflict with main; inspect fresh
 - `reservation-workflow-v2-native-leads.ts:169` blocks cross-role A/R candidates. Its `source.arrivedAt` cutoff is message arrival, and the default PMS snapshot was captured `2026-10-30T00:42:32Z`; do not bypass capture-time eligibility to improve a replay score.
 - Current native catalog lookups do not paginate; agency commission and Rate Plan-to-Meal Plan directories are absent. `ingestStayObservation()` and a dedicated Stay360 Messages reader are also absent; reuse `buildHmsBookingMemory` / `loadHmsBookingMemory` and `openStay360RecordTab`.
 - Booker extraction already separates email/mobile but projection collapses them into `bookerContact`. Trace `caller` / `udfchar06` and actual limits before choosing native serialization; do not invent a native field or silently discard either contact.
-- Note limits disagree: contract 4,000, compiler/native binding 2,000. Use the verified native 2,000-character limit consistently and show validation rather than truncation. Billing Reference is separately verified at 4,000.
+- Note limits disagree: contract 4,000, compiler/native binding 2,000. Use the verified native 2,000-character limit consistently and show validation rather than truncation. Billing Reference retains the requested 4,000-character source cap, but live editable Create and saved-Amend controls both expose a 50-character native limit; UI and write validation must reflect that distinction.
 - Cancel/Add-Ons/Amend validators are currently positive; Filing's two checks are looser. V2 lacks the cited `explicitNativeCode` shredder symbol; inspect active prompt/parity/legacy paths before deleting code based on an older head.
 - `write-ec2-remote-env.sh --m1-only` reads durable `.env.production`, accepts no flag-value arguments, and currently omits memory path variables. Ignored data survives bundle checkout but is not transferred; U9 supplies the missing provisioning/configuration seam.
 
@@ -216,7 +216,7 @@ The unit table is the file-ownership boundary after U1; source additions stay in
 
 - **Goal / Requirements:** every product requirement, using the Verification Contract below.
 - **Dependencies / Files:** U4-U9; no product writes. Source owners fix failures in their own branches, then the merge owner produces a new clean head.
-- **Approach / Verification:** remote typecheck both apps, existing focused checks, paired50 field comparison and real-email backend Prepare with no Save. Prove Organization/Agency-to-A/R, Rate Plan-to-Meal Plan, `ta1commission`, Track, Billing Reference and both note layers on eligible wave1 evidence AND real mail `arrivedAt >= 2026-10-31`. Report measured gains and all missing/wrong/unresolved regressions; a field without scored slots needs native proof, not an invented score. Prepare precedes any live Labtest Save.
+- **Approach / Verification:** remote typecheck both apps, existing focused checks, paired50 field comparison and authentic late-Oct real-email backend Prepare with no Save, retaining original trusted receipt timestamps and strictly prior observation eligibility. Cover Organization/Agency-to-A/R, Rate Plan-to-Meal Plan, `ta1commission`, Track, Billing Reference and both note layers. Separately label post-Oct-30 backend projection inputs as Labtest/non-corpus, then prove cutoff/runtime loading through final deployed Nov-13 Labtest Save/readback. Report measured gains and all missing/wrong/unresolved regressions; a field without scored slots needs native proof, not an invented score. Prepare precedes any live Labtest Save.
 
 ### U11. Review exact heads and merge through hooks
 
@@ -252,7 +252,7 @@ The unit table is the file-ownership boundary after U1; source additions stay in
 
 **Review, live proof and ordered autonomous release**
 
-1. Produce unsaved backend Prepare on actual email details for affected workflows; inspect staff business fields and stop before Save. Use real tools, not pane clicks or fabricated request-body snapshots.
+1. Produce unsaved backend Prepare on authentic late-Oct email details for affected workflows, preserving original receivedAt; inspect staff business fields and stop before Save. Use static verified native masters and observations captured strictly before the original mail. The captured real corpus ends `2026-10-29T16:05:33Z`; November ingest objects are synthetic, and MIME Date is not arrival evidence. Separately label the `>=2026-10-31` projection case as Labtest/non-corpus and verify live memory loading on the final deployed Nov-13 Labtest Save/readback. No fabricated receipt timestamps or pilot-RDS tests.
 2. Complete exact-head Apex/fallback review and candidate gates, merge with hooks, then have the merge owner obtain a clean main checkout with `HEAD == fetched origin/main` and no deploy HOLD. Re-run both remote app typechecks on the final merge SHA; repeat focused tests/replay only when integration changes, findings or unresolved concerns justify them.
 3. Deploy from that clean main checkout using `bash apps/server-pilot/deploy/ops-deploy.sh`. Do not add `--migrate` without a real migration requirement; do not use rollback/quiesce bypasses. Verify bundle/build marker/runtime SHA and health/readiness/VPN checks.
 4. Run U9's scoped non-Git catalog/memory sync, verify manifest checksums and runtime paths, then restart through `bash apps/server-pilot/deploy/ops-restart.sh` as needed. No destructive DB/volume operations, secret output or unrelated data cleanup.
@@ -271,6 +271,7 @@ The unit table is the file-ownership boundary after U1; source additions stay in
 - Clean final heads pass remote typecheck for both apps and applicable existing focused checks; no new tests, bypassed hooks, pilot-RDS tests or unsupported true Terms/Auto-Transfer writes are introduced.
 - Paired50 demonstrates exact measured improvement with critical regressions resolved and zero replay exceptions; unscored A/R/rate coverage is labeled honestly. Cancellation semantics are source-bound.
 - Final PR head has Apex or documented fallback review, valid P0/P1 resolved, and main is deployed with exact runtime identity. Required final-SHA Labtest Saves/readbacks, artifact loading and all-four-process effective flags are verified.
+- The final report states the real corpus's Oct-29 cutoff and distinguishes authentic-mail Prepare from labelled Labtest/non-corpus clock proof. Native Billing Reference is checked against the observed editable 50-character limit; the 4,000-character source contract never authorizes native truncation or validation bypass.
 - Remove abandoned experimental code and active app legacy aliases introduced during this work; retain only the approved persisted-reader hydration and offline sealed-gold adapter. Preserve sealed fixtures and every other session's files. Coordinator receives one truthful final completion message.
 
 ---
