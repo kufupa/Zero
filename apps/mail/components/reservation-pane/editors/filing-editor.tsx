@@ -134,7 +134,7 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
     && selectedAttachment.uploadability !== 'unsupported' && (selectedAttachment.size === undefined || selectedAttachment.size <= 10 * 1024 * 1024));
   useEffect(() => { setConfirmation(text(hint?.confirmation)); }, [editor.request.id, hint?.id, hint?.confirmation]);
   useEffect(() => { setKind(documentKind === 'voucher' || documentKind === 'payment_proof' ? documentKind : ''); }, [doc?.id, documentKind]);
-  const configuredByStaff = Boolean(doc && ['documentSourceRef', 'kind', 'handling'].every(field =>
+  const configuredByStaff = Boolean(doc && effectiveDocument.handling === 'filing_requested' && ['documentSourceRef', 'kind', 'handling'].every(field =>
     draft.staffReviews[`${documentRoot}/${field}`]?.status === 'accepted'));
   const dirty = (chosenAttachment !== null && chosenAttachment !== resolvedAttachment) ||
     destinationKind !== defaultDestinationKind ||
@@ -269,6 +269,7 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
           </select>
         </label>
       </div>
+      <small className={styles.hint}>The category identifies the voucher or payment proof. Infor saves the PDF name and description with a generated Document Code.</small>
       {doc && <div className={styles.grid}>
         <Field label="Document name" path={`${documentRoot}/requestedName`} editor={editor} maxLength={150} emptyState="none" review
           hint="Optional PDF name in Infor. Leave blank to use the attachment name." />
@@ -292,7 +293,7 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
         <Field label="Original Arrival Date" path={`${body}/targets/include/${encodeURIComponent(text(hint.id))}/bookedArrival`} type="date" editor={editor} resolvedValue={hint.bookedArrival ?? null} disabled={dirty || editor.view.busy} />
         <Field label="Original Departure Date" path={`${body}/targets/include/${encodeURIComponent(text(hint.id))}/bookedDeparture`} type="date" editor={editor} resolvedValue={hint.bookedDeparture ?? null} disabled={dirty || editor.view.busy} />
       </div>}
-      {dirty && <div className={styles.warning}>New selection is not saved. Check and Go use the saved selection until you apply this selection.</div>}
+      {dirty && <div className={styles.warning}>Apply the PDF and destination to confirm the attachment, category and filing request before checking.</div>}
       <div className={styles.row}><button type="button" disabled={editor.view.busy || !dirty || !pdf || !validConfirmation || !kind || docs.length > 1 || include.length > 1 || exclude.length > 0 || scope.mode === 'scoped_all'}
         onClick={() => {
           if (!kind || useCreateTarget && !selectedAllocation) return;

@@ -13,7 +13,7 @@ type Editor = WorkbenchEditorProps;
 const fields = [
   ['arrival', 'Arrival Date', 'date'], ['departure', 'Departure Date', 'date'],
   ['roomType', 'Room Type', 'code'], ['roomTypeForCharge', 'Room Type for Charge', 'code'],
-  ['ratePlan', 'Rate Plan', 'code'], ['requestedMealPlan', 'Requested Meal Plan', 'text'],
+  ['ratePlan', 'Rate Plan', 'code'], ['requestedMealPlan', 'Meal Plan request', 'text'],
   ['roomCount', 'Rooms', 'count'], ['adults', 'Adults', 'count'], ['childCount', 'Children', 'count'],
   ['childAges', 'Child ages', 'ages'], ['firstName', 'First Name', 'text'], ['lastName', 'Last Name', 'text'],
   ['guestEmail', 'E-mail Address', 'email'], ['bookingAgency', 'Primary Booking Agency', 'party'],
@@ -513,7 +513,7 @@ export function AmendEditor(editor: Editor) {
           {latest && <div className={styles.card}><strong>Last Infor check</strong>
             <span>{text(before.arrival)} → {text(before.departure)} · {text(before.roomType)} / {text(before.ratePlan)}</span>
             <span>Requested: {text(target.arrival)} → {text(target.departure)} · {text(target.roomType)} / {text(target.ratePlan)}</span>
-            {typeof result.requestedMealPlan === 'string' && result.requestedMealPlan.trim() && <span>Requested Meal Plan: {result.requestedMealPlan}</span>}
+            {typeof result.requestedMealPlan === 'string' && result.requestedMealPlan.trim() && <span>Meal Plan request: {result.requestedMealPlan}</span>}
             {Object.hasOwn(record(result.applied), 'mealPlan') && <span>Infor Meal Plan: {text(record(result.applied).mealPlan) || 'Not returned'}</span>}
             {result.outcome === 'meal_plan_mismatch_or_unknown' ? <div className={styles.warning} role="alert">{text(record(result.applied).mealPlan)
               ? 'Infor could not match the requested Meal Plan. Choose a matching Rate Plan or update the request, then check again.'
