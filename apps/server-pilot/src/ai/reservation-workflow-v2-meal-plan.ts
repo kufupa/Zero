@@ -3,9 +3,21 @@ export function normalizeRequestedMealPlan(value: unknown): {
   lunchRequested: boolean;
 } {
   const phrase = typeof value === 'string' ? value.trim().toLowerCase() : '';
-  const normalized = phrase.replace(/[,+\s&_-]+/gu, ' ').replace(/\b(?:and|for all)\b/gu, '').replace(/\s+/gu, ' ').trim();
-  const lunchRequested = /\blunch\b/u.test(normalized);
+  const exclusions = new Set<string>();
+  const positive = phrase.replace(/[,+\s&/_-]+/gu, ' ').replace(
+    /\b(?:no|without|excluding|exclude|not(?:\s+including)?)\s+(?:(?:any|the)\s+)?(?:breakfast|lunch|dinner|meals?)(?:\s+(?:(?:and|or)\s+)?(?:breakfast|lunch|dinner|meals?))*/gu,
+    clause => {
+      for (const meal of clause.match(/\b(?:breakfast|lunch|dinner|meals?)\b/gu) ?? []) exclusions.add(meal);
+      return ' ';
+    });
+  if (/\b(?:no|not|without|excluding|exclude|except)\b/u.test(positive)) return { mealPlan: null, lunchRequested: false };
+  const normalized = positive.replace(/\b(?:and|for all)\b/gu, '').replace(/\s+/gu, ' ').trim();
+  const allMealsExcluded = exclusions.has('meal') || exclusions.has('meals');
+  const lunchRequested = /\blunch\b/u.test(normalized) && !exclusions.has('lunch') && !allMealsExcluded;
   const board = normalized.replace(/\b(?:lunch|with|plus|including)\b/gu, '').replace(/\s+/gu, ' ').trim();
+  const breakfast = /\b(?:breakfast|bb|b b|dbb)\b/u.test(board), dinner = /\b(?:dinner|dbb)\b/u.test(board);
+  if ((allMealsExcluded || exclusions.has('breakfast')) && breakfast || (allMealsExcluded || exclusions.has('dinner')) && dinner)
+    return { mealPlan: null, lunchRequested };
   if (['room only', 'roomonly', 'ro', 'room only r'].includes(board)) return { mealPlan: 'room_only', lunchRequested };
   if (['dbb', 'dinner bb', 'dinner b b'].includes(board) || /\bdinner\b/u.test(board) && /\b(?:breakfast|bb)\b/u.test(board)) {
     return { mealPlan: 'dinner_bb', lunchRequested };
