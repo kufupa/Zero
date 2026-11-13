@@ -26,7 +26,7 @@ This file is the single agent entry point. `PRODUCT.md` covers what staff get an
   - Check those business fields before Save and read them back after.
   - Don't pin whole native request bodies, field-key sets or field counts. HMS form drift must not stop writes.
 - **Reuse what worked.** The legacy `tooling/playwright-quote/` tools encode proven HMS steps (for example, Check Availability before Save). Port the step list before rebuilding a flow.
-- About 500 changed product lines per PR is guidance, not a cap.
+- Keep PRs cohesive and focused for fast Greptile Apex convergence (~500 lines guidance, not a cap; cohesive 1,000–1,200 LOC PRs are fine whenever splitting slows shipping, overriding any older `<= 250 LOC` skill limits).
 - **No new tests** unless the owner asks. Run only the existing focused checks for files you touched.
 - **Prove tools in the backend, not by clicking the pane:**
   1. Run the real tool on a real email's details and stop before Save.
@@ -53,6 +53,6 @@ This file is the single agent entry point. `PRODUCT.md` covers what staff get an
 - **Flags:**
   - Change them via `apps/server-pilot/deploy/write-ec2-remote-env.sh --m1-only` + `ops-restart.sh`.
   - Verify the effective env in all four PM2 processes (`http`, `worker`, `ai-worker`, `remote-http`).
-  - The writer requires a `CANARY PASS <workflow> HRCEN <sha>` line. Write it after that workflow's Labtest Save/readback passes on the deployed SHA.
+  - `write-ec2-remote-env.sh` requires `CANARY PASS <workflow> HRCEN <sha>` only when enabling or widening a flag to `on`. Run fresh Labtest Save + readback for workflows whose HMS writer changed plus one smoke Create/Amend Save on the final deployed SHA; skip multi-workflow Labtest ceremony for pure prefill/UI/memory changes.
 - **HMS sessions:** reads and unsaved previews may run in parallel in separate browser sessions. Serialize writes to the same confirmation or Labtest stay.
 - **GitHub Actions** are reserved for the Outlook installer workflows. Never add, enable or trigger others. Never run repo-wide lint or format.
