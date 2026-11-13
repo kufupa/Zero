@@ -72,6 +72,11 @@ export async function listTrackSubSegments(page, { propertyCode } = {}) {
     if (await win.count() !== 1 || await page.locator('.x-window:visible:not(.x-menu)').count() !== 1 || nativeDialog || blocked) {
       throw new Error('TRACK_PICKER_UNVERIFIED');
     }
+    const requestParams = new URLSearchParams(reply.request().postData() || '');
+    const requestFiltered = [...requestParams].some(([key, value]) =>
+      /^(?:MADDON_FILTER_VALUE_\d+|filtervalue|selfiltervaluectrl)$/i.test(key) && value.trim());
+    const pickerFiltered = await win.evaluate(element => [...element.querySelectorAll('input')].some(input =>
+      (input.name === 'selfiltervaluectrl' || input.name.startsWith('ff_')) && input.value.trim()));
     const windowId = await win.getAttribute('id');
     if (!windowId) throw new Error('TRACK_PICKER_UNVERIFIED');
     const ready = await page.waitForFunction(id => {
@@ -130,7 +135,7 @@ export async function listTrackSubSegments(page, { propertyCode } = {}) {
     const correlated = nativeGrid && JSON.stringify(nativeGrid.DATA.map(key).sort()) === JSON.stringify(candidates.map(key).sort());
     const marker = String(nativeGrid?.METADATA?.MORERECORDPRESENT ?? '').trim();
     const total = /^\d+$/.test(String(nativeGrid?.METADATA?.RECORDS)) ? Number(nativeGrid.METADATA.RECORDS) : null;
-    const complete = correlated && marker === '-' && total === candidates.length ? true
+    const complete = !requestFiltered && !pickerFiltered && correlated && marker === '-' && total === candidates.length ? true
       : marker === '+' || (total != null && total > candidates.length) ? false : null;
     if (!await closePicker()) throw new Error('TRACK_CANCEL_UNAVAILABLE');
     await page.unroute('**/*', guard);
@@ -143,7 +148,8 @@ export async function listTrackSubSegments(page, { propertyCode } = {}) {
       }
       throw new Error('TRACK_FORM_CHANGED');
     }
-    return { outcome: 'ok', observedAt: new Date().toISOString(), criteria: { propertyCode, scope: 'unfiltered' },
+    return { outcome: 'ok', observedAt: new Date().toISOString(),
+      criteria: { propertyCode, scope: requestFiltered || pickerFiltered ? 'filtered_or_unknown' : 'unfiltered' },
       coverage: { loaded: candidates.length, total: total != null && total >= candidates.length ? total
         : footer && footer.total >= candidates.length ? footer.total : null,
         complete, possiblyTruncated: complete !== true, nativeResponseCorrelated: Boolean(correlated) }, candidates };
