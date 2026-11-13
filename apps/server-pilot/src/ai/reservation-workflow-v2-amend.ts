@@ -67,7 +67,7 @@ type AmendRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['r
 type Amendment = {
   arrival?: string; departure?: string; adults?: number; children?: number; childAges?: number[];
   roomType?: string; roomTypeForCharge?: string; ratePlan: string; retainRates: 'yes' | 'no'; firstName?: string; lastName?: string;
-  guestEmail?: string; bookerName?: string; bookerContact?: string; billingReference?: string; taCommission?: number;
+  guestEmail?: string; bookerName?: string; bookerContact?: string; billingReference?: string; taCommission?: number; guestOptIn?: false;
   track?: { lookupCode: string; display: string };
   cmsSend: boolean; cmsMessageId: string; cmsRecipient: string;
 };
@@ -492,11 +492,11 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     if (field === UNKNOWN || typeof field !== 'string') { errors.push(`${changePath}:change_unknown`); return; }
     if (field === 'roomCount') { roomCountPaths.push(changePath); return; }
     const supported = new Set(['arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'roomTypeForCharge', 'ratePlan',
-      'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'taCommission', 'track', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
+      'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'taCommission', 'guestOptIn', 'track', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
     if (!supported.has(field)) { unsupported.add(field); return; }
     if (op === 'clear') {
       if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'roomTypeForCharge'].includes(field)) values[field] = '';
-      else if (field === 'cmsSend') values.cmsSend = false;
+      else if (field === 'cmsSend' || field === 'guestOptIn') values[field] = false;
       else if (field === 'cmsMessageId' || field === 'cmsRecipient') values[field] = '';
       else errors.push(`${changePath}:field_cannot_be_cleared`);
       reviewPaths.add(valuePath);
@@ -507,7 +507,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     if (rawValue === UNKNOWN) { errors.push(`${valuePath}:value_unknown`); return; }
     if (rawValue === NONE) {
       if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'roomTypeForCharge'].includes(field)) values[field] = '';
-      else if (field === 'cmsSend') values.cmsSend = false;
+      else if (field === 'cmsSend' || field === 'guestOptIn') values[field] = false;
       else errors.push(`${valuePath}:explicit_none_not_supported`);
       reviewPaths.add(valuePath);
       return;
@@ -524,6 +524,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
         track.display.length > 0 && track.display.length <= 200 && track.display.trim() === track.display && !/[\p{Cc}]/u.test(track.display)); })() :
       field === 'billingReference' ? typeof rawValue === 'string' && rawValue.length <= 4000 && !/[\p{Cc}]/u.test(rawValue) :
       field === 'taCommission' ? typeof rawValue === 'number' && Number.isFinite(rawValue) && rawValue >= 0 && rawValue <= 100 :
+      field === 'guestOptIn' ? rawValue === false :
       field === 'cmsSend' ? typeof rawValue === 'boolean' : typeof rawValue === 'string' && rawValue.length <= 1000 && !/[\p{Cc}]/u.test(rawValue);
     if (!valid) { errors.push(`${valuePath}:value_invalid`); return; }
     values[field] = rawValue;
@@ -999,7 +1000,7 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
   const module = await nativeModule();
   const dispatchKey = hmsDispatchTargetKey(locked.dispatchTarget);
   const discoveryBase = Object.fromEntries(Object.entries(compiled.baseChanges)
-    .filter(([field]) => field !== 'bookerEmail' && field !== 'bookerMobile' && field !== 'taCommission'));
+    .filter(([field]) => field !== 'bookerEmail' && field !== 'bookerMobile' && field !== 'taCommission' && field !== 'guestOptIn'));
   const discoveryChanges = { ...discoveryBase, ratePlan: String(compiled.baseChanges.ratePlan ?? compiled.selected.ratePlan),
     retainRates: compiled.rateHandling === 'retain' ? 'yes' : 'no', cmsSend: false, cmsMessageId: '', cmsRecipient: '' };
   try {
@@ -1019,6 +1020,7 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
         ...(childAgePreimage ? { childAgePreimage } : {}),
         confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, changes: discoveryChanges,
         discoveryOnly: true, captureCommissionBaseline: Object.hasOwn(compiled.baseChanges, 'taCommission'),
+        captureGuestOptInBaseline: Object.hasOwn(compiled.baseChanges, 'guestOptIn'),
         allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
       const discoveryBaseline = record(discovery.recoveryBaseline);
       if (discovery.outcome !== 'prepared' || !record(discovery.preserved) || !discoveryBaseline) {
@@ -1049,6 +1051,7 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
         ...(childAgePreimage ? { childAgePreimage } : {}),
         confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, changes,
         captureCommissionBaseline: Object.hasOwn(compiled.baseChanges, 'taCommission'),
+        captureGuestOptInBaseline: Object.hasOwn(compiled.baseChanges, 'guestOptIn'),
         allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
       const price = nativePrice(native.approvedPrices), afterPreserved = record(native.preserved),
         recoveryBaseline = record(native.recoveryBaseline);
@@ -1063,6 +1066,7 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
           (!Object.hasOwn(changes, 'bookerName') && typeof recoveryBaseline.beforeBookerName !== 'string') ||
           (!Object.hasOwn(changes, 'bookerContact') && typeof recoveryBaseline.beforeBookerContact !== 'string') ||
           (!changes.cmsSend && typeof afterPreserved.cmsMessageId !== 'string') ||
+          (Object.hasOwn(changes, 'guestOptIn') && typeof recoveryBaseline.beforeGuestOptIn !== 'boolean') ||
           (Object.hasOwn(changes, 'taCommission') && (typeof recoveryBaseline.beforeCommission !== 'number' ||
             !Number.isFinite(recoveryBaseline.beforeCommission) || !record(afterPreserved.bookingAgency)?.nativeId)) ||
           typeof recoveryBaseline.beforeGuaranteeCode !== 'string' ||
@@ -1214,6 +1218,7 @@ function readbackMatches(readback: unknown, prepared: Record<string, unknown>): 
       (typeof (changes.roomTypeForCharge ?? baseline.beforeRoomTypeForCharge) === 'string' &&
         actual.roomTypeForCharge !== (changes.roomTypeForCharge ?? baseline.beforeRoomTypeForCharge))) return null;
   if (Object.hasOwn(changes, 'taCommission') && actual.taCommission !== changes.taCommission) return null;
+  if (Object.hasOwn(changes, 'guestOptIn') && actual.guestOptIn !== false) return null;
   const track = record(changes.track);
   if ((track && actual.track !== track.display) ||
       (!track && typeof baseline.beforeTrack === 'string' && actual.track !== baseline.beforeTrack)) return null;
@@ -1350,6 +1355,7 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
         selected: compiled.selected, confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival,
         ...(Array.isArray(childAgePreimage) ? { childAgePreimage } : {}), changes: nativeChanges, nativeDigest: preparedResult.nativeDigest, approvedPrices: price, preserved,
         captureCommissionBaseline: Object.hasOwn(nativeChanges, 'taCommission'),
+        captureGuestOptInBaseline: Object.hasOwn(nativeChanges, 'guestOptIn'),
         allowRealGuest: process.env.PANE_WRITE_AMEND === 'on', cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget),
         beforeScreenshot, afterScreenshot, signal: AbortSignal.timeout(20 * 60_000) },
       { operationDigest: prepared.criteria.semanticDigest as string, authorizeFirst, sealBeforeEvidence,

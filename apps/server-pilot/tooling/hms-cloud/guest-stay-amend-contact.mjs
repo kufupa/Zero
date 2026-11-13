@@ -67,6 +67,25 @@ export async function stageSavedGuestFieldsForComposition(context, changes) {
     const after = await control.evaluate((element) => globalThis.Ext?.getCmp?.(element.id.replace(/-inputEl$/, ''))?.getValue?.());
     if (after !== changes.cmsSend || !context.isActive()) throw new Error('CMS_EDIT_UNVERIFIED');
   }
+  if (Object.hasOwn(changes, 'guestOptIn')) {
+    if (changes.guestOptIn !== false) throw new Error('GUEST_OPT_IN_INVALID');
+    const control = context.frame.locator('input[name="guestoptin4"]:visible');
+    if (await control.count() !== 1) throw new Error('GUEST_OPT_IN_CONTROL_UNAVAILABLE');
+    const before = await control.evaluate(element => {
+      const cmp = globalThis.Ext?.getCmp?.(element.id.replace(/-inputEl$/, ''));
+      const guests = [...document.querySelectorAll('input[name="guestid"]')].filter(node =>
+        (node.offsetWidth || node.offsetHeight) && getComputedStyle(node).visibility !== 'hidden' && !node.closest('.x-window'));
+      const form = guests.length === 1 ? globalThis.Ext?.getCmp?.(guests[0].id.replace(/-inputEl$/, ''))?.up?.('form') : null;
+      if (!form?.el?.dom?.contains(element) || cmp?.up?.('form') !== form || typeof cmp.getValue !== 'function') return null;
+      const value = cmp.getValue();
+      if (typeof value !== 'boolean' || (value && (element.disabled || element.readOnly || cmp.readOnly || cmp.isDisabled?.()))) return null;
+      return value;
+    });
+    if (typeof before !== 'boolean') throw new Error('GUEST_OPT_IN_PREIMAGE_UNVERIFIED');
+    if (before) await control.click({ timeout: 5000 });
+    const after = await control.evaluate(element => globalThis.Ext?.getCmp?.(element.id.replace(/-inputEl$/, ''))?.getValue?.());
+    if (after !== false || !context.isActive()) throw new Error('GUEST_OPT_IN_EDIT_UNVERIFIED');
+  }
   const synced = await context.frame.evaluate(() => {
     const guests = [...document.querySelectorAll('input[name="guestid"]')].filter((node) =>
       (node.offsetWidth || node.offsetHeight) && getComputedStyle(node).visibility !== 'hidden' && !node.closest('.x-window'));

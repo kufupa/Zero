@@ -162,6 +162,9 @@ function matchesAmendBusiness(snapshot, selected, changes, baseline, state) {
   }
   if (Object.hasOwn(changes, 'taCommission') && (percent(data.ta1commission) !== changes.taCommission ||
       percent(values.ta1commission) !== changes.taCommission)) return false;
+  if (Object.hasOwn(changes, 'guestOptIn') && (changes.guestOptIn !== false ||
+      nativeCmsSendValue(data.guestoptin4) !== false || snapshot.guestOptInControl !== false ||
+      (Object.hasOwn(values, 'guestoptin4') && nativeCmsSendValue(values.guestoptin4) !== false))) return false;
   const recipient = changes.cmsRecipient, message = changes.cmsMessageId;
   const formCms = !Object.hasOwn(values, 'udfchkbox04') || values.udfchkbox04 === ''
     ? false : nativeCmsSendValue(values.udfchkbox04);
@@ -207,6 +210,10 @@ export function matchesCloudPaneAmendSave(request, frame, snapshot,
     if (Object.hasOwn(changes, 'taCommission')) {
       const fields = [...body].filter(([name]) => name.toLowerCase() === 'ta1commission');
       if (fields.length !== 1 || fields[0][0] !== 'ta1commission' || percent(fields[0][1]) !== changes.taCommission) return false;
+    }
+    if (Object.hasOwn(changes, 'guestOptIn')) {
+      const fields = [...body].filter(([name]) => name.toLowerCase() === 'guestoptin4');
+      if (fields.length !== 1 || fields[0][0] !== 'guestoptin4' || nativeCmsSendValue(fields[0][1]) !== false) return false;
     }
     for (const [key, name] of Object.entries({ bookerName: 'caller', bookerContact: 'udfchar06',
       billingReference: 'billingreference', cmsMessageId: 'udfchar09' })) {
@@ -512,7 +519,15 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       const value = control?.getValue?.();
       return typeof value === 'boolean' ? value : null;
     });
-    return { ...draft, cmsSendControl };
+    let guestOptInControl = null;
+    if (input.captureGuestOptInBaseline) guestOptInControl = await frame.evaluate(() => {
+      const controls = [...document.querySelectorAll('input[name=guestoptin4]')].filter(el =>
+        (el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+      if (controls.length !== 1) return null;
+      const value = globalThis.Ext?.getCmp?.(controls[0].id.replace(/-inputEl$/, ''))?.getValue?.();
+      return typeof value === 'boolean' ? value : null;
+    });
+    return { ...draft, cmsSendControl, ...(input.captureGuestOptInBaseline ? { guestOptInControl } : {}) };
   };
   input = { ...structuredClone({ ...input, signal: undefined }), signal: input?.signal };
   const selected = input?.selected, changes = input?.changes;
@@ -686,6 +701,8 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           baseline.data.billingreference === baseline?.values?.billingreference ? baseline.data.billingreference : null,
         beforeTrack: typeof baseline?.data?.track === 'string' && baseline.data.track === baseline?.values?.track ? baseline.data.track : null,
         ...(Array.isArray(input.childAgePreimage) ? { beforeChildAges: [...input.childAgePreimage] } : {}),
+        ...(input.captureGuestOptInBaseline ? { beforeGuestOptIn:
+          nativeCmsSendValue(baseline?.data?.guestoptin4) === baseline.guestOptInControl ? baseline.guestOptInControl : null } : {}),
         ...(input.captureCommissionBaseline ? { beforeCommission:
           percent(baseline?.data?.ta1commission) !== null && percent(baseline?.data?.ta1commission) === percent(baseline?.values?.ta1commission)
             ? percent(baseline.data.ta1commission) : null } : {}),
@@ -693,6 +710,9 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           baseline.data.roomtypecharge === baseline?.values?.roomtypecharge ? baseline.data.roomtypecharge : null,
         beforeGuaranteeCode: state.expectedGuarantee?.code ?? 'NGI',
         beforeSavedRates: savedRates ? structuredClone(savedRates) : null };
+      if (input.captureGuestOptInBaseline && typeof recoveryBaseline.beforeGuestOptIn !== 'boolean') {
+        throw new Error('GUEST_OPT_IN_PREIMAGE_UNVERIFIED');
+      }
       if (input.captureCommissionBaseline && (recoveryBaseline.beforeCommission === null ||
           !/^\d{1,30}$/.test(state.partyPreimage?.taid1 || '') || !state.partyPreimage?.ta1?.trim())) {
         throw new Error('COMMISSION_AGENCY_OR_PREIMAGE_UNVERIFIED');
@@ -727,6 +747,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           beforeTrack: recoveryBaseline.beforeTrack,
           ...(Array.isArray(input.childAgePreimage) ? { beforeChildAges: recoveryBaseline.beforeChildAges } : {}),
           ...(input.captureCommissionBaseline ? { beforeCommission: recoveryBaseline.beforeCommission } : {}),
+          ...(input.captureGuestOptInBaseline ? { beforeGuestOptIn: recoveryBaseline.beforeGuestOptIn } : {}),
           beforeRoomTypeForCharge: recoveryBaseline.beforeRoomTypeForCharge,
           beforeGuaranteeCode: recoveryBaseline.beforeGuaranteeCode,
           beforeSavedRates: savedRates ? structuredClone(savedRates) : null,
@@ -762,6 +783,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       const fields = Object.fromEntries(['firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'billingReference']
         .filter((key) => Object.hasOwn(changes, key)).map((key) => [key, changes[key]]));
       fields.cmsSend = changes.cmsSend;
+      if (Object.hasOwn(changes, 'guestOptIn')) fields.guestOptIn = changes.guestOptIn;
       if (input.discoveryOnly !== true) {
         if (changes.cmsMessageId !== String(prepared.baseline.data.udfchar09 ?? '')) fields.cmsMessageId = changes.cmsMessageId;
         if (changes.cmsRecipient !== String(prepared.baseline.data.udfchar13 ?? '')) fields.cmsRecipient = changes.cmsRecipient;
@@ -918,6 +940,16 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
         String(data.billingreference ?? '') === String(saved.values.billingreference ?? '') ? String(data.billingreference ?? '') : null;
       if ((Object.hasOwn(changes, 'billingReference') || typeof input.beforeBillingReference === 'string') &&
           billingReference !== (changes.billingReference ?? input.beforeBillingReference)) return { outcome: 'unverified' };
+      if (Object.hasOwn(changes, 'guestOptIn')) {
+        const actual = await state.frame.evaluate(() => {
+          const controls = [...document.querySelectorAll('input[name=guestoptin4]')].filter(el =>
+            (el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+          return controls.length === 1 ? globalThis.Ext?.getCmp?.(controls[0].id.replace(/-inputEl$/, ''))?.getValue?.() : null;
+        });
+        if (typeof input.beforeGuestOptIn !== 'boolean' || nativeCmsSendValue(data.guestoptin4) !== false || actual !== false) {
+          return { outcome: 'unverified' };
+        }
+      }
       const commission = percent(data.ta1commission);
       if (Object.hasOwn(changes, 'taCommission') && (commission !== changes.taCommission ||
           percent(saved.values?.ta1commission) !== changes.taCommission || typeof input.beforeCommission !== 'number')) {
@@ -962,6 +994,7 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
         ...(billingReference === null ? {} : { billingReference }),
         ...(track === null ? {} : { track }),
         ...(Object.hasOwn(changes, 'taCommission') ? { taCommission: commission } : {}),
+        ...(Object.hasOwn(changes, 'guestOptIn') ? { guestOptIn: false } : {}),
         ...(typeof chargeRoom === 'string' ? { roomTypeForCharge: chargeRoom } : {}),
         cmsSend: state.cmsSend, cmsMessageId, cmsRecipient,
         price: observedAmendPrice(saved, target, null) } };
