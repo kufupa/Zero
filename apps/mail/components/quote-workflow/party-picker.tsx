@@ -889,7 +889,7 @@ export function PartyPicker({
   const timeoutMessage = 'Party search timed out after four minutes. You can retry.';
   const jobName = currentJobView?.request?.kind === 'party' ? currentJobView.request.name : query;
   const jobDisplayName = sharedPrefetch ? jobName : query || jobName;
-  const partyType = jobStatusKind ? partyKindLabel(jobStatusKind).toLowerCase() : 'organization or bookingAgency';
+  const partyType = jobStatusKind ? partyKindLabel(jobStatusKind).toLowerCase() : 'organization or primary booking agency';
   const jobDetail = `Searching for the ${partyType} in HMS.`;
   const jobStatusSurface = Boolean(
     showJobStatus &&

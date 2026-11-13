@@ -1760,7 +1760,7 @@ export async function bindQualifiedStaffProposalPdf(args: {
   if (typeof args.input.organization !== 'string' || typeof args.input.bookingAgency !== 'string') {
     return {
       status: 'unavailable',
-      reason: 'The organization or bookingAgency on the PDF does not match the quote. Run the quote again.',
+      reason: 'The organization or primary booking agency on the PDF does not match the quote. Run the quote again.',
     };
   }
   try {

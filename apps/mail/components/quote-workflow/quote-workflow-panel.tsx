@@ -1044,7 +1044,7 @@ export function QuoteWorkflowPanel({
   const missingCandidates = orderedMissing.map(({ item, index, priority }) => ({ item, index, priority }));
   if (hasUnconfirmedParty && !hasPartyBlocker) {
     missingCandidates.push({
-      item: { field: 'party', question: 'Confirm the organization or bookingAgency in HMS before using a contract rate.' },
+      item: { field: 'party', question: 'Confirm the organization or primary booking agency in HMS before using a contract rate.' },
       index: -1,
       priority: 0,
     });
