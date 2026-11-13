@@ -50,7 +50,7 @@ export function buildHmsRateFrequency({ propertyCode, pmsSnapshots = [] } = {}) 
 export function buildHmsRateMealMapping({ propertyCode, pmsSnapshots = [], asOf } = {}) {
   const scope = text(propertyCode).toUpperCase(), cutoff = Date.parse(asOf);
   if (!scope || !Number.isFinite(cutoff)) throw new TypeError('Property and asOf timestamp are required.');
-  const latest = new Map();
+  const latest = new Map(), ambiguous = new Set();
   for (const snapshot of pmsSnapshots) {
     if (text(snapshot?.propertyCode) && text(snapshot.propertyCode).toUpperCase() !== scope) throw new TypeError('Rate history spans properties.');
     const times = [snapshot?.startedAt, snapshot?.updatedAt].filter(Boolean).map(value => Date.parse(value));
@@ -66,15 +66,18 @@ export function buildHmsRateMealMapping({ propertyCode, pmsSnapshots = [], asOf 
       const values = label => [...new Set(fields.filter(field => labelOf(field) === label).map(field => text(field.value)).filter(Boolean))];
       const rate = values('rate plan'), meal = values('meal plan');
       if (rate.length !== 1 || !/^[A-Z0-9]{1,12}$/.test(rate[0].toUpperCase()) || meal.length > 1) continue;
-      const item = { ratePlan: rate[0].toUpperCase(), mealPlan: meal[0] || null, captured };
+      const item = { ratePlan: rate[0].toUpperCase(), mealPlan: meal[0] || null, captured,
+        stayId: confirmationKey(result.provenance?.verifiedStayId) };
       const previous = latest.get(key);
+      if (previous && (!item.stayId || item.stayId !== previous.stayId)) { ambiguous.add(key); continue; }
       if (!previous || captured > previous.captured) latest.set(key, item);
       else if (captured === previous.captured && (previous.ratePlan !== item.ratePlan || previous.mealPlan !== item.mealPlan)) {
         latest.set(key, { ...item, conflicting: true });
       }
     }
   }
-  const byRate = Map.groupBy([...latest.values()].filter(item => !item.conflicting), item => item.ratePlan);
+  const byRate = Map.groupBy([...latest].filter(([key, item]) => !ambiguous.has(key) && !item.conflicting)
+    .map(([, item]) => item), item => item.ratePlan);
   return [...byRate].map(([ratePlan, records]) => {
     const meals = Map.groupBy(records.filter(item => item.mealPlan), item => item.mealPlan);
     const ranked = [...meals].map(([mealPlan, matches]) => ({ mealPlan, support: matches.length,
