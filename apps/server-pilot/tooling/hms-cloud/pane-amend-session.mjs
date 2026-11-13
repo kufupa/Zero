@@ -904,7 +904,9 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
       const occupancy = savedChildOccupancy(saved);
       const ages = occupancy.ages ?? 'unknown';
       if (!occupancy.valid || occupancy.count !== target.children ||
-          (Array.isArray(target.childAges) && !sameChildAgeMultiset(ages, target.childAges))) return { outcome: 'unverified' };
+          (ages !== 'unknown' && Array.isArray(target.childAges) && !sameChildAgeMultiset(ages, target.childAges))) {
+        return { outcome: 'unverified' };
+      }
       const chargeRoom = Object.hasOwn(changes, 'roomTypeForCharge') ? changes.roomTypeForCharge : input.beforeRoomTypeForCharge;
       if (typeof chargeRoom === 'string' && (!Object.hasOwn(data, 'roomtypecharge') ||
           !Object.hasOwn(saved.values ?? {}, 'roomtypecharge') || String(data.roomtypecharge ?? '') !== chargeRoom ||
@@ -964,10 +966,12 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
         cmsSend: state.cmsSend, cmsMessageId, cmsRecipient,
         price: observedAmendPrice(saved, target, null) } };
     }, protectedSession.options);
-    if (result.outcome === 'matched' && Array.isArray(input.beforeChildAges)) {
+    if (result.outcome === 'matched' && (Array.isArray(input.beforeChildAges) || result.readback.childAges === 'unknown')) {
+      const expectedAges = Array.isArray(input.beforeChildAges) ? input.beforeChildAges : target.childAges;
+      if (!Array.isArray(expectedAges)) return { outcome: 'unverified' };
       const childRead = await readCloudSavedChildAges({ ...input, selected: savedNative,
         confirmation: savedNative.confirmation, arrival: savedNative.arrival });
-      if (childRead.outcome !== 'ok' || !sameChildAgeMultiset(childRead.ages, input.beforeChildAges)) return { outcome: 'unverified' };
+      if (childRead.outcome !== 'ok' || !sameChildAgeMultiset(childRead.ages, expectedAges)) return { outcome: 'unverified' };
       result.readback.childAges = childRead.ages;
     }
     return result;
