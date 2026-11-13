@@ -6,7 +6,7 @@ import { planSavedChildOccupancy, savedChildOccupancy } from './guest-stay-amend
 const identityFields = ['confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note', 'adults', 'childCount', 'childAges'];
 const optionalIdentityFields = ['firstName', 'lastName'];
 const changeFields = ['arrival', 'departure', 'adults', 'children', 'childCount', 'childAges', 'roomType', 'ratePlan', 'retainRates',
-  'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'billingReference', 'roomTypeForCharge', 'taCommission', 'guestOptIn', 'track', 'cmsSend', 'cmsMessageId', 'cmsRecipient'];
+  'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'billingReference', 'roomTypeForCharge', 'taCommission', 'guestOptIn', 'track', 'guaranteeType', 'cmsSend', 'cmsMessageId', 'cmsRecipient'];
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const only = (v, keys) => object(v) && Object.keys(v).every((key) => keys.includes(key));
@@ -57,6 +57,8 @@ function validChanges(expected, changes, minimumArrival) {
       (Object.hasOwn(changes, 'billingReference') && (typeof changes.billingReference !== 'string' ||
         changes.billingReference.length > 50 || /[\p{Cc}]/u.test(changes.billingReference))) ||
       (Object.hasOwn(changes, 'guestOptIn') && changes.guestOptIn !== false) ||
+      (Object.hasOwn(changes, 'guaranteeType') && (typeof changes.guaranteeType !== 'string' ||
+        !/^[A-Z0-9]{1,20}$/.test(changes.guaranteeType))) ||
       (Object.hasOwn(changes, 'taCommission') && (typeof changes.taCommission !== 'number' ||
         !Number.isFinite(changes.taCommission) || changes.taCommission < 0 || changes.taCommission > 100)) ||
       (Object.hasOwn(changes, 'track') && (!only(changes.track, ['lookupCode', 'display']) ||

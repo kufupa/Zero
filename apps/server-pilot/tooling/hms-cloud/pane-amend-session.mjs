@@ -12,6 +12,8 @@ import { stageSavedGuestFieldsForComposition } from './guest-stay-amend-contact.
 import { stageSavedChargeRoomForComposition } from './guest-stay-amend-charge-room.mjs';
 import { listSavedTrackChoices, stageSavedTrackForComposition } from './guest-stay-amend-track.mjs';
 import { stageSavedStayCommission } from './guest-stay-commission.mjs';
+import { inspectSavedGuaranteeForComposition, applySavedGuaranteeOnGo } from './guest-stay-amend-guarantee.mjs';
+import { createSavedGuaranteeRequestGate } from './saved-stay-guarantee-request-gate.mjs';
 import { labtestCombinedAmendPreimageBinding } from './saved-stay-combined-preimage.mjs';
 import { nativeCmsSendValue, runLabtestAmendSave } from './labtest-amend-save.mjs';
 import { createLabtestAmendDispatch } from './labtest-amend-dispatch.mjs';
@@ -536,6 +538,12 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
     throw new Error('CHILD_PREIMAGE_INVALID');
   }
   const target = amendTarget(selected, changes, { allowRealGuest: input.allowRealGuest === true });
+  if ((input.guaranteeChoiceCode !== undefined &&
+      (typeof input.guaranteeChoiceCode !== 'string' || !/^[A-Z0-9]{1,20}$/.test(input.guaranteeChoiceCode) ||
+        (input.discoveryOnly !== true && input.guaranteeChoiceCode !== changes?.guaranteeType))) ||
+      (Object.hasOwn(changes ?? {}, 'guaranteeType') && input.guaranteeChoiceCode !== changes.guaranteeType)) {
+    throw new Error('GUARANTEE_CHOICE_UNVERIFIED');
+  }
   if (!page || !expected || !validTarget(input?.target) || !target || selected.confirmation !== input.confirmation ||
       selected.arrival !== input.arrival || (!prepareOnly && (!/^[a-f0-9]{64}$/.test(input.nativeDigest || '') ||
         !authorization || !input.preserved))) throw new Error('AMEND_CHOICE_UNSUPPORTED');
@@ -557,8 +565,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
   if (changes.retainRates === 'yes' && needsAvailability) throw new Error('AMEND_PRICE_UNVERIFIED');
   const allowsExtendOverrideRate = changes.retainRates === 'yes' &&
     (target.arrival < selected.arrival || target.departure > selected.departure);
-  const dispatch = prepareOnly ? null : createLabtestAmendDispatch({ ...authorization,
-    requiresAvailability: needsAvailability, allowsExtendOverrideRate });
+  let dispatch = null;
   let firstSnapshot = null, questionSnapshot = null, extendSnapshot = null;
   let preparedState = null, nativeDigest = null, preserved = null, quoted = null, stopOperation = null;
   let rateScope = null, operationBounded = null;
@@ -680,6 +687,12 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       if (await bounded(save.count()) !== 1 || await bounded(state.frame.locator('.x-window:visible:not(.x-menu)').count()) !== 0) {
         throw new Error('AMEND_CONTROL_NOT_UNIQUE');
       }
+      const beforeGuarantee = state.expectedGuarantee ?? { code: 'NGI', display: 'Non-Guaranteed Individual' };
+      const guaranteeChanged = typeof changes.guaranteeType === 'string' && changes.guaranteeType !== beforeGuarantee.code;
+      if (!prepareOnly) dispatch = createLabtestAmendDispatch({ ...authorization,
+        requiresAvailability: needsAvailability, requiresGuarantee: guaranteeChanged, allowsExtendOverrideRate });
+      const guaranteeStageGate = !prepareOnly && guaranteeChanged ? createSavedGuaranteeRequestGate({
+        frame: state.frame, isActive: () => !input.signal?.aborted, deadlineAt: performance.now() + 6 * 60_000 }) : null;
       const occupancy = savedChildOccupancy(baseline);
       const childStageGate = childChanged ? createSavedChildStageRequestGate({ frame: state.frame,
         stayId: selected.reservationStayId, adults: target.adults, priorAges: occupancy.ages,
@@ -688,6 +701,12 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         deadlineAt: performance.now() + 6 * 60_000 }) : null;
       const rateStageGate = needsAvailability || trackChanged ? createSavedRateStageRequestGate({ frame: state.frame, selected,
         deadlineAt: performance.now() + 6 * 60_000 }) : null;
+      const guaranteePrice = input.guaranteeChoiceCode ? observedAmendPrice(baseline, selected, null) : null;
+      if (input.guaranteeChoiceCode) {
+        if (!guaranteePrice) throw new Error('AMEND_PRICE_UNVERIFIED');
+        assertApprovedAmendPrice(baseline, selected, guaranteePrice, { requireAverage: false });
+        if (!prepareOnly) assertApprovedAmendPrice(baseline, selected, input.approvedBeforeGuaranteePrice, { requireAverage: false });
+      }
       const recoveryBaseline = { beforeNote: expected.note, beforeParties: structuredClone(state.partyPreimage),
         beforeRecipient: preserved.cmsRecipient,
         beforeGuestEmail: preserved.guestEmail !== undefined ? preserved.guestEmail :
@@ -708,7 +727,8 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
             ? percent(baseline.data.ta1commission) : null } : {}),
         beforeRoomTypeForCharge: typeof baseline?.data?.roomtypecharge === 'string' &&
           baseline.data.roomtypecharge === baseline?.values?.roomtypecharge ? baseline.data.roomtypecharge : null,
-        beforeGuaranteeCode: state.expectedGuarantee?.code ?? 'NGI',
+        beforeGuaranteeCode: beforeGuarantee.code,
+        ...(input.guaranteeChoiceCode ? { beforeGuaranteeDisplay: beforeGuarantee.display, beforeGuaranteePrice: guaranteePrice } : {}),
         beforeSavedRates: savedRates ? structuredClone(savedRates) : null };
       if (input.captureGuestOptInBaseline && typeof recoveryBaseline.beforeGuestOptIn !== 'boolean') {
         throw new Error('GUEST_OPT_IN_PREIMAGE_UNVERIFIED');
@@ -753,7 +773,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           beforeSavedRates: savedRates ? structuredClone(savedRates) : null,
           beforeEvidence: { eventId: evidence.eventId, sha256: evidence.sha256 } });
       }
-      preparedState = { frame: state.frame, state, baseline, save, childStageGate, roomStageGate, rateStageGate,
+      preparedState = { frame: state.frame, state, baseline, save, childStageGate, roomStageGate, rateStageGate, guaranteeStageGate,
         savedRateDigest: savedRates?.digest ?? null, recoveryBaseline,
         enableComposedStage: true, allowRealGuest: input.allowRealGuest === true };
       return preparedState;
@@ -761,6 +781,31 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
     stage: async (bounded, prepared, context) => {
       stopOperation = context.stop;
       let draft = prepared.baseline;
+      if (input.guaranteeChoiceCode) {
+        const observation = await bounded(inspectSavedGuaranteeForComposition(context));
+        const matches = observation.candidates.filter(item => item.code === input.guaranteeChoiceCode);
+        const before = prepared.state.expectedGuarantee ?? { code: 'NGI', display: 'Non-Guaranteed Individual' };
+        if (!observation.enabled || !observation.coverage?.complete || matches.length !== 1 ||
+            observation.before.code !== before.code || observation.before.display !== before.display ||
+            (!prepareOnly && (before.display !== input.approvedBeforeGuaranteeDisplay ||
+              matches[0].label !== input.approvedGuaranteeDisplay))) throw new Error('GUARANTEE_CHOICE_UNVERIFIED');
+        prepared.recoveryBaseline.requestedGuaranteeDisplay = matches[0].label;
+        if (!prepareOnly && changes.guaranteeType !== before.code) {
+          const result = await bounded(applySavedGuaranteeOnGo(context, {
+            expected: { confirmation: selected.confirmation, guestId: selected.guestId,
+              reservationStayId: selected.reservationStayId, reservationId: selected.reservationId,
+              recordId: selected.recordId, firstName: selected.firstName, lastName: selected.lastName,
+              arrival: selected.arrival, departure: selected.departure,
+              guaranteeCode: before.code, guaranteeDisplay: before.display },
+            code: changes.guaranteeType, display: matches[0].label,
+          }, { authorizeCandidate: async () => true,
+            dispatchCandidate: (request, proceed) => dispatch.guarantee(request, proceed) }));
+          if (result.outcome !== 'applied' || !result.snapshot) throw new Error(result.issue || 'GUARANTEE_RESULT_UNVERIFIED');
+          Object.assign(context.baseline, structuredClone(result.snapshot));
+          prepared.state.expectedGuarantee = { code: changes.guaranteeType, display: matches[0].label };
+          draft = result.snapshot;
+        }
+      }
       if (Object.hasOwn(proposed, 'adults')) draft = (await bounded(stageAdults(context, expected, proposed.adults))).snapshot;
       if (dateChanged) draft = await bounded(stageDates(context, expected, proposed, draft === prepared.baseline ? null : draft));
       if (childChanged) draft = await bounded(stageChildren(context, { ...expected,
@@ -915,7 +960,7 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
           native.status !== 'Reserved' || native.firstName !== target.firstName || native.lastName !== target.lastName ||
           native.arrival !== target.arrival || native.departure !== target.departure || native.roomType !== target.roomType ||
           native.ratePlan !== target.ratePlan || native.adults !== target.adults || native.children !== target.children ||
-          native.guaranteeCode !== input.beforeGuaranteeCode) return { outcome: 'unverified' };
+          native.guaranteeCode !== (changes.guaranteeType ?? input.beforeGuaranteeCode)) return { outcome: 'unverified' };
       const expected = expectedLabtestAmendRecord(record, native, { allowRealGuest: input.allowRealGuest === true });
       if (!expected || expected.note !== (changes.reservationNote ?? input.beforeNote)) return { outcome: 'unverified' };
       savedNative = native;
@@ -990,7 +1035,7 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
       return { outcome: 'matched', readback: { confirmation: native.confirmation, nativeStayId: native.reservationStayId,
         arrival: native.arrival, departure: native.departure, roomType: native.roomType, ratePlan: native.ratePlan,
         adults: native.adults, children: native.children, childAges: ages, firstName: native.firstName, lastName: native.lastName,
-        guestEmail, bookerName, bookerContact, reservationNote: expected.note,
+        guestEmail, bookerName, bookerContact, reservationNote: expected.note, guaranteeType: native.guaranteeCode,
         ...(billingReference === null ? {} : { billingReference }),
         ...(track === null ? {} : { track }),
         ...(Object.hasOwn(changes, 'taCommission') ? { taCommission: commission } : {}),

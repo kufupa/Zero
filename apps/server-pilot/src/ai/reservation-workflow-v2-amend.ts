@@ -68,7 +68,7 @@ type Amendment = {
   arrival?: string; departure?: string; adults?: number; children?: number; childAges?: number[];
   roomType?: string; roomTypeForCharge?: string; ratePlan: string; retainRates: 'yes' | 'no'; firstName?: string; lastName?: string;
   guestEmail?: string; bookerName?: string; bookerContact?: string; billingReference?: string; taCommission?: number; guestOptIn?: false;
-  track?: { lookupCode: string; display: string };
+  track?: { lookupCode: string; display: string }; guaranteeType?: string;
   cmsSend: boolean; cmsMessageId: string; cmsRecipient: string;
 };
 type Compile = { outcome: 'ok'; requestId: string; hintId: string; selectionPath: string; selectedRef: string;
@@ -492,7 +492,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     if (field === UNKNOWN || typeof field !== 'string') { errors.push(`${changePath}:change_unknown`); return; }
     if (field === 'roomCount') { roomCountPaths.push(changePath); return; }
     const supported = new Set(['arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'roomTypeForCharge', 'ratePlan',
-      'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'taCommission', 'guestOptIn', 'track', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
+      'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'taCommission', 'guestOptIn', 'track', 'guaranteeType', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
     if (!supported.has(field)) { unsupported.add(field); return; }
     if (op === 'clear') {
       if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'roomTypeForCharge'].includes(field)) values[field] = '';
@@ -525,6 +525,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
       field === 'billingReference' ? typeof rawValue === 'string' && rawValue.length <= 4000 && !/[\p{Cc}]/u.test(rawValue) :
       field === 'taCommission' ? typeof rawValue === 'number' && Number.isFinite(rawValue) && rawValue >= 0 && rawValue <= 100 :
       field === 'guestOptIn' ? rawValue === false :
+      field === 'guaranteeType' ? typeof rawValue === 'string' && /^[A-Z0-9]{1,20}$/.test(rawValue) :
       field === 'cmsSend' ? typeof rawValue === 'boolean' : typeof rawValue === 'string' && rawValue.length <= 1000 && !/[\p{Cc}]/u.test(rawValue);
     if (!valid) { errors.push(`${valuePath}:value_invalid`); return; }
     values[field] = rawValue;
@@ -1000,7 +1001,7 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
   const module = await nativeModule();
   const dispatchKey = hmsDispatchTargetKey(locked.dispatchTarget);
   const discoveryBase = Object.fromEntries(Object.entries(compiled.baseChanges)
-    .filter(([field]) => field !== 'bookerEmail' && field !== 'bookerMobile' && field !== 'taCommission' && field !== 'guestOptIn'));
+    .filter(([field]) => field !== 'bookerEmail' && field !== 'bookerMobile' && field !== 'taCommission' && field !== 'guestOptIn' && field !== 'guaranteeType'));
   const discoveryChanges = { ...discoveryBase, ratePlan: String(compiled.baseChanges.ratePlan ?? compiled.selected.ratePlan),
     retainRates: compiled.rateHandling === 'retain' ? 'yes' : 'no', cmsSend: false, cmsMessageId: '', cmsRecipient: '' };
   try {
@@ -1019,7 +1020,9 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
       const discovery = await module.prepareCloudPaneAmend({ target: locked.target, selected: compiled.selected,
         ...(childAgePreimage ? { childAgePreimage } : {}),
         confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, changes: discoveryChanges,
-        discoveryOnly: true, captureCommissionBaseline: Object.hasOwn(compiled.baseChanges, 'taCommission'),
+        discoveryOnly: true, ...(typeof compiled.baseChanges.guaranteeType === 'string'
+          ? { guaranteeChoiceCode: compiled.baseChanges.guaranteeType } : {}),
+        captureCommissionBaseline: Object.hasOwn(compiled.baseChanges, 'taCommission'),
         captureGuestOptInBaseline: Object.hasOwn(compiled.baseChanges, 'guestOptIn'),
         allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
       const discoveryBaseline = record(discovery.recoveryBaseline);
@@ -1049,6 +1052,7 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
       }
       const native = await module.prepareCloudPaneAmend({ target: locked.target, selected: compiled.selected,
         ...(childAgePreimage ? { childAgePreimage } : {}),
+        ...(typeof compiled.baseChanges.guaranteeType === 'string' ? { guaranteeChoiceCode: compiled.baseChanges.guaranteeType } : {}),
         confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival, changes,
         captureCommissionBaseline: Object.hasOwn(compiled.baseChanges, 'taCommission'),
         captureGuestOptInBaseline: Object.hasOwn(compiled.baseChanges, 'guestOptIn'),
@@ -1066,6 +1070,8 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
           (!Object.hasOwn(changes, 'bookerName') && typeof recoveryBaseline.beforeBookerName !== 'string') ||
           (!Object.hasOwn(changes, 'bookerContact') && typeof recoveryBaseline.beforeBookerContact !== 'string') ||
           (!changes.cmsSend && typeof afterPreserved.cmsMessageId !== 'string') ||
+          (Object.hasOwn(changes, 'guaranteeType') && (typeof recoveryBaseline.beforeGuaranteeDisplay !== 'string' ||
+            typeof recoveryBaseline.requestedGuaranteeDisplay !== 'string' || !nativePrice(recoveryBaseline.beforeGuaranteePrice))) ||
           (Object.hasOwn(changes, 'guestOptIn') && typeof recoveryBaseline.beforeGuestOptIn !== 'boolean') ||
           (Object.hasOwn(changes, 'taCommission') && (typeof recoveryBaseline.beforeCommission !== 'number' ||
             !Number.isFinite(recoveryBaseline.beforeCommission) || !record(afterPreserved.bookingAgency)?.nativeId)) ||
@@ -1219,6 +1225,7 @@ function readbackMatches(readback: unknown, prepared: Record<string, unknown>): 
         actual.roomTypeForCharge !== (changes.roomTypeForCharge ?? baseline.beforeRoomTypeForCharge))) return null;
   if (Object.hasOwn(changes, 'taCommission') && actual.taCommission !== changes.taCommission) return null;
   if (Object.hasOwn(changes, 'guestOptIn') && actual.guestOptIn !== false) return null;
+  if (Object.hasOwn(changes, 'guaranteeType') && actual.guaranteeType !== changes.guaranteeType) return null;
   const track = record(changes.track);
   if ((track && actual.track !== track.display) ||
       (!track && typeof baseline.beforeTrack === 'string' && actual.track !== baseline.beforeTrack)) return null;
@@ -1307,7 +1314,7 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
   const authorizeFirst = async (stepValue: unknown) => {
     const step = record(stepValue);
     if (dispatchState.claimAttempted || !step || step.operationDigest !== prepared.criteria.semanticDigest ||
-        !['amend.availability', 'amend.save'].includes(String(step.phase)) ||
+        !['amend.guarantee', 'amend.availability', 'amend.save'].includes(String(step.phase)) ||
         typeof step.requestDigest !== 'string' || !/^[a-f0-9]{64}$/.test(step.requestDigest) || !dispatchState.beforeEvidence) {
       throw new Error('AMEND_APPROVAL_INVALID');
     }
@@ -1353,7 +1360,11 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
         }
         return native.commitCloudPaneAmend({ target: locked.target,
         selected: compiled.selected, confirmation: compiled.selected.confirmation, arrival: compiled.selected.arrival,
-        ...(Array.isArray(childAgePreimage) ? { childAgePreimage } : {}), changes: nativeChanges, nativeDigest: preparedResult.nativeDigest, approvedPrices: price, preserved,
+        ...(Array.isArray(childAgePreimage) ? { childAgePreimage } : {}), changes: nativeChanges,
+        ...(typeof nativeChanges.guaranteeType === 'string' ? { guaranteeChoiceCode: nativeChanges.guaranteeType,
+          approvedGuaranteeDisplay: record(preparedResult.recoveryBaseline)?.requestedGuaranteeDisplay,
+          approvedBeforeGuaranteeDisplay: record(preparedResult.recoveryBaseline)?.beforeGuaranteeDisplay,
+          approvedBeforeGuaranteePrice: record(preparedResult.recoveryBaseline)?.beforeGuaranteePrice } : {}), nativeDigest: preparedResult.nativeDigest, approvedPrices: price, preserved,
         captureCommissionBaseline: Object.hasOwn(nativeChanges, 'taCommission'),
         captureGuestOptInBaseline: Object.hasOwn(nativeChanges, 'guestOptIn'),
         allowRealGuest: process.env.PANE_WRITE_AMEND === 'on', cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget),

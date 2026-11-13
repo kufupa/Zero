@@ -3,6 +3,7 @@ import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-gu
 import { isSavedChildStageRequestGate, SAVED_CHILD_STAGE_PATHS } from './saved-stay-child-request-gate.mjs';
 import { isSavedRoomStageRequestGate, SAVED_ROOM_STAGE_PATHS } from './saved-stay-room-stage-gate.mjs';
 import { isSavedRateStageRequestGate, SAVED_RATE_STAGE_PATHS } from './saved-stay-rate-stage-gate.mjs';
+import { isSavedGuaranteeRequestGate, SAVED_GUARANTEE_PATH } from './saved-stay-guarantee-request-gate.mjs';
 
 const SAVE_PATH = '/web/base/OSRESV.HDR';
 const AVAILABILITY_PATH = '/web/base/OSRESV.HDR.getcheckavailability';
@@ -128,6 +129,8 @@ export async function installLabtestSaveRouteChain(page, {
   childStageGate = null,
   roomStageGate = null,
   rateStageGate = null,
+  guaranteeStageGate = null,
+  onGuaranteeCandidate,
   isChildStageActive = () => false,
   availability = null,
   secondSave = null,
@@ -137,7 +140,7 @@ export async function installLabtestSaveRouteChain(page, {
   onBlocked,
 } = {}) {
   if (![SAVE_PATH, '/web/base/OSSTWZ.UpdateStayWizard'].includes(savePath) ||
-      (savePath !== SAVE_PATH && (availability || secondSave || thirdSave || childStageGate || roomStageGate || rateStageGate)) ||
+      (savePath !== SAVE_PATH && (availability || secondSave || thirdSave || childStageGate || roomStageGate || rateStageGate || guaranteeStageGate)) ||
       !page || typeof page.route !== 'function' || typeof page.context !== 'function' || !frame ||
       typeof fence?.isQuarantined !== 'function' || typeof scope?.allow !== 'function' ||
       typeof isArmed !== 'function' || typeof matches !== 'function' ||
@@ -151,7 +154,9 @@ export async function installLabtestSaveRouteChain(page, {
       (thirdSave !== null && secondSave === null) ||
       (childStageGate !== null && !isSavedChildStageRequestGate(childStageGate)) ||
       (roomStageGate !== null && !isSavedRoomStageRequestGate(roomStageGate)) ||
-      (rateStageGate !== null && !isSavedRateStageRequestGate(rateStageGate))) {
+      (rateStageGate !== null && !isSavedRateStageRequestGate(rateStageGate)) ||
+      (guaranteeStageGate !== null && !isSavedGuaranteeRequestGate(guaranteeStageGate)) ||
+      (onGuaranteeCandidate !== undefined && typeof onGuaranteeCandidate !== 'function')) {
     throw new Error('AMEND_ROUTE_CHAIN_INPUT_INVALID');
   }
 
@@ -174,6 +179,7 @@ export async function installLabtestSaveRouteChain(page, {
   const childCandidates = new WeakSet(), continuedChildren = new WeakSet();
   const roomCandidates = new WeakSet(), continuedRooms = new WeakSet();
   const rateCandidates = new WeakSet(), continuedRates = new WeakSet();
+  const guaranteeCandidates = new WeakSet(), continuedGuarantees = new WeakSet();
   let finishDispatch;
   const dispatchFinished = new Promise((resolve) => { finishDispatch = resolve; });
   let finishAvailability, finishSecond, finishThird;
@@ -252,7 +258,7 @@ export async function installLabtestSaveRouteChain(page, {
       continueOnce.proveNeverDispatched = () => {
         // Create has no effectful child route. Once disarmed, this exact Save
         // and any pending continuation are unable to reach route.continue().
-        if (isAvailability || isSecond || isThird || childStageGate || roomStageGate || rateStageGate ||
+        if (isAvailability || isSecond || isThird || childStageGate || roomStageGate || rateStageGate || guaranteeStageGate ||
             wrapperFinished || attempted || continuedRequest || noDispatchProved) return null;
         active = false;
         noDispatchProved = true;
@@ -285,6 +291,14 @@ export async function installLabtestSaveRouteChain(page, {
         else if (isSecond) { secondarySucceeded = wrapperSucceeded; finishSecond(wrapperSucceeded); }
         else { primarySucceeded = wrapperSucceeded; finishDispatch(wrapperSucceeded); }
       }
+    }
+    if (active && guaranteeStageGate && guaranteeCandidates.has(request) && !continuedGuarantees.has(request) &&
+        isSameFrame(request) && isChildStageActive() && guaranteeStageGate.isActive() && !fence.isQuarantined()) {
+      continuedGuarantees.add(request);
+      try {
+        onGuaranteeCandidate?.(request);
+        return await guaranteeStageGate.dispatch(request, () => route.continue());
+      } catch { observeBlocked(request); return route.abort().catch(() => {}); }
     }
     if (active && childStageGate && childCandidates.has(request) && !continuedChildren.has(request) &&
         isSameFrame(request) && isChildStageActive() && childStageGate.isActive() && !fence.isQuarantined()) {
@@ -335,6 +349,16 @@ export async function installLabtestSaveRouteChain(page, {
       if (!allowed) { observeBlocked(request); return route.abort(); }
       availabilityRequest = request;
       try { availability.onCandidate?.(request); } catch { /* The request stays fenced. */ }
+      return route.fallback();
+    }
+    if (url.pathname.toLowerCase() === SAVED_GUARANTEE_PATH.toLowerCase()) {
+      let allowed = false;
+      try {
+        allowed = Boolean(active && guaranteeStageGate && isChildStageActive() && guaranteeStageGate.isActive() &&
+          !fence.isQuarantined() && isSameFrame(request) && guaranteeStageGate.consume(request) && scope.allow(request));
+      } catch { /* Refuse without the exact one-use gate and page fence. */ }
+      if (!allowed) { observeBlocked(request); return route.abort(); }
+      guaranteeCandidates.add(request);
       return route.fallback();
     }
     if (SAVED_CHILD_STAGE_PATHS.some((path) => path.toLowerCase() === url.pathname.toLowerCase())) {
@@ -427,7 +451,7 @@ export async function installLabtestSaveRouteChain(page, {
     let path;
     try { path = new URL(route.request().url()).pathname.toLowerCase(); }
     catch { return handler(route); }
-    return path === savePath.toLowerCase() || path === AVAILABILITY_PATH.toLowerCase() ||
+    return path === savePath.toLowerCase() || path === AVAILABILITY_PATH.toLowerCase() || path === SAVED_GUARANTEE_PATH.toLowerCase() ||
       [...SAVED_CHILD_STAGE_PATHS, ...SAVED_ROOM_STAGE_PATHS, ...SAVED_RATE_STAGE_PATHS].some((item) => item.toLowerCase() === path)
       ? trackCallback(() => handler(route)) : handler(route);
   };

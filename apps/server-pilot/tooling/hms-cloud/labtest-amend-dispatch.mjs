@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const SAVE_PATH = '/web/base/OSRESV.HDR';
 const AVAILABILITY_PATH = '/web/base/OSRESV.HDR.getcheckavailability';
+const GUARANTEE_PATH = '/web/base/OSRESV.HDR.changeguaranteemethod';
 const HASH = /^[a-f0-9]{64}$/;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
@@ -16,7 +17,9 @@ export function amendNativeRequestDigest(request, phase) {
         typeof contentType !== 'string' ||
         !/^application\/x-www-form-urlencoded(?:;|$)/i.test(contentType) ||
         !Buffer.isBuffer(body) || body.length === 0 || body.length > 2 * 1024 * 1024) return null;
-    if (phase === 'availability') {
+    if (phase === 'guarantee') {
+      if (url.pathname !== GUARANTEE_PATH || url.search) return null;
+    } else if (phase === 'availability') {
       if (url.pathname !== AVAILABILITY_PATH || url.search) return null;
     } else if (['save', 'retain', 'extend'].includes(phase)) {
       if (url.pathname !== SAVE_PATH || [...url.searchParams].length !== 1 ||
@@ -37,20 +40,21 @@ export function amendNativeRequestDigest(request, phase) {
  * sequences intercepted requests: the caller must independently match their
  * full bodies and verify availability and the retain question before arming.
  */
-export function createLabtestAmendDispatch({ operationDigest, requiresAvailability, allowsExtendOverrideRate = false,
+export function createLabtestAmendDispatch({ operationDigest, requiresAvailability, requiresGuarantee = false, allowsExtendOverrideRate = false,
   authorizeFirst, isEnabled = () => true }) {
-  if (!HASH.test(operationDigest || '') || typeof requiresAvailability !== 'boolean' ||
+  if (!HASH.test(operationDigest || '') || typeof requiresAvailability !== 'boolean' || typeof requiresGuarantee !== 'boolean' ||
       typeof allowsExtendOverrideRate !== 'boolean' ||
       typeof authorizeFirst !== 'function' || typeof isEnabled !== 'function') {
     throw new Error('AMEND_DISPATCH_INPUT_INVALID');
   }
   let handle = null, busy = false, closed = false;
-  let availabilityDone = false, saveDone = false, retainDone = false, extendDone = false;
+  let guaranteeDone = false, availabilityDone = false, saveDone = false, retainDone = false, extendDone = false;
 
   const dispatch = async (phase, request, proceed) => {
     const eligible = !closed && !busy && isEnabled() && typeof proceed === 'function' &&
-      (phase === 'availability' ? requiresAvailability && !availabilityDone && !saveDone :
-        phase === 'save' ? !saveDone && (!requiresAvailability || availabilityDone) :
+      (phase === 'guarantee' ? requiresGuarantee && !guaranteeDone && !availabilityDone && !saveDone :
+        phase === 'availability' ? requiresAvailability && !availabilityDone && !saveDone && (!requiresGuarantee || guaranteeDone) :
+        phase === 'save' ? !saveDone && (!requiresGuarantee || guaranteeDone) && (!requiresAvailability || availabilityDone) :
           phase === 'retain' ? saveDone && !retainDone :
             phase === 'extend' && allowsExtendOverrideRate && saveDone && retainDone && !extendDone);
     const requestDigest = eligible ? amendNativeRequestDigest(request, phase) : null;
@@ -75,7 +79,8 @@ export function createLabtestAmendDispatch({ operationDigest, requiresAvailabili
         throw new Error('AMEND_DISPATCH_NOT_AUTHORIZED');
       }
       await proceed();
-      if (phase === 'availability') availabilityDone = true;
+      if (phase === 'guarantee') guaranteeDone = true;
+      else if (phase === 'availability') availabilityDone = true;
       else if (phase === 'save') saveDone = true;
       else if (phase === 'retain') retainDone = true;
       else extendDone = true;
@@ -88,6 +93,7 @@ export function createLabtestAmendDispatch({ operationDigest, requiresAvailabili
   };
 
   return Object.freeze({
+    guarantee: (request, proceed) => dispatch('guarantee', request, proceed),
     availability: (request, proceed) => dispatch('availability', request, proceed),
     save: (request, proceed) => dispatch('save', request, proceed),
     retain: (request, proceed) => dispatch('retain', request, proceed),
