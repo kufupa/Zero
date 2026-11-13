@@ -25,6 +25,7 @@ const memorySchema = z.object({
   observations: z.array(z.object({ confirmationKey: z.string(), snapshotId: z.string(),
     historicalIdentity: z.object({ nativeConfirmation: z.string() }).passthrough(),
     historicalHints: z.object({ guaranteeType: historicalValuesSchema, track: historicalValuesSchema }).passthrough(),
+    historicalAutoTransfer: z.object({ value: z.literal(true), evidence: z.literal('stay360_auto_transfer_card_row') }).nullable().optional(),
     historicalNoteFields: historicalValuesSchema,
     outcomes: z.array(z.object({ combination: z.record(z.string().nullable()), conflictingFields: z.array(z.string()) }).passthrough()) }).passthrough()),
   addressEvidence: z.array(z.object({ confirmationKey: z.string(), role: z.string(), address: z.string(),
@@ -272,6 +273,66 @@ export async function loadReservationNativeLeads(input: { propertyCode: string;
     })));
     const multiClientDomain = organizations.size > 1 || domainResults.some(result => result.candidatesTruncated || result.conflictsTruncated);
     const observations: ReservationWorkflowV2Observation[] = [];
+    const latestStays = new Map<string, { capturedAt: string; rows: Memory['observations'] }>();
+    for (const row of memory.observations) {
+      const capturedAt = snapshotTimes.get(row.snapshotId);
+      if (!capturedAt) continue;
+      const current = latestStays.get(row.confirmationKey);
+      if (!current || capturedAt > current.capturedAt) latestStays.set(row.confirmationKey, { capturedAt, rows: [row] });
+      else if (capturedAt === current.capturedAt) current.rows.push(row);
+    }
+    const autoTransferHint = (requestId: string, workflow: 'create' | 'amend', fieldPath: string,
+      partyKind: 'organization' | 'arAccount', partyQuery: string) => {
+      const role: PartyRole = partyKind === 'organization' ? 'organization' : 'ar_account';
+      const key = reservationEntityKey(partyQuery, role);
+      if (!key) return;
+      let denominator = 0, support = 0;
+      let observedThrough = '';
+      for (const stay of latestStays.values()) {
+        const fields = stay.rows.flatMap(row => row.outcomes.flatMap(outcome => {
+          if (outcome.conflictingFields.includes(partyKind)) return [];
+          const value = outcome.combination[partyKind];
+          return value ? [reservationEntityKey(value, role)] : [];
+        })).filter(Boolean);
+        if (!fields.length || fields.some(value => value !== key) ||
+            stay.rows.some(row => row.outcomes.some(outcome => outcome.conflictingFields.includes(partyKind)))) continue;
+        denominator += 1;
+        if (stay.rows.some(row => row.historicalAutoTransfer?.value === true)) {
+          support += 1;
+          if (stay.capturedAt > observedThrough) observedThrough = stay.capturedAt;
+        }
+      }
+      const confidence = denominator ? support / denominator : 0;
+      if (confidence < 0.8) return;
+      observations.push({ ref: randomUUID(), generationId: input.generationId, kind: 'stay_candidate', status: 'partial',
+        observedAt: new Date().toISOString(), propertyCode: input.propertyCode, sourceMessageId: input.source.messageId,
+        sourceRefs: [], criteria: { kind: 'historical_auto_transfer_hint', workflow, requestId,
+          sourceHash: input.source.sourceHash, fieldPath, partyKind, partyQuery },
+        coverage: { complete: false, notes: ['Prior native stays are informational; missing Auto Transfer details are unknown.'] },
+        result: { value: true, support, denominator, confidence, evidence: 'stay360_auto_transfer_card_row', observedThrough } });
+    };
+    for (const request of input.proposal.content.requests) {
+      const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
+      if (request.kind === 'create') {
+        const slots = [{ path: `${root}/shared`, fields: request.body.shared },
+          ...request.body.dateSections.map((section, index) => ({ path: `${root}/dateSections/${index}/defaults`, fields: section.defaults })),
+          ...request.body.allocations.map((allocation, index) => ({ path: `${root}/allocations/${index}/overrides`, fields: allocation.overrides }))];
+        for (const slot of slots) for (const kind of ['organization', 'arAccount'] as const) {
+          const party = slot.fields[kind];
+          if (party && 'name' in party && typeof party.name === 'string' && party.name.trim())
+            autoTransferHint(request.id, 'create', `${slot.path}/${kind}`, kind, party.name);
+        }
+      } else if (request.kind === 'amend') {
+        const groups = [{ path: `${root}/sharedChanges`, changes: request.body.sharedChanges },
+          ...request.body.perTarget.map((target, index) => ({ path: `${root}/perTarget/${index}/changes`, changes: target.changes }))];
+        for (const group of groups) for (const [index, change] of group.changes.entries()) {
+          if (change.op !== 'set' || (change.field !== 'organization' && change.field !== 'arAccount') ||
+              !change.value || typeof change.value !== 'object' || !('name' in change.value) ||
+              typeof change.value.name !== 'string' || !change.value.name.trim()) continue;
+          autoTransferHint(request.id, 'amend', `${group.path}/${index}/value`, change.field, change.value.name);
+        }
+      }
+    }
     for (const request of input.proposal.content.requests) {
       if (request.kind !== 'create' && request.kind !== 'quote') continue;
       const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
@@ -373,7 +434,7 @@ export async function loadReservationNativeLeads(input: { propertyCode: string;
             kind: role === 'rate_plan' || role === 'room_type' ? 'rate_availability' : 'party_candidate', status: 'partial',
             observedAt: new Date().toISOString(), propertyCode: input.propertyCode, sourceMessageId: input.source.messageId,
             sourceRefs: [], criteria: { kind: 'historical_lookup_leads', workflow: request.kind, requestId: request.id,
-              sourceHash: input.source.sourceHash, role: request.kind === 'quote' && role === 'agency' ? 'bookingAgency' : role,
+              sourceHash: input.source.sourceHash, role: role === 'agency' ? 'bookingAgency' : role,
               query: sourceQuery, fieldPath, fieldPaths: [fieldPath], rankBasis: ['exact_sender', 'normalized_entity'],
               multiClientDomain, snapshotTimes: [...snapshotTimes.values()] },
             coverage: { complete: false, notes: ['Historical names/codes require a current Infor search and staff selection.',

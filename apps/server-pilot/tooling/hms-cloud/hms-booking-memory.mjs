@@ -124,6 +124,18 @@ function historicalHintFields(result) {
   ]));
 }
 
+function historicalAutoTransfer(result) {
+  const cards = result?.stay360?.details?.cards;
+  if (!Array.isArray(cards)) return null;
+  const matches = cards.filter(card => text(card?.title).toLowerCase() === 'auto transfer');
+  if (matches.length !== 1 || typeof matches[0].visibleText !== 'string') return null;
+  const lines = matches[0].visibleText.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (text(lines[0]).toLowerCase() !== 'auto transfer') return null;
+  const dateRange = /^\d{1,2}-[A-Za-z]{3}-\d{4}\s+-\s+\d{1,2}-[A-Za-z]{3}-\d{4}$/;
+  return lines.some((line, index) => index >= 2 && index + 1 < lines.length && dateRange.test(line))
+    ? { value: true, evidence: 'stay360_auto_transfer_card_row' } : null;
+}
+
 function historicalNoteFields(result) {
   const recordFields = result?.recordView?.details?.fields;
   const cards = result?.stay360?.details?.cards;
@@ -292,6 +304,7 @@ export function buildHmsBookingMemory({
         snapshotId: metadata.snapshotId, snapshotDate: metadata.snapshotDate,
         sourceType: metadata.sourceType, provenance: result.provenance || null,
         historicalIdentity: historicalIdentity(result, key), historicalHints: historicalHintFields(result),
+        historicalAutoTransfer: historicalAutoTransfer(result),
         historicalNoteFields: historicalNoteFields(result),
         outcomes: outcomeVariants(result),
         pdfAttachmentIds: [...new Set((pdf.pdfAttachmentIds || []).map(text).filter(Boolean))],
