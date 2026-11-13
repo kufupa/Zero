@@ -4365,19 +4365,38 @@ function applyDefaultCmsSendPolicy(
       const instructionsBound = bound && source && cmsInstructions.every((instruction) => source.requestText.raw.includes(instruction.raw));
       const path = `/proposal/content/requests/${request.id}/body/shared/cmsSend`;
       const unambiguous = instructionsBound && values.size === 1 && !values.has(null);
-      if (!unambiguous || values.has(false) || labtest || isRecord(cmsSend) && cmsSend.kind === 'none') {
+      const restrictedPath = [
+        { value: cmsSend, path },
+        ...request.body.dateSections.map((row, index) => ({ value: row.defaults.cmsSend, path: `${root}/dateSections/${index}/defaults/cmsSend` })),
+        ...request.body.allocations.map((row, index) => ({ value: row.overrides.cmsSend, path: `${root}/allocations/${index}/overrides/cmsSend` })),
+      ].find((slot) => isRecord(slot.value) && slot.value.kind === 'none')?.path;
+      if (!unambiguous || values.has(false) || labtest || restrictedPath) {
         const fromSource = unambiguous && values.has(false) && !labtest;
         holdNestedSends(fromSource ? 'source' : 'policy', fromSource ? [message.ref] : []);
       }
-      if (labtest || isRecord(cmsSend) && cmsSend.kind === 'none') {
+      if (labtest || restrictedPath) {
+        if (restrictedPath && request.body.shared.cmsSend === true) {
+          request.body.shared.cmsSend = false;
+          proposal.annotations = proposal.annotations.filter((annotation) => annotation.path !== path);
+          if (proposal.annotations.length < 2000) proposal.annotations.push({ path, basis: 'policy', evidenceRefs: [] });
+        }
         if (!unambiguous) addProjectionIssue(proposal, path, 'cms_send_scope_ambiguous',
           'The source has conflicting or unscoped CMS Send instructions. The initial setting is off; review the correct choice.', [message.ref]);
-        else if (values.has(true)) addProjectionIssue(proposal, path, 'cms_send_policy_restricted',
+        else if (values.has(true)) addProjectionIssue(proposal, restrictedPath ?? path, 'cms_send_policy_restricted',
           'An existing setting keeps CMS sending off. Review the source instruction and the Send choice.', [message.ref]);
         continue;
       }
       request.body.shared.cmsSend = unambiguous ? values.has(true) : false;
-      proposal.annotations = proposal.annotations.filter((annotation) => annotation.path !== path);
+      const changedPaths = [path];
+      if (unambiguous && values.has(true)) {
+        request.body.dateSections.forEach((row, index) => { if (typeof row.defaults.cmsSend === 'boolean') {
+          row.defaults.cmsSend = null; changedPaths.push(`${root}/dateSections/${index}/defaults/cmsSend`);
+        } });
+        request.body.allocations.forEach((row, index) => { if (typeof row.overrides.cmsSend === 'boolean') {
+          row.overrides.cmsSend = null; changedPaths.push(`${root}/allocations/${index}/overrides/cmsSend`);
+        } });
+      }
+      proposal.annotations = proposal.annotations.filter((annotation) => !changedPaths.includes(annotation.path));
       if (proposal.annotations.length < 2000) proposal.annotations.push({ path,
         basis: unambiguous ? 'source' : 'policy', evidenceRefs: unambiguous ? [message.ref] : [] });
       for (const instruction of unambiguous ? cmsInstructions : []) {
