@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import type { WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { effectiveAt, record, requestPath, text, valueAt } from '@/lib/reservation-workflow/views';
 import { Field, Section } from '../shared/stay-fields';
-import { StayFacts } from './amend-editor';
+import { isExactConfirmation, StayFacts } from './amend-editor';
 import styles from './other-editors.module.css';
 
 export function FilingEditor(editor: WorkbenchEditorProps) {
@@ -77,7 +77,7 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
     ![...include, ...exclude].some(row => row.id === ref.hintId));
   const intentionalExistingDestination = Boolean(bodyTargetOverride?.state === 'unknown' && !bodyHasRequest && !bodyHasAllocation &&
     allocationRefs.length === 0 && savedTargetRefs.length === 1 && savedTargetRefs[0]!.requestId === editor.request.id &&
-    include.length === 1 && include[0]!.id === savedTargetRefs[0]!.hintId && /^\d+-\d+$/.test(text(include[0]!.confirmation) || '') &&
+    include.length === 1 && include[0]!.id === savedTargetRefs[0]!.hintId && isExactConfirmation(hint?.confirmation) &&
     ['documentSourceRef', 'kind', 'handling'].every(field => draft.staffReviews[`${documentRoot}/${field}`]?.status === 'accepted'));
   const targetLinkHeld = Boolean((bodyTargetOverride && ['none', 'clear'].includes(bodyTargetOverride.state)) ||
     (bodyTargetOverride?.state === 'unknown' && !intentionalExistingDestination) ||
@@ -175,7 +175,7 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
     && observation.criteria.requestId === editor.request.id && observation.criteria.documentId === doc.id
     && observation.criteria.targetObservationRef === selectedStay.observation.ref && record(observation.result).outcome === 'ready') : undefined;
   const validConfirmation = useCreateTarget ? Boolean(selectedAllocation && allocationOptions.length)
-    : /^\d+-\d+$/.test(confirmation.trim());
+    : isExactConfirmation(confirmation);
   const canRunLookup = !targetLinkHeld && !targetBindingMissing && (!useCreateTarget || (Boolean(selectedAllocation) && createStatus === 'succeeded'));
   const needsSeparateAction = docs.length > 1 || include.length > 1 || exclude.length > 0 || scope.mode === 'scoped_all';
   const linkedCreateLabel = createStatus === 'queued' ? 'Queued — waiting for this exact Create allocation to save.'
@@ -249,6 +249,19 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
           </select>
         </label>
       </div>
+      {doc && <div className={styles.grid}>
+        <Field label="Document name" path={`${documentRoot}/requestedName`} editor={editor} maxLength={150} emptyState="none" review
+          hint="Optional PDF name in Infor. Leave blank to use the attachment name." />
+        <Field label="Description" path={`${documentRoot}/requestedDescription`} editor={editor} maxLength={200} emptyState="none" review
+          hint="Optional description in Infor. Leave blank to use the default." />
+        {(['requestedName', 'requestedDescription'] as const).map(field => {
+          const path = `${documentRoot}/${field}`, value = valueAt(editor.snapshot, path);
+          if (typeof value !== 'string' || !value.trim() || draft.staffReviews[path]?.status === 'accepted') return null;
+          const label = field === 'requestedName' ? 'document name' : 'description';
+          return <button type="button" key={field} disabled={editor.view.busy} onClick={() => void editor.commands.acceptServiceReview(
+            path, `Reviewed ${label}`, { path, value, generationId: draft.generationId }).catch(() => {})}>Confirm {label}</button>;
+        })}
+      </div>}
       {useCreateTarget && selectedAllocation && <div className={createStatus === 'needs_reconcile' || createStatus === 'failed' ? styles.warning : styles.hint}>
         {linkedCreateLabel} The confirmation is supplied only from the verified Create receipt; it is not entered or guessed here.
         {createUnknown.length === 1 && <div className={styles.row}><button type="button" disabled={editor.view.busy}

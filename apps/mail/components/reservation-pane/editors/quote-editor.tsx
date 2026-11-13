@@ -9,7 +9,7 @@ import styles from './create-quote-editor.module.css';
 import pickerStyles from '../reservation-pane.module.css';
 
 type Editor = WorkbenchEditorProps;
-const boards = [
+const mealPlans = [
   { value: 'room_only', label: 'Room only' },
   { value: 'bb', label: 'Bed and breakfast' },
   { value: 'dinner_bb', label: 'Dinner, bed and breakfast' },
@@ -17,7 +17,7 @@ const boards = [
 const strategies = [
   { value: 'BAR', label: 'BAR · best available rate' }, { value: 'PROMO', label: 'PROMO · promotion' },
   { value: 'PRESET', label: 'PRESET' }, { value: 'WS', label: 'WS' }, { value: 'NC', label: 'NC' },
-  { value: 'GOV', label: 'GOV · government' }, { value: 'AIR', label: 'AIR' },
+  { value: 'GOV', label: 'GOV · Government' }, { value: 'AIR', label: 'AIR' },
   { value: 'DOML', label: 'DOML' }, { value: 'OTHER', label: 'OTHER' },
 ];
 
@@ -88,17 +88,17 @@ function quoteCurrent(editor: Editor, observation: ReturnType<typeof latestQuote
     return (!roomCodes.length || roomCodes.includes(native.roomCode)) && (!group.ratePlan || group.ratePlan === native.rateCode);
   });
 }
-function quoteBoardCode(value: unknown, propertyCode: string) {
+function quoteMealPlanCode(value: unknown, propertyCode: string) {
   const label = text(value).trim().toLowerCase().replace(/\s+/gu, ' ');
   if (propertyCode === 'HRCEN') {
     if (label === 'room only r') return 'room_only';
     if (label === 'bed & breakfast r') return 'bb';
     if (['dinner bed & breakfast r', 'dinner, bed & breakfast r', 'dinner, bed, breakfast & beverage r'].includes(label)) return 'dinner_bb';
   }
-  const board = text(value).trim().toLocaleLowerCase().replace(/[,\s&-]+/gu, '_').replace(/_for_all$/u, '');
-  if (['room_only', 'roomonly', 'ro'].includes(board)) return 'room_only';
-  if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast', 'bed_breakfast'].includes(board)) return 'bb';
-  if (['dbb', 'dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_bed_and_breakfast', 'dinner_and_breakfast'].includes(board)) return 'dinner_bb';
+  const mealPlan = text(value).trim().toLocaleLowerCase().replace(/[,\s&-]+/gu, '_').replace(/_for_all$/u, '');
+  if (['room_only', 'roomonly', 'ro'].includes(mealPlan)) return 'room_only';
+  if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast', 'bed_breakfast'].includes(mealPlan)) return 'bb';
+  if (['dbb', 'dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_bed_and_breakfast', 'dinner_and_breakfast'].includes(mealPlan)) return 'dinner_bb';
   return null;
 }
 function quoteOffersCurrent(editor: Editor, observation: ReturnType<typeof latestQuote>) {
@@ -124,7 +124,7 @@ function quoteOffersCurrent(editor: Editor, observation: ReturnType<typeof lates
   return groups.every((group) => {
     const native = requested.find((row) => row.id === group.id), occupancy = record(group.occupancy);
     return native && native.arrivalDate === group.arrival && native.departureDate === group.departure &&
-      native.quantity === group.quantity && native.adults === occupancy.adults && native.board === quoteBoardCode(group.mealPlan, editor.snapshot.session.draft.propertyCode) &&
+      native.quantity === group.quantity && native.adults === occupancy.adults && native.mealPlan === quoteMealPlanCode(group.mealPlan, editor.snapshot.session.draft.propertyCode) &&
       native.childrenAges instanceof Array && native.childrenAges.length === occupancy.childCount &&
       JSON.stringify(native.childrenAges) === JSON.stringify(occupancy.childAges ?? []) &&
       JSON.stringify(native.roomCodes ?? []) === JSON.stringify(group.roomCodes ?? []) &&
@@ -270,23 +270,23 @@ function OfferList({ editor, groupId, groupPath, observation }: { editor: Editor
     {result.availabilityTruncated === true && <p className={styles.notice}>Infor's availability results were truncated; some offers may be missing.</p>}
     {!options.length && <p className={styles.note}>{observation ? 'No selectable Infor offers were returned for this group.' : 'Available Infor offers appear after lookup.'}</p>}
     {options.map((option, index) => {
-      const room = text(option.roomCode), rate = text(option.rateCode), board = text(option.board);
+      const room = text(option.roomCode), rate = text(option.rateCode), mealPlan = text(option.mealPlan);
       const selected = Array.isArray(valueAt(editor.snapshot, `${groupPath}/roomCodes`)) &&
         (valueAt(editor.snapshot, `${groupPath}/roomCodes`) as unknown[]).includes(room) &&
-        text(valueAt(editor.snapshot, `${groupPath}/ratePlan`)) === rate && text(valueAt(editor.snapshot, `${groupPath}/mealPlan`)) === board;
+        text(valueAt(editor.snapshot, `${groupPath}/ratePlan`)) === rate && text(valueAt(editor.snapshot, `${groupPath}/mealPlan`)) === mealPlan;
       const nightly = money(option.perNightMinor, option.currency), total = money(option.totalMinor, option.currency);
-      return <div className={styles.offer} key={`${room}-${rate}-${board}-${index}`}>
+      return <div className={styles.offer} key={`${room}-${rate}-${mealPlan}-${index}`}>
         <div><strong>{room} · {text(option.roomLabel) || room} / {rate} · {text(option.rateLabel) || rate}</strong>
-          <small>{text(option.boardLabel) || board}{nightly ? ` · ${nightly} per night` : ''}{total ? ` · ${total} ${option.priced === 'summary' ? 'indicative sum' : 'total'}` : ''}
+          <small>{text(option.mealPlanLabel) || mealPlan}{nightly ? ` · ${nightly} per night` : ''}{total ? ` · ${total} ${option.priced === 'summary' ? 'indicative sum' : 'total'}` : ''}
             {typeof option.roomsLeft === 'number' ? ` · ${option.roomsLeft} rooms left` : ''}{option.priced === 'summary' ? ' · summary only' : ''}</small></div>
-        <button type="button" className={styles.secondaryButton} disabled={!current || editor.view.busy || !room || !rate || !board}
+        <button type="button" className={styles.secondaryButton} disabled={!current || editor.view.busy || !room || !rate || !mealPlan}
           aria-pressed={selected} onClick={() => {
             const pending = `${groupPath}/offer`;
             editor.commands.setUncommitted(pending, true);
             void (async () => {
               await editor.commands.edit(`${groupPath}/roomCodes`, [room]);
               await editor.commands.edit(`${groupPath}/ratePlan`, rate);
-              await editor.commands.edit(`${groupPath}/mealPlan`, board);
+              await editor.commands.edit(`${groupPath}/mealPlan`, mealPlan);
             })().finally(() => editor.commands.setUncommitted(pending, false)).catch(() => {});
           }}>{selected ? 'Selected' : 'Use this'}</button>
       </div>;
@@ -387,7 +387,7 @@ function PreparedReview({ editor }: { editor: Editor }) {
       const quantity = typeof group.quantity === 'number' ? group.quantity : 0;
       const groupTotal = nightly.length && nightly.every((amount) => typeof amount === 'number' && Number.isSafeInteger(amount))
         ? nightly.reduce<number>((sum, amount) => sum + (amount as number), 0) * quantity : null;
-      return <p className={styles.note} key={text(group.id) || index}>Group {index + 1} · {text(group.quantity)} rooms · {text(group.arrivalDate)} – {text(group.departureDate)} · {text(group.roomCode)} / {text(group.rateCode)} · {text(group.board)}{groupTotal != null ? ` · ${money(groupTotal, result.currency)}` : ''}</p>;
+      return <p className={styles.note} key={text(group.id) || index}>Group {index + 1} · {text(group.quantity)} rooms · {text(group.arrivalDate)} – {text(group.departureDate)} · {text(group.roomCode)} / {text(group.rateCode)} · {text(group.mealPlan)}{groupTotal != null ? ` · ${money(groupTotal, result.currency)}` : ''}</p>;
     })}
     {extras.map((extra, index) => {
       const ids = Array.isArray(extra.groupIds) ? extra.groupIds.map(text) : [];
@@ -491,7 +491,7 @@ export function QuoteEditor(editor: Editor) {
             <Field label="Departure" path={`${groupPath}/departure`} editor={editor} type="date" review /></div>}
           {roomSource && <p className={styles.note}>Requested: {roomSource.raw}</p>}
           <div className={styles.twoCol}><Count label="Rooms" path={`${groupPath}/quantity`} editor={editor} min={1} max={100} review />
-            <Field label="Meal Plan" path={`${groupPath}/mealPlan`} editor={editor} options={boards} review /></div>
+            <Field label="Meal Plan" path={`${groupPath}/mealPlan`} editor={editor} options={mealPlans} review /></div>
           <Field label="Requested room" path={`${groupPath}/requestedRoomDescription`} editor={editor} maxLength={1000} compact
             hint="Customer room description. Choose the Infor categories below." />
           <Field label="Requested guests for this group" path={`${groupPath}/guestNames`} editor={editor} type="string-list" compact
@@ -504,7 +504,7 @@ export function QuoteEditor(editor: Editor) {
           <div className={styles.twoCol}><Count label="Adults per room" path={`${groupPath}/occupancy/adults`} editor={editor} min={1} max={6} review />
             <ChildAges editor={editor} path={`${groupPath}/occupancy`} max={6} /></div>
           <RoomCode editor={editor} path={`${groupPath}/roomCodes`} options={options} />
-          <NativePicker label="Rate plan" path={`${groupPath}/ratePlan`} editor={editor} kind="rate_plan" compact />
+          <NativePicker label="Rate Plan" path={`${groupPath}/ratePlan`} editor={editor} kind="rate_plan" compact />
           <OfferList editor={editor} groupId={text(group.id)} groupPath={groupPath} observation={observation} />
         </div>;
       })}

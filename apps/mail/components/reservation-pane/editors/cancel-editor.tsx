@@ -4,12 +4,12 @@ import { useEffect, useState } from 'react';
 import type { WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { effectiveAt, record, requestPath, savedTargetOperationLocks, text, valueAt } from '@/lib/reservation-workflow/views';
 import { Field, Section } from '../shared/stay-fields';
-import { TargetSearch } from './amend-editor';
+import { isExactConfirmation, TargetSearch } from './amend-editor';
 import styles from './other-editors.module.css';
 
 function exactConfirmation(hint: Record<string, unknown>) {
   const confirmation = text(hint.confirmation).trim();
-  return /^\d{6,10}-\d{1,2}$/.test(confirmation) ? confirmation : '';
+  return isExactConfirmation(confirmation) ? confirmation : '';
 }
 
 function definitelyDistinct(left: Record<string, unknown>, right: Record<string, unknown>) {
