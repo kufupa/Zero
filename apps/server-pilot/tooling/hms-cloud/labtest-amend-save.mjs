@@ -233,6 +233,7 @@ export async function runLabtestAmendSave(page, {
   dispatchDrainTimeoutMs = 5_000,
   prepareOnly = false,
   partyStageActive = () => false,
+  dispatchChildCandidate,
   prepare,
   stage,
   matches,
@@ -265,6 +266,7 @@ export async function runLabtestAmendSave(page, {
   if (usedPages.has(page)) return result('refused', { issue: 'PAGE_WRITE_ALREADY_USED' });
   if ([prepare, stage, matches, validate].some((callback) => typeof callback !== 'function') ||
       (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
+      (dispatchChildCandidate !== undefined && typeof dispatchChildCandidate !== 'function') ||
       (beforeSave !== undefined && typeof beforeSave !== 'function')) {
     return result('input_gap', { issue: 'AMEND_CALLBACKS_INVALID' });
   }
@@ -380,7 +382,8 @@ export async function runLabtestAmendSave(page, {
       fence,
       scope,
       isArmed: () => !prepareOnly && armed && withinDeadline(),
-      childStageGate,
+      childStageGate, canDispatchChild: () => !prepareOnly && typeof dispatchChildCandidate === 'function',
+      dispatchChildCandidate, onChildCandidate: () => { possiblyDispatched = true; },
       roomStageGate,
       rateStageGate,
       guaranteeStageGate,

@@ -128,6 +128,9 @@ export async function installLabtestSaveRouteChain(page, {
   dispatchCandidate,
   onAuthorizationAttempt,
   childStageGate = null,
+  canDispatchChild = () => false,
+  dispatchChildCandidate,
+  onChildCandidate,
   roomStageGate = null,
   rateStageGate = null,
   guaranteeStageGate = null,
@@ -158,6 +161,9 @@ export async function installLabtestSaveRouteChain(page, {
         typeof phase.dispatchCandidate !== 'function')) ||
       (thirdSave !== null && secondSave === null) ||
       (childStageGate !== null && !isSavedChildStageRequestGate(childStageGate)) ||
+      typeof canDispatchChild !== 'function' ||
+      (dispatchChildCandidate !== undefined && typeof dispatchChildCandidate !== 'function') ||
+      (onChildCandidate !== undefined && typeof onChildCandidate !== 'function') ||
       (roomStageGate !== null && !isSavedRoomStageRequestGate(roomStageGate)) ||
       (rateStageGate !== null && !isSavedRateStageRequestGate(rateStageGate)) ||
       (guaranteeStageGate !== null && !isSavedGuaranteeRequestGate(guaranteeStageGate)) ||
@@ -333,8 +339,23 @@ export async function installLabtestSaveRouteChain(page, {
     if (active && childStageGate && childCandidates.has(request) && !continuedChildren.has(request) &&
         isSameFrame(request) && isChildStageActive() && childStageGate.isActive() && !fence.isQuarantined()) {
       continuedChildren.add(request);
-      // The bounded child gate has verified the frame, stay and requested ages.
-      return route.continue();
+      if (!childStageGate.isValidationRequest(request)) return route.continue();
+      if (!canDispatchChild() || typeof dispatchChildCandidate !== 'function') {
+        observeBlocked(request); return route.abort();
+      }
+      let closed = false, started = false, settled = false;
+      try {
+        onChildCandidate?.(request);
+        await dispatchChildCandidate(request, async () => {
+          if (closed || started || !active || !isChildStageActive() || !canDispatchChild() ||
+              !childStageGate.isActive() || fence.isQuarantined()) throw new Error('CHILD_DISPATCH_UNAUTHORIZED');
+          started = true;
+          try { return await route.continue(); } finally { settled = true; }
+        });
+        closed = true;
+        if (!started || !settled) throw new Error('CHILD_DISPATCH_UNCERTAIN');
+        return;
+      } catch { closed = true; observeBlocked(request); return route.abort().catch(() => {}); }
     }
     if (active && roomStageGate && roomCandidates.has(request) && !continuedRooms.has(request) &&
         isSameFrame(request) && isChildStageActive() && roomStageGate.isActive() && !fence.isQuarantined()) {
@@ -406,7 +427,9 @@ export async function installLabtestSaveRouteChain(page, {
     if (SAVED_CHILD_STAGE_PATHS.some((path) => path.toLowerCase() === url.pathname.toLowerCase())) {
       let allowed = false;
       try {
+        const validation = url.pathname.toLowerCase() === SAVED_CHILD_STAGE_PATHS[1].toLowerCase();
         allowed = Boolean(active && childStageGate && isChildStageActive() && childStageGate.isActive() &&
+          (!validation || (canDispatchChild() && typeof dispatchChildCandidate === 'function')) &&
           !fence.isQuarantined() && isSameFrame(request) && childStageGate.consume(request) && scope.allow(request));
       } catch { /* Refuse when the exact-match gate or page fence fails. */ }
       if (!allowed) { observeBlocked(request); return route.abort(); }

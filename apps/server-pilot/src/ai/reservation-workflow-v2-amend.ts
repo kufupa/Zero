@@ -1317,7 +1317,7 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
   const authorizeFirst = async (stepValue: unknown) => {
     const step = record(stepValue);
     if (dispatchState.claimAttempted || !step || step.operationDigest !== prepared.criteria.semanticDigest ||
-        !['amend.guarantee', 'amend.availability', 'amend.save'].includes(String(step.phase)) ||
+        !['amend.guarantee', 'amend.children', 'amend.availability', 'amend.save'].includes(String(step.phase)) ||
         typeof step.requestDigest !== 'string' || !/^[a-f0-9]{64}$/.test(step.requestDigest) || !dispatchState.beforeEvidence) {
       throw new Error('AMEND_APPROVAL_INVALID');
     }
