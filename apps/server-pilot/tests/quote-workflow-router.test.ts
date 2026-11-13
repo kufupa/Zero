@@ -519,7 +519,7 @@ describe('quoteWorkflow.analyseSelection', () => {
           messageId: 'm1',
         },
       ],
-      async () => ({ text: null }),
+      async () => ({ text: null, reason: 'office conversion failed' }),
     );
     quoteWorkflowLoaders.loadSyncedSelection = async () => ({
       subject: 'Rooms',
@@ -548,7 +548,7 @@ describe('quoteWorkflow.analyseSelection', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
         blocking: false,
-        text: "Nava can't read rooming.docx (not a PDF) — open it if it has booking details.",
+        text: "Nava can't read rooming.docx (Word file could not be read) — open it if it has booking details.",
       });
     }
   });
