@@ -104,7 +104,7 @@ function historicalHintFields(result) {
     stay360: Array.isArray(cards) ? cards.flatMap(card => Array.isArray(card?.fields) ? card.fields : []) : null,
   };
   const incompleteSources = Array.isArray(cards) && cards.some(card => !Array.isArray(card?.fields)) ? ['stay360'] : [];
-  return Object.fromEntries(Object.entries(HINT_LABELS).map(([label, key]) => [key,
+  return Object.fromEntries(Object.entries({ ...HINT_LABELS, 'track / sub segment': 'track' }).map(([label, key]) => [key,
     { ...Object.fromEntries(Object.entries(sources).map(([source, fields]) => [source,
       fields && fields.filter(field => labelOf(field) === label).map(field =>
         typeof field?.value === 'string' || typeof field?.value === 'number' ? field.value : null),

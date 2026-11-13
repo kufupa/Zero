@@ -16,12 +16,17 @@ const partyFields = [
   { role: 'organization', field: 'organization' },
   { role: 'ar_account', field: 'arAccount' },
 ] satisfies { role: PartyRole; field: 'bookingAgency' | 'organization' | 'arAccount' }[];
+const historicalValuesSchema = z.object({ recordView: z.array(z.union([z.string(), z.number(), z.null()])).nullable(),
+  stay360: z.array(z.union([z.string(), z.number(), z.null()])).nullable(), incompleteSources: z.array(z.string()) }).passthrough();
 const memorySchema = z.object({
   propertyCode: z.string(),
   snapshots: z.array(z.object({ snapshotId: z.string(), startedAt: z.string().nullable(),
     updatedAt: z.string().nullable() }).passthrough()),
   observations: z.array(z.object({ confirmationKey: z.string(), snapshotId: z.string(),
-    historicalIdentity: z.object({ nativeConfirmation: z.string() }).passthrough() }).passthrough()),
+    historicalIdentity: z.object({ nativeConfirmation: z.string() }).passthrough(),
+    historicalHints: z.object({ guaranteeType: historicalValuesSchema, track: historicalValuesSchema }).passthrough(),
+    historicalNoteFields: historicalValuesSchema,
+    outcomes: z.array(z.object({ combination: z.record(z.string().nullable()), conflictingFields: z.array(z.string()) }).passthrough()) }).passthrough()),
   addressEvidence: z.array(z.object({ confirmationKey: z.string(), role: z.string(), address: z.string(),
     sentAt: z.string().nullable().optional(), messageDbId: z.string().nullable().optional(),
     threadId: z.string().nullable().optional(), linkMethod: z.string().optional(),
@@ -93,6 +98,83 @@ async function loadMemory(env: NodeJS.ProcessEnv): Promise<Memory | null> {
     cached = { key, loadedAt: Date.now(), value };
   }
   return cached.value;
+}
+
+type MemoryGuidanceValue = { value: string; support: number; denominator: number; confidence: number };
+
+/** Time-eligible, identity-bound native notes and booking codes, before current mail arrived. */
+export async function loadReservationMemoryGuidance(input: { propertyCode: string; source: ReservationWorkflowV2Source;
+  fromAddress?: string | null; agencyName?: string | null; organizationName?: string | null;
+  excludedConfirmations?: readonly string[]; env?: NodeJS.ProcessEnv }): Promise<
+  { status: 'available'; denominator: number; notes: MemoryGuidanceValue[]; guarantees: MemoryGuidanceValue[];
+    tracks: MemoryGuidanceValue[]; complete: boolean; multiClientDomain: boolean } |
+  { status: 'unavailable'; issue: string }
+> {
+  try {
+    const memory = await loadMemory(input.env ?? process.env), cutoff = Date.parse(input.source.arrivedAt);
+    if (!memory || memory.propertyCode !== input.propertyCode || !Number.isFinite(cutoff)) {
+      return { status: 'unavailable', issue: 'booking_memory_unavailable' };
+    }
+    const eligibleSnapshots = new Set(memory.snapshots.flatMap(snapshot => {
+      const timestamps = [snapshot.startedAt, snapshot.updatedAt].filter((value): value is string => Boolean(value));
+      return timestamps.length && timestamps.every(value => Number.isFinite(Date.parse(value))) &&
+        Math.max(...timestamps.map(value => Date.parse(value))) < cutoff ? [snapshot.snapshotId] : [];
+    }));
+    const excluded = new Set(input.excludedConfirmations ?? []);
+    for (const row of memory.addressEvidence) if (row.messageDbId === input.source.messageId || row.threadId === input.source.threadId) {
+      excluded.add(row.confirmationKey);
+    }
+    const address = input.fromAddress?.trim().toLocaleLowerCase('en-US') ?? '';
+    const verifiedAddresses = memory.addressEvidence.filter(row => row.sentAt && Number.isFinite(Date.parse(row.sentAt)) &&
+      Date.parse(row.sentAt) < cutoff && row.linkMethod === 'attachment-id' && row.linkProvenance?.ambiguousAttachment === false &&
+      row.linkProvenance.labeledConfirmationMatch === true && row.linkProvenance.subjectHasOtherConfirmation !== true &&
+      row.linkedPmsSnapshotIds?.some(id => eligibleSnapshots.has(id)) && !excluded.has(row.confirmationKey));
+    const senderKeys = new Set(verifiedAddresses.filter(row => row.address === address &&
+      ['inbound-sender', 'outbound-recipient'].includes(row.role)).map(row => row.confirmationKey));
+    const domain = address.includes('@') ? address.split('@')[1] : '';
+    const domainKeys = new Set(verifiedAddresses.filter(row => domain && row.address.endsWith(`@${domain}`) &&
+      ['inbound-sender', 'outbound-recipient'].includes(row.role)).map(row => row.confirmationKey));
+    const eligible = memory.observations.filter(row => eligibleSnapshots.has(row.snapshotId) &&
+      row.historicalIdentity.nativeConfirmation === 'matched' && !excluded.has(row.confirmationKey));
+    const organizations = new Set(eligible.filter(row => domainKeys.has(row.confirmationKey)).flatMap(row => row.outcomes.flatMap(outcome => {
+      const name = outcome.combination.organization;
+      return name && !outcome.conflictingFields.includes('organization') ? [reservationEntityKey(name, 'organization')] : [];
+    })));
+    const multiClientDomain = organizations.size > 1;
+    const hasEntity = Boolean(input.agencyName || input.organizationName);
+    if (!hasEntity && !senderKeys.size) return { status: 'unavailable', issue: 'booking_memory_identity_unavailable' };
+    if (!hasEntity && multiClientDomain) return { status: 'unavailable', issue: 'multiple_client_domain' };
+    const rows = eligible.filter(row => (!senderKeys.size || senderKeys.has(row.confirmationKey)) && row.outcomes.some(outcome => {
+      const matches = (field: 'bookingAgency' | 'organization', role: PartyRole, name?: string | null) => !name ||
+        Boolean(outcome.combination[field] && !outcome.conflictingFields.includes(field) &&
+          reservationEntityKey(outcome.combination[field], role) === reservationEntityKey(name, role));
+      return matches('bookingAgency', 'agency', input.agencyName) && matches('organization', 'organization', input.organizationName);
+    }));
+    const grouped = new Map<string, typeof rows>();
+    for (const row of rows) grouped.set(row.confirmationKey, [...(grouped.get(row.confirmationKey) ?? []), row]);
+    const denominator = grouped.size;
+    const aggregate = (select: (row: typeof rows[number]) => z.infer<typeof historicalValuesSchema>) => {
+      const counts = new Map<string, { value: string; support: number }>();
+      for (const records of grouped.values()) {
+        const values = records.flatMap(row => {
+          const field = select(row);
+          return [...(field.recordView ?? []), ...(field.stay360 ?? [])].flatMap(value =>
+            typeof value === 'string' || typeof value === 'number' ? [String(value).trim()] : []).filter(Boolean);
+        });
+        const distinct = new Map(values.map(value => [value.normalize('NFKC').toLocaleLowerCase('en-US'), value]));
+        if (distinct.size !== 1) continue;
+        const [key, value] = [...distinct][0]!;
+        const prior = counts.get(key);
+        counts.set(key, { value, support: (prior?.support ?? 0) + 1 });
+      }
+      return [...counts.values()].map(row => ({ ...row, denominator, confidence: row.support / denominator }))
+        .sort((a, b) => b.support - a.support || a.value.localeCompare(b.value));
+    };
+    const notes = aggregate(row => row.historicalNoteFields), guarantees = aggregate(row => row.historicalHints.guaranteeType),
+      tracks = aggregate(row => row.historicalHints.track);
+    return { status: 'available', denominator, notes: notes.slice(0, 200), guarantees: guarantees.slice(0, 200),
+      tracks: tracks.slice(0, 200), complete: notes.length <= 200 && guarantees.length <= 200 && tracks.length <= 200, multiClientDomain };
+  } catch { return { status: 'unavailable', issue: 'booking_memory_invalid' }; }
 }
 
 /** Existing captured memory supplies ranked names/codes only, after source projection has finished. */
