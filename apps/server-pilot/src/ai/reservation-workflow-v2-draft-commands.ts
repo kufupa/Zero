@@ -1186,7 +1186,9 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
         const approval = priceRef && rec(priceRef.result).approvalDigest;
         const priorPriceReview = typeof approval === 'string' && /^[a-f0-9]{64}$/.test(approval) &&
           reviews[path]?.status === 'accepted' && reviews[path]?.note === `amend-price:${value}:${approval}`;
-        if (!priorPriceReview && !(request.kind === 'quote' && input.scope === 'request' && path === `${root}/body` && !hasPreparedExtras))
+        const noteBaselineReview = request.kind === 'amend' && /\/perTarget\/\d+\/currentObservationRefs$/.test(path) &&
+          reviews[path]?.status === 'accepted' && /^amend-note:[a-f0-9]{64}$/.test(reviews[path]?.note ?? '');
+        if (!priorPriceReview && !noteBaselineReview && !(request.kind === 'quote' && input.scope === 'request' && path === `${root}/body` && !hasPreparedExtras))
           reviews[path] = { status: 'accepted', note: null, at: now };
         if (Array.isArray(value)) value.forEach((row, index) => walk(`${path}/${index}`, row));
         else if (typeof value === 'object') {

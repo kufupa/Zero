@@ -569,8 +569,7 @@ function textDigest(text: string): string {
 function sourceText(selection: SyncedQuoteSelection): string {
   const participants = [...new Set([selection.fromAddress, ...(selection.participants ?? [])]
     .map((address) => address?.trim()).filter((address): address is string => Boolean(address)))].slice(0, 50);
-  return maskCardNumbers(`From: ${selection.fromAddress ?? 'unknown'}\nParticipants: ${participants.join(', ')}\nSubject: ${selection.subject}\n\n${selection.currentBodyText ?? selection.bodyText}`)
-    .slice(0, MAX_TARGET_CHARS);
+  return maskCardNumbers(`From: ${selection.fromAddress ?? 'unknown'}\nParticipants: ${participants.join(', ')}\nSubject: ${selection.subject}\n\n${selection.currentBodyText ?? selection.bodyText}`);
 }
 
 function extractionRefs(extraction: ReservationWorkflowV2Extraction): string[] {
@@ -1050,7 +1049,7 @@ export function sourceEvidence(input: {
 }): ReservationWorkflowV2Evidence[] {
   const { source, selection, vision } = input;
   const out: ReservationWorkflowV2Evidence[] = [];
-  const target = sourceText(selection);
+  const target = sourceText(selection).slice(0, MAX_TARGET_CHARS);
   const append = (row: ReservationWorkflowV2Evidence) => {
     const parsed = reservationWorkflowV2EvidenceSchema.safeParse(row);
     if (parsed.success) out.push(parsed.data);
@@ -1099,6 +1098,21 @@ export function sourceEvidence(input: {
       text: `Vision input admitted for attachment ${visual.id}, page ${visual.page ?? 1}; image text is not independently verified.` });
   }
   return out.slice(0, 500);
+}
+
+function completeCurrentSourceText(input: { source: ReservationWorkflowV2Source; selection: SyncedQuoteSelection;
+  evidence: ReservationWorkflowV2Evidence[] }): boolean {
+  const { source, selection, evidence } = input;
+  if (!evidence.some(row => row.ref === evidenceRef(source, 'message', source.messageId) &&
+      row.relation === 'current_message' && row.text === sourceText(selection))) return false;
+  return [...selection.attachments, ...(selection.threadAttachments ?? [])].every(attachment => {
+    if (attachment.messageId && attachment.messageId !== source.messageId) return true;
+    const attachmentText = attachment.text?.trim();
+    const isPdf = !attachment.isInline && (/\.pdf$/i.test(attachment.filename) || attachment.mimeType?.toLowerCase() === 'application/pdf');
+    if (!attachmentText && !isPdf) return true;
+    const admitted = evidence.find(row => row.ref === evidenceRef(source, 'attachment_text', attachment.id) && row.relation === 'attachment');
+    return Boolean(admitted && (!attachmentText || admitted.text === maskCardNumbers(attachmentText)));
+  });
 }
 
 /** Map page/text evidence refs back to one physical attachment, without serializing attachment IDs into evidence. */
@@ -4281,8 +4295,8 @@ function applyDefaultCmsSendPolicy(
     const hasChildren = !source || source.occupancy.some((row) => Boolean(row.childCount || row.childAges?.length));
     for (const allocation of request.body.allocations) {
       const totals = request.body.dateSections.find((section) => section.id === allocation.dateSectionId)?.requestedTotals;
-      if (!hasAdults && allocation.occupancy.adults === null && totals?.adults == null) allocation.occupancy.adults = 1;
-      if (!hasChildren && allocation.occupancy.childCount === null && totals?.childCount == null && !totals?.childAges?.length &&
+      if (extraction.sourceReadComplete && !hasAdults && allocation.occupancy.adults === null && totals?.adults == null) allocation.occupancy.adults = 1;
+      if (extraction.sourceReadComplete && !hasChildren && allocation.occupancy.childCount === null && totals?.childCount == null && !totals?.childAges?.length &&
           !allocation.occupancy.childAges?.length) {
         allocation.occupancy.childCount = 0;
         allocation.occupancy.childAges = [];
@@ -5473,11 +5487,12 @@ export async function runReservationWorkflowV2Prefill(input: {
     enabled: extractionVisionEnabled(input.env ?? process.env), signal: input.signal,
   });
   const evidence = sourceEvidence({ source: input.source, selection: input.selection, vision });
+  const textCoverageComplete = completeCurrentSourceText({ source: input.source, selection: input.selection, evidence });
   const attachmentIdentityByRef = sourceAttachmentIdentityByRef({ source: input.source, selection: input.selection, vision });
   const observations: ReservationWorkflowV2Observation[] = [seedObservation({ ref: 'obs_source',
     generationId, propertyCode: input.propertyCode, source: input.source, sourceRefs: evidence.map((row) => row.ref),
     status: vision.attachmentReads.some((row) => row.status !== 'read') ? 'partial' : 'complete',
-    result: { evidenceRefs: evidence.map((row) => row.ref), visionAttachmentReads: vision.attachmentReads,
+    result: { evidenceRefs: evidence.map((row) => row.ref), visionAttachmentReads: vision.attachmentReads, textCoverageComplete,
       maxImages: EXTRACTION_MAX_IMAGES, maxPdfPages: EXTRACTION_MAX_PDF_PAGES },
     complete: !vision.attachmentReads.some((row) => row.status !== 'read'),
   })];
@@ -5539,7 +5554,8 @@ export async function runReservationWorkflowV2Prefill(input: {
     source: input.source, selection: input.selection, evidence });
   const extraction = anchorCurrentExtractionDates({ extraction: recoveredExtraction, source: input.source, evidence });
   const currentRefs = new Set(evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
-  const currentActions = { ...currentRequestExtraction(extraction, currentRefs), sourceReadComplete: observations[0]?.coverage.complete === true };
+  const currentActions = { ...currentRequestExtraction(extraction, currentRefs), sourceReadComplete:
+    observations[0]?.coverage.complete === true && textCoverageComplete };
   const candidateExtraction = currentCandidateExtraction(extraction, currentRefs);
   if (selfPreStay) {
     // Match the established pre-stay rule: a grounded separate ask is surfaced

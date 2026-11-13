@@ -473,11 +473,14 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   const ageOverridden = Object.entries(draft.fieldOverrides).some(([path, override]) => override.state !== 'inherit' &&
     [agesPath, ageAlias].some(target => path === target || target.startsWith(`${path}/`)));
   const childEvidence = extracted?.occupancy.some(row => row.childCount && row.childCount.value !== 0 || row.childAges?.length);
+  const completeSource = draft.observations.some(row => row.kind === 'source' && row.status === 'complete' &&
+    row.coverage.complete && row.generationId === draft.generationId && row.propertyCode === draft.propertyCode &&
+    row.sourceMessageId === draft.source.messageId && row.result.textCoverageComplete === true);
   const ageClaims = draft.proposal.sourceClaims?.some(claim => claim.path.includes('/occupancy/') && claim.path.includes('/childAges'));
   const occupancyConflict = draft.proposal.issues?.some(issue => issue.kind.includes('occupancy') &&
     (issue.path?.includes(`/requests/${requestId}/`) || issue.path?.includes(`/requests/${encodeURIComponent(requestId)}/`)));
   const childAges = allocation.occupancy.childAges === null && childCount === 0 && !ageOverridden && !childEvidence &&
-    !occupancyConflict && !ageClaims && (!draft.extraction || extracted) ? [] : allocation.occupancy.childAges;
+    !occupancyConflict && !ageClaims && completeSource && extracted ? [] : allocation.occupancy.childAges;
   for (const [path, value] of [[adultsPath, adults], [childrenPath, childCount], [agesPath, childAges]] as const) {
     if (value == null) issues.push(`${path}:required`);
     else if (!(path === agesPath && childCount === 0 && Array.isArray(childAges) && childAges.length === 0)) {
