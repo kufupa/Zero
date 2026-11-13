@@ -36,7 +36,8 @@ const memorySchema = z.object({
 }).passthrough();
 const historicalHintSchema = z.object({ values: z.array(z.object({
   value: z.string(), valueTruncated: z.boolean(),
-  evidence: z.object({ confirmationRecords: z.array(z.object({ confirmationNumber: z.string().nullable() }).passthrough()) }).passthrough(),
+  evidence: z.object({ confirmationRecords: z.array(z.object({ confirmationNumber: z.string().nullable() }).passthrough()),
+    truncated: z.boolean() }).passthrough(),
 }).passthrough()) }).passthrough();
 const querySchema = z.object({ candidates: z.array(z.object({
   combination: z.record(z.string().nullable()),
@@ -277,7 +278,7 @@ export async function loadReservationNativeLeads(input: { propertyCode: string;
         const incomplete = new Set<Lead['basis']>();
         const add = (value: string, basis: Lead['basis'], confirmations: Array<string | null>) => {
           const ids = confirmations.filter((id): id is string => Boolean(id));
-          if (!value.trim() || !ids.length) return;
+          if (!value.trim() || !ids.length || (role === 'ar_account' && /^refund\s+account\b/i.test(value.trim()))) return;
           const key = role === 'rate_plan' || role === 'room_type' ? value.toUpperCase() : reservationEntityKey(value, role);
           if (!key) return;
           const prior = leads.get(key);
@@ -305,9 +306,13 @@ export async function loadReservationNativeLeads(input: { propertyCode: string;
                 reservationEntityKey(value, relatedRole) === reservationEntityKey(name, relatedRole)
                 ? candidate.evidence.confirmationRecords.map(row => row.confirmationNumber) : [];
             })) : null;
-            for (const hint of result.historicalHints[role === 'rate_plan' ? 'ratePlan' : 'roomType'].values) if (!hint.valueTruncated && /^[A-Z0-9]{1,12}$/.test(hint.value))
-              add(hint.value, basis, hint.evidence.confirmationRecords.map(row => row.confirmationNumber)
-                .filter(id => !matching || matching.has(id)));
+            for (const hint of result.historicalHints[role === 'rate_plan' ? 'ratePlan' : 'roomType'].values) {
+              if (hint.evidence.truncated) incomplete.add(basis);
+              if (!hint.valueTruncated && /^[A-Z0-9]{1,12}$/.test(hint.value)) {
+                add(hint.value, basis, hint.evidence.confirmationRecords.map(row => row.confirmationNumber)
+                  .filter((id): id is string => Boolean(id) && denominator.has(id ?? '') && (!matching || matching.has(id))));
+              }
+            }
           } else for (const candidate of result.candidates) {
             const value = candidate.combination[field];
             if (value && !candidate.conflictingFields.includes(field) && sourceMatches(candidate))
