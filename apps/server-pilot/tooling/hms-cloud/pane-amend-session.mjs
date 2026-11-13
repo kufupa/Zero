@@ -4,7 +4,7 @@ import { installSavedStayReadGuard } from './saved-stay-read-guard.mjs';
 import { readShallow, readRecord } from './hms-readers.mjs';
 import { cleanLabtestRecord, currentLabtestRecord, snapshotLabtestRecord,
   unchangedLabtestBusinessParties } from './labtest-record.mjs';
-import { readSavedChildAgesForComposition, savedChildOccupancy, sameChildAgeMultiset, stageSavedChildrenForComposition } from './guest-stay-amend-children.mjs';
+import { previewSavedChildrenForComposition, readSavedChildAgesForComposition, savedChildOccupancy, sameChildAgeMultiset, stageSavedChildrenForComposition } from './guest-stay-amend-children.mjs';
 import { createSavedChildStageRequestGate } from './saved-stay-child-request-gate.mjs';
 import { createSavedRoomStageRequestGate } from './saved-stay-room-stage-gate.mjs';
 import { createSavedRateStageRequestGate } from './saved-stay-rate-stage-gate.mjs';
@@ -14,6 +14,8 @@ import { listSavedTrackChoices, stageSavedTrackForComposition } from './guest-st
 import { stageSavedStayCommission } from './guest-stay-commission.mjs';
 import { inspectSavedGuaranteeForComposition, applySavedGuaranteeOnGo } from './guest-stay-amend-guarantee.mjs';
 import { createSavedGuaranteeRequestGate } from './saved-stay-guarantee-request-gate.mjs';
+import { inspectSavedPartyForComposition } from './guest-stay-amend-party.mjs';
+import { createSavedPartyStageRequestGate } from './saved-stay-party-request-gate.mjs';
 import { labtestCombinedAmendPreimageBinding } from './saved-stay-combined-preimage.mjs';
 import { nativeCmsSendValue, runLabtestAmendSave } from './labtest-amend-save.mjs';
 import { createLabtestAmendDispatch } from './labtest-amend-dispatch.mjs';
@@ -340,6 +342,104 @@ export async function readCloudSavedChildAges(input, { openSession = withCenturi
           result.issue || 'SAVED_AGES_UNVERIFIED' };
     }, protectedSession.options);
   } catch { return { outcome: 'refused', issue: 'SAVED_AGES_UNVERIFIED' }; }
+}
+
+/** Preview requested child ages in the native editor, then Cancel without Apply. */
+export async function previewCloudPaneAmendChildren(input, { openSession = withCenturionStay360Page,
+  guard = installSavedStayReadGuard, shallow = readShallow, read = readRecord,
+  current = currentLabtestRecord, snapshot = snapshotLabtestRecord } = {}) {
+  const selected = input?.selected, beforeAges = input?.beforeChildAges, ages = input?.childAges;
+  if (!validTarget(input?.target) || !selected || selected.confirmation !== input.confirmation ||
+      selected.arrival !== input.arrival || !Array.isArray(beforeAges) || beforeAges.length !== selected.children ||
+      !Array.isArray(ages) || ages.length > 9 || [...beforeAges, ...ages].some(age => !Number.isInteger(age) || age < 0 || age > 17)) {
+    return { outcome: 'refused', issue: 'CHILD_INPUT_INVALID' };
+  }
+  try {
+    const protectedSession = guardedSession(input, guard);
+    return await openSession(async page => {
+      if (!protectedSession.hasGuard(page.context())) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
+      await shallow(page, input.confirmation, searchHints(selected, input.arrival));
+      const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
+      const expected = expectedLabtestAmendRecord(record, selected, { allowRealGuest: input.allowRealGuest === true,
+        childAgePreimage: beforeAges });
+      if (!expected) return { outcome: 'refused', issue: 'APPROVED_STAY_MISMATCH' };
+      const result = await runLabtestAmendSave(page, {
+        timeoutMs: 120_000, signal: protectedSession.options.signal, prepareOnly: true,
+        prepare: async bounded => {
+          const state = await bounded(current(page, expected, nativeOptions(input, record)));
+          const baseline = await bounded(snapshot(state.frame)), occupancy = savedChildOccupancy(baseline);
+          const raw = occupancy.fields?.childages?.model;
+          const save = state.frame.locator('[data-qtip="Save Record (Ctrl+S)"]:visible');
+          if (!baseline || !occupancy.valid || !raw?.present || (occupancy.ages === null && raw.value !== '') ||
+              (occupancy.ages !== null && !sameChildAgeMultiset(occupancy.ages, beforeAges)) ||
+              await bounded(save.count()) !== 1) throw new Error('CHILD_PREIMAGE_UNVERIFIED');
+          return { frame: state.frame, save, baseline, enableComposedStage: true, allowRealGuest: input.allowRealGuest === true,
+            expected: { ...expected, childAges: beforeAges, reservationStayId: selected.reservationStayId,
+              expectedGuarantee: state.expectedGuarantee },
+            childStageGate: createSavedChildStageRequestGate({ frame: state.frame, stayId: selected.reservationStayId,
+              adults: expected.adults, priorAges: beforeAges, priorBands: occupancy.bands,
+              readAges: occupancy.ages ?? [], readOnly: true, deadlineAt: performance.now() + 110_000 }) };
+        },
+        stage: async (bounded, prepared, context) => bounded(previewSavedChildrenForComposition(context, prepared.expected, ages)),
+        validate: async (_bounded, _prepared, staged) => sameChildAgeMultiset(staged?.requested?.childAges, ages) &&
+          sameChildAgeMultiset(staged?.before?.ages, beforeAges),
+        matches: () => false,
+        stageDetails: staged => ({ preview: staged }),
+      });
+      return result.issue === 'PREPARE_ONLY' && result.blockedRequests === 0 && result.preview
+        ? { outcome: 'ok', ...result.preview }
+        : { outcome: 'refused', issue: result.issue || 'CHILD_PREVIEW_UNVERIFIED' };
+    }, protectedSession.options);
+  } catch { return { outcome: 'refused', issue: 'CHILD_PREVIEW_UNVERIFIED' }; }
+}
+
+/** Search selected-stay party pickers without dispatching a selection callback or Save. */
+export async function inspectCloudPaneAmendParties(input, { openSession = withCenturionStay360Page,
+  guard = installSavedStayReadGuard, shallow = readShallow, read = readRecord,
+  current = currentLabtestRecord, snapshot = snapshotLabtestRecord } = {}) {
+  const selected = input?.selected, queries = input?.queries;
+  if (!validTarget(input?.target) || !selected || selected.confirmation !== input.confirmation ||
+      selected.arrival !== input.arrival || !Array.isArray(queries) || !queries.length || queries.length > 3 ||
+      queries.some(item => !item || !['organization', 'bookingAgency', 'arAccount'].includes(item.kind) ||
+        typeof item.query !== 'string' || !item.query.trim() || item.query !== item.query.trim() ||
+        item.query.length > 200 || /[\p{Cc}]/u.test(item.query)) ||
+      new Set(queries.map(item => item.kind)).size !== queries.length) return { outcome: 'refused', issue: 'PARTY_INPUT_INVALID' };
+  try {
+    const protectedSession = guardedSession(input, guard);
+    return await openSession(async page => {
+      if (!protectedSession.hasGuard(page.context())) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
+      await shallow(page, input.confirmation, searchHints(selected, input.arrival));
+      const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
+      const expected = expectedLabtestAmendRecord(record, selected, { allowRealGuest: input.allowRealGuest === true,
+        allowUnknownChildAges: true });
+      if (!expected) return { outcome: 'refused', issue: 'APPROVED_STAY_MISMATCH' };
+      const result = await runLabtestAmendSave(page, {
+        timeoutMs: 180_000, signal: protectedSession.options.signal, prepareOnly: true, partyStageActive: () => true,
+        prepare: async bounded => {
+          const state = await bounded(current(page, expected, nativeOptions(input, record)));
+          const baseline = await bounded(snapshot(state.frame));
+          const save = state.frame.locator('[data-qtip="Save Record (Ctrl+S)"]:visible');
+          if (!baseline || !cleanLabtestRecord(baseline) || await bounded(save.count()) !== 1) {
+            throw new Error('PARTY_PREIMAGE_UNVERIFIED');
+          }
+          return { frame: state.frame, save, baseline, enableComposedStage: true, allowRealGuest: input.allowRealGuest === true,
+            partyStageGate: createSavedPartyStageRequestGate({ frame: state.frame, selected,
+              deadlineAt: performance.now() + 170_000 }) };
+        },
+        stage: async (bounded, _prepared, context) => {
+          const observations = [];
+          for (const query of queries) observations.push(await bounded(inspectSavedPartyForComposition(context, query)));
+          return observations;
+        },
+        validate: async (_bounded, _prepared, staged) => Array.isArray(staged) && staged.length === queries.length,
+        matches: () => false,
+        stageDetails: staged => ({ observations: staged }),
+      });
+      return result.issue === 'PREPARE_ONLY' && result.blockedRequests === 0 && Array.isArray(result.observations)
+        ? { outcome: 'ok', observations: result.observations }
+        : { outcome: 'refused', issue: result.issue || 'PARTY_READ_UNVERIFIED' };
+    }, protectedSession.options);
+  } catch { return { outcome: 'refused', issue: 'PARTY_READ_UNVERIFIED' }; }
 }
 
 /** Read the selected reservation's Track choices with Save permanently disarmed. */

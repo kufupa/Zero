@@ -5,6 +5,7 @@ import { isSavedChildStageRequestGate, SAVED_CHILD_STAGE_PATHS } from './saved-s
 import { isSavedRoomStageRequestGate, SAVED_ROOM_STAGE_PATHS } from './saved-stay-room-stage-gate.mjs';
 import { isSavedRateStageRequestGate, SAVED_RATE_STAGE_PATHS } from './saved-stay-rate-stage-gate.mjs';
 import { isSavedGuaranteeRequestGate, SAVED_GUARANTEE_PATH } from './saved-stay-guarantee-request-gate.mjs';
+import { isSavedPartyStageRequestGate, SAVED_PARTY_STAGE_PATHS } from './saved-stay-party-request-gate.mjs';
 import { parseNativePricingJson } from './saved-stay-nightly-rates.mjs';
 
 /** Native loadVault only initializes the card iframe. This POST remains aborted. */
@@ -231,6 +232,7 @@ export async function runLabtestAmendSave(page, {
   reportDispatchDrain = false,
   dispatchDrainTimeoutMs = 5_000,
   prepareOnly = false,
+  partyStageActive = () => false,
   prepare,
   stage,
   matches,
@@ -254,6 +256,7 @@ export async function runLabtestAmendSave(page, {
       (reportDispatchDrain && dispatchDrainTimeoutMs === 0)) {
     return result('input_gap', { issue: 'INVALID_DRAIN_TIMEOUT' });
   }
+  if (typeof partyStageActive !== 'function') return result('input_gap', { issue: 'AMEND_CALLBACKS_INVALID' });
   if (typeof prepareOnly !== 'boolean') return result('input_gap', { issue: 'INVALID_PREPARE_ONLY' });
   if (!page || typeof page.route !== 'function' || typeof page.locator !== 'function' ||
       typeof page.on !== 'function' || typeof page.off !== 'function') {
@@ -287,7 +290,7 @@ export async function runLabtestAmendSave(page, {
 
   let armed = false, possiblyDispatched = false, dispatched = false, blockedAtDispatch = 0;
   let blocked = 0, sendRequests = 0, blockedCardEntry = 0, blockedTaxValues = 0, nativeDialog = null, response = null, authorizedRequest = null;
-  let stopReason = null, scope, fence, routeChain, prepared, staged, inStage = false, childStageGate = null, roomStageGate = null, rateStageGate = null, guaranteeStageGate = null;
+  let stopReason = null, scope, fence, routeChain, prepared, staged, inStage = false, childStageGate = null, roomStageGate = null, rateStageGate = null, guaranteeStageGate = null, partyStageGate = null;
   let routeSetupSettled = true;
   let availabilityArmed = false, availabilityRequest = null, availabilityDispatched = false, availabilitySnapshot = null;
   let retainArmed = false, retainRequest = null, retainDispatched = false, retainSnapshot = null;
@@ -306,6 +309,7 @@ export async function runLabtestAmendSave(page, {
     roomStageGate?.close();
     rateStageGate?.close();
     guaranteeStageGate?.close();
+    partyStageGate?.close();
     routeChain?.disarm();
     fence?.quarantine();
     signalStop({ reason });
@@ -360,13 +364,15 @@ export async function runLabtestAmendSave(page, {
     if (roomStageGate !== null && !isSavedRoomStageRequestGate(roomStageGate)) throw new Error('ROOM_STAGE_GATE_INVALID');
     rateStageGate = prepared.rateStageGate ?? null;
     if (rateStageGate !== null && !isSavedRateStageRequestGate(rateStageGate)) throw new Error('RATE_STAGE_GATE_INVALID');
+    partyStageGate = prepared.partyStageGate ?? null;
+    if (partyStageGate !== null && !isSavedPartyStageRequestGate(partyStageGate)) throw new Error('PARTY_STAGE_GATE_INVALID');
     guaranteeStageGate = prepared.guaranteeStageGate ?? null;
     if (guaranteeStageGate !== null && (prepareOnly || !isSavedGuaranteeRequestGate(guaranteeStageGate))) {
       throw new Error('GUARANTEE_STAGE_GATE_INVALID');
     }
     fence = await bounded(installPageRequestFence(page, [SAVE_PATH, ...(availability ? [AVAILABILITY_PATH] : []),
       ...(childStageGate ? SAVED_CHILD_STAGE_PATHS : []), ...(roomStageGate ? SAVED_ROOM_STAGE_PATHS : []),
-      ...(rateStageGate ? SAVED_RATE_STAGE_PATHS : []), ...(guaranteeStageGate ? [SAVED_GUARANTEE_PATH] : [])]));
+      ...(rateStageGate ? SAVED_RATE_STAGE_PATHS : []), ...(guaranteeStageGate ? [SAVED_GUARANTEE_PATH] : []), ...(partyStageGate ? SAVED_PARTY_STAGE_PATHS : [])]));
     scope = fence.open();
     routeSetupSettled = false;
     const routeSetup = installLabtestSaveRouteChain(page, {
@@ -379,6 +385,8 @@ export async function runLabtestAmendSave(page, {
       rateStageGate,
       guaranteeStageGate,
       onGuaranteeCandidate: () => { possiblyDispatched = true; },
+      partyStageGate, isPartyStageActive: () => inStage && partyStageActive() && withinDeadline(),
+      canDispatchParty: () => !prepareOnly, onPartyCandidate: () => { possiblyDispatched = true; },
       isChildStageActive: () => inStage && withinDeadline(),
       dispatchCandidate,
       availability: availability ? {
@@ -431,6 +439,7 @@ export async function runLabtestAmendSave(page, {
         roomStageGate?.close();
         rateStageGate?.close();
         guaranteeStageGate?.close();
+        partyStageGate?.close();
         try {
           const url = new URL(request.url());
           if (/send|email|mail/i.test(url.pathname)) sendRequests += 1;
@@ -455,7 +464,7 @@ export async function runLabtestAmendSave(page, {
     usedPages.add(page);
 
     inStage = true;
-    const stageContext = Object.freeze({ page, frame: prepared.frame, childStageGate, roomStageGate, rateStageGate, guaranteeStageGate,
+    const stageContext = Object.freeze({ page, frame: prepared.frame, childStageGate, roomStageGate, rateStageGate, guaranteeStageGate, partyStageGate,
       allowRealGuest: prepared.allowRealGuest === true,
       baseline: prepared.enableComposedStage === true && prepared.baseline ? structuredClone(prepared.baseline) : null,
       isActive: () => inStage && blocked === 0 && withinDeadline() && !fence.isQuarantined(),
@@ -469,6 +478,7 @@ export async function runLabtestAmendSave(page, {
     roomStageGate?.close();
     rateStageGate?.close();
     guaranteeStageGate?.close();
+    partyStageGate?.close();
     const verification = blocked || nativeDialog
       ? { ok: false, issue: 'AMEND_DRAFT_CHANGED' }
       : await bounded(validate(bounded, prepared, staged));
@@ -613,6 +623,7 @@ export async function runLabtestAmendSave(page, {
     extendArmed = false;
     childStageGate?.close();
     guaranteeStageGate?.close();
+    partyStageGate?.close();
     armed = false;
     routeChain?.disarm();
     scope?.close();
