@@ -206,7 +206,11 @@ const mailExtractionObjectSchema = z.object({
   ).nullish().transform((questions) => questions ?? []),
 }).strict();
 
-export const mailExtractionSchema = mailExtractionObjectSchema.superRefine((value, context) => {
+const modelStaySchema = mailExtractionObjectSchema.shape.stays.element.extend({
+  workflowProposal: workflowProposalSchema.omit({ sourceOfBusiness: true, track: true, guaranteeType: true, cmsMessageId: true }).optional(),
+  amendProposal: amendProposalSchema.omit({ cmsMessageId: true }).optional(),
+});
+export const mailExtractionSchema = mailExtractionObjectSchema.extend({ stays: z.array(modelStaySchema) }).superRefine((value, context) => {
   if (value.needsAction === (value.action === 'no_action')) {
     context.addIssue({
       code: z.ZodIssueCode.custom,

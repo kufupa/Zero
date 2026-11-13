@@ -2213,6 +2213,7 @@ function anchorCurrentExtractionDates(input: { extraction: ReservationWorkflowV2
         const claim = date[key];
         if (!claim || !claim.sourceRefs.some((ref) => input.evidence.some((row) => row.ref === ref &&
             row.relation !== 'prior_thread' && row.text.includes(claim.raw)))) continue;
+        if (!rollover && !/\b(?:19|20)\d{2}\b/u.test(claim.raw)) continue;
         const resolved = resolveSourceStayDate(claim.raw, input.source.arrivedAt, rollover);
         if (resolved) claim.value = resolved;
       }
@@ -4133,7 +4134,7 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
       excludedConfirmations, db: input.db, transportId: input.transportId,
       sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []), env: input.env });
     if (memory.status !== 'available' || !memory.complete || !memory.denominator || memory.multiClientDomain && !organizationName) continue;
-    const payerCounts = new Map<string, number>(), capCounts = new Map<string, number>();
+    const payerCounts = new Map<string, number>(), capCounts = new Map<string, number>(), mealCounts = new Map<string, number>();
     for (const note of memory.notes) {
       const payers = [
         /\bto\s+agent\b/i.test(note.value) ? 'agent' : null,
@@ -4142,6 +4143,11 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
         /\bsettle\s+direct\b/i.test(note.value) ? 'direct' : null,
       ].filter((value): value is string => value !== null);
       if (payers.length === 1) payerCounts.set(payers[0]!, (payerCounts.get(payers[0]!) ?? 0) + note.support);
+      const meals = [
+        /\bDBB\b/i.test(note.value) || /\bdinner\b/i.test(note.value) && /\bbreakfast\b/i.test(note.value) ? 'dinner_bb' : null,
+        /\bBB\b|\bB\s*&\s*B\b/i.test(note.value) && !/\bDBB\b|\bdinner\b/i.test(note.value) ? 'bb' : null,
+      ].filter((value): value is string => value !== null);
+      if (meals.length === 1) mealCounts.set(meals[0]!, (mealCounts.get(meals[0]!) ?? 0) + note.support);
       const amount = dinnerAmount(note.value);
       if (amount) capCounts.set(amount, (capCounts.get(amount) ?? 0) + note.support);
     }
@@ -4159,7 +4165,11 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
         normalizedFact(row.meaning) === normalizedFact(guarantee.value))) : [];
     const guaranteeCode = request.body.shared.guaranteeType == null && matchingGuarantees.length === 1
       ? matchingGuarantees[0]?.code ?? null : null;
-    const meal = boardMeaning(request.body.shared.requestedMealPlan);
+    const currentMeal = request.body.shared.requestedMealPlan ?? request.body.shared.mealPlan;
+    const namedMeal = typeof currentMeal === 'string' && /\bdinner\b/i.test(currentMeal) && /\bbreakfast\b/i.test(currentMeal)
+      ? 'dinner_bb' : typeof currentMeal === 'string' && /\bbed\b/i.test(currentMeal) && /\bbreakfast\b/i.test(currentMeal)
+        ? 'bb' : boardMeaning(currentMeal);
+    const meal = currentMeal == null ? leader(mealCounts)?.[0] ?? '' : namedMeal;
     const presetId = payer?.[0] === 'direct' ? 'settle-direct' : ['bb', 'dinner_bb'].includes(meal) && payer
       ? `${meal === 'dinner_bb' ? 'dbb' : 'bb'}-${payer[0]}` : null;
     const preset = RESERVATION_NOTE_PRESETS.find((row) => row.id === presetId);
@@ -5074,12 +5084,12 @@ export async function runReservationWorkflowV2Prefill(input: {
   let finalProposal = guardedProposal ? applyDefaultCmsSendPolicy(guardedProposal, input.propertyCode,
     currentActions, boundProjection?.extractionIdByProposalRequestId) : null;
   if (finalProposal) {
-    const noteResult = await applyNoteMemory({ proposal: finalProposal, source: input.source, propertyCode: input.propertyCode,
-      generationId, selection: input.selection, evidence, db: input.db, transportId: input.transportId, env });
-    const mealResult = await applyRateMealMemory({ proposal: noteResult.proposal, source: input.source,
+    const mealResult = await applyRateMealMemory({ proposal: finalProposal, source: input.source,
       propertyCode: input.propertyCode, generationId, env });
-    finalProposal = mealResult.proposal;
-    finalObservations = [...finalObservations, ...noteResult.observations, ...mealResult.observations];
+    const noteResult = await applyNoteMemory({ proposal: mealResult.proposal, source: input.source, propertyCode: input.propertyCode,
+      generationId, selection: input.selection, evidence, db: input.db, transportId: input.transportId, env });
+    finalProposal = noteResult.proposal;
+    finalObservations = [...finalObservations, ...mealResult.observations, ...noteResult.observations];
   }
   const admittedReviewRefs = new Set([...evidence.map((row) => row.ref), ...finalObservations.map((row) => row.ref)]);
   let unverifiedReviewEvidence = false;
@@ -5161,14 +5171,13 @@ export async function runReservationWorkflowV2Prefill(input: {
     const fallbackSafety = addRequestConfirmationSafety({ proposal: fallbackProjection.proposal, extraction: currentActions,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
       currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence });
-    const noteResult = await applyNoteMemory({ proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, input.propertyCode,
-      currentActions, fallbackProjection.extractionIdByProposalRequestId),
-      source: input.source, propertyCode: input.propertyCode, generationId, selection: input.selection, evidence,
-      db: input.db, transportId: input.transportId, env });
-    const mealResult = await applyRateMealMemory({ proposal: noteResult.proposal, source: input.source,
+    const mealResult = await applyRateMealMemory({ proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, input.propertyCode,
+      currentActions, fallbackProjection.extractionIdByProposalRequestId), source: input.source,
       propertyCode: input.propertyCode, generationId, env });
-    const proposal = mealResult.proposal;
-    finalObservations = [...finalObservations, ...noteResult.observations, ...mealResult.observations];
+    const noteResult = await applyNoteMemory({ proposal: mealResult.proposal, source: input.source, propertyCode: input.propertyCode,
+      generationId, selection: input.selection, evidence, db: input.db, transportId: input.transportId, env });
+    const proposal = noteResult.proposal;
+    finalObservations = [...finalObservations, ...mealResult.observations, ...noteResult.observations];
     const historicalLeads = await loadReservationNativeLeads({ propertyCode: input.propertyCode, source: input.source,
       generationId, proposal, fromAddress: input.selection.fromAddress ?? null, env, signal: input.signal,
       db: input.db, transportId: input.transportId,
