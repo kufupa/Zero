@@ -146,7 +146,7 @@ function safeDatabaseIdentity(value: string | undefined) {
   try { parsed = new URL(value); } catch { throw new Error('REPLAY_DATABASE_URL_INVALID'); }
   const database = parsed.pathname.slice(1);
   if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || parsed.hostname !== '127.0.0.1' || parsed.port !== '55447' ||
-      parsed.username !== 'fresh_replay' || !['nava_replay_wave1_20261112_195632', 'nava_replay_wave1_20261112_195632_r2', 'nava_replay_wave1_20261112_195632_r3', 'nava_replay_wave1_20261112_195632_r4', 'nava_replay_wave1_20261112_195632_r5', 'nava_replay_wave1_20261112_195632_r6', 'nava_replay_tier1_4_baseline', 'nava_replay_tier1_4_baseline2', 'nava_replay_tier1_4_candidate', 'nava_replay_tier1_4_candidate2'].includes(database))
+      parsed.username !== 'fresh_replay' || !['nava_replay_wave1_20261112_195632', 'nava_replay_wave1_20261112_195632_r2', 'nava_replay_wave1_20261112_195632_r3', 'nava_replay_wave1_20261112_195632_r4', 'nava_replay_wave1_20261112_195632_r5', 'nava_replay_wave1_20261112_195632_r6', 'nava_replay_tier1_4_baseline', 'nava_replay_tier1_4_baseline2', 'nava_replay_tier1_4_candidate', 'nava_replay_tier1_4_candidate2', 'nava_replay_tier1_4_candidate3'].includes(database))
     throw new Error('REPLAY_DATABASE_NOT_THE_OWNED_LOCAL_DATABASE');
   return { host: parsed.hostname, port: Number(parsed.port), database, user: parsed.username };
 }
