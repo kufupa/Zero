@@ -105,7 +105,8 @@ type MemoryGuidanceValue = { value: string; support: number; denominator: number
 /** Time-eligible, identity-bound native notes and booking codes, before current mail arrived. */
 export async function loadReservationMemoryGuidance(input: { propertyCode: string; source: ReservationWorkflowV2Source;
   fromAddress?: string | null; agencyName?: string | null; organizationName?: string | null;
-  excludedConfirmations?: readonly string[]; env?: NodeJS.ProcessEnv }): Promise<
+  excludedConfirmations?: readonly string[]; sourceThreadMessageIds?: readonly string[]; db?: DB; transportId?: string;
+  env?: NodeJS.ProcessEnv }): Promise<
   { status: 'available'; denominator: number; notes: MemoryGuidanceValue[]; guarantees: MemoryGuidanceValue[];
     tracks: MemoryGuidanceValue[]; complete: boolean; multiClientDomain: boolean } |
   { status: 'unavailable'; issue: string }
@@ -115,16 +116,28 @@ export async function loadReservationMemoryGuidance(input: { propertyCode: strin
     if (!memory || memory.propertyCode !== input.propertyCode || !Number.isFinite(cutoff)) {
       return { status: 'unavailable', issue: 'booking_memory_unavailable' };
     }
+    if (!input.db && !input.sourceThreadMessageIds) return { status: 'unavailable', issue: 'source_thread_unavailable' };
+    const sourceMessages = new Set([input.source.messageId, ...(input.sourceThreadMessageIds ?? [])]);
+    if (input.db) {
+      if (!input.transportId) return { status: 'unavailable', issue: 'source_transport_unavailable' };
+      const thread = await input.db.select({ id: message.id }).from(message).where(and(
+        eq(message.transportId, input.transportId), eq(message.threadId, input.source.threadId),
+        lt(MESSAGE_ARRIVED_AT, sql`${input.source.arrivedAt}::timestamptz at time zone 'UTC'`))).limit(2001);
+      if (thread.length > 2000) return { status: 'unavailable', issue: 'source_thread_incomplete' };
+      for (const row of thread) sourceMessages.add(row.id);
+    }
     const eligibleSnapshots = new Set(memory.snapshots.flatMap(snapshot => {
       const timestamps = [snapshot.startedAt, snapshot.updatedAt].filter((value): value is string => Boolean(value));
       return timestamps.length && timestamps.every(value => Number.isFinite(Date.parse(value))) &&
         Math.max(...timestamps.map(value => Date.parse(value))) < cutoff ? [snapshot.snapshotId] : [];
     }));
     const excluded = new Set(input.excludedConfirmations ?? []);
-    for (const row of memory.addressEvidence) if (row.messageDbId === input.source.messageId || row.threadId === input.source.threadId) {
+    for (const row of memory.addressEvidence) if ((row.messageDbId && sourceMessages.has(row.messageDbId)) || row.threadId === input.source.threadId) {
       excluded.add(row.confirmationKey);
     }
-    const address = input.fromAddress?.trim().toLocaleLowerCase('en-US') ?? '';
+    const addresses = [...new Set((input.fromAddress?.match(/[^\s@,;<>]+@[^\s@,;<>]+/g) ?? [])
+      .map(value => value.replace(/^mailto:/i, '').replace(/[.!?]+$/, '').toLocaleLowerCase('en-US')))];
+    const address = addresses.length === 1 ? addresses[0] : '';
     const verifiedAddresses = memory.addressEvidence.filter(row => row.sentAt && Number.isFinite(Date.parse(row.sentAt)) &&
       Date.parse(row.sentAt) < cutoff && row.linkMethod === 'attachment-id' && row.linkProvenance?.ambiguousAttachment === false &&
       row.linkProvenance.labeledConfirmationMatch === true && row.linkProvenance.subjectHasOtherConfirmation !== true &&
