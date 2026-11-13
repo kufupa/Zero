@@ -86,7 +86,7 @@ describe('PartyPicker shared job status', () => {
     expect(screen.getAllByRole('status')).toHaveLength(1);
     expect(screen.getByRole('status').textContent).toContain('Running');
     expect(screen.getByRole('status').textContent).toContain(
-      'Searching for the company or agency in HMS.',
+      'Searching for the organization or primary booking agency in HMS.',
     );
 
     view = sharedPartyJob('failed', 'message-2');
@@ -127,7 +127,7 @@ describe('PartyPicker shared job status', () => {
     await waitFor(() => expect(pendingReadbacks).toHaveLength(1));
     expect(screen.getAllByRole('status')).toHaveLength(1);
     expect(screen.getByRole('status').textContent).toContain(
-      'Searching HMS for "Example Company" (company)',
+      'Searching HMS for "Example Company" (organization)',
     );
     expect(screen.queryByText('Checking for a background HMS lookup…')).toBeNull();
 
@@ -172,7 +172,7 @@ describe('PartyPicker shared job status', () => {
     expect(await screen.findByRole('button', { name: 'Confirm Example Company' })).toBeTruthy();
     expect(screen.getByRole('alert').textContent).toContain("Couldn't reach HMS.");
     expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
-    expect(screen.queryByText('Searching HMS for "Example Company" (company)')).toBeNull();
+    expect(screen.queryByText('Searching HMS for "Example Company" (organization)')).toBeNull();
     expect(onPick).not.toHaveBeenCalled();
   });
 });

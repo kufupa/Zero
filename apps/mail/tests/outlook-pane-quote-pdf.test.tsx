@@ -4,7 +4,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import OutlookPanePage from '../app/(routes)/outlook-pane/page';
+import { NavaPane } from '../components/nava-pane/nava-pane';
+import { useOutlookBridge } from '../lib/workstation/use-outlook-bridge';
 import { useQuotePdfJob } from '../components/nava-pane/use-quote-pdf-job';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import {
@@ -211,6 +212,10 @@ vi.mock('../providers/query-provider', () => ({
   },
 }));
 
+function LegacyOutlookQuotePane() {
+  return <NavaPane bridge={useOutlookBridge()} />;
+}
+
 const PDF_WORK_ITEM_ID = '00000000-0000-4000-8000-000000000011';
 const OTHER_WORK_ITEM_ID = '00000000-0000-4000-8000-000000000022';
 
@@ -349,7 +354,7 @@ function QuotePdfJobHarness({
   );
 }
 
-describe('Outlook pane quote proposal PDF', () => {
+describe('Legacy NavaPane quote proposal PDF', () => {
   it('uses the current reviewed reply when revalidation failed before any native create was submitted', async () => {
     let reads = 0;
     sendCommandMock.mockImplementation(async (action: string) => {
@@ -359,7 +364,7 @@ describe('Outlook pane quote proposal PDF', () => {
       }
       return { entryId: 'draft-99', storeId: 'store-1', folderEntryId: 'folder-drafts', displayed: true };
     });
-    render(<OutlookPanePage />);
+    render(<LegacyOutlookQuotePane />);
     await prepareReviewedQuote();
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
@@ -517,11 +522,11 @@ describe('Outlook pane quote proposal PDF', () => {
   });
 
   it('requires a fresh quote after the staff session changes on the same selected message', async () => {
-    const view = render(<OutlookPanePage />);
+    const view = render(<LegacyOutlookQuotePane />);
     await prepareReviewedQuote();
     expect(screen.getByRole('button', { name: /Draft quotation into email reply/i }).hasAttribute('disabled')).toBe(false);
     sessionState.sessionId = 'session-2';
-    view.rerender(<OutlookPanePage />);
+    view.rerender(<LegacyOutlookQuotePane />);
     await waitFor(() => expect(screen.queryByText(/Prepared PDF/i)).toBeNull());
     // The button is off until a PDF is prepared for this session, and says why.
     expect(screen.getByRole('button', { name: /Draft quotation into email reply/i }).hasAttribute('disabled')).toBe(true);
@@ -570,7 +575,7 @@ describe('Outlook pane quote proposal PDF', () => {
         tasks: [],
       },
     });
-    render(<OutlookPanePage />);
+    render(<LegacyOutlookQuotePane />);
     fireEvent.change(await findReadStayArrival(), { target: { value: '2026-11-13' } });
     // Get rates waits for a room type on every row; the email gave none.
     fireEvent.change(await screen.findByLabelText('Room type'), { target: { value: 'STQN' } });
@@ -627,7 +632,7 @@ describe('Outlook pane quote proposal PDF', () => {
 
   it('sends the approved quote to the server Excel route from Download Excel', async () => {
     quoteWorkbookMutateMock.mockRejectedValueOnce(new Error('workbook route reached'));
-    render(<OutlookPanePage />);
+    render(<LegacyOutlookQuotePane />);
     await prepareReviewedQuote();
     const download = screen.getByRole('button', { name: 'Download Excel' });
     expect(download.hasAttribute('disabled')).toBe(false);
@@ -646,7 +651,7 @@ describe('Outlook pane quote proposal PDF', () => {
         settle = resolve;
       }),
     );
-    render(<OutlookPanePage />);
+    render(<LegacyOutlookQuotePane />);
     await prepareReviewedQuote();
     const download = screen.getByRole('button', { name: 'Download Excel' });
     fireEvent.click(download);
@@ -663,7 +668,7 @@ describe('Outlook pane quote proposal PDF', () => {
     sessionState.email = 'kdouglas@legacyhotels.co.za';
     sessionState.outlookEmail = 'centurion@legacyhotels.co.za';
     sessionState.transportId = '';
-    render(<OutlookPanePage />);
+    render(<LegacyOutlookQuotePane />);
     // Mailbox gate runs before HITL review. Search availability is absent until a transport binds.
     // No analysis is loaded yet, so the reply button keeps its plain label.
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
@@ -677,7 +682,7 @@ describe('Outlook pane quote proposal PDF', () => {
   it('uses the server-selected shared mailbox even when staff login and native PING email differ', async () => {
     sessionState.email = 'kdouglas@legacyhotels.co.za';
     sessionState.outlookEmail = 'not-the-mailbox@legacyhotels.co.za';
-    render(<OutlookPanePage />);
+    render(<LegacyOutlookQuotePane />);
     await prepareReviewedQuote();
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     expect(quotePdfMutateMock).not.toHaveBeenCalled();
@@ -719,7 +724,7 @@ describe('Outlook pane quote proposal PDF', () => {
       if (action === 'ADD_ATTACHMENT_TO_DRAFT') return { attached: true };
       return { entryId: 'draft-99', storeId: 'store-1', folderEntryId: 'folder-drafts' };
     });
-    render(<OutlookPanePage />);
+    render(<LegacyOutlookQuotePane />);
     await prepareReviewedQuote();
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     expect(quotePdfMutateMock).not.toHaveBeenCalled();
@@ -739,7 +744,7 @@ describe('Outlook pane quote proposal PDF', () => {
       if (action === 'ADD_ATTACHMENT_TO_DRAFT') return { attached: true };
       return { entryId: 'draft-99', storeId: 'store-1', folderEntryId: 'folder-drafts', displayed: true };
     });
-    render(<OutlookPanePage />);
+    render(<LegacyOutlookQuotePane />);
     await prepareReviewedQuote();
     const button = screen.getByRole('button', { name: /Draft quotation into email reply/i });
     fireEvent.click(button);
@@ -771,7 +776,7 @@ describe('Outlook pane quote proposal PDF', () => {
     sessionState.transportId = 'transport-pane-registry';
     sessionState.transportEmail = 'davinci@legacyhotels.co.za';
     sessionState.propertyCode = 'HRDAV';
-    render(<OutlookPanePage />);
+    render(<LegacyOutlookQuotePane />);
     await prepareReviewedQuote(null);
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     expect(quotePdfMutateMock).not.toHaveBeenCalled();
@@ -820,7 +825,7 @@ describe('Outlook pane quote proposal PDF', () => {
         displayed: true,
       };
     });
-    render(<OutlookPanePage />);
+    render(<LegacyOutlookQuotePane />);
     await prepareReviewedQuote();
     const button = screen.getByRole('button', { name: /Draft quotation into email reply/i });
     fireEvent.click(button);
@@ -860,7 +865,7 @@ describe('Outlook pane quote proposal PDF', () => {
         displayed: true,
       };
     });
-    render(<OutlookPanePage />);
+    render(<LegacyOutlookQuotePane />);
     await prepareReviewedQuote();
     const button = screen.getByRole('button', { name: /Draft quotation into email reply/i });
     fireEvent.click(button);
@@ -901,12 +906,12 @@ describe('Outlook pane quote proposal PDF', () => {
       }
       return { entryId: 'draft-99', storeId: 'store-1', folderEntryId: 'folder-drafts', displayed: true };
     });
-    const pane = render(<OutlookPanePage />);
+    const pane = render(<LegacyOutlookQuotePane />);
     await prepareReviewedQuote();
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     sessionState.userId = '';
     sessionState.transportId = '';
-    pane.rerender(<OutlookPanePage />);
+    pane.rerender(<LegacyOutlookQuotePane />);
     await act(async () => release());
     expect(sendCommandMock.mock.calls.filter((call) => call[0] === 'CREATE_REPLY_DRAFT')).toHaveLength(0);
     expect(quotePdfMutateMock).not.toHaveBeenCalled();
@@ -915,11 +920,11 @@ describe('Outlook pane quote proposal PDF', () => {
 
   it('does not attach RATE_TABLE PDF bytes after a 24-hour re-login', async () => {
     sessionState.requiresRelogin = true;
-    const pane = render(<OutlookPanePage />);
+    const pane = render(<LegacyOutlookQuotePane />);
     expect(screen.queryByRole('button', { name: /Insert Draft in Outlook|Draft quotation into email reply/i })).toBeNull();
     expect(quotePdfMutateMock).not.toHaveBeenCalled();
     sessionState.requiresRelogin = false;
-    pane.rerender(<OutlookPanePage />);
+    pane.rerender(<LegacyOutlookQuotePane />);
     await prepareReviewedQuote();
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     await waitFor(() =>
@@ -936,7 +941,7 @@ describe('Outlook pane quote proposal PDF', () => {
     let finishNative!: (value: { entryId: string; storeId: string; folderEntryId: string }) => void;
     sendCommandMock.mockResolvedValueOnce({ entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' });
     sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => { finishNative = resolve; }));
-    const pane = render(<OutlookPanePage />);
+    const pane = render(<LegacyOutlookQuotePane />);
     await prepareReviewedQuote();
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith(
@@ -946,11 +951,11 @@ describe('Outlook pane quote proposal PDF', () => {
     expect(JSON.stringify(Object.entries(sessionStorage))).not.toContain('JVBER');
 
     sessionState.requiresRelogin = true;
-    pane.rerender(<OutlookPanePage />);
+    pane.rerender(<LegacyOutlookQuotePane />);
     pane.unmount();
     await act(async () => finishNative({ entryId: 'draft-99', storeId: 'store-1', folderEntryId: 'folder-drafts' }));
     sessionState.requiresRelogin = false;
-    render(<OutlookPanePage />);
+    render(<LegacyOutlookQuotePane />);
     await prepareReviewedQuote();
 
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
@@ -969,7 +974,7 @@ describe('Outlook pane quote proposal PDF', () => {
 
   it('clears draft preview and suppresses a pending native mutation toast on cached-session expiry', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    const pane = render(<OutlookPanePage />);
+    const pane = render(<LegacyOutlookQuotePane />);
     await prepareReviewedQuote();
     const button = screen.getByRole('button', { name: /Draft quotation into email reply/i });
     fireEvent.click(button);
@@ -992,13 +997,13 @@ describe('Outlook pane quote proposal PDF', () => {
     );
     const pdfCallsBeforeExpiry = quotePdfMutateMock.mock.calls.length;
     sessionState.requiresRelogin = true;
-    pane.rerender(<OutlookPanePage />);
+    pane.rerender(<LegacyOutlookQuotePane />);
     await act(async () => rejectMutation(new Error('Bridge unavailable')));
     expect(vi.mocked(toast.error).mock.calls.flat().join(' ')).not.toContain(
       'Suite Availability Request',
     );
     sessionState.requiresRelogin = false;
-    pane.rerender(<OutlookPanePage />);
+    pane.rerender(<LegacyOutlookQuotePane />);
     expect(screen.queryByText(/Attached: Quote-authorised\.pdf/)).toBeNull();
     expect(screen.queryByRole('status')).toBeNull();
     // Expiry made no PDF call. The relogin reset cleared the prepared quote, so prepare it again before the draft clicks.

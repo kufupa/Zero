@@ -123,7 +123,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
     const status = screen.getByRole('status');
     expect(status.textContent).toContain('Looking up in HMS — you can keep working');
     expect(status.textContent).toContain('elapsed');
-    expect(status.textContent).toContain('Searching HMS for "Woolworths" (company)');
+    expect(status.textContent).toContain('Searching HMS for "Woolworths" (organization)');
     expect(status.querySelector('svg')).toBeNull();
     const confirm = await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' });
     expect(screen.queryByText(/✓ Woolworths Holdings/)).toBeNull();

@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NavaPane } from '../components/nava-pane/nava-pane';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
@@ -112,6 +112,7 @@ vi.mock('../providers/query-provider', () => ({
       dismiss: { mutate: async () => ({ status: 'ok' }) },
     },
     quoteWorkflow: {
+      rateCatalogue: { query: async () => ({ transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [], mealPlans: [], overrideRateCodes: [], eventRateCodes: [] }) },
       voucherFind: { query: async () => ({ status: 'not_voucher' }) },
       analyseSelection: {
         mutate: async () => ({
@@ -179,7 +180,7 @@ describe('NavaPane mail-derived party hints', () => {
     cleanup();
   });
 
-  it('preselects the sender party once HMS returns it', async () => {
+  it('offers the sender party from HMS for staff confirmation', async () => {
     const agency = { kind: 'bookingAgency' as const, nativeId: '77', name: 'Example Travel Agency' };
     findPartyMutation.mockResolvedValue({
       outcome: 'resolved',
@@ -189,9 +190,12 @@ describe('NavaPane mail-derived party hints', () => {
       searchedFor: 'Example Travel Agency',
     });
     render(<NavaPane bridge={fakeBridge} preview />);
-    await waitFor(() => expect(screen.getByText('✓ Example Travel Agency (#77)')).toBeTruthy(), {
-      timeout: 4000,
-    });
+    const match = await screen.findByRole('button', { name: 'Confirm Example Travel Agency' }, { timeout: 4000 });
+    expect(screen.queryByRole('button', { name: 'Edit Booking Agency' })).toBeNull();
+    fireEvent.click(match);
+    expect(screen.getByRole('combobox', { name: 'Booking Agency from HMS' })).toHaveProperty('value', 'bookingAgency:77');
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Booking Agency' }));
+    expect(screen.getByRole('button', { name: 'Edit Booking Agency' })).toBeTruthy();
     expect(suggestQuery).toHaveBeenCalledWith({
       sender: 'ops@example-agency.test',
       body: fakeBridge.activeEmail!.bodyText.slice(0, BODY_LIMIT),
