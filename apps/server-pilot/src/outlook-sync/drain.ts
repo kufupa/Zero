@@ -251,16 +251,17 @@ async function recordFailure(db: DB, claim: SyncDrainClaim, error: unknown) {
     // The old snapshot must be discarded, then the new one claimed normally.
     const retryableGaps = new Set(['MISSING_REQUIRED_ARTIFACT', 'ARTIFACT_CHANGED',
       'ARTIFACT_ORIGIN_CHANGED', 'OBSERVATION_CHANGED', 'UNKNOWN_DIRECTION']);
-    const attention = error instanceof SyncIngestionGap && !retryableGaps.has(error.code);
     const now = await databaseNow(t),
       retries = row.retryCount + 1,
       delay = Math.min(60_000, 1000 * 2 ** Math.min(6, retries - 1));
+    const unresolvedDirection = error instanceof SyncIngestionGap && error.code === 'UNKNOWN_DIRECTION' && retries >= 3;
+    const attention = error instanceof SyncIngestionGap && (!retryableGaps.has(error.code) || unresolvedDirection);
     await t
       .update(observationTable)
       .set({
         ingestionState: attention ? 'attention' : 'pending',
         retryCount: retries,
-        errorCode: attention ? error.code : 'INGESTION_RETRY',
+        errorCode: unresolvedDirection ? 'UNKNOWN_DIRECTION_UNRESOLVED' : attention ? error.code : 'INGESTION_RETRY',
         drainOwner: null,
         drainExpiresAt: null,
         drainNextAttemptAt: attention ? null : new Date(now.getTime() + delay),
