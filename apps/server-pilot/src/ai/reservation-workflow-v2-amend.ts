@@ -1228,7 +1228,6 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
           canonicalJson(stagedBaseline.beforeParties) !== canonicalJson(baseline.beforeParties)) {
         return { issue: 'native_amend_prepare_unverified' };
       }
-      if (!mealPlanVerified(draft, compiled, staged)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(draft, compiled, staged) };
       const nextAges = childrenChanged && Array.isArray(compiled.target.childAges) ? compiled.target.childAges as number[] : null;
       if (childrenChanged) {
         if (!nextAges) return { issue: 'child_ages_required_for_occupancy_change' };
@@ -1320,6 +1319,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
         return { observation, price: ordinaryPrice, plan: null, semanticDigest, noop: true };
       }
       if (compiled.rateHandling === 'retain') return { issue: 'retained_rate_not_supported_for_priced_amendment', retainCallback: true };
+      if (!mealPlanVerified(draft, compiled, staged)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(draft, compiled, staged) };
       const planDigest = sha256(plan);
       const recoveryBaseline = { ...stagedBaseline, beforeChildAges: beforeAges,
         beforeGuaranteeDisplay: baseline.beforeGuaranteeDisplay, beforeGuaranteePrice: baseline.beforeGuaranteePrice,
