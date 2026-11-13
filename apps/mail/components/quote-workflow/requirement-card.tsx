@@ -148,7 +148,7 @@ export function StayCard({
   propertyCode = HRCEN_PROPERTY_CODE,
   roomTypes: configuredRoomTypes,
   strictRoomTypes: configuredStrictRoomTypes,
-  boards: configuredBoards,
+  mealPlans: configuredBoards,
 }: {
   stayId: string;
   rows: StayGroupRequirement[];
@@ -169,7 +169,7 @@ export function StayCard({
   roomTypes?: QuotePaneRoomType[];
   /** Callers with a merged option list can preserve legacy matching separately. */
   strictRoomTypes?: boolean;
-  boards?: QuotePaneBoard[];
+  mealPlans?: QuotePaneBoard[];
 }) {
   const id = useId();
   const stayNumber = index + 1;

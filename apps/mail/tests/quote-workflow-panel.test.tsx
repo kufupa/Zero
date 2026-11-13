@@ -530,7 +530,7 @@ describe('QuoteWorkflowPanel', () => {
     const session = withLunaMissing(
       {
         ...base,
-        staffHeader: { ...base.staffHeader, company: 'Sample Company', parties: {} },
+        staffHeader: { ...base.staffHeader, organization: 'Sample Company', parties: {} },
       },
       [
         { field: 'arrivalDate', question: 'What arrival and departure dates should be quoted?' },
@@ -570,12 +570,12 @@ describe('QuoteWorkflowPanel', () => {
         })),
         staffHeader: {
           ...base.staffHeader,
-          company: 'Sample Company',
-          parties: { company: { kind: 'company', nativeId: 'company-1', name: 'Sample Company' } },
+          organization: 'Sample Company',
+          parties: { organization: { kind: 'organization', nativeId: 'company-1', name: 'Sample Company' } },
         },
       },
       [
-        { field: 'company', question: 'Which company should appear on the quote?' },
+        { field: 'organization', question: 'Which company should appear on the quote?' },
         { field: 'arrivalDate', question: 'What arrival and departure dates should be quoted?' },
       ],
       { kind: 'organization', name: 'Sample Company', reference: null },
@@ -692,8 +692,8 @@ describe('QuoteWorkflowPanel', () => {
       quoteRequestKey,
       approvedHeader: {
         salesStrategy: 'BAR' as const,
-        company: '',
-        agency: '',
+        organization: '',
+        bookingAgency: '',
         attention: '',
         clientEmail: '',
         clientTelephone: '',
@@ -714,7 +714,7 @@ describe('QuoteWorkflowPanel', () => {
   });
 
   it('marks People as looking up while an HMS party search is pending', () => {
-    const session = { ...sessionFromFixture('public-single'), pendingPartyKinds: ['company' as const] };
+    const session = { ...sessionFromFixture('public-single'), pendingPartyKinds: ['organization' as const] };
     render(<QuoteWorkflowPanel session={session} />);
     expect(
       within(
@@ -746,8 +746,8 @@ describe('QuoteWorkflowPanel', () => {
   it('shows Find in HMS in both party fields, including an empty Company field', () => {
     const findParty = vi.fn(async () => ({ outcome: 'no_match' as const, results: [], truncated: false, best: null, searchedFor: null }));
     render(<QuoteWorkflowPanel session={sessionFromFixture('mixed-same-dates')} findParty={findParty} />);
-    const agency = screen.getByRole('group', { name: 'Agency lookup in HMS' });
-    const company = screen.getByRole('group', { name: 'Company lookup in HMS' });
+    const agency = screen.getByRole('group', { name: 'Booking Agency lookup in HMS' });
+    const company = screen.getByRole('group', { name: 'Organization lookup in HMS' });
     expect(within(agency).getByRole('button', { name: 'Find in HMS' })).toBeDefined();
     const findCompany = within(company).getByRole('button', { name: 'Find in HMS' }) as HTMLButtonElement;
     expect(findCompany.disabled).toBe(true);
@@ -1031,11 +1031,11 @@ describe('QuoteWorkflowPanel', () => {
     expect(step).toBeDefined();
     if (!step) return;
     session.steps = session.steps.map((item) => item.id === step.id ? { ...item, status: 'succeeded' as const } : item);
-    render(<QuoteWorkflowPanel session={{ ...session, pendingPartyKinds: ['company'] }} onRunStep={vi.fn()} />);
+    render(<QuoteWorkflowPanel session={{ ...session, pendingPartyKinds: ['organization'] }} onRunStep={vi.fn()} />);
 
     const button = screen.getByRole('button', { name: 'Search this date range for Stay 1' }) as HTMLButtonElement;
     expect(button.disabled).toBe(false);
-    expect(screen.getByText('Finding the company in HMS…')).toBeTruthy();
+    expect(screen.getByText('Finding the organization in HMS…')).toBeTruthy();
   });
 
   it('explains when a date-specific search has no run handler instead of leaving an enabled no-op', () => {
@@ -1084,8 +1084,8 @@ describe('QuoteWorkflowPanel', () => {
     const rateOption = (groupId: string, id: string): RateOption => ({
       id,
       groupId,
-      board: 'bb',
-      boardLabel: 'Bed & breakfast',
+      mealPlan: 'bb',
+      mealPlanLabel: 'Bed & breakfast',
       rateCode: 'BAR',
       rateLabel: 'Best available',
       roomCode: 'STQN',
@@ -1635,8 +1635,8 @@ describe('QuoteWorkflowPanel', () => {
       rateLabel: 'Government rate',
       roomCode: 'STWN',
       roomLabel: 'Standard Twin',
-      board: 'bb',
-      boardLabel: 'Bed & breakfast',
+      mealPlan: 'bb',
+      mealPlanLabel: 'Bed & breakfast',
       contract: false,
       onlyContract: false,
       matchesRequest: true,
@@ -1743,7 +1743,7 @@ function staggeredDatesWithOptionA(): QuoteSession {
       kind: 'allocation',
       roomCode: 'SKNG',
       roomLabel: 'Standard King',
-      board: 'bb',
+      mealPlan: 'bb',
       rateCode: 'BAR',
       currency: 'ZAR',
       nightly: [],
@@ -1772,8 +1772,8 @@ function staggeredDatesWithOptionA(): QuoteSession {
       quoteRequestKey: '2026-11-02:2026-11-04',
       approvedHeader: {
         salesStrategy: 'BAR',
-        company: '',
-        agency: '',
+        organization: '',
+        bookingAgency: '',
         attention: '',
         clientEmail: '',
         clientTelephone: '',
@@ -1785,8 +1785,8 @@ function staggeredDatesWithOptionA(): QuoteSession {
 }
 
 describe('the Find in HMS picker in the quote header', () => {
-  const ACME = { kind: 'company' as const, nativeId: 'C-100', name: 'Acme Travel' };
-  const TRAVEL_HUB = { kind: 'agency' as const, nativeId: 'A-7', name: 'Travel Hub' };
+  const ACME = { kind: 'organization' as const, nativeId: 'C-100', name: 'Acme Travel' };
+  const TRAVEL_HUB = { kind: 'bookingAgency' as const, nativeId: 'A-7', name: 'Travel Hub' };
   const noMatch = async () => ({ outcome: 'no_match' as const, results: [], truncated: false });
 
   function headerSession(staffHeader: Partial<QuoteSession['staffHeader']>): QuoteSession {
@@ -1795,7 +1795,7 @@ describe('the Find in HMS picker in the quote header', () => {
   }
 
   it('shows the rate selector above the availability action before rates are read', () => {
-    const session = headerSession({ company: 'Sample Company', parties: {} });
+    const session = headerSession({ organization: 'Sample Company', parties: {} });
     expect(session.rateOptions ?? []).toHaveLength(0);
     const { container } = render(<QuoteWorkflowPanel session={session} />);
     const ratesStep = container.querySelector<HTMLElement>('#quote-rates');
@@ -1924,8 +1924,8 @@ describe('the Find in HMS picker in the quote header', () => {
           roomLabel: 'Standard Queen',
           rateCode: 'BAR',
           rateLabel: 'Best Available Rate',
-          board: 'bb',
-          boardLabel: 'Bed & Breakfast',
+          mealPlan: 'bb',
+          mealPlanLabel: 'Bed & Breakfast',
           nightlyPriceMinor: 100_000,
           roomsLeft: 4,
         },
@@ -1943,8 +1943,8 @@ describe('the Find in HMS picker in the quote header', () => {
           roomLabel: 'Standard Queen',
           rateCode: 'BAR',
           rateLabel: 'Best Available Rate',
-          board: 'bb',
-          boardLabel: 'Bed & Breakfast',
+          mealPlan: 'bb',
+          mealPlanLabel: 'Bed & Breakfast',
           nightlyPriceMinor: 100_000,
           roomsLeft: 4,
         },
@@ -1954,8 +1954,8 @@ describe('the Find in HMS picker in the quote header', () => {
           roomLabel: 'Standard Twin',
           rateCode: 'FLEX',
           rateLabel: 'Flexible Rate',
-          board: 'dinner_bb',
-          boardLabel: 'Dinner B&B',
+          mealPlan: 'dinner_bb',
+          mealPlanLabel: 'Dinner B&B',
           nightlyPriceMinor: null,
           roomsLeft: null,
         },
@@ -1979,7 +1979,7 @@ describe('the Find in HMS picker in the quote header', () => {
         }}
       />,
     );
-    const grids = screen.getAllByRole('group', { name: 'Room, rate and board choices' });
+    const grids = screen.getAllByRole('group', { name: 'Room, rate and meal plan choices' });
     expect(grids).toHaveLength(2);
     const grid = grids[1]!;
     const queen = within(grid).getByRole('button', {
@@ -1991,8 +1991,8 @@ describe('the Find in HMS picker in the quote header', () => {
 
     fireEvent.click(twin);
 
-    expect(seen.latest?.roomRateBoardSelections).toEqual({
-      [selectedGroupId]: { roomCode: 'STWN', rateCode: 'FLEX', board: 'dinner_bb' },
+    expect(seen.latest?.roomRateMealPlanSelections).toEqual({
+      [selectedGroupId]: { roomCode: 'STWN', rateCode: 'FLEX', mealPlan: 'dinner_bb' },
     });
     expect(queen.getAttribute('aria-pressed')).toBe('false');
     expect(twin.getAttribute('aria-pressed')).toBe('true');
@@ -2083,7 +2083,7 @@ describe('the Find in HMS picker in the quote header', () => {
       propertyCode: HRDAV_PROPERTY_CODE,
       roomTypes: [{ code: 'DVQ', label: 'Property Queen' }],
       ratePlans: [],
-      boards: ['bb'],
+      mealPlans: ['bb'],
       salesStrategies: [{ code: 'BAR', label: 'Best Available Rate', requestValue: 'BAR' }],
       overrideRateCodes: [],
       eventRateCodes: [],
@@ -2188,7 +2188,7 @@ describe('the Find in HMS picker in the quote header', () => {
         { code: 'TEST-TWIN', label: 'Example Twin' },
       ],
       ratePlans: [],
-      boards: ['bb'],
+      mealPlans: ['bb'],
       salesStrategies: [{ code: 'BAR', label: 'Best Available Rate', requestValue: 'BAR' }],
       overrideRateCodes: [],
       eventRateCodes: [],
@@ -2275,7 +2275,7 @@ describe('the Find in HMS picker in the quote header', () => {
       propertyCode: HRDAV_PROPERTY_CODE,
       roomTypes: [{ code: 'TEST-QUEEN', label: 'Example Queen' }],
       ratePlans: [],
-      boards: ['bb'],
+      mealPlans: ['bb'],
       salesStrategies: [{ code: 'BAR', label: 'Best Available Rate', requestValue: 'BAR' }],
       overrideRateCodes: [],
       eventRateCodes: [],
@@ -2347,7 +2347,7 @@ describe('the Find in HMS picker in the quote header', () => {
       propertyCode: HRDAV_PROPERTY_CODE,
       roomTypes: [{ code: 'DVQ', label: 'Property Queen' }],
       ratePlans: [],
-      boards: ['bb'],
+      mealPlans: ['bb'],
       salesStrategies: [{ code: 'BAR', label: 'Best Available Rate', requestValue: 'BAR' }],
       overrideRateCodes: [],
       eventRateCodes: [],
@@ -2477,7 +2477,7 @@ describe('the Find in HMS picker in the quote header', () => {
       propertyCode: HRDAV_PROPERTY_CODE,
       roomTypes: [{ code: 'DVQ', label: 'Property Queen' }],
       ratePlans: [],
-      boards: ['bb'],
+      mealPlans: ['bb'],
       salesStrategies: [{ code: 'BAR', label: 'Best Available Rate', requestValue: 'BAR' }],
       overrideRateCodes: [],
       eventRateCodes: [],
@@ -2495,8 +2495,8 @@ describe('the Find in HMS picker in the quote header', () => {
       {
         id: 'g1:BAR',
         groupId: 'g1',
-        board: 'bb',
-        boardLabel: 'Bed & Breakfast',
+        mealPlan: 'bb',
+        mealPlanLabel: 'Bed & Breakfast',
         rateCode: 'BAR',
         rateLabel: 'Best Available Rate',
         roomCode: 'STQN',
@@ -2513,8 +2513,8 @@ describe('the Find in HMS picker in the quote header', () => {
       {
         id: 'g1:NCOR1B',
         groupId: 'g1',
-        board: 'bb',
-        boardLabel: 'Bed & Breakfast',
+        mealPlan: 'bb',
+        mealPlanLabel: 'Bed & Breakfast',
         rateCode: 'NCOR1B',
         rateLabel: 'Corporate Negotiated',
         roomCode: 'STQN',
@@ -2531,9 +2531,9 @@ describe('the Find in HMS picker in the quote header', () => {
     ];
     const session = { ...sessionFromFixture('public-single'), rateOptions };
     const rateCatalogue: RatePlanCatalogueEntry[] = [
-      { code: 'BAR', name: 'Best Available Rate', board: 'bed_breakfast' },
-      { code: 'NCOR1B', name: 'Corporate Negotiated', board: 'unknown', contract: true },
-      { code: 'NCOR2B', name: 'Corporate Negotiated 2', board: 'unknown', contract: true },
+      { code: 'BAR', name: 'Best Available Rate', mealPlan: 'bed_breakfast' },
+      { code: 'NCOR1B', name: 'Corporate Negotiated', mealPlan: 'unknown', contract: true },
+      { code: 'NCOR2B', name: 'Corporate Negotiated 2', mealPlan: 'unknown', contract: true },
     ];
 
     function FilterHarness() {
@@ -2577,8 +2577,8 @@ describe('the Find in HMS picker in the quote header', () => {
     const onPatchStaffHeader = vi.fn();
     const base = sessionFromFixture('public-single');
     const rateCatalogue: RatePlanCatalogueEntry[] = [
-      { code: 'BAR', name: 'Best Available Rate', board: 'bed_breakfast' },
-      { code: 'NGOVB', name: 'NGOVB', board: 'unknown', government: true },
+      { code: 'BAR', name: 'Best Available Rate', mealPlan: 'bed_breakfast' },
+      { code: 'NGOVB', name: 'NGOVB', mealPlan: 'unknown', government: true },
     ];
     const first = render(
       <QuoteWorkflowPanel session={base} rateCatalogue={rateCatalogue} onPatchStaffHeader={onPatchStaffHeader} />,
@@ -2672,7 +2672,7 @@ describe('the Find in HMS picker in the quote header', () => {
     const base = headerSession({ salesStrategy: 'Government' });
     const analysis = {
       ...base.analysis!,
-      groups: base.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
+      groups: base.groups.map((group) => ({ ...group, mealPlan: 'dinner_bb' as const })),
       luna: {
         workflow: 'quote' as const,
         flags: [],
@@ -2700,31 +2700,31 @@ describe('the Find in HMS picker in the quote header', () => {
     resetPartyAutoLookupForTests();
     const find = vi.fn(noMatch);
     const { unmount } = render(
-      <QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel', agency: 'Travel Hub' })} findParty={find} />,
+      <QuoteWorkflowPanel session={headerSession({ organization: 'Acme Travel', bookingAgency: 'Travel Hub' })} findParty={find} />,
     );
     await waitFor(() => expect(find).toHaveBeenCalledTimes(2), { timeout: 3000 });
     expect(screen.getAllByRole('region', { name: 'People' })).toHaveLength(1);
     expect(
-      screen.getByLabelText('Search agency in HMS').compareDocumentPosition(screen.getByLabelText('Search company in HMS')) &
+      screen.getByLabelText('Search booking agency in HMS').compareDocumentPosition(screen.getByLabelText('Search organization in HMS')) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(screen.getAllByRole('group', { name: /lookup in HMS$/i })).toHaveLength(2);
     expect(await screen.findAllByRole('button', { name: 'Find in HMS' })).toHaveLength(2);
-    expect(find).toHaveBeenCalledWith('Acme Travel', 'company');
-    expect(find).toHaveBeenCalledWith('Travel Hub', 'agency');
+    expect(find).toHaveBeenCalledWith('Acme Travel', 'organization');
+    expect(find).toHaveBeenCalledWith('Travel Hub', 'bookingAgency');
     unmount();
-    render(<QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel' })} />);
+    render(<QuoteWorkflowPanel session={headerSession({ organization: 'Acme Travel' })} />);
     expect(screen.queryByText(/Searching HMS/)).toBeNull();
   });
 
   it('prefills Company/agency from the email once, without restoring a cleared field', async () => {
-    const initial = headerSession({ company: '', agency: '' });
+    const initial = headerSession({ organization: '', bookingAgency: '' });
     const namedInEmail = {
       name: 'Asha Patel',
       email: 'asha@example.test',
       phone: '+27 11 555 0123',
-      company: 'Optimum Shared Services',
-      endClient: 'Optimum Insure Consulting',
+      bookingAgency: 'Optimum Shared Services',
+      organization: 'Optimum Insure Consulting',
     };
     const seen: { latest: QuoteSession | null } = { latest: null };
     function EmailPrefilledPanel() {
@@ -2748,12 +2748,12 @@ describe('the Find in HMS picker in the quote header', () => {
     });
 
     fireEvent.change(screen.getByLabelText('Agency'), { target: { value: '' } });
-    await waitFor(() => expect(seen.latest?.staffHeader.agency).toBe(''));
+    await waitFor(() => expect(seen.latest?.staffHeader.bookingAgency).toBe(''));
     expect((screen.getByLabelText('Agency') as HTMLInputElement).value).toBe('');
   });
 
   it('uses named email company and agency values over an unedited Luna party prefill', async () => {
-    const base = headerSession({ company: 'Optimum Shared Services', agency: '' });
+    const base = headerSession({ organization: 'Optimum Shared Services', bookingAgency: '' });
     const initial: QuoteSession = {
       ...base,
       analysis: {
@@ -2774,8 +2774,8 @@ describe('the Find in HMS picker in the quote header', () => {
       name: 'Asha Patel',
       email: 'asha@example.test',
       phone: '+27 11 555 0123',
-      company: 'Optimum Shared Services',
-      endClient: 'Optimum Insure Consulting',
+      bookingAgency: 'Optimum Shared Services',
+      organization: 'Optimum Insure Consulting',
     };
     function EmailPrefilledPanel() {
       const [session, setSession] = useState(initial);
@@ -2801,7 +2801,7 @@ describe('the Find in HMS picker in the quote header', () => {
     const onPatchStaffHeader = vi.fn();
     render(
       <QuoteWorkflowPanel
-        session={headerSession({ company: 'Acme Travel', parties: { company: ACME } })}
+        session={headerSession({ organization: 'Acme Travel', parties: { organization: ACME } })}
         findParty={noMatch}
         onPatchStaffHeader={onPatchStaffHeader}
       />,
@@ -2809,7 +2809,7 @@ describe('the Find in HMS picker in the quote header', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm Company' }));
     expect(onPatchStaffHeader).toHaveBeenCalledWith(
-      expect.objectContaining({ company: 'Acme Travel', parties: { company: ACME } }),
+      expect.objectContaining({ organization: 'Acme Travel', parties: { organization: ACME } }),
       { staffEdit: true },
     );
     expect(screen.getByRole('button', { name: 'Edit Company' })).toBeTruthy();
@@ -2818,58 +2818,58 @@ describe('the Find in HMS picker in the quote header', () => {
 
   it('drops a pick only when its own field is edited away from its name', () => {
     const seen: { latest: QuoteSession | null } = { latest: null };
-    const editName = (kind: 'company' | 'agency', value: string) => {
-      const label = kind === 'company' ? 'Company' : 'Agency';
+    const editName = (kind: 'organization' | 'bookingAgency', value: string) => {
+      const label = kind === 'organization' ? 'Organization' : 'Booking Agency';
       const picker = screen.getByRole('group', { name: `${label} lookup in HMS` });
       const select = within(picker).queryByRole('combobox');
       if (select) fireEvent.change(select, { target: { value: '__search_hms__' } });
-      fireEvent.change(within(picker).getByRole('textbox', { name: `Search ${kind} in HMS` }), {
+      fireEvent.change(within(picker).getByRole('textbox', { name: `Search ${label.toLowerCase()} in HMS` }), {
         target: { value },
       });
     };
     const { unmount } = render(
       <PartyGate
-        initial={headerSession({ company: 'Acme Travel', parties: { company: ACME } })}
+        initial={headerSession({ organization: 'Acme Travel', parties: { organization: ACME } })}
         seen={seen}
         findParty={noMatch}
       />,
     );
-    editName('agency', 'Hub');
-    expect(seen.latest?.staffHeader.parties?.company).toEqual(ACME);
-    editName('company', 'Acme Travel Ltd');
-    expect(seen.latest?.staffHeader.parties?.company).toBeUndefined();
+    editName('bookingAgency', 'Hub');
+    expect(seen.latest?.staffHeader.parties?.organization).toEqual(ACME);
+    editName('organization', 'Acme Travel Ltd');
+    expect(seen.latest?.staffHeader.parties?.organization).toBeUndefined();
     unmount();
 
     render(
       <PartyGate
         initial={headerSession({
-          company: 'Acme Travel',
-          agency: 'Travel Hub',
-          parties: { company: ACME, agency: TRAVEL_HUB },
+          organization: 'Acme Travel',
+          bookingAgency: 'Travel Hub',
+          parties: { organization: ACME, bookingAgency: TRAVEL_HUB },
         })}
         seen={seen}
         findParty={noMatch}
       />,
     );
-    editName('company', 'Acme Travel Ltd');
-    expect(seen.latest?.staffHeader.parties?.company).toBeUndefined();
-    expect(seen.latest?.staffHeader.parties?.agency).toEqual(TRAVEL_HUB);
-    editName('agency', 'Travel Hub Ltd');
-    expect(seen.latest?.staffHeader.parties?.agency).toBeUndefined();
+    editName('organization', 'Acme Travel Ltd');
+    expect(seen.latest?.staffHeader.parties?.organization).toBeUndefined();
+    expect(seen.latest?.staffHeader.parties?.bookingAgency).toEqual(TRAVEL_HUB);
+    editName('bookingAgency', 'Travel Hub Ltd');
+    expect(seen.latest?.staffHeader.parties?.bookingAgency).toBeUndefined();
   });
 
   it('holds Search availability with the lookup copy while an automatic company search still decides the pick', () => {
-    const session = { ...headerSession({ company: 'Acme Travel' }), pendingPartyKinds: ['company' as const] };
+    const session = { ...headerSession({ organization: 'Acme Travel' }), pendingPartyKinds: ['organization' as const] };
     render(<QuoteWorkflowPanel session={session} />);
     expect((screen.getByRole('button', { name: 'Search availability' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getAllByText('Finding the company in HMS…').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Finding the organization in HMS…').length).toBeGreaterThan(0);
   });
 
   it('says Nava, not Luna, when the automatic HMS lookup cannot reach HMS', async () => {
     resetPartyAutoLookupForTests();
     const unavailable = async () => ({ outcome: 'external_system_unavailable' as const, results: [], truncated: false });
     const { container } = render(
-      <QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel' })} findParty={unavailable} />,
+      <QuoteWorkflowPanel session={headerSession({ organization: 'Acme Travel' })} findParty={unavailable} />,
     );
     expect(
       await screen.findByText(
@@ -2987,7 +2987,7 @@ describe('quote strategy comparison', () => {
         WS: {
           status: 'ready',
           roomLabels: ['Standard King'],
-          boardLabels: ['Bed & Breakfast'],
+          mealPlanLabels: ['Bed & Breakfast'],
           nightlyMinor: [80000],
           totalMinor: 160000,
         },
@@ -2999,7 +2999,7 @@ describe('quote strategy comparison', () => {
       propertyCode: HRDAV_PROPERTY_CODE,
       roomTypes: [],
       ratePlans: [],
-      boards: ['bb'],
+      mealPlans: ['bb'],
       salesStrategies: strategies,
       overrideRateCodes: [],
       eventRateCodes: [],

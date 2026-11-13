@@ -870,13 +870,13 @@ describe('NavaPane', () => {
   const resolveDavinciProperty = () => {
     bridgeMockState.quotePaneConfig = {
       transportId: 'transport-1', propertyCode: 'HRDAV', roomTypes: [], ratePlans: [],
-      boards: [], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+      mealPlans: [], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
     };
   };
   const resolveCenturionProperty = () => {
     bridgeMockState.quotePaneConfig = {
       transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
-      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+      mealPlans: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
     };
   };
 
@@ -1054,7 +1054,7 @@ describe('NavaPane', () => {
       propertyCode: 'HRCEN',
       roomTypes: [],
       ratePlans: [],
-      boards: ['bb'],
+      mealPlans: ['bb'],
       salesStrategies: COMPARISON_STRATEGIES,
       overrideRateCodes: [],
       eventRateCodes: [],
@@ -1610,7 +1610,7 @@ describe('NavaPane', () => {
       propertyCode: 'HRCEN',
       roomTypes: [{ code: 'SKNG', label: 'Standard King' }],
       ratePlans: [],
-      boards: ['bb'],
+      mealPlans: ['bb'],
       salesStrategies: [],
       overrideRateCodes: [],
       eventRateCodes: [],
@@ -2438,7 +2438,7 @@ describe('NavaPane', () => {
       propertyCode: HRDAV_PROPERTY_CODE,
       roomTypes: [],
       ratePlans: [],
-      boards: ['bb'],
+      mealPlans: ['bb'],
       salesStrategies: [],
       overrideRateCodes: [],
       eventRateCodes: [],
@@ -3188,7 +3188,7 @@ describe('NavaPane', () => {
     bridgeMockState.quotePaneConfig = {
       transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [],
       ratePlans: [{ code: 'CORP', name: 'Corporate', mealPlan: 'bed_breakfast' }],
-      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+      mealPlans: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
     };
     bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');
     bridgeMockState.analysisOverride = {
@@ -3283,7 +3283,7 @@ describe('NavaPane', () => {
   it('opens the HRCEN review only for a verified web message selection', async () => {
     bridgeMockState.quotePaneConfig = {
       transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
-      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+      mealPlans: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
     };
     bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');
     bridgeMockState.analysisOverride = {
@@ -3308,7 +3308,7 @@ describe('NavaPane', () => {
   it('refuses the HRCEN web review when the resolved source names a different message', async () => {
     bridgeMockState.quotePaneConfig = {
       transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
-      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+      mealPlans: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
     };
     bridgeMockState.staffQuoteSources['<quote-request@example.invalid>'] = {
       messageId: 'another-message', threadId: 'thread-1', sourceHash: 'ab'.repeat(32),
@@ -3342,7 +3342,7 @@ describe('NavaPane', () => {
     'hides the HRCEN review if the selected email changes its %s without changing its entry', async (field) => {
       bridgeMockState.quotePaneConfig = {
         transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
-        boards: [], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+        mealPlans: [], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
       };
       bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');
       bridgeMockState.analysisOverride = {
@@ -3872,7 +3872,7 @@ describe('NavaPane contact and translation on both surfaces', () => {
         senderName: 'Expedia Partner Central', bodyText: 'Payment received for the guest reservation.' },
     } as unknown as PaneBridge;
     bridgeMockState.quotePaneConfig = {
-      transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [], boards: ['bb'],
+      transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [], mealPlans: ['bb'],
       salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
     };
     bridgeMockState.storedWork = { ...storedMail('voucher_pop'), workItemId: 'wi-payment', workItemStatus: 'needs_you' };

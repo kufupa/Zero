@@ -334,7 +334,7 @@ export type QuotePaneConfig = {
   propertyCode: HmsQuotePropertyCode;
   roomTypes: QuotePaneRoomType[];
   ratePlans: RatePlanCatalogueEntry[];
-  boards: QuotePaneBoard[];
+  mealPlans: QuotePaneBoard[];
   salesStrategies: QuoteSalesStrategy[];
   overrideRateCodes: string[];
   eventRateCodes: string[];
@@ -392,7 +392,7 @@ export type AvailabilityBoardRow = {
 };
 
 /** Staff's exact grid choice. It carries no price, availability, or quote-validity evidence. */
-export type QuoteRoomRateBoardSelection = Pick<AvailabilityBoardRow, 'roomCode' | 'rateCode' | 'mealPlan'>;
+export type QuoteRoomRateMealPlanSelection = Pick<AvailabilityBoardRow, 'roomCode' | 'rateCode' | 'mealPlan'>;
 
 /** What one row was charged on its last run: HMS's nightly rates, the rates charged, and for an override its HMS comment. */
 export type StaffRowRate = {
@@ -855,7 +855,7 @@ export type QuoteSession = {
   /** Rate cards for the latest run of each room group. Kept while a pinned re-run is pending. */
   rateOptions?: RateOption[];
   /** Staff's exact room/rate/board choice, keyed by room-group id. Optional for older saved sessions. */
-  roomRateBoardSelections?: Record<string, QuoteRoomRateBoardSelection>;
+  roomRateMealPlanSelections?: Record<string, QuoteRoomRateMealPlanSelection>;
   /** U8 booking cards, one per stay whose matching prepareBookingDraft result has arrived. */
   bookingDrafts: Record<string, BookingDraftReady>;
   /** Staff override that re-runs analyseSelection as quote or booking. */
@@ -926,7 +926,7 @@ export type QuoteSessionAction =
   | { type: 'patch_staff_header'; header: Partial<StaffQuoteHeader> }
   | { type: 'patch_staff_stay_extras'; stayKey: string; extras: Partial<StaffStayExtras> }
   | { type: 'party_lookup_pending'; kind: StaffQuoteParty['kind']; pending: boolean }
-  | { type: 'room_rate_board_selected'; groupId: string; selection: QuoteRoomRateBoardSelection }
+  | { type: 'room_rate_meal_plan_selected'; groupId: string; selection: QuoteRoomRateMealPlanSelection }
   | { type: 'select_stay_key'; stayKey: string }
   | {
       type: 'staff_quote_ready';
@@ -993,4 +993,4 @@ export type QuoteSessionAction =
 /** Actions emitted by controls nested in the Stay step, including an exact grid tuple choice. */
 export type QuoteStayAction =
   | StayEditAction
-  | Extract<QuoteSessionAction, { type: 'room_rate_board_selected' }>;
+  | Extract<QuoteSessionAction, { type: 'room_rate_meal_plan_selected' }>;

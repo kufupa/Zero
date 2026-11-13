@@ -80,7 +80,7 @@ export type PropertyQuotePaneConfig = {
   propertyCode: HmsPropertyCode;
   roomTypes: Array<{ code: string; label: string }>;
   ratePlans: PropertyRatePlan[];
-  boards: QuotePaneBoard[];
+  mealPlans: QuotePaneBoard[];
   salesStrategies: QuoteSalesStrategy[];
   overrideRateCodes: string[];
   eventRateCodes: string[];
@@ -157,7 +157,7 @@ export async function quotePaneConfigForProperty(
       propertyCode,
       roomTypes: Object.entries(ROOM_TYPE_NAMES).map(([code, label]) => ({ code, label })),
       ratePlans: CENTURION_RATE_PLANS,
-      boards: boardsForPlans(CENTURION_RATE_PLANS),
+      mealPlans: boardsForPlans(CENTURION_RATE_PLANS),
       salesStrategies: quoteSalesStrategiesFromRegistry(propertyCode, null),
       overrideRateCodes: [...CENTURION_OVERRIDE_RATE_CODES],
       eventRateCodes: [...CENTURION_EVENT_RATE_CODES],
@@ -180,7 +180,7 @@ export async function quotePaneConfigForProperty(
     propertyCode,
     roomTypes: Object.entries(profile.rooms).map(([code, room]) => ({ code, label: room.label })),
     ratePlans,
-    boards: boardsForPlans(ratePlans),
+    mealPlans: boardsForPlans(ratePlans),
     salesStrategies: quoteSalesStrategiesFromRegistry(propertyCode, profile.salesStrategies),
     overrideRateCodes: ratePlans.map(({ code }) => code),
     eventRateCodes: ratePlans.filter(({ event }) => event).map(({ code }) => code),

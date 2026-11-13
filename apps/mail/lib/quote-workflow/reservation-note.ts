@@ -7,7 +7,7 @@ import {
   staffStayExtrasFor,
   type AvailabilityBoardRow,
   type DinnerAddOnUnit,
-  type QuoteRoomRateBoardSelection,
+  type QuoteRoomRateMealPlanSelection,
   type QuoteSession,
   type RowPriceChoice,
   type StaffQuoteOtherUnit,
@@ -23,7 +23,7 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 export type ReservationNoteInput = {
   propertyCode: string | null | undefined;
   stay: Pick<StayGroupRequirement, 'arrivalDate' | 'departureDate' | 'quantity'>;
-  selection: QuoteRoomRateBoardSelection;
+  selection: QuoteRoomRateMealPlanSelection;
   availability: AvailabilityBoardRow;
   chargedRate: StaffRowRate;
   rowPrice?: RowPriceChoice;
@@ -191,7 +191,7 @@ export function formatReservationNote(input: ReservationNoteInput): string | nul
   return note.length <= PANE_RESERVATION_NOTE_MAX ? note : null;
 }
 
-function selectedRateForGroup(group: StayGroupRequirement): QuoteRoomRateBoardSelection | null {
+function selectedRateForGroup(group: StayGroupRequirement): QuoteRoomRateMealPlanSelection | null {
   const roomCode = group.roomCodes?.length === 1 ? group.roomCodes[0]?.trim() : '';
   const rateCode = group.rateCode?.trim();
   if (!roomCode || !rateCode || group.mealPlan === 'unknown') return null;

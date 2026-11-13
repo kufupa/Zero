@@ -392,7 +392,8 @@ export function pendingPdfStayKey(
 export function partyLookupWaitReason(session: Pick<QuoteSession, 'pendingPartyKinds'>): string | null {
   const pending = session.pendingPartyKinds ?? [];
   if (!pending.length) return null;
-  const names = (['organization', 'bookingAgency'] as const).filter((kind) => pending.includes(kind));
+  const names = (['organization', 'bookingAgency'] as const).filter((kind) => pending.includes(kind))
+    .map((kind) => kind === 'bookingAgency' ? 'booking agency' : 'organization');
   return `Finding the ${names.join(' and ')} in HMS…`;
 }
 
@@ -558,7 +559,7 @@ export function initialQuoteSession(): QuoteWorkflowSession {
     staffQuotes: {},
     stayPdfs: {},
     rateOptions: [],
-    roomRateBoardSelections: {},
+    roomRateMealPlanSelections: {},
     staffHeader: emptyStaffQuoteHeader(),
     staffActions: [],
     preparedStaffTasks: [],
@@ -1920,7 +1921,7 @@ export function reduceQuoteSession(
         : pending.filter((kind) => kind !== action.kind);
       return { ...session, pendingPartyKinds };
     }
-    case 'room_rate_board_selected': {
+    case 'room_rate_meal_plan_selected': {
       const group = session.groups.find((item) => item.id === action.groupId);
       if (!group) return session;
       const quote = staffQuoteForStay(session, stayKeyForGroup(group));
@@ -1933,7 +1934,7 @@ export function reduceQuoteSession(
       );
       if (!knownRow) return session;
 
-      const previous = session.roomRateBoardSelections?.[action.groupId];
+      const previous = session.roomRateMealPlanSelections?.[action.groupId];
       if (
         previous?.roomCode === action.selection.roomCode &&
         previous.rateCode === action.selection.rateCode &&
@@ -1944,8 +1945,8 @@ export function reduceQuoteSession(
       // Keep this as staff intent only: a grid choice does not create or validate a quote.
       return {
         ...session,
-        roomRateBoardSelections: {
-          ...session.roomRateBoardSelections,
+        roomRateMealPlanSelections: {
+          ...session.roomRateMealPlanSelections,
           [action.groupId]: {
             roomCode: action.selection.roomCode,
             rateCode: action.selection.rateCode,

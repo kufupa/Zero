@@ -76,7 +76,7 @@ describe('quote failure reason', () => {
       propertyCode: HRDAV_PROPERTY_CODE,
       roomTypes: [],
       ratePlans: [],
-      boards: ['bb'],
+      mealPlans: ['bb'],
       salesStrategies: strategies,
       overrideRateCodes: [],
       eventRateCodes: [],

@@ -565,7 +565,7 @@ describe('booking cards', () => {
       propertyCode: HRCEN_PROPERTY_CODE,
       roomTypes: [{ code: 'CONFIG-ONLY', label: 'Hotel configured room' }],
       ratePlans: [],
-      boards: ['room_only', 'bb', 'dinner_bb'],
+      mealPlans: ['room_only', 'bb', 'dinner_bb'],
       salesStrategies: [],
       overrideRateCodes: [],
       eventRateCodes: [],

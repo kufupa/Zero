@@ -842,7 +842,7 @@ export function QuoteWorkflowPanel({
   }
   const paneRoomTypes = [...roomTypesByCode.values()];
   const strictRoomTypes = paneConfig !== undefined;
-  const paneBoards = paneConfig === undefined ? undefined : paneConfig?.boards ?? [];
+  const paneMealPlans = paneConfig === undefined ? undefined : paneConfig?.mealPlans ?? [];
   const salesStrategies = [...(paneConfig?.salesStrategies ?? [])].sort(
     (left, right) => Number(right.code === 'BAR') - Number(left.code === 'BAR'),
   );
@@ -1178,7 +1178,7 @@ export function QuoteWorkflowPanel({
           availabilityReader={availabilityReader}
           paneRoomTypes={paneRoomTypes}
           strictRoomTypes={strictRoomTypes}
-          paneBoards={paneBoards}
+          paneMealPlans={paneMealPlans}
           onPatchGroup={onPatchGroup}
           onStayAction={onStayAction}
           onPatchStayExtras={onPatchStayExtras}
@@ -1498,9 +1498,9 @@ export function QuoteWorkflowPanel({
                             cells={projectBarGrid(stayBoard.filter((row) => row.groupId === group.id))}
                             contractChecked={contractChecked}
                             plans={ratePlans}
-                            selection={session.roomRateBoardSelections?.[group.id]}
+                            selection={session.roomRateMealPlanSelections?.[group.id]}
                             onSelect={(selection) => {
-                              onStayAction?.({ type: 'room_rate_board_selected', groupId: group.id, selection });
+                              onStayAction?.({ type: 'room_rate_meal_plan_selected', groupId: group.id, selection });
                               const board = quoteBoardFromGrid(selection.mealPlan);
                               const match = board
                                 ? (session.rateOptions ?? []).find(

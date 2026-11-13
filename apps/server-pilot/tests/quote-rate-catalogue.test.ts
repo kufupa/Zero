@@ -37,7 +37,7 @@ describe('mailbox-scoped quote pane configuration', () => {
         { code: 'LUXKNG', label: 'Luxury King' },
         { code: 'SUITE', label: 'Suite' },
       ],
-      boards: ['room_only', 'bb', 'dinner_bb'],
+      mealPlans: ['room_only', 'bb', 'dinner_bb'],
       salesStrategies: [
         { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
         { code: 'GOV', label: 'Government', requestValue: 'Government' },
@@ -47,8 +47,8 @@ describe('mailbox-scoped quote pane configuration', () => {
     });
     expect(config.ratePlans).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ code: 'BAR', name: 'Best Available Rate', board: 'bed_breakfast' }),
-        expect.objectContaining({ code: 'NCOR1B', board: 'unknown', contract: true }),
+        expect.objectContaining({ code: 'BAR', name: 'Best Available Rate', mealPlan: 'bed_breakfast' }),
+        expect.objectContaining({ code: 'NCOR1B', mealPlan: 'unknown', contract: true }),
         expect.objectContaining({ code: 'GNC3B', event: true }),
         expect.objectContaining({ code: 'NGOVB', government: true }),
       ]),
@@ -71,7 +71,7 @@ describe('mailbox-scoped quote pane configuration', () => {
         { code: 'STKNG', label: 'Standard King' },
         { code: 'STWN', label: 'Standard Twin' },
       ],
-      boards: ['room_only', 'bb'],
+      mealPlans: ['room_only', 'bb'],
       salesStrategies: [
         { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
         { code: 'PROMO', label: 'Promotions', requestValue: 'PROMO' },

@@ -1,5 +1,5 @@
 import { draftMoney } from '@/lib/quote-workflow/multi-option-draft';
-import type { QuoteRoomRateBoardSelection } from '@/lib/quote-workflow/types';
+import type { QuoteRoomRateMealPlanSelection } from '@/lib/quote-workflow/types';
 import type { RatePlanChoice } from './rate-plan-select';
 import { GRID_TAG_LABEL, gridRateTag } from './rates-bar-grid';
 import type { BarGridCell } from './rate-cards';
@@ -9,9 +9,9 @@ export type StayRateGridProps = {
   cells: readonly BarGridCell[];
   contractChecked: boolean;
   plans: readonly RatePlanChoice[];
-  selection?: QuoteRoomRateBoardSelection | null;
+  selection?: QuoteRoomRateMealPlanSelection | null;
   /** Emits staff intent only; price and inventory are not quote evidence. */
-  onSelect: (selection: QuoteRoomRateBoardSelection) => void;
+  onSelect: (selection: QuoteRoomRateMealPlanSelection) => void;
 };
 
 function rowKey(cell: BarGridCell): string {
@@ -23,7 +23,7 @@ function rowKey(cell: BarGridCell): string {
   ].join('|');
 }
 
-function isSelected(cell: BarGridCell, selection?: QuoteRoomRateBoardSelection | null): boolean {
+function isSelected(cell: BarGridCell, selection?: QuoteRoomRateMealPlanSelection | null): boolean {
   return Boolean(
     selection &&
       cell.roomCode === selection.roomCode &&

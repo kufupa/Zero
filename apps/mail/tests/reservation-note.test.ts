@@ -31,7 +31,7 @@ const stay: StayGroupRequirement = {
   roomPreference: 'STWN',
   roomCodes: ['STWN'],
   rateCode: 'NCOR1B',
-  board: 'bb',
+  mealPlan: 'bb',
   specialRequests: [],
   fields: {},
 };
@@ -41,8 +41,8 @@ const boardRow: AvailabilityBoardRow = {
   roomLabel: 'Standard Twin',
   rateCode: 'NCOR1B',
   rateLabel: 'Corporate negotiated',
-  board: 'bb',
-  boardLabel: 'Bed & breakfast',
+  mealPlan: 'bb',
+  mealPlanLabel: 'Bed & breakfast',
   nightlyPriceMinor: 220000,
   roomsLeft: 2,
   rateScope: 'public',
@@ -81,7 +81,7 @@ async function currentSession() {
   session = reduceQuoteSession(session, {
     type: 'patch_group',
     groupId: 'g1',
-    patch: { roomCodes: ['STWN'], rateCode: 'NCOR1B', board: 'bb' },
+    patch: { roomCodes: ['STWN'], rateCode: 'NCOR1B', mealPlan: 'bb' },
   });
   const stayKey = '2026-11-12:2026-11-14';
   session = reduceQuoteSession(session, {
@@ -130,9 +130,9 @@ describe('reservation note', () => {
     expect(formatReservationNote({
       propertyCode: HRCEN_PROPERTY_CODE,
       stay: { arrivalDate: '2027-03-15', departureDate: '2027-03-17', quantity: 1 },
-      selection: { roomCode: 'DLXKNG', rateCode: 'BAR', board: 'bb' },
-      availability: { groupId: 'g1', roomCode: 'DLXKNG', rateCode: 'BAR', board: 'bb', nightlyPriceMinor: 220000,
-        roomLabel: 'Deluxe King', rateLabel: 'Best Available', boardLabel: 'Bed and breakfast', roomsLeft: 1, rateScope: 'public' },
+      selection: { roomCode: 'DLXKNG', rateCode: 'BAR', mealPlan: 'bb' },
+      availability: { groupId: 'g1', roomCode: 'DLXKNG', rateCode: 'BAR', mealPlan: 'bb', nightlyPriceMinor: 220000,
+        roomLabel: 'Deluxe King', rateLabel: 'Best Available', mealPlanLabel: 'Bed and breakfast', roomsLeft: 1, rateScope: 'public' },
       chargedRate: { groupId: 'g1', source: 'hms', hmsNightlyMinor: [215000, 225000],
         nightlyMinor: [215000, 225000], rateCode: 'BAR' },
       extras: { shuttleEnabled: true, shuttleMinor: 12500, shuttleTrips: 2, lunchEnabled: false,
@@ -144,7 +144,7 @@ describe('reservation note', () => {
     const session = await currentSession();
     const note = reservationNoteForGroup(session, HRDAV_PROPERTY_CODE, 'g1');
     expect(reservationNoteForGroup(session, HRCEN_PROPERTY_CODE, 'g1')).toBe(note);
-    expect(session.roomRateBoardSelections?.g1).toBeUndefined();
+    expect(session.roomRateMealPlanSelections?.g1).toBeUndefined();
 
     expect(note).toContain('Standard Twin');
     expect(note).toContain('STWN');
@@ -175,7 +175,7 @@ describe('reservation note', () => {
     expect(formatReservationNote({
       propertyCode: HRDAV_PROPERTY_CODE,
       stay,
-      selection: { roomCode: 'STWN', rateCode: 'NCOR1B', board: 'bb' },
+      selection: { roomCode: 'STWN', rateCode: 'NCOR1B', mealPlan: 'bb' },
       availability: boardRow,
       chargedRate: rowRate,
       extras: {

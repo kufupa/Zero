@@ -264,7 +264,7 @@ export function QuoteStayStep({
   availabilityReader,
   paneRoomTypes,
   strictRoomTypes,
-  paneBoards,
+  paneMealPlans,
   onPatchGroup,
   onStayAction,
   onPatchStayExtras,
@@ -283,7 +283,7 @@ export function QuoteStayStep({
   availabilityReader?: PaneStayAvailabilityReader | null;
   paneRoomTypes: QuotePaneRoomType[];
   strictRoomTypes: boolean;
-  paneBoards?: QuotePaneBoard[];
+  paneMealPlans?: QuotePaneBoard[];
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   onStayAction?: (action: QuoteStayAction) => void;
   onPatchStayExtras?: (stayKey: string, extras: Partial<StaffStayExtras>) => void;
@@ -323,7 +323,7 @@ export function QuoteStayStep({
             propertyCode={paneConfig?.propertyCode}
             roomTypes={paneRoomTypes}
             strictRoomTypes={strictRoomTypes}
-            boards={paneBoards}
+            mealPlans={paneMealPlans}
             onMealPlanChange={(value) =>
               setMealPlanFilters((current) => ({ ...current, [stay.id]: value }))
             }

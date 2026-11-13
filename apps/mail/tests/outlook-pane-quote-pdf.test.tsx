@@ -173,7 +173,7 @@ vi.mock('../providers/query-provider', () => ({
           propertyCode: sessionState.propertyCode,
           roomTypes: [],
           ratePlans: [],
-          boards: [],
+          mealPlans: [],
           overrideRateCodes: [],
           eventRateCodes: [],
         }),
