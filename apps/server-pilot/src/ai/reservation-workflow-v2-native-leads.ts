@@ -102,6 +102,8 @@ export function reservationEntityKey(value: string, role: PartyRole): string {
   return tokens.join('');
 }
 
+const normalizedPartyName = (value: string) => value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase('en-US');
+
 type Memory = z.infer<typeof memorySchema>;
 type NativeLeadsInput = { propertyCode: string;
   source: ReservationWorkflowV2Source; generationId: string; proposal: ReservationWorkflowV2Proposal;
@@ -148,7 +150,6 @@ function verifiedAmendBaseline(input: NativeLeadsInput & { prepareObservation: R
   const verified = z.object({ organization: selectedBaselinePartySchema, arAccount: selectedBaselinePartySchema })
     .safeParse(prepare.result.nativePartyBaseline);
   if (!baseline.success || !semantic.success || !verified.success) return null;
-  const normalizedName = (value: string) => value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase('en-US');
   const parties: SavedAmendBaseline['parties'] = [];
   for (const kind of ['organization', 'arAccount'] as const) {
     if (Object.hasOwn(semantic.data.baseChanges, kind)) continue;
@@ -159,7 +160,7 @@ function verifiedAmendBaseline(input: NativeLeadsInput & { prepareObservation: R
     const names = (kind === 'organization' ? ['company', 'companyname'] : ['araccountname'])
       .map(key => baseline.data.beforeParties[key]).filter(value => value !== null && value !== undefined && value !== '');
     if (String(id ?? '').trim() !== party.nativeId || !names.length ||
-        names.some(value => typeof value !== 'string' || normalizedName(value) !== normalizedName(name))) continue;
+        names.some(value => typeof value !== 'string' || normalizedPartyName(value) !== normalizedPartyName(name))) continue;
     parties.push({ kind, nativeId: party.nativeId, name });
   }
   return { requestId, hintId, selectedRef, prepareRef: prepare.ref, selectionPath, draftRevision,
@@ -348,8 +349,7 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
     }
     const autoTransferHint = (requestId: string, workflow: 'create' | 'amend', fieldPath: string,
       partyKind: 'organization' | 'arAccount', partyQuery: string, binding?: Record<string, unknown>) => {
-      const role: PartyRole = partyKind === 'organization' ? 'organization' : 'ar_account';
-      const key = reservationEntityKey(partyQuery, role);
+      const key = normalizedPartyName(partyQuery);
       if (!key) return;
       let denominator = 0, support = 0;
       let observedThrough = '';
@@ -357,7 +357,7 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
         const fields = stay.rows.flatMap(row => row.outcomes.flatMap(outcome => {
           if (outcome.conflictingFields.includes(partyKind)) return [];
           const value = outcome.combination[partyKind];
-          return value ? [reservationEntityKey(value, role)] : [];
+          return value ? [normalizedPartyName(value)] : [];
         })).filter(Boolean);
         if (!fields.length || fields.some(value => value !== key) ||
             stay.rows.some(row => row.outcomes.some(outcome => outcome.conflictingFields.includes(partyKind)))) continue;
