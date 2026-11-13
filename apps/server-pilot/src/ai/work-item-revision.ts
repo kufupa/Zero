@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { hydrateStoredReservationWorkflowV2 } from './reservation-workflow-v2-stored-draft.js';
 import type { DB } from '../db/client.js';
 import { workEvent, workItem } from '../db/schema/work.js';
 import type { ReservationWorkflowV2Draft, ReservationWorkflowV2Proposal } from './reservation-workflow-v2-contract.js';
@@ -53,10 +54,12 @@ export function withPaneState(state: PaneState, pane: PaneState): PaneState {
   }
   for (const [key, value] of Object.entries(paneStateOf(pane))) {
     if (key === RESERVATION_V2_KEY) {
-      const current = state[key] && typeof state[key] === 'object' && !Array.isArray(state[key])
-        ? state[key] as Record<string, unknown> : {};
-      const restored = value && typeof value === 'object' && !Array.isArray(value)
-        ? value as Record<string, unknown> : {};
+      const currentValue = hydrateStoredReservationWorkflowV2(state[key]);
+      const current = currentValue && typeof currentValue === 'object' && !Array.isArray(currentValue)
+        ? currentValue as Record<string, unknown> : {};
+      const restoredValue = hydrateStoredReservationWorkflowV2(value);
+      const restored = restoredValue && typeof restoredValue === 'object' && !Array.isArray(restoredValue)
+        ? restoredValue as Record<string, unknown> : {};
       // Old snapshots have no proposal. Native observations, receipts, source and generation always survive.
       next[key] = { ...current, ...(Object.hasOwn(restored, 'proposal') ? { proposal: restored.proposal } : {}),
         fieldOverrides: restored.fieldOverrides ?? {}, staffReviews: restored.staffReviews ?? {} };

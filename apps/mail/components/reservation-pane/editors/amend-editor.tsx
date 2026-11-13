@@ -12,13 +12,13 @@ const fields = [
   ['arrival', 'Arrival Date', 'date'], ['departure', 'Departure Date', 'date'], ['roomType', 'Room Type', 'code'],
   ['ratePlan', 'Rate Plan', 'code'], ['adults', 'Adults', 'count'], ['childCount', 'Children', 'count'],
   ['childAges', 'Child ages', 'ages'], ['firstName', 'First Name', 'text'], ['lastName', 'Last Name', 'text'],
-  ['guestEmail', 'E-mail Address', 'email'], ['bookerName', 'Booker name', 'text'], ['bookerContact', 'Booker contact', 'text'],
+  ['guestEmail', 'E-mail Address', 'email'], ['bookerName', 'Booker name', 'text'], ['bookerEmail', 'Booker email', 'email'], ['bookerMobile', 'Booker mobile', 'text'],
   ['cmsSend', 'CMS Send Mail', 'boolean'], ['cmsMessageId', 'CMS Message Id', 'text'],
   ['cmsRecipient', 'CMS Booker Email', 'email'],
 ] as const;
-const clearable = new Set(['guestEmail', 'bookerName', 'bookerContact', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
+const clearable = new Set(['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
 const priceFields = new Set(['arrival', 'departure', 'roomType', 'ratePlan', 'adults', 'childCount', 'childAges']);
-const unsupportedFieldLabels: Record<string, string> = { roomTypeForCharge: 'Charged room type', reservationNote: 'Reservation note' };
+const unsupportedFieldLabels: Record<string, string> = { roomTypeForCharge: 'Room Type for Charge', reservationNote: 'Reservation note' };
 const rows = (value: unknown) => Array.isArray(value) ? value.map(record) : [];
 
 function exactConfirmation(hint: Record<string, unknown>) {

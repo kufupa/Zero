@@ -10,7 +10,7 @@ type Editor = WorkbenchEditorProps;
 type BookingField = { key: string; label: string; picker?: string; party?: boolean; type?: string; hint?: string; maxLength?: number };
 const roomFields: BookingField[] = [
   { key: 'requestedRoomDescription', label: 'Requested room', maxLength: 1000, hint: 'Customer room description. Choose the Infor category below.' },
-  { key: 'requestedBoard', label: 'Requested board', maxLength: 120, hint: 'Customer board request. Confirm it against the Infor rate.' },
+  { key: 'requestedMealPlan', label: 'Requested Meal Plan', maxLength: 120, hint: 'Customer meal plan request. Confirm it against the Infor rate.' },
   { key: 'roomType', label: 'Room Type', picker: 'room_type' },
   { key: 'roomTypeForCharge', label: 'Room Type for Charge', picker: 'room_type_for_charge', hint: 'Blank uses the Infor default. Infor checks the price for the selected category.' },
   { key: 'ratePlan', label: 'Rate Plan', picker: 'rate_plan' },
@@ -29,7 +29,8 @@ const stayFields: BookingField[] = [
 const trackField: BookingField = { key: 'track', label: 'Track / Sub Segment', picker: 'track' };
 const otherFields: BookingField[] = [
   { key: 'bookerName', label: 'Booker name', maxLength: 50 },
-  { key: 'bookerContact', label: 'Booker contact', maxLength: 80 },
+  { key: 'bookerEmail', label: 'Booker email', maxLength: 320, type: 'email' },
+  { key: 'bookerMobile', label: 'Booker mobile', maxLength: 120 },
   { key: 'reservationNote', label: 'Reservation note', maxLength: 2000, type: 'textarea' },
   { key: 'cmsSend', label: 'CMS Send Mail', type: 'checkbox' },
   { key: 'cmsMessageId', label: 'CMS Message Id', picker: 'cms_message' },
@@ -42,7 +43,7 @@ export function resolveCreateCmsRecipientDefault(snapshot: Editor['snapshot'], r
     const candidate = value.trim();
     return candidate.length <= 255 && /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/.test(candidate) ? candidate : '';
   };
-  const booker = email(text(valueAt(snapshot, `${requestPath(requestId)}/body/shared/bookerContact`)));
+  const booker = email(text(valueAt(snapshot, `${requestPath(requestId)}/body/shared/bookerEmail`)));
   const displayAddress = /^[^<>]*<([^<>]+)>\s*$/.exec(sender.trim())?.[1];
   return booker || email(displayAddress ?? sender);
 }
@@ -442,7 +443,6 @@ export function CreateEditor(editor: Editor) {
           if (completed) return <SavedRoom key={allocationId || index} editor={editor} result={completed} index={index} />;
           const overrides = `${allocationPath}/overrides`, dateDefaults = `${sectionPath}/defaults`;
           const exceptions = ownSummary(editor, overrides);
-          const guestOptIn = inheritedValue(editor, [`${overrides}/guestOptIn`, `${dateDefaults}/guestOptIn`, `${shared}/guestOptIn`]);
           return <div className={styles.roomCard} key={allocationId || index}>
             <div className={styles.groupHeading}><strong>Room {index + 1}</strong>
               <button type="button" className={styles.linkButton} disabled={view.busy || allocations.length <= 1}
@@ -464,8 +464,6 @@ export function CreateEditor(editor: Editor) {
             </label>}
             <GuestProfile editor={editor} allocationPath={allocationPath} allocationId={allocationId} />
             <Price editor={editor} allocationId={allocationId} />
-            {guestOptIn === true && <p className={styles.notice}>Complete the requested marketing opt-in in Infor, then untick this control to continue this booking.</p>}
-            <Field label="Guest marketing opt-in" type="checkbox" path={`${overrides}/guestOptIn`} resolvedValue={guestOptIn ?? false} editor={editor} />
             <details open={Boolean(exceptions) || undefined} className={styles.details}>
               <summary>Room exceptions{exceptions ? ` · ${exceptions}` : ''}</summary>
               <div className={styles.stack}>
@@ -491,7 +489,6 @@ export function CreateEditor(editor: Editor) {
         {otherFields.map(field => <BookingControl key={field.key} field={field.key === 'cmsRecipient' ? { ...field,
           hint: defaultRecipient ? `Blank uses ${defaultRecipient}.` : 'Enter an email when CMS Send Mail is enabled.' } : field} path={`${shared}/${field.key}`} editor={editor}
           defaultValue={field.key === 'cmsRecipient' ? defaultRecipient || undefined : undefined} />)}
-        {valueAt(snapshot, `${shared}/guestOptIn`) === true && <p className={styles.notice}>Guest marketing opt-in needs Infor.</p>}
       </fieldset>
     </Section>
   </div>;

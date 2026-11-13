@@ -33,7 +33,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
 }) {
   const id = useId();
   const pickerRef = useRef<HTMLDivElement>(null);
-  const party = /\/(bookingAgency|organization|arAccount|agency|company)$/.test(path);
+  const party = /\/(bookingAgency|organization|arAccount)$/.test(path);
   const entity = party || path.endsWith('/nativeSelectionRef');
   const selectionPath = party ? `${path}/nativeSelectionRef` : path;
   const guestPath = !party && entity ? path.replace(/\/nativeSelectionRef$/, '') : null;

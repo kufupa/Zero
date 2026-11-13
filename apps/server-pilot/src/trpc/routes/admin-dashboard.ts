@@ -26,6 +26,7 @@ import {
   outboundSendQueue,
 } from '../../db/schema/mail.js';
 import { workItem } from '../../db/schema/work.js';
+import { hydrateStoredReservationWorkflowV2 } from '../../ai/reservation-workflow-v2-stored-draft.js';
 import { reservationWorkflowV2DraftSchema } from '../../ai/reservation-workflow-v2-contract.js';
 import { staffQuoteSourceHash } from '../../ai/staff-quote-workflow.js';
 import {
@@ -402,7 +403,7 @@ export function v2DashboardKinds(row: {
   messageId: string; threadId: string; transportId: string; subject: string | null;
   textBody: string | null; htmlBody: string | null; state: unknown;
 }): string[] | null {
-  const parsed = reservationWorkflowV2DraftSchema.safeParse(row.state);
+  const parsed = reservationWorkflowV2DraftSchema.safeParse(hydrateStoredReservationWorkflowV2(row.state));
   if (!parsed.success) return null;
   const draft = parsed.data;
   if (draft.transportId !== row.transportId || draft.source.messageId !== row.messageId ||

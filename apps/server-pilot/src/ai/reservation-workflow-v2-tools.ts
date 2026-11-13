@@ -527,12 +527,12 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   }
 
   const optionalFields = ['sourceOfBusiness', 'reasonForStay', 'billingReference', 'track', 'guestOptIn', 'bookerName',
-    'bookerContact', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient'] as const;
+    'bookerEmail', 'bookerMobile', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient'] as const;
   const optional = Object.fromEntries(optionalFields.map((field) => [field, readValue(field)]));
   if (mode !== 'lookup') {
     const nativeTextFields = [
       ['reasonForStay', optional.reasonForStay, 100], ['bookerName', optional.bookerName, 50],
-      ['bookerContact', optional.bookerContact, 80], ['cmsMessageId', optional.cmsMessageId, 100],
+      ['bookerEmail', optional.bookerEmail, 320], ['bookerMobile', optional.bookerMobile, 120], ['cmsMessageId', optional.cmsMessageId, 100],
       ['cmsRecipient', optional.cmsRecipient, 255],
     ] as const;
     for (const [field, value, max] of nativeTextFields) {
@@ -593,9 +593,10 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     ...(optional.billingReference != null ? { billingReference: optional.billingReference } : {}),
     ...(optional.track != null ? { track: optional.track } : {}),
     ...(optional.guestOptIn === false ? { guestoptin4: false } : {}),
-    ...(optional.bookerName != null || optional.bookerContact != null ? { booker: {
+    ...(optional.bookerName != null || optional.bookerEmail != null || optional.bookerMobile != null ? { booker: {
       ...(optional.bookerName != null ? { name: optional.bookerName } : {}),
-      ...(optional.bookerContact != null ? { contact: optional.bookerContact } : {}),
+      ...(optional.bookerEmail != null ? { email: optional.bookerEmail } : {}),
+      ...(optional.bookerMobile != null ? { mobile: optional.bookerMobile } : {}),
     } } : {}),
     ...(optional.cmsSend !== undefined || optional.cmsMessageId != null || optional.cmsRecipient != null ? { cms: {
       ...(optional.cmsSend !== undefined ? { send: optional.cmsSend } : { send: false }),

@@ -100,7 +100,7 @@ export function Field({ label, path, editor, type = 'text', options, disabled, h
   const version = useRef(0);
   useEffect(() => { if (!dirty) setLocal(savedText); }, [savedText, dirty]);
   const clearedCreateOptional = (value: unknown) => editor.request.kind === 'create' && value === ''
-    && /\/(?:bookerName|bookerContact|billingReference|reservationNote|cmsRecipient)$/.test(path);
+    && /\/(?:bookerName|bookerEmail|bookerMobile|billingReference|reservationNote|cmsRecipient)$/.test(path);
   const parsedValue = (value: string) => type === 'string-list' ? value.split(/[\n,]/u).map(item => item.trim()).filter(Boolean)
     : type === 'number' ? value === '' ? null : Number(value)
     : value === '' && defaultValue ? defaultValue : value;

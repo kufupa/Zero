@@ -36,6 +36,7 @@ const moneyRequestSchema = z.object({
   scope: z.enum(['overall', 'per_target', 'unresolved']),
   targetRefs: z.array(refSchema).max(100),
   sourceRefs: z.array(refSchema).max(100),
+  staffAllowanceType: z.enum(['dinner', 'unsupported']).optional(),
 }).strict();
 const partySchema = z.object({
   name: z.string().max(300).nullable(),
@@ -104,7 +105,7 @@ const prefillRequestFactsSchema = z.object({
   confirmationHints: z.array(extractedClaimSchema).max(100).default([]),
   roomTypeHints: z.array(extractedClaimSchema).max(100).default([]),
   rateHints: z.array(extractedClaimSchema).max(100).default([]),
-  boardHints: z.array(extractedClaimSchema).max(100).default([]),
+  mealPlanHints: z.array(extractedClaimSchema).max(100).default([]),
   serviceHints: z.array(extractedClaimSchema).max(200).default([]),
   documentRefs: z.array(refSchema).max(200).default([]),
   documentHints: z.array(z.object({ documentRef: refSchema,
@@ -129,7 +130,8 @@ export type ReservationWorkflowV2PrefillInput = z.infer<typeof reservationWorkfl
 
 const bookingFieldsSchema = z.object({
   requestedRoomDescription: value(z.string().max(1000)).optional(),
-  requestedBoard: value(z.string().max(120)).optional(),
+  requestedMealPlan: value(z.string().max(120)).optional(),
+  mealPlan: value(z.string().max(120)).optional(),
   roomType: value(z.string().max(120)).optional(),
   roomTypeForCharge: value(z.string().max(120)).optional(),
   ratePlan: value(z.string().max(120)).optional(),
@@ -137,13 +139,15 @@ const bookingFieldsSchema = z.object({
   organization: value(partySchema).optional(),
   arAccount: value(partySchema).optional(),
   guaranteeType: value(z.string().max(120)).optional(),
+  taCommission: value(z.union([z.number().min(0).max(100), z.string().max(40)])).optional(),
   sourceOfBusiness: value(z.string().max(120)).optional(),
   reasonForStay: value(z.string().max(500)).optional(),
-  billingReference: value(z.string().max(300)).optional(),
+  billingReference: value(z.string().max(4000)).optional(),
   track: value(z.string().max(120)).optional(),
   guestOptIn: value(z.boolean()).optional(),
   bookerName: value(z.string().max(300)).optional(),
-  bookerContact: value(z.string().max(500)).optional(),
+  bookerEmail: value(z.string().max(320)).optional(),
+  bookerMobile: value(z.string().max(120)).optional(),
   reservationNote: value(z.string().max(4000)).optional(),
   cmsSend: value(z.boolean()).optional(),
   cmsMessageId: value(z.string().max(200)).optional(),
@@ -189,7 +193,7 @@ const quoteBodySchema = z.object({
     arrival: z.string().max(40).nullable(),
     departure: z.string().max(40).nullable(),
     quantity: z.number().int().nullable(),
-    board: z.string().max(120).nullable(),
+    mealPlan: z.string().max(120).nullable(),
     requestedRoomDescription: z.string().max(1000).nullable().optional(),
     guestNames: z.array(z.string().max(300)).max(200).optional(),
     roomCodes: z.array(z.string().max(120)).max(100),
@@ -198,7 +202,7 @@ const quoteBodySchema = z.object({
     priceObservationRefs: z.array(refSchema).max(100),
   }).strict()).max(100),
   guestNames: z.array(z.string().max(300)).max(200).optional(),
-  parties: z.object({ company: value(partySchema).optional(), agency: value(partySchema).optional() }).strict(),
+  parties: z.object({ organization: value(partySchema).optional(), bookingAgency: value(partySchema).optional() }).strict(),
   salesStrategy: z.string().max(1000).nullable(),
   client: z.object({ attention: z.string().max(300).nullable(), email: z.string().max(320).nullable(),
     telephone: z.string().max(120).nullable() }).strict(),
@@ -211,11 +215,12 @@ const quoteBodySchema = z.object({
 
 const amendFieldSchema = z.enum([
   'arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'roomTypeForCharge', 'ratePlan',
-  'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'cmsSend',
+  'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'cmsSend',
+  'mealPlan', 'roomCount', 'bookingAgency', 'organization', 'arAccount', 'billingReference', 'taCommission', 'track', 'guaranteeType',
   'cmsMessageId', 'cmsRecipient',
 ]);
 const amendScalarSchema = z.union([
-  z.string().max(4000), z.number().int(), z.boolean(), z.array(z.number().int().nullable()).max(12),
+  z.string().max(4000), z.number(), z.boolean(), z.array(z.number().int().nullable()).max(12), partySchema,
 ]);
 const changeSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('set'), field: amendFieldSchema, value: amendScalarSchema, sourceRefs: z.array(refSchema).max(100) }).strict(),
@@ -402,9 +407,29 @@ export const reservationWorkflowV2DraftSchema = z.object({
 }).strict();
 export type ReservationWorkflowV2Draft = z.infer<typeof reservationWorkflowV2DraftSchema>;
 
+// Native, derived and staff-only Create fields are filled after synthesis.
+const modelBookingFieldsSchema = bookingFieldsSchema.omit({ mealPlan: true, roomType: true,
+  roomTypeForCharge: true, ratePlan: true, bookingAgency: true, organization: true, arAccount: true,
+  guaranteeType: true, taCommission: true, sourceOfBusiness: true, reasonForStay: true, track: true,
+  guestOptIn: true, cmsSend: true, cmsMessageId: true, cmsRecipient: true });
+const modelCreateBodySchema = createBodySchema.extend({
+  shared: modelBookingFieldsSchema,
+  dateSections: z.array(createBodySchema.shape.dateSections.element.extend({ defaults: modelBookingFieldsSchema })).max(100),
+  allocations: z.array(createBodySchema.shape.allocations.element.extend({ overrides: modelBookingFieldsSchema })).max(100),
+});
+const modelMoneyRequestSchema = moneyRequestSchema.omit({ staffAllowanceType: true });
+const modelQuoteBodySchema = quoteBodySchema.extend({ requestedMoney: z.array(modelMoneyRequestSchema).max(100) });
+const modelServiceRequestSchema = serviceRequestSchema.extend({ requestedMoney: z.array(modelMoneyRequestSchema).max(100) });
+const modelRequestSchema = z.discriminatedUnion('kind', [requestSchema.options[0].extend({ body: modelQuoteBodySchema }),
+  requestSchema.options[1].extend({ body: modelCreateBodySchema }), requestSchema.options[2],
+  requestSchema.options[3], requestSchema.options[4], requestSchema.options[5], requestSchema.options[6]]);
+const modelProposalSchema = reservationWorkflowV2ProposalSchema.extend({
+  content: reservationWorkflowV2ProposalSchema.shape.content.extend({ requests: z.array(modelRequestSchema).max(200),
+    services: z.array(modelServiceRequestSchema).max(200) }),
+});
 /** A model's first-pass output is evidence-only: it cannot author host observations or staff state. */
 export const reservationWorkflowV2ModelOutputSchema = z.object({
-  proposal: reservationWorkflowV2ProposalSchema,
+  proposal: modelProposalSchema,
   reviewRequirements: z.record(fieldReviewRequirementSchema).optional(),
 }).strict();
 export type ReservationWorkflowV2ModelOutput = z.infer<typeof reservationWorkflowV2ModelOutputSchema>;

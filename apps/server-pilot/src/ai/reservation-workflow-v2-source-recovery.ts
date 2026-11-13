@@ -141,7 +141,7 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
       paths.push(path);
     };
     if (request.kind === 'quote') { fill('attention', name, 300); fill('email', email, 320); fill('telephone', mobile, 120); }
-    else { fill('bookerName', name, 50); fill('bookerContact', mobile.length ? mobile : email, 80); fill('cmsRecipient', email, 255); }
+    else { fill('bookerName', name, 50); fill('bookerEmail', email, 320); fill('bookerMobile', mobile, 120); fill('cmsRecipient', email, 255); }
   }
   if (!paths.length) return null;
   const parsed = reservationWorkflowV2DraftSchema.safeParse(draft);

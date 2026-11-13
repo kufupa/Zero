@@ -45,9 +45,9 @@ export function currentLead(draft: ReservationWorkflowV2Draft, input: Input) {
   if (lead.kind !== 'party_candidate') return null;
   let role: string | undefined, kind: NativeLeadKind | undefined, party: Record<string, unknown> = {};
   if (request.kind === 'quote') {
-    const match = tail.match(/^\/parties\/(company|agency)\/nativeSelectionRef$/);
+    const match = tail.match(/^\/parties\/(organization|bookingAgency)\/nativeSelectionRef$/);
     role = match?.[1];
-    kind = role === 'company' ? 'organization' : role === 'agency' ? 'agency' : undefined;
+    kind = role === 'organization' ? 'organization' : role === 'bookingAgency' ? 'agency' : undefined;
     party = rec(effectiveSubtree(draft, rec(body.parties)[role ?? ''], `${root}/parties/${role ?? ''}`));
   } else if (request.kind === 'create') {
     const match = tail.match(/^\/(shared|dateSections\/\d+\/defaults|allocations\/\d+\/overrides)\/(bookingAgency|organization|arAccount)\/nativeSelectionRef$/);

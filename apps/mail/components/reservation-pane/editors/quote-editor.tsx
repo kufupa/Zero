@@ -124,7 +124,7 @@ function quoteOffersCurrent(editor: Editor, observation: ReturnType<typeof lates
   return groups.every((group) => {
     const native = requested.find((row) => row.id === group.id), occupancy = record(group.occupancy);
     return native && native.arrivalDate === group.arrival && native.departureDate === group.departure &&
-      native.quantity === group.quantity && native.adults === occupancy.adults && native.board === quoteBoardCode(group.board, editor.snapshot.session.draft.propertyCode) &&
+      native.quantity === group.quantity && native.adults === occupancy.adults && native.board === quoteBoardCode(group.mealPlan, editor.snapshot.session.draft.propertyCode) &&
       native.childrenAges instanceof Array && native.childrenAges.length === occupancy.childCount &&
       JSON.stringify(native.childrenAges) === JSON.stringify(occupancy.childAges ?? []) &&
       JSON.stringify(native.roomCodes ?? []) === JSON.stringify(group.roomCodes ?? []) &&
@@ -144,7 +144,7 @@ function availabilityMessage(result: Record<string, unknown>): string | null {
     return `Infor confirmed ${supply} of ${demand} requested ${shortfall.roomLabel} rooms available on ${shortfall.date}. This is only the selected room/date, not a hotel-wide sold-out result.`;
   }
   if (result.failureKind === 'requested_mismatch' || result.failureKind === 'requested_unqualified')
-    return 'Infor did not confirm a matching rate for the selected room and board. Availability is not confirmed; choose an available offer or refresh the search.';
+    return 'Infor did not confirm a matching rate for the selected room and meal plan. Availability is not confirmed; choose an available offer or refresh the search.';
   if (result.failureKind === 'restricted')
     return 'Infor marked part of this stay restricted. This is not a sold-out result; review the affected dates or choose another offer.';
   if (result.failureKind === 'qualification_failure')
@@ -273,7 +273,7 @@ function OfferList({ editor, groupId, groupPath, observation }: { editor: Editor
       const room = text(option.roomCode), rate = text(option.rateCode), board = text(option.board);
       const selected = Array.isArray(valueAt(editor.snapshot, `${groupPath}/roomCodes`)) &&
         (valueAt(editor.snapshot, `${groupPath}/roomCodes`) as unknown[]).includes(room) &&
-        text(valueAt(editor.snapshot, `${groupPath}/ratePlan`)) === rate && text(valueAt(editor.snapshot, `${groupPath}/board`)) === board;
+        text(valueAt(editor.snapshot, `${groupPath}/ratePlan`)) === rate && text(valueAt(editor.snapshot, `${groupPath}/mealPlan`)) === board;
       const nightly = money(option.perNightMinor, option.currency), total = money(option.totalMinor, option.currency);
       return <div className={styles.offer} key={`${room}-${rate}-${board}-${index}`}>
         <div><strong>{room} · {text(option.roomLabel) || room} / {rate} · {text(option.rateLabel) || rate}</strong>
@@ -286,7 +286,7 @@ function OfferList({ editor, groupId, groupPath, observation }: { editor: Editor
             void (async () => {
               await editor.commands.edit(`${groupPath}/roomCodes`, [room]);
               await editor.commands.edit(`${groupPath}/ratePlan`, rate);
-              await editor.commands.edit(`${groupPath}/board`, board);
+              await editor.commands.edit(`${groupPath}/mealPlan`, board);
             })().finally(() => editor.commands.setUncommitted(pending, false)).catch(() => {});
           }}>{selected ? 'Selected' : 'Use this'}</button>
       </div>;
@@ -491,7 +491,7 @@ export function QuoteEditor(editor: Editor) {
             <Field label="Departure" path={`${groupPath}/departure`} editor={editor} type="date" review /></div>}
           {roomSource && <p className={styles.note}>Requested: {roomSource.raw}</p>}
           <div className={styles.twoCol}><Count label="Rooms" path={`${groupPath}/quantity`} editor={editor} min={1} max={100} review />
-            <Field label="Board" path={`${groupPath}/board`} editor={editor} options={boards} review /></div>
+            <Field label="Meal Plan" path={`${groupPath}/mealPlan`} editor={editor} options={boards} review /></div>
           <Field label="Requested room" path={`${groupPath}/requestedRoomDescription`} editor={editor} maxLength={1000} compact
             hint="Customer room description. Choose the Infor categories below." />
           <Field label="Requested guests for this group" path={`${groupPath}/guestNames`} editor={editor} type="string-list" compact
@@ -515,9 +515,9 @@ export function QuoteEditor(editor: Editor) {
         {rows.some((_, i) => text(valueAt(snapshot, `${bodyPath}/requestedMoney/${i}/staffAllowanceType`)) !== 'dinner') &&
           <small>Unresolved requests above are not included in this total.</small>}</div>}
     </Section>
-    <Section title="Company and agency">
-      <NativePicker label="Company" path={`${bodyPath}/parties/company`} editor={editor} kind="party_candidate" allowNone compact />
-      <NativePicker label="Agency" path={`${bodyPath}/parties/agency`} editor={editor} kind="party_candidate" allowNone compact />
+    <Section title="Organization and booking agency">
+      <NativePicker label="Organization" path={`${bodyPath}/parties/organization`} editor={editor} kind="party_candidate" allowNone compact />
+      <NativePicker label="Primary Booking Agency" path={`${bodyPath}/parties/bookingAgency`} editor={editor} kind="party_candidate" allowNone compact />
       <Field label="Sales strategy" path={`${bodyPath}/salesStrategy`} editor={editor} compact options={strategies} />
       {strategyUsedDiscoveryBar && selectedStrategy !== 'BAR' && <p className={styles.notice}>
         This source price used BAR as a discovery default; no sales strategy was selected. Choose the intended strategy above before Review/Check. If it is not BAR, check and prepare the price again.

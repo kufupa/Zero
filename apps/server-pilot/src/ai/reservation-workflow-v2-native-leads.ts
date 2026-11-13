@@ -119,7 +119,7 @@ export async function loadReservationNativeLeads(input: { propertyCode: string;
         ? [{ path: `${root}/shared`, fields: request.body.shared },
           ...request.body.dateSections.map((section, index) => ({ path: `${root}/dateSections/${index}/defaults`, fields: section.defaults })),
           ...request.body.allocations.map((allocation, index) => ({ path: `${root}/allocations/${index}/overrides`, fields: allocation.overrides }))]
-        : [{ path: `${root}/parties`, fields: { bookingAgency: request.body.parties.agency, organization: request.body.parties.company } }];
+        : [{ path: `${root}/parties`, fields: { bookingAgency: request.body.parties.bookingAgency, organization: request.body.parties.organization } }];
       const names = new Map<PartyRole, string[]>();
       for (const spec of partyFields) names.set(spec.role, slots.flatMap(slot => {
         const party = spec.field === 'bookingAgency' ? slot.fields.bookingAgency : spec.field === 'organization'
@@ -171,7 +171,7 @@ export async function loadReservationNativeLeads(input: { propertyCode: string;
         const ranked = [...leads.values()].sort((a, b) => Number(b.basis === 'exact_sender') - Number(a.basis === 'exact_sender') ||
           b.support - a.support || a.value.localeCompare(b.value)).slice(0, 3);
         if (!ranked.length) continue;
-        const actualField = request.kind === 'quote' ? role === 'agency' ? 'agency' : role === 'organization' ? 'company' : field : field;
+        const actualField = field;
         const fieldPaths = role === 'rate_plan' && request.kind === 'quote'
           ? request.body.groups.map((_, index) => `${root}/groups/${index}/ratePlan`)
           : role === 'ar_account' && request.kind === 'quote' ? [] : slots.map(slot => `${slot.path}/${actualField}/nativeSelectionRef`);
@@ -190,7 +190,7 @@ export async function loadReservationNativeLeads(input: { propertyCode: string;
             kind: role === 'rate_plan' ? 'rate_availability' : 'party_candidate', status: 'partial',
             observedAt: new Date().toISOString(), propertyCode: input.propertyCode, sourceMessageId: input.source.messageId,
             sourceRefs: [], criteria: { kind: 'historical_lookup_leads', workflow: request.kind, requestId: request.id,
-              sourceHash: input.source.sourceHash, role: request.kind === 'quote' && role === 'organization' ? 'company' : role,
+              sourceHash: input.source.sourceHash, role: request.kind === 'quote' && role === 'agency' ? 'bookingAgency' : role,
               query: sourceQuery, fieldPath, fieldPaths: [fieldPath], rankBasis: ['exact_sender', 'normalized_entity'], snapshotTimes: [...snapshotTimes.values()] },
             coverage: { complete: false, notes: ['Historical names/codes require a current Infor search and staff selection.',
               'Support counts observed confirmations; journey/room grouping is unavailable where source links are missing.'] },

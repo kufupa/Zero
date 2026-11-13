@@ -9,6 +9,7 @@ import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { reservationArrivalEvidence } from './reservation-workflow-v2-evidence.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
+import { hydrateStoredReservationWorkflowV2 } from './reservation-workflow-v2-stored-draft.js';
 import { recoverReservationWorkflowV2SourceFields } from './reservation-workflow-v2-source-recovery.js';
 import { advancePaneRevision, redoWorkItemRevision, undoWorkItemRevision,
   rebaseReservationV2Path, rebaseReservationV2Observations, nativeStructureIsSafe } from './work-item-revision.js';
@@ -66,7 +67,7 @@ export type ReservationWorkflowV2StateResult =
   | { status: 'not_found' | 'invalid_source' | 'wrong_property' | 'invalid_state' | 'stale_revision' | 'invalid_path' | 'invalid_value'; issue?: string };
 
 export function reservationWorkflowV2DraftOf(state: State): ReservationWorkflowV2Draft | null {
-  const parsed = reservationWorkflowV2DraftSchema.safeParse(state[RESERVATION_WORKFLOW_V2_STATE_KEY]);
+  const parsed = reservationWorkflowV2DraftSchema.safeParse(hydrateStoredReservationWorkflowV2(state[RESERVATION_WORKFLOW_V2_STATE_KEY]));
   return parsed.success ? parsed.data : null;
 }
 
@@ -1393,7 +1394,7 @@ function updateDraft(current: ReservationWorkflowV2Draft, input: {
     }
     // Retyping a native identity or saved-stay query removes the old selection atomically.
     const guest = input.fieldPath.match(/^(.*\/guest)\/(?:firstName|lastName|email)$/);
-    const party = input.fieldPath.match(/^(.*\/(?:bookingAgency|organization|arAccount|agency|company))(?:\/name)?$/);
+    const party = input.fieldPath.match(/^(.*\/(?:bookingAgency|organization|arAccount))(?:\/name)?$/);
     const target = input.fieldPath.match(/^(.*\/targets\/(?:include|exclude)\/[^/]+)\/(?:confirmation|guestName|bookedArrival|bookedDeparture)$/);
     const service = input.fieldPath.match(/^(\/proposal\/content\/services\/[^/]+)\/code$/);
     const selection = guest ? `${guest[1]}/nativeSelectionRef` : party ? `${party[1]}/nativeSelectionRef` :

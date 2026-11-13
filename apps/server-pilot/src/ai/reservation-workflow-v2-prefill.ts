@@ -80,7 +80,7 @@ const VOUCHER_SYNTHESIS_RULES = `Keep requestedPrice as cited source evidence. W
 // from the existing property profile. Later corpus outcomes never enter T0 input.
 const HRCEN_AMEND_CAPABILITIES = `Trusted HRCEN tool capability context (applies only to Amend): Target bookedArrival and bookedDeparture identify the original saved stay, not the requested new dates. Put a requested new date only in its change; leave the corresponding original date absent unless the original is separately supported by the source or a native stay read. HMS can issue revised reservation documents when the amendment is saved, through the existing change fields cmsSend, cmsMessageId and cmsRecipient. A customer's request to send revised confirmation/proforma documents is a business delivery intent, not an incoming attachment or filing request. Translate that explicit intent into editable set changes: cmsSend=true and cmsRecipient=the source-supported requested recipient or current requester's address. For an explicit proforma request, choose only a configured CMS template whose supplied label supports proforma. A confirmation-only request does not justify switching to the proforma template: preserve the applicable native template, or leave template choice for staff when unknown. Template selection is host policy, not a customer claim: its change.sourceRefs and policy annotation.evidenceRefs must be empty; cite the current request for delivery intent and recipient. If recipient or intent is ambiguous, leave it unresolved for staff review. Do not require customers to name CMS controls, create incoming document entities for generated confirmations, change guest/booker contact records merely to deliver a document, or claim anything was sent before a verified Save. If no delivery is requested, leave CMS unchanged for native preservation. Existing stay room, occupancy and rate codes come from native Lookup unless the customer asks to change them; do not guess missing native codes. The supported native tool uses per-target rateHandling="reprice" for date, occupancy, room or rate changes: propose that editable method for the ordinary supported path and let native Prepare supply prices. Repricing with the existing rate code is distinct from changing that code or retaining a numeric nightly price. For price-affecting changes, explicit retained-price instructions are unsupported and must remain visible for staff resolution, never silently replaced by repricing; numeric manual-price overrides are unsupported.`;
 
-const SOURCE_INTENT_RULES = `Canceling only the last/final day or night of an existing stay is an Amend to departure, not cancellation of the whole stay. Unable/cannot keep a reservation expresses cancellation, not an instruction to keep it. A current submission of a voucher or proof of payment for a source-identified existing stay is Filing, including "please see attached billback voucher" and a forwarded accommodation-voucher email whose supplied document states the hotel's exact confirmation. The document alone does not create a stay or establish native identity: retain the exact source confirmation as an unresolved target until native lookup. A prior hotel acknowledgement that this same booking was already cancelled means review/status work (other), not a duplicate Cancel; retain the supporting evidence. Preserve source room descriptions in requestedRoomDescription separately from native roomType/roomCodes; Create's requestedBoard contains explicit source board meaning. Quote guestNames is the overall unassigned roster; group guestNames requires explicit source group assignment. For one source stay range, preserve separately counted room categories as separate Quote groups, including 5 Standard and 1 Executive. Dinner and Breakfast components for the same group mean Dinner, Bed & Breakfast; preserve group scope and do not treat them as conflicting alternatives. Missing-year source dates remain editable without inventing a year. Preserve explicit operational instructions in notes/reservationNote, including passport on arrival, parking and labelled contacts.`;
+const SOURCE_INTENT_RULES = `Canceling only the last/final day or night of an existing stay is an Amend to departure, not cancellation of the whole stay. Unable/cannot keep a reservation expresses cancellation, not an instruction to keep it. A current submission of a voucher or proof of payment for a source-identified existing stay is Filing, including "please see attached billback voucher" and a forwarded accommodation-voucher email whose supplied document states the hotel's exact confirmation. The document alone does not create a stay or establish native identity: retain the exact source confirmation as an unresolved target until native lookup. A prior hotel acknowledgement that this same booking was already cancelled means review/status work (other), not a duplicate Cancel; retain the supporting evidence. Preserve source room descriptions in requestedRoomDescription separately from native roomType/roomCodes; Create's requestedMealPlan contains explicit source meal plan meaning. Quote guestNames is the overall unassigned roster; group guestNames requires explicit source group assignment. For one source stay range, preserve separately counted room categories as separate Quote groups, including 5 Standard and 1 Executive. Dinner and Breakfast components for the same group mean Dinner, Bed & Breakfast; preserve group scope and do not treat them as conflicting alternatives. Missing-year source dates remain editable without inventing a year. Preserve explicit operational instructions in notes/reservationNote, including passport on arrival, parking and labelled contacts.`;
 
 const OMIT_UNKNOWN_CLAIM = Symbol('omit-uncited-unknown-claim');
 function omitUncitedUnknownClaims(value: unknown): unknown {
@@ -181,7 +181,7 @@ function recoverExtractionFacts(value: unknown, input: {
     // Only known fact containers may lose a malformed claim. Intent and required
     // request text are never replaced with a guessed/default workflow.
     const arrays = new Set(['dates', 'occupancy', 'guests', 'parties', 'confirmationHints',
-      'roomTypeHints', 'rateHints', 'boardHints', 'serviceHints', 'documentRefs', 'documentHints']);
+      'roomTypeHints', 'rateHints', 'mealPlanHints', 'serviceHints', 'documentRefs', 'documentHints']);
     for (let remaining = 32; remaining > 0; remaining--) {
       const parsed = requestSchema.safeParse(request);
       if (parsed.success) return [parsed.data];
@@ -358,7 +358,7 @@ function emptyQuotePlaceholder(key: string, value: unknown): boolean {
     keys.every((field) => value[field] === null);
   switch (key) {
     case 'salesStrategy': case 'notes': case 'provisionalBookingRequested': return value === null;
-    case 'parties': return nullObject(['company', 'agency']);
+    case 'parties': return nullObject(['organization', 'bookingAgency']);
     case 'client': return nullObject(['attention', 'email', 'telephone']);
     case 'requestedMoney': return Array.isArray(value) && value.length === 0;
     case 'outputIntent': return isRecord(value) && Object.keys(value).length === 2 &&
@@ -563,7 +563,7 @@ function extractionRefs(extraction: ReservationWorkflowV2Extraction): string[] {
     request.guests.forEach((guest) => { claim(guest.name); claim(guest.email); claim(guest.mobile); });
     request.parties.forEach((party) => claim(party.name));
     request.confirmationHints.forEach(claim); request.roomTypeHints.forEach(claim);
-    request.rateHints.forEach(claim); request.boardHints.forEach(claim); request.serviceHints.forEach(claim);
+    request.rateHints.forEach(claim); request.mealPlanHints.forEach(claim); request.serviceHints.forEach(claim);
     refs.push(...request.documentRefs);
     if (request.requestedPrice) {
       claim(request.requestedPrice.nightlyRate); claim(request.requestedPrice.total); claim(request.requestedPrice.currency);
@@ -645,7 +645,7 @@ export function buildReservationWorkflowV2CandidateReadPlan(input: {
         occupancy,
         roomTypes: request.roomTypeHints.map((hint) => ({ value: hint.value, sourceRefs: hint.sourceRefs })),
         rateHints: request.rateHints.map((hint) => ({ value: hint.value, sourceRefs: hint.sourceRefs })),
-        boardHints: request.boardHints.map((hint) => ({ value: hint.value, sourceRefs: hint.sourceRefs })),
+        mealPlanHints: request.mealPlanHints.map((hint) => ({ value: hint.value, sourceRefs: hint.sourceRefs })),
         roomCount: request.roomCount?.value ?? null,
       }, availabilityRefs);
     }
@@ -1214,7 +1214,7 @@ function buildFallbackProposal(input: {
     // through fallback projection also makes identical/paraphrased requests unambiguous.
     const id = request.id;
     const refs = [...new Set([request.requestText.sourceRefs, ...request.dates.flatMap((date) => [date.arrival?.sourceRefs ?? [], date.departure?.sourceRefs ?? []]),
-      request.roomTypeHints.flatMap((x) => x.sourceRefs), request.rateHints.flatMap((x) => x.sourceRefs), request.boardHints.flatMap((x) => x.sourceRefs),
+      request.roomTypeHints.flatMap((x) => x.sourceRefs), request.rateHints.flatMap((x) => x.sourceRefs), request.mealPlanHints.flatMap((x) => x.sourceRefs),
       request.confirmationHints.flatMap((x) => x.sourceRefs), request.guests.flatMap((guest) => [guest.name?.sourceRefs ?? [], guest.email?.sourceRefs ?? [], guest.mobile?.sourceRefs ?? []]),
       request.parties.flatMap((party) => party.name.sourceRefs), request.roomCount?.sourceRefs ?? [], request.occupancy.flatMap((row) => [
         row.adults?.sourceRefs ?? [], row.childCount?.sourceRefs ?? [], ...(row.childAges?.map((claim) => claim.sourceRefs) ?? [])]),
@@ -1231,23 +1231,25 @@ function buildFallbackProposal(input: {
       serviceRefs: [] as string[], documentRefs: [] as string[] };
     const booker = request.guests.find((guest) => guest.role === 'booker');
     const bookerName = safeCurrentText(booker?.name, currentRefs, 50);
-    const bookerContact = safeCurrentText(booker?.mobile, currentRefs, 80) || safeCurrentText(booker?.email, currentRefs, 80);
-    const board = safeCurrentText(request.boardHints[0], currentRefs, 120);
+    const bookerEmail = safeCurrentText(booker?.email, currentRefs, 320);
+    const bookerMobile = safeCurrentText(booker?.mobile, currentRefs, 120);
+    const board = safeCurrentText(request.mealPlanHints[0], currentRefs, 120);
     if (request.kind === 'quote') return { ...base, kind: 'quote' as const, body: {
       groups: request.dates.length ? request.dates.map((date, dateIndex) => ({ id: stableId(id, 'date', String(dateIndex)),
         arrival: currentClaim(date.arrival, currentRefs) && typeof date.arrival?.value === 'string' && date.arrival.value.length <= 40 ? date.arrival.value : null,
         departure: currentClaim(date.departure, currentRefs) && typeof date.departure?.value === 'string' && date.departure.value.length <= 40 ? date.departure.value : null,
         quantity: citedInteger(currentClaim(request.roomCount, currentRefs)) ?? null,
-        board: board ?? null, roomCodes: [], ratePlan: null,
+        mealPlan: board ?? null, roomCodes: [], ratePlan: null,
         occupancy: fallbackQuoteOccupancy(request, currentRefs).occupancy, priceObservationRefs: [],
-      })) : [{ id: stableId(id, 'date', '0'), arrival: null, departure: null, quantity: null, board: null,
+      })) : [{ id: stableId(id, 'date', '0'), arrival: null, departure: null, quantity: null, mealPlan: null,
         roomCodes: [], ratePlan: null, occupancy: fallbackQuoteOccupancy(request, currentRefs).occupancy, priceObservationRefs: [] }],
       parties: {}, salesStrategy: null, client: { attention: null, email: null, telephone: null }, requestedMoney: [], notes: null,
       outputIntent: { artifacts: ['email_quote', 'pdf_quote', 'xlsx_quote'], evidenceRefs: refs }, provisionalBookingRequested: null,
     } };
     if (request.kind === 'create') return { ...base, kind: 'create' as const, body: {
       shared: { ...(bookerName !== undefined ? { bookerName } : {}),
-        ...(bookerContact !== undefined ? { bookerContact } : {}) },
+        ...(bookerEmail !== undefined ? { bookerEmail } : {}),
+        ...(bookerMobile !== undefined ? { bookerMobile } : {}) },
       dateSections: (request.dates.length ? request.dates : [{}]).map((date, dateIndex) => ({ id: stableId(id, 'section', String(dateIndex)),
         arrival: currentClaim(date.arrival, currentRefs) && typeof date.arrival?.value === 'string' && date.arrival.value.length <= 40 ? date.arrival.value : null,
         departure: currentClaim(date.departure, currentRefs) && typeof date.departure?.value === 'string' && date.departure.value.length <= 40 ? date.departure.value : null,
@@ -1367,7 +1369,7 @@ function currentCandidateExtraction(extraction: ReservationWorkflowV2Extraction,
       parties: request.parties.filter((party) => currentClaim(party.name, currentRefs)), confirmationHints,
       roomTypeHints: request.roomTypeHints.filter((claim) => currentClaim(claim, currentRefs)),
       rateHints: request.rateHints.filter((claim) => currentClaim(claim, currentRefs)),
-      boardHints: request.boardHints.filter((claim) => currentClaim(claim, currentRefs)),
+      mealPlanHints: request.mealPlanHints.filter((claim) => currentClaim(claim, currentRefs)),
       serviceHints: request.serviceHints.filter((claim) => currentClaim(claim, currentRefs)),
       documentRefs: request.documentRefs.filter((ref) => currentRefs.has(ref)),
     };
@@ -1456,7 +1458,7 @@ function appendExtractionSourceClaims(proposal: ReservationWorkflowV2Proposal,
     request.confirmationHints.forEach((claim, index) => add(`${root}/confirmationHints/${index}`, claim));
     request.roomTypeHints.forEach((claim, index) => add(`${root}/roomTypeHints/${index}`, claim));
     request.rateHints.forEach((claim, index) => add(`${root}/rateHints/${index}`, claim));
-    request.boardHints.forEach((claim, index) => add(`${root}/boardHints/${index}`, claim));
+    request.mealPlanHints.forEach((claim, index) => add(`${root}/mealPlanHints/${index}`, claim));
     request.serviceHints.forEach((claim, index) => add(`${root}/serviceHints/${index}`, claim));
     request.documentRefs.forEach((ref, index) => add(`${root}/documentRefs/${index}`, { raw: ref, sourceRefs: [ref] }));
     request.documentHints.forEach((hint, index) => {
@@ -1666,8 +1668,8 @@ function projectBookerContacts(input: { proposal: ReservationWorkflowV2Proposal;
     project('telephone', mobile, 120);
   } else {
     project('bookerName', name, 50);
-    const contact = mobile.some(hasText) ? mobile : email.some(hasText) ? email : mobile.length ? mobile : email;
-    project('bookerContact', contact, 80);
+    project('bookerEmail', email, 320);
+    project('bookerMobile', mobile, 120);
     if (target.cmsRecipient === undefined || target.cmsRecipient === null || target.cmsRecipient === '')
       project('cmsRecipient', email, 255);
   }
@@ -3195,7 +3197,7 @@ function projectCurrentExtraction(input: {
     const sameText = sourceCandidates.filter((candidate) => requestTextKey(candidate.requestText.raw) === requestTextKey(extracted.requestText.raw));
     const sourceExtracted = sourceCandidates.length === 1 ? sourceCandidates[0]! : sameText.length === 1 ? sameText[0]! : extracted;
     const priorRoomCountRefs = priorOnlySourceRefs([sourceExtracted.roomCount], currentRefs, knownRefs);
-    const priorBoardRefs = priorOnlySourceRefs(sourceExtracted.boardHints, currentRefs, knownRefs);
+    const priorBoardRefs = priorOnlySourceRefs(sourceExtracted.mealPlanHints, currentRefs, knownRefs);
     const priorRoomCodeRefs = priorOnlySourceRefs(sourceExtracted.roomTypeHints, currentRefs, knownRefs);
     const isPriceRateHint = (claim: { raw: string; value: unknown }) => typeof claim.value === 'string' &&
       /[€£$]|\b(?:USD|GBP|EUR|AUD|CAD)\b|\b(?:per|nightly?|total|person|room)\b|^\s*(?:R|ZAR)\s*\d+(?:\.\d{1,2})?\s*$|^\s*\d+(?:\.\d{1,2})?\s*$/i.test(claim.raw);
@@ -3214,7 +3216,7 @@ function projectCurrentExtraction(input: {
         clearedPriorRefs.push(...priorRoomCountRefs);
       }
       if (priorBoardRefs.length) {
-        request.body.groups.forEach((group) => { group.board = null; });
+        request.body.groups.forEach((group) => { group.mealPlan = null; });
         clearedPriorRefs.push(...priorBoardRefs);
       }
       if (priorRoomCodeRefs.length) {
@@ -3282,9 +3284,9 @@ function projectCurrentExtraction(input: {
           if (original) linkedIds.add(original.id);
           const id = original?.id ?? stableId(request.id, 'source_room_group', String(index));
           sourceRoomByGroupId.set(id, row);
-          return { ...(original ?? { id, arrival: null, departure: null, board: null, roomCodes: [], ratePlan: null,
+          return { ...(original ?? { id, arrival: null, departure: null, mealPlan: null, roomCodes: [], ratePlan: null,
             occupancy: { scope: 'unresolved' as const, adults: null, childCount: null, childAges: null }, priceObservationRefs: [] }),
-          id, quantity: row.quantity, requestedRoomDescription: row.description, board: row.board };
+          id, quantity: row.quantity, requestedRoomDescription: row.description, mealPlan: row.board };
         });
         request.body.groups = groups;
         // A removed model group cannot lend its service/money target to a new source
@@ -3357,7 +3359,7 @@ function projectCurrentExtraction(input: {
         }
       }
 
-      const currentBoards = extracted.boardHints.flatMap((hint) => {
+      const currentBoards = extracted.mealPlanHints.flatMap((hint) => {
         const claim = currentClaim(hint, currentRefs);
         return claim && typeof claim.value === 'string' && claim.value.trim() ? [claim] : [];
       });
@@ -3372,13 +3374,13 @@ function projectCurrentExtraction(input: {
         for (const groupIndex of linkedQuoteGroups) {
           const group = request.body.groups[groupIndex]!;
           const sourceRoom = sourceRoomByGroupId.get(group.id);
-          if (sourceRoom && datePairKey(group.arrival, group.departure) === currentDatePair) group.board = sourceRoom.board;
+          if (sourceRoom && datePairKey(group.arrival, group.departure) === currentDatePair) group.mealPlan = sourceRoom.board;
         }
         if (sourceRooms.some((row) => !row.board)) addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
           'Some room-specific board choices could not be bound to their counted source clause. Those boards remain unresolved; independently bound group boards were retained.',
           currentBoards.flatMap((claim) => claim.sourceRefs));
       } else if (sourceRooms.length) {
-        for (const group of request.body.groups) group.board = null;
+        for (const group of request.body.groups) group.mealPlan = null;
         addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
           'Counted room clauses could not be bound to one current stay range and matching room groups. Their board claims remain available; no board was copied by group position.',
           currentBoards.flatMap((claim) => claim.sourceRefs));
@@ -3386,17 +3388,17 @@ function projectCurrentExtraction(input: {
         if (boardsByValue.size === 1) {
           const board = [...boardsByValue.values()][0]!;
           for (const groupIndex of linkedQuoteGroups) projectLimitedText({ proposal,
-            target: request.body.groups[groupIndex] as unknown as Record<string, unknown>, field: 'board',
+            target: request.body.groups[groupIndex] as unknown as Record<string, unknown>, field: 'mealPlan',
             claim: { ...board, value: boardValue(board.value) },
-            currentRefs, max: 120, path: `/requests/${request.id}/body/groups/${groupIndex}/board` });
+            currentRefs, max: 120, path: `/requests/${request.id}/body/groups/${groupIndex}/mealPlan` });
         } else {
-          for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.board = null;
+          for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.mealPlan = null;
           addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
             'The current source contains conflicting board choices without a reliable group mapping. Group boards were cleared for staff selection; the source claims remain available.',
             [...new Set(currentBoards.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
         }
       } else if (currentBoards.length) {
-        for (const group of request.body.groups) group.board = null;
+        for (const group of request.body.groups) group.mealPlan = null;
         addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
           'A current board choice could not be mapped to a source-linked date group. Group boards were cleared; the source claim remains available for staff review.',
           [...new Set(currentBoards.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
@@ -3495,9 +3497,9 @@ function projectCurrentExtraction(input: {
       }
       const quoteParties = request.body.parties as unknown as Record<string, unknown>;
       projectPartyRole({ proposal, parties: extracted.parties, role: 'agency', currentRefs,
-        slots: [{ target: quoteParties, field: 'agency', path: `/requests/${request.id}/body/parties/agency` }] });
+        slots: [{ target: quoteParties, field: 'bookingAgency', path: `/requests/${request.id}/body/parties/bookingAgency` }] });
       projectPartyRole({ proposal, parties: extracted.parties, role: 'organization', currentRefs,
-        slots: [{ target: quoteParties, field: 'company', path: `/requests/${request.id}/body/parties/company` }] });
+        slots: [{ target: quoteParties, field: 'organization', path: `/requests/${request.id}/body/parties/organization` }] });
       const typedRequestedPriceClaims = [extracted.requestedPrice?.nightlyRate, extracted.requestedPrice?.total,
         extracted.requestedPrice?.currency].flatMap((claim) => {
         const current = currentClaim(claim, currentRefs);
@@ -3701,28 +3703,28 @@ function projectCurrentExtraction(input: {
             [...new Set(currentRoomHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
         }
       }
-      const boards = extracted.boardHints.filter((hint) => currentClaim(hint, currentRefs));
+      const boards = extracted.mealPlanHints.filter((hint) => currentClaim(hint, currentRefs));
       const explicitRateBoards = boards.length ? [] : extracted.rateHints.filter((hint) => currentClaim(hint, currentRefs) &&
         /\b(?:DBB|B&B|bed\s+(?:and\s+)?breakfast|dinner\s+(?:and\s+)?breakfast)\b/i.test(hint.raw));
       const boardClaims = [...boards, ...explicitRateBoards];
       const meanings = new Set(boardClaims.map((hint) => boardMeaning(hint.value)));
       if (currentRoomHints.length <= 1) {
-        if (meanings.size === 2 && meanings.has('dinner') && meanings.has('bb')) request.body.shared.requestedBoard = 'dinner_bb';
-        else if (explicitRateBoards.length === 1 && /\bDBB\b/i.test(explicitRateBoards[0]!.raw)) request.body.shared.requestedBoard = 'dinner_bb';
-        else if (meanings.size === 1) request.body.shared.requestedBoard = boardValue(boardClaims[0]!.value);
+        if (meanings.size === 2 && meanings.has('dinner') && meanings.has('bb')) request.body.shared.requestedMealPlan = 'dinner_bb';
+        else if (explicitRateBoards.length === 1 && /\bDBB\b/i.test(explicitRateBoards[0]!.raw)) request.body.shared.requestedMealPlan = 'dinner_bb';
+        else if (meanings.size === 1) request.body.shared.requestedMealPlan = boardValue(boardClaims[0]!.value);
       } else if (boardClaims.length) {
-        request.body.shared.requestedBoard = null;
-        addProjectionIssue(proposal, `/requests/${request.id}/body/shared/requestedBoard`, 'create_board_scope_ambiguous',
+        request.body.shared.requestedMealPlan = null;
+        addProjectionIssue(proposal, `/requests/${request.id}/body/shared/requestedMealPlan`, 'create_board_scope_ambiguous',
           'The request contains different room categories. A shared board was not imposed without a source group mapping; board claims remain available for staff selection.', boardClaims.flatMap((claim) => claim.sourceRefs));
       }
-      const requestedBoard = request.body.shared.requestedBoard;
-      if (typeof requestedBoard === 'string' && requestedBoard.length > 120) {
-        request.body.shared.requestedBoard = null;
-        addProjectionIssue(proposal, `/requests/${request.id}/body/shared/requestedBoard`, 'source_value_not_projected',
+      const requestedMealPlan = request.body.shared.requestedMealPlan;
+      if (typeof requestedMealPlan === 'string' && requestedMealPlan.length > 120) {
+        request.body.shared.requestedMealPlan = null;
+        addProjectionIssue(proposal, `/requests/${request.id}/body/shared/requestedMealPlan`, 'source_value_not_projected',
           'The board wording exceeds this field limit; its source claims remain available for review.', boardClaims.flatMap((hint) => hint.sourceRefs));
       }
-      if (boardClaims.length && request.body.shared.requestedBoard) {
-        const path = `/proposal/content/requests/${request.id}/body/shared/requestedBoard`;
+      if (boardClaims.length && request.body.shared.requestedMealPlan) {
+        const path = `/proposal/content/requests/${request.id}/body/shared/requestedMealPlan`;
         proposal.annotations.push({ path, basis: 'source', evidenceRefs: [...new Set(boardClaims.flatMap((hint) => hint.sourceRefs))] });
       }
       const currentRateHints = extracted.rateHints.filter((hint) => currentClaim(hint, currentRefs));
@@ -4206,8 +4208,8 @@ function bindPartyObservations(input: { proposal: ReservationWorkflowV2Proposal;
     };
     const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
     if (request.kind === 'quote') {
-      add(request.body.parties, 'company', 'company', 'organization', `${root}/parties`);
-      add(request.body.parties, 'agency', 'agency', 'agency', `${root}/parties`);
+      add(request.body.parties, 'organization', 'organization', 'organization', `${root}/parties`);
+      add(request.body.parties, 'bookingAgency', 'bookingAgency', 'agency', `${root}/parties`);
     } else {
       const fields = (value: Record<string, unknown>, path: string, allocationId?: string) => {
         if (!allocationId) return;
@@ -4470,8 +4472,8 @@ export function classifyReservationWorkflowV2Source(input: { fromAddress?: strin
   return { classification, selfPreStay, skippedReason };
 }
 
-const ANCILLARY_EXTRACTION_RULES = `For an explicitly requested ancillary service or allowance, such as a meal or transfer, preserve the exact request, including any stated amount or limit, as a source-cited serviceHints claim. Do this even when the same wording also describes board. Do not turn a bare board description, existing voucher detail, invoice or account-document request into a new service.`;
-const ANCILLARY_SYNTHESIS_RULES = `For a source-cited ancillary service requested alongside Create or Amend, keep a linked entry in content.services and the owning request's serviceRefs; preserve the requested wording and any stated amount or limit. A reservation note alone is not a service entry. Put a stated amount in requestedMoney with sourceRefs and unresolved scope when its basis is unclear, not in native unitPrice. Do not infer an item, target, quantity or price basis. When these are unclear, leave code and itemCandidateRef null, targets empty, quantityRequest scope unresolved and native price fields unset. Do not convert bare board, past voucher details or invoice/document requests into new services.`;
+const ANCILLARY_EXTRACTION_RULES = `For an explicitly requested ancillary service or allowance, such as a meal or transfer, preserve the exact request, including any stated amount or limit, as a source-cited serviceHints claim. Do this even when the same wording also describes a meal plan. Do not turn a bare meal plan description, existing voucher detail, invoice or account-document request into a new service.`;
+const ANCILLARY_SYNTHESIS_RULES = `For a source-cited ancillary service requested alongside Create or Amend, keep a linked entry in content.services and the owning request's serviceRefs; preserve the requested wording and any stated amount or limit. A reservation note alone is not a service entry. Put a stated amount in requestedMoney with sourceRefs and unresolved scope when its basis is unclear, not in native unitPrice. Do not infer an item, target, quantity or price basis. When these are unclear, leave code and itemCandidateRef null, targets empty, quantityRequest scope unresolved and native price fields unset. Do not convert bare meal plan, past voucher details or invoice/document requests into new services.`;
 
 /** One read-only prefill run. The caller injects fixed native/mail readers or deterministic lookup fixtures. */
 export async function runReservationWorkflowV2Prefill(input: {
@@ -4718,9 +4720,9 @@ export async function runReservationWorkflowV2Prefill(input: {
       const rows = fallbackQuoteRoomRows({ request: extracted, evidence });
       if (!rows || fallbackProposal.sourceClaims.length + rows.length > MAX_PROPOSAL_SOURCE_CLAIMS ||
           fallbackProposal.annotations.length + rows.length > 2000) continue;
-      const board = request.body.groups[0]?.board ?? null;
+      const board = request.body.groups[0]?.mealPlan ?? null;
       request.body.groups = rows.map((row, index) => ({ id: stableId(request.id, 'source-room', String(index)),
-        arrival: row.arrival, departure: row.departure, quantity: row.quantity, board,
+        arrival: row.arrival, departure: row.departure, quantity: row.quantity, mealPlan: board,
         roomCodes: [], ratePlan: null, occupancy: { scope: 'unresolved', adults: null, childCount: null, childAges: null },
         priceObservationRefs: [] }));
       rows.forEach((row, index) => {

@@ -198,7 +198,7 @@ function boardCode(value: unknown, propertyCode?: string): 'room_only' | 'bb' | 
 function selectedParty(
   draft: ReservationWorkflowV2Draft,
   request: QuoteRequest,
-  role: 'company' | 'agency',
+  role: 'organization' | 'bookingAgency',
   execute: boolean,
 ): { party?: { kind: 'company' | 'agency'; nativeId: string; name: string }; issue?: string; reviewPaths: string[]; observationRef?: string } {
   const raw = request.body.parties[role];
@@ -246,7 +246,7 @@ function selectedParty(
     : [];
   if (execute && reviewPaths.length) return { reviewPaths, issue: `${role}_requires_staff_acceptance` };
   return {
-    party: { kind: role, nativeId: String(candidate.nativeId), name: String(candidate.name) },
+    party: { kind: role === 'organization' ? 'company' : 'agency', nativeId: String(candidate.nativeId), name: String(candidate.name) },
     reviewPaths,
     observationRef: observation.ref,
   };
@@ -525,9 +525,9 @@ function compileQuote(
     const quantity = quantityResult && !('issue' in quantityResult) ? quantityResult.value : null;
     if (!Number.isInteger(quantity) || Number(quantity) < 1 || Number(quantity) > 100) issues.push(`${base}/quantity:valid_room_count_required`);
 
-    const boardResult = resolved(path('groups', groupIndex, 'board'), group.board);
+    const boardResult = resolved(path('groups', groupIndex, 'mealPlan'), group.mealPlan);
     const board = boardResult && !('issue' in boardResult) ? boardCode(boardResult.value, draft.propertyCode) : null;
-    if (!board) issues.push(`${base}/board:native_board_code_required`);
+    if (!board) issues.push(`${base}/mealPlan:native_meal_plan_code_required`);
 
     // Occupancy may be edited atomically as a parent object to keep child count and age slots in one revision.
     const occupancyResult = resolvedLeaf(draft, path('groups', groupIndex, 'occupancy'), group.occupancy);
@@ -589,7 +589,7 @@ function compileQuote(
   for (const [index, claim] of request.body.requestedMoney.entries()) {
     const base = path('requestedMoney', index);
     const read = (key: string, original: unknown) => resolvedLeaf(draft, `${base}/${key}`, original);
-    const kind = read('staffAllowanceType', undefined);
+    const kind = read('staffAllowanceType', claim.staffAllowanceType);
     const amount = read('amount', claim.amount), currency = read('currency', claim.currency),
       unit = read('unit', claim.unit), scope = read('scope', claim.scope), targets = read('targetRefs', claim.targetRefs);
     const values = [kind, amount, currency, unit, scope, targets];
@@ -637,8 +637,8 @@ function compileQuote(
     }
   }
 
-  const company = selectedParty(draft, request, 'company', execute);
-  const agency = selectedParty(draft, request, 'agency', execute);
+  const company = selectedParty(draft, request, 'organization', execute);
+  const agency = selectedParty(draft, request, 'bookingAgency', execute);
   for (const selected of [company, agency]) {
     if (selected.issue) issues.push(selected.issue);
     selected.reviewPaths.forEach((item) => reviewPaths.add(item));
@@ -1041,7 +1041,7 @@ async function lookupPartyCandidates(
   const target = await quoteTarget(ctx, input);
   if (!target.target) return { status: 'unsupported', issue: target.issue, candidates: [] as unknown[] };
   const candidates: Array<Record<string, unknown>> = [];
-  for (const role of ['company', 'agency'] as const) {
+  for (const role of ['organization', 'bookingAgency'] as const) {
     const basePath = ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role);
     const partyLeaf = resolvedLeaf(draft, basePath, request.body.parties[role]);
     const party = !('issue' in partyLeaf) ? record(partyLeaf.value) : null;
@@ -1064,7 +1064,7 @@ async function lookupPartyCandidates(
       continue;
     }
     if (ctx.nativeBatch) {
-      const found = await lookupNativeParty({ role: role === 'company' ? 'organization' : 'agency',
+      const found = await lookupNativeParty({ role: role === 'organization' ? 'organization' : 'agency',
         name, target: target.target, signal: ctx.nativeBatch.signal });
       const rows = Array.isArray(found.result.candidates) ? found.result.candidates : [];
       const rowValues = rows.length ? rows : [null];
@@ -1086,7 +1086,7 @@ async function lookupPartyCandidates(
     }
     let found: Awaited<ReturnType<typeof findParty>>;
     try {
-      found = await findParty({ kind: role, name }, { target: target.target });
+      found = await findParty({ kind: role === 'organization' ? 'company' : 'agency', name }, { target: target.target });
     } catch {
       const observation: ReservationWorkflowV2Observation = {
         ref: randomUUID(), generationId: draft.generationId, kind: 'party_candidate', status: 'failed',

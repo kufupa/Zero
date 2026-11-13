@@ -14,7 +14,7 @@ export function extractionRefsForRequest(request: ReservationWorkflowV2Extractio
   request.confirmationHints.forEach((claim) => claim.sourceRefs.forEach((ref) => refs.add(ref)));
   request.roomTypeHints.forEach((claim) => claim.sourceRefs.forEach((ref) => refs.add(ref)));
   request.rateHints.forEach((claim) => claim.sourceRefs.forEach((ref) => refs.add(ref)));
-  request.boardHints.forEach((claim) => claim.sourceRefs.forEach((ref) => refs.add(ref)));
+  request.mealPlanHints.forEach((claim) => claim.sourceRefs.forEach((ref) => refs.add(ref)));
   request.serviceHints.forEach((claim) => claim.sourceRefs.forEach((ref) => refs.add(ref)));
   if (request.requestedPrice) {
     request.requestedPrice.nightlyRate?.sourceRefs.forEach((ref) => refs.add(ref));

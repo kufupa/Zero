@@ -63,7 +63,7 @@ function hasCurrentUnavailableInventoryProof(snapshot: ReservationPaneSnapshot, 
   const nights = stayNights(group?.arrival, group?.departure);
   if (!group || roomCodes.length !== 1 || !group.ratePlan || !nights.length ||
       marker.groupId !== group.id || marker.roomCode !== roomCodes[0] || marker.rateCode !== group.ratePlan ||
-      marker.board !== boardCode(group.board) || marker.arrivalDate !== group.arrival ||
+      marker.board !== boardCode(group.mealPlan) || marker.arrivalDate !== group.arrival ||
       marker.departureDate !== group.departure || marker.quantity !== group.quantity) return false;
   const availability = draft.observations.find((item) => item.ref === availabilityRef);
   const native = rec(availability?.result), criteria = rec(availability?.criteria), shortfall = rec(native.shortfall);

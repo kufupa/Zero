@@ -30,7 +30,7 @@ const section = () => ({ id: id(), arrival: null, departure: null, requestedRoom
 const allocation = (dateSectionId: string) => ({ id: id(), dateSectionId, overrides: {},
   guest: { firstName: null, lastName: null, email: null, mobile: null, profileIntent: 'existing_or_unknown' as const,
     candidateRefs: [], suggestedRef: null }, occupancy: occupancy(), priceObservationRefs: [] });
-const group = () => ({ id: id(), arrival: null, departure: null, quantity: null, board: null, roomCodes: [],
+const group = () => ({ id: id(), arrival: null, departure: null, quantity: null, mealPlan: null, roomCodes: [],
   ratePlan: null, occupancy: { ...occupancy(), scope: 'unresolved' as const }, priceObservationRefs: [] });
 const service = (requestId: string) => ({ id: id(), ownerRequestId: requestId, operation: 'add' as const,
   requestedText: '', code: null, itemCandidateRef: null, sharedFields: {}, requestedMoney: [], targets: [],
@@ -322,7 +322,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           // Native party selections are staff-only evidence, not proposal fields.
           // Keep the original request's selection in its override; the split
           // requests get a fresh lookup rather than reusing a request-bound ref.
-          for (const role of ['company', 'agency'] as const) {
+          for (const role of ['organization', 'bookingAgency'] as const) {
             const party = effectiveBody.parties[role] as (typeof effectiveBody.parties)[typeof role] & Record<string, unknown>;
             if (party && typeof party === 'object') delete party.nativeSelectionRef;
           }
@@ -331,7 +331,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           dateGroups.slice(1).forEach(rows => {
             const requestId = id(); createdId ??= requestId;
             const splitBody = structuredClone(effectiveBody);
-            for (const role of ['company', 'agency'] as const) {
+            for (const role of ['organization', 'bookingAgency'] as const) {
               const party = splitBody.parties[role];
               if (party && typeof party === 'object' && 'candidateRefs' in party && 'suggestedRef' in party) {
                 party.candidateRefs = [];
@@ -365,7 +365,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           // The materialized bodies now own the staff values; old checks and reviews are invalidated.
           changedRoots.push(`${root}/body/groups`);
           for (const path of Object.keys(draft.fieldOverrides)) if (path.startsWith(`${root}/body/`) &&
-              !path.endsWith('/staffAllowanceType') && !/^\/proposal\/content\/requests\/[^/]+\/body\/parties\/(?:company|agency)\/nativeSelectionRef$/.test(path)) {
+              !path.endsWith('/staffAllowanceType') && !/^\/proposal\/content\/requests\/[^/]+\/body\/parties\/(?:organization|bookingAgency)\/nativeSelectionRef$/.test(path)) {
             delete draft.fieldOverrides[path];
           }
           break;
@@ -921,8 +921,8 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
       } else if (observation.kind === 'party_candidate' && input.fieldPath.endsWith('/nativeSelectionRef')) {
         const parent = input.fieldPath.slice(0, -'/nativeSelectionRef'.length);
         const field = parent.split('/').at(-1);
-        const roles: Record<string, string> = { bookingAgency: 'agency', organization: 'organization', arAccount: 'ar_account',
-          company: 'company', agency: 'agency' };
+        const roles: Record<string, string> = { bookingAgency: request.kind === 'quote' ? 'bookingAgency' : 'agency',
+          organization: 'organization', arAccount: 'ar_account' };
         if (!field || !roles[field] || observation.criteria.role !== roles[field] ||
             !((request.kind === 'create' && /\/body\/(shared|dateSections\/\d+\/defaults|allocations\/\d+\/overrides)\//.test(parent)) ||
               (request.kind === 'quote' && /\/body\/parties\//.test(parent)))) return null;
@@ -1144,7 +1144,7 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
         if (NON_REVIEW_FIELDS.has(last)) return;
         if (request.kind === 'create' && /\/body\/allocations\/\d+\/guest\/nativeSelectionRef$/.test(path)) return;
         if ((request.kind === 'create' || request.kind === 'quote') &&
-            /\/(?:bookingAgency|organization|arAccount|company|agency)\/nativeSelectionRef$/.test(path)) return;
+            /\/(?:bookingAgency|organization|arAccount)\/nativeSelectionRef$/.test(path)) return;
         const override = draft.fieldOverrides[path];
         if (override?.state === 'unknown') return;
         if (override?.state === 'none' || override?.state === 'clear') {
@@ -1155,7 +1155,7 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
         const value = override?.state === 'set' ? override.value : source;
         const parent = path.slice(0, path.lastIndexOf('/'));
         const clearValue = last === 'value' && valueAt(draft, `${parent}/op`) === 'clear' &&
-          ['guestEmail', 'bookerName', 'bookerContact', 'cmsSend', 'cmsMessageId', 'cmsRecipient'].includes(String(valueAt(draft, `${parent}/field`)));
+          ['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'cmsSend', 'cmsMessageId', 'cmsRecipient'].includes(String(valueAt(draft, `${parent}/field`)));
         const reviewedEmpty = request.kind === 'quote' || (last === 'comment' && override?.state === 'set');
         if ((value === null || value === undefined || (value === '' && !reviewedEmpty)) && !clearValue) return;
         if (!(request.kind === 'quote' && input.scope === 'request' && path === `${root}/body` && !hasPreparedExtras))
@@ -1199,7 +1199,7 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
           if (path) reviews[path] = { status: 'accepted', note: null, at: now };
         }
       }
-      if (request.kind === 'quote' && input.scope === 'request') for (const role of ['company', 'agency'] as const) {
+      if (request.kind === 'quote' && input.scope === 'request') for (const role of ['organization', 'bookingAgency'] as const) {
         const party = `${root}/body/parties/${role}`;
         delete reviews[`${party}/nativeSelectionRef`];
         const path = reviewedPartySelection(draft, request.id, 'quote', party, role, new Set());

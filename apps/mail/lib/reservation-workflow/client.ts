@@ -454,7 +454,7 @@ export function inputFieldLabel(value: string): string {
     childCount: 'number of children', childAges: 'children’s ages', adults: 'adults per room',
     agency_selection_required: 'select the Infor agency', company_selection_required: 'select the Infor company',
     arrival: 'arrival date', departure: 'departure date', quantity: 'quantity', roomCodes: 'room type',
-    roomType: 'room type', ratePlan: 'rate plan', board: 'meal plan', guaranteeType: 'guarantee',
+    roomType: 'room type', ratePlan: 'rate plan', mealPlan: 'meal plan', guaranteeType: 'guarantee',
     sourceOfBusiness: 'source of business', firstName: 'guest first name', lastName: 'guest last name',
     guestOptIn: 'guest opt-in', unitPrice: 'unit price', currency: 'currency', requestedRooms: 'number of rooms',
     requestedTotals: 'requested occupancy totals', nativeSelectionRef: 'confirmed Infor selection',
@@ -611,7 +611,7 @@ function quoteOperationNotice(result: unknown, success: string[], action: string
     : result.status === 'needs_reconcile' || result.status === 'unknown'
       ? 'The result is uncertain. Check the recorded result before trying again' : null;
   const labels: Record<string, string> = {
-    arrival: 'arrival date', departure: 'departure date', quantity: 'number of rooms', board: 'meal plan',
+    arrival: 'arrival date', departure: 'departure date', quantity: 'number of rooms', mealPlan: 'meal plan',
     scope: 'occupancy per room', occupancy: 'number of children and their ages', adults: 'adults per room',
     childCount: 'number of children', childAges: 'children’s ages', roomCodes: 'room type', ratePlan: 'rate plan',
     salesStrategy: 'sales strategy', email: 'recipient email', attention: 'contact name', telephone: 'contact number',
