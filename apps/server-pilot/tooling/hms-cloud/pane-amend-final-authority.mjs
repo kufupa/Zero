@@ -11,10 +11,11 @@ export const isFinalGoCallbackAuthority = value => Boolean(value && issued.has(v
 
 /** The transition to Save is held by the host, separate from the runner's authority. */
 export function createFinalGoCallbackAuthority({ operationDigest, sourceDigest, targetDigest, approvedPlanDigest,
-  reviewDigest, plan, phases, authorizeFirst, verifyFinal, isEnabled = () => true }) {
+  reviewDigest, plan, phases, authorizeFirst, verifyFinal, verifyDispatch, isEnabled = () => true }) {
   if ([operationDigest, sourceDigest, targetDigest, approvedPlanDigest, reviewDigest].some(value => !HASH.test(value || '')) ||
       !plan || callbackPlanDigest(plan) !== approvedPlanDigest || !Array.isArray(phases) ||
-      typeof authorizeFirst !== 'function' || typeof verifyFinal !== 'function' || typeof isEnabled !== 'function') {
+      typeof authorizeFirst !== 'function' || typeof verifyFinal !== 'function' ||
+      typeof verifyDispatch !== 'function' || typeof isEnabled !== 'function') {
     throw new Error('AMEND_FINAL_AUTHORITY_INVALID');
   }
   const planned = [...(plan.guarantee ? ['guarantee'] : []),
@@ -39,12 +40,14 @@ export function createFinalGoCallbackAuthority({ operationDigest, sourceDigest, 
     }
     busy = true;
     try {
+      if (['save', 'retain'].includes(phase) && await verifyDispatch(phase, request) !== true) throw new Error('AMEND_FINAL_REVIEW_UNVERIFIED');
       if (!handle) {
         const result = await authorizeFirst({ operationDigest, sourceDigest, targetDigest, approvedPlanDigest, reviewDigest,
           phase: partyPhases.includes(phase) ? `amend.party.${phase}` : `amend.${phase}`, requestDigest });
         if (!UUID.test(result?.holdId || '') || !HASH.test(result?.ownerToken || '')) throw new Error('AMEND_FINAL_CLAIM_UNVERIFIED');
         handle = Object.freeze({ holdId: result.holdId, ownerToken: result.ownerToken });
       }
+      if (['save', 'retain'].includes(phase) && await verifyDispatch(phase, request) !== true) throw new Error('AMEND_FINAL_REVIEW_UNVERIFIED');
       if (!active() || digest(request, phase) !== requestDigest) throw new Error('AMEND_FINAL_DISPATCH_UNAUTHORIZED');
       if (phase !== 'availability') possiblyPersisted = true;
       await proceed();

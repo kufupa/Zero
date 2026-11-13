@@ -292,6 +292,8 @@ export async function runLabtestAmendSave(page, {
   const callbackFinal = isFinalGoCallbackAuthority(callbackAuthority);
   if (callbackFinal && (prepareOnly || callbackReviewOnly || !availability || extendRate !== undefined ||
       !callbackAuthority.isActive() || availability.dispatchCandidate !== callbackAuthority.dispatchAvailability ||
+      dispatchCandidate !== callbackAuthority.dispatchSave || !retainRate || retainRate.choice !== 'no' ||
+      retainRate.dispatchCandidate !== callbackAuthority.dispatchRetain ||
       (dispatchChildCandidate !== undefined && dispatchChildCandidate !== callbackAuthority.dispatchChildren))) {
     return result('input_gap', { issue: 'AMEND_CALLBACK_FINAL_INVALID' });
   }
