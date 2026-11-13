@@ -3,7 +3,7 @@ import { isVerifiedCreateFilingCandidate, verifyCreateAllocationDependency } fro
 import { readResolvedHmsLabtestCreates } from './hms-labtest-dispatch.js';
 import type { z } from 'zod';
 import type { ReservationWorkflowV2Draft, ReservationWorkflowV2Proposal } from './reservation-workflow-v2-contract.js';
-import { reservationWorkflowV2ProposalSchema, type reservationWorkflowV2AddActionInputSchema,
+import { reservationWorkflowV2DraftSchema, type reservationWorkflowV2AddActionInputSchema,
   type reservationWorkflowV2ChangeRowsInputSchema, type reservationWorkflowV2SelectNativeInputSchema,
   type reservationWorkflowV2ReviewScopeInputSchema } from './reservation-workflow-v2-contract.js';
 import { withLockedV2DraftMutation, reservationWorkflowV2SavedTargetLocked, reservationWorkflowV2SavedTargetOperationLocks,
@@ -477,7 +477,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           changedRoots.push('/proposal/content/requests', '/proposal/content/services', '/proposal/content/documents'); break;
         }
       }
-      if (!reservationWorkflowV2ProposalSchema.safeParse(proposal).success) return null;
+      if (!reservationWorkflowV2DraftSchema.shape.proposal.safeParse(proposal).success) return null;
       const next = rebase(draft, before, proposal, changedRoots);
       duplicateQuoteDocumentState(next, copiedQuoteDocumentIds);
       if (request.kind === 'create' && ['add_allocation', 'remove_allocation', 'move_allocation', 'add_date_section', 'remove_date_section'].includes(input.kind)) {
@@ -791,7 +791,7 @@ function materializeCreateAllocations(draft: ReservationWorkflowV2Draft, request
   const target = proposal.content.requests.find((row) => row.id === requestId);
   if (!target || target.kind !== 'create') return null;
   target.body.allocations = structuredClone(override.value) as typeof target.body.allocations;
-  const parsed = reservationWorkflowV2ProposalSchema.safeParse(proposal);
+  const parsed = reservationWorkflowV2DraftSchema.shape.proposal.safeParse(proposal);
   if (!parsed.success) return null;
   const fieldOverrides = { ...draft.fieldOverrides };
   delete fieldOverrides[path];

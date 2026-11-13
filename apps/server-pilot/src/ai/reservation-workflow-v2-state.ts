@@ -1126,7 +1126,47 @@ function validateOverride(value: unknown): V2Override | null {
   return parsed.success ? { ...parsed.data, updatedAt: new Date().toISOString() } : null;
 }
 
-function validStructuredEdit(path: string, override: V2Override): boolean {
+function validStructuredEdit(draft: ReservationWorkflowV2Draft, path: string, override: V2Override): boolean {
+  const parts = pathParts(path);
+  const requestKey = parts?.[3];
+  const request = parts?.[2] === 'requests' && requestKey ? draft.proposal.content.requests.find((row) => row.id === requestKey) ??
+    (/^\d+$/.test(requestKey) ? draft.proposal.content.requests[Number(requestKey)] : undefined) : undefined;
+  if (request?.kind === 'create' && parts?.[4] === 'body' && override.state === 'set') {
+    if (parts.at(-1) === 'reservationNote' && typeof override.value !== 'string') return false;
+    let stable = '', indexed = '';
+    for (const part of parts) {
+      const parent = stable ? effectiveDraftPath(draft, stable, indexed) : draft;
+      const index = Array.isArray(parent) ? (/^\d+$/.test(part) ? Number(part) : parent.findIndex((row) =>
+        row && typeof row === 'object' && (row as { id?: unknown }).id === part)) : -1;
+      const id = index >= 0 && Array.isArray(parent) ? parent[index]?.id : undefined;
+      stable += `/${encodeURIComponent(typeof id === 'string' && !/^\d+$/.test(id) ? id : part)}`;
+      indexed += `/${encodeURIComponent(index >= 0 ? String(index) : part)}`;
+    }
+    const requestId = encodeURIComponent(request.id), requestIndex = String(draft.proposal.content.requests.indexOf(request));
+    const sameEffectiveNote = (value: string, stablePath: string, indexPath: string): boolean => {
+      const aliases = new Set([stablePath, indexPath].flatMap((candidate) => [requestId, requestIndex].map((id) =>
+        candidate.replace(/^(\/proposal\/content\/requests\/)[^/]+/, `$1${id}`))));
+      return [...aliases].every((candidate) => effectiveDraftPath(draft, candidate) === value);
+    };
+    const unchanged = (value: unknown, stablePath: string, indexPath: string): boolean => {
+      if (typeof value === 'string' && stablePath.endsWith('/reservationNote') && value.length > 2000)
+        return sameEffectiveNote(value, stablePath, indexPath);
+      if (Array.isArray(value)) {
+        const previous = effectiveDraftPath(draft, stablePath, indexPath);
+        return value.every((entry, index) => {
+          const id = entry && typeof entry === 'object' && !Array.isArray(entry) ? (entry as { id?: unknown }).id : null;
+          const matches = typeof id === 'string' && Array.isArray(previous) ? previous.flatMap((row, position) =>
+            row && typeof row === 'object' && row.id === id ? [position] : []) : [];
+          const oldIndex = typeof id === 'string' ? (matches.length === 1 ? matches[0]! : -1) : index;
+          const stableKey = typeof id === 'string' && !/^\d+$/.test(id) && oldIndex >= 0 ? id : String(oldIndex);
+          return unchanged(entry, `${stablePath}/${encodeURIComponent(stableKey)}`, `${indexPath}/${oldIndex}`);
+        });
+      }
+      return !value || typeof value !== 'object' || Object.entries(value).every(([key, entry]) =>
+        unchanged(entry, `${stablePath}/${encodeURIComponent(key)}`, `${indexPath}/${encodeURIComponent(key)}`));
+    };
+    if (!unchanged(override.value, stable, indexed)) return false;
+  }
   if (/\/requestedMoney\/\d+\/staffAllowanceType$/.test(path))
     return override.state === 'set' && (override.value === 'dinner' || override.value === 'unsupported');
   if (!/\/(?:occupancy|requestedTotals)$/.test(path) || override.state !== 'set') return true;
@@ -1586,7 +1626,7 @@ async function mutateDraft(ctx: Context, input: MutationInput & { fieldPath: str
   return withLockedV2DraftMutation(ctx, input, { fieldPath: input.fieldPath, eventType: input.eventType,
     value: input.value, apply: (draft) => {
       if (!(input.review ? reviewablePath(draft, input.fieldPath) : editablePath(draft, input.fieldPath))) return null;
-      if (input.override && (!validStructuredEdit(input.fieldPath, input.override) ||
+      if (input.override && (!validStructuredEdit(draft, input.fieldPath, input.override) ||
           !validServiceTargetEdit(draft, input.fieldPath, input.override) || !safeSavedTargetEdit(draft, input.fieldPath) ||
           !validCancelIncludeEdit(draft, input.fieldPath, input.override) || !validCancelExcludeEdit(draft, input.fieldPath, input.override) ||
           !validAmendTargetScopeEdit(draft, input.fieldPath, input.override) ||

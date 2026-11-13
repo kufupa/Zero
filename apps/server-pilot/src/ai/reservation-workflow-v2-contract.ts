@@ -326,6 +326,21 @@ export const reservationWorkflowV2ProposalSchema = z.object({
 
 export type ReservationWorkflowV2Proposal = z.infer<typeof reservationWorkflowV2ProposalSchema>;
 
+// Existing drafts may contain notes accepted before the native limit was fixed.
+// New/model proposals still use the strict 2,000-character schema above.
+const storedBookingFieldsSchema = bookingFieldsSchema.extend({ reservationNote: value(z.string().max(4000)).optional() });
+const storedCreateBodySchema = createBodySchema.extend({
+  shared: storedBookingFieldsSchema,
+  dateSections: z.array(createBodySchema.shape.dateSections.element.extend({ defaults: storedBookingFieldsSchema })).max(100),
+  allocations: z.array(createBodySchema.shape.allocations.element.extend({ overrides: storedBookingFieldsSchema })).max(100),
+});
+const storedRequestSchema = z.discriminatedUnion('kind', [requestSchema.options[0],
+  requestSchema.options[1].extend({ body: storedCreateBodySchema }), requestSchema.options[2], requestSchema.options[3],
+  requestSchema.options[4], requestSchema.options[5], requestSchema.options[6]]);
+const storedProposalSchema = reservationWorkflowV2ProposalSchema.extend({
+  content: reservationWorkflowV2ProposalSchema.shape.content.extend({ requests: z.array(storedRequestSchema).max(200) }),
+});
+
 /** Host-owned evidence. Model output can cite these refs but cannot create or edit registry entries. */
 export const reservationWorkflowV2ObservationSchema = z.object({
   ref: refSchema,
@@ -390,7 +405,7 @@ export const reservationWorkflowV2DraftSchema = z.object({
   status: z.enum(['ready', 'partial', 'prefill_failed']),
   extraction: reservationWorkflowV2ExtractionSchema.optional(),
   extractionGenerationId: z.string().uuid().optional(),
-  proposal: reservationWorkflowV2ProposalSchema,
+  proposal: storedProposalSchema,
   observations: z.array(reservationWorkflowV2ObservationSchema).max(5000),
   fieldReviewRequirements: z.record(fieldReviewRequirementSchema),
   staffReviews: z.record(staffReviewSchema),
