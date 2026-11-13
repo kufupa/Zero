@@ -4433,7 +4433,11 @@ function applyDefaultCmsSendPolicy(
         }
         for (const hint of source.serviceHints) {
           const text = `${hint.raw} ${typeof hint.value === 'string' ? hint.value : ''}`;
-          if (/\blunch\b/iu.test(text)) addExtra('lunch', hint);
+          if (/\blunch\b/iu.test(text)) {
+            const scopedLunchGroups = request.body.requestedMoney.filter(money => money.staffAllowanceType === 'lunch' &&
+              money.scope === 'per_target').flatMap(money => money.targetRefs);
+            addExtra('lunch', hint, [...new Set(scopedLunchGroups)]);
+          }
           if (/\b(?:airport|flight)\b/iu.test(text) && /\b(?:transfer|shuttle|transport|pickup|pick.?up)\b/iu.test(text)) addExtra('airport_transfer', hint);
           else if (/\b(?:office|work|university|campus)\b/iu.test(text) && /\b(?:transfer|shuttle|transport|pickup|pick.?up)\b/iu.test(text)) addExtra('office_transfer', hint);
         }

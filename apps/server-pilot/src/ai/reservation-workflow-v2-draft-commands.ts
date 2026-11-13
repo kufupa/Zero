@@ -349,6 +349,9 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
             staffAllowanceType: valueAt(draft, `${root}/body/requestedMoney/${index}/staffAllowanceType`) as typeof claim.staffAllowanceType,
           }));
           const splitMoney = (rows: typeof groups, first: boolean) => moneyRows.flatMap(claim => {
+            const separated = claim.staffAllowanceType === 'unsupported' && proposal.content.requests.some(other =>
+              other.kind === 'other' && other.body.separatedFrom?.requestId === request.id && other.body.separatedFrom.moneyId === claim.id);
+            if (separated) return first ? [{ ...claim }] : [];
             const groupIds = new Set(rows.map(row => row.id));
             if (claim.scope === 'per_target') {
               const targetRefs = claim.targetRefs.filter(ref => groupIds.has(ref));
