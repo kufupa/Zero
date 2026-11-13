@@ -21,7 +21,7 @@ const partyFields: BookingField[] = [
   { key: 'bookingAgency', label: 'Primary Booking Agency', party: true },
   { key: 'organization', label: 'Organization', party: true },
   { key: 'arAccount', label: 'A/R Account', party: true },
-  { key: 'billingReference', label: 'Billing Reference', maxLength: 4000, hint: 'Select an A/R Account when using a billing reference.' },
+  { key: 'billingReference', label: 'Billing Reference', maxLength: 4000, hint: 'Select an A/R Account. Infor accepts at most 50 characters.' },
   { key: 'taCommission', label: 'TA Commission (%)', maxLength: 40, hint: 'Enter a percentage from 0 to 100.' },
 ];
 const stayFields: BookingField[] = [
@@ -58,7 +58,7 @@ function BookingControl({ field, path, editor, defaultValue, emptyState }: {
   return field.picker || field.party
     ? <NativePicker label={field.label} path={path} editor={editor} kind={field.picker} allowNone={field.party || field.key === 'roomTypeForCharge'} hint={field.hint} compact />
     : <Field label={field.label} path={path} editor={editor} type={field.type} hint={field.hint} maxLength={field.maxLength}
-      defaultValue={defaultValue} emptyState={emptyState} compact />;
+      defaultValue={defaultValue} emptyState={emptyState} nativeMaxLength={field.key === 'billingReference' ? 50 : undefined} compact />;
 }
 
 function UnsupportedTerms({ editor, path }: { editor: Editor; path: string }) {

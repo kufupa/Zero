@@ -100,3 +100,5 @@
   .compactField:has(.fieldReview) .controlSlot { grid-column:1; }
   .compactField .fieldReview { grid-column:2; }
 }
+
+.field .validation { color:#a34420; font-weight:600; }

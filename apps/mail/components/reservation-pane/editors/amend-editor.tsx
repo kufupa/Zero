@@ -329,7 +329,7 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
             <option value="true">Yes</option><option value="false">No</option></select></label> :
           spec?.[2] === 'code' ? <NativePicker label={spec[1]} path={valuePath} editor={editor}
             kind={field === 'roomType' ? 'room_type' : field === 'roomTypeForCharge' ? 'room_type_for_charge' : field === 'cmsMessageId' ? 'cms_message' : field === 'guaranteeType' ? 'guarantee' : field === 'track' ? 'track' : 'rate_plan'} compact /> :
-          <Field label={spec?.[1] || 'Value'} path={valuePath} editor={editor} compact type={spec?.[2] === 'date' ? 'date' : spec?.[2] === 'email' ? 'email' : 'text'} maxLength={field === 'billingReference' ? 4000 : undefined} hint={field === 'billingReference' ? 'Select an A/R Account when using a billing reference.' : field === 'guestEmail' ? 'Use the guest’s own email only when explicitly stated.' : undefined} />}
+          <Field label={spec?.[1] || 'Value'} path={valuePath} editor={editor} compact type={spec?.[2] === 'date' ? 'date' : spec?.[2] === 'email' ? 'email' : 'text'} maxLength={field === 'billingReference' ? 4000 : undefined} nativeMaxLength={field === 'billingReference' ? 50 : undefined} hint={field === 'billingReference' ? 'Select an A/R Account. Infor accepts at most 50 characters.' : field === 'guestEmail' ? 'Use the guest’s own email only when explicitly stated.' : undefined} />}
       </>}
   </div>;
 }

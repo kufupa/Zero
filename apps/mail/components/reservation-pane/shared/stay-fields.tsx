@@ -86,15 +86,16 @@ export function FieldReview({ editor, path, label, onPendingChange, requireRevie
   </span>;
 }
 
-export function Field({ label, path, editor, type = 'text', options, disabled, hint, defaultValue, emptyState, resolvedValue, compact = false, review = false, requireReview = false, unmatchedOptionLabel, maxLength }: {
+export function Field({ label, path, editor, type = 'text', options, disabled, hint, defaultValue, emptyState, resolvedValue, compact = false, review = false, requireReview = false, unmatchedOptionLabel, maxLength, nativeMaxLength }: {
   label: string; path: string; editor: WorkbenchEditorProps; type?: string;
-  options?: { value: string; label: string }[]; disabled?: boolean; hint?: string; defaultValue?: string; emptyState?: 'inherit' | 'none'; resolvedValue?: unknown; compact?: boolean; review?: boolean; requireReview?: boolean; unmatchedOptionLabel?: string; maxLength?: number;
+  options?: { value: string; label: string }[]; disabled?: boolean; hint?: string; defaultValue?: string; emptyState?: 'inherit' | 'none'; resolvedValue?: unknown; compact?: boolean; review?: boolean; requireReview?: boolean; unmatchedOptionLabel?: string; maxLength?: number; nativeMaxLength?: number;
 }) {
   const id = useId();
   const saved = resolvedValue === undefined ? valueAt(editor.snapshot, path) : resolvedValue;
   const savedText = type === 'string-list' && Array.isArray(saved)
     ? saved.filter((item): item is string => typeof item === 'string').join('\n') : text(saved);
   const [local, setLocal] = useState(savedText);
+  const exceedsNativeLimit = nativeMaxLength !== undefined && local.length > nativeMaxLength;
   const [dirty, setDirty] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const version = useRef(0);
@@ -122,9 +123,10 @@ export function Field({ label, path, editor, type = 'text', options, disabled, h
       : options ? <select id={id} value={local} disabled={disabled || reviewing} onChange={event => { const value = event.target.value; setLocal(value); void editor.commands.edit(path, value).catch(() => setDirty(true)); }}>
         <option value="">Choose…</option>{local && !options.some(option => option.value === local) && <option value={local} disabled={Boolean(unmatchedOptionLabel)}>{local}{unmatchedOptionLabel ? ` · ${unmatchedOptionLabel}` : ''}</option>}{options.filter(option => option.value).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
       : type === 'textarea' || type === 'string-list' ? <textarea id={id} value={local} maxLength={maxLength} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} />
-      : <input id={id} type={type} value={local} maxLength={maxLength} placeholder={defaultValue} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); } }} />}
+      : <input id={id} type={type} value={local} maxLength={maxLength} aria-invalid={exceedsNativeLimit || undefined} placeholder={defaultValue} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); } }} />}
     {type === 'date' && local && !/^\d{4}-\d{2}-\d{2}$/.test(local) && <small>Requested: {local}. Choose the full date above.</small>}
-    {dirty && <span className={styles.small}>Unsaved</span>}{hint && <small>{hint}</small>}</div>
+    {dirty && <span className={styles.small}>Unsaved</span>}{hint && <small>{hint}</small>}
+    {exceedsNativeLimit && <small role="alert" className={styles.validation}>Infor accepts at most {nativeMaxLength} characters. Shorten this value before saving.</small>}</div>
     {compact && <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} requireReview={requireReview} disabled={disabled} />}
   </div>;
 }
