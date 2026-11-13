@@ -688,6 +688,7 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
               await arRecordMatches(page, { record: arDraft.record, ...arResponseIdentity }) &&
               !nativeDialog && !requestFailed && !inFlight.size) {
             verifiedArSelections.set(page, { record: arDraft.record, ...arResponseIdentity, token: randomUUID() });
+            nativeReadback.arprofileid = arResponseIdentity.profileId;
             arDraft = null;
           }
           if (nativeDialog || requestFailed || inFlight.size) throw new Error('LOOKUP_SELECTION_NOT_CONFIRMED');
