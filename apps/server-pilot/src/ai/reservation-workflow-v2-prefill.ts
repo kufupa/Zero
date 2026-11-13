@@ -26,7 +26,7 @@ import { PANE_PROPERTY_LOCK_WAIT_MS, acquisitionWithin } from '../hms/property-r
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { findParty } from './pane-party-lookup.js';
 import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
-import { loadReservationMemoryGuidance, loadReservationNativeLeads, loadReservationRateMealMapping, loadReservationRateTrackMapping,
+import { loadReservationMemoryGuidance, loadReservationNativeLeads, loadReservationRateTrackMapping,
   reservationEntityKey } from './reservation-workflow-v2-native-leads.js';
 import { loadAgencyCommission, loadNativeBookingCodes, loadNativeRateMealPlan } from './booking-code-rules.js';
 import { RESERVATION_NOTE_MAX, RESERVATION_NOTE_PRESETS } from './reservation-note-presets.js';
@@ -4201,36 +4201,28 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
   return { proposal, observations };
 }
 
-async function applyRateMealMemory(input: { proposal: ReservationWorkflowV2Proposal; source: ReservationWorkflowV2Source;
+async function applyNativeRateMealDefaults(input: { proposal: ReservationWorkflowV2Proposal; source: ReservationWorkflowV2Source;
   propertyCode: string; generationId: string; env: NodeJS.ProcessEnv }): Promise<{
     proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[] }> {
   const proposal = structuredClone(input.proposal), observations: ReservationWorkflowV2Observation[] = [];
-  const memory = await loadReservationRateMealMapping({ propertyCode: input.propertyCode, arrivedAt: input.source.arrivedAt, env: input.env });
-  if (memory.status !== 'available') return { proposal, observations };
   const cache = new Map<string, Awaited<ReturnType<typeof loadNativeRateMealPlan>>>();
   const apply = async (fields: { ratePlan?: unknown; mealPlan?: unknown }, path: string) => {
     if (typeof fields.ratePlan !== 'string' || fields.mealPlan != null) return;
     const ratePlan = fields.ratePlan.trim();
-    const mapping = memory.mappings.find((row) => row.ratePlan.toUpperCase() === ratePlan.toUpperCase());
-    if (!mapping) return;
-    const ranked = [...mapping.candidates].sort((a, b) => b.support - a.support);
-    const leader = ranked[0];
-    if (!leader || leader.confidence < 0.8 || ranked[1] && ranked[1].support >= leader.support) return;
+    if (!ratePlan) return;
     let current = cache.get(ratePlan);
     if (!current) {
       current = await loadNativeRateMealPlan({ propertyCode: input.propertyCode, ratePlan, env: input.env })
         .catch(() => ({ status: 'unavailable' as const, issue: 'rate_catalog_unavailable' }));
       cache.set(ratePlan, current);
     }
-    if (current.status !== 'verified' || normalizedFact(current.mealPlan) !== normalizedFact(leader.mealPlan)) return;
+    if (current.status !== 'verified' || !current.mealPlan.trim() || current.mealPlan.length > 120) return;
     fields.mealPlan = current.mealPlan;
     const ref = `obs_${randomUUID()}`;
     observations.push({ ref, generationId: input.generationId, kind: 'rate_availability', status: 'complete',
       observedAt: new Date().toISOString(), propertyCode: input.propertyCode, sourceMessageId: input.source.messageId,
-      sourceRefs: [], criteria: { kind: 'rate_meal_memory', ratePlan, sourceCutoff: input.source.arrivedAt, fieldPath: path },
-      coverage: { complete: true, notes: [] }, result: { mealPlan: current.mealPlan, support: leader.support,
-        denominator: leader.denominator, confidence: leader.confidence, historicalCapturedThrough: mapping.capturedThrough,
-        nativeCapturedAt: current.capturedAt } });
+      sourceRefs: [], criteria: { kind: 'native_rate_meal_configuration', ratePlan, fieldPath: path },
+      coverage: { complete: true, notes: [] }, result: { mealPlan: current.mealPlan, nativeCapturedAt: current.capturedAt } });
     proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, ref])].slice(0, 1000);
     proposal.annotations.push({ path, basis: 'native_read', evidenceRefs: [ref] });
   };
@@ -5299,7 +5291,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     currentActions, boundProjection?.extractionIdByProposalRequestId) : null;
   let amendNoteRequirements: ReservationWorkflowV2Draft['fieldReviewRequirements'] = {};
   if (finalProposal) {
-    const mealResult = await applyRateMealMemory({ proposal: finalProposal, source: input.source,
+    const mealResult = await applyNativeRateMealDefaults({ proposal: finalProposal, source: input.source,
       propertyCode: input.propertyCode, generationId, env });
     const trackResult = await applyRateTrackMemory({ proposal: mealResult.proposal, source: input.source,
       propertyCode: input.propertyCode, generationId, env });
@@ -5393,7 +5385,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     const fallbackSafety = addRequestConfirmationSafety({ proposal: fallbackProjection.proposal, extraction: currentActions,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
       currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence });
-    const mealResult = await applyRateMealMemory({ proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, input.propertyCode,
+    const mealResult = await applyNativeRateMealDefaults({ proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, input.propertyCode,
       currentActions, fallbackProjection.extractionIdByProposalRequestId), source: input.source,
       propertyCode: input.propertyCode, generationId, env });
     const trackResult = await applyRateTrackMemory({ proposal: mealResult.proposal, source: input.source,
