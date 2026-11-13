@@ -388,8 +388,12 @@ async function draft(page, expected) {
           if (!current.found || typeof current.value !== 'string' || matches.length !== 1) return 'DRAFT_AGENCY_COMMISSION_VALUE';
           const control = matches[0], submitted = control.getSubmitData?.();
           const keys = Object.keys(submitted || {}).filter((key) => key.toLowerCase() === name.toLowerCase());
+          const modelMatches = modelKeys.filter((key) => key.toLowerCase() === name.toLowerCase());
+          const controlValue = typeof control.getValue === 'function' ? control.getValue() : undefined;
+          const emptyPricing = name === 'bookingagencycommissionpricing' && controlValue === null &&
+            current.value === '' && submitted?.[name] === '' && modelMatches.length === 1 && modelData[modelMatches[0]] === '';
           if (control.up?.('form') !== form || control.disabled || control.isDisabled?.() ||
-              typeof control.getValue !== 'function' || control.getValue() !== current.value ||
+              typeof control.getValue !== 'function' || (controlValue !== current.value && !emptyPricing) ||
               keys.length !== 1 || !Object.hasOwn(submitted, name) || submitted[name] !== current.value ||
               !copyCurrentFormValue(name, current)) return 'DRAFT_AGENCY_COMMISSION_VALUE';
         }
