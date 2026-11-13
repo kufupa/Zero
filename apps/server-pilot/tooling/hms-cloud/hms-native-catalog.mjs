@@ -55,11 +55,12 @@ export function normalizeHmsNativeCatalog({ propertyCode, capturedAt, source, ca
     const coverage = result.coverage && typeof result.coverage === 'object' ? result.coverage : {};
     const criteria = result.criteria && typeof result.criteria === 'object' ? result.criteria : {};
     const query = typeof criteria.query === 'string' ? criteria.query.trim() : null;
-    const filtered = (query === null ? criteria.scope !== 'unfiltered' : query !== '') ||
+    const rateShopScope = kind === 'ratePlans' && criteria.scope !== 'property_master';
+    const filtered = rateShopScope || (query === null ? criteria.scope !== 'unfiltered' : query !== '') ||
       coverage.nativeFiltered === true;
     const complete = !filtered && (coverage.complete === true || coverage.truncated === false) &&
       (typeof coverage.loaded !== 'number' || rows.length >= coverage.loaded);
-    normalized[kind] = { status: result.outcome || 'unknown', scope: { kind: filtered ? 'filtered_or_unknown' : 'unfiltered',
+    normalized[kind] = { status: result.outcome || 'unknown', scope: { kind: rateShopScope ? 'rate_shop' : filtered ? 'filtered_or_unknown' : 'unfiltered',
       query, wholeCatalogComplete: complete }, coverage: { ...coverage, complete }, records: rows.flatMap(row => {
       const nativeId = clean(row[idField]), code = clean(row[codeField]), meaning = clean(row[labelField]);
       if (!nativeId && !code && !meaning) return [];
