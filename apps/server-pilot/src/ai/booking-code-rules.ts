@@ -139,6 +139,7 @@ export function bookingCodeDefaults(kind: string): BookingCodeDefaults {
 
 const commissionCatalogSchema = z.object({ capturedAt: z.string().datetime({ offset: true }), catalogs: z.object({
   agencies: z.object({ records: z.array(z.object({ nativeId: z.string().nullable(),
+    capturedAt: z.string().datetime({ offset: true }),
     commissionPercent: z.number().min(0).max(100).nullable(), commissionEvidence: z.object({
       directory: z.object({ mapping: z.string(), confidence: z.number().nullable() }).nullable(),
       mapping: z.object({ basis: z.literal('same_agency_unsaved_native_form_readback'),
@@ -167,12 +168,13 @@ export async function loadAgencyCommission(input: { propertyCode: string; native
   const { numerator, denominator } = rows[0].commissionEvidence.mapping;
   const confidence = numerator / denominator;
   if (!denominator || numerator > denominator || confidence < 0.9) return { status: 'not_found', issue: 'commission_unverified' };
-  return { status: 'verified', percent: rows[0].commissionPercent, capturedAt: parsed.data.capturedAt,
+  return { status: 'verified', percent: rows[0].commissionPercent, capturedAt: rows[0].capturedAt,
     numerator, denominator, confidence };
 }
 
 const rateMealCatalogSchema = z.object({ capturedAt: z.string().datetime({ offset: true }), catalogs: z.object({
   ratePlans: z.object({ records: z.array(z.object({ code: z.string().nullable(), mealPlan: z.string().nullable(),
+    capturedAt: z.string().datetime({ offset: true }),
     mealPlanEvidence: z.object({ basis: z.literal('validated_unsaved_rate_and_native_meal_readback'),
       numerator: z.number().int().positive(), denominator: z.number().int().positive() }).nullable() })) }),
 }) });
@@ -193,18 +195,19 @@ export async function loadNativeRateMealPlan(input: { propertyCode: string; rate
       rows[0].mealPlanEvidence.numerator !== rows[0].mealPlanEvidence.denominator) {
     return { status: 'not_found', issue: 'rate_meal_unverified' };
   }
-  return { status: 'verified', mealPlan: rows[0].mealPlan, capturedAt: parsed.data.capturedAt };
+  return { status: 'verified', mealPlan: rows[0].mealPlan, capturedAt: rows[0].capturedAt };
 }
 
 const nativeCodeCatalogSchema = z.object({ capturedAt: z.string().datetime({ offset: true }), catalogs: z.record(z.object({
   scope: z.object({ wholeCatalogComplete: z.boolean() }), coverage: z.object({ complete: z.boolean() }),
-  records: z.array(z.object({ code: z.string().nullable(), meaning: z.string().nullable() })),
+  records: z.array(z.object({ code: z.string().nullable(), meaning: z.string().nullable(),
+    capturedAt: z.string().datetime({ offset: true }) })),
 })) });
 
 /** Current complete native codes; historical guidance still needs a unique matching code or meaning. */
 export async function loadNativeBookingCodes(input: { propertyCode: string; kind: 'guaranteeTypes' | 'trackSubsegment';
   env?: NodeJS.ProcessEnv }): Promise<
-  { status: 'available'; capturedAt: string; records: { code: string | null; meaning: string | null }[] } |
+  { status: 'available'; capturedAt: string; records: { code: string | null; meaning: string | null; capturedAt: string }[] } |
   { status: 'unavailable'; issue: string }
 > {
   const path = (input.env ?? process.env).HMS_NATIVE_CATALOG_PATH;
@@ -218,5 +221,8 @@ export async function loadNativeBookingCodes(input: { propertyCode: string; kind
   if (!catalog || !catalog.scope.wholeCatalogComplete || !catalog.coverage.complete) {
     return { status: 'unavailable', issue: 'booking_code_catalog_incomplete' };
   }
-  return { status: 'available', capturedAt: parsed.data.capturedAt, records: catalog.records };
+  const capturedAt = catalog.records.length
+    ? new Date(catalog.records.reduce((earliest, row) => Math.min(earliest, Date.parse(row.capturedAt)), Infinity)).toISOString()
+    : parsed.data.capturedAt;
+  return { status: 'available', capturedAt, records: catalog.records };
 }
