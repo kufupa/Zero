@@ -474,6 +474,7 @@ function compileQuote(
   draft: ReservationWorkflowV2Draft,
   request: QuoteRequest,
   execute: boolean,
+  allowRequestedForUnavailable = false,
 ): CompiledQuote {
   const bodyPath = ['proposal', 'content', 'requests', request.id, 'body'] as const;
   const path = (...parts: Array<string | number>) => ptr(...bodyPath, ...parts);
@@ -530,9 +531,12 @@ function compileQuote(
     const boardResult = execute ? resolved(path('groups', groupIndex, 'mealPlan'), group.mealPlan)
       : resolvedLeaf(draft, path('groups', groupIndex, 'mealPlan'), group.mealPlan);
     const actual = boardResult && !('issue' in boardResult) ? boardCode(boardResult.value, draft.propertyCode) : null;
-    const requested = resolvedLeaf(draft, path('groups', groupIndex, 'requestedMealPlan'), group.requestedMealPlan);
+    const useRequested = execute && allowRequestedForUnavailable && !('issue' in boardResult) && boardResult.value == null;
+    const requestedPath = path('groups', groupIndex, 'requestedMealPlan');
+    const requested = useRequested ? resolved(requestedPath, group.requestedMealPlan)
+      : resolvedLeaf(draft, requestedPath, group.requestedMealPlan);
     const requestedBoard = !('issue' in requested) ? boardCode(requested.value, draft.propertyCode) : null;
-    const board = actual ?? (!execute ? requestedBoard ?? 'bb' : null);
+    const board = actual ?? (useRequested ? requestedBoard : !execute ? requestedBoard ?? 'bb' : null);
     if (!execute && !actual && !requestedBoard) mealPlanDefaultedGroupIds.push(group.id);
     if (!board) issues.push(`${base}/mealPlan:native_meal_plan_code_required`);
 
@@ -908,6 +912,15 @@ function preparedUnavailableOperation(
   return [...operationResults(draft)].reverse().find((result) => result.requestId === requestId &&
     result.generationId === draft.generationId && result.draftRevision === draft.revision && result.status === 'prepared' &&
     result.summary === UNAVAILABLE_PREPARED_SUMMARY && result.observationRefs.includes(observationRef)) ?? null;
+}
+
+/** Only a current, prepared shortage can use the reviewed requested meal plan to compile a decline. */
+function compilePreparedUnavailableQuote(draft: ReservationWorkflowV2Draft, request: QuoteRequest): CompiledQuote | null {
+  const discovery = compileQuote(draft, request, false);
+  if (discovery.status !== 'ok') return null;
+  const proof = unavailableInventoryProof(draft, discovery);
+  if (!proof || !preparedUnavailableOperation(draft, request.id, proof.observation.ref)) return null;
+  return compileQuote(draft, request, true, true);
 }
 
 async function prepareUnavailableInventory(
@@ -1446,9 +1459,17 @@ export async function reservationWorkflowV2QuoteExecute(
       (operationObservation(loaded.draft, prior.id, prior.observationRefs) || !quoteOperationExpired(prior))) {
     return { status: 'needs_reconcile', operationId: prior.id };
   }
-  const compiled = compileQuote(loaded.draft, request, true);
+  let compiled = compileQuote(loaded.draft, request, true);
+  let declineOnly = false;
+  if (compiled.status !== 'ok') {
+    const decline = compilePreparedUnavailableQuote(loaded.draft, request);
+    if (decline) {
+      compiled = decline;
+      declineOnly = true;
+    }
+  }
   if (compiled.status !== 'ok') return { status: compiled.status, issue: compiled.issue, fields: compiled.fields };
-  const preparedObservation = matchingPreparedQuote(loaded.draft, compiled, true);
+  const preparedObservation = declineOnly ? null : matchingPreparedQuote(loaded.draft, compiled, true);
   const unavailable = preparedObservation ? null : unavailableInventoryProof(loaded.draft, compiled);
   if (!preparedObservation && !unavailable) return { status: 'needs_prepare', issue: 'current_native_quote_prepare_required' };
   if (unavailable && !preparedUnavailableOperation(loaded.draft, request.id, unavailable.observation.ref)) {
@@ -1542,7 +1563,8 @@ function validUnavailableInventoryReceipt(
 ): boolean {
   const request = quoteRequests(draft, result.requestId)[0];
   if (!request) return false;
-  const compiled = compileQuote(draft, request, true);
+  const strict = compileQuote(draft, request, true);
+  const compiled = strict.status === 'ok' ? strict : compilePreparedUnavailableQuote(draft, request) ?? strict;
   if (compiled.status !== 'ok' || !compiled.outputKinds.includes('email_quote')) return false;
   const proof = unavailableInventoryProof(draft, compiled);
   if (!proof) return false;
