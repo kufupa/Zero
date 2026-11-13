@@ -312,8 +312,10 @@ export async function readCloudSavedChildAges(input, { openSession = withCenturi
       if (!protectedSession.hasGuard(page.context())) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
       await shallow(page, input.confirmation, searchHints(selected, input.arrival));
       const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
-      const expected = expectedLabtestAmendRecord(record, selected, { allowRealGuest: input.allowRealGuest === true,
-        allowUnknownChildAges: true });
+      const expected = expectedLabtestAmendRecord(record, selected, {
+        allowRealGuest: input.allowRealGuest === true,
+        allowUnknownChildAges: true,
+      });
       if (!expected) return { outcome: 'refused', issue: 'APPROVED_STAY_MISMATCH' };
       const result = await runLabtestAmendSave(page, {
         timeoutMs: 120_000, signal: protectedSession.options.signal, prepareOnly: true,
@@ -410,8 +412,10 @@ export async function inspectCloudPaneAmendParties(input, { openSession = withCe
       if (!protectedSession.hasGuard(page.context())) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
       await shallow(page, input.confirmation, searchHints(selected, input.arrival));
       const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
-      const expected = expectedLabtestAmendRecord(record, selected, { allowRealGuest: input.allowRealGuest === true,
-        allowUnknownChildAges: true });
+      const expected = expectedLabtestAmendRecord(record, selected, {
+        allowRealGuest: input.allowRealGuest === true,
+        allowUnknownChildAges: true,
+      });
       if (!expected) return { outcome: 'refused', issue: 'APPROVED_STAY_MISMATCH' };
       const result = await runLabtestAmendSave(page, {
         timeoutMs: 180_000, signal: protectedSession.options.signal, prepareOnly: true, partyStageActive: () => true,
@@ -458,7 +462,10 @@ export async function listCloudPaneAmendTrackChoices(input, { openSession = with
       if (!protectedSession.hasGuard(page.context())) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
       await shallow(page, input.confirmation, searchHints(selected, input.arrival));
       const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
-      const expected = expectedLabtestAmendRecord(record, selected, { allowRealGuest: input.allowRealGuest === true });
+      const expected = expectedLabtestAmendRecord(record, selected, {
+        allowRealGuest: input.allowRealGuest === true,
+        allowUnknownChildAges: true,
+      });
       if (!expected) return { outcome: 'refused', issue: 'APPROVED_STAY_MISMATCH' };
       const result = await runLabtestAmendSave(page, {
         timeoutMs: 120_000, signal: protectedSession.options.signal, prepareOnly: true,
