@@ -4511,6 +4511,10 @@ function applyDefaultCmsSendPolicy(
           return true;
         };
         const movedTransferServiceIds = new Set<string>();
+        const hasExtraDetails = (service: ReservationWorkflowV2Proposal['content']['services'][number]) =>
+          service.requestedMoney.length > 0 || service.quantityRequest.value !== null || Boolean(service.code || service.itemCandidateRef) ||
+          Object.values(service.sharedFields).some(value => value != null) ||
+          service.targets.some(target => Object.values(target.fields).some(value => value != null));
         const transferType = (text: string) => {
           if (/\b(?:airport|flight)\b/iu.test(text) && /\b(?:transfer|shuttle|transport|pickup|pick.?up)\b/iu.test(text)) return 'airport_transfer' as const;
           if (/\b(?:office|work|university|campus)\b/iu.test(text) && /\b(?:transfer|shuttle|transport|pickup|pick.?up)\b/iu.test(text)) return 'office_transfer' as const;
@@ -4550,9 +4554,7 @@ function applyDefaultCmsSendPolicy(
                 /\b(?:all|each|every|both)\s+(?:(?:the|of the)\s+)?(?:guests?|rooms?|groups?|people)\b|\beveryone\b/iu.test(service.requestedText));
               const moved = addExtra(type, { raw: service.requestedText, sourceRefs: service.sourceRefs },
                 completeTargets ? [...new Set(targetRefs)] : [], completeTargets || overall ? 'known' : 'unresolved');
-              if (moved && !service.requestedMoney.length && service.quantityRequest.value === null &&
-                  !service.code && !service.itemCandidateRef && !Object.values(service.sharedFields).some(value => value != null) &&
-                  service.targets.every(target => !Object.values(target.fields).some(value => value != null))) movedTransferServiceIds.add(service.id);
+              if (moved && !hasExtraDetails(service)) movedTransferServiceIds.add(service.id);
             }
           } else {
             const overall = request.body.groups.length === 1 ||
@@ -4564,7 +4566,7 @@ function applyDefaultCmsSendPolicy(
         const movedServiceIds = new Set(proposal.content.services.filter(service => {
           if (service.ownerRequestId !== request.id || service.operation !== 'add') return false;
           const text = service.requestedText;
-          return normalizeRequestedMealPlan(text).lunchRequested && extraTypes.has('lunch') || movedTransferServiceIds.has(service.id);
+          return normalizeRequestedMealPlan(text).lunchRequested && extraTypes.has('lunch') && !hasExtraDetails(service) || movedTransferServiceIds.has(service.id);
         }).map(service => service.id));
         proposal.content.services = proposal.content.services.filter(service => !movedServiceIds.has(service.id));
         request.serviceRefs = request.serviceRefs.filter(ref => !movedServiceIds.has(ref));
