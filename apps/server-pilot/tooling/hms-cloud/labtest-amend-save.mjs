@@ -8,6 +8,7 @@ import { isSavedGuaranteeRequestGate, SAVED_GUARANTEE_PATH } from './saved-stay-
 import { isSavedPartyStageRequestGate, SAVED_PARTY_STAGE_PATHS } from './saved-stay-party-request-gate.mjs';
 import { parseNativePricingJson } from './saved-stay-nightly-rates.mjs';
 import { isFirstGoCallbackAuthority } from './pane-amend-callback-authority.mjs';
+import { isFinalGoCallbackAuthority } from './pane-amend-final-authority.mjs';
 
 /** Native loadVault only initializes the card iframe. This POST remains aborted. */
 export function isNativeCardEntryInitialization(request) {
@@ -288,7 +289,13 @@ export async function runLabtestAmendSave(page, {
       (dispatchChildCandidate !== undefined && dispatchChildCandidate !== callbackAuthority.dispatchChildren))) {
     return result('input_gap', { issue: 'AMEND_CALLBACK_REVIEW_INVALID' });
   }
-  if (!callbackReviewOnly && callbackAuthority !== undefined) {
+  const callbackFinal = isFinalGoCallbackAuthority(callbackAuthority);
+  if (callbackFinal && (prepareOnly || callbackReviewOnly || !availability || extendRate !== undefined ||
+      !callbackAuthority.isActive() || availability.dispatchCandidate !== callbackAuthority.dispatchAvailability ||
+      (dispatchChildCandidate !== undefined && dispatchChildCandidate !== callbackAuthority.dispatchChildren))) {
+    return result('input_gap', { issue: 'AMEND_CALLBACK_FINAL_INVALID' });
+  }
+  if (!callbackReviewOnly && callbackAuthority !== undefined && !callbackFinal) {
     return result('input_gap', { issue: 'AMEND_CALLBACK_REVIEW_INVALID' });
   }
   if (retainRate !== undefined && (!retainRate || typeof retainRate !== 'object' || prepareOnly ||
@@ -375,7 +382,7 @@ export async function runLabtestAmendSave(page, {
     const candidateGate = prepared.childStageGate ?? null;
     if (candidateGate !== null && !isSavedChildStageRequestGate(candidateGate)) throw new Error('CHILD_STAGE_GATE_INVALID');
     childStageGate = candidateGate;
-    if (callbackReviewOnly && childStageGate && dispatchChildCandidate !== callbackAuthority.dispatchChildren) {
+    if ((callbackReviewOnly || callbackFinal) && childStageGate && dispatchChildCandidate !== callbackAuthority.dispatchChildren) {
       throw new Error('CHILD_STAGE_AUTHORITY_INVALID');
     }
     roomStageGate = prepared.roomStageGate ?? null;
@@ -397,7 +404,7 @@ export async function runLabtestAmendSave(page, {
       frame: prepared.frame,
       fence,
       scope,
-      isArmed: () => !prepareOnly && !callbackReviewOnly && armed && withinDeadline(),
+      isArmed: () => !prepareOnly && !callbackReviewOnly && (!callbackFinal || callbackAuthority.mayAttemptSave()) && armed && withinDeadline(),
       childStageGate, canDispatchChild: () => !prepareOnly && typeof dispatchChildCandidate === 'function',
       dispatchChildCandidate, onChildCandidate: () => { possiblyDispatched = true; },
       roomStageGate,
@@ -484,7 +491,7 @@ export async function runLabtestAmendSave(page, {
 
     inStage = true;
     const stageContext = Object.freeze({ page, frame: prepared.frame, childStageGate, roomStageGate, rateStageGate, guaranteeStageGate, partyStageGate,
-      ...(callbackReviewOnly ? { callbackAuthority } : {}),
+      ...(callbackReviewOnly || callbackFinal ? { callbackAuthority } : {}),
       allowRealGuest: prepared.allowRealGuest === true,
       baseline: prepared.enableComposedStage === true && prepared.baseline ? structuredClone(prepared.baseline) : null,
       isActive: () => inStage && blocked === 0 && withinDeadline() && !fence.isQuarantined(),
