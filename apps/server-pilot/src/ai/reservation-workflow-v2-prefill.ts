@@ -26,8 +26,7 @@ import { PANE_PROPERTY_LOCK_WAIT_MS, acquisitionWithin } from '../hms/property-r
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { findParty } from './pane-party-lookup.js';
 import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
-import { loadReservationMemoryGuidance, loadReservationNativeLeads, loadReservationRateTrackMapping,
-  reservationEntityKey } from './reservation-workflow-v2-native-leads.js';
+import { loadReservationMemoryGuidance, loadReservationNativeLeads, loadReservationRateTrackMapping } from './reservation-workflow-v2-native-leads.js';
 import { loadAgencyCommission, loadNativeBookingCodes } from './booking-code-rules.js';
 import { RESERVATION_NOTE_MAX, RESERVATION_NOTE_PRESETS } from './reservation-note-presets.js';
 import { resolveSourceStayDate } from './stay-date-anchoring.js';
@@ -4440,6 +4439,7 @@ async function applyHistoricalPartySuggestions(input: { proposal: ReservationWor
   const proposal = structuredClone(input.proposal), added: ReservationWorkflowV2Observation[] = [];
   for (const request of proposal.content.requests) {
     if (request.kind !== 'create' && request.kind !== 'quote') continue;
+    if (request.kind === 'create' && !request.body.allocations.length) continue;
     const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
     const fields: Record<string, unknown> = request.kind === 'create' ? request.body.shared : request.body.parties;
     for (const role of ['agency', 'organization', 'ar_account'] as const) {
@@ -4456,24 +4456,32 @@ async function applyHistoricalPartySuggestions(input: { proposal: ReservationWor
         lead.confidence >= 0.8 && (role === 'ar_account' ? relatedSelected && lead.basis === 'normalized_entity' : lead.autoSelectable === true));
       if (eligible.length !== 1) continue;
       const leadName = String(eligible[0]!.value);
+      const leadKey = normalizedFact(leadName);
+      if (!leadKey) continue;
+      const matchesLead = (candidate: unknown): boolean => isRecord(candidate) && typeof candidate.nativeId === 'string' &&
+        (request.kind === 'quote' ? /^[A-Za-z0-9._-]{1,64}$/ : /^\d{1,30}$/).test(candidate.nativeId) &&
+        normalizedFact(candidate.name) === leadKey;
       const fieldValue = fields[field];
       const existing = isRecord(fieldValue) ? fieldValue : null;
-      if (existing && typeof existing.name === 'string' &&
-          reservationEntityKey(existing.name, role) !== reservationEntityKey(leadName, role)) continue;
+      if (existing && typeof existing.name === 'string' && normalizedFact(existing.name) !== leadKey) continue;
       const candidateRefs = existing && Array.isArray(existing.candidateRefs)
         ? existing.candidateRefs.filter((ref): ref is string => typeof ref === 'string') : [];
       const matching = candidateRefs.flatMap((ref) => [...input.observations, ...added].filter((row) => row.ref === ref &&
-        row.status === 'complete' && row.coverage.complete && Array.isArray(row.result.candidates) &&
-        row.result.candidates.some((candidate) => isRecord(candidate) && typeof candidate.name === 'string' &&
-          reservationEntityKey(candidate.name, role) === reservationEntityKey(leadName, role))));
+        row.kind === 'party_candidate' && row.status === 'complete' && row.coverage.complete &&
+        row.generationId === input.generationId && row.propertyCode === input.propertyCode &&
+        row.sourceMessageId === input.source.messageId && row.criteria.workflow === request.kind &&
+        row.criteria.requestId === request.id && row.criteria.role === (role === 'agency' ? 'bookingAgency' : role) &&
+        (request.kind !== 'create' || typeof row.criteria.allocationId === 'string' &&
+          request.body.allocations.some((allocation) => allocation.id === row.criteria.allocationId)) &&
+        (row.criteria.fieldPath === path || Array.isArray(row.criteria.fieldPaths) && row.criteria.fieldPaths.includes(path)) &&
+        Array.isArray(row.result.candidates) && row.result.candidates.length === 1 && matchesLead(row.result.candidates[0])));
       let chosen = matching.length === 1 ? matching[0] : undefined;
       if (!chosen && !matching.length && input.allowNativeRead && !input.signal?.aborted) {
         let read: Awaited<ReturnType<typeof lookupNativeParty>> | null = null;
         try { read = await lookupNativeParty({ role, name: leadName, target: hmsReadTargetForProperty(input.propertyCode), signal: input.signal }); }
         catch { input.signal?.throwIfAborted(); }
         const rows = read?.status === 'complete' && read.coverage.complete && Array.isArray(read.result.candidates)
-          ? read.result.candidates.filter(isRecord).filter((candidate) => typeof candidate.name === 'string' &&
-            reservationEntityKey(candidate.name, role) === reservationEntityKey(leadName, role)) : [];
+          ? read.result.candidates.filter(isRecord).filter(matchesLead) : [];
         if (rows.length === 1 && read) {
           const ref = `obs_${randomUUID()}`;
           chosen = { ref, generationId: input.generationId, kind: 'party_candidate', status: 'complete',
