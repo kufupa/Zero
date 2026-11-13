@@ -1882,7 +1882,8 @@ function countedSourceQuoteRooms(request: ReservationWorkflowV2Extraction['reque
       currentRefs.has(row.ref) && claim.sourceRefs.includes(row.ref) && normalizedFact(row.text).includes(normalizedFact(claim.raw)))) return [];
     return [{ quantity, description: match[2]!.trim(), claim }];
   });
-  const total = citedInteger(currentClaim(request.roomCount, currentRefs));
+  const total = citedInteger(currentClaim(request.roomCount, currentRefs) ??
+    (request.dates.length === 1 ? currentClaim(request.dates[0]?.roomCount, currentRefs) : undefined));
   const complete = rows.length > 1 && rows.length <= 8 && rows.length === request.roomTypeHints.length &&
     new Set(rows.map((row) => normalizedFact(row.description))).size === rows.length &&
     total === rows.reduce((sum, row) => sum + row.quantity, 0);
@@ -3577,8 +3578,7 @@ function projectCurrentExtraction(input: {
     if (request.kind === 'quote') {
       const originalDateGroups = structuredClone(request.body.groups);
       for (const group of request.body.groups) { group.mealPlan = null; group.requestedMealPlan = null; }
-      const sourceRooms = extracted.dates.some(date => currentClaim(date.roomCount, currentRefs)) ? [] :
-        countedSourceQuoteRooms(extracted, input.evidence, currentRefs, currentExtraction.requests.length === 1);
+      const sourceRooms = countedSourceQuoteRooms(extracted, input.evidence, currentRefs, currentExtraction.requests.length === 1);
       const sourceRoomByGroupId = new Map<string, typeof sourceRooms[number]>();
       if (sourceRooms.length && singleCurrentDatePair(projectedDates, currentRefs)) {
         const originalGroups = request.body.groups;
@@ -3907,7 +3907,8 @@ function projectCurrentExtraction(input: {
       if (datedRows.some(({ date, inferred }) => currentClaim(date.roomCount, currentRefs) || inferred)) {
         const previous = request.body.groups;
         const usedIds = new Set<string>();
-        request.body.groups = datedRows.map(({ date, index, arrival, departure, quantity }) => {
+        const projectedGroupRows: Array<{ date: typeof extracted.dates[number]; inferred: boolean; category: boolean }> = [];
+        request.body.groups = datedRows.flatMap(({ date, index, arrival, departure, quantity, inferred }) => {
           const board = safeCurrentText(date.mealPlan, currentRefs, 120) ??
             (boardsByValue.size === 1 ? boardValue([...boardsByValue.values()][0]!.value) : null);
           const dateMatches = originalDateGroups.filter(group => !usedIds.has(group.id) &&
@@ -3915,14 +3916,27 @@ function projectCurrentExtraction(input: {
           const boardMatches = board ? dateMatches.filter(group =>
             boardMeaning(group.requestedMealPlan ?? group.mealPlan) === boardMeaning(board)) : dateMatches;
           const matches = boardMatches.length ? boardMatches : dateMatches.filter(group => !group.requestedMealPlan && !group.mealPlan);
-          const original = matches.length === 1 ? matches[0] : undefined;
+          const categories = previous.filter(group => !usedIds.has(group.id) &&
+            sourceRoomByGroupId.has(group.id) && group.arrival === arrival && group.departure === departure);
+          if (categories.length > 1 && quantity !== null &&
+              categories.reduce((total, group) => total + (group.quantity ?? 0), 0) === quantity) {
+            return categories.map(group => {
+              usedIds.add(group.id);
+              projectedGroupRows.push({ date, inferred: false, category: true });
+              return { ...group, arrival, departure, mealPlan: null,
+                requestedMealPlan: safeCurrentText(date.mealPlan, currentRefs, 120) ?? group.requestedMealPlan };
+            });
+          }
+          const originalMatch = matches.length === 1 ? matches[0] : undefined;
+          const original = originalMatch ? previous.find(group => group.id === originalMatch.id) : undefined;
           if (original) usedIds.add(original.id);
-          return { ...(original ?? { roomCodes: roomCodes.codes.length === 1 ? roomCodes.codes : [], ratePlan: null,
+          projectedGroupRows.push({ date, inferred, category: false });
+          return [{ ...(original ?? { roomCodes: roomCodes.codes.length === 1 ? roomCodes.codes : [], ratePlan: null,
             occupancy: fallbackQuoteOccupancy(extracted, currentRefs).occupancy, priceObservationRefs: [] }),
             id: original?.id ?? stableId(request.id, 'dated_room_row', String(index)), arrival, departure, quantity,
             mealPlan: null, requestedMealPlan: board,
             guestNames: date.guestNames?.flatMap(claim => safeCurrentText(claim, currentRefs, 300)
-              ? [safeCurrentText(claim, currentRefs, 300)!] : []) ?? original?.guestNames ?? [] };
+              ? [safeCurrentText(claim, currentRefs, 300)!] : []) ?? original?.guestNames ?? [] }];
         });
         const retainedIds = new Set(request.body.groups.map(group => group.id));
         const removedIds = new Set(previous.map(group => group.id).filter(id => !retainedIds.has(id)));
@@ -3935,7 +3949,7 @@ function projectCurrentExtraction(input: {
         proposal.issues = proposal.issues.filter(issue => !issue.path.startsWith(`/requests/${request.id}/body/groups`) ||
           !['date_section_link_ambiguous', 'synthesized_date_without_source', 'quote_group_quantity_scope_ambiguous',
             'quote_board_scope_ambiguous'].includes(issue.kind));
-        datedRows.forEach(({ date, inferred }, index) => {
+        projectedGroupRows.forEach(({ date, inferred, category }, index) => {
           const path = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/groups/${index}`;
           if (inferred) {
             const evidenceRefs = [...new Set((date.guestNames ?? []).flatMap(claim =>
@@ -3944,7 +3958,7 @@ function projectCurrentExtraction(input: {
             addProjectionIssue(proposal, `${path}/quantity`, 'quote_guest_room_count_inferred',
               'Tentative one room per named guest for these dates. Confirm the room count before generating the quote.', evidenceRefs);
             for (const claim of date.guestNames ?? []) appendProjectedSource(proposal, `${path}/guestNames`, claim, currentRefs);
-          } else appendProjectedSource(proposal, `${path}/quantity`, date.roomCount ??
+          } else if (!category) appendProjectedSource(proposal, `${path}/quantity`, date.roomCount ??
             (extracted.dates.length === 1 ? extracted.roomCount : undefined), currentRefs);
           appendProjectedSource(proposal, `${path}/requestedMealPlan`, date.mealPlan, currentRefs);
         });
