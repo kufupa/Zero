@@ -114,9 +114,12 @@ function displaySnapshot(snapshot: ReservationPaneSnapshot | null, pending: Map<
     // Match the server's atomic identity invalidation while the edit is pending.
     const guest = edit.path.match(/^(.*\/guest)\/(?:firstName|lastName|email|mobile)$/);
     const party = edit.path.match(/^(.*\/(?:bookingAgency|organization|arAccount))(?:\/name)?$/);
+    const amendParty = edit.path.match(/^(\/proposal\/content\/requests\/[^/]+\/body\/(?:sharedChanges\/\d+|perTarget\/\d+\/changes\/\d+)\/value)(?:\/name)?$/);
+    const amendField = amendParty && valueAt(snapshot, `${amendParty[1]!.slice(0, -'/value'.length)}/field`);
     const target = edit.path.match(/^(.*\/targets\/include\/[^/]+)\/(?:confirmation|guestName|bookedArrival|bookedDeparture)$/);
     const service = edit.path.match(/^(\/proposal\/content\/services\/[^/]+)\/code$/);
     const selection = guest ? `${guest[1]}/nativeSelectionRef` : party ? `${party[1]}/nativeSelectionRef` :
+      amendParty && ['bookingAgency', 'organization', 'arAccount'].includes(text(amendField)) ? `${amendParty[1]}/nativeSelectionRef` :
       target ? `${target[1]}/suggestedRef` : service ? `${service[1]}/itemCandidateRef` : null;
     const selections = new Set(selection ? [selection] : []);
     if (target) {
