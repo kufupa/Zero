@@ -52,7 +52,7 @@ function option(room: string, building: string | null, inventory = 40) {
     id: `HRCEN:${room}:BAR`,
     room: { code: room, label: `Standard ${room}`, buildingCode: building },
     rate: { code: 'BAR', label: 'Best Available' },
-    board: 'Bed & Breakfast',
+    mealPlan: 'Bed & Breakfast',
     held: false,
     eligibility: 'verified',
     availability: 'available',
@@ -258,7 +258,7 @@ function rowFor(room: { code: string; label?: string; buildingCode: string | nul
     id: `HRCEN:${room.code}:${rate}`,
     room,
     rate: { code: rate, label: 'Best Available' },
-    board: 'Bed & Breakfast',
+    mealPlan: 'Bed & Breakfast',
     held: false,
     eligibility: 'verified',
     availability,
@@ -511,7 +511,7 @@ describe('wholesale rows that stay conditional without a party', () => {
       departureDate: '2026-11-14',
       requestedCurrency: 'ZAR',
       details: 'summary',
-      rooms: [{ id: 'room-1', quantity: 1, adults: 1, children: 0, childAges: [], required: { boardBases: ['breakfast'] } }],
+      rooms: [{ id: 'room-1', quantity: 1, adults: 1, children: 0, childAges: [], required: { mealPlanBases: ['breakfast'] } }],
     };
     const evidence = await captureFor(
       req,
@@ -547,7 +547,7 @@ describe('wholesale rows that stay conditional without a party', () => {
       departureDate: '2026-11-14',
       requestedCurrency: 'ZAR',
       details: 'summary',
-      rooms: [{ id: 'room-1', quantity: 1, adults: 1, children: 0, childAges: [], required: { boardBases: ['breakfast'] } }],
+      rooms: [{ id: 'room-1', quantity: 1, adults: 1, children: 0, childAges: [], required: { mealPlanBases: ['breakfast'] } }],
     };
     const evidence = await captureFor(
       req,
