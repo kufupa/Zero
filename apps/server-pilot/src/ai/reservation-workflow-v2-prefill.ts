@@ -2222,7 +2222,8 @@ function recoverSourceIntent(input: {
     addIssue({ explanation: 'A prior hotel acknowledgement says this booking was already cancelled. Review its current native status; no duplicate cancellation was proposed.',
       sourceRefs: [...new Set([...request.requestText.sourceRefs, ...priorHotel.map((row) => row.ref)])].slice(0, 20) });
   }
-  const message = input.evidence.find((row) => row.relation === 'current_message');
+  const message = input.evidence.find((row) => row.relation === 'current_message' &&
+    row.messageId === input.source.messageId && row.threadId === input.source.threadId);
   if (!message) return extraction;
   const subject = input.selection.subject ?? '';
   const submission = /\b(?:attached|attachment|herewith|proof\s+of\s+payment|payment\s+proof|remittance|POP)\b/i.test(currentBody) ||
@@ -2240,10 +2241,21 @@ function recoverSourceIntent(input: {
   const eligible = extraction.requests.filter((request) => ['other', 'filing', 'create'].includes(request.kind) &&
     currentClaim(request.requestText, currentRefs));
   if (eligible.length > 1 || extraction.requests.some((request) => !eligible.includes(request))) return extraction;
-  const documentEvidenceRefs = new Set(documents.flatMap(({ pdf }) => pdf.sourceRefs));
+  // Confirmations can be cited from a scanned attachment even when its text
+  // cannot classify it as a filing document. Keep all selected current-file
+  // evidence for conflict detection, with the physical attachment identity bound.
+  const attachmentEvidenceRefs = new Set(input.selection.attachments.flatMap((attachment) => {
+    if (attachment.messageId && attachment.messageId !== input.source.messageId) return [];
+    const textRef = evidenceRef(input.source, 'attachment_text', attachment.id);
+    return input.evidence.filter((row) => row.relation === 'attachment' &&
+      row.messageId === input.source.messageId && row.threadId === input.source.threadId &&
+      (row.kind === 'attachment_text' && row.ref === textRef || row.kind === 'attachment_vision' &&
+        row.ref === evidenceRef(input.source, 'attachment_vision', `${attachment.id}:${row.page ?? 1}`)))
+      .map((row) => row.ref);
+  }));
   const typedCurrentClaims = (eligible[0]?.confirmationHints ?? []).filter((claim) =>
-    claim.sourceRefs.every((ref) => currentRefs.has(ref)) &&
-    claim.sourceRefs.some((ref) => ref === message.ref || documentEvidenceRefs.has(ref)));
+    claim.sourceRefs.every((ref) => ref === message.ref || attachmentEvidenceRefs.has(ref)) &&
+    claim.sourceRefs.some((ref) => ref === message.ref || attachmentEvidenceRefs.has(ref)));
   const attachmentConfirmations = documents.flatMap(({ text, pdf }) => (text.match(/\b\d{6,10}-\d{1,2}\b/g) ?? [])
     .map((value) => ({ raw: value, value, sourceRefs: [pdf.documentRef] })));
   const currentConfirmations = (`${subject}\n${currentBody}`.match(/\b\d{6,10}-\d{1,2}\b/g) ?? [])
@@ -4214,9 +4226,33 @@ function applyDefaultCmsSendPolicy(
   propertyCode: string,
   extraction: ReservationWorkflowV2Extraction & { sourceReadComplete: boolean },
   extractionIds: ReadonlyMap<string, string> | undefined,
+  input: { source: ReservationWorkflowV2Source; selection: SyncedQuoteSelection; evidence: ReservationWorkflowV2Evidence[] },
 ): ReservationWorkflowV2Proposal {
   const proposal = structuredClone(proposalInput);
   if (propertyCode !== 'HRCEN') return proposal;
+  const message = input.evidence.find((row) => row.relation === 'current_message' &&
+    row.messageId === input.source.messageId && row.threadId === input.source.threadId);
+  const currentBody = maskCardNumbers(input.selection.currentBodyText ?? input.selection.bodyText)
+    .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
+  const cmsParts = message ? currentBody.split(/\r?\n|(?<=[.!?])\s+|;/u).map((part) => part.trim())
+    .filter((part) => message.text.includes(part)) : [];
+  const cmsInstructions = cmsParts.filter((part) => /\bCMS\s+Send\b/iu.test(part))
+    .map((raw) => {
+      const match = /^CMS\s+Send(?:\s*(?::|=)\s*|\s+(?:is\s+)?)(on|off)\s*[.!?]?$/iu.exec(raw) ??
+        /^(?:please\s+)?(?:keep|leave|turn|switch|set)\s+CMS\s+Send\s+(on|off)\s*[.!?]?$/iu.exec(raw);
+      return { raw, value: match ? match[1]!.toLowerCase() === 'on' : null };
+    });
+  const cmsTemplates = cmsParts.filter((part) => /\bCMS\s+message\b/iu.test(part)).map((raw) => {
+    const match = /^CMS\s+message\s*(?::|=|is)\s*([\w-]+)\s*[.!?]?$/iu.exec(raw);
+    return { raw, value: match?.[1] ?? null };
+  });
+  const createRequests = proposal.content.requests.filter((request) => request.kind === 'create');
+  if (createRequests.length && message) proposal.issues = proposal.issues.filter((issue) => {
+    const match = /^CMS message ([\w-]+) and CMS Send (ON|OFF) are retained as source claims, but are not represented as native Create fields here\.?$/iu.exec(issue.explanation);
+    return !match || !issue.evidenceRefs.every((ref) => ref === message.ref) ||
+      !cmsTemplates.some((template) => template.value === match[1]) ||
+      !cmsInstructions.some((instruction) => instruction.value === (match[2]!.toLowerCase() === 'on'));
+  });
   for (const request of proposal.content.requests) {
     if (request.kind === 'quote') {
       const source = extractionRequestForProposal(request, proposal.content.requests, extraction, extractionIds);
@@ -4252,12 +4288,93 @@ function applyDefaultCmsSendPolicy(
         allocation.occupancy.childAges = [];
       }
     }
-    if (request.body.allocations.some(({ guest }) => /^proof$/i.test(guest.firstName?.trim() ?? '') &&
-        /^labtest$/i.test(guest.lastName?.trim() ?? ''))) {
+    const root = `/proposal/content/requests/${request.id}/body`;
+    const holdNestedSends = (basis: 'source' | 'policy', evidenceRefs: string[]) => {
+      const changedPaths: string[] = [];
+      request.body.dateSections.forEach((row, index) => { if (row.defaults.cmsSend === true) {
+        row.defaults.cmsSend = false; changedPaths.push(`${root}/dateSections/${index}/defaults/cmsSend`);
+      } });
+      request.body.allocations.forEach((row, index) => { if (row.overrides.cmsSend === true) {
+        row.overrides.cmsSend = false; changedPaths.push(`${root}/allocations/${index}/overrides/cmsSend`);
+      } });
+      proposal.annotations = proposal.annotations.filter((annotation) => !changedPaths.includes(annotation.path));
+      for (const path of changedPaths) if (proposal.annotations.length < 2000)
+        proposal.annotations.push({ path, basis, evidenceRefs });
+    };
+    const labtest = request.body.allocations.some(({ guest }) => /^proof$/i.test(guest.firstName?.trim() ?? '') &&
+      /^labtest$/i.test(guest.lastName?.trim() ?? ''));
+    if (labtest) {
       request.body.shared.cmsSend = false;
-      continue;
+      holdNestedSends('policy', []);
     }
     const cmsSend = request.body.shared.cmsSend;
+    const roomCount = citedInteger(source?.roomCount);
+    const bound = message && extraction.requests.length === 1 && createRequests.length === 1 && source?.kind === 'create' &&
+      source.requestText.sourceRefs.includes(message.ref) && message.text.includes(source.requestText.raw) &&
+      source.dates.length <= 1 && request.body.dateSections.length <= 1 && request.body.allocations.length <= 1 &&
+      !(typeof roomCount === 'number' && roomCount > 1);
+    if (cmsTemplates.length && message) {
+      const values = new Set(cmsTemplates.map((template) => template.value));
+      const templateBound = bound && source && cmsTemplates.every((template) => source.requestText.raw.includes(template.raw));
+      const section = request.body.dateSections[0];
+      const allocation = request.body.allocations[0];
+      const selected = allocation?.overrides.cmsMessageId ?? section?.defaults.cmsMessageId ?? request.body.shared.cmsMessageId;
+      const resolved = templateBound && values.size === 1 && !values.has(null) && typeof selected === 'string' && values.has(selected);
+      const templatePath = templateBound && allocation?.overrides.cmsMessageId != null ? `${root}/allocations/0/overrides/cmsMessageId`
+        : templateBound && section?.defaults.cmsMessageId != null ? `${root}/dateSections/0/defaults/cmsMessageId` : `${root}/shared/cmsMessageId`;
+      if (templateBound) for (const template of cmsTemplates) {
+        if (template.raw.length > 2000 || proposal.sourceClaims.length >= MAX_PROPOSAL_SOURCE_CLAIMS || proposal.sourceClaims.some((claim) =>
+          claim.path === templatePath && claim.raw === template.raw && claim.sourceRefs.includes(message.ref))) continue;
+        proposal.sourceClaims.push({ path: templatePath, raw: template.raw, sourceRefs: [message.ref] });
+      }
+      if (!resolved) {
+        const sendPath = `${root}/shared/cmsSend`;
+        holdNestedSends('policy', []);
+        if (!(isRecord(cmsSend) && cmsSend.kind === 'none')) {
+          request.body.shared.cmsSend = false;
+          proposal.annotations = proposal.annotations.filter((annotation) => annotation.path !== sendPath);
+          if (proposal.annotations.length < 2000) proposal.annotations.push({ path: sendPath, basis: 'policy', evidenceRefs: [] });
+        }
+        if (bound && source) for (const instruction of cmsInstructions) {
+          if (!source.requestText.raw.includes(instruction.raw) || instruction.raw.length > 2000 ||
+            proposal.sourceClaims.length >= MAX_PROPOSAL_SOURCE_CLAIMS || proposal.sourceClaims.some((claim) =>
+              claim.path === sendPath && claim.raw === instruction.raw && claim.sourceRefs.includes(message.ref))) continue;
+          proposal.sourceClaims.push({ path: sendPath, raw: instruction.raw, sourceRefs: [message.ref] });
+        }
+        addProjectionIssue(proposal, templatePath, 'cms_template_unresolved',
+          'The source CMS message template is not resolved to the current selection. Initial Send is off; review the template and effective Send choice.', [message.ref]);
+        continue;
+      }
+    }
+    if (cmsInstructions.length && message) {
+      const values = new Set(cmsInstructions.map((instruction) => instruction.value));
+      const instructionsBound = bound && source && cmsInstructions.every((instruction) => source.requestText.raw.includes(instruction.raw));
+      const path = `/proposal/content/requests/${request.id}/body/shared/cmsSend`;
+      const unambiguous = instructionsBound && values.size === 1 && !values.has(null);
+      if (!unambiguous || values.has(false) || labtest || isRecord(cmsSend) && cmsSend.kind === 'none') {
+        const fromSource = unambiguous && values.has(false) && !labtest;
+        holdNestedSends(fromSource ? 'source' : 'policy', fromSource ? [message.ref] : []);
+      }
+      if (labtest || isRecord(cmsSend) && cmsSend.kind === 'none') {
+        if (!unambiguous) addProjectionIssue(proposal, path, 'cms_send_scope_ambiguous',
+          'The source has conflicting or unscoped CMS Send instructions. The initial setting is off; review the correct choice.', [message.ref]);
+        else if (values.has(true)) addProjectionIssue(proposal, path, 'cms_send_policy_restricted',
+          'An existing setting keeps CMS sending off. Review the source instruction and the Send choice.', [message.ref]);
+        continue;
+      }
+      request.body.shared.cmsSend = unambiguous ? values.has(true) : false;
+      proposal.annotations = proposal.annotations.filter((annotation) => annotation.path !== path);
+      if (proposal.annotations.length < 2000) proposal.annotations.push({ path,
+        basis: unambiguous ? 'source' : 'policy', evidenceRefs: unambiguous ? [message.ref] : [] });
+      for (const instruction of unambiguous ? cmsInstructions : []) {
+        if (instruction.raw.length > 2000 || proposal.sourceClaims.length >= MAX_PROPOSAL_SOURCE_CLAIMS || proposal.sourceClaims.some((claim) =>
+          claim.path === path && claim.raw === instruction.raw && claim.sourceRefs.includes(message.ref))) continue;
+        proposal.sourceClaims.push({ path, raw: instruction.raw, sourceRefs: [message.ref] });
+      }
+      if (!unambiguous) addProjectionIssue(proposal, path, 'cms_send_scope_ambiguous',
+        'The source has conflicting or unscoped CMS Send instructions. The initial setting is off; review the correct choice.', [message.ref]);
+      continue;
+    }
     if (cmsSend === false || isRecord(cmsSend) && cmsSend.kind === 'none') continue;
     if (cmsSend !== null && cmsSend !== undefined) continue;
     const path = `/proposal/content/requests/${request.id}/body/shared/cmsSend`;
@@ -5525,7 +5642,8 @@ export async function runReservationWorkflowV2Prefill(input: {
     currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence }) : null;
   const guardedProposal = referenceSafety?.proposal ?? (finalParsed?.success ? finalParsed.data.proposal : null);
   let finalProposal = guardedProposal ? applyDefaultCmsSendPolicy(guardedProposal, input.propertyCode,
-    currentActions, boundProjection?.extractionIdByProposalRequestId) : null;
+    currentActions, boundProjection?.extractionIdByProposalRequestId,
+    { source: input.source, selection: input.selection, evidence }) : null;
   let amendNoteRequirements: ReservationWorkflowV2Draft['fieldReviewRequirements'] = {};
   if (finalProposal) {
     const trackResult = await applyRateTrackMemory({ proposal: finalProposal, source: input.source,
@@ -5621,7 +5739,8 @@ export async function runReservationWorkflowV2Prefill(input: {
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
       currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence });
     const trackResult = await applyRateTrackMemory({ proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, input.propertyCode,
-      currentActions, fallbackProjection.extractionIdByProposalRequestId), source: input.source,
+      currentActions, fallbackProjection.extractionIdByProposalRequestId,
+      { source: input.source, selection: input.selection, evidence }), source: input.source,
       propertyCode: input.propertyCode, generationId, env });
     const noteResult = await applyNoteMemory({ proposal: trackResult.proposal, source: input.source, propertyCode: input.propertyCode,
       generationId, selection: input.selection, evidence, db: input.db, transportId: input.transportId, env });
