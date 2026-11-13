@@ -111,6 +111,11 @@ function displaySnapshot(snapshot: ReservationPaneSnapshot | null, pending: Map<
       }
     }
     fieldOverrides[edit.path] = { state: edit.state, ...(edit.state === 'set' ? { value: edit.value } : {}), updatedAt: new Date().toISOString() };
+    const quoteRate = edit.path.match(/^(\/proposal\/content\/requests\/([^/]+)\/body\/groups\/\d+)\/ratePlan$/);
+    const mealPath = quoteRate && `${quoteRate[1]}/mealPlan`;
+    if (mealPath && snapshot.requests.some(request => request.kind === 'quote' && request.id === decodeURIComponent(quoteRate![2]!)) && !pending.has(mealPath)) {
+      fieldOverrides[mealPath] = { state: 'unknown', updatedAt: new Date().toISOString() };
+    }
     // Match the server's atomic identity invalidation while the edit is pending.
     const guest = edit.path.match(/^(.*\/guest)\/(?:firstName|lastName|email|mobile)$/);
     const party = edit.path.match(/^(.*\/(?:bookingAgency|organization|arAccount))(?:\/name)?$/);
