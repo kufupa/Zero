@@ -10,7 +10,7 @@ import { matchKey } from './party-match.js';
  * typing. A pick from it is only a candidate: the quote re-checks the id live in HMS before it binds.
  */
 
-export type PartyIndexKind = 'company' | 'agency';
+export type PartyIndexKind = 'organization' | 'bookingAgency';
 
 /** The only HMS properties that have a party index. Unknown codes stay unknown. */
 export const PARTY_INDEX_PROPERTIES = ['HRCEN', 'HRDAV'] as const;
@@ -33,7 +33,7 @@ export const partyIndexFileSchema = z
       .array(
         z
           .object({
-            kind: z.enum(['company', 'agency']),
+            kind: z.enum(['organization', 'bookingAgency']),
             nativeId: plainNativeId,
             name: z.string().trim().min(1).max(256),
           })
@@ -44,6 +44,13 @@ export const partyIndexFileSchema = z
   .strict();
 export type PartyIndexFile = z.infer<typeof partyIndexFileSchema>;
 export type PartyIndexEntry = PartyIndexFile['entries'][number];
+const legacyPartyIndexFileSchema = partyIndexFileSchema.extend({
+  entries: z.array(z.object({
+    kind: z.enum(['company', 'agency']),
+    nativeId: plainNativeId,
+    name: z.string().trim().min(1).max(256),
+  }).strict()).max(200_000),
+});
 
 /** Where the index lives: the private pipeline root, beside the lookup output. One file per property. */
 export function partyIndexPath(
@@ -99,7 +106,16 @@ export async function loadPartyIndex(path: string = partyIndexPath()): Promise<P
   if (cache && cache.path === path && cache.mtimeMs === info.mtimeMs && cache.size === info.size) return cache.index;
   let parsed: z.SafeParseReturnType<unknown, PartyIndexFile>;
   try {
-    parsed = partyIndexFileSchema.safeParse(JSON.parse(await readFile(path, 'utf8')));
+    const raw: unknown = JSON.parse(await readFile(path, 'utf8'));
+    const legacy = legacyPartyIndexFileSchema.safeParse(raw);
+    const hydrated = legacy.success ? {
+      ...legacy.data,
+      entries: legacy.data.entries.map((entry) => ({
+        ...entry,
+        kind: entry.kind === 'company' ? 'organization' : 'bookingAgency',
+      })),
+    } : raw;
+    parsed = partyIndexFileSchema.safeParse(hydrated);
   } catch {
     return null;
   }
@@ -128,7 +144,7 @@ export function searchPartyIndex(
 ): PartyIndexEntry[] {
   if (!matchKey(query)) return [];
   const out: PartyIndexEntry[] = [];
-  for (const kind of ['company', 'agency'] as const) {
+  for (const kind of ['organization', 'bookingAgency'] as const) {
     const ranked = index.entries
       .map((entry, position) => ({ entry, position, rank: indexRank(query, entry.name) }))
       .filter((row) => row.entry.kind === kind && row.rank < 4)
