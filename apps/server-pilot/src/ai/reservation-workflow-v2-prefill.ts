@@ -3963,6 +3963,25 @@ function projectCurrentExtraction(input: {
           appendProjectedSource(proposal, `${path}/requestedMealPlan`, date.mealPlan, currentRefs);
         });
       }
+      const mealDateLinks = matchQuoteDateProjectionTargets({ targets: request.body.groups, dates: projectedDates, currentRefs });
+      for (const [dateIndex, groupIndexes] of mealDateLinks.targetsByDate) {
+        const date = projectedDates[dateIndex]!;
+        const key = datePairKey(citedText(currentClaim(date.arrival, currentRefs)), citedText(currentClaim(date.departure, currentRefs)));
+        const sameDates = projectedDates.filter((other, index) => index === dateIndex || key &&
+          datePairKey(citedText(currentClaim(other.arrival, currentRefs)), citedText(currentClaim(other.departure, currentRefs))) === key);
+        const boards = new Map(sameDates.flatMap(row => {
+          const board = safeCurrentText(row.mealPlan, currentRefs, 120);
+          return board ? [[boardMeaning(board), row.mealPlan] as const] : [];
+        }));
+        if (boards.size !== 1) continue;
+        const claim = [...boards.values()][0];
+        for (const groupIndex of groupIndexes) {
+          const group = request.body.groups[groupIndex]!;
+          group.requestedMealPlan = safeCurrentText(claim, currentRefs, 120) ?? group.requestedMealPlan;
+          appendProjectedSource(proposal,
+            `/proposal/content/requests/${encodeURIComponent(request.id)}/body/groups/${groupIndex}/requestedMealPlan`, claim, currentRefs);
+        }
+      }
       if (!request.body.outputIntent.artifacts.length) request.body.outputIntent.artifacts = ['email_quote', 'pdf_quote', 'xlsx_quote'];
     }
     if (request.kind === 'create') {
