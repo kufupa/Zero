@@ -3896,12 +3896,12 @@ function projectCurrentExtraction(input: {
         request.body.requestedMoney.push({ id, amount, currency: null, unit: null,
           scope: 'unresolved', targetRefs: [], sourceRefs });
       }
-      const datedRows = extracted.dates.map((date, index) => {
+      const datedRows = projectedDates.map((date, index) => {
         const arrivalClaim = currentClaim(date.arrival, currentRefs), departureClaim = currentClaim(date.departure, currentRefs);
         const quantity = quoteDatedRoomCount(extracted, date, currentRefs);
-        const arrival = isoDay(arrivalClaim?.value) ? arrivalClaim.value : null;
-        const departure = isoDay(departureClaim?.value) ? departureClaim.value : null;
-        return { date, index, arrival, departure: arrival && departure && arrival >= departure ? null : departure,
+        const arrival = safeCurrentText(arrivalClaim, currentRefs, 40) ?? null;
+        const departure = safeCurrentText(departureClaim, currentRefs, 40) ?? null;
+        return { date, index, arrival, departure: isoDay(arrival) && isoDay(departure) && arrival >= departure ? null : departure,
           quantity: quantity.count, inferred: quantity.inferred };
       });
       if (datedRows.some(({ date, inferred }) => currentClaim(date.roomCount, currentRefs) || inferred)) {
