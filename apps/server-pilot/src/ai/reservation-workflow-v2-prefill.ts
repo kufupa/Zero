@@ -4237,7 +4237,8 @@ function applyDefaultCmsSendPolicy(
   const cmsInstructions = message ? currentBody.split(/\r?\n|(?<=[.!?])\s+|;/u).map((part) => part.trim())
     .filter((part) => /\bCMS\s+Send\b/iu.test(part) && message.text.includes(part))
     .map((raw) => {
-      const match = /^CMS\s+Send\s*(?::|=|is)\s*(on|off)\s*[.!?]?$/iu.exec(raw);
+      const match = /^CMS\s+Send\s*(?::|=|is)\s*(on|off)\s*[.!?]?$/iu.exec(raw) ??
+        /^(?:please\s+)?(?:keep|leave)\s+CMS\s+Send\s+(on|off)\s*[.!?]?$/iu.exec(raw);
       return { raw, value: match ? match[1]!.toLowerCase() === 'on' : null };
     }) : [];
   const createRequests = proposal.content.requests.filter((request) => request.kind === 'create');
@@ -5581,7 +5582,8 @@ export async function runReservationWorkflowV2Prefill(input: {
     currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence }) : null;
   const guardedProposal = referenceSafety?.proposal ?? (finalParsed?.success ? finalParsed.data.proposal : null);
   let finalProposal = guardedProposal ? applyDefaultCmsSendPolicy(guardedProposal, input.propertyCode,
-    currentActions, boundProjection?.extractionIdByProposalRequestId, input) : null;
+    currentActions, boundProjection?.extractionIdByProposalRequestId,
+    { source: input.source, selection: input.selection, evidence }) : null;
   let amendNoteRequirements: ReservationWorkflowV2Draft['fieldReviewRequirements'] = {};
   if (finalProposal) {
     const trackResult = await applyRateTrackMemory({ proposal: finalProposal, source: input.source,
@@ -5677,7 +5679,8 @@ export async function runReservationWorkflowV2Prefill(input: {
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
       currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence });
     const trackResult = await applyRateTrackMemory({ proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, input.propertyCode,
-      currentActions, fallbackProjection.extractionIdByProposalRequestId, input), source: input.source,
+      currentActions, fallbackProjection.extractionIdByProposalRequestId,
+      { source: input.source, selection: input.selection, evidence }), source: input.source,
       propertyCode: input.propertyCode, generationId, env });
     const noteResult = await applyNoteMemory({ proposal: trackResult.proposal, source: input.source, propertyCode: input.propertyCode,
       generationId, selection: input.selection, evidence, db: input.db, transportId: input.transportId, env });
