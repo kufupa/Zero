@@ -1170,7 +1170,18 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
           ['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'roomTypeForCharge', 'cmsSend', 'cmsMessageId', 'cmsRecipient', 'guestOptIn'].includes(String(valueAt(draft, `${parent}/field`)));
         const reviewedEmpty = request.kind === 'quote' || (last === 'comment' && override?.state === 'set');
         if ((value === null || value === undefined || (value === '' && !reviewedEmpty)) && !clearValue) return;
-        if (!(request.kind === 'quote' && input.scope === 'request' && path === `${root}/body` && !hasPreparedExtras))
+        // A reviewed first-Go price is a distinct approval of exact native effects;
+        // reviewing the rest of the target must not erase its bound approval note.
+        const priceRef = request.kind === 'amend' && /\/perTarget\/\d+\/currentObservationRefs\/\d+$/.test(path) &&
+          typeof value === 'string' ? draft.observations.find(item => item.ref === value && item.kind === 'rate_availability' &&
+            item.status === 'complete' && item.coverage.complete && item.generationId === draft.generationId &&
+            item.propertyCode === draft.propertyCode && item.sourceMessageId === draft.source.messageId &&
+            item.criteria.workflow === 'amend' && item.criteria.stage === 'callback_price_review' &&
+            item.criteria.requestId === request.id) : null;
+        const approval = priceRef && rec(priceRef.result).approvalDigest;
+        const priorPriceReview = typeof approval === 'string' && /^[a-f0-9]{64}$/.test(approval) &&
+          reviews[path]?.status === 'accepted' && reviews[path]?.note === `amend-price:${value}:${approval}`;
+        if (!priorPriceReview && !(request.kind === 'quote' && input.scope === 'request' && path === `${root}/body` && !hasPreparedExtras))
           reviews[path] = { status: 'accepted', note: null, at: now };
         if (Array.isArray(value)) value.forEach((row, index) => walk(`${path}/${index}`, row));
         else if (typeof value === 'object') {
