@@ -175,6 +175,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const selectedVerified = entity && editor.snapshot.session.draft.observations.find(observation => observation.ref === selectedRef &&
     record(observation.criteria).kind === 'verified_native_row' && choices.some(choice => choice.ref === observation.ref));
   const selectedChoice = choices.find(row => entity ? row.ref === selectedRef : row.value === saved);
+  const staleIdentity = Boolean(entity && selectedRef && !selectedChoice);
   const staleCode = Boolean(!entity && catalogueField && saved && !selectedChoice &&
     hasCompleteNativeCatalogue(editor.snapshot, path, choiceKind));
   const setCatalogueUncommitted = useRef(editor.commands.setUncommitted);
@@ -184,6 +185,11 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     setCatalogueUncommitted.current(key, staleCode);
     return () => setCatalogueUncommitted.current(key, false);
   }, [path, staleCode]);
+  useEffect(() => {
+    const key = `native-selection:${selectionPath}`;
+    setCatalogueUncommitted.current(key, staleIdentity);
+    return () => setCatalogueUncommitted.current(key, false);
+  }, [selectionPath, staleIdentity]);
   const display = open && catalogueSearch !== null ? catalogueSearch : dirty || open ? query : guestPath
     ? selectedChoice?.label || [text(valueAt(editor.snapshot, `${guestPath}/firstName`)), saved].filter(Boolean).join(' ')
     : amendTrack && trackDisplay && trackDisplay !== saved ? `${saved} — ${trackDisplay}`
@@ -265,6 +271,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     }}>Cancel search</button></small> : <small>Unsaved search</small>
     : amendTrack && typeof savedValue === 'string' && saved ? <small>Select an Infor match for this requested Track.</small>
     : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}
+    {staleIdentity && <small role="alert">The selected Infor match changed. Choose a current match or search again.</small>}
     {staleCode && <small role="alert">This code was not returned by the latest Infor choices. Choose a current code or refresh.</small>}{hint && <small>{hint}</small>}
     {autoTransfer && (!dirty || normalized(query) === normalized(saved)) && <small role="note" className={styles.memoryBadge}>History: Auto Transfer was recorded on {autoTransfer.support} of {autoTransfer.denominator} earlier stays for this {autoTransfer.partyKind === 'organization' ? 'organization' : 'A/R account'}. Check the current Infor setting.</small>}</div>
     {compact && <FieldReview editor={editor} path={path} label={label} disabled={amendTrack && dirty} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />}</div>;

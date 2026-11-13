@@ -253,7 +253,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
         const count = typeof claim?.value === 'number' ? claim.value : typeof claim?.value === 'string' && /^\d{1,6}$/.test(claim.value.trim())
           ? Number(claim.value.trim()) : null;
         const path = `${root}/body/dateSections/0/requestedRooms`;
-        if (count !== null && Number.isSafeInteger(count) && count >= 1 && count <= 8 &&
+        if (count !== null && Number.isSafeInteger(count) && count >= 0 &&
             request.body.dateSections[0]!.requestedRooms === count && claim?.sourceRefs.length &&
             claim.sourceRefs.every(ref => request.sourceRefs.includes(ref)) &&
             !proposal.annotations.some(row => row.path === path && row.basis === 'source')) {

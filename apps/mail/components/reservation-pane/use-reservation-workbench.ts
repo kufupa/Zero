@@ -348,7 +348,8 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     },
     createGuestProfile(allocationId, confirmDuplicateName = false) {
       if (preview) return Promise.reject(new Error('Preview only. Profile creation is disabled.'));
-      if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before creating a profile.'));
+      if (liveInputs.current.key === key && [...liveInputs.current.uncommitted].some(hold =>
+        !hold.startsWith('service-candidate:/proposal/content/services/'))) return Promise.reject(new Error('Apply changed fields before creating a profile.'));
       const requestId = requireRequest();
       const inFlightKey = guestAttemptKey(source, requestId, allocationId);
       if (guestCreatesInFlight.has(inFlightKey)) return Promise.reject(new Error('Profile creation is already in progress.'));

@@ -393,9 +393,11 @@ function currentIdentityRow(snapshot: ReservationPaneSnapshot, path: string, obs
   if (criteria.fieldPath !== path && (!Array.isArray(criteria.fieldPaths) || !criteria.fieldPaths.includes(path))) return false;
   const parts = path.split('/'), requestId = decodeURIComponent(parts[4] ?? '');
   const request = snapshot.session.draft.proposal.content.requests.find(row => row.id === requestId);
+  const guest = observation.kind === 'guest_candidate';
+  const createdProfile = guest && request?.kind === 'create' && criteria.workflow === 'guest_profile_create';
   if (!request || (request.kind !== 'create' && request.kind !== 'quote' && request.kind !== 'amend') ||
-      criteria.workflow !== request.kind || criteria.requestId !== request.id) return false;
-  const owner = path.replace(/\/nativeSelectionRef$/, ''), guest = observation.kind === 'guest_candidate';
+      criteria.workflow !== request.kind && !createdProfile || criteria.requestId !== request.id) return false;
+  const owner = path.replace(/\/nativeSelectionRef$/, '');
   const role = request.kind === 'amend' ? amendPartyRole(snapshot, request.id, owner) : guest ? 'guest' : owner.endsWith('/bookingAgency') ? 'bookingAgency'
     : owner.endsWith('/arAccount') ? 'ar_account' : 'organization';
   if (!role || !guest && criteria.role !== role || guest && request.kind !== 'create' ||
@@ -419,6 +421,19 @@ function currentIdentityRow(snapshot: ReservationPaneSnapshot, path: string, obs
     : valueAt(snapshot, path) ?? valueAt(snapshot, `${owner}/suggestedRef`);
   const candidates = Array.isArray(result.candidates) ? result.candidates : [result];
   const candidate = candidates.length === 1 ? record(candidates[0]) : {};
+  if (createdProfile) {
+    const attemptId = criteria.attemptId;
+    return criteria.fieldPath === path && typeof attemptId === 'string' && Boolean(attemptId) &&
+      observation.ref === `guest-created-${attemptId}` && selectedRef === observation.ref && result.outcome === 'created' &&
+      typeof candidate.nativeId === 'string' && /^\d{1,30}$/.test(candidate.nativeId) &&
+      Boolean(normal(candidate.firstName)) && Boolean(normal(candidate.lastName)) &&
+      normal(candidate.firstName) === normal(valueAt(snapshot, `${owner}/firstName`)) &&
+      normal(candidate.lastName) === normal(valueAt(snapshot, `${owner}/lastName`)) &&
+      snapshot.session.draft.operationResults.some(operation => operation.id === attemptId &&
+        operation.generationId === snapshot.session.draft.generationId && operation.workflow === 'guest_profile' &&
+        operation.status === 'succeeded' && operation.requestId === request.id &&
+        operation.allocationId === criteria.allocationId && operation.observationRefs.includes(observation.ref));
+  }
   if (observation.status === 'complete' && selectedRef === observation.ref && (guest
     ? normal(candidate.firstName) === normal(valueAt(snapshot, `${owner}/firstName`)) &&
       normal(candidate.lastName) === normal(valueAt(snapshot, `${owner}/lastName`))
@@ -570,6 +585,7 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
     const rows = candidates.map(raw => { const row = record(raw); const code = text(row.code ?? row.nativeCode ?? row.name ?? [row.firstName, row.lastName].filter(Boolean).join(' '));
       const label = amendTrack ? typeof row.label === 'string' ? row.label : '' : text(row.label ?? row.name) || code;
       return { choice: { ref: observation.ref, value: code, label, detail: [row.meaning ?? row.description, row.nativeId, row.email].filter(Boolean).join(' · ') },
+        candidate: row,
         nativeId: typeof row.nativeId === 'string' && row.nativeId.trim() ? row.nativeId : null }; }).filter(row => row.choice.value);
     return amendTrack ? rows.filter(({ choice }) => /^[A-Z0-9]{1,12}$/.test(choice.value) && choice.label.trim() &&
       choice.label.length <= 200 && ![...choice.label].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) &&
@@ -579,13 +595,21 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
   const selected = draft.fieldOverrides[path];
   const selectedRef = selected && selected.state !== 'inherit' ? valueAt(snapshot, path)
     : valueAt(snapshot, path) ?? valueAt(snapshot, `${path.replace(/\/nativeSelectionRef$/, '')}/suggestedRef`);
-  const latest = new Map<string, NativeChoice>();
-  for (const { choice, nativeId } of choices) {
+  const normal = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  const equivalent = (left: Record<string, unknown>, right: Record<string, unknown>) => {
+    const fields = kind === 'guest_candidate' ? ['firstName', 'lastName', 'email', 'city', 'country'] : ['name'];
+    const phone = (row: Record<string, unknown>) => text(row.phoneNumber ?? row.mobile).replace(/\D/g, '');
+    return fields.every(field => normal(left[field]) === normal(right[field])) &&
+      (kind !== 'guest_candidate' || phone(left) === phone(right));
+  };
+  const latest = new Map<string, { choice: NativeChoice; candidate: Record<string, unknown> }>();
+  for (const { choice, candidate, nativeId } of choices) {
     const key = identities ? JSON.stringify(nativeId ? ['nativeId', nativeId] : ['ref', choice.ref]) : choice.value;
-    if (identities && selectedRef != null && latest.get(key)?.ref === selectedRef) continue;
-    latest.delete(key); latest.set(key, choice);
+    const previous = latest.get(key);
+    if (identities && selectedRef != null && previous?.choice.ref === selectedRef && equivalent(previous.candidate, candidate)) continue;
+    latest.delete(key); latest.set(key, { choice, candidate });
   }
-  return [...latest.values()];
+  return [...latest.values()].map(row => row.choice);
 }
 
 /** Incomplete native searches are useful leads, never selectable identities. */
