@@ -38,9 +38,13 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const selectionPath = party ? `${path}/nativeSelectionRef` : path;
   const guestPath = !party && entity ? path.replace(/\/nativeSelectionRef$/, '') : null;
   const inputPath = party ? `${path}/name` : guestPath ? `${guestPath}/lastName` : path;
+  const amendTrack = editor.request.kind === 'amend' && kind === 'track';
+  const savedValue = valueAt(editor.snapshot, inputPath);
+  const trackDisplay = amendTrack ? text(record(savedValue).display) : '';
   // HMS guest search is by surname. Keep first name separate; a name's last
   // token is not necessarily its surname (for example, "van der Merwe").
-  const saved = party ? text(valueAt(editor.snapshot, `${path}/name`)) : text(valueAt(editor.snapshot, inputPath));
+  const saved = party ? text(valueAt(editor.snapshot, `${path}/name`)) : amendTrack && typeof savedValue === 'object'
+    ? text(record(savedValue).lookupCode) : text(savedValue);
   const choiceKind = kind ?? (party ? 'party_candidate' : undefined);
   const catalogueField = ['create', 'quote', 'amend'].includes(editor.request.kind) &&
     ['room_type', 'room_type_for_charge', 'rate_plan', 'reason_for_stay', 'guarantee', 'cms_message', 'source_of_business', 'track'].includes(choiceKind ?? '');
@@ -57,22 +61,29 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const [activeIndex, setActiveIndex] = useState(-1);
   const [loading, setLoading] = useState(false);
   const [lookupError, setLookupError] = useState<string | null>(null);
+  const [trackReady, setTrackReady] = useState(false);
+  const trackPreviousRefs = useRef(new Set<string>());
   const loadingRef = useRef(false);
   const editVersion = useRef(0);
   const loadChoices = async () => {
     if (loadingRef.current) return;
+    if (amendTrack) {
+      setTrackReady(false);
+      trackPreviousRefs.current = new Set(editor.snapshot.session.draft.observations.map(observation => observation.ref));
+    }
     loadingRef.current = true; setLoading(true); setLookupError(null);
     try {
       await saveSearch();
       if (catalogueField && editor.commands.lookupChoices) await editor.commands.lookupChoices(path);
       else await editor.commands.lookup();
+      if (amendTrack) setTrackReady(true);
     } catch { setLookupError('Infor choices could not load. Try again.'); }
     finally { loadingRef.current = false; setLoading(false); }
   };
   const openChoices = () => {
     if (!open) setCatalogueSearch(null);
     setOpen(true); setActiveIndex(-1);
-    if (!choices.length && !lookupError && (entity ? Boolean(query.trim()) : true)) void loadChoices();
+    if ((amendTrack && !open) || (!choices.length && !lookupError && (entity ? Boolean(query.trim()) : true))) void loadChoices();
   };
   useEffect(() => {
     if (!open) return;
@@ -96,21 +107,27 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const candidateRefs = entity ? record(valueAt(editor.snapshot, party ? path : guestPath ?? '')).candidateRefs : null;
   const rank = (ref: string) => Array.isArray(candidateRefs) && candidateRefs.includes(ref) ? candidateRefs.indexOf(ref) : Number.MAX_SAFE_INTEGER;
   const ordered = [...availableChoices].sort((left, right) => rank(left.ref) - rank(right.ref) || recommendationRank(left.value) - recommendationRank(right.value));
-  const choices = guestPath ? ordered.slice(0, 3) : ordered;
+  const choices = amendTrack ? trackReady && !loading ? ordered.filter(row => !trackPreviousRefs.current.has(row.ref)) : []
+    : guestPath ? ordered.slice(0, 3) : ordered;
   const leads = entity && (!dirty || normalized(query) === normalized(saved))
     ? partialNativeLeads(editor.snapshot, selectionPath, choiceKind).slice(0, 3) : [];
   useEffect(() => { if (!dirty) setQuery(saved); }, [saved, dirty]);
+  useEffect(() => () => { if (amendTrack) editor.commands.setUncommitted(path, false); }, [path, amendTrack]);
   const editValue = (value: string) => party ? { name: value, candidateRefs: [], suggestedRef: null } : value;
   const editPath = party ? path : inputPath;
-  const choose = async (ref: string, value: string) => {
+  const choose = async (ref: string, value: string, label: string) => {
     editVersion.current += 1;
     const before = editVersion.current;
-    try { if (entity) await editor.commands.selectNative(selectionPath, ref); else await editor.commands.edit(path, value);
-      if (editVersion.current === before) { setCatalogueSearch(null); setDirty(false); setOpen(false); setActiveIndex(-1); } }
+    try { if (entity) await editor.commands.selectNative(selectionPath, ref);
+      else await editor.commands.edit(path, amendTrack ? { lookupCode: value, display: label } : value);
+      if (editVersion.current === before) {
+        if (amendTrack) editor.commands.setUncommitted(path, false);
+        setCatalogueSearch(null); setDirty(false); setOpen(false); setActiveIndex(-1);
+      } }
     catch { /* controller retains failure */ }
   };
   const saveSearch = async () => {
-    if (!dirty) return;
+    if (!dirty || amendTrack) return;
     const before = editVersion.current;
     await editor.commands.edit(editPath, editValue(query));
     if (editVersion.current === before) setDirty(false);
@@ -154,6 +171,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const selectedChoice = choices.find(row => entity ? row.ref === selectedRef : row.value === saved);
   const display = open && catalogueSearch !== null ? catalogueSearch : dirty || open ? query : guestPath
     ? selectedChoice?.label || [text(valueAt(editor.snapshot, `${guestPath}/firstName`)), saved].filter(Boolean).join(' ')
+    : amendTrack && trackDisplay && trackDisplay !== saved ? `${saved} — ${trackDisplay}`
     : !entity && selectedChoice && selectedChoice.label !== saved ? choiceKind === 'reason_for_stay' ? selectedChoice.label : `${saved} — ${selectedChoice.label}` : query;
   const activeId = open && activeIndex >= 0 && shown[activeIndex] ? `${id}-option-${activeIndex}` : undefined;
   useEffect(() => {
@@ -171,16 +189,20 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       value={display} disabled={disabled || reviewing} onFocus={openChoices} onClick={openChoices} placeholder={guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
         editVersion.current += 1;
         const value = event.target.value; setCatalogueSearch(null); setQuery(value); setDirty(true); setOpen(true); setActiveIndex(-1);
-        editor.commands.stageEdit(editPath, editValue(value));
+        if (amendTrack) editor.commands.setUncommitted(path, true);
+        else editor.commands.stageEdit(editPath, editValue(value));
       }}
       onBlur={() => { void saveSearch().catch(() => {}); }} onKeyDown={event => {
-        if (event.key === 'Escape') { setOpen(false); setActiveIndex(-1); }
+        if (event.key === 'Escape') {
+          if (amendTrack) { setQuery(saved); setDirty(false); editor.commands.setUncommitted(path, false); }
+          setOpen(false); setActiveIndex(-1);
+        }
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
           event.preventDefault(); if (!open) openChoices();
           setActiveIndex(index => shown.length ? (event.key === 'ArrowDown' ? Math.min(index + 1, shown.length - 1) : index < 0 ? shown.length - 1 : Math.max(0, index - 1)) : -1);
         }
         if (event.key === 'Enter') { event.preventDefault(); const row = open && (shown[activeIndex] ?? (visible.length === 1 ? visible[0] : undefined));
-          if (row) void choose(row.ref, row.value); else void saveSearch().catch(() => {}); }
+          if (row) void choose(row.ref, row.value, row.label); else void saveSearch().catch(() => {}); }
       }} />
       <button type="button" aria-label={`Show ${label} choices`} disabled={disabled || reviewing} onMouseDown={event => event.preventDefault()} onClick={() => open ? setOpen(false) : openChoices()}>⌄</button></div>
     {open && !disabled && <div id={`${id}-options`} role="listbox" className={styles.options} style={position}>
@@ -202,7 +224,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
         }).catch(() => {});
       }}>None</button>}
       {shown.map((row, index) => <button id={`${id}-option-${index}`} key={`${row.ref}:${row.value}`} type="button" role="option" aria-selected={entity ? selectedRef === row.ref : saved === row.value}
-        onMouseDown={event => event.preventDefault()} onClick={() => { void choose(row.ref, row.value); }}><strong>{choiceKind === 'reason_for_stay' ? row.label : row.value}</strong>{choiceKind !== 'reason_for_stay' && row.label !== row.value && <span> — {row.label}</span>}{row.detail && <small>{row.detail}</small>}</button>)}
+        onMouseDown={event => event.preventDefault()} onClick={() => { void choose(row.ref, row.value, row.label); }}><strong>{choiceKind === 'reason_for_stay' ? row.label : row.value}</strong>{choiceKind !== 'reason_for_stay' && row.label !== row.value && <span> — {row.label}</span>}{row.detail && <small>{row.detail}</small>}</button>)}
       {selectedVerified && <small role="note">This row was checked; the earlier search may still be incomplete.</small>}
       {leads.length > 0 && <div role="note"><small><strong>Infor matches</strong> · {editor.commands.verifyNativeLead
         ? 'Verify a match before selecting. Search results may be incomplete.'
@@ -221,6 +243,10 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       <button type="button" disabled={loading} onMouseDown={event => event.preventDefault()} onClick={() => { void loadChoices(); }}>{lookupError ? 'Retry Infor' : entity ? 'Search Infor' : 'Refresh Infor choices'}</button>
     </div>}
   {open && catalogueSearch !== null && <small>Searching {catalogueSearch}. Select an Infor rate to apply it.</small>}
-  {dirty ? <small>Unsaved search</small> : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}{hint && <small>{hint}</small>}</div>
-    {compact && <FieldReview editor={editor} path={path} label={label} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />}</div>;
+  {dirty ? amendTrack ? <small>Select an Infor match. <button type="button" disabled={editor.view.busy} onClick={() => {
+      editVersion.current += 1; setQuery(saved); setDirty(false); setOpen(false); editor.commands.setUncommitted(path, false);
+    }}>Cancel search</button></small> : <small>Unsaved search</small>
+    : amendTrack && typeof savedValue === 'string' && saved ? <small>Select an Infor match for this requested Track.</small>
+    : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}{hint && <small>{hint}</small>}</div>
+    {compact && <FieldReview editor={editor} path={path} label={label} disabled={amendTrack && dirty} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />}</div>;
 }

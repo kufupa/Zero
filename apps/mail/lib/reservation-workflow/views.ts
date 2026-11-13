@@ -225,9 +225,20 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
   const requestId = decodeURIComponent(path.split('/')[4] ?? '');
   const draft = snapshot.session.draft;
   const request = draft.proposal.content.requests.find(row => row.id === requestId);
+  const amendTrack = request?.kind === 'amend' && kind === 'track';
+  const latestTrackRef = amendTrack ? draft.observations.findLast(observation => {
+    const criteria = record(observation.criteria);
+    return observation.status === 'complete' && observation.generationId === draft.generationId &&
+      observation.propertyCode === draft.propertyCode && observation.sourceMessageId === draft.source.messageId &&
+      criteria.kind === 'native_catalogue' && criteria.workflow === 'amend_catalogue' && criteria.catalogueKind === 'track' &&
+      criteria.requestId === requestId && criteria.sourceHash === draft.source.sourceHash &&
+      Array.isArray(criteria.fieldPaths) && criteria.fieldPaths.includes(path) &&
+      record(observation.coverage).complete === true && record(criteria.nativeCoverage).nativeResponseCorrelated === true;
+  })?.ref : undefined;
   const choices = draft.observations.flatMap(observation => {
     const criteria = record(observation.criteria);
     const catalogue = criteria.kind === 'native_catalogue';
+    if (amendTrack && (!latestTrackRef || observation.ref !== latestTrackRef)) return [];
     // Catalogue entries are individually observed even when the full list is incomplete.
     // Identity matches, however, require a complete search before they can be selected.
     if (observation.status !== 'complete' || (!catalogue && record(observation.coverage).complete !== true) ||
@@ -246,8 +257,12 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
     const candidates = Array.isArray(result.candidates) ? result.candidates : Array.isArray(result.options) ? result.options : [result];
     // Entity selections need a unique observation for the candidate, not a batch ref.
     if (!catalogue && candidates.length > 1) return [];
-    return candidates.map(raw => { const row = record(raw); const code = text(row.code ?? row.nativeCode ?? row.name ?? [row.firstName, row.lastName].filter(Boolean).join(' '));
-      return { ref: observation.ref, value: code, label: text(row.label ?? row.name) || code, detail: [row.meaning ?? row.description, row.nativeId, row.email].filter(Boolean).join(' · ') }; }).filter(row => row.value);
+    const rows = candidates.map(raw => { const row = record(raw); const code = text(row.code ?? row.nativeCode ?? row.name ?? [row.firstName, row.lastName].filter(Boolean).join(' '));
+      const label = amendTrack ? typeof row.label === 'string' ? row.label : '' : text(row.label ?? row.name) || code;
+      return { ref: observation.ref, value: code, label, detail: [row.meaning ?? row.description, row.nativeId, row.email].filter(Boolean).join(' · ') }; }).filter(row => row.value);
+    return amendTrack ? rows.filter(row => /^[A-Z0-9]{1,12}$/.test(row.value) && row.label.trim() &&
+      row.label.length <= 200 && ![...row.label].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) &&
+      rows.filter(other => other.value === row.value).length === 1) : rows;
   });
   const identities = kind === 'guest_candidate' || kind === 'party_candidate';
   const latest = new Map<string, NativeChoice>();
