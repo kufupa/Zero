@@ -262,9 +262,6 @@ export function ReservationPane(props: ReservationPaneProps) {
   const createPriceBlocked = request?.kind === 'create' && snapshot?.preparationViews.some(view => view.requestId === request.id && record(record(view).priceComparison).blocksGo === true && !snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === view.allocationId && row.status === 'succeeded'));
   const quotePrepared = request?.kind === 'quote' && snapshot ? [...snapshot.session.draft.operationResults].reverse().find(row => row.workflow === 'quote' && row.requestId === request.id && row.status === 'prepared') : null;
   const quoteObservation = quotePrepared && snapshot?.session.draft.observations.find(row => quotePrepared.observationRefs.includes(row.ref) && row.kind === 'rate_availability');
-  const needsCheck = () => checked !== digest || request?.kind === 'amend' && (checkedAmendReview !== null || hasPendingAmendPrice) &&
-    !amendPriceReviews.some(row => row.observation.ref === checkedAmendReview) || request?.kind === 'quote' &&
-    (!quoteObservation || !(Date.parse(text(record(quoteObservation.result).freshUntil)) > Date.now()));
   const amendCallbackTargets = snapshot && request?.kind === 'amend' ? ids.flatMap((id, index) => {
     if (snapshot.operationResults.some(row => row.workflow === 'amend' && row.requestId === request.id && row.allocationId === id &&
       ['succeeded', 'unknown'].includes(text(row.status))) || amendPriceReviews.some(row => row.id === id)) return [];
@@ -275,10 +272,22 @@ export function ReservationPane(props: ReservationPaneProps) {
       row.sourceMessageId === draft.source.messageId && row.criteria.workflow === 'amend' && row.criteria.requestId === request.id &&
       row.criteria.hintId === id && row.criteria.selectedRef === selected && record(row.result).outcome === 'prepared');
     const result = record(prepared?.result), target = record(result.target);
+    const parties = record(result.callbackPlan).parties;
+    const agency = Array.isArray(parties) ? parties.map(record).find(row => row.kind === 'bookingAgency') : undefined;
+    const nativeDefault = record(agency?.expectedEffects).ta1commission, requested = record(result.nativeChanges).taCommission;
+    const validDefault = typeof nativeDefault === 'string' && /^(?:0|[1-9]\d?)(?:\.\d+)?$|^100(?:\.0+)?$/.test(nativeDefault);
+    const validRequested = requested === undefined || typeof requested === 'number' && Number.isFinite(requested) && requested >= 0 && requested <= 100;
+    const name = typeof agency?.name === 'string' ? agency.name.trim() : '';
+    const commissionUnknown = nativeDefault !== undefined && (!validDefault || !validRequested || !name);
+    const commission = typeof nativeDefault === 'string' && validDefault && validRequested && name
+      ? { name, nativeDefault, requested: typeof requested === 'number' ? requested : null } : null;
     return typeof selected === 'string' && selected && result.callbackPriceReviewRequired === true &&
       isExactConfirmation(target.confirmation) && text(target.arrival) && text(target.departure)
-      ? [{ id, target }] : [];
+      ? [{ id, target, commission, commissionUnknown }] : [];
   }) : [];
+  const needsCheck = () => checked !== digest || request?.kind === 'amend' && (checkedAmendReview !== null || hasPendingAmendPrice) &&
+    !amendPriceReviews.some(row => row.observation.ref === checkedAmendReview) || !hasPendingAmendPrice && Boolean(amendCallbackTargets[0]?.commissionUnknown) ||
+    request?.kind === 'quote' && (!quoteObservation || !(Date.parse(text(record(quoteObservation.result).freshUntil)) > Date.now()));
   const pendingAmendReview = amendPriceReviews.find(row => row.observation.ref === checkedAmendReview) ??
     amendPriceReviews.find(row => row.id === activeTarget.current) ?? amendPriceReviews[0];
   const quoteExtras = record(quoteObservation?.result).extrasReviewItems;
@@ -527,11 +536,16 @@ export function ReservationPane(props: ReservationPaneProps) {
       {attention?.digest === digest && <small className={styles.small}>{attention.message}
         {attention.fields[0] && <button type="button" onClick={() => focusField(attention.fields[0]!)}>Review {inputFieldLabel(attention.fields[0])}</button>}
       </small>}
+      {checked === digest && !pendingAmendReview && amendCallbackTargets[0]?.commissionUnknown && <div className={styles.notice}>
+        Infor's agency commission could not be verified. Check the agency again before applying changes.
+      </div>}
       {needsCheck() && <small className={styles.small}>Check the current details and Infor price first. Then approve the final action.</small>}
-      {!needsCheck() && !pendingAmendReview && amendCallbackTargets[0] && <small className={styles.notice}>
-        For {text(amendCallbackTargets[0].target.confirmation)} · {text(amendCallbackTargets[0].target.arrival)} → {text(amendCallbackTargets[0].target.departure)},
-        Infor details may change when you check the price. Review that price before saving.
-      </small>}
+      {!needsCheck() && !pendingAmendReview && amendCallbackTargets[0] && <div className={styles.notice}>
+        For {text(amendCallbackTargets[0].target.confirmation)} · {text(amendCallbackTargets[0].target.arrival)} → {text(amendCallbackTargets[0].target.departure)}.
+        {amendCallbackTargets[0].commission && <><br />Agency {amendCallbackTargets[0].commission.name}: Infor selection default TA commission {amendCallbackTargets[0].commission.nativeDefault}%.
+          {amendCallbackTargets[0].commission.requested !== null && <> Requested final TA commission: {amendCallbackTargets[0].commission.requested}%.</>}</>}
+        <br />Infor details may change when you check the price. Review that price before saving.
+      </div>}
       <div className={styles.actions}>
         <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{needsCheck() ? request.kind === 'quote' ? 'Check quote' : request.kind === 'create' ? 'Check booking' : 'Check details' : request.kind === 'quote' ? record(quoteObservation?.result).failureKind === 'proven_shortage' ? 'Generate unsent decline' : 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : pendingAmendReview ? 'Save reviewed stay in Infor' : amendCallbackTargets.length ? 'Apply changes & check price' : 'Save in Infor'}</button></div>
       {workbench.blocked && <small>Apply the changed selection before checking.</small>}
