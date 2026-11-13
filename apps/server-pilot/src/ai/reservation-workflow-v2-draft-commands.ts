@@ -369,8 +369,8 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
             staffAllowanceType: valueAt(draft, `${root}/body/requestedMoney/${index}/staffAllowanceType`) as typeof claim.staffAllowanceType,
           }));
           const splitMoney = (rows: typeof groups, bucketIndex: number) => moneyRows.flatMap(claim => {
-            const separated = claim.staffAllowanceType === 'unsupported' && proposal.content.requests.find(other =>
-              other.kind === 'other' && separatedQuoteMoneyLinked(other.body.separatedFrom, request.id, claim.id));
+            const separated = claim.staffAllowanceType === 'unsupported' ? proposal.content.requests.find(other =>
+              other.kind === 'other' && separatedQuoteMoneyLinked(other.body.separatedFrom, request.id, claim.id)) : undefined;
             if (separated?.kind === 'other') {
               const coverage = separated.body.separatedFrom?.allowance?.groupIds;
               if (!coverage) return bucketIndex === 0 ? [{ ...claim }] : [];
@@ -410,9 +410,10 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
             for (const other of proposal.content.requests) {
               if (other.kind !== 'other' || !other.body.separatedFrom?.allowance) continue;
               const separated = other.body.separatedFrom;
-              if (separated.allowance.quoteRequestIds.includes(request.id) && splitRequest.body.requestedMoney.some(claim =>
+              const allowance = other.body.separatedFrom.allowance;
+              if (allowance.quoteRequestIds.includes(request.id) && splitRequest.body.requestedMoney.some(claim =>
                 claim.id === separated.moneyId && claim.staffAllowanceType === 'unsupported')) {
-                separated.allowance.quoteRequestIds = [...new Set([...separated.allowance.quoteRequestIds, requestId])];
+                allowance.quoteRequestIds = [...new Set([...allowance.quoteRequestIds, requestId])];
               }
             }
             const nextRoot = ptr('proposal', 'content', 'requests', requestId);
