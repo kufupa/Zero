@@ -770,6 +770,22 @@ export async function executeStaffQuote(
   await guard();
   return revision;
 }
+
+/** Interpret old stored header names for comparison without changing the approved attestation. */
+function storedPartyHeaderForComparison(header: unknown) {
+  if (!header || typeof header !== 'object' || Array.isArray(header)) return null;
+  const field = (canonical: string, legacy: string): unknown =>
+    Object.hasOwn(header, canonical)
+      ? Reflect.get(header, canonical)
+      : Object.hasOwn(header, legacy)
+        ? Reflect.get(header, legacy)
+        : undefined;
+  return {
+    organization: field('organization', 'company'),
+    bookingAgency: field('bookingAgency', 'agency'),
+  };
+}
+
 /**
  * Why a staff-approved quote can no longer be exported, or null while it is still the current approval.
  * Pure: the caller reads the latest generation and the current message from the database.
@@ -795,10 +811,11 @@ export function staffQuoteCurrencyProblem(args: {
     args.staff.sourceHash !== staffQuoteSourceHash(current)
   )
     return 'Selected email changed; rerun the approved quote';
+  const header = storedPartyHeaderForComparison(args.staff.header);
   if (
-    !args.staff.header ||
-    args.party.organization !== args.staff.header.organization ||
-    args.party.bookingAgency !== args.staff.header.bookingAgency
+    !header ||
+    args.party.organization !== header.organization ||
+    args.party.bookingAgency !== header.bookingAgency
   )
     return 'Party identity changed; rerun the approved quote';
   return null;
