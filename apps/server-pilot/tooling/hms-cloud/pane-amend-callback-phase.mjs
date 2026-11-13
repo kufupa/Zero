@@ -11,7 +11,9 @@ import { isSavedPartyStageRequestGate, savedPartyBeforeImage, savedPartySpec } f
 
 const usedPages = new WeakSet();
 const order = ['organization', 'bookingAgency', 'arAccount'];
-const price = /(?:price|tax|total|amount|averagenightly|averagerate|currency|curr)$/i;
+const priceAmounts = new Set(['grandtotal', 'averagenightly', 'averagerate', 'totalrate', 'totalratewithtax',
+  'enhancedexptotal', 'guesttotal', 'guesttax', 'guesttotalwithtax', 'tax', 'totalresortfee', 'ratetax']);
+const priceAmount = name => priceAmounts.has(name.toLowerCase());
 const text = value => typeof value === 'string' && value.length > 0 && value.length <= 200 &&
   value === value.trim() && !/[\p{Cc}]/u.test(value);
 const id = value => typeof value === 'string' && /^\d{1,100}$/.test(value);
@@ -21,7 +23,7 @@ const code = value => typeof value === 'string' && /^[A-Z0-9]{1,20}$/.test(value
 const pair = value => value && code(value.code) && text(value.display);
 const commission = value => value && typeof value === 'object' && !Array.isArray(value) &&
   Object.keys(value).length === 1 && typeof value.ta1commission === 'string' &&
-  /^10(?:\.0+)?$/.test(value.ta1commission);
+  /^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value.ta1commission) && Number(value.ta1commission) <= 100;
 const issue = error => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'CALLBACK_PHASE_UNVERIFIED';
 
 function validatePlan({ selected, expected, guarantee, parties, children, beforeImage }) {
@@ -55,13 +57,13 @@ function withoutSession(image) {
   return copy;
 }
 
-// Compare business and price fields, exempting only the native fields that the
-// current callback is allowed to change. Child pricing is reviewed after reprice.
+// Compare business fields and currency, allowing callback amounts to change
+// only after dispatch; the owner verifies prices after native reprice.
 function preserved(before, after, exempt, allowPriceChange = false) {
   const skip = new Set(exempt.map(name => name.toLowerCase()));
   const mask = snapshot => Object.fromEntries(['data', 'values'].map(part => [part,
     Object.fromEntries(Object.entries(snapshot?.[part] ?? {}).filter(([name]) =>
-      !skip.has(name.toLowerCase()) && !(allowPriceChange && price.test(name))))]));
+      !skip.has(name.toLowerCase()) && !(allowPriceChange && priceAmount(name))))]));
   return sameSavedGuaranteePreimage(mask(before), mask(after));
 }
 
@@ -73,7 +75,7 @@ function partyImagePreserved(before, after, exempt, allowPriceChange = false) {
   if (!a || !b) return false;
   const mask = image => Object.fromEntries(['data', 'values'].map(part => [part,
     Object.fromEntries(Object.entries(image[part]).filter(([name]) => !skip.has(name.toLowerCase()) &&
-      !(allowPriceChange && (price.test(name) || name === 'enablecheckavailability'))))]));
+      !(allowPriceChange && priceAmount(name))))]));
   return isDeepStrictEqual(mask(a), mask(b));
 }
 
@@ -94,7 +96,7 @@ export async function runCloudPaneAmendCallbacks(input, authority) {
   };
   try {
     if (!isLabtestAmendStageContext(context) || !isFirstGoCallbackAuthority(authority) ||
-        !context.page || !context.frame || !context.baseline || !context.isActive() ||
+        context.callbackAuthority !== authority || !context.page || !context.frame || !context.baseline || !context.isActive() ||
         context.remainingMs() <= 0 || !authority.isActive()) throw new Error('CALLBACK_CONTEXT_INVALID');
     const { selected, expected, guarantee, parties, children, beforeImage } = structuredClone({
       selected: input.selected, expected: input.expected, guarantee: input.guarantee,
@@ -175,8 +177,8 @@ export async function runCloudPaneAmendCallbacks(input, authority) {
       pending.partialEffect = result.partialEffect === 'possible' ? 'possible' : 'none';
       if (result.outcome !== 'applied' || !isDeepStrictEqual(result.before, guarantee.before) ||
           !isDeepStrictEqual(result.actual, { code: guarantee.code, display: guarantee.display }) ||
-          !result.snapshot || !preserved(snapshot, result.snapshot, ['guaranteetype']) ||
-          !partyImagePreserved(snapshot, result.snapshot, ['guaranteetype', 'childages']) || !possible()) {
+          !result.snapshot || !preserved(snapshot, result.snapshot, ['guaranteetype'], true) ||
+          !partyImagePreserved(snapshot, result.snapshot, ['guaranteetype', 'childages'], true) || !possible()) {
         throw new Error(result.issue || 'CALLBACK_GUARANTEE_UNVERIFIED');
       }
       active();
@@ -217,7 +219,7 @@ export async function runCloudPaneAmendCallbacks(input, authority) {
         ...(party.expectedEffects ? ['ta1commission'] : [])];
       if (result.outcome !== 'applied' || !isDeepStrictEqual(result.beforeImage, pending.before) ||
           !isDeepStrictEqual(result.afterImage, savedPartyBeforeImage(result.snapshot)) ||
-          !preserved(snapshot, result.snapshot, exempt) || !possible()) {
+          !preserved(snapshot, result.snapshot, exempt, true) || !possible()) {
         throw new Error(result.issue || 'CALLBACK_PARTY_UNVERIFIED');
       }
       active();
