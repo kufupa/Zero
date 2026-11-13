@@ -1172,12 +1172,18 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
         if ((value === null || value === undefined || (value === '' && !reviewedEmpty)) && !clearValue) return;
         // A reviewed first-Go price is a distinct approval of exact native effects;
         // reviewing the rest of the target must not erase its bound approval note.
-        const priceRef = request.kind === 'amend' && /\/perTarget\/\d+\/currentObservationRefs\/\d+$/.test(path) &&
+        const pricePath = request.kind === 'amend' ? path.match(/\/perTarget\/(\d+)\/currentObservationRefs\/\d+$/) : null;
+        const priceHintId = pricePath ? valueAt(draft, `${root}/body/perTarget/${pricePath[1]}/hintId`) : null;
+        const priceHints = pricePath ? valueAt(draft, `${root}/body/targets/include`) : null;
+        const priceHintIndex = Array.isArray(priceHints) ? priceHints.findIndex(hint => rec(hint).id === priceHintId) : -1;
+        const priceSelectedRef = priceHintIndex >= 0 ? valueAt(draft, `${root}/body/targets/include/${priceHintIndex}/suggestedRef`) : null;
+        const priceRef = pricePath && typeof priceHintId === 'string' && typeof priceSelectedRef === 'string' &&
           typeof value === 'string' ? draft.observations.find(item => item.ref === value && item.kind === 'rate_availability' &&
             item.status === 'complete' && item.coverage.complete && item.generationId === draft.generationId &&
             item.propertyCode === draft.propertyCode && item.sourceMessageId === draft.source.messageId &&
             item.criteria.workflow === 'amend' && item.criteria.stage === 'callback_price_review' &&
-            item.criteria.requestId === request.id) : null;
+            item.criteria.requestId === request.id && item.criteria.hintId === priceHintId &&
+            item.criteria.selectedRef === priceSelectedRef) : null;
         const approval = priceRef && rec(priceRef.result).approvalDigest;
         const priorPriceReview = typeof approval === 'string' && /^[a-f0-9]{64}$/.test(approval) &&
           reviews[path]?.status === 'accepted' && reviews[path]?.note === `amend-price:${value}:${approval}`;
