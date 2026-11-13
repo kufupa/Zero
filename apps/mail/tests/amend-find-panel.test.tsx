@@ -752,8 +752,8 @@ describe('AmendLookupPanel', () => {
     const findStay = vi.fn().mockResolvedValue({
       ...found(),
       commercial: {
-        company: { name: 'Northstar Conference Group', nativeId: 'COMP-42' },
-        agency: { name: 'Harbor Travel', nativeId: 'AG-9' },
+        organization: { name: 'Northstar Conference Group', nativeId: 'COMP-42' },
+        bookingAgency: { name: 'Harbor Travel', nativeId: 'AG-9' },
       },
     });
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
@@ -1160,7 +1160,7 @@ describe('AmendLookupPanel with the job queue off', () => {
 });
 
 describe('party lookup transport with the job queue off', () => {
-  const request = { kind: 'party' as const, name: 'ABC Travel', partyKind: 'company' as const };
+  const request = { kind: 'party' as const, name: 'ABC Travel', partyKind: 'organization' as const };
 
   it('does not queue or run a party lookup from an automatic read-back start', async () => {
     const findParty = vi
@@ -1185,7 +1185,7 @@ describe('party lookup transport with the job queue off', () => {
     const started = await transport!.queue(request);
     expect(findParty).toHaveBeenCalledWith({
       name: 'ABC Travel',
-      kind: 'company',
+      kind: 'organization',
       threadId: THREAD,
     });
     expect(started).toMatchObject({
@@ -2413,7 +2413,7 @@ describe('AmendLookupPanel amend form', () => {
     const session = sessionWith({ ...AMEND, requestedArrival: '2026-10-13', requestedDeparture: '2026-10-15' });
     session.binding = { ...session.binding!, internetMessageId: '<one@example.test>' };
     const panel = render(<AmendLookupPanel session={session} trpc={trpc} readOnlyAmend={{ propertyCode: 'HRCEN', selectionCurrent: true,
-      ratePlans: [{ code: 'CORP', name: 'Corporate', board: 'bed_breakfast' }] }} />);
+      ratePlans: [{ code: 'CORP', name: 'Corporate', mealPlan: 'bed_breakfast' }] }} />);
     await pressFind();
     const form = await screen.findByTestId('amend-form');
     expect(screen.queryByTestId('amend-payment-banner')).toBeNull();
@@ -2470,7 +2470,7 @@ describe('AmendLookupPanel amend form', () => {
           stored = { status: 'needs_you', formDigest: DIGEST, form: { action: 'amend', confirmation: request.confirmation,
             arrival: request.arrival, fields: request.changes, cloudAmend: { bound: true,
               approvedPrices: { version: 2, currency: 'ZAR', totalCents: '10000', options: [] },
-              preserved: { agency: null, organization: null } } }, before: { fields: {} },
+              preserved: { bookingAgency: null, organization: null } } }, before: { fields: {} },
           snapshot: { readAt: AS_OF, stale: false }, grant: null,
           run: { runId: 'b0f24507-0c25-4c82-a929-bc3ce167d3ef', state: 'failed', failureClass: null,
             lastError: null, evidence: [], reviewed: null }, needsCheck: false };
@@ -2487,7 +2487,7 @@ describe('AmendLookupPanel amend form', () => {
         reviewCloudAmend: { mutate: review }, cloudAmendEvidence: { query: vi.fn() },
       } };
       panel.rerender(<AmendLookupPanel session={session} trpc={cloud} workItemId={RUN_ID} readOnlyAmend={{
-        propertyCode: 'HRCEN', selectionCurrent: true, ratePlans: [{ code: 'CORP', name: 'Corporate', board: 'bed_breakfast' }],
+        propertyCode: 'HRCEN', selectionCurrent: true, ratePlans: [{ code: 'CORP', name: 'Corporate', mealPlan: 'bed_breakfast' }],
       }} />);
       await pressFind();
       fireEvent.change(await screen.findByLabelText('Confirmation recipient'), { target: { value: 'guest@example.test' } });
@@ -2518,7 +2518,7 @@ describe('AmendLookupPanel amend form', () => {
     const findStay = vi.fn(async ({ confirmation }: { confirmation: string }) => unpaidFound({ confirmation }));
     const trpc = amendTrpc(findStay, vi.fn(), vi.fn());
     const options = { propertyCode: 'HRCEN' as const, selectionCurrent: true,
-      ratePlans: [{ code: 'CORP', name: 'Corporate', board: 'bed_breakfast' as const }] };
+      ratePlans: [{ code: 'CORP', name: 'Corporate', mealPlan: 'bed_breakfast' as const }] };
     const makeSession = (confirmation: string, messageId: string, epoch: number) => {
       const session = sessionWith({ ...AMEND, confirmationNumber: confirmation,
         requestedArrival: '2026-10-13', requestedDeparture: '2026-10-15' });

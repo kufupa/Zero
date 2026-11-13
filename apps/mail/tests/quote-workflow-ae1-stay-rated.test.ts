@@ -32,8 +32,8 @@ const A = { key: '2027-10-26:2027-10-28', arrival: '2027-10-26', departure: '202
 const B = { key: '2027-11-17:2027-11-19', arrival: '2027-11-17', departure: '2027-11-19' };
 /** What the auto party lookup's pick sends: StaffPartyFields onPick -> onPatch({ parties, company }). */
 const PICK: Partial<StaffQuoteHeader> = {
-  company: 'Acme Travel',
-  parties: { company: { kind: 'company', nativeId: 'hms-1', name: 'Acme Travel' } },
+  organization: 'Acme Travel',
+  parties: { organization: { kind: 'organization', nativeId: 'hms-1', name: 'Acme Travel' } },
 };
 
 function row(
@@ -50,7 +50,7 @@ function row(
     roomPreference: roomCode,
     adults,
     childrenAges: [],
-    board: 'bb',
+    mealPlan: 'bb',
     specialRequests: [],
     fields: { arrivalDate: 'extracted', departureDate: 'extracted', adults: 'extracted', roomPreference: 'staff_corrected' },
   };
@@ -203,20 +203,20 @@ describe('AE1 multi-stay: a run waits for the party lookup', () => {
     const session = aeSession();
     const stayA = session.steps.find((step) => step.shareKey === A.key);
     if (!stayA) throw new Error(`no step for ${A.key}`);
-    const pending = reduceQuoteSession(session, { type: 'party_lookup_pending', kind: 'company', pending: true });
+    const pending = reduceQuoteSession(session, { type: 'party_lookup_pending', kind: 'organization', pending: true });
     expect(pending.inputRevision).toBe(session.inputRevision);
-    expect(quoteRunBlockReason(pending, stayA)).toBe('Finding the company in HMS…');
-    const settled = reduceQuoteSession(pending, { type: 'party_lookup_pending', kind: 'company', pending: false });
+    expect(quoteRunBlockReason(pending, stayA)).toBe('Finding the organization in HMS…');
+    const settled = reduceQuoteSession(pending, { type: 'party_lookup_pending', kind: 'organization', pending: false });
     expect(quoteRunBlockReason(settled, stayA)).toBeNull();
     // A report that changes nothing returns the same session, so the pane does not re-render for it.
-    expect(reduceQuoteSession(settled, { type: 'party_lookup_pending', kind: 'company', pending: false })).toBe(settled);
+    expect(reduceQuoteSession(settled, { type: 'party_lookup_pending', kind: 'organization', pending: false })).toBe(settled);
   });
 
   it('names both lookups while the company and the agency are both pending', () => {
-    const company = reduceQuoteSession(aeSession(), { type: 'party_lookup_pending', kind: 'company', pending: true });
-    const both = reduceQuoteSession(company, { type: 'party_lookup_pending', kind: 'agency', pending: true });
-    expect(partyLookupWaitReason(both)).toBe('Finding the company and agency in HMS…');
-    const agencyOnly = reduceQuoteSession(both, { type: 'party_lookup_pending', kind: 'company', pending: false });
-    expect(partyLookupWaitReason(agencyOnly)).toBe('Finding the agency in HMS…');
+    const company = reduceQuoteSession(aeSession(), { type: 'party_lookup_pending', kind: 'organization', pending: true });
+    const both = reduceQuoteSession(company, { type: 'party_lookup_pending', kind: 'bookingAgency', pending: true });
+    expect(partyLookupWaitReason(both)).toBe('Finding the organization and booking agency in HMS…');
+    const agencyOnly = reduceQuoteSession(both, { type: 'party_lookup_pending', kind: 'organization', pending: false });
+    expect(partyLookupWaitReason(agencyOnly)).toBe('Finding the booking agency in HMS…');
   });
 });

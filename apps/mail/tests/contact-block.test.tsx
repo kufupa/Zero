@@ -15,8 +15,8 @@ afterEach(() => {
 
 const PRIYA: StoredContact = {
   name: 'Priya Naidoo',
-  company: 'New Frontiers Tours',
-  endClient: 'Tailormade Africa',
+  bookingAgency: 'New Frontiers Tours',
+  organization: 'Tailormade Africa',
   email: 'priya@example.com',
   phone: '+27 11 000 0000',
 };

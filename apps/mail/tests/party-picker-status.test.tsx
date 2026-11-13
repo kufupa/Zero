@@ -32,7 +32,7 @@ function partyFields(
 ) {
   const shared = {
     parties: agencySelected
-      ? { agency: { kind: 'agency' as const, nativeId: 'agency-1', name: 'Example Agency' } }
+      ? { bookingAgency: { kind: 'bookingAgency' as const, nativeId: 'agency-1', name: 'Example Agency' } }
       : {},
     find: vi.fn(),
     jobTransport,
@@ -49,14 +49,14 @@ function partyFields(
         autoLookup
         jobReadBackStatusOwner
         name="Example Agency"
-        kind="agency"
+        kind="bookingAgency"
       />
       <PartyPicker
         {...shared}
         autoLookup
         jobReadBackStatusOwner={agencySelected}
         name="Example Group"
-        kind="company"
+        kind="organization"
       />
     </>
   );
@@ -113,7 +113,7 @@ describe('PartyPicker shared job status', () => {
       <PartyPicker
         autoLookup
         name="Example Company"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -137,7 +137,7 @@ describe('PartyPicker shared job status', () => {
   });
 
   it('keeps inline match confirmation and failed read-back Retry visible together', async () => {
-    const candidate = { kind: 'company' as const, nativeId: 'company-1', name: 'Example Company' };
+    const candidate = { kind: 'organization' as const, nativeId: 'company-1', name: 'Example Company' };
     const find = vi.fn(async () => ({
       outcome: 'resolved' as const,
       results: [candidate],
@@ -158,7 +158,7 @@ describe('PartyPicker shared job status', () => {
       <PartyPicker
         autoLookup
         name="Example Company"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={find}
         jobTransport={jobTransport}

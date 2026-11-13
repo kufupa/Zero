@@ -9,7 +9,7 @@ import type { PartySuggestion } from '../lib/quote-workflow/party-lookup';
 
 const SENDER_HINT: PartySuggestion = {
   source: 'sender',
-  kind: 'agency',
+  kind: 'bookingAgency',
   name: 'Example Travel Agency',
   nativeId: null,
   idStatus: 'unverified',
@@ -104,7 +104,7 @@ vi.mock('../providers/query-provider', () => ({
       screenshot: { query: async () => null },
     },
     panePartyLookup: {
-      findParty: { mutate: (input: { name: string; kind?: 'company' | 'agency' }) => findPartyMutation(input) },
+      findParty: { mutate: (input: { name: string; kind?: 'organization' | 'bookingAgency' }) => findPartyMutation(input) },
       suggest: { query: (input: { sender: string; body: string }) => suggestQuery(input) },
     },
     workItems: {
@@ -121,7 +121,7 @@ vi.mock('../providers/query-provider', () => ({
             {
               id: 'g1',
               childrenAges: [],
-              board: 'unknown' as const,
+              mealPlan: 'unknown' as const,
               quantity: 1,
               specialRequests: [],
               fields: {
@@ -180,7 +180,7 @@ describe('NavaPane mail-derived party hints', () => {
   });
 
   it('preselects the sender party once HMS returns it', async () => {
-    const agency = { kind: 'agency' as const, nativeId: '77', name: 'Example Travel Agency' };
+    const agency = { kind: 'bookingAgency' as const, nativeId: '77', name: 'Example Travel Agency' };
     findPartyMutation.mockResolvedValue({
       outcome: 'resolved',
       results: [agency],
@@ -204,7 +204,7 @@ describe('NavaPane mail-derived party hints', () => {
   it('swallows a failed suggest and shows no hints', async () => {
     suggestQuery.mockRejectedValue(new Error('suggest unavailable'));
     render(<NavaPane bridge={fakeBridge} preview />);
-    expect(await screen.findByRole('group', { name: 'Agency lookup in HMS' })).toBeTruthy();
+    expect(await screen.findByRole('group', { name: 'Booking Agency lookup in HMS' })).toBeTruthy();
     await waitFor(() => expect(suggestQuery).toHaveBeenCalled());
     expect(screen.queryByText(/not confirmed in HMS/)).toBeNull();
     expect(screen.queryByText('Example Travel Agency')).toBeNull();

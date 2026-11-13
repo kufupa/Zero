@@ -23,7 +23,7 @@ afterEach(() => {
   cleanup();
 });
 
-const ABC: StaffQuoteParty = { kind: 'company', nativeId: '4411', name: 'ABC Travel (Pty) Ltd' };
+const ABC: StaffQuoteParty = { kind: 'organization', nativeId: '4411', name: 'ABC Travel (Pty) Ltd' };
 
 describe('partyFinderFromTrpc', () => {
   it('is null when the panePartyLookup route is not bound', () => {
@@ -60,10 +60,10 @@ describe('partyFinderFromTrpc', () => {
     const mutate = vi.fn(async () => reply);
     const find = partyFinderFromTrpc({ panePartyLookup: { findParty: { mutate } } });
     expect(find).not.toBeNull();
-    await expect(find!('Safari', 'company', { threadId: 'thread-dv' })).resolves.toEqual(reply);
+    await expect(find!('Safari', 'organization', { threadId: 'thread-dv' })).resolves.toEqual(reply);
     expect(mutate).toHaveBeenCalledWith({
       name: 'Safari',
-      kind: 'company',
+      kind: 'organization',
       threadId: 'thread-dv',
     });
   });
@@ -74,11 +74,11 @@ describe('partyFinderFromTrpc', () => {
     const find = partyFinderFromTrpc({ panePartyLookup: { findParty: { mutate } } });
     expect(find).not.toBeNull();
     await expect(
-      find!('Safari', 'company', { threadId: 'thread-dv', messageId: 'msg-older-dv' }),
+      find!('Safari', 'organization', { threadId: 'thread-dv', messageId: 'msg-older-dv' }),
     ).resolves.toEqual(reply);
     expect(mutate).toHaveBeenCalledWith({
       name: 'Safari',
-      kind: 'company',
+      kind: 'organization',
       threadId: 'thread-dv',
       messageId: 'msg-older-dv',
     });
@@ -88,8 +88,8 @@ describe('partyFinderFromTrpc', () => {
 describe('party copy', () => {
   it('shows the picked name with the HMS mark, and says why a search found nothing', () => {
     expect(partyChipText(ABC)).toBe('✓ ABC Travel (Pty) Ltd (HMS)');
-    expect(partyNoCandidateNote('no_match', 'company', 'ABC Travel')).toBe(
-      'No company in HMS matches “ABC Travel”. Check the spelling or search a shorter name.',
+    expect(partyNoCandidateNote('no_match', 'organization', 'ABC Travel')).toBe(
+      'No organization in HMS matches “ABC Travel”. Check the spelling or search a shorter name.',
     );
     expect(partyNoCandidateNote('refused_lock_busy')).toBe(
       'HMS is busy with another lookup. Nava will retry.',
@@ -120,8 +120,8 @@ describe('PartyPicker', () => {
       async (): Promise<PartyFindReply> => ({
         outcome: 'ambiguous',
         results: [
-          { kind: 'company', nativeId: '4411', name: 'ABC Travel (Pty) Ltd' },
-          { kind: 'agency', nativeId: '4412', name: 'ABC Travel Holdings' },
+          { kind: 'organization', nativeId: '4411', name: 'ABC Travel (Pty) Ltd' },
+          { kind: 'bookingAgency', nativeId: '4412', name: 'ABC Travel Holdings' },
         ],
         truncated: false,
       }),
@@ -134,8 +134,8 @@ describe('PartyPicker', () => {
       expect(screen.getByRole('button', { name: 'ABC Travel Holdings' })).toBeTruthy(),
     );
     expect(find).toHaveBeenCalledWith('ABC');
-    expect(screen.getByText('Company')).toBeTruthy();
-    expect(screen.getByText('Agency')).toBeTruthy();
+    expect(screen.getByText('Organization')).toBeTruthy();
+    expect(screen.getByText('Booking Agency')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'ABC Travel (Pty) Ltd' }));
     expect(onPick).toHaveBeenCalledWith(ABC);
   });
@@ -180,7 +180,7 @@ describe('PartyPicker', () => {
     const find = vi.fn(
       async (): Promise<PartyFindReply> => ({
         outcome: 'ambiguous',
-        results: [{ kind: 'company', nativeId: '1', name: 'Tourvest Branch One' }],
+        results: [{ kind: 'organization', nativeId: '1', name: 'Tourvest Branch One' }],
         truncated: true,
       }),
     );
@@ -208,7 +208,7 @@ describe('PartyPicker', () => {
     render(
       <PartyPicker
         name="ABC Travel (Pty) Ltd"
-        parties={{ company: ABC }}
+        parties={{ organization: ABC }}
         find={vi.fn()}
         onPick={vi.fn()}
         onClear={onClear}
@@ -218,7 +218,7 @@ describe('PartyPicker', () => {
     // Find stays: the other kind (agency) can still be picked alongside the company.
     expect(screen.queryByRole('button', { name: 'Find in HMS' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Change' }));
-    expect(onClear).toHaveBeenCalledWith('company');
+    expect(onClear).toHaveBeenCalledWith('organization');
   });
 });
 
@@ -231,7 +231,7 @@ describe('executeStaffQuote party on the pane bind', () => {
     quantity: 1,
     adults: 1,
     childrenAges: [] as number[],
-    board: 'bb' as const,
+    mealPlan: 'bb' as const,
     specialRequests: [] as string[],
     fields: {},
   };
@@ -261,7 +261,7 @@ describe('executeStaffQuote party on the pane bind', () => {
       selectionEpoch: 1,
       inputRevision: 1,
       groups: [stay],
-      header: { ...emptyStaffQuoteHeader(), company: 'ABC Travel (Pty) Ltd' },
+      header: { ...emptyStaffQuoteHeader(), organization: 'ABC Travel (Pty) Ltd' },
     });
     const sent = mutate.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(Object.keys(sent)).not.toContain('parties');
@@ -276,13 +276,13 @@ describe('executeStaffQuote party on the pane bind', () => {
       selectionEpoch: 1,
       inputRevision: 1,
       groups: [stay],
-      header: { ...emptyStaffQuoteHeader(), company: ABC.name, parties: { company: { ...ABC } } },
+      header: { ...emptyStaffQuoteHeader(), organization: ABC.name, parties: { organization: { ...ABC } } },
     });
     expect(mutate.mock.calls[0]?.[0]).toMatchObject({
-      parties: { company: { kind: 'company', nativeId: '4411', name: ABC.name } },
+      parties: { organization: { kind: 'organization', nativeId: '4411', name: ABC.name } },
     });
-    const sent = mutate.mock.calls[0]?.[0] as { parties: { company: object } };
-    expect(Object.keys(sent.parties.company).sort()).toEqual(['kind', 'name', 'nativeId']);
+    const sent = mutate.mock.calls[0]?.[0] as { parties: { organization: object } };
+    expect(Object.keys(sent.parties.organization).sort()).toEqual(['kind', 'name', 'nativeId']);
   });
 });
 
@@ -290,14 +290,14 @@ describe('the picked party in the session header', () => {
   it('stores the pick on the header, bumps the input revision, and Clear removes it', () => {
     const before = reduceQuoteSession(initialQuoteSession(), {
       type: 'patch_staff_header',
-      header: { company: 'x' },
+      header: { organization: 'x' },
     });
     const picked = reduceQuoteSession(before, {
       type: 'patch_staff_header',
-      header: { parties: { company: { ...ABC } }, company: ABC.name },
+      header: { parties: { organization: { ...ABC } }, organization: ABC.name },
     });
-    expect(picked.staffHeader.parties).toEqual({ company: ABC });
-    expect(picked.staffHeader.company).toBe(ABC.name);
+    expect(picked.staffHeader.parties).toEqual({ organization: ABC });
+    expect(picked.staffHeader.organization).toBe(ABC.name);
     expect(picked.inputRevision).toBe(before.inputRevision + 1);
     const cleared = reduceQuoteSession(picked, {
       type: 'patch_staff_header',

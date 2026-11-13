@@ -26,7 +26,7 @@ const groups: StayGroupRequirement[] = [
     quantity: 1,
     adults: 2,
     childrenAges: [],
-    board: 'room_only',
+    mealPlan: 'room_only',
     roomCodes: ['SKNG'],
     specialRequests: [],
     fields: {},
@@ -163,6 +163,7 @@ describe('staff quote HMS job binding', () => {
     const staffQuoteJob = vi.fn(async (_input: unknown) => view('done', READY, undefined, true));
 
     const result = await bindReadBackStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       query: staffQuoteJob,
       source: selectedSource,
       selectionEpoch: 3,
@@ -222,7 +223,7 @@ describe('staff quote HMS job binding', () => {
   });
 
   it.each(['Dinner buffet', 'Dinner buffet (Children < 12)'])('labels a server-priced dinner fallback as B&B and carries the verified add-on: %s', async (label) => {
-    const dinnerGroups = groups.map((group) => ({ ...group, board: 'dinner_bb' as const }));
+    const dinnerGroups = groups.map((group) => ({ ...group, mealPlan: 'dinner_bb' as const }));
     const dinnerAddOn = {
       label,
       amountMinor: 25_000,
@@ -247,7 +248,7 @@ describe('staff quote HMS job binding', () => {
 
     expect(result).toMatchObject({
       status: 'ok',
-      offer: { board: 'bb' },
+      offer: { mealPlan: 'bb' },
       staffQuote: { dinnerFallbackGroupIds: ['single'], dinnerAddOn },
     });
   });
@@ -263,7 +264,7 @@ describe('staff quote HMS job binding', () => {
       source,
       selectionEpoch: 3,
       inputRevision: 4,
-      groups: groups.map((group) => ({ ...group, board: 'bb' as const })),
+      groups: groups.map((group) => ({ ...group, mealPlan: 'bb' as const })),
       header: { ...emptyStaffQuoteHeader(), dinnerAllowanceMinor: 25_000 },
     });
 
@@ -527,7 +528,7 @@ describe('staff quote HMS job binding', () => {
     const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'prepared-job' }));
     const staffQuoteJob = vi.fn(async () => ({
       ...view('done', { ...READY, selectionEpoch: 0, inputRevision: 0 }, asOf, true),
-      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { company: 'Example Client' }),
+      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { organization: 'Example Client' }),
     }));
 
     const result = await bindAutoStartStaffQuote({
@@ -581,7 +582,7 @@ describe('staff quote HMS job binding', () => {
     const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'staff-job-reused' }));
     const staffQuoteJob = vi.fn(async () => ({
       ...view('done', { ...READY, selectionEpoch: 1, inputRevision: 2 }),
-      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { company: 'Different Company' }),
+      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { groups: [{ ...queue.mock.calls[0]![0].groups[0]!, mealPlan: 'bb' }] }),
     }));
 
     const result = await bindAutoStartStaffQuote({
@@ -665,13 +666,13 @@ describe('staff quote HMS job binding', () => {
               quantity: 1,
               adults: 9,
               childrenAges: [],
-              board: 'room_only',
+              mealPlan: 'room_only',
               roomCodes: ['SKNG'],
             },
           ],
           salesStrategy: 'BAR' as const,
-          company: '',
-          agency: '',
+          organization: '',
+          bookingAgency: '',
           attention: '',
           clientEmail: '',
           clientTelephone: '',
@@ -707,13 +708,13 @@ describe('staff quote HMS job binding', () => {
               quantity: 1,
               adults: 2,
               childrenAges: [],
-              board: 'room_only',
+              mealPlan: 'room_only',
               roomCodes: ['SKNG'],
             },
           ],
           salesStrategy: 'BAR' as const,
-          company: '',
-          agency: '',
+          organization: '',
+          bookingAgency: '',
           attention: 'Earlier name',
           clientEmail: '',
           clientTelephone: '',
@@ -761,13 +762,13 @@ describe('staff quote HMS job binding', () => {
                 quantity: 1,
                 adults: 2,
                 childrenAges: [],
-                board: 'room_only',
+                mealPlan: 'room_only',
                 roomCodes: ['SKNG'],
               },
             ],
             salesStrategy: 'BAR',
-            company: '',
-            agency: '',
+            organization: '',
+            bookingAgency: '',
             attention: '',
             clientEmail: '',
             clientTelephone: '',
@@ -791,13 +792,13 @@ describe('staff quote HMS job binding', () => {
                 quantity: 1,
                 adults: 2,
                 childrenAges: [],
-                board: 'room_only',
+                mealPlan: 'room_only',
                 roomCodes: ['SKNG'],
               },
             ],
             salesStrategy: 'BAR',
-            company: '',
-            agency: '',
+            organization: '',
+            bookingAgency: '',
             attention: '',
             clientEmail: '',
             clientTelephone: '',

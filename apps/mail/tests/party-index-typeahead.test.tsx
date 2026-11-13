@@ -22,9 +22,9 @@ afterEach(() => {
 const DAY = 24 * 60 * 60 * 1000;
 const HOUR = 60 * 60 * 1000;
 
-const WOOLWORTHS_COMPANY = { kind: 'company' as const, nativeId: '49', name: 'Woolworths Holdings' };
-const WOOLWORTHS_AGENCY = { kind: 'agency' as const, nativeId: '571', name: 'Woolworths Travel' };
-const ACME_AGENCY = { kind: 'agency' as const, nativeId: '612', name: 'Acme Travel HQ' };
+const WOOLWORTHS_COMPANY = { kind: 'organization' as const, nativeId: '49', name: 'Woolworths Holdings' };
+const WOOLWORTHS_AGENCY = { kind: 'bookingAgency' as const, nativeId: '571', name: 'Woolworths Travel' };
+const ACME_AGENCY = { kind: 'bookingAgency' as const, nativeId: '612', name: 'Acme Travel HQ' };
 
 function indexReply(results: PartyIndexReply['results'], ageMs: number | null = 3 * HOUR): PartyIndexReply {
   return { source: 'index', available: true, updatedAt: '2026-10-01T00:00:00.000Z', ageMs, results };
@@ -137,7 +137,7 @@ describe('PartyPicker: matches from the HMS list', () => {
     rerender(picker({ name: 'Woolworths', indexSearch }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Woolworths Holdings' })).toBeTruthy());
     await act(async () => {
-      resolveWool(indexReply([{ kind: 'company', nativeId: '1', name: 'Wool Stale Co' }]));
+      resolveWool(indexReply([{ kind: 'organization', nativeId: '1', name: 'Wool Stale Co' }]));
     });
     expect(screen.queryByRole('button', { name: 'Wool Stale Co' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Woolworths Holdings' })).toBeTruthy();
@@ -147,13 +147,13 @@ describe('PartyPicker: matches from the HMS list', () => {
     const onPick = vi.fn();
     const find = vi.fn<(name: string) => Promise<PartyFindReply>>(async () => ({
       outcome: 'resolved',
-      results: [{ kind: 'company', nativeId: '50', name: 'Live Only Co' }],
+      results: [{ kind: 'organization', nativeId: '50', name: 'Live Only Co' }],
       truncated: false,
     }));
     const indexSearch = vi.fn(async () => indexReply([WOOLWORTHS_COMPANY]));
     render(picker({ find, onPick, indexSearch }));
     fireEvent.click(await screen.findByRole('button', { name: 'Woolworths Holdings' }));
-    expect(onPick).toHaveBeenCalledWith({ kind: 'company', nativeId: '49', name: 'Woolworths Holdings' });
+    expect(onPick).toHaveBeenCalledWith({ kind: 'organization', nativeId: '49', name: 'Woolworths Holdings' });
     expect(find).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Live Only Co' })).toBeTruthy());
@@ -162,7 +162,7 @@ describe('PartyPicker: matches from the HMS list', () => {
 
   it('a field with a kind lists only matches of its kind', async () => {
     const indexSearch = vi.fn(async () => indexReply([WOOLWORTHS_COMPANY, WOOLWORTHS_AGENCY]));
-    render(picker({ kind: 'agency', indexSearch }));
+    render(picker({ kind: 'bookingAgency', indexSearch }));
     const section = await screen.findByRole('region', { name: 'Matches from the HMS list' });
     expect(within(section).getByRole('button', { name: 'Woolworths Travel' })).toBeTruthy();
     expect(within(section).queryByRole('button', { name: 'Woolworths Holdings' })).toBeNull();
@@ -179,7 +179,7 @@ describe('the quote workflow header: the HMS list is asked with each field\'s ow
     const session = {
       ...initialQuoteSession(),
       phase: 'review' as const,
-      staffHeader: { ...emptyStaffQuoteHeader(), company: 'Woolworths', agency: 'Acme Travel' },
+      staffHeader: { ...emptyStaffQuoteHeader(), organization: 'Woolworths', bookingAgency: 'Acme Travel' },
     };
     render(
       <QuoteWorkflowPanel
@@ -190,8 +190,8 @@ describe('the quote workflow header: the HMS list is asked with each field\'s ow
         partyIndex={partyIndex}
       />,
     );
-    const agencyGroup = screen.getByRole('group', { name: 'Agency lookup in HMS' });
-    const companyGroup = screen.getByRole('group', { name: 'Company lookup in HMS' });
+    const agencyGroup = screen.getByRole('group', { name: 'Booking Agency lookup in HMS' });
+    const companyGroup = screen.getByRole('group', { name: 'Organization lookup in HMS' });
     await waitFor(() => expect(within(agencyGroup).getByRole('button', { name: 'Acme Travel HQ' })).toBeTruthy());
     await waitFor(() =>
       expect(within(companyGroup).getByRole('button', { name: 'Woolworths Holdings' })).toBeTruthy(),

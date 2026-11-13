@@ -31,7 +31,7 @@ const stay = (overrides: Partial<StayGroupRequirement> = {}): StayGroupRequireme
   quantity: 1,
   adults: 1,
   childrenAges: [],
-  board: 'bb',
+  mealPlan: 'bb',
   specialRequests: [],
   fields: {},
   ...overrides,
@@ -303,13 +303,13 @@ describe('HRDAV native room and board maps', () => {
     expect(hrdavBoardFromLabel('')).toBe('unknown');
     expect(hrdavBoardFromLabel('DBB')).toBe('unknown');
     expect(hrdavBoardFromLabel('BB')).toBe('unknown');
-    expect(HRDAV_RATE_PLANS.BAR.board).toBe('bb');
-    expect(HRDAV_RATE_PLANS.BARRO.board).toBe('room_only');
-    expect(HRDAV_RATE_PLANS.BLRB.board).toBe('unknown');
-    expect(HRDAV_RATE_PLANS.BARDIS.board).toBe('unknown');
-    expect(HRDAV_RATE_PLANS.DEF.board).toBe('unknown');
+    expect(HRDAV_RATE_PLANS.BAR.mealPlan).toBe('bb');
+    expect(HRDAV_RATE_PLANS.BARRO.mealPlan).toBe('room_only');
+    expect(HRDAV_RATE_PLANS.BLRB.mealPlan).toBe('unknown');
+    expect(HRDAV_RATE_PLANS.BARDIS.mealPlan).toBe('unknown');
+    expect(HRDAV_RATE_PLANS.DEF.mealPlan).toBe('unknown');
     expect(
-      staffQuoteGroupsFromStay([stay({ board: 'dinner_bb', roomPreference: 'STKNG' })], HRDAV_PROPERTY_CODE),
+      staffQuoteGroupsFromStay([stay({ mealPlan: 'dinner_bb', roomPreference: 'STKNG' })], HRDAV_PROPERTY_CODE),
     ).toEqual({
       error: expect.stringMatching(/meal plan/i),
     });
@@ -428,8 +428,8 @@ describe('staff quote strategy comparisons', () => {
         {
           id: `option-${strategy}`,
           groupId: group.id,
-          board: 'bb',
-          boardLabel: 'Bed & Breakfast',
+          mealPlan: 'bb',
+          mealPlanLabel: 'Bed & Breakfast',
           rateCode: 'BAR',
           rateLabel: 'Best available',
           roomCode: 'STKNG',
@@ -497,7 +497,7 @@ describe('staff quote strategy comparisons', () => {
       row: {
         status: 'ready',
         roomLabels: ['Standard King'],
-        boardLabels: ['Bed & Breakfast'],
+        mealPlanLabels: ['Bed & Breakfast'],
         nightlyMinor: [10_000],
         totalMinor: 10_000,
       },
@@ -631,8 +631,8 @@ describe('staff quote strategy comparisons', () => {
   });
 
   it('hydrates a prepared contract run only for the same bound party and price shape', async () => {
-    const agency = { kind: 'agency' as const, nativeId: 'agency-17', name: 'Acme Travel' };
-    const header = { ...emptyStaffQuoteHeader(), parties: { agency } };
+    const agency = { kind: 'bookingAgency' as const, nativeId: 'agency-17', name: 'Acme Travel' };
+    const header = { ...emptyStaffQuoteHeader(), parties: { bookingAgency: agency } };
     const run = async (changes: Partial<ExecuteStaffQuoteInput> = {}, prefetch = true) => {
       const query = vi.fn<StaffQuoteJobQuery>(async (lookup) => {
         if (!('input' in lookup)) return null;
@@ -645,7 +645,7 @@ describe('staff quote strategy comparisons', () => {
       return bindReadBackStaffQuote({ ...args, header, query });
     };
     expect(await run()).toMatchObject({ status: 'ok', staffQuote: { preparedByNava: true } });
-    expect(await run({ parties: { agency: { ...agency, nativeId: 'other' } } })).toBeNull();
+    expect(await run({ parties: { bookingAgency: { ...agency, nativeId: 'other' } } })).toBeNull();
     expect(await run({ parties: undefined })).toBeNull();
     expect(await run({}, false)).toBeNull();
     expect(await run({ sourceHash: 'b'.repeat(64) })).toBeNull();

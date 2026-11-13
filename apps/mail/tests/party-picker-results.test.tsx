@@ -28,9 +28,9 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const ABC_TRAVEL = { kind: 'company' as const, nativeId: '4411', name: 'ABC Travel' };
-const ABCD_TRAVEL = { kind: 'company' as const, nativeId: '4412', name: 'ABCD Travel' };
-const ABC_TRAVEL_AGENCY = { kind: 'agency' as const, nativeId: '7711', name: 'ABC Travel Agency' };
+const ABC_TRAVEL = { kind: 'organization' as const, nativeId: '4411', name: 'ABC Travel' };
+const ABCD_TRAVEL = { kind: 'organization' as const, nativeId: '4412', name: 'ABCD Travel' };
+const ABC_TRAVEL_AGENCY = { kind: 'bookingAgency' as const, nativeId: '7711', name: 'ABC Travel Agency' };
 
 function prefetchedPartyView(): HmsJobView {
   return {
@@ -80,7 +80,7 @@ function v2PartyView(matchStatus: 'bound' | 'needs_pick', requestName = 'ABC Tra
       boundParty,
       suggestions: [ABC_TRAVEL, ABCD_TRAVEL, ABC_TRAVEL_AGENCY],
       reason: matchStatus === 'bound' ? 'Unique exact name.' : 'Two rows have an equal claim.',
-      searchesTried: [{ term: 'ABC Travel', candidateName: 'ABC Travel', kind: 'company', outcome: 'ambiguous', returned: 3 }],
+      searchesTried: [{ term: 'ABC Travel', candidateName: 'ABC Travel', kind: 'organization', outcome: 'ambiguous', returned: 3 }],
     },
   };
 }
@@ -88,7 +88,7 @@ function v2PartyView(matchStatus: 'bound' | 'needs_pick', requestName = 'ABC Tra
 function manualPartyView(sourceMessageId?: string): HmsJobView {
   const view: HmsJobView = {
     ...prefetchedPartyView(),
-    request: { kind: 'party', name: 'ABC Travel', partyKind: 'company' },
+    request: { kind: 'party', name: 'ABC Travel', partyKind: 'organization' },
     prefetch: false,
   };
   delete view.sourceMessageId;
@@ -103,7 +103,7 @@ function listed(...results: PartyCandidate[]): PartyFindReply {
 
 function tourvestCopies(): PartyCandidate[] {
   return Array.from({ length: 13 }, (_, index): PartyCandidate => ({
-    kind: 'agency',
+    kind: 'bookingAgency',
     nativeId: index === 0 ? '6' : index === 1 ? '543' : `fixture-${index}`,
     name: 'Tourvest Travel Services',
     iata: index < 2 ? '77206673' : String(77206673 + index),
@@ -143,28 +143,28 @@ describe('PartyPicker outcome copy', () => {
   it.each([
     [
       'no_match',
-      'company',
+      'organization',
       'Acme Travel',
-      'No company in HMS matches “Acme Travel”. Check the spelling or search a shorter name.',
+      'No organization in HMS matches “Acme Travel”. Check the spelling or search a shorter name.',
     ],
     [
       'refused_lock_busy',
-      'agency',
+      'bookingAgency',
       'Travel Hub',
       'HMS is busy with another lookup. Nava will retry.',
     ],
     [
       'external_system_unavailable',
-      'agency',
+      'bookingAgency',
       'Travel Hub',
       "Nava couldn't check HMS for this name. Try again, or quote at public rates.",
     ],
-    ['execution_failure', 'company', 'Acme Travel', "Couldn't reach HMS. Try again in a minute."],
-    ['refused_flag_off', 'company', 'Acme Travel', 'Company and agency rates are switched off.'],
-    ['refused_input_invalid', 'agency', '', 'Type a company or agency name.'],
+    ['execution_failure', 'organization', 'Acme Travel', "Couldn't reach HMS. Try again in a minute."],
+    ['refused_flag_off', 'organization', 'Acme Travel', 'Company and agency rates are switched off.'],
+    ['refused_input_invalid', 'bookingAgency', '', 'Type a company or agency name.'],
     [
       'refused_origin_mismatch',
-      'agency',
+      'bookingAgency',
       'Acme',
       'This email is Da Vinci mail. Centurion HMS will not look it up.',
     ],
@@ -188,7 +188,7 @@ describe('PartyPicker prefetched party jobs', () => {
     render(
       <PartyPicker
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -203,7 +203,7 @@ describe('PartyPicker prefetched party jobs', () => {
     expect(jobTransport.status).toHaveBeenCalledWith({
       kind: 'party',
       name: 'ABC Travel',
-      partyKind: 'company',
+      partyKind: 'organization',
     });
     expect(onPick).not.toHaveBeenCalled();
     fireEvent.click(confirm);
@@ -221,7 +221,7 @@ describe('PartyPicker prefetched party jobs', () => {
       <>
         <PartyPicker
           name="ABC Travel"
-          kind="company"
+          kind="organization"
           parties={{}}
           find={vi.fn()}
           jobTransport={jobTransport}
@@ -231,7 +231,7 @@ describe('PartyPicker prefetched party jobs', () => {
         />
         <PartyPicker
           name="ABC Travel"
-          kind="agency"
+          kind="bookingAgency"
           parties={{}}
           find={vi.fn()}
           jobTransport={jobTransport}
@@ -242,8 +242,8 @@ describe('PartyPicker prefetched party jobs', () => {
       </>,
     );
 
-    const company = screen.getByRole('group', { name: 'Company lookup in HMS' });
-    const agency = screen.getByRole('group', { name: 'Agency lookup in HMS' });
+    const company = screen.getByRole('group', { name: 'Organization lookup in HMS' });
+    const agency = screen.getByRole('group', { name: 'Booking Agency lookup in HMS' });
     expect(await within(company).findByRole('button', { name: 'Confirm ABC Travel' })).toBeTruthy();
     expect(within(agency).queryByRole('button', { name: 'Confirm ABC Travel' })).toBeNull();
     expect(
@@ -253,12 +253,12 @@ describe('PartyPicker prefetched party jobs', () => {
     expect(jobTransport.status).toHaveBeenCalledWith({
       kind: 'party',
       name: 'ABC Travel',
-      partyKind: 'company',
+      partyKind: 'organization',
     });
     expect(jobTransport.status).toHaveBeenCalledWith({
       kind: 'party',
       name: 'ABC Travel',
-      partyKind: 'agency',
+      partyKind: 'bookingAgency',
     });
     expect(onCompanyPick).not.toHaveBeenCalled();
     expect(onAgencyPick).not.toHaveBeenCalled();
@@ -269,14 +269,14 @@ describe('PartyPicker prefetched party jobs', () => {
     const onSearchName = vi.fn();
     const bodyHint: PartySuggestion = {
       source: 'body',
-      kind: 'company',
+      kind: 'organization',
       name: 'Northstar Group',
       nativeId: null,
       idStatus: 'unverified',
     };
     const domainHint: PartySuggestion = {
       source: 'sender',
-      kind: 'company',
+      kind: 'organization',
       name: 'Harbor Travel',
       nativeId: null,
       idStatus: 'unverified',
@@ -284,7 +284,7 @@ describe('PartyPicker prefetched party jobs', () => {
     render(
       <PartyPicker
         name=""
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         suggestions={[domainHint, bodyHint]}
@@ -293,8 +293,8 @@ describe('PartyPicker prefetched party jobs', () => {
         onClear={vi.fn()}
       />,
     );
-    expect(onSearchName).toHaveBeenCalledWith('Northstar Group', 'company');
-    expect(onSearchName).not.toHaveBeenCalledWith('Harbor Travel', 'company');
+    expect(onSearchName).toHaveBeenCalledWith('Northstar Group', 'organization');
+    expect(onSearchName).not.toHaveBeenCalledWith('Harbor Travel', 'organization');
     expect(onPick).not.toHaveBeenCalled();
   });
 
@@ -302,7 +302,7 @@ describe('PartyPicker prefetched party jobs', () => {
     const onPick = vi.fn();
     const domainHint: PartySuggestion = {
       source: 'sender',
-      kind: 'company',
+      kind: 'organization',
       name: 'ABC Travel',
       nativeId: null,
       idStatus: 'unverified',
@@ -318,7 +318,7 @@ describe('PartyPicker prefetched party jobs', () => {
       <PartyPicker
         autoLookup
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={find}
         suggestions={[domainHint]}
@@ -340,7 +340,7 @@ describe('PartyPicker prefetched party jobs', () => {
     render(
       <PartyPicker
         name=""
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -351,7 +351,7 @@ describe('PartyPicker prefetched party jobs', () => {
     );
 
     expect(await screen.findByRole('button', { name: 'Confirm ABC Travel' })).toBeTruthy();
-    expect(jobTransport.status).toHaveBeenCalledWith({ kind: 'party', partyKind: 'company' });
+    expect(jobTransport.status).toHaveBeenCalledWith({ kind: 'party', partyKind: 'organization' });
     expect(onPick).not.toHaveBeenCalled();
   });
 
@@ -375,7 +375,7 @@ describe('PartyPicker prefetched party jobs', () => {
     render(
       <PartyPicker
         name=""
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -387,7 +387,7 @@ describe('PartyPicker prefetched party jobs', () => {
 
     expect(
       await screen.findByText(
-        'No company in HMS matches “ABC Travel”. Check the spelling or search a shorter name.',
+        'No organization in HMS matches “ABC Travel”. Check the spelling or search a shorter name.',
       ),
     ).toBeTruthy();
   });
@@ -398,7 +398,7 @@ describe('PartyPicker prefetched party jobs', () => {
       result: {
         kind: 'party',
         outcome: 'ambiguous',
-        results: [{ kind: 'company', nativeId: 4411, name: null }],
+        results: [{ kind: 'organization', nativeId: 4411, name: null }],
         best: null,
         truncated: false,
       },
@@ -411,7 +411,7 @@ describe('PartyPicker prefetched party jobs', () => {
     render(
       <PartyPicker
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -448,7 +448,7 @@ describe('PartyPicker prefetched party jobs', () => {
     render(
       <PartyPicker
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -473,7 +473,7 @@ describe('PartyPicker prefetched party jobs', () => {
     render(
       <PartyPicker
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -483,11 +483,11 @@ describe('PartyPicker prefetched party jobs', () => {
         onClear={vi.fn()}
       />,
     );
-    expect(((await screen.findByRole('combobox', { name: 'Company from HMS' })) as unknown as HTMLSelectElement).value).toBe('company:4411');
+    expect(((await screen.findByRole('combobox', { name: 'Organization from HMS' })) as unknown as HTMLSelectElement).value).toBe('organization:4411');
     expect(screen.getByText(partyRecommendationLabel('ABC Travel', 'Unique exact name.'))).toBeTruthy();
     expect(screen.getByTestId('hms-as-of').textContent).toMatch(/Looked up in HMS/);
     expect(onPick).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm Company' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Organization' }));
     expect(onPick).toHaveBeenCalledWith(ABC_TRAVEL);
   });
 
@@ -504,7 +504,7 @@ describe('PartyPicker prefetched party jobs', () => {
     const { unmount: unmountMissing } = render(
       <PartyPicker
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={missingTransport}
@@ -517,7 +517,7 @@ describe('PartyPicker prefetched party jobs', () => {
     );
     await waitFor(() => expect(missingTransport.status).toHaveBeenCalled());
     expect(missingPick).not.toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: 'Confirm Company' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Confirm Organization' })).toBeNull();
     unmountMissing();
 
     const staleView: HmsJobView = {
@@ -530,7 +530,7 @@ describe('PartyPicker prefetched party jobs', () => {
     const { unmount: unmountStale } = render(
       <PartyPicker
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={{ queue: vi.fn(), status: vi.fn(async () => staleView) }}
@@ -544,7 +544,7 @@ describe('PartyPicker prefetched party jobs', () => {
     expect(await screen.findByText(partyRecommendationLabel('ABC Travel', 'Unique exact name.'))).toBeTruthy();
     expect(screen.getByTestId('hms-as-of').textContent).toMatch(/Looked up in HMS/);
     expect(stalePick).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm Company' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Organization' }));
     expect(stalePick).toHaveBeenCalledWith(ABC_TRAVEL);
     unmountStale();
 
@@ -556,7 +556,7 @@ describe('PartyPicker prefetched party jobs', () => {
     const { unmount: unmountMismatch } = render(
       <PartyPicker
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={{ queue: vi.fn(), status: vi.fn(async () => mismatchView) }}
@@ -568,11 +568,11 @@ describe('PartyPicker prefetched party jobs', () => {
       />,
     );
     await waitFor(() => {
-      expect(screen.getByRole('textbox', { name: 'Search company in HMS' })).toBeTruthy();
-      expect(screen.queryByRole('combobox', { name: 'Company from HMS' })).toBeNull();
+      expect(screen.getByRole('textbox', { name: 'Search organization in HMS' })).toBeTruthy();
+      expect(screen.queryByRole('combobox', { name: 'Organization from HMS' })).toBeNull();
     });
     expect(mismatchPick).not.toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: 'Confirm Company' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Confirm Organization' })).toBeNull();
     expect(screen.queryByText(/Recommended:/)).toBeNull();
     unmountMismatch();
 
@@ -581,7 +581,7 @@ describe('PartyPicker prefetched party jobs', () => {
     render(
       <PartyPicker
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={{ queue: vi.fn(), status: vi.fn(async () => unknownStored) }}
@@ -593,11 +593,11 @@ describe('PartyPicker prefetched party jobs', () => {
       />,
     );
     await waitFor(() => {
-      expect(screen.getByRole('textbox', { name: 'Search company in HMS' })).toBeTruthy();
-      expect(screen.queryByRole('combobox', { name: 'Company from HMS' })).toBeNull();
+      expect(screen.getByRole('textbox', { name: 'Search organization in HMS' })).toBeTruthy();
+      expect(screen.queryByRole('combobox', { name: 'Organization from HMS' })).toBeNull();
     });
     expect(unknownPick).not.toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: 'Confirm Company' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Confirm Organization' })).toBeNull();
   });
 
   it('ignores a V2 bound result created for a different message in the same thread', async () => {
@@ -613,7 +613,7 @@ describe('PartyPicker prefetched party jobs', () => {
     render(
       <PartyPicker
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -647,7 +647,7 @@ describe('PartyPicker prefetched party jobs', () => {
     render(
       <PartyPicker
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -672,7 +672,7 @@ describe('PartyPicker prefetched party jobs', () => {
     render(
       <PartyPicker
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -681,13 +681,13 @@ describe('PartyPicker prefetched party jobs', () => {
         onClear={vi.fn()}
       />,
     );
-    const select = (await screen.findByRole('combobox', { name: 'Company from HMS' })) as unknown as HTMLSelectElement;
-    expect(select.options[0]?.textContent).toBe('Choose company (2 found)');
-    expect(Array.from(select.options).filter((option) => option.value.startsWith('company:'))).toHaveLength(2);
+    const select = (await screen.findByRole('combobox', { name: 'Organization from HMS' })) as unknown as HTMLSelectElement;
+    expect(select.options[0]?.textContent).toBe('Choose organization (2 found)');
+    expect(Array.from(select.options).filter((option) => option.value.startsWith('organization:'))).toHaveLength(2);
     expect(screen.getByText(PARTY_NO_MATCH_CLOSEST)).toBeTruthy();
     expect(screen.queryByText('Pick the company/agency')).toBeNull();
     expect(screen.queryByText('Two rows have an equal claim.')).toBeNull();
-    fireEvent.change(select, { target: { value: 'company:4412' } });
+    fireEvent.change(select, { target: { value: 'organization:4412' } });
     expect(onPick).toHaveBeenCalledWith(ABCD_TRAVEL);
     fireEvent.change(select, { target: { value: '__search_hms__' } });
     expect(screen.getByRole('button', { name: 'Find in HMS' })).toBeTruthy();
@@ -695,13 +695,13 @@ describe('PartyPicker prefetched party jobs', () => {
 
   it('shows bound preset and all same-kind HMS rows without ids or cross-kind reason text', async () => {
     const rows: PartyCandidate[] = [
-      { kind: 'agency', nativeId: 'A-1', name: 'Nexus Travel', iata: '12345', city: 'Pretoria', address: '1 Main Road' },
-      { kind: 'agency', nativeId: 'A-2', name: 'Nexus Travel North', iata: '12346', city: 'Johannesburg' },
-      { kind: 'agency', nativeId: 'A-3', name: 'Nexus Travel South', iata: '12347', city: 'Cape Town' },
-      { kind: 'agency', nativeId: 'A-4', name: 'Nexus Travel East', iata: '12348', city: 'Durban' },
-      { kind: 'agency', nativeId: 'A-5', name: 'Nexus Travel West', iata: '12349', city: 'Gqeberha' },
-      { kind: 'company', nativeId: 'C-1', name: 'Nexus Group', city: 'Pretoria' },
-      { kind: 'company', nativeId: 'C-2', name: 'Nexus Holdings', city: 'Cape Town' },
+      { kind: 'bookingAgency', nativeId: 'A-1', name: 'Nexus Travel', iata: '12345', city: 'Pretoria', address: '1 Main Road' },
+      { kind: 'bookingAgency', nativeId: 'A-2', name: 'Nexus Travel North', iata: '12346', city: 'Johannesburg' },
+      { kind: 'bookingAgency', nativeId: 'A-3', name: 'Nexus Travel South', iata: '12347', city: 'Cape Town' },
+      { kind: 'bookingAgency', nativeId: 'A-4', name: 'Nexus Travel East', iata: '12348', city: 'Durban' },
+      { kind: 'bookingAgency', nativeId: 'A-5', name: 'Nexus Travel West', iata: '12349', city: 'Gqeberha' },
+      { kind: 'organization', nativeId: 'C-1', name: 'Nexus Group', city: 'Pretoria' },
+      { kind: 'organization', nativeId: 'C-2', name: 'Nexus Holdings', city: 'Cape Town' },
     ];
     const boundAgency = rows[0]!;
     const base = v2PartyView('bound', 'Nexus Travel');
@@ -729,7 +729,7 @@ describe('PartyPicker prefetched party jobs', () => {
       return (
         <PartyPicker
           name="Nexus Travel"
-          kind="agency"
+          kind="bookingAgency"
           parties={parties}
           find={findParty}
           jobTransport={jobTransport}
@@ -748,7 +748,7 @@ describe('PartyPicker prefetched party jobs', () => {
         <AgencyPicker />
         <PartyPicker
           name="Guest Name"
-          kind="company"
+          kind="organization"
           parties={{}}
           find={findParty}
           jobTransport={jobTransport}
@@ -760,40 +760,40 @@ describe('PartyPicker prefetched party jobs', () => {
       </>,
     );
 
-    const agency = await screen.findByRole('combobox', { name: 'Agency from HMS' });
+    const agency = await screen.findByRole('combobox', { name: 'Booking Agency from HMS' });
     expect(onAgencyPick).not.toHaveBeenCalled();
     expect(
       screen.getByText(partyRecommendationLabel('Nexus Travel · IATA 12345 · Pretoria · 1 Main Road', 'Private matcher rationale must not be shown.')),
     ).toBeTruthy();
     const agencyOptions = Array.from((agency as unknown as HTMLSelectElement).options);
-    expect(agencyOptions.filter((option) => option.value.startsWith('agency:'))).toHaveLength(5);
+    expect(agencyOptions.filter((option) => option.value.startsWith('bookingAgency:'))).toHaveLength(5);
     expect(agencyOptions.map((option) => option.textContent).join(' ')).toContain('IATA 12345 · Pretoria · 1 Main Road');
     expect(agencyOptions.map((option) => option.textContent).join(' ')).not.toMatch(/#A-[1-5]/);
-    expect(agencyOptions.find((option) => option.value === 'agency:A-4')?.title).toBe('A-4');
+    expect(agencyOptions.find((option) => option.value === 'bookingAgency:A-4')?.title).toBe('A-4');
 
     // The company field never shows the agency's rows, pick or reason; it falls back to its own search.
-    const companyGroup = screen.getByRole('group', { name: 'Company lookup in HMS' });
+    const companyGroup = screen.getByRole('group', { name: 'Organization lookup in HMS' });
     expect(within(companyGroup).queryByText(/Nexus Travel/)).toBeNull();
-    expect(within(companyGroup).getByRole('textbox', { name: 'Search company in HMS' })).toBeTruthy();
+    expect(within(companyGroup).getByRole('textbox', { name: 'Search organization in HMS' })).toBeTruthy();
     expect(within(companyGroup).queryByText('Private matcher rationale must not be shown.')).toBeNull();
 
     onAgencyPick.mockClear();
-    fireEvent.change(agency, { target: { value: 'agency:A-4' } });
-    expect(onAgencyPick).toHaveBeenCalledWith(expect.objectContaining({ kind: 'agency', nativeId: 'A-4', name: 'Nexus Travel East' }));
+    fireEvent.change(agency, { target: { value: 'bookingAgency:A-4' } });
+    expect(onAgencyPick).toHaveBeenCalledWith(expect.objectContaining({ kind: 'bookingAgency', nativeId: 'A-4', name: 'Nexus Travel East' }));
     expect(jobTransport.queue).not.toHaveBeenCalled();
     expect(findParty).not.toHaveBeenCalled();
   });
 
   it('shows needs-pick rows without a preset and reveals manual search from the last option', async () => {
     const rows: PartyCandidate[] = [
-      { kind: 'agency', nativeId: 'A-1', name: 'Nexus Travel', iata: '12345', city: 'Pretoria' },
-      { kind: 'agency', nativeId: 'A-2', name: 'Nexus Travel North', iata: '12346', city: 'Johannesburg' },
-      { kind: 'agency', nativeId: 'A-3', name: 'Nexus Travel South', iata: '12347', city: 'Cape Town' },
+      { kind: 'bookingAgency', nativeId: 'A-1', name: 'Nexus Travel', iata: '12345', city: 'Pretoria' },
+      { kind: 'bookingAgency', nativeId: 'A-2', name: 'Nexus Travel North', iata: '12346', city: 'Johannesburg' },
+      { kind: 'bookingAgency', nativeId: 'A-3', name: 'Nexus Travel South', iata: '12347', city: 'Cape Town' },
     ];
     const base = v2PartyView('needs_pick', 'Nexus Travel');
     const view: HmsJobView = {
       ...base,
-      request: { kind: 'party', name: 'Nexus Travel', partyKind: 'agency', matchVersion: 2 },
+      request: { kind: 'party', name: 'Nexus Travel', partyKind: 'bookingAgency', matchVersion: 2 },
       result: {
         ...base.result,
         results: rows,
@@ -808,7 +808,7 @@ describe('PartyPicker prefetched party jobs', () => {
     render(
       <PartyPicker
         name="Nexus Travel"
-        kind="agency"
+        kind="bookingAgency"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -818,16 +818,16 @@ describe('PartyPicker prefetched party jobs', () => {
       />,
     );
 
-    const select = (await screen.findByRole('combobox', { name: 'Agency from HMS' })) as unknown as HTMLSelectElement;
+    const select = (await screen.findByRole('combobox', { name: 'Booking Agency from HMS' })) as unknown as HTMLSelectElement;
     expect(select.value).toBe('__choose__');
-    expect(select.options[0]?.textContent).toBe('Choose agency (3 found)');
-    expect(Array.from(select.options).filter((option) => option.value.startsWith('agency:'))).toHaveLength(3);
+    expect(select.options[0]?.textContent).toBe('Choose booking agency (3 found)');
+    expect(Array.from(select.options).filter((option) => option.value.startsWith('bookingAgency:'))).toHaveLength(3);
     expect(screen.getByText(PARTY_NO_MATCH_CLOSEST)).toBeTruthy();
     expect(screen.queryByText('Pick the company/agency')).toBeNull();
     expect(screen.queryByText('Private matcher rationale must not be shown.')).toBeNull();
 
     fireEvent.change(select, { target: { value: '__search_hms__' } });
-    expect(screen.getByRole('textbox', { name: 'Search agency in HMS' })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Search booking agency in HMS' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Find in HMS' })).toBeTruthy();
     expect(screen.getByText('Takes ~30–40 s. Keep filling the stay below.')).toBeTruthy();
   });
@@ -842,7 +842,7 @@ describe('PartyPicker prefetched party jobs', () => {
       <PartyPicker
         autoLookup
         name="Voerkraal Restaurant"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -851,9 +851,9 @@ describe('PartyPicker prefetched party jobs', () => {
         onClear={vi.fn()}
       />,
     );
-    await screen.findByRole('combobox', { name: 'Company from HMS' });
+    await screen.findByRole('combobox', { name: 'Organization from HMS' });
     await waitFor(() =>
-      expect(jobTransport.status).toHaveBeenCalledWith({ kind: 'party', partyKind: 'company' }),
+      expect(jobTransport.status).toHaveBeenCalledWith({ kind: 'party', partyKind: 'organization' }),
     );
   });
 });
@@ -867,7 +867,7 @@ describe('PartyPicker queued party jobs', () => {
         'runId' in input
           ? {
               ...prefetchedPartyView(),
-              request: { kind: 'party' as const, name: 'ABC Travel', partyKind: 'company' as const },
+              request: { kind: 'party' as const, name: 'ABC Travel', partyKind: 'organization' as const },
               runId: input.runId,
               prefetch: false,
             }
@@ -879,7 +879,7 @@ describe('PartyPicker queued party jobs', () => {
     render(
       <PartyPicker
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={find}
         jobTransport={jobTransport}
@@ -895,7 +895,7 @@ describe('PartyPicker queued party jobs', () => {
     expect(jobTransport.queue).toHaveBeenCalledWith({
       kind: 'party',
       name: 'ABC Travel',
-      partyKind: 'company',
+      partyKind: 'organization',
     });
     const results = await screen.findByRole('list', {
       name: 'Companies and agencies found in HMS',
@@ -917,7 +917,7 @@ describe('PartyPicker queued party jobs', () => {
     render(
       <PartyPicker
         name="Acme"
-        kind="agency"
+        kind="bookingAgency"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -940,7 +940,7 @@ describe('PartyPicker queued party jobs', () => {
     render(
       <PartyPicker
         name="Acme"
-        kind="agency"
+        kind="bookingAgency"
         parties={{}}
         find={find}
         threadId="thread-dv"
@@ -961,7 +961,7 @@ describe('PartyPicker queued party jobs', () => {
     render(
       <PartyPicker
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -983,7 +983,7 @@ describe('PartyPicker queued party jobs', () => {
     expect(jobTransport.queue).toHaveBeenCalledWith({
       kind: 'party',
       name: 'ABC Travel',
-      partyKind: 'company',
+      partyKind: 'organization',
     });
   });
 
@@ -998,7 +998,7 @@ describe('PartyPicker queued party jobs', () => {
     render(
       <PartyPicker
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -1020,7 +1020,7 @@ describe('PartyPicker queued party jobs', () => {
     expect(jobTransport.queue).toHaveBeenCalledWith({
       kind: 'party',
       name: 'ABC Travel',
-      partyKind: 'company',
+      partyKind: 'organization',
     });
   });
 
@@ -1037,7 +1037,7 @@ describe('PartyPicker queued party jobs', () => {
     render(
       <PartyPicker
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -1060,7 +1060,7 @@ describe('PartyPicker queued party jobs', () => {
     expect(queue).toHaveBeenNthCalledWith(1, {
       kind: 'party',
       name: 'ABC Travel',
-      partyKind: 'company',
+      partyKind: 'organization',
     });
     expect(onLookupPending).toHaveBeenLastCalledWith(true);
 
@@ -1079,7 +1079,7 @@ describe('PartyPicker queued party jobs', () => {
     expect(queue).toHaveBeenNthCalledWith(2, {
       kind: 'party',
       name: 'ABC Travel',
-      partyKind: 'company',
+      partyKind: 'organization',
     }, { retry: true });
   });
 });
@@ -1152,7 +1152,7 @@ describe('PartyPicker duplicate-name choices', () => {
       request: {
         kind: 'party',
         name: 'Tourvest Travel Services',
-        partyKind: 'agency',
+        partyKind: 'bookingAgency',
         matchVersion: 2,
       },
       result: {
@@ -1179,7 +1179,7 @@ describe('PartyPicker duplicate-name choices', () => {
       return (
         <PartyPicker
           name="Tourvest Travel Services"
-          kind="agency"
+          kind="bookingAgency"
           parties={parties}
           find={vi.fn()}
           jobTransport={jobTransport}
@@ -1194,26 +1194,26 @@ describe('PartyPicker duplicate-name choices', () => {
     };
     render(<Harness />);
 
-    const select = (await screen.findByRole('combobox', { name: 'Agency from HMS' })) as unknown as HTMLSelectElement;
-    const options = Array.from(select.options).filter((option) => option.value.startsWith('agency:'));
+    const select = (await screen.findByRole('combobox', { name: 'Booking Agency from HMS' })) as unknown as HTMLSelectElement;
+    const options = Array.from(select.options).filter((option) => option.value.startsWith('bookingAgency:'));
     expect(options).toHaveLength(13);
-    expect(options.find((option) => option.value === 'agency:6')?.textContent).toBe(
+    expect(options.find((option) => option.value === 'bookingAgency:6')?.textContent).toBe(
       'Tourvest Travel Services · IATA 77206673 · Bryanston',
     );
-    expect(options.find((option) => option.value === 'agency:543')?.textContent).toBe(
+    expect(options.find((option) => option.value === 'bookingAgency:543')?.textContent).toBe(
       'Tourvest Travel Services · IATA 77206673',
     );
-    expect(options.find((option) => option.value === 'agency:fixture-2')?.textContent).toBe(
+    expect(options.find((option) => option.value === 'bookingAgency:fixture-2')?.textContent).toBe(
       'Tourvest Travel Services · IATA 77206675 · Fixture city · Fixture address',
     );
-    expect(options.find((option) => option.value === 'agency:fixture-12')?.textContent).toBe(
+    expect(options.find((option) => option.value === 'bookingAgency:fixture-12')?.textContent).toBe(
       'Tourvest Travel Services · IATA 77206685',
     );
     expect(options.map((option) => option.textContent).join(' ')).not.toMatch(/#(?:6|543|fixture-)/);
-    expect(options.find((option) => option.value === 'agency:6')?.title).toBe('6');
-    fireEvent.change(select, { target: { value: 'agency:6' } });
+    expect(options.find((option) => option.value === 'bookingAgency:6')?.title).toBe('6');
+    fireEvent.change(select, { target: { value: 'bookingAgency:6' } });
     expect(onPick).toHaveBeenCalledWith({
-      kind: 'agency',
+      kind: 'bookingAgency',
       nativeId: '6',
       name: 'Tourvest Travel Services',
     });
@@ -1222,7 +1222,7 @@ describe('PartyPicker duplicate-name choices', () => {
 
   it('keeps original V2 choices available while staff switch and confirm parties', async () => {
     const alternatives: PartyCandidate[] = Array.from({ length: 5 }, (_, index) => ({
-      kind: 'company',
+      kind: 'organization',
       nativeId: `900${index + 1}`,
       name: `Partner ${index + 1}`,
       iata: `7000${index + 1}`,
@@ -1251,7 +1251,7 @@ describe('PartyPicker duplicate-name choices', () => {
       return (
         <PartyPicker
           name={name}
-          kind="company"
+          kind="organization"
           parties={parties}
           find={find}
           jobTransport={jobTransport}
@@ -1274,19 +1274,19 @@ describe('PartyPicker duplicate-name choices', () => {
     };
     render(<Harness />);
 
-    const select = (await screen.findByRole('combobox', { name: 'Company from HMS' })) as unknown as HTMLSelectElement;
+    const select = (await screen.findByRole('combobox', { name: 'Organization from HMS' })) as unknown as HTMLSelectElement;
     expect(onPick).not.toHaveBeenCalled();
     expect(
       screen.getByText(partyRecommendationLabel('ABC Travel', 'Internal matcher rationale must not be shown.')),
     ).toBeTruthy();
-    expect(Array.from(select.options).filter((option) => option.value.startsWith('company:'))).toHaveLength(6);
+    expect(Array.from(select.options).filter((option) => option.value.startsWith('organization:'))).toHaveLength(6);
     expect(select.textContent).not.toContain('#4411');
 
     const statusCallsBeforePick = status.mock.calls.length;
-    fireEvent.change(select, { target: { value: 'company:9001' } });
+    fireEvent.change(select, { target: { value: 'organization:9001' } });
     await waitFor(() =>
       expect(onPick).toHaveBeenLastCalledWith({
-        kind: 'company',
+        kind: 'organization',
         nativeId: '9001',
         name: 'Partner 1',
       }),
@@ -1295,11 +1295,11 @@ describe('PartyPicker duplicate-name choices', () => {
     expect(queue).not.toHaveBeenCalled();
     expect(status).toHaveBeenCalledTimes(statusCallsBeforePick);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm Company' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Organization' }));
     expect(screen.getByText('Partner 1 · IATA 70001 · Pretoria')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Edit Company' }));
-    fireEvent.change(screen.getByRole('combobox', { name: 'Company from HMS' }), {
-      target: { value: 'company:4411' },
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Organization' }));
+    fireEvent.change(screen.getByRole('combobox', { name: 'Organization from HMS' }), {
+      target: { value: 'organization:4411' },
     });
     await waitFor(() => expect(onPick).toHaveBeenLastCalledWith(ABC_TRAVEL));
     expect(find).not.toHaveBeenCalled();
@@ -1320,7 +1320,7 @@ describe('PartyPicker duplicate-name choices', () => {
           </button>
           <PartyPicker
             name={name}
-            kind="company"
+            kind="organization"
             parties={{}}
             find={vi.fn()}
             jobTransport={jobTransport}
@@ -1334,10 +1334,10 @@ describe('PartyPicker duplicate-name choices', () => {
     };
     render(<Harness />);
 
-    expect(await screen.findByRole('combobox', { name: 'Company from HMS' })).toBeTruthy();
+    expect(await screen.findByRole('combobox', { name: 'Organization from HMS' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Edit party name' }));
 
-    await waitFor(() => expect(screen.queryByRole('combobox', { name: 'Company from HMS' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('combobox', { name: 'Organization from HMS' })).toBeNull());
   });
 
   it('hides cached alternatives when a fresh HMS lookup starts', async () => {
@@ -1361,7 +1361,7 @@ describe('PartyPicker duplicate-name choices', () => {
       return (
         <PartyPicker
           name="ABC Travel"
-          kind="company"
+          kind="organization"
           parties={parties}
           find={vi.fn()}
           jobTransport={jobTransport}
@@ -1383,19 +1383,19 @@ describe('PartyPicker duplicate-name choices', () => {
     };
     render(<Harness />);
 
-    const select = (await screen.findByRole('combobox', { name: 'Company from HMS' })) as unknown as HTMLSelectElement;
+    const select = (await screen.findByRole('combobox', { name: 'Organization from HMS' })) as unknown as HTMLSelectElement;
     expect(onPick).not.toHaveBeenCalled();
-    fireEvent.change(select, { target: { value: 'company:4411' } });
+    fireEvent.change(select, { target: { value: 'organization:4411' } });
     await waitFor(() => expect(onPick).toHaveBeenCalledWith(ABC_TRAVEL));
-    expect(Array.from(select.options).filter((option) => option.value.startsWith('company:'))).toHaveLength(2);
+    expect(Array.from(select.options).filter((option) => option.value.startsWith('organization:'))).toHaveLength(2);
     fireEvent.change(select, { target: { value: '__search_hms__' } });
     await waitFor(() => expect(findButton().disabled).toBe(false));
 
     fireEvent.click(findButton());
     await waitFor(() => expect(queue).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(findButton().disabled).toBe(true));
-    expect(Array.from((screen.getByRole('combobox', { name: 'Company from HMS' }) as unknown as HTMLSelectElement).options)
-      .filter((option) => option.value.startsWith('company:'))).toHaveLength(1);
+    expect(Array.from((screen.getByRole('combobox', { name: 'Organization from HMS' }) as unknown as HTMLSelectElement).options)
+      .filter((option) => option.value.startsWith('organization:'))).toHaveLength(1);
     expect(screen.queryByText('Other HMS matches (1)')).toBeNull();
   });
 
@@ -1419,7 +1419,7 @@ describe('PartyPicker duplicate-name choices', () => {
     render(
       <PartyPicker
         name="ABC Travel"
-        kind="company"
+        kind="organization"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}
@@ -1429,8 +1429,8 @@ describe('PartyPicker duplicate-name choices', () => {
       />,
     );
 
-    const select = (await screen.findByRole('combobox', { name: 'Company from HMS' })) as unknown as HTMLSelectElement;
-    const companyOptions = Array.from(select.options).filter((option) => option.value.startsWith('company:'));
+    const select = (await screen.findByRole('combobox', { name: 'Organization from HMS' })) as unknown as HTMLSelectElement;
+    const companyOptions = Array.from(select.options).filter((option) => option.value.startsWith('organization:'));
     expect(companyOptions).toHaveLength(1);
     expect(companyOptions[0]?.textContent).toBe('ABC Travel');
     expect(Array.from(select.options).map((option) => option.textContent).join(' ')).not.toContain('ABC Travel Agency');
@@ -1439,8 +1439,8 @@ describe('PartyPicker duplicate-name choices', () => {
 
   it('labels company and agency matches distinctly when no kind is set', async () => {
     const rows: PartyCandidate[] = [
-      { kind: 'company', nativeId: '100', name: 'Shared Partner' },
-      { kind: 'agency', nativeId: '100', name: 'Shared Partner' },
+      { kind: 'organization', nativeId: '100', name: 'Shared Partner' },
+      { kind: 'bookingAgency', nativeId: '100', name: 'Shared Partner' },
     ];
     const base = v2PartyView('needs_pick', 'Shared Partner');
     const view: HmsJobView = {
@@ -1472,10 +1472,10 @@ describe('PartyPicker duplicate-name choices', () => {
 
     const list = await screen.findByRole('list', { name: 'HMS matches' });
     expect(
-      within(list).getByRole('button', { name: 'Use Shared Partner (Company)' }),
+      within(list).getByRole('button', { name: 'Use Shared Partner (Organization)' }),
     ).toBeTruthy();
     expect(
-      within(list).getByRole('button', { name: 'Use Shared Partner (Agency)' }),
+      within(list).getByRole('button', { name: 'Use Shared Partner (Booking Agency)' }),
     ).toBeTruthy();
   });
 
@@ -1483,7 +1483,7 @@ describe('PartyPicker duplicate-name choices', () => {
     const copies = tourvestCopies();
     const view: HmsJobView = {
       ...prefetchedPartyView(),
-      request: { kind: 'party', name: 'Tourvest Travel Services', partyKind: 'agency' },
+      request: { kind: 'party', name: 'Tourvest Travel Services', partyKind: 'bookingAgency' },
       result: {
         kind: 'party',
         outcome: 'ambiguous',
@@ -1500,7 +1500,7 @@ describe('PartyPicker duplicate-name choices', () => {
     render(
       <PartyPicker
         name="Tourvest Travel Services"
-        kind="agency"
+        kind="bookingAgency"
         parties={{}}
         find={vi.fn()}
         jobTransport={jobTransport}

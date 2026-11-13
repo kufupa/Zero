@@ -24,7 +24,7 @@ const group: StayGroupRequirement = {
   quantity: 1,
   adults: 1,
   childrenAges: [],
-  board: 'bb',
+  mealPlan: 'bb',
   specialRequests: [],
   fields: { arrivalDate: 'extracted', departureDate: 'extracted', adults: 'extracted' },
 };

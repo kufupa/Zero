@@ -17,21 +17,21 @@ afterEach(() => {
 });
 
 const agency: StaffQuoteParty = {
-  kind: 'agency',
+  kind: 'bookingAgency',
   nativeId: 'agency-profile-1',
   name: 'Example Agency',
 };
 
 const company: StaffQuoteParty = {
-  kind: 'company',
+  kind: 'organization',
   nativeId: 'company-profile-1',
   name: 'Example Company',
 };
 
 const contact: StoredContact = {
   name: 'Request contact',
-  company: 'Request-side source',
-  endClient: 'Request-side company',
+  bookingAgency: 'Request-side source',
+  organization: 'Request-side company',
   email: 'contact@example.invalid',
   phone: '000-000-0000',
 };
@@ -50,9 +50,9 @@ describe('QuotePeopleStep', () => {
       partyState: 'Done' as const,
       header: {
         ...emptyStaffQuoteHeader(),
-        agency: agency.name,
-        company: company.name,
-        parties: { agency, company },
+        bookingAgency: agency.name,
+        organization: company.name,
+        parties: { bookingAgency: agency, organization: company },
       },
       contact,
       contactEditorKey: 'request-1',
@@ -70,8 +70,8 @@ describe('QuotePeopleStep', () => {
     });
     expect(within(contactBlock).getByText('Corrections save to this request only. HMS is not changed.')).toBeDefined();
 
-    const agencyPicker = within(people).getByLabelText('Agency from HMS');
-    const companyPicker = within(people).getByLabelText('Company from HMS');
+    const agencyPicker = within(people).getByLabelText('Booking Agency from HMS');
+    const companyPicker = within(people).getByLabelText('Organization from HMS');
     const selectedAgency = within(agencyPicker).getByRole('option', { selected: true });
     const selectedCompany = within(companyPicker).getByRole('option', { selected: true });
     expect(selectedAgency.getAttribute('title')).toBe(agency.nativeId);
@@ -92,8 +92,8 @@ describe('QuotePeopleStep', () => {
   it('asks for a guest name instead of using an agent sender when no guest was parsed', () => {
     const agentContact: StoredContact = {
       name: 'Agent sender',
-      company: null,
-      endClient: null,
+      bookingAgency: null,
+      organization: null,
       email: null,
       phone: null,
     };
@@ -103,7 +103,7 @@ describe('QuotePeopleStep', () => {
         groups: [],
         analysis: {
           luna: {
-            party: { kind: 'agency' },
+            party: { kind: 'bookingAgency' },
             groups: [{ guestNames: [] }],
           },
         },
@@ -129,8 +129,8 @@ describe('QuotePeopleStep', () => {
   it('keeps guest edits for the same message without leaking them to another message', () => {
     const agentContact: StoredContact = {
       name: 'Agent sender',
-      company: null,
-      endClient: null,
+      bookingAgency: null,
+      organization: null,
       email: null,
       phone: null,
     };
@@ -140,7 +140,7 @@ describe('QuotePeopleStep', () => {
         groups: [],
         analysis: {
           luna: {
-            party: { kind: 'agency' },
+            party: { kind: 'bookingAgency' },
             groups: [{ guestNames: [] }],
           },
         },
@@ -173,8 +173,8 @@ describe('QuotePeopleStep', () => {
   it('keeps a guest edit when the contact editor key changes for the same message', () => {
     const agentContact: StoredContact = {
       name: 'Agent sender',
-      company: null,
-      endClient: null,
+      bookingAgency: null,
+      organization: null,
       email: null,
       phone: null,
     };
@@ -194,7 +194,7 @@ describe('QuotePeopleStep', () => {
         groups: [],
         analysis: {
           luna: {
-            party: { kind: 'agency' },
+            party: { kind: 'bookingAgency' },
             groups: [{ guestNames: [] }],
           },
         },

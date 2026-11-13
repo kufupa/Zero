@@ -24,7 +24,7 @@ const STAY: StayGroupRequirement = {
   quantity: 1,
   adults: 2,
   childrenAges: [],
-  board: 'bb',
+  mealPlan: 'bb',
   specialRequests: [],
   fields: {},
 };

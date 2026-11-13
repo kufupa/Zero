@@ -54,8 +54,8 @@ const OTHER = 'desk@example.invalid';
 
 const contact: StoredContact = {
   name: 'Guest Contact',
-  company: null,
-  endClient: null,
+  bookingAgency: null,
+  organization: null,
   email: CLIENT,
   phone: null,
 };
@@ -67,7 +67,7 @@ const group = {
   quantity: 1,
   adults: 1,
   childrenAges: [],
-  board: 'bb',
+  mealPlan: 'bb',
   specialRequests: [],
   fields: { arrivalDate: 'extracted', departureDate: 'extracted', adults: 'extracted' },
 } as StayGroupRequirement;
