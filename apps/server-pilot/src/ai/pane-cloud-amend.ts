@@ -14,7 +14,8 @@ import { labtestAmendWorkerEnabled } from './pane-cloud-amend-readiness.js';
 import { createSourceSnapshotDigest } from './pane-create-source-snapshot.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
-import { mailExtractionPayloadSchema } from './extraction/schema.js';
+import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
+import { hydrateStoredWorkState } from './stored-work-state.js';
 import { amendStayForRequest, projectAmendRequests } from './pane-amend-draft.js';
 
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
@@ -88,9 +89,9 @@ export function amendDraftMatchesForm(input: {
   selected: CloudAmendSource; payload: unknown; state: Record<string, unknown>; revisionSeq: number;
   confirmation: string; arrival: string; draft?: z.infer<typeof bindCloudAmendInput>['draft'];
 }): boolean {
-  const payload = mailExtractionPayloadSchema.safeParse(input.payload);
+  const payload = safeParseStoredMailExtraction(input.payload);
   if (!payload.success) return !input.draft; // Preserve pre-draft legacy clients.
-  const requests = projectAmendRequests(input.selected, payload.data, input.state).requests;
+  const requests = projectAmendRequests(input.selected, payload.data, hydrateStoredWorkState(input.state)).requests;
   if (!input.draft) return requests.length <= 1;
   if (input.draft.expectedSeq !== input.revisionSeq) return false;
   const request = requests.find((candidate) => candidate.requestId === input.draft?.requestId &&
@@ -105,7 +106,7 @@ export function cloudAmendSourceBinding(rows: SourceRows, selected: CloudAmendSo
   if (!selectedAmendSourceMatches(selected, rows.item, rows.mail, rows.extraction, transportId, rows.thread) ||
       !rows.item || !rows.mail || !rows.extraction || rows.attachments.length > MAX_SOURCE_ATTACHMENTS) return null;
   if (draft) {
-    const payload = mailExtractionPayloadSchema.safeParse(rows.extraction.payload);
+    const payload = safeParseStoredMailExtraction(rows.extraction.payload);
     const stay = payload.success ? amendStayForRequest(selected, payload.data, draft.requestId) : undefined;
     if (!stay || stay.id !== draft.stayId) return null;
   }

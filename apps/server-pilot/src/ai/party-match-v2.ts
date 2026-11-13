@@ -494,8 +494,8 @@ export function buildPartyMatchCandidates(input: {
   const quoteParty = quoteLlmPartyOf({ payload, quoteLlmParty: input.quoteLlmParty });
   const contact = objectRecord(payload.contact);
   const contactName = text(contact.name);
-  const agency = text(payload.agency);
-  const endClient = text(payload.endClient);
+  const agency = text(payload.bookingAgency);
+  const endClient = text(payload.organization);
   const bodyPartyMentions = extractPartyMentions(input.body);
   const signatureOrganisations = signatureOrganisationRows(signature);
   const domain = domainLabel(sender.address);
@@ -606,8 +606,8 @@ export function partyMatchEmailContext(input: {
     signature,
   });
   const names = [
-    text(payload.agency),
-    text(payload.endClient),
+    text(payload.bookingAgency),
+    text(payload.organization),
     quoteParty.name,
     contactName,
     sender.displayName,

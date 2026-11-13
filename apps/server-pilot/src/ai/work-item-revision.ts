@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { hydrateStoredReservationWorkflowV2 } from './reservation-workflow-v2-stored-draft.js';
+import { hydrateStoredWorkState } from './stored-work-state.js';
 import type { DB } from '../db/client.js';
 import { workEvent, workItem } from '../db/schema/work.js';
 import type { ReservationWorkflowV2Draft, ReservationWorkflowV2Proposal } from './reservation-workflow-v2-contract.js';
@@ -100,7 +101,7 @@ function asRevision(value: unknown): number | null {
 
 function asState(value: unknown): PaneState {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return { ...(value as PaneState) };
+  return hydrateStoredWorkState(value as PaneState);
 }
 
 async function latestEvidence(
@@ -434,7 +435,7 @@ async function applyHistoryMove(
     const restored = undo ? snapshot.previousPaneState : snapshot.paneState;
     const nextRevision = undo ? revision - 1 : revision + 1;
     const nextSeq = seq + 1;
-    const state = withPaneState(item.state, restored);
+    const state = withPaneState(hydrateStoredWorkState(item.state), restored);
     if (!nativeStructureIsSafe(item.state, state)) return { status: 'history_stale' as const, revision, revisionHead, seq };
     const previousV2 = item.state[RESERVATION_V2_KEY] as ReservationWorkflowV2Draft | undefined;
     const restoredV2 = state[RESERVATION_V2_KEY] as ReservationWorkflowV2Draft | undefined;

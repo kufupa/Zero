@@ -129,7 +129,7 @@ export function projectEffectiveWork(source: DraftSource, payload: MailExtractio
         return { rowId: row.id, rooms: structural('count', row.rooms),
           requestedRoomType: structural('roomType', row.roomType), roomTypeCode: selected('roomTypeCode', null),
           adults: structural('adults', row.adultsPerRoom), childAges: structural('childAges', row.childAges),
-          board: structural('board', row.board), ratePlan: selected('ratePlan', value('ratePlan', 'ratePlan')) };
+          mealPlan: structural('mealPlan', row.mealPlan), ratePlan: selected('ratePlan', value('ratePlan', 'ratePlan')) };
       });
       fields = { kind: 'quote', value: { stayId: stay.id, arrival: stayValue('arrival'), departure: stayValue('departure'),
         rows, bookingAgency: value('parties.agency'), organization: value('parties.organization'),
@@ -159,7 +159,7 @@ export function projectEffectiveWork(source: DraftSource, payload: MailExtractio
         cms: { send: value('cms.send', 'cmsSend'), messageId: value('cms.messageId', 'cmsMessageId'),
           recipient: value('cms.recipient', 'cmsRecipient') } };
       const sourceRows = stay.rows.length ? stay.rows : [{ id: `${stay.id}_row`, roomType: null, rooms: null,
-        adultsPerRoom: null, childAges: null, board: null }];
+        adultsPerRoom: null, childAges: null, mealPlan: null }];
       const rooms = sourceRows.flatMap((row) => {
         const countPath = `stays[${stay.id}].rows[${row.id}].count`;
         const count = Object.hasOwn(state, countPath) ? state[countPath] : row.rooms ??

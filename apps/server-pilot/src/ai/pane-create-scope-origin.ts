@@ -2,6 +2,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { mailExtraction, workEvent, workItem } from '../db/schema/work.js';
 import { paneCreateIdentitySchema, type PaneCreateIdentity } from './pane-create-scope.js';
+import { hydrateStoredFieldPath } from './stored-work-state.js';
 
 export type HistoricalOwnRow = { eventId: string; extractionId: string; fieldPath: string; value: unknown; extraction: unknown };
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
@@ -20,7 +21,7 @@ export function paneOwnRowsFromEvents(input: {
   if (!paneCreateIdentitySchema.safeParse(input.identity).success || input.identity.roomIndex !== 1 ||
       input.identity.rowId !== `${input.identity.stayId}_row`) return [];
   const prefix = `stays[${input.identity.stayId}].rows[${input.identity.rowId}].`;
-  const fields = new Set(['count', 'adults', 'roomType', 'childAges', 'board'].map((field) => prefix + field));
+  const fields = new Set(['count', 'adults', 'roomType', 'childAges', 'board', 'mealPlan'].map((field) => prefix + field));
   return input.rows.flatMap((row) => {
     if (!row.eventId || !row.extractionId || row.workItemId !== input.workItemId || row.eventWorkItemId !== input.workItemId ||
         row.transportId !== input.transportId || !row.sourceMessageId || row.sourceMessageId !== row.extractionMessageId ||
@@ -34,7 +35,8 @@ export function paneOwnRowsFromEvents(input: {
         (evidence.paneSeq as number) < 1 || !paneState || typeof paneState !== 'object' || Array.isArray(paneState) ||
         !Object.hasOwn(paneState, row.fieldPath) ||
         JSON.stringify((paneState as Record<string, unknown>)[row.fieldPath]) !== JSON.stringify(row.value)) return [];
-    return [{ eventId: row.eventId, extractionId: row.extractionId, fieldPath: row.fieldPath, value: row.value, extraction: row.extraction }];
+    return [{ eventId: row.eventId, extractionId: row.extractionId, fieldPath: hydrateStoredFieldPath(row.fieldPath),
+      value: row.value, extraction: row.extraction }];
   });
 }
 
@@ -49,7 +51,7 @@ export async function loadPaneOwnRowOrigins(tx: WorkTx, input: {
   if (!paneCreateIdentitySchema.safeParse(input.identity).success || input.identity.roomIndex !== 1 ||
       input.identity.rowId !== `${input.identity.stayId}_row`) return [];
   const prefix = `stays[${input.identity.stayId}].rows[${input.identity.rowId}].`;
-  const paths = ['count', 'adults', 'roomType', 'childAges', 'board'].map((field) => prefix + field);
+  const paths = ['count', 'adults', 'roomType', 'childAges', 'board', 'mealPlan'].map((field) => prefix + field);
   const rows = await tx.select({
     workItemId: workItem.id, transportId: workItem.transportId, sourceMessageId: workItem.sourceMessageId,
     eventId: workEvent.id, eventWorkItemId: workEvent.workItemId, actorKind: workEvent.actorKind, eventType: workEvent.type,

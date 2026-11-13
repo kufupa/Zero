@@ -90,8 +90,8 @@ describe('PARTY MATCH V2 search plan', () => {
       subject: 'Accommodation request for Karen Vickers',
       body: 'Regards,\nKaren Vickers\nAmicis Health (Pty) Ltd',
       payload: {
-        agency: 'Karen Vickers',
-        endClient: 'Amicis Health (Pty) Ltd',
+        bookingAgency: 'Karen Vickers',
+        organization: 'Amicis Health (Pty) Ltd',
         contact: { name: 'Karen Vickers' },
       },
       quoteLlmParty: { kind: 'agency', name: 'Karen Vickers', guestNames: ['Karen Vickers'] },
@@ -102,7 +102,7 @@ describe('PARTY MATCH V2 search plan', () => {
     const mixedSignature = buildPartyMatchCandidates({
       fromAddress: 'karen@example.test',
       body: 'Please arrange the quote.\nRegards, Karen Vickers | Reservations Consultant',
-      payload: { agency: 'Karen Vickers Travel' },
+      payload: { bookingAgency: 'Karen Vickers Travel' },
     });
     expect(mixedSignature).toContainEqual({
       name: 'Karen Vickers Travel',
@@ -113,7 +113,7 @@ describe('PARTY MATCH V2 search plan', () => {
 
     const titledContact = buildPartyMatchCandidates({
       fromAddress: 'karen@example.test',
-      payload: { agency: 'Karen Vickers Travel', contact: { name: 'Dr. Karen Vickers' } },
+      payload: { bookingAgency: 'Karen Vickers Travel', contact: { name: 'Dr. Karen Vickers' } },
     });
     expect(titledContact).toContainEqual({
       name: 'Karen Vickers Travel',
@@ -125,7 +125,7 @@ describe('PARTY MATCH V2 search plan', () => {
 
   it('uses guest names from the existing quote-Luna answer to reject a party-shaped person name', () => {
     const candidates = buildPartyMatchCandidates({
-      payload: { agency: 'Karen Vickers' },
+      payload: { bookingAgency: 'Karen Vickers' },
       quoteLlmParty: {
         party: { kind: 'agency', name: 'Karen Vickers' },
         groups: [{ guestNames: ['Karen Vickers'] }],
@@ -136,7 +136,7 @@ describe('PARTY MATCH V2 search plan', () => {
 
   it('rejects an extracted end client repeated as a guest before planning HMS searches', () => {
     const candidates = buildPartyMatchCandidates({
-      payload: { endClient: 'Karen Vickers' },
+      payload: { organization: 'Karen Vickers' },
       body: 'Guest: Karen Vickers',
     });
 
@@ -146,7 +146,7 @@ describe('PARTY MATCH V2 search plan', () => {
 
   it('keeps a person-name candidate only when it also contains an organisation word', () => {
     const candidates = buildPartyMatchCandidates({
-      payload: { endClient: 'Karen Vickers Travel' },
+      payload: { organization: 'Karen Vickers Travel' },
       body: 'Guest: Karen Vickers',
     });
 
@@ -163,14 +163,14 @@ describe('PARTY MATCH V2 search plan', () => {
     ['signature person line', { body: 'Regards,\nKaren Vickers' }],
   ] as const)('prefers %s evidence over an extracted end client', (_source, evidence) => {
     expect(
-      buildPartyMatchCandidates({ payload: { endClient: 'Karen Vickers' }, ...evidence }),
+      buildPartyMatchCandidates({ payload: { organization: 'Karen Vickers' }, ...evidence }),
     ).toEqual([]);
   });
 
   it('treats a compact travel domain as a weak agency-first hint', () => {
     const candidates = buildPartyMatchCandidates({
       fromAddress: 'booker@acme-travelagency.co.za',
-      payload: { endClient: 'Mahindra Group' },
+      payload: { organization: 'Mahindra Group' },
     });
     expect(candidates).toContainEqual({
       name: 'acme travelagency',
@@ -195,7 +195,7 @@ describe('PARTY MATCH V2 search plan', () => {
     const candidates = buildPartyMatchCandidates({
       fromAddress: 'Northwind Mining <bookings@northwind-mining.com>',
       body: 'Please arrange the quote.\nRegards,\nNorthwind Mining',
-      payload: { endClient: 'Northwind Mining' },
+      payload: { organization: 'Northwind Mining' },
     });
 
     expect(candidates).toContainEqual({
@@ -283,7 +283,7 @@ describe('party sender history candidates', () => {
 
     const candidates = buildPartyMatchCandidates({
       fromAddress: 'agent@agency.example.test',
-      payload: { agency: 'Flight Centre' },
+      payload: { bookingAgency: 'Flight Centre' },
       allowLearnedSenderHistory: true,
     });
     expect(candidates.slice(0, 2)).toEqual([
@@ -313,7 +313,7 @@ describe('party sender history candidates', () => {
 
     const history = buildPartyMatchCandidates({
       fromAddress: 'agent@agency.example.test',
-      payload: { agency: emailName },
+      payload: { bookingAgency: emailName },
       allowLearnedSenderHistory: true,
     }).find((candidate) => candidate.source === 'sender_history');
 
@@ -345,7 +345,7 @@ describe('PARTY MATCH V2 binding', () => {
   it('does not bind a person name or the Dire/Directorate false positive', () => {
     const people = buildPartyMatchCandidates({
       fromAddress: 'Dire Itumeleng <dire@example.test>',
-      payload: { agency: 'Dire Itumeleng', contact: { name: 'Dire Itumeleng' } },
+      payload: { bookingAgency: 'Dire Itumeleng', contact: { name: 'Dire Itumeleng' } },
       body: 'Travel Agency Details: Dire Itumeleng',
     });
     const result = applyPartyBindRule({
@@ -604,7 +604,7 @@ describe('PARTY MATCH V2 structured Luna pick', () => {
 
   it('does not let no-model fallback bind an exact candidate that is also a guest person name', async () => {
     const context = partyMatchEmailContext({
-      payload: { endClient: 'karen vickers' },
+      payload: { organization: 'karen vickers' },
       guestNames: ['Karen Vickers'],
     });
     const result = await pickPartyMatch({
