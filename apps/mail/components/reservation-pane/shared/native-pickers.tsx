@@ -241,7 +241,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       {allowNone && <button type="button" role="option" aria-selected={!query} onMouseDown={event => event.preventDefault()} onClick={() => {
         editVersion.current += 1; const before = editVersion.current;
         void editor.commands.edit(party ? path : inputPath, null, 'none').then(() => {
-          if (editVersion.current === before) { setQuery(''); setDirty(false); setOpen(false); }
+          if (editVersion.current === before) { setQuery(''); setDirty(false); setOpen(false); if (catalogueField) editor.commands.setUncommitted(path, false); }
         }).catch(() => {});
       }}>None</button>}
       {shown.map((row, index) => <button id={`${id}-option-${index}`} key={`${row.ref}:${row.value}`} type="button" role="option" aria-selected={entity ? selectedRef === row.ref : saved === row.value}
