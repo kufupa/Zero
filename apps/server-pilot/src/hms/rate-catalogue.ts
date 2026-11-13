@@ -6,7 +6,7 @@ import {
   type PropertyProfile,
 } from '../../tooling/playwright-quote/property-profile.mjs';
 
-import { CENTURION_RATE_CATALOGUE, CENTURION_RATE_PLANS, CENTURION_OVERRIDE_RATE_CODES, CENTURION_EVENT_RATE_CODES, type CenturionRatePlan } from './centurion-rate-catalogue.js';
+import { CENTURION_RATE_CATALOGUE, CENTURION_RATE_PLANS, CENTURION_OVERRIDE_RATE_CODES, CENTURION_EVENT_RATE_CODES, type CenturionRatePlan, type CenturionRateBoard } from './centurion-rate-catalogue.js';
 export { CENTURION_RATE_CATALOGUE, CENTURION_RATE_PLANS, CENTURION_OVERRIDE_RATE_CODES, CENTURION_EVENT_RATE_CODES };
 export type { CenturionRateBoard, CenturionRatePlan, CenturionRateCode, CenturionRateCatalogueEntry } from './centurion-rate-catalogue.js';
 
