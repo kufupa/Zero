@@ -4543,16 +4543,21 @@ function applyDefaultCmsSendPolicy(
           proposal.annotations.push({ path, basis: 'source', evidenceRefs: sourceRefs });
           return true;
         };
-        const movedTransferServiceIds = new Set<string>();
+        const movedServiceIds = new Set<string>();
         const hasExtraDetails = (service: ReservationWorkflowV2Proposal['content']['services'][number]) =>
           service.requestedMoney.length > 0 || service.quantityRequest.value !== null || Boolean(service.code || service.itemCandidateRef) ||
           Object.values(service.sharedFields).some(value => value != null) ||
           service.targets.some(target => Object.values(target.fields).some(value => value != null));
-        const transferType = (text: string) => {
-          if (/\b(?:airport|flight)\b/iu.test(text) && /\b(?:transfer|shuttle|transport|pickup|pick.?up)\b/iu.test(text)) return 'airport_transfer' as const;
-          if (/\b(?:office|work|university|campus)\b/iu.test(text) && /\b(?:transfer|shuttle|transport|pickup|pick.?up)\b/iu.test(text)) return 'office_transfer' as const;
-          return null;
+        const serviceTypes = (text: string): Array<'lunch' | 'airport_transfer' | 'office_transfer'> => {
+          const types: Array<'lunch' | 'airport_transfer' | 'office_transfer'> = [];
+          if (normalizeRequestedMealPlan(text).lunchRequested) types.push('lunch');
+          const transfer = /\b(?:transfer|shuttle|transport|pickup|pick.?up)\b/iu.test(text);
+          if (transfer && /\b(?:airport|flight)\b/iu.test(text)) types.push('airport_transfer');
+          if (transfer && /\b(?:office|work|university|campus)\b/iu.test(text)) types.push('office_transfer');
+          return types;
         };
+        const hasUnrepresentedClause = (text: string) => text.split(/\b(?:and|plus|including)\b|[&+]/iu)
+          .some(clause => clause.trim() && !/\b(?:lunch|airport|flight|office|work|university|campus)\b/iu.test(clause));
         for (const group of request.body.groups) {
           const normalized = normalizeRequestedMealPlan(group.requestedMealPlan);
           if (normalized.mealPlan) group.requestedMealPlan = normalized.mealPlan;
@@ -4564,18 +4569,10 @@ function applyDefaultCmsSendPolicy(
         }
         for (const hint of source.serviceHints) {
           const text = `${hint.raw} ${typeof hint.value === 'string' ? hint.value : ''}`;
-          if (normalizeRequestedMealPlan(hint.raw).lunchRequested) {
-            const scope = quoteLunchHintScope({ hint, mealHints: [...source.mealPlanHints,
-              ...source.dates.flatMap(date => date.mealPlan ? [date.mealPlan] : [])], groupCount: request.body.groups.length });
-            const alreadyRepresented = request.body.requestedMoney.some(money => money.staffAllowanceType === 'lunch');
-            if (scope !== 'repeated_meal_plan' || !alreadyRepresented)
-              addExtra('lunch', hint, [], scope === 'overall' ? 'known' : 'unresolved');
-          }
-          const type = transferType(text);
-          if (!type) continue;
+          const types = serviceTypes(text);
+          if (!types.length) continue;
           const linkedServices = proposal.content.services.filter(service => service.ownerRequestId === request.id &&
-            service.operation === 'add' && transferType(service.requestedText) === type &&
-            [hint.raw, typeof hint.value === 'string' ? hint.value : ''].some(raw =>
+            service.operation === 'add' && [hint.raw, typeof hint.value === 'string' ? hint.value : ''].some(raw =>
               normalizedFact(raw) === normalizedFact(service.requestedText)) &&
             service.sourceRefs.some(ref => currentRefs.has(ref) && hint.sourceRefs.includes(ref)));
           if (linkedServices.length) {
@@ -4585,22 +4582,27 @@ function applyDefaultCmsSendPolicy(
               const completeTargets = targetRefs.length > 0 && targetRefs.length === service.targets.length;
               const overall = !service.targets.length && (request.body.groups.length === 1 ||
                 /\b(?:all|each|every|both)\s+(?:(?:the|of the)\s+)?(?:guests?|rooms?|groups?|people)\b|\beveryone\b/iu.test(service.requestedText));
-              const moved = addExtra(type, { raw: service.requestedText, sourceRefs: service.sourceRefs },
-                completeTargets ? [...new Set(targetRefs)] : [], completeTargets || overall ? 'known' : 'unresolved');
-              if (moved && !hasExtraDetails(service)) movedTransferServiceIds.add(service.id);
+              const requestedTypes = serviceTypes(service.requestedText);
+              const moved = requestedTypes.map(type => addExtra(type,
+                { raw: service.requestedText, sourceRefs: service.sourceRefs },
+                completeTargets ? [...new Set(targetRefs)] : [], completeTargets || overall ? 'known' : 'unresolved'));
+              if (requestedTypes.length && moved.every(Boolean) && !hasExtraDetails(service) &&
+                  !hasUnrepresentedClause(service.requestedText)) movedServiceIds.add(service.id);
             }
           } else {
             const overall = request.body.groups.length === 1 ||
               /\b(?:all|each|every|both)\s+(?:(?:the|of the)\s+)?(?:guests?|rooms?|groups?|people)\b|\beveryone\b/iu.test(text);
-            addExtra(type, hint, [], overall ? 'known' : 'unresolved');
+            for (const type of types) {
+              if (type === 'lunch') {
+                const scope = quoteLunchHintScope({ hint, mealHints: [...source.mealPlanHints,
+                  ...source.dates.flatMap(date => date.mealPlan ? [date.mealPlan] : [])], groupCount: request.body.groups.length });
+                const alreadyRepresented = request.body.requestedMoney.some(money => money.staffAllowanceType === 'lunch');
+                if (scope !== 'repeated_meal_plan' || !alreadyRepresented)
+                  addExtra(type, hint, [], scope === 'overall' ? 'known' : 'unresolved');
+              } else addExtra(type, hint, [], overall ? 'known' : 'unresolved');
+            }
           }
         }
-        const extraTypes = new Set(request.body.requestedMoney.map(money => money.staffAllowanceType));
-        const movedServiceIds = new Set(proposal.content.services.filter(service => {
-          if (service.ownerRequestId !== request.id || service.operation !== 'add') return false;
-          const text = service.requestedText;
-          return normalizeRequestedMealPlan(text).lunchRequested && extraTypes.has('lunch') && !hasExtraDetails(service) || movedTransferServiceIds.has(service.id);
-        }).map(service => service.id));
         proposal.content.services = proposal.content.services.filter(service => !movedServiceIds.has(service.id));
         request.serviceRefs = request.serviceRefs.filter(ref => !movedServiceIds.has(ref));
         if (request.body.requestedMoney.some(money => money.staffAllowanceType === 'lunch')) {
