@@ -218,7 +218,7 @@ export async function loadReservationNativeLeads(input: { propertyCode: string;
   fromAddress: string | null | undefined; env?: NodeJS.ProcessEnv; signal?: AbortSignal;
   db?: DB; transportId?: string; sourceThreadMessageIds?: readonly string[];
 }): Promise<ReservationWorkflowV2Observation[]> {
-  if (input.propertyCode !== 'HRCEN' || input.signal?.aborted) return [];
+  if (input.propertyCode !== 'HRCEN' || input.signal?.aborted || (!input.db && !input.sourceThreadMessageIds)) return [];
   try {
     const loaded = await loadMemory(input.env ?? process.env);
     input.signal?.throwIfAborted();
