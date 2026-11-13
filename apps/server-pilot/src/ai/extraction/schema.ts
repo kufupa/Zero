@@ -194,7 +194,7 @@ const mailExtractionObjectSchema = z.object({
             .nullable()
             .describe('Actual ages in these rooms; [] for explicit zero children or the source-clear person-authored Centurion quote-only adult convention, never for booking, children/family or ambiguous requests; null when child count or ages remain unknown.'),
           mealPlan: z.enum(['room_only', 'bb', 'dbb']).nullable(),
-        }),
+        }).strict(),
       ),
     }),
   ),
@@ -204,7 +204,7 @@ const mailExtractionObjectSchema = z.object({
       question: z.string(),
     }),
   ).nullish().transform((questions) => questions ?? []),
-});
+}).strict();
 
 export const mailExtractionSchema = mailExtractionObjectSchema.superRefine((value, context) => {
   if (value.needsAction === (value.action === 'no_action')) {

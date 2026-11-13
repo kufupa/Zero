@@ -2,6 +2,7 @@ import { extractionRefsForRequest, extractionRequestForProposal, requestTextKey 
 import { createHash, randomUUID } from 'node:crypto';
 import { profileCms, profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
 import { zodToJsonSchema } from 'zod-to-json-schema';
+import { z } from 'zod';
 import { and, desc, eq, ilike, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { mailThread, message } from '../db/schema/mail.js';
@@ -84,7 +85,7 @@ const VOUCHER_SYNTHESIS_RULES = `Keep requestedPrice as cited source evidence. W
 // from the existing property profile. Later corpus outcomes never enter T0 input.
 const HRCEN_AMEND_CAPABILITIES = `Trusted HRCEN tool capability context (applies only to Amend): Target bookedArrival and bookedDeparture identify the original saved stay, not the requested new dates. Put a requested new date only in its change; leave the corresponding original date absent unless the original is separately supported by the source or a native stay read. HMS can issue revised reservation documents when the amendment is saved, through the existing change fields cmsSend, cmsMessageId and cmsRecipient. A customer's request to send revised confirmation/proforma documents is a business delivery intent, not an incoming attachment or filing request. Translate that explicit intent into editable set changes: cmsSend=true and cmsRecipient=the source-supported requested recipient or current requester's address. For an explicit proforma request, choose only a configured CMS template whose supplied label supports proforma. A confirmation-only request does not justify switching to the proforma template: preserve the applicable native template, or leave template choice for staff when unknown. Template selection is host policy, not a customer claim: its change.sourceRefs and policy annotation.evidenceRefs must be empty; cite the current request for delivery intent and recipient. If recipient or intent is ambiguous, leave it unresolved for staff review. Do not require customers to name CMS controls, create incoming document entities for generated confirmations, change guest/booker contact records merely to deliver a document, or claim anything was sent before a verified Save. If no delivery is requested, leave CMS unchanged for native preservation. Existing stay room, occupancy and rate codes come from native Lookup unless the customer asks to change them; do not guess missing native codes. The supported native tool uses per-target rateHandling="reprice" for date, occupancy, room or rate changes: propose that editable method for the ordinary supported path and let native Prepare supply prices. Repricing with the existing rate code is distinct from changing that code or retaining a numeric nightly price. For price-affecting changes, explicit retained-price instructions are unsupported and must remain visible for staff resolution, never silently replaced by repricing; numeric manual-price overrides are unsupported.`;
 
-const SOURCE_INTENT_RULES = `Canceling only the last/final day or night of an existing stay is an Amend to departure, not cancellation of the whole stay. Unable/cannot keep a reservation expresses cancellation, not an instruction to keep it. A current submission of a voucher or proof of payment for a source-identified existing stay is Filing, including "please see attached billback voucher" and a forwarded accommodation-voucher email whose supplied document states the hotel's exact confirmation. The document alone does not create a stay or establish native identity: retain the exact source confirmation as an unresolved target until native lookup. A prior hotel acknowledgement that this same booking was already cancelled means review/status work (other), not a duplicate Cancel; retain the supporting evidence. Preserve source room descriptions in requestedRoomDescription separately from native roomType/roomCodes; Create's requestedMealPlan contains explicit source meal plan meaning. Quote guestNames is the overall unassigned roster; group guestNames requires explicit source group assignment. For one source stay range, preserve separately counted room categories as separate Quote groups, including 5 Standard and 1 Executive. Dinner and Breakfast components for the same group mean Dinner, Bed & Breakfast; preserve group scope and do not treat them as conflicting alternatives. Missing-year source dates remain editable without inventing a year. Preserve explicit operational instructions in notes/reservationNote, including passport on arrival, parking and labelled contacts.`;
+const SOURCE_INTENT_RULES = `Canceling only the last/final day or night of an existing stay is an Amend to departure, not cancellation of the whole stay. Unable/cannot keep a reservation expresses cancellation, not an instruction to keep it. A current submission of a voucher or proof of payment for a source-identified existing stay is Filing, including "please see attached billback voucher" and a forwarded accommodation-voucher email whose supplied document states the hotel's exact confirmation. The document alone does not create a stay or establish native identity: retain the exact source confirmation as an unresolved target until native lookup. A prior hotel acknowledgement that this same booking was already cancelled means review/status work (other), not a duplicate Cancel; retain the supporting evidence. Preserve source room descriptions in requestedRoomDescription separately from native roomType/roomCodes; Create and Quote requestedMealPlan contains explicit source meal plan meaning, not a derived native meal code. Quote guestNames is the overall unassigned roster; group guestNames requires explicit source group assignment. For one source stay range, preserve separately counted room categories as separate Quote groups, including 5 Standard and 1 Executive. Dinner and Breakfast components for the same group mean Dinner, Bed & Breakfast; preserve group scope and do not treat them as conflicting alternatives. Missing-year source dates remain editable without inventing a year. Copy a stated Billing Reference exactly, including punctuation and spacing; never infer a Refund Account. Preserve explicit operational instructions verbatim in notes/reservationNote, including dietary, water, transfer, passport on arrival, parking and labelled contacts. Do not repeat an ordinary request as an issue when it is already preserved; only genuine uncertainty belongs in issues.`;
 
 const OMIT_UNKNOWN_CLAIM = Symbol('omit-uncited-unknown-claim');
 function omitUncitedUnknownClaims(value: unknown): unknown {
@@ -3659,6 +3660,17 @@ function projectCurrentExtraction(input: {
         request.body.dateSections.forEach((section) => { delete section.defaults.roomTypeForCharge; });
         request.body.allocations.forEach((allocation) => { delete allocation.overrides.roomTypeForCharge; });
       }
+      const currentSources = input.evidence.filter((row) => row.relation !== 'prior_thread' && request.sourceRefs.includes(row.ref));
+      const bookingSlots = [request.body.shared, ...request.body.dateSections.map((section) => section.defaults),
+        ...request.body.allocations.map((allocation) => allocation.overrides)];
+      for (const fields of bookingSlots) {
+        const reference = fields.billingReference;
+        if (typeof reference === 'string' && !currentSources.some((row) => row.text.includes(reference))) {
+          fields.billingReference = null;
+          addProjectionIssue(proposal, `/requests/${request.id}/body/billingReference`, 'billing_reference_unverified',
+            'The billing reference could not be found verbatim in the current source. Enter or confirm it before continuing.', request.sourceRefs.filter((ref) => currentRefs.has(ref)));
+        }
+      }
       for (const allocation of request.body.allocations) {
         const guest = allocation.guest;
         const fullName = [guest.firstName, guest.lastName].filter(Boolean).join(' ');
@@ -3838,6 +3850,32 @@ function projectCurrentExtraction(input: {
     if (request.kind !== 'amend') continue;
     const extracted = extractionRequestForProposal(request, proposal.content.requests, currentExtraction, extractionIdByProposalRequestId);
     const cancellation = extracted && currentClaim(extracted.requestText, currentRefs);
+    for (const changes of [request.body.sharedChanges, ...request.body.perTarget.map((row) => row.changes)]) {
+      for (let index = changes.length - 1; index >= 0; index -= 1) {
+        const change = changes[index]!;
+        if (change.op !== 'set' || change.field !== 'billingReference' || typeof change.value !== 'string') continue;
+        const reference = change.value;
+        if (input.evidence.some((row) => currentRefs.has(row.ref) && change.sourceRefs.includes(row.ref) && row.text.includes(reference))) continue;
+        changes.splice(index, 1);
+        addProjectionIssue(proposal, `/requests/${request.id}/body/billingReference`, 'billing_reference_unverified',
+          'The billing reference could not be found verbatim in the current source. Enter or confirm it before continuing.',
+          change.sourceRefs.filter((ref) => currentRefs.has(ref)));
+      }
+      if (!changes.some((change) => change.op === 'set' && change.field === 'cmsSend' && change.value === true)) continue;
+      const all = [...request.body.sharedChanges, ...request.body.perTarget.flatMap((row) => row.changes)];
+      if (!all.some((change) => (change.op === 'set' || change.op === 'clear') && change.field === 'cmsMessageId')) {
+        changes.push({ op: 'set', field: 'cmsMessageId', value: '03', sourceRefs: [] });
+        proposal.annotations.push({ path: `/proposal/content/requests/${request.id}/body/cmsMessageId`, basis: 'policy', evidenceRefs: [] });
+      }
+      if (!extracted || all.some((change) => (change.op === 'set' || change.op === 'clear') && change.field === 'cmsRecipient')) continue;
+      const emails = extracted.guests.filter((guest) => guest.role === 'booker').flatMap((guest) => {
+        const claim = currentClaim(guest.email, currentRefs);
+        return typeof claim?.value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(claim.value.trim())
+          ? [{ value: claim.value.trim(), sourceRefs: claim.sourceRefs }] : [];
+      });
+      if (new Set(emails.map((claim) => normalizedFact(claim.value))).size === 1 && emails[0])
+        changes.push({ op: 'set', field: 'cmsRecipient', value: emails[0].value, sourceRefs: emails[0].sourceRefs });
+    }
     const allChanges = [...request.body.sharedChanges, ...request.body.perTarget.flatMap((row) => row.changes)];
     if (cancellation && isPartialStayCancellation(cancellation.raw) && !allChanges.some((change) =>
         change.op === 'shift_dates' || change.op === 'shift_departure' ||
@@ -4074,6 +4112,18 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
     .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
   const sourceRefs = input.evidence.filter((row) => row.relation === 'current_message').map((row) => row.ref);
   const excludedConfirmations = [...new Set(JSON.stringify(proposal).match(/\b\d{6,10}-\d{1,2}\b/g) ?? [])];
+  const catalogSchema = z.object({ status: z.literal('available'), catalog: z.object({ capturedAt: z.string(), catalogs: z.object({
+    guaranteeTypes: z.object({ records: z.array(z.object({ code: z.string().nullable(), meaning: z.string().nullable() })) }).optional(),
+  }) }) });
+  let catalog: z.infer<typeof catalogSchema> | null = null;
+  if (input.env.HMS_NATIVE_CATALOG_PATH) {
+    try {
+      const native = await import(new URL('../../tooling/hms-cloud/hms-native-catalog.mjs', import.meta.url).href);
+      const parsed = catalogSchema.safeParse(await native.loadHmsNativeCatalog({ path: input.env.HMS_NATIVE_CATALOG_PATH,
+        propertyCode: input.propertyCode }));
+      if (parsed.success) catalog = parsed.data;
+    } catch { /* Native defaults remain unset when the current directory cannot be read. */ }
+  }
   for (const request of proposal.content.requests) {
     if (request.kind !== 'create') continue;
     const name = (value: unknown) => isRecord(value) && typeof value.name === 'string' ? value.name : null;
@@ -4101,12 +4151,20 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
         ? ranked[0] : null;
     };
     const payer = leader(payerCounts), rememberedCap = leader(capCounts);
+    const guarantees = [...memory.guarantees].sort((a, b) => b.support - a.support);
+    const guarantee = guarantees[0] && guarantees[0].confidence >= 0.8 &&
+      (!guarantees[1] || guarantees[0].support > guarantees[1].support) ? guarantees[0] : null;
+    const matchingGuarantees = guarantee ? (catalog?.catalog.catalogs.guaranteeTypes?.records ?? []).filter((row) =>
+      row.code && (normalizedFact(row.code) === normalizedFact(guarantee.value) ||
+        normalizedFact(row.meaning) === normalizedFact(guarantee.value))) : [];
+    const guaranteeCode = request.body.shared.guaranteeType == null && matchingGuarantees.length === 1
+      ? matchingGuarantees[0]?.code ?? null : null;
     const meal = boardMeaning(request.body.shared.requestedMealPlan);
     const presetId = payer?.[0] === 'direct' ? 'settle-direct' : ['bb', 'dinner_bb'].includes(meal) && payer
       ? `${meal === 'dinner_bb' ? 'dbb' : 'bb'}-${payer[0]}` : null;
     const preset = RESERVATION_NOTE_PRESETS.find((row) => row.id === presetId);
     const cap = meal === 'dinner_bb' ? dinnerAmount(currentText) ?? rememberedCap?.[0] ?? null : null;
-    if (!preset && !cap) continue;
+    if (!preset && !cap && !guaranteeCode) continue;
     const existing = typeof request.body.shared.reservationNote === 'string' ? request.body.shared.reservationNote : '';
     const parts = [preset?.text, cap && !dinnerAmount(existing) ? `Dinner allowance R${cap}` : null, existing]
       .filter((part): part is string => Boolean(part));
@@ -4115,7 +4173,6 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
     if (note.length > RESERVATION_NOTE_MAX) {
       addProjectionIssue(proposal, path, 'source_note_exceeds_native_limit',
         `The composed note exceeds HMS's ${RESERVATION_NOTE_MAX}-character limit. Review and shorten it before saving.`, sourceRefs);
-      continue;
     }
     const ref = `obs_${randomUUID()}`;
     observations.push({ ref, generationId: input.generationId, kind: 'source', status: 'complete',
@@ -4123,10 +4180,18 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
       sourceRefs: [], criteria: { kind: 'historical_note_guidance', requestId: request.id, sourceCutoff: input.source.arrivedAt },
       coverage: { complete: true, notes: [] }, result: { denominator: memory.denominator,
         payer: payer ? { value: payer[0], support: payer[1] } : null,
-        dinnerCap: rememberedCap ? { value: rememberedCap[0], support: rememberedCap[1] } : null } });
-    request.body.shared.reservationNote = note;
+        dinnerCap: rememberedCap ? { value: rememberedCap[0], support: rememberedCap[1] } : null,
+        guarantee: guaranteeCode && guarantee ? { code: guaranteeCode, support: guarantee.support,
+          denominator: guarantee.denominator, confidence: guarantee.confidence, nativeCapturedAt: catalog?.catalog.capturedAt } : null } });
+    if ((preset || cap) && note.length <= RESERVATION_NOTE_MAX) {
+      request.body.shared.reservationNote = note;
+      proposal.annotations.push({ path, basis: 'native_read', evidenceRefs: [ref] });
+    }
+    if (guaranteeCode) {
+      request.body.shared.guaranteeType = guaranteeCode;
+      proposal.annotations.push({ path: `/proposal/content/requests/${request.id}/body/shared/guaranteeType`, basis: 'native_read', evidenceRefs: [ref] });
+    }
     proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, ref])].slice(0, 1000);
-    proposal.annotations.push({ path, basis: 'native_read', evidenceRefs: [ref] });
   }
   return { proposal, observations };
 }
