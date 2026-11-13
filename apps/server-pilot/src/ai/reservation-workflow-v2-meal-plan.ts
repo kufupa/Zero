@@ -5,7 +5,7 @@ export function normalizeRequestedMealPlan(value: unknown): {
   const phrase = typeof value === 'string' ? value.trim().toLowerCase() : '';
   const exclusions = new Set<string>();
   const positive = phrase.replace(/[,+\s&/_-]+/gu, ' ').replace(
-    /\b(?:no|without|excluding|exclude|not(?:\s+including)?)\s+(?:(?:any|the)\s+)?(?:breakfast|lunch|dinner|meals?)(?:\s+(?:(?:and|or)\s+)?(?:breakfast|lunch|dinner|meals?))*/gu,
+    /\b(?:no(?:\s+(?:need|requirement|request)(?:\s+for)?)?|without|excluding|exclude|not(?:\s+(?:including|need|require|want|request|include|provide|have))?)\s+(?:(?:any|the)\s+)?(?:breakfast|lunch|dinner|meals?)(?:\s+(?:(?:and|or)\s+)?(?:breakfast|lunch|dinner|meals?))*/gu,
     clause => {
       for (const meal of clause.match(/\b(?:breakfast|lunch|dinner|meals?)\b/gu) ?? []) exclusions.add(meal);
       return ' ';
