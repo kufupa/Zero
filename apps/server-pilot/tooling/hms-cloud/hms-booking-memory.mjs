@@ -374,7 +374,10 @@ export function buildHmsBookingMemory({
   };
 }
 
-function observationSnapshots(propertyCode, observations) {
+const canonicalValue = value => Array.isArray(value) ? value.map(canonicalValue)
+  : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalValue(value[key])])) : value;
+
+function normalizedObservations(propertyCode, observations) {
   const scope = text(propertyCode).toUpperCase();
   const unique = new Map();
   for (const observation of observations) {
@@ -391,27 +394,30 @@ function observationSnapshots(propertyCode, observations) {
       throw new TypeError('Stay observation requires a verified native confirmation.');
     }
     const capturedAt = new Date(observation.capturedAt).toISOString();
-    const item = { ...observation, propertyCode: scope, capturedAt };
+    const item = { ...observation, propertyCode: scope, capturedAt, source: text(observation.source),
+      result: { ...result, propertyCode: scope, confirmation: key } };
     const identity = JSON.stringify([scope, capturedAt, key, text(observation.source)]);
     const prior = unique.get(identity);
-    if (prior && JSON.stringify(prior.result) !== JSON.stringify(result)) {
+    if (prior && JSON.stringify(canonicalValue(prior.result)) !== JSON.stringify(canonicalValue(item.result))) {
       throw new TypeError('A stay observation identity has conflicting contents.');
     }
     unique.set(identity, item);
   }
-  return [...unique.values()].map(item => ({ propertyCode: scope, startedAt: item.capturedAt,
+  return [...unique.values()];
+}
+
+function observationSnapshots(propertyCode, observations) {
+  return normalizedObservations(propertyCode, observations).map(item => ({ propertyCode: item.propertyCode, startedAt: item.capturedAt,
     updatedAt: item.capturedAt, sourceType: item.source, results: [item.result] }));
 }
 
 /** Add a verified, timestamped native stay read; repeated identical reads are idempotent. */
 export function ingestStayObservation({ propertyCode, pmsSnapshots = [], outboundPdfRecords = [],
   messageRecords = [], observations = [] } = {}, observation) {
-  const next = [...observations, observation];
+  const next = normalizedObservations(propertyCode, [...observations, observation]);
   const snapshots = observationSnapshots(propertyCode, next);
-  const deduplicated = new Map(next.map(item => [JSON.stringify([text(item.propertyCode).toUpperCase(),
-    new Date(item.capturedAt).toISOString(), confirmationKey(item.result.confirmation), text(item.source)]), item]));
   return { propertyCode: text(propertyCode).toUpperCase(), pmsSnapshots, outboundPdfRecords, messageRecords,
-    observations: [...deduplicated.values()], memory: buildHmsBookingMemory({ propertyCode,
+    observations: next, memory: buildHmsBookingMemory({ propertyCode,
       pmsSnapshots: [...pmsSnapshots, ...snapshots], outboundPdfRecords, messageRecords }) };
 }
 
