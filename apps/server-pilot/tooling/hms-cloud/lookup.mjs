@@ -284,8 +284,9 @@ function matchesRun(request, query, alias) {
   try {
     if (request.method() !== 'POST' || new URL(request.url()).pathname !== '/web/base/GRIDDATA') return false;
     const body = new URLSearchParams(request.postData() || '');
-    return body.get('MADDON_FILTER_ALIAS_NAME_1') === alias &&
-      body.get('MADDON_FILTER_VALUE_1')?.trim().toLocaleLowerCase() === query.toLocaleLowerCase();
+    return query ? body.get('MADDON_FILTER_ALIAS_NAME_1') === alias &&
+      body.get('MADDON_FILTER_VALUE_1')?.trim().toLocaleLowerCase() === query.toLocaleLowerCase()
+      : ![...body.keys()].some((key) => key.startsWith('MADDON_FILTER_'));
   } catch {
     return false;
   }
@@ -324,7 +325,7 @@ async function waitForResponseRows(page, windowId, columns, rows, timeoutMs) {
 }
 
 export function correlateAgencyReferenceField(responseRow, gridRow, field) {
-  if (!['iatanumber', 'referencenumbertype'].includes(field)) return { outcome: 'unsupported_field' };
+  if (!['iatanumber', 'referencenumbertype', 'commissionpercentage', 'commissionflatamount', 'paycommissionflag'].includes(field)) return { outcome: 'unsupported_field' };
   if (!responseRow || !Object.hasOwn(responseRow, field)) return { outcome: 'response_field_missing' };
   if (!gridRow) return { outcome: 'grid_row_missing' };
   if (!Object.hasOwn(gridRow, field)) return { outcome: 'grid_field_missing' };
@@ -342,6 +343,12 @@ function candidate(row, records, kind, spec, keys) {
   const gridData = matches.length === 1 ? matches[0] : null;
   const iata = kind === 'agency' ? correlateAgencyReferenceField(row, gridData, 'iatanumber') : null;
   const referenceType = kind === 'agency' ? correlateAgencyReferenceField(row, gridData, 'referencenumbertype') : null;
+  const percent = kind === 'agency' ? correlateAgencyReferenceField(row, gridData, 'commissionpercentage') : null;
+  const pay = kind === 'agency' ? correlateAgencyReferenceField(row, gridData, 'paycommissionflag') : null;
+  const flat = kind === 'agency' ? correlateAgencyReferenceField(row, gridData, 'commissionflatamount') : null;
+  const numericPercent = percent?.value != null && /^\d+(?:\.\d+)?$/.test(percent.value) ? Number(percent.value) : null;
+  const verifiedPercent = percent?.outcome === 'response_grid_correlated' && pay?.outcome === 'response_grid_correlated' &&
+    ['-1', '1', 'true'].includes(pay.value?.toLowerCase()) && numericPercent != null && numericPercent <= 100;
   return {
     nativeId: clean(row[spec.id]), name: clean(row[spec.name]),
     ...(kind === 'agency' ? {
@@ -349,6 +356,10 @@ function candidate(row, records, kind, spec, keys) {
       ...(referenceType.outcome === 'response_grid_correlated' ? { referenceNumberType: referenceType.value } : {}),
       referenceNumberEvidence: iata.outcome, referenceNumberTypeEvidence: referenceType.outcome,
       internalReferenceNumber: clean(row.internalreferencenumber),
+      commissionPercent: verifiedPercent ? numericPercent : null,
+      commissionEvidence: { percentage: percent, payCommission: pay, flatAmount: flat,
+        mapping: verifiedPercent ? 'correlated_agency_directory_percent' : 'unverified',
+        confidence: verifiedPercent ? 1 : null },
     } : kind === 'organization' ? { corporateAccountNumber: clean(row.corporateaccountnumber) } : {
       accountNumber: clean(row.araccountnumber), status: clean(row.arstatuscodedesc),
       accountType: clean(row.accttype), accountStanding: clean(row.accountstanding),
@@ -376,13 +387,13 @@ function coverage(metadata, loaded) {
   return { loaded, total, reportedTotal, pageSize, serverMoreRecords, truncated, possiblyTruncated: truncated !== false };
 }
 
-async function search(page, kind, input, { timeoutMs = 20000, field = 'name' } = {}) {
+async function search(page, kind, input, { timeoutMs = 20000, field = 'name', collectPages = false } = {}) {
   if (field !== 'name' && !(kind === 'organization' && field === 'nativeId')) return { outcome: 'input_gap', issue: 'lookup_field_unsupported' };
   const spec = field === 'nativeId' ? { ...LOOKUPS[kind], filter: 'Organization ID', alias: 'companyid' } : LOOKUPS[kind];
   const query = typeof input === 'string' ? input.trim() : '';
   if (busyPages.has(page)) return { outcome: 'execution_failure', kind, query, candidates: [], issue: 'lookup_in_progress' };
   if (kind === 'arAccount') forgetVerifiedAr(page);
-  if (!query || query.length > 200 || /[\r\n]/.test(query)) {
+  if ((!query && !collectPages) || query.length > 200 || /[\r\n]/.test(query)) {
     lastSearch.delete(page);
     return { outcome: 'input_gap', candidates: [], issue: `${kind}_name_required` };
   }
@@ -426,7 +437,8 @@ async function search(page, kind, input, { timeoutMs = 20000, field = 'name' } =
     const body = await Promise.race([response.text(), new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Error('LOOKUP_RESPONSE_TIMEOUT')), timeoutMs);
     })]).finally(() => clearTimeout(timer));
-    const { DATA: rows, METADATA: metadata } = responseData(body).grid?.GRIDRESULT?.GRID ?? {};
+    const { DATA: rows, METADATA: initialMetadata } = responseData(body).grid?.GRIDRESULT?.GRID ?? {};
+    let metadata = initialMetadata;
     if (!Array.isArray(rows) || !metadata) throw new Error('LOOKUP_RESPONSE_INVALID');
     stage = 'waiting_for_grid';
     const { keys, expected } = await waitForResponseRows(page, windowId, [spec.id, spec.name], rows, timeoutMs);
@@ -434,9 +446,33 @@ async function search(page, kind, input, { timeoutMs = 20000, field = 'name' } =
     const externalError = page.getByText(/Cannot retrieve profile:\s*External system|External system unavailable/i)
       .filter({ visible: true });
     if (await externalError.count()) throw new Error('EXTERNAL_SYSTEM_UNAVAILABLE');
-    const grid = await readGrid(page, windowId);
+    let grid = await readGrid(page, windowId);
     if (signature(grid.records, keys) !== expected || JSON.stringify(await readCriteria(win)) !== JSON.stringify(controls)) {
       throw new Error('LOOKUP_RESULTS_UNVERIFIED');
+    }
+    if (collectPages) for (let pageNumber = 1; pageNumber < 20 && coverage(metadata, rows.length).serverMoreRecords === true; pageNumber += 1) {
+      const next = page.waitForResponse((res) => {
+        const req = res.request(), target = new URL(req.url());
+        const params = new URLSearchParams(req.postData() || '');
+        return req.method() === 'POST' && target.origin === ORIGIN && target.pathname === '/web/base/GETCACHE' &&
+          clean(params.get('GRID_NAME')) === clean(initialMetadata.GRIDNAME);
+      }, { timeout: timeoutMs }).catch(() => null);
+      await win.locator('.x-grid-view:visible').last().evaluate((element) => { element.scrollTop = element.scrollHeight; });
+      const received = await next;
+      if (!received) break;
+      if (received.status() !== 200) throw new Error('LOOKUP_PAGE_FAILED');
+      const nextGrid = responseData(await received.text()).grid?.GRIDRESULT?.GRID;
+      if (!Array.isArray(nextGrid?.DATA) || !nextGrid.DATA.length || !nextGrid.METADATA ||
+          ['GRIDID', 'GRIDNAME', 'DATASPYID'].some((key) => clean(nextGrid.METADATA[key]) !== clean(initialMetadata[key]))) {
+        throw new Error('LOOKUP_PAGE_INVALID');
+      }
+      rows.push(...nextGrid.DATA);
+      metadata = nextGrid.METADATA;
+      await waitForResponseRows(page, windowId, [spec.id, spec.name], rows, timeoutMs);
+      grid = await readGrid(page, windowId);
+      if (signature(grid.records, keys) !== signature(rows, keys) || JSON.stringify(await readCriteria(win)) !== JSON.stringify(controls)) {
+        throw new Error('LOOKUP_RESULTS_UNVERIFIED');
+      }
     }
     const resultCoverage = coverage(metadata, grid.records.length);
     if (!rows.length && (resultCoverage.serverMoreRecords !== false || (resultCoverage.total != null && resultCoverage.total !== 0))) {
@@ -455,7 +491,7 @@ async function search(page, kind, input, { timeoutMs = 20000, field = 'name' } =
     const unverified = (records) => [...new Set(records.flatMap((row) => Object.keys(row)))].filter((key) => !keys.includes(key));
     return {
       outcome: candidates.length ? 'matches' : 'no_match', kind, field: spec.label, query, searchId,
-      criteria: { field: spec.filter, query, controls, requestFilters }, coverage: resultCoverage,
+      criteria: { field: spec.filter, query, controls, requestFilters, scope: query ? 'filtered' : 'unfiltered' }, coverage: resultCoverage,
       loaded: resultCoverage.loaded, total: resultCoverage.total,
       possiblyTruncated: resultCoverage.possiblyTruncated, serverMoreRecords: resultCoverage.serverMoreRecords,
       columns: grid.columns, metadata, candidates,

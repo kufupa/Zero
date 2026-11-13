@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { PROPERTY_REGISTRY } from '../../tooling/playwright-quote/property-registry.mjs';
 import { profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
+import { z } from 'zod';
 
 /**
  * CLIENT_QUESTION: track / sourceOfBusiness / guaranteeType per party class
@@ -134,4 +135,63 @@ export function bookingCodeDefaults(kind: string): BookingCodeDefaults {
     return { track: null, sourceOfBusiness: null, guaranteeType: null };
   }
   return defaultsFromCrosstabRow(MINED_CROSSTAB[kind as PartyClass]);
+}
+
+const commissionCatalogSchema = z.object({ capturedAt: z.string().datetime({ offset: true }), catalogs: z.object({
+  agencies: z.object({ records: z.array(z.object({ nativeId: z.string().nullable(),
+    commissionPercent: z.number().min(0).max(100).nullable(), commissionEvidence: z.object({
+      directory: z.object({ mapping: z.string(), confidence: z.number().nullable() }).nullable(),
+      mapping: z.object({ basis: z.literal('same_agency_unsaved_native_form_readback'),
+        numerator: z.number().int().nonnegative(), denominator: z.number().int().nonnegative() }).nullable(),
+    }) })) }),
+}) });
+
+/** A selected native agency ID can use a currently verified directory percentage. */
+export async function loadAgencyCommission(input: { propertyCode: string; nativeId: string; env?: NodeJS.ProcessEnv }): Promise<
+  { status: 'verified'; percent: number; capturedAt: string; confidence: number; numerator: number; denominator: number } |
+  { status: 'unavailable' | 'not_found'; issue: string }
+> {
+  const path = (input.env ?? process.env).HMS_NATIVE_CATALOG_PATH;
+  if (!path) return { status: 'unavailable', issue: 'catalog_path_missing' };
+  const module = await import(new URL('../../tooling/hms-cloud/hms-native-catalog.mjs', import.meta.url).href);
+  const loaded = await module.loadHmsNativeCatalog({ path, propertyCode: input.propertyCode });
+  if (loaded.status !== 'available') return { status: 'unavailable', issue: loaded.issue };
+  const parsed = commissionCatalogSchema.safeParse(loaded.catalog);
+  if (!parsed.success) return { status: 'unavailable', issue: 'commission_catalog_invalid' };
+  const rows = parsed.data.catalogs.agencies.records.filter(row => row.nativeId === input.nativeId);
+  if (rows.length !== 1 || rows[0]?.commissionPercent == null ||
+      rows[0].commissionEvidence.directory?.mapping !== 'correlated_agency_directory_percent' ||
+      (rows[0].commissionEvidence.directory.confidence ?? 0) < 0.9 || !rows[0].commissionEvidence.mapping) {
+    return { status: 'not_found', issue: 'commission_unverified' };
+  }
+  const { numerator, denominator } = rows[0].commissionEvidence.mapping;
+  const confidence = numerator / denominator;
+  if (!denominator || numerator > denominator || confidence < 0.9) return { status: 'not_found', issue: 'commission_unverified' };
+  return { status: 'verified', percent: rows[0].commissionPercent, capturedAt: parsed.data.capturedAt,
+    numerator, denominator, confidence };
+}
+
+const rateMealCatalogSchema = z.object({ capturedAt: z.string().datetime({ offset: true }), catalogs: z.object({
+  ratePlans: z.object({ records: z.array(z.object({ code: z.string().nullable(), mealPlan: z.string().nullable(),
+    mealPlanEvidence: z.object({ basis: z.literal('validated_unsaved_rate_and_native_meal_readback'),
+      numerator: z.number().int().positive(), denominator: z.number().int().positive() }).nullable() })) }),
+}) });
+
+/** Confirm the current native Rate Plan/Meal Plan mapping separately from historical stay evidence. */
+export async function loadNativeRateMealPlan(input: { propertyCode: string; ratePlan: string; env?: NodeJS.ProcessEnv }): Promise<
+  { status: 'verified'; mealPlan: string; capturedAt: string } | { status: 'unavailable' | 'not_found'; issue: string }
+> {
+  const path = (input.env ?? process.env).HMS_NATIVE_CATALOG_PATH;
+  if (!path) return { status: 'unavailable', issue: 'catalog_path_missing' };
+  const module = await import(new URL('../../tooling/hms-cloud/hms-native-catalog.mjs', import.meta.url).href);
+  const loaded = await module.loadHmsNativeCatalog({ path, propertyCode: input.propertyCode });
+  if (loaded.status !== 'available') return { status: 'unavailable', issue: loaded.issue };
+  const parsed = rateMealCatalogSchema.safeParse(loaded.catalog);
+  if (!parsed.success) return { status: 'unavailable', issue: 'rate_catalog_invalid' };
+  const rows = parsed.data.catalogs.ratePlans.records.filter(row => row.code === input.ratePlan);
+  if (rows.length !== 1 || !rows[0]?.mealPlan || !rows[0].mealPlanEvidence ||
+      rows[0].mealPlanEvidence.numerator !== rows[0].mealPlanEvidence.denominator) {
+    return { status: 'not_found', issue: 'rate_meal_unverified' };
+  }
+  return { status: 'verified', mealPlan: rows[0].mealPlan, capturedAt: parsed.data.capturedAt };
 }

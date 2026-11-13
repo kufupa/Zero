@@ -472,9 +472,18 @@ export async function listGuestStayDropdown(page, { propertyCode, field } = {}) 
     await check(); mark();
     await openCombo(page, input);
     const options = await comboOptions(input);
+    const info = await input.evaluate(el => {
+      const store = Ext.getCmp(el.id.replace(/-inputEl$/, ''))?.getStore?.();
+      const proxy = store?.getProxy?.();
+      const total = store?.getTotalCount?.();
+      return { total: Number.isInteger(total) && total >= 0 ? total : null,
+        local: proxy?.type === 'memory' || proxy?.getType?.() === 'memory', loading: Boolean(store?.isLoading?.()) };
+    });
     await page.keyboard.press('Escape');
     await check();
-    return { outcome: 'ok', field, options, coverage: { loaded: options.length, total: null, complete: null } };
+    const complete = !info.loading && info.local && info.total === options.length ? true : null;
+    return { outcome: 'ok', field, options, criteria: { propertyCode, scope: 'unfiltered' },
+      coverage: { loaded: options.length, total: info.total, complete, possiblyTruncated: complete !== true } };
   });
 }
 
@@ -695,13 +704,22 @@ export async function listCmsMessageIds(page, { propertyCode } = {}) {
     await check();
     if (await win.count() !== 1) throw new Error('CMS_LOOKUP_NOT_UNIQUE');
     const records = await cmsGrid(win);
+    const info = await win.evaluate(el => {
+      const footer = el.innerText.match(/Records:\s*(\d+)\s+of\s+(\d+)/i);
+      const controls = [...el.querySelectorAll('input')].filter(input =>
+        input.name === 'selfiltervaluectrl' || input.name.startsWith('ff_'));
+      return { footer: footer ? { loaded: Number(footer[1]), total: Number(footer[2]) } : null,
+        filtersClear: controls.length > 0 && controls.every(input => !input.value.trim()) };
+    });
     const rows = win.locator('.x-grid-view .x-grid-row:visible, .x-grid-view .x-grid-data-row:visible');
     if (!records.length || await rows.count() !== records.length) throw new Error('CMS_GRID_INCOMPLETE');
     const searchId = randomUUID();
     cmsSearches.set(page, { propertyCode, searchId, windowId: await win.getAttribute('id'), records: JSON.stringify(records) });
-    return { outcome: 'ok', searchId, candidates: records.map((record) => ({
+    const complete = info.filtersClear && info.footer?.loaded === records.length && info.footer.total === records.length ? true
+      : info.footer && info.footer.total > records.length ? false : null;
+    return { outcome: 'ok', searchId, criteria: { propertyCode, scope: info.filtersClear ? 'unfiltered' : 'filtered_or_unknown' }, candidates: records.map((record) => ({
       code: record.userdefinedfieldvalue ?? null, description: record.description ?? null, nativeData: record,
-    })), coverage: { loaded: records.length, total: null, complete: null } };
+    })), coverage: { loaded: records.length, total: info.footer?.total ?? null, complete, possiblyTruncated: complete !== true } };
   });
 }
 

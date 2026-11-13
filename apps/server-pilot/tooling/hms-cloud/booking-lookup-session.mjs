@@ -46,6 +46,7 @@ import { getQuoteView } from './quote-view.mjs';
 import { validCreateNote } from './create-request-binding.mjs';
 import { compareChargeRoomCriteria, compareChargeRoomPricing } from './charge-room-pricing.mjs';
 import { compareCreatePartyRecord, extractCreatePartySnapshot } from './create-party-readback.mjs';
+import { listTrackSubSegments } from './guest-stay-track-catalog.mjs';
 
 const PROPERTY = 'HRCEN';
 const GUEST_STAY_CHECK_AVAILABILITY_PATH = '/web/base/OSRESV.HDR.getcheckavailability';
@@ -234,12 +235,14 @@ export async function readSavedOrganizationCreate(state, request, { openSession 
 
 function defaultMemorySources(env) {
   if (env.HMS_MEMORY_PMS_PATH) {
-    return { pmsPath: env.HMS_MEMORY_PMS_PATH, outboundPdfPath: env.HMS_MEMORY_OUTBOUND_PATH || undefined };
+    return { pmsPath: env.HMS_MEMORY_PMS_PATH, outboundPdfPath: env.HMS_MEMORY_OUTBOUND_PATH || undefined,
+      observationsPath: env.HMS_MEMORY_OBSERVATIONS_PATH || undefined };
   }
   const dir = env.HMS_MEMORY_DATA_DIR || DEFAULT_DATA_DIR;
   return {
     pmsPath: join(dir, 'stay360-1a-1b-1c-20261029-run01.json'),
     outboundPdfPath: env.HMS_MEMORY_OUTBOUND_PATH || join(dir, 'centurion-outbound-pdf-records-2026-10-29.jsonl'),
+    observationsPath: env.HMS_MEMORY_OBSERVATIONS_PATH || undefined,
   };
 }
 
@@ -475,6 +478,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       setGuestStayChildAges, listCmsMessageIds, selectCmsMessageId, closeCmsMessageIdPicker, setCmsSendCheckbox,
       searchHotelAvailabilityParty, selectHotelAvailabilityParty, cancelHotelAvailabilityParty,
       searchRoomTypes, searchRoomTypesForCharge, searchRatePlans, inspectRoomRateCandidate,
+      listTrackSubSegments,
       selectRoomType, selectRoomTypeForCharge, closeRoomRatePicker, selectGuestStayRatePlan,
       searchGuestStaySourceBusiness, inspectGuestStaySourceBusiness,
       selectGuestStaySourceBusiness, closeGuestStaySourceBusinessPicker,
@@ -552,6 +556,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       'closeGuestStayPartyPicker', 'closeCmsMessageIdPicker',
       'setCmsSendCheckbox', 'searchHotelAvailabilityParty', 'selectHotelAvailabilityParty',
       'searchRoomTypes', 'searchRoomTypesForCharge', 'searchRatePlans', 'inspectRoomRateCandidate',
+      'listTrackSubSegments',
       'selectRoomType', 'selectRoomTypeForCharge', 'selectGuestStayRatePlan',
       'inspectGuestStaySourceBusiness', 'selectGuestStaySourceBusiness',
     ].includes(tool)) {
