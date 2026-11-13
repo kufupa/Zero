@@ -24,8 +24,9 @@ async function readField(page, selector) {
 }
 
 // One reading of the record: is the processing mask up, what the Confirmation Number and Status show.
-export async function readSaveSnapshot(page) {
+export async function readSaveSnapshot(page, options = {}) {
   const confirmationNumber = await readField(page, CONFIRMATION_FIELD);
+  options.onConfirmation?.(confirmationNumber);
   const status = await readField(page, STATUS_FIELD);
   const maskVisible = (await page.getByText(MASK_TEXT).filter({ visible: true }).count()) > 0;
   return { maskVisible, confirmationNumber, status };

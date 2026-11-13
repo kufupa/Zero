@@ -108,6 +108,7 @@ describe('write CLI session lease', () => {
     const previousExit = process.exitCode;
     try {
       expect(await createLabStayMain(OMITTED_ARGV['create-lab-stay'])).toBe(2);
+      expect(await createLabStayMain(['--property', 'HRCEN', '--request', 'x.json'])).toBe(2);
       expect(await amendStayMain(OMITTED_ARGV['amend-stay'])).toBe(2);
       expect(await cancelStayMain(OMITTED_ARGV['cancel-stay'])).toBe(2);
       expect(await cancelLabStayMain(OMITTED_ARGV['cancel-lab-stay'])).toBe(2);

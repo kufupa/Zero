@@ -41,7 +41,7 @@ export function proofPreSaveSearchRefusal(existingRows) {
 }
 
 export function saveClickMayHaveFired(error) {
-  return !/^control_missing:/.test(String(error?.message || error));
+  return !String(error?.message || error).startsWith('control_missing:');
 }
 
 export function paneCommitOutcome(proof) {
@@ -87,6 +87,16 @@ export async function reconcileCreateSave({
   save, expected, existingRows, readByConfirmation, searchByGuestDates,
 }) {
   const result = { confNo: null, readbackMatch: null, mismatches: [], screenshot: null, unknownOutcome: null };
+  if (save?.reason === 'conflicting_confirmation_numbers') {
+    return {
+      ...result,
+      unknownOutcome: 'unresolved',
+      conflictReason: 'conflicting_confirmation_numbers',
+      ...(Array.isArray(save.conflictingConfirmationNumbers)
+        ? { conflictingConfirmationNumbers: save.conflictingConfirmationNumbers }
+        : {}),
+    };
+  }
   let confNo = save?.confirmed === true ? String(save.confirmationNumber ?? '').trim() : '';
   if (confNo) result.confNo = confNo;
 
@@ -124,6 +134,15 @@ export async function reconcileCreateSave({
       return { ...result, unknownOutcome: 'unresolved' };
     }
     confNo = String(newMatches[0].confirmation).trim();
+    const observedConfirmation = String(save?.confirmationNumber ?? '').trim();
+    if (observedConfirmation && observedConfirmation !== confNo) {
+      return {
+        ...result,
+        unknownOutcome: 'unresolved',
+        conflictReason: 'conflicting_confirmation_numbers',
+        conflictingConfirmationNumbers: [observedConfirmation, confNo],
+      };
+    }
     result.unknownOutcome = 'found';
   }
 

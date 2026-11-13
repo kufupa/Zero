@@ -1,11 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { assertTrackReadyForGuarantee, loadCreateRequest, matchTrackRow, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, shopRowsFromTexts, stayActions } from './create-request.mjs';
-import { blankRequiredCreateFields, createLabtestRefusal, createRoomTypeMismatch, parseCreateProperty } from './create-lab-stay.mjs';
+import { blankRequiredCreateFields, createLabtestRefusal, createModeRefusal, createRoomTypeMismatch, parseCreateProperty } from './create-lab-stay.mjs';
+import { reconcileCreateSave } from './create-proof-rules.mjs';
 import { profileFor } from './property-profile.mjs';
+import { readSaveSnapshot, waitForSaveConfirmation } from './save-wait.mjs';
 
 function requiredRequest(extra = {}) {
   return {
@@ -37,6 +41,32 @@ async function withRequest(data, fn) {
 test('offline create request test does not opt into pilot RDS', () => {
   assert.notEqual(process.env.VITEST_ALLOW_PILOT_RDS, '1');
   assert.equal(/nava-zero-mail-pilot/i.test(process.env.DATABASE_URL || ''), false);
+});
+
+test('implicit create exits before request or browser work; explicit safe modes remain available', () => {
+  const result = spawnSync(process.execPath, [
+    fileURLToPath(new URL('./create-lab-stay.mjs', import.meta.url)),
+    '--property', 'HRCEN', '--request', '/nonexistent/create-request.json',
+  ], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /explicit_create_mode_required/);
+  assert.equal(createModeRefusal({ paneCommit: true }), null);
+  assert.equal(createModeRefusal({ stopBefore: 'save' }), null);
+  assert.equal(createModeRefusal({ stopBefore: 'availability' }), null);
+  assert.equal(createModeRefusal({ shopMode: true }), null);
+  assert.equal(createModeRefusal({}), 'explicit_create_mode_required');
+});
+
+test('missing property is refused before an implicit or explicit create mode', () => {
+  for (const mode of [[], ['--stop-before', 'save']]) {
+    const result = spawnSync(process.execPath, [
+      fileURLToPath(new URL('./create-lab-stay.mjs', import.meta.url)),
+      '--request', '/nonexistent/create-request.json', ...mode,
+    ], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /PROPERTY_REQUIRED/);
+    assert.doesNotMatch(result.stderr, /request file:|explicit_create_mode_required/);
+  }
 });
 
 test('adults 0 fails before any browser work', async () => {
@@ -191,7 +221,8 @@ test('create-lab-stay validates before browser and keeps shot names', async () =
   const cancelClick = source.indexOf("clickTip(page, 'Cancel')");
   assert.ok(shopReturn !== -1 && saveClick !== -1 && shopReturn < saveClick);
   assert.ok(checkAvail !== -1 && saveStop !== -1 && checkAvail < saveStop && saveStop < saveClick);
-  assert.ok(paneCommit !== -1 && cancelClick !== -1 && paneCommit < cancelClick);
+  assert.ok(paneCommit !== -1 && paneCommit < saveClick);
+  assert.equal(cancelClick, -1, 'create must not automatically cancel a saved stay');
   assert.match(source, /outcome = 'previewed'/);
   assert.match(source, /paneCommitOutcome\(proof\)/);
   assert.equal(source.includes('x-tree-expander'), false);
@@ -220,7 +251,7 @@ test('proof mode is guarded before browser work and wires read-only reconciliati
   assert.match(source, /reconcileCreateSave/);
   assert.match(source, /saveClickMayHaveFired\(error\)/);
   assert.match(source, /save_click_unconfirmed/);
-  assert.match(source, /result\.saved = proof\.confNo \? true : null/);
+  assert.match(source, /result\.saved = proof\.readbackMatch === true \? true : null/);
   for (const field of ['confNo', 'readbackMatch', 'mismatches', 'screenshot']) {
     assert.match(source, new RegExp(`${field}:`));
   }
@@ -674,6 +705,101 @@ test('still_processing wait reads the form with fakes and never retries Save', a
   assert.equal(masked.confirmed, false);
   assert.equal(rules.reconcileSaveInput(masked).confirmed, false);
   assert.equal(maskedClock, 60_000);
+});
+
+test('save polling preserves unconfirmed breadcrumbs and refuses conflicting numbers', async () => {
+  const rules = await loadReadbackRules();
+  const prior = '11111111-1';
+  const other = '22222222-1';
+  const poll = (confirmationNumber, frames) => {
+    let clock = 0;
+    let reads = 0;
+    return rules.waitWhileStillProcessing({
+      reason: 'still_processing', confirmationNumber, timeoutMs: 10, pollMs: 5,
+      now: () => clock, sleep: async (ms) => { clock += ms; },
+      read: async () => frames[Math.min(reads++, frames.length - 1)],
+    });
+  };
+  const blank = { maskVisible: false, confirmationNumber: '', status: 'Reserved' };
+  const unconfirmed = await poll(prior, [blank]);
+  assert.equal(unconfirmed.confirmed, false);
+  assert.equal(unconfirmed.confirmationNumber, prior);
+  assert.equal(rules.reconcileSaveInput(unconfirmed).confirmed, false);
+
+  const current = await poll(prior, [{ ...blank, confirmationNumber: prior }]);
+  assert.equal(current.confirmed, true);
+  assert.equal(current.confirmationNumber, prior);
+
+  const conflict = await poll(prior, [{ ...blank, confirmationNumber: other }]);
+  assert.equal(conflict.confirmed, false);
+  assert.equal(conflict.confirmationNumber, null);
+  assert.deepEqual(conflict.conflictingConfirmationNumbers, [prior, other]);
+  assert.equal(conflict.reason, 'conflicting_confirmation_numbers');
+  const reconciliationInput = rules.reconcileSaveInput(conflict);
+  assert.equal(reconciliationInput.reason, 'conflicting_confirmation_numbers');
+  const proof = await reconcileCreateSave({ save: reconciliationInput });
+  assert.equal(proof.unknownOutcome, 'unresolved');
+  assert.equal(proof.confNo, null);
+  assert.equal(proof.conflictReason, 'conflicting_confirmation_numbers');
+  assert.deepEqual(proof.conflictingConfirmationNumbers, [prior, other]);
+
+  const laterConflict = await poll('', [
+    { ...blank, maskVisible: true, confirmationNumber: prior }, blank,
+    { ...blank, confirmationNumber: other },
+  ]);
+  assert.deepEqual(laterConflict.conflictingConfirmationNumbers, [prior, other]);
+});
+
+test('first save wait retains observations through blank, conflicting, and failed reads', async () => {
+  const rules = await loadReadbackRules();
+  const prior = '11111111-1';
+  const other = '22222222-1';
+  const masked = { maskVisible: true, confirmationNumber: prior, status: 'New' };
+  const blank = { maskVisible: false, confirmationNumber: '', status: 'Reserved' };
+  const run = (frames) => {
+    const evidence = { saved: null };
+    let clock = 0;
+    let reads = 0;
+    const wait = waitForSaveConfirmation(null, {
+      timeoutMs: 10, pollMs: 5, now: () => clock,
+      sleep: async (ms) => { clock += ms; },
+      read: async () => {
+        const frame = frames[Math.min(reads++, frames.length - 1)];
+        if (frame instanceof Error) throw frame;
+        return rules.rememberSaveSnapshot(evidence, frame);
+      },
+    });
+    return { evidence, wait };
+  };
+
+  const afterBlank = run([masked, blank]);
+  const blankSave = rules.applyObservedSaveNumbers(await afterBlank.wait, afterBlank.evidence);
+  assert.equal(blankSave.confirmed, false);
+  assert.equal(blankSave.confirmationNumber, prior);
+
+  const afterConflict = run([masked, { ...blank, confirmationNumber: other }]);
+  const conflictingSave = rules.applyObservedSaveNumbers(await afterConflict.wait, afterConflict.evidence);
+  assert.equal(conflictingSave.confirmed, false);
+  assert.equal(conflictingSave.confirmationNumber, null);
+  assert.deepEqual(conflictingSave.conflictingConfirmationNumbers, [prior, other]);
+  assert.equal(conflictingSave.reason, 'conflicting_confirmation_numbers');
+
+  const afterError = run([masked, new Error('snapshot_failed')]);
+  await assert.rejects(afterError.wait, /snapshot_failed/);
+  assert.equal(afterError.evidence.saved, null);
+  assert.equal(afterError.evidence.confirmationNumber, prior);
+  const errorSave = rules.applyObservedSaveNumbers({ confirmed: false, confirmationNumber: null }, afterError.evidence);
+  assert.equal(errorSave.confirmationNumber, prior);
+
+  const duringRead = { saved: null };
+  const page = {
+    locator: (selector) => ({ first: () => ({ inputValue: async () => selector.includes('confirmationnumber') ? prior : 'New' }) }),
+    getByText: () => ({ filter: () => ({ count: async () => { throw new Error('mask_read_failed'); } }) }),
+  };
+  await assert.rejects(readSaveSnapshot(page, {
+    onConfirmation: (confirmationNumber) => rules.rememberSaveSnapshot(duringRead, { confirmationNumber }),
+  }), /mask_read_failed/);
+  assert.equal(duringRead.confirmationNumber, prior);
 });
 
 test('confirmation find passes expected arrival so HMS can move the 60-day window', async () => {

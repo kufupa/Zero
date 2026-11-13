@@ -79,6 +79,24 @@ test('pane commit is committed only when readback matches', () => {
   assert.equal(rules.paneCommitOutcome({ readbackMatch: null, unknownOutcome: 'not_found' }), 'committed_unverified');
 });
 
+test('conflicting observed confirmations remain unresolved without guessing a match', async () => {
+  let calls = 0;
+  const observed = ['11111111-1', '22222222-1', '33333333-1'];
+  const result = await rules.reconcileCreateSave({
+    save: { confirmed: false, confirmationNumber: null, reason: 'conflicting_confirmation_numbers', conflictingConfirmationNumbers: observed },
+    expected: EXPECTED,
+    existingRows: [],
+    searchByGuestDates: async () => { calls += 1; return { outcome: 'ok', rows: [] }; },
+    readByConfirmation: async () => { calls += 1; return { outcome: 'found', stay: EXPECTED }; },
+  });
+  assert.equal(calls, 0);
+  assert.equal(result.confNo, null);
+  assert.equal(result.unknownOutcome, 'unresolved');
+  assert.equal(result.conflictReason, 'conflicting_confirmation_numbers');
+  assert.deepEqual(result.conflictingConfirmationNumbers, observed);
+  assert.equal(rules.paneCommitOutcome(result), 'committed_unverified');
+});
+
 test('confirmed save retains confirmation when readback throws', async () => {
   const result = await rules.reconcileCreateSave({
     save: { confirmed: true, confirmationNumber: '61143613-1' },
@@ -123,7 +141,7 @@ test('unknown save searches guest/dates once, then reads the found record by con
   const calls = [];
   assert.equal(typeof rules.reconcileCreateSave, 'function');
   const result = await rules.reconcileCreateSave({
-    save: { confirmed: false, confirmationNumber: 'stale-1' },
+    save: { confirmed: false, confirmationNumber: '61143613-1' },
     expected: EXPECTED,
     existingRows: [],
     searchByGuestDates: async (request) => {
@@ -161,6 +179,23 @@ test('unknown save searches guest/dates once, then reads the found record by con
     screenshot: '/tmp/readback.png',
     unknownOutcome: 'found',
   });
+});
+
+test('unknown save does not substitute a different found confirmation for the breadcrumb', async () => {
+  const result = await rules.reconcileCreateSave({
+    save: { confirmed: false, confirmationNumber: '11111111-1' },
+    expected: EXPECTED,
+    existingRows: [],
+    searchByGuestDates: async () => ({
+      outcome: 'ok',
+      rows: [{ ...EXPECTED, confirmation: '22222222-1', status: 'Reserved' }],
+    }),
+    readByConfirmation: async () => { throw new Error('conflicting numbers must remain unresolved'); },
+  });
+  assert.equal(result.confNo, null);
+  assert.equal(result.unknownOutcome, 'unresolved');
+  assert.deepEqual(result.conflictingConfirmationNumbers, ['11111111-1', '22222222-1']);
+  assert.equal(rules.paneCommitOutcome(result), 'committed_unverified');
 });
 
 test('unknown save reports not_found without confirmation readback or retry', async () => {

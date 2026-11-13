@@ -82,6 +82,12 @@ export function createLabtestRefusal(propertyCode, stay, env = process.env) {
   return null;
 }
 
+// A create must use the reconciled pane-commit path; preview and rate shop never save.
+export function createModeRefusal({ paneCommit, stopBefore, shopMode }) {
+  return paneCommit || shopMode || stopBefore === 'availability' || stopBefore === 'save'
+    ? null : 'explicit_create_mode_required';
+}
+
 // --- create-readback-rules ---
 export const READBACK_WAIT_MS = 60_000;
 export const READBACK_POLL_MS = 5_000;
@@ -167,6 +173,37 @@ export function knownConfirmation(save) {
   return squashText(save?.confirmationNumber);
 }
 
+// Preserve every distinct number as soon as it is observed, even if polling later throws.
+export function rememberSaveSnapshot(result, snapshot) {
+  const confirmation = knownConfirmation(snapshot);
+  if (!confirmation) return snapshot;
+  const prior = knownConfirmation(result);
+  const observed = result.conflictingConfirmationNumbers ?? (prior ? [prior] : []);
+  if (!observed.includes(confirmation)) observed.push(confirmation);
+  if (observed.length === 1) result.confirmationNumber = observed[0];
+  else {
+    result.confirmationNumber = null;
+    result.conflictingConfirmationNumbers = observed;
+  }
+  return snapshot;
+}
+
+export function applyObservedSaveNumbers(save, result) {
+  if (result.conflictingConfirmationNumbers?.length > 1) {
+    return {
+      ...save,
+      confirmed: false,
+      confirmationNumber: null,
+      conflictingConfirmationNumbers: result.conflictingConfirmationNumbers,
+      reason: 'conflicting_confirmation_numbers',
+    };
+  }
+  if (!save.confirmed && result.confirmationNumber) {
+    return { ...save, confirmationNumber: result.confirmationNumber };
+  }
+  return save;
+}
+
 export function readbackSearchPlan(save) {
   const confirmation = knownConfirmation(save);
   if (save?.confirmed === true && confirmation) return { by: 'confirmation', confirmation };
@@ -195,6 +232,9 @@ export function reconcileSaveInput(save) {
     confirmationNumber: confirmation || null,
     reason: save?.reason ?? null,
     status: save?.status ?? null,
+    ...(Array.isArray(save?.conflictingConfirmationNumbers)
+      ? { conflictingConfirmationNumbers: save.conflictingConfirmationNumbers }
+      : {}),
   };
 }
 
@@ -307,12 +347,23 @@ export async function waitWhileStillProcessing({
   read,
 }) {
   const start = now();
+  let observedConfirmation = knownConfirmation({ confirmationNumber: priorConfirmation });
   for (;;) {
     const snapshot = await read();
-    const confirmationNumber = snapshot?.confirmationNumber ?? '';
+    const confirmationNumber = knownConfirmation(snapshot);
+    if (confirmationNumber && observedConfirmation && confirmationNumber !== observedConfirmation) {
+      return {
+        confirmed: false,
+        confirmationNumber: null,
+        conflictingConfirmationNumbers: [observedConfirmation, confirmationNumber],
+        status: snapshot?.status ?? null,
+        reason: 'conflicting_confirmation_numbers',
+      };
+    }
+    if (confirmationNumber) observedConfirmation = confirmationNumber;
     const maskVisible = snapshot?.maskVisible === true;
-    const currentReason = maskVisible ? 'still_processing' : (knownConfirmation({ confirmationNumber }) ? null : 'no_confirmation');
-    if (!maskVisible && knownConfirmation({ confirmationNumber })) {
+    const currentReason = maskVisible ? 'still_processing' : (confirmationNumber ? null : 'no_confirmation');
+    if (!maskVisible && confirmationNumber) {
       return {
         confirmed: true,
         confirmationNumber: squashText(confirmationNumber),
@@ -330,7 +381,7 @@ export async function waitWhileStillProcessing({
     }) === 'stop') {
       return {
         confirmed: false,
-        confirmationNumber: knownConfirmation({ confirmationNumber }) || null,
+        confirmationNumber: observedConfirmation || null,
         status: snapshot?.status ?? null,
         reason: currentReason ?? reason,
       };
@@ -1032,6 +1083,8 @@ async function runProofReadback(browser, secret, stay, dir, save, savedScreensho
     mismatches: merged.mismatches,
     screenshot: merged.screenshot ?? savedScreenshot,
     unknownOutcome: merged.unknownOutcome,
+    ...(merged.conflictReason ? { conflictReason: merged.conflictReason } : {}),
+    ...(merged.conflictingConfirmationNumbers ? { conflictingConfirmationNumbers: merged.conflictingConfirmationNumbers } : {}),
   };
 }
 
@@ -1043,14 +1096,6 @@ export async function main(argv = process.argv.slice(2)) {
     process.exitCode = stop.exitCode;
     return;
   }
-  const shopMode = parseShop(argv);
-  const out = parseOutDir(argv);
-  if (!out.ok) {
-    process.stderr.write(`${out.error}\n`);
-    process.exitCode = out.exitCode;
-    return;
-  }
-  const actions = stayActions(stop.stopBefore);
   const property = parseCreateProperty(argv);
   if (!property.ok) {
     process.stderr.write(`${property.error}\n`);
@@ -1058,6 +1103,20 @@ export async function main(argv = process.argv.slice(2)) {
     return property.exitCode;
   }
   const propertyCode = property.propertyCode;
+  const shopMode = parseShop(argv);
+  const modeRefusal = createModeRefusal({ ...stop, shopMode });
+  if (modeRefusal) {
+    process.stderr.write(`${modeRefusal}\n`);
+    process.exitCode = 2;
+    return 2;
+  }
+  const out = parseOutDir(argv);
+  if (!out.ok) {
+    process.stderr.write(`${out.error}\n`);
+    process.exitCode = out.exitCode;
+    return;
+  }
+  const actions = stayActions(stop.stopBefore);
   const loaded = await loadCreateRequest(argv);
   if (!loaded.ok) {
     process.stderr.write(`${loaded.error}\n`);
@@ -1262,6 +1321,7 @@ export async function main(argv = process.argv.slice(2)) {
       return;
     }
     const verifySave = proofMode || stop.paneCommit;
+    if (!verifySave) throw new Error('explicit_create_mode_required');
     const existingRows = verifySave
       ? await readExistingGuestRows(browser, secret, stay, dir, result)
       : null;
@@ -1298,6 +1358,7 @@ export async function main(argv = process.argv.slice(2)) {
       result.saveError = String(error.message || error);
       saveClickUnknown = true;
     }
+    result.saved = null; // A click may have reached HMS; only independent readback can establish the outcome.
     // HMS masks the record while it saves. Read the number only once the mask is gone. A missing number is
     // save_unconfirmed, never a failed save: HMS may already have booked the stay.
     // Allowlisted no-rooms Ext box: click OK and keep waiting. Money/unknown abort.
@@ -1317,7 +1378,9 @@ export async function main(argv = process.argv.slice(2)) {
               error.messageBoxAbort = true;
               throw error;
             }
-            return readSaveSnapshot(p);
+            return readSaveSnapshot(p, {
+              onConfirmation: (confirmationNumber) => rememberSaveSnapshot(result, { confirmationNumber }),
+            });
           },
         });
       } catch (error) {
@@ -1330,7 +1393,8 @@ export async function main(argv = process.argv.slice(2)) {
         save = { confirmed: false, confirmationNumber: null, reason: 'save_observation_error' };
       }
     }
-    if (!save.confirmed) {
+    save = applyObservedSaveNumbers(save, result);
+    if (!save.confirmed && save.reason !== 'conflicting_confirmation_numbers') {
       try {
         save = await waitWhileStillProcessing({
           reason: save.reason,
@@ -1341,7 +1405,9 @@ export async function main(argv = process.argv.slice(2)) {
               error.messageBoxAbort = true;
               throw error;
             }
-            return readSaveSnapshot(page);
+            return readSaveSnapshot(page, {
+              onConfirmation: (confirmationNumber) => rememberSaveSnapshot(result, { confirmationNumber }),
+            });
           },
           sleep: (ms) => page.waitForTimeout(ms),
         });
@@ -1354,8 +1420,9 @@ export async function main(argv = process.argv.slice(2)) {
         result.saveError = String(error.message || error);
       }
     }
+    save = applyObservedSaveNumbers(save, result);
     result.confirmationNumber = save.confirmationNumber;
-    result.saved = save.confirmed;
+    if (save.conflictingConfirmationNumbers) result.conflictingConfirmationNumbers = save.conflictingConfirmationNumbers;
     result.saveReason = save.reason;
     if (save.confirmed) {
       result.statusAfterSave = proofMode
@@ -1371,9 +1438,10 @@ export async function main(argv = process.argv.slice(2)) {
       const proof = await runProofReadback(
         browser, secret, stay, dir, save, savedScreenshot, existingRows,
       );
-      result.confirmationNumber = proof.confNo ?? save.confirmationNumber;
-      result.saved = proof.confNo ? true : null;
+      result.confirmationNumber = proof.conflictingConfirmationNumbers ? null : (proof.confNo ?? save.confirmationNumber);
+      result.saved = proof.readbackMatch === true ? true : null;
       result.proof = proof;
+      if (proof.conflictingConfirmationNumbers) result.conflictingConfirmationNumbers = proof.conflictingConfirmationNumbers;
       result.cmsReason = proof.cmsReason;
       if (proofMode) {
         result.outcome = proof.readbackMatch === true ? 'readback_match'
@@ -1390,46 +1458,6 @@ export async function main(argv = process.argv.slice(2)) {
       process.stdout.write(`${result.outcome}${result.confirmationNumber ? ` ${result.confirmationNumber}` : ''}\n`);
       return;
     }
-    if (result.saved) {
-      const actual = await readSavedCreateFields(page);
-      const cms = compareCmsReadback(expectedCmsFields(stay), actual);
-      const children = Array.isArray(stay.childAges) ? bandChildAges(stay.childAges) : {};
-      const childMismatches = Object.entries(children).filter(([field, count]) => normalizeAdults(actual[field]) !== count)
-        .map(([field, expected]) => ({ field, expected, actual: actual[field] ?? null }));
-      if (cms.reason || childMismatches.length) {
-        result.outcome = cms.reason ?? 'saved_child_mismatch';
-        result.cmsReason = cms.reason;
-        result.mismatches = [...cms.mismatches, ...childMismatches];
-        result.cancelled = false;
-        process.stdout.write(`${result.outcome}\n`);
-        return;
-      }
-    }
-    if (!result.saved) {
-      result.outcome = 'save_unconfirmed';
-      await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
-      process.stdout.write(`${result.outcome}\n`);
-      return;
-    }
-    let cancelled = false;
-    for (let attempt = 1; attempt <= 2 && !cancelled; attempt += 1) {
-      try {
-        await clickTip(page, 'Cancel');
-        const yes = page.getByRole('button', { name: /yes|ok/i }).first();
-        if (await yes.count()) await yes.click();
-        await page.waitForTimeout(2000);
-        const status = await page.locator('input[name="status"]').inputValue().catch(() => '');
-        result.statusAfterCancel = status;
-        cancelled = /cancel/i.test(status);
-      } catch (error) {
-        result.cancelError = String(error.message || error);
-      }
-    }
-    result.cancelled = cancelled;
-    await shot(page, dir, 'cancelled.png');
-    result.outcome = cancelled ? 'saved_then_cancelled' : 'cancel_failed';
-      process.stdout.write(`${result.outcome}\n`);
-      if (result.outcome !== 'saved_then_cancelled') process.exitCode = 2;
     });
   } catch (error) {
     result.outcome = 'execution_failure';
