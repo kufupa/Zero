@@ -4238,7 +4238,7 @@ function applyDefaultCmsSendPolicy(
     .filter((part) => message.text.includes(part)) : [];
   const cmsInstructions = cmsParts.filter((part) => /\bCMS\s+Send\b/iu.test(part))
     .map((raw) => {
-      const match = /^CMS\s+Send\s*(?::|=|is)\s*(on|off)\s*[.!?]?$/iu.exec(raw) ??
+      const match = /^CMS\s+Send(?:\s*(?::|=)\s*|\s+(?:is\s+)?)(on|off)\s*[.!?]?$/iu.exec(raw) ??
         /^(?:please\s+)?(?:keep|leave|turn)\s+CMS\s+Send\s+(on|off)\s*[.!?]?$/iu.exec(raw);
       return { raw, value: match ? match[1]!.toLowerCase() === 'on' : null };
     });
@@ -4288,10 +4288,24 @@ function applyDefaultCmsSendPolicy(
         allocation.occupancy.childAges = [];
       }
     }
+    const root = `/proposal/content/requests/${request.id}/body`;
+    const holdNestedSends = (basis: 'source' | 'policy', evidenceRefs: string[]) => {
+      const changedPaths: string[] = [];
+      request.body.dateSections.forEach((row, index) => { if (row.defaults.cmsSend === true) {
+        row.defaults.cmsSend = false; changedPaths.push(`${root}/dateSections/${index}/defaults/cmsSend`);
+      } });
+      request.body.allocations.forEach((row, index) => { if (row.overrides.cmsSend === true) {
+        row.overrides.cmsSend = false; changedPaths.push(`${root}/allocations/${index}/overrides/cmsSend`);
+      } });
+      proposal.annotations = proposal.annotations.filter((annotation) => !changedPaths.includes(annotation.path));
+      for (const path of changedPaths) if (proposal.annotations.length < 2000)
+        proposal.annotations.push({ path, basis, evidenceRefs });
+    };
     const labtest = request.body.allocations.some(({ guest }) => /^proof$/i.test(guest.firstName?.trim() ?? '') &&
       /^labtest$/i.test(guest.lastName?.trim() ?? ''));
     if (labtest) {
       request.body.shared.cmsSend = false;
+      holdNestedSends('policy', []);
     }
     const cmsSend = request.body.shared.cmsSend;
     const roomCount = citedInteger(source?.roomCount);
@@ -4306,7 +4320,6 @@ function applyDefaultCmsSendPolicy(
       const allocation = request.body.allocations[0];
       const selected = allocation?.overrides.cmsMessageId ?? section?.defaults.cmsMessageId ?? request.body.shared.cmsMessageId;
       const resolved = templateBound && values.size === 1 && !values.has(null) && typeof selected === 'string' && values.has(selected);
-      const root = `/proposal/content/requests/${request.id}/body`;
       const templatePath = templateBound && allocation?.overrides.cmsMessageId != null ? `${root}/allocations/0/overrides/cmsMessageId`
         : templateBound && section?.defaults.cmsMessageId != null ? `${root}/dateSections/0/defaults/cmsMessageId` : `${root}/shared/cmsMessageId`;
       if (templateBound) for (const template of cmsTemplates) {
@@ -4316,18 +4329,12 @@ function applyDefaultCmsSendPolicy(
       }
       if (!resolved) {
         const sendPath = `${root}/shared/cmsSend`;
-        const changedSendPaths: string[] = [];
-        if (!(isRecord(cmsSend) && cmsSend.kind === 'none')) request.body.shared.cmsSend = false;
-        if (!(isRecord(cmsSend) && cmsSend.kind === 'none')) changedSendPaths.push(sendPath);
-        request.body.dateSections.forEach((row, index) => { if (row.defaults.cmsSend === true) {
-          row.defaults.cmsSend = false; changedSendPaths.push(`${root}/dateSections/${index}/defaults/cmsSend`);
-        } });
-        request.body.allocations.forEach((row, index) => { if (row.overrides.cmsSend === true) {
-          row.overrides.cmsSend = false; changedSendPaths.push(`${root}/allocations/${index}/overrides/cmsSend`);
-        } });
-        proposal.annotations = proposal.annotations.filter((annotation) => !changedSendPaths.includes(annotation.path));
-        for (const path of changedSendPaths) if (proposal.annotations.length < 2000)
-          proposal.annotations.push({ path, basis: 'policy', evidenceRefs: [] });
+        holdNestedSends('policy', []);
+        if (!(isRecord(cmsSend) && cmsSend.kind === 'none')) {
+          request.body.shared.cmsSend = false;
+          proposal.annotations = proposal.annotations.filter((annotation) => annotation.path !== sendPath);
+          if (proposal.annotations.length < 2000) proposal.annotations.push({ path: sendPath, basis: 'policy', evidenceRefs: [] });
+        }
         if (bound && source) for (const instruction of cmsInstructions) {
           if (!source.requestText.raw.includes(instruction.raw) || instruction.raw.length > 2000 ||
             proposal.sourceClaims.length >= MAX_PROPOSAL_SOURCE_CLAIMS || proposal.sourceClaims.some((claim) =>
@@ -4344,6 +4351,10 @@ function applyDefaultCmsSendPolicy(
       const instructionsBound = bound && source && cmsInstructions.every((instruction) => source.requestText.raw.includes(instruction.raw));
       const path = `/proposal/content/requests/${request.id}/body/shared/cmsSend`;
       const unambiguous = instructionsBound && values.size === 1 && !values.has(null);
+      if (!unambiguous || values.has(false) || labtest || isRecord(cmsSend) && cmsSend.kind === 'none') {
+        const fromSource = unambiguous && values.has(false) && !labtest;
+        holdNestedSends(fromSource ? 'source' : 'policy', fromSource ? [message.ref] : []);
+      }
       if (labtest || isRecord(cmsSend) && cmsSend.kind === 'none') {
         if (!unambiguous) addProjectionIssue(proposal, path, 'cms_send_scope_ambiguous',
           'The source has conflicting or unscoped CMS Send instructions. The initial setting is off; review the correct choice.', [message.ref]);
