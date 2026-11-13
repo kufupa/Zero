@@ -118,7 +118,7 @@ async function responseText(response) {
 }
 // HMS returns a data-only JavaScript object literal with single-quoted strings.
 // Normalize strings and keys without evaluating vendor-supplied code.
-function parseResponse(body) {
+export function parseResponse(body) {
   let badEscape = false;
   const strings = body.replace(/("(?:\\.|[^"\\])*")|'((?:\\.|[^'\\])*)'/gs, (all, double, single) => {
     if (double) return double;

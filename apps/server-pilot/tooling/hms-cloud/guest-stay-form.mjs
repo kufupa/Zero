@@ -4,6 +4,7 @@ import { installPageRequestFence } from './page-request-fence.mjs';
 import { isVerifiedArSelectionCurrent, verifiedArSelectionToken } from './lookup.mjs';
 import { currentVerifiedLabtestProfileToken, isVerifiedLabtestProfile, isVerifiedLabtestProfileCurrent, verifiedLabtestProfileToken } from './guest-profile.mjs';
 import { isLabtestGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
+import { parseResponse as parsePickerResponse } from './guest-stay-room-rate.mjs';
 
 const CLOUD_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const TEXT_FIELDS = {
@@ -689,12 +690,7 @@ async function cmsGrid(win) {
 }
 
 function cmsResponse(text) {
-  const json = text.replace(/("(?:\\.|[^"\\])*")|([,{]\s*)([A-Za-z_$][\w$]*)\s*:/g,
-    (match, quoted, prefix, key) => quoted || `${prefix}"${key}":`);
-  const payload = JSON.parse(json), data = payload?.pageData;
-  const content = value => Array.isArray(value) ? value.length > 0 : value != null && value !== false && value !== '';
-  if (!data || [payload, data].some(part => part && ((Object.hasOwn(part, 'success') && part.success !== true) ||
-      content(part.error) || content(part.errors))) || content(data.messages)) throw new Error('CMS_RESPONSE_INVALID');
+  const data = parsePickerResponse(text);
   const grid = data.grid?.GRIDRESULT?.GRID;
   if (!Array.isArray(grid?.DATA) || grid.METADATA?.GRIDNAME !== 'LVUDFCD' ||
       grid.DATA.some(row => !Object.hasOwn(row, 'userdefinedfieldvalue') || !Object.hasOwn(row, 'description'))) {
