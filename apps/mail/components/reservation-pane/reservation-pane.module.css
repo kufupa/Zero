@@ -77,6 +77,7 @@
 .priceBlock { min-width:0; border-top:1px solid var(--border); padding:8px 0; }
 .priceBlock strong { text-align:right; overflow-wrap:anywhere; }
 .priceBlock button { margin-top:6px; }
+.memoryBadge { display:block; margin-top:5px; padding:6px 8px; border:1px solid var(--border); border-radius:6px; color:var(--ink); font-size:11px; line-height:1.4; overflow-wrap:anywhere; }
 
 .options::-webkit-scrollbar { display:block; width:12px; }
 .options::-webkit-scrollbar-thumb { background:#8b80a5; border:2px solid #f2f0f6; border-radius:6px; }

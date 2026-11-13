@@ -101,6 +101,40 @@ export type NativeRecommendationLead = { ref: string; value: string; label: stri
   basis: 'exact_sender' | 'normalized_entity'; support: number;
   stock?: { status: 'available_each_night' | 'sold_or_restricted' | 'unknown'; observedAt: string } };
 
+export function autoTransferHistory(snapshot: ReservationPaneSnapshot, path: string): { support: number; denominator: number; partyKind: 'organization' | 'arAccount' } | null {
+  const draft = snapshot.session.draft;
+  const requestId = decodeURIComponent(path.split('/')[4] ?? '');
+  const request = draft.proposal.content.requests.find(row => row.id === requestId);
+  if (!request || request.kind !== 'create' && request.kind !== 'amend') return null;
+  const root = `${requestPath(requestId)}/body/`;
+  if (!path.startsWith(root)) return null;
+  const relative = path.slice(root.length);
+  const createParty = request.kind === 'create' ? /^(?:shared|dateSections\/\d+\/defaults|allocations\/\d+\/overrides)\/(organization|arAccount)$/.exec(relative)?.[1] : undefined;
+  const amendChange = request.kind === 'amend' && /^(?:sharedChanges\/\d+|perTarget\/\d+\/changes\/\d+)\/value$/.test(relative)
+    ? path.slice(0, -'/value'.length) : null;
+  const partyKind = createParty ?? (amendChange && valueAt(snapshot, `${amendChange}/op`) === 'set'
+    ? valueAt(snapshot, `${amendChange}/field`) : null);
+  if (partyKind !== 'organization' && partyKind !== 'arAccount') return null;
+  const normalize = (value: unknown) => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase() : '';
+  const currentName = normalize(valueAt(snapshot, `${path}/name`));
+  if (!currentName) return null;
+  const observation = [...draft.observations].reverse().find(row => {
+    const criteria = record(row.criteria), result = record(row.result);
+    return row.kind === 'stay_candidate' && row.status === 'partial' && row.coverage.complete === false &&
+      row.generationId === draft.generationId && row.propertyCode === draft.propertyCode && row.sourceMessageId === draft.source.messageId &&
+      criteria.kind === 'historical_auto_transfer_hint' && criteria.workflow === request.kind && criteria.requestId === request.id &&
+      criteria.sourceHash === draft.source.sourceHash && criteria.fieldPath === path && criteria.partyKind === partyKind &&
+      normalize(criteria.partyQuery) === currentName && result.value === true && result.evidence === 'stay360_auto_transfer_card_row' &&
+      typeof result.support === 'number' && Number.isSafeInteger(result.support) && result.support > 0 &&
+      typeof result.denominator === 'number' && Number.isSafeInteger(result.denominator) && result.denominator >= result.support &&
+      typeof result.confidence === 'number' && result.confidence >= 0.8 && result.confidence <= 1 && result.support / result.denominator >= 0.8;
+  });
+  if (!observation) return null;
+  const result = record(observation.result);
+  return typeof result.support === 'number' && typeof result.denominator === 'number'
+    ? { support: result.support, denominator: result.denominator, partyKind } : null;
+}
+
 function currentRoomStock(snapshot: ReservationPaneSnapshot, requestId: string, raw: unknown): NativeRecommendationLead['stock'] {
   const stock = record(raw), draft = snapshot.session.draft;
   if (!['available_each_night', 'sold_or_restricted', 'unknown'].includes(text(stock.status)) ||

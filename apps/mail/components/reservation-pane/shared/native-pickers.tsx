@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react';
-import { effectiveAt, nativeChoices, nativeRecommendationLeads, partialNativeLeads, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { autoTransferHistory, effectiveAt, nativeChoices, nativeRecommendationLeads, partialNativeLeads, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import styles from '../reservation-pane.module.css';
 import { FieldReview, FieldSource } from './stay-fields';
 
@@ -38,6 +38,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const selectionPath = party ? `${path}/nativeSelectionRef` : path;
   const guestPath = !party && entity ? path.replace(/\/nativeSelectionRef$/, '') : null;
   const inputPath = party ? `${path}/name` : guestPath ? `${guestPath}/lastName` : path;
+  const autoTransfer = party ? autoTransferHistory(editor.snapshot, path) : null;
   const amendTrack = editor.request.kind === 'amend' && kind === 'track';
   const savedValue = valueAt(editor.snapshot, inputPath);
   const trackDisplay = amendTrack ? text(record(savedValue).display) : '';
@@ -254,6 +255,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       editVersion.current += 1; setQuery(saved); setDirty(false); setOpen(false); editor.commands.setUncommitted(path, false);
     }}>Cancel search</button></small> : <small>Unsaved search</small>
     : amendTrack && typeof savedValue === 'string' && saved ? <small>Select an Infor match for this requested Track.</small>
-    : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}{hint && <small>{hint}</small>}</div>
+    : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}{hint && <small>{hint}</small>}
+    {autoTransfer && <small role="note" className={styles.memoryBadge}>History: Auto Transfer was recorded on {autoTransfer.support} of {autoTransfer.denominator} earlier stays for this {autoTransfer.partyKind === 'organization' ? 'organization' : 'A/R account'}. Check the current Infor setting.</small>}</div>
     {compact && <FieldReview editor={editor} path={path} label={label} disabled={amendTrack && dirty} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />}</div>;
 }
