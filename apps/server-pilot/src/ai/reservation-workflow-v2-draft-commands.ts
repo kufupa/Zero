@@ -838,7 +838,7 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
           observation.criteria.kind === 'saved_row_candidate') {
         const service = draft.proposal.content.services[Number(savedServicePath[1])];
         const target = service?.targets[Number(savedServicePath[2])], candidate = rec(observation.result.candidate);
-        if (!service || !Array.isArray(serviceRefs) || !serviceRefs.includes(service.id) || service.id !== observation.criteria.serviceId || !target ||
+        if (!service || service.targets.length !== 1 || !Array.isArray(serviceRefs) || !serviceRefs.includes(service.id) || service.id !== observation.criteria.serviceId || !target ||
             !['edit', 'remove'].includes(String(valueAt(draft, `/proposal/content/services/${savedServicePath[1]}/operation`))) ||
             canonicalJson(target.target) !== canonicalJson(observation.criteria.targetRef) || !candidate.nativeId) return null;
         const targetRef = rec(observation.criteria.targetRef), scopeMode = valueAt(draft, `${root}/body/targets/mode`);
@@ -850,7 +850,7 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
       } else if (servicePath && observation.kind === 'service_preview' && observation.criteria.workflow === 'services' &&
           observation.criteria.kind === 'catalogue_candidate') {
         const row = draft.proposal.content.services[Number(servicePath[1])], candidate = rec(observation.result.candidate);
-        if (!row || !Array.isArray(serviceRefs) || !serviceRefs.includes(row.id) || row.id !== observation.criteria.serviceId ||
+        if (!row || row.targets.length !== 1 || !Array.isArray(serviceRefs) || !serviceRefs.includes(row.id) || row.id !== observation.criteria.serviceId ||
             valueAt(draft, `/proposal/content/services/${servicePath[1]}/operation`) !== 'add' ||
             typeof candidate.code !== 'string' || !candidate.code.trim() || !candidate.itemId) return null;
         const bound = rec(observation.criteria.targetRef);
@@ -859,6 +859,12 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
           const index = Array.isArray(rows) ? rows.findIndex((entry) => rec(entry).id === bound.hintId) : -1;
           if (!row.targets.some((entry) => canonicalJson(entry.target) === canonicalJson(bound)) || index < 0 ||
               valueAt(draft, `${root}/body/targets/include/${index}/suggestedRef`) !== observation.criteria.targetObservationRef) return null;
+        } else {
+          const target = rec(row.targets[0]?.target);
+          if (request.kind !== 'create' || target.kind !== 'allocation' || target.requestId !== request.id ||
+              target.allocationId !== observation.criteria.sourceAllocationId ||
+              !request.body.allocations.some((allocation) => allocation.id === target.allocationId) ||
+              (bound.kind != null && canonicalJson(target) !== canonicalJson(bound))) return null;
         }
         set(`/proposal/content/services/${servicePath[1]}/code`, candidate.code); set(input.fieldPath, observation.ref);
       } else if (observation.kind === 'stay_candidate' && input.fieldPath.endsWith('/suggestedRef')) {
