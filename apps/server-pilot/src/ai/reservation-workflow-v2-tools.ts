@@ -1,4 +1,4 @@
-import { normalizeRequestedMealPlan } from './reservation-workflow-v2-meal-plan.js';
+import { isLunchOnlyMealRequest, normalizeRequestedMealPlan } from './reservation-workflow-v2-meal-plan.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -686,7 +686,7 @@ export function reservationWorkflowV2MealPlanMatches(expected: string | null, ob
     return aliases[normalized] ?? (key ? aliases[key] : undefined);
   };
   const expectedCode = mealCode(expected), observedCode = mealCode(observed);
-  if (requested.lunchRequested && requested.mealPlan === null) return observedCode !== undefined;
+  if (requested.lunchRequested && requested.mealPlan === null && isLunchOnlyMealRequest(expected)) return observedCode !== undefined;
   return expectedCode !== undefined && expectedCode === observedCode;
 }
 

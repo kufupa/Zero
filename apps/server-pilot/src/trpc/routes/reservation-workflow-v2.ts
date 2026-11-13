@@ -264,12 +264,13 @@ export const reservationWorkflowV2Router = router({
         .orderBy(sql`${outlookSyncObservation.semanticVersion} desc`).limit(1);
       const observation = observations[0];
       if (observation?.state === 'attention') {
-        logPaneSourceResolution({ ...diagnostic, matches: 0, result: 'attention' });
-        return { status: 'source_unavailable' as const, reason: 'attention' as const };
+        const reason = observation.errorCode === 'AMBIGUOUS_IDENTITY' ? 'ambiguous' as const : 'attention' as const;
+        logPaneSourceResolution({ ...diagnostic, matches: 0, result: reason });
+        return { status: 'source_unavailable' as const, reason };
       }
     }
     if (!selected || selected.sourceProvenance?.attention != null || !selected.arrivedAt) {
-      const reason = rows.length > 1 ? 'ambiguous' as const : !selected ? 'not_found' as const
+      const reason = rows.length > 1 || selected?.sourceProvenance?.attention === 'AMBIGUOUS_IDENTITY' ? 'ambiguous' as const : !selected ? 'not_found' as const
         : selected.sourceProvenance?.attention != null ? 'attention' as const : 'missing_arrival' as const;
       logPaneSourceResolution({ ...diagnostic, matches: rows.length, result: reason });
       return { status: 'source_unavailable' as const, reason };

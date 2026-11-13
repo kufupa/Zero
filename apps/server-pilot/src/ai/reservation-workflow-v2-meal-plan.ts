@@ -3,15 +3,20 @@ export function normalizeRequestedMealPlan(value: unknown): {
   lunchRequested: boolean;
 } {
   const phrase = typeof value === 'string' ? value.trim().toLowerCase() : '';
-  const normalized = phrase.replace(/[,\s&_-]+/gu, ' ').replace(/\b(?:and|for all)\b/gu, '').replace(/\s+/gu, ' ').trim();
+  const normalized = phrase.replace(/[,+\s&_-]+/gu, ' ').replace(/\b(?:and|for all)\b/gu, '').replace(/\s+/gu, ' ').trim();
   const lunchRequested = /\blunch\b/u.test(normalized);
-  const board = normalized.replace(/\blunch\b/gu, '').replace(/\s+/gu, ' ').trim();
+  const board = normalized.replace(/\b(?:lunch|with|plus|including)\b/gu, '').replace(/\s+/gu, ' ').trim();
   if (['room only', 'roomonly', 'ro', 'room only r'].includes(board)) return { mealPlan: 'room_only', lunchRequested };
   if (['dbb', 'dinner bb', 'dinner b b'].includes(board) || /\bdinner\b/u.test(board) && /\b(?:breakfast|bb)\b/u.test(board)) {
     return { mealPlan: 'dinner_bb', lunchRequested };
   }
   if (['bb', 'b b'].includes(board) || /\bbreakfast\b/u.test(board)) return { mealPlan: 'bb', lunchRequested };
   return { mealPlan: null, lunchRequested };
+}
+
+export function isLunchOnlyMealRequest(value: string): boolean {
+  const phrase = value.trim().toLowerCase().replace(/[,+\s&_-]+/gu, ' ').trim();
+  return /^(?:with )?lunch(?: only)?(?: for all(?: guests| rooms)?)?$/u.test(phrase);
 }
 
 export function quoteLunchHintScope(input: {

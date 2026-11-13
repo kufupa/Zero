@@ -215,10 +215,10 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
         if (!alive || currentOwner.current !== owner || epoch.current.value !== selectedEpoch) return;
         if (result.status !== 'ok') {
           const elapsedMs = Date.now() - startedAt;
-          setSourceRetryable(result.status === 'source_unavailable');
+          setSourceRetryable(result.status === 'source_unavailable' && result.reason !== 'ambiguous');
           const message = result.status === 'wrong_property'
             ? result.message : result.reason === 'ambiguous'
-              ? 'Nava found more than one matching email. Reopen the selected email after copying finishes.'
+              ? 'Nava found more than one matching email. Check sync details or contact support to resolve this copy.'
               : result.reason === 'content_mismatch'
                 ? 'The selected email differs from Nava’s copy. Retry after Outlook finishes copying it.'
               : result.reason === 'attention'
