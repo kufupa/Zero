@@ -256,6 +256,6 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     }}>Cancel search</button></small> : <small>Unsaved search</small>
     : amendTrack && typeof savedValue === 'string' && saved ? <small>Select an Infor match for this requested Track.</small>
     : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}{hint && <small>{hint}</small>}
-    {autoTransfer && <small role="note" className={styles.memoryBadge}>History: Auto Transfer was recorded on {autoTransfer.support} of {autoTransfer.denominator} earlier stays for this {autoTransfer.partyKind === 'organization' ? 'organization' : 'A/R account'}. Check the current Infor setting.</small>}</div>
+    {autoTransfer && (!dirty || normalized(query) === normalized(saved)) && <small role="note" className={styles.memoryBadge}>History: Auto Transfer was recorded on {autoTransfer.support} of {autoTransfer.denominator} earlier stays for this {autoTransfer.partyKind === 'organization' ? 'organization' : 'A/R account'}. Check the current Infor setting.</small>}</div>
     {compact && <FieldReview editor={editor} path={path} label={label} disabled={amendTrack && dirty} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />}</div>;
 }

@@ -347,7 +347,7 @@ export function ReservationPane(props: ReservationPaneProps) {
   };
   const save = async () => {
     if (!request || createBlocked || preview) return;
-    if (request.kind === 'amend' && (workbench.blocked || workbench.saving)) {
+    if (request.kind === 'amend' && !workbench.readyForReply()) {
       setChecked(null);
       showAttention('Finish editing and check the current details before saving.');
       return;
@@ -495,8 +495,8 @@ export function ReservationPane(props: ReservationPaneProps) {
           {changed && <p className={styles.notice}>Infor total changed from {text(review.price.currency)} {oldTotal.slice(0, -2)}.{oldTotal.slice(-2)}.</p>}
           {needsCheck() ? <p className={styles.notice}>Check the current details again before reviewing this price.</p>
             : review.accepted ? <p className={styles.small}>Price reviewed for this stay.</p>
-            : <button type="button" disabled={disabled || preview || pendingAmendReview?.id !== review.id}
-              onClick={() => { void commands.acceptFinancialReview(review.path, review.note, review.observation.ref).then(() => setAttention(null)).catch(() => {}); }}>I reviewed this Infor price</button>}
+            : <button type="button" disabled={disabled || workbench.saving || preview || pendingAmendReview?.id !== review.id}
+              onClick={() => { if (workbench.readyForReply()) void commands.acceptFinancialReview(review.path, review.note, review.observation.ref).then(() => setAttention(null)).catch(() => {}); }}>I reviewed this Infor price</button>}
         </section>;
       })}
       {request?.kind === 'quote' && snapshot && <QuoteOutputPanel source={source} snapshot={snapshot} requestId={request.id} save={props.onSaveQuoteOutput} latestSnapshot={workbench.latestSnapshot} readyForReply={workbench.readyForReply} blocked={busy || workbench.saving || workbench.blocked || workbench.conflict || sourceChanged} />}
@@ -547,8 +547,8 @@ export function ReservationPane(props: ReservationPaneProps) {
         <br />Infor details may change when you check the price. Review that price before saving.
       </div>}
       <div className={styles.actions}>
-        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{needsCheck() ? request.kind === 'quote' ? 'Check quote' : request.kind === 'create' ? 'Check booking' : 'Check details' : request.kind === 'quote' ? record(quoteObservation?.result).failureKind === 'proven_shortage' ? 'Generate unsent decline' : 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : pendingAmendReview ? 'Save reviewed stay in Infor' : amendCallbackTargets.length ? 'Apply changes & check price' : 'Save in Infor'}</button></div>
-      {workbench.blocked && <small>Apply the changed selection before checking.</small>}
+        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview || request.kind === 'amend' && (workbench.saving || workbench.blocked)} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{needsCheck() ? request.kind === 'quote' ? 'Check quote' : request.kind === 'create' ? 'Check booking' : 'Check details' : request.kind === 'quote' ? record(quoteObservation?.result).failureKind === 'proven_shortage' ? 'Generate unsent decline' : 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : pendingAmendReview ? 'Save reviewed stay in Infor' : amendCallbackTargets.length ? 'Apply changes & check price' : 'Save in Infor'}</button></div>
+      {(workbench.blocked || request.kind === 'amend' && workbench.saving) && <small>Finish editing or choose a selection before checking.</small>}
     </footer>}
   </div>;
 }
