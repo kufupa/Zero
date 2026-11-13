@@ -1167,7 +1167,7 @@ export function reviewReservationWorkflowV2Scope(ctx: ReservationWorkflowV2Conte
         const value = override?.state === 'set' ? override.value : source;
         const parent = path.slice(0, path.lastIndexOf('/'));
         const clearValue = last === 'value' && valueAt(draft, `${parent}/op`) === 'clear' &&
-          ['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'roomTypeForCharge', 'cmsSend', 'cmsMessageId', 'cmsRecipient'].includes(String(valueAt(draft, `${parent}/field`)));
+          ['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'roomTypeForCharge', 'cmsSend', 'cmsMessageId', 'cmsRecipient', 'guestOptIn'].includes(String(valueAt(draft, `${parent}/field`)));
         const reviewedEmpty = request.kind === 'quote' || (last === 'comment' && override?.state === 'set');
         if ((value === null || value === undefined || (value === '' && !reviewedEmpty)) && !clearValue) return;
         if (!(request.kind === 'quote' && input.scope === 'request' && path === `${root}/body` && !hasPreparedExtras))
