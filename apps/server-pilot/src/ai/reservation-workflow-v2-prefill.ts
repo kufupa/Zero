@@ -4342,7 +4342,7 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
           !proposal.sourceClaims.some((claim) => claim.path === `${path}/reservationNote` && claim.raw === raw))
         proposal.sourceClaims.push({ path: `${path}/reservationNote`, raw, sourceRefs });
     }
-    const target = request.body.targets.include.length === 1 && request.body.targets.exclude.length === 0
+    const target = request.body.targets.mode !== 'scoped_all' && request.body.targets.include.length === 1 && request.body.targets.exclude.length === 0
       ? request.body.targets.include[0] : undefined;
     const confirmation = target?.confirmation?.trim();
     const extractionId = input.extractionIdByProposalRequestId.get(request.id);
