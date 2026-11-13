@@ -10,6 +10,7 @@ import { createSavedRoomStageRequestGate } from './saved-stay-room-stage-gate.mj
 import { createSavedRateStageRequestGate } from './saved-stay-rate-stage-gate.mjs';
 import { stageSavedGuestFieldsForComposition } from './guest-stay-amend-contact.mjs';
 import { stageSavedChargeRoomForComposition } from './guest-stay-amend-charge-room.mjs';
+import { stageSavedTrackForComposition } from './guest-stay-amend-track.mjs';
 import { labtestCombinedAmendPreimageBinding } from './saved-stay-combined-preimage.mjs';
 import { nativeCmsSendValue, runLabtestAmendSave } from './labtest-amend-save.mjs';
 import { createLabtestAmendDispatch } from './labtest-amend-dispatch.mjs';
@@ -137,6 +138,9 @@ function matchesAmendBusiness(snapshot, selected, changes, baseline, state) {
     required.roomtypecharge = Object.hasOwn(changes, 'roomTypeForCharge')
       ? changes.roomTypeForCharge : String(baseline.data.roomtypecharge ?? '');
   }
+  if (Object.hasOwn(changes, 'track') || Object.hasOwn(baseline.data, 'track')) {
+    required.track = changes.track?.display ?? String(baseline.data.track ?? '');
+  }
   if (!Object.entries(required).every(([key, value]) => Object.hasOwn(data, key) && String(data[key] ?? '') === value)) return false;
   const displayed = { confirmationnumber: target.confirmation, guestid: target.guestId, status: 'Reserved',
     firstname: target.firstName, lastname: target.lastName, arrivaldate: displayDate(target.arrival),
@@ -144,6 +148,7 @@ function matchesAmendBusiness(snapshot, selected, changes, baseline, state) {
     adults: String(target.adults) };
   displayed.reservationnote = required.reservationnote;
   if (Object.hasOwn(required, 'roomtypecharge')) displayed.roomtypecharge = required.roomtypecharge;
+  if (Object.hasOwn(required, 'track')) displayed.track = required.track;
   if (!Object.entries(displayed).every(([key, value]) => Object.hasOwn(values, key) && String(values[key] ?? '') === value)) return false;
   const contact = { emailaddress: 'guestEmail', caller: 'bookerName', udfchar06: 'bookerContact', billingreference: 'billingReference' };
   for (const [name, key] of Object.entries(contact)) {
@@ -190,6 +195,7 @@ export function matchesCloudPaneAmendSave(request, frame, snapshot,
     if (cmsFields.length !== 1 || cmsFields[0][0] !== 'udfchkbox04' ||
         nativeCmsSendValue(cmsFields[0][1]) !== changes.cmsSend) return false;
     if (Object.hasOwn(data, 'roomtypecharge')) required.roomtypecharge = String(data.roomtypecharge ?? '');
+    if (Object.hasOwn(data, 'track')) required.track = String(data.track ?? '');
     if (Object.hasOwn(changes, 'childAges')) {
       for (const name of ['childages', 'child1', 'child2', 'child3']) required[name] = String(data[name] ?? '');
     }
@@ -429,7 +435,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
   const childChanged = Object.hasOwn(changes, 'children') && (changes.children !== selected.children ||
     !same(changes.childAges, selected.childAges));
   const roomChanged = target.roomType !== selected.roomType, rateChanged = target.ratePlan !== selected.ratePlan;
-  const chargeChanged = Object.hasOwn(changes, 'roomTypeForCharge');
+  const chargeChanged = Object.hasOwn(changes, 'roomTypeForCharge'), trackChanged = Object.hasOwn(changes, 'track');
   const needsAvailability = dateChanged || Object.hasOwn(proposed, 'adults') || childChanged || roomChanged || rateChanged || chargeChanged;
   // The retained baseline is not the final price when availability changes.
   if (changes.retainRates === 'yes' && needsAvailability) throw new Error('AMEND_PRICE_UNVERIFIED');
@@ -564,7 +570,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         priorBands: occupancy.bands, nextAges: changes.childAges, deadlineAt: performance.now() + 6 * 60_000 }) : null;
       const roomStageGate = roomChanged ? createSavedRoomStageRequestGate({ frame: state.frame, selected,
         deadlineAt: performance.now() + 6 * 60_000 }) : null;
-      const rateStageGate = needsAvailability ? createSavedRateStageRequestGate({ frame: state.frame, selected,
+      const rateStageGate = needsAvailability || trackChanged ? createSavedRateStageRequestGate({ frame: state.frame, selected,
         deadlineAt: performance.now() + 6 * 60_000 }) : null;
       const recoveryBaseline = { beforeNote: expected.note, beforeParties: structuredClone(state.partyPreimage),
         beforeRecipient: preserved.cmsRecipient,
@@ -577,6 +583,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           baseline.data.udfchar06 === baseline.values.udfchar06 ? baseline.data.udfchar06 : null,
         beforeBillingReference: typeof baseline?.data?.billingreference === 'string' &&
           baseline.data.billingreference === baseline?.values?.billingreference ? baseline.data.billingreference : null,
+        beforeTrack: typeof baseline?.data?.track === 'string' && baseline.data.track === baseline?.values?.track ? baseline.data.track : null,
         beforeRoomTypeForCharge: typeof baseline?.data?.roomtypecharge === 'string' &&
           baseline.data.roomtypecharge === baseline?.values?.roomtypecharge ? baseline.data.roomtypecharge : null,
         beforeGuaranteeCode: state.expectedGuarantee?.code ?? 'NGI',
@@ -607,6 +614,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           beforeBookerName: recoveryBaseline.beforeBookerName,
           beforeBookerContact: recoveryBaseline.beforeBookerContact,
           beforeBillingReference: recoveryBaseline.beforeBillingReference,
+          beforeTrack: recoveryBaseline.beforeTrack,
           beforeRoomTypeForCharge: recoveryBaseline.beforeRoomTypeForCharge,
           beforeGuaranteeCode: recoveryBaseline.beforeGuaranteeCode,
           beforeSavedRates: savedRates ? structuredClone(savedRates) : null,
@@ -626,11 +634,15 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         reservationStayId: selected.reservationStayId, adults: target.adults }, changes.childAges));
       // Picker refreshes are unsaved; keep HMS mail off until the final requested
       // form is staged so an intermediate native action cannot send a message.
-      if ((roomChanged || chargeChanged || String(draft.data?.rateplan ?? selected.ratePlan) !== target.ratePlan) && prepared.state.cmsSend === true) {
+      if ((roomChanged || chargeChanged || trackChanged || String(draft.data?.rateplan ?? selected.ratePlan) !== target.ratePlan) && prepared.state.cmsSend === true) {
         draft = await bounded(stageGuest(context, { cmsSend: false }));
       }
-      if (roomChanged) draft = await bounded(stageOption(context, 'roomType', selected.roomType, target.roomType));
+      if (roomChanged) {
+        draft = await bounded(stageOption(context, 'roomType', selected.roomType, target.roomType));
+        prepared.roomStageGate.close();
+      }
       if (chargeChanged) draft = await bounded(stageCharge(context, changes.roomTypeForCharge));
+      if (trackChanged) draft = await bounded(stageSavedTrackForComposition(context, changes.track));
       const currentRate = String(draft.data?.rateplan ?? selected.ratePlan);
       if (currentRate !== target.ratePlan) {
         draft = await bounded(stageOption(context, 'ratePlan', currentRate, target.ratePlan));
@@ -786,6 +798,11 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
         String(data.billingreference ?? '') === String(saved.values.billingreference ?? '') ? String(data.billingreference ?? '') : null;
       if ((Object.hasOwn(changes, 'billingReference') || typeof input.beforeBillingReference === 'string') &&
           billingReference !== (changes.billingReference ?? input.beforeBillingReference)) return { outcome: 'unverified' };
+      const track = Object.hasOwn(data, 'track') && Object.hasOwn(saved.values ?? {}, 'track') &&
+        String(data.track ?? '') === String(saved.values.track ?? '') ? String(data.track ?? '') : null;
+      if ((changes.track || typeof input.beforeTrack === 'string') && track !== (changes.track?.display ?? input.beforeTrack)) {
+        return { outcome: 'unverified' };
+      }
       for (const [name, actual] of Object.entries({ guestEmail, bookerName, bookerContact })) {
         if (Object.hasOwn(changes, name) && changes[name] !== actual) return { outcome: 'unverified' };
       }
@@ -818,6 +835,7 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
         adults: native.adults, children: native.children, childAges: ages, firstName: native.firstName, lastName: native.lastName,
         guestEmail, bookerName, bookerContact, reservationNote: expected.note,
         ...(billingReference === null ? {} : { billingReference }),
+        ...(track === null ? {} : { track }),
         ...(typeof chargeRoom === 'string' ? { roomTypeForCharge: chargeRoom } : {}),
         cmsSend: state.cmsSend, cmsMessageId, cmsRecipient,
         price: observedAmendPrice(saved, target, null) } };

@@ -4,6 +4,7 @@ import { parseSavedStayNativeResponse } from './saved-stay-native-response.mjs';
 
 export const SAVED_RATE_STAGE_PATHS = Object.freeze([
   '/web/base/fieldvalidate', '/web/base/OSRESV.HDR.rateplanchange', '/web/base/OSRESV.HDR.attributerefresh',
+  '/web/base/LOVPOP', '/web/base/GRIDDATA',
 ]);
 const issued = new WeakSet();
 export const isSavedRateStageRequestGate = (gate) => Boolean(gate && issued.has(gate));
@@ -15,13 +16,45 @@ export function createSavedRateStageRequestGate({ frame, selected, deadlineAt } 
       !/^\d+$/.test(selected.recordId || '') || !Number.isFinite(deadlineAt) || deadlineAt <= performance.now()) {
     throw new Error('RATE_STAGE_GATE_INPUT_INVALID');
   }
-  let state = 'ready', native, target, validationGrid = 'LVRATEPLANS2', chargeVerified = false;
+  let state = 'ready', native, target, trackTarget, trackGrid, validationGrid = 'LVRATEPLANS2', chargeVerified = false;
   const requests = new Map();
   const active = () => {
     if (performance.now() >= deadlineAt) state = 'closed';
     return state !== 'closed';
   };
   const gate = Object.freeze({
+    armTrack(snapshot, next) {
+      const data = snapshot?.data, display = snapshot?.values?.track;
+      if (!active() || state !== 'ready' || !data || typeof display !== 'string' || String(data.track ?? '') !== display ||
+          data.propertycode !== 'HRCEN' || data.status !== 'Reserved' ||
+          String(data.confirmationnumber ?? '') !== selected.confirmation || String(data.guestid ?? '') !== selected.guestId ||
+          String(data.reservationstayid ?? '') !== selected.reservationStayId || String(data.reservationid ?? '') !== selected.reservationId ||
+          String(data.recordid ?? '') !== selected.recordId || ![false, 0, '0', 'false', ''].includes(data.udfchkbox04) ||
+          !next || !/^[A-Z0-9]{1,12}$/.test(next.lookupCode || '') || typeof next.display !== 'string' ||
+          !next.display.trim() || next.display !== next.display.trim() || next.display.length > 200 || /[\p{Cc}]/u.test(next.display)) return false;
+      native = { track: display }; trackTarget = next; state = 'track_popup_armed'; return true;
+    },
+    armTrackReset(metadata) {
+      if (!active() || state !== 'track_popup_consumed' || metadata?.GRIDNAME !== 'LVTRACKCODE' ||
+          !/^\d+$/.test(String(metadata.GRIDID ?? '')) || !/^\d+$/.test(String(metadata.DATASPYID ?? ''))) return false;
+      trackGrid = { GRID_ID: String(metadata.GRIDID), DATASPY_ID: String(metadata.DATASPYID) };
+      state = 'track_reset_armed'; return true;
+    },
+    verifyTrackRows(status, body) {
+      if (!active() || state !== 'track_reset_consumed' || status !== 200) return false;
+      try {
+        const grid = parseSavedStayNativeResponse(body)?.grid?.GRIDRESULT?.GRID, rows = grid?.DATA;
+        if (grid?.METADATA?.GRIDNAME !== 'LVTRACKCODE' || grid.METADATA.MORERECORDPRESENT !== '-' ||
+            !Array.isArray(rows) || Number(grid.METADATA.RECORDS) !== rows.length ||
+            rows.filter(row => row.trackcode === trackTarget.lookupCode && row.tcddesc === trackTarget.display).length !== 1 ||
+            rows.filter(row => row.trackcode === trackTarget.lookupCode).length !== 1) return false;
+        state = 'track_verified'; return true;
+      } catch { return false; }
+    },
+    completeTrack() {
+      if (!active() || state !== 'track_verified') return false;
+      state = 'ready'; return true;
+    },
     armCharge(snapshot, current, next) {
       const data = snapshot?.data;
       if (!active() || state !== 'ready' || !data || !/^(?:[A-Z0-9]{1,12})?$/.test(current || '') ||
@@ -71,7 +104,15 @@ export function createSavedRateStageRequestGate({ frame, selected, deadlineAt } 
     consume(request) {
       if (!active()) return false;
       let kind = null;
-      if (state === 'charge_armed' && matchesSavedStageRequest(request, frame, SAVED_RATE_STAGE_PATHS[0], {
+      const trackBase = { GRID_NAME:'LVTRACKCODE', GRID_TYPE:'LOV', LOV_TAGNAME:'track',
+        USER_FUNCTION_NAME:'OSRESV', CURRENT_TAB_NAME:'HDR', LOV_ALIAS_NAME_1:'param.propertycode',
+        LOV_ALIAS_VALUE_1:'HRCEN', LOV_ALIAS_TYPE_1:'text' };
+      if (state === 'track_popup_armed' && matchesSavedStageRequest(request, frame, SAVED_RATE_STAGE_PATHS[3], {
+        ...trackBase, REQUEST_TYPE:'LOV.HEAD_DATA.STORED', popup:'true', filterfields:'tcddesc',
+        filteroperator:'CONTAINS', filtervalue:native.track })) kind = 'track_popup';
+      else if (state === 'track_reset_armed' && matchesSavedStageRequest(request, frame, SAVED_RATE_STAGE_PATHS[4], {
+        ...trackBase, ...trackGrid, REQUEST_TYPE:'LOV.DATA_ONLY.STORED' })) kind = 'track_reset';
+      else if (state === 'charge_armed' && matchesSavedStageRequest(request, frame, SAVED_RATE_STAGE_PATHS[0], {
         GRID_NAME:'LVROOMTYPE2', GRID_TYPE:'LOV', REQUEST_TYPE:'LOV.HEAD_DATA.STORED', LOV_TAGNAME:'roomtypecharge',
         USER_FUNCTION_NAME:'OSRESV', CURRENT_TAB_NAME:'HDR', LOV_ALIAS_NAME_1:'param.propertycode',
         LOV_ALIAS_VALUE_1:'HRCEN', filterfields:'roomtypecode', filteroperator:'=', filtervalue:target })) kind = 'validation';

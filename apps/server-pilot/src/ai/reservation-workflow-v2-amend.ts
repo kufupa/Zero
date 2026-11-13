@@ -68,6 +68,7 @@ type Amendment = {
   arrival?: string; departure?: string; adults?: number; children?: number; childAges?: number[];
   roomType?: string; roomTypeForCharge?: string; ratePlan: string; retainRates: 'yes' | 'no'; firstName?: string; lastName?: string;
   guestEmail?: string; bookerName?: string; bookerContact?: string; billingReference?: string;
+  track?: { lookupCode: string; display: string };
   cmsSend: boolean; cmsMessageId: string; cmsRecipient: string;
 };
 type Compile = { outcome: 'ok'; requestId: string; hintId: string; selectionPath: string; selectedRef: string;
@@ -491,7 +492,7 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     if (field === UNKNOWN || typeof field !== 'string') { errors.push(`${changePath}:change_unknown`); return; }
     if (field === 'roomCount') { roomCountPaths.push(changePath); return; }
     const supported = new Set(['arrival', 'departure', 'adults', 'childCount', 'childAges', 'roomType', 'roomTypeForCharge', 'ratePlan',
-      'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
+      'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'track', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
     if (!supported.has(field)) { unsupported.add(field); return; }
     if (op === 'clear') {
       if (['guestEmail', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'billingReference', 'roomTypeForCharge'].includes(field)) values[field] = '';
@@ -518,6 +519,9 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
       field === 'roomType' || field === 'roomTypeForCharge' || field === 'ratePlan' ? code(rawValue) :
       field === 'reservationNote' ? typeof rawValue === 'string' && rawValue.length <= 2000 &&
         ![...rawValue].some((char) => (char.charCodeAt(0) < 32 && char !== '\n') || char.charCodeAt(0) === 127) :
+      field === 'track' ? (() => { const track = record(rawValue); return Boolean(track && Object.keys(track).length === 2 &&
+        typeof track.lookupCode === 'string' && /^[A-Z0-9]{1,12}$/.test(track.lookupCode) && typeof track.display === 'string' &&
+        track.display.length > 0 && track.display.length <= 200 && track.display.trim() === track.display && !/[\p{Cc}]/u.test(track.display)); })() :
       field === 'billingReference' ? typeof rawValue === 'string' && rawValue.length <= 4000 && !/[\p{Cc}]/u.test(rawValue) :
       field === 'cmsSend' ? typeof rawValue === 'boolean' : typeof rawValue === 'string' && rawValue.length <= 1000 && !/[\p{Cc}]/u.test(rawValue);
     if (!valid) { errors.push(`${valuePath}:value_invalid`); return; }
@@ -1115,6 +1119,9 @@ function readbackMatches(readback: unknown, prepared: Record<string, unknown>): 
   if (actual.reservationNote !== (changes.reservationNote ?? baseline.beforeNote) ||
       (typeof (changes.roomTypeForCharge ?? baseline.beforeRoomTypeForCharge) === 'string' &&
         actual.roomTypeForCharge !== (changes.roomTypeForCharge ?? baseline.beforeRoomTypeForCharge))) return null;
+  const track = record(changes.track);
+  if ((track && actual.track !== track.display) ||
+      (!track && typeof baseline.beforeTrack === 'string' && actual.track !== baseline.beforeTrack)) return null;
   for (const key of ['guestEmail', 'bookerName', 'bookerContact', 'billingReference'] as const) {
     if (Object.hasOwn(changes, key) && actual[key] !== changes[key]) return null;
     if (!Object.hasOwn(changes, key) && (key !== 'billingReference' || typeof baseline[beforeKeys[key]] === 'string') &&
