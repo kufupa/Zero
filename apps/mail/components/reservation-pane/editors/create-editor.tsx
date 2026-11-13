@@ -10,7 +10,7 @@ import styles from './create-quote-editor.module.css';
 type Editor = WorkbenchEditorProps;
 type BookingField = { key: string; label: string; picker?: string; party?: boolean; type?: string; hint?: string; maxLength?: number };
 const roomFields: BookingField[] = [
-  { key: 'requestedMealPlan', label: 'Requested Meal Plan', maxLength: 120, hint: 'Customer meal plan request. Confirm it against the Infor rate.' },
+  { key: 'requestedMealPlan', label: 'Meal Plan request', maxLength: 120, hint: 'Customer meal plan request. Confirm it against the Infor rate.' },
   { key: 'roomType', label: 'Room Type', picker: 'room_type' },
   { key: 'roomTypeForCharge', label: 'Room Type for Charge', picker: 'room_type_for_charge', hint: 'Blank uses the Infor default. Infor checks the price for the selected category.' },
   { key: 'ratePlan', label: 'Rate Plan', picker: 'rate_plan' },
@@ -33,7 +33,7 @@ const otherFields: BookingField[] = [
   { key: 'bookerName', label: 'Booker name', maxLength: 50 },
   { key: 'bookerEmail', label: 'Booker email', maxLength: 320, type: 'email' },
   { key: 'bookerMobile', label: 'Booker mobile', maxLength: 120 },
-  { key: 'reservationNote', label: 'Reservation note', maxLength: 2000, type: 'textarea' },
+  { key: 'reservationNote', label: 'Reservation Note', maxLength: 2000, type: 'textarea' },
   { key: 'cmsSend', label: 'CMS Send Mail', type: 'checkbox' },
   { key: 'cmsMessageId', label: 'CMS Message Id', picker: 'cms_message' },
   { key: 'cmsRecipient', label: 'CMS Booker Email', maxLength: 255, type: 'email' },
@@ -439,11 +439,11 @@ export function CreateEditor(editor: Editor) {
         {unresolved && <p className={styles.note}>Enter occupancy for every room to compare with the requested totals.</p>}
         <details className={styles.details}><summary>Review source request totals</summary>
           <p className={styles.note}>Requested: {requested == null ? 'unknown' : text(requested)} rooms · {requestedTotals.adults == null ? 'unknown' : text(requestedTotals.adults)} adults · {requestedTotals.childCount == null ? 'unknown' : text(requestedTotals.childCount)} children.</p>
-          <details className={styles.details}><summary>Adjust requested totals</summary><fieldset disabled={sectionHasCompleted} className={styles.plainFieldset}>
+          <details className={styles.details}><summary>Correct source totals</summary><fieldset disabled={sectionHasCompleted} className={styles.plainFieldset}>
             <Field label="Requested rooms" type="number" path={`${sectionPath}/requestedRooms`} editor={editor} review />
             <Field label="Requested adults" type="number" path={`${sectionPath}/requestedTotals/adults`} editor={editor} review />
             <Field label="Requested children" type="number" path={`${sectionPath}/requestedTotals/childCount`} editor={editor} review />
-            <small>Blank means unknown. Known requested totals must match the rooms before saving.</small>
+            <small>These email totals check the room allocation. They are not separate Infor fields. Blank means unknown. Known totals must match the rooms before saving.</small>
           </fieldset></details>
         </details>
         {rooms.map(({ allocation, index }) => completedRoom(editor, text(allocation.id)) ? null : <div className={styles.occupancyRow} key={text(allocation.id) || index}>

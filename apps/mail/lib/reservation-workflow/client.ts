@@ -451,10 +451,10 @@ export function inputFieldLabel(value: string): string {
   const key = value.split(':')[0]!.split('/').at(-1) ?? value;
   const labels: Record<string, string> = {
     scope: 'occupancy scope', occupancy: 'number of children and their ages', known_child_count_and_ages_required: 'number of children and their ages', known_child_count: 'number of children and their ages',
-    childCount: 'number of children', childAges: 'children’s ages', adults: 'adults per room',
+    childCount: 'number of children', childAges: 'children’s ages', adults: 'adults',
     bookingAgency_selection_required: 'select the Primary Booking Agency in Infor', organization_selection_required: 'select the Organization in Infor',
     arrival: 'arrival date', departure: 'departure date', quantity: 'quantity', roomCodes: 'room type',
-    roomType: 'room type', ratePlan: 'rate plan', rateHandling: 'rate handling', mealPlan: 'meal plan', requestedMealPlan: 'requested meal plan', guaranteeType: 'guarantee',
+    roomType: 'room type', ratePlan: 'rate plan', rateHandling: 'rate handling', mealPlan: 'meal plan', requestedMealPlan: 'Meal Plan request', guaranteeType: 'guarantee',
     sourceOfBusiness: 'source of business', firstName: 'guest first name', lastName: 'guest last name',
     guestOptIn: 'guest opt-in', unitPrice: 'unit price', currency: 'currency', requestedRooms: 'number of rooms',
     requestedTotals: 'requested occupancy totals', nativeSelectionRef: 'confirmed Infor selection',
@@ -616,8 +616,8 @@ function quoteOperationNotice(result: unknown, success: string[], action: string
     : result.status === 'needs_reconcile' || result.status === 'unknown'
       ? 'The result is uncertain. Check the recorded result before trying again' : null;
   const labels: Record<string, string> = {
-    arrival: 'arrival date', departure: 'departure date', quantity: 'number of rooms', mealPlan: 'meal plan', requestedMealPlan: 'requested meal plan',
-    scope: 'occupancy per room', occupancy: 'number of children and their ages', adults: 'adults per room',
+    arrival: 'arrival date', departure: 'departure date', quantity: 'number of rooms', mealPlan: 'meal plan', requestedMealPlan: 'Meal Plan request',
+    scope: 'occupancy scope', occupancy: 'number of children and their ages', adults: 'adults',
     childCount: 'number of children', childAges: 'children’s ages', roomCodes: 'room type', ratePlan: 'rate plan',
     salesStrategy: 'sales strategy', email: 'recipient email', attention: 'contact name', telephone: 'contact number',
     artifacts: 'quote outputs', provisionalBookingRequested: 'quote-only choice', requestedMoney: 'extra charges',

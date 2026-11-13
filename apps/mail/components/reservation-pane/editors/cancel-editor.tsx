@@ -166,7 +166,7 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
       </div>
     </Section>
     <Section title="Cancellation details">
-      <label className={styles.label}>Infor cancellation reason
+      <label className={styles.label}>Cancellation reason
         <select value={reasons.some(row => row.display === reason) ? reason : ''} disabled={editor.view.busy || !reasons.length}
           onChange={event => void editor.commands.edit(reasonPath, event.target.value, event.target.value ? 'set' : 'none')}>
           <option value="">{reasons.length ? 'Choose a reason' : 'Check the stay to load reasons'}</option>
