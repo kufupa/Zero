@@ -750,7 +750,11 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
   };
   const effectiveCmsChanges = (prepared) => input.discoveryOnly === true ? { ...changes,
     cmsMessageId: String(prepared.baseline.data.udfchar09 ?? ''), cmsRecipient: String(prepared.baseline.data.udfchar13 ?? '') } : changes;
-  const valid = (value, prepared) => matchesAmendBusiness(value, selected, effectiveCmsChanges(prepared), prepared.baseline, prepared.state);
+  const valid = (value, prepared) => matchesAmendBusiness(value, selected, effectiveCmsChanges(prepared), prepared.baseline, prepared.state) &&
+    (input.expectedFinalCommission === undefined || (typeof input.expectedFinalCommission === 'number' &&
+      Number.isFinite(input.expectedFinalCommission) && input.expectedFinalCommission >= 0 && input.expectedFinalCommission <= 100 &&
+      percent(value.data?.ta1commission) === input.expectedFinalCommission &&
+      percent(value.values?.ta1commission) === input.expectedFinalCommission));
   const saveOptions = (prepared, phase) => ({ selected, changes, beforeNote: expected.note,
     beforeParties: prepared.state.partyPreimage, guaranteeCode: prepared.state.expectedGuarantee?.code ?? 'NGI',
     verifiedChildAges: prepared.state.verifiedChildAges,
@@ -1271,12 +1275,13 @@ export async function readCloudCallbackReviewState(input) {
       if (!expected || expected.note !== before.beforeNote) return null;
       const state = await currentLabtestRecord(page, expected, nativeOptions(readInput, record));
       const snapshot = await snapshotLabtestRecord(state.frame), image = savedPartyBeforeImage(snapshot);
+      const agencyDefault = plan.parties.some(item => item.kind === 'bookingAgency' && item.expectedEffects);
       if (!snapshot || !cleanLabtestRecord(snapshot) || !image ||
           !unchangedLabtestBusinessParties(state.partyPreimage, snapshot,
             { allowModelOnlyPrimaryPartyIds: true, allowRealGuest: true }) ||
           (typeof input.preserved?.cmsSend === 'boolean' && state.cmsSend !== input.preserved.cmsSend) ||
           (typeof input.preserved?.cmsMessageId === 'string' && state.cmsMessageId !== input.preserved.cmsMessageId) ||
-          (typeof before.beforeCommission === 'number' && percent(snapshot.data?.ta1commission) !== before.beforeCommission) ||
+          (!agencyDefault && typeof before.beforeCommission === 'number' && percent(snapshot.data?.ta1commission) !== before.beforeCommission) ||
           (typeof before.beforeGuestOptIn === 'boolean' && nativeCmsSendValue(snapshot.data?.guestoptin4) !== before.beforeGuestOptIn)) return null;
       const permitted = new Set();
       for (const item of plan.parties) {
@@ -1306,10 +1311,14 @@ export async function readCloudCallbackReviewState(input) {
           if (confirmed && (!value || state.partyPreimage.arprofileid !== value)) return null;
           if (!confirmed && state.partyPreimage.arprofileid !== before.beforeParties.arprofileid) return null;
         }
-        if (item.kind === 'bookingAgency' && item.expectedEffects && confirmed) {
-          const actual = percent(snapshot.data?.ta1commission), final = percent(input.changes?.taCommission);
-          if (actual === null || actual !== percent(snapshot.values?.ta1commission) ||
-              (actual !== Number(item.expectedEffects.ta1commission) && (final === null || actual !== final))) return null;
+        if (item.kind === 'bookingAgency' && item.expectedEffects) {
+          if (confirmed) {
+            const actual = percent(snapshot.data?.ta1commission), final = percent(input.changes?.taCommission);
+            if (actual === null || actual !== percent(snapshot.values?.ta1commission) ||
+                (actual !== Number(item.expectedEffects.ta1commission) && (final === null || actual !== final))) return null;
+          } else if (!plan.beforeImage || ['data', 'values'].some(part => !plan.beforeImage[part] ||
+            !Object.hasOwn(plan.beforeImage[part], 'ta1commission') ||
+            !same(plan.beforeImage[part].ta1commission, image[part]?.ta1commission))) return null;
         }
         effects.push({ field: item.kind, requested: { nativeId: item.nativeId, name: item.name },
           persistence: confirmed ? 'confirmed' : 'not_observed' });
@@ -1439,6 +1448,11 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
           percent(saved.values?.ta1commission) !== changes.taCommission || typeof input.beforeCommission !== 'number')) {
         return { outcome: 'unverified' };
       }
+      if (input.expectedFinalCommission !== undefined && (typeof input.expectedFinalCommission !== 'number' ||
+          !Number.isFinite(input.expectedFinalCommission) || input.expectedFinalCommission < 0 || input.expectedFinalCommission > 100 ||
+          commission !== input.expectedFinalCommission || percent(saved.values?.ta1commission) !== input.expectedFinalCommission)) {
+        return { outcome: 'unverified' };
+      }
       const track = Object.hasOwn(data, 'track') && Object.hasOwn(saved.values ?? {}, 'track') &&
         String(data.track ?? '') === String(saved.values.track ?? '') ? String(data.track ?? '') : null;
       if ((changes.track || typeof input.beforeTrack === 'string') && track !== (changes.track?.display ?? input.beforeTrack)) {
@@ -1477,7 +1491,7 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
         guestEmail, bookerName, bookerContact, reservationNote: expected.note, guaranteeType: native.guaranteeCode,
         ...(billingReference === null ? {} : { billingReference }),
         ...(track === null ? {} : { track }),
-        ...(Object.hasOwn(changes, 'taCommission') ? { taCommission: commission } : {}),
+        ...(Object.hasOwn(changes, 'taCommission') || input.expectedFinalCommission !== undefined ? { taCommission: commission } : {}),
         ...(Object.hasOwn(changes, 'guestOptIn') ? { guestOptIn: false } : {}),
         ...(typeof chargeRoom === 'string' ? { roomTypeForCharge: chargeRoom } : {}),
         cmsSend: state.cmsSend, cmsMessageId, cmsRecipient,

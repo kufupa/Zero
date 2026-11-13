@@ -1183,13 +1183,33 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
       const plan = { selected: compiled.selected, expected, guarantee, parties,
         children: nextAges ? { beforeAges, nextAges } : null, beforeImage: parties.length ? beforeImage : null };
       if (!guarantee && parties.length === 0 && !nextAges) {
-        const recoveryBaseline = { ...stagedBaseline, beforeChildAges: beforeAges };
+        const ordinaryBase = Object.fromEntries(Object.entries(compiled.baseChanges).filter(([field]) =>
+          !['children', 'childAges', 'bookingAgency', 'organization', 'arAccount', 'guaranteeType'].includes(field)));
+        const ordinaryChanges = normalizedChanges({ ...compiled, baseChanges: ordinaryBase }, preserved, baseline);
+        if (!ordinaryChanges) return { issue: 'native_amend_contact_or_cms_baseline_unavailable' };
+        const ordinary = await native.prepareCloudPaneAmend({ ...common, childAgePreimage: beforeAges, changes: ordinaryChanges,
+          captureCommissionBaseline: Object.hasOwn(ordinaryBase, 'taCommission'),
+          captureGuestOptInBaseline: Object.hasOwn(ordinaryBase, 'guestOptIn') });
+        const ordinaryPrice = nativePrice(ordinary.approvedPrices), ordinaryBaseline = record(ordinary.recoveryBaseline),
+          ordinaryPreserved = record(ordinary.preserved);
+        if (ordinary.outcome !== 'prepared' || !ordinaryPrice || !ordinaryBaseline || !ordinaryPreserved ||
+            typeof ordinary.nativeDigest !== 'string' || !/^[a-f0-9]{64}$/.test(ordinary.nativeDigest) ||
+            ordinaryBaseline.beforeNote !== baseline.beforeNote || ordinaryBaseline.beforeGuaranteeCode !== baseline.beforeGuaranteeCode ||
+            canonicalJson(ordinaryBaseline.beforeParties) !== canonicalJson(baseline.beforeParties) ||
+            canonicalJson(Object.fromEntries(Object.entries(ordinaryPreserved).filter(([key]) =>
+              key !== 'bookerContact' || Object.hasOwn(preserved, key)))) !== canonicalJson(preserved) ||
+            (Object.hasOwn(ordinaryChanges, 'taCommission') && (typeof ordinaryBaseline.beforeCommission !== 'number' ||
+              !Number.isFinite(ordinaryBaseline.beforeCommission) || !record(ordinaryPreserved.bookingAgency)?.nativeId)) ||
+            (Object.hasOwn(ordinaryChanges, 'guestOptIn') && typeof ordinaryBaseline.beforeGuestOptIn !== 'boolean')) {
+          return { issue: 'native_amend_prepare_unverified' };
+        }
+        const recoveryBaseline = { ...ordinaryBaseline, beforeChildAges: beforeAges };
         const semanticDigest = sha256({ baseDigest: compiled.baseDigest, selectedRef: compiled.selectedRef,
-          selected: compiled.selected, target: compiled.target, changes: safeChanges, preserved: stagedPreserved,
-          recoveryBaseline, nativeDigest: staged.nativeDigest, price });
-        const observation = preparationObservation(draft, compiled, staged, safeChanges, stagedPreserved, price, recoveryBaseline, semanticDigest);
+          selected: compiled.selected, target: compiled.target, changes: ordinaryChanges, preserved: ordinaryPreserved,
+          recoveryBaseline, nativeDigest: ordinary.nativeDigest, price: ordinaryPrice });
+        const observation = preparationObservation(draft, compiled, ordinary, ordinaryChanges, ordinaryPreserved, ordinaryPrice, recoveryBaseline, semanticDigest);
         observation.result = { ...observation.result, callbackNoop: true };
-        return { observation, price, plan: null, semanticDigest, noop: true };
+        return { observation, price: ordinaryPrice, plan: null, semanticDigest, noop: true };
       }
       if (compiled.rateHandling === 'retain') return { issue: 'retained_rate_not_supported_for_priced_amendment' };
       const planDigest = sha256(plan);
@@ -1542,6 +1562,7 @@ function readbackMatches(readback: unknown, prepared: Record<string, unknown>): 
       (typeof (changes.roomTypeForCharge ?? baseline.beforeRoomTypeForCharge) === 'string' &&
         actual.roomTypeForCharge !== (changes.roomTypeForCharge ?? baseline.beforeRoomTypeForCharge))) return null;
   if (Object.hasOwn(changes, 'taCommission') && actual.taCommission !== changes.taCommission) return null;
+  if (typeof prepared.expectedFinalCommission === 'number' && actual.taCommission !== prepared.expectedFinalCommission) return null;
   if (Object.hasOwn(changes, 'guestOptIn') && actual.guestOptIn !== false) return null;
   if (Object.hasOwn(changes, 'guaranteeType') && actual.guaranteeType !== changes.guaranteeType) return null;
   const track = record(changes.track);
@@ -1586,16 +1607,20 @@ async function executeCallbackFirst(ctx: ReservationWorkflowV2AmendContext, inpu
     afterShot: { runId: string; sha256: string } | null; handle: HmsLabtestWriteHandle | null; claimAttempted: boolean } = {
     beforeEvidence: null, beforeShot: null, afterShot: null, handle: null, claimAttempted: false };
   const approvedDigest = prepared.criteria.semanticDigest as string;
-  const claimBase = { workItemId: input.workItemId, transportId: ctx.transport.id, actorUserId: ctx.user.id,
-    grantId: input.idempotencyKey, propertyCode: 'HRCEN' as const, firstName: compiled.selected.firstName,
-    lastName: compiled.selected.lastName, nativeGuestId: compiled.selected.guestId, operation: 'amend' as const,
-    sourceDigest: input.source.sourceHash, approvedDigest, target: locked.dispatchTarget,
-    recovery: { selected: compiled.selected, confirmation: compiled.selected.confirmation,
+  const callbackRecovery = structuredClone({ selected: compiled.selected, confirmation: compiled.selected.confirmation,
       reservationStayId: compiled.selected.reservationStayId, reservationId: compiled.selected.reservationId,
       recordId: compiled.selected.recordId, approved: changes, indicativePrice, preserved, recoveryBaseline: baseline,
       nativeDigest: result.nativeDigest, prepareObservationRef: prepared.ref, approvedAfter: result.target,
       callbackPlan: plan, callbackPlanDigest: planDigest, firstGo: true,
-      requestId: input.requestId, hintId: compiled.hintId, operationId: input.idempotencyKey, draftRevision: input.expectedRevision } };
+      requestId: input.requestId, hintId: compiled.hintId, operationId: input.idempotencyKey, draftRevision: input.expectedRevision });
+  const claimBase = { workItemId: input.workItemId, transportId: ctx.transport.id, actorUserId: ctx.user.id,
+    grantId: input.idempotencyKey, propertyCode: 'HRCEN' as const, firstName: compiled.selected.firstName,
+    lastName: compiled.selected.lastName, nativeGuestId: compiled.selected.guestId, operation: 'amend' as const,
+    sourceDigest: input.source.sourceHash, approvedDigest, target: locked.dispatchTarget,
+    recovery: { confirmation: compiled.selected.confirmation, reservationStayId: compiled.selected.reservationStayId,
+      prepareObservationRef: prepared.ref, requestId: input.requestId, hintId: compiled.hintId,
+      operationId: input.idempotencyKey, draftRevision: input.expectedRevision, firstGo: true,
+      recoveryEvidenceDigest: sha256(callbackRecovery) } };
   let approvedClaim = '';
   const authorizeFirst = async (raw: unknown) => {
     const step = record(raw);
@@ -1606,16 +1631,21 @@ async function executeCallbackFirst(ctx: ReservationWorkflowV2AmendContext, inpu
         typeof step.requestDigest !== 'string' || !/^[a-f0-9]{64}$/.test(step.requestDigest) || !state.beforeEvidence) {
       throw new Error('AMEND_CALLBACK_APPROVAL_INVALID');
     }
-    state.claimAttempted = true;
     const claim = { ...claimBase, requestDigest: step.requestDigest,
       recovery: { ...claimBase.recovery, firstPhase: step.phase, runId, beforeShot: state.beforeShot } };
     approvedClaim = canonicalJson(claim);
+    if (Buffer.byteLength(approvedClaim) > 16_384) throw new Error('AMEND_CALLBACK_CLAIM_TOO_LARGE');
+    state.claimAttempted = true;
     const attempt = observationForWrite(draft, input, compiled.hintId, 'partial', { outcome: 'dispatch_pending',
       requestDigest: step.requestDigest, approvedDigest, prepareObservationRef: prepared.ref,
       target: result.target, before: compiled.selected, approvedPrices: indicativePrice,
       beforeShot: state.beforeShot, semanticInput: result.semanticInput });
-    state.handle = await claimHmsLabtestDispatch(ctx.db, claim, async tx =>
-      authorizeCurrentAmend(tx, ctx, input, compiled, prepared, approvedDigest, attempt), epoch);
+    state.handle = await claimHmsLabtestDispatch(ctx.db, claim, async tx => {
+      await authorizeCurrentAmend(tx, ctx, input, compiled, prepared, approvedDigest, attempt);
+      await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
+        fieldPath: 'nava.hms.amend.callback-recovery.v1', value: { operationId: input.idempotencyKey,
+          sourceDigest: input.source.sourceHash, recovery: callbackRecovery }, evidence: { sourceHash: input.source.sourceHash } });
+    }, epoch);
     return state.handle;
   };
   const sealBeforeEvidence = async () => {
@@ -1642,7 +1672,7 @@ async function executeCallbackFirst(ctx: ReservationWorkflowV2AmendContext, inpu
           sourceDigest: input.source.sourceHash, targetDigest, nativeDigest: result.nativeDigest,
           approvedPrices: indicativePrice, approvedBeforeCallbackPrice: baseline.beforeGuaranteePrice, preserved,
           ...(typeof changes.guaranteeType === 'string' ? { guaranteeChoiceCode: changes.guaranteeType } : {}),
-          capturePriceComponents: true, captureCommissionBaseline: Object.hasOwn(safeChanges, 'taCommission'),
+          capturePriceComponents: true, captureCommissionBaseline: Object.hasOwn(changes, 'taCommission'),
           captureGuestOptInBaseline: Object.hasOwn(safeChanges, 'guestOptIn'),
           allowRealGuest: process.env.PANE_WRITE_AMEND === 'on', allowChangedLabGuarantee: true,
           cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget),
@@ -1690,7 +1720,10 @@ async function executeCallbackFirst(ctx: ReservationWorkflowV2AmendContext, inpu
       workItemId: input.workItemId }, 'before.png') ||
         !await verifyStoredHmsShot({ ...state.afterShot, name: 'saved.png', owner, propertyCode: 'HRCEN',
           workItemId: input.workItemId }, 'saved.png')) throw new Error('reservation_v2_amend_screenshot_unverified');
-    const callbackReadback = { ...fresh, operationPhase: 'callback_review', finalSave: false };
+    // The full readback is stored atomically in the review observation below.
+    // Keep the dispatch receipt bounded while binding it to that exact evidence.
+    const callbackReadback = { confirmation: compiled.selected.confirmation, nativeStayId: compiled.selected.reservationStayId,
+      operationPhase: 'callback_review', finalSave: false, callbackReviewDigest: approval, freshReadbackDigest: sha256(fresh) };
     await resolveHmsLabtestDispatch(ctx.db, state.handle, { operation: 'amend', confirmation: compiled.selected.confirmation,
       nativeStayId: compiled.selected.reservationStayId, nativeReadback: callbackReadback,
       readbackDigest: sha256(callbackReadback), savedShot: state.afterShot },
@@ -1725,11 +1758,22 @@ async function executeCallbackSecond(ctx: ReservationWorkflowV2AmendContext, inp
   const baseline = record(original?.recoveryBaseline), preserved = record(original?.preserved), changes = record(original?.nativeChanges),
     safeChanges = record(original?.safeChanges), price = nativePrice(reviewResult?.price);
   const firstOperationId = text(pending.operationId), originalDigest = text(prepared?.criteria.semanticDigest);
+  const originalExpected = record(plan?.expected);
   if (financial?.accepted !== true || !review || !reviewDigest || !firstOperationId || !prepared || !originalDigest ||
-      reviewResult?.prepareObservationRef !== prepared.ref || reviewResult.callbackPlanDigest !== original?.callbackPlanDigest ||
+      !reviewResult || !original || reviewResult.prepareObservationRef !== prepared.ref ||
+      reviewResult.callbackPlanDigest !== original.callbackPlanDigest ||
       !plan || !baseline || !preserved || !changes || !safeChanges || !price || !record(price.componentsTenThousandths) ||
       !recordedFresh || !Array.isArray(reviewResult.callbackEffects) || !Array.isArray(plan.parties) ||
-      !record(plan.expected) || changes.retainRates !== 'no') return { status: 'needs_reconcile', issue: 'amend_callback_review_unverified' };
+      !originalExpected || changes.retainRates !== 'no') return { status: 'needs_reconcile', issue: 'amend_callback_review_unverified' };
+  const originalParties = plan.parties;
+  const agency = originalParties.map(record).find(item => item?.kind === 'bookingAgency');
+  const commissionEffect = record(agency?.expectedEffects)?.ta1commission;
+  if (commissionEffect !== undefined && (typeof commissionEffect !== 'string' ||
+      !/^(?:0|[1-9]\d?)(?:\.\d+)?$|^100(?:\.0+)?$/.test(commissionEffect))) {
+    return { status: 'needs_reconcile', issue: 'amend_callback_commission_unverified' };
+  }
+  const expectedFinalCommission = typeof changes.taCommission === 'number' ? changes.taCommission :
+    typeof commissionEffect === 'string' ? Number(commissionEffect) : null;
   const indicativePrice = nativePrice(original.approvedPrices);
   if (!indicativePrice || original.callbackPlanDigest !== sha256(plan) || originalDigest !== sha256({
     baseDigest: compiled.baseDigest, selectedRef: compiled.selectedRef, selected: compiled.selected, target: original.target,
@@ -1765,7 +1809,7 @@ async function executeCallbackSecond(ctx: ReservationWorkflowV2AmendContext, inp
         const common = { target: locked.target, selected: compiled.selected, confirmation: compiled.selected.confirmation,
           arrival: compiled.selected.arrival, allowRealGuest: true, cloudTargetKey: hmsDispatchTargetKey(locked.dispatchTarget),
           capturePriceComponents: true, signal: AbortSignal.timeout(20 * 60_000) };
-        const current = await native.readCloudCallbackReviewState({ ...common, callbackPlan: plan, before: baseline,
+        const current = await native.readCloudCallbackReviewState({ ...common, callbackPlan: plan, before: baseline, changes,
           preserved, callbackEffects: reviewResult.callbackEffects });
         if (current.outcome !== 'matched' || canonicalJson(current) !== canonicalJson(recordedFresh) || !validNative(current.native) ||
             !Array.isArray(current.childAges) || !record(current.partyImage) || !record(current.guarantee) || !nativePrice(current.savedPrice)) {
@@ -1780,16 +1824,16 @@ async function executeCallbackSecond(ctx: ReservationWorkflowV2AmendContext, inp
         };
         const originalGuarantee = record(plan.guarantee), originalChildren = record(plan.children);
         if ((originalGuarantee && !statusFor('guaranteeType')) || (originalChildren && !statusFor('childAges')) ||
-            plan.parties.some(item => !record(item) || !statusFor(String(record(item)?.kind)))) {
+            originalParties.some(item => !record(item) || !statusFor(String(record(item)?.kind)))) {
           return { outcome: 'not_dispatched', issue: 'AMEND_CALLBACK_STATE_UNVERIFIED' };
         }
         const selected = current.native, guaranteeBefore = record(current.guarantee)!;
-        const parties = plan.parties.filter(item => statusFor(String(record(item)?.kind)) === 'not_observed');
+        const parties = originalParties.filter(item => statusFor(String(record(item)?.kind)) === 'not_observed');
         const guarantee = originalGuarantee && statusFor('guaranteeType') === 'not_observed'
           ? { ...originalGuarantee, before: guaranteeBefore } : null;
         const children = originalChildren && statusFor('childAges') === 'not_observed'
           ? { beforeAges: current.childAges, nextAges: originalChildren.nextAges } : null;
-        const expected = { ...record(plan.expected), confirmation: selected.confirmation, guestId: selected.guestId,
+        const expected = { ...originalExpected, confirmation: selected.confirmation, guestId: selected.guestId,
           reservationStayId: selected.reservationStayId, reservationId: selected.reservationId, recordId: selected.recordId,
           firstName: selected.firstName, lastName: selected.lastName, arrival: selected.arrival, departure: selected.departure,
           roomType: selected.roomType, ratePlan: selected.ratePlan, adults: selected.adults, childCount: selected.children,
@@ -1809,16 +1853,20 @@ async function executeCallbackSecond(ctx: ReservationWorkflowV2AmendContext, inp
           return { outcome: 'not_dispatched', issue: 'AMEND_CALLBACK_PREFLIGHT_CHANGED' };
         }
         finalBaseline = preflightBaseline;
-        const claimBase = { workItemId: input.workItemId, transportId: ctx.transport.id, actorUserId: ctx.user.id,
-          grantId: input.idempotencyKey, propertyCode: 'HRCEN' as const, firstName: compiled.selected.firstName,
-          lastName: compiled.selected.lastName, nativeGuestId: compiled.selected.guestId, operation: 'amend' as const,
-          sourceDigest: input.source.sourceHash, approvedDigest: reviewDigest, target: locked.dispatchTarget,
-          recovery: { selected, confirmation: selected.confirmation, reservationStayId: selected.reservationStayId,
+        const callbackRecovery = structuredClone({ selected, confirmation: selected.confirmation, reservationStayId: selected.reservationStayId,
             reservationId: selected.reservationId, recordId: selected.recordId, approved: changes, approvedPrices: price,
             preserved: nextPreserved, recoveryBaseline: preflightBaseline, nativeDigest: preflight.nativeDigest,
             prepareObservationRef: prepared.ref, approvedAfter: original.target, callbackPlan: nextPlan,
             callbackPlanDigest: planDigest, reviewObservationRef: review.ref, reviewDigest, firstGoOperationId: firstOperationId,
-            requestId: input.requestId, hintId: compiled.hintId, operationId: input.idempotencyKey, draftRevision: input.expectedRevision } };
+            requestId: input.requestId, hintId: compiled.hintId, operationId: input.idempotencyKey, draftRevision: input.expectedRevision });
+        const claimBase = { workItemId: input.workItemId, transportId: ctx.transport.id, actorUserId: ctx.user.id,
+          grantId: input.idempotencyKey, propertyCode: 'HRCEN' as const, firstName: compiled.selected.firstName,
+          lastName: compiled.selected.lastName, nativeGuestId: compiled.selected.guestId, operation: 'amend' as const,
+          sourceDigest: input.source.sourceHash, approvedDigest: reviewDigest, target: locked.dispatchTarget,
+          recovery: { confirmation: selected.confirmation, reservationStayId: selected.reservationStayId,
+            prepareObservationRef: prepared.ref, reviewDigest, requestId: input.requestId, hintId: compiled.hintId,
+            operationId: input.idempotencyKey, draftRevision: input.expectedRevision,
+            recoveryEvidenceDigest: sha256(callbackRecovery) } };
         const authorizeFirst = async (raw: unknown) => {
           const step = record(raw);
           if (state.claimAttempted || !step || step.operationDigest !== reviewDigest || step.sourceDigest !== input.source.sourceHash ||
@@ -1828,17 +1876,22 @@ async function executeCallbackSecond(ctx: ReservationWorkflowV2AmendContext, inp
               typeof step.requestDigest !== 'string' || !/^[a-f0-9]{64}$/.test(step.requestDigest) || !state.beforeEvidence) {
             throw new Error('AMEND_FINAL_APPROVAL_INVALID');
           }
-          state.claimAttempted = true;
           const claim = { ...claimBase, requestDigest: step.requestDigest,
             recovery: { ...claimBase.recovery, firstPhase: step.phase, runId, beforeShot: state.beforeShot } };
           approvedClaim = canonicalJson(claim);
+          if (Buffer.byteLength(approvedClaim) > 16_384) throw new Error('AMEND_CALLBACK_CLAIM_TOO_LARGE');
+          state.claimAttempted = true;
           const attempt = observationForWrite(draft, input, compiled.hintId, 'partial', { outcome: 'dispatch_pending',
             requestDigest: step.requestDigest, approvedDigest: originalDigest, prepareObservationRef: prepared.ref,
             target: original.target, before: compiled.selected, approvedPrices: price, beforeShot: state.beforeShot,
             reviewObservationRef: review.ref, reviewDigest });
-          state.handle = await claimHmsLabtestDispatch(ctx.db, claim, async tx =>
-            authorizeCurrentAmend(tx, ctx, input, compiled, prepared, originalDigest, attempt,
-              { operationId: firstOperationId, observation: review, approvalDigest: reviewDigest }), epoch);
+          state.handle = await claimHmsLabtestDispatch(ctx.db, claim, async tx => {
+            await authorizeCurrentAmend(tx, ctx, input, compiled, prepared, originalDigest, attempt,
+              { operationId: firstOperationId, observation: review, approvalDigest: reviewDigest });
+            await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
+              fieldPath: 'nava.hms.amend.callback-recovery.v1', value: { operationId: input.idempotencyKey,
+                sourceDigest: input.source.sourceHash, recovery: callbackRecovery }, evidence: { sourceHash: input.source.sourceHash } });
+          }, epoch);
           return state.handle;
         };
         const sealBeforeEvidence = async () => {
@@ -1849,6 +1902,7 @@ async function executeCallbackSecond(ctx: ReservationWorkflowV2AmendContext, inp
         };
         return native.commitCloudPaneAmendReviewed({ ...nextCommon, changes, callbackPlan: nextPlan, callbackPlanDigest: planDigest,
           callbackBindingChanges: safeChanges, approvedBusinessImage: current.partyImage,
+          ...(expectedFinalCommission !== null ? { expectedFinalCommission } : {}),
           sourceDigest: input.source.sourceHash, targetDigest, reviewDigest,
           nativeDigest: preflight.nativeDigest, approvedPrices: price, approvedBeforeCallbackPrice: current.savedPrice,
           preserved: nextPreserved, ...(typeof changes.guaranteeType === 'string' ? { guaranteeChoiceCode: changes.guaranteeType } : {}),
@@ -1865,7 +1919,7 @@ async function executeCallbackSecond(ctx: ReservationWorkflowV2AmendContext, inp
     issue: 'amend_dispatch_claim_unconfirmed' } : { status: 'failed', issue: text(result.issue) ?? 'amend_not_dispatched' };
   const actual = result.outcome === 'amended' && result.writerSessionClosed === true && result.dispatchCallbacksDrained === true &&
     result.businessFieldsMatched === true && finalBaseline ? readbackMatches(result.readback,
-      { ...original, recoveryBaseline: finalBaseline, approvedPrices: price }) : null;
+      { ...original, recoveryBaseline: finalBaseline, approvedPrices: price, expectedFinalCommission }) : null;
   if (!actual || !state.beforeShot || !state.afterShot || !state.beforeEvidence) {
     const partialEvidenceRecorded = await recordCallbackPartial(ctx, input, compiled.hintId, 'final_go', result);
     return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: state.handle.holdId,
@@ -2145,7 +2199,18 @@ export async function reservationWorkflowV2AmendReconcile(ctx: ReservationWorkfl
     return { status: 'needs_reconcile', operationId: input.operationId, issue: 'amend_dispatch_intent_scope_unverified' };
   }
   if (record(intent.recovery)?.firstGo === true || typeof record(intent.recovery)?.reviewDigest === 'string') {
-    const recovery = record(intent.recovery)!, selected = recovery.selected, plan = record(recovery.callbackPlan),
+    const claimRecovery = record(intent.recovery)!;
+    const recoveryRows = await ctx.db.select({ value: workEvent.value }).from(workEvent).where(and(
+      eq(workEvent.workItemId, input.workItemId), eq(workEvent.type, 'write.evidence'),
+      eq(workEvent.fieldPath, 'nava.hms.amend.callback-recovery.v1'))).limit(2000);
+    const matches = recoveryRows.map(row => record(row.value)).filter(row => row?.operationId === input.operationId &&
+      row.sourceDigest === input.source.sourceHash && record(row.recovery) &&
+      sha256(row.recovery) === claimRecovery.recoveryEvidenceDigest);
+    const recovery = matches.length === 1 ? record(matches[0]?.recovery) : null;
+    if (!recovery) return { status: 'needs_reconcile', operationId: input.operationId, dispatchHoldId: intent.holdId,
+      issue: 'amend_callback_recovery_evidence_unavailable', partialEffect: 'possible',
+      message: 'Details may have changed in HMS. Check the reservation and resolve this operation before retrying.' };
+    const selected = recovery.selected, plan = record(recovery.callbackPlan),
       baseline = record(recovery.recoveryBaseline), preserved = record(recovery.preserved), changes = record(recovery.approved);
     let nativeState: Record<string, unknown> | null = null;
     if (validNative(selected) && plan && baseline && preserved && changes) {
