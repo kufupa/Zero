@@ -4346,8 +4346,15 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
       ? request.body.targets.include[0] : undefined;
     const confirmation = target?.confirmation?.trim();
     const extractionId = input.extractionIdByProposalRequestId.get(request.id);
+    const extracted = input.extraction.requests.find((row) => row.id === extractionId && row.kind === 'amend');
+    const confirmations = [...new Set(extracted?.confirmationHints.flatMap((claim) => {
+      const value = typeof claim.value === 'string' ? claim.value.trim() : '';
+      return /^\d{6,10}-\d{1,2}$/.test(value) && claim.sourceRefs.some((ref) =>
+        input.evidence.some((row) => row.ref === ref && row.relation === 'current_message' && row.text.includes(value))) ? [value] : [];
+    }) ?? [])];
     const currentConfirmation = confirmation && /^\d{6,10}-\d{1,2}$/.test(confirmation) && target?.sourceRefs.some((ref) =>
-      input.evidence.some((row) => row.ref === ref && row.relation === 'current_message' && row.text.includes(confirmation)));
+      input.evidence.some((row) => row.ref === ref && row.relation === 'current_message' && row.text.includes(confirmation))) &&
+      confirmations.length === 1 && confirmations[0] === confirmation;
     const uniqueRequest = extractionId && proposal.content.requests.filter((row) => row.kind === 'amend' &&
       input.extractionIdByProposalRequestId.get(row.id) === extractionId).length === 1;
     const matches = currentConfirmation && uniqueRequest ? input.observations.filter((row) =>
