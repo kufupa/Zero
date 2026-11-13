@@ -4239,7 +4239,7 @@ function applyDefaultCmsSendPolicy(
   const cmsInstructions = cmsParts.filter((part) => /\bCMS\s+Send\b/iu.test(part))
     .map((raw) => {
       const match = /^CMS\s+Send(?:\s*(?::|=)\s*|\s+(?:is\s+)?)(on|off)\s*[.!?]?$/iu.exec(raw) ??
-        /^(?:please\s+)?(?:keep|leave|turn)\s+CMS\s+Send\s+(on|off)\s*[.!?]?$/iu.exec(raw);
+        /^(?:please\s+)?(?:keep|leave|turn|switch|set)\s+CMS\s+Send\s+(on|off)\s*[.!?]?$/iu.exec(raw);
       return { raw, value: match ? match[1]!.toLowerCase() === 'on' : null };
     });
   const cmsTemplates = cmsParts.filter((part) => /\bCMS\s+message\b/iu.test(part)).map((raw) => {
