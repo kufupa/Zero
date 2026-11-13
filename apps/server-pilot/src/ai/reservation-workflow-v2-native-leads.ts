@@ -52,6 +52,10 @@ const rateMealMappingSchema = z.array(z.object({ propertyCode: z.string(), rateP
   countingUnit: z.literal('distinct_verified_stays'), capturedThrough: z.string(), denominator: z.number().int().positive(),
   candidates: z.array(z.object({ mealPlan: z.string(), support: z.number().int().positive(),
     denominator: z.number().int().positive(), confidence: z.number().min(0).max(1) })) }));
+const rateTrackMappingSchema = z.array(z.object({ propertyCode: z.string(), ratePlan: z.string(),
+  countingUnit: z.literal('distinct_verified_stays'), capturedThrough: z.string(), denominator: z.number().int().positive(),
+  candidates: z.array(z.object({ track: z.string(), support: z.number().int().positive(),
+    denominator: z.number().int().positive(), confidence: z.number().min(0).max(1) })) }));
 
 /** Native stay evidence, scoped to the selected message's arrival; no rate-code guessing. */
 export async function loadReservationRateMealMapping(input: { propertyCode: string; arrivedAt: string; env?: NodeJS.ProcessEnv }):
@@ -67,6 +71,23 @@ export async function loadReservationRateMealMapping(input: { propertyCode: stri
     return { status: 'available', mappings: parsed.data };
   } catch {
     return { status: 'unavailable', issue: 'RATE_MEAL_MEMORY_UNAVAILABLE' };
+  }
+}
+
+/** Native stay rate/Track evidence scoped to the selected message's arrival. */
+export async function loadReservationRateTrackMapping(input: { propertyCode: string; arrivedAt: string; env?: NodeJS.ProcessEnv }):
+  Promise<{ status: 'available'; mappings: z.infer<typeof rateTrackMappingSchema> } | { status: 'unavailable'; issue: string }> {
+  const env = input.env ?? process.env;
+  const dir = env.HMS_MEMORY_DATA_DIR || '/home/orca/.local/share/zero/research/halloween/raw-data';
+  try {
+    const module = await import(new URL('../../tooling/hms-cloud/hms-booking-memory.mjs', import.meta.url).href);
+    const parsed = rateTrackMappingSchema.safeParse(await module.loadHmsRateTrackMapping({ propertyCode: input.propertyCode,
+      asOf: input.arrivedAt, pmsPaths: [env.HMS_MEMORY_PMS_PATH || `${dir}/stay360-1a-1b-1c-20261029-run01.json`],
+      observationsPath: env.HMS_MEMORY_OBSERVATIONS_PATH || undefined }));
+    if (!parsed.success) return { status: 'unavailable', issue: 'RATE_TRACK_MEMORY_INVALID' };
+    return { status: 'available', mappings: parsed.data };
+  } catch {
+    return { status: 'unavailable', issue: 'RATE_TRACK_MEMORY_UNAVAILABLE' };
   }
 }
 

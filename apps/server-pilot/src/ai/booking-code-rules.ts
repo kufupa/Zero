@@ -195,3 +195,28 @@ export async function loadNativeRateMealPlan(input: { propertyCode: string; rate
   }
   return { status: 'verified', mealPlan: rows[0].mealPlan, capturedAt: parsed.data.capturedAt };
 }
+
+const nativeCodeCatalogSchema = z.object({ capturedAt: z.string().datetime({ offset: true }), catalogs: z.record(z.object({
+  scope: z.object({ wholeCatalogComplete: z.boolean() }), coverage: z.object({ complete: z.boolean() }),
+  records: z.array(z.object({ code: z.string().nullable(), meaning: z.string().nullable() })),
+})) });
+
+/** Current complete native codes; historical guidance still needs a unique matching code or meaning. */
+export async function loadNativeBookingCodes(input: { propertyCode: string; kind: 'guaranteeTypes' | 'trackSubsegment';
+  env?: NodeJS.ProcessEnv }): Promise<
+  { status: 'available'; capturedAt: string; records: { code: string | null; meaning: string | null }[] } |
+  { status: 'unavailable'; issue: string }
+> {
+  const path = (input.env ?? process.env).HMS_NATIVE_CATALOG_PATH;
+  if (!path) return { status: 'unavailable', issue: 'catalog_path_missing' };
+  const module = await import(new URL('../../tooling/hms-cloud/hms-native-catalog.mjs', import.meta.url).href);
+  const loaded = await module.loadHmsNativeCatalog({ path, propertyCode: input.propertyCode });
+  if (loaded.status !== 'available') return { status: 'unavailable', issue: loaded.issue };
+  const parsed = nativeCodeCatalogSchema.safeParse(loaded.catalog);
+  if (!parsed.success) return { status: 'unavailable', issue: 'booking_code_catalog_invalid' };
+  const catalog = parsed.data.catalogs[input.kind];
+  if (!catalog || !catalog.scope.wholeCatalogComplete || !catalog.coverage.complete) {
+    return { status: 'unavailable', issue: 'booking_code_catalog_incomplete' };
+  }
+  return { status: 'available', capturedAt: parsed.data.capturedAt, records: catalog.records };
+}

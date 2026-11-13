@@ -46,8 +46,7 @@ export function buildHmsRateFrequency({ propertyCode, pmsSnapshots = [] } = {}) 
     full: counts(false), email: counts(true) };
 }
 
-/** Derive only recorded rate/meal pairs from native-confirmed stays captured before asOf. */
-export function buildHmsRateMealMapping({ propertyCode, pmsSnapshots = [], asOf } = {}) {
+function buildHmsRateFieldMapping({ propertyCode, pmsSnapshots = [], asOf } = {}, { label, field }) {
   const scope = text(propertyCode).toUpperCase(), cutoff = Date.parse(asOf);
   if (!scope || !Number.isFinite(cutoff)) throw new TypeError('Property and asOf timestamp are required.');
   const latest = new Map(), ambiguous = new Set();
@@ -64,14 +63,14 @@ export function buildHmsRateMealMapping({ propertyCode, pmsSnapshots = [], asOf 
       const fields = [...(result.recordView?.details?.fields || []),
         ...(result.stay360?.details?.cards || []).flatMap(card => Array.isArray(card?.fields) ? card.fields : [])];
       const values = label => [...new Set(fields.filter(field => labelOf(field) === label).map(field => text(field.value)).filter(Boolean))];
-      const rate = values('rate plan'), meal = values('meal plan');
-      if (rate.length !== 1 || !/^[A-Z0-9]{1,12}$/.test(rate[0].toUpperCase()) || meal.length > 1) continue;
-      const item = { ratePlan: rate[0].toUpperCase(), mealPlan: meal[0] || null, captured,
+      const rate = values('rate plan'), target = values(label);
+      if (rate.length !== 1 || !/^[A-Z0-9]{1,12}$/.test(rate[0].toUpperCase()) || target.length > 1) continue;
+      const item = { ratePlan: rate[0].toUpperCase(), target: target[0] || null, captured,
         stayId: confirmationKey(result.provenance?.verifiedStayId) };
       const previous = latest.get(key);
       if (previous && (!item.stayId || item.stayId !== previous.stayId)) { ambiguous.add(key); continue; }
       if (!previous || captured > previous.captured) latest.set(key, item);
-      else if (captured === previous.captured && (previous.ratePlan !== item.ratePlan || previous.mealPlan !== item.mealPlan)) {
+      else if (captured === previous.captured && (previous.ratePlan !== item.ratePlan || previous.target !== item.target)) {
         latest.set(key, { ...item, conflicting: true });
       }
     }
@@ -79,14 +78,24 @@ export function buildHmsRateMealMapping({ propertyCode, pmsSnapshots = [], asOf 
   const byRate = Map.groupBy([...latest].filter(([key, item]) => !ambiguous.has(key) && !item.conflicting)
     .map(([, item]) => item), item => item.ratePlan);
   return [...byRate].map(([ratePlan, records]) => {
-    const meals = Map.groupBy(records.filter(item => item.mealPlan), item => item.mealPlan);
-    const ranked = [...meals].map(([mealPlan, matches]) => ({ mealPlan, support: matches.length,
+    const targets = Map.groupBy(records.filter(item => item.target), item => item.target);
+    const ranked = [...targets].map(([value, matches]) => ({ [field]: value, support: matches.length,
       denominator: records.length, confidence: matches.length / records.length }))
-      .sort((a, b) => b.support - a.support || a.mealPlan.localeCompare(b.mealPlan));
+      .sort((a, b) => b.support - a.support || a[field].localeCompare(b[field]));
     return { propertyCode: scope, ratePlan, countingUnit: 'distinct_verified_stays',
       capturedThrough: new Date(Math.max(...records.map(item => item.captured))).toISOString(),
       denominator: records.length, candidates: ranked };
   }).sort((a, b) => a.ratePlan.localeCompare(b.ratePlan));
+}
+
+/** Derive only recorded rate/meal pairs from native-confirmed stays captured before asOf. */
+export function buildHmsRateMealMapping(input = {}) {
+  return buildHmsRateFieldMapping(input, { label: 'meal plan', field: 'mealPlan' });
+}
+
+/** Derive only recorded rate/Track pairs from the same time-eligible verified stays. */
+export function buildHmsRateTrackMapping(input = {}) {
+  return buildHmsRateFieldMapping(input, { label: 'track / sub segment', field: 'track' });
 }
 
 const LABELS = {
@@ -441,6 +450,16 @@ export async function loadHmsRateMealMapping({ propertyCode, pmsPaths = [], obse
     observationsPath ? readSource(observationsPath, true) : [],
   ]);
   return buildHmsRateMealMapping({ propertyCode, asOf,
+    pmsSnapshots: [...snapshots, ...observationSnapshots(propertyCode, observations)] });
+}
+
+export async function loadHmsRateTrackMapping({ propertyCode, pmsPaths = [], observationsPath, asOf } = {}) {
+  if (!pmsPaths.length && !observationsPath) throw new TypeError('Provide a native stay source.');
+  const [snapshots, observations] = await Promise.all([
+    Promise.all(pmsPaths.map(path => readSource(path, false))),
+    observationsPath ? readSource(observationsPath, true) : [],
+  ]);
+  return buildHmsRateTrackMapping({ propertyCode, asOf,
     pmsSnapshots: [...snapshots, ...observationSnapshots(propertyCode, observations)] });
 }
 
