@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { isLabtestAmendStageContext } from './labtest-amend-save.mjs';
 import { cleanLabtestRecord, snapshotLabtestRecord } from './labtest-record.mjs';
 import { isFirstGoCallbackAuthority } from './pane-amend-callback-authority.mjs';
+import { isFinalGoCallbackAuthority } from './pane-amend-final-authority.mjs';
 import { applySavedGuaranteeOnGo } from './guest-stay-amend-guarantee.mjs';
 import { inspectSavedPartyForComposition, applySavedPartyOnGo } from './guest-stay-amend-party.mjs';
 import { savedChildOccupancy, sameChildAgeMultiset, stageSavedChildrenForComposition } from './guest-stay-amend-children.mjs';
@@ -26,7 +27,7 @@ const commission = value => value && typeof value === 'object' && !Array.isArray
   /^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value.ta1commission) && Number(value.ta1commission) <= 100;
 const issue = error => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'CALLBACK_PHASE_UNVERIFIED';
 
-function validatePlan({ selected, expected, guarantee, parties, children, beforeImage }) {
+function validatePlan({ selected, expected, guarantee, parties, children, beforeImage }, { allowEmpty = false } = {}) {
   if (!selected || !expected || selected.source !== 'record_view_ext_model' || selected.propertyCode !== 'HRCEN' ||
       selected.status !== 'Reserved' || !/^\d{6,}-\d+$/.test(selected.confirmation || '') ||
       !['guestId', 'reservationId', 'reservationStayId', 'recordId'].every(key => id(selected[key])) ||
@@ -46,7 +47,7 @@ function validatePlan({ selected, expected, guarantee, parties, children, before
         children.beforeAges.length === selected.children && ages(expected.childAges) &&
         isDeepStrictEqual(children.beforeAges, expected.childAges) &&
         !sameChildAgeMultiset(children.beforeAges, children.nextAges))) ||
-      (!guarantee && parties.length === 0 && !children)) throw new Error('CALLBACK_PLAN_INVALID');
+      (!allowEmpty && !guarantee && parties.length === 0 && !children)) throw new Error('CALLBACK_PLAN_INVALID');
 }
 
 function withoutSession(image) {
@@ -79,15 +80,23 @@ function partyImagePreserved(before, after, exempt, allowPriceChange = false) {
   return isDeepStrictEqual(mask(a), mask(b));
 }
 
-/** Run only the approved first-Go callbacks; the owning host reprices and returns before Save. */
+/** Run only the approved callbacks; the owning host controls repricing and Save. */
 export async function runCloudPaneAmendCallbacks(input, authority) {
   const context = input?.context;
   const effects = [];
-  let snapshot, pending = null, blockedSave = false;
-  const possible = () => isFirstGoCallbackAuthority(authority) && authority.possiblyPersisted();
+  let snapshot, pending = null, blockedSave = false, callbacksReturned = false;
+  const firstGo = isFirstGoCallbackAuthority(authority), finalGo = isFinalGoCallbackAuthority(authority);
+  const validAuthority = firstGo !== finalGo;
+  const bound = isLabtestAmendStageContext(context) ? context.callbackAuthority : null;
+  const boundIsAuthority = isFirstGoCallbackAuthority(bound) || isFinalGoCallbackAuthority(bound);
+  const possible = () => (validAuthority && authority.possiblyPersisted()) ||
+    (bound !== authority && boundIsAuthority && bound.possiblyPersisted());
   const stop = reason => {
-    if (isFirstGoCallbackAuthority(authority)) authority.close();
-    if (isLabtestAmendStageContext(context)) context.stop(reason);
+    if (validAuthority) authority.close();
+    if (isLabtestAmendStageContext(context)) {
+      if (bound !== authority && boundIsAuthority) bound.close();
+      context.stop(reason);
+    }
   };
   const active = () => {
     if (blockedSave || !context.isActive() || context.remainingMs() <= 0 || !authority.isActive()) {
@@ -95,15 +104,17 @@ export async function runCloudPaneAmendCallbacks(input, authority) {
     }
   };
   try {
-    if (!isLabtestAmendStageContext(context) || !isFirstGoCallbackAuthority(authority) ||
+    if (!isLabtestAmendStageContext(context) || !validAuthority ||
         context.callbackAuthority !== authority || !context.page || !context.frame || !context.baseline || !context.isActive() ||
-        context.remainingMs() <= 0 || !authority.isActive()) throw new Error('CALLBACK_CONTEXT_INVALID');
+        context.remainingMs() <= 0 || !authority.isActive() || (finalGo && authority.mayAttemptSave())) {
+      throw new Error('CALLBACK_CONTEXT_INVALID');
+    }
     const { selected, expected, guarantee, parties, children, beforeImage } = structuredClone({
       selected: input.selected, expected: input.expected, guarantee: input.guarantee,
       parties: input.parties, children: input.children, beforeImage: input.beforeImage,
     });
     const plan = { selected, expected, guarantee, parties, children, beforeImage };
-    validatePlan(plan);
+    validatePlan(plan, { allowEmpty: finalGo });
     if (!authority.matchesPlan(plan) || usedPages.has(context.page) ||
         (guarantee && !isSavedGuaranteeRequestGate(context.guaranteeStageGate)) ||
         (parties.length && !isSavedPartyStageRequestGate(context.partyStageGate)) ||
@@ -120,6 +131,7 @@ export async function runCloudPaneAmendCallbacks(input, authority) {
       try { path = decodeURIComponent(new URL(route.request().url()).pathname).toLowerCase(); }
       catch { stop('CALLBACK_REQUEST_INVALID'); return route.abort(); }
       if (path === '/web/base/osresv.hdr') {
+        if (finalGo && callbacksReturned && authority.isActive() && authority.mayAttemptSave() === true) return route.fallback();
         blockedSave = true;
         stop('CALLBACK_SAVE_FORBIDDEN');
         return route.abort();
@@ -245,7 +257,9 @@ export async function runCloudPaneAmendCallbacks(input, authority) {
       effects.push(pending); pending = null; updateBaseline(next);
     }
     active();
-    return { outcome: 'applied', effects, snapshot, partialEffect: 'possible' };
+    if (finalGo && (!authority.callbacksComplete() || authority.mayAttemptSave())) throw new Error('CALLBACK_PHASE_INCOMPLETE');
+    callbacksReturned = true;
+    return { outcome: 'applied', effects, snapshot, partialEffect: possible() ? 'possible' : 'none' };
   } catch (error) {
     const dispatched = Boolean(possible() || effects.some(effect => effect.partialEffect === 'possible') ||
       pending?.partialEffect === 'possible');
