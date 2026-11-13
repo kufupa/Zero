@@ -103,6 +103,69 @@ export function reservationEntityKey(value: string, role: PartyRole): string {
 }
 
 type Memory = z.infer<typeof memorySchema>;
+type NativeLeadsInput = { propertyCode: string;
+  source: ReservationWorkflowV2Source; generationId: string; proposal: ReservationWorkflowV2Proposal;
+  fromAddress: string | null | undefined; env?: NodeJS.ProcessEnv; signal?: AbortSignal;
+  db?: DB; transportId?: string; sourceThreadMessageIds?: readonly string[];
+};
+type SavedAmendBaseline = { requestId: string; hintId: string; selectedRef: string; prepareRef: string;
+  selectionPath: string; draftRevision: number; confirmation: string;
+  parties: Array<{ kind: 'organization' | 'arAccount'; nativeId: string; name: string }> };
+
+const selectedBaselinePartySchema = z.object({ state: z.enum(['selected', 'blank', 'unknown']),
+  nativeId: z.string().optional(), name: z.string().optional() }).passthrough();
+const savedStayIdentitySchema = z.object({ source: z.literal('record_view_ext_model'), propertyCode: z.literal('HRCEN'),
+  confirmation: z.string().regex(/^\d{6,10}-\d{1,2}$/), reservationStayId: z.string().regex(/^\d+$/),
+  reservationId: z.string().regex(/^\d+$/), recordId: z.string().regex(/^\d+$/), guestId: z.string().regex(/^\d+$/) }).passthrough();
+
+function verifiedAmendBaseline(input: NativeLeadsInput & { prepareObservation: ReservationWorkflowV2Observation;
+  targetObservation: ReservationWorkflowV2Observation }): SavedAmendBaseline | null {
+  const prepare = input.prepareObservation, target = input.targetObservation;
+  if (prepare.kind !== 'rate_availability' || prepare.status !== 'complete' || !prepare.coverage.complete ||
+      target.kind !== 'stay_candidate' || target.status !== 'complete' || !target.coverage.complete ||
+      [prepare, target].some(row => row.generationId !== input.generationId || row.propertyCode !== input.propertyCode ||
+        row.sourceMessageId !== input.source.messageId) || prepare.criteria.workflow !== 'amend' ||
+      prepare.result.outcome !== 'prepared' || target.criteria.workflow !== 'amend' || target.criteria.kind !== 'saved_target') return null;
+  const requestId = prepare.criteria.requestId, hintId = prepare.criteria.hintId, selectedRef = prepare.criteria.selectedRef;
+  const selectionPath = target.criteria.selectionPath, draftRevision = prepare.criteria.draftRevision;
+  const targetAt = Date.parse(target.observedAt), preparedAt = Date.parse(prepare.observedAt);
+  if (typeof requestId !== 'string' || typeof hintId !== 'string' || typeof selectedRef !== 'string' ||
+      typeof selectionPath !== 'string' || typeof draftRevision !== 'number' || !Number.isSafeInteger(draftRevision) || draftRevision < 0 ||
+      selectedRef !== target.ref || target.criteria.requestId !== requestId || target.criteria.hintId !== hintId ||
+      !Number.isFinite(targetAt) || !Number.isFinite(preparedAt) || targetAt > preparedAt) return null;
+  const request = input.proposal.content.requests.find(row => row.id === requestId && row.kind === 'amend');
+  if (!request || request.kind !== 'amend') return null;
+  const targetPrefix = `/proposal/content/requests/${encodeURIComponent(requestId)}/body/targets/include/`;
+  if (!selectionPath.startsWith(targetPrefix) || !/^\d+\/suggestedRef$/.test(selectionPath.slice(targetPrefix.length))) return null;
+  const before = savedStayIdentitySchema.safeParse(prepare.result.before);
+  const selected = savedStayIdentitySchema.safeParse(target.result.candidate);
+  if (!before.success || !selected.success || target.result.confirmation !== before.data.confirmation ||
+      target.result.nativeStayId !== before.data.reservationStayId ||
+      (['confirmation', 'reservationStayId', 'reservationId', 'recordId', 'guestId'] as const).some(key =>
+        before.data[key] !== selected.data[key])) return null;
+  const baseline = z.object({ beforeParties: z.record(z.unknown()) }).passthrough().safeParse(prepare.result.recoveryBaseline);
+  const semantic = z.object({ baseChanges: z.record(z.unknown()) }).passthrough().safeParse(prepare.result.semanticInput);
+  const verified = z.object({ organization: selectedBaselinePartySchema, arAccount: selectedBaselinePartySchema })
+    .safeParse(prepare.result.nativePartyBaseline);
+  if (!baseline.success || !semantic.success || !verified.success) return null;
+  const normalizedName = (value: string) => value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase('en-US');
+  const parties: SavedAmendBaseline['parties'] = [];
+  for (const kind of ['organization', 'arAccount'] as const) {
+    if (Object.hasOwn(semantic.data.baseChanges, kind)) continue;
+    const party = verified.data[kind];
+    const name = party.name;
+    if (party.state !== 'selected' || !party.nativeId || !/^[1-9]\d*$/.test(party.nativeId) || !name?.trim()) continue;
+    const id = baseline.data.beforeParties[kind === 'organization' ? 'companyid' : 'araccountid'];
+    const names = (kind === 'organization' ? ['company', 'companyname'] : ['araccountname'])
+      .map(key => baseline.data.beforeParties[key]).filter(value => value !== null && value !== undefined && value !== '');
+    if (String(id ?? '').trim() !== party.nativeId || !names.length ||
+        names.some(value => typeof value !== 'string' || normalizedName(value) !== normalizedName(name))) continue;
+    parties.push({ kind, nativeId: party.nativeId, name });
+  }
+  return { requestId, hintId, selectedRef, prepareRef: prepare.ref, selectionPath, draftRevision,
+    confirmation: before.data.confirmation, parties };
+}
+
 let cached: { key: string; loadedAt: number; value: Promise<Memory | null> } | undefined;
 async function loadMemory(env: NodeJS.ProcessEnv): Promise<Memory | null> {
   const key = JSON.stringify([env.HMS_MEMORY_PMS_PATH, env.HMS_MEMORY_OUTBOUND_PATH, env.HMS_MEMORY_DATA_DIR, env.HMS_MEMORY_OBSERVATIONS_PATH]);
@@ -214,11 +277,12 @@ export async function loadReservationMemoryGuidance(input: { propertyCode: strin
 }
 
 /** Existing captured memory supplies ranked names/codes only, after source projection has finished. */
-export async function loadReservationNativeLeads(input: { propertyCode: string;
-  source: ReservationWorkflowV2Source; generationId: string; proposal: ReservationWorkflowV2Proposal;
-  fromAddress: string | null | undefined; env?: NodeJS.ProcessEnv; signal?: AbortSignal;
-  db?: DB; transportId?: string; sourceThreadMessageIds?: readonly string[];
-}): Promise<ReservationWorkflowV2Observation[]> {
+export async function loadReservationNativeLeads(input: NativeLeadsInput): Promise<ReservationWorkflowV2Observation[]> {
+  return loadReservationNativeLeadsInternal(input);
+}
+
+async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { savedAmendBaseline?: SavedAmendBaseline }):
+  Promise<ReservationWorkflowV2Observation[]> {
   if (input.propertyCode !== 'HRCEN' || input.signal?.aborted || (!input.db && !input.sourceThreadMessageIds)) return [];
   try {
     const loaded = await loadMemory(input.env ?? process.env);
@@ -233,6 +297,7 @@ export async function loadReservationNativeLeads(input: { propertyCode: string;
     }));
     if (!snapshotTimes.size) return [];
     const excluded = new Set(JSON.stringify(input.proposal).match(/\b\d{6,10}-\d{1,2}\b/g) ?? []);
+    if (input.savedAmendBaseline) excluded.add(input.savedAmendBaseline.confirmation);
     const sourceMessages = new Set([input.source.messageId, ...(input.sourceThreadMessageIds ?? [])]);
     if (input.db) {
       if (!input.transportId) return [];
@@ -282,7 +347,7 @@ export async function loadReservationNativeLeads(input: { propertyCode: string;
       else if (capturedAt === current.capturedAt) current.rows.push(row);
     }
     const autoTransferHint = (requestId: string, workflow: 'create' | 'amend', fieldPath: string,
-      partyKind: 'organization' | 'arAccount', partyQuery: string) => {
+      partyKind: 'organization' | 'arAccount', partyQuery: string, binding?: Record<string, unknown>) => {
       const role: PartyRole = partyKind === 'organization' ? 'organization' : 'ar_account';
       const key = reservationEntityKey(partyQuery, role);
       if (!key) return;
@@ -307,10 +372,17 @@ export async function loadReservationNativeLeads(input: { propertyCode: string;
       observations.push({ ref: randomUUID(), generationId: input.generationId, kind: 'stay_candidate', status: 'partial',
         observedAt: new Date().toISOString(), propertyCode: input.propertyCode, sourceMessageId: input.source.messageId,
         sourceRefs: [], criteria: { kind: 'historical_auto_transfer_hint', workflow, requestId,
-          sourceHash: input.source.sourceHash, fieldPath, partyKind, partyQuery },
+          sourceHash: input.source.sourceHash, fieldPath, partyKind, partyQuery, ...binding },
         coverage: { complete: false, notes: ['Prior native stays are informational; missing Auto Transfer details are unknown.'] },
         result: { value: true, support, denominator, confidence, evidence: 'stay360_auto_transfer_card_row', observedThrough } });
     };
+    if (input.savedAmendBaseline) {
+      const { requestId, hintId, selectedRef, prepareRef, selectionPath, draftRevision, parties } = input.savedAmendBaseline;
+      for (const party of parties) autoTransferHint(requestId, 'amend', selectionPath, party.kind, party.name,
+        { binding: 'saved_amend_baseline', hintId, selectedRef, prepareRef, selectionPath,
+          draftRevision, partyNativeId: party.nativeId });
+      return observations;
+    }
     for (const request of input.proposal.content.requests) {
       const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
       if (request.kind === 'create') {
@@ -449,4 +521,13 @@ export async function loadReservationNativeLeads(input: { propertyCode: string;
     input.signal?.throwIfAborted();
     return [];
   }
+}
+
+/** Historical guidance for a fresh saved Amend baseline; no native fields are changed. */
+export async function loadReservationAmendBaselineAutoTransferLeads(input: Omit<NativeLeadsInput, 'fromAddress'> & {
+  prepareObservation: ReservationWorkflowV2Observation; targetObservation: ReservationWorkflowV2Observation;
+}): Promise<ReservationWorkflowV2Observation[]> {
+  const savedAmendBaseline = verifiedAmendBaseline({ ...input, fromAddress: null });
+  if (!savedAmendBaseline?.parties.length) return [];
+  return loadReservationNativeLeadsInternal({ ...input, fromAddress: null, savedAmendBaseline });
 }
