@@ -172,15 +172,7 @@ export async function loadAgencyCommission(input: { propertyCode: string; native
     numerator, denominator, confidence };
 }
 
-const rateMealCatalogSchema = z.object({ capturedAt: z.string().datetime({ offset: true }), catalogs: z.object({
-  ratePlans: z.object({ records: z.array(z.object({ code: z.string().nullable(), mealPlan: z.string().nullable(),
-    capturedAt: z.string().datetime({ offset: true }),
-    mealPlanEvidence: z.object({ basis: z.literal('validated_unsaved_rate_and_native_meal_readback'),
-      numerator: z.number().int().positive(), denominator: z.number().int().positive(),
-      capturedAt: z.string().datetime({ offset: true }).optional() }).nullable() })) }),
-}) });
-
-/** Confirm the current native Rate Plan/Meal Plan mapping separately from historical stay evidence. */
+/** Report whether a property-wide native Rate Plan/Meal Plan configuration is available. */
 export async function loadNativeRateMealPlan(input: { propertyCode: string; ratePlan: string; env?: NodeJS.ProcessEnv }): Promise<
   { status: 'verified'; mealPlan: string; capturedAt: string } | { status: 'unavailable' | 'not_found'; issue: string }
 > {
@@ -189,15 +181,9 @@ export async function loadNativeRateMealPlan(input: { propertyCode: string; rate
   const module = await import(new URL('../../tooling/hms-cloud/hms-native-catalog.mjs', import.meta.url).href);
   const loaded = await module.loadHmsNativeCatalog({ path, propertyCode: input.propertyCode });
   if (loaded.status !== 'available') return { status: 'unavailable', issue: loaded.issue };
-  const parsed = rateMealCatalogSchema.safeParse(loaded.catalog);
-  if (!parsed.success) return { status: 'unavailable', issue: 'rate_catalog_invalid' };
-  const rows = parsed.data.catalogs.ratePlans.records.filter(row => row.code === input.ratePlan);
-  if (rows.length !== 1 || !rows[0]?.mealPlan || !rows[0].mealPlanEvidence ||
-      rows[0].mealPlanEvidence.numerator !== rows[0].mealPlanEvidence.denominator) {
-    return { status: 'not_found', issue: 'rate_meal_unverified' };
-  }
-  return { status: 'verified', mealPlan: rows[0].mealPlan,
-    capturedAt: rows[0].mealPlanEvidence.capturedAt ?? rows[0].capturedAt };
+  // A selected draft readback is not a property-wide configuration: the native
+  // rate-change call sends the whole draft, and its dependencies are unknown.
+  return { status: 'not_found', issue: 'rate_meal_configuration_unverified' };
 }
 
 const nativeCodeCatalogSchema = z.object({ capturedAt: z.string().datetime({ offset: true }), catalogs: z.record(z.object({

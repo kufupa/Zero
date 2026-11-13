@@ -36,7 +36,13 @@ export function validateRateMealReadback({ propertyCode, selection, form, observ
   const rates = values('rateplan'), meals = values('mealplan');
   const code = clean(selection.code);
   if (!code || rates.length !== 1 || rates[0] !== code || meals.length !== 1 || !meals[0]) return null;
+  const changes = (Array.isArray(selection.changedFields) ? selection.changedFields : [])
+    .filter(change => change?.before?.name === 'mealplan' && change?.after?.name === 'mealplan');
+  const mealChange = changes.length === 1 && clean(changes[0].after.value) === meals[0]
+    ? { before: clean(changes[0].before.value), after: meals[0] } : null;
   return { ratePlan: code, mealPlan: meals[0], propertyCode, observedAt: new Date(observedAt).toISOString(),
+    arrivalDate: clean(selection.arrivalDate), departureDate: clean(selection.departureDate), mealChange,
+    nativeCodeEvidence: selection.nativeCodeEvidence,
     basis: 'validated_unsaved_rate_and_native_meal_readback' };
 }
 
@@ -79,20 +85,15 @@ export function normalizeHmsNativeCatalog({ propertyCode, capturedAt, source, ca
           commissionEvidence: { directory: row.commissionEvidence || null, mapping: commissionMapping || null } }];
       }
       if (kind === 'ratePlans') {
-        const nativeMeal = clean(row.responseData?.mealplan);
-        const gridMeal = clean(row.gridData?.mealplan);
         const matched = rateMealReadbacks.filter(item => item?.propertyCode === property && item.ratePlan === code &&
-          item.basis === 'validated_unsaved_rate_and_native_meal_readback' && clean(item.mealPlan));
-        const observedMeals = [...new Set(matched.map(item => item.mealPlan))];
-        const directMeal = nativeMeal && nativeMeal === gridMeal ? nativeMeal : null;
-        const mealPlan = observedMeals.length === 1 && (!directMeal || directMeal === observedMeals[0]) ? observedMeals[0] : null;
-        const readTimes = matched.map(item => Date.parse(item.observedAt));
-        const mealCapturedAt = readTimes.length && readTimes.every(Number.isFinite)
-          ? new Date(readTimes.reduce((earliest, value) => Math.min(earliest, value), Infinity)).toISOString() : time;
-        return [{ ...base, mealPlan, mealPlanEvidence: mealPlan ? {
-          basis: 'validated_unsaved_rate_and_native_meal_readback', numerator: matched.length, denominator: matched.length,
-          capturedAt: mealCapturedAt,
-        } : null }];
+          item.basis === 'validated_unsaved_rate_and_native_meal_readback' && clean(item.mealPlan) &&
+          Number.isFinite(Date.parse(item.observedAt)));
+        return [{ ...base, mealPlan: null, mealPlanEvidence: null,
+          mealPlanObservations: matched.map(item => ({ ratePlan: code, mealPlan: clean(item.mealPlan), propertyCode: property,
+            observedAt: new Date(item.observedAt).toISOString(), arrivalDate: clean(item.arrivalDate),
+            departureDate: clean(item.departureDate), mealChange: item.mealChange && clean(item.mealChange.after) === clean(item.mealPlan)
+              ? { before: clean(item.mealChange.before), after: clean(item.mealChange.after) } : null,
+            nativeCodeEvidence: clean(item.nativeCodeEvidence), basis: item.basis, catalogMappingApplied: false })) }];
       }
       return [base];
     }) };
