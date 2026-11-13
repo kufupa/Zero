@@ -210,6 +210,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     const pane = paneRef.current;
     if (!pane || !request) return;
     let path = field.split(':')[0]!;
+    if (path.endsWith('/occupancy') && field.endsWith(':known_child_count_and_ages_required')) path += '/childCount';
     const invalidDateRange = field.endsWith(':date_range_invalid');
     if (invalidDateRange && request.kind === 'create' && path === 'stay') {
       const failed = workbench.latestSnapshot()?.preparationViews.find(view => view.requestId === request.id && view.fields?.includes(field));

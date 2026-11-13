@@ -118,7 +118,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const leads = entity && (!dirty || normalized(query) === normalized(saved))
     ? partialNativeLeads(editor.snapshot, selectionPath, choiceKind) : [];
   useEffect(() => { if (!dirty) setQuery(saved); }, [saved, dirty]);
-  useEffect(() => () => { if (amendTrack) editor.commands.setUncommitted(path, false); }, [path, amendTrack]);
+  useEffect(() => () => { if (catalogueField) editor.commands.setUncommitted(path, false); }, [path, catalogueField]);
   const editValue = (value: string) => party ? { name: value, candidateRefs: [], suggestedRef: null } : value;
   const editPath = party ? path : inputPath;
   const choose = async (ref: string, value: string, label: string) => {
@@ -127,7 +127,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     try { if (entity) await editor.commands.selectNative(selectionPath, ref);
       else await editor.commands.edit(path, amendTrack ? { lookupCode: value, display: label } : value);
       if (editVersion.current === before) {
-        if (amendTrack) editor.commands.setUncommitted(path, false);
+        if (catalogueField) editor.commands.setUncommitted(path, false);
         setCatalogueSearch(null); setDirty(false); setOpen(false); setActiveIndex(-1);
       } }
     catch { /* controller retains failure */ }
@@ -136,7 +136,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     if (!dirty || amendTrack) return;
     const before = editVersion.current;
     await editor.commands.edit(editPath, editValue(query));
-    if (editVersion.current === before) setDirty(false);
+    if (editVersion.current === before) { setDirty(false); if (catalogueField) editor.commands.setUncommitted(path, false); }
   };
   const searchRecommendation = async (value: string) => {
     if (loadingRef.current) return;
@@ -210,7 +210,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       value={display} disabled={disabled || reviewing} onFocus={openChoices} onClick={openChoices} placeholder={guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
         editVersion.current += 1;
         const value = event.target.value; setCatalogueSearch(null); setQuery(value); setDirty(true); setOpen(true); setActiveIndex(-1);
-        if (amendTrack) editor.commands.setUncommitted(path, true);
+        if (catalogueField) editor.commands.setUncommitted(path, true);
         else editor.commands.stageEdit(editPath, editValue(value));
       }}
       onBlur={() => { void saveSearch().catch(() => {}); }} onKeyDown={event => {

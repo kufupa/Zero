@@ -3,7 +3,7 @@ import {
   commitReservationNativeCheck, getReservationWorkflowV2Draft,
   type ReservationNativeCheckBatch, type ReservationPrefillJobFence, type ReservationWorkflowV2Context,
 } from './reservation-workflow-v2-state.js';
-import { reservationWorkflowV2Lookup, reservationWorkflowV2Prepare } from './reservation-workflow-v2-tools.js';
+import { reservationWorkflowV2Lookup, reservationWorkflowV2Prepare, reservationWorkflowV2NativeChoices } from './reservation-workflow-v2-tools.js';
 import type { ReservationWorkflowV2SystemReadContext } from './reservation-workflow-v2-system-read-context.js';
 import { reservationWorkflowV2QuoteLookup, reservationWorkflowV2QuotePrepare } from './reservation-workflow-v2-quote.js';
 import { reservationWorkflowV2AmendLookup, reservationWorkflowV2AmendPrepare } from './reservation-workflow-v2-amend.js';
@@ -34,9 +34,22 @@ function nativeSteps(draft: ReservationWorkflowV2Draft): { steps: Step[]; omitte
           run: (ctx, item) => reservationWorkflowV2Prepare(ctx, { ...item, requestId, allocationId }) });
       }
     } else if (request.kind === 'quote') {
+      if (request.body.groups.length) for (const field of ['ratePlan', 'roomCodes']) {
+        const path = `/proposal/content/requests/${encodeURIComponent(requestId)}/body/groups/0/${field}`;
+        steps.push({ key: `quote:native_catalogue:${requestId}:${field}`, run: (ctx, item) =>
+          reservationWorkflowV2NativeChoices(ctx, { ...item, requestId, nativeFieldPath: path }) });
+      }
       steps.push({ key: `quote:lookup:${requestId}`, run: (ctx, item) => reservationWorkflowV2QuoteLookup(ctx, { ...item, requestId }) });
       steps.push({ key: `quote:prepare:${requestId}`, run: (ctx, item) => reservationWorkflowV2QuotePrepare(ctx, { ...item, requestId }) });
     } else if (request.kind === 'amend') {
+      const cataloguePaths = request.body.sharedChanges.flatMap((change, index) => change.op === 'set' &&
+        ['ratePlan', 'roomType', 'roomTypeForCharge'].includes(change.field)
+        ? [`/proposal/content/requests/${encodeURIComponent(requestId)}/body/sharedChanges/${index}/value`] : []);
+      for (const [targetIndex, target] of request.body.perTarget.entries()) for (const [changeIndex, change] of target.changes.entries())
+        if (change.op === 'set' && ['ratePlan', 'roomType', 'roomTypeForCharge'].includes(change.field))
+          cataloguePaths.push(`/proposal/content/requests/${encodeURIComponent(requestId)}/body/perTarget/${targetIndex}/changes/${changeIndex}/value`);
+      for (const path of cataloguePaths) steps.push({ key: `amend:native_catalogue:${requestId}:${path}`, run: (ctx, item) =>
+        reservationWorkflowV2NativeChoices(ctx, { ...item, requestId, nativeFieldPath: path }) });
       steps.push({ key: `amend:lookup:${requestId}`, run: stayLookup((ctx, item) => reservationWorkflowV2AmendLookup(ctx, { ...item, requestId })) });
       for (const hint of request.body.targets.include) steps.push({ key: `amend:prepare:${requestId}:${hint.id}`,
         run: stayLookup((ctx, item) => reservationWorkflowV2AmendPrepare(ctx, { ...item, requestId, allocationId: hint.id })) });

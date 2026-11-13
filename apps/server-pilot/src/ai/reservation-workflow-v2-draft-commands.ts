@@ -32,7 +32,7 @@ const allocation = (dateSectionId: string) => ({ id: id(), dateSectionId, overri
   guest: { firstName: null, lastName: null, email: null, mobile: null, profileIntent: 'existing_or_unknown' as const,
     candidateRefs: [], suggestedRef: null }, occupancy: occupancy(), priceObservationRefs: [] });
 const group = () => ({ id: id(), arrival: null, departure: null, quantity: null, mealPlan: null, requestedMealPlan: null, roomCodes: [],
-  ratePlan: null, occupancy: { ...occupancy(), scope: 'unresolved' as const }, priceObservationRefs: [] });
+  ratePlan: null, occupancy: { ...occupancy(), childCount: 0, childAges: [], scope: 'unresolved' as const }, priceObservationRefs: [] });
 const service = (requestId: string) => ({ id: id(), ownerRequestId: requestId, operation: 'add' as const,
   requestedText: '', code: null, itemCandidateRef: null, sharedFields: {}, requestedMoney: [], targets: [],
   quantityRequest: { value: null, scope: 'unresolved' as const, sourceRefs: [] }, sourceRefs: [] });

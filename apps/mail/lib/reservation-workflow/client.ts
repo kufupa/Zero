@@ -1,5 +1,5 @@
 import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Draft, type ReservationWorkflowV2Source } from '../../../server-pilot/src/ai/reservation-workflow-v2-contract.js';
-import type { RowChange } from './views';
+import { effectiveAt, record, requestPath, type RowChange } from './views';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import {
   paneSurfaceForFailureEvent,
@@ -450,9 +450,9 @@ function okResult(result: unknown): RecordValue {
 export function inputFieldLabel(value: string): string {
   const key = value.split(':')[0]!.split('/').at(-1) ?? value;
   const labels: Record<string, string> = {
-    scope: 'occupancy per room', known_child_count: 'number of children and their ages',
+    scope: 'occupancy scope', occupancy: 'number of children and their ages', known_child_count_and_ages_required: 'number of children and their ages', known_child_count: 'number of children and their ages',
     childCount: 'number of children', childAges: 'children’s ages', adults: 'adults per room',
-    agency_selection_required: 'select the Infor agency', company_selection_required: 'select the Infor Organization',
+    bookingAgency_selection_required: 'select the Primary Booking Agency in Infor', organization_selection_required: 'select the Organization in Infor',
     arrival: 'arrival date', departure: 'departure date', quantity: 'quantity', roomCodes: 'room type',
     roomType: 'room type', ratePlan: 'rate plan', rateHandling: 'rate handling', mealPlan: 'meal plan', requestedMealPlan: 'requested meal plan', guaranteeType: 'guarantee',
     sourceOfBusiness: 'source of business', firstName: 'guest first name', lastName: 'guest last name',
@@ -621,7 +621,7 @@ function quoteOperationNotice(result: unknown, success: string[], action: string
     childCount: 'number of children', childAges: 'children’s ages', roomCodes: 'room type', ratePlan: 'rate plan',
     salesStrategy: 'sales strategy', email: 'recipient email', attention: 'contact name', telephone: 'contact number',
     artifacts: 'quote outputs', provisionalBookingRequested: 'quote-only choice', requestedMoney: 'extra charges',
-    agency_selection_required: 'Infor agency', company_selection_required: 'Infor Organization',
+    bookingAgency_selection_required: 'Primary Booking Agency', organization_selection_required: 'Organization',
   };
   const fields = Array.isArray(result.fields) ? [...new Set(result.fields.filter(isString).map((field) => {
     const [path, reason] = field.split(':');
@@ -738,6 +738,20 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       expectedRevision: typeof result.revision === 'number' ? result.revision : input.expectedRevision,
       expectedSeq: typeof result.seq === 'number' ? result.seq : input.expectedSeq }, source);
   };
+  const splitQuoteDates = async (command: ReservationCommandContext & { requestId?: string; nativeFieldPath?: string }) => {
+    const request = command.snapshot.session.draft.proposal.content.requests.find(row => row.id === command.requestId);
+    if (request?.kind !== 'quote' || command.nativeFieldPath) return { snapshot: command.snapshot, requestIds: [] as string[] };
+    const body = record(effectiveAt(command.snapshot, `${requestPath(request.id)}/body`));
+    const groups = Array.isArray(body.groups) ? body.groups.map(record) : [];
+    if (groups.some(group => !group.arrival || !group.departure) ||
+      new Set(groups.map(group => `${group.arrival}:${group.departure}`)).size < 2)
+      return { snapshot: command.snapshot, requestIds: [] as string[] };
+    const previousIds = new Set(command.snapshot.session.draft.proposal.content.requests.map(row => row.id));
+    const snapshot = await refreshAfter(api.changeRows, { ...itemInput(command), kind: 'split_quote_dates' as const,
+      requestId: request.id }, command.source);
+    return { snapshot, requestIds: snapshot.session.draft.proposal.content.requests.filter(row => row.kind === 'quote' &&
+      (row.id === request.id || !previousIds.has(row.id))).map(row => row.id) };
+  };
   const guestResult = async (command: ReservationCommandContext, input: ItemInput & { idempotencyKey?: string }, raw: unknown, creating: boolean) => {
     const result = isRecord(raw) && isString(raw.status) ? raw : {
       status: creating ? 'needs_reconcile' : 'failed',
@@ -821,6 +835,20 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     undo(command) { return refreshAfter(api.undo, itemInput(command), command.source); },
     redo(command) { return refreshAfter(api.redo, itemInput(command), command.source); },
     async lookup(command) {
+      const split = await splitQuoteDates(command);
+      if (split.requestIds.length) {
+        let snapshot = split.snapshot;
+        const notices: string[] = [];
+        for (const requestId of split.requestIds) {
+          const input = { ...itemInput({ ...command, snapshot }), requestId };
+          const raw = await api.lookup.mutate(input, mailboxOptions(command.source));
+          await refreshAfterStale(input, command.source, raw);
+          const result = okResult(raw), notice = quoteLookupNotice(result);
+          if (notice) notices.push(notice);
+          snapshot = await load(input, command.source);
+        }
+        return { ...snapshot, ...(notices.length ? { serviceNotice: [...new Set(notices)].join(' ') } : {}) };
+      }
       const input = { ...itemInput(command), ...(command.requestId ? { requestId: command.requestId } : {}),
         ...(command.nativeFieldPath ? { nativeFieldPath: command.nativeFieldPath } : {}) };
       const raw = await api.lookup.mutate(input, mailboxOptions(command.source));
@@ -868,6 +896,25 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       return guestResult(command, input, result, true);
     },
     async prepare(command) {
+      const split = await splitQuoteDates(command);
+      if (split.requestIds.length) {
+        let snapshot = split.snapshot;
+        const notices: string[] = [];
+        for (const requestId of split.requestIds) {
+          let input = { ...itemInput({ ...command, snapshot }), requestId };
+          const lookup = await api.lookup.mutate(input, mailboxOptions(command.source));
+          await refreshAfterStale(input, command.source, lookup);
+          okResult(lookup);
+          snapshot = await load(input, command.source);
+          input = { ...itemInput({ ...command, snapshot }), requestId };
+          const result = await api.prepare.mutate(input, mailboxOptions(command.source));
+          await refreshAfterStale(input, command.source, result);
+          const notice = quoteOperationNotice(result, ['prepared'], 'Quote price preparation');
+          if (notice) notices.push(notice);
+          snapshot = await load(input, command.source);
+        }
+        return { ...snapshot, ...(notices.length ? { serviceNotice: [...new Set(notices)].join(' ') } : {}) };
+      }
       const input = { ...itemInput(command), requestId: command.requestId,
         ...(command.allocationId ? { allocationId: command.allocationId } : {}) };
       const result = await api.prepare.mutate(input, mailboxOptions(command.source));

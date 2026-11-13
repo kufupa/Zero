@@ -1,3 +1,4 @@
+import { CENTURION_RATE_CATALOGUE } from '../../../server-pilot/src/hms/centurion-rate-catalogue';
 import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationRequestProjection, ReservationFieldOverride, ReservationSavedServiceTarget, ReservationGuestProfileOptionField } from './types';
 
 type BasicRowChange = { requestId: string; parentId?: string; entityId?: string; childIds?: string[] };
@@ -494,7 +495,7 @@ function nativeCatalogueScope(snapshot: ReservationPaneSnapshot, path: string, k
         : allocations[0];
       if (!expected || expected.id !== criteria.allocationId || sourceParts.at(-1) !== parts.at(-1)) return false;
     }
-  } else if (!criteria.fieldPaths.includes(path)) return false;
+  } else if (!criteria.fieldPaths.includes(path) && !['rate_plan', 'room_type', 'room_type_for_charge'].includes(String(criteria.catalogueKind))) return false;
   return observation.status === 'complete' || observation.status === 'partial' &&
     record(observation.result).closeOutcome === 'closed_unsaved';
 }
@@ -511,7 +512,7 @@ export function hasCompleteNativeCatalogue(snapshot: ReservationPaneSnapshot, pa
   const requestId = decodeURIComponent(path.split('/')[4] ?? '');
   if (kind === 'track' && snapshot.session.draft.proposal.content.requests.some(row => row.id === requestId && row.kind === 'amend')) return false;
   const exact = snapshot.session.draft.observations.filter(observation => nativeCatalogueScope(snapshot, path, kind, observation) &&
-    Array.isArray(observation.criteria.fieldPaths) && observation.criteria.fieldPaths.includes(path));
+    Array.isArray(observation.criteria.fieldPaths));
   const last = exact.at(-1);
   return Boolean(last && exact.some(observation => nativeCatalogueContext(observation) === nativeCatalogueContext(last) &&
     observation.status === 'complete' && observation.coverage.complete === true));
@@ -554,7 +555,7 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
   const exactCatalogue = draft.observations.some(observation => nativeCatalogueScope(snapshot, path, kind, observation) &&
     Array.isArray(observation.criteria.fieldPaths) && observation.criteria.fieldPaths.includes(path));
   const compatibleCatalogue = (observation: ReservationPaneSnapshot['session']['draft']['observations'][number]) =>
-    nativeCatalogueScope(snapshot, path, kind, observation) && (!exactCatalogue ||
+    nativeCatalogueScope(snapshot, path, kind, observation) && (['rate_plan', 'room_type', 'room_type_for_charge'].includes(kind ?? '') || !exactCatalogue ||
       Array.isArray(observation.criteria.fieldPaths) && observation.criteria.fieldPaths.includes(path));
   const lastCatalogue = draft.observations.findLast(observation => (!amendTrack || observation.ref === latestTrackRef) && compatibleCatalogue(observation));
   const currentCatalogue = (observation: ReservationPaneSnapshot['session']['draft']['observations'][number]) =>
@@ -609,7 +610,23 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
     if (identities && selectedRef != null && previous?.choice.ref === selectedRef && equivalent(previous.candidate, candidate)) continue;
     latest.delete(key); latest.set(key, { choice, candidate });
   }
-  return [...latest.values()].map(row => row.choice);
+  const native = [...latest.values()].map(row => row.choice);
+  if (kind !== 'rate_plan') return native;
+  const available = new Map<string, NativeChoice>();
+  if (draft.propertyCode === 'HRCEN') for (const [code, entry] of Object.entries(CENTURION_RATE_CATALOGUE))
+    available.set(code, { ref: `catalogue:${code}`, value: code, label: entry.name, detail: 'Check price and availability in Infor' });
+  for (const observation of draft.observations) {
+    if (observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
+      observation.sourceMessageId !== draft.source.messageId || observation.criteria.requestId !== requestId) continue;
+    const result = record(observation.result);
+    for (const raw of Array.isArray(result.rateOptions) ? result.rateOptions : []) {
+      const option = record(raw), code = text(option.rateCode ?? option.ratePlan ?? option.code);
+      if (code) available.set(code, { ref: observation.ref, value: code,
+        label: text(option.rateName ?? option.label) || code, detail: 'Check price and availability in Infor' });
+    }
+  }
+  for (const choice of native) available.set(choice.value, choice);
+  return [...available.values()];
 }
 
 /** Incomplete native searches are useful leads, never selectable identities. */
