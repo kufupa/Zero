@@ -425,7 +425,7 @@ export function AmendEditor(editor: Editor) {
       const previousNote = record(record(baselines[0]?.result.reservationObservations).reservationNote);
       const currentNote = record(record(selectedObservation?.result.reservationObservations).reservationNote);
       const selectedStay = record(selectedObservation?.result.candidate);
-      const noteRefresh = baselines.length === 1 && noteChanges.length === 1 && typeof desiredNote === 'string' &&
+      const noteRefresh = baselines.length === 1 && noteChanges.length > 0 && typeof desiredNote === 'string' &&
         typeof selected === 'string' && previousNote.source === 'record_view_raw_value' &&
         currentNote.source === 'record_view_raw_value' && ['observed', 'blank'].includes(text(previousNote.state)) &&
         ['observed', 'blank'].includes(text(currentNote.state)) && previousNote.confirmation === selectedStay.confirmation &&

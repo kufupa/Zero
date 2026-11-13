@@ -17,6 +17,8 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
   if (!sourceObservations.length) return null;
   const admittedRefs = new Set(sourceObservations.flatMap(row => row.sourceRefs));
   const sourceComplete = sourceObservations.some(row => row.status === 'complete' && row.coverage.complete);
+  const occupancySourceComplete = sourceObservations.some(row => row.status === 'complete' && row.coverage.complete &&
+    row.result.textCoverageComplete === true);
   const draft = structuredClone(input), paths: string[] = [];
   const normal = (value: unknown) => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US') : '';
   const covered = (path: string, alias: string) => [...Object.keys(draft.fieldOverrides), ...Object.keys(draft.staffReviews)]
@@ -35,7 +37,7 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
     const hasOccupancy = extracted.occupancy.some(row => row.adults || row.childCount || row.childAges?.length);
     const occupancyConflict = draft.proposal.issues.some(issue => issue.kind.includes('occupancy') &&
       (issue.path.includes(`/requests/${request.id}/`) || issue.path.includes(`/requests/${encodeURIComponent(request.id)}/`)));
-    if (input.propertyCode === 'HRCEN' && sourceComplete && !occupancyConflict) {
+    if (input.propertyCode === 'HRCEN' && occupancySourceComplete && !occupancyConflict) {
       if (request.kind === 'quote' && !hasOccupancy) {
         for (const [index, group] of request.body.groups.entries()) {
           const occupancy = group.occupancy;
